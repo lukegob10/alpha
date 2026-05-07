@@ -84,7 +84,7 @@ import { WorktreesView } from "../worktrees/WorktreesView"
 import { SettingsSearch } from "./SettingsSearch"
 import { useSearchIndexRegistry, SearchIndexProvider } from "./useSettingsSearch"
 
-export const settingsTabsContainer = "flex flex-1 overflow-hidden [&.narrow_.tab-label]:hidden"
+export const settingsTabsContainer = "flex min-h-0 flex-1 overflow-hidden [&.narrow_.tab-label]:hidden"
 export const settingsTabList =
 	"w-48 data-[compact=true]:w-12 flex-shrink-0 flex flex-col overflow-y-auto overflow-x-hidden border-r border-vscode-sideBar-background"
 export const settingsTabTrigger =
@@ -730,7 +730,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 				{/* Content area - renders only the active tab (or indexing tab during initial indexing) */}
 				<TabContent
 					ref={contentRef}
-					className={cn("p-0 flex-1 overflow-auto", isIndexing && "opacity-0")}
+					className={cn("p-0 min-h-0 flex-1 overflow-auto", isIndexing && "opacity-0")}
 					data-testid="settings-content">
 					<SearchIndexProvider value={searchContextValue}>
 						{/* Providers Section */}
