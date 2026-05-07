@@ -173,6 +173,30 @@ describe("Model Validation Functions", () => {
 			)
 			expect(result).toBeUndefined() // Should exclude model-specific org errors
 		})
+
+		it("returns error for invalid Vertex gateway model routing JSON", () => {
+			const config: ProviderSettings = {
+				apiProvider: "vertex",
+				vertexProjectId: "test-project",
+				vertexRegion: "global",
+				vertexGatewayModelRoutingMap: "{not-json",
+			}
+
+			const result = validateApiConfigurationExcludingModelErrors(config, mockRouterModels, allowAllOrganization)
+			expect(result).toBe("settings:validation.vertexGatewayModelRoutingMap")
+		})
+
+		it("accepts a valid Vertex gateway model routing map", () => {
+			const config: ProviderSettings = {
+				apiProvider: "vertex",
+				vertexProjectId: "test-project",
+				vertexRegion: "global",
+				vertexGatewayModelRoutingMap: '{"gemini-3-flash-preview":"gateway-gemini-flash"}',
+			}
+
+			const result = validateApiConfigurationExcludingModelErrors(config, mockRouterModels, allowAllOrganization)
+			expect(result).toBeUndefined()
+		})
 	})
 })
 

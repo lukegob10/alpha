@@ -1,7 +1,35 @@
 // npx vitest run src/api/providers/__tests__/vertex.spec.ts
 
+const { mockExecFile, mockGoogleGenAI } = vitest.hoisted(() => ({
+	mockExecFile: vitest.fn(),
+	mockGoogleGenAI: vitest.fn(() => ({
+		models: {
+			generateContentStream: vitest.fn(),
+			generateContent: vitest.fn(),
+			getGenerativeModel: vitest.fn(),
+		},
+	})),
+}))
+
 // Mock vscode first to avoid import errors
 vitest.mock("vscode", () => ({}))
+
+vitest.mock("child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("child_process")>()
+	return {
+		...actual,
+		execFile: mockExecFile,
+	}
+})
+
+vitest.mock("@google/genai", () => ({
+	GoogleGenAI: mockGoogleGenAI,
+	FunctionCallingConfigMode: {
+		ANY: "ANY",
+		AUTO: "AUTO",
+		NONE: "NONE",
+	},
+}))
 
 import { Anthropic } from "@anthropic-ai/sdk"
 
@@ -9,11 +37,23 @@ import { ApiStreamChunk } from "../../transform/stream"
 
 import { t } from "i18next"
 import { VertexHandler } from "../vertex"
+import {
+	createVertexGatewayRefreshHandler,
+	fetchVertexGatewayAccessToken,
+	resetVertexGatewayCaBundleForTests,
+} from "../vertex-gateway"
 
 describe("VertexHandler", () => {
 	let handler: VertexHandler
+	const originalUsername = process.env.USERNAME
+	const originalUser = process.env.USER
 
 	beforeEach(() => {
+		vitest.clearAllMocks()
+		resetVertexGatewayCaBundleForTests()
+		restoreEnv("USERNAME", originalUsername)
+		restoreEnv("USER", originalUser)
+
 		// Create mock functions
 		const mockGenerateContentStream = vitest.fn()
 		const mockGenerateContent = vitest.fn()
@@ -33,6 +73,43 @@ describe("VertexHandler", () => {
 				getGenerativeModel: mockGetGenerativeModel,
 			},
 		} as any
+	})
+
+	afterAll(() => {
+		resetVertexGatewayCaBundleForTests()
+		restoreEnv("USERNAME", originalUsername)
+		restoreEnv("USER", originalUser)
+	})
+
+	describe("constructor", () => {
+		it("should initialize GoogleGenAI with Vertex gateway options", () => {
+			process.env.USERNAME = "soe123"
+
+			new VertexHandler({
+				apiModelId: "gemini-3-flash-preview",
+				vertexProjectId: "test-project",
+				vertexRegion: "global",
+				vertexGatewayBaseUrl: "https://gateway.example.com/vertex",
+				vertexGatewayHelixCommand: "helix auth access-token print -a",
+			})
+
+			expect(mockGoogleGenAI).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					vertexai: true,
+					project: "test-project",
+					location: "global",
+					httpOptions: {
+						baseUrl: "https://gateway.example.com/vertex",
+						headers: { "x-r2d2-soeid": "soe123" },
+					},
+					googleAuthOptions: {
+						authClient: expect.objectContaining({
+							refreshHandler: expect.any(Function),
+						}),
+					},
+				}),
+			)
+		})
 	})
 
 	describe("createMessage", () => {
@@ -163,5 +240,127 @@ describe("VertexHandler", () => {
 			expect(excludedCount).toBe(1)
 			expect(includedCount).toBe(1)
 		})
+
+		it("should route selected model IDs through the Vertex gateway map", () => {
+			const testHandler = new VertexHandler({
+				apiModelId: "gemini-3-flash-preview",
+				vertexProjectId: "test-project",
+				vertexRegion: "global",
+				vertexGatewayModelRoutingMap: '{"gemini-3-flash-preview":"gateway-gemini-flash"}',
+			})
+
+			expect(testHandler.getModel().id).toBe("gateway-gemini-flash")
+		})
+	})
+
+	describe("gateway auth", () => {
+		it("should parse raw Helix stdout as the bearer token", async () => {
+			mockExecFile.mockImplementation((file, args, options, callback) => {
+				expect(file).toBe("helix")
+				expect(args).toEqual(["auth", "access-token", "print", "-a"])
+				expect(options).toEqual(
+					expect.objectContaining({
+						encoding: "utf8",
+						windowsHide: true,
+					}),
+				)
+				callback(null, "  access-token-123\n", "")
+			})
+
+			await expect(fetchVertexGatewayAccessToken("helix auth access-token print -a")).resolves.toBe(
+				"access-token-123",
+			)
+		})
+
+		it("should reject empty Helix token output", async () => {
+			mockExecFile.mockImplementation((_file, _args, _options, callback) => {
+				callback(null, "\n", "")
+			})
+
+			await expect(fetchVertexGatewayAccessToken("helix auth access-token print -a")).rejects.toThrow(
+				"empty access token",
+			)
+		})
+
+		it("should include Helix command failures in the error message", async () => {
+			mockExecFile.mockImplementation((_file, _args, _options, callback) => {
+				callback(new Error("not logged in"), "", "")
+			})
+
+			await expect(fetchVertexGatewayAccessToken("helix auth access-token print -a")).rejects.toThrow(
+				"Vertex gateway Helix command failed: not logged in",
+			)
+		})
+
+		it("should reject shell operators in the Helix command", async () => {
+			await expect(fetchVertexGatewayAccessToken("helix auth access-token print -a && echo bad")).rejects.toThrow(
+				"shell operators",
+			)
+			expect(mockExecFile).not.toHaveBeenCalled()
+		})
+
+		it("should set token expiry from the configured refresh interval", async () => {
+			const nowSpy = vitest.spyOn(Date, "now").mockReturnValue(1_000)
+			mockExecFile.mockImplementation((_file, _args, _options, callback) => {
+				callback(null, "access-token-123", "")
+			})
+
+			const refreshHandler = createVertexGatewayRefreshHandler({
+				vertexGatewayHelixCommand: "helix auth access-token print -a",
+				vertexGatewayTokenRefreshMinutes: 5,
+			})
+
+			await expect(refreshHandler()).resolves.toEqual({
+				access_token: "access-token-123",
+				expiry_date: 301_000,
+			})
+
+			nowSpy.mockRestore()
+		})
+
+		it("should cache Helix tokens until the configured refresh interval expires", async () => {
+			const nowSpy = vitest.spyOn(Date, "now").mockReturnValue(1_000)
+			mockExecFile
+				.mockImplementationOnce((_file, _args, _options, callback) => {
+					callback(null, "access-token-1", "")
+				})
+				.mockImplementationOnce((_file, _args, _options, callback) => {
+					callback(null, "access-token-2", "")
+				})
+
+			const refreshHandler = createVertexGatewayRefreshHandler({
+				vertexGatewayHelixCommand: "helix auth access-token print -a",
+				vertexGatewayTokenRefreshMinutes: 5,
+			})
+
+			await expect(refreshHandler()).resolves.toEqual({
+				access_token: "access-token-1",
+				expiry_date: 301_000,
+			})
+
+			nowSpy.mockReturnValue(300_999)
+			await expect(refreshHandler()).resolves.toEqual({
+				access_token: "access-token-1",
+				expiry_date: 301_000,
+			})
+
+			nowSpy.mockReturnValue(301_000)
+			await expect(refreshHandler()).resolves.toEqual({
+				access_token: "access-token-2",
+				expiry_date: 601_000,
+			})
+
+			expect(mockExecFile).toHaveBeenCalledTimes(2)
+			nowSpy.mockRestore()
+		})
 	})
 })
+
+function restoreEnv(name: string, value: string | undefined): void {
+	if (value === undefined) {
+		delete process.env[name]
+		return
+	}
+
+	process.env[name] = value
+}

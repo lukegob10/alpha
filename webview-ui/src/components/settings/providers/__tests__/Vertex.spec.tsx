@@ -1,14 +1,17 @@
-import { render, screen } from "@testing-library/react"
+import { fireEvent, render, screen } from "@testing-library/react"
 import { Vertex } from "../Vertex"
 import type { ProviderSettings } from "@roo-code/types"
 import { VERTEX_REGIONS } from "@roo-code/types"
 
 vi.mock("@vscode/webview-ui-toolkit/react", () => ({
-	VSCodeTextField: ({ children, value, onInput, type }: any) => (
+	VSCodeTextField: ({ children, value, onInput, type, ...props }: any) => (
 		<div>
 			{children}
-			<input type={type} value={value} onChange={(e) => onInput(e)} />
+			<input type={type} value={value} onChange={(e) => onInput(e)} {...props} />
 		</div>
+	),
+	VSCodeTextArea: ({ value, onInput, ...props }: any) => (
+		<textarea value={value} onChange={(e) => onInput(e)} {...props} />
 	),
 	VSCodeLink: ({ children, href }: any) => <a href={href}>{children}</a>,
 }))
@@ -44,6 +47,11 @@ describe("Vertex", () => {
 		vertexJsonCredentials: "",
 		vertexProjectId: "",
 		vertexRegion: "",
+		vertexGatewayBaseUrl: "",
+		vertexGatewayCaBundlePath: "",
+		vertexGatewayHelixCommand: "",
+		vertexGatewayTokenRefreshMinutes: undefined,
+		vertexGatewayModelRoutingMap: "",
 		apiModelId: "gemini-2.0-flash-001",
 	}
 
@@ -121,5 +129,70 @@ describe("Vertex", () => {
 
 		expect(screen.queryByTestId("checkbox-url-context")).not.toBeInTheDocument()
 		expect(screen.queryByTestId("checkbox-grounding-search")).not.toBeInTheDocument()
+	})
+
+	it("should render Vertex gateway settings", () => {
+		render(
+			<Vertex
+				apiConfiguration={{
+					...defaultApiConfiguration,
+					vertexGatewayBaseUrl: "https://gateway.example.com/vertex",
+					vertexGatewayCaBundlePath: "/certs/corp.pem",
+					vertexGatewayHelixCommand: "helix auth access-token print -a",
+					vertexGatewayTokenRefreshMinutes: 15,
+					vertexGatewayModelRoutingMap: '{"gemini-3-flash-preview":"gateway-gemini-flash"}',
+				}}
+				setApiConfigurationField={mockSetApiConfigurationField}
+			/>,
+		)
+
+		expect(screen.getByText("settings:providers.vertexGatewayBaseUrl")).toBeInTheDocument()
+		expect(screen.getByTestId("vertex-gateway-base-url")).toHaveValue("https://gateway.example.com/vertex")
+		expect(screen.getByTestId("vertex-gateway-ca-bundle-path")).toHaveValue("/certs/corp.pem")
+		expect(screen.getByTestId("vertex-gateway-helix-command")).toHaveValue("helix auth access-token print -a")
+		expect(screen.getByTestId("vertex-gateway-token-refresh-minutes")).toHaveValue("15")
+		expect(screen.getByTestId("vertex-gateway-model-routing-map")).toHaveValue(
+			'{"gemini-3-flash-preview":"gateway-gemini-flash"}',
+		)
+	})
+
+	it("should update Vertex gateway settings through cached api configuration callbacks", () => {
+		render(
+			<Vertex
+				apiConfiguration={defaultApiConfiguration}
+				setApiConfigurationField={mockSetApiConfigurationField}
+			/>,
+		)
+
+		fireEvent.change(screen.getByTestId("vertex-gateway-base-url"), {
+			target: { value: "https://gateway.example.com/vertex" },
+		})
+		fireEvent.change(screen.getByTestId("vertex-gateway-ca-bundle-path"), {
+			target: { value: "/certs/corp.pem" },
+		})
+		fireEvent.change(screen.getByTestId("vertex-gateway-helix-command"), {
+			target: { value: "helix auth access-token print -a" },
+		})
+		fireEvent.change(screen.getByTestId("vertex-gateway-token-refresh-minutes"), {
+			target: { value: "20" },
+		})
+		fireEvent.change(screen.getByTestId("vertex-gateway-model-routing-map"), {
+			target: { value: '{"gemini-3-flash-preview":"gateway-gemini-flash"}' },
+		})
+
+		expect(mockSetApiConfigurationField).toHaveBeenCalledWith(
+			"vertexGatewayBaseUrl",
+			"https://gateway.example.com/vertex",
+		)
+		expect(mockSetApiConfigurationField).toHaveBeenCalledWith("vertexGatewayCaBundlePath", "/certs/corp.pem")
+		expect(mockSetApiConfigurationField).toHaveBeenCalledWith(
+			"vertexGatewayHelixCommand",
+			"helix auth access-token print -a",
+		)
+		expect(mockSetApiConfigurationField).toHaveBeenCalledWith("vertexGatewayTokenRefreshMinutes", 20)
+		expect(mockSetApiConfigurationField).toHaveBeenCalledWith(
+			"vertexGatewayModelRoutingMap",
+			'{"gemini-3-flash-preview":"gateway-gemini-flash"}',
+		)
 	})
 })

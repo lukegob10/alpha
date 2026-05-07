@@ -241,6 +241,11 @@ const vertexSchema = apiModelIdProviderModelSchema.extend({
 	vertexJsonCredentials: z.string().optional(),
 	vertexProjectId: z.string().optional(),
 	vertexRegion: z.string().optional(),
+	vertexGatewayBaseUrl: z.string().optional(),
+	vertexGatewayCaBundlePath: z.string().optional(),
+	vertexGatewayHelixCommand: z.string().optional(),
+	vertexGatewayTokenRefreshMinutes: z.number().int().positive().optional(),
+	vertexGatewayModelRoutingMap: z.string().optional(),
 	vertex1MContext: z.boolean().optional(), // Enable 'context-1m-2025-08-07' beta for 1M context window.
 })
 

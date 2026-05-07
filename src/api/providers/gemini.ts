@@ -1,13 +1,14 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
 import {
 	GoogleGenAI,
+	type GoogleGenAIOptions,
 	type GenerateContentResponseUsageMetadata,
 	type GenerateContentParameters,
 	type GenerateContentConfig,
 	type GroundingMetadata,
 	FunctionCallingConfigMode,
 } from "@google/genai"
-import type { JWTInput } from "google-auth-library"
+import { OAuth2Client, type JWTInput } from "google-auth-library"
 
 import {
 	type ModelInfo,
@@ -28,6 +29,11 @@ import { getModelParams } from "../transform/model-params"
 
 import type { SingleCompletionHandler, ApiHandlerCreateMessageMetadata } from "../index"
 import { BaseProvider } from "./base-provider"
+import {
+	configureVertexGatewayCaBundle,
+	createVertexGatewayRefreshHandler,
+	getVertexGatewayHeaders,
+} from "./vertex-gateway"
 
 type GeminiHandlerOptions = ApiHandlerOptions & {
 	isVertex?: boolean
@@ -49,26 +55,49 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 		const project = this.options.vertexProjectId ?? "not-provided"
 		const location = this.options.vertexRegion ?? "not-provided"
 		const apiKey = this.options.geminiApiKey ?? "not-provided"
+		const vertexGatewayBaseUrl = isVertex ? this.options.vertexGatewayBaseUrl?.trim() : undefined
 
-		this.client = this.options.vertexJsonCredentials
-			? new GoogleGenAI({
-					vertexai: true,
-					project,
-					location,
-					googleAuthOptions: {
-						credentials: safeJsonParse<JWTInput>(this.options.vertexJsonCredentials, undefined),
-					},
-				})
-			: this.options.vertexKeyFile
+		if (vertexGatewayBaseUrl) {
+			configureVertexGatewayCaBundle(this.options.vertexGatewayCaBundlePath)
+
+			const authClient = new OAuth2Client({
+				eagerRefreshThresholdMillis: 30_000,
+				forceRefreshOnFailure: true,
+			})
+			authClient.refreshHandler = createVertexGatewayRefreshHandler(this.options)
+			const googleAuthOptions = { authClient } as unknown as NonNullable<GoogleGenAIOptions["googleAuthOptions"]>
+
+			this.client = new GoogleGenAI({
+				vertexai: true,
+				project,
+				location,
+				googleAuthOptions,
+				httpOptions: {
+					baseUrl: vertexGatewayBaseUrl,
+					headers: getVertexGatewayHeaders(),
+				},
+			})
+		} else {
+			this.client = this.options.vertexJsonCredentials
 				? new GoogleGenAI({
 						vertexai: true,
 						project,
 						location,
-						googleAuthOptions: { keyFile: this.options.vertexKeyFile },
+						googleAuthOptions: {
+							credentials: safeJsonParse<JWTInput>(this.options.vertexJsonCredentials, undefined),
+						},
 					})
-				: isVertex
-					? new GoogleGenAI({ vertexai: true, project, location })
-					: new GoogleGenAI({ apiKey })
+				: this.options.vertexKeyFile
+					? new GoogleGenAI({
+							vertexai: true,
+							project,
+							location,
+							googleAuthOptions: { keyFile: this.options.vertexKeyFile },
+						})
+					: isVertex
+						? new GoogleGenAI({ vertexai: true, project, location })
+						: new GoogleGenAI({ apiKey })
+		}
 	}
 
 	async *createMessage(
