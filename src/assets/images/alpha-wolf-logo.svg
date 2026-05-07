@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Alpha Wolf Logo</title>
+  <desc id="desc">A clean angular wolf head logo facing right, designed for dark UI backgrounds.</desc>
+
+  <defs>
+    <linearGradient id="mainWhite" x1="250" y1="210" x2="760" y2="790" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.55" stop-color="#F7F7F7"/>
+      <stop offset="1" stop-color="#E9E9E9"/>
+    </linearGradient>
+    <linearGradient id="facetA" x1="300" y1="330" x2="635" y2="735" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FDFDFD"/>
+      <stop offset="1" stop-color="#D9D9D9"/>
+    </linearGradient>
+    <linearGradient id="facetB" x1="410" y1="305" x2="770" y2="625" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E3E3E3"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Main wolf silhouette -->
+  <path fill="url(#mainWhite)" d="
+    M584 152
+    L584 335
+    L646 288
+    L620 396
+    L747 489
+    L877 552
+    L803 621
+    L659 621
+    L555 574
+    L442 650
+    L334 762
+    L392 641
+    L222 716
+    L343 565
+    L454 415
+    L412 414
+    L509 299
+    L584 152Z"/>
+
+  <!-- Rear neck / mane shard -->
+  <path fill="url(#facetA)" opacity="0.96" d="
+    M222 716
+    L454 415
+    L343 565
+    L294 651
+    Z"/>
+
+  <!-- Upper back fur shard -->
+  <path fill="#F5F5F5" opacity="0.95" d="
+    M343 565
+    L454 415
+    L412 414
+    L313 497
+    Z"/>
+
+  <!-- Ear inner negative cut -->
+  <path fill="#050505" d="
+    M563 214
+    L536 381
+    L578 333
+    Z"/>
+
+  <!-- Front ear highlight -->
+  <path fill="#EFEFEF" d="
+    M584 335
+    L646 288
+    L620 396
+    Z"/>
+
+  <!-- Face plane -->
+  <path fill="url(#facetB)" d="
+    M509 299
+    L584 152
+    L584 335
+    L620 396
+    L747 489
+    L803 621
+    L659 621
+    L555 574
+    L454 415
+    Z"/>
+
+  <!-- Eye negative space -->
+  <path fill="#050505" d="
+    M575 453
+    L676 475
+    L709 521
+    L643 504
+    Z"/>
+
+  <!-- Muzzle plane -->
+  <path fill="#FAFAFA" d="
+    M676 475
+    L747 489
+    L877 552
+    L803 621
+    L709 521
+    Z"/>
+
+  <!-- Lower jaw plane -->
+  <path fill="#EDEDED" d="
+    M555 574
+    L659 621
+    L803 621
+    L690 565
+    Z"/>
+
+  <!-- Cheek plane -->
+  <path fill="#F2F2F2" d="
+    M454 415
+    L555 574
+    L392 641
+    L343 565
+    Z"/>
+
+  <!-- Lower neck shard -->
+  <path fill="#F9F9F9" d="
+    M442 650
+    L626 735
+    L675 867
+    L474 797
+    L334 762
+    Z"/>
+
+  <!-- Lower neck shadow facet -->
+  <path fill="#DEDEDE" opacity="0.85" d="
+    M474 797
+    L626 735
+    L675 867
+    Z"/>
+
+  <!-- Front lower fur shard -->
+  <path fill="#FFFFFF" d="
+    M626 735
+    L768 805
+    L696 684
+    Z"/>
+
+  <!-- Small throat cut -->
+  <path fill="#050505" d="
+    M442 650
+    L532 575
+    L483 653
+    Z"/>
+
+  <!-- Subtle facet lines as soft planes, not strokes -->
+  <path fill="#EAEAEA" opacity="0.55" d="
+    M392 641
+    L555 574
+    L454 681
+    L334 762
+    Z"/>
+
+  <path fill="#F7F7F7" opacity="0.75" d="
+    M313 497
+    L454 415
+    L389 454
+    Z"/>
+
+  <!-- Optional invisible bounding aid removed; logo only -->
+</svg>
