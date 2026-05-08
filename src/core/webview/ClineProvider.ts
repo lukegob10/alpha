@@ -2402,6 +2402,8 @@ export class ClineProvider
 				codebaseIndexOpenAiCompatibleBaseUrl: codebaseIndexConfig?.codebaseIndexOpenAiCompatibleBaseUrl,
 				codebaseIndexSearchMaxResults: codebaseIndexConfig?.codebaseIndexSearchMaxResults,
 				codebaseIndexSearchMinScore: codebaseIndexConfig?.codebaseIndexSearchMinScore,
+				codebaseIndexEmbeddingRateLimitEnabled: codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitEnabled,
+				codebaseIndexEmbeddingRateLimitSeconds: codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitSeconds,
 				codebaseIndexBedrockRegion: codebaseIndexConfig?.codebaseIndexBedrockRegion,
 				codebaseIndexBedrockProfile: codebaseIndexConfig?.codebaseIndexBedrockProfile,
 				codebaseIndexVertexProjectId: codebaseIndexConfig?.codebaseIndexVertexProjectId,
@@ -2641,6 +2643,10 @@ export class ClineProvider
 					stateValues.codebaseIndexConfig?.codebaseIndexOpenAiCompatibleBaseUrl,
 				codebaseIndexSearchMaxResults: stateValues.codebaseIndexConfig?.codebaseIndexSearchMaxResults,
 				codebaseIndexSearchMinScore: stateValues.codebaseIndexConfig?.codebaseIndexSearchMinScore,
+				codebaseIndexEmbeddingRateLimitEnabled:
+					stateValues.codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitEnabled,
+				codebaseIndexEmbeddingRateLimitSeconds:
+					stateValues.codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitSeconds,
 				codebaseIndexBedrockRegion: stateValues.codebaseIndexConfig?.codebaseIndexBedrockRegion,
 				codebaseIndexBedrockProfile: stateValues.codebaseIndexConfig?.codebaseIndexBedrockProfile,
 				codebaseIndexVertexProjectId: stateValues.codebaseIndexConfig?.codebaseIndexVertexProjectId,
