@@ -48,27 +48,56 @@ export class CodeIndexConfigManager {
 		activeVertexOptions?: ProviderSettings,
 		vertexJsonCredentials?: string,
 	): ProviderSettings | undefined {
+		const projectId =
+			codebaseIndexConfig.codebaseIndexVertexProjectId ||
+			activeVertexOptions?.projectId ||
+			activeVertexOptions?.vertexProjectId
+		const location =
+			codebaseIndexConfig.codebaseIndexVertexRegion ||
+			activeVertexOptions?.location ||
+			activeVertexOptions?.vertexRegion
+		const gatewayBaseUrl =
+			codebaseIndexConfig.codebaseIndexVertexGatewayBaseUrl ||
+			activeVertexOptions?.gatewayBaseUrl ||
+			activeVertexOptions?.vertexGatewayBaseUrl
+		const pemCaBundlePath =
+			codebaseIndexConfig.codebaseIndexVertexGatewayCaBundlePath ||
+			activeVertexOptions?.pemCaBundlePath ||
+			activeVertexOptions?.vertexGatewayCaBundlePath
+		const helixCommand =
+			codebaseIndexConfig.codebaseIndexVertexGatewayHelixCommand ||
+			activeVertexOptions?.helixCommand ||
+			activeVertexOptions?.vertexGatewayHelixCommand
+		const refreshIntervalMinutes =
+			codebaseIndexConfig.codebaseIndexVertexGatewayTokenRefreshMinutes ??
+			activeVertexOptions?.refreshIntervalMinutes ??
+			activeVertexOptions?.vertexGatewayTokenRefreshMinutes
+		const modelRoutingMap =
+			codebaseIndexConfig.codebaseIndexVertexGatewayModelRoutingMap ||
+			activeVertexOptions?.modelRoutingMap ||
+			activeVertexOptions?.vertexGatewayModelRoutingMap
+
 		const resolved: ProviderSettings = {
 			...(activeVertexOptions ?? {}),
 			apiProvider: "vertex",
-			vertexProjectId: codebaseIndexConfig.codebaseIndexVertexProjectId || activeVertexOptions?.vertexProjectId,
-			vertexRegion: codebaseIndexConfig.codebaseIndexVertexRegion || activeVertexOptions?.vertexRegion,
+			projectId,
+			location,
+			vertexProjectId: projectId,
+			vertexRegion: location,
 			vertexKeyFile: codebaseIndexConfig.codebaseIndexVertexKeyFile || activeVertexOptions?.vertexKeyFile,
 			vertexJsonCredentials: vertexJsonCredentials || activeVertexOptions?.vertexJsonCredentials,
-			vertexGatewayBaseUrl:
-				codebaseIndexConfig.codebaseIndexVertexGatewayBaseUrl || activeVertexOptions?.vertexGatewayBaseUrl,
-			vertexGatewayCaBundlePath:
-				codebaseIndexConfig.codebaseIndexVertexGatewayCaBundlePath ||
-				activeVertexOptions?.vertexGatewayCaBundlePath,
-			vertexGatewayHelixCommand:
-				codebaseIndexConfig.codebaseIndexVertexGatewayHelixCommand ||
-				activeVertexOptions?.vertexGatewayHelixCommand,
-			vertexGatewayTokenRefreshMinutes:
-				codebaseIndexConfig.codebaseIndexVertexGatewayTokenRefreshMinutes ??
-				activeVertexOptions?.vertexGatewayTokenRefreshMinutes,
-			vertexGatewayModelRoutingMap:
-				codebaseIndexConfig.codebaseIndexVertexGatewayModelRoutingMap ||
-				activeVertexOptions?.vertexGatewayModelRoutingMap,
+			gatewayBaseUrl,
+			pemCaBundlePath,
+			helixCommand,
+			helixParseMode: activeVertexOptions?.helixParseMode,
+			helixTokenKey: activeVertexOptions?.helixTokenKey,
+			refreshIntervalMinutes,
+			modelRoutingMap,
+			vertexGatewayBaseUrl: gatewayBaseUrl,
+			vertexGatewayCaBundlePath: pemCaBundlePath,
+			vertexGatewayHelixCommand: helixCommand,
+			vertexGatewayTokenRefreshMinutes: refreshIntervalMinutes,
+			vertexGatewayModelRoutingMap: typeof modelRoutingMap === "string" ? modelRoutingMap : undefined,
 		}
 
 		const hasCodeIndexVertexSettings = [
@@ -273,15 +302,23 @@ export class CodeIndexConfigManager {
 			openAiCompatibleBaseUrl: this.openAiCompatibleOptions?.baseUrl ?? "",
 			openAiCompatibleApiKey: this.openAiCompatibleOptions?.apiKey ?? "",
 			geminiApiKey: this.geminiOptions?.apiKey ?? "",
-			vertexProjectId: this.vertexOptions?.vertexProjectId ?? "",
-			vertexRegion: this.vertexOptions?.vertexRegion ?? "",
+			vertexProjectId: this.vertexOptions?.projectId ?? this.vertexOptions?.vertexProjectId ?? "",
+			vertexRegion: this.vertexOptions?.location ?? this.vertexOptions?.vertexRegion ?? "",
 			vertexKeyFile: this.vertexOptions?.vertexKeyFile ?? "",
 			vertexJsonCredentials: this.vertexOptions?.vertexJsonCredentials ?? "",
-			vertexGatewayBaseUrl: this.vertexOptions?.vertexGatewayBaseUrl ?? "",
-			vertexGatewayCaBundlePath: this.vertexOptions?.vertexGatewayCaBundlePath ?? "",
-			vertexGatewayHelixCommand: this.vertexOptions?.vertexGatewayHelixCommand ?? "",
-			vertexGatewayTokenRefreshMinutes: this.vertexOptions?.vertexGatewayTokenRefreshMinutes,
-			vertexGatewayModelRoutingMap: this.vertexOptions?.vertexGatewayModelRoutingMap ?? "",
+			vertexGatewayBaseUrl: this.vertexOptions?.gatewayBaseUrl ?? this.vertexOptions?.vertexGatewayBaseUrl ?? "",
+			vertexGatewayCaBundlePath:
+				this.vertexOptions?.pemCaBundlePath ?? this.vertexOptions?.vertexGatewayCaBundlePath ?? "",
+			vertexGatewayHelixCommand:
+				this.vertexOptions?.helixCommand ?? this.vertexOptions?.vertexGatewayHelixCommand ?? "",
+			vertexGatewayTokenRefreshMinutes:
+				this.vertexOptions?.refreshIntervalMinutes ?? this.vertexOptions?.vertexGatewayTokenRefreshMinutes,
+			vertexGatewayModelRoutingMap:
+				typeof this.vertexOptions?.modelRoutingMap === "string"
+					? this.vertexOptions.modelRoutingMap
+					: this.vertexOptions?.modelRoutingMap
+						? JSON.stringify(this.vertexOptions.modelRoutingMap)
+						: (this.vertexOptions?.vertexGatewayModelRoutingMap ?? ""),
 			mistralApiKey: this.mistralOptions?.apiKey ?? "",
 			vercelAiGatewayApiKey: this.vercelAiGatewayOptions?.apiKey ?? "",
 			bedrockRegion: this.bedrockOptions?.region ?? "",
@@ -352,8 +389,8 @@ export class CodeIndexConfigManager {
 		} else if (this.embedderProvider === "vertex") {
 			const isConfigured = !!(
 				this.vertexOptions?.apiProvider === "vertex" &&
-				this.vertexOptions.vertexProjectId &&
-				this.vertexOptions.vertexRegion &&
+				(this.vertexOptions.projectId || this.vertexOptions.vertexProjectId) &&
+				(this.vertexOptions.location || this.vertexOptions.vertexRegion) &&
 				hasVectorStore
 			)
 			return isConfigured
@@ -472,15 +509,24 @@ export class CodeIndexConfigManager {
 		const currentOpenAiCompatibleApiKey = this.openAiCompatibleOptions?.apiKey ?? ""
 		const currentModelDimension = this.modelDimension
 		const currentGeminiApiKey = this.geminiOptions?.apiKey ?? ""
-		const currentVertexProjectId = this.vertexOptions?.vertexProjectId ?? ""
-		const currentVertexRegion = this.vertexOptions?.vertexRegion ?? ""
+		const currentVertexProjectId = this.vertexOptions?.projectId ?? this.vertexOptions?.vertexProjectId ?? ""
+		const currentVertexRegion = this.vertexOptions?.location ?? this.vertexOptions?.vertexRegion ?? ""
 		const currentVertexKeyFile = this.vertexOptions?.vertexKeyFile ?? ""
 		const currentVertexJsonCredentials = this.vertexOptions?.vertexJsonCredentials ?? ""
-		const currentVertexGatewayBaseUrl = this.vertexOptions?.vertexGatewayBaseUrl ?? ""
-		const currentVertexGatewayCaBundlePath = this.vertexOptions?.vertexGatewayCaBundlePath ?? ""
-		const currentVertexGatewayHelixCommand = this.vertexOptions?.vertexGatewayHelixCommand ?? ""
-		const currentVertexGatewayTokenRefreshMinutes = this.vertexOptions?.vertexGatewayTokenRefreshMinutes
-		const currentVertexGatewayModelRoutingMap = this.vertexOptions?.vertexGatewayModelRoutingMap ?? ""
+		const currentVertexGatewayBaseUrl =
+			this.vertexOptions?.gatewayBaseUrl ?? this.vertexOptions?.vertexGatewayBaseUrl ?? ""
+		const currentVertexGatewayCaBundlePath =
+			this.vertexOptions?.pemCaBundlePath ?? this.vertexOptions?.vertexGatewayCaBundlePath ?? ""
+		const currentVertexGatewayHelixCommand =
+			this.vertexOptions?.helixCommand ?? this.vertexOptions?.vertexGatewayHelixCommand ?? ""
+		const currentVertexGatewayTokenRefreshMinutes =
+			this.vertexOptions?.refreshIntervalMinutes ?? this.vertexOptions?.vertexGatewayTokenRefreshMinutes
+		const currentVertexGatewayModelRoutingMap =
+			typeof this.vertexOptions?.modelRoutingMap === "string"
+				? this.vertexOptions.modelRoutingMap
+				: this.vertexOptions?.modelRoutingMap
+					? JSON.stringify(this.vertexOptions.modelRoutingMap)
+					: (this.vertexOptions?.vertexGatewayModelRoutingMap ?? "")
 		const currentMistralApiKey = this.mistralOptions?.apiKey ?? ""
 		const currentVercelAiGatewayApiKey = this.vercelAiGatewayOptions?.apiKey ?? ""
 		const currentBedrockRegion = this.bedrockOptions?.region ?? ""

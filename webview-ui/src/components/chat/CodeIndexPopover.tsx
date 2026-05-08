@@ -407,28 +407,43 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 				codebaseIndexBedrockRegion: codebaseIndexConfig.codebaseIndexBedrockRegion || "",
 				codebaseIndexBedrockProfile: codebaseIndexConfig.codebaseIndexBedrockProfile || "",
 				codebaseIndexVertexProjectId:
-					codebaseIndexConfig.codebaseIndexVertexProjectId || activeVertexConfig?.vertexProjectId || "",
+					codebaseIndexConfig.codebaseIndexVertexProjectId ||
+					activeVertexConfig?.projectId ||
+					activeVertexConfig?.vertexProjectId ||
+					"",
 				codebaseIndexVertexRegion:
-					codebaseIndexConfig.codebaseIndexVertexRegion || activeVertexConfig?.vertexRegion || "",
+					codebaseIndexConfig.codebaseIndexVertexRegion ||
+					activeVertexConfig?.location ||
+					activeVertexConfig?.vertexRegion ||
+					"",
 				codebaseIndexVertexKeyFile:
 					codebaseIndexConfig.codebaseIndexVertexKeyFile || activeVertexConfig?.vertexKeyFile || "",
 				codebaseIndexVertexGatewayBaseUrl:
 					codebaseIndexConfig.codebaseIndexVertexGatewayBaseUrl ||
+					activeVertexConfig?.gatewayBaseUrl ||
 					activeVertexConfig?.vertexGatewayBaseUrl ||
 					"",
 				codebaseIndexVertexGatewayCaBundlePath:
 					codebaseIndexConfig.codebaseIndexVertexGatewayCaBundlePath ||
+					activeVertexConfig?.pemCaBundlePath ||
 					activeVertexConfig?.vertexGatewayCaBundlePath ||
 					"",
 				codebaseIndexVertexGatewayHelixCommand:
 					codebaseIndexConfig.codebaseIndexVertexGatewayHelixCommand ||
+					activeVertexConfig?.helixCommand ||
 					activeVertexConfig?.vertexGatewayHelixCommand ||
 					"",
 				codebaseIndexVertexGatewayTokenRefreshMinutes:
 					codebaseIndexConfig.codebaseIndexVertexGatewayTokenRefreshMinutes ??
+					activeVertexConfig?.refreshIntervalMinutes ??
 					activeVertexConfig?.vertexGatewayTokenRefreshMinutes,
 				codebaseIndexVertexGatewayModelRoutingMap:
 					codebaseIndexConfig.codebaseIndexVertexGatewayModelRoutingMap ||
+					(typeof activeVertexConfig?.modelRoutingMap === "string"
+						? activeVertexConfig.modelRoutingMap
+						: activeVertexConfig?.modelRoutingMap
+							? JSON.stringify(activeVertexConfig.modelRoutingMap)
+							: "") ||
 					activeVertexConfig?.vertexGatewayModelRoutingMap ||
 					"",
 				codeIndexOpenAiKey: "",
@@ -975,20 +990,33 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 												}
 
 												if (value === "vertex" && apiConfiguration?.apiProvider === "vertex") {
+													const routingMap =
+														typeof apiConfiguration.modelRoutingMap === "string"
+															? apiConfiguration.modelRoutingMap
+															: apiConfiguration.modelRoutingMap
+																? JSON.stringify(apiConfiguration.modelRoutingMap)
+																: apiConfiguration.vertexGatewayModelRoutingMap
+
 													const vertexFallbacks: Partial<LocalCodeIndexSettings> = {
-														codebaseIndexVertexProjectId: apiConfiguration.vertexProjectId,
-														codebaseIndexVertexRegion: apiConfiguration.vertexRegion,
+														codebaseIndexVertexProjectId:
+															apiConfiguration.projectId ||
+															apiConfiguration.vertexProjectId,
+														codebaseIndexVertexRegion:
+															apiConfiguration.location || apiConfiguration.vertexRegion,
 														codebaseIndexVertexKeyFile: apiConfiguration.vertexKeyFile,
 														codebaseIndexVertexGatewayBaseUrl:
+															apiConfiguration.gatewayBaseUrl ||
 															apiConfiguration.vertexGatewayBaseUrl,
 														codebaseIndexVertexGatewayCaBundlePath:
+															apiConfiguration.pemCaBundlePath ||
 															apiConfiguration.vertexGatewayCaBundlePath,
 														codebaseIndexVertexGatewayHelixCommand:
+															apiConfiguration.helixCommand ||
 															apiConfiguration.vertexGatewayHelixCommand,
 														codebaseIndexVertexGatewayTokenRefreshMinutes:
+															apiConfiguration.refreshIntervalMinutes ??
 															apiConfiguration.vertexGatewayTokenRefreshMinutes,
-														codebaseIndexVertexGatewayModelRoutingMap:
-															apiConfiguration.vertexGatewayModelRoutingMap,
+														codebaseIndexVertexGatewayModelRoutingMap: routingMap,
 													}
 
 													Object.entries(vertexFallbacks).forEach(([key, fallbackValue]) => {
