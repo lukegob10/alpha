@@ -52,6 +52,7 @@ describe("Single-open-task invariant", () => {
 			}),
 			removeClineFromStack,
 			addClineToStack,
+			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
 			setProviderProfile: vi.fn(),
 			log: vi.fn(),
 			getStateToPostToWebview: vi.fn(),
@@ -71,6 +72,132 @@ describe("Single-open-task invariant", () => {
 
 		expect(removeClineFromStack).toHaveBeenCalledTimes(1)
 		expect(addClineToStack).toHaveBeenCalledTimes(1)
+	})
+
+	it("Extension multi-session create: preserves existing live task", async () => {
+		vi.spyOn(ProfileValidatorMod.ProfileValidator, "isProfileAllowed").mockReturnValue(true)
+
+		const removeClineFromStack = vi.fn().mockResolvedValue(undefined)
+		const addClineToStack = vi.fn().mockResolvedValue(undefined)
+
+		const provider = {
+			clineStack: [{ taskId: "existing-1" }],
+			taskSessions: { canCreateTask: vi.fn(() => true) },
+			setValues: vi.fn(),
+			getState: vi.fn().mockResolvedValue({
+				apiConfiguration: { apiProvider: "anthropic", consecutiveMistakeLimit: 0 },
+				organizationAllowList: "*",
+				enableCheckpoints: true,
+				checkpointTimeout: 60,
+				cloudUserInfo: null,
+			}),
+			removeClineFromStack,
+			addClineToStack,
+			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+			setProviderProfile: vi.fn(),
+			log: vi.fn(),
+			providerSettingsManager: { getModeConfigId: vi.fn(), listConfig: vi.fn() },
+			customModesManager: { getCustomModes: vi.fn().mockResolvedValue([]) },
+			taskCreationCallback: vi.fn(),
+			contextProxy: {
+				extensionUri: {},
+				setValue: vi.fn(),
+				getValue: vi.fn(),
+				setProviderSettings: vi.fn(),
+				getProviderSettings: vi.fn(() => ({})),
+			},
+		} as unknown as ClineProvider
+
+		await (ClineProvider.prototype as any).createTask.call(provider, "New task", undefined, undefined, {
+			preserveExisting: true,
+		})
+
+		expect(removeClineFromStack).not.toHaveBeenCalled()
+		expect(addClineToStack).toHaveBeenCalledTimes(1)
+	})
+
+	it("Extension multi-session create: blocks when live task cap is reached", async () => {
+		vi.spyOn(ProfileValidatorMod.ProfileValidator, "isProfileAllowed").mockReturnValue(true)
+		const addClineToStack = vi.fn()
+
+		const provider = {
+			clineStack: [{ taskId: "existing-1" }],
+			taskSessions: { canCreateTask: vi.fn(() => false) },
+			setValues: vi.fn(),
+			getState: vi.fn().mockResolvedValue({
+				apiConfiguration: { apiProvider: "anthropic", consecutiveMistakeLimit: 0 },
+				organizationAllowList: "*",
+				enableCheckpoints: true,
+				checkpointTimeout: 60,
+				cloudUserInfo: null,
+			}),
+			removeClineFromStack: vi.fn(),
+			addClineToStack,
+			setProviderProfile: vi.fn(),
+			log: vi.fn(),
+			providerSettingsManager: { getModeConfigId: vi.fn(), listConfig: vi.fn() },
+			customModesManager: { getCustomModes: vi.fn().mockResolvedValue([]) },
+			taskCreationCallback: vi.fn(),
+			contextProxy: {
+				extensionUri: {},
+				setValue: vi.fn(),
+				getValue: vi.fn(),
+				setProviderSettings: vi.fn(),
+				getProviderSettings: vi.fn(() => ({})),
+			},
+		} as unknown as ClineProvider
+
+		await expect(
+			(ClineProvider.prototype as any).createTask.call(provider, "New task", undefined, undefined, {
+				preserveExisting: true,
+			}),
+		).rejects.toThrow("Maximum live task limit reached")
+		expect(addClineToStack).not.toHaveBeenCalled()
+	})
+
+	it("Extension blank task intent: backgrounds current task and resets chat UI", async () => {
+		const activeTask = { taskId: "existing-1", emit: vi.fn() }
+		const clearFocus = vi.fn()
+		const postStateToWebview = vi.fn().mockResolvedValue(undefined)
+		const postMessageToWebview = vi.fn().mockResolvedValue(undefined)
+
+		const provider = {
+			getActiveTask: vi.fn(() => activeTask),
+			taskSessions: { clearFocus },
+			postStateToWebview,
+			postMessageToWebview,
+		} as unknown as ClineProvider
+
+		await (ClineProvider.prototype as any).startBlankTask.call(provider)
+
+		expect(clearFocus).toHaveBeenCalledTimes(1)
+		expect(activeTask.emit).toHaveBeenCalledWith("taskUnfocused")
+		expect(postStateToWebview).toHaveBeenCalledTimes(1)
+		expect(postMessageToWebview).toHaveBeenCalledWith({
+			type: "action",
+			action: "chatButtonClicked",
+			values: { force: true },
+		})
+		expect(postMessageToWebview).toHaveBeenCalledWith({ type: "invoke", invoke: "newChat" })
+	})
+
+	it("History delete releases a background live task slot", async () => {
+		const removeClineFromStack = vi.fn().mockResolvedValue(undefined)
+		const deleteFromHistory = vi.fn().mockResolvedValue(undefined)
+		const postStateToWebview = vi.fn().mockResolvedValue(undefined)
+
+		const provider = {
+			getLiveTask: vi.fn((taskId: string) => (taskId === "background-1" ? { taskId } : undefined)),
+			removeClineFromStack,
+			taskHistoryStore: { delete: deleteFromHistory },
+			postStateToWebview,
+		} as unknown as ClineProvider
+
+		await (ClineProvider.prototype as any).deleteTaskFromState.call(provider, "background-1")
+
+		expect(removeClineFromStack).toHaveBeenCalledWith({ taskId: "background-1" })
+		expect(deleteFromHistory).toHaveBeenCalledWith("background-1")
+		expect(postStateToWebview).toHaveBeenCalledTimes(1)
 	})
 
 	it("History resume path always closes current before rehydration (non-rehydrating case)", async () => {

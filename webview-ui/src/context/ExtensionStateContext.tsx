@@ -195,6 +195,9 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		version: "",
 		clineMessages: [],
 		taskHistory: [],
+		currentView: { type: "newTaskDraft" },
+		liveTaskIds: [],
+		liveTasksById: {},
 		shouldShowAnnouncement: false,
 		allowedCommands: [],
 		deniedCommands: [],
@@ -373,6 +376,10 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 				case "messageUpdated": {
 					const clineMessage = message.clineMessage!
 					setState((prevState) => {
+						if (message.taskId && message.taskId !== prevState.currentTaskId) {
+							return prevState
+						}
+
 						// worth noting it will never be possible for a more up-to-date message to be sent here or in normal messages post since the presentAssistantContent function uses lock
 						const lastIndex = findLastIndex(prevState.clineMessages, (msg) => msg.ts === clineMessage.ts)
 						if (lastIndex !== -1) {

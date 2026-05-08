@@ -187,6 +187,17 @@ describe("App", () => {
 		window.dispatchEvent(messageEvent)
 	}
 
+	const triggerForcedChatMessage = () => {
+		const messageEvent = new MessageEvent("message", {
+			data: {
+				type: "action",
+				action: "chatButtonClicked",
+				values: { force: true },
+			},
+		})
+		window.dispatchEvent(messageEvent)
+	}
+
 	it("shows chat view by default", () => {
 		render(<AppWithProviders />)
 
@@ -221,6 +232,24 @@ describe("App", () => {
 
 		const chatView = screen.getByTestId("chat-view")
 		expect(chatView.getAttribute("data-hidden")).toBe("true")
+	})
+
+	it("forces chat view when receiving a forced chatButtonClicked action", async () => {
+		render(<AppWithProviders />)
+
+		act(() => {
+			triggerMessage("historyButtonClicked")
+		})
+
+		expect(await screen.findByTestId("history-view")).toBeInTheDocument()
+
+		act(() => {
+			triggerForcedChatMessage()
+		})
+
+		const chatView = screen.getByTestId("chat-view")
+		expect(chatView.getAttribute("data-hidden")).toBe("false")
+		expect(screen.queryByTestId("history-view")).not.toBeInTheDocument()
 	})
 
 	it("returns to chat view when clicking done in settings view", async () => {

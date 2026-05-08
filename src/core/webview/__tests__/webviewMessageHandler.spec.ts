@@ -75,7 +75,9 @@ const mockClineProvider = {
 	log: vi.fn(),
 	postStateToWebview: vi.fn(),
 	getCurrentTask: vi.fn(),
+	getLiveTask: vi.fn(),
 	getTaskWithId: vi.fn(),
+	createTask: vi.fn(),
 	createTaskWithHistoryItem: vi.fn(),
 	getSkillsManager: vi.fn(),
 	cwd: "/mock/workspace",
@@ -216,7 +218,7 @@ describe("webviewMessageHandler - image mentions", () => {
 
 	it("should resolve image mentions for askResponse payloads", async () => {
 		const mockHandleWebviewAskResponse = vi.fn()
-		vi.mocked(mockClineProvider.getCurrentTask).mockReturnValue({
+		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue({
 			cwd: "/mock/workspace",
 			rooIgnoreController: undefined,
 			handleWebviewAskResponse: mockHandleWebviewAskResponse,
@@ -227,12 +229,87 @@ describe("webviewMessageHandler - image mentions", () => {
 			askResponse: "messageResponse",
 			text: "See @/img.png",
 			images: [],
+			taskId: "task-1",
 		})
 
 		expect(vi.mocked(resolveImageMentions)).toHaveBeenCalled()
 		expect(mockHandleWebviewAskResponse).toHaveBeenCalledWith("messageResponse", "See @/img.png", [
 			"data:image/png;base64,from-mention",
 		])
+	})
+
+	it("does not route askResponse without a taskId to the active task", async () => {
+		const mockHandleWebviewAskResponse = vi.fn()
+		vi.mocked(mockClineProvider.getCurrentTask).mockReturnValue({
+			handleWebviewAskResponse: mockHandleWebviewAskResponse,
+		} as any)
+		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue(undefined)
+
+		await webviewMessageHandler(mockClineProvider, {
+			type: "askResponse",
+			askResponse: "messageResponse",
+			text: "wrong target",
+			images: [],
+		})
+
+		expect(mockHandleWebviewAskResponse).not.toHaveBeenCalled()
+		expect(mockClineProvider.log).toHaveBeenCalledWith(
+			"[webviewMessageHandler] Ignoring askResponse: missing or unknown taskId",
+		)
+	})
+})
+
+describe("webviewMessageHandler - newTask", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.mocked(mockClineProvider.createTask).mockResolvedValue({ taskId: "task-1" } as any)
+	})
+
+	it("keeps the newly created task visible instead of resetting back to a blank chat", async () => {
+		await webviewMessageHandler(mockClineProvider, {
+			type: "newTask",
+			text: "Build the feature",
+			images: [],
+			taskId: "task-1",
+		})
+
+		expect(mockClineProvider.createTask).toHaveBeenCalledWith(
+			"Build the feature",
+			["data:image/png;base64,from-mention"],
+			undefined,
+			{ taskId: "task-1", preserveExisting: true },
+			undefined,
+		)
+		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "action",
+			action: "chatButtonClicked",
+			values: { force: true },
+		})
+		expect(mockClineProvider.postMessageToWebview).not.toHaveBeenCalledWith({
+			type: "invoke",
+			invoke: "newChat",
+		})
+	})
+
+	it("forces the chat view and resets the draft if task creation fails", async () => {
+		vi.mocked(mockClineProvider.createTask).mockRejectedValue(new Error("boom"))
+
+		await webviewMessageHandler(mockClineProvider, {
+			type: "newTask",
+			text: "Build the feature",
+			images: [],
+			taskId: "task-1",
+		})
+
+		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "action",
+			action: "chatButtonClicked",
+			values: { force: true },
+		})
+		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "invoke",
+			invoke: "newChat",
+		})
 	})
 })
 
