@@ -1,6 +1,5 @@
 import {
 	GoogleGenAI,
-	type ContentEmbedding,
 	type EmbedContentConfig,
 	type EmbedContentParameters,
 	type EmbedContentResponse,
@@ -14,7 +13,7 @@ import { TelemetryService } from "@alpha-code/telemetry"
 import { t } from "../../../i18n"
 import { HelixTokenManager, type HelixParseMode } from "../../../api/providers/utils/helix-token-manager"
 import { configureVertexGatewayTransport } from "../../../api/providers/utils/vertex-gateway-transport"
-import { GEMINI_MAX_ITEM_TOKENS } from "../constants"
+import { GEMINI_MAX_ITEM_TOKENS, INITIAL_RETRY_DELAY_MS, MAX_BATCH_RETRIES } from "../constants"
 import type { IEmbedder, EmbeddingResponse, EmbedderInfo } from "../interfaces/embedder"
 import { formatEmbeddingError, withValidationErrorHandling } from "../shared/validation-helpers"
 
@@ -126,8 +125,8 @@ export class VertexGeminiEmbedder implements IEmbedder {
 	async createEmbeddings(texts: string[], model?: string): Promise<EmbeddingResponse> {
 		const selectedModel = model || this.modelId
 		const maxItemTokens = this.getMaxItemTokens(selectedModel)
-		const embeddings: number[][] = []
-		const usage = { promptTokens: 0, totalTokens: 0 }
+		const validTexts: string[] = []
+		const estimatedTokenCounts: number[] = []
 
 		for (let i = 0; i < texts.length; i++) {
 			const text = texts[i]
@@ -144,47 +143,15 @@ export class VertexGeminiEmbedder implements IEmbedder {
 				continue
 			}
 
-			let didRetryForGatewayAuth = false
-
-			while (true) {
-				const requestContext = await this.getRequestContext(selectedModel)
-				const params: EmbedContentParameters = {
-					model: requestContext.model,
-					contents: text,
-					...(requestContext.httpOptions ? { config: { httpOptions: requestContext.httpOptions } } : {}),
-				}
-
-				try {
-					const response = await requestContext.client.models.embedContent(params)
-					const values = this.extractEmbeddingValues(response)
-
-					if (!values.length) {
-						throw new Error(t("embeddings:openai.invalidResponseFormat"))
-					}
-
-					embeddings.push(values)
-
-					const tokenCount = response.embeddings?.[0]?.statistics?.tokenCount ?? estimatedTokens
-					usage.promptTokens += tokenCount
-					usage.totalTokens += tokenCount
-					break
-				} catch (error) {
-					if (!didRetryForGatewayAuth && (await this.shouldRetryWithRefreshedGatewayToken(error))) {
-						didRetryForGatewayAuth = true
-						continue
-					}
-
-					TelemetryService.instance.captureEvent(TelemetryEventName.CODE_INDEX_ERROR, {
-						error: error instanceof Error ? error.message : String(error),
-						stack: error instanceof Error ? error.stack : undefined,
-						location: "VertexGeminiEmbedder:createEmbeddings",
-					})
-					throw formatEmbeddingError(error, 1)
-				}
-			}
+			validTexts.push(text)
+			estimatedTokenCounts.push(estimatedTokens)
 		}
 
-		return { embeddings, usage }
+		if (validTexts.length === 0) {
+			return { embeddings: [], usage: { promptTokens: 0, totalTokens: 0 } }
+		}
+
+		return this.embedBatchWithRetries(validTexts, estimatedTokenCounts, selectedModel)
 	}
 
 	async validateConfiguration(): Promise<{ valid: boolean; error?: string }> {
@@ -539,8 +506,120 @@ export class VertexGeminiEmbedder implements IEmbedder {
 		return modelId === "gemini-embedding-2" ? 8192 : GEMINI_MAX_ITEM_TOKENS
 	}
 
-	private extractEmbeddingValues(response: EmbedContentResponse): number[] {
-		const embedding = response.embeddings?.[0] ?? (response as { embedding?: ContentEmbedding }).embedding
-		return embedding?.values ?? []
+	private async embedBatchWithRetries(
+		texts: string[],
+		estimatedTokenCounts: number[],
+		selectedModel: string,
+	): Promise<EmbeddingResponse> {
+		let didRetryForGatewayAuth = false
+		let lastError: unknown
+
+		for (let attempt = 0; attempt < MAX_BATCH_RETRIES; attempt++) {
+			const requestContext = await this.getRequestContext(selectedModel)
+			const params: EmbedContentParameters = {
+				model: requestContext.model,
+				contents: texts,
+				...(requestContext.httpOptions ? { config: { httpOptions: requestContext.httpOptions } } : {}),
+			}
+
+			try {
+				const response = await requestContext.client.models.embedContent(params)
+				return this.createEmbeddingResponse(response, estimatedTokenCounts)
+			} catch (error) {
+				lastError = error
+
+				if (!didRetryForGatewayAuth && (await this.shouldRetryWithRefreshedGatewayToken(error))) {
+					didRetryForGatewayAuth = true
+					attempt--
+					continue
+				}
+
+				const hasMoreAttempts = attempt < MAX_BATCH_RETRIES - 1
+				if (hasMoreAttempts && this.isRetryableEmbeddingError(error)) {
+					await new Promise((resolve) => setTimeout(resolve, this.getRetryDelayMs(error, attempt)))
+					continue
+				}
+
+				TelemetryService.instance.captureEvent(TelemetryEventName.CODE_INDEX_ERROR, {
+					error: error instanceof Error ? error.message : String(error),
+					stack: error instanceof Error ? error.stack : undefined,
+					location: "VertexGeminiEmbedder:createEmbeddings",
+					attempt: attempt + 1,
+				})
+				throw formatEmbeddingError(error, MAX_BATCH_RETRIES)
+			}
+		}
+
+		throw formatEmbeddingError(lastError, MAX_BATCH_RETRIES)
+	}
+
+	private createEmbeddingResponse(response: EmbedContentResponse, estimatedTokenCounts: number[]): EmbeddingResponse {
+		const responseEmbeddings = response.embeddings ?? []
+		const embeddings = responseEmbeddings.map((embedding) => embedding.values ?? [])
+
+		if (embeddings.length !== estimatedTokenCounts.length || embeddings.some((values) => values.length === 0)) {
+			throw new Error(t("embeddings:openai.invalidResponseFormat"))
+		}
+
+		const promptTokens = responseEmbeddings.reduce(
+			(total, embedding, index) => total + (embedding.statistics?.tokenCount ?? estimatedTokenCounts[index] ?? 0),
+			0,
+		)
+		const totalTokens = promptTokens || estimatedTokenCounts.reduce((total, count) => total + count, 0)
+
+		return {
+			embeddings,
+			usage: {
+				promptTokens: totalTokens,
+				totalTokens,
+			},
+		}
+	}
+
+	private isRetryableEmbeddingError(error: unknown): boolean {
+		const status = this.extractStatusCode(error)
+		if (status === 429 || (status !== undefined && status >= 500)) {
+			return true
+		}
+
+		const message = error instanceof Error ? error.message : String(error)
+		return /rate limit|too many requests|temporarily unavailable|timeout/i.test(message)
+	}
+
+	private getRetryDelayMs(error: unknown, attempt: number): number {
+		const retryAfterMs = this.extractRetryAfterMs(error)
+		if (retryAfterMs !== undefined) {
+			return retryAfterMs
+		}
+
+		const status = this.extractStatusCode(error)
+		const baseDelayMs = status === 429 ? 5000 : INITIAL_RETRY_DELAY_MS
+		return baseDelayMs * Math.pow(2, attempt)
+	}
+
+	private extractRetryAfterMs(error: unknown): number | undefined {
+		if (!error || typeof error !== "object") {
+			return undefined
+		}
+
+		const errorRecord = error as Record<string, any>
+		const headers = errorRecord.response?.headers ?? errorRecord.headers
+		const retryAfter = typeof headers?.get === "function" ? headers.get("retry-after") : headers?.["retry-after"]
+
+		if (typeof retryAfter !== "string") {
+			return undefined
+		}
+
+		const seconds = Number.parseFloat(retryAfter)
+		if (Number.isFinite(seconds) && seconds >= 0) {
+			return seconds * 1000
+		}
+
+		const retryAt = Date.parse(retryAfter)
+		if (Number.isFinite(retryAt)) {
+			return Math.max(0, retryAt - Date.now())
+		}
+
+		return undefined
 	}
 }
