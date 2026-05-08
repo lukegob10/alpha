@@ -93,6 +93,7 @@ export const ShareButton = ({ item, disabled = false }: ShareButtonProps) => {
 		vscode.postMessage({
 			type: "shareCurrentTask",
 			visibility,
+			taskId: item?.id,
 		})
 		// Don't close the dropdown immediately - let success message show first
 	}

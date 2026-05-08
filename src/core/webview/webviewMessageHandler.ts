@@ -71,9 +71,6 @@ import { GetModelsOptions } from "../../shared/api"
 import { generateSystemPrompt } from "./generateSystemPrompt"
 import { resolveDefaultSaveUri, saveLastExportPath } from "../../utils/export"
 import { getCommand } from "../../utils/commands"
-
-const ALLOWED_VSCODE_SETTINGS = new Set(["terminal.integrated.inheritEnv"])
-
 import { MarketplaceManager, MarketplaceItemType } from "../../services/marketplace"
 import { setPendingTodoList } from "../tools/UpdateTodoListTool"
 import {
@@ -88,6 +85,28 @@ import {
 	handleCreateWorktreeInclude,
 	handleCheckoutBranch,
 } from "./worktree"
+
+const ALLOWED_VSCODE_SETTINGS = new Set(["terminal.integrated.inheritEnv"])
+
+function getTaskForMessage(
+	provider: ClineProvider,
+	message: WebviewMessage,
+	options: { allowActiveFallback?: boolean } = {},
+) {
+	if (message.taskId) {
+		return provider.getLiveTask(message.taskId)
+	}
+
+	return options.allowActiveFallback ? provider.getCurrentTask() : undefined
+}
+
+function getRequiredTaskForMessage(provider: ClineProvider, message: WebviewMessage, action: string) {
+	const task = getTaskForMessage(provider, message)
+	if (!task) {
+		provider.log(`[webviewMessageHandler] Ignoring ${action}: missing or unknown taskId`)
+	}
+	return task
+}
 
 export const webviewMessageHandler = async (
 	provider: ClineProvider,
@@ -619,25 +638,36 @@ export const webviewMessageHandler = async (
 			// Initializing new instance of Alpha will make sure that any
 			// agentically running promises in old instance don't affect our new
 			// task. This essentially creates a fresh slate for the new task.
+			await provider.postMessageToWebview({
+				type: "action",
+				action: "chatButtonClicked",
+				values: { force: true },
+			})
 			try {
 				const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
 				await provider.createTask(
 					resolved.text,
 					resolved.images,
 					undefined,
-					{ taskId: message.taskId },
+					{ taskId: message.taskId, preserveExisting: true },
 					message.taskConfiguration,
 				)
-				// Task created successfully - notify the UI to reset
-				await provider.postMessageToWebview({ type: "invoke", invoke: "newChat" })
 			} catch (error) {
 				// For all errors, reset the UI and show error
+				await provider.postMessageToWebview({
+					type: "action",
+					action: "chatButtonClicked",
+					values: { force: true },
+				})
 				await provider.postMessageToWebview({ type: "invoke", invoke: "newChat" })
 				// Show error to user
 				vscode.window.showErrorMessage(
 					`Failed to create task: ${error instanceof Error ? error.message : String(error)}`,
 				)
 			}
+			break
+		case "startBlankTask":
+			await provider.startBlankTask()
 			break
 		case "customInstructions":
 			await provider.updateCustomInstructions(message.text)
@@ -646,9 +676,11 @@ export const webviewMessageHandler = async (
 		case "askResponse":
 			{
 				const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
-				provider
-					.getCurrentTask()
-					?.handleWebviewAskResponse(message.askResponse!, resolved.text, resolved.images)
+				getRequiredTaskForMessage(provider, message, "askResponse")?.handleWebviewAskResponse(
+					message.askResponse!,
+					resolved.text,
+					resolved.images,
+				)
 			}
 			break
 
@@ -752,7 +784,9 @@ export const webviewMessageHandler = async (
 
 		case "terminalOperation":
 			if (message.terminalOperation) {
-				provider.getCurrentTask()?.handleTerminalOperation(message.terminalOperation)
+				getRequiredTaskForMessage(provider, message, "terminalOperation")?.handleTerminalOperation(
+					message.terminalOperation,
+				)
 			}
 			break
 		case "clearTask":
@@ -776,14 +810,15 @@ export const webviewMessageHandler = async (
 			})
 			break
 		case "exportCurrentTask":
-			const currentTaskId = provider.getCurrentTask()?.taskId
+			const currentTaskId = getTaskForMessage(provider, message, { allowActiveFallback: true })?.taskId
 			if (currentTaskId) {
 				provider.exportTaskWithId(currentTaskId)
 			}
 			break
 		case "shareCurrentTask":
-			const shareTaskId = provider.getCurrentTask()?.taskId
-			const clineMessages = provider.getCurrentTask()?.clineMessages
+			const shareTask = getTaskForMessage(provider, message, { allowActiveFallback: true })
+			const shareTaskId = shareTask?.taskId
+			const clineMessages = shareTask?.clineMessages
 
 			if (!shareTaskId) {
 				vscode.window.showErrorMessage(t("common:errors.share_no_active_task"))
@@ -1292,7 +1327,7 @@ export const webviewMessageHandler = async (
 			const result = checkoutDiffPayloadSchema.safeParse(message.payload)
 
 			if (result.success) {
-				await provider.getCurrentTask()?.checkpointDiff(result.data)
+				await getRequiredTaskForMessage(provider, message, "checkpointDiff")?.checkpointDiff(result.data)
 			}
 
 			break
@@ -1300,16 +1335,22 @@ export const webviewMessageHandler = async (
 			const result = checkoutRestorePayloadSchema.safeParse(message.payload)
 
 			if (result.success) {
-				await provider.cancelTask()
+				if (!message.taskId) {
+					provider.log("[webviewMessageHandler] Ignoring checkpointRestore: missing taskId")
+					break
+				}
+
+				await provider.cancelTask(message.taskId)
+				const task = getRequiredTaskForMessage(provider, message, "checkpointRestore")
 
 				try {
-					await pWaitFor(() => provider.getCurrentTask()?.isInitialized === true, { timeout: 3_000 })
+					await pWaitFor(() => task?.isInitialized === true, { timeout: 3_000 })
 				} catch (error) {
 					vscode.window.showErrorMessage(t("common:errors.checkpoint_timeout"))
 				}
 
 				try {
-					await provider.getCurrentTask()?.checkpointRestore(result.data)
+					await task?.checkpointRestore(result.data)
 				} catch (error) {
 					vscode.window.showErrorMessage(t("common:errors.checkpoint_failed"))
 				}
@@ -1317,12 +1358,23 @@ export const webviewMessageHandler = async (
 
 			break
 		}
+		case "closeTask":
+			if (!message.taskId) {
+				provider.log("[webviewMessageHandler] Ignoring closeTask: missing taskId")
+				break
+			}
+			await provider.closeTask(message.taskId)
+			break
 		case "cancelTask":
-			await provider.cancelTask()
+			if (!message.taskId) {
+				provider.log("[webviewMessageHandler] Ignoring cancelTask: missing taskId")
+				break
+			}
+			await provider.cancelTask(message.taskId)
 			break
 		case "cancelAutoApproval":
 			// Cancel any pending auto-approval timeout for the current task
-			provider.getCurrentTask()?.cancelAutoApprovalTimeout()
+			getRequiredTaskForMessage(provider, message, "cancelAutoApproval")?.cancelAutoApprovalTimeout()
 			break
 		case "allowedCommands": {
 			// Validate and sanitize the commands array
@@ -2522,6 +2574,8 @@ export const webviewMessageHandler = async (
 				const globalStateConfig = {
 					...currentConfig,
 					codebaseIndexEnabled: settings.codebaseIndexEnabled,
+					codebaseIndexVectorStoreProvider: settings.codebaseIndexVectorStoreProvider,
+					codebaseIndexLocalIndexPath: settings.codebaseIndexLocalIndexPath,
 					codebaseIndexQdrantUrl: settings.codebaseIndexQdrantUrl,
 					codebaseIndexEmbedderProvider: settings.codebaseIndexEmbedderProvider,
 					codebaseIndexEmbedderBaseUrl: settings.codebaseIndexEmbedderBaseUrl,
@@ -2530,6 +2584,15 @@ export const webviewMessageHandler = async (
 					codebaseIndexOpenAiCompatibleBaseUrl: settings.codebaseIndexOpenAiCompatibleBaseUrl,
 					codebaseIndexBedrockRegion: settings.codebaseIndexBedrockRegion,
 					codebaseIndexBedrockProfile: settings.codebaseIndexBedrockProfile,
+					codebaseIndexVertexProjectId: settings.codebaseIndexVertexProjectId,
+					codebaseIndexVertexRegion: settings.codebaseIndexVertexRegion,
+					codebaseIndexVertexKeyFile: settings.codebaseIndexVertexKeyFile,
+					codebaseIndexVertexGatewayBaseUrl: settings.codebaseIndexVertexGatewayBaseUrl,
+					codebaseIndexVertexGatewayCaBundlePath: settings.codebaseIndexVertexGatewayCaBundlePath,
+					codebaseIndexVertexGatewayHelixCommand: settings.codebaseIndexVertexGatewayHelixCommand,
+					codebaseIndexVertexGatewayTokenRefreshMinutes:
+						settings.codebaseIndexVertexGatewayTokenRefreshMinutes,
+					codebaseIndexVertexGatewayModelRoutingMap: settings.codebaseIndexVertexGatewayModelRoutingMap,
 					codebaseIndexSearchMaxResults: settings.codebaseIndexSearchMaxResults,
 					codebaseIndexSearchMinScore: settings.codebaseIndexSearchMinScore,
 					codebaseIndexOpenRouterSpecificProvider: settings.codebaseIndexOpenRouterSpecificProvider,
@@ -2555,6 +2618,12 @@ export const webviewMessageHandler = async (
 					await provider.contextProxy.storeSecret(
 						"codebaseIndexGeminiApiKey",
 						settings.codebaseIndexGeminiApiKey,
+					)
+				}
+				if (settings.codebaseIndexVertexJsonCredentials !== undefined) {
+					await provider.contextProxy.storeSecret(
+						"codebaseIndexVertexJsonCredentials",
+						settings.codebaseIndexVertexJsonCredentials,
 					)
 				}
 				if (settings.codebaseIndexMistralApiKey !== undefined) {
@@ -2677,7 +2746,7 @@ export const webviewMessageHandler = async (
 						processedItems: 0,
 						totalItems: 0,
 						currentItemUnit: "items",
-						workerspacePath: undefined,
+						workspacePath: undefined,
 					},
 				})
 				return
@@ -2708,6 +2777,9 @@ export const webviewMessageHandler = async (
 				"codebaseIndexOpenAiCompatibleApiKey",
 			))
 			const hasGeminiApiKey = !!(await provider.context.secrets.get("codebaseIndexGeminiApiKey"))
+			const hasVertexJsonCredentials = !!(await provider.context.secrets.get(
+				"codebaseIndexVertexJsonCredentials",
+			))
 			const hasMistralApiKey = !!(await provider.context.secrets.get("codebaseIndexMistralApiKey"))
 			const hasVercelAiGatewayApiKey = !!(await provider.context.secrets.get(
 				"codebaseIndexVercelAiGatewayApiKey",
@@ -2721,6 +2793,7 @@ export const webviewMessageHandler = async (
 					hasQdrantApiKey,
 					hasOpenAiCompatibleApiKey,
 					hasGeminiApiKey,
+					hasVertexJsonCredentials,
 					hasMistralApiKey,
 					hasVercelAiGatewayApiKey,
 					hasOpenRouterApiKey,
@@ -3241,17 +3314,26 @@ export const webviewMessageHandler = async (
 
 		case "queueMessage": {
 			const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
-			provider.getCurrentTask()?.messageQueueService.addMessage(resolved.text, resolved.images)
+			getRequiredTaskForMessage(provider, message, "queueMessage")?.messageQueueService.addMessage(
+				resolved.text,
+				resolved.images,
+			)
 			break
 		}
 		case "removeQueuedMessage": {
-			provider.getCurrentTask()?.messageQueueService.removeMessage(message.text ?? "")
+			getRequiredTaskForMessage(provider, message, "removeQueuedMessage")?.messageQueueService.removeMessage(
+				message.text ?? "",
+			)
 			break
 		}
 		case "editQueuedMessage": {
 			if (message.payload) {
 				const { id, text, images } = message.payload as EditQueuedMessagePayload
-				provider.getCurrentTask()?.messageQueueService.updateMessage(id, text, images)
+				getRequiredTaskForMessage(provider, message, "editQueuedMessage")?.messageQueueService.updateMessage(
+					id,
+					text,
+					images,
+				)
 			}
 
 			break
@@ -3347,7 +3429,7 @@ export const webviewMessageHandler = async (
 
 		case "openDebugApiHistory":
 		case "openDebugUiHistory": {
-			const currentTask = provider.getCurrentTask()
+			const currentTask = getTaskForMessage(provider, message, { allowActiveFallback: true })
 			if (!currentTask) {
 				vscode.window.showErrorMessage("No active task to view history for")
 				break
@@ -3402,7 +3484,7 @@ export const webviewMessageHandler = async (
 		}
 
 		case "downloadErrorDiagnostics": {
-			const currentTask = provider.getCurrentTask()
+			const currentTask = getTaskForMessage(provider, message, { allowActiveFallback: true })
 			if (!currentTask) {
 				vscode.window.showErrorMessage("No active task to generate diagnostics for")
 				break

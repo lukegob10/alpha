@@ -30,7 +30,8 @@
 	},
 	"vectorStore": {
 		"qdrantConnectionFailed": "Failed to connect to Qdrant vector database. Please ensure Qdrant is running and accessible at {{qdrantUrl}}. Error: {{errorMessage}}",
-		"vectorDimensionMismatch": "Failed to update vector index for new model. Please try clearing the index and starting again. Details: {{errorMessage}}"
+		"vectorDimensionMismatch": "Failed to update vector index for new model. Please try clearing the index and starting again. Details: {{errorMessage}}",
+		"lanceConnectionFailed": "Failed to initialize local LanceDB vector index at {{indexPath}}. Error: {{errorMessage}}"
 	},
 	"validation": {
 		"authenticationFailed": "Authentication failed. Please check your API key in the settings.",
@@ -52,6 +53,7 @@
 		"ollamaConfigMissing": "Ollama configuration missing for embedder creation",
 		"openAiCompatibleConfigMissing": "OpenAI Compatible configuration missing for embedder creation",
 		"geminiConfigMissing": "Gemini configuration missing for embedder creation",
+		"vertexConfigMissing": "GCP Vertex AI configuration missing for embedder creation",
 		"mistralConfigMissing": "Mistral configuration missing for embedder creation",
 		"openRouterConfigMissing": "OpenRouter configuration missing for embedder creation",
 		"vercelAiGatewayConfigMissing": "Vercel AI Gateway configuration missing for embedder creation",
@@ -60,7 +62,8 @@
 		"vectorDimensionNotDeterminedOpenAiCompatible": "Could not determine vector dimension for model '{{modelId}}' with provider '{{provider}}'. Please ensure the 'Embedding Dimension' is correctly set in the OpenAI-Compatible provider settings.",
 		"vectorDimensionNotDetermined": "Could not determine vector dimension for model '{{modelId}}' with provider '{{provider}}'. Check model profiles or configuration.",
 		"qdrantUrlMissing": "Qdrant URL missing for vector store creation",
-		"codeIndexingNotConfigured": "Cannot create services: Code indexing is not properly configured"
+		"codeIndexingNotConfigured": "Cannot create services: Code indexing is not properly configured",
+		"localIndexPathMissing": "Local vector index path missing for vector store creation"
 	},
 	"orchestrator": {
 		"indexingFailedNoBlocks": "Indexing failed: No code blocks were successfully indexed. This usually indicates an embedder configuration issue.",

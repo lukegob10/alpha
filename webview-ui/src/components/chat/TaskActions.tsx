@@ -28,7 +28,7 @@ export const TaskActions = ({ item, buttonsDisabled }: TaskActionsProps) => {
 			<LucideIconButton
 				icon={DownloadIcon}
 				title={t("chat:task.export")}
-				onClick={() => vscode.postMessage({ type: "exportCurrentTask" })}
+				onClick={() => vscode.postMessage({ type: "exportCurrentTask", taskId: item?.id })}
 			/>
 
 			{item?.task && (
@@ -68,12 +68,12 @@ export const TaskActions = ({ item, buttonsDisabled }: TaskActionsProps) => {
 					<LucideIconButton
 						icon={FileJsonIcon}
 						title={t("chat:task.openApiHistory")}
-						onClick={() => vscode.postMessage({ type: "openDebugApiHistory" })}
+						onClick={() => vscode.postMessage({ type: "openDebugApiHistory", taskId: item.id })}
 					/>
 					<LucideIconButton
 						icon={MessageSquareCodeIcon}
 						title={t("chat:task.openUiHistory")}
-						onClick={() => vscode.postMessage({ type: "openDebugUiHistory" })}
+						onClick={() => vscode.postMessage({ type: "openDebugUiHistory", taskId: item.id })}
 					/>
 				</>
 			)}

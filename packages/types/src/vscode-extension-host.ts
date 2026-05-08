@@ -7,6 +7,7 @@ import type { ModeConfig, PromptComponent } from "./mode.js"
 import type { TelemetrySetting } from "./telemetry.js"
 import type { Experiments } from "./experiment.js"
 import type { ClineMessage, QueuedMessage } from "./message.js"
+import type { CurrentTaskView, LiveTaskMetadata } from "./task.js"
 import {
 	type MarketplaceItem,
 	type MarketplaceInstalledMetadata,
@@ -105,6 +106,7 @@ export interface ExtensionMessage {
 		| "skills"
 		| "fileContent"
 	text?: string
+	taskId?: string
 	/** For fileContent: { path, content, error? } */
 	fileContent?: { path: string; content: string | null; error?: string }
 	payload?: any // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -313,6 +315,10 @@ export type ExtensionState = Pick<
 	currentTaskId?: string
 	currentTaskItem?: HistoryItem
 	currentTaskTodos?: TodoItem[] // Initial todos for the current task
+	currentView?: CurrentTaskView
+	activeTaskId?: string
+	liveTaskIds?: string[]
+	liveTasksById?: Record<string, LiveTaskMetadata>
 	apiConfiguration: ProviderSettings
 	uriScheme?: string
 	shouldShowAnnouncement: boolean
@@ -423,6 +429,7 @@ export interface WebviewMessage {
 		| "customInstructions"
 		| "webviewDidLaunch"
 		| "newTask"
+		| "startBlankTask"
 		| "askResponse"
 		| "terminalOperation"
 		| "clearTask"
@@ -449,6 +456,7 @@ export interface WebviewMessage {
 		| "openFile"
 		| "readFileContent"
 		| "openMention"
+		| "closeTask"
 		| "cancelTask"
 		| "cancelAutoApproval"
 		| "updateVSCodeSetting"
@@ -650,12 +658,15 @@ export interface WebviewMessage {
 	codeIndexSettings?: {
 		// Global state settings
 		codebaseIndexEnabled: boolean
+		codebaseIndexVectorStoreProvider?: "qdrant" | "lancedb"
+		codebaseIndexLocalIndexPath?: string
 		codebaseIndexQdrantUrl: string
 		codebaseIndexEmbedderProvider:
 			| "openai"
 			| "ollama"
 			| "openai-compatible"
 			| "gemini"
+			| "vertex"
 			| "mistral"
 			| "vercel-ai-gateway"
 			| "bedrock"
@@ -666,6 +677,14 @@ export interface WebviewMessage {
 		codebaseIndexOpenAiCompatibleBaseUrl?: string
 		codebaseIndexBedrockRegion?: string
 		codebaseIndexBedrockProfile?: string
+		codebaseIndexVertexProjectId?: string
+		codebaseIndexVertexRegion?: string
+		codebaseIndexVertexKeyFile?: string
+		codebaseIndexVertexGatewayBaseUrl?: string
+		codebaseIndexVertexGatewayCaBundlePath?: string
+		codebaseIndexVertexGatewayHelixCommand?: string
+		codebaseIndexVertexGatewayTokenRefreshMinutes?: number
+		codebaseIndexVertexGatewayModelRoutingMap?: string
 		codebaseIndexSearchMaxResults?: number
 		codebaseIndexSearchMinScore?: number
 		codebaseIndexOpenRouterSpecificProvider?: string // OpenRouter provider routing
@@ -675,6 +694,7 @@ export interface WebviewMessage {
 		codeIndexQdrantApiKey?: string
 		codebaseIndexOpenAiCompatibleApiKey?: string
 		codebaseIndexGeminiApiKey?: string
+		codebaseIndexVertexJsonCredentials?: string
 		codebaseIndexMistralApiKey?: string
 		codebaseIndexVercelAiGatewayApiKey?: string
 		codebaseIndexOpenRouterApiKey?: string

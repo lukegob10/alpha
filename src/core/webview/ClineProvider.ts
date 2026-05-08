@@ -32,11 +32,13 @@ import {
 	type CloudUserInfo,
 	type CloudOrganizationMembership,
 	type CreateTaskOptions,
+	type CurrentTaskView,
 	type TokenUsage,
 	type ToolUsage,
 	type ExtensionMessage,
 	type ExtensionState,
 	type MarketplaceInstalledMetadata,
+	TaskLifecycleState,
 	RooCodeEventName,
 	requestyDefaultModelId,
 	openRouterDefaultModelId,
@@ -96,13 +98,14 @@ import { CustomModesManager } from "../config/CustomModesManager"
 import { Task } from "../task/Task"
 
 import { webviewMessageHandler } from "./webviewMessageHandler"
-import type { ClineMessage, TodoItem } from "@roo-code/types"
+import type { ClineMessage, LiveTaskMetadata, TodoItem } from "@roo-code/types"
 import { readApiMessages, saveApiMessages, saveTaskMessages, TaskHistoryStore } from "../task-persistence"
 import { readTaskMessages } from "../task-persistence/taskMessages"
 import { getNonce } from "./getNonce"
 import { getUri } from "./getUri"
 import { REQUESTY_BASE_URL } from "../../shared/utils/requesty"
 import { validateAndFixToolResultIds } from "../task/validateToolResultIds"
+import { DEFAULT_MAX_LIVE_TASKS, TaskSessionRegistry } from "./TaskSessionRegistry"
 
 /**
  * https://github.com/microsoft/vscode-webview-ui-toolkit-samples/blob/main/default/weather-webview/src/providers/WeatherViewProvider.ts
@@ -137,6 +140,8 @@ export class ClineProvider
 	private webviewDisposables: vscode.Disposable[] = []
 	private view?: vscode.WebviewView | vscode.WebviewPanel
 	private clineStack: Task[] = []
+	private taskSessions = new TaskSessionRegistry()
+	private currentView: CurrentTaskView = { type: "newTaskDraft" }
 	private codeIndexStatusSubscription?: vscode.Disposable
 	private codeIndexManager?: CodeIndexManager
 	private _workspaceTracker?: WorkspaceTracker // workSpaceTracker read-only for access outside this class
@@ -239,10 +244,19 @@ export class ClineProvider
 			this.emit(RooCodeEventName.TaskCreated, instance)
 
 			// Create named listener functions so we can remove them later.
-			const onTaskStarted = () => this.emit(RooCodeEventName.TaskStarted, instance.taskId)
-			const onTaskCompleted = (taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage) =>
+			const onTaskStarted = () => {
+				this.markTaskLifecycle(instance.taskId, TaskLifecycleState.Running)
+				this.emit(RooCodeEventName.TaskStarted, instance.taskId)
+			}
+			const onTaskCompleted = (taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage) => {
+				this.markTaskLifecycle(taskId, TaskLifecycleState.Completed)
 				this.emit(RooCodeEventName.TaskCompleted, taskId, tokenUsage, toolUsage)
+			}
 			const onTaskAborted = async () => {
+				this.markTaskLifecycle(
+					instance.taskId,
+					instance.abortReason === "streaming_failed" ? TaskLifecycleState.Failed : TaskLifecycleState.Closed,
+				)
 				this.emit(RooCodeEventName.TaskAborted, instance.taskId)
 
 				try {
@@ -250,7 +264,7 @@ export class ClineProvider
 					// User-initiated cancels are handled by cancelTask().
 					if (instance.abortReason === "streaming_failed") {
 						// Defensive safeguard: if another path already replaced this instance, skip
-						const current = this.getCurrentTask()
+						const current = this.getLiveTask(instance.taskId)
 						if (current && current.instanceId !== instance.instanceId) {
 							this.log(
 								`[onTaskAborted] Skipping rehydrate: current instance ${current.instanceId} != aborted ${instance.instanceId}`,
@@ -261,7 +275,10 @@ export class ClineProvider
 						const { historyItem } = await this.getTaskWithId(instance.taskId)
 						const rootTask = instance.rootTask
 						const parentTask = instance.parentTask
-						await this.createTaskWithHistoryItem({ ...historyItem, rootTask, parentTask })
+						await this.createTaskWithHistoryItem(
+							{ ...historyItem, rootTask, parentTask },
+							{ preserveExisting: true },
+						)
 					}
 				} catch (error) {
 					this.log(
@@ -273,16 +290,31 @@ export class ClineProvider
 			}
 			const onTaskFocused = () => this.emit(RooCodeEventName.TaskFocused, instance.taskId)
 			const onTaskUnfocused = () => this.emit(RooCodeEventName.TaskUnfocused, instance.taskId)
-			const onTaskActive = (taskId: string) => this.emit(RooCodeEventName.TaskActive, taskId)
-			const onTaskInteractive = (taskId: string) => this.emit(RooCodeEventName.TaskInteractive, taskId)
-			const onTaskResumable = (taskId: string) => this.emit(RooCodeEventName.TaskResumable, taskId)
-			const onTaskIdle = (taskId: string) => this.emit(RooCodeEventName.TaskIdle, taskId)
+			const onTaskActive = (taskId: string) => {
+				this.markTaskLifecycle(taskId, TaskLifecycleState.Running)
+				this.emit(RooCodeEventName.TaskActive, taskId)
+			}
+			const onTaskInteractive = (taskId: string) => {
+				this.markTaskLifecycle(taskId, TaskLifecycleState.Waiting, "interactive")
+				this.emit(RooCodeEventName.TaskInteractive, taskId)
+			}
+			const onTaskResumable = (taskId: string) => {
+				this.markTaskLifecycle(taskId, TaskLifecycleState.Waiting, "resumable")
+				this.emit(RooCodeEventName.TaskResumable, taskId)
+			}
+			const onTaskIdle = (taskId: string) => {
+				const lifecycle = this.getIdleTaskLifecycle(instance)
+				this.markTaskLifecycle(taskId, lifecycle, lifecycle === TaskLifecycleState.Waiting ? "idle" : undefined)
+				this.emit(RooCodeEventName.TaskIdle, taskId)
+			}
 			const onTaskPaused = (taskId: string) => this.emit(RooCodeEventName.TaskPaused, taskId)
 			const onTaskUnpaused = (taskId: string) => this.emit(RooCodeEventName.TaskUnpaused, taskId)
 			const onTaskSpawned = (taskId: string) => this.emit(RooCodeEventName.TaskSpawned, taskId)
 			const onTaskUserMessage = (taskId: string) => this.emit(RooCodeEventName.TaskUserMessage, taskId)
-			const onTaskTokenUsageUpdated = (taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage) =>
+			const onTaskTokenUsageUpdated = (taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage) => {
+				void this.postStateToWebviewWithoutTaskHistory()
 				this.emit(RooCodeEventName.TaskTokenUsageUpdated, taskId, tokenUsage, toolUsage)
+			}
 
 			// Attach the listeners.
 			instance.on(RooCodeEventName.TaskStarted, onTaskStarted)
@@ -471,7 +503,16 @@ export class ClineProvider
 	async addClineToStack(task: Task) {
 		// Add this cline instance into the stack that represents the order of
 		// all the called tasks.
-		this.clineStack.push(task)
+		const previous = this.getActiveTask()
+		if (!this.clineStack.some((cline) => cline.taskId === task.taskId)) {
+			this.clineStack.push(task)
+		}
+		this.taskSessions.register(task, { focus: true })
+		this.currentView = { type: "task", taskId: task.taskId }
+		this.taskSessions.markLifecycle(task.taskId, TaskLifecycleState.Initializing)
+		if (previous && previous.taskId !== task.taskId) {
+			previous.emit(RooCodeEventName.TaskUnfocused)
+		}
 		task.emit(RooCodeEventName.TaskFocused)
 
 		// Perform special setup provider specific tasks.
@@ -505,13 +546,23 @@ export class ClineProvider
 
 	// Removes and destroys the top Alpha instance (the current finished task),
 	// activating the previous one (resuming the parent task).
-	async removeClineFromStack(options?: { skipDelegationRepair?: boolean }) {
-		if (this.clineStack.length === 0) {
+	async removeClineFromStack(options?: { skipDelegationRepair?: boolean; taskId?: string }) {
+		const clineStack = this.clineStack ?? []
+		const currentTask =
+			(options?.taskId ? this.getLiveTask(options.taskId) : undefined) ??
+			(typeof this.getActiveTask === "function" ? this.getActiveTask() : undefined) ??
+			clineStack.at(-1)
+		if (!currentTask) {
 			return
 		}
 
-		// Pop the top Alpha instance from the stack.
-		let task = this.clineStack.pop()
+		this.clineStack = clineStack.filter((cline) => cline.taskId !== currentTask.taskId)
+		this.taskSessions.markLifecycle(currentTask.taskId, TaskLifecycleState.Closing)
+		let task: Task | undefined = this.taskSessions?.unregister(currentTask.taskId) ?? currentTask
+		const nextActiveTaskId = this.getActiveTaskId()
+		if (this.currentView.type === "task" && this.currentView.taskId === currentTask.taskId) {
+			this.currentView = nextActiveTaskId ? { type: "task", taskId: nextActiveTaskId } : { type: "newTaskDraft" }
+		}
 
 		if (task) {
 			// Capture delegation metadata before abort/dispose, since abortTask(true)
@@ -961,7 +1012,7 @@ export class ClineProvider
 
 	public async createTaskWithHistoryItem(
 		historyItem: HistoryItem & { rootTask?: Task; parentTask?: Task },
-		options?: { startTask?: boolean },
+		options?: { startTask?: boolean; preserveExisting?: boolean },
 	) {
 		const isCliRuntime = process.env.ROO_CLI_RUNTIME === "1"
 		// CLI injects runtime provider settings from command flags/env at startup.
@@ -970,10 +1021,10 @@ export class ClineProvider
 		const skipProfileRestoreFromHistory = isCliRuntime
 
 		// Check if we're rehydrating the current task to avoid flicker
-		const currentTask = this.getCurrentTask()
+		const currentTask = this.getCurrentTask() ?? this.clineStack?.at(-1)
 		const isRehydratingCurrentTask = currentTask && currentTask.taskId === historyItem.id
 
-		if (!isRehydratingCurrentTask) {
+		if (!isRehydratingCurrentTask && !options?.preserveExisting) {
 			await this.removeClineFromStack()
 		}
 
@@ -1095,10 +1146,10 @@ export class ClineProvider
 
 		if (isRehydratingCurrentTask) {
 			// Replace the current task in-place to avoid UI flicker
-			const stackIndex = this.clineStack.length - 1
+			const stackIndex = this.clineStack.findIndex((cline) => cline.taskId === historyItem.id)
 
 			// Properly dispose of the old task to ensure garbage collection
-			const oldTask = this.clineStack[stackIndex]
+			const oldTask = stackIndex >= 0 ? this.clineStack[stackIndex] : currentTask
 
 			// Abort the old task to stop running processes and mark as abandoned
 			try {
@@ -1117,7 +1168,13 @@ export class ClineProvider
 			}
 
 			// Replace the task in the stack
-			this.clineStack[stackIndex] = task
+			if (stackIndex >= 0) {
+				this.clineStack[stackIndex] = task
+			} else {
+				this.clineStack.push(task)
+			}
+			this.taskSessions.register(task, { focus: true })
+			this.currentView = { type: "task", taskId: task.taskId }
 			task.emit(RooCodeEventName.TaskFocused)
 
 			// Perform preparation tasks and set up event listeners
@@ -1835,9 +1892,14 @@ export class ClineProvider
 
 	async showTaskWithId(id: string) {
 		if (id !== this.getCurrentTask()?.taskId) {
-			// Non-current task.
+			const focused = await this.focusTask(id)
+			if (focused) {
+				await this.postMessageToWebview({ type: "action", action: "chatButtonClicked" })
+				return
+			}
+
 			const { historyItem } = await this.getTaskWithId(id)
-			await this.createTaskWithHistoryItem(historyItem) // Clears existing task.
+			await this.createTaskWithHistoryItem(historyItem, { preserveExisting: true })
 		}
 
 		await this.postMessageToWebview({ type: "action", action: "chatButtonClicked" })
@@ -1903,12 +1965,11 @@ export class ClineProvider
 				await collectChildIds(id)
 			}
 
-			// Remove from stack if any of the tasks to delete are in the current task stack
+			// Close any live task instances, including background tasks. History deletion
+			// alone must not leave a live session counted against the max task limit.
 			for (const taskId of allIdsToDelete) {
-				if (taskId === this.getCurrentTask()?.taskId) {
-					// Close the current task instance; delegation flows will be handled via metadata if applicable.
-					await this.removeClineFromStack()
-					break
+				if (this.getLiveTask(taskId)) {
+					await this.removeClineFromStack({ taskId })
 				}
 			}
 
@@ -1955,6 +2016,9 @@ export class ClineProvider
 	}
 
 	async deleteTaskFromState(id: string) {
+		if (this.getLiveTask(id)) {
+			await this.removeClineFromStack({ taskId: id })
+		}
 		await this.taskHistoryStore.delete(id)
 		this.recentTasksCache = undefined
 
@@ -2237,7 +2301,7 @@ export class ClineProvider
 		const mergedAllowedCommands = this.mergeAllowedCommands(allowedCommands)
 		const mergedDeniedCommands = this.mergeDeniedCommands(deniedCommands)
 		const cwd = this.cwd
-		const currentTask = this.getCurrentTask()
+		const currentTask = this.currentView.type === "task" ? this.getLiveTask(this.currentView.taskId) : undefined
 
 		return {
 			version: this.context.extension?.packageJSON?.version ?? "",
@@ -2258,6 +2322,10 @@ export class ClineProvider
 			autoCondenseContextPercent: autoCondenseContextPercent ?? 100,
 			uriScheme: vscode.env.uriScheme,
 			currentTaskId: currentTask?.taskId,
+			currentView: this.currentView,
+			activeTaskId: this.getActiveTaskId(),
+			liveTaskIds: this.getLiveTaskIds(),
+			liveTasksById: this.getLiveTaskMetadata(),
 			currentTaskItem: currentTask?.taskId ? this.taskHistoryStore.get(currentTask.taskId) : undefined,
 			clineMessages: currentTask?.clineMessages || [],
 			currentTaskTodos: currentTask?.todoList || [],
@@ -2323,6 +2391,9 @@ export class ClineProvider
 			codebaseIndexModels: codebaseIndexModels ?? EMBEDDING_MODEL_PROFILES,
 			codebaseIndexConfig: {
 				codebaseIndexEnabled: codebaseIndexConfig?.codebaseIndexEnabled ?? false,
+				codebaseIndexVectorStoreProvider: codebaseIndexConfig?.codebaseIndexVectorStoreProvider ?? "lancedb",
+				codebaseIndexLocalIndexPath:
+					codebaseIndexConfig?.codebaseIndexLocalIndexPath ?? ".alpha/code-index/lancedb",
 				codebaseIndexQdrantUrl: codebaseIndexConfig?.codebaseIndexQdrantUrl ?? "http://localhost:6333",
 				codebaseIndexEmbedderProvider: codebaseIndexConfig?.codebaseIndexEmbedderProvider ?? "openai",
 				codebaseIndexEmbedderBaseUrl: codebaseIndexConfig?.codebaseIndexEmbedderBaseUrl ?? "",
@@ -2333,6 +2404,16 @@ export class ClineProvider
 				codebaseIndexSearchMinScore: codebaseIndexConfig?.codebaseIndexSearchMinScore,
 				codebaseIndexBedrockRegion: codebaseIndexConfig?.codebaseIndexBedrockRegion,
 				codebaseIndexBedrockProfile: codebaseIndexConfig?.codebaseIndexBedrockProfile,
+				codebaseIndexVertexProjectId: codebaseIndexConfig?.codebaseIndexVertexProjectId,
+				codebaseIndexVertexRegion: codebaseIndexConfig?.codebaseIndexVertexRegion,
+				codebaseIndexVertexKeyFile: codebaseIndexConfig?.codebaseIndexVertexKeyFile,
+				codebaseIndexVertexGatewayBaseUrl: codebaseIndexConfig?.codebaseIndexVertexGatewayBaseUrl,
+				codebaseIndexVertexGatewayCaBundlePath: codebaseIndexConfig?.codebaseIndexVertexGatewayCaBundlePath,
+				codebaseIndexVertexGatewayHelixCommand: codebaseIndexConfig?.codebaseIndexVertexGatewayHelixCommand,
+				codebaseIndexVertexGatewayTokenRefreshMinutes:
+					codebaseIndexConfig?.codebaseIndexVertexGatewayTokenRefreshMinutes,
+				codebaseIndexVertexGatewayModelRoutingMap:
+					codebaseIndexConfig?.codebaseIndexVertexGatewayModelRoutingMap,
 				codebaseIndexOpenRouterSpecificProvider: codebaseIndexConfig?.codebaseIndexOpenRouterSpecificProvider,
 			},
 			// Only set mdmCompliant if there's an actual MDM policy
@@ -2544,6 +2625,10 @@ export class ClineProvider
 			codebaseIndexModels: stateValues.codebaseIndexModels ?? EMBEDDING_MODEL_PROFILES,
 			codebaseIndexConfig: {
 				codebaseIndexEnabled: stateValues.codebaseIndexConfig?.codebaseIndexEnabled ?? false,
+				codebaseIndexVectorStoreProvider:
+					stateValues.codebaseIndexConfig?.codebaseIndexVectorStoreProvider ?? "lancedb",
+				codebaseIndexLocalIndexPath:
+					stateValues.codebaseIndexConfig?.codebaseIndexLocalIndexPath ?? ".alpha/code-index/lancedb",
 				codebaseIndexQdrantUrl:
 					stateValues.codebaseIndexConfig?.codebaseIndexQdrantUrl ?? "http://localhost:6333",
 				codebaseIndexEmbedderProvider:
@@ -2558,6 +2643,18 @@ export class ClineProvider
 				codebaseIndexSearchMinScore: stateValues.codebaseIndexConfig?.codebaseIndexSearchMinScore,
 				codebaseIndexBedrockRegion: stateValues.codebaseIndexConfig?.codebaseIndexBedrockRegion,
 				codebaseIndexBedrockProfile: stateValues.codebaseIndexConfig?.codebaseIndexBedrockProfile,
+				codebaseIndexVertexProjectId: stateValues.codebaseIndexConfig?.codebaseIndexVertexProjectId,
+				codebaseIndexVertexRegion: stateValues.codebaseIndexConfig?.codebaseIndexVertexRegion,
+				codebaseIndexVertexKeyFile: stateValues.codebaseIndexConfig?.codebaseIndexVertexKeyFile,
+				codebaseIndexVertexGatewayBaseUrl: stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayBaseUrl,
+				codebaseIndexVertexGatewayCaBundlePath:
+					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayCaBundlePath,
+				codebaseIndexVertexGatewayHelixCommand:
+					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayHelixCommand,
+				codebaseIndexVertexGatewayTokenRefreshMinutes:
+					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayTokenRefreshMinutes,
+				codebaseIndexVertexGatewayModelRoutingMap:
+					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayModelRoutingMap,
 				codebaseIndexOpenRouterSpecificProvider:
 					stateValues.codebaseIndexConfig?.codebaseIndexOpenRouterSpecificProvider,
 			},
@@ -2828,12 +2925,76 @@ export class ClineProvider
 	 * TaskProviderLike, TelemetryPropertiesProvider
 	 */
 
+	private markTaskLifecycle(taskId: string, lifecycle: TaskLifecycleState, waitingReason?: string): void {
+		this.taskSessions.markLifecycle(taskId, lifecycle, waitingReason)
+		this.log(`[task-session] ${taskId}: ${lifecycle}${waitingReason ? ` (${waitingReason})` : ""}`)
+		void this.postStateToWebviewWithoutTaskHistory()
+	}
+
+	private getIdleTaskLifecycle(task: Task): TaskLifecycleState {
+		return task.taskAsk?.ask === "completion_result" || task.taskAsk?.ask === "resume_completed_task"
+			? TaskLifecycleState.Completed
+			: TaskLifecycleState.Waiting
+	}
+
 	public getCurrentTask(): Task | undefined {
-		if (this.clineStack.length === 0) {
-			return undefined
+		return this.getActiveTask()
+	}
+
+	public getActiveTask(): Task | undefined {
+		return this.taskSessions.getActiveTask()
+	}
+
+	public getActiveTaskId(): string | undefined {
+		return this.taskSessions.getActiveTaskId()
+	}
+
+	public getLiveTask(taskId: string | undefined): Task | undefined {
+		return this.taskSessions.getTask(taskId)
+	}
+
+	public getTaskForMessage(message: Pick<WebviewMessage, "taskId">): Task | undefined {
+		return this.getLiveTask(message.taskId)
+	}
+
+	public getLiveTaskIds(): string[] {
+		return this.taskSessions.getLiveTaskIds()
+	}
+
+	public getLiveTaskMetadata(): Record<string, LiveTaskMetadata> {
+		return this.taskSessions.getMetadata()
+	}
+
+	public async focusTask(taskId: string): Promise<boolean> {
+		const previous = this.getActiveTask()
+		const task = this.taskSessions.focus(taskId)
+
+		if (!task) {
+			return false
 		}
 
-		return this.clineStack[this.clineStack.length - 1]
+		if (previous && previous.taskId !== task.taskId) {
+			previous.emit(RooCodeEventName.TaskUnfocused)
+		}
+
+		this.currentView = { type: "task", taskId: task.taskId }
+		task.emit(RooCodeEventName.TaskFocused)
+		await this.postStateToWebview()
+		return true
+	}
+
+	public async startBlankTask(): Promise<void> {
+		const previous = this.getActiveTask()
+		await this.postMessageToWebview({
+			type: "action",
+			action: "chatButtonClicked",
+			values: { force: true },
+		})
+		this.taskSessions.clearFocus()
+		this.currentView = { type: "newTaskDraft" }
+		previous?.emit(RooCodeEventName.TaskUnfocused)
+		await this.postStateToWebview()
+		await this.postMessageToWebview({ type: "invoke", invoke: "newChat" })
 	}
 
 	public getRecentTasks(): string[] {
@@ -2938,12 +3099,18 @@ export class ClineProvider
 			await this.getState()
 
 		// Single-open-task invariant: always enforce for user-initiated top-level tasks
-		if (!parentTask) {
+		if (!parentTask && !options.preserveExisting) {
 			try {
 				await this.removeClineFromStack()
 			} catch {
 				// Non-fatal
 			}
+		}
+
+		if (!parentTask && options.preserveExisting && !this.taskSessions.canCreateTask()) {
+			const message = `Maximum live task limit reached (${DEFAULT_MAX_LIVE_TASKS}). Close a running task before starting another.`
+			vscode.window.showErrorMessage(message)
+			throw new Error(message)
 		}
 
 		if (!ProfileValidator.isProfileAllowed(apiConfiguration, organizationAllowList)) {
@@ -2959,7 +3126,7 @@ export class ClineProvider
 			task: text,
 			images,
 			experiments,
-			rootTask: this.clineStack.length > 0 ? this.clineStack[0] : undefined,
+			rootTask: parentTask ? this.clineStack[0] : undefined,
 			parentTask,
 			taskNumber: this.clineStack.length + 1,
 			onCreated: this.taskCreationCallback,
@@ -2971,6 +3138,7 @@ export class ClineProvider
 		})
 
 		await this.addClineToStack(task)
+		await this.postStateToWebviewWithoutTaskHistory()
 		task.start()
 
 		this.log(
@@ -2980,8 +3148,8 @@ export class ClineProvider
 		return task
 	}
 
-	public async cancelTask(): Promise<void> {
-		const task = this.getCurrentTask()
+	public async cancelTask(taskId?: string): Promise<void> {
+		const task = this.getLiveTask(taskId) ?? this.getCurrentTask()
 
 		if (!task) {
 			return
@@ -3026,13 +3194,13 @@ export class ClineProvider
 
 		await pWaitFor(
 			() =>
-				this.getCurrentTask()! === undefined ||
-				this.getCurrentTask()!.isStreaming === false ||
-				this.getCurrentTask()!.didFinishAbortingStream ||
+				this.getLiveTask(task.taskId) === undefined ||
+				task.isStreaming === false ||
+				task.didFinishAbortingStream ||
 				// If only the first chunk is processed, then there's no
 				// need to wait for graceful abort (closes edits, browser,
 				// etc).
-				this.getCurrentTask()!.isWaitingForFirstChunk,
+				task.isWaitingForFirstChunk,
 			{
 				timeout: 3_000,
 			},
@@ -3041,7 +3209,7 @@ export class ClineProvider
 		})
 
 		// Defensive safeguard: if current instance already changed, skip rehydrate
-		const current = this.getCurrentTask()
+		const current = this.getLiveTask(task.taskId)
 		if (current && current.instanceId !== originalInstanceId) {
 			this.log(
 				`[cancelTask] Skipping rehydrate: current instance ${current.instanceId} != original ${originalInstanceId}`,
@@ -3051,7 +3219,7 @@ export class ClineProvider
 
 		// Final race check before rehydrate to avoid duplicate rehydration
 		{
-			const currentAfterCheck = this.getCurrentTask()
+			const currentAfterCheck = this.getLiveTask(task.taskId)
 			if (currentAfterCheck && currentAfterCheck.instanceId !== originalInstanceId) {
 				this.log(
 					`[cancelTask] Skipping rehydrate after final check: current instance ${currentAfterCheck.instanceId} != original ${originalInstanceId}`,
@@ -3065,14 +3233,24 @@ export class ClineProvider
 		}
 
 		// Clears task again, so we need to abortTask manually above.
-		await this.createTaskWithHistoryItem({ ...historyItem, rootTask, parentTask })
+		await this.createTaskWithHistoryItem({ ...historyItem, rootTask, parentTask }, { preserveExisting: true })
+	}
+
+	public async closeTask(taskId?: string): Promise<void> {
+		const task = this.getLiveTask(taskId) ?? this.getCurrentTask()
+		if (!task) {
+			return
+		}
+
+		await this.removeClineFromStack({ taskId: task.taskId })
+		await this.postStateToWebview()
 	}
 
 	// Clear the current task without treating it as a subtask.
 	// This is used when the user cancels a task that is not a subtask.
 	public async clearTask(): Promise<void> {
-		if (this.clineStack.length > 0) {
-			const task = this.clineStack[this.clineStack.length - 1]
+		const task = this.getCurrentTask()
+		if (task) {
 			console.log(`[clearTask] clearing task ${task.taskId}.${task.instanceId}`)
 			await this.removeClineFromStack()
 		}

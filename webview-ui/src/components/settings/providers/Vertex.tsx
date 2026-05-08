@@ -1,18 +1,18 @@
 import { useCallback } from "react"
 import { Checkbox } from "vscrui"
-import { VSCodeLink, VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
+import { VSCodeLink, VSCodeTextArea, VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 
 import { type ProviderSettings, VERTEX_REGIONS, VERTEX_1M_CONTEXT_MODEL_IDS } from "@roo-code/types"
 
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@src/components/ui"
 
-import { inputEventTransform } from "../transforms"
-
 type VertexProps = {
 	apiConfiguration: ProviderSettings
 	setApiConfigurationField: (field: keyof ProviderSettings, value: ProviderSettings[keyof ProviderSettings]) => void
 }
+
+const DEFAULT_VERTEX_GATEWAY_HELIX_COMMAND = "helix auth access-token print -a"
 
 export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexProps) => {
 	const { t } = useAppTranslation()
@@ -25,12 +25,12 @@ export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexPro
 		)
 
 	const handleInputChange = useCallback(
-		<K extends keyof ProviderSettings, E>(
+		<K extends keyof ProviderSettings>(
 			field: K,
-			transform: (event: E) => ProviderSettings[K] = inputEventTransform,
+			transform: (value: string) => ProviderSettings[K] = (value) => value as ProviderSettings[K],
 		) =>
-			(event: E | Event) => {
-				setApiConfigurationField(field, transform(event as E))
+			(event: unknown) => {
+				setApiConfigurationField(field, transform(getInputValue(event)))
 			},
 		[setApiConfigurationField],
 	)
@@ -62,20 +62,6 @@ export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexPro
 				</div>
 			</div>
 			<VSCodeTextField
-				value={apiConfiguration?.vertexJsonCredentials || ""}
-				onInput={handleInputChange("vertexJsonCredentials")}
-				placeholder={t("settings:placeholders.credentialsJson")}
-				className="w-full">
-				<label className="block font-medium mb-1">{t("settings:providers.googleCloudCredentials")}</label>
-			</VSCodeTextField>
-			<VSCodeTextField
-				value={apiConfiguration?.vertexKeyFile || ""}
-				onInput={handleInputChange("vertexKeyFile")}
-				placeholder={t("settings:placeholders.keyFilePath")}
-				className="w-full">
-				<label className="block font-medium mb-1">{t("settings:providers.googleCloudKeyFile")}</label>
-			</VSCodeTextField>
-			<VSCodeTextField
 				value={apiConfiguration?.vertexProjectId || ""}
 				onInput={handleInputChange("vertexProjectId")}
 				placeholder={t("settings:placeholders.projectId")}
@@ -99,6 +85,69 @@ export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexPro
 					</SelectContent>
 				</Select>
 			</div>
+			<VSCodeTextField
+				value={apiConfiguration?.vertexJsonCredentials || ""}
+				onInput={handleInputChange("vertexJsonCredentials")}
+				placeholder={t("settings:placeholders.credentialsJson")}
+				className="w-full">
+				<label className="block font-medium mb-1">{t("settings:providers.googleCloudCredentials")}</label>
+			</VSCodeTextField>
+			<VSCodeTextField
+				value={apiConfiguration?.vertexKeyFile || ""}
+				onInput={handleInputChange("vertexKeyFile")}
+				placeholder={t("settings:placeholders.keyFilePath")}
+				className="w-full">
+				<label className="block font-medium mb-1">{t("settings:providers.googleCloudKeyFile")}</label>
+			</VSCodeTextField>
+			<VSCodeTextField
+				value={apiConfiguration?.vertexGatewayBaseUrl || ""}
+				onInput={handleInputChange("vertexGatewayBaseUrl")}
+				placeholder={t("settings:placeholders.baseUrl")}
+				className="w-full"
+				data-testid="vertex-gateway-base-url">
+				<label className="block font-medium mb-1">{t("settings:providers.vertexGatewayBaseUrl")}</label>
+			</VSCodeTextField>
+			<VSCodeTextField
+				value={apiConfiguration?.vertexGatewayCaBundlePath || ""}
+				onInput={handleInputChange("vertexGatewayCaBundlePath")}
+				placeholder={t("settings:placeholders.keyFilePath")}
+				className="w-full"
+				data-testid="vertex-gateway-ca-bundle-path">
+				<label className="block font-medium mb-1">{t("settings:providers.vertexGatewayCaBundlePath")}</label>
+			</VSCodeTextField>
+			<VSCodeTextField
+				value={apiConfiguration?.vertexGatewayHelixCommand || ""}
+				onInput={handleInputChange("vertexGatewayHelixCommand")}
+				placeholder={DEFAULT_VERTEX_GATEWAY_HELIX_COMMAND}
+				className="w-full"
+				data-testid="vertex-gateway-helix-command">
+				<label className="block font-medium mb-1">{t("settings:providers.vertexGatewayHelixCommand")}</label>
+			</VSCodeTextField>
+			<VSCodeTextField
+				value={apiConfiguration?.vertexGatewayTokenRefreshMinutes?.toString() || ""}
+				onInput={handleInputChange("vertexGatewayTokenRefreshMinutes", (value) => {
+					const parsed = Number.parseInt(value, 10)
+					return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+				})}
+				placeholder="10"
+				className="w-full"
+				data-testid="vertex-gateway-token-refresh-minutes">
+				<label className="block font-medium mb-1">
+					{t("settings:providers.vertexGatewayTokenRefreshMinutes")}
+				</label>
+			</VSCodeTextField>
+			<div>
+				<label className="block font-medium mb-1">{t("settings:providers.vertexGatewayModelRoutingMap")}</label>
+				<VSCodeTextArea
+					resize="vertical"
+					value={apiConfiguration?.vertexGatewayModelRoutingMap || ""}
+					onInput={handleInputChange("vertexGatewayModelRoutingMap")}
+					placeholder='{"gemini-3-flash-preview":"gateway-model-id"}'
+					rows={4}
+					className="w-full"
+					data-testid="vertex-gateway-model-routing-map"
+				/>
+			</div>
 
 			{supports1MContextBeta && (
 				<div>
@@ -117,4 +166,14 @@ export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexPro
 			)}
 		</>
 	)
+}
+
+function getInputValue(event: unknown): string {
+	const customTargetValue = (event as CustomEvent<{ target?: { value?: string } }>)?.detail?.target?.value
+	if (customTargetValue !== undefined) {
+		return customTargetValue
+	}
+
+	const targetValue = (event as { target?: HTMLInputElement | HTMLTextAreaElement })?.target?.value
+	return targetValue ?? ""
 }

@@ -30,7 +30,8 @@
 	},
 	"vectorStore": {
 		"qdrantConnectionFailed": "Nie udało się połączyć z bazą danych wektorowych Qdrant. Upewnij się, że Qdrant jest uruchomiony i dostępny pod adresem {{qdrantUrl}}. Błąd: {{errorMessage}}",
-		"vectorDimensionMismatch": "Nie udało się zaktualizować indeksu wektorowego dla nowego modelu. Spróbuj wyczyścić indeks i zacząć od nowa. Szczegóły: {{errorMessage}}"
+		"vectorDimensionMismatch": "Nie udało się zaktualizować indeksu wektorowego dla nowego modelu. Spróbuj wyczyścić indeks i zacząć od nowa. Szczegóły: {{errorMessage}}",
+		"lanceConnectionFailed": "Failed to initialize local LanceDB vector index at {{indexPath}}. Error: {{errorMessage}}"
 	},
 	"validation": {
 		"authenticationFailed": "Uwierzytelnianie nie powiodło się. Sprawdź swój klucz API w ustawieniach.",
@@ -52,6 +53,7 @@
 		"ollamaConfigMissing": "Brak konfiguracji Ollama do utworzenia embeddera",
 		"openAiCompatibleConfigMissing": "Brak konfiguracji kompatybilnej z OpenAI do utworzenia embeddera",
 		"geminiConfigMissing": "Brak konfiguracji Gemini do utworzenia embeddera",
+		"vertexConfigMissing": "GCP Vertex AI configuration missing for embedder creation",
 		"mistralConfigMissing": "Brak konfiguracji Mistral do utworzenia embeddera",
 		"openRouterConfigMissing": "Brak konfiguracji OpenRouter do utworzenia embeddera",
 		"vercelAiGatewayConfigMissing": "Brak konfiguracji Vercel AI Gateway do utworzenia embeddera",
@@ -60,7 +62,8 @@
 		"vectorDimensionNotDeterminedOpenAiCompatible": "Nie można określić wymiaru wektora dla modelu '{{modelId}}' z dostawcą '{{provider}}'. Upewnij się, że 'Wymiar osadzania' jest poprawnie ustawiony w ustawieniach dostawcy kompatybilnego z OpenAI.",
 		"vectorDimensionNotDetermined": "Nie można określić wymiaru wektora dla modelu '{{modelId}}' z dostawcą '{{provider}}'. Sprawdź profile modelu lub konfigurację.",
 		"qdrantUrlMissing": "Brak adresu URL Qdrant do utworzenia magazynu wektorów",
-		"codeIndexingNotConfigured": "Nie można utworzyć usług: Indeksowanie kodu nie jest poprawnie skonfigurowane"
+		"codeIndexingNotConfigured": "Nie można utworzyć usług: Indeksowanie kodu nie jest poprawnie skonfigurowane",
+		"localIndexPathMissing": "Local vector index path missing for vector store creation"
 	},
 	"orchestrator": {
 		"indexingFailedNoBlocks": "Indeksowanie nie powiodło się: Żadne bloki kodu nie zostały pomyślnie zaindeksowane. To zwykle wskazuje na problem z konfiguracją embeddera.",

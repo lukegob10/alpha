@@ -119,6 +119,7 @@
 		"openaiProvider": "OpenAI",
 		"ollamaProvider": "Ollama",
 		"geminiProvider": "Gemini",
+		"vertexProvider": "GCP Vertex AI",
 		"geminiApiKeyLabel": "API 密钥：",
 		"geminiApiKeyPlaceholder": "输入您的Gemini API密钥",
 		"vercelAiGatewayProvider": "Vercel AI Gateway",
@@ -202,7 +203,13 @@
 			"ollamaBaseUrlRequired": "需要 Ollama 基础 URL",
 			"baseUrlRequired": "需要基础 URL",
 			"modelDimensionMinValue": "模型维度必须大于 0",
-			"openRouterApiKeyRequired": "OpenRouter API 密钥是必需的"
+			"openRouterApiKeyRequired": "OpenRouter API 密钥是必需的",
+			"vertexProjectIdRequired": "Google Cloud project ID is required",
+			"vertexRegionRequired": "Google Cloud region is required",
+			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
+			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
+			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
+			"localIndexPathRequired": "Local index path is required"
 		},
 		"optional": "可选",
 		"advancedConfigLabel": "高级配置",
@@ -216,7 +223,14 @@
 		"stoppingButton": "正在停止...",
 		"workspaceToggleLabel": "为此工作区启用索引",
 		"workspaceDisabledMessage": "索引已配置，但尚未为此工作区启用。",
-		"autoEnableDefaultLabel": "自动为新工作区启用索引"
+		"autoEnableDefaultLabel": "自动为新工作区启用索引",
+		"vectorStoreProviderLabel": "Vector Store",
+		"lancedbVectorStore": "Local LanceDB",
+		"qdrantVectorStore": "Qdrant",
+		"localIndexPathLabel": "Local Index Path",
+		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
+		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
+		"savedSecretPlaceholder": "Saved value hidden"
 	},
 	"autoApprove": {
 		"toggleShortcut": "您可以<SettingsLink>在 IDE 首选项中</SettingsLink>为此设置配置全局快捷方式。",

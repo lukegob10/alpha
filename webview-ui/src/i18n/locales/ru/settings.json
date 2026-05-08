@@ -114,6 +114,7 @@
 		"openaiProvider": "OpenAI",
 		"ollamaProvider": "Ollama",
 		"geminiProvider": "Gemini",
+		"vertexProvider": "GCP Vertex AI",
 		"geminiApiKeyLabel": "Ключ API:",
 		"geminiApiKeyPlaceholder": "Введите свой API-ключ Gemini",
 		"vercelAiGatewayProvider": "Vercel AI Gateway",
@@ -202,7 +203,13 @@
 			"ollamaBaseUrlRequired": "Требуется базовый URL Ollama",
 			"baseUrlRequired": "Требуется базовый URL",
 			"modelDimensionMinValue": "Размерность модели должна быть больше 0",
-			"openRouterApiKeyRequired": "Требуется ключ API OpenRouter"
+			"openRouterApiKeyRequired": "Требуется ключ API OpenRouter",
+			"vertexProjectIdRequired": "Google Cloud project ID is required",
+			"vertexRegionRequired": "Google Cloud region is required",
+			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
+			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
+			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
+			"localIndexPathRequired": "Local index path is required"
 		},
 		"optional": "необязательно",
 		"advancedConfigLabel": "Расширенная конфигурация",
@@ -216,7 +223,14 @@
 		"stoppingButton": "Остановка...",
 		"workspaceToggleLabel": "Включить индексацию для этого рабочего пространства",
 		"workspaceDisabledMessage": "Индексация настроена, но не включена для этого рабочего пространства.",
-		"autoEnableDefaultLabel": "Автоматически включать индексацию для новых рабочих пространств"
+		"autoEnableDefaultLabel": "Автоматически включать индексацию для новых рабочих пространств",
+		"vectorStoreProviderLabel": "Vector Store",
+		"lancedbVectorStore": "Local LanceDB",
+		"qdrantVectorStore": "Qdrant",
+		"localIndexPathLabel": "Local Index Path",
+		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
+		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
+		"savedSecretPlaceholder": "Saved value hidden"
 	},
 	"autoApprove": {
 		"toggleShortcut": "Вы можете настроить глобальное сочетание клавиш для этого параметра <SettingsLink>в настройках вашей IDE</SettingsLink>.",

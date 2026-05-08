@@ -18,6 +18,9 @@ vi.mock("@src/components/common/MarkdownBlock")
 vi.mock("@src/utils/path-mentions", () => ({
 	convertToMentionPath: vi.fn((path, cwd) => {
 		// Simple mock implementation that mimics the real function's behavior
+		if (path.startsWith("file://")) {
+			path = decodeURIComponent(path.substring("file://".length))
+		}
 		if (cwd && path.toLowerCase().startsWith(cwd.toLowerCase())) {
 			const relativePath = path.substring(cwd.length)
 			return "@" + (relativePath.startsWith("/") ? relativePath : "/" + relativePath)
@@ -262,6 +265,94 @@ describe("ChatTextArea", () => {
 					}),
 				)
 			}).not.toThrow()
+		})
+	})
+
+	describe("clipboard paste", () => {
+		const mockCwd = "/Users/test/project"
+
+		beforeEach(() => {
+			;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+				filePaths: [],
+				openedTabs: [],
+				apiConfiguration: {
+					apiProvider: "anthropic",
+				},
+				taskHistory: [],
+				cwd: mockCwd,
+			})
+		})
+
+		it("inserts pasted URLs at the textarea selection instead of a stale cursor position", () => {
+			const setInputValue = vi.fn()
+			const { container } = render(
+				<ChatTextArea {...defaultProps} setInputValue={setInputValue} inputValue="before selected after" />,
+			)
+
+			const textarea = container.querySelector("textarea")!
+			textarea.setSelectionRange("before ".length, "before selected".length)
+
+			fireEvent.paste(textarea, {
+				clipboardData: {
+					items: [],
+					getData: vi.fn(() => "https://example.com"),
+				},
+			})
+
+			expect(setInputValue).toHaveBeenCalledWith("before https://example.com after")
+		})
+
+		it("converts pasted VS Code URI lists into clean mentions", () => {
+			const setInputValue = vi.fn()
+			const { container } = render(
+				<ChatTextArea {...defaultProps} setInputValue={setInputValue} inputValue="Review " />,
+			)
+
+			const textarea = container.querySelector("textarea")!
+			textarea.setSelectionRange("Review ".length, "Review ".length)
+
+			const getData = vi.fn((type: string) => {
+				if (type === "application/vnd.code.uri-list") {
+					return "file:///Users/test/project/src/file1.ts\nfile:///Users/test/project/src/file2.ts"
+				}
+
+				return ""
+			})
+
+			fireEvent.paste(textarea, {
+				clipboardData: {
+					items: [],
+					getData,
+				},
+			})
+
+			expect(mockConvertToMentionPath).toHaveBeenCalledWith("file:///Users/test/project/src/file1.ts", mockCwd)
+			expect(mockConvertToMentionPath).toHaveBeenCalledWith("file:///Users/test/project/src/file2.ts", mockCwd)
+			expect(setInputValue).toHaveBeenCalledWith("Review @/src/file1.ts @/src/file2.ts ")
+		})
+
+		it("extracts VS Code resource paths from raw clipboard metadata instead of pasting the metadata blob", () => {
+			const setInputValue = vi.fn()
+			const { container } = render(<ChatTextArea {...defaultProps} setInputValue={setInputValue} inputValue="" />)
+
+			const textarea = container.querySelector("textarea")!
+			const rawMetadata =
+				'{"changed":[],"resource":{"$mid":1,"fsPath":"c:\\\\Users\\\\Luke Goblirsch\\\\AppData\\\\Roaming\\\\Code\\\\User\\\\globalStorage","scheme":"file"}}\u0002\u0006'
+
+			fireEvent.paste(textarea, {
+				clipboardData: {
+					items: [],
+					getData: vi.fn((type: string) => (type === "text" ? rawMetadata : "")),
+				},
+			})
+
+			expect(mockConvertToMentionPath).toHaveBeenCalledWith(
+				"c:\\Users\\Luke Goblirsch\\AppData\\Roaming\\Code\\User\\globalStorage",
+				mockCwd,
+			)
+			expect(setInputValue).toHaveBeenCalledWith(
+				"c:\\Users\\Luke Goblirsch\\AppData\\Roaming\\Code\\User\\globalStorage ",
+			)
 		})
 	})
 

@@ -33,6 +33,7 @@ export type AvailableEmbedders =
 	| "ollama"
 	| "openai-compatible"
 	| "gemini"
+	| "vertex"
 	| "mistral"
 	| "vercel-ai-gateway"
 	| "bedrock"

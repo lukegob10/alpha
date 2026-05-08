@@ -72,6 +72,9 @@ function validateModelsAndKeysProvided(apiConfiguration: ProviderSettings): stri
 			if (!apiConfiguration.vertexProjectId || !apiConfiguration.vertexRegion) {
 				return i18next.t("settings:validation.googleCloud")
 			}
+			if (!isValidVertexGatewayModelRoutingMap(apiConfiguration.vertexGatewayModelRoutingMap)) {
+				return i18next.t("settings:validation.vertexGatewayModelRoutingMap")
+			}
 			break
 		case "gemini":
 			if (!apiConfiguration.geminiApiKey) {
@@ -173,6 +176,27 @@ function validateProviderAgainstOrganizationSettings(
 				}
 			}
 		}
+	}
+}
+
+function isValidVertexGatewayModelRoutingMap(value: string | undefined): boolean {
+	if (!value?.trim()) {
+		return true
+	}
+
+	try {
+		const parsed = JSON.parse(value)
+
+		return (
+			parsed !== null &&
+			typeof parsed === "object" &&
+			!Array.isArray(parsed) &&
+			Object.entries(parsed).every(
+				([key, route]) => key.trim().length > 0 && typeof route === "string" && route.trim().length > 0,
+			)
+		)
+	} catch {
+		return false
 	}
 }
 

@@ -666,33 +666,91 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			setIsFocused(false)
 		}, [isMouseDownOnMenu])
 
+		const insertTextAtSelection = useCallback(
+			(textarea: HTMLTextAreaElement, text: string, options: { addTrailingSpace?: boolean } = {}) => {
+				const selectionStart = textarea.selectionStart ?? textarea.value.length
+				const selectionEnd = textarea.selectionEnd ?? selectionStart
+				const textAfterSelection = textarea.value.slice(selectionEnd)
+				const trailingSpace = options.addTrailingSpace && !textAfterSelection.startsWith(" ") ? " " : ""
+				const newValue = textarea.value.slice(0, selectionStart) + text + trailingSpace + textAfterSelection
+				const newCursorPosition = selectionStart + text.length + trailingSpace.length
+
+				setInputValue(newValue)
+				setCursorPosition(newCursorPosition)
+				setIntendedCursorPosition(newCursorPosition)
+				setShowContextMenu(false)
+
+				setTimeout(() => {
+					if (textAreaRef.current) {
+						textAreaRef.current.focus()
+						textAreaRef.current.setSelectionRange(newCursorPosition, newCursorPosition)
+					}
+				}, 0)
+			},
+			[setInputValue],
+		)
+
+		const getClipboardUriList = useCallback((clipboardData: DataTransfer) => {
+			const uriList =
+				clipboardData.getData("application/vnd.code.uri-list") ||
+				clipboardData.getData("text/uri-list") ||
+				clipboardData.getData("text/x-moz-url")
+
+			return uriList
+				.split(/\r?\n/)
+				.map((line) => line.trim())
+				.filter((line) => line && !line.startsWith("#"))
+		}, [])
+
+		const getVsCodeResourcePaths = useCallback((text: string) => {
+			if (!text.includes('"fsPath"')) {
+				return []
+			}
+
+			return Array.from(text.matchAll(/"fsPath"\s*:\s*"((?:\\.|[^"\\])+)"/g))
+				.map((match) => {
+					try {
+						return JSON.parse(`"${match[1]}"`) as string
+					} catch {
+						return match[1].replace(/\\\\/g, "\\")
+					}
+				})
+				.filter(Boolean)
+		}, [])
+
 		const handlePaste = useCallback(
 			async (e: React.ClipboardEvent) => {
 				const items = e.clipboardData.items
 
+				const uriList = getClipboardUriList(e.clipboardData)
+				if (uriList.length > 0) {
+					e.preventDefault()
+					const mentionText = uriList.map((uri) => convertToMentionPath(uri, cwd)).join(" ")
+					insertTextAtSelection(e.currentTarget as HTMLTextAreaElement, mentionText, {
+						addTrailingSpace: true,
+					})
+					return
+				}
+
 				const pastedText = e.clipboardData.getData("text")
+				const resourcePaths = getVsCodeResourcePaths(pastedText)
+				if (resourcePaths.length > 0) {
+					e.preventDefault()
+					const mentionText = resourcePaths.map((path) => convertToMentionPath(path, cwd)).join(" ")
+					insertTextAtSelection(e.currentTarget as HTMLTextAreaElement, mentionText, {
+						addTrailingSpace: true,
+					})
+					return
+				}
+
 				// Check if the pasted content is a URL, add space after so user
 				// can easily delete if they don't want it.
 				const urlRegex = /^\S+:\/\/\S+$/
 				if (urlRegex.test(pastedText.trim())) {
 					e.preventDefault()
-					const trimmedUrl = pastedText.trim()
-					const newValue =
-						inputValue.slice(0, cursorPosition) + trimmedUrl + " " + inputValue.slice(cursorPosition)
-					setInputValue(newValue)
-					const newCursorPosition = cursorPosition + trimmedUrl.length + 1
-					setCursorPosition(newCursorPosition)
-					setIntendedCursorPosition(newCursorPosition)
-					setShowContextMenu(false)
-
-					// Scroll to new cursor position.
-					setTimeout(() => {
-						if (textAreaRef.current) {
-							textAreaRef.current.blur()
-							textAreaRef.current.focus()
-						}
-					}, 0)
-
+					insertTextAtSelection(e.currentTarget as HTMLTextAreaElement, pastedText.trim(), {
+						addTrailingSpace: true,
+					})
 					return
 				}
 
@@ -741,7 +799,15 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					}
 				}
 			},
-			[shouldDisableImages, setSelectedImages, cursorPosition, setInputValue, inputValue, t],
+			[
+				cwd,
+				getClipboardUriList,
+				getVsCodeResourcePaths,
+				insertTextAtSelection,
+				shouldDisableImages,
+				setSelectedImages,
+				t,
+			],
 		)
 
 		const handleMenuMouseDown = useCallback(() => {
