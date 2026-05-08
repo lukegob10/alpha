@@ -12,7 +12,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.52.0",
+		version: "1.0.0",
 	},
 }))
 
@@ -49,10 +49,10 @@ vi.mock("@src/i18n/TranslationContext", () => ({
 }))
 
 describe("Announcement", () => {
-	it("renders the v3.52.0 announcement title and highlights", () => {
+	it("renders the v1.0.0 announcement title and highlights", () => {
 		render(<Announcement hideAnnouncement={vi.fn()} />)
 
-		expect(screen.getByText("Alpha 3.52.0 Released")).toBeInTheDocument()
+		expect(screen.getByText("Alpha 1.0.0 Released")).toBeInTheDocument()
 		expect(
 			screen.getByText(
 				"Poe Provider: Added Poe as an AI provider so you can access Poe models directly in Alpha.",
