@@ -59,7 +59,7 @@
 		"contact": {
 			"label": "Perlu bicara dengan kami? Tulis"
 		},
-		"community": "Ingin tips atau hanya nongkrong dengan pengguna Alpha lainnya? Bergabunglah dengan <redditLink>github.com/AlphaInc/Alpha/discussions</redditLink> atau <discordLink>github.com/AlphaInc/Alpha/issues</discordLink>",
+		"community": "Ingin tips atau hanya nongkrong dengan pengguna Alpha lainnya? Bergabunglah dengan <redditLink>reddit.com/r/RooCode</redditLink> atau <discordLink>discord.gg/roocode</discordLink>",
 		"contactAndCommunity": "Kontak & Komunitas",
 		"manageSettings": "Kelola Pengaturan",
 		"debugMode": {
@@ -114,6 +114,7 @@
 		"openaiProvider": "OpenAI",
 		"ollamaProvider": "Ollama",
 		"geminiProvider": "Gemini",
+		"vertexProvider": "GCP Vertex AI",
 		"geminiApiKeyLabel": "API Key:",
 		"geminiApiKeyPlaceholder": "Masukkan kunci API Gemini Anda",
 		"vercelAiGatewayProvider": "Vercel AI Gateway",
@@ -202,7 +203,13 @@
 			"ollamaBaseUrlRequired": "URL dasar Ollama diperlukan",
 			"baseUrlRequired": "URL dasar diperlukan",
 			"modelDimensionMinValue": "Dimensi model harus lebih besar dari 0",
-			"openRouterApiKeyRequired": "Kunci API OpenRouter diperlukan"
+			"openRouterApiKeyRequired": "Kunci API OpenRouter diperlukan",
+			"vertexProjectIdRequired": "Google Cloud project ID is required",
+			"vertexRegionRequired": "Google Cloud region is required",
+			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
+			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
+			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
+			"localIndexPathRequired": "Local index path is required"
 		},
 		"optional": "opsional",
 		"advancedConfigLabel": "Konfigurasi Lanjutan",
@@ -216,7 +223,14 @@
 		"stoppingButton": "Menghentikan...",
 		"workspaceToggleLabel": "Aktifkan pengindeksan untuk ruang kerja ini",
 		"workspaceDisabledMessage": "Pengindeksan dikonfigurasi tetapi tidak diaktifkan untuk ruang kerja ini.",
-		"autoEnableDefaultLabel": "Aktifkan pengindeksan secara otomatis untuk ruang kerja baru"
+		"autoEnableDefaultLabel": "Aktifkan pengindeksan secara otomatis untuk ruang kerja baru",
+		"vectorStoreProviderLabel": "Vector Store",
+		"lancedbVectorStore": "Local LanceDB",
+		"qdrantVectorStore": "Qdrant",
+		"localIndexPathLabel": "Local Index Path",
+		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
+		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
+		"savedSecretPlaceholder": "Saved value hidden"
 	},
 	"autoApprove": {
 		"toggleShortcut": "Anda dapat mengonfigurasi pintasan global untuk pengaturan ini <SettingsLink>di preferensi IDE Anda</SettingsLink>.",

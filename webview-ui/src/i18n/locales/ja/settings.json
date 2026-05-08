@@ -59,7 +59,7 @@
 		"contact": {
 			"label": "お問い合わせが必要ですか？メールを送信"
 		},
-		"community": "ヒントが欲しいですか、または他のAlphaユーザーと交流したいですか？<redditLink>github.com/AlphaInc/Alpha/discussions</redditLink>または<discordLink>github.com/AlphaInc/Alpha/issues</discordLink>に参加してください",
+		"community": "ヒントが欲しいですか、または他のAlphaユーザーと交流したいですか？<redditLink>reddit.com/r/RooCode</redditLink>または<discordLink>discord.gg/roocode</discordLink>に参加してください",
 		"contactAndCommunity": "お問い合わせとコミュニティ",
 		"manageSettings": "設定を管理",
 		"debugMode": {
@@ -114,6 +114,7 @@
 		"openaiProvider": "OpenAI",
 		"ollamaProvider": "Ollama",
 		"geminiProvider": "Gemini",
+		"vertexProvider": "GCP Vertex AI",
 		"geminiApiKeyLabel": "APIキー：",
 		"geminiApiKeyPlaceholder": "Gemini APIキーを入力してください",
 		"vercelAiGatewayProvider": "Vercel AI Gateway",
@@ -202,7 +203,13 @@
 			"ollamaBaseUrlRequired": "OllamaのベースURLが必要です",
 			"baseUrlRequired": "ベースURLが必要です",
 			"modelDimensionMinValue": "モデルの次元は0より大きくなければなりません",
-			"openRouterApiKeyRequired": "OpenRouter APIキーが必要です"
+			"openRouterApiKeyRequired": "OpenRouter APIキーが必要です",
+			"vertexProjectIdRequired": "Google Cloud project ID is required",
+			"vertexRegionRequired": "Google Cloud region is required",
+			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
+			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
+			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
+			"localIndexPathRequired": "Local index path is required"
 		},
 		"optional": "オプション",
 		"advancedConfigLabel": "詳細設定",
@@ -216,7 +223,14 @@
 		"stoppingButton": "停止中...",
 		"workspaceToggleLabel": "このワークスペースのインデックス作成を有効にする",
 		"workspaceDisabledMessage": "インデックス作成は設定済みですが、このワークスペースでは有効になっていません。",
-		"autoEnableDefaultLabel": "新しいワークスペースのインデックス作成を自動的に有効にする"
+		"autoEnableDefaultLabel": "新しいワークスペースのインデックス作成を自動的に有効にする",
+		"vectorStoreProviderLabel": "Vector Store",
+		"lancedbVectorStore": "Local LanceDB",
+		"qdrantVectorStore": "Qdrant",
+		"localIndexPathLabel": "Local Index Path",
+		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
+		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
+		"savedSecretPlaceholder": "Saved value hidden"
 	},
 	"autoApprove": {
 		"toggleShortcut": "<SettingsLink>IDEの環境設定</SettingsLink>で、この設定のグローバルショートカットを設定できます。",

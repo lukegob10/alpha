@@ -59,7 +59,7 @@
 		"contact": {
 			"label": "Moet je met ons praten? Schrijf"
 		},
-		"community": "Wil je tips of gewoon even hangen met andere Alpha-gebruikers? Sluit je aan bij <redditLink>github.com/AlphaInc/Alpha/discussions</redditLink> of <discordLink>github.com/AlphaInc/Alpha/issues</discordLink>",
+		"community": "Wil je tips of gewoon even hangen met andere Alpha-gebruikers? Sluit je aan bij <redditLink>reddit.com/r/RooCode</redditLink> of <discordLink>discord.gg/roocode</discordLink>",
 		"contactAndCommunity": "Contact & Gemeenschap",
 		"manageSettings": "Instellingen Beheren",
 		"debugMode": {
@@ -114,6 +114,7 @@
 		"openaiProvider": "OpenAI",
 		"ollamaProvider": "Ollama",
 		"geminiProvider": "Gemini",
+		"vertexProvider": "GCP Vertex AI",
 		"geminiApiKeyLabel": "API-sleutel:",
 		"geminiApiKeyPlaceholder": "Voer uw Gemini API-sleutel in",
 		"vercelAiGatewayProvider": "Vercel AI Gateway",
@@ -202,7 +203,13 @@
 			"ollamaBaseUrlRequired": "Ollama basis-URL is vereist",
 			"baseUrlRequired": "Basis-URL is vereist",
 			"modelDimensionMinValue": "Modelafmeting moet groter zijn dan 0",
-			"openRouterApiKeyRequired": "OpenRouter API-sleutel is vereist"
+			"openRouterApiKeyRequired": "OpenRouter API-sleutel is vereist",
+			"vertexProjectIdRequired": "Google Cloud project ID is required",
+			"vertexRegionRequired": "Google Cloud region is required",
+			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
+			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
+			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
+			"localIndexPathRequired": "Local index path is required"
 		},
 		"optional": "optioneel",
 		"advancedConfigLabel": "Geavanceerde configuratie",
@@ -216,7 +223,14 @@
 		"stoppingButton": "Stoppen...",
 		"workspaceToggleLabel": "Indexering inschakelen voor deze werkruimte",
 		"workspaceDisabledMessage": "Indexering is geconfigureerd maar niet ingeschakeld voor deze werkruimte.",
-		"autoEnableDefaultLabel": "Indexering automatisch inschakelen voor nieuwe werkruimtes"
+		"autoEnableDefaultLabel": "Indexering automatisch inschakelen voor nieuwe werkruimtes",
+		"vectorStoreProviderLabel": "Vector Store",
+		"lancedbVectorStore": "Local LanceDB",
+		"qdrantVectorStore": "Qdrant",
+		"localIndexPathLabel": "Local Index Path",
+		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
+		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
+		"savedSecretPlaceholder": "Saved value hidden"
 	},
 	"autoApprove": {
 		"toggleShortcut": "U kunt een globale sneltoets voor deze instelling configureren <SettingsLink>in de voorkeuren van uw IDE</SettingsLink>.",

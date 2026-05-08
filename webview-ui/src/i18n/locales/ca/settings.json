@@ -59,7 +59,7 @@
 		"contact": {
 			"label": "Necessites parlar amb nosaltres? Escriu"
 		},
-		"community": "Vols consells o simplement passar l'estona amb altres usuaris de Alpha? Uneix-te a <redditLink>github.com/AlphaInc/Alpha/discussions</redditLink> o <discordLink>github.com/AlphaInc/Alpha/issues</discordLink>",
+		"community": "Vols consells o simplement passar l'estona amb altres usuaris de Alpha? Uneix-te a <redditLink>reddit.com/r/RooCode</redditLink> o <discordLink>discord.gg/roocode</discordLink>",
 		"contactAndCommunity": "Contacte i Comunitat",
 		"manageSettings": "Gestionar Configuració",
 		"debugMode": {
@@ -114,6 +114,7 @@
 		"openaiProvider": "OpenAI",
 		"ollamaProvider": "Ollama",
 		"geminiProvider": "Gemini",
+		"vertexProvider": "GCP Vertex AI",
 		"geminiApiKeyLabel": "Clau API:",
 		"geminiApiKeyPlaceholder": "Introduïu la vostra clau d'API de Gemini",
 		"mistralProvider": "Mistral",
@@ -202,7 +203,13 @@
 			"ollamaBaseUrlRequired": "Cal una URL base d'Ollama",
 			"baseUrlRequired": "Cal una URL base",
 			"modelDimensionMinValue": "La dimensió del model ha de ser superior a 0",
-			"openRouterApiKeyRequired": "Clau API d'OpenRouter és requerida"
+			"openRouterApiKeyRequired": "Clau API d'OpenRouter és requerida",
+			"vertexProjectIdRequired": "Google Cloud project ID is required",
+			"vertexRegionRequired": "Google Cloud region is required",
+			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
+			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
+			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
+			"localIndexPathRequired": "Local index path is required"
 		},
 		"optional": "opcional",
 		"advancedConfigLabel": "Configuració avançada",
@@ -216,7 +223,14 @@
 		"stoppingButton": "Aturant...",
 		"workspaceToggleLabel": "Activar la indexació per a aquest espai de treball",
 		"workspaceDisabledMessage": "La indexació està configurada però no habilitada per a aquest espai de treball.",
-		"autoEnableDefaultLabel": "Habilitar automàticament la indexació per a nous espais de treball"
+		"autoEnableDefaultLabel": "Habilitar automàticament la indexació per a nous espais de treball",
+		"vectorStoreProviderLabel": "Vector Store",
+		"lancedbVectorStore": "Local LanceDB",
+		"qdrantVectorStore": "Qdrant",
+		"localIndexPathLabel": "Local Index Path",
+		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
+		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
+		"savedSecretPlaceholder": "Saved value hidden"
 	},
 	"autoApprove": {
 		"toggleShortcut": "Pots configurar una drecera global per a aquesta configuració <SettingsLink>a les preferències del teu IDE</SettingsLink>.",

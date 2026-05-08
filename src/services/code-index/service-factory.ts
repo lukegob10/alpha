@@ -16,16 +16,18 @@ import { OpenAiEmbedder } from "./embedders/openai"
 import { CodeIndexOllamaEmbedder } from "./embedders/ollama"
 import { OpenAICompatibleEmbedder } from "./embedders/openai-compatible"
 import { GeminiEmbedder } from "./embedders/gemini"
+import { VertexGeminiEmbedder } from "./embedders/vertex"
 import { MistralEmbedder } from "./embedders/mistral"
 import { VercelAiGatewayEmbedder } from "./embedders/vercel-ai-gateway"
 import { BedrockEmbedder } from "./embedders/bedrock"
 import { OpenRouterEmbedder } from "./embedders/openrouter"
 import { QdrantVectorStore } from "./vector-store/qdrant-client"
+import { LanceDbVectorStore } from "./vector-store/lancedb-client"
 import { codeParser, DirectoryScanner, FileWatcher } from "./processors"
 import { ICodeParser, IEmbedder, IFileWatcher, IVectorStore } from "./interfaces"
 import { CodeIndexConfigManager } from "./config-manager"
 import { CacheManager } from "./cache-manager"
-import { BATCH_SEGMENT_THRESHOLD } from "./constants"
+import { BATCH_SEGMENT_THRESHOLD, DEFAULT_LOCAL_INDEX_PATH } from "./constants"
 
 /**
  * Factory class responsible for creating and configuring code indexing service dependencies.
@@ -77,6 +79,15 @@ export class CodeIndexServiceFactory {
 				throw new Error(t("embeddings:serviceFactory.geminiConfigMissing"))
 			}
 			return new GeminiEmbedder(config.geminiOptions.apiKey, config.modelId)
+		} else if (provider === "vertex") {
+			if (
+				config.vertexOptions?.apiProvider !== "vertex" ||
+				!config.vertexOptions.vertexProjectId ||
+				!config.vertexOptions.vertexRegion
+			) {
+				throw new Error(t("embeddings:serviceFactory.vertexConfigMissing"))
+			}
+			return new VertexGeminiEmbedder(config.vertexOptions, config.modelId)
 		} else if (provider === "mistral") {
 			if (!config.mistralOptions?.apiKey) {
 				throw new Error(t("embeddings:serviceFactory.mistralConfigMissing"))
@@ -165,11 +176,20 @@ export class CodeIndexServiceFactory {
 			}
 		}
 
+		const vectorStoreProvider = config.vectorStoreProvider ?? "qdrant"
+
+		if (vectorStoreProvider === "lancedb") {
+			return new LanceDbVectorStore(
+				this.workspacePath,
+				config.localIndexPath || DEFAULT_LOCAL_INDEX_PATH,
+				vectorSize,
+			)
+		}
+
 		if (!config.qdrantUrl) {
 			throw new Error(t("embeddings:serviceFactory.qdrantUrlMissing"))
 		}
 
-		// Assuming constructor is updated: new QdrantVectorStore(workspacePath, url, vectorSize, apiKey?)
 		return new QdrantVectorStore(this.workspacePath, config.qdrantUrl, vectorSize, config.qdrantApiKey)
 	}
 

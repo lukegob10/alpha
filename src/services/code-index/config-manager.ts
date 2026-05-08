@@ -1,9 +1,10 @@
 import { ApiHandlerOptions } from "../../shared/api"
 import { ContextProxy } from "../../core/config/ContextProxy"
 import { EmbedderProvider } from "./interfaces/manager"
-import { CodeIndexConfig, PreviousConfigSnapshot } from "./interfaces/config"
-import { DEFAULT_SEARCH_MIN_SCORE, DEFAULT_MAX_SEARCH_RESULTS } from "./constants"
+import { CodeIndexConfig, PreviousConfigSnapshot, VectorStoreProvider } from "./interfaces/config"
+import { DEFAULT_LOCAL_INDEX_PATH, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_MAX_SEARCH_RESULTS } from "./constants"
 import { getDefaultModelId, getModelDimension, getModelScoreThreshold } from "../../shared/embeddingModels"
+import type { ProviderSettings } from "@alpha-code/types"
 
 /**
  * Manages configuration state and validation for the code indexing feature.
@@ -18,12 +19,15 @@ export class CodeIndexConfigManager {
 	private ollamaOptions?: ApiHandlerOptions
 	private openAiCompatibleOptions?: { baseUrl: string; apiKey: string }
 	private geminiOptions?: { apiKey: string }
+	private vertexOptions?: ProviderSettings
 	private mistralOptions?: { apiKey: string }
 	private vercelAiGatewayOptions?: { apiKey: string }
 	private bedrockOptions?: { region: string; profile?: string }
 	private openRouterOptions?: { apiKey: string; specificProvider?: string }
+	private vectorStoreProvider: VectorStoreProvider = "lancedb"
 	private qdrantUrl?: string = "http://localhost:6333"
 	private qdrantApiKey?: string
+	private localIndexPath?: string = DEFAULT_LOCAL_INDEX_PATH
 	private searchMinScore?: number
 	private searchMaxResults?: number
 
@@ -39,6 +43,65 @@ export class CodeIndexConfigManager {
 		return this.contextProxy
 	}
 
+	private resolveVertexOptions(
+		codebaseIndexConfig: Record<string, any>,
+		activeVertexOptions?: ProviderSettings,
+		vertexJsonCredentials?: string,
+	): ProviderSettings | undefined {
+		const resolved: ProviderSettings = {
+			...(activeVertexOptions ?? {}),
+			apiProvider: "vertex",
+			vertexProjectId: codebaseIndexConfig.codebaseIndexVertexProjectId || activeVertexOptions?.vertexProjectId,
+			vertexRegion: codebaseIndexConfig.codebaseIndexVertexRegion || activeVertexOptions?.vertexRegion,
+			vertexKeyFile: codebaseIndexConfig.codebaseIndexVertexKeyFile || activeVertexOptions?.vertexKeyFile,
+			vertexJsonCredentials: vertexJsonCredentials || activeVertexOptions?.vertexJsonCredentials,
+			vertexGatewayBaseUrl:
+				codebaseIndexConfig.codebaseIndexVertexGatewayBaseUrl || activeVertexOptions?.vertexGatewayBaseUrl,
+			vertexGatewayCaBundlePath:
+				codebaseIndexConfig.codebaseIndexVertexGatewayCaBundlePath ||
+				activeVertexOptions?.vertexGatewayCaBundlePath,
+			vertexGatewayHelixCommand:
+				codebaseIndexConfig.codebaseIndexVertexGatewayHelixCommand ||
+				activeVertexOptions?.vertexGatewayHelixCommand,
+			vertexGatewayTokenRefreshMinutes:
+				codebaseIndexConfig.codebaseIndexVertexGatewayTokenRefreshMinutes ??
+				activeVertexOptions?.vertexGatewayTokenRefreshMinutes,
+			vertexGatewayModelRoutingMap:
+				codebaseIndexConfig.codebaseIndexVertexGatewayModelRoutingMap ||
+				activeVertexOptions?.vertexGatewayModelRoutingMap,
+		}
+
+		const hasCodeIndexVertexSettings = [
+			codebaseIndexConfig.codebaseIndexVertexProjectId,
+			codebaseIndexConfig.codebaseIndexVertexRegion,
+			codebaseIndexConfig.codebaseIndexVertexKeyFile,
+			vertexJsonCredentials,
+			codebaseIndexConfig.codebaseIndexVertexGatewayBaseUrl,
+			codebaseIndexConfig.codebaseIndexVertexGatewayCaBundlePath,
+			codebaseIndexConfig.codebaseIndexVertexGatewayHelixCommand,
+			codebaseIndexConfig.codebaseIndexVertexGatewayTokenRefreshMinutes,
+			codebaseIndexConfig.codebaseIndexVertexGatewayModelRoutingMap,
+		].some((value) => value !== undefined && value !== "")
+
+		return activeVertexOptions || hasCodeIndexVertexSettings ? resolved : undefined
+	}
+
+	private resolveVectorStoreProvider(
+		codebaseIndexConfig: Record<string, any>,
+		qdrantApiKey?: string,
+	): VectorStoreProvider {
+		const configuredProvider = codebaseIndexConfig.codebaseIndexVectorStoreProvider
+		if (configuredProvider === "qdrant" || configuredProvider === "lancedb") {
+			return configuredProvider
+		}
+
+		if (codebaseIndexConfig.codebaseIndexQdrantUrl || qdrantApiKey) {
+			return "qdrant"
+		}
+
+		return "lancedb"
+	}
+
 	/**
 	 * Private method that handles loading configuration from storage and updating instance variables.
 	 * This eliminates code duplication between initializeWithCurrentConfig() and loadConfiguration().
@@ -47,6 +110,8 @@ export class CodeIndexConfigManager {
 		// Load configuration from storage
 		const codebaseIndexConfig = this.contextProxy?.getGlobalState("codebaseIndexConfig") ?? {
 			codebaseIndexEnabled: false,
+			codebaseIndexVectorStoreProvider: "lancedb",
+			codebaseIndexLocalIndexPath: DEFAULT_LOCAL_INDEX_PATH,
 			codebaseIndexQdrantUrl: "http://localhost:6333",
 			codebaseIndexEmbedderProvider: "openai",
 			codebaseIndexEmbedderBaseUrl: "",
@@ -55,7 +120,17 @@ export class CodeIndexConfigManager {
 			codebaseIndexSearchMaxResults: undefined,
 			codebaseIndexBedrockRegion: "us-east-1",
 			codebaseIndexBedrockProfile: "",
+			codebaseIndexVertexProjectId: "",
+			codebaseIndexVertexRegion: "",
+			codebaseIndexVertexKeyFile: "",
+			codebaseIndexVertexGatewayBaseUrl: "",
+			codebaseIndexVertexGatewayCaBundlePath: "",
+			codebaseIndexVertexGatewayHelixCommand: "",
+			codebaseIndexVertexGatewayTokenRefreshMinutes: undefined,
+			codebaseIndexVertexGatewayModelRoutingMap: "",
 		}
+		const providerSettings = this.contextProxy?.getProviderSettings?.()
+		const activeVertexOptions = providerSettings?.apiProvider === "vertex" ? providerSettings : undefined
 
 		const {
 			codebaseIndexEnabled,
@@ -69,10 +144,13 @@ export class CodeIndexConfigManager {
 
 		const openAiKey = this.contextProxy?.getSecret("codeIndexOpenAiKey") ?? ""
 		const qdrantApiKey = this.contextProxy?.getSecret("codeIndexQdrantApiKey") ?? ""
+		const vectorStoreProvider = this.resolveVectorStoreProvider(codebaseIndexConfig, qdrantApiKey)
+		const localIndexPath = codebaseIndexConfig.codebaseIndexLocalIndexPath || DEFAULT_LOCAL_INDEX_PATH
 		// Fix: Read OpenAI Compatible settings from the correct location within codebaseIndexConfig
 		const openAiCompatibleBaseUrl = codebaseIndexConfig.codebaseIndexOpenAiCompatibleBaseUrl ?? ""
 		const openAiCompatibleApiKey = this.contextProxy?.getSecret("codebaseIndexOpenAiCompatibleApiKey") ?? ""
 		const geminiApiKey = this.contextProxy?.getSecret("codebaseIndexGeminiApiKey") ?? ""
+		const vertexJsonCredentials = this.contextProxy?.getSecret("codebaseIndexVertexJsonCredentials") ?? ""
 		const mistralApiKey = this.contextProxy?.getSecret("codebaseIndexMistralApiKey") ?? ""
 		const vercelAiGatewayApiKey = this.contextProxy?.getSecret("codebaseIndexVercelAiGatewayApiKey") ?? ""
 		const bedrockRegion = codebaseIndexConfig.codebaseIndexBedrockRegion ?? "us-east-1"
@@ -82,8 +160,10 @@ export class CodeIndexConfigManager {
 
 		// Update instance variables with configuration
 		this.codebaseIndexEnabled = codebaseIndexEnabled ?? false
+		this.vectorStoreProvider = vectorStoreProvider
 		this.qdrantUrl = codebaseIndexQdrantUrl
 		this.qdrantApiKey = qdrantApiKey ?? ""
+		this.localIndexPath = localIndexPath
 		this.searchMinScore = codebaseIndexSearchMinScore
 		this.searchMaxResults = codebaseIndexSearchMaxResults
 
@@ -104,6 +184,7 @@ export class CodeIndexConfigManager {
 		}
 
 		this.openAiOptions = { openAiNativeApiKey: openAiKey }
+		this.vertexOptions = this.resolveVertexOptions(codebaseIndexConfig, activeVertexOptions, vertexJsonCredentials)
 
 		// Set embedder provider with support for openai-compatible
 		if (codebaseIndexEmbedderProvider === "ollama") {
@@ -112,6 +193,8 @@ export class CodeIndexConfigManager {
 			this.embedderProvider = "openai-compatible"
 		} else if (codebaseIndexEmbedderProvider === "gemini") {
 			this.embedderProvider = "gemini"
+		} else if (codebaseIndexEmbedderProvider === "vertex") {
+			this.embedderProvider = "vertex"
 		} else if (codebaseIndexEmbedderProvider === "mistral") {
 			this.embedderProvider = "mistral"
 		} else if (codebaseIndexEmbedderProvider === "vercel-ai-gateway") {
@@ -158,18 +241,21 @@ export class CodeIndexConfigManager {
 		currentConfig: {
 			isConfigured: boolean
 			embedderProvider: EmbedderProvider
+			vectorStoreProvider?: VectorStoreProvider
 			modelId?: string
 			modelDimension?: number
 			openAiOptions?: ApiHandlerOptions
 			ollamaOptions?: ApiHandlerOptions
 			openAiCompatibleOptions?: { baseUrl: string; apiKey: string }
 			geminiOptions?: { apiKey: string }
+			vertexOptions?: ProviderSettings
 			mistralOptions?: { apiKey: string }
 			vercelAiGatewayOptions?: { apiKey: string }
 			bedrockOptions?: { region: string; profile?: string }
 			openRouterOptions?: { apiKey: string }
 			qdrantUrl?: string
 			qdrantApiKey?: string
+			localIndexPath?: string
 			searchMinScore?: number
 		}
 		requiresRestart: boolean
@@ -179,6 +265,7 @@ export class CodeIndexConfigManager {
 			enabled: this.codebaseIndexEnabled,
 			configured: this.isConfigured(),
 			embedderProvider: this.embedderProvider,
+			vectorStoreProvider: this.vectorStoreProvider,
 			modelId: this.modelId,
 			modelDimension: this.modelDimension,
 			openAiKey: this.openAiOptions?.openAiNativeApiKey ?? "",
@@ -186,6 +273,15 @@ export class CodeIndexConfigManager {
 			openAiCompatibleBaseUrl: this.openAiCompatibleOptions?.baseUrl ?? "",
 			openAiCompatibleApiKey: this.openAiCompatibleOptions?.apiKey ?? "",
 			geminiApiKey: this.geminiOptions?.apiKey ?? "",
+			vertexProjectId: this.vertexOptions?.vertexProjectId ?? "",
+			vertexRegion: this.vertexOptions?.vertexRegion ?? "",
+			vertexKeyFile: this.vertexOptions?.vertexKeyFile ?? "",
+			vertexJsonCredentials: this.vertexOptions?.vertexJsonCredentials ?? "",
+			vertexGatewayBaseUrl: this.vertexOptions?.vertexGatewayBaseUrl ?? "",
+			vertexGatewayCaBundlePath: this.vertexOptions?.vertexGatewayCaBundlePath ?? "",
+			vertexGatewayHelixCommand: this.vertexOptions?.vertexGatewayHelixCommand ?? "",
+			vertexGatewayTokenRefreshMinutes: this.vertexOptions?.vertexGatewayTokenRefreshMinutes,
+			vertexGatewayModelRoutingMap: this.vertexOptions?.vertexGatewayModelRoutingMap ?? "",
 			mistralApiKey: this.mistralOptions?.apiKey ?? "",
 			vercelAiGatewayApiKey: this.vercelAiGatewayOptions?.apiKey ?? "",
 			bedrockRegion: this.bedrockOptions?.region ?? "",
@@ -194,6 +290,7 @@ export class CodeIndexConfigManager {
 			openRouterSpecificProvider: this.openRouterOptions?.specificProvider ?? "",
 			qdrantUrl: this.qdrantUrl ?? "",
 			qdrantApiKey: this.qdrantApiKey ?? "",
+			localIndexPath: this.localIndexPath ?? DEFAULT_LOCAL_INDEX_PATH,
 		}
 
 		// Refresh secrets from VSCode storage to ensure we have the latest values
@@ -209,18 +306,21 @@ export class CodeIndexConfigManager {
 			currentConfig: {
 				isConfigured: this.isConfigured(),
 				embedderProvider: this.embedderProvider,
+				vectorStoreProvider: this.vectorStoreProvider,
 				modelId: this.modelId,
 				modelDimension: this.modelDimension,
 				openAiOptions: this.openAiOptions,
 				ollamaOptions: this.ollamaOptions,
 				openAiCompatibleOptions: this.openAiCompatibleOptions,
 				geminiOptions: this.geminiOptions,
+				vertexOptions: this.vertexOptions,
 				mistralOptions: this.mistralOptions,
 				vercelAiGatewayOptions: this.vercelAiGatewayOptions,
 				bedrockOptions: this.bedrockOptions,
 				openRouterOptions: this.openRouterOptions,
 				qdrantUrl: this.qdrantUrl,
 				qdrantApiKey: this.qdrantApiKey,
+				localIndexPath: this.localIndexPath,
 				searchMinScore: this.currentSearchMinScore,
 			},
 			requiresRestart,
@@ -231,49 +331,59 @@ export class CodeIndexConfigManager {
 	 * Checks if the service is properly configured based on the embedder type.
 	 */
 	public isConfigured(): boolean {
+		const hasVectorStore = this.isVectorStoreConfigured()
+
 		if (this.embedderProvider === "openai") {
 			const openAiKey = this.openAiOptions?.openAiNativeApiKey
-			const qdrantUrl = this.qdrantUrl
-			return !!(openAiKey && qdrantUrl)
+			return !!(openAiKey && hasVectorStore)
 		} else if (this.embedderProvider === "ollama") {
 			// Ollama model ID has a default, so only base URL is strictly required for config
 			const ollamaBaseUrl = this.ollamaOptions?.ollamaBaseUrl
-			const qdrantUrl = this.qdrantUrl
-			return !!(ollamaBaseUrl && qdrantUrl)
+			return !!(ollamaBaseUrl && hasVectorStore)
 		} else if (this.embedderProvider === "openai-compatible") {
 			const baseUrl = this.openAiCompatibleOptions?.baseUrl
 			const apiKey = this.openAiCompatibleOptions?.apiKey
-			const qdrantUrl = this.qdrantUrl
-			const isConfigured = !!(baseUrl && apiKey && qdrantUrl)
+			const isConfigured = !!(baseUrl && apiKey && hasVectorStore)
 			return isConfigured
 		} else if (this.embedderProvider === "gemini") {
 			const apiKey = this.geminiOptions?.apiKey
-			const qdrantUrl = this.qdrantUrl
-			const isConfigured = !!(apiKey && qdrantUrl)
+			const isConfigured = !!(apiKey && hasVectorStore)
+			return isConfigured
+		} else if (this.embedderProvider === "vertex") {
+			const isConfigured = !!(
+				this.vertexOptions?.apiProvider === "vertex" &&
+				this.vertexOptions.vertexProjectId &&
+				this.vertexOptions.vertexRegion &&
+				hasVectorStore
+			)
 			return isConfigured
 		} else if (this.embedderProvider === "mistral") {
 			const apiKey = this.mistralOptions?.apiKey
-			const qdrantUrl = this.qdrantUrl
-			const isConfigured = !!(apiKey && qdrantUrl)
+			const isConfigured = !!(apiKey && hasVectorStore)
 			return isConfigured
 		} else if (this.embedderProvider === "vercel-ai-gateway") {
 			const apiKey = this.vercelAiGatewayOptions?.apiKey
-			const qdrantUrl = this.qdrantUrl
-			const isConfigured = !!(apiKey && qdrantUrl)
+			const isConfigured = !!(apiKey && hasVectorStore)
 			return isConfigured
 		} else if (this.embedderProvider === "bedrock") {
 			// Only region is required for Bedrock (profile is optional)
 			const region = this.bedrockOptions?.region
-			const qdrantUrl = this.qdrantUrl
-			const isConfigured = !!(region && qdrantUrl)
+			const isConfigured = !!(region && hasVectorStore)
 			return isConfigured
 		} else if (this.embedderProvider === "openrouter") {
 			const apiKey = this.openRouterOptions?.apiKey
-			const qdrantUrl = this.qdrantUrl
-			const isConfigured = !!(apiKey && qdrantUrl)
+			const isConfigured = !!(apiKey && hasVectorStore)
 			return isConfigured
 		}
 		return false // Should not happen if embedderProvider is always set correctly
+	}
+
+	private isVectorStoreConfigured(): boolean {
+		if (this.vectorStoreProvider === "qdrant") {
+			return !!this.qdrantUrl
+		}
+
+		return !!this.localIndexPath
 	}
 
 	/**
@@ -299,12 +409,22 @@ export class CodeIndexConfigManager {
 		const prevEnabled = prev?.enabled ?? false
 		const prevConfigured = prev?.configured ?? false
 		const prevProvider = prev?.embedderProvider ?? "openai"
+		const prevVectorStoreProvider = prev?.vectorStoreProvider ?? "qdrant"
 		const prevOpenAiKey = prev?.openAiKey ?? ""
 		const prevOllamaBaseUrl = prev?.ollamaBaseUrl ?? ""
 		const prevOpenAiCompatibleBaseUrl = prev?.openAiCompatibleBaseUrl ?? ""
 		const prevOpenAiCompatibleApiKey = prev?.openAiCompatibleApiKey ?? ""
 		const prevModelDimension = prev?.modelDimension
 		const prevGeminiApiKey = prev?.geminiApiKey ?? ""
+		const prevVertexProjectId = prev?.vertexProjectId ?? ""
+		const prevVertexRegion = prev?.vertexRegion ?? ""
+		const prevVertexKeyFile = prev?.vertexKeyFile ?? ""
+		const prevVertexJsonCredentials = prev?.vertexJsonCredentials ?? ""
+		const prevVertexGatewayBaseUrl = prev?.vertexGatewayBaseUrl ?? ""
+		const prevVertexGatewayCaBundlePath = prev?.vertexGatewayCaBundlePath ?? ""
+		const prevVertexGatewayHelixCommand = prev?.vertexGatewayHelixCommand ?? ""
+		const prevVertexGatewayTokenRefreshMinutes = prev?.vertexGatewayTokenRefreshMinutes
+		const prevVertexGatewayModelRoutingMap = prev?.vertexGatewayModelRoutingMap ?? ""
 		const prevMistralApiKey = prev?.mistralApiKey ?? ""
 		const prevVercelAiGatewayApiKey = prev?.vercelAiGatewayApiKey ?? ""
 		const prevBedrockRegion = prev?.bedrockRegion ?? ""
@@ -313,6 +433,7 @@ export class CodeIndexConfigManager {
 		const prevOpenRouterSpecificProvider = prev?.openRouterSpecificProvider ?? ""
 		const prevQdrantUrl = prev?.qdrantUrl ?? ""
 		const prevQdrantApiKey = prev?.qdrantApiKey ?? ""
+		const prevLocalIndexPath = prev?.localIndexPath ?? DEFAULT_LOCAL_INDEX_PATH
 
 		// 1. Transition from disabled/unconfigured to enabled/configured
 		if ((!prevEnabled || !prevConfigured) && this.codebaseIndexEnabled && nowConfigured) {
@@ -340,6 +461,10 @@ export class CodeIndexConfigManager {
 			return true
 		}
 
+		if (prevVectorStoreProvider !== this.vectorStoreProvider) {
+			return true
+		}
+
 		// Authentication changes (API keys)
 		const currentOpenAiKey = this.openAiOptions?.openAiNativeApiKey ?? ""
 		const currentOllamaBaseUrl = this.ollamaOptions?.ollamaBaseUrl ?? ""
@@ -347,6 +472,15 @@ export class CodeIndexConfigManager {
 		const currentOpenAiCompatibleApiKey = this.openAiCompatibleOptions?.apiKey ?? ""
 		const currentModelDimension = this.modelDimension
 		const currentGeminiApiKey = this.geminiOptions?.apiKey ?? ""
+		const currentVertexProjectId = this.vertexOptions?.vertexProjectId ?? ""
+		const currentVertexRegion = this.vertexOptions?.vertexRegion ?? ""
+		const currentVertexKeyFile = this.vertexOptions?.vertexKeyFile ?? ""
+		const currentVertexJsonCredentials = this.vertexOptions?.vertexJsonCredentials ?? ""
+		const currentVertexGatewayBaseUrl = this.vertexOptions?.vertexGatewayBaseUrl ?? ""
+		const currentVertexGatewayCaBundlePath = this.vertexOptions?.vertexGatewayCaBundlePath ?? ""
+		const currentVertexGatewayHelixCommand = this.vertexOptions?.vertexGatewayHelixCommand ?? ""
+		const currentVertexGatewayTokenRefreshMinutes = this.vertexOptions?.vertexGatewayTokenRefreshMinutes
+		const currentVertexGatewayModelRoutingMap = this.vertexOptions?.vertexGatewayModelRoutingMap ?? ""
 		const currentMistralApiKey = this.mistralOptions?.apiKey ?? ""
 		const currentVercelAiGatewayApiKey = this.vercelAiGatewayOptions?.apiKey ?? ""
 		const currentBedrockRegion = this.bedrockOptions?.region ?? ""
@@ -355,6 +489,7 @@ export class CodeIndexConfigManager {
 		const currentOpenRouterSpecificProvider = this.openRouterOptions?.specificProvider ?? ""
 		const currentQdrantUrl = this.qdrantUrl ?? ""
 		const currentQdrantApiKey = this.qdrantApiKey ?? ""
+		const currentLocalIndexPath = this.localIndexPath ?? DEFAULT_LOCAL_INDEX_PATH
 
 		if (prevOpenAiKey !== currentOpenAiKey) {
 			return true
@@ -372,6 +507,28 @@ export class CodeIndexConfigManager {
 		}
 
 		if (prevGeminiApiKey !== currentGeminiApiKey) {
+			return true
+		}
+
+		if (
+			this.embedderProvider === "vertex" &&
+			(prevVertexProjectId !== currentVertexProjectId ||
+				prevVertexRegion !== currentVertexRegion ||
+				prevVertexKeyFile !== currentVertexKeyFile ||
+				prevVertexJsonCredentials !== currentVertexJsonCredentials ||
+				prevVertexGatewayBaseUrl !== currentVertexGatewayBaseUrl ||
+				prevVertexGatewayCaBundlePath !== currentVertexGatewayCaBundlePath ||
+				prevVertexGatewayHelixCommand !== currentVertexGatewayHelixCommand ||
+				prevVertexGatewayTokenRefreshMinutes !== currentVertexGatewayTokenRefreshMinutes ||
+				prevVertexGatewayModelRoutingMap !== currentVertexGatewayModelRoutingMap)
+		) {
+			return true
+		}
+
+		if (
+			this.embedderProvider === "vertex" &&
+			(prev?.modelId ?? getDefaultModelId("vertex")) !== (this.modelId ?? getDefaultModelId("vertex"))
+		) {
 			return true
 		}
 
@@ -402,6 +559,10 @@ export class CodeIndexConfigManager {
 		}
 
 		if (prevQdrantUrl !== currentQdrantUrl || prevQdrantApiKey !== currentQdrantApiKey) {
+			return true
+		}
+
+		if (prevLocalIndexPath !== currentLocalIndexPath) {
 			return true
 		}
 
@@ -446,18 +607,21 @@ export class CodeIndexConfigManager {
 		return {
 			isConfigured: this.isConfigured(),
 			embedderProvider: this.embedderProvider,
+			vectorStoreProvider: this.vectorStoreProvider,
 			modelId: this.modelId,
 			modelDimension: this.modelDimension,
 			openAiOptions: this.openAiOptions,
 			ollamaOptions: this.ollamaOptions,
 			openAiCompatibleOptions: this.openAiCompatibleOptions,
 			geminiOptions: this.geminiOptions,
+			vertexOptions: this.vertexOptions,
 			mistralOptions: this.mistralOptions,
 			vercelAiGatewayOptions: this.vercelAiGatewayOptions,
 			bedrockOptions: this.bedrockOptions,
 			openRouterOptions: this.openRouterOptions,
 			qdrantUrl: this.qdrantUrl,
 			qdrantApiKey: this.qdrantApiKey,
+			localIndexPath: this.localIndexPath,
 			searchMinScore: this.currentSearchMinScore,
 			searchMaxResults: this.currentSearchMaxResults,
 		}
@@ -491,6 +655,13 @@ export class CodeIndexConfigManager {
 		return {
 			url: this.qdrantUrl,
 			apiKey: this.qdrantApiKey,
+		}
+	}
+
+	public get vectorStoreConfig(): { provider: VectorStoreProvider; localIndexPath?: string } {
+		return {
+			provider: this.vectorStoreProvider,
+			localIndexPath: this.localIndexPath,
 		}
 	}
 

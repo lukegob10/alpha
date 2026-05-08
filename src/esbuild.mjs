@@ -1,6 +1,7 @@
 import * as esbuild from "esbuild"
 import * as fs from "fs"
 import * as path from "path"
+import { createRequire } from "module"
 import { fileURLToPath } from "url"
 import process from "node:process"
 import * as console from "node:console"
@@ -9,6 +10,7 @@ import { copyPaths, copyWasms, copyLocales, setupLocaleWatcher } from "@alpha-co
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+const require = createRequire(import.meta.url)
 
 async function removeDirWithRetries(dirPath, retries = 5, retryDelayMs = 200) {
 	for (let attempt = 0; attempt <= retries; attempt++) {
@@ -26,6 +28,29 @@ async function removeDirWithRetries(dirPath, retries = 5, retryDelayMs = 200) {
 			await new Promise((resolve) => globalThis.setTimeout(resolve, retryDelayMs * (attempt + 1)))
 		}
 	}
+}
+
+function resolveLanceDbNativeBinding() {
+	if (process.platform !== "win32" || process.arch !== "x64") {
+		return undefined
+	}
+
+	const lanceDbEntry = require.resolve("@lancedb/lancedb")
+	const lanceDbRequire = createRequire(lanceDbEntry)
+	return lanceDbRequire.resolve("@lancedb/lancedb-win32-x64-msvc/lancedb.win32-x64-msvc.node")
+}
+
+function copyLanceDbNativeBinding(distDir) {
+	const nativeBinding = resolveLanceDbNativeBinding()
+
+	if (!nativeBinding) {
+		return
+	}
+
+	fs.mkdirSync(distDir, { recursive: true })
+	const target = path.join(distDir, path.basename(nativeBinding))
+	fs.copyFileSync(nativeBinding, target)
+	console.log(`[copyLanceDbNativeBinding] Copied ${nativeBinding} to ${target}`)
 }
 
 async function main() {
@@ -93,6 +118,16 @@ async function main() {
 			},
 		},
 		{
+			name: "copyLanceDbNativeBinding",
+			setup(build) {
+				build.onEnd((result) => {
+					if (result.errors.length === 0) {
+						copyLanceDbNativeBinding(distDir)
+					}
+				})
+			},
+		},
+		{
 			name: "esbuild-problem-matcher",
 			setup(build) {
 				build.onStart(() => console.log("[esbuild-problem-matcher#onStart]"))
@@ -121,7 +156,7 @@ async function main() {
 		// global-agent must be external because it dynamically patches Node.js http/https modules
 		// which breaks when bundled. It needs access to the actual Node.js module instances.
 		// undici must be bundled because our VSIX is packaged with `--no-dependencies`.
-		external: ["vscode", "esbuild", "global-agent"],
+		external: ["vscode", "esbuild", "global-agent", "@lancedb/lancedb-win32-x64-msvc"],
 	}
 
 	/**

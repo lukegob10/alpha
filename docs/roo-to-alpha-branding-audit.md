@@ -7,7 +7,7 @@ This document records the rebrand pass from Roo to Alpha. The pass removes non-c
 - Deleted the non-core marketing website app at `apps/web-roo-code`.
 - Removed website deploy and preview workflows.
 - Removed workspace/config references to the deleted website app.
-- Renamed internal package imports and package manifests from the `@roo-code/*` scope to `@alpha-code/*`.
+- Renamed internal package imports and package manifests from the `@alpha-code/*` scope to `@alpha-code/*`.
 - Renamed the CLI package and command to `alpha`; no `roo` binary alias is kept.
 - Reset root and CLI changelogs for Alpha.
 - Removed old Roo community, blog, social, legal, and support links from root docs, issue templates, PR template, localized repo docs, and `.alpha` agent assets.

@@ -1,6 +1,6 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import { AnthropicVertex } from "@anthropic-ai/vertex-sdk"
-import { GoogleAuth, JWTInput } from "google-auth-library"
+import { GoogleAuth, OAuth2Client, type JWTInput } from "google-auth-library"
 
 import {
 	type ModelInfo,
@@ -25,6 +25,12 @@ import {
 
 import { BaseProvider } from "./base-provider"
 import type { SingleCompletionHandler, ApiHandlerCreateMessageMetadata } from "../index"
+import {
+	configureVertexGatewayCaBundle,
+	createVertexGatewayRefreshHandler,
+	getVertexGatewayHeaders,
+	resolveVertexGatewayModelId,
+} from "./vertex-gateway"
 
 // https://docs.anthropic.com/en/api/claude-on-vertex-ai
 export class AnthropicVertexHandler extends BaseProvider implements SingleCompletionHandler {
@@ -39,8 +45,26 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 		// https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/use-claude#regions
 		const projectId = this.options.vertexProjectId ?? "not-provided"
 		const region = this.options.vertexRegion ?? "us-east5"
+		const vertexGatewayBaseUrl = this.options.vertexGatewayBaseUrl?.trim()
 
-		if (this.options.vertexJsonCredentials) {
+		if (vertexGatewayBaseUrl) {
+			configureVertexGatewayCaBundle(this.options.vertexGatewayCaBundlePath)
+
+			const authClient = new OAuth2Client({
+				eagerRefreshThresholdMillis: 30_000,
+				forceRefreshOnFailure: true,
+			})
+			authClient.refreshHandler = createVertexGatewayRefreshHandler(this.options)
+			const googleAuth = new GoogleAuth({ authClient }) as unknown as GoogleAuth
+
+			this.client = new AnthropicVertex({
+				baseURL: vertexGatewayBaseUrl,
+				projectId,
+				region,
+				defaultHeaders: getVertexGatewayHeaders(),
+				googleAuth,
+			})
+		} else if (this.options.vertexJsonCredentials) {
 			this.client = new AnthropicVertex({
 				projectId,
 				region,
@@ -252,7 +276,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 		// The actual model ID honored by Anthropic's API does not have this
 		// suffix.
 		return {
-			id: id.endsWith(":thinking") ? id.replace(":thinking", "") : id,
+			id: resolveVertexGatewayModelId(id, this.options.vertexGatewayModelRoutingMap),
 			info,
 			betas: betas.length > 0 ? betas : undefined,
 			...params,

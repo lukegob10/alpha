@@ -4,6 +4,7 @@ import { z } from "zod"
 import {
 	VSCodeButton,
 	VSCodeTextField,
+	VSCodeTextArea,
 	VSCodeDropdown,
 	VSCodeOption,
 	VSCodeLink,
@@ -12,7 +13,7 @@ import {
 import * as ProgressPrimitive from "@radix-ui/react-progress"
 import { AlertTriangle } from "lucide-react"
 
-import { type IndexingStatus, type EmbedderProvider, CODEBASE_INDEX_DEFAULTS } from "@alpha-code/types"
+import { type IndexingStatus, type EmbedderProvider, CODEBASE_INDEX_DEFAULTS, VERTEX_REGIONS } from "@alpha-code/types"
 
 import { vscode } from "@src/utils/vscode"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
@@ -49,7 +50,12 @@ import {
 
 // Default URLs for providers
 const DEFAULT_QDRANT_URL = "http://localhost:6333"
+const DEFAULT_LOCAL_INDEX_PATH = ".alpha/code-index/lancedb"
 const DEFAULT_OLLAMA_URL = "http://localhost:11434"
+const DEFAULT_VERTEX_MODEL = "gemini-embedding-001"
+const DEFAULT_VERTEX_GATEWAY_HELIX_COMMAND = "helix auth access-token print -a"
+
+type VectorStoreProvider = "qdrant" | "lancedb"
 
 interface CodeIndexPopoverProps {
 	children: React.ReactNode
@@ -59,6 +65,8 @@ interface CodeIndexPopoverProps {
 interface LocalCodeIndexSettings {
 	// Global state settings
 	codebaseIndexEnabled: boolean
+	codebaseIndexVectorStoreProvider: VectorStoreProvider
+	codebaseIndexLocalIndexPath: string
 	codebaseIndexQdrantUrl: string
 	codebaseIndexEmbedderProvider: EmbedderProvider
 	codebaseIndexEmbedderBaseUrl?: string
@@ -71,27 +79,96 @@ interface LocalCodeIndexSettings {
 	codebaseIndexBedrockRegion?: string
 	codebaseIndexBedrockProfile?: string
 
+	// Vertex-specific settings
+	codebaseIndexVertexProjectId?: string
+	codebaseIndexVertexRegion?: string
+	codebaseIndexVertexKeyFile?: string
+	codebaseIndexVertexGatewayBaseUrl?: string
+	codebaseIndexVertexGatewayCaBundlePath?: string
+	codebaseIndexVertexGatewayHelixCommand?: string
+	codebaseIndexVertexGatewayTokenRefreshMinutes?: number
+	codebaseIndexVertexGatewayModelRoutingMap?: string
+
 	// Secret settings (start empty, will be loaded separately)
 	codeIndexOpenAiKey?: string
 	codeIndexQdrantApiKey?: string
 	codebaseIndexOpenAiCompatibleBaseUrl?: string
 	codebaseIndexOpenAiCompatibleApiKey?: string
 	codebaseIndexGeminiApiKey?: string
+	codebaseIndexVertexJsonCredentials?: string
 	codebaseIndexMistralApiKey?: string
 	codebaseIndexVercelAiGatewayApiKey?: string
 	codebaseIndexOpenRouterApiKey?: string
 	codebaseIndexOpenRouterSpecificProvider?: string
 }
 
+const secretStatusKeyByField = {
+	codeIndexOpenAiKey: "hasOpenAiKey",
+	codeIndexQdrantApiKey: "hasQdrantApiKey",
+	codebaseIndexOpenAiCompatibleApiKey: "hasOpenAiCompatibleApiKey",
+	codebaseIndexGeminiApiKey: "hasGeminiApiKey",
+	codebaseIndexVertexJsonCredentials: "hasVertexJsonCredentials",
+	codebaseIndexMistralApiKey: "hasMistralApiKey",
+	codebaseIndexVercelAiGatewayApiKey: "hasVercelAiGatewayApiKey",
+	codebaseIndexOpenRouterApiKey: "hasOpenRouterApiKey",
+} as const
+
+type SecretField = keyof typeof secretStatusKeyByField
+type SavedSecretStatus = Record<SecretField, boolean>
+
+const emptySavedSecretStatus = (): SavedSecretStatus =>
+	Object.fromEntries(Object.keys(secretStatusKeyByField).map((field) => [field, false])) as SavedSecretStatus
+
+const optionalUrlSchema = (message: string) =>
+	z
+		.string()
+		.refine((value) => !value || z.string().url().safeParse(value).success, message)
+		.optional()
+
+const isValidVertexGatewayModelRoutingMap = (value: string | undefined): boolean => {
+	if (!value?.trim()) {
+		return true
+	}
+
+	try {
+		const parsed = JSON.parse(value)
+
+		return (
+			parsed !== null &&
+			typeof parsed === "object" &&
+			!Array.isArray(parsed) &&
+			Object.entries(parsed).every(
+				([key, route]) => key.trim().length > 0 && typeof route === "string" && route.trim().length > 0,
+			)
+		)
+	} catch {
+		return false
+	}
+}
+
 // Validation schema for codebase index settings
-const createValidationSchema = (provider: EmbedderProvider, t: any) => {
+const createValidationSchema = (provider: EmbedderProvider, vectorStoreProvider: VectorStoreProvider, t: any) => {
+	const vectorStoreSchema =
+		vectorStoreProvider === "qdrant"
+			? {
+					codebaseIndexQdrantUrl: z
+						.string()
+						.min(1, t("settings:codeIndex.validation.qdrantUrlRequired"))
+						.url(t("settings:codeIndex.validation.invalidQdrantUrl")),
+					codebaseIndexLocalIndexPath: z.string().optional(),
+				}
+			: {
+					codebaseIndexQdrantUrl: z.string().optional(),
+					codebaseIndexLocalIndexPath: z
+						.string()
+						.min(1, t("settings:codeIndex.validation.localIndexPathRequired")),
+				}
+
 	const baseSchema = z.object({
 		codebaseIndexEnabled: z.boolean(),
-		codebaseIndexQdrantUrl: z
-			.string()
-			.min(1, t("settings:codeIndex.validation.qdrantUrlRequired"))
-			.url(t("settings:codeIndex.validation.invalidQdrantUrl")),
+		codebaseIndexVectorStoreProvider: z.enum(["qdrant", "lancedb"]),
 		codeIndexQdrantApiKey: z.string().optional(),
+		...vectorStoreSchema,
 	})
 
 	switch (provider) {
@@ -134,6 +211,36 @@ const createValidationSchema = (provider: EmbedderProvider, t: any) => {
 		case "gemini":
 			return baseSchema.extend({
 				codebaseIndexGeminiApiKey: z.string().min(1, t("settings:codeIndex.validation.geminiApiKeyRequired")),
+				codebaseIndexEmbedderModelId: z
+					.string()
+					.min(1, t("settings:codeIndex.validation.modelSelectionRequired")),
+			})
+
+		case "vertex":
+			return baseSchema.extend({
+				codebaseIndexVertexProjectId: z
+					.string()
+					.min(1, t("settings:codeIndex.validation.vertexProjectIdRequired")),
+				codebaseIndexVertexRegion: z.string().min(1, t("settings:codeIndex.validation.vertexRegionRequired")),
+				codebaseIndexVertexJsonCredentials: z.string().optional(),
+				codebaseIndexVertexKeyFile: z.string().optional(),
+				codebaseIndexVertexGatewayBaseUrl: optionalUrlSchema(
+					t("settings:codeIndex.validation.invalidVertexGatewayBaseUrl"),
+				),
+				codebaseIndexVertexGatewayCaBundlePath: z.string().optional(),
+				codebaseIndexVertexGatewayHelixCommand: z.string().optional(),
+				codebaseIndexVertexGatewayTokenRefreshMinutes: z
+					.number()
+					.int()
+					.positive(t("settings:codeIndex.validation.vertexGatewayTokenRefreshMinutesRequired"))
+					.optional(),
+				codebaseIndexVertexGatewayModelRoutingMap: z
+					.string()
+					.optional()
+					.refine(
+						isValidVertexGatewayModelRoutingMap,
+						t("settings:codeIndex.validation.vertexGatewayModelRoutingMap"),
+					),
 				codebaseIndexEmbedderModelId: z
 					.string()
 					.min(1, t("settings:codeIndex.validation.modelSelectionRequired")),
@@ -196,6 +303,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 
 	const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle")
 	const [saveError, setSaveError] = useState<string | null>(null)
+	const [savedSecretStatus, setSavedSecretStatus] = useState<SavedSecretStatus>(emptySavedSecretStatus())
 
 	// Form validation state
 	const [formErrors, setFormErrors] = useState<Record<string, string>>({})
@@ -207,6 +315,8 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 	// Default settings template
 	const getDefaultSettings = (): LocalCodeIndexSettings => ({
 		codebaseIndexEnabled: true,
+		codebaseIndexVectorStoreProvider: "lancedb",
+		codebaseIndexLocalIndexPath: DEFAULT_LOCAL_INDEX_PATH,
 		codebaseIndexQdrantUrl: "",
 		codebaseIndexEmbedderProvider: "openai",
 		codebaseIndexEmbedderBaseUrl: "",
@@ -216,11 +326,20 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 		codebaseIndexSearchMinScore: CODEBASE_INDEX_DEFAULTS.DEFAULT_SEARCH_MIN_SCORE,
 		codebaseIndexBedrockRegion: "",
 		codebaseIndexBedrockProfile: "",
+		codebaseIndexVertexProjectId: "",
+		codebaseIndexVertexRegion: "",
+		codebaseIndexVertexKeyFile: "",
+		codebaseIndexVertexGatewayBaseUrl: "",
+		codebaseIndexVertexGatewayCaBundlePath: "",
+		codebaseIndexVertexGatewayHelixCommand: "",
+		codebaseIndexVertexGatewayTokenRefreshMinutes: undefined,
+		codebaseIndexVertexGatewayModelRoutingMap: "",
 		codeIndexOpenAiKey: "",
 		codeIndexQdrantApiKey: "",
 		codebaseIndexOpenAiCompatibleBaseUrl: "",
 		codebaseIndexOpenAiCompatibleApiKey: "",
 		codebaseIndexGeminiApiKey: "",
+		codebaseIndexVertexJsonCredentials: "",
 		codebaseIndexMistralApiKey: "",
 		codebaseIndexVercelAiGatewayApiKey: "",
 		codebaseIndexOpenRouterApiKey: "",
@@ -233,6 +352,31 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 	// Current settings state - tracks user changes
 	const [currentSettings, setCurrentSettings] = useState<LocalCodeIndexSettings>(getDefaultSettings())
 
+	const hasSavedSecret = useCallback((field: SecretField) => savedSecretStatus[field], [savedSecretStatus])
+
+	const getSecretPlaceholder = useCallback(
+		(field: SecretField, placeholderKey: string) =>
+			hasSavedSecret(field) && !currentSettings[field]
+				? t("settings:codeIndex.savedSecretPlaceholder")
+				: t(placeholderKey),
+		[hasSavedSecret, currentSettings, t],
+	)
+
+	const redactSavedSecrets = useCallback(
+		(settings: LocalCodeIndexSettings): LocalCodeIndexSettings => {
+			const redacted = { ...settings }
+
+			for (const field of Object.keys(secretStatusKeyByField) as SecretField[]) {
+				if (redacted[field] && redacted[field] !== SECRET_PLACEHOLDER) {
+					redacted[field] = ""
+				}
+			}
+
+			return redacted
+		},
+		[SECRET_PLACEHOLDER],
+	)
+
 	// Update indexing status from parent
 	useEffect(() => {
 		setIndexingStatus(externalIndexingStatus)
@@ -241,12 +385,19 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 	// Initialize settings from global state
 	useEffect(() => {
 		if (codebaseIndexConfig) {
+			const embedderProvider = codebaseIndexConfig.codebaseIndexEmbedderProvider || "openai"
+			const activeVertexConfig = apiConfiguration?.apiProvider === "vertex" ? apiConfiguration : undefined
 			const settings = {
 				codebaseIndexEnabled: codebaseIndexConfig.codebaseIndexEnabled ?? true,
+				codebaseIndexVectorStoreProvider: codebaseIndexConfig.codebaseIndexVectorStoreProvider || "lancedb",
+				codebaseIndexLocalIndexPath:
+					codebaseIndexConfig.codebaseIndexLocalIndexPath || DEFAULT_LOCAL_INDEX_PATH,
 				codebaseIndexQdrantUrl: codebaseIndexConfig.codebaseIndexQdrantUrl || "",
-				codebaseIndexEmbedderProvider: codebaseIndexConfig.codebaseIndexEmbedderProvider || "openai",
+				codebaseIndexEmbedderProvider: embedderProvider,
 				codebaseIndexEmbedderBaseUrl: codebaseIndexConfig.codebaseIndexEmbedderBaseUrl || "",
-				codebaseIndexEmbedderModelId: codebaseIndexConfig.codebaseIndexEmbedderModelId || "",
+				codebaseIndexEmbedderModelId:
+					codebaseIndexConfig.codebaseIndexEmbedderModelId ||
+					(embedderProvider === "vertex" ? DEFAULT_VERTEX_MODEL : ""),
 				codebaseIndexEmbedderModelDimension:
 					codebaseIndexConfig.codebaseIndexEmbedderModelDimension || undefined,
 				codebaseIndexSearchMaxResults:
@@ -255,11 +406,37 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 					codebaseIndexConfig.codebaseIndexSearchMinScore ?? CODEBASE_INDEX_DEFAULTS.DEFAULT_SEARCH_MIN_SCORE,
 				codebaseIndexBedrockRegion: codebaseIndexConfig.codebaseIndexBedrockRegion || "",
 				codebaseIndexBedrockProfile: codebaseIndexConfig.codebaseIndexBedrockProfile || "",
+				codebaseIndexVertexProjectId:
+					codebaseIndexConfig.codebaseIndexVertexProjectId || activeVertexConfig?.vertexProjectId || "",
+				codebaseIndexVertexRegion:
+					codebaseIndexConfig.codebaseIndexVertexRegion || activeVertexConfig?.vertexRegion || "",
+				codebaseIndexVertexKeyFile:
+					codebaseIndexConfig.codebaseIndexVertexKeyFile || activeVertexConfig?.vertexKeyFile || "",
+				codebaseIndexVertexGatewayBaseUrl:
+					codebaseIndexConfig.codebaseIndexVertexGatewayBaseUrl ||
+					activeVertexConfig?.vertexGatewayBaseUrl ||
+					"",
+				codebaseIndexVertexGatewayCaBundlePath:
+					codebaseIndexConfig.codebaseIndexVertexGatewayCaBundlePath ||
+					activeVertexConfig?.vertexGatewayCaBundlePath ||
+					"",
+				codebaseIndexVertexGatewayHelixCommand:
+					codebaseIndexConfig.codebaseIndexVertexGatewayHelixCommand ||
+					activeVertexConfig?.vertexGatewayHelixCommand ||
+					"",
+				codebaseIndexVertexGatewayTokenRefreshMinutes:
+					codebaseIndexConfig.codebaseIndexVertexGatewayTokenRefreshMinutes ??
+					activeVertexConfig?.vertexGatewayTokenRefreshMinutes,
+				codebaseIndexVertexGatewayModelRoutingMap:
+					codebaseIndexConfig.codebaseIndexVertexGatewayModelRoutingMap ||
+					activeVertexConfig?.vertexGatewayModelRoutingMap ||
+					"",
 				codeIndexOpenAiKey: "",
 				codeIndexQdrantApiKey: "",
 				codebaseIndexOpenAiCompatibleBaseUrl: codebaseIndexConfig.codebaseIndexOpenAiCompatibleBaseUrl || "",
 				codebaseIndexOpenAiCompatibleApiKey: "",
 				codebaseIndexGeminiApiKey: "",
+				codebaseIndexVertexJsonCredentials: "",
 				codebaseIndexMistralApiKey: "",
 				codebaseIndexVercelAiGatewayApiKey: "",
 				codebaseIndexOpenRouterApiKey: "",
@@ -272,7 +449,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 			// Request secret status to check if secrets exist
 			vscode.postMessage({ type: "requestCodeIndexSecretStatus" })
 		}
-	}, [codebaseIndexConfig])
+	}, [apiConfiguration, codebaseIndexConfig])
 
 	// Request initial indexing status
 	useEffect(() => {
@@ -303,20 +480,24 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 		const handleMessage = (event: MessageEvent<any>) => {
 			if (event.data.type === "indexingStatusUpdate") {
 				if (!event.data.values.workspacePath || event.data.values.workspacePath === cwd) {
-					setIndexingStatus({
+					setIndexingStatus((prev) => ({
+						...prev,
 						systemStatus: event.data.values.systemStatus,
 						message: event.data.values.message || "",
 						processedItems: event.data.values.processedItems,
 						totalItems: event.data.values.totalItems,
 						currentItemUnit: event.data.values.currentItemUnit || "items",
-					})
+						workspacePath: event.data.values.workspacePath ?? prev.workspacePath,
+						workspaceEnabled: event.data.values.workspaceEnabled ?? prev.workspaceEnabled,
+						autoEnableDefault: event.data.values.autoEnableDefault ?? prev.autoEnableDefault,
+					}))
 				}
 			} else if (event.data.type === "codeIndexSettingsSaved") {
 				if (event.data.success) {
 					setSaveStatus("saved")
 					// Update initial settings to match current settings after successful save
 					// This ensures hasUnsavedChanges becomes false
-					const savedSettings = { ...currentSettingsRef.current }
+					const savedSettings = redactSavedSecrets({ ...currentSettingsRef.current })
 					setInitialSettings(savedSettings)
 					// Also update current settings to maintain consistency
 					setCurrentSettings(savedSettings)
@@ -338,7 +519,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 
 		window.addEventListener("message", handleMessage)
 		return () => window.removeEventListener("message", handleMessage)
-	}, [t, cwd])
+	}, [t, cwd, redactSavedSecrets])
 
 	// Listen for secret status
 	useEffect(() => {
@@ -346,48 +527,55 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 			if (event.data.type === "codeIndexSecretStatus") {
 				// Update settings to show placeholders for existing secrets
 				const secretStatus = event.data.values
+				const nextSavedSecretStatus = Object.fromEntries(
+					(Object.entries(secretStatusKeyByField) as [SecretField, keyof typeof secretStatus][]).map(
+						([field, statusKey]) => [field, !!secretStatus[statusKey]],
+					),
+				) as SavedSecretStatus
+
+				setSavedSecretStatus(nextSavedSecretStatus)
 
 				// Update both current and initial settings based on what secrets exist
 				const updateWithSecrets = (prev: LocalCodeIndexSettings): LocalCodeIndexSettings => {
 					const updated = { ...prev }
 
-					// Only update to placeholder if the field is currently empty or already a placeholder
+					// Only update saved-secret fields if the field is currently empty or already a legacy placeholder.
 					// This preserves user input when they're actively editing
 					if (!prev.codeIndexOpenAiKey || prev.codeIndexOpenAiKey === SECRET_PLACEHOLDER) {
-						updated.codeIndexOpenAiKey = secretStatus.hasOpenAiKey ? SECRET_PLACEHOLDER : ""
+						updated.codeIndexOpenAiKey = ""
 					}
 					if (!prev.codeIndexQdrantApiKey || prev.codeIndexQdrantApiKey === SECRET_PLACEHOLDER) {
-						updated.codeIndexQdrantApiKey = secretStatus.hasQdrantApiKey ? SECRET_PLACEHOLDER : ""
+						updated.codeIndexQdrantApiKey = ""
 					}
 					if (
 						!prev.codebaseIndexOpenAiCompatibleApiKey ||
 						prev.codebaseIndexOpenAiCompatibleApiKey === SECRET_PLACEHOLDER
 					) {
-						updated.codebaseIndexOpenAiCompatibleApiKey = secretStatus.hasOpenAiCompatibleApiKey
-							? SECRET_PLACEHOLDER
-							: ""
+						updated.codebaseIndexOpenAiCompatibleApiKey = ""
 					}
 					if (!prev.codebaseIndexGeminiApiKey || prev.codebaseIndexGeminiApiKey === SECRET_PLACEHOLDER) {
-						updated.codebaseIndexGeminiApiKey = secretStatus.hasGeminiApiKey ? SECRET_PLACEHOLDER : ""
+						updated.codebaseIndexGeminiApiKey = ""
+					}
+					if (
+						!prev.codebaseIndexVertexJsonCredentials ||
+						prev.codebaseIndexVertexJsonCredentials === SECRET_PLACEHOLDER
+					) {
+						updated.codebaseIndexVertexJsonCredentials = ""
 					}
 					if (!prev.codebaseIndexMistralApiKey || prev.codebaseIndexMistralApiKey === SECRET_PLACEHOLDER) {
-						updated.codebaseIndexMistralApiKey = secretStatus.hasMistralApiKey ? SECRET_PLACEHOLDER : ""
+						updated.codebaseIndexMistralApiKey = ""
 					}
 					if (
 						!prev.codebaseIndexVercelAiGatewayApiKey ||
 						prev.codebaseIndexVercelAiGatewayApiKey === SECRET_PLACEHOLDER
 					) {
-						updated.codebaseIndexVercelAiGatewayApiKey = secretStatus.hasVercelAiGatewayApiKey
-							? SECRET_PLACEHOLDER
-							: ""
+						updated.codebaseIndexVercelAiGatewayApiKey = ""
 					}
 					if (
 						!prev.codebaseIndexOpenRouterApiKey ||
 						prev.codebaseIndexOpenRouterApiKey === SECRET_PLACEHOLDER
 					) {
-						updated.codebaseIndexOpenRouterApiKey = secretStatus.hasOpenRouterApiKey
-							? SECRET_PLACEHOLDER
-							: ""
+						updated.codebaseIndexOpenRouterApiKey = ""
 					}
 
 					return updated
@@ -449,18 +637,27 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 
 	// Validation function
 	const validateSettings = (): boolean => {
-		const schema = createValidationSchema(currentSettings.codebaseIndexEmbedderProvider, t)
+		const schema = createValidationSchema(
+			currentSettings.codebaseIndexEmbedderProvider,
+			currentSettings.codebaseIndexVectorStoreProvider,
+			t,
+		)
 
 		// Prepare data for validation
 		const dataToValidate: any = {}
 		for (const [key, value] of Object.entries(currentSettings)) {
 			// For secret fields with placeholder values, treat them as valid (they exist in backend)
-			if (value === SECRET_PLACEHOLDER) {
+			const secretField = key as SecretField
+			if (
+				value === SECRET_PLACEHOLDER ||
+				(key in secretStatusKeyByField && !value && savedSecretStatus[secretField])
+			) {
 				// Add a dummy value that will pass validation for these fields
 				if (
 					key === "codeIndexOpenAiKey" ||
 					key === "codebaseIndexOpenAiCompatibleApiKey" ||
 					key === "codebaseIndexGeminiApiKey" ||
+					key === "codebaseIndexVertexJsonCredentials" ||
 					key === "codebaseIndexMistralApiKey" ||
 					key === "codebaseIndexVercelAiGatewayApiKey" ||
 					key === "codebaseIndexOpenRouterApiKey"
@@ -544,7 +741,11 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 			// For secret fields with placeholder, don't send the placeholder
 			// but also don't send an empty string - just skip the field
 			// This tells the backend to keep the existing secret
-			if (value === SECRET_PLACEHOLDER) {
+			const secretField = key as SecretField
+			if (
+				value === SECRET_PLACEHOLDER ||
+				(key in secretStatusKeyByField && value === "" && savedSecretStatus[secretField])
+			) {
 				// Skip sending placeholder values - backend will preserve existing secrets
 				continue
 			}
@@ -694,6 +895,44 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 
 							{isSetupSettingsOpen && (
 								<div className="mt-4 space-y-4">
+									{/* Vector Store Section */}
+									<div className="space-y-2">
+										<label className="text-sm font-medium">
+											{t("settings:codeIndex.vectorStoreProviderLabel")}
+										</label>
+										<Select
+											value={currentSettings.codebaseIndexVectorStoreProvider}
+											onValueChange={(value: VectorStoreProvider) => {
+												updateSetting("codebaseIndexVectorStoreProvider", value)
+
+												if (
+													value === "lancedb" &&
+													!currentSettings.codebaseIndexLocalIndexPath
+												) {
+													updateSetting(
+														"codebaseIndexLocalIndexPath",
+														DEFAULT_LOCAL_INDEX_PATH,
+													)
+												}
+
+												if (value === "qdrant" && !currentSettings.codebaseIndexQdrantUrl) {
+													updateSetting("codebaseIndexQdrantUrl", DEFAULT_QDRANT_URL)
+												}
+											}}>
+											<SelectTrigger className="w-full">
+												<SelectValue />
+											</SelectTrigger>
+											<SelectContent>
+												<SelectItem value="lancedb">
+													{t("settings:codeIndex.lancedbVectorStore")}
+												</SelectItem>
+												<SelectItem value="qdrant">
+													{t("settings:codeIndex.qdrantVectorStore")}
+												</SelectItem>
+											</SelectContent>
+										</Select>
+									</div>
+
 									{/* Embedder Provider Section */}
 									<div className="space-y-2">
 										<label className="text-sm font-medium">
@@ -703,8 +942,10 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 											value={currentSettings.codebaseIndexEmbedderProvider}
 											onValueChange={(value: EmbedderProvider) => {
 												updateSetting("codebaseIndexEmbedderProvider", value)
-												// Clear model selection when switching providers
-												updateSetting("codebaseIndexEmbedderModelId", "")
+												updateSetting(
+													"codebaseIndexEmbedderModelId",
+													value === "vertex" ? DEFAULT_VERTEX_MODEL : "",
+												)
 
 												// Auto-populate Region and Profile when switching to Bedrock
 												// if the main API provider is also configured for Bedrock
@@ -732,6 +973,31 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 														)
 													}
 												}
+
+												if (value === "vertex" && apiConfiguration?.apiProvider === "vertex") {
+													const vertexFallbacks: Partial<LocalCodeIndexSettings> = {
+														codebaseIndexVertexProjectId: apiConfiguration.vertexProjectId,
+														codebaseIndexVertexRegion: apiConfiguration.vertexRegion,
+														codebaseIndexVertexKeyFile: apiConfiguration.vertexKeyFile,
+														codebaseIndexVertexGatewayBaseUrl:
+															apiConfiguration.vertexGatewayBaseUrl,
+														codebaseIndexVertexGatewayCaBundlePath:
+															apiConfiguration.vertexGatewayCaBundlePath,
+														codebaseIndexVertexGatewayHelixCommand:
+															apiConfiguration.vertexGatewayHelixCommand,
+														codebaseIndexVertexGatewayTokenRefreshMinutes:
+															apiConfiguration.vertexGatewayTokenRefreshMinutes,
+														codebaseIndexVertexGatewayModelRoutingMap:
+															apiConfiguration.vertexGatewayModelRoutingMap,
+													}
+
+													Object.entries(vertexFallbacks).forEach(([key, fallbackValue]) => {
+														const settingKey = key as keyof LocalCodeIndexSettings
+														if (!currentSettings[settingKey] && fallbackValue) {
+															updateSetting(settingKey, fallbackValue)
+														}
+													})
+												}
 											}}>
 											<SelectTrigger className="w-full">
 												<SelectValue />
@@ -748,6 +1014,9 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 												</SelectItem>
 												<SelectItem value="gemini">
 													{t("settings:codeIndex.geminiProvider")}
+												</SelectItem>
+												<SelectItem value="vertex">
+													{t("settings:codeIndex.vertexProvider")}
 												</SelectItem>
 												<SelectItem value="mistral">
 													{t("settings:codeIndex.mistralProvider")}
@@ -778,7 +1047,10 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 													onInput={(e: any) =>
 														updateSetting("codeIndexOpenAiKey", e.target.value)
 													}
-													placeholder={t("settings:codeIndex.openAiKeyPlaceholder")}
+													placeholder={getSecretPlaceholder(
+														"codeIndexOpenAiKey",
+														"settings:codeIndex.openAiKeyPlaceholder",
+													)}
 													className={cn("w-full", {
 														"border-red-500": formErrors.codeIndexOpenAiKey,
 													})}
@@ -957,7 +1229,8 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 															e.target.value,
 														)
 													}
-													placeholder={t(
+													placeholder={getSecretPlaceholder(
+														"codebaseIndexOpenAiCompatibleApiKey",
 														"settings:codeIndex.openAiCompatibleApiKeyPlaceholder",
 													)}
 													className={cn("w-full", {
@@ -1035,7 +1308,10 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 													onInput={(e: any) =>
 														updateSetting("codebaseIndexGeminiApiKey", e.target.value)
 													}
-													placeholder={t("settings:codeIndex.geminiApiKeyPlaceholder")}
+													placeholder={getSecretPlaceholder(
+														"codebaseIndexGeminiApiKey",
+														"settings:codeIndex.geminiApiKeyPlaceholder",
+													)}
 													className={cn("w-full", {
 														"border-red-500": formErrors.codebaseIndexGeminiApiKey,
 													})}
@@ -1043,6 +1319,251 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 												{formErrors.codebaseIndexGeminiApiKey && (
 													<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
 														{formErrors.codebaseIndexGeminiApiKey}
+													</p>
+												)}
+											</div>
+
+											<div className="space-y-2">
+												<label className="text-sm font-medium">
+													{t("settings:codeIndex.modelLabel")}
+												</label>
+												<VSCodeDropdown
+													value={currentSettings.codebaseIndexEmbedderModelId}
+													onChange={(e: any) =>
+														updateSetting("codebaseIndexEmbedderModelId", e.target.value)
+													}
+													className={cn("w-full", {
+														"border-red-500": formErrors.codebaseIndexEmbedderModelId,
+													})}>
+													<VSCodeOption value="" className="p-2">
+														{t("settings:codeIndex.selectModel")}
+													</VSCodeOption>
+													{getAvailableModels().map((modelId) => {
+														const model =
+															codebaseIndexModels?.[
+																currentSettings.codebaseIndexEmbedderProvider as keyof typeof codebaseIndexModels
+															]?.[modelId]
+														return (
+															<VSCodeOption key={modelId} value={modelId} className="p-2">
+																{modelId}{" "}
+																{model
+																	? t("settings:codeIndex.modelDimensions", {
+																			dimension: model.dimension,
+																		})
+																	: ""}
+															</VSCodeOption>
+														)
+													})}
+												</VSCodeDropdown>
+												{formErrors.codebaseIndexEmbedderModelId && (
+													<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
+														{formErrors.codebaseIndexEmbedderModelId}
+													</p>
+												)}
+											</div>
+										</>
+									)}
+
+									{currentSettings.codebaseIndexEmbedderProvider === "vertex" && (
+										<>
+											<div className="space-y-2">
+												<label className="text-sm font-medium">
+													{t("settings:providers.googleCloudProjectId")}
+												</label>
+												<VSCodeTextField
+													value={currentSettings.codebaseIndexVertexProjectId || ""}
+													onInput={(e: any) =>
+														updateSetting("codebaseIndexVertexProjectId", e.target.value)
+													}
+													placeholder={t("settings:placeholders.projectId")}
+													className={cn("w-full", {
+														"border-red-500": formErrors.codebaseIndexVertexProjectId,
+													})}
+												/>
+												{formErrors.codebaseIndexVertexProjectId && (
+													<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
+														{formErrors.codebaseIndexVertexProjectId}
+													</p>
+												)}
+											</div>
+
+											<div className="space-y-2">
+												<label className="text-sm font-medium">
+													{t("settings:providers.googleCloudRegion")}
+												</label>
+												<Select
+													value={currentSettings.codebaseIndexVertexRegion || ""}
+													onValueChange={(value) =>
+														updateSetting("codebaseIndexVertexRegion", value)
+													}>
+													<SelectTrigger
+														className={cn("w-full", {
+															"border-red-500": formErrors.codebaseIndexVertexRegion,
+														})}>
+														<SelectValue placeholder={t("settings:common.select")} />
+													</SelectTrigger>
+													<SelectContent>
+														{VERTEX_REGIONS.map(({ value, label }) => (
+															<SelectItem key={value} value={value}>
+																{label}
+															</SelectItem>
+														))}
+													</SelectContent>
+												</Select>
+												{formErrors.codebaseIndexVertexRegion && (
+													<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
+														{formErrors.codebaseIndexVertexRegion}
+													</p>
+												)}
+											</div>
+
+											<div className="space-y-2">
+												<label className="text-sm font-medium">
+													{t("settings:providers.googleCloudCredentials")}
+												</label>
+												<VSCodeTextField
+													type="password"
+													value={currentSettings.codebaseIndexVertexJsonCredentials || ""}
+													onInput={(e: any) =>
+														updateSetting(
+															"codebaseIndexVertexJsonCredentials",
+															e.target.value,
+														)
+													}
+													placeholder={getSecretPlaceholder(
+														"codebaseIndexVertexJsonCredentials",
+														"settings:placeholders.credentialsJson",
+													)}
+													className="w-full"
+												/>
+											</div>
+
+											<div className="space-y-2">
+												<label className="text-sm font-medium">
+													{t("settings:providers.googleCloudKeyFile")}
+												</label>
+												<VSCodeTextField
+													value={currentSettings.codebaseIndexVertexKeyFile || ""}
+													onInput={(e: any) =>
+														updateSetting("codebaseIndexVertexKeyFile", e.target.value)
+													}
+													placeholder={t("settings:placeholders.keyFilePath")}
+													className="w-full"
+												/>
+											</div>
+
+											<div className="space-y-2">
+												<label className="text-sm font-medium">
+													{t("settings:providers.vertexGatewayBaseUrl")}
+												</label>
+												<VSCodeTextField
+													value={currentSettings.codebaseIndexVertexGatewayBaseUrl || ""}
+													onInput={(e: any) =>
+														updateSetting(
+															"codebaseIndexVertexGatewayBaseUrl",
+															e.target.value,
+														)
+													}
+													placeholder={t("settings:placeholders.baseUrl")}
+													className={cn("w-full", {
+														"border-red-500": formErrors.codebaseIndexVertexGatewayBaseUrl,
+													})}
+												/>
+												{formErrors.codebaseIndexVertexGatewayBaseUrl && (
+													<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
+														{formErrors.codebaseIndexVertexGatewayBaseUrl}
+													</p>
+												)}
+											</div>
+
+											<div className="space-y-2">
+												<label className="text-sm font-medium">
+													{t("settings:providers.vertexGatewayCaBundlePath")}
+												</label>
+												<VSCodeTextField
+													value={currentSettings.codebaseIndexVertexGatewayCaBundlePath || ""}
+													onInput={(e: any) =>
+														updateSetting(
+															"codebaseIndexVertexGatewayCaBundlePath",
+															e.target.value,
+														)
+													}
+													placeholder={t("settings:placeholders.keyFilePath")}
+													className="w-full"
+												/>
+											</div>
+
+											<div className="space-y-2">
+												<label className="text-sm font-medium">
+													{t("settings:providers.vertexGatewayHelixCommand")}
+												</label>
+												<VSCodeTextField
+													value={currentSettings.codebaseIndexVertexGatewayHelixCommand || ""}
+													onInput={(e: any) =>
+														updateSetting(
+															"codebaseIndexVertexGatewayHelixCommand",
+															e.target.value,
+														)
+													}
+													placeholder={DEFAULT_VERTEX_GATEWAY_HELIX_COMMAND}
+													className="w-full"
+												/>
+											</div>
+
+											<div className="space-y-2">
+												<label className="text-sm font-medium">
+													{t("settings:providers.vertexGatewayTokenRefreshMinutes")}
+												</label>
+												<VSCodeTextField
+													value={
+														currentSettings.codebaseIndexVertexGatewayTokenRefreshMinutes?.toString() ||
+														""
+													}
+													onInput={(e: any) => {
+														const parsed = Number.parseInt(e.target.value, 10)
+														updateSetting(
+															"codebaseIndexVertexGatewayTokenRefreshMinutes",
+															Number.isFinite(parsed) && parsed > 0 ? parsed : undefined,
+														)
+													}}
+													placeholder="10"
+													className={cn("w-full", {
+														"border-red-500":
+															formErrors.codebaseIndexVertexGatewayTokenRefreshMinutes,
+													})}
+												/>
+												{formErrors.codebaseIndexVertexGatewayTokenRefreshMinutes && (
+													<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
+														{formErrors.codebaseIndexVertexGatewayTokenRefreshMinutes}
+													</p>
+												)}
+											</div>
+
+											<div className="space-y-2">
+												<label className="text-sm font-medium">
+													{t("settings:providers.vertexGatewayModelRoutingMap")}
+												</label>
+												<VSCodeTextArea
+													resize="vertical"
+													value={
+														currentSettings.codebaseIndexVertexGatewayModelRoutingMap || ""
+													}
+													onInput={(e: any) =>
+														updateSetting(
+															"codebaseIndexVertexGatewayModelRoutingMap",
+															e.target.value,
+														)
+													}
+													placeholder='{"gemini-embedding-001":"gateway-embedding-model"}'
+													rows={4}
+													className={cn("w-full", {
+														"border-red-500":
+															formErrors.codebaseIndexVertexGatewayModelRoutingMap,
+													})}
+												/>
+												{formErrors.codebaseIndexVertexGatewayModelRoutingMap && (
+													<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
+														{formErrors.codebaseIndexVertexGatewayModelRoutingMap}
 													</p>
 												)}
 											</div>
@@ -1100,7 +1621,10 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 													onInput={(e: any) =>
 														updateSetting("codebaseIndexMistralApiKey", e.target.value)
 													}
-													placeholder={t("settings:codeIndex.mistralApiKeyPlaceholder")}
+													placeholder={getSecretPlaceholder(
+														"codebaseIndexMistralApiKey",
+														"settings:codeIndex.mistralApiKeyPlaceholder",
+													)}
 													className={cn("w-full", {
 														"border-red-500": formErrors.codebaseIndexMistralApiKey,
 													})}
@@ -1168,7 +1692,8 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 															e.target.value,
 														)
 													}
-													placeholder={t(
+													placeholder={getSecretPlaceholder(
+														"codebaseIndexVercelAiGatewayApiKey",
 														"settings:codeIndex.vercelAiGatewayApiKeyPlaceholder",
 													)}
 													className={cn("w-full", {
@@ -1328,7 +1853,10 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 													onInput={(e: any) =>
 														updateSetting("codebaseIndexOpenRouterApiKey", e.target.value)
 													}
-													placeholder={t("settings:codeIndex.openRouterApiKeyPlaceholder")}
+													placeholder={getSecretPlaceholder(
+														"codebaseIndexOpenRouterApiKey",
+														"settings:codeIndex.openRouterApiKeyPlaceholder",
+													)}
 													className={cn("w-full", {
 														"border-red-500": formErrors.codebaseIndexOpenRouterApiKey,
 													})}
@@ -1430,54 +1958,93 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 										</>
 									)}
 
-									{/* Qdrant Settings */}
-									<div className="space-y-2">
-										<label className="text-sm font-medium">
-											{t("settings:codeIndex.qdrantUrlLabel")}
-										</label>
-										<VSCodeTextField
-											value={currentSettings.codebaseIndexQdrantUrl || ""}
-											onInput={(e: any) =>
-												updateSetting("codebaseIndexQdrantUrl", e.target.value)
-											}
-											onBlur={(e: any) => {
-												// Set default Qdrant URL if field is empty
-												if (!e.target.value.trim()) {
-													currentSettings.codebaseIndexQdrantUrl = DEFAULT_QDRANT_URL
-													updateSetting("codebaseIndexQdrantUrl", DEFAULT_QDRANT_URL)
-												}
-											}}
-											placeholder={t("settings:codeIndex.qdrantUrlPlaceholder")}
-											className={cn("w-full", {
-												"border-red-500": formErrors.codebaseIndexQdrantUrl,
-											})}
-										/>
-										{formErrors.codebaseIndexQdrantUrl && (
-											<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
-												{formErrors.codebaseIndexQdrantUrl}
-											</p>
-										)}
-									</div>
+									{/* Vector Store Settings */}
+									{currentSettings.codebaseIndexVectorStoreProvider === "qdrant" ? (
+										<>
+											<div className="space-y-2">
+												<label className="text-sm font-medium">
+													{t("settings:codeIndex.qdrantUrlLabel")}
+												</label>
+												<VSCodeTextField
+													value={currentSettings.codebaseIndexQdrantUrl || ""}
+													onInput={(e: any) =>
+														updateSetting("codebaseIndexQdrantUrl", e.target.value)
+													}
+													onBlur={(e: any) => {
+														if (!e.target.value.trim()) {
+															updateSetting("codebaseIndexQdrantUrl", DEFAULT_QDRANT_URL)
+														}
+													}}
+													placeholder={t("settings:codeIndex.qdrantUrlPlaceholder")}
+													className={cn("w-full", {
+														"border-red-500": formErrors.codebaseIndexQdrantUrl,
+													})}
+												/>
+												{formErrors.codebaseIndexQdrantUrl && (
+													<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
+														{formErrors.codebaseIndexQdrantUrl}
+													</p>
+												)}
+											</div>
 
-									<div className="space-y-2">
-										<label className="text-sm font-medium">
-											{t("settings:codeIndex.qdrantApiKeyLabel")}
-										</label>
-										<VSCodeTextField
-											type="password"
-											value={currentSettings.codeIndexQdrantApiKey || ""}
-											onInput={(e: any) => updateSetting("codeIndexQdrantApiKey", e.target.value)}
-											placeholder={t("settings:codeIndex.qdrantApiKeyPlaceholder")}
-											className={cn("w-full", {
-												"border-red-500": formErrors.codeIndexQdrantApiKey,
-											})}
-										/>
-										{formErrors.codeIndexQdrantApiKey && (
-											<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
-												{formErrors.codeIndexQdrantApiKey}
+											<div className="space-y-2">
+												<label className="text-sm font-medium">
+													{t("settings:codeIndex.qdrantApiKeyLabel")}
+												</label>
+												<VSCodeTextField
+													type="password"
+													value={currentSettings.codeIndexQdrantApiKey || ""}
+													onInput={(e: any) =>
+														updateSetting("codeIndexQdrantApiKey", e.target.value)
+													}
+													placeholder={getSecretPlaceholder(
+														"codeIndexQdrantApiKey",
+														"settings:codeIndex.qdrantApiKeyPlaceholder",
+													)}
+													className={cn("w-full", {
+														"border-red-500": formErrors.codeIndexQdrantApiKey,
+													})}
+												/>
+												{formErrors.codeIndexQdrantApiKey && (
+													<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
+														{formErrors.codeIndexQdrantApiKey}
+													</p>
+												)}
+											</div>
+										</>
+									) : (
+										<div className="space-y-2">
+											<label className="text-sm font-medium">
+												{t("settings:codeIndex.localIndexPathLabel")}
+											</label>
+											<VSCodeTextField
+												value={currentSettings.codebaseIndexLocalIndexPath || ""}
+												onInput={(e: any) =>
+													updateSetting("codebaseIndexLocalIndexPath", e.target.value)
+												}
+												onBlur={(e: any) => {
+													if (!e.target.value.trim()) {
+														updateSetting(
+															"codebaseIndexLocalIndexPath",
+															DEFAULT_LOCAL_INDEX_PATH,
+														)
+													}
+												}}
+												placeholder={t("settings:codeIndex.localIndexPathPlaceholder")}
+												className={cn("w-full", {
+													"border-red-500": formErrors.codebaseIndexLocalIndexPath,
+												})}
+											/>
+											{formErrors.codebaseIndexLocalIndexPath && (
+												<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
+													{formErrors.codebaseIndexLocalIndexPath}
+												</p>
+											)}
+											<p className="text-xs text-vscode-descriptionForeground mt-1 mb-0">
+												{t("settings:codeIndex.localIndexPathDescription")}
 											</p>
-										)}
-									</div>
+										</div>
+									)}
 								</div>
 							)}
 						</div>
@@ -1597,12 +2164,14 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 									type="checkbox"
 									id="auto-enable-default-toggle"
 									checked={indexingStatus.autoEnableDefault ?? true}
-									onChange={(e) =>
+									onChange={(e) => {
+										const enabled = e.target.checked
+										setIndexingStatus((prev) => ({ ...prev, autoEnableDefault: enabled }))
 										vscode.postMessage({
 											type: "setAutoEnableDefault",
-											bool: e.target.checked,
+											bool: enabled,
 										})
-									}
+									}}
 									className="accent-vscode-focusBorder"
 								/>
 								<label
@@ -1620,12 +2189,14 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 									type="checkbox"
 									id="workspace-indexing-toggle"
 									checked={indexingStatus.workspaceEnabled ?? false}
-									onChange={(e) =>
+									onChange={(e) => {
+										const enabled = e.target.checked
+										setIndexingStatus((prev) => ({ ...prev, workspaceEnabled: enabled }))
 										vscode.postMessage({
 											type: "toggleWorkspaceIndexing",
-											bool: e.target.checked,
+											bool: enabled,
 										})
-									}
+									}}
 									className="accent-vscode-focusBorder"
 								/>
 								<label

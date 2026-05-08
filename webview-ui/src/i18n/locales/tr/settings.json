@@ -59,7 +59,7 @@
 		"contact": {
 			"label": "Bizimle konuşmanız mı gerekiyor? Yazın"
 		},
-		"community": "İpuçları mı istiyorsunuz yoksa sadece diğer Alpha kullanıcılarıyla takılmak mı istiyorsunuz? <redditLink>github.com/AlphaInc/Alpha/discussions</redditLink> veya <discordLink>github.com/AlphaInc/Alpha/issues</discordLink>'a katılın",
+		"community": "İpuçları mı istiyorsunuz yoksa sadece diğer Alpha kullanıcılarıyla takılmak mı istiyorsunuz? <redditLink>reddit.com/r/RooCode</redditLink> veya <discordLink>discord.gg/roocode</discordLink>'a katılın",
 		"contactAndCommunity": "İletişim ve Topluluk",
 		"manageSettings": "Ayarları Yönet",
 		"debugMode": {
@@ -114,6 +114,7 @@
 		"openaiProvider": "OpenAI",
 		"ollamaProvider": "Ollama",
 		"geminiProvider": "Gemini",
+		"vertexProvider": "GCP Vertex AI",
 		"geminiApiKeyLabel": "API Anahtarı:",
 		"geminiApiKeyPlaceholder": "Gemini API anahtarınızı girin",
 		"mistralProvider": "Mistral",
@@ -202,7 +203,13 @@
 			"ollamaBaseUrlRequired": "Ollama temel URL'si gereklidir",
 			"baseUrlRequired": "Temel URL'si gereklidir",
 			"modelDimensionMinValue": "Model boyutu 0'dan büyük olmalıdır",
-			"openRouterApiKeyRequired": "OpenRouter API anahtarı gereklidir"
+			"openRouterApiKeyRequired": "OpenRouter API anahtarı gereklidir",
+			"vertexProjectIdRequired": "Google Cloud project ID is required",
+			"vertexRegionRequired": "Google Cloud region is required",
+			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
+			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
+			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
+			"localIndexPathRequired": "Local index path is required"
 		},
 		"optional": "isteğe bağlı",
 		"advancedConfigLabel": "Gelişmiş Yapılandırma",
@@ -216,7 +223,14 @@
 		"stoppingButton": "Durduruluyor...",
 		"workspaceToggleLabel": "Bu çalışma alanı için indekslemeyi etkinleştir",
 		"workspaceDisabledMessage": "İndeksleme yapılandırıldı ancak bu çalışma alanı için etkinleştirilmedi.",
-		"autoEnableDefaultLabel": "Yeni çalışma alanları için indekslemeyi otomatik etkinleştir"
+		"autoEnableDefaultLabel": "Yeni çalışma alanları için indekslemeyi otomatik etkinleştir",
+		"vectorStoreProviderLabel": "Vector Store",
+		"lancedbVectorStore": "Local LanceDB",
+		"qdrantVectorStore": "Qdrant",
+		"localIndexPathLabel": "Local Index Path",
+		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
+		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
+		"savedSecretPlaceholder": "Saved value hidden"
 	},
 	"autoApprove": {
 		"toggleShortcut": "<SettingsLink>IDE tercihlerinizde</SettingsLink> bu ayar için genel bir kısayol yapılandırabilirsiniz.",

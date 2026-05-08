@@ -2391,6 +2391,9 @@ export class ClineProvider
 			codebaseIndexModels: codebaseIndexModels ?? EMBEDDING_MODEL_PROFILES,
 			codebaseIndexConfig: {
 				codebaseIndexEnabled: codebaseIndexConfig?.codebaseIndexEnabled ?? false,
+				codebaseIndexVectorStoreProvider: codebaseIndexConfig?.codebaseIndexVectorStoreProvider ?? "lancedb",
+				codebaseIndexLocalIndexPath:
+					codebaseIndexConfig?.codebaseIndexLocalIndexPath ?? ".alpha/code-index/lancedb",
 				codebaseIndexQdrantUrl: codebaseIndexConfig?.codebaseIndexQdrantUrl ?? "http://localhost:6333",
 				codebaseIndexEmbedderProvider: codebaseIndexConfig?.codebaseIndexEmbedderProvider ?? "openai",
 				codebaseIndexEmbedderBaseUrl: codebaseIndexConfig?.codebaseIndexEmbedderBaseUrl ?? "",
@@ -2401,6 +2404,16 @@ export class ClineProvider
 				codebaseIndexSearchMinScore: codebaseIndexConfig?.codebaseIndexSearchMinScore,
 				codebaseIndexBedrockRegion: codebaseIndexConfig?.codebaseIndexBedrockRegion,
 				codebaseIndexBedrockProfile: codebaseIndexConfig?.codebaseIndexBedrockProfile,
+				codebaseIndexVertexProjectId: codebaseIndexConfig?.codebaseIndexVertexProjectId,
+				codebaseIndexVertexRegion: codebaseIndexConfig?.codebaseIndexVertexRegion,
+				codebaseIndexVertexKeyFile: codebaseIndexConfig?.codebaseIndexVertexKeyFile,
+				codebaseIndexVertexGatewayBaseUrl: codebaseIndexConfig?.codebaseIndexVertexGatewayBaseUrl,
+				codebaseIndexVertexGatewayCaBundlePath: codebaseIndexConfig?.codebaseIndexVertexGatewayCaBundlePath,
+				codebaseIndexVertexGatewayHelixCommand: codebaseIndexConfig?.codebaseIndexVertexGatewayHelixCommand,
+				codebaseIndexVertexGatewayTokenRefreshMinutes:
+					codebaseIndexConfig?.codebaseIndexVertexGatewayTokenRefreshMinutes,
+				codebaseIndexVertexGatewayModelRoutingMap:
+					codebaseIndexConfig?.codebaseIndexVertexGatewayModelRoutingMap,
 				codebaseIndexOpenRouterSpecificProvider: codebaseIndexConfig?.codebaseIndexOpenRouterSpecificProvider,
 			},
 			// Only set mdmCompliant if there's an actual MDM policy
@@ -2612,6 +2625,10 @@ export class ClineProvider
 			codebaseIndexModels: stateValues.codebaseIndexModels ?? EMBEDDING_MODEL_PROFILES,
 			codebaseIndexConfig: {
 				codebaseIndexEnabled: stateValues.codebaseIndexConfig?.codebaseIndexEnabled ?? false,
+				codebaseIndexVectorStoreProvider:
+					stateValues.codebaseIndexConfig?.codebaseIndexVectorStoreProvider ?? "lancedb",
+				codebaseIndexLocalIndexPath:
+					stateValues.codebaseIndexConfig?.codebaseIndexLocalIndexPath ?? ".alpha/code-index/lancedb",
 				codebaseIndexQdrantUrl:
 					stateValues.codebaseIndexConfig?.codebaseIndexQdrantUrl ?? "http://localhost:6333",
 				codebaseIndexEmbedderProvider:
@@ -2626,6 +2643,18 @@ export class ClineProvider
 				codebaseIndexSearchMinScore: stateValues.codebaseIndexConfig?.codebaseIndexSearchMinScore,
 				codebaseIndexBedrockRegion: stateValues.codebaseIndexConfig?.codebaseIndexBedrockRegion,
 				codebaseIndexBedrockProfile: stateValues.codebaseIndexConfig?.codebaseIndexBedrockProfile,
+				codebaseIndexVertexProjectId: stateValues.codebaseIndexConfig?.codebaseIndexVertexProjectId,
+				codebaseIndexVertexRegion: stateValues.codebaseIndexConfig?.codebaseIndexVertexRegion,
+				codebaseIndexVertexKeyFile: stateValues.codebaseIndexConfig?.codebaseIndexVertexKeyFile,
+				codebaseIndexVertexGatewayBaseUrl: stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayBaseUrl,
+				codebaseIndexVertexGatewayCaBundlePath:
+					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayCaBundlePath,
+				codebaseIndexVertexGatewayHelixCommand:
+					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayHelixCommand,
+				codebaseIndexVertexGatewayTokenRefreshMinutes:
+					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayTokenRefreshMinutes,
+				codebaseIndexVertexGatewayModelRoutingMap:
+					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayModelRoutingMap,
 				codebaseIndexOpenRouterSpecificProvider:
 					stateValues.codebaseIndexConfig?.codebaseIndexOpenRouterSpecificProvider,
 			},

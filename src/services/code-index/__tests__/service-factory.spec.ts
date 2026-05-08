@@ -4,14 +4,18 @@ import { OpenAiEmbedder } from "../embedders/openai"
 import { CodeIndexOllamaEmbedder } from "../embedders/ollama"
 import { OpenAICompatibleEmbedder } from "../embedders/openai-compatible"
 import { GeminiEmbedder } from "../embedders/gemini"
+import { VertexGeminiEmbedder } from "../embedders/vertex"
 import { QdrantVectorStore } from "../vector-store/qdrant-client"
+import { LanceDbVectorStore } from "../vector-store/lancedb-client"
 
 // Mock the embedders and vector store
 vitest.mock("../embedders/openai")
 vitest.mock("../embedders/ollama")
 vitest.mock("../embedders/openai-compatible")
 vitest.mock("../embedders/gemini")
+vitest.mock("../embedders/vertex")
 vitest.mock("../vector-store/qdrant-client")
+vitest.mock("../vector-store/lancedb-client")
 
 // Mock the embedding models module
 vitest.mock("../../../shared/embeddingModels", () => ({
@@ -32,7 +36,9 @@ const MockedOpenAiEmbedder = OpenAiEmbedder as MockedClass<typeof OpenAiEmbedder
 const MockedCodeIndexOllamaEmbedder = CodeIndexOllamaEmbedder as MockedClass<typeof CodeIndexOllamaEmbedder>
 const MockedOpenAICompatibleEmbedder = OpenAICompatibleEmbedder as MockedClass<typeof OpenAICompatibleEmbedder>
 const MockedGeminiEmbedder = GeminiEmbedder as MockedClass<typeof GeminiEmbedder>
+const MockedVertexGeminiEmbedder = VertexGeminiEmbedder as MockedClass<typeof VertexGeminiEmbedder>
 const MockedQdrantVectorStore = QdrantVectorStore as MockedClass<typeof QdrantVectorStore>
+const MockedLanceDbVectorStore = LanceDbVectorStore as MockedClass<typeof LanceDbVectorStore>
 
 // Import the mocked functions
 import { getDefaultModelId, getModelDimension } from "../../../shared/embeddingModels"
@@ -345,6 +351,40 @@ describe("CodeIndexServiceFactory", () => {
 			expect(() => factory.createEmbedder()).toThrow("serviceFactory.geminiConfigMissing")
 		})
 
+		it("should create VertexGeminiEmbedder with active Vertex provider settings", () => {
+			// Arrange
+			const vertexOptions = {
+				apiProvider: "vertex",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+				vertexGatewayBaseUrl: "https://gateway.example.com/vertex",
+			}
+			const testConfig = {
+				embedderProvider: "vertex",
+				modelId: "gemini-embedding-001",
+				vertexOptions,
+			}
+			mockConfigManager.getConfig.mockReturnValue(testConfig as any)
+
+			// Act
+			factory.createEmbedder()
+
+			// Assert
+			expect(MockedVertexGeminiEmbedder).toHaveBeenCalledWith(vertexOptions, "gemini-embedding-001")
+		})
+
+		it("should throw error when Vertex provider settings are missing", () => {
+			// Arrange
+			const testConfig = {
+				embedderProvider: "vertex",
+				vertexOptions: undefined,
+			}
+			mockConfigManager.getConfig.mockReturnValue(testConfig as any)
+
+			// Act & Assert
+			expect(() => factory.createEmbedder()).toThrow("serviceFactory.vertexConfigMissing")
+		})
+
 		it("should throw error for invalid embedder provider", () => {
 			// Arrange
 			const testConfig = {
@@ -623,6 +663,49 @@ describe("CodeIndexServiceFactory", () => {
 				3072,
 				"test-key",
 			)
+		})
+
+		it("should use model-specific dimension for Vertex provider", () => {
+			// Arrange
+			const testConfig = {
+				embedderProvider: "vertex",
+				modelId: "gemini-embedding-001",
+				qdrantUrl: "http://localhost:6333",
+				qdrantApiKey: "test-key",
+			}
+			mockConfigManager.getConfig.mockReturnValue(testConfig as any)
+			mockGetModelDimension.mockReturnValue(3072)
+
+			// Act
+			factory.createVectorStore()
+
+			// Assert
+			expect(mockGetModelDimension).toHaveBeenCalledWith("vertex", "gemini-embedding-001")
+			expect(MockedQdrantVectorStore).toHaveBeenCalledWith(
+				"/test/workspace",
+				"http://localhost:6333",
+				3072,
+				"test-key",
+			)
+		})
+
+		it("should create a LanceDB vector store when local vector store is selected", () => {
+			// Arrange
+			const testConfig = {
+				embedderProvider: "openai",
+				modelId: "text-embedding-3-small",
+				vectorStoreProvider: "lancedb",
+				localIndexPath: ".alpha/code-index/lancedb",
+			}
+			mockConfigManager.getConfig.mockReturnValue(testConfig as any)
+			mockGetModelDimension.mockReturnValue(1536)
+
+			// Act
+			factory.createVectorStore()
+
+			// Assert
+			expect(MockedLanceDbVectorStore).toHaveBeenCalledWith("/test/workspace", ".alpha/code-index/lancedb", 1536)
+			expect(MockedQdrantVectorStore).not.toHaveBeenCalled()
 		})
 
 		it("should use default model when config.modelId is undefined", () => {

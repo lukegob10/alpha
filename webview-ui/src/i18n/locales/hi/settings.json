@@ -59,7 +59,7 @@
 		"contact": {
 			"label": "हमसे बात करने की जरूरत है? लिखें"
 		},
-		"community": "सुझाव चाहिए या बस अन्य Alpha उपयोगकर्ताओं के साथ घूमना चाहते हैं? <redditLink>github.com/AlphaInc/Alpha/discussions</redditLink> या <discordLink>github.com/AlphaInc/Alpha/issues</discordLink> में शामिल हों",
+		"community": "सुझाव चाहिए या बस अन्य Alpha उपयोगकर्ताओं के साथ घूमना चाहते हैं? <redditLink>reddit.com/r/RooCode</redditLink> या <discordLink>discord.gg/roocode</discordLink> में शामिल हों",
 		"contactAndCommunity": "संपर्क और समुदाय",
 		"manageSettings": "सेटिंग्स प्रबंधित करें",
 		"debugMode": {
@@ -114,6 +114,7 @@
 		"openaiProvider": "OpenAI",
 		"ollamaProvider": "Ollama",
 		"geminiProvider": "Gemini",
+		"vertexProvider": "GCP Vertex AI",
 		"geminiApiKeyLabel": "API कुंजी:",
 		"geminiApiKeyPlaceholder": "अपना जेमिनी एपीआई कुंजी दर्ज करें",
 		"vercelAiGatewayProvider": "Vercel AI Gateway",
@@ -202,7 +203,13 @@
 			"ollamaBaseUrlRequired": "Ollama आधार URL आवश्यक है",
 			"baseUrlRequired": "आधार URL आवश्यक है",
 			"modelDimensionMinValue": "मॉडल आयाम 0 से बड़ा होना चाहिए",
-			"openRouterApiKeyRequired": "OpenRouter API कुंजी आवश्यक है"
+			"openRouterApiKeyRequired": "OpenRouter API कुंजी आवश्यक है",
+			"vertexProjectIdRequired": "Google Cloud project ID is required",
+			"vertexRegionRequired": "Google Cloud region is required",
+			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
+			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
+			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
+			"localIndexPathRequired": "Local index path is required"
 		},
 		"optional": "वैकल्पिक",
 		"advancedConfigLabel": "उन्नत कॉन्फ़िगरेशन",
@@ -216,7 +223,14 @@
 		"stoppingButton": "रोक रहा है...",
 		"workspaceToggleLabel": "इस वर्कस्पेस के लिए इंडेक्सिंग सक्षम करें",
 		"workspaceDisabledMessage": "इंडेक्सिंग कॉन्फ़िगर की गई है लेकिन इस वर्कस्पेस के लिए सक्षम नहीं है।",
-		"autoEnableDefaultLabel": "नए वर्कस्पेस के लिए स्वचालित रूप से इंडेक्सिंग सक्षम करें"
+		"autoEnableDefaultLabel": "नए वर्कस्पेस के लिए स्वचालित रूप से इंडेक्सिंग सक्षम करें",
+		"vectorStoreProviderLabel": "Vector Store",
+		"lancedbVectorStore": "Local LanceDB",
+		"qdrantVectorStore": "Qdrant",
+		"localIndexPathLabel": "Local Index Path",
+		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
+		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
+		"savedSecretPlaceholder": "Saved value hidden"
 	},
 	"autoApprove": {
 		"toggleShortcut": "आप <SettingsLink>अपनी आईडीई वरीयताओं में</SettingsLink> इस सेटिंग के लिए एक वैश्विक शॉर्टकट कॉन्फ़िगर कर सकते हैं।",

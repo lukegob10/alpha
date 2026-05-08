@@ -30,7 +30,8 @@
 	},
 	"vectorStore": {
 		"qdrantConnectionFailed": "Qdrant वेक्टर डेटाबेस से कनेक्ट करने में विफल। कृपया सुनिश्चित करें कि Qdrant चल रहा है और {{qdrantUrl}} पर पहुंच योग्य है। त्रुटि: {{errorMessage}}",
-		"vectorDimensionMismatch": "नए मॉडल के लिए वेक्टर इंडेक्स को अपडेट करने में विफल। कृपया इंडेक्स को साफ़ करने और फिर से शुरू करने का प्रयास करें। विवरण: {{errorMessage}}"
+		"vectorDimensionMismatch": "नए मॉडल के लिए वेक्टर इंडेक्स को अपडेट करने में विफल। कृपया इंडेक्स को साफ़ करने और फिर से शुरू करने का प्रयास करें। विवरण: {{errorMessage}}",
+		"lanceConnectionFailed": "Failed to initialize local LanceDB vector index at {{indexPath}}. Error: {{errorMessage}}"
 	},
 	"validation": {
 		"authenticationFailed": "प्रमाणीकरण विफल। कृपया सेटिंग्स में अपनी एपीआई कुंजी जांचें।",
@@ -52,6 +53,7 @@
 		"ollamaConfigMissing": "एम्बेडर बनाने के लिए Ollama कॉन्फ़िगरेशन गायब है",
 		"openAiCompatibleConfigMissing": "एम्बेडर बनाने के लिए OpenAI संगत कॉन्फ़िगरेशन गायब है",
 		"geminiConfigMissing": "एम्बेडर बनाने के लिए Gemini कॉन्फ़िगरेशन गायब है",
+		"vertexConfigMissing": "GCP Vertex AI configuration missing for embedder creation",
 		"mistralConfigMissing": "एम्बेडर निर्माण के लिए मिस्ट्रल कॉन्फ़िगरेशन गायब है",
 		"openRouterConfigMissing": "एम्बेडर निर्माण के लिए OpenRouter कॉन्फ़िगरेशन गायब है",
 		"vercelAiGatewayConfigMissing": "एम्बेडर निर्माण के लिए Vercel AI Gateway कॉन्फ़िगरेशन गायब है",
@@ -60,7 +62,8 @@
 		"vectorDimensionNotDeterminedOpenAiCompatible": "प्रदाता '{{provider}}' के साथ मॉडल '{{modelId}}' के लिए वेक्टर आयाम निर्धारित नहीं कर सका। कृपया सुनिश्चित करें कि OpenAI-संगत प्रदाता सेटिंग्स में 'एम्बेडिंग आयाम' सही तरीके से सेट है।",
 		"vectorDimensionNotDetermined": "प्रदाता '{{provider}}' के साथ मॉडल '{{modelId}}' के लिए वेक्टर आयाम निर्धारित नहीं कर सका। मॉडल प्रोफ़ाइल या कॉन्फ़िगरेशन की जांच करें।",
 		"qdrantUrlMissing": "वेक्टर स्टोर बनाने के लिए Qdrant URL गायब है",
-		"codeIndexingNotConfigured": "सेवाएं नहीं बना सकते: कोड इंडेक्सिंग ठीक से कॉन्फ़िगर नहीं है"
+		"codeIndexingNotConfigured": "सेवाएं नहीं बना सकते: कोड इंडेक्सिंग ठीक से कॉन्फ़िगर नहीं है",
+		"localIndexPathMissing": "Local vector index path missing for vector store creation"
 	},
 	"orchestrator": {
 		"indexingFailedNoBlocks": "इंडेक्सिंग असफल: कोई भी कोड ब्लॉक सफलतापूर्वक इंडेक्स नहीं हुआ। यह आमतौर पर एम्बेडर कॉन्फ़िगरेशन समस्या को दर्शाता है।",

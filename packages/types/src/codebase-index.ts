@@ -20,6 +20,8 @@ export const CODEBASE_INDEX_DEFAULTS = {
 
 export const codebaseIndexConfigSchema = z.object({
 	codebaseIndexEnabled: z.boolean().optional(),
+	codebaseIndexVectorStoreProvider: z.enum(["qdrant", "lancedb"]).optional(),
+	codebaseIndexLocalIndexPath: z.string().optional(),
 	codebaseIndexQdrantUrl: z.string().optional(),
 	codebaseIndexEmbedderProvider: z
 		.enum([
@@ -27,6 +29,7 @@ export const codebaseIndexConfigSchema = z.object({
 			"ollama",
 			"openai-compatible",
 			"gemini",
+			"vertex",
 			"mistral",
 			"vercel-ai-gateway",
 			"bedrock",
@@ -48,6 +51,15 @@ export const codebaseIndexConfigSchema = z.object({
 	// Bedrock specific fields
 	codebaseIndexBedrockRegion: z.string().optional(),
 	codebaseIndexBedrockProfile: z.string().optional(),
+	// Vertex specific fields
+	codebaseIndexVertexProjectId: z.string().optional(),
+	codebaseIndexVertexRegion: z.string().optional(),
+	codebaseIndexVertexKeyFile: z.string().optional(),
+	codebaseIndexVertexGatewayBaseUrl: z.string().optional(),
+	codebaseIndexVertexGatewayCaBundlePath: z.string().optional(),
+	codebaseIndexVertexGatewayHelixCommand: z.string().optional(),
+	codebaseIndexVertexGatewayTokenRefreshMinutes: z.number().int().positive().optional(),
+	codebaseIndexVertexGatewayModelRoutingMap: z.string().optional(),
 	// OpenRouter specific fields
 	codebaseIndexOpenRouterSpecificProvider: z.string().optional(),
 })
@@ -63,6 +75,7 @@ export const codebaseIndexModelsSchema = z.object({
 	ollama: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
 	"openai-compatible": z.record(z.string(), z.object({ dimension: z.number() })).optional(),
 	gemini: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
+	vertex: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
 	mistral: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
 	"vercel-ai-gateway": z.record(z.string(), z.object({ dimension: z.number() })).optional(),
 	openrouter: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
@@ -82,6 +95,7 @@ export const codebaseIndexProviderSchema = z.object({
 	codebaseIndexOpenAiCompatibleApiKey: z.string().optional(),
 	codebaseIndexOpenAiCompatibleModelDimension: z.number().optional(),
 	codebaseIndexGeminiApiKey: z.string().optional(),
+	codebaseIndexVertexJsonCredentials: z.string().optional(),
 	codebaseIndexMistralApiKey: z.string().optional(),
 	codebaseIndexVercelAiGatewayApiKey: z.string().optional(),
 	codebaseIndexOpenRouterApiKey: z.string().optional(),

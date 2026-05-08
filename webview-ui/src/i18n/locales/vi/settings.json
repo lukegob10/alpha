@@ -59,7 +59,7 @@
 		"contact": {
 			"label": "Cần nói chuyện với chúng tôi? Viết"
 		},
-		"community": "Muốn nhận mẹo hoặc chỉ muốn giao lưu với những người dùng Alpha khác? Tham gia <redditLink>github.com/AlphaInc/Alpha/discussions</redditLink> hoặc <discordLink>github.com/AlphaInc/Alpha/issues</discordLink>",
+		"community": "Muốn nhận mẹo hoặc chỉ muốn giao lưu với những người dùng Alpha khác? Tham gia <redditLink>reddit.com/r/RooCode</redditLink> hoặc <discordLink>discord.gg/roocode</discordLink>",
 		"contactAndCommunity": "Liên Hệ & Cộng Đồng",
 		"manageSettings": "Quản Lý Cài Đặt",
 		"debugMode": {
@@ -114,6 +114,7 @@
 		"openaiProvider": "OpenAI",
 		"ollamaProvider": "Ollama",
 		"geminiProvider": "Gemini",
+		"vertexProvider": "GCP Vertex AI",
 		"geminiApiKeyLabel": "Khóa API:",
 		"geminiApiKeyPlaceholder": "Nhập khóa API Gemini của bạn",
 		"mistralProvider": "Mistral",
@@ -202,7 +203,13 @@
 			"ollamaBaseUrlRequired": "Yêu cầu URL cơ sở Ollama",
 			"baseUrlRequired": "Yêu cầu URL cơ sở",
 			"modelDimensionMinValue": "Kích thước mô hình phải lớn hơn 0",
-			"openRouterApiKeyRequired": "Yêu cầu khóa API OpenRouter"
+			"openRouterApiKeyRequired": "Yêu cầu khóa API OpenRouter",
+			"vertexProjectIdRequired": "Google Cloud project ID is required",
+			"vertexRegionRequired": "Google Cloud region is required",
+			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
+			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
+			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
+			"localIndexPathRequired": "Local index path is required"
 		},
 		"optional": "tùy chọn",
 		"advancedConfigLabel": "Cấu hình nâng cao",
@@ -216,7 +223,14 @@
 		"stoppingButton": "Đang dừng...",
 		"workspaceToggleLabel": "Bật lập chỉ mục cho không gian làm việc này",
 		"workspaceDisabledMessage": "Lập chỉ mục đã được cấu hình nhưng chưa được bật cho không gian làm việc này.",
-		"autoEnableDefaultLabel": "Tự động bật lập chỉ mục cho không gian làm việc mới"
+		"autoEnableDefaultLabel": "Tự động bật lập chỉ mục cho không gian làm việc mới",
+		"vectorStoreProviderLabel": "Vector Store",
+		"lancedbVectorStore": "Local LanceDB",
+		"qdrantVectorStore": "Qdrant",
+		"localIndexPathLabel": "Local Index Path",
+		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
+		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
+		"savedSecretPlaceholder": "Saved value hidden"
 	},
 	"autoApprove": {
 		"toggleShortcut": "Bạn có thể định cấu hình một phím tắt chung cho cài đặt này <SettingsLink>trong tùy chọn IDE của bạn</SettingsLink>.",

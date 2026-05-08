@@ -29,6 +29,7 @@ describe("CodeIndexConfigManager", () => {
 		mockContextProxy = {
 			getGlobalState: vi.fn(),
 			getSecret: vi.fn().mockReturnValue(undefined),
+			getProviderSettings: vi.fn().mockReturnValue({}),
 			refreshSecrets: vi.fn().mockResolvedValue(undefined),
 			updateGlobalState: vi.fn(),
 		}
@@ -98,9 +99,11 @@ describe("CodeIndexConfigManager", () => {
 
 			const result = await configManager.loadConfiguration()
 
-			expect(result.currentConfig).toEqual({
+			expect(result.currentConfig).toMatchObject({
 				isConfigured: false,
 				embedderProvider: "openai",
+				vectorStoreProvider: "lancedb",
+				localIndexPath: ".alpha/code-index/lancedb",
 				modelId: undefined,
 				openAiOptions: { openAiNativeApiKey: "" },
 				ollamaOptions: { ollamaBaseUrl: "" },
@@ -451,6 +454,58 @@ describe("CodeIndexConfigManager", () => {
 				mockContextProxy.getGlobalState.mockReturnValue({
 					codebaseIndexEnabled: true,
 					codebaseIndexQdrantUrl: "http://new-qdrant.local",
+					codebaseIndexEmbedderProvider: "openai",
+					codebaseIndexEmbedderModelId: "text-embedding-3-small",
+				})
+
+				const result = await configManager.loadConfiguration()
+				expect(result.requiresRestart).toBe(true)
+			})
+
+			it("should detect restart requirement for vector store provider changes", async () => {
+				mockContextProxy.getGlobalState.mockReturnValue({
+					codebaseIndexEnabled: true,
+					codebaseIndexVectorStoreProvider: "qdrant",
+					codebaseIndexQdrantUrl: "http://qdrant.local",
+					codebaseIndexEmbedderProvider: "openai",
+					codebaseIndexEmbedderModelId: "text-embedding-3-small",
+				})
+				setupSecretMocks({
+					codeIndexOpenAiKey: "test-key",
+				})
+
+				await configManager.loadConfiguration()
+
+				mockContextProxy.getGlobalState.mockReturnValue({
+					codebaseIndexEnabled: true,
+					codebaseIndexVectorStoreProvider: "lancedb",
+					codebaseIndexLocalIndexPath: ".alpha/code-index/lancedb",
+					codebaseIndexEmbedderProvider: "openai",
+					codebaseIndexEmbedderModelId: "text-embedding-3-small",
+				})
+
+				const result = await configManager.loadConfiguration()
+				expect(result.requiresRestart).toBe(true)
+			})
+
+			it("should detect restart requirement for local LanceDB path changes", async () => {
+				mockContextProxy.getGlobalState.mockReturnValue({
+					codebaseIndexEnabled: true,
+					codebaseIndexVectorStoreProvider: "lancedb",
+					codebaseIndexLocalIndexPath: ".alpha/code-index/lancedb",
+					codebaseIndexEmbedderProvider: "openai",
+					codebaseIndexEmbedderModelId: "text-embedding-3-small",
+				})
+				setupSecretMocks({
+					codeIndexOpenAiKey: "test-key",
+				})
+
+				await configManager.loadConfiguration()
+
+				mockContextProxy.getGlobalState.mockReturnValue({
+					codebaseIndexEnabled: true,
+					codebaseIndexVectorStoreProvider: "lancedb",
+					codebaseIndexLocalIndexPath: ".alpha/code-index/lancedb-alt",
 					codebaseIndexEmbedderProvider: "openai",
 					codebaseIndexEmbedderModelId: "text-embedding-3-small",
 				})
@@ -1258,6 +1313,209 @@ describe("CodeIndexConfigManager", () => {
 			expect(configManager.isFeatureConfigured).toBe(false)
 		})
 
+		it("should validate Vertex configuration from the active API profile without a Gemini API key", async () => {
+			const vertexOptions = {
+				apiProvider: "vertex",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+				vertexGatewayBaseUrl: "https://gateway.example.com/vertex",
+			}
+			mockContextProxy.getGlobalState.mockImplementation((key: string) => {
+				if (key === "codebaseIndexConfig") {
+					return {
+						codebaseIndexEnabled: true,
+						codebaseIndexQdrantUrl: "http://qdrant.local",
+						codebaseIndexEmbedderProvider: "vertex",
+						codebaseIndexEmbedderModelId: "gemini-embedding-001",
+					}
+				}
+				return undefined
+			})
+			mockContextProxy.getProviderSettings.mockReturnValue(vertexOptions)
+
+			const result = await configManager.loadConfiguration()
+
+			expect(configManager.isFeatureConfigured).toBe(true)
+			expect(result.currentConfig).toMatchObject({
+				isConfigured: true,
+				embedderProvider: "vertex",
+				modelId: "gemini-embedding-001",
+				vertexOptions,
+				geminiOptions: undefined,
+				qdrantUrl: "http://qdrant.local",
+			})
+		})
+
+		it("should validate Vertex configuration from code index settings without an active Vertex API profile", async () => {
+			mockContextProxy.getGlobalState.mockImplementation((key: string) => {
+				if (key === "codebaseIndexConfig") {
+					return {
+						codebaseIndexEnabled: true,
+						codebaseIndexQdrantUrl: "http://qdrant.local",
+						codebaseIndexEmbedderProvider: "vertex",
+						codebaseIndexEmbedderModelId: "text-embedding-005",
+						codebaseIndexVertexProjectId: "index-project",
+						codebaseIndexVertexRegion: "global",
+						codebaseIndexVertexGatewayBaseUrl: "https://gateway.example.com/vertex",
+						codebaseIndexVertexGatewayHelixCommand: "helix auth access-token print -a",
+						codebaseIndexVertexGatewayTokenRefreshMinutes: 15,
+						codebaseIndexVertexGatewayModelRoutingMap: '{"text-embedding-005":"gateway-text-005"}',
+					}
+				}
+				return undefined
+			})
+			mockContextProxy.getProviderSettings.mockReturnValue({ apiProvider: "gemini" })
+			setupSecretMocks({
+				codebaseIndexVertexJsonCredentials: '{"client_email":"svc@example.com"}',
+			})
+
+			const result = await configManager.loadConfiguration()
+
+			expect(configManager.isFeatureConfigured).toBe(true)
+			expect(result.currentConfig.vertexOptions).toMatchObject({
+				apiProvider: "vertex",
+				vertexProjectId: "index-project",
+				vertexRegion: "global",
+				vertexJsonCredentials: '{"client_email":"svc@example.com"}',
+				vertexGatewayBaseUrl: "https://gateway.example.com/vertex",
+				vertexGatewayHelixCommand: "helix auth access-token print -a",
+				vertexGatewayTokenRefreshMinutes: 15,
+				vertexGatewayModelRoutingMap: '{"text-embedding-005":"gateway-text-005"}',
+			})
+		})
+
+		it("should prefer code index Vertex settings over active API profile values", async () => {
+			mockContextProxy.getGlobalState.mockImplementation((key: string) => {
+				if (key === "codebaseIndexConfig") {
+					return {
+						codebaseIndexEnabled: true,
+						codebaseIndexQdrantUrl: "http://qdrant.local",
+						codebaseIndexEmbedderProvider: "vertex",
+						codebaseIndexEmbedderModelId: "gemini-embedding-001",
+						codebaseIndexVertexProjectId: "index-project",
+						codebaseIndexVertexRegion: "eu",
+						codebaseIndexVertexGatewayBaseUrl: "https://index-gateway.example.com/vertex",
+					}
+				}
+				return undefined
+			})
+			mockContextProxy.getProviderSettings.mockReturnValue({
+				apiProvider: "vertex",
+				vertexProjectId: "active-project",
+				vertexRegion: "global",
+				vertexGatewayBaseUrl: "https://active-gateway.example.com/vertex",
+				vertexGatewayCaBundlePath: "C:/certs/active.pem",
+			})
+
+			const result = await configManager.loadConfiguration()
+
+			expect(result.currentConfig.vertexOptions).toMatchObject({
+				apiProvider: "vertex",
+				vertexProjectId: "index-project",
+				vertexRegion: "eu",
+				vertexGatewayBaseUrl: "https://index-gateway.example.com/vertex",
+				vertexGatewayCaBundlePath: "C:/certs/active.pem",
+			})
+		})
+
+		it("should return false when Vertex is selected but the active API profile is not Vertex", async () => {
+			mockContextProxy.getGlobalState.mockImplementation((key: string) => {
+				if (key === "codebaseIndexConfig") {
+					return {
+						codebaseIndexEnabled: true,
+						codebaseIndexQdrantUrl: "http://qdrant.local",
+						codebaseIndexEmbedderProvider: "vertex",
+						codebaseIndexEmbedderModelId: "gemini-embedding-001",
+					}
+				}
+				return undefined
+			})
+			mockContextProxy.getProviderSettings.mockReturnValue({
+				apiProvider: "gemini",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+			})
+
+			await configManager.loadConfiguration()
+
+			expect(configManager.isFeatureConfigured).toBe(false)
+		})
+
+		it("should require restart when active Vertex gateway settings change", async () => {
+			const oldVertexOptions = {
+				apiProvider: "vertex",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+				vertexGatewayBaseUrl: "https://old-gateway.example.com/vertex",
+				vertexGatewayCaBundlePath: "C:/certs/old.pem",
+				vertexGatewayHelixCommand: "helix auth access-token print -a",
+				vertexGatewayTokenRefreshMinutes: 5,
+				vertexGatewayModelRoutingMap: '{"gemini-embedding-001":"old-model"}',
+			}
+			const newVertexOptions = {
+				...oldVertexOptions,
+				vertexGatewayBaseUrl: "https://new-gateway.example.com/vertex",
+				vertexGatewayModelRoutingMap: '{"gemini-embedding-001":"new-model"}',
+			}
+			mockContextProxy.getGlobalState.mockImplementation((key: string) => {
+				if (key === "codebaseIndexConfig") {
+					return {
+						codebaseIndexEnabled: true,
+						codebaseIndexQdrantUrl: "http://qdrant.local",
+						codebaseIndexEmbedderProvider: "vertex",
+						codebaseIndexEmbedderModelId: "gemini-embedding-001",
+					}
+				}
+				return undefined
+			})
+			mockContextProxy.getProviderSettings.mockReturnValue(oldVertexOptions)
+
+			await configManager.loadConfiguration()
+
+			mockContextProxy.getProviderSettings.mockReturnValue(newVertexOptions)
+			const result = await configManager.loadConfiguration()
+
+			expect(result.requiresRestart).toBe(true)
+		})
+
+		it("should require restart when Vertex embedding model changes even if dimensions match", async () => {
+			const vertexOptions = {
+				apiProvider: "vertex",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+			}
+			mockedGetModelDimension.mockReturnValue(3072)
+			mockContextProxy.getGlobalState.mockImplementation((key: string) => {
+				if (key === "codebaseIndexConfig") {
+					return {
+						codebaseIndexEnabled: true,
+						codebaseIndexQdrantUrl: "http://qdrant.local",
+						codebaseIndexEmbedderProvider: "vertex",
+						codebaseIndexEmbedderModelId: "old-embedding-model",
+					}
+				}
+				return undefined
+			})
+			mockContextProxy.getProviderSettings.mockReturnValue(vertexOptions)
+
+			await configManager.loadConfiguration()
+
+			mockContextProxy.getGlobalState.mockImplementation((key: string) => {
+				if (key === "codebaseIndexConfig") {
+					return {
+						codebaseIndexEnabled: true,
+						codebaseIndexQdrantUrl: "http://qdrant.local",
+						codebaseIndexEmbedderProvider: "vertex",
+						codebaseIndexEmbedderModelId: "gemini-embedding-001",
+					}
+				}
+				return undefined
+			})
+			const result = await configManager.loadConfiguration()
+
+			expect(result.requiresRestart).toBe(true)
+		})
+
 		it("should return false when required values are missing", async () => {
 			mockContextProxy.getGlobalState.mockReturnValue({
 				codebaseIndexEnabled: true,
@@ -1673,6 +1931,7 @@ describe("CodeIndexConfigManager", () => {
 		it("should return false when Qdrant URL is missing", () => {
 			mockContextProxy.getGlobalState.mockReturnValue({
 				codebaseIndexEnabled: true,
+				codebaseIndexVectorStoreProvider: "qdrant",
 				codebaseIndexEmbedderProvider: "openai",
 			})
 			mockContextProxy.getSecret.mockImplementation((key: string) => {
@@ -1682,6 +1941,22 @@ describe("CodeIndexConfigManager", () => {
 
 			configManager = new CodeIndexConfigManager(mockContextProxy)
 			expect(configManager.isConfigured()).toBe(false)
+		})
+
+		it("should not require Qdrant URL when LanceDB vector store is selected", () => {
+			mockContextProxy.getGlobalState.mockReturnValue({
+				codebaseIndexEnabled: true,
+				codebaseIndexVectorStoreProvider: "lancedb",
+				codebaseIndexLocalIndexPath: ".alpha/code-index/lancedb",
+				codebaseIndexEmbedderProvider: "openai",
+			})
+			mockContextProxy.getSecret.mockImplementation((key: string) => {
+				if (key === "codeIndexOpenAiKey") return "test-key"
+				return undefined
+			})
+
+			configManager = new CodeIndexConfigManager(mockContextProxy)
+			expect(configManager.isConfigured()).toBe(true)
 		})
 
 		describe("currentModelDimension", () => {

@@ -59,7 +59,7 @@
 		"contact": {
 			"label": "Precisa falar conosco? Escreva"
 		},
-		"community": "Quer dicas ou apenas conversar com outros usuários do Alpha? Junte-se a <redditLink>github.com/AlphaInc/Alpha/discussions</redditLink> ou <discordLink>github.com/AlphaInc/Alpha/issues</discordLink>",
+		"community": "Quer dicas ou apenas conversar com outros usuários do Alpha? Junte-se a <redditLink>reddit.com/r/RooCode</redditLink> ou <discordLink>discord.gg/roocode</discordLink>",
 		"contactAndCommunity": "Contato e Comunidade",
 		"manageSettings": "Gerenciar Configurações",
 		"debugMode": {
@@ -114,6 +114,7 @@
 		"openaiProvider": "OpenAI",
 		"ollamaProvider": "Ollama",
 		"geminiProvider": "Gemini",
+		"vertexProvider": "GCP Vertex AI",
 		"geminiApiKeyLabel": "Chave de API:",
 		"geminiApiKeyPlaceholder": "Digite sua chave de API do Gemini",
 		"vercelAiGatewayProvider": "Vercel AI Gateway",
@@ -202,7 +203,13 @@
 			"ollamaBaseUrlRequired": "A URL base do Ollama é obrigatória",
 			"baseUrlRequired": "A URL base é obrigatória",
 			"modelDimensionMinValue": "A dimensão do modelo deve ser maior que 0",
-			"openRouterApiKeyRequired": "Chave API do OpenRouter é obrigatória"
+			"openRouterApiKeyRequired": "Chave API do OpenRouter é obrigatória",
+			"vertexProjectIdRequired": "Google Cloud project ID is required",
+			"vertexRegionRequired": "Google Cloud region is required",
+			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
+			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
+			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
+			"localIndexPathRequired": "Local index path is required"
 		},
 		"optional": "opcional",
 		"advancedConfigLabel": "Configuração Avançada",
@@ -216,7 +223,14 @@
 		"stoppingButton": "Parando...",
 		"workspaceToggleLabel": "Ativar indexação para este workspace",
 		"workspaceDisabledMessage": "A indexação está configurada, mas não ativada para este workspace.",
-		"autoEnableDefaultLabel": "Ativar indexação automaticamente para novos workspaces"
+		"autoEnableDefaultLabel": "Ativar indexação automaticamente para novos workspaces",
+		"vectorStoreProviderLabel": "Vector Store",
+		"lancedbVectorStore": "Local LanceDB",
+		"qdrantVectorStore": "Qdrant",
+		"localIndexPathLabel": "Local Index Path",
+		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
+		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
+		"savedSecretPlaceholder": "Saved value hidden"
 	},
 	"autoApprove": {
 		"toggleShortcut": "Você pode configurar um atalho global para esta configuração <SettingsLink>nas preferências do seu IDE</SettingsLink>.",
