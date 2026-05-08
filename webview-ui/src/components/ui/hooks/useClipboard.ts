@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { copyToClipboard } from "@src/utils/clipboard"
 
 export interface UseClipboardProps {
 	timeout?: number
@@ -7,15 +8,17 @@ export interface UseClipboardProps {
 export function useClipboard({ timeout = 2000 }: UseClipboardProps = {}) {
 	const [isCopied, setIsCopied] = useState(false)
 
-	const copy = (value: string) => {
-		if (typeof window === "undefined" || !navigator.clipboard?.writeText || !value) {
+	const copy = async (value: string) => {
+		if (typeof window === "undefined" || !value) {
 			return
 		}
 
-		navigator.clipboard.writeText(value).then(() => {
+		const copied = await copyToClipboard(value)
+
+		if (copied) {
 			setIsCopied(true)
 			setTimeout(() => setIsCopied(false), timeout)
-		})
+		}
 	}
 
 	return { isCopied, copy }

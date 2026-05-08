@@ -16,16 +16,58 @@ interface CopyOptions {
  * Copy text to clipboard with error handling
  */
 export const copyToClipboard = async (text: string, options?: CopyOptions): Promise<boolean> => {
+	let clipboardError: unknown
+
 	try {
-		await navigator.clipboard.writeText(text)
-		options?.onSuccess?.()
-		return true
+		if (navigator.clipboard?.writeText) {
+			await navigator.clipboard.writeText(text)
+			options?.onSuccess?.()
+			return true
+		}
 	} catch (error) {
-		const err = error instanceof Error ? error : new Error("Failed to copy to clipboard")
-		options?.onError?.(err)
-		console.error("Failed to copy to clipboard:", err)
-		return false
+		clipboardError = error
 	}
+
+	let textarea: HTMLTextAreaElement | undefined
+	const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+	const selection = document.getSelection()
+	const selectedRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : undefined
+
+	try {
+		textarea = document.createElement("textarea")
+		textarea.value = text
+		textarea.setAttribute("readonly", "")
+		textarea.style.position = "fixed"
+		textarea.style.top = "-9999px"
+		textarea.style.left = "-9999px"
+		textarea.style.opacity = "0"
+
+		document.body.appendChild(textarea)
+		textarea.focus()
+		textarea.select()
+
+		const copied = document.execCommand?.("copy") ?? false
+
+		if (copied) {
+			options?.onSuccess?.()
+			return true
+		}
+	} catch (error) {
+		clipboardError = error
+	} finally {
+		textarea?.remove()
+		activeElement?.focus()
+
+		if (selection && selectedRange) {
+			selection.removeAllRanges()
+			selection.addRange(selectedRange)
+		}
+	}
+
+	const err = clipboardError instanceof Error ? clipboardError : new Error("Failed to copy to clipboard")
+	options?.onError?.(err)
+	console.error("Failed to copy to clipboard:", err)
+	return false
 }
 
 /**

@@ -34,7 +34,7 @@ const exportedModeConfigSchema = modeConfigSchema.omit({ groups: true }).extend(
 })
 
 // Build the top-level .alphamodes schema.
-const roomodesZodSchema = z
+const alphamodesZodSchema = z
 	.object({
 		customModes: z.array(exportedModeConfigSchema),
 	})
@@ -44,8 +44,8 @@ const roomodesZodSchema = z
  * Generates the JSON Schema object for .alphamodes configuration files.
  * Includes metadata fields ($id, title, description).
  */
-export function generateRoomodesJsonSchema(): Record<string, unknown> {
-	const jsonSchema = zodToJsonSchema(roomodesZodSchema, {
+export function generateAlphamodesJsonSchema(): Record<string, unknown> {
+	const jsonSchema = zodToJsonSchema(alphamodesZodSchema, {
 		$refStrategy: "none",
 		target: "jsonSchema7",
 	}) as Record<string, unknown>

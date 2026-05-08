@@ -99,14 +99,49 @@ export interface CreateTaskOptions {
 	/** Whether to start the task loop immediately (default: true).
 	 *  When false, the caller must invoke `task.start()` manually. */
 	startTask?: boolean
+	/** Keep other live top-level tasks running when this task is created. */
+	preserveExisting?: boolean
 }
-
 export enum TaskStatus {
 	Running = "running",
 	Interactive = "interactive",
 	Resumable = "resumable",
 	Idle = "idle",
 	None = "none",
+}
+
+export enum TaskLifecycleState {
+	Initializing = "initializing",
+	Running = "running",
+	Waiting = "waiting",
+	Completed = "completed",
+	Failed = "failed",
+	Closing = "closing",
+	Closed = "closed",
+}
+
+export type CurrentTaskView =
+	| {
+			type: "newTaskDraft"
+	  }
+	| {
+			type: "task"
+			taskId: string
+	  }
+
+export interface LiveTaskMetadata {
+	id: string
+	status: TaskStatus
+	lifecycle: TaskLifecycleState
+	isActive: boolean
+	isStreaming: boolean
+	isWaitingForInput: boolean
+	lastUpdatedAt: number
+	waitingReason?: string
+	queueCount: number
+	tokensIn: number
+	tokensOut: number
+	totalCost: number
 }
 
 export const taskMetadataSchema = z.object({

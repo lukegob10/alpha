@@ -12,9 +12,9 @@ import * as fs from "fs"
 import * as path from "path"
 import { fileURLToPath } from "url"
 
-import { generateRoomodesJsonSchema } from "../src/alphamodes-schema.js"
+import { generateAlphamodesJsonSchema } from "../src/alphamodes-schema.js"
 
-const jsonSchema = generateRoomodesJsonSchema()
+const jsonSchema = generateAlphamodesJsonSchema()
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, "../../..")

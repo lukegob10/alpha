@@ -136,7 +136,13 @@ const App = () => {
 					const marketplaceTab = message.values?.marketplaceTab as string | undefined
 
 					if (newTab) {
-						switchTab(newTab)
+						if (message.values?.force === true) {
+							setCurrentSection(undefined)
+							setCurrentMarketplaceTab(undefined)
+							setTab(newTab)
+						} else {
+							switchTab(newTab)
+						}
 						setCurrentSection(section)
 						setCurrentMarketplaceTab(marketplaceTab)
 					}
