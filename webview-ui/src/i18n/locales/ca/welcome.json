@@ -28,7 +28,7 @@
 		"useAnotherProvider": "Proveïdor de tercers",
 		"useAnotherProviderDescription": "Entra una clau API i comença.",
 		"noApiKeys": "No vols tractar amb claus API i comptes separats?",
-		"backToRoo": "Tria el Proveïdor Alpha Cloud.",
+		"backToAlpha": "Tria el Proveïdor Alpha Cloud.",
 		"goBack": "Enrere",
 		"finish": "Finalitza"
 	},

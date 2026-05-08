@@ -4,8 +4,8 @@ import * as vscode from "vscode"
 
 import delay from "delay"
 
-import { CommandExecutionStatus, DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE, PersistedCommandOutput } from "@roo-code/types"
-import { TelemetryService } from "@roo-code/telemetry"
+import { CommandExecutionStatus, DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE, PersistedCommandOutput } from "@alpha-code/types"
+import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../task/Task"
 

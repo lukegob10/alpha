@@ -20,7 +20,7 @@ const CYAN = "\x1b[36m"
 const RED = "\x1b[31m"
 
 // Build vsix to a fixed path in temp directory
-const VSIX_PATH = path.join(os.tmpdir(), "roo-code-serve.vsix")
+const VSIX_PATH = path.join(os.tmpdir(), "alpha-code-serve.vsix")
 
 function log(message) {
 	console.log(`${CYAN}[code-server]${RESET} ${message}`)

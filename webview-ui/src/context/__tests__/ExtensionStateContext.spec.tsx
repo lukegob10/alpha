@@ -6,7 +6,7 @@ import {
 	type ExtensionState,
 	type ClineMessage,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
-} from "@roo-code/types"
+} from "@alpha-code/types"
 
 import { ExtensionStateContextProvider, useExtensionState, mergeExtensionState } from "../ExtensionStateContext"
 
@@ -22,7 +22,9 @@ const TestComponent = () => {
 			<button data-testid="update-button" onClick={() => setAllowedCommands(["npm install", "git status"])}>
 				Update Commands
 			</button>
-			<button data-testid="toggle-alphaignore-button" onClick={() => setShowRooIgnoredFiles(!showRooIgnoredFiles)}>
+			<button
+				data-testid="toggle-alphaignore-button"
+				onClick={() => setShowRooIgnoredFiles(!showRooIgnoredFiles)}>
 				Update Commands
 			</button>
 		</div>

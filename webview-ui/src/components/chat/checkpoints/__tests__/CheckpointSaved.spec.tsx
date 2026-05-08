@@ -28,6 +28,12 @@ vi.mock("@/components/ui", () => {
 	}
 })
 
+vi.mock("@/context/ExtensionStateContext", () => ({
+	useExtensionState: () => ({
+		currentTaskId: "test-task-id",
+	}),
+}))
+
 import { render, waitFor, screen, fireEvent } from "@/utils/test-utils"
 import React from "react"
 import userEvent from "@testing-library/user-event"

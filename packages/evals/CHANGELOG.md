@@ -1,3 +1,3 @@
-# @roo-code/evals
+# @alpha-code/evals
 
 ## 0.0.1

@@ -1,6 +1,6 @@
 import { execa } from "execa"
 
-import { type TaskEvent, RooCodeEventName } from "@roo-code/types"
+import { type TaskEvent, RooCodeEventName } from "@alpha-code/types"
 
 import { findRun, findTask, updateTask } from "../db/index"
 
@@ -103,7 +103,7 @@ export const processTaskInContainer = async ({
 		}
 	}
 
-	const command = `pnpm --filter @roo-code/evals cli --taskId ${taskId}`
+	const command = `pnpm --filter @alpha-code/evals cli --taskId ${taskId}`
 	logger.info(command)
 
 	for (let attempt = 0; attempt <= maxRetries; attempt++) {

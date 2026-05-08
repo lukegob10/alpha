@@ -3,7 +3,7 @@ Thank you for contributing to Alpha!
 
 Before submitting your PR, please ensure:
 - It's linked to an approved GitHub Issue.
-- You've reviewed our [Contributing Guidelines](../CONTRIBUTING.md).
+- You've reviewed [CONTRIBUTING.md](../CONTRIBUTING.md).
 -->
 
 ### Related GitHub Issue
@@ -15,9 +15,8 @@ Closes: # <!-- Replace with the issue number, e.g., Closes: #123 -->
 ### Alpha Task Context (Optional)
 
 <!--
-If you used Alpha to help create this PR, you can share public task links here.
+If you used Alpha to help create this PR, summarize the task context here.
 This helps reviewers understand your development process and provides additional context.
-Example: https://app.roocode.com/share/task-id
 -->
 
 ### Description
@@ -47,7 +46,7 @@ Detail the steps to test your changes. This helps reviewers verify your work.
 - [ ] **Self-Review**: I have performed a thorough self-review of my code.
 - [ ] **Testing**: New and/or updated tests have been added to cover my changes (if applicable).
 - [ ] **Documentation Impact**: I have considered if my changes require documentation updates (see "Documentation Updates" section below).
-- [ ] **Contribution Guidelines**: I have read and agree to the [Contributor Guidelines](/CONTRIBUTING.md).
+- [ ] **Contribution Flow**: I have followed [CONTRIBUTING.md](/CONTRIBUTING.md).
 
 ### Screenshots / Videos
 
@@ -67,9 +66,3 @@ Does this PR necessitate updates to user-facing documentation?
 ### Additional Notes
 
 <!-- Add any other context, questions, or information for reviewers here. -->
-
-### Get in Touch
-
-<!--
-Please provide your Discord username for reviewers or maintainers to reach you if they have questions about your PR
--->

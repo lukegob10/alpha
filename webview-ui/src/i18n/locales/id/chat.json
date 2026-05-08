@@ -131,7 +131,7 @@
 	"about": "Alpha adalah seluruh tim pengembang AI di editor Anda.",
 	"docs": "Lihat <DocsLink>dokumentasi</DocsLink> kami untuk mempelajari lebih lanjut.",
 	"onboarding": "Daftar tugas Anda di ruang kerja ini kosong.",
-	"rooTips": {
+	"alphaTips": {
 		"customizableModes": {
 			"title": "Mode yang dapat disesuaikan",
 			"description": "Persona khusus yang tetap mengerjakan tugas dan memberikan hasil."

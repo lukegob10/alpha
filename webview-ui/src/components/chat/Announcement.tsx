@@ -1,6 +1,6 @@
 import { memo, useState } from "react"
 
-import { Package } from "@roo/package"
+import { Package } from "@alpha/package"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@src/components/ui"
 
@@ -44,10 +44,9 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 							<li>{t("chat:announcement.release.slashSkills")}</li>
 						</ul>
 					</div>
-
-					</div>
-				</DialogContent>
-			</Dialog>
+				</div>
+			</DialogContent>
+		</Dialog>
 	)
 }
 

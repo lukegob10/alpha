@@ -1,3 +1,3 @@
-# @roo-code/web-evals
+# @alpha-code/web-evals
 
 ## 0.0.1

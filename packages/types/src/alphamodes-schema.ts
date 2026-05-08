@@ -50,7 +50,7 @@ export function generateAlphamodesJsonSchema(): Record<string, unknown> {
 		target: "jsonSchema7",
 	}) as Record<string, unknown>
 
-	jsonSchema["$id"] = "https://github.com/RooCodeInc/Alpha/blob/main/schemas/alphamodes.json"
+	jsonSchema["$id"] = "https://github.com/AlphaInc/Alpha/blob/main/schemas/alphamodes.json"
 	jsonSchema["title"] = "Alpha Custom Modes"
 	jsonSchema["description"] = "Schema for .alphamodes configuration files used by Alpha to define custom modes."
 

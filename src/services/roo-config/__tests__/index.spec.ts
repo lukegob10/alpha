@@ -342,8 +342,8 @@ describe("RooConfigService", () => {
 		it("should discover .roo directories from subfolders", async () => {
 			// Find any file inside .roo directories
 			mockExecuteRipgrep.mockResolvedValueOnce([
-				{ path: "package-a/.alpha/rules/rule.md", type: "file" },
-				{ path: "package-b/.alpha/rules-code/rule.md", type: "file" },
+				{ path: "package-a/.roo/rules/rule.md", type: "file" },
+				{ path: "package-b/.roo/rules-code/rule.md", type: "file" },
 			])
 
 			const result = await discoverSubfolderRooDirectories("/project/path")
@@ -356,9 +356,9 @@ describe("RooConfigService", () => {
 
 		it("should sort discovered directories alphabetically", async () => {
 			mockExecuteRipgrep.mockResolvedValueOnce([
-				{ path: "zebra/.alpha/rules/rule.md", type: "file" },
-				{ path: "apple/.alpha/rules/rule.md", type: "file" },
-				{ path: "mango/.alpha/rules/rule.md", type: "file" },
+				{ path: "zebra/.roo/rules/rule.md", type: "file" },
+				{ path: "apple/.roo/rules/rule.md", type: "file" },
+				{ path: "mango/.roo/rules/rule.md", type: "file" },
 			])
 
 			const result = await discoverSubfolderRooDirectories("/project/path")
@@ -373,8 +373,8 @@ describe("RooConfigService", () => {
 		it("should exclude root .roo directory", async () => {
 			// This would match the root .roo, which should be excluded
 			mockExecuteRipgrep.mockResolvedValueOnce([
-				{ path: ".alpha/rules/rule.md", type: "file" }, // This is root - should be excluded
-				{ path: "subfolder/.alpha/rules/rule.md", type: "file" },
+				{ path: ".roo/rules/rule.md", type: "file" }, // This is root - should be excluded
+				{ path: "subfolder/.roo/rules/rule.md", type: "file" },
 			])
 
 			const result = await discoverSubfolderRooDirectories("/project/path")
@@ -385,8 +385,8 @@ describe("RooConfigService", () => {
 
 		it("should handle nested subdirectories", async () => {
 			mockExecuteRipgrep.mockResolvedValueOnce([
-				{ path: "packages/core/.alpha/rules/rule.md", type: "file" },
-				{ path: "packages/utils/.alpha/rules-code/rule.md", type: "file" },
+				{ path: "packages/core/.roo/rules/rule.md", type: "file" },
+				{ path: "packages/utils/.roo/rules-code/rule.md", type: "file" },
 			])
 
 			const result = await discoverSubfolderRooDirectories("/project/path")
@@ -407,9 +407,9 @@ describe("RooConfigService", () => {
 
 		it("should deduplicate .roo directories from multiple files", async () => {
 			mockExecuteRipgrep.mockResolvedValueOnce([
-				{ path: "package-a/.alpha/rules/rule1.md", type: "file" },
-				{ path: "package-a/.alpha/rules/rule2.md", type: "file" },
-				{ path: "package-a/.alpha/rules-code/rule3.md", type: "file" },
+				{ path: "package-a/.roo/rules/rule1.md", type: "file" },
+				{ path: "package-a/.roo/rules/rule2.md", type: "file" },
+				{ path: "package-a/.roo/rules-code/rule3.md", type: "file" },
 			])
 
 			const result = await discoverSubfolderRooDirectories("/project/path")
@@ -421,10 +421,10 @@ describe("RooConfigService", () => {
 		it("should discover .roo directories with any content", async () => {
 			// Should find .roo directories regardless of what's inside them
 			mockExecuteRipgrep.mockResolvedValueOnce([
-				{ path: "package-a/.alpha/rules/rule.md", type: "file" },
-				{ path: "package-b/.alpha/rules-code/code-rule.md", type: "file" },
-				{ path: "package-c/.alpha/rules-architect/arch-rule.md", type: "file" },
-				{ path: "package-d/.alpha/config/settings.json", type: "file" },
+				{ path: "package-a/.roo/rules/rule.md", type: "file" },
+				{ path: "package-b/.roo/rules-code/code-rule.md", type: "file" },
+				{ path: "package-c/.roo/rules-architect/arch-rule.md", type: "file" },
+				{ path: "package-d/.roo/config/settings.json", type: "file" },
 			])
 
 			const result = await discoverSubfolderRooDirectories("/project/path")
@@ -440,7 +440,7 @@ describe("RooConfigService", () => {
 
 	describe("getAllRooDirectoriesForCwd", () => {
 		it("should return global, project, and subfolder directories", async () => {
-			mockExecuteRipgrep.mockResolvedValueOnce([{ path: "subfolder/.alpha/rules/rule.md", type: "file" }])
+			mockExecuteRipgrep.mockResolvedValueOnce([{ path: "subfolder/.roo/rules/rule.md", type: "file" }])
 
 			const result = await getAllRooDirectoriesForCwd("/project/path")
 
@@ -461,8 +461,8 @@ describe("RooConfigService", () => {
 
 		it("should maintain order: global, project, subfolders (alphabetically)", async () => {
 			mockExecuteRipgrep.mockResolvedValueOnce([
-				{ path: "zebra/.alpha/rules/rule.md", type: "file" },
-				{ path: "apple/.alpha/rules/rule.md", type: "file" },
+				{ path: "zebra/.roo/rules/rule.md", type: "file" },
+				{ path: "apple/.roo/rules/rule.md", type: "file" },
 			])
 
 			const result = await getAllRooDirectoriesForCwd("/project/path")
@@ -478,7 +478,7 @@ describe("RooConfigService", () => {
 
 	describe("getAgentsDirectoriesForCwd", () => {
 		it("should return root directory and parent directories of subfolder .roo dirs", async () => {
-			mockExecuteRipgrep.mockResolvedValueOnce([{ path: "package-a/.alpha/rules/rule.md", type: "file" }])
+			mockExecuteRipgrep.mockResolvedValueOnce([{ path: "package-a/.roo/rules/rule.md", type: "file" }])
 
 			const result = await getAgentsDirectoriesForCwd("/project/path")
 
@@ -498,9 +498,9 @@ describe("RooConfigService", () => {
 
 		it("should include multiple subfolder parent directories", async () => {
 			mockExecuteRipgrep.mockResolvedValueOnce([
-				{ path: "package-a/.alpha/rules/rule.md", type: "file" },
-				{ path: "package-b/.alpha/rules-code/rule.md", type: "file" },
-				{ path: "packages/core/.alpha/rules/rule.md", type: "file" },
+				{ path: "package-a/.roo/rules/rule.md", type: "file" },
+				{ path: "package-b/.roo/rules-code/rule.md", type: "file" },
+				{ path: "packages/core/.roo/rules/rule.md", type: "file" },
 			])
 
 			const result = await getAgentsDirectoriesForCwd("/project/path")

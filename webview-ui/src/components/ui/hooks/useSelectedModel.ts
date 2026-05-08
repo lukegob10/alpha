@@ -31,7 +31,7 @@ import {
 	isDynamicProvider,
 	isRetiredProvider,
 	getProviderDefaultModelId,
-} from "@roo-code/types"
+} from "@alpha-code/types"
 
 import { useRouterModels } from "./useRouterModels"
 import { useOpenRouterModelProviders } from "./useOpenRouterModelProviders"

@@ -14,7 +14,7 @@ describe("RooProtectedController", () => {
 			expect(controller.isWriteProtected(".alphaignore")).toBe(true)
 		})
 
-		it("should protect files in .roo directory", () => {
+		it("should protect files in .alpha directory", () => {
 			expect(controller.isWriteProtected(".alpha/config.json")).toBe(true)
 			expect(controller.isWriteProtected(".alpha/settings/user.json")).toBe(true)
 			expect(controller.isWriteProtected(".alpha/modes/custom.json")).toBe(true)
@@ -59,9 +59,9 @@ describe("RooProtectedController", () => {
 			expect(controller.isWriteProtected("AGENT.md")).toBe(true)
 		})
 
-		it("should not protect other files starting with .roo", () => {
-			expect(controller.isWriteProtected(".roosettings")).toBe(false)
-			expect(controller.isWriteProtected(".rooconfig")).toBe(false)
+		it("should not protect other files starting with .alpha", () => {
+			expect(controller.isWriteProtected(".alphasettings")).toBe(false)
+			expect(controller.isWriteProtected(".alphaconfig")).toBe(false)
 		})
 
 		it("should not protect regular files", () => {
@@ -70,9 +70,9 @@ describe("RooProtectedController", () => {
 			expect(controller.isWriteProtected("README.md")).toBe(false)
 		})
 
-		it("should not protect files that contain 'roo' but don't start with .roo", () => {
-			expect(controller.isWriteProtected("src/roo-utils.ts")).toBe(false)
-			expect(controller.isWriteProtected("config/roo.config.js")).toBe(false)
+		it("should not protect files that contain 'alpha' but don't start with .alpha", () => {
+			expect(controller.isWriteProtected("src/alpha-utils.ts")).toBe(false)
+			expect(controller.isWriteProtected("config/alpha.config.js")).toBe(false)
 		})
 
 		it("should handle nested paths correctly", () => {
@@ -88,7 +88,7 @@ describe("RooProtectedController", () => {
 		})
 
 		it("should handle paths with different separators", () => {
-			expect(controller.isWriteProtected(".roo\\config.json")).toBe(true)
+			expect(controller.isWriteProtected(".alpha\\config.json")).toBe(true)
 			expect(controller.isWriteProtected(".alpha/config.json")).toBe(true)
 		})
 

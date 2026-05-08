@@ -1,4 +1,4 @@
-import type { ProviderName, ReasoningEffortExtended } from "@roo-code/types"
+import type { ProviderName, ReasoningEffortExtended } from "@alpha-code/types"
 import type { OutputFormat } from "./json-events.js"
 
 export const supportedProviders = [
@@ -14,6 +14,14 @@ export type SupportedProvider = (typeof supportedProviders)[number]
 
 export function isSupportedProvider(provider: string): provider is SupportedProvider {
 	return supportedProviders.includes(provider as SupportedProvider)
+}
+
+export function normalizeProviderName(provider: string | undefined): SupportedProvider | undefined {
+	if (!provider) {
+		return undefined
+	}
+
+	return provider === "alpha-cloud" ? "roo" : (provider as SupportedProvider)
 }
 
 export type ReasoningEffortFlagOptions = ReasoningEffortExtended | "unspecified" | "disabled"

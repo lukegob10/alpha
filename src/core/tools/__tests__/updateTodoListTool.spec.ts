@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { parseMarkdownChecklist } from "../UpdateTodoListTool"
-import { TodoItem } from "@roo-code/types"
+import { TodoItem } from "@alpha-code/types"
 
 describe("parseMarkdownChecklist", () => {
 	describe("standard checkbox format (without dash prefix)", () => {
@@ -180,7 +180,7 @@ Just some text
 		})
 
 		it("should handle extra spaces", () => {
-			const md = `  [ ]   Task with spaces  
+			const md = `  [ ]   Task with spaces
 -  [ ]  Task with dash and spaces
   [x]  Completed with spaces
 -   [X]   Completed with dash and spaces`

@@ -6,7 +6,7 @@ import { fileURLToPath } from "url"
 import { randomUUID } from "crypto"
 
 import { execa } from "execa"
-import type { TaskSessionEntry } from "@roo-code/core/cli"
+import type { TaskSessionEntry } from "@alpha-code/core/cli"
 
 type StreamEvent = {
 	type?: string
@@ -314,10 +314,10 @@ async function resumeSessionAndSendMarker(
 }
 
 async function main() {
-	const cliRoot = process.env.ROO_CLI_ROOT
-		? path.resolve(process.env.ROO_CLI_ROOT)
+	const cliRoot = process.env.ALPHA_CLI_ROOT
+		? path.resolve(process.env.ALPHA_CLI_ROOT)
 		: path.resolve(__dirname, "../../..")
-	const workspacePath = await fs.mkdtemp(path.join(os.tmpdir(), "roo-cli-create-session-id-"))
+	const workspacePath = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-cli-create-session-id-"))
 
 	const firstSessionId = randomUUID()
 	const secondSessionId = randomUUID()

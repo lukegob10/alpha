@@ -59,7 +59,7 @@
 		"contact": {
 			"label": "Bizimle konuşmanız mı gerekiyor? Yazın"
 		},
-		"community": "İpuçları mı istiyorsunuz yoksa sadece diğer Alpha kullanıcılarıyla takılmak mı istiyorsunuz? <redditLink>reddit.com/r/RooCode</redditLink> veya <discordLink>discord.gg/roocode</discordLink>'a katılın",
+		"community": "İpuçları mı istiyorsunuz yoksa sadece diğer Alpha kullanıcılarıyla takılmak mı istiyorsunuz? <redditLink>github.com/AlphaInc/Alpha/discussions</redditLink> veya <discordLink>github.com/AlphaInc/Alpha/issues</discordLink>'a katılın",
 		"contactAndCommunity": "İletişim ve Topluluk",
 		"manageSettings": "Ayarları Yönet",
 		"debugMode": {

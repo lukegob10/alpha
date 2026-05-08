@@ -53,9 +53,9 @@ import {
 	ConsecutiveMistakeError,
 	MAX_MCP_TOOLS_THRESHOLD,
 	countEnabledMcpTools,
-} from "@roo-code/types"
-import { TelemetryService } from "@roo-code/telemetry"
-import { CloudService } from "@roo-code/cloud"
+} from "@alpha-code/types"
+import { TelemetryService } from "@alpha-code/telemetry"
+import { CloudService } from "@alpha-code/cloud"
 
 // api
 import { ApiHandler, ApiHandlerCreateMessageMetadata, buildApiHandler } from "../../api"
@@ -2100,7 +2100,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// Removing or merging it would destroy this metadata, causing all condensed
 					// messages to become "orphaned" and restored to active status — effectively
 					// undoing the condensation and sending the full history to the API.
-					// See: https://github.com/RooCodeInc/Alpha/issues/11487
+					// See: https://github.com/AlphaInc/Alpha/issues/11487
 					modifiedApiConversationHistory = [...existingApiConversationHistory]
 					modifiedOldUserContent = []
 				} else if (lastMessage.role === "assistant") {

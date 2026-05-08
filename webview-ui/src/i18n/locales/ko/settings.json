@@ -59,7 +59,7 @@
 		"contact": {
 			"label": "문의가 필요하신가요? 이메일 보내기"
 		},
-		"community": "팁을 얻거나 다른 Alpha 사용자들과 교류하고 싶으신가요? <redditLink>reddit.com/r/RooCode</redditLink> 또는 <discordLink>discord.gg/roocode</discordLink>에 참여하세요",
+		"community": "팁을 얻거나 다른 Alpha 사용자들과 교류하고 싶으신가요? <redditLink>github.com/AlphaInc/Alpha/discussions</redditLink> 또는 <discordLink>github.com/AlphaInc/Alpha/issues</discordLink>에 참여하세요",
 		"contactAndCommunity": "문의 및 커뮤니티",
 		"manageSettings": "설정 관리",
 		"debugMode": {

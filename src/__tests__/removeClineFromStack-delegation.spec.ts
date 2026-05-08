@@ -35,6 +35,12 @@ describe("ClineProvider.removeClineFromStack() delegation awareness", () => {
 		const provider = {
 			clineStack: [childTask] as any[],
 			taskEventListeners: new Map(),
+			taskSessions: {
+				markLifecycle: vi.fn(),
+				unregister: vi.fn().mockReturnValue(childTask),
+			},
+			currentView: { type: "task", taskId: opts.childTaskId },
+			getActiveTaskId: vi.fn().mockReturnValue(undefined),
 			log: vi.fn(),
 			getTaskWithId,
 			updateTaskHistory,
@@ -180,6 +186,12 @@ describe("ClineProvider.removeClineFromStack() delegation awareness", () => {
 		const provider = {
 			clineStack: [] as any[],
 			taskEventListeners: new Map(),
+			taskSessions: {
+				markLifecycle: vi.fn(),
+				unregister: vi.fn(),
+			},
+			currentView: { type: "newTaskDraft" },
+			getActiveTaskId: vi.fn().mockReturnValue(undefined),
 			log: vi.fn(),
 			getTaskWithId: vi.fn(),
 			updateTaskHistory: vi.fn(),
@@ -260,6 +272,12 @@ describe("ClineProvider.removeClineFromStack() delegation awareness", () => {
 		const provider = {
 			clineStack: [taskB] as any[],
 			taskEventListeners: new Map(),
+			taskSessions: {
+				markLifecycle: vi.fn(),
+				unregister: vi.fn().mockReturnValue(taskB),
+			},
+			currentView: { type: "task", taskId: "task-B" },
+			getActiveTaskId: vi.fn().mockReturnValue(undefined),
 			log: vi.fn(),
 			getTaskWithId,
 			updateTaskHistory,

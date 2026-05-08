@@ -1,4 +1,4 @@
-import { ProviderSettings } from "@roo-code/types"
+import { ProviderSettings } from "@alpha-code/types"
 
 import { Task } from "../Task"
 import { ClineProvider } from "../../webview/ClineProvider"
@@ -22,7 +22,7 @@ vi.mock("../../../api", () => ({
 }))
 
 // Mock TelemetryService
-vi.mock("@roo-code/telemetry", () => ({
+vi.mock("@alpha-code/telemetry", () => ({
 	TelemetryService: {
 		instance: {
 			captureTaskCreated: vi.fn(),

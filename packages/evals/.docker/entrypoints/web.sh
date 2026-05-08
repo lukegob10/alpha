@@ -22,14 +22,14 @@ wait_for_db() {
         echo "⏳ Database not ready yet, waiting 2 seconds..."
         sleep 2
     done
-    
+
     echo "✅ Database is ready"
 }
 
 run_migrations() {
     echo "🔄 Running database migrations..."
 
-    if pnpm --filter @roo-code/evals db:migrate; then
+    if pnpm --filter @alpha-code/evals db:migrate; then
         echo "✅ Database migrations completed successfully!"
     else
         echo "❌ Database migration failed!"
@@ -42,7 +42,7 @@ main() {
     run_migrations
 
     echo "🌐 Starting web service..."
-    pnpm --filter @roo-code/web-evals start
+    pnpm --filter @alpha-code/web-evals start
 }
 
 main "$@"

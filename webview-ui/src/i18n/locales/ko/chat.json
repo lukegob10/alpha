@@ -101,7 +101,7 @@
 	"about": "Alpha는 편집기 안에 있는 전체 AI 개발팀입니다.",
 	"docs": "더 알아보려면 <DocsLink>문서</DocsLink>를 확인하세요.",
 	"onboarding": "이 작업 공간의 작업 목록이 비어 있습니다.",
-	"rooTips": {
+	"alphaTips": {
 		"customizableModes": {
 			"title": "사용자 정의 가능한 모드",
 			"description": "작업에 집중하고 결과를 제공하는 전문화된 페르소나."

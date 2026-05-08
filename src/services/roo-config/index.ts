@@ -203,7 +203,7 @@ export async function discoverSubfolderRooDirectories(cwd: string): Promise<stri
 			"--hidden",
 			"--follow",
 			"-g",
-			"**/.alpha/**",
+			"**/.roo/**",
 			"-g",
 			"!node_modules/**",
 			"-g",

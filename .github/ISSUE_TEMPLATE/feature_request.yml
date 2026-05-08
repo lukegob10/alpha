@@ -54,7 +54,7 @@ body:
           required: true
 
   - type: textarea
-    id: roo-code-tasks
+    id: alpha-tasks
     attributes:
       label: Alpha Task Links (optional)
       description: If you explored this with Alpha, share public task links for context.

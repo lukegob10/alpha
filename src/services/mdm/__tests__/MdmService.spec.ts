@@ -10,7 +10,7 @@ vi.mock("os", () => ({
 	platform: vi.fn(),
 }))
 
-vi.mock("@roo-code/cloud", () => ({
+vi.mock("@alpha-code/cloud", () => ({
 	CloudService: {
 		hasInstance: vi.fn(),
 		instance: {
@@ -34,7 +34,7 @@ vi.mock("vscode", () => ({
 
 vi.mock("../../../shared/package", () => ({
 	Package: {
-		publisher: "roo-code",
+		publisher: "AlphaInc",
 		name: "alpha",
 		version: "1.0.0",
 		outputChannel: "Alpha",
@@ -59,7 +59,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as vscode from "vscode"
 import { MdmService } from "../MdmService"
-import { CloudService, getClerkBaseUrl, PRODUCTION_CLERK_BASE_URL } from "@roo-code/cloud"
+import { CloudService, getClerkBaseUrl, PRODUCTION_CLERK_BASE_URL } from "@alpha-code/cloud"
 
 const mockFs = fs as any
 const mockOs = os as any

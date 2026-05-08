@@ -101,7 +101,7 @@
 	"about": "Alpha ist ein ganzes KI-Entwicklerteam in deinem Editor.",
 	"docs": "Schau in unsere <DocsLink>Dokumentation</DocsLink>, um mehr zu erfahren.",
 	"onboarding": "Deine Aufgabenliste in diesem Arbeitsbereich ist leer.",
-	"rooTips": {
+	"alphaTips": {
 		"customizableModes": {
 			"title": "Anpassbare Modi",
 			"description": "Spezialisierte Personas, die bei der Sache bleiben und liefern."

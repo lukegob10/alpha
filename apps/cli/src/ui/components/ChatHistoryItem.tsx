@@ -193,7 +193,7 @@ function ChatHistoryItem({ message }: ChatHistoryItemProps) {
 					<Text bold color="yellow">
 						Alpha said:
 					</Text>
-					<Text color={theme.rooText}>
+					<Text color={theme.alphaText}>
 						{content}
 						<Newline />
 					</Text>

@@ -101,7 +101,7 @@
 	"about": "Alpha, düzenleyicinizdeki bütün bir yapay zeka geliştirme ekibidir.",
 	"docs": "Daha fazla bilgi için <DocsLink>belgelerimize</DocsLink> göz atın.",
 	"onboarding": "Bu çalışma alanındaki görev listeniz boş.",
-	"rooTips": {
+	"alphaTips": {
 		"customizableModes": {
 			"title": "Özelleştirilebilir modlar",
 			"description": "Göreve odaklanan ve sonuç veren özel kişilikler."

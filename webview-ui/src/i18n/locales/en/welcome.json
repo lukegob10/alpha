@@ -25,7 +25,7 @@
 		"useAnotherProvider": "3rd-party Provider",
 		"useAnotherProviderDescription": "Enter an API key and get going.",
 		"noApiKeys": "Don't want to deal with API keys and separate accounts?",
-		"backToRoo": "Go with the Alpha Router.",
+		"backToAlpha": "Go with the Alpha Router.",
 		"goBack": "Back",
 		"finish": "Finish"
 	},

@@ -59,7 +59,7 @@
 		"contact": {
 			"label": "Moet je met ons praten? Schrijf"
 		},
-		"community": "Wil je tips of gewoon even hangen met andere Alpha-gebruikers? Sluit je aan bij <redditLink>reddit.com/r/RooCode</redditLink> of <discordLink>discord.gg/roocode</discordLink>",
+		"community": "Wil je tips of gewoon even hangen met andere Alpha-gebruikers? Sluit je aan bij <redditLink>github.com/AlphaInc/Alpha/discussions</redditLink> of <discordLink>github.com/AlphaInc/Alpha/issues</discordLink>",
 		"contactAndCommunity": "Contact & Gemeenschap",
 		"manageSettings": "Instellingen Beheren",
 		"debugMode": {
