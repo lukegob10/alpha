@@ -1,14 +1,39 @@
-const { mockGoogleGenAI, mockEmbedContent } = vitest.hoisted(() => ({
-	mockEmbedContent: vitest.fn(),
-	mockGoogleGenAI: vitest.fn(() => ({
-		models: {
-			embedContent: mockEmbedContent,
-		},
-	})),
-}))
+const {
+	mockGoogleGenAI,
+	mockEmbedContent,
+	mockGetOrCreate,
+	mockGetToken,
+	mockForceRefreshToken,
+	mockConfigureTransport,
+} = vitest.hoisted(() => {
+	const mockEmbedContent = vitest.fn()
+
+	return {
+		mockEmbedContent,
+		mockGoogleGenAI: vitest.fn(() => ({
+			models: {
+				embedContent: mockEmbedContent,
+			},
+		})),
+		mockGetToken: vitest.fn(),
+		mockForceRefreshToken: vitest.fn(),
+		mockGetOrCreate: vitest.fn(),
+		mockConfigureTransport: vitest.fn(),
+	}
+})
 
 vitest.mock("@google/genai", () => ({
 	GoogleGenAI: mockGoogleGenAI,
+}))
+
+vitest.mock("../../../../api/providers/utils/helix-token-manager", () => ({
+	HelixTokenManager: {
+		getOrCreate: mockGetOrCreate,
+	},
+}))
+
+vitest.mock("../../../../api/providers/utils/vertex-gateway-transport", () => ({
+	configureVertexGatewayTransport: mockConfigureTransport,
 }))
 
 vitest.mock("@alpha-code/telemetry", () => ({
@@ -19,42 +44,44 @@ vitest.mock("@alpha-code/telemetry", () => ({
 	},
 }))
 
-import { describe, it, expect, beforeEach, afterAll, vitest } from "vitest"
+import { describe, it, expect, beforeEach, vitest } from "vitest"
 
-import { resetVertexGatewayCaBundleForTests } from "../../../../api/providers/vertex-gateway"
 import { VertexGeminiEmbedder } from "../vertex"
 
 describe("VertexGeminiEmbedder", () => {
-	const originalUsername = process.env.USERNAME
-	const originalUser = process.env.USER
-
 	beforeEach(() => {
 		vitest.clearAllMocks()
-		resetVertexGatewayCaBundleForTests()
-		restoreEnv("USERNAME", originalUsername)
-		restoreEnv("USER", originalUser)
+		mockGetToken.mockResolvedValue("initial-token")
+		mockForceRefreshToken.mockResolvedValue("refreshed-token")
+		mockGetOrCreate.mockReturnValue({
+			getToken: mockGetToken,
+			forceRefreshToken: mockForceRefreshToken,
+		})
+		mockConfigureTransport.mockResolvedValue("C:\\certs\\gateway.pem")
 	})
 
-	afterAll(() => {
-		resetVertexGatewayCaBundleForTests()
-		restoreEnv("USERNAME", originalUsername)
-		restoreEnv("USER", originalUser)
-	})
-
-	it("initializes GoogleGenAI with Vertex gateway options", () => {
-		process.env.USERNAME = "soe123"
-
+	it("initializes GoogleGenAI with canonical Vertex gateway options and fake auth", () => {
 		new VertexGeminiEmbedder(
 			{
 				apiProvider: "vertex",
-				vertexProjectId: "test-project",
-				vertexRegion: "global",
-				vertexGatewayBaseUrl: "https://gateway.example.com/vertex",
-				vertexGatewayHelixCommand: "helix auth access-token print -a",
+				projectId: "test-project",
+				location: "global",
+				gatewayBaseUrl: "https://gateway.example.com/vertex",
+				pemCaBundlePath: "C:\\certs\\gateway.pem",
+				helixCommand: "helix auth access-token print -a",
+				helixParseMode: "json_field",
+				helixTokenKey: "token.access",
+				refreshIntervalMinutes: 15,
 			} as any,
 			"gemini-embedding-001",
 		)
 
+		expect(mockGetOrCreate).toHaveBeenCalledWith({
+			helixCommand: "helix auth access-token print -a",
+			helixParseMode: "json_field",
+			helixTokenKey: "token.access",
+			refreshIntervalMinutes: 15,
+		})
 		expect(mockGoogleGenAI).toHaveBeenLastCalledWith(
 			expect.objectContaining({
 				vertexai: true,
@@ -62,11 +89,10 @@ describe("VertexGeminiEmbedder", () => {
 				location: "global",
 				httpOptions: {
 					baseUrl: "https://gateway.example.com/vertex",
-					headers: { "x-r2d2-soeid": "soe123" },
 				},
 				googleAuthOptions: {
 					authClient: expect.objectContaining({
-						refreshHandler: expect.any(Function),
+						getRequestHeaders: expect.any(Function),
 					}),
 				},
 			}),
@@ -110,11 +136,61 @@ describe("VertexGeminiEmbedder", () => {
 		})
 	})
 
-	it("routes model IDs through the Vertex gateway routing map", async () => {
+	it("sends bearer auth, routed model, project, location, and extra headers through the gateway", async () => {
+		const embedder = new VertexGeminiEmbedder({
+			apiProvider: "vertex",
+			projectId: "default-project",
+			location: "global",
+			gatewayBaseUrl: "https://gateway.example.com/vertex",
+			pemCaBundlePath: "C:\\certs\\gateway.pem",
+			helixCommand: "helix auth access-token print -a",
+			modelRoutingMap: {
+				"gemini-embedding-001": {
+					projectId: "routed-project",
+					location: "us-central1",
+					modelOverride: "gateway-embedding-model",
+					extraHeaders: {
+						"x-route": "embedding",
+					},
+				},
+			},
+		} as any)
+		mockEmbedContent.mockResolvedValueOnce({
+			embeddings: [{ values: [0.1, 0.2], statistics: { tokenCount: 2 } }],
+		})
+
+		await embedder.createEmbeddings(["text"])
+
+		expect(mockConfigureTransport).toHaveBeenCalledWith("C:\\certs\\gateway.pem")
+		expect(mockGoogleGenAI).toHaveBeenCalledWith(
+			expect.objectContaining({
+				project: "routed-project",
+				location: "us-central1",
+			}),
+		)
+		expect(mockEmbedContent).toHaveBeenCalledWith({
+			model: "gateway-embedding-model",
+			contents: "text",
+			config: {
+				httpOptions: {
+					baseUrl: "https://gateway.example.com/vertex",
+					headers: {
+						Authorization: "Bearer initial-token",
+						"x-route": "embedding",
+					},
+				},
+			},
+		})
+	})
+
+	it("treats legacy string routing entries as model overrides", async () => {
 		const embedder = new VertexGeminiEmbedder({
 			apiProvider: "vertex",
 			vertexProjectId: "test-project",
 			vertexRegion: "us-central1",
+			vertexGatewayBaseUrl: "https://gateway.example.com/vertex",
+			vertexGatewayCaBundlePath: "C:\\certs\\gateway.pem",
+			vertexGatewayHelixCommand: "helix auth access-token print -a",
 			vertexGatewayModelRoutingMap: '{"gemini-embedding-001":"gateway-embedding-model"}',
 		} as any)
 		mockEmbedContent.mockResolvedValueOnce({
@@ -126,7 +202,57 @@ describe("VertexGeminiEmbedder", () => {
 		expect(mockEmbedContent).toHaveBeenCalledWith({
 			model: "gateway-embedding-model",
 			contents: "text",
+			config: {
+				httpOptions: {
+					baseUrl: "https://gateway.example.com/vertex",
+					headers: {
+						Authorization: "Bearer initial-token",
+					},
+				},
+			},
 		})
+	})
+
+	it("retries once with a forced Helix refresh after gateway auth failure", async () => {
+		const embedder = new VertexGeminiEmbedder({
+			apiProvider: "vertex",
+			projectId: "test-project",
+			location: "global",
+			gatewayBaseUrl: "https://gateway.example.com/vertex",
+			pemCaBundlePath: "C:\\certs\\gateway.pem",
+			helixCommand: "helix auth access-token print -a",
+		} as any)
+		mockGetToken.mockResolvedValueOnce("expired-token").mockResolvedValueOnce("refreshed-token")
+		mockEmbedContent
+			.mockRejectedValueOnce(Object.assign(new Error("Unauthorized"), { status: 401 }))
+			.mockResolvedValueOnce({
+				embeddings: [{ values: [0.1, 0.2], statistics: { tokenCount: 2 } }],
+			})
+
+		const response = await embedder.createEmbeddings(["text"])
+
+		expect(response.embeddings).toEqual([[0.1, 0.2]])
+		expect(mockForceRefreshToken).toHaveBeenCalledTimes(1)
+		expect(mockEmbedContent).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({
+				config: expect.objectContaining({
+					httpOptions: expect.objectContaining({
+						headers: expect.objectContaining({ Authorization: "Bearer expired-token" }),
+					}),
+				}),
+			}),
+		)
+		expect(mockEmbedContent).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				config: expect.objectContaining({
+					httpOptions: expect.objectContaining({
+						headers: expect.objectContaining({ Authorization: "Bearer refreshed-token" }),
+					}),
+				}),
+			}),
+		)
 	})
 
 	it("uses the larger item token limit for gemini-embedding-2", async () => {
@@ -166,12 +292,3 @@ describe("VertexGeminiEmbedder", () => {
 		})
 	})
 })
-
-function restoreEnv(name: string, value: string | undefined): void {
-	if (value === undefined) {
-		delete process.env[name]
-		return
-	}
-
-	process.env[name] = value
-}

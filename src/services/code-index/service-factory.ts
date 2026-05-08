@@ -82,8 +82,8 @@ export class CodeIndexServiceFactory {
 		} else if (provider === "vertex") {
 			if (
 				config.vertexOptions?.apiProvider !== "vertex" ||
-				!config.vertexOptions.vertexProjectId ||
-				!config.vertexOptions.vertexRegion
+				!(config.vertexOptions.projectId || config.vertexOptions.vertexProjectId) ||
+				!(config.vertexOptions.location || config.vertexOptions.vertexRegion)
 			) {
 				throw new Error(t("embeddings:serviceFactory.vertexConfigMissing"))
 			}
