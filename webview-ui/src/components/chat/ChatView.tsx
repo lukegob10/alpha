@@ -130,7 +130,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[visibleCurrentTaskId],
 	)
 	const visibleCurrentTaskItem = isDraftView ? undefined : currentTaskItem
-	const visibleCurrentTaskTodos = isDraftView ? [] : currentTaskTodos
+	const visibleCurrentTaskTodos = useMemo(
+		() => (isDraftView ? [] : currentTaskTodos),
+		[isDraftView, currentTaskTodos],
+	)
 	const messagesRef = useRef(activeMessages)
 	const isBlankTaskPendingRef = useRef(false)
 
