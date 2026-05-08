@@ -637,6 +637,70 @@ export class NativeToolCallParser {
 				}
 				break
 
+			case "spawn_agent":
+				if (partialArgs.task_name !== undefined || partialArgs.message !== undefined) {
+					nativeArgs = {
+						task_name: partialArgs.task_name,
+						message: partialArgs.message,
+						mode: partialArgs.mode,
+						agent_type: partialArgs.agent_type,
+						workspace_strategy: partialArgs.workspace_strategy,
+						write_scope: partialArgs.write_scope,
+					}
+				}
+				break
+
+			case "spawn_agents":
+				if (Array.isArray(partialArgs.agents)) {
+					nativeArgs = {
+						agents: partialArgs.agents,
+					}
+				}
+				break
+
+			case "wait_agent":
+				if (partialArgs.targets !== undefined || partialArgs.timeout_ms !== undefined) {
+					nativeArgs = {
+						targets: partialArgs.targets,
+						timeout_ms: partialArgs.timeout_ms,
+					}
+				}
+				break
+
+			case "send_input":
+				if (partialArgs.target !== undefined || partialArgs.message !== undefined) {
+					nativeArgs = {
+						target: partialArgs.target,
+						message: partialArgs.message,
+						interrupt: partialArgs.interrupt,
+					}
+				}
+				break
+
+			case "list_agents":
+				nativeArgs = {
+					status: partialArgs.status,
+				}
+				break
+
+			case "close_agent":
+				if (partialArgs.target !== undefined) {
+					nativeArgs = {
+						target: partialArgs.target,
+						cleanup: partialArgs.cleanup,
+					}
+				}
+				break
+
+			case "integrate_agent_result":
+				if (partialArgs.target !== undefined) {
+					nativeArgs = {
+						target: partialArgs.target,
+						strategy: partialArgs.strategy,
+					}
+				}
+				break
+
 			default:
 				break
 		}
@@ -982,6 +1046,68 @@ export class NativeToolCallParser {
 							mode: args.mode,
 							message: args.message,
 							todos: args.todos,
+						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "spawn_agent":
+					if (args.task_name !== undefined && args.message !== undefined) {
+						nativeArgs = {
+							task_name: args.task_name,
+							message: args.message,
+							mode: args.mode,
+							agent_type: args.agent_type,
+							workspace_strategy: args.workspace_strategy,
+							write_scope: args.write_scope,
+						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "spawn_agents":
+					if (Array.isArray(args.agents)) {
+						nativeArgs = {
+							agents: args.agents,
+						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "wait_agent":
+					nativeArgs = {
+						targets: args.targets,
+						timeout_ms: args.timeout_ms,
+					} as NativeArgsFor<TName>
+					break
+
+				case "send_input":
+					if (args.target !== undefined && args.message !== undefined) {
+						nativeArgs = {
+							target: args.target,
+							message: args.message,
+							interrupt: args.interrupt,
+						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "list_agents":
+					nativeArgs = {
+						status: args.status,
+					} as NativeArgsFor<TName>
+					break
+
+				case "close_agent":
+					if (args.target !== undefined) {
+						nativeArgs = {
+							target: args.target,
+							cleanup: args.cleanup,
+						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "integrate_agent_result":
+					if (args.target !== undefined) {
+						nativeArgs = {
+							target: args.target,
+							strategy: args.strategy,
 						} as NativeArgsFor<TName>
 					}
 					break

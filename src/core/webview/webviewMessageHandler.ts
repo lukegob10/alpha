@@ -99,12 +99,16 @@ export const webviewMessageHandler = async (
 	const updateGlobalState = async <K extends keyof GlobalState>(key: K, value: GlobalState[K]) =>
 		await provider.contextProxy.setValue(key, value)
 
-	const getCurrentCwd = () => {
-		return provider.getCurrentTask()?.cwd || provider.cwd
+	const getCurrentOrTargetTask = (taskId?: string) => {
+		return provider.getCurrentOrTask?.(taskId) ?? (!taskId ? provider.getCurrentTask?.() : undefined)
 	}
 
-	const getCurrentMode = async (): Promise<string> => {
-		const currentTask = provider.getCurrentTask()
+	const getCurrentCwd = (taskId?: string) => {
+		return getCurrentOrTargetTask(taskId)?.cwd || provider.cwd
+	}
+
+	const getCurrentMode = async (taskId?: string): Promise<string> => {
+		const currentTask = getCurrentOrTargetTask(taskId)
 
 		if (currentTask) {
 			try {
@@ -173,15 +177,15 @@ export const webviewMessageHandler = async (
 	 * Resolves image file mentions in incoming messages.
 	 * Matches read_file behavior: respects size limits and model capabilities.
 	 */
-	const resolveIncomingImages = async (payload: { text?: string; images?: string[] }) => {
+	const resolveIncomingImages = async (payload: { text?: string; images?: string[]; taskId?: string }) => {
 		const text = payload.text ?? ""
 		const images = payload.images
-		const currentTask = provider.getCurrentTask()
+		const currentTask = getCurrentOrTargetTask(payload.taskId)
 		const state = await provider.getState()
 		const resolved = await resolveImageMentions({
 			text,
 			images,
-			cwd: getCurrentCwd(),
+			cwd: getCurrentCwd(payload.taskId),
 			rooIgnoreController: currentTask?.rooIgnoreController,
 			maxImageFileSize: state.maxImageFileSize,
 			maxTotalImageSize: state.maxTotalImageSize,
@@ -625,7 +629,7 @@ export const webviewMessageHandler = async (
 					resolved.text,
 					resolved.images,
 					undefined,
-					{ taskId: message.taskId },
+					{ taskId: message.taskId, isolation: message.isolation },
 					message.taskConfiguration,
 				)
 				// Task created successfully - notify the UI to reset
@@ -639,16 +643,30 @@ export const webviewMessageHandler = async (
 				)
 			}
 			break
-		case "customInstructions":
-			await provider.updateCustomInstructions(message.text)
-			break
+			case "focusTask":
+				if (message.taskId || message.text) {
+					await provider.showTaskWithId(message.taskId ?? message.text!)
+				}
+				break
+			case "dockTask":
+				await provider.dockTask(message.taskId)
+				break
+			case "customInstructions":
+				await provider.updateCustomInstructions(message.text)
+				break
 
 		case "askResponse":
 			{
-				const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
-				provider
-					.getCurrentTask()
-					?.handleWebviewAskResponse(message.askResponse!, resolved.text, resolved.images)
+				const resolved = await resolveIncomingImages({
+					text: message.text,
+					images: message.images,
+					taskId: message.taskId,
+				})
+				getCurrentOrTargetTask(message.taskId)?.handleWebviewAskResponse(
+					message.askResponse!,
+					resolved.text,
+					resolved.images,
+				)
 			}
 			break
 
@@ -752,14 +770,14 @@ export const webviewMessageHandler = async (
 
 		case "terminalOperation":
 			if (message.terminalOperation) {
-				provider.getCurrentTask()?.handleTerminalOperation(message.terminalOperation)
+				getCurrentOrTargetTask(message.taskId)?.handleTerminalOperation(message.terminalOperation)
 			}
 			break
 		case "clearTask":
 			// Clear task resets the current session. Delegation flows are
 			// handled via metadata; parent resumption occurs through
 			// reopenParentFromDelegation, not via finishSubTask.
-			await provider.clearTask()
+			await provider.clearTask(message.taskId)
 			await provider.postStateToWebview()
 			break
 		case "didShowAnnouncement":
@@ -776,14 +794,15 @@ export const webviewMessageHandler = async (
 			})
 			break
 		case "exportCurrentTask":
-			const currentTaskId = provider.getCurrentTask()?.taskId
+			const currentTaskId = getCurrentOrTargetTask(message.taskId)?.taskId
 			if (currentTaskId) {
 				provider.exportTaskWithId(currentTaskId)
 			}
 			break
 		case "shareCurrentTask":
-			const shareTaskId = provider.getCurrentTask()?.taskId
-			const clineMessages = provider.getCurrentTask()?.clineMessages
+			const shareTask = getCurrentOrTargetTask(message.taskId)
+			const shareTaskId = shareTask?.taskId
+			const clineMessages = shareTask?.clineMessages
 
 			if (!shareTaskId) {
 				vscode.window.showErrorMessage(t("common:errors.share_no_active_task"))
@@ -829,6 +848,39 @@ export const webviewMessageHandler = async (
 		case "showTaskWithId":
 			provider.showTaskWithId(message.text!)
 			break
+		case "openAgentWorktree": {
+			const agent = provider.getAgentCoordinator().get(message.text!)
+			if (agent?.workspacePath) {
+				await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(agent.workspacePath), true)
+			}
+			break
+		}
+		case "closeParallelAgent": {
+			const target = message.text!
+			const response = await vscode.window.showWarningMessage(
+				`Close parallel agent ${target}? Its worktree will be left intact.`,
+				{ modal: true },
+				"Close Agent",
+			)
+			if (response === "Close Agent") {
+				await provider.getAgentCoordinator().close(target)
+			}
+			break
+		}
+		case "integrateParallelAgentResult": {
+			const target = message.text!
+			const coordinator = provider.getAgentCoordinator()
+			const preview = await coordinator.getIntegrationPreview(target)
+			const response = await vscode.window.showWarningMessage(
+				`Apply parallel agent diff to the current worktree?\n\n${preview.stat || `${preview.changedFiles.length} changed file(s)`}`,
+				{ modal: true },
+				"Apply Diff",
+			)
+			if (response === "Apply Diff") {
+				await coordinator.applyIntegration(target, preview.diff)
+			}
+			break
+		}
 		case "condenseTaskContextRequest":
 			provider.condenseTaskContext(message.text!)
 			break
@@ -1292,7 +1344,7 @@ export const webviewMessageHandler = async (
 			const result = checkoutDiffPayloadSchema.safeParse(message.payload)
 
 			if (result.success) {
-				await provider.getCurrentTask()?.checkpointDiff(result.data)
+				await getCurrentOrTargetTask(message.taskId)?.checkpointDiff(result.data)
 			}
 
 			break
@@ -1300,16 +1352,18 @@ export const webviewMessageHandler = async (
 			const result = checkoutRestorePayloadSchema.safeParse(message.payload)
 
 			if (result.success) {
-				await provider.cancelTask()
+				await provider.cancelTask(message.taskId)
 
 				try {
-					await pWaitFor(() => provider.getCurrentTask()?.isInitialized === true, { timeout: 3_000 })
+					await pWaitFor(() => getCurrentOrTargetTask(message.taskId)?.isInitialized === true, {
+						timeout: 3_000,
+					})
 				} catch (error) {
 					vscode.window.showErrorMessage(t("common:errors.checkpoint_timeout"))
 				}
 
 				try {
-					await provider.getCurrentTask()?.checkpointRestore(result.data)
+					await getCurrentOrTargetTask(message.taskId)?.checkpointRestore(result.data)
 				} catch (error) {
 					vscode.window.showErrorMessage(t("common:errors.checkpoint_failed"))
 				}
@@ -1318,11 +1372,11 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "cancelTask":
-			await provider.cancelTask()
+			await provider.cancelTask(message.taskId)
 			break
 		case "cancelAutoApproval":
 			// Cancel any pending auto-approval timeout for the current task
-			provider.getCurrentTask()?.cancelAutoApprovalTimeout()
+			getCurrentOrTargetTask(message.taskId)?.cancelAutoApprovalTimeout()
 			break
 		case "allowedCommands": {
 			// Validate and sanitize the commands array
@@ -3240,18 +3294,22 @@ export const webviewMessageHandler = async (
 		 */
 
 		case "queueMessage": {
-			const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
-			provider.getCurrentTask()?.messageQueueService.addMessage(resolved.text, resolved.images)
+			const resolved = await resolveIncomingImages({
+				text: message.text,
+				images: message.images,
+				taskId: message.taskId,
+			})
+			getCurrentOrTargetTask(message.taskId)?.messageQueueService.addMessage(resolved.text, resolved.images)
 			break
 		}
 		case "removeQueuedMessage": {
-			provider.getCurrentTask()?.messageQueueService.removeMessage(message.text ?? "")
+			getCurrentOrTargetTask(message.taskId)?.messageQueueService.removeMessage(message.text ?? "")
 			break
 		}
 		case "editQueuedMessage": {
 			if (message.payload) {
 				const { id, text, images } = message.payload as EditQueuedMessagePayload
-				provider.getCurrentTask()?.messageQueueService.updateMessage(id, text, images)
+				getCurrentOrTargetTask(message.taskId)?.messageQueueService.updateMessage(id, text, images)
 			}
 
 			break

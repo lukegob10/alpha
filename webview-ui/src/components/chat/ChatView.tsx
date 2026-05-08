@@ -12,7 +12,7 @@ import { appendImages } from "@src/utils/imageUtils"
 import { getCostBreakdownIfNeeded } from "@src/utils/costFormatting"
 import { batchConsecutive } from "@src/utils/batchConsecutive"
 
-import type { ClineAsk, ClineSayTool, ClineMessage, ExtensionMessage, AudioType } from "@roo-code/types"
+import type { ClineAsk, ClineSayTool, ClineMessage, ExtensionMessage, AudioType, TaskIsolation } from "@roo-code/types"
 import { isRetiredProvider } from "@roo-code/types"
 
 import { findLast } from "@roo/array"
@@ -37,6 +37,7 @@ import TelemetryBanner from "../common/TelemetryBanner"
 import VersionIndicator from "../common/VersionIndicator"
 import HistoryPreview from "../history/HistoryPreview"
 import Announcement from "./Announcement"
+import { ActiveTasksSwitcher } from "./ActiveTasksSwitcher"
 import ChatRow from "./ChatRow"
 import WarningRow from "./WarningRow"
 import { ChatTextArea } from "./ChatTextArea"
@@ -93,10 +94,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		cloudIsAuthenticated,
 		messageQueue = [],
 		showWorktreesInHomeScreen,
+		liveTasks = [],
+		focusedTaskId,
 	} = useExtensionState()
 
 	// Show a WarningRow when the user sends a message with a retired provider.
 	const [showRetiredProviderWarning, setShowRetiredProviderWarning] = useState(false)
+	const [newTaskIsolation, setNewTaskIsolation] = useState<TaskIsolation | undefined>()
 
 	// When the provider changes, clear the retired-provider warning.
 	const providerName = apiConfiguration?.apiProvider
@@ -637,7 +641,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				userRespondedRef.current = true
 
 				if (messagesRef.current.length === 0) {
-					vscode.postMessage({ type: "newTask", text, images })
+					vscode.postMessage({ type: "newTask", text, images, isolation: newTaskIsolation })
+					setNewTaskIsolation(undefined)
 				} else if (clineAskRef.current) {
 					if (clineAskRef.current === "followup") {
 						markFollowUpAsAnswered()
@@ -679,6 +684,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			isStreaming,
 			messageQueue.length,
 			apiConfiguration?.apiProvider,
+			newTaskIsolation,
 		], // messagesRef and clineAskRef are stable
 	)
 
@@ -699,8 +705,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	const startNewTask = useCallback(() => {
 		setShowRetiredProviderWarning(false)
-		vscode.postMessage({ type: "clearTask" })
-	}, [])
+		vscode.postMessage(
+			currentTaskItem?.id ? { type: "dockTask", taskId: currentTaskItem.id } : { type: "clearTask" },
+		)
+	}, [currentTaskItem?.id])
 
 	// Handle stop button click from textarea
 	const handleStopTask = useCallback(() => {
@@ -1583,6 +1591,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					}}
 				/>
 			)}
+			<ActiveTasksSwitcher liveTasks={liveTasks} focusedTaskId={focusedTaskId} />
 			{task ? (
 				<>
 					<TaskHeader
@@ -1659,7 +1668,25 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				</div>
 			)}
 
-			{!task && showWorktreesInHomeScreen && <WorktreeSelector />}
+			{!task && showWorktreesInHomeScreen && (
+				<WorktreeSelector
+					selectionMode="task"
+					selectedWorktreePath={
+						newTaskIsolation?.mode === "worktree" ? newTaskIsolation.workspacePath : undefined
+					}
+					onSelectWorktree={(worktree) => {
+						setNewTaskIsolation(
+							worktree.isCurrent
+								? undefined
+								: {
+										mode: "worktree",
+										workspacePath: worktree.path,
+										branch: worktree.branch,
+									},
+						)
+					}}
+				/>
+			)}
 
 			{task && (
 				<>

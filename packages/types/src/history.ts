@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { parallelAgentStatusSchema, workspaceStrategySchema } from "./parallel-agent.js"
+
 /**
  * HistoryItem
  */
@@ -23,9 +25,21 @@ export const historyItemSchema = z.object({
 	status: z.enum(["active", "completed", "delegated"]).optional(),
 	delegatedToId: z.string().optional(), // Last child this parent delegated to
 	childIds: z.array(z.string()).optional(), // All children spawned by this task
+	runningChildIds: z.array(z.string()).optional(), // Parallel children currently running
+	completedChildIds: z.array(z.string()).optional(), // Parallel children completed
+	failedChildIds: z.array(z.string()).optional(), // Parallel children failed or cancelled
 	awaitingChildId: z.string().optional(), // Child currently awaited (set when delegated)
 	completedByChildId: z.string().optional(), // Child that completed and resumed this parent
 	completionResultSummary: z.string().optional(), // Summary from completed child
+	agentStatus: parallelAgentStatusSchema.optional(),
+	agentRole: z.string().optional(),
+	workspaceStrategy: workspaceStrategySchema.optional(),
+	workspacePath: z.string().optional(),
+	baseBranch: z.string().optional(),
+	agentResultSummary: z.string().optional(),
+	agentChangedFiles: z.array(z.string()).optional(),
+	agentValidation: z.string().optional(),
+	agentIntegrated: z.boolean().optional(),
 })
 
 export type HistoryItem = z.infer<typeof historyItemSchema>

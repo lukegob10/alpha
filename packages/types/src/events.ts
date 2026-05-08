@@ -50,6 +50,7 @@ export enum RooCodeEventName {
 	CommandsResponse = "commandsResponse",
 	ModesResponse = "modesResponse",
 	ModelsResponse = "modelsResponse",
+	LiveTasksResponse = "liveTasksResponse",
 
 	// Evals
 	EvalPass = "evalPass",
@@ -128,6 +129,7 @@ export const rooCodeEventsSchema = z.object({
 	]),
 	[RooCodeEventName.ModesResponse]: z.tuple([z.array(z.object({ slug: z.string(), name: z.string() }))]),
 	[RooCodeEventName.ModelsResponse]: z.tuple([z.record(z.string(), modelInfoSchema)]),
+	[RooCodeEventName.LiveTasksResponse]: z.tuple([z.array(z.any())]),
 })
 
 export type RooCodeEvents = z.infer<typeof rooCodeEventsSchema>
@@ -271,6 +273,11 @@ export const taskEventSchema = z.discriminatedUnion("eventName", [
 	z.object({
 		eventName: z.literal(RooCodeEventName.ModelsResponse),
 		payload: rooCodeEventsSchema.shape[RooCodeEventName.ModelsResponse],
+		taskId: z.number().optional(),
+	}),
+	z.object({
+		eventName: z.literal(RooCodeEventName.LiveTasksResponse),
+		payload: rooCodeEventsSchema.shape[RooCodeEventName.LiveTasksResponse],
 		taskId: z.number().optional(),
 	}),
 

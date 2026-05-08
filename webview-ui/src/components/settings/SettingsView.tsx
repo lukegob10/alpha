@@ -158,6 +158,9 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		alwaysAllowMcp,
 		alwaysAllowModeSwitch,
 		alwaysAllowSubtasks,
+		parallelSubagents,
+		parallelAgentMaxConcurrent,
+		maxConcurrentTasks,
 		alwaysAllowWrite,
 		alwaysAllowWriteOutsideWorkspace,
 		alwaysAllowWriteProtected,
@@ -408,6 +411,9 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 						includeDiagnosticMessages !== undefined ? includeDiagnosticMessages : true,
 					maxDiagnosticMessages: maxDiagnosticMessages ?? 50,
 					alwaysAllowSubtasks,
+					parallelSubagents: parallelSubagents ?? false,
+					parallelAgentMaxConcurrent: Math.min(Math.max(1, parallelAgentMaxConcurrent ?? 3), 8),
+					maxConcurrentTasks: Math.min(Math.max(1, maxConcurrentTasks ?? 3), 8),
 					alwaysAllowFollowupQuestions: alwaysAllowFollowupQuestions ?? false,
 					followupAutoApproveTimeoutMs,
 					includeTaskHistoryInEnhance: includeTaskHistoryInEnhance ?? true,
@@ -911,6 +917,10 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 								setImageGenerationProvider={setImageGenerationProvider}
 								setOpenRouterImageApiKey={setOpenRouterImageApiKey}
 								setImageGenerationSelectedModel={setImageGenerationSelectedModel}
+								parallelSubagents={parallelSubagents}
+								parallelAgentMaxConcurrent={parallelAgentMaxConcurrent}
+								maxConcurrentTasks={maxConcurrentTasks}
+								setCachedStateField={setCachedStateField}
 							/>
 						)}
 

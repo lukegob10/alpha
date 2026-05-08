@@ -46,6 +46,8 @@ export enum TaskCommandName {
 	CloseTask = "CloseTask",
 	ResumeTask = "ResumeTask",
 	SendMessage = "SendMessage",
+	ListLiveTasks = "ListLiveTasks",
+	FocusTask = "FocusTask",
 	GetCommands = "GetCommands",
 	GetModes = "GetModes",
 	GetModels = "GetModels",
@@ -64,13 +66,16 @@ export const taskCommandSchema = z.discriminatedUnion("commandName", [
 			text: z.string(),
 			images: z.array(z.string()).optional(),
 			newTab: z.boolean().optional(),
+			isolation: z.any().optional(),
 		}),
 	}),
 	z.object({
 		commandName: z.literal(TaskCommandName.CancelTask),
+		data: z.object({ taskId: z.string().optional() }).optional(),
 	}),
 	z.object({
 		commandName: z.literal(TaskCommandName.CloseTask),
+		data: z.object({ taskId: z.string().optional() }).optional(),
 	}),
 	z.object({
 		commandName: z.literal(TaskCommandName.ResumeTask),
@@ -79,9 +84,17 @@ export const taskCommandSchema = z.discriminatedUnion("commandName", [
 	z.object({
 		commandName: z.literal(TaskCommandName.SendMessage),
 		data: z.object({
+			taskId: z.string().optional(),
 			text: z.string().optional(),
 			images: z.array(z.string()).optional(),
 		}),
+	}),
+	z.object({
+		commandName: z.literal(TaskCommandName.ListLiveTasks),
+	}),
+	z.object({
+		commandName: z.literal(TaskCommandName.FocusTask),
+		data: z.string(),
 	}),
 	z.object({
 		commandName: z.literal(TaskCommandName.GetCommands),
@@ -94,7 +107,7 @@ export const taskCommandSchema = z.discriminatedUnion("commandName", [
 	}),
 	z.object({
 		commandName: z.literal(TaskCommandName.DeleteQueuedMessage),
-		data: z.string(), // messageId
+		data: z.union([z.string(), z.object({ messageId: z.string(), taskId: z.string().optional() })]),
 	}),
 ])
 

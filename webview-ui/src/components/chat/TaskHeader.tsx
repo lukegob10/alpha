@@ -3,7 +3,15 @@ import { useTranslation } from "react-i18next"
 import { useCloudUpsell } from "@src/hooks/useCloudUpsell"
 import { CloudUpsellDialog } from "@src/components/cloud/CloudUpsellDialog"
 import DismissibleUpsell from "@src/components/common/DismissibleUpsell"
-import { ChevronUp, ChevronDown, HardDriveDownload, HardDriveUpload, FoldVertical, ArrowLeft } from "lucide-react"
+import {
+	ChevronUp,
+	ChevronDown,
+	HardDriveDownload,
+	HardDriveUpload,
+	FoldVertical,
+	ArrowLeft,
+	Minimize2,
+} from "lucide-react"
 import prettyBytes from "pretty-bytes"
 
 import type { ClineMessage } from "@roo-code/types"
@@ -25,6 +33,7 @@ import { ContextWindowProgress } from "./ContextWindowProgress"
 import { Mention } from "./Mention"
 import { TodoListDisplay } from "./TodoListDisplay"
 import { LucideIconButton } from "./LucideIconButton"
+import { ActiveAgentsList } from "./ActiveAgentsList"
 
 export interface TaskHeaderProps {
 	task: ClineMessage
@@ -130,6 +139,10 @@ const TaskHeader = ({
 		}
 	}
 
+	const handleDockTask = () => {
+		vscode.postMessage({ type: "dockTask", taskId: currentTaskItem?.id })
+	}
+
 	return (
 		<div className="group pt-2 pb-0 px-3">
 			{isSubtask && (
@@ -198,9 +211,19 @@ const TaskHeader = ({
 								</div>
 							)}
 						</div>
-						<div className="flex items-center shrink-0 ml-2" onClick={(e) => e.stopPropagation()}>
-							<StandardTooltip content={isTaskExpanded ? t("chat:task.collapse") : t("chat:task.expand")}>
-								<button
+							<div className="flex items-center shrink-0 ml-2" onClick={(e) => e.stopPropagation()}>
+								<StandardTooltip content="Return to task dock">
+									<button
+										type="button"
+										title="Return to task dock"
+										aria-label="Return to task dock"
+										onClick={handleDockTask}
+										className="shrink-0 min-h-[20px] min-w-[20px] p-[2px] cursor-pointer opacity-85 hover:opacity-100 bg-transparent border-none rounded-md">
+										<Minimize2 size={15} />
+									</button>
+								</StandardTooltip>
+								<StandardTooltip content={isTaskExpanded ? t("chat:task.collapse") : t("chat:task.expand")}>
+									<button
 									onClick={() => setIsTaskExpanded(!isTaskExpanded)}
 									className="shrink-0 min-h-[20px] min-w-[20px] p-[2px] cursor-pointer opacity-85 hover:opacity-100 bg-transparent border-none rounded-md">
 									{isTaskExpanded ? (
@@ -466,6 +489,7 @@ const TaskHeader = ({
 				{/* Todo list - always shown at bottom when todos exist */}
 				{hasTodos && <TodoListDisplay todos={todos ?? (task as any)?.tool?.todos ?? []} />}
 			</div>
+			<ActiveAgentsList currentTaskId={currentTaskItem?.id} />
 			<CloudUpsellDialog open={isOpen} onOpenChange={closeUpsell} onConnect={handleConnect} />
 		</div>
 	)

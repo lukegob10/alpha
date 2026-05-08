@@ -30,6 +30,15 @@ import { askFollowupQuestionTool } from "../tools/AskFollowupQuestionTool"
 import { switchModeTool } from "../tools/SwitchModeTool"
 import { attemptCompletionTool, AttemptCompletionCallbacks } from "../tools/AttemptCompletionTool"
 import { newTaskTool } from "../tools/NewTaskTool"
+import {
+	spawnAgentTool,
+	spawnAgentsTool,
+	waitAgentTool,
+	sendInputTool,
+	listAgentsTool,
+	closeAgentTool,
+	integrateAgentResultTool,
+} from "../tools/ParallelAgentTools"
 import { updateTodoListTool } from "../tools/UpdateTodoListTool"
 import { runSlashCommandTool } from "../tools/RunSlashCommandTool"
 import { skillTool } from "../tools/SkillTool"
@@ -377,6 +386,20 @@ export async function presentAssistantMessage(cline: Task) {
 						const modeName = getModeBySlug(mode, customModes)?.name ?? mode
 						return `[${block.name} in ${modeName} mode: '${message}']`
 					}
+					case "spawn_agent":
+						return `[${block.name} '${block.params.task_name ?? "(unnamed)"}']`
+					case "spawn_agents":
+						return `[${block.name}]`
+					case "wait_agent":
+						return `[${block.name}]`
+					case "send_input":
+						return `[${block.name} to '${block.params.target ?? "(unknown)"}']`
+					case "list_agents":
+						return `[${block.name}]`
+					case "close_agent":
+						return `[${block.name} '${block.params.target ?? "(unknown)"}']`
+					case "integrate_agent_result":
+						return `[${block.name} '${block.params.target ?? "(unknown)"}']`
 					case "run_slash_command":
 						return `[${block.name} for '${block.params.command}'${block.params.args ? ` with args: ${block.params.args}` : ""}]`
 					case "skill":
@@ -810,6 +833,56 @@ export async function presentAssistantMessage(cline: Task) {
 						handleError,
 						pushToolResult,
 						toolCallId: block.id,
+					})
+					break
+				case "spawn_agent":
+					await spawnAgentTool.handle(cline, block as ToolUse<"spawn_agent">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "spawn_agents":
+					await spawnAgentsTool.handle(cline, block as ToolUse<"spawn_agents">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "wait_agent":
+					await waitAgentTool.handle(cline, block as ToolUse<"wait_agent">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "send_input":
+					await sendInputTool.handle(cline, block as ToolUse<"send_input">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "list_agents":
+					await listAgentsTool.handle(cline, block as ToolUse<"list_agents">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "close_agent":
+					await closeAgentTool.handle(cline, block as ToolUse<"close_agent">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "integrate_agent_result":
+					await checkpointSaveAndMark(cline)
+					await integrateAgentResultTool.handle(cline, block as ToolUse<"integrate_agent_result">, {
+						askApproval,
+						handleError,
+						pushToolResult,
 					})
 					break
 				case "attempt_completion": {

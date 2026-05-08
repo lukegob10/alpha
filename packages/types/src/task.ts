@@ -8,6 +8,48 @@ import type { StaticAppProperties, GitProperties, TelemetryProperties } from "./
 import type { TodoItem } from "./todo.js"
 
 /**
+ * Parallel Task Sessions
+ */
+
+export type TaskRuntimeStatus = "queued" | "running" | "interactive" | "resumable" | "idle" | "completed" | "aborted"
+
+export type TaskIsolation =
+	| {
+			mode: "shared"
+			workspacePath: string
+	  }
+	| {
+			mode: "worktree"
+			workspacePath: string
+			branch?: string
+			createdByTask?: boolean
+	  }
+
+export type TaskTarget = {
+	taskId?: string
+}
+
+export interface LiveTaskSummary {
+	id: string
+	rootTaskId: string
+	currentTaskId: string
+	parentTaskId?: string
+	title: string
+	status: TaskRuntimeStatus
+	isFocused: boolean
+	isSubtask: boolean
+	unreadCount: number
+	queueSize: number
+	tokensIn?: number
+	tokensOut?: number
+	totalCost?: number
+	workspacePath?: string
+	isolation: TaskIsolation
+	createdAt: number
+	updatedAt: number
+}
+
+/**
  * TaskProviderLike
  */
 
@@ -94,11 +136,16 @@ export interface CreateTaskOptions {
 	consecutiveMistakeLimit?: number
 	experiments?: Record<string, boolean>
 	initialTodos?: TodoItem[]
+	isolation?: TaskIsolation
 	/** Initial status for the task's history item (e.g., "active" for child tasks) */
 	initialStatus?: "active" | "delegated" | "completed"
 	/** Whether to start the task loop immediately (default: true).
 	 *  When false, the caller must invoke `task.start()` manually. */
 	startTask?: boolean
+	/** Initial mode for background/isolated tasks that should not mutate the visible provider mode. */
+	initialMode?: string
+	/** Parallel agent id when this task is owned by the AgentCoordinator. */
+	parallelAgentId?: string
 }
 
 export enum TaskStatus {
@@ -121,6 +168,7 @@ export interface TaskLike {
 	readonly rootTaskId?: string
 	readonly parentTaskId?: string
 	readonly childTaskId?: string
+	readonly parallelAgentId?: string
 	readonly metadata: TaskMetadata
 	readonly taskStatus: TaskStatus
 	readonly taskAsk: ClineMessage | undefined

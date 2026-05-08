@@ -1,4 +1,5 @@
 import { HTMLAttributes } from "react"
+import { VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
 
 import type { Experiments, ImageGenerationProvider } from "@roo-code/types"
 
@@ -6,8 +7,9 @@ import { EXPERIMENT_IDS, experimentConfigsMap } from "@roo/experiments"
 
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { cn } from "@src/lib/utils"
+import { Input } from "@/components/ui"
 
-import { SetExperimentEnabled } from "./types"
+import { SetCachedStateField, SetExperimentEnabled } from "./types"
 import { SectionHeader } from "./SectionHeader"
 import { Section } from "./Section"
 import { SearchableSetting } from "./SearchableSetting"
@@ -26,6 +28,10 @@ type ExperimentalSettingsProps = HTMLAttributes<HTMLDivElement> & {
 	setImageGenerationProvider?: (provider: ImageGenerationProvider) => void
 	setOpenRouterImageApiKey?: (apiKey: string) => void
 	setImageGenerationSelectedModel?: (model: string) => void
+	parallelSubagents?: boolean
+	parallelAgentMaxConcurrent?: number
+	maxConcurrentTasks?: number
+	setCachedStateField?: SetCachedStateField<any>
 }
 
 export const ExperimentalSettings = ({
@@ -39,6 +45,10 @@ export const ExperimentalSettings = ({
 	setImageGenerationProvider,
 	setOpenRouterImageApiKey,
 	setImageGenerationSelectedModel,
+	parallelSubagents,
+	parallelAgentMaxConcurrent,
+	maxConcurrentTasks,
+	setCachedStateField,
 	className,
 	...props
 }: ExperimentalSettingsProps) => {
@@ -49,6 +59,60 @@ export const ExperimentalSettings = ({
 			<SectionHeader>{t("settings:sections.experimental")}</SectionHeader>
 
 			<Section>
+				{setCachedStateField && (
+					<SearchableSetting
+						settingId="experimental-parallel-subagents"
+						section="experimental"
+						label="Parallel subagents">
+						<div className="flex flex-col gap-3">
+							<VSCodeCheckbox
+								checked={parallelSubagents ?? false}
+								onChange={(e: any) => setCachedStateField("parallelSubagents", e.target.checked)}>
+								<span className="font-medium">Enable parallel subagents</span>
+							</VSCodeCheckbox>
+							<div className="flex items-center gap-3 pl-6">
+								<label
+									className="text-sm text-vscode-descriptionForeground"
+									htmlFor="parallel-agent-max">
+									Max concurrent agents
+								</label>
+								<Input
+									id="parallel-agent-max"
+									type="number"
+									min={1}
+									max={8}
+									value={parallelAgentMaxConcurrent ?? 3}
+									onChange={(event) =>
+										setCachedStateField(
+											"parallelAgentMaxConcurrent",
+											Math.min(Math.max(1, Number(event.target.value) || 3), 8),
+										)
+									}
+									className="w-20"
+								/>
+							</div>
+							<div className="flex items-center gap-3 pl-6">
+								<label className="text-sm text-vscode-descriptionForeground" htmlFor="live-task-max">
+									Max live task sessions
+								</label>
+								<Input
+									id="live-task-max"
+									type="number"
+									min={1}
+									max={8}
+									value={maxConcurrentTasks ?? 3}
+									onChange={(event) =>
+										setCachedStateField(
+											"maxConcurrentTasks",
+											Math.min(Math.max(1, Number(event.target.value) || 3), 8),
+										)
+									}
+									className="w-20"
+								/>
+							</div>
+						</div>
+					</SearchableSetting>
+				)}
 				{Object.entries(experimentConfigsMap)
 					.filter(([key]) => key in EXPERIMENT_IDS)
 					.map((config) => {

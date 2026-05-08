@@ -155,6 +155,8 @@ export interface TaskOptions extends CreateTaskOptions {
 	onCreated?: (task: Task) => void
 	initialTodos?: TodoItem[]
 	workspacePath?: string
+	initialMode?: string
+	parallelAgentId?: string
 	/** Initial status for the task's history item (e.g., "active" for child tasks) */
 	initialStatus?: "active" | "delegated" | "completed"
 }
@@ -164,6 +166,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	readonly rootTaskId?: string
 	readonly parentTaskId?: string
 	childTaskId?: string
+	readonly parallelAgentId?: string
 	pendingNewTaskToolCallId?: string
 
 	readonly instanceId: string
@@ -435,6 +438,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		onCreated,
 		initialTodos,
 		workspacePath,
+		initialMode,
+		parallelAgentId,
 		initialStatus,
 	}: TaskOptions) {
 		super()
@@ -461,6 +466,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.rootTaskId = historyItem ? historyItem.rootTaskId : rootTask?.taskId
 		this.parentTaskId = historyItem ? historyItem.parentTaskId : parentTask?.taskId
 		this.childTaskId = undefined
+		this.parallelAgentId = parallelAgentId
 
 		this.metadata = {
 			task: historyItem ? historyItem.task : task,
@@ -468,9 +474,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		// Normal use-case is usually retry similar history task with new workspace.
-		this.workspacePath = parentTask
-			? parentTask.workspacePath
-			: (workspacePath ?? getWorkspacePath(path.join(os.homedir(), "Desktop")))
+		this.workspacePath =
+			workspacePath ??
+			(parentTask ? parentTask.workspacePath : getWorkspacePath(path.join(os.homedir(), "Desktop")))
 
 		this.instanceId = crypto.randomUUID().slice(0, 8)
 		this.taskNumber = -1
@@ -507,6 +513,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.taskModeReady = Promise.resolve()
 			this.taskApiConfigReady = Promise.resolve()
 			TelemetryService.instance.captureTaskRestarted(this.taskId)
+		} else if (initialMode) {
+			this._taskMode = initialMode
+			this._taskApiConfigName = undefined
+			this.taskModeReady = Promise.resolve()
+			this.taskApiConfigReady = this.initializeTaskApiConfigName(provider)
+			TelemetryService.instance.captureTaskCreated(this.taskId)
 		} else {
 			// For new tasks, don't set the mode/apiConfigName yet - wait for async initialization.
 			this._taskMode = undefined
@@ -523,7 +535,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.messageQueueStateChangedHandler = () => {
 			this.emit(RooCodeEventName.TaskUserMessage, this.taskId)
 			this.emit(RooCodeEventName.QueuedMessagesUpdated, this.taskId, this.messageQueueService.messages)
-			this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
+			void this.postCurrentTaskStateToWebview()
 		}
 
 		this.messageQueueService.on("stateChanged", this.messageQueueStateChangedHandler)
@@ -1153,12 +1165,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return readTaskMessages({ taskId: this.taskId, globalStoragePath: this.globalStoragePath })
 	}
 
+	private async postCurrentTaskStateToWebview() {
+		const provider = this.providerRef.deref()
+
+		if (provider?.postTaskStateToWebview) {
+			await provider.postTaskStateToWebview(this.taskId)
+			return
+		}
+
+		await provider?.postStateToWebviewWithoutTaskHistory?.()
+	}
+
 	private async addToClineMessages(message: ClineMessage) {
 		this.clineMessages.push(message)
-		const provider = this.providerRef.deref()
 		// Avoid resending large, mostly-static fields (notably taskHistory) on every chat message update.
 		// taskHistory is maintained in-memory in the webview and updated via taskHistoryItemUpdated.
-		await provider?.postStateToWebviewWithoutTaskHistory()
+		await this.postCurrentTaskStateToWebview()
 		this.emit(RooCodeEventName.Message, { action: "created", message })
 		await this.saveClineMessages()
 
@@ -1191,7 +1213,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private async updateClineMessage(message: ClineMessage) {
 		const provider = this.providerRef.deref()
-		await provider?.postMessageToWebview({ type: "messageUpdated", clineMessage: message })
+		await provider?.postMessageToWebview({ type: "messageUpdated", taskId: this.taskId, clineMessage: message })
 		this.emit(RooCodeEventName.Message, { action: "updated", message })
 
 		// Check if we should sync to cloud and haven't already synced this message
@@ -1399,7 +1421,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						if (message) {
 							this.interactiveAsk = message
 							this.emit(RooCodeEventName.TaskInteractive, this.taskId)
-							provider?.postMessageToWebview({ type: "interactionRequired" })
+							provider?.postMessageToWebview({ type: "interactionRequired", taskId: this.taskId })
 						}
 					}, statusMutationTimeout),
 				)
@@ -1948,7 +1970,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// The todo list is already set in the constructor if initialTodos were provided
 			// No need to add any messages - the todoList property is already set
 
-			await this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
+			await this.postCurrentTaskStateToWebview()
 
 			await this.say("text", task, images)
 
@@ -2671,7 +2693,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			} satisfies ClineApiReqInfo)
 
 			await this.saveClineMessages()
-			await this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
+			await this.postCurrentTaskStateToWebview()
 
 			try {
 				let cacheWriteTokens = 0
@@ -3401,7 +3423,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 
 				await this.saveClineMessages()
-				await this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
+				await this.postCurrentTaskStateToWebview()
 
 				// No legacy text-stream tool parser state to reset.
 

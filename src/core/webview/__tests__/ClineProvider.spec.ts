@@ -316,16 +316,23 @@ describe("ClineProvider", () => {
 				abortTask: vi.fn(),
 				handleWebviewAskResponse: vi.fn(),
 				clineMessages: [],
-				apiConversationHistory: [],
-				overwriteClineMessages: vi.fn(),
-				overwriteApiConversationHistory: vi.fn(),
-				getTaskNumber: vi.fn().mockReturnValue(0),
-				setTaskNumber: vi.fn(),
-				setParentTask: vi.fn(),
-				setRootTask: vi.fn(),
-				taskId: options?.historyItem?.id || "test-task-id",
-				emit: vi.fn(),
-			}
+					apiConversationHistory: [],
+					overwriteClineMessages: vi.fn(),
+					overwriteApiConversationHistory: vi.fn(),
+					getTaskNumber: vi.fn().mockReturnValue(0),
+					setTaskNumber: vi.fn(),
+					setParentTask: vi.fn(),
+					setRootTask: vi.fn(),
+					start: vi.fn(),
+					taskId: options?.historyItem?.id || "test-task-id",
+					cwd: options?.workspacePath ?? "/test/path",
+					parentTask: options?.parentTask,
+					parentTaskId: options?.parentTask?.taskId,
+					rootTask: options?.rootTask,
+					metadata: { task: options?.task ?? options?.historyItem?.task },
+					messageQueueService: { messages: [] },
+					emit: vi.fn(),
+				}
 
 			Object.defineProperty(task, "messageManager", {
 				get: () => new MessageManager(task),
@@ -736,7 +743,7 @@ describe("ClineProvider", () => {
 		})
 	})
 
-	test("addClineToStack adds multiple Alpha instances to the stack", async () => {
+	test("addClineToStack tracks multiple top-level Alpha instances as live sessions", async () => {
 		// Setup Alpha instance with auto-mock from the top of the file
 		const mockCline1 = new Task(defaultTaskOptions) // Create a new mocked instance
 		const mockCline2 = new Task(defaultTaskOptions) // Create a new mocked instance
@@ -747,11 +754,163 @@ describe("ClineProvider", () => {
 		await provider.addClineToStack(mockCline1)
 		await provider.addClineToStack(mockCline2)
 
-		// verify cline instances were added to the stack
-		expect(provider.getTaskStackSize()).toBe(2)
+			// Top-level tasks live in separate sessions; the legacy stack exposes only the focused session.
+			expect(provider.getLiveTasks()).toHaveLength(2)
+			expect(provider.getTaskStackSize()).toBe(1)
 
 		// verify current cline instance is the last one added
 		expect(provider.getCurrentTask()).toBe(mockCline2)
+	})
+
+	describe("parallel live task sessions", () => {
+		test("focuses an existing live task without closing the other sessions", async () => {
+			const mockCline1 = new Task(defaultTaskOptions)
+			const mockCline2 = new Task(defaultTaskOptions)
+			Object.defineProperty(mockCline1, "taskId", { value: "parallel-task-1", writable: true })
+			Object.defineProperty(mockCline2, "taskId", { value: "parallel-task-2", writable: true })
+			const postStateToWebview = vi.spyOn(provider, "postStateToWebview").mockResolvedValue(undefined)
+
+			await provider.addClineToStack(mockCline1)
+			await provider.addClineToStack(mockCline2)
+
+			expect(provider.getCurrentTask()).toBe(mockCline2)
+			expect(provider.getLiveTasks()).toHaveLength(2)
+
+			await provider.showTaskWithId("parallel-task-1")
+
+			expect(provider.getCurrentTask()).toBe(mockCline1)
+			expect(provider.getLiveTasks()).toHaveLength(2)
+			expect(provider.getLiveTasks().find((task) => task.id === "parallel-task-1")?.isFocused).toBe(true)
+			expect(postStateToWebview).toHaveBeenCalled()
+		})
+
+		test("scopes subtasks to the parent live session instead of creating another top-level session", async () => {
+			const parentTask = new Task(defaultTaskOptions)
+			const childTask = new Task({ ...defaultTaskOptions, parentTask })
+			Object.defineProperty(parentTask, "taskId", { value: "parent-session-task", writable: true })
+			Object.defineProperty(childTask, "taskId", { value: "child-session-task", writable: true })
+			Object.defineProperty(childTask, "parentTaskId", { value: "parent-session-task", writable: true })
+
+			await provider.addClineToStack(parentTask)
+			await provider.addClineToStack(childTask)
+
+			expect(provider.getLiveTasks()).toHaveLength(1)
+			expect(provider.getTaskStackSize()).toBe(2)
+			expect(provider.getCurrentTask()).toBe(childTask)
+			expect(provider.getTaskById("parent-session-task")).toBe(parentTask)
+			expect(provider.getTaskById("child-session-task")).toBe(childTask)
+		})
+
+		test("queues top-level sessions beyond maxConcurrentTasks", async () => {
+			vi.spyOn(provider.contextProxy, "getValue").mockImplementation((key: any) =>
+				key === "maxConcurrentTasks" ? 3 : undefined,
+			)
+
+			const tasks = Array.from({ length: 4 }, (_, index) => {
+				const task = new Task(defaultTaskOptions)
+				Object.defineProperty(task, "taskId", { value: `scheduled-task-${index + 1}`, writable: true })
+				return task
+			})
+
+			for (const task of tasks) {
+				await provider.addClineToStack(task)
+			}
+
+			const sessions = tasks.map((task) => (provider as any).getSessionByTaskId(task.taskId))
+			const starts = sessions.map(() => vi.fn())
+
+			sessions.forEach((session, index) => {
+				session.started = false
+				session.status = "running"
+				session.startPending = starts[index]
+			})
+
+			sessions.forEach((session) => (provider as any).startSessionIfSlotAvailable(session))
+
+			expect(starts.slice(0, 3).every((start) => start.mock.calls.length === 1)).toBe(true)
+			expect(starts[3]).not.toHaveBeenCalled()
+			expect(sessions.slice(0, 3).every((session) => session.started)).toBe(true)
+			expect(sessions[3].started).toBe(false)
+			expect(sessions[3].status).toBe("queued")
+		})
+
+		test("posts full task state only for the focused task and lightweight updates for background tasks", async () => {
+			const mockCline1 = new Task(defaultTaskOptions)
+			const mockCline2 = new Task(defaultTaskOptions)
+			Object.defineProperty(mockCline1, "taskId", { value: "background-task", writable: true })
+			Object.defineProperty(mockCline2, "taskId", { value: "focused-task", writable: true })
+			const postStateWithoutHistory = vi
+				.spyOn(provider, "postStateToWebviewWithoutTaskHistory")
+				.mockResolvedValue(undefined)
+			const postMessage = vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
+
+			await provider.addClineToStack(mockCline1)
+			await provider.addClineToStack(mockCline2)
+
+			postStateWithoutHistory.mockClear()
+			postMessage.mockClear()
+
+			await provider.postTaskStateToWebview("background-task")
+
+			expect(postStateWithoutHistory).not.toHaveBeenCalled()
+			expect(postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "liveTaskUpdated",
+					liveTask: expect.objectContaining({ id: "background-task" }),
+				}),
+			)
+
+			postMessage.mockClear()
+
+			await provider.postTaskStateToWebview("focused-task")
+
+			expect(postStateWithoutHistory).toHaveBeenCalledTimes(1)
+			expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "liveTaskUpdated" }))
+		})
+
+		test("removes a targeted live task without affecting the focused session", async () => {
+			const mockCline1 = new Task(defaultTaskOptions)
+			const mockCline2 = new Task(defaultTaskOptions)
+			Object.defineProperty(mockCline1, "taskId", { value: "task-to-remove", writable: true })
+			Object.defineProperty(mockCline2, "taskId", { value: "task-to-keep", writable: true })
+
+			await provider.addClineToStack(mockCline1)
+			await provider.addClineToStack(mockCline2)
+
+			await provider.removeClineFromStack({ taskId: "task-to-remove" })
+
+			expect(provider.getLiveTasks()).toHaveLength(1)
+			expect(provider.getCurrentTask()).toBe(mockCline2)
+			expect(provider.getTaskById("task-to-remove")).toBeUndefined()
+			expect(provider.getTaskById("task-to-keep")).toBe(mockCline2)
+			expect(mockCline1.abortTask).toHaveBeenCalled()
+			expect(mockCline2.abortTask).not.toHaveBeenCalled()
+		})
+
+		test("docks the focused task into the live task switcher without cancelling it", async () => {
+			const mockCline = new Task(defaultTaskOptions)
+			Object.defineProperty(mockCline, "taskId", { value: "task-to-dock", writable: true })
+			const postStateToWebview = vi.spyOn(provider, "postStateToWebview").mockResolvedValue(undefined)
+			const postMessageToWebview = vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
+
+			await provider.addClineToStack(mockCline)
+
+			expect(provider.getCurrentTask()).toBe(mockCline)
+
+			await provider.dockTask("task-to-dock")
+
+			expect(provider.getCurrentTask()).toBeUndefined()
+			expect(provider.getLiveTasks()).toHaveLength(1)
+			expect(provider.getLiveTasks()[0]).toEqual(
+				expect.objectContaining({
+					id: "task-to-dock",
+					isFocused: false,
+				}),
+			)
+			expect(mockCline.abortTask).not.toHaveBeenCalled()
+			expect(postStateToWebview).toHaveBeenCalled()
+			expect(postMessageToWebview).toHaveBeenCalledWith({ type: "action", action: "chatButtonClicked" })
+		})
 	})
 
 	test("getState returns correct initial state", async () => {

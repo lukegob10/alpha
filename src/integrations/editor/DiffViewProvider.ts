@@ -36,6 +36,7 @@ export class DiffViewProvider {
 	private streamedLines: string[] = []
 	private preDiagnostics: [vscode.Uri, vscode.Diagnostic[]][] = []
 	private taskRef: WeakRef<Task>
+	private releaseWriteLock?: () => void
 
 	constructor(
 		private cwd: string,
@@ -44,10 +45,22 @@ export class DiffViewProvider {
 		this.taskRef = new WeakRef(task)
 	}
 
+	private acquireWriteLock(absolutePath: string, operation: string): (() => void) | undefined {
+		const task = this.taskRef.deref()
+		return task?.providerRef.deref()?.acquireTaskWriteLock?.(task, absolutePath, operation)
+	}
+
+	private releaseOpenWriteLock(): void {
+		this.releaseWriteLock?.()
+		this.releaseWriteLock = undefined
+	}
+
 	async open(relPath: string): Promise<void> {
 		this.relPath = relPath
 		const fileExists = this.editType === "modify"
 		const absolutePath = path.resolve(this.cwd, relPath)
+		this.releaseOpenWriteLock()
+		this.releaseWriteLock = this.acquireWriteLock(absolutePath, "edit")
 		this.isEditing = true
 
 		// If the file is already open, ensure it's not dirty before getting its
@@ -617,6 +630,7 @@ export class DiffViewProvider {
 	}
 
 	async reset(): Promise<void> {
+		this.releaseOpenWriteLock()
 		await this.closeAllDiffViews()
 		this.editType = undefined
 		this.isEditing = false
@@ -656,8 +670,13 @@ export class DiffViewProvider {
 		this.preDiagnostics = vscode.languages.getDiagnostics()
 
 		// Write the content directly to the file
-		await createDirectoriesForFile(absolutePath)
-		await fs.writeFile(absolutePath, content, "utf-8")
+		const releaseWriteLock = this.acquireWriteLock(absolutePath, "write")
+		try {
+			await createDirectoriesForFile(absolutePath)
+			await fs.writeFile(absolutePath, content, "utf-8")
+		} finally {
+			releaseWriteLock?.()
+		}
 
 		// Open the document to ensure diagnostics are loaded
 		// When openFile is false (PREVENT_FOCUS_DISRUPTION enabled), we only open in memory

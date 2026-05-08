@@ -27,21 +27,33 @@ vi.mock("../core/task/Task", () => {
 	return { Task: TaskStub }
 })
 
-describe("Single-open-task invariant", () => {
+describe("Parallel live task sessions", () => {
 	beforeEach(() => {
 		vi.restoreAllMocks()
 	})
 
-	it("User-initiated create: closes existing before opening new", async () => {
+	it("User-initiated create: keeps existing live task before opening new", async () => {
 		// Allow profile
 		vi.spyOn(ProfileValidatorMod.ProfileValidator, "isProfileAllowed").mockReturnValue(true)
 
 		const removeClineFromStack = vi.fn().mockResolvedValue(undefined)
-		const addClineToStack = vi.fn().mockResolvedValue(undefined)
+		const addClineToStack = vi.fn().mockResolvedValue({
+			id: "new-session",
+			stack: [],
+			isolation: { mode: "shared", workspacePath: "/tmp" },
+			status: "running",
+			unreadCount: 0,
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+			started: false,
+		})
 
 		const provider = {
 			// Simulate an existing task present in stack
 			clineStack: [{ taskId: "existing-1" }],
+			liveTaskSessions: new Map(),
+			getDefaultIsolation: vi.fn(() => ({ mode: "shared", workspacePath: "/tmp" })),
+			startSessionIfSlotAvailable: vi.fn(),
 			setValues: vi.fn(),
 			getState: vi.fn().mockResolvedValue({
 				apiConfiguration: { apiProvider: "anthropic", consecutiveMistakeLimit: 0 },
@@ -55,6 +67,7 @@ describe("Single-open-task invariant", () => {
 			setProviderProfile: vi.fn(),
 			log: vi.fn(),
 			getStateToPostToWebview: vi.fn(),
+			postMessageToWebview: vi.fn(),
 			providerSettingsManager: { getModeConfigId: vi.fn(), listConfig: vi.fn() },
 			customModesManager: { getCustomModes: vi.fn().mockResolvedValue([]) },
 			taskCreationCallback: vi.fn(),
@@ -69,17 +82,29 @@ describe("Single-open-task invariant", () => {
 
 		await (ClineProvider.prototype as any).createTask.call(provider, "New task")
 
-		expect(removeClineFromStack).toHaveBeenCalledTimes(1)
+		expect(removeClineFromStack).not.toHaveBeenCalled()
 		expect(addClineToStack).toHaveBeenCalledTimes(1)
 	})
 
-	it("History resume path always closes current before rehydration (non-rehydrating case)", async () => {
+	it("History resume path creates a focused resumable session without closing other live sessions", async () => {
 		const removeClineFromStack = vi.fn().mockResolvedValue(undefined)
-		const addClineToStack = vi.fn().mockResolvedValue(undefined)
+		const addClineToStack = vi.fn().mockResolvedValue({
+			id: "hist-1",
+			stack: [],
+			isolation: { mode: "shared", workspacePath: "/tmp" },
+			status: "running",
+			unreadCount: 0,
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+			started: false,
+		})
 		const updateGlobalState = vi.fn().mockResolvedValue(undefined)
 
 		const provider = {
 			getCurrentTask: vi.fn(() => undefined), // ensure not rehydrating
+			liveTaskSessions: new Map(),
+			getSessionByTaskId: vi.fn(() => undefined),
+			getDefaultIsolation: vi.fn(() => ({ mode: "shared", workspacePath: "/tmp" })),
 			removeClineFromStack,
 			addClineToStack,
 			updateGlobalState,
@@ -124,11 +149,11 @@ describe("Single-open-task invariant", () => {
 
 		const task = await (ClineProvider.prototype as any).createTaskWithHistoryItem.call(provider, historyItem)
 		expect(task).toBeTruthy()
-		expect(removeClineFromStack).toHaveBeenCalledTimes(1)
+		expect(removeClineFromStack).not.toHaveBeenCalled()
 		expect(addClineToStack).toHaveBeenCalledTimes(1)
 	})
 
-	it("IPC StartNewTask path closes current before new task", async () => {
+	it("IPC StartNewTask path starts a new live task without closing current", async () => {
 		const removeClineFromStack = vi.fn().mockResolvedValue(undefined)
 		const createTask = vi.fn().mockResolvedValue({ taskId: "ipc-1" })
 		const provider = {
@@ -158,7 +183,7 @@ describe("Single-open-task invariant", () => {
 		})
 
 		expect(taskId).toBe("ipc-1")
-		expect(removeClineFromStack).toHaveBeenCalledTimes(1)
+		expect(removeClineFromStack).not.toHaveBeenCalled()
 		expect(createTask).toHaveBeenCalled()
 	})
 })

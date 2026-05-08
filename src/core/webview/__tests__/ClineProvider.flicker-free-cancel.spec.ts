@@ -233,11 +233,11 @@ describe("ClineProvider flicker-free cancel", () => {
 		expect(mockTask2.emit).toHaveBeenCalledWith("taskFocused")
 	})
 
-	it("should remove task from stack when creating different task", async () => {
+	it("should not remove current stack when creating different live history session", async () => {
 		// Setup: Add a task to the stack first
 		;(provider as any).clineStack = [mockTask1]
 
-		// Spy on removeClineFromStack to verify it IS called
+		// Spy on removeClineFromStack to verify other live sessions remain open
 		const removeClineFromStackSpy = vi.spyOn(provider, "removeClineFromStack").mockResolvedValue(undefined)
 
 		// Create history item with different taskId
@@ -255,8 +255,8 @@ describe("ClineProvider flicker-free cancel", () => {
 		// Act: Create task with different history item
 		await provider.createTaskWithHistoryItem(historyItem)
 
-		// Assert: removeClineFromStack should be called
-		expect(removeClineFromStackSpy).toHaveBeenCalled()
+		// Assert: removeClineFromStack should not be called for a different top-level session
+		expect(removeClineFromStackSpy).not.toHaveBeenCalled()
 	})
 
 	it("should handle empty stack gracefully during rehydration attempt", async () => {
@@ -278,11 +278,11 @@ describe("ClineProvider flicker-free cancel", () => {
 			workspace: "/test/workspace",
 		}
 
-		// Act: Should not error and should call removeClineFromStack
+		// Act: Should not error and should not close any other live session
 		await provider.createTaskWithHistoryItem(historyItem)
 
-		// Assert: removeClineFromStack should be called (no current task to rehydrate)
-		expect(removeClineFromStackSpy).toHaveBeenCalled()
+		// Assert: no live session is closed while opening a resumable history task
+		expect(removeClineFromStackSpy).not.toHaveBeenCalled()
 	})
 
 	it("should maintain task stack integrity during flicker-free replacement", async () => {

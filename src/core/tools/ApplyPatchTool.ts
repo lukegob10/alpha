@@ -419,8 +419,15 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			} else {
 				// Write to new path and delete old file
 				const parentDir = path.dirname(moveAbsolutePath)
-				await fs.mkdir(parentDir, { recursive: true })
-				await fs.writeFile(moveAbsolutePath, newContent, "utf8")
+				const releaseMoveWriteLock = task.providerRef
+					.deref()
+					?.acquireTaskWriteLock(task, moveAbsolutePath, "move")
+				try {
+					await fs.mkdir(parentDir, { recursive: true })
+					await fs.writeFile(moveAbsolutePath, newContent, "utf8")
+				} finally {
+					releaseMoveWriteLock?.()
+				}
 			}
 
 			// Delete the original file

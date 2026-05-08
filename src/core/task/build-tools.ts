@@ -107,10 +107,12 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 
 	// Check if the model supports images for read_file tool description.
 	const supportsImages = modelInfo?.supportsImages ?? false
+	const providerState = await provider.getState().catch(() => undefined)
 
 	// Build native tools with dynamic read_file tool based on settings.
 	const nativeTools = getNativeTools({
 		supportsImages,
+		parallelSubagentsEnabled: providerState?.parallelSubagents ?? false,
 	})
 
 	// Filter native tools based on mode restrictions.

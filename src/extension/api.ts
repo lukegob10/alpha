@@ -86,12 +86,16 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 						break
 					case TaskCommandName.CancelTask:
 						this.log(`[API] CancelTask`)
-						await this.cancelCurrentTask()
+						await this.cancelCurrentTask(command.data?.taskId)
 						break
 					case TaskCommandName.CloseTask:
 						this.log(`[API] CloseTask`)
-						await vscode.commands.executeCommand("workbench.action.files.saveFiles")
-						await vscode.commands.executeCommand("workbench.action.closeWindow")
+						if (command.data?.taskId) {
+							await this.clearCurrentTask(undefined, command.data.taskId)
+						} else {
+							await vscode.commands.executeCommand("workbench.action.files.saveFiles")
+							await vscode.commands.executeCommand("workbench.action.closeWindow")
+						}
 						break
 					case TaskCommandName.ResumeTask:
 						this.log(`[API] ResumeTask -> ${command.data}`)
@@ -106,7 +110,15 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 						break
 					case TaskCommandName.SendMessage:
 						this.log(`[API] SendMessage -> ${command.data.text}`)
-						await this.sendMessage(command.data.text, command.data.images)
+						await this.sendMessage(command.data.text, command.data.images, command.data.taskId)
+						break
+					case TaskCommandName.ListLiveTasks:
+						this.log("[API] ListLiveTasks")
+						sendResponse(RooCodeEventName.LiveTasksResponse, [this.sidebarProvider.getLiveTasks()])
+						break
+					case TaskCommandName.FocusTask:
+						this.log(`[API] FocusTask -> ${command.data}`)
+						await this.sidebarProvider.showTaskWithId(command.data)
 						break
 					case TaskCommandName.GetCommands:
 						try {
@@ -179,11 +191,13 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 		text,
 		images,
 		newTab,
+		isolation,
 	}: {
 		configuration: RooCodeSettings
 		text?: string
 		images?: string[]
 		newTab?: boolean
+		isolation?: CreateTaskOptions["isolation"]
 	}) {
 		let provider: ClineProvider
 
@@ -199,13 +213,12 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 			provider = this.sidebarProvider
 		}
 
-		await provider.removeClineFromStack()
-		await provider.postStateToWebview()
 		await provider.postMessageToWebview({ type: "action", action: "chatButtonClicked" })
 		await provider.postMessageToWebview({ type: "invoke", invoke: "newChat", text, images })
 
 		const options: CreateTaskOptions = {
 			consecutiveMistakeLimit: Number.MAX_SAFE_INTEGER,
+			isolation,
 		}
 
 		const task = await provider.createTask(text, images, undefined, options, configuration)
@@ -246,23 +259,25 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 		return this.sidebarProvider.getCurrentTaskStack()
 	}
 
-	public async clearCurrentTask(_lastMessage?: string) {
+	public async clearCurrentTask(_lastMessage?: string, taskId?: string) {
 		// Legacy finishSubTask removed; clear current by closing active task instance.
-		await this.sidebarProvider.removeClineFromStack()
+		await this.sidebarProvider.removeClineFromStack({ taskId })
 		await this.sidebarProvider.postStateToWebview()
 	}
 
-	public async cancelCurrentTask() {
-		await this.sidebarProvider.cancelTask()
+	public async cancelCurrentTask(taskId?: string) {
+		await this.sidebarProvider.cancelTask(taskId)
 	}
 
-	public async sendMessage(text?: string, images?: string[]) {
-		const currentTask = this.sidebarProvider.getCurrentTask()
+	public async sendMessage(text?: string, images?: string[], taskId?: string) {
+		const currentTask =
+			this.sidebarProvider.getCurrentOrTask?.(taskId) ??
+			(taskId ? undefined : this.sidebarProvider.getCurrentTask())
 
 		// In headless/sandbox flows the webview may not be launched, so routing
 		// through invoke=sendMessage drops the message. Deliver directly to the
 		// task ask-response channel instead.
-		if (!this.sidebarProvider.viewLaunched) {
+		if (taskId || !this.sidebarProvider.viewLaunched) {
 			if (!currentTask) {
 				this.log("[API#sendMessage] no current task in headless mode; message dropped")
 				return
@@ -275,8 +290,12 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 		await this.sidebarProvider.postMessageToWebview({ type: "invoke", invoke: "sendMessage", text, images })
 	}
 
-	public deleteQueuedMessage(messageId: string) {
-		const currentTask = this.sidebarProvider.getCurrentTask()
+	public deleteQueuedMessage(data: string | { messageId: string; taskId?: string }) {
+		const messageId = typeof data === "string" ? data : data.messageId
+		const taskId = typeof data === "string" ? undefined : data.taskId
+		const currentTask =
+			this.sidebarProvider.getCurrentOrTask?.(taskId) ??
+			(taskId ? undefined : this.sidebarProvider.getCurrentTask())
 
 		if (!currentTask) {
 			this.log(`[API#deleteQueuedMessage] no current task; ignoring delete for messageId ${messageId}`)

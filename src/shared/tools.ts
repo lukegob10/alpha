@@ -46,6 +46,18 @@ export const toolParamNames = [
 	"line",
 	"mode",
 	"message",
+	"task_name",
+	"agents",
+	"agent_type",
+	"workspace_strategy",
+	"write_scope",
+	"targets",
+	"timeout_ms",
+	"target",
+	"interrupt",
+	"cleanup",
+	"strategy",
+	"status",
 	"cwd",
 	"follow_up",
 	"task",
@@ -103,6 +115,29 @@ export type NativeToolArgs = {
 	apply_patch: { patch: string }
 	list_files: { path: string; recursive?: boolean }
 	new_task: { mode: string; message: string; todos?: string }
+	spawn_agent: {
+		task_name: string
+		message: string
+		mode?: string | null
+		agent_type?: string | null
+		workspace_strategy?: "auto" | "sameWorktree" | "newWorktree" | null
+		write_scope?: string[] | null
+	}
+	spawn_agents: {
+		agents: Array<{
+			task_name: string
+			message: string
+			mode?: string | null
+			agent_type?: string | null
+			workspace_strategy?: "auto" | "sameWorktree" | "newWorktree" | null
+			write_scope?: string[] | null
+		}>
+	}
+	wait_agent: { targets?: string[]; timeout_ms?: number | null }
+	send_input: { target: string; message: string; interrupt?: boolean | null }
+	list_agents: { status?: string | null }
+	close_agent: { target: string; cleanup?: boolean | null }
+	integrate_agent_result: { target: string; strategy?: "apply_patch" | "merge_worktree" | null }
 	ask_followup_question: {
 		question: string
 		follow_up: Array<{ text: string; mode?: string }>
@@ -243,6 +278,43 @@ export interface NewTaskToolUse extends ToolUse<"new_task"> {
 	params: Partial<Pick<Record<ToolParamName, string>, "mode" | "message" | "todos">>
 }
 
+export interface SpawnAgentToolUse extends ToolUse<"spawn_agent"> {
+	name: "spawn_agent"
+	params: Partial<
+		Pick<Record<ToolParamName, string>, "task_name" | "message" | "mode" | "agent_type" | "workspace_strategy">
+	>
+}
+
+export interface SpawnAgentsToolUse extends ToolUse<"spawn_agents"> {
+	name: "spawn_agents"
+	params: Partial<Pick<Record<ToolParamName, string>, "agents">>
+}
+
+export interface WaitAgentToolUse extends ToolUse<"wait_agent"> {
+	name: "wait_agent"
+	params: Partial<Pick<Record<ToolParamName, string>, "targets" | "timeout_ms">>
+}
+
+export interface SendInputToolUse extends ToolUse<"send_input"> {
+	name: "send_input"
+	params: Partial<Pick<Record<ToolParamName, string>, "target" | "message" | "interrupt">>
+}
+
+export interface ListAgentsToolUse extends ToolUse<"list_agents"> {
+	name: "list_agents"
+	params: Partial<Pick<Record<ToolParamName, string>, "status">>
+}
+
+export interface CloseAgentToolUse extends ToolUse<"close_agent"> {
+	name: "close_agent"
+	params: Partial<Pick<Record<ToolParamName, string>, "target" | "cleanup">>
+}
+
+export interface IntegrateAgentResultToolUse extends ToolUse<"integrate_agent_result"> {
+	name: "integrate_agent_result"
+	params: Partial<Pick<Record<ToolParamName, string>, "target" | "strategy">>
+}
+
 export interface RunSlashCommandToolUse extends ToolUse<"run_slash_command"> {
 	name: "run_slash_command"
 	params: Partial<Pick<Record<ToolParamName, string>, "command" | "args">>
@@ -284,6 +356,13 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	attempt_completion: "complete tasks",
 	switch_mode: "switch modes",
 	new_task: "create new task",
+	spawn_agent: "spawn parallel agent",
+	spawn_agents: "spawn parallel agents",
+	wait_agent: "wait for parallel agents",
+	send_input: "send input to parallel agent",
+	list_agents: "list parallel agents",
+	close_agent: "close parallel agent",
+	integrate_agent_result: "integrate parallel agent result",
 	codebase_search: "codebase search",
 	update_todo_list: "update todo list",
 	run_slash_command: "run slash command",
@@ -308,7 +387,17 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 		tools: ["use_mcp_tool", "access_mcp_resource"],
 	},
 	modes: {
-		tools: ["switch_mode", "new_task"],
+		tools: [
+			"switch_mode",
+			"new_task",
+			"spawn_agent",
+			"spawn_agents",
+			"wait_agent",
+			"send_input",
+			"list_agents",
+			"close_agent",
+			"integrate_agent_result",
+		],
 		alwaysAvailable: true,
 	},
 }
@@ -319,6 +408,13 @@ export const ALWAYS_AVAILABLE_TOOLS: ToolName[] = [
 	"attempt_completion",
 	"switch_mode",
 	"new_task",
+	"spawn_agent",
+	"spawn_agents",
+	"wait_agent",
+	"send_input",
+	"list_agents",
+	"close_agent",
+	"integrate_agent_result",
 	"update_todo_list",
 	"run_slash_command",
 	"skill",

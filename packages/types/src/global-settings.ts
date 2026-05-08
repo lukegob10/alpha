@@ -74,6 +74,10 @@ export const MAX_CHECKPOINT_TIMEOUT_SECONDS = 60
  */
 export const DEFAULT_CHECKPOINT_TIMEOUT_SECONDS = 15
 
+export const DEFAULT_PARALLEL_AGENT_MAX_CONCURRENT = 3
+
+export const HARD_PARALLEL_AGENT_MAX_CONCURRENT = 8
+
 /**
  * GlobalSettings
  */
@@ -103,9 +107,12 @@ export const globalSettingsSchema = z.object({
 	alwaysAllowWriteProtected: z.boolean().optional(),
 	writeDelayMs: z.number().min(0).optional(),
 	requestDelaySeconds: z.number().optional(),
+	maxConcurrentTasks: z.number().int().min(1).optional(),
 	alwaysAllowMcp: z.boolean().optional(),
 	alwaysAllowModeSwitch: z.boolean().optional(),
 	alwaysAllowSubtasks: z.boolean().optional(),
+	parallelSubagents: z.boolean().optional(),
+	parallelAgentMaxConcurrent: z.number().int().min(1).max(HARD_PARALLEL_AGENT_MAX_CONCURRENT).optional(),
 	alwaysAllowExecute: z.boolean().optional(),
 	alwaysAllowFollowupQuestions: z.boolean().optional(),
 	followupAutoApproveTimeoutMs: z.number().optional(),
@@ -332,9 +339,12 @@ export const EVALS_SETTINGS: RooCodeSettings = {
 	alwaysAllowWriteProtected: false,
 	writeDelayMs: 1000,
 	requestDelaySeconds: 10,
+	maxConcurrentTasks: 3,
 	alwaysAllowMcp: true,
 	alwaysAllowModeSwitch: true,
 	alwaysAllowSubtasks: true,
+	parallelSubagents: false,
+	parallelAgentMaxConcurrent: DEFAULT_PARALLEL_AGENT_MAX_CONCURRENT,
 	alwaysAllowExecute: true,
 	alwaysAllowFollowupQuestions: true,
 	followupAutoApproveTimeoutMs: 0,

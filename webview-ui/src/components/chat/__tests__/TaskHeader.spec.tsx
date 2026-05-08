@@ -132,13 +132,24 @@ describe("TaskHeader", () => {
 		)
 	}
 
-	it("should display cost when totalCost is greater than 0", () => {
-		renderTaskHeader()
-		expect(screen.getByText("$0.05")).toBeInTheDocument()
-	})
+		it("should display cost when totalCost is greater than 0", () => {
+			renderTaskHeader()
+			expect(screen.getByText("$0.05")).toBeInTheDocument()
+		})
 
-	it("should not display cost when totalCost is 0", () => {
-		renderTaskHeader({ totalCost: 0 })
+		it("should send the current task to the task dock", () => {
+			renderTaskHeader()
+
+			fireEvent.click(screen.getByLabelText("Return to task dock"))
+
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "dockTask",
+				taskId: "test-task-id",
+			})
+		})
+
+		it("should not display cost when totalCost is 0", () => {
+			renderTaskHeader({ totalCost: 0 })
 		expect(screen.queryByText("$0.0000")).not.toBeInTheDocument()
 	})
 

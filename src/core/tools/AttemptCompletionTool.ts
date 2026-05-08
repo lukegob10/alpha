@@ -31,6 +31,7 @@ interface DelegationProvider {
 		childTaskId: string
 		completionResultSummary: string
 	}): Promise<void>
+	completeParallelAgent?(agentId: string, result: string): Promise<void>
 }
 
 export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
@@ -79,6 +80,19 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			task.consecutiveMistakeCount = 0
 
 			await task.say("completion_result", result, undefined, false)
+
+			if (task.parallelAgentId) {
+				const provider = task.providerRef.deref() as DelegationProvider | undefined
+				if (!provider?.completeParallelAgent) {
+					pushToolResult(formatResponse.toolError("Parallel agent coordinator is not available."))
+					return
+				}
+
+				await provider.completeParallelAgent(task.parallelAgentId, result)
+				pushToolResult("Parallel agent result recorded.")
+				this.emitTaskCompleted(task)
+				return
+			}
 
 			// Check for subtask using parentTaskId (metadata-driven delegation)
 			if (task.parentTaskId) {

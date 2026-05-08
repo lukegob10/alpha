@@ -7,6 +7,77 @@ describe("NativeToolCallParser", () => {
 	})
 
 	describe("parseToolCall", () => {
+		describe("parallel agent tools", () => {
+			it("should parse spawn_agent args", () => {
+				const toolCall = {
+					id: "toolu_spawn_1",
+					name: "spawn_agent" as const,
+					arguments: JSON.stringify({
+						task_name: "inspect-api",
+						message: "Inspect the API layer and report findings.",
+						mode: null,
+						agent_type: "explorer",
+						workspace_strategy: "sameWorktree",
+						write_scope: [],
+					}),
+				}
+
+				const result = NativeToolCallParser.parseToolCall(toolCall)
+
+				expect(result).not.toBeNull()
+				expect(result?.type).toBe("tool_use")
+				if (result?.type === "tool_use") {
+					expect(result.name).toBe("spawn_agent")
+					expect(result.nativeArgs).toEqual({
+						task_name: "inspect-api",
+						message: "Inspect the API layer and report findings.",
+						mode: null,
+						agent_type: "explorer",
+						workspace_strategy: "sameWorktree",
+						write_scope: [],
+					})
+				}
+			})
+
+			it("should parse spawn_agents batch args", () => {
+				const toolCall = {
+					id: "toolu_spawn_many_1",
+					name: "spawn_agents" as const,
+					arguments: JSON.stringify({
+						agents: [
+							{
+								task_name: "frontend",
+								message: "Implement frontend changes.",
+								mode: null,
+								agent_type: "worker",
+								workspace_strategy: "newWorktree",
+								write_scope: ["webview-ui/src"],
+							},
+							{
+								task_name: "tests",
+								message: "Add focused tests.",
+								mode: null,
+								agent_type: "worker",
+								workspace_strategy: "newWorktree",
+								write_scope: ["src/core"],
+							},
+						],
+					}),
+				}
+
+				const result = NativeToolCallParser.parseToolCall(toolCall)
+
+				expect(result).not.toBeNull()
+				expect(result?.type).toBe("tool_use")
+				if (result?.type === "tool_use") {
+					expect(result.name).toBe("spawn_agents")
+					expect((result.nativeArgs as any).agents).toHaveLength(2)
+					expect((result.nativeArgs as any).agents[0].task_name).toBe("frontend")
+					expect((result.nativeArgs as any).agents[1].write_scope).toEqual(["src/core"])
+				}
+			})
+		})
+
 		describe("read_file tool", () => {
 			it("should parse minimal single-file read_file args", () => {
 				const toolCall = {

@@ -14,9 +14,17 @@ import { IconButton } from "./IconButton"
 
 interface WorktreeSelectorProps {
 	disabled?: boolean
+	selectionMode?: "switch" | "task"
+	selectedWorktreePath?: string
+	onSelectWorktree?: (worktree: Worktree) => void
 }
 
-export const WorktreeSelector = ({ disabled = false }: WorktreeSelectorProps) => {
+export const WorktreeSelector = ({
+	disabled = false,
+	selectionMode = "switch",
+	selectedWorktreePath,
+	onSelectWorktree,
+}: WorktreeSelectorProps) => {
 	const { t } = useAppTranslation()
 	const [open, setOpen] = useState(false)
 	const [worktrees, setWorktrees] = useState<Worktree[]>([])
@@ -24,8 +32,11 @@ export const WorktreeSelector = ({ disabled = false }: WorktreeSelectorProps) =>
 	const [showCreateModal, setShowCreateModal] = useState(false)
 	const portalContainer = useRooPortal("roo-portal")
 
-	// Find current worktree
-	const currentWorktree = useMemo(() => worktrees.find((w) => w.isCurrent), [worktrees])
+	// Find selected/current worktree
+	const currentWorktree = useMemo(
+		() => worktrees.find((w) => w.path === selectedWorktreePath) ?? worktrees.find((w) => w.isCurrent),
+		[worktrees, selectedWorktreePath],
+	)
 
 	// Fetch worktrees when popover opens
 	const fetchWorktrees = useCallback(() => {
@@ -58,14 +69,23 @@ export const WorktreeSelector = ({ disabled = false }: WorktreeSelectorProps) =>
 		}
 	}, [open, fetchWorktrees])
 
-	const handleSelect = useCallback((worktreePath: string) => {
-		vscode.postMessage({
-			type: "switchWorktree",
-			worktreePath: worktreePath,
-			worktreeNewWindow: false,
-		})
-		setOpen(false)
-	}, [])
+	const handleSelect = useCallback(
+		(worktree: Worktree) => {
+			if (selectionMode === "task") {
+				onSelectWorktree?.(worktree)
+				setOpen(false)
+				return
+			}
+
+			vscode.postMessage({
+				type: "switchWorktree",
+				worktreePath: worktree.path,
+				worktreeNewWindow: false,
+			})
+			setOpen(false)
+		},
+		[onSelectWorktree, selectionMode],
+	)
 
 	const handleSettingsClick = useCallback(() => {
 		vscode.postMessage({
@@ -127,11 +147,14 @@ export const WorktreeSelector = ({ disabled = false }: WorktreeSelectorProps) =>
 					{/* Worktree list */}
 					<div className="max-h-[300px] overflow-y-auto py-1">
 						{worktrees.map((worktree) => {
-							const isSelected = worktree.isCurrent
+							const isSelected =
+								selectionMode === "task"
+									? (selectedWorktreePath ?? currentWorktree?.path) === worktree.path
+									: worktree.isCurrent
 							return (
 								<div
 									key={worktree.path}
-									onClick={() => !isSelected && handleSelect(worktree.path)}
+									onClick={() => !isSelected && handleSelect(worktree)}
 									data-testid="worktree-selector-item"
 									className={cn(
 										"px-3 py-1.5 text-sm cursor-pointer flex items-center",
@@ -145,6 +168,9 @@ export const WorktreeSelector = ({ disabled = false }: WorktreeSelectorProps) =>
 											<span className="font-bold truncate">
 												{worktree.branch || t("worktrees:noBranch")}
 											</span>
+											{selectionMode === "task" && worktree.isCurrent && (
+												<span className="text-xs opacity-70">current</span>
+											)}
 											{worktree.isBare && (
 												<span className="text-xs opacity-70">{t("worktrees:primary")}</span>
 											)}

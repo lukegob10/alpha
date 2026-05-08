@@ -21,7 +21,9 @@ import type { McpServer } from "./mcp.js"
 import type { ModelRecord, RouterModels } from "./model.js"
 import type { OpenAiCodexRateLimitInfo } from "./providers/openai-codex-rate-limits.js"
 import type { SkillMetadata } from "./skills.js"
+import type { LiveTaskSummary, TaskIsolation } from "./task.js"
 import type { WorktreeIncludeStatus } from "./worktree.js"
+import type { ParallelAgentRecord } from "./parallel-agent.js"
 
 /**
  * ExtensionMessage
@@ -38,6 +40,8 @@ export interface ExtensionMessage {
 		| "workspaceUpdated"
 		| "invoke"
 		| "messageUpdated"
+		| "liveTasksUpdated"
+		| "liveTaskUpdated"
 		| "mcpServers"
 		| "enhancedPrompt"
 		| "commitSearchResults"
@@ -136,6 +140,9 @@ export interface ExtensionMessage {
 		path?: string
 	}>
 	clineMessage?: ClineMessage
+	taskId?: string
+	liveTasks?: LiveTaskSummary[]
+	liveTask?: LiveTaskSummary
 	routerModels?: RouterModels
 	openAiModels?: string[]
 	ollamaModels?: ModelRecord
@@ -262,6 +269,8 @@ export type ExtensionState = Pick<
 	| "alwaysAllowMcp"
 	| "alwaysAllowModeSwitch"
 	| "alwaysAllowSubtasks"
+	| "parallelSubagents"
+	| "parallelAgentMaxConcurrent"
 	| "alwaysAllowFollowupQuestions"
 	| "alwaysAllowExecute"
 	| "followupAutoApproveTimeoutMs"
@@ -304,6 +313,7 @@ export type ExtensionState = Pick<
 	| "includeCurrentCost"
 	| "maxGitStatusFiles"
 	| "requestDelaySeconds"
+	| "maxConcurrentTasks"
 	| "showWorktreesInHomeScreen"
 	| "disabledTools"
 > & {
@@ -311,6 +321,9 @@ export type ExtensionState = Pick<
 	version: string
 	clineMessages: ClineMessage[]
 	currentTaskId?: string
+	focusedTaskId?: string
+	liveTasks?: LiveTaskSummary[]
+	maxConcurrentTasks?: number
 	currentTaskItem?: HistoryItem
 	currentTaskTodos?: TodoItem[] // Initial todos for the current task
 	apiConfiguration: ProviderSettings
@@ -318,6 +331,7 @@ export type ExtensionState = Pick<
 	shouldShowAnnouncement: boolean
 
 	taskHistory: HistoryItem[]
+	parallelAgents?: ParallelAgentRecord[]
 
 	writeDelayMs: number
 
@@ -421,9 +435,11 @@ export interface WebviewMessage {
 		| "renameApiConfiguration"
 		| "getListApiConfiguration"
 		| "customInstructions"
-		| "webviewDidLaunch"
-		| "newTask"
-		| "askResponse"
+			| "webviewDidLaunch"
+			| "newTask"
+			| "focusTask"
+			| "dockTask"
+			| "askResponse"
 		| "terminalOperation"
 		| "clearTask"
 		| "didShowAnnouncement"
@@ -562,6 +578,9 @@ export interface WebviewMessage {
 		| "requestModes"
 		| "switchMode"
 		| "debugSetting"
+		| "openAgentWorktree"
+		| "closeParallelAgent"
+		| "integrateParallelAgentResult"
 		// Worktree messages
 		| "listWorktrees"
 		| "createWorktree"
@@ -583,6 +602,7 @@ export interface WebviewMessage {
 		| "openSkillFile"
 	text?: string
 	taskId?: string
+	isolation?: TaskIsolation
 	editedMessageContent?: string
 	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "marketplace" | "cloud"
 	disabled?: boolean

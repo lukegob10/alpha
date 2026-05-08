@@ -10,6 +10,13 @@ import executeCommand from "./execute_command"
 import generateImage from "./generate_image"
 import listFiles from "./list_files"
 import newTask from "./new_task"
+import spawnAgent from "./spawn_agent"
+import spawnAgents from "./spawn_agents"
+import waitAgent from "./wait_agent"
+import sendInput from "./send_input"
+import listAgents from "./list_agents"
+import closeAgent from "./close_agent"
+import integrateAgentResult from "./integrate_agent_result"
 import readCommandOutput from "./read_command_output"
 import { createReadFileTool, type ReadFileToolOptions } from "./read_file"
 import runSlashCommand from "./run_slash_command"
@@ -31,6 +38,8 @@ export type { ReadFileToolOptions } from "./read_file"
 export interface NativeToolsOptions {
 	/** Whether the model supports image processing (default: false) */
 	supportsImages?: boolean
+	/** Whether to expose experimental parallel subagent tools (default: false) */
+	parallelSubagentsEnabled?: boolean
 }
 
 /**
@@ -40,13 +49,13 @@ export interface NativeToolsOptions {
  * @returns Array of native tool definitions
  */
 export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.ChatCompletionTool[] {
-	const { supportsImages = false } = options
+	const { supportsImages = false, parallelSubagentsEnabled = false } = options
 
 	const readFileOptions: ReadFileToolOptions = {
 		supportsImages,
 	}
 
-	return [
+	const tools = [
 		accessMcpResource,
 		apply_diff,
 		applyPatch,
@@ -57,6 +66,9 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		generateImage,
 		listFiles,
 		newTask,
+		...(parallelSubagentsEnabled
+			? [spawnAgent, spawnAgents, waitAgent, sendInput, listAgents, closeAgent, integrateAgentResult]
+			: []),
 		readCommandOutput,
 		createReadFileTool(readFileOptions),
 		runSlashCommand,
@@ -69,6 +81,8 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		updateTodoList,
 		writeToFile,
 	] satisfies OpenAI.Chat.ChatCompletionTool[]
+
+	return tools
 }
 
 // Backward compatibility: export default tools with line ranges enabled

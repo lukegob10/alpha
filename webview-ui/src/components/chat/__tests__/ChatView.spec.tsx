@@ -807,6 +807,63 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 	})
 })
 
+describe("ChatView - Active Task Docking Tests", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.mocked(vscode.postMessage).mockClear()
+	})
+
+	it("docks the focused task instead of clearing it when starting a new task from a completed task", async () => {
+		const { getByRole } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			focusedTaskId: "task-1",
+			currentTaskItem: { id: "task-1", task: "Finished task", ts: Date.now(), number: 1 },
+			liveTasks: [
+				{
+					id: "task-1",
+					rootTaskId: "task-1",
+					currentTaskId: "task-1",
+					title: "Finished task",
+					status: "completed",
+					isFocused: true,
+					isSubtask: false,
+					unreadCount: 0,
+					queueSize: 0,
+					workspacePath: "/repo/main",
+					isolation: { mode: "shared", workspacePath: "/repo/main" },
+					createdAt: 1,
+					updatedAt: 1,
+				},
+			],
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: Date.now() - 1000,
+					text: "Finished task",
+				},
+				{
+					type: "ask",
+					ask: "completion_result",
+					ts: Date.now(),
+					text: "Done",
+					partial: false,
+				},
+			],
+		})
+
+		const startButton = await waitFor(() => getByRole("button", { name: "chat:startNewTask.title" }))
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.click(startButton)
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "dockTask", taskId: "task-1" })
+		expect(vscode.postMessage).not.toHaveBeenCalledWith({ type: "clearTask" })
+	})
+})
+
 describe("ChatView - Message Queueing Tests", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
