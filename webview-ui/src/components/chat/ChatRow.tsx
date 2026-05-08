@@ -182,8 +182,16 @@ export const ChatRowContent = ({
 }: ChatRowContentProps) => {
 	const { t, i18n } = useTranslation()
 
-	const { mcpServers, alwaysAllowMcp, currentCheckpoint, mode, apiConfiguration, clineMessages, currentTaskItem } =
-		useExtensionState()
+	const {
+		mcpServers,
+		alwaysAllowMcp,
+		currentCheckpoint,
+		mode,
+		apiConfiguration,
+		clineMessages,
+		currentTaskItem,
+		currentTaskId,
+	} = useExtensionState()
 	const { info: model } = useSelectedModel(apiConfiguration)
 	const [isEditing, setIsEditing] = useState(false)
 	const [editedContent, setEditedContent] = useState("")
@@ -235,8 +243,9 @@ export const ChatRowContent = ({
 			value: message.ts,
 			editedMessageContent: editedContent,
 			images: editImages,
+			taskId: currentTaskId,
 		})
-	}, [message.ts, editedContent, editImages])
+	}, [message.ts, editedContent, editImages, currentTaskId])
 
 	// Handle image selection for editing
 	const handleSelectImages = useCallback(() => {
@@ -1263,7 +1272,11 @@ export const ChatRowContent = ({
 												style={{ visibility: isStreaming ? "hidden" : "visible" }}
 												onClick={(e) => {
 													e.stopPropagation()
-													vscode.postMessage({ type: "deleteMessage", value: message.ts })
+													vscode.postMessage({
+														type: "deleteMessage",
+														value: message.ts,
+														taskId: currentTaskId,
+													})
 												}}>
 												<Trash2 className="w-4 shrink-0" aria-label="Delete message icon" />
 											</div>

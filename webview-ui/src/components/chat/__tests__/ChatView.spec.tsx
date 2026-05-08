@@ -814,6 +814,157 @@ describe("ChatView - Message Queueing Tests", () => {
 		vi.mocked(vscode.postMessage).mockClear()
 	})
 
+	it("shows the task chat shell when a focused task exists before its first message arrives", async () => {
+		const { getByTestId, queryByTestId, queryByText } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-2",
+			currentTaskItem: {
+				id: "task-2",
+				number: 2,
+				ts: 123,
+				task: "Second task",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				workspace: "/test/workspace",
+			},
+			clineMessages: [],
+		})
+
+		await waitFor(() => {
+			expect(getByTestId("chat-view")).toBeInTheDocument()
+		})
+
+		expect(queryByText("Second task")).toBeInTheDocument()
+		expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
+	})
+
+	it("enters an empty new-task window before backend state clears the old running task", async () => {
+		const { getByTestId, queryByTestId } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentTaskItem: {
+				id: "task-1",
+				number: 1,
+				ts: 100,
+				task: "Old running task",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				workspace: "/test/workspace",
+			},
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: 100,
+					text: "Old running task",
+				},
+				{
+					type: "say",
+					say: "api_req_started",
+					ts: 101,
+					text: JSON.stringify({ apiProtocol: "anthropic" }),
+				},
+			],
+		})
+
+		await waitFor(() => {
+			expect(getByTestId("chat-textarea")).toBeInTheDocument()
+		})
+
+		vi.mocked(vscode.postMessage).mockClear()
+
+		await act(async () => {
+			window.postMessage({ type: "invoke", invoke: "newChat" }, "*")
+		})
+
+		await waitFor(() => {
+			const input = getByTestId("chat-textarea").querySelector("input")!
+			expect(input.getAttribute("data-sending-disabled")).toBe("false")
+			expect(queryByTestId("roo-tips")).toBeInTheDocument()
+		})
+
+		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+
+		await act(async () => {
+			fireEvent.change(input, { target: { value: "Second task" } })
+			fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		})
+
+		await waitFor(() => {
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "newTask",
+				text: "Second task",
+				images: [],
+			})
+		})
+	})
+
+	it("opens the source task on the first click after entering the new-task window", async () => {
+		const { getByTestId, queryByTestId, queryByText } = renderChatView()
+
+		const taskItem = {
+			id: "task-1",
+			number: 1,
+			ts: 100,
+			task: "Original task",
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+			workspace: "/test/workspace",
+		}
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			currentTaskItem: taskItem,
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: 100,
+					text: "Original task",
+				},
+			],
+		})
+
+		await waitFor(() => {
+			expect(getByTestId("chat-textarea")).toBeInTheDocument()
+		})
+
+		await act(async () => {
+			window.postMessage({ type: "invoke", invoke: "newChat" }, "*")
+		})
+
+		mockPostMessage({
+			currentTaskId: undefined,
+			currentView: { type: "newTaskDraft" },
+			currentTaskItem: undefined,
+			clineMessages: [],
+			taskHistory: [taskItem],
+		})
+
+		await waitFor(() => {
+			expect(queryByTestId("roo-tips")).toBeInTheDocument()
+		})
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			currentTaskItem: taskItem,
+			clineMessages: [],
+			taskHistory: [taskItem],
+		})
+
+		await waitFor(() => {
+			expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
+			expect(queryByText("Original task")).toBeInTheDocument()
+		})
+	})
+
 	it("shows sending is disabled when task is active", async () => {
 		const { getByTestId } = renderChatView()
 

@@ -64,6 +64,16 @@ export interface ChatViewRef {
 export const MAX_IMAGES_PER_MESSAGE = 20 // This is the Anthropic limit.
 
 const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0
+const messageResponseAskTypes = new Set<ClineAsk>([
+	"followup",
+	"tool",
+	"command",
+	"use_mcp_server",
+	"completion_result",
+	"resume_task",
+	"resume_completed_task",
+	"mistake_limit_reached",
+])
 
 const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewProps> = (
 	{ isHidden, showAnnouncement, hideAnnouncement },
@@ -78,6 +88,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	const {
 		clineMessages: messages,
+		currentTaskId,
+		currentView,
 		currentTaskItem,
 		currentTaskTodos,
 		taskHistory,
@@ -104,34 +116,95 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setShowRetiredProviderWarning(false)
 	}, [providerName])
 
-	const messagesRef = useRef(messages)
+	const [isBlankTaskView, setIsBlankTaskView] = useState(false)
+	const blankTaskSourceIdRef = useRef<string | undefined>(undefined)
+	const hasSeenProviderDraftRef = useRef(false)
+	const lastFocusedTaskIdRef = useRef<string | undefined>(currentTaskId)
+	const isProviderDraftView = currentView?.type === "newTaskDraft" && !currentTaskId && messages.length === 0
+	const isDraftView = isBlankTaskView || isProviderDraftView
+	const activeMessages = useMemo(() => (isDraftView ? [] : messages), [isDraftView, messages])
+	const visibleMessageQueue = useMemo(() => (isDraftView ? [] : messageQueue), [isDraftView, messageQueue])
+	const visibleCurrentTaskId = isDraftView ? undefined : currentTaskId
+	const visibleTaskPayload = useMemo(
+		() => (visibleCurrentTaskId ? { taskId: visibleCurrentTaskId } : {}),
+		[visibleCurrentTaskId],
+	)
+	const visibleCurrentTaskItem = isDraftView ? undefined : currentTaskItem
+	const visibleCurrentTaskTodos = isDraftView ? [] : currentTaskTodos
+	const messagesRef = useRef(activeMessages)
+	const isBlankTaskPendingRef = useRef(false)
 
 	useEffect(() => {
-		messagesRef.current = messages
-	}, [messages])
+		messagesRef.current = activeMessages
+	}, [activeMessages])
+
+	useEffect(() => {
+		if (currentTaskId) {
+			lastFocusedTaskIdRef.current = currentTaskId
+		}
+	}, [currentTaskId])
+
+	useEffect(() => {
+		if (currentView?.type === "newTaskDraft") {
+			hasSeenProviderDraftRef.current = true
+		}
+
+		if (!isBlankTaskView) {
+			return
+		}
+
+		const providerSelectedTask = currentView?.type === "task" && currentTaskId && hasSeenProviderDraftRef.current
+		const legacySelectedDifferentTask =
+			!currentView && currentTaskId && currentTaskId !== blankTaskSourceIdRef.current
+
+		if (providerSelectedTask || legacySelectedDifferentTask) {
+			setIsBlankTaskView(false)
+			isBlankTaskPendingRef.current = false
+		}
+	}, [currentTaskId, currentView, isBlankTaskView])
 
 	// Leaving this less safe version here since if the first message is not a
 	// task, then the extension is in a bad state and needs to be debugged (see
 	// Alpha.abort).
-	const task = useMemo(() => messages.at(0), [messages])
+	const task = useMemo(() => {
+		const firstMessage = activeMessages.at(0)
+
+		if (firstMessage) {
+			return firstMessage
+		}
+
+		if (!visibleCurrentTaskId) {
+			return undefined
+		}
+
+		return {
+			ts: visibleCurrentTaskItem?.ts ?? 0,
+			type: "say" as const,
+			say: "text" as const,
+			text: visibleCurrentTaskItem?.task ?? "",
+		}
+	}, [visibleCurrentTaskId, visibleCurrentTaskItem?.task, visibleCurrentTaskItem?.ts, activeMessages])
 
 	const latestTodos = useMemo(() => {
 		// First check if we have initial todos from the state (for new subtasks)
-		if (currentTaskTodos && currentTaskTodos.length > 0) {
+		if (visibleCurrentTaskTodos && visibleCurrentTaskTodos.length > 0) {
 			// Check if there are any todo updates in messages
-			const messageBasedTodos = getLatestTodo(messages)
+			const messageBasedTodos = getLatestTodo(activeMessages)
 			// If there are message-based todos, they take precedence (user has updated them)
 			if (messageBasedTodos && messageBasedTodos.length > 0) {
 				return messageBasedTodos
 			}
 			// Otherwise use the initial todos from state
-			return currentTaskTodos
+			return visibleCurrentTaskTodos
 		}
 		// Fall back to extracting from messages
-		return getLatestTodo(messages)
-	}, [messages, currentTaskTodos])
+		return getLatestTodo(activeMessages)
+	}, [activeMessages, visibleCurrentTaskTodos])
 
-	const modifiedMessages = useMemo(() => combineApiRequests(combineCommandSequences(messages.slice(1))), [messages])
+	const modifiedMessages = useMemo(
+		() => combineApiRequests(combineCommandSequences(activeMessages.slice(1))),
+		[activeMessages],
+	)
 
 	// Has to be after api_req_finished are all reduced into api_req_started messages.
 	const apiMetrics = useMemo(() => getApiMetrics(modifiedMessages), [modifiedMessages])
@@ -224,8 +297,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// of these messages, we are deep comparing) i.e. the button state after
 	// hitting button sets enableButtons to false,  and this effect otherwise
 	// would have to true again even if messages didn't change.
-	const lastMessage = useMemo(() => messages.at(-1), [messages])
-	const secondLastMessage = useMemo(() => messages.at(-2), [messages])
+	const lastMessage = useMemo(() => activeMessages.at(-1), [activeMessages])
+	const secondLastMessage = useMemo(() => activeMessages.at(-2), [activeMessages])
 
 	const volume = typeof soundVolume === "number" ? soundVolume : 0.5
 	const [playNotification] = useSound(`${audioBaseUri}/notification.wav`, { volume, soundEnabled, interrupt: true })
@@ -380,7 +453,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						case "completion_result":
 							// Extension waiting for feedback, but we can just present a new task button.
 							// Only play celebration sound if there are no queued messages.
-							if (!isPartial && messageQueue.length === 0) {
+							if (!isPartial && visibleMessageQueue.length === 0) {
 								playSound("celebration")
 							}
 							setSendingDisabled(isPartial)
@@ -398,8 +471,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							// - It has a parentTaskId AND
 							// - Its messages contain a completion_result (either ask or say)
 							const isCompletedSubtask =
-								currentTaskItem?.parentTaskId &&
-								messages.some(
+								visibleCurrentTaskItem?.parentTaskId &&
+								activeMessages.some(
 									(msg) => msg.ask === "completion_result" || msg.say === "completion_result",
 								)
 							if (isCompletedSubtask) {
@@ -459,8 +532,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	// Update button text when messages change (e.g., completion_result is added) for subtasks in resume_task state
 	useEffect(() => {
-		if (clineAsk === "resume_task" && currentTaskItem?.parentTaskId) {
-			const hasCompletionResult = messages.some(
+		if (clineAsk === "resume_task" && visibleCurrentTaskItem?.parentTaskId) {
+			const hasCompletionResult = activeMessages.some(
 				(msg) => msg.ask === "completion_result" || msg.say === "completion_result",
 			)
 			if (hasCompletionResult) {
@@ -468,17 +541,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				setSecondaryButtonText(undefined)
 			}
 		}
-	}, [clineAsk, currentTaskItem?.parentTaskId, messages, t])
+	}, [clineAsk, visibleCurrentTaskItem?.parentTaskId, activeMessages, t])
 
 	useEffect(() => {
-		if (messages.length === 0) {
+		if (activeMessages.length === 0) {
 			setSendingDisabled(false)
 			setClineAsk(undefined)
 			setEnableButtons(false)
 			setPrimaryButtonText(undefined)
 			setSecondaryButtonText(undefined)
 		}
-	}, [messages.length])
+	}, [activeMessages.length])
 
 	// Reset UI states when task changes. Scroll lifecycle is handled by
 	// useScrollLifecycle which has its own effect keyed on taskTs.
@@ -499,13 +572,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	// Request aggregated costs when task changes and has childIds
 	useEffect(() => {
-		if (taskTs && currentTaskItem?.childIds && currentTaskItem.childIds.length > 0) {
+		if (taskTs && visibleCurrentTaskItem?.childIds && visibleCurrentTaskItem.childIds.length > 0) {
 			vscode.postMessage({
 				type: "getTaskWithAggregatedCosts",
-				text: currentTaskItem.id,
+				text: visibleCurrentTaskItem.id,
 			})
 		}
-	}, [taskTs, currentTaskItem?.id, currentTaskItem?.childIds])
+	}, [taskTs, visibleCurrentTaskItem?.id, visibleCurrentTaskItem?.childIds])
 
 	useEffect(() => {
 		if (isHidden) {
@@ -591,6 +664,19 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		// setSecondaryButtonText(undefined)
 	}, [])
 
+	const enterBlankTaskView = useCallback(() => {
+		setShowRetiredProviderWarning(false)
+		blankTaskSourceIdRef.current = currentTaskId ?? lastFocusedTaskIdRef.current
+		hasSeenProviderDraftRef.current = currentView?.type === "newTaskDraft"
+		isBlankTaskPendingRef.current = true
+		messagesRef.current = []
+		setIsBlankTaskView(true)
+		handleChatReset()
+		setSendingDisabled(false)
+
+		setTimeout(() => textAreaRef.current?.focus(), 0)
+	}, [currentTaskId, currentView?.type, handleChatReset])
+
 	/**
 	 * Handles sending messages to the extension
 	 * @param text - The message text to send
@@ -600,85 +686,59 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		(text: string, images: string[]) => {
 			text = text.trim()
 
-			if (text || images.length > 0) {
-				// Intercept when the active provider is retired — show a
-				// WarningRow instead of sending anything to the backend.
-				if (apiConfiguration?.apiProvider && isRetiredProvider(apiConfiguration.apiProvider)) {
-					setShowRetiredProviderWarning(true)
-					return
-				}
-
-				// Queue message if:
-				// - Task is busy (sendingDisabled)
-				// - API request in progress (isStreaming)
-				// - Queue has items (preserve message order during drain)
-				// - Command is running (command_output) - user's message should be queued for AI, not sent to terminal
-				if (
-					sendingDisabled ||
-					isStreaming ||
-					messageQueue.length > 0 ||
-					clineAskRef.current === "command_output"
-				) {
-					try {
-						console.log("queueMessage", text, images)
-						vscode.postMessage({ type: "queueMessage", text, images })
-						setInputValue("")
-						setSelectedImages([])
-					} catch (error) {
-						console.error(
-							`Failed to queue message: ${error instanceof Error ? error.message : String(error)}`,
-						)
-					}
-
-					return
-				}
-
-				// Mark that user has responded - this prevents any pending auto-approvals.
-				userRespondedRef.current = true
-
-				if (messagesRef.current.length === 0) {
-					vscode.postMessage({ type: "newTask", text, images })
-				} else if (clineAskRef.current) {
-					if (clineAskRef.current === "followup") {
-						markFollowUpAsAnswered()
-					}
-
-					// Use clineAskRef.current
-					switch (
-						clineAskRef.current // Use clineAskRef.current
-					) {
-						case "followup":
-						case "tool":
-						case "command": // User can provide feedback to a tool or command use.
-						case "use_mcp_server":
-						case "completion_result": // If this happens then the user has feedback for the completion result.
-						case "resume_task":
-						case "resume_completed_task":
-						case "mistake_limit_reached":
-							vscode.postMessage({
-								type: "askResponse",
-								askResponse: "messageResponse",
-								text,
-								images,
-							})
-							break
-						// There is no other case that a textfield should be enabled.
-					}
-				} else {
-					// This is a new message in an ongoing task.
-					vscode.postMessage({ type: "askResponse", askResponse: "messageResponse", text, images })
-				}
-
-				handleChatReset()
+			if (!text && images.length === 0) {
+				return
 			}
+
+			// Intercept when the active provider is retired; show a WarningRow instead of sending.
+			if (apiConfiguration?.apiProvider && isRetiredProvider(apiConfiguration.apiProvider)) {
+				setShowRetiredProviderWarning(true)
+				return
+			}
+
+			const shouldQueueMessage =
+				sendingDisabled ||
+				isStreaming ||
+				visibleMessageQueue.length > 0 ||
+				clineAskRef.current === "command_output"
+
+			if (shouldQueueMessage) {
+				vscode.postMessage({ type: "queueMessage", text, images, ...visibleTaskPayload })
+				setInputValue("")
+				setSelectedImages([])
+				return
+			}
+
+			// Mark that user has responded - this prevents any pending auto-approvals.
+			userRespondedRef.current = true
+
+			if (isBlankTaskPendingRef.current || messagesRef.current.length === 0) {
+				isBlankTaskPendingRef.current = false
+				vscode.postMessage({ type: "newTask", text, images })
+			} else if (!clineAskRef.current || messageResponseAskTypes.has(clineAskRef.current)) {
+				if (clineAskRef.current === "followup") {
+					markFollowUpAsAnswered()
+				}
+
+				vscode.postMessage({
+					type: "askResponse",
+					askResponse: "messageResponse",
+					text,
+					images,
+					...visibleTaskPayload,
+				})
+			}
+
+			handleChatReset()
 		},
 		[
 			handleChatReset,
 			markFollowUpAsAnswered,
 			sendingDisabled,
 			isStreaming,
-			messageQueue.length,
+			visibleMessageQueue.length,
 			apiConfiguration?.apiProvider,
+			visibleTaskPayload,
 		], // messagesRef and clineAskRef are stable
 	)
 
@@ -698,15 +758,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	)
 
 	const startNewTask = useCallback(() => {
-		setShowRetiredProviderWarning(false)
-		vscode.postMessage({ type: "clearTask" })
-	}, [])
+		enterBlankTaskView()
+		vscode.postMessage({ type: "startBlankTask" })
+	}, [enterBlankTaskView])
 
 	// Handle stop button click from textarea
 	const handleStopTask = useCallback(() => {
-		vscode.postMessage({ type: "cancelTask" })
+		vscode.postMessage({ type: "cancelTask", ...visibleTaskPayload })
 		setDidClickCancel(true)
-	}, [setDidClickCancel])
+	}, [visibleTaskPayload, setDidClickCancel])
 
 	// Handle enqueue button click from textarea
 	const handleEnqueueCurrentMessage = useCallback(() => {
@@ -716,11 +776,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				type: "queueMessage",
 				text,
 				images: selectedImages,
+				...visibleTaskPayload,
 			})
 			setInputValue("")
 			setSelectedImages([])
 		}
-	}, [inputValue, selectedImages])
+	}, [visibleTaskPayload, inputValue, selectedImages])
 
 	// This logic depends on the useEffect[messages] above to set clineAsk,
 	// after which buttons are shown and we then send an askResponse to the
@@ -745,19 +806,24 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							askResponse: "yesButtonClicked",
 							text: trimmedInput,
 							images: images,
+							...visibleTaskPayload,
 						})
 						// Clear input state after sending
 						setInputValue("")
 						setSelectedImages([])
 					} else {
-						vscode.postMessage({ type: "askResponse", askResponse: "yesButtonClicked" })
+						vscode.postMessage({
+							type: "askResponse",
+							askResponse: "yesButtonClicked",
+							...visibleTaskPayload,
+						})
 					}
 					break
 				case "resume_task":
 					// For completed subtasks (tasks with a parentTaskId and a completion_result),
 					// start a new task instead of resuming since the subtask is done
 					const isCompletedSubtaskForClick =
-						currentTaskItem?.parentTaskId &&
+						visibleCurrentTaskItem?.parentTaskId &&
 						messagesRef.current.some(
 							(msg) => msg.ask === "completion_result" || msg.say === "completion_result",
 						)
@@ -771,12 +837,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 								askResponse: "yesButtonClicked",
 								text: trimmedInput,
 								images: images,
+								...visibleTaskPayload,
 							})
 							// Clear input state after sending
 							setInputValue("")
 							setSelectedImages([])
 						} else {
-							vscode.postMessage({ type: "askResponse", askResponse: "yesButtonClicked" })
+							vscode.postMessage({
+								type: "askResponse",
+								askResponse: "yesButtonClicked",
+								...visibleTaskPayload,
+							})
 						}
 					}
 					break
@@ -786,7 +857,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					startNewTask()
 					break
 				case "command_output":
-					vscode.postMessage({ type: "terminalOperation", terminalOperation: "continue" })
+					vscode.postMessage({
+						type: "terminalOperation",
+						terminalOperation: "continue",
+						...visibleTaskPayload,
+					})
 					break
 			}
 
@@ -796,7 +871,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			setPrimaryButtonText(undefined)
 			setSecondaryButtonText(undefined)
 		},
-		[clineAsk, startNewTask, currentTaskItem?.parentTaskId],
+		[clineAsk, visibleTaskPayload, startNewTask, visibleCurrentTaskItem?.parentTaskId],
 	)
 
 	const handleSecondaryButtonClick = useCallback(
@@ -807,7 +882,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			const trimmedInput = text?.trim()
 
 			if (isStreaming) {
-				vscode.postMessage({ type: "cancelTask" })
+				vscode.postMessage({ type: "cancelTask", ...visibleTaskPayload })
 				setDidClickCancel(true)
 				return
 			}
@@ -828,24 +903,33 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							askResponse: "noButtonClicked",
 							text: trimmedInput,
 							images: images,
+							...visibleTaskPayload,
 						})
 						// Clear input state after sending
 						setInputValue("")
 						setSelectedImages([])
 					} else {
 						// Responds to the API with a "This operation failed" and lets it try again
-						vscode.postMessage({ type: "askResponse", askResponse: "noButtonClicked" })
+						vscode.postMessage({
+							type: "askResponse",
+							askResponse: "noButtonClicked",
+							...visibleTaskPayload,
+						})
 					}
 					break
 				case "command_output":
-					vscode.postMessage({ type: "terminalOperation", terminalOperation: "abort" })
+					vscode.postMessage({
+						type: "terminalOperation",
+						terminalOperation: "abort",
+						...visibleTaskPayload,
+					})
 					break
 			}
 			setSendingDisabled(true)
 			setClineAsk(undefined)
 			setEnableButtons(false)
 		},
-		[clineAsk, startNewTask, isStreaming, setDidClickCancel],
+		[clineAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel],
 	)
 
 	const { info: model } = useSelectedModel(apiConfiguration)
@@ -883,7 +967,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				case "invoke":
 					switch (message.invoke!) {
 						case "newChat":
-							handleChatReset()
+							enterBlankTaskView()
 							break
 						case "sendMessage":
 							handleSendMessage(message.text ?? "", message.images ?? [])
@@ -945,7 +1029,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			isHidden,
 			sendingDisabled,
 			enableButtons,
-			handleChatReset,
+			enterBlankTaskView,
 			handleSendMessage,
 			handleSetChatBoxMessage,
 			handlePrimaryButtonClick,
@@ -1082,7 +1166,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	useEffect(() => {
 		// This ensures the first message is not read, future user messages are
 		// labeled as `user_feedback`.
-		if (lastMessage && messages.length > 1) {
+		if (lastMessage && activeMessages.length > 1) {
 			if (
 				typeof lastMessage.text === "string" && // has text (must be string for startsWith)
 				(lastMessage.say === "text" || lastMessage.say === "completion_result") && // is a text message
@@ -1110,7 +1194,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 		// Update previous value.
 		setWasStreaming(isStreaming)
-	}, [isStreaming, lastMessage, wasStreaming, messages.length])
+	}, [isStreaming, lastMessage, wasStreaming, activeMessages.length])
 
 	const groupedMessages = useMemo(() => {
 		const filtered: ClineMessage[] = visibleMessages
@@ -1400,16 +1484,23 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[handleSendMessage, setInputValue, switchToMode, alwaysAllowModeSwitch, clineAsk, markFollowUpAsAnswered],
 	)
 
-	const handleBatchFileResponse = useCallback((response: { [key: string]: boolean }) => {
-		// Handle batch file response, e.g., for file uploads
-		vscode.postMessage({ type: "askResponse", askResponse: "objectResponse", text: JSON.stringify(response) })
-	}, [])
-
+	const handleBatchFileResponse = useCallback(
+		(response: { [key: string]: boolean }) => {
+			// Handle batch file response, e.g., for file uploads
+			vscode.postMessage({
+				type: "askResponse",
+				askResponse: "objectResponse",
+				text: JSON.stringify(response),
+				...visibleTaskPayload,
+			})
+		},
+		[visibleTaskPayload],
+	)
 	// Cancel backend auto-approval timeout when FollowUpSuggest's countdown effect cleans up.
 	// This is called when auto-approve is toggled off, a suggestion is clicked, or the component unmounts.
 	const handleFollowUpUnmount = useCallback(() => {
-		vscode.postMessage({ type: "cancelAutoApproval" })
-	}, [])
+		vscode.postMessage({ type: "cancelAutoApproval", ...visibleTaskPayload })
+	}, [visibleTaskPayload])
 
 	const handleScrollToBottomAndResetCheckpointCursor = useCallback(() => {
 		checkpointJumpCursorRef.current = null
@@ -1541,7 +1632,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			// Special case: during command_output, queue the message instead of
 			// triggering the primary button action (which would lose the message)
 			if (clineAskRef.current === "command_output" && hasInput) {
-				vscode.postMessage({ type: "queueMessage", text: inputValue.trim(), images: selectedImages })
+				vscode.postMessage({
+					type: "queueMessage",
+					text: inputValue.trim(),
+					images: selectedImages,
+					...visibleTaskPayload,
+				})
 				setInputValue("")
 				setSelectedImages([])
 				return
@@ -1593,21 +1689,21 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						cacheReads={apiMetrics.totalCacheReads}
 						totalCost={apiMetrics.totalCost}
 						aggregatedCost={
-							currentTaskItem?.id && aggregatedCostsMap.has(currentTaskItem.id)
-								? aggregatedCostsMap.get(currentTaskItem.id)!.totalCost
+							visibleCurrentTaskItem?.id && aggregatedCostsMap.has(visibleCurrentTaskItem.id)
+								? aggregatedCostsMap.get(visibleCurrentTaskItem.id)!.totalCost
 								: undefined
 						}
 						hasSubtasks={
 							!!(
-								currentTaskItem?.id &&
-								aggregatedCostsMap.has(currentTaskItem.id) &&
-								aggregatedCostsMap.get(currentTaskItem.id)!.childrenCost > 0
+								visibleCurrentTaskItem?.id &&
+								aggregatedCostsMap.has(visibleCurrentTaskItem.id) &&
+								aggregatedCostsMap.get(visibleCurrentTaskItem.id)!.childrenCost > 0
 							)
 						}
-						parentTaskId={currentTaskItem?.parentTaskId}
+						parentTaskId={visibleCurrentTaskItem?.parentTaskId}
 						costBreakdown={
-							currentTaskItem?.id && aggregatedCostsMap.has(currentTaskItem.id)
-								? getCostBreakdownIfNeeded(aggregatedCostsMap.get(currentTaskItem.id)!, {
+							visibleCurrentTaskItem?.id && aggregatedCostsMap.has(visibleCurrentTaskItem.id)
+								? getCostBreakdownIfNeeded(aggregatedCostsMap.get(visibleCurrentTaskItem.id)!, {
 										own: t("common:costs.own"),
 										subtasks: t("common:costs.subtasks"),
 									})
@@ -1676,7 +1772,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							atBottomThreshold={10}
 						/>
 					</div>
-					<FileChangesPanel clineMessages={messages} />
+					<FileChangesPanel clineMessages={activeMessages} />
 					{areButtonsVisible && (
 						<div
 							className={`flex h-9 items-center mb-1 px-[15px] ${
@@ -1768,17 +1864,26 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			)}
 
 			<QueuedMessages
-				queue={messageQueue}
+				queue={visibleMessageQueue}
 				onRemove={(index) => {
-					if (messageQueue[index]) {
-						vscode.postMessage({ type: "removeQueuedMessage", text: messageQueue[index].id })
+					if (visibleMessageQueue[index]) {
+						vscode.postMessage({
+							type: "removeQueuedMessage",
+							text: visibleMessageQueue[index].id,
+							...visibleTaskPayload,
+						})
 					}
 				}}
 				onUpdate={(index, newText) => {
-					if (messageQueue[index]) {
+					if (visibleMessageQueue[index]) {
 						vscode.postMessage({
 							type: "editQueuedMessage",
-							payload: { id: messageQueue[index].id, text: newText, images: messageQueue[index].images },
+							payload: {
+								id: visibleMessageQueue[index].id,
+								text: newText,
+								images: visibleMessageQueue[index].images,
+							},
+							...visibleTaskPayload,
 						})
 					}
 				}}

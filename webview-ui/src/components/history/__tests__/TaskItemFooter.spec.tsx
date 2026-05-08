@@ -48,6 +48,13 @@ describe("TaskItemFooter", () => {
 		expect(screen.getByTestId("export")).toBeInTheDocument()
 	})
 
+	it("does not let hidden action buttons intercept row clicks", () => {
+		render(<TaskItemFooter item={mockItem} variant="full" />)
+
+		expect(screen.getByTestId("task-item-actions")).toHaveClass("pointer-events-none")
+		expect(screen.getByTestId("task-item-actions")).toHaveClass("group-hover:pointer-events-auto")
+	})
+
 	it("hides export button in compact variant", () => {
 		render(<TaskItemFooter item={mockItem} variant="compact" />)
 

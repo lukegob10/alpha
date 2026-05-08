@@ -293,6 +293,57 @@ describe("NativeToolCallParser", () => {
 		})
 	})
 
+	describe("scoped streaming state", () => {
+		it("keeps concurrent task streams isolated even when chunk indices match", () => {
+			const taskA = "task-a"
+			const taskB = "task-b"
+
+			expect(
+				NativeToolCallParser.processRawChunk(
+					{ index: 0, id: "call-a", name: "read_file", arguments: '{"path":"a.ts"}' },
+					taskA,
+				),
+			).toEqual([
+				{ type: "tool_call_start", id: "call-a", name: "read_file" },
+				{ type: "tool_call_delta", id: "call-a", delta: '{"path":"a.ts"}' },
+			])
+			expect(
+				NativeToolCallParser.processRawChunk(
+					{ index: 0, id: "call-b", name: "read_file", arguments: '{"path":"b.ts"}' },
+					taskB,
+				),
+			).toEqual([
+				{ type: "tool_call_start", id: "call-b", name: "read_file" },
+				{ type: "tool_call_delta", id: "call-b", delta: '{"path":"b.ts"}' },
+			])
+
+			NativeToolCallParser.startStreamingToolCall("call-a", "read_file", taskA)
+			NativeToolCallParser.startStreamingToolCall("call-b", "read_file", taskB)
+			NativeToolCallParser.processStreamingChunk("call-a", '{"path":"a.ts"}', taskA)
+			NativeToolCallParser.processStreamingChunk("call-b", '{"path":"b.ts"}', taskB)
+
+			const finalA = NativeToolCallParser.finalizeStreamingToolCall("call-a", taskA)
+			const finalB = NativeToolCallParser.finalizeStreamingToolCall("call-b", taskB)
+
+			expect(finalA?.type).toBe("tool_use")
+			expect(finalB?.type).toBe("tool_use")
+			if (finalA?.type === "tool_use" && finalB?.type === "tool_use") {
+				expect(finalA.nativeArgs).toMatchObject({ path: "a.ts" })
+				expect(finalB.nativeArgs).toMatchObject({ path: "b.ts" })
+			}
+		})
+
+		it("clears only the requested task scope", () => {
+			NativeToolCallParser.startStreamingToolCall("call-a", "read_file", "task-a")
+			NativeToolCallParser.startStreamingToolCall("call-b", "read_file", "task-b")
+
+			NativeToolCallParser.clearAllStreamingToolCalls("task-a")
+
+			expect(NativeToolCallParser.hasActiveStreamingToolCalls("task-a")).toBe(false)
+			expect(NativeToolCallParser.hasActiveStreamingToolCalls("task-b")).toBe(true)
+		})
+	})
+
 	describe("processStreamingChunk", () => {
 		describe("read_file tool", () => {
 			it("should emit a partial ToolUse with nativeArgs.path during streaming", () => {
