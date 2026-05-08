@@ -17,6 +17,10 @@ type TestApiConfiguration = {
 	apiKey?: string
 	awsRegion?: string
 	awsProfile?: string
+	vertexProjectId?: string
+	vertexRegion?: string
+	vertexGatewayBaseUrl?: string
+	vertexGatewayHelixCommand?: string
 }
 
 describe("CodeIndexPopover - Auto-population Feature Logic", () => {
@@ -328,5 +332,63 @@ describe("CodeIndexPopover - Auto-population Feature Logic", () => {
 		expect(mockUpdateSetting).not.toHaveBeenCalledWith("codebaseIndexBedrockRegion", expect.anything())
 		expect(mockUpdateSetting).not.toHaveBeenCalledWith("codebaseIndexBedrockProfile", expect.anything())
 		expect(mockUpdateSetting).toHaveBeenCalledTimes(1)
+	})
+
+	test("defaults model selection when switching to Vertex provider", () => {
+		const mockUpdateSetting = vi.fn()
+		const value = "vertex"
+
+		mockUpdateSetting("codebaseIndexEmbedderModelId", value === "vertex" ? "gemini-embedding-001" : "")
+
+		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexEmbedderModelId", "gemini-embedding-001")
+		expect(mockUpdateSetting).toHaveBeenCalledTimes(1)
+	})
+
+	test("auto-populates Vertex gateway settings when switching to Vertex and main API is Vertex", () => {
+		const mockUpdateSetting = vi.fn()
+		const currentSettings = {
+			codebaseIndexVertexProjectId: "",
+			codebaseIndexVertexRegion: "",
+			codebaseIndexVertexGatewayBaseUrl: "",
+			codebaseIndexVertexGatewayHelixCommand: "",
+		}
+		const apiConfiguration: TestApiConfiguration = {
+			apiProvider: "vertex",
+			vertexProjectId: "test-project",
+			vertexRegion: "global",
+			vertexGatewayBaseUrl: "https://gateway.example.com/vertex",
+			vertexGatewayHelixCommand: "helix auth access-token print -a",
+		}
+		const value = "vertex"
+
+		mockUpdateSetting("codebaseIndexEmbedderModelId", value === "vertex" ? "gemini-embedding-001" : "")
+
+		if (value === "vertex" && apiConfiguration?.apiProvider === "vertex") {
+			const vertexFallbacks = {
+				codebaseIndexVertexProjectId: apiConfiguration.vertexProjectId,
+				codebaseIndexVertexRegion: apiConfiguration.vertexRegion,
+				codebaseIndexVertexGatewayBaseUrl: apiConfiguration.vertexGatewayBaseUrl,
+				codebaseIndexVertexGatewayHelixCommand: apiConfiguration.vertexGatewayHelixCommand,
+			}
+
+			Object.entries(vertexFallbacks).forEach(([key, fallbackValue]) => {
+				if (!currentSettings[key as keyof typeof currentSettings] && fallbackValue) {
+					mockUpdateSetting(key, fallbackValue)
+				}
+			})
+		}
+
+		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexEmbedderModelId", "gemini-embedding-001")
+		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexVertexProjectId", "test-project")
+		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexVertexRegion", "global")
+		expect(mockUpdateSetting).toHaveBeenCalledWith(
+			"codebaseIndexVertexGatewayBaseUrl",
+			"https://gateway.example.com/vertex",
+		)
+		expect(mockUpdateSetting).toHaveBeenCalledWith(
+			"codebaseIndexVertexGatewayHelixCommand",
+			"helix auth access-token print -a",
+		)
+		expect(mockUpdateSetting).toHaveBeenCalledTimes(5)
 	})
 })

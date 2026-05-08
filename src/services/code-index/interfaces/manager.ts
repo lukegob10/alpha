@@ -80,6 +80,7 @@ export type EmbedderProvider =
 	| "ollama"
 	| "openai-compatible"
 	| "gemini"
+	| "vertex"
 	| "mistral"
 	| "vercel-ai-gateway"
 	| "bedrock"
