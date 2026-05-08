@@ -40,7 +40,7 @@ export const TabContent = forwardRef<HTMLDivElement, TabProps>(({ className, chi
 	)
 
 	return (
-		<div ref={ref} className={cn("flex-1 overflow-auto p-5", className)} onWheel={onWheel} {...props}>
+		<div ref={ref} className={cn("min-h-0 flex-1 overflow-auto p-5", className)} onWheel={onWheel} {...props}>
 			{children}
 		</div>
 	)
