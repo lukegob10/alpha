@@ -101,27 +101,20 @@ describe("VertexHandler", () => {
 				vertexProjectId: "test-project",
 				vertexRegion: "global",
 				vertexGatewayBaseUrl: " https://gateway.example.com/vertex/v1/ ",
+				vertexGatewayCaBundlePath: "C:\\certs\\gateway.pem",
 				vertexGatewayHelixCommand: "helix auth access-token print -a",
 			})
 
-			expect(mockOAuth2Client).toHaveBeenCalledWith({
-				eagerRefreshThresholdMillis: 30_000,
-				forceRefreshOnFailure: true,
-			})
-
-			const authClient = mockOAuth2Client.mock.results[0]!.value
-			expect(authClient).toEqual(
-				expect.objectContaining({
-					refreshHandler: expect.any(Function),
-				}),
-			)
-			expect(mockGoogleAuth).toHaveBeenCalledWith({ authClient })
+			expect(mockOAuth2Client).not.toHaveBeenCalled()
+			expect(mockGoogleAuth).not.toHaveBeenCalled()
 			expect(AnthropicVertex).toHaveBeenCalledWith({
 				baseURL: "https://gateway.example.com/vertex/v1/",
 				projectId: "test-project",
 				region: "global",
-				defaultHeaders: { "x-r2d2-soeid": "soe123" },
-				googleAuth: { options: { authClient } },
+				fetch: expect.any(Function),
+				googleAuth: expect.objectContaining({
+					getClient: expect.any(Function),
+				}),
 			})
 		})
 
@@ -851,18 +844,21 @@ describe("VertexHandler", () => {
 
 			const result = await handler.completePrompt("Test prompt")
 			expect(result).toBe("Test response")
-			expect(handler["client"].messages.create).toHaveBeenCalledWith({
-				model: "claude-3-5-sonnet-v2@20241022",
-				max_tokens: 8192,
-				temperature: 0,
-				messages: [
-					{
-						role: "user",
-						content: [{ type: "text", text: "Test prompt", cache_control: { type: "ephemeral" } }],
-					},
-				],
-				stream: false,
-			})
+			expect(handler["client"].messages.create).toHaveBeenCalledWith(
+				expect.objectContaining({
+					model: "claude-3-5-sonnet-v2@20241022",
+					max_tokens: 8192,
+					temperature: 0,
+					messages: [
+						{
+							role: "user",
+							content: [{ type: "text", text: "Test prompt", cache_control: { type: "ephemeral" } }],
+						},
+					],
+					stream: false,
+				}),
+				undefined,
+			)
 		})
 
 		it("should handle API errors for Claude", async () => {
@@ -967,7 +963,7 @@ describe("VertexHandler", () => {
 			})
 
 			const result = handler.getModel()
-			expect(result.id).toBe("gateway-claude-3-7-sonnet")
+			expect(result.id).toBe("claude-3-7-sonnet@20250219")
 			expect(result.reasoningBudget).toBeDefined()
 		})
 

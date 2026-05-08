@@ -16,6 +16,20 @@ const DEFAULT_VERTEX_GATEWAY_HELIX_COMMAND = "helix auth access-token print -a"
 
 export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexProps) => {
 	const { t } = useAppTranslation()
+	const location = apiConfiguration?.location || apiConfiguration?.vertexRegion || ""
+	const projectId = apiConfiguration?.projectId || apiConfiguration?.vertexProjectId || ""
+	const rawModelRoutingMap = apiConfiguration?.modelRoutingMap ?? apiConfiguration?.vertexGatewayModelRoutingMap
+	const modelRoutingMapValue =
+		typeof rawModelRoutingMap === "string"
+			? rawModelRoutingMap
+			: rawModelRoutingMap
+				? JSON.stringify(rawModelRoutingMap, null, 2)
+				: ""
+	const refreshInterval =
+		typeof apiConfiguration?.refreshIntervalMinutes === "number"
+			? apiConfiguration.refreshIntervalMinutes
+			: apiConfiguration?.vertexGatewayTokenRefreshMinutes
+	const refreshIntervalValue = typeof refreshInterval === "number" ? String(refreshInterval) : ""
 
 	// Check if the selected model supports 1M context (supported Claude 4 models)
 	const supports1MContextBeta =
@@ -62,17 +76,15 @@ export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexPro
 				</div>
 			</div>
 			<VSCodeTextField
-				value={apiConfiguration?.vertexProjectId || ""}
-				onInput={handleInputChange("vertexProjectId")}
+				value={projectId}
+				onInput={handleInputChange("projectId")}
 				placeholder={t("settings:placeholders.projectId")}
 				className="w-full">
 				<label className="block font-medium mb-1">{t("settings:providers.googleCloudProjectId")}</label>
 			</VSCodeTextField>
 			<div>
 				<label className="block font-medium mb-1">{t("settings:providers.googleCloudRegion")}</label>
-				<Select
-					value={apiConfiguration?.vertexRegion || ""}
-					onValueChange={(value) => setApiConfigurationField("vertexRegion", value)}>
+				<Select value={location} onValueChange={(value) => setApiConfigurationField("location", value)}>
 					<SelectTrigger className="w-full">
 						<SelectValue placeholder={t("settings:common.select")} />
 					</SelectTrigger>
@@ -100,32 +112,60 @@ export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexPro
 				<label className="block font-medium mb-1">{t("settings:providers.googleCloudKeyFile")}</label>
 			</VSCodeTextField>
 			<VSCodeTextField
-				value={apiConfiguration?.vertexGatewayBaseUrl || ""}
-				onInput={handleInputChange("vertexGatewayBaseUrl")}
+				value={apiConfiguration?.gatewayBaseUrl || apiConfiguration?.vertexGatewayBaseUrl || ""}
+				onInput={handleInputChange("gatewayBaseUrl")}
 				placeholder={t("settings:placeholders.baseUrl")}
 				className="w-full"
 				data-testid="vertex-gateway-base-url">
 				<label className="block font-medium mb-1">{t("settings:providers.vertexGatewayBaseUrl")}</label>
 			</VSCodeTextField>
 			<VSCodeTextField
-				value={apiConfiguration?.vertexGatewayCaBundlePath || ""}
-				onInput={handleInputChange("vertexGatewayCaBundlePath")}
+				value={apiConfiguration?.pemCaBundlePath || apiConfiguration?.vertexGatewayCaBundlePath || ""}
+				onInput={handleInputChange("pemCaBundlePath")}
 				placeholder={t("settings:placeholders.keyFilePath")}
 				className="w-full"
 				data-testid="vertex-gateway-ca-bundle-path">
 				<label className="block font-medium mb-1">{t("settings:providers.vertexGatewayCaBundlePath")}</label>
 			</VSCodeTextField>
 			<VSCodeTextField
-				value={apiConfiguration?.vertexGatewayHelixCommand || ""}
-				onInput={handleInputChange("vertexGatewayHelixCommand")}
+				value={apiConfiguration?.helixCommand || apiConfiguration?.vertexGatewayHelixCommand || ""}
+				onInput={handleInputChange("helixCommand")}
 				placeholder={DEFAULT_VERTEX_GATEWAY_HELIX_COMMAND}
 				className="w-full"
 				data-testid="vertex-gateway-helix-command">
 				<label className="block font-medium mb-1">{t("settings:providers.vertexGatewayHelixCommand")}</label>
 			</VSCodeTextField>
+			<div>
+				<label className="block font-medium mb-1">{t("settings:providers.vertexGatewayHelixParseMode")}</label>
+				<Select
+					value={apiConfiguration?.helixParseMode || "raw_stdout"}
+					onValueChange={(value) =>
+						setApiConfigurationField("helixParseMode", value as ProviderSettings["helixParseMode"])
+					}>
+					<SelectTrigger className="w-full">
+						<SelectValue placeholder={t("settings:common.select")} />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="raw_stdout">
+							{t("settings:providers.vertexGatewayHelixParseModeRawStdout")}
+						</SelectItem>
+						<SelectItem value="json_field">
+							{t("settings:providers.vertexGatewayHelixParseModeJsonField")}
+						</SelectItem>
+					</SelectContent>
+				</Select>
+			</div>
 			<VSCodeTextField
-				value={apiConfiguration?.vertexGatewayTokenRefreshMinutes?.toString() || ""}
-				onInput={handleInputChange("vertexGatewayTokenRefreshMinutes", (value) => {
+				value={apiConfiguration?.helixTokenKey || "access_token"}
+				onInput={handleInputChange("helixTokenKey")}
+				placeholder="access_token"
+				className="w-full"
+				data-testid="vertex-gateway-helix-token-key">
+				<label className="block font-medium mb-1">{t("settings:providers.vertexGatewayHelixTokenKey")}</label>
+			</VSCodeTextField>
+			<VSCodeTextField
+				value={refreshIntervalValue}
+				onInput={handleInputChange("refreshIntervalMinutes", (value) => {
 					const parsed = Number.parseInt(value, 10)
 					return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
 				})}
@@ -140,13 +180,16 @@ export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexPro
 				<label className="block font-medium mb-1">{t("settings:providers.vertexGatewayModelRoutingMap")}</label>
 				<VSCodeTextArea
 					resize="vertical"
-					value={apiConfiguration?.vertexGatewayModelRoutingMap || ""}
-					onInput={handleInputChange("vertexGatewayModelRoutingMap")}
-					placeholder='{"gemini-3-flash-preview":"gateway-model-id"}'
+					value={modelRoutingMapValue}
+					onInput={handleInputChange("modelRoutingMap")}
+					placeholder='{"gemini-3-flash-preview":{"modelOverride":"gateway-model-id"}}'
 					rows={4}
 					className="w-full"
 					data-testid="vertex-gateway-model-routing-map"
 				/>
+				<div className="text-xs text-vscode-descriptionForeground mt-1">
+					{t("settings:providers.vertexGatewayModelRoutingMapDescription")}
+				</div>
 			</div>
 
 			{supports1MContextBeta && (

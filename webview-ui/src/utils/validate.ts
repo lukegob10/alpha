@@ -13,6 +13,9 @@ import {
 	isCustomProvider,
 } from "@alpha-code/types"
 
+const VERTEX_GATEWAY_REQUIRED_FIELDS = ["gatewayBaseUrl", "pemCaBundlePath", "helixCommand"] as const
+const VERTEX_GATEWAY_TRIGGER_FIELDS = [...VERTEX_GATEWAY_REQUIRED_FIELDS] as const
+
 export function validateApiConfiguration(
 	apiConfiguration: ProviderSettings,
 	routerModels?: RouterModels,
@@ -69,10 +72,17 @@ function validateModelsAndKeysProvided(apiConfiguration: ProviderSettings): stri
 			}
 			break
 		case "vertex":
-			if (!apiConfiguration.vertexProjectId || !apiConfiguration.vertexRegion) {
+			if (!hasVertexProjectAndLocation(apiConfiguration)) {
 				return i18next.t("settings:validation.googleCloud")
 			}
-			if (!isValidVertexGatewayModelRoutingMap(apiConfiguration.vertexGatewayModelRoutingMap)) {
+			if (hasVertexGatewayConfiguration(apiConfiguration) && !hasRequiredVertexGatewayFields(apiConfiguration)) {
+				return i18next.t("settings:validation.vertexGateway")
+			}
+			if (
+				!isValidVertexGatewayModelRoutingMap(
+					apiConfiguration.modelRoutingMap ?? apiConfiguration.vertexGatewayModelRoutingMap,
+				)
+			) {
 				return i18next.t("settings:validation.vertexGatewayModelRoutingMap")
 			}
 			break
@@ -179,8 +189,48 @@ function validateProviderAgainstOrganizationSettings(
 	}
 }
 
-function isValidVertexGatewayModelRoutingMap(value: string | undefined): boolean {
-	if (!value?.trim()) {
+function hasConfiguredValue(value: unknown): boolean {
+	return typeof value === "string" ? value.trim().length > 0 : value !== undefined && value !== null
+}
+
+function hasVertexProjectAndLocation(apiConfiguration: ProviderSettings): boolean {
+	return (
+		(hasConfiguredValue(apiConfiguration.projectId) || hasConfiguredValue(apiConfiguration.vertexProjectId)) &&
+		(hasConfiguredValue(apiConfiguration.location) || hasConfiguredValue(apiConfiguration.vertexRegion))
+	)
+}
+
+function hasVertexGatewayConfiguration(apiConfiguration: ProviderSettings): boolean {
+	const hasCanonicalConfig = VERTEX_GATEWAY_TRIGGER_FIELDS.some((field) =>
+		hasConfiguredValue(apiConfiguration[field]),
+	)
+	const hasLegacyConfig =
+		hasConfiguredValue(apiConfiguration.vertexGatewayBaseUrl) ||
+		hasConfiguredValue(apiConfiguration.vertexGatewayCaBundlePath) ||
+		hasConfiguredValue(apiConfiguration.vertexGatewayHelixCommand)
+
+	return hasCanonicalConfig || hasLegacyConfig
+}
+
+function hasRequiredVertexGatewayFields(apiConfiguration: ProviderSettings): boolean {
+	const hasGatewayBaseUrl =
+		hasConfiguredValue(apiConfiguration.gatewayBaseUrl) || hasConfiguredValue(apiConfiguration.vertexGatewayBaseUrl)
+	const hasPemCaBundlePath =
+		hasConfiguredValue(apiConfiguration.pemCaBundlePath) ||
+		hasConfiguredValue(apiConfiguration.vertexGatewayCaBundlePath)
+	const hasHelixCommand =
+		hasConfiguredValue(apiConfiguration.helixCommand) ||
+		hasConfiguredValue(apiConfiguration.vertexGatewayHelixCommand)
+
+	return hasGatewayBaseUrl && hasPemCaBundlePath && hasHelixCommand
+}
+
+function isValidVertexGatewayModelRoutingMap(value: ProviderSettings["modelRoutingMap"] | string | undefined): boolean {
+	if (typeof value !== "string") {
+		return value === undefined || (typeof value === "object" && value !== null && !Array.isArray(value))
+	}
+
+	if (!value.trim()) {
 		return true
 	}
 
@@ -191,9 +241,15 @@ function isValidVertexGatewayModelRoutingMap(value: string | undefined): boolean
 			parsed !== null &&
 			typeof parsed === "object" &&
 			!Array.isArray(parsed) &&
-			Object.entries(parsed).every(
-				([key, route]) => key.trim().length > 0 && typeof route === "string" && route.trim().length > 0,
-			)
+			Object.entries(parsed).every(([key, route]) => {
+				if (key.trim().length === 0) {
+					return false
+				}
+				if (typeof route === "string") {
+					return route.trim().length > 0
+				}
+				return route !== null && typeof route === "object" && !Array.isArray(route)
+			})
 		)
 	} catch {
 		return false

@@ -6,7 +6,6 @@ import { getModelParams } from "../transform/model-params"
 
 import { GeminiHandler } from "./gemini"
 import { SingleCompletionHandler } from "../index"
-import { resolveVertexGatewayModelId } from "./vertex-gateway"
 
 export class VertexHandler extends GeminiHandler implements SingleCompletionHandler {
 	constructor(options: ApiHandlerOptions) {
@@ -36,6 +35,6 @@ export class VertexHandler extends GeminiHandler implements SingleCompletionHand
 		// reasoning model and that reasoning is required to be enabled.
 		// The actual model ID honored by Gemini's API does not have this
 		// suffix.
-		return { id: resolveVertexGatewayModelId(id, this.options.vertexGatewayModelRoutingMap), info, ...params }
+		return { id: id.endsWith(":thinking") ? id.replace(":thinking", "") : id, info, ...params }
 	}
 }
