@@ -2595,6 +2595,8 @@ export const webviewMessageHandler = async (
 					codebaseIndexVertexGatewayModelRoutingMap: settings.codebaseIndexVertexGatewayModelRoutingMap,
 					codebaseIndexSearchMaxResults: settings.codebaseIndexSearchMaxResults,
 					codebaseIndexSearchMinScore: settings.codebaseIndexSearchMinScore,
+					codebaseIndexEmbeddingRateLimitEnabled: settings.codebaseIndexEmbeddingRateLimitEnabled,
+					codebaseIndexEmbeddingRateLimitSeconds: settings.codebaseIndexEmbeddingRateLimitSeconds,
 					codebaseIndexOpenRouterSpecificProvider: settings.codebaseIndexOpenRouterSpecificProvider,
 				}
 

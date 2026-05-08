@@ -27,6 +27,7 @@ import { TelemetryService } from "@alpha-code/telemetry"
 import { TelemetryEventName } from "@alpha-code/types"
 import { sanitizeErrorMessage } from "../shared/validation-helpers"
 import { Package } from "../../../shared/package"
+import { EmbeddingRateLimiter } from "../shared/embedding-rate-limiter"
 
 /**
  * Implementation of the file watcher interface
@@ -40,6 +41,7 @@ export class FileWatcher implements IFileWatcher {
 	private readonly BATCH_DEBOUNCE_DELAY_MS = 500
 	private readonly FILE_PROCESSING_CONCURRENCY_LIMIT = 10
 	private readonly batchSegmentThreshold: number
+	private readonly embeddingRateLimiter: EmbeddingRateLimiter
 
 	private readonly _onDidStartBatchProcessing = new vscode.EventEmitter<string[]>()
 	private readonly _onBatchProgressUpdate = new vscode.EventEmitter<{
@@ -81,6 +83,7 @@ export class FileWatcher implements IFileWatcher {
 		ignoreInstance?: Ignore,
 		ignoreController?: RooIgnoreController,
 		batchSegmentThreshold?: number,
+		embeddingRateLimitSeconds?: number,
 	) {
 		this.ignoreController = ignoreController || new RooIgnoreController(workspacePath)
 		if (ignoreInstance) {
@@ -100,6 +103,7 @@ export class FileWatcher implements IFileWatcher {
 				this.batchSegmentThreshold = BATCH_SEGMENT_THRESHOLD
 			}
 		}
+		this.embeddingRateLimiter = new EmbeddingRateLimiter((embeddingRateLimitSeconds ?? 0) * 1000)
 	}
 
 	/**
@@ -566,6 +570,7 @@ export class FileWatcher implements IFileWatcher {
 			let pointsToUpsert: PointStruct[] = []
 			if (this.embedder && blocks.length > 0) {
 				const texts = blocks.map((block) => block.content)
+				await this.embeddingRateLimiter.wait()
 				const { embeddings } = await this.embedder.createEmbeddings(texts)
 
 				pointsToUpsert = blocks.map((block, index) => {

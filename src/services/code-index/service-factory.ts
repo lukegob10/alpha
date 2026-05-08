@@ -202,6 +202,7 @@ export class CodeIndexServiceFactory {
 		parser: ICodeParser,
 		ignoreInstance: Ignore,
 	): DirectoryScanner {
+		const config = this.configManager.getConfig()
 		// Get the configurable batch size from VSCode settings
 		let batchSize: number
 		try {
@@ -212,7 +213,15 @@ export class CodeIndexServiceFactory {
 			// In test environment, vscode.workspace might not be available
 			batchSize = BATCH_SEGMENT_THRESHOLD
 		}
-		return new DirectoryScanner(embedder, vectorStore, parser, this.cacheManager, ignoreInstance, batchSize)
+		return new DirectoryScanner(
+			embedder,
+			vectorStore,
+			parser,
+			this.cacheManager,
+			ignoreInstance,
+			batchSize,
+			config.embeddingRateLimitSeconds,
+		)
 	}
 
 	/**
@@ -226,6 +235,7 @@ export class CodeIndexServiceFactory {
 		ignoreInstance: Ignore,
 		rooIgnoreController?: RooIgnoreController,
 	): IFileWatcher {
+		const config = this.configManager.getConfig()
 		// Get the configurable batch size from VSCode settings
 		let batchSize: number
 		try {
@@ -245,6 +255,7 @@ export class CodeIndexServiceFactory {
 			ignoreInstance,
 			rooIgnoreController,
 			batchSize,
+			config.embeddingRateLimitSeconds,
 		)
 	}
 

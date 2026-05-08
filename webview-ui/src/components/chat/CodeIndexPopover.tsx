@@ -74,6 +74,8 @@ interface LocalCodeIndexSettings {
 	codebaseIndexEmbedderModelDimension?: number // Generic dimension for all providers
 	codebaseIndexSearchMaxResults?: number
 	codebaseIndexSearchMinScore?: number
+	codebaseIndexEmbeddingRateLimitEnabled?: boolean
+	codebaseIndexEmbeddingRateLimitSeconds?: number
 
 	// Bedrock-specific settings
 	codebaseIndexBedrockRegion?: string
@@ -168,6 +170,18 @@ const createValidationSchema = (provider: EmbedderProvider, vectorStoreProvider:
 		codebaseIndexEnabled: z.boolean(),
 		codebaseIndexVectorStoreProvider: z.enum(["qdrant", "lancedb"]),
 		codeIndexQdrantApiKey: z.string().optional(),
+		codebaseIndexEmbeddingRateLimitEnabled: z.boolean().optional(),
+		codebaseIndexEmbeddingRateLimitSeconds: z
+			.number()
+			.min(
+				CODEBASE_INDEX_DEFAULTS.MIN_EMBEDDING_RATE_LIMIT_SECONDS,
+				t("settings:codeIndex.validation.embeddingRateLimitSecondsRange"),
+			)
+			.max(
+				CODEBASE_INDEX_DEFAULTS.MAX_EMBEDDING_RATE_LIMIT_SECONDS,
+				t("settings:codeIndex.validation.embeddingRateLimitSecondsRange"),
+			)
+			.optional(),
 		...vectorStoreSchema,
 	})
 
@@ -324,6 +338,8 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 		codebaseIndexEmbedderModelDimension: undefined,
 		codebaseIndexSearchMaxResults: CODEBASE_INDEX_DEFAULTS.DEFAULT_SEARCH_RESULTS,
 		codebaseIndexSearchMinScore: CODEBASE_INDEX_DEFAULTS.DEFAULT_SEARCH_MIN_SCORE,
+		codebaseIndexEmbeddingRateLimitEnabled: false,
+		codebaseIndexEmbeddingRateLimitSeconds: CODEBASE_INDEX_DEFAULTS.DEFAULT_EMBEDDING_RATE_LIMIT_SECONDS,
 		codebaseIndexBedrockRegion: "",
 		codebaseIndexBedrockProfile: "",
 		codebaseIndexVertexProjectId: "",
@@ -404,6 +420,11 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 					codebaseIndexConfig.codebaseIndexSearchMaxResults ?? CODEBASE_INDEX_DEFAULTS.DEFAULT_SEARCH_RESULTS,
 				codebaseIndexSearchMinScore:
 					codebaseIndexConfig.codebaseIndexSearchMinScore ?? CODEBASE_INDEX_DEFAULTS.DEFAULT_SEARCH_MIN_SCORE,
+				codebaseIndexEmbeddingRateLimitEnabled:
+					codebaseIndexConfig.codebaseIndexEmbeddingRateLimitEnabled ?? false,
+				codebaseIndexEmbeddingRateLimitSeconds:
+					codebaseIndexConfig.codebaseIndexEmbeddingRateLimitSeconds ??
+					CODEBASE_INDEX_DEFAULTS.DEFAULT_EMBEDDING_RATE_LIMIT_SECONDS,
 				codebaseIndexBedrockRegion: codebaseIndexConfig.codebaseIndexBedrockRegion || "",
 				codebaseIndexBedrockProfile: codebaseIndexConfig.codebaseIndexBedrockProfile || "",
 				codebaseIndexVertexProjectId:
@@ -2175,6 +2196,64 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 													updateSetting(
 														"codebaseIndexSearchMaxResults",
 														CODEBASE_INDEX_DEFAULTS.DEFAULT_SEARCH_RESULTS,
+													)
+												}>
+												<span className="codicon codicon-discard" />
+											</VSCodeButton>
+										</div>
+									</div>
+
+									{/* Embedding Rate Limit */}
+									<div className="space-y-2">
+										<div className="flex items-center gap-2">
+											<VSCodeCheckbox
+												checked={
+													currentSettings.codebaseIndexEmbeddingRateLimitEnabled ?? false
+												}
+												onChange={(e: any) =>
+													updateSetting(
+														"codebaseIndexEmbeddingRateLimitEnabled",
+														e.target.checked,
+													)
+												}>
+												{t("settings:codeIndex.embeddingRateLimitLabel")}
+											</VSCodeCheckbox>
+											<StandardTooltip
+												content={t("settings:codeIndex.embeddingRateLimitDescription")}>
+												<span className="codicon codicon-info text-xs text-vscode-descriptionForeground cursor-help" />
+											</StandardTooltip>
+										</div>
+										<div className="flex items-center gap-2">
+											<Slider
+												min={CODEBASE_INDEX_DEFAULTS.MIN_EMBEDDING_RATE_LIMIT_SECONDS}
+												max={CODEBASE_INDEX_DEFAULTS.MAX_EMBEDDING_RATE_LIMIT_SECONDS}
+												step={CODEBASE_INDEX_DEFAULTS.EMBEDDING_RATE_LIMIT_STEP}
+												value={[
+													currentSettings.codebaseIndexEmbeddingRateLimitSeconds ??
+														CODEBASE_INDEX_DEFAULTS.DEFAULT_EMBEDDING_RATE_LIMIT_SECONDS,
+												]}
+												onValueChange={(values) =>
+													updateSetting("codebaseIndexEmbeddingRateLimitSeconds", values[0])
+												}
+												disabled={!currentSettings.codebaseIndexEmbeddingRateLimitEnabled}
+												className="flex-1"
+												data-testid="embedding-rate-limit-slider"
+											/>
+											<span className="w-16 text-center">
+												{(
+													currentSettings.codebaseIndexEmbeddingRateLimitSeconds ??
+													CODEBASE_INDEX_DEFAULTS.DEFAULT_EMBEDDING_RATE_LIMIT_SECONDS
+												).toFixed(1)}
+												s
+											</span>
+											<VSCodeButton
+												appearance="icon"
+												title={t("settings:codeIndex.resetToDefault")}
+												disabled={!currentSettings.codebaseIndexEmbeddingRateLimitEnabled}
+												onClick={() =>
+													updateSetting(
+														"codebaseIndexEmbeddingRateLimitSeconds",
+														CODEBASE_INDEX_DEFAULTS.DEFAULT_EMBEDDING_RATE_LIMIT_SECONDS,
 													)
 												}>
 												<span className="codicon codicon-discard" />

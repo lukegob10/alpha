@@ -30,6 +30,7 @@ export class CodeIndexConfigManager {
 	private localIndexPath?: string = DEFAULT_LOCAL_INDEX_PATH
 	private searchMinScore?: number
 	private searchMaxResults?: number
+	private embeddingRateLimitSeconds?: number
 
 	constructor(private readonly contextProxy: ContextProxy) {
 		// Initialize with current configuration to avoid false restart triggers
@@ -147,6 +148,8 @@ export class CodeIndexConfigManager {
 			codebaseIndexEmbedderModelId: "",
 			codebaseIndexSearchMinScore: undefined,
 			codebaseIndexSearchMaxResults: undefined,
+			codebaseIndexEmbeddingRateLimitEnabled: false,
+			codebaseIndexEmbeddingRateLimitSeconds: undefined,
 			codebaseIndexBedrockRegion: "us-east-1",
 			codebaseIndexBedrockProfile: "",
 			codebaseIndexVertexProjectId: "",
@@ -169,6 +172,8 @@ export class CodeIndexConfigManager {
 			codebaseIndexEmbedderModelId,
 			codebaseIndexSearchMinScore,
 			codebaseIndexSearchMaxResults,
+			codebaseIndexEmbeddingRateLimitEnabled,
+			codebaseIndexEmbeddingRateLimitSeconds,
 		} = codebaseIndexConfig
 
 		const openAiKey = this.contextProxy?.getSecret("codeIndexOpenAiKey") ?? ""
@@ -195,6 +200,10 @@ export class CodeIndexConfigManager {
 		this.localIndexPath = localIndexPath
 		this.searchMinScore = codebaseIndexSearchMinScore
 		this.searchMaxResults = codebaseIndexSearchMaxResults
+		this.embeddingRateLimitSeconds =
+			codebaseIndexEmbeddingRateLimitEnabled && typeof codebaseIndexEmbeddingRateLimitSeconds === "number"
+				? codebaseIndexEmbeddingRateLimitSeconds
+				: undefined
 
 		// Validate and set model dimension
 		const rawDimension = codebaseIndexConfig.codebaseIndexEmbedderModelDimension
@@ -286,6 +295,8 @@ export class CodeIndexConfigManager {
 			qdrantApiKey?: string
 			localIndexPath?: string
 			searchMinScore?: number
+			searchMaxResults?: number
+			embeddingRateLimitSeconds?: number
 		}
 		requiresRestart: boolean
 	}> {
@@ -328,6 +339,7 @@ export class CodeIndexConfigManager {
 			qdrantUrl: this.qdrantUrl ?? "",
 			qdrantApiKey: this.qdrantApiKey ?? "",
 			localIndexPath: this.localIndexPath ?? DEFAULT_LOCAL_INDEX_PATH,
+			embeddingRateLimitSeconds: this.embeddingRateLimitSeconds,
 		}
 
 		// Refresh secrets from VSCode storage to ensure we have the latest values
@@ -359,6 +371,8 @@ export class CodeIndexConfigManager {
 				qdrantApiKey: this.qdrantApiKey,
 				localIndexPath: this.localIndexPath,
 				searchMinScore: this.currentSearchMinScore,
+				searchMaxResults: this.currentSearchMaxResults,
+				embeddingRateLimitSeconds: this.embeddingRateLimitSeconds,
 			},
 			requiresRestart,
 		}
@@ -471,6 +485,7 @@ export class CodeIndexConfigManager {
 		const prevQdrantUrl = prev?.qdrantUrl ?? ""
 		const prevQdrantApiKey = prev?.qdrantApiKey ?? ""
 		const prevLocalIndexPath = prev?.localIndexPath ?? DEFAULT_LOCAL_INDEX_PATH
+		const prevEmbeddingRateLimitSeconds = prev?.embeddingRateLimitSeconds
 
 		// 1. Transition from disabled/unconfigured to enabled/configured
 		if ((!prevEnabled || !prevConfigured) && this.codebaseIndexEnabled && nowConfigured) {
@@ -536,6 +551,7 @@ export class CodeIndexConfigManager {
 		const currentQdrantUrl = this.qdrantUrl ?? ""
 		const currentQdrantApiKey = this.qdrantApiKey ?? ""
 		const currentLocalIndexPath = this.localIndexPath ?? DEFAULT_LOCAL_INDEX_PATH
+		const currentEmbeddingRateLimitSeconds = this.embeddingRateLimitSeconds
 
 		if (prevOpenAiKey !== currentOpenAiKey) {
 			return true
@@ -612,6 +628,10 @@ export class CodeIndexConfigManager {
 			return true
 		}
 
+		if (prevEmbeddingRateLimitSeconds !== currentEmbeddingRateLimitSeconds) {
+			return true
+		}
+
 		// Vector dimension changes (still important for compatibility)
 		if (this._hasVectorDimensionChanged(prevProvider, prev?.modelId)) {
 			return true
@@ -670,6 +690,7 @@ export class CodeIndexConfigManager {
 			localIndexPath: this.localIndexPath,
 			searchMinScore: this.currentSearchMinScore,
 			searchMaxResults: this.currentSearchMaxResults,
+			embeddingRateLimitSeconds: this.embeddingRateLimitSeconds,
 		}
 	}
 

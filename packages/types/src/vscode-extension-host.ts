@@ -687,6 +687,8 @@ export interface WebviewMessage {
 		codebaseIndexVertexGatewayModelRoutingMap?: string
 		codebaseIndexSearchMaxResults?: number
 		codebaseIndexSearchMinScore?: number
+		codebaseIndexEmbeddingRateLimitEnabled?: boolean
+		codebaseIndexEmbeddingRateLimitSeconds?: number
 		codebaseIndexOpenRouterSpecificProvider?: string // OpenRouter provider routing
 
 		// Secret settings
