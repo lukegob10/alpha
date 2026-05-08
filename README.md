@@ -6,7 +6,7 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## What's New in v3.52.0
+## What's New in v1.0.0
 
 - Add Poe as an AI provider so you can access Poe models directly in Alpha.
 - Improve the xAI provider with a Responses API migration, reusable transform utilities, and updated Grok-4.20 defaults.
@@ -34,7 +34,7 @@
 - [简体中文](locales/zh-CN/README.md)
 - [繁體中文](locales/zh-TW/README.md)
 - ...
-      </details>
+  </details>
 
 ---
 
