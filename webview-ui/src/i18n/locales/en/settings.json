@@ -212,6 +212,8 @@
 		"searchMinScoreResetTooltip": "Reset to default value (0.4)",
 		"searchMaxResultsLabel": "Maximum Search Results",
 		"searchMaxResultsDescription": "Maximum number of search results to return when querying the codebase index. Higher values provide more context but may include less relevant results.",
+		"embeddingRateLimitLabel": "Limit embedding request rate",
+		"embeddingRateLimitDescription": "Adds a delay between embedding API requests while indexing. Increase this if your embedding provider is rate limiting codebase indexing.",
 		"resetToDefault": "Reset to default",
 		"startIndexingButton": "Start Indexing",
 		"clearIndexDataButton": "Clear Index Data",
@@ -262,6 +264,7 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
+			"embeddingRateLimitSecondsRange": "Embedding request delay must be between 0.1 and 60 seconds",
 			"localIndexPathRequired": "Local index path is required"
 		},
 		"optional": "optional",

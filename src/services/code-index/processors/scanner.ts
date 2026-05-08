@@ -30,9 +30,11 @@ import { TelemetryService } from "@alpha-code/telemetry"
 import { TelemetryEventName } from "@alpha-code/types"
 import { sanitizeErrorMessage } from "../shared/validation-helpers"
 import { Package } from "../../../shared/package"
+import { EmbeddingRateLimiter } from "../shared/embedding-rate-limiter"
 
 export class DirectoryScanner implements IDirectoryScanner {
 	private readonly batchSegmentThreshold: number
+	private readonly embeddingRateLimiter: EmbeddingRateLimiter
 
 	constructor(
 		private readonly embedder: IEmbedder,
@@ -41,6 +43,7 @@ export class DirectoryScanner implements IDirectoryScanner {
 		private readonly cacheManager: CacheManager,
 		private readonly ignoreInstance: Ignore,
 		batchSegmentThreshold?: number,
+		embeddingRateLimitSeconds?: number,
 	) {
 		// Get the configurable batch size from VSCode settings, fallback to default
 		// If not provided in constructor, try to get from VSCode settings
@@ -56,6 +59,7 @@ export class DirectoryScanner implements IDirectoryScanner {
 				this.batchSegmentThreshold = BATCH_SEGMENT_THRESHOLD
 			}
 		}
+		this.embeddingRateLimiter = new EmbeddingRateLimiter((embeddingRateLimitSeconds ?? 0) * 1000)
 	}
 
 	/**
@@ -443,6 +447,7 @@ export class DirectoryScanner implements IDirectoryScanner {
 				// --- End Deletion Step ---
 
 				// Create embeddings for batch
+				await this.embeddingRateLimiter.wait()
 				const { embeddings } = await this.embedder.createEmbeddings(batchTexts)
 
 				// Prepare points for Qdrant

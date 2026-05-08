@@ -27,6 +27,7 @@ export interface CodeIndexConfig {
 	localIndexPath?: string
 	searchMinScore?: number
 	searchMaxResults?: number
+	embeddingRateLimitSeconds?: number
 }
 
 /**
@@ -62,4 +63,5 @@ export type PreviousConfigSnapshot = {
 	qdrantUrl?: string
 	qdrantApiKey?: string
 	localIndexPath?: string
+	embeddingRateLimitSeconds?: number
 }
