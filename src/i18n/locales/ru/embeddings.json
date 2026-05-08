@@ -30,7 +30,8 @@
 	},
 	"vectorStore": {
 		"qdrantConnectionFailed": "Не удалось подключиться к векторной базе данных Qdrant. Убедитесь, что Qdrant запущен и доступен по адресу {{qdrantUrl}}. Ошибка: {{errorMessage}}",
-		"vectorDimensionMismatch": "Не удалось обновить векторный индекс для новой модели. Попробуйте очистить индекс и начать сначала. Подробности: {{errorMessage}}"
+		"vectorDimensionMismatch": "Не удалось обновить векторный индекс для новой модели. Попробуйте очистить индекс и начать сначала. Подробности: {{errorMessage}}",
+		"lanceConnectionFailed": "Failed to initialize local LanceDB vector index at {{indexPath}}. Error: {{errorMessage}}"
 	},
 	"validation": {
 		"authenticationFailed": "Ошибка аутентификации. Проверьте свой ключ API в настройках.",
@@ -52,6 +53,7 @@
 		"ollamaConfigMissing": "Отсутствует конфигурация Ollama для создания эмбеддера",
 		"openAiCompatibleConfigMissing": "Отсутствует конфигурация, совместимая с OpenAI, для создания эмбеддера",
 		"geminiConfigMissing": "Отсутствует конфигурация Gemini для создания эмбеддера",
+		"vertexConfigMissing": "GCP Vertex AI configuration missing for embedder creation",
 		"mistralConfigMissing": "Конфигурация Mistral отсутствует для создания эмбеддера",
 		"openRouterConfigMissing": "Конфигурация OpenRouter отсутствует для создания эмбеддера",
 		"vercelAiGatewayConfigMissing": "Конфигурация Vercel AI Gateway отсутствует для создания эмбеддера",
@@ -60,7 +62,8 @@
 		"vectorDimensionNotDeterminedOpenAiCompatible": "Не удалось определить размерность вектора для модели '{{modelId}}' с провайдером '{{provider}}'. Убедитесь, что 'Размерность эмбеддинга' правильно установлена в настройках провайдера, совместимого с OpenAI.",
 		"vectorDimensionNotDetermined": "Не удалось определить размерность вектора для модели '{{modelId}}' с провайдером '{{provider}}'. Проверьте профили модели или конфигурацию.",
 		"qdrantUrlMissing": "Отсутствует URL Qdrant для создания векторного хранилища",
-		"codeIndexingNotConfigured": "Невозможно создать сервисы: Индексация кода не настроена должным образом"
+		"codeIndexingNotConfigured": "Невозможно создать сервисы: Индексация кода не настроена должным образом",
+		"localIndexPathMissing": "Local vector index path missing for vector store creation"
 	},
 	"orchestrator": {
 		"indexingFailedNoBlocks": "Индексация не удалась: Ни один блок кода не был успешно проиндексирован. Это обычно указывает на проблему конфигурации эмбеддера.",

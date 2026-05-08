@@ -30,7 +30,8 @@
 	},
 	"vectorStore": {
 		"qdrantConnectionFailed": "Error al conectar con la base de datos vectorial Qdrant. Asegúrate de que Qdrant esté funcionando y sea accesible en {{qdrantUrl}}. Error: {{errorMessage}}",
-		"vectorDimensionMismatch": "No se pudo actualizar el índice de vectores para el nuevo modelo. Intenta borrar el índice y empezar de nuevo. Detalles: {{errorMessage}}"
+		"vectorDimensionMismatch": "No se pudo actualizar el índice de vectores para el nuevo modelo. Intenta borrar el índice y empezar de nuevo. Detalles: {{errorMessage}}",
+		"lanceConnectionFailed": "Failed to initialize local LanceDB vector index at {{indexPath}}. Error: {{errorMessage}}"
 	},
 	"validation": {
 		"authenticationFailed": "Error de autenticación. Comprueba tu clave de API en los ajustes.",
@@ -52,6 +53,7 @@
 		"ollamaConfigMissing": "Falta la configuración de Ollama para crear el incrustador",
 		"openAiCompatibleConfigMissing": "Falta la configuración compatible con OpenAI para crear el incrustador",
 		"geminiConfigMissing": "Falta la configuración de Gemini para crear el incrustador",
+		"vertexConfigMissing": "GCP Vertex AI configuration missing for embedder creation",
 		"mistralConfigMissing": "Falta la configuración de Mistral para la creación del incrustador",
 		"openRouterConfigMissing": "Falta la configuración de OpenRouter para la creación del incrustador",
 		"vercelAiGatewayConfigMissing": "Falta la configuración de Vercel AI Gateway para la creación del incrustador",
@@ -60,7 +62,8 @@
 		"vectorDimensionNotDeterminedOpenAiCompatible": "No se pudo determinar la dimensión del vector para el modelo '{{modelId}}' con el proveedor '{{provider}}'. Asegúrate de que la 'Dimensión de incrustación' esté configurada correctamente en los ajustes del proveedor compatible con OpenAI.",
 		"vectorDimensionNotDetermined": "No se pudo determinar la dimensión del vector para el modelo '{{modelId}}' con el proveedor '{{provider}}'. Verifica los perfiles del modelo o la configuración.",
 		"qdrantUrlMissing": "Falta la URL de Qdrant para crear el almacén de vectores",
-		"codeIndexingNotConfigured": "No se pueden crear servicios: La indexación de código no está configurada correctamente"
+		"codeIndexingNotConfigured": "No se pueden crear servicios: La indexación de código no está configurada correctamente",
+		"localIndexPathMissing": "Local vector index path missing for vector store creation"
 	},
 	"orchestrator": {
 		"indexingFailedNoBlocks": "Indexación fallida: No se indexaron exitosamente bloques de código. Esto usualmente indica un problema de configuración del incrustador.",

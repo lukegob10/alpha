@@ -30,7 +30,8 @@
 	},
 	"vectorStore": {
 		"qdrantConnectionFailed": "Không thể kết nối với cơ sở dữ liệu vector Qdrant. Vui lòng đảm bảo Qdrant đang chạy và có thể truy cập tại {{qdrantUrl}}. Lỗi: {{errorMessage}}",
-		"vectorDimensionMismatch": "Không thể cập nhật chỉ mục vector cho mô hình mới. Vui lòng thử xóa chỉ mục và bắt đầu lại. Chi tiết: {{errorMessage}}"
+		"vectorDimensionMismatch": "Không thể cập nhật chỉ mục vector cho mô hình mới. Vui lòng thử xóa chỉ mục và bắt đầu lại. Chi tiết: {{errorMessage}}",
+		"lanceConnectionFailed": "Failed to initialize local LanceDB vector index at {{indexPath}}. Error: {{errorMessage}}"
 	},
 	"validation": {
 		"authenticationFailed": "Xác thực không thành công. Vui lòng kiểm tra khóa API của bạn trong cài đặt.",
@@ -52,6 +53,7 @@
 		"ollamaConfigMissing": "Thiếu cấu hình Ollama để tạo embedder",
 		"openAiCompatibleConfigMissing": "Thiếu cấu hình tương thích OpenAI để tạo embedder",
 		"geminiConfigMissing": "Thiếu cấu hình Gemini để tạo embedder",
+		"vertexConfigMissing": "GCP Vertex AI configuration missing for embedder creation",
 		"mistralConfigMissing": "Thiếu cấu hình Mistral để tạo trình nhúng",
 		"openRouterConfigMissing": "Thiếu cấu hình OpenRouter để tạo trình nhúng",
 		"vercelAiGatewayConfigMissing": "Thiếu cấu hình Vercel AI Gateway để tạo trình nhúng",
@@ -60,7 +62,8 @@
 		"vectorDimensionNotDeterminedOpenAiCompatible": "Không thể xác định kích thước vector cho mô hình '{{modelId}}' với nhà cung cấp '{{provider}}'. Hãy đảm bảo 'Kích thước Embedding' được cài đặt đúng trong cài đặt nhà cung cấp tương thích OpenAI.",
 		"vectorDimensionNotDetermined": "Không thể xác định kích thước vector cho mô hình '{{modelId}}' với nhà cung cấp '{{provider}}'. Kiểm tra hồ sơ mô hình hoặc cấu hình.",
 		"qdrantUrlMissing": "Thiếu URL Qdrant để tạo kho lưu trữ vector",
-		"codeIndexingNotConfigured": "Không thể tạo dịch vụ: Lập chỉ mục mã không được cấu hình đúng cách"
+		"codeIndexingNotConfigured": "Không thể tạo dịch vụ: Lập chỉ mục mã không được cấu hình đúng cách",
+		"localIndexPathMissing": "Local vector index path missing for vector store creation"
 	},
 	"orchestrator": {
 		"indexingFailedNoBlocks": "Lập chỉ mục thất bại: Không có khối mã nào được lập chỉ mục thành công. Điều này thường cho thấy vấn đề cấu hình embedder.",
