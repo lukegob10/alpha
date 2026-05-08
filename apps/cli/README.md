@@ -1,10 +1,10 @@
-# @roo-code/cli
+# @alpha-code/cli
 
 Command Line Interface for Alpha - Run the Alpha agent from the terminal without VSCode.
 
 ## Overview
 
-This CLI uses the `@roo-code/vscode-shim` package to provide a VSCode API compatibility layer, allowing the main Alpha extension to run in a Node.js environment.
+This CLI uses the `@alpha-code/vscode-shim` package to provide a VSCode API compatibility layer, allowing the main Alpha extension to run in a Node.js environment.
 
 ## Installation
 
@@ -24,13 +24,13 @@ curl -fsSL https://raw.githubusercontent.com/AlphaInc/Alpha/main/apps/cli/instal
 **Custom installation directory:**
 
 ```bash
-ROO_INSTALL_DIR=/opt/roo-code ROO_BIN_DIR=/usr/local/bin curl -fsSL ... | sh
+ALPHA_INSTALL_DIR=/opt/alpha-code ALPHA_BIN_DIR=/usr/local/bin curl -fsSL ... | sh
 ```
 
 **Install a specific version:**
 
 ```bash
-ROO_VERSION=0.1.0 curl -fsSL https://raw.githubusercontent.com/AlphaInc/Alpha/main/apps/cli/install.sh | sh
+ALPHA_VERSION=0.1.0 curl -fsSL https://raw.githubusercontent.com/AlphaInc/Alpha/main/apps/cli/install.sh | sh
 ```
 
 ### Updating
@@ -44,13 +44,13 @@ curl -fsSL https://raw.githubusercontent.com/AlphaInc/Alpha/main/apps/cli/instal
 Or run:
 
 ```bash
-roo upgrade
+alpha upgrade
 ```
 
 ### Uninstalling
 
 ```bash
-rm -rf ~/.alpha/cli ~/.local/bin/roo
+rm -rf ~/.alpha/cli ~/.local/bin/alpha
 ```
 
 ### Development Installation
@@ -65,7 +65,7 @@ pnpm install
 pnpm --filter alpha bundle
 
 # Build the CLI.
-pnpm --filter @roo-code/cli build
+pnpm --filter @alpha-code/cli build
 ```
 
 ## Usage
@@ -77,13 +77,13 @@ By default, the CLI auto-approves actions and runs in interactive TUI mode:
 ```bash
 export OPENROUTER_API_KEY=sk-or-v1-...
 
-roo "What is this project?" -w ~/Documents/my-project
+alpha "What is this project?" -w ~/Documents/my-project
 ```
 
 You can also run without a prompt and enter it interactively in TUI mode:
 
 ```bash
-roo -w ~/Documents/my-project
+alpha -w ~/Documents/my-project
 ```
 
 In interactive mode:
@@ -98,7 +98,7 @@ In interactive mode:
 If you want manual approval prompts, enable approval-required mode:
 
 ```bash
-roo "Refactor the utils.ts file" --require-approval -w ~/Documents/my-project
+alpha "Refactor the utils.ts file" --require-approval -w ~/Documents/my-project
 ```
 
 In approval-required mode:
@@ -112,10 +112,10 @@ Use `--print` for non-interactive execution and machine-readable output:
 
 ```bash
 # Prompt is required
-roo --print "Summarize this repository"
+alpha --print "Summarize this repository"
 
 # Create a new task with a specific session ID (UUID)
-roo --print --create-with-session-id 018f7fc8-7c96-7f7c-98aa-2ec4ff7f6d87 "Summarize this repository"
+alpha --print --create-with-session-id 018f7fc8-7c96-7f7c-98aa-2ec4ff7f6d87 "Summarize this repository"
 ```
 
 ### Stdin Stream Mode (`--stdin-prompt-stream`)
@@ -124,10 +124,10 @@ For programmatic control (one process, multiple prompts), use `--stdin-prompt-st
 Send NDJSON commands via stdin:
 
 ```bash
-printf '{"command":"start","requestId":"1","prompt":"1+1=?"}\n' | roo --print --stdin-prompt-stream --output-format stream-json
+printf '{"command":"start","requestId":"1","prompt":"1+1=?"}\n' | alpha --print --stdin-prompt-stream --output-format stream-json
 
 # Optional: provide taskId per start command
-printf '{"command":"start","requestId":"1","taskId":"018f7fc8-7c96-7f7c-98aa-2ec4ff7f6d87","prompt":"1+1=?"}\n' | roo --print --stdin-prompt-stream --output-format stream-json
+printf '{"command":"start","requestId":"1","taskId":"018f7fc8-7c96-7f7c-98aa-2ec4ff7f6d87","prompt":"1+1=?"}\n' | alpha --print --stdin-prompt-stream --output-format stream-json
 ```
 
 ### Alpha Cloud Authentication
@@ -136,20 +136,20 @@ To use Alpha Cloud features (like the provider proxy), you need to authenticate:
 
 ```bash
 # Log in to Alpha Cloud (opens browser)
-roo auth login
+alpha auth login
 
 # Check authentication status
-roo auth status
+alpha auth status
 
 # Log out
-roo auth logout
+alpha auth logout
 ```
 
 The `auth login` command:
 
 1. Opens your browser to authenticate with Alpha Cloud
 2. Receives a secure token via localhost callback
-3. Stores the token in `~/.config/roo/credentials.json`
+3. Stores the token in the Alpha credentials store
 
 Tokens are valid for 90 days. The CLI will prompt you to re-authenticate when your token expires.
 
@@ -176,35 +176,35 @@ Tokens are valid for 90 days. The CLI will prompt you to re-authenticate when yo
 
 ## Options
 
-| Option                                  | Description                                                                             | Default                                  |
-| --------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------- |
-| `[prompt]`                              | Your prompt (positional argument, optional)                                             | None                                     |
-| `--prompt-file <path>`                  | Read prompt from a file instead of command line argument                                | None                                     |
-| `--create-with-session-id <session-id>` | Create a new task using the provided session ID (UUID)                                  | None                                     |
-| `-w, --workspace <path>`                | Workspace path to operate in                                                            | Current directory                        |
-| `-p, --print`                           | Print response and exit (non-interactive mode)                                          | `false`                                  |
-| `--stdin-prompt-stream`                 | Read NDJSON control commands from stdin (requires `--print`)                            | `false`                                  |
-| `-e, --extension <path>`                | Path to the extension bundle directory                                                  | Auto-detected                            |
-| `-d, --debug`                           | Enable debug output (includes detailed debug information, prompts, paths, etc)          | `false`                                  |
-| `-a, --require-approval`                | Require manual approval before actions execute                                          | `false`                                  |
-| `-k, --api-key <key>`                   | API key for the LLM provider                                                            | From env var                             |
-| `--provider <provider>`                 | API provider (roo, anthropic, openai, openrouter, etc.)                                 | `openrouter` (or `roo` if authenticated) |
-| `-m, --model <model>`                   | Model to use                                                                            | `anthropic/claude-opus-4.6`              |
-| `--mode <mode>`                         | Mode to start in (code, architect, ask, debug, etc.)                                    | `code`                                   |
-| `--terminal-shell <path>`               | Absolute shell path for inline terminal command execution                               | Auto-detected shell                      |
-| `-r, --reasoning-effort <effort>`       | Reasoning effort level (unspecified, disabled, none, minimal, low, medium, high, xhigh) | `medium`                                 |
-| `--consecutive-mistake-limit <n>`       | Consecutive error/repetition limit before guidance prompt (`0` disables the limit)      | `10`                                     |
-| `--ephemeral`                           | Run without persisting state (uses temporary storage)                                   | `false`                                  |
-| `--oneshot`                             | Exit upon task completion                                                               | `false`                                  |
-| `--output-format <format>`              | Output format with `--print`: `text`, `json`, or `stream-json`                          | `text`                                   |
+| Option                                  | Description                                                                             | Default                                          |
+| --------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `[prompt]`                              | Your prompt (positional argument, optional)                                             | None                                             |
+| `--prompt-file <path>`                  | Read prompt from a file instead of command line argument                                | None                                             |
+| `--create-with-session-id <session-id>` | Create a new task using the provided session ID (UUID)                                  | None                                             |
+| `-w, --workspace <path>`                | Workspace path to operate in                                                            | Current directory                                |
+| `-p, --print`                           | Print response and exit (non-interactive mode)                                          | `false`                                          |
+| `--stdin-prompt-stream`                 | Read NDJSON control commands from stdin (requires `--print`)                            | `false`                                          |
+| `-e, --extension <path>`                | Path to the extension bundle directory                                                  | Auto-detected                                    |
+| `-d, --debug`                           | Enable debug output (includes detailed debug information, prompts, paths, etc)          | `false`                                          |
+| `-a, --require-approval`                | Require manual approval before actions execute                                          | `false`                                          |
+| `-k, --api-key <key>`                   | API key for the LLM provider                                                            | From env var                                     |
+| `--provider <provider>`                 | API provider (alpha-cloud, anthropic, openai, openrouter, etc.)                         | `openrouter` (or `alpha-cloud` if authenticated) |
+| `-m, --model <model>`                   | Model to use                                                                            | `anthropic/claude-opus-4.6`                      |
+| `--mode <mode>`                         | Mode to start in (code, architect, ask, debug, etc.)                                    | `code`                                           |
+| `--terminal-shell <path>`               | Absolute shell path for inline terminal command execution                               | Auto-detected shell                              |
+| `-r, --reasoning-effort <effort>`       | Reasoning effort level (unspecified, disabled, none, minimal, low, medium, high, xhigh) | `medium`                                         |
+| `--consecutive-mistake-limit <n>`       | Consecutive error/repetition limit before guidance prompt (`0` disables the limit)      | `10`                                             |
+| `--ephemeral`                           | Run without persisting state (uses temporary storage)                                   | `false`                                          |
+| `--oneshot`                             | Exit upon task completion                                                               | `false`                                          |
+| `--output-format <format>`              | Output format with `--print`: `text`, `json`, or `stream-json`                          | `text`                                           |
 
 ## Auth Commands
 
-| Command           | Description                        |
-| ----------------- | ---------------------------------- |
-| `roo auth login`  | Authenticate with Alpha Cloud   |
-| `roo auth logout` | Clear stored authentication token  |
-| `roo auth status` | Show current authentication status |
+| Command             | Description                        |
+| ------------------- | ---------------------------------- |
+| `alpha auth login`  | Authenticate with Alpha Cloud      |
+| `alpha auth logout` | Clear stored authentication token  |
+| `alpha auth status` | Show current authentication status |
 
 ## Environment Variables
 
@@ -212,7 +212,7 @@ The CLI will look for API keys in environment variables if not provided via `--a
 
 | Provider          | Environment Variable        |
 | ----------------- | --------------------------- |
-| roo               | `ROO_API_KEY`               |
+| alpha-cloud       | `ROO_API_KEY`               |
 | anthropic         | `ANTHROPIC_API_KEY`         |
 | openai-native     | `OPENAI_API_KEY`            |
 | openrouter        | `OPENROUTER_API_KEY`        |
@@ -221,8 +221,8 @@ The CLI will look for API keys in environment variables if not provided via `--a
 
 **Authentication Environment Variables:**
 
-| Variable          | Description                                                          |
-| ----------------- | -------------------------------------------------------------------- |
+| Variable          | Description                                                       |
+| ----------------- | ----------------------------------------------------------------- |
 | `ROO_WEB_APP_URL` | Override the Alpha Cloud URL (default: `https://app.roocode.com`) |
 
 ## Architecture
@@ -255,7 +255,7 @@ The CLI will look for API keys in environment variables if not provided via `--a
 
 2. **ExtensionHost** (`extension-host.ts`):
 
-    - Creates a VSCode API mock using `@roo-code/vscode-shim`
+    - Creates a VSCode API mock using `@alpha-code/vscode-shim`
     - Intercepts `require('vscode')` to return the mock
     - Loads and activates the extension bundle
     - Manages bidirectional message flow
@@ -268,7 +268,7 @@ The CLI will look for API keys in environment variables if not provided via `--a
 
 ```bash
 # Run directly from source (no build required)
-pnpm dev --provider roo --api-key $ROO_API_KEY --print "Hello"
+pnpm dev --provider alpha-cloud --api-key $ROO_API_KEY --print "Hello"
 
 # Run tests
 pnpm test
@@ -283,7 +283,7 @@ pnpm lint
 By default the `start` script points `ROO_CODE_PROVIDER_URL` at `http://localhost:8080/proxy` for local development. To point at the production API instead, override the environment variable:
 
 ```bash
-ROO_CODE_PROVIDER_URL=https://api.roocode.com/proxy pnpm dev --provider roo --api-key $ROO_API_KEY --print "Hello"
+ROO_CODE_PROVIDER_URL=https://api.roocode.com/proxy pnpm dev --provider alpha-cloud --api-key $ROO_API_KEY --print "Hello"
 ```
 
 ## Releasing

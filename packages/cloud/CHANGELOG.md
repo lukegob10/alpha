@@ -1,3 +1,3 @@
-# @roo-code/cloud
+# @alpha-code/cloud
 
 ## 0.0.1

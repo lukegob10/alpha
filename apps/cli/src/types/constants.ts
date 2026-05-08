@@ -1,4 +1,4 @@
-import { reasoningEffortsExtended } from "@roo-code/types"
+import { reasoningEffortsExtended } from "@alpha-code/types"
 
 export const DEFAULT_FLAGS = {
 	mode: "code",
@@ -15,7 +15,7 @@ export const REASONING_EFFORTS = [...reasoningEffortsExtended, "unspecified", "d
  */
 export const FOLLOWUP_TIMEOUT_SECONDS = 60
 
-export const ASCII_ROO = `  _,'   ___
+export const ASCII_ALPHA = `  _,'   ___
  <__\\__/   \\
     \\_  /  _\\
       \\,\\ / \\\\

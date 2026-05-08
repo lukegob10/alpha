@@ -28,7 +28,7 @@
 		"useAnotherProvider": "Fournisseur tiers",
 		"useAnotherProviderDescription": "Entre une clé API et commence.",
 		"noApiKeys": "Tu ne veux pas gérer les clés API et les comptes séparés?",
-		"backToRoo": "Opte pour le Fournisseur Alpha Cloud.",
+		"backToAlpha": "Opte pour le Fournisseur Alpha Cloud.",
 		"goBack": "Retour",
 		"finish": "Terminer"
 	},

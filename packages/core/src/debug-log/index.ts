@@ -1,11 +1,11 @@
 /**
  * File-based debug logging utility
  *
- * This writes logs to ~/.alpha/cli-debug.log, avoiding stdout/stderr
+ * This writes logs to ~/.roo/cli-debug.log, avoiding stdout/stderr
  * which would break TUI applications. The log format is timestamped JSON.
  *
  * Usage:
- *   import { debugLog, DebugLogger } from "@roo-code/core/cli"
+ *   import { debugLog, DebugLogger } from "@alpha-code/core/cli"
  *
  *   // Simple logging
  *   debugLog("handleModeSwitch", { mode: newMode, configId })
@@ -33,7 +33,7 @@ export function setDebugLogEnabled(enabled: boolean): void {
 
 /**
  * Simple file-based debug log function.
- * Writes timestamped entries to ~/.alpha/cli-debug.log
+ * Writes timestamped entries to ~/.roo/cli-debug.log
  * Only writes when enabled via setDebugLogEnabled(true).
  */
 export function debugLog(message: string, data?: unknown): void {

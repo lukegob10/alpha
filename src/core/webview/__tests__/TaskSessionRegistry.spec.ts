@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { TaskLifecycleState, TaskStatus } from "@roo-code/types"
+import { TaskLifecycleState, TaskStatus } from "@alpha-code/types"
 
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
 import type { Task } from "../../task/Task"

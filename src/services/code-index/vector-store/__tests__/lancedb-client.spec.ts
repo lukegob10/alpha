@@ -79,7 +79,6 @@ describe("LanceDbVectorStore", () => {
 			createTable: vitest.fn().mockResolvedValue(mockTable),
 			dropTable: vitest.fn().mockResolvedValue(undefined),
 		}
-
 		;(lancedb.connect as any).mockResolvedValue(mockConnection)
 		;(fs.mkdir as any).mockResolvedValue(undefined)
 	})

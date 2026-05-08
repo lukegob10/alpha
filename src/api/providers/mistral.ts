@@ -8,8 +8,8 @@ import {
 	mistralModels,
 	MISTRAL_DEFAULT_TEMPERATURE,
 	ApiProviderError,
-} from "@roo-code/types"
-import { TelemetryService } from "@roo-code/telemetry"
+} from "@alpha-code/types"
+import { TelemetryService } from "@alpha-code/telemetry"
 
 import { ApiHandlerOptions } from "../../shared/api"
 

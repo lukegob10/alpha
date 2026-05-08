@@ -28,7 +28,7 @@
 		"useAnotherProvider": "Üçüncü taraf Sağlayıcı",
 		"useAnotherProviderDescription": "Bir API anahtarı gir ve başla.",
 		"noApiKeys": "API anahtarları ve ayrı hesaplarla uğraşmak istemez misin?",
-		"backToRoo": "Alpha Cloud Sağlayıcısını seç.",
+		"backToAlpha": "Alpha Cloud Sağlayıcısını seç.",
 		"goBack": "Geri",
 		"finish": "Bitir"
 	},

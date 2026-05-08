@@ -101,7 +101,7 @@
 	"about": "Alphaは、エディタに常駐するAI開発チームです。",
 	"docs": "詳細については、<DocsLink>ドキュメント</DocsLink>をご確認ください。",
 	"onboarding": "このワークスペースのタスクリストは空です。",
-	"rooTips": {
+	"alphaTips": {
 		"customizableModes": {
 			"title": "カスタマイズ可能なモード",
 			"description": "タスクに集中し、成果を出す専門のペルソナ。"

@@ -101,7 +101,7 @@
 	"about": "Alpha is een heel AI-ontwikkelteam in je editor.",
 	"docs": "Bekijk onze <DocsLink>documentatie</DocsLink> voor meer informatie.",
 	"onboarding": "Je takenlijst in deze werkruimte is leeg.",
-	"rooTips": {
+	"alphaTips": {
 		"customizableModes": {
 			"title": "Aanpasbare modi",
 			"description": "Gespecialiseerde persona's die op schema blijven en presteren."

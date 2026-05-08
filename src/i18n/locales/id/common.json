@@ -187,8 +187,8 @@
 	},
 	"storage": {
 		"prompt_custom_path": "Masukkan path penyimpanan riwayat percakapan kustom, biarkan kosong untuk menggunakan lokasi default",
-		"path_placeholder": "D:\\RooCodeStorage",
-		"enter_absolute_path": "Silakan masukkan path absolut (misalnya D:\\RooCodeStorage atau /home/user/storage)",
+		"path_placeholder": "D:\\AlphaCodeStorage",
+		"enter_absolute_path": "Silakan masukkan path absolut (misalnya D:\\AlphaCodeStorage atau /home/user/storage)",
 		"enter_valid_path": "Silakan masukkan path yang valid"
 	},
 	"input": {
@@ -250,6 +250,6 @@
 	},
 	"docsLink": {
 		"label": "Docs",
-		"url": "https://docs.roocode.com"
+		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
 	}
 }

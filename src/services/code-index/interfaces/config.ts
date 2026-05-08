@@ -1,6 +1,6 @@
 import { ApiHandlerOptions } from "../../../shared/api" // Adjust path if needed
 import { EmbedderProvider } from "./manager"
-import type { ProviderSettings } from "@roo-code/types"
+import type { ProviderSettings } from "@alpha-code/types"
 
 export type VectorStoreProvider = "qdrant" | "lancedb"
 

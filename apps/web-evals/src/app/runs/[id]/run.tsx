@@ -4,8 +4,8 @@ import { useMemo, useState, useCallback, useEffect, Fragment } from "react"
 import { toast } from "sonner"
 import { LoaderCircle, FileText, Copy, Check, StopCircle, List, Layers } from "lucide-react"
 
-import type { Run, TaskMetrics as _TaskMetrics, Task } from "@roo-code/evals"
-import type { ToolName } from "@roo-code/types"
+import type { Run, TaskMetrics as _TaskMetrics, Task } from "@alpha-code/evals"
+import type { ToolName } from "@alpha-code/types"
 
 import { formatCurrency, formatDuration, formatTokens, formatToolUsageSuccessRate } from "@/lib/formatters"
 import { useRunStatus } from "@/hooks/use-run-status"
@@ -455,7 +455,7 @@ export function Run({ run }: { run: Run }) {
 				: streamingToolUsage
 
 			if (taskToolUsage) {
-				for (const [toolName, usage] of Object.entries(taskToolUsage)) {
+				for (const [toolName, usage] of Object.entries(taskToolUsage as ToolUsage)) {
 					const tool = toolName as ToolName
 					const current = toolTotals.get(tool) ?? 0
 					toolTotals.set(tool, current + usage.attempts)

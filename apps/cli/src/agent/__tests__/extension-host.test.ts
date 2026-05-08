@@ -1,9 +1,9 @@
-// pnpm --filter @roo-code/cli test src/agent/__tests__/extension-host.test.ts
+// pnpm --filter @alpha-code/cli test src/agent/__tests__/extension-host.test.ts
 
 import { EventEmitter } from "events"
 import fs from "fs"
 
-import type { ExtensionMessage, WebviewMessage } from "@roo-code/types"
+import type { ExtensionMessage, WebviewMessage } from "@alpha-code/types"
 
 import { DEFAULT_FLAGS } from "@/types/index.js"
 
@@ -11,7 +11,7 @@ import { type ExtensionHostOptions, ExtensionHost } from "../extension-host.js"
 import { ExtensionClient } from "../extension-client.js"
 import { AgentLoopState } from "../agent-state.js"
 
-vi.mock("@roo-code/vscode-shim", () => ({
+vi.mock("@alpha-code/vscode-shim", () => ({
 	createVSCodeAPI: vi.fn(() => ({
 		context: { extensionPath: "/test/extension" },
 	})),
@@ -19,7 +19,7 @@ vi.mock("@roo-code/vscode-shim", () => ({
 }))
 
 vi.mock("@/lib/storage/index.js", () => ({
-	createEphemeralStorageDir: vi.fn(() => Promise.resolve("/tmp/roo-cli-test-ephemeral")),
+	createEphemeralStorageDir: vi.fn(() => Promise.resolve("/tmp/alpha-cli-test-ephemeral")),
 }))
 
 /**
@@ -704,7 +704,7 @@ describe("ExtensionHost", () => {
 			const host = createTestHost({ ephemeral: true })
 
 			// Set up a mock ephemeral storage directory
-			const mockEphemeralDir = "/tmp/roo-cli-test-ephemeral-cleanup"
+			const mockEphemeralDir = "/tmp/alpha-cli-test-ephemeral-cleanup"
 			setPrivate(host, "ephemeralStorageDir", mockEphemeralDir)
 
 			// Mock fs.promises.rm
@@ -738,7 +738,7 @@ describe("ExtensionHost", () => {
 			const host = createTestHost({ ephemeral: true })
 
 			// Set up a mock ephemeral storage directory
-			setPrivate(host, "ephemeralStorageDir", "/tmp/roo-cli-test-ephemeral-error")
+			setPrivate(host, "ephemeralStorageDir", "/tmp/alpha-cli-test-ephemeral-error")
 
 			// Mock fs.promises.rm to throw an error
 			const rmMock = vi.spyOn(fs.promises, "rm").mockRejectedValue(new Error("Cleanup failed"))

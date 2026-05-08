@@ -8,7 +8,7 @@ import * as fs from "fs/promises"
 import * as yaml from "yaml"
 import * as vscode from "vscode"
 
-import type { ModeConfig } from "@roo-code/types"
+import type { ModeConfig } from "@alpha-code/types"
 
 import { fileExistsAtPath } from "../../../utils/fs"
 import { getWorkspacePath } from "../../../utils/path"
@@ -249,8 +249,12 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 			expect(result.success).toBe(true)
 
 			// Verify files were written to the correct new slug folder
-			const rule1Path = Object.keys(writtenFiles).find((p) => p.includes("rule1.md") && !p.includes(".alphamodes"))
-			const rule2Path = Object.keys(writtenFiles).find((p) => p.includes("rule2.md") && !p.includes(".alphamodes"))
+			const rule1Path = Object.keys(writtenFiles).find(
+				(p) => p.includes("rule1.md") && !p.includes(".alphamodes"),
+			)
+			const rule2Path = Object.keys(writtenFiles).find(
+				(p) => p.includes("rule2.md") && !p.includes(".alphamodes"),
+			)
 
 			expect(rule1Path).toBeDefined()
 			expect(rule2Path).toBeDefined()
@@ -304,8 +308,12 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 			expect(result.success).toBe(true)
 
 			// Verify files were written to the NEW slug folder, not the old one
-			const rule1Path = Object.keys(writtenFiles).find((p) => p.includes("rule1.md") && !p.includes(".alphamodes"))
-			const rule2Path = Object.keys(writtenFiles).find((p) => p.includes("rule2.md") && !p.includes(".alphamodes"))
+			const rule1Path = Object.keys(writtenFiles).find(
+				(p) => p.includes("rule1.md") && !p.includes(".alphamodes"),
+			)
+			const rule2Path = Object.keys(writtenFiles).find(
+				(p) => p.includes("rule2.md") && !p.includes(".alphamodes"),
+			)
 
 			expect(rule1Path).toBeDefined()
 			expect(rule2Path).toBeDefined()

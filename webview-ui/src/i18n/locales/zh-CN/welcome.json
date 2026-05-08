@@ -28,7 +28,7 @@
 		"useAnotherProvider": "第三方供应商",
 		"useAnotherProviderDescription": "输入 API 密钥开始使用。",
 		"noApiKeys": "不想处理 API 密钥和单独的账户？",
-		"backToRoo": "选择 Alpha Cloud 提供商。",
+		"backToAlpha": "选择 Alpha Cloud 提供商。",
 		"goBack": "返回",
 		"finish": "完成"
 	},

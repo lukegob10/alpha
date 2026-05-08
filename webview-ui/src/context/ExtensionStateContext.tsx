@@ -19,14 +19,14 @@ import {
 	RouterModels,
 	ORGANIZATION_ALLOW_ALL,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
-} from "@roo-code/types"
+} from "@alpha-code/types"
 
-import { findLastIndex } from "@roo/array"
+import { findLastIndex } from "@alpha/array"
 
-import { checkExistKey } from "@roo/checkExistApiConfig"
-import { Mode, defaultModeSlug, defaultPrompts } from "@roo/modes"
-import { CustomSupportPrompts } from "@roo/support-prompt"
-import { experimentDefault } from "@roo/experiments"
+import { checkExistKey } from "@alpha/checkExistApiConfig"
+import { Mode, defaultModeSlug, defaultPrompts } from "@alpha/modes"
+import { CustomSupportPrompts } from "@alpha/support-prompt"
+import { experimentDefault } from "@alpha/experiments"
 
 import { vscode } from "@src/utils/vscode"
 import { convertTextMateToHljs } from "@src/utils/textMateToHljs"

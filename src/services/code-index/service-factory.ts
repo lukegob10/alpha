@@ -1,9 +1,9 @@
 import * as vscode from "vscode"
 import { Ignore } from "ignore"
 
-import type { EmbedderProvider } from "@roo-code/types"
-import { TelemetryService } from "@roo-code/telemetry"
-import { TelemetryEventName } from "@roo-code/types"
+import type { EmbedderProvider } from "@alpha-code/types"
+import { TelemetryService } from "@alpha-code/telemetry"
+import { TelemetryEventName } from "@alpha-code/types"
 
 import { t } from "../../i18n"
 
@@ -179,7 +179,11 @@ export class CodeIndexServiceFactory {
 		const vectorStoreProvider = config.vectorStoreProvider ?? "qdrant"
 
 		if (vectorStoreProvider === "lancedb") {
-			return new LanceDbVectorStore(this.workspacePath, config.localIndexPath || DEFAULT_LOCAL_INDEX_PATH, vectorSize)
+			return new LanceDbVectorStore(
+				this.workspacePath,
+				config.localIndexPath || DEFAULT_LOCAL_INDEX_PATH,
+				vectorSize,
+			)
 		}
 
 		if (!config.qdrantUrl) {

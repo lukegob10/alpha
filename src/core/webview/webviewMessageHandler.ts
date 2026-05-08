@@ -21,10 +21,10 @@ import {
 	ExperimentId,
 	checkoutDiffPayloadSchema,
 	checkoutRestorePayloadSchema,
-} from "@roo-code/types"
-import { customToolRegistry } from "@roo-code/core"
-import { CloudService } from "@roo-code/cloud"
-import { TelemetryService } from "@roo-code/telemetry"
+} from "@alpha-code/types"
+import { customToolRegistry } from "@alpha-code/core"
+import { CloudService } from "@alpha-code/cloud"
+import { TelemetryService } from "@alpha-code/telemetry"
 
 import { type ApiMessage } from "../task-persistence/apiMessages"
 import { saveTaskMessages } from "../task-persistence"

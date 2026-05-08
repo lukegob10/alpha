@@ -129,16 +129,16 @@ describe("loadRuleFiles", () => {
 		statMock.mockRejectedValueOnce({ code: "ENOENT" })
 		readFileMock.mockImplementation((filePath: PathLike) => {
 			if (filePath.toString().endsWith(".alpharules")) {
-				return Promise.resolve("roo rules content")
+				return Promise.resolve("alpha rules content")
 			}
-			if (filePath.toString().endsWith(".alpharules")) {
+			if (filePath.toString().endsWith(".clinerules")) {
 				return Promise.resolve("cline rules content")
 			}
 			return Promise.reject({ code: "ENOENT" })
 		})
 
 		const result = await loadRuleFiles("/fake/path")
-		expect(result).toBe("\n# Rules from .alpharules:\nroo rules content\n")
+		expect(result).toBe("\n# Rules from .alpharules:\nalpha rules content\n")
 	})
 
 	it("should handle when no rule files exist", async () => {
@@ -154,7 +154,7 @@ describe("loadRuleFiles", () => {
 		// Simulate no .alpha/rules directory
 		statMock.mockRejectedValueOnce({ code: "ENOENT" })
 		readFileMock.mockImplementation((filePath: PathLike) => {
-			if (filePath.toString().endsWith(".alpharules")) {
+			if (filePath.toString().endsWith(".clinerules")) {
 				return Promise.reject({ code: "EISDIR" })
 			}
 			if (filePath.toString().endsWith(".alpharules")) {
@@ -175,8 +175,18 @@ describe("loadRuleFiles", () => {
 
 		// Simulate listing files
 		readdirMock.mockResolvedValueOnce([
-			{ name: "file1.txt", isFile: () => true, isSymbolicLink: () => false, parentPath: "/fake/path/.alpha/rules" },
-			{ name: "file2.txt", isFile: () => true, isSymbolicLink: () => false, parentPath: "/fake/path/.alpha/rules" },
+			{
+				name: "file1.txt",
+				isFile: () => true,
+				isSymbolicLink: () => false,
+				parentPath: "/fake/path/.alpha/rules",
+			},
+			{
+				name: "file2.txt",
+				isFile: () => true,
+				isSymbolicLink: () => false,
+				parentPath: "/fake/path/.alpha/rules",
+			},
 		] as any)
 
 		statMock.mockImplementation((path) => {
@@ -210,8 +220,10 @@ describe("loadRuleFiles", () => {
 
 		const result = await loadRuleFiles("/fake/path")
 		// Paths in output should be relative to cwd
-		const expectedRelativePath1 = process.platform === "win32" ? ".roo\\rules\\file1.txt" : ".alpha/rules/file1.txt"
-		const expectedRelativePath2 = process.platform === "win32" ? ".roo\\rules\\file2.txt" : ".alpha/rules/file2.txt"
+		const expectedRelativePath1 =
+			process.platform === "win32" ? ".alpha\\rules\\file1.txt" : ".alpha/rules/file1.txt"
+		const expectedRelativePath2 =
+			process.platform === "win32" ? ".alpha\\rules\\file2.txt" : ".alpha/rules/file2.txt"
 		expect(result).toContain(`# Rules from ${expectedRelativePath1}:`)
 		expect(result).toContain("content of file1")
 		expect(result).toContain(`# Rules from ${expectedRelativePath2}:`)
@@ -219,11 +231,16 @@ describe("loadRuleFiles", () => {
 
 		// We expect both checks because our new implementation checks the files again for validation
 		// These are the absolute paths used internally
-		const expectedRulesDir = process.platform === "win32" ? "\\fake\\path\\.roo\\rules" : "/fake/path/.alpha/rules"
+		const expectedRulesDir =
+			process.platform === "win32" ? "\\fake\\path\\.alpha\\rules" : "/fake/path/.alpha/rules"
 		const expectedFile1Path =
-			process.platform === "win32" ? "\\fake\\path\\.roo\\rules\\file1.txt" : "/fake/path/.alpha/rules/file1.txt"
+			process.platform === "win32"
+				? "\\fake\\path\\.alpha\\rules\\file1.txt"
+				: "/fake/path/.alpha/rules/file1.txt"
 		const expectedFile2Path =
-			process.platform === "win32" ? "\\fake\\path\\.roo\\rules\\file2.txt" : "/fake/path/.alpha/rules/file2.txt"
+			process.platform === "win32"
+				? "\\fake\\path\\.alpha\\rules\\file2.txt"
+				: "/fake/path/.alpha/rules/file2.txt"
 
 		expect(statMock).toHaveBeenCalledWith(expectedRulesDir)
 		expect(statMock).toHaveBeenCalledWith(expectedFile1Path)
@@ -240,18 +257,48 @@ describe("loadRuleFiles", () => {
 
 		// Simulate listing files including cache files
 		readdirMock.mockResolvedValueOnce([
-			{ name: "rule1.txt", isFile: () => true, isSymbolicLink: () => false, parentPath: "/fake/path/.alpha/rules" },
-			{ name: ".DS_Store", isFile: () => true, isSymbolicLink: () => false, parentPath: "/fake/path/.alpha/rules" },
-			{ name: "Thumbs.db", isFile: () => true, isSymbolicLink: () => false, parentPath: "/fake/path/.alpha/rules" },
-			{ name: "rule2.md", isFile: () => true, isSymbolicLink: () => false, parentPath: "/fake/path/.alpha/rules" },
-			{ name: "cache.log", isFile: () => true, isSymbolicLink: () => false, parentPath: "/fake/path/.alpha/rules" },
+			{
+				name: "rule1.txt",
+				isFile: () => true,
+				isSymbolicLink: () => false,
+				parentPath: "/fake/path/.alpha/rules",
+			},
+			{
+				name: ".DS_Store",
+				isFile: () => true,
+				isSymbolicLink: () => false,
+				parentPath: "/fake/path/.alpha/rules",
+			},
+			{
+				name: "Thumbs.db",
+				isFile: () => true,
+				isSymbolicLink: () => false,
+				parentPath: "/fake/path/.alpha/rules",
+			},
+			{
+				name: "rule2.md",
+				isFile: () => true,
+				isSymbolicLink: () => false,
+				parentPath: "/fake/path/.alpha/rules",
+			},
+			{
+				name: "cache.log",
+				isFile: () => true,
+				isSymbolicLink: () => false,
+				parentPath: "/fake/path/.alpha/rules",
+			},
 			{
 				name: "backup.bak",
 				isFile: () => true,
 				isSymbolicLink: () => false,
 				parentPath: "/fake/path/.alpha/rules",
 			},
-			{ name: "temp.tmp", isFile: () => true, isSymbolicLink: () => false, parentPath: "/fake/path/.alpha/rules" },
+			{
+				name: "temp.tmp",
+				isFile: () => true,
+				isSymbolicLink: () => false,
+				parentPath: "/fake/path/.alpha/rules",
+			},
 			{
 				name: "script.pyc",
 				isFile: () => true,
@@ -344,13 +391,13 @@ describe("loadRuleFiles", () => {
 		// Simulate .alpharules exists
 		readFileMock.mockImplementation((filePath: PathLike) => {
 			if (filePath.toString().endsWith(".alpharules")) {
-				return Promise.resolve("roo rules content")
+				return Promise.resolve("alpha rules content")
 			}
 			return Promise.reject({ code: "ENOENT" })
 		})
 
 		const result = await loadRuleFiles("/fake/path")
-		expect(result).toBe("\n# Rules from .alpharules:\nroo rules content\n")
+		expect(result).toBe("\n# Rules from .alpharules:\nalpha rules content\n")
 	})
 
 	it("should handle errors when reading directory", async () => {
@@ -365,13 +412,13 @@ describe("loadRuleFiles", () => {
 		// Simulate .alpharules exists
 		readFileMock.mockImplementation((filePath: PathLike) => {
 			if (filePath.toString().endsWith(".alpharules")) {
-				return Promise.resolve("roo rules content")
+				return Promise.resolve("alpha rules content")
 			}
 			return Promise.reject({ code: "ENOENT" })
 		})
 
 		const result = await loadRuleFiles("/fake/path")
-		expect(result).toBe("\n# Rules from .alpharules:\nroo rules content\n")
+		expect(result).toBe("\n# Rules from .alpharules:\nalpha rules content\n")
 	})
 
 	it("should read files from nested subdirectories in .alpha/rules/", async () => {
@@ -446,12 +493,13 @@ describe("loadRuleFiles", () => {
 		const result = await loadRuleFiles("/fake/path")
 
 		// Check root file content - paths in output should be relative
-		const expectedRelativeRootPath = process.platform === "win32" ? ".roo\\rules\\root.txt" : ".alpha/rules/root.txt"
+		const expectedRelativeRootPath =
+			process.platform === "win32" ? ".alpha\\rules\\root.txt" : ".alpha/rules/root.txt"
 		const expectedRelativeNested1Path =
-			process.platform === "win32" ? ".roo\\rules\\subdir\\nested1.txt" : ".alpha/rules/subdir/nested1.txt"
+			process.platform === "win32" ? ".alpha\\rules\\subdir\\nested1.txt" : ".alpha/rules/subdir/nested1.txt"
 		const expectedRelativeNested2Path =
 			process.platform === "win32"
-				? ".roo\\rules\\subdir\\subdir2\\nested2.txt"
+				? ".alpha\\rules\\subdir\\subdir2\\nested2.txt"
 				: ".alpha/rules/subdir/subdir2/nested2.txt"
 
 		expect(result).toContain(`# Rules from ${expectedRelativeRootPath}:`)
@@ -465,14 +513,14 @@ describe("loadRuleFiles", () => {
 
 		// Verify correct absolute paths were checked internally
 		const expectedRootPath2 =
-			process.platform === "win32" ? "\\fake\\path\\.roo\\rules\\root.txt" : "/fake/path/.alpha/rules/root.txt"
+			process.platform === "win32" ? "\\fake\\path\\.alpha\\rules\\root.txt" : "/fake/path/.alpha/rules/root.txt"
 		const expectedNested1Path2 =
 			process.platform === "win32"
-				? "\\fake\\path\\.roo\\rules\\subdir\\nested1.txt"
+				? "\\fake\\path\\.alpha\\rules\\subdir\\nested1.txt"
 				: "/fake/path/.alpha/rules/subdir/nested1.txt"
 		const expectedNested2Path2 =
 			process.platform === "win32"
-				? "\\fake\\path\\.roo\\rules\\subdir\\subdir2\\nested2.txt"
+				? "\\fake\\path\\.alpha\\rules\\subdir\\subdir2\\nested2.txt"
 				: "/fake/path/.alpha/rules/subdir/subdir2/nested2.txt"
 
 		expect(statMock).toHaveBeenCalledWith(expectedRootPath2)
@@ -1053,9 +1101,9 @@ describe("addCustomInstructions", () => {
 
 		// Paths in output should be relative
 		const expectedRelativeRule1Path =
-			process.platform === "win32" ? ".roo\\rules-test-mode\\rule1.txt" : ".alpha/rules-test-mode/rule1.txt"
+			process.platform === "win32" ? ".alpha\\rules-test-mode\\rule1.txt" : ".alpha/rules-test-mode/rule1.txt"
 		const expectedRelativeRule2Path =
-			process.platform === "win32" ? ".roo\\rules-test-mode\\rule2.txt" : ".alpha/rules-test-mode/rule2.txt"
+			process.platform === "win32" ? ".alpha\\rules-test-mode\\rule2.txt" : ".alpha/rules-test-mode/rule2.txt"
 
 		expect(result).toContain(`# Rules from ${expectedRelativeRule1Path}:`)
 		expect(result).toContain("mode specific rule 1")
@@ -1064,14 +1112,14 @@ describe("addCustomInstructions", () => {
 
 		// Verify absolute paths were used internally
 		const expectedAbsTestModeDir =
-			process.platform === "win32" ? "\\fake\\path\\.roo\\rules-test-mode" : "/fake/path/.alpha/rules-test-mode"
+			process.platform === "win32" ? "\\fake\\path\\.alpha\\rules-test-mode" : "/fake/path/.alpha/rules-test-mode"
 		const expectedAbsRule1Path =
 			process.platform === "win32"
-				? "\\fake\\path\\.roo\\rules-test-mode\\rule1.txt"
+				? "\\fake\\path\\.alpha\\rules-test-mode\\rule1.txt"
 				: "/fake/path/.alpha/rules-test-mode/rule1.txt"
 		const expectedAbsRule2Path =
 			process.platform === "win32"
-				? "\\fake\\path\\.roo\\rules-test-mode\\rule2.txt"
+				? "\\fake\\path\\.alpha\\rules-test-mode\\rule2.txt"
 				: "/fake/path/.alpha/rules-test-mode/rule2.txt"
 
 		expect(statMock).toHaveBeenCalledWith(expectedAbsTestModeDir)
@@ -1103,7 +1151,7 @@ describe("addCustomInstructions", () => {
 		expect(result).toContain("Rules from .alpharules-test-mode:\nmode specific rules from file")
 	})
 
-	it("should fall back to .alpharules-test-mode when .alpha/rules-test-mode/ and .alpharules-test-mode do not exist", async () => {
+	it("should fall back to .clinerules-test-mode when .alpha/rules-test-mode/ and .alpharules-test-mode do not exist", async () => {
 		// Simulate .alpha/rules-test-mode directory does not exist
 		statMock.mockRejectedValueOnce({ code: "ENOENT" })
 
@@ -1112,7 +1160,7 @@ describe("addCustomInstructions", () => {
 			if (filePath.toString().includes(".alpharules-test-mode")) {
 				return Promise.reject({ code: "ENOENT" })
 			}
-			if (filePath.toString().includes(".alpharules-test-mode")) {
+			if (filePath.toString().includes(".clinerules-test-mode")) {
 				return Promise.resolve("mode specific rules from cline file")
 			}
 			return Promise.reject({ code: "ENOENT" })
@@ -1125,7 +1173,7 @@ describe("addCustomInstructions", () => {
 			"test-mode",
 		)
 
-		expect(result).toContain("Rules from .alpharules-test-mode:\nmode specific rules from cline file")
+		expect(result).toContain("Rules from .clinerules-test-mode:\nmode specific rules from cline file")
 	})
 
 	it("should correctly format content from directories when using .alpha/rules-test-mode/", async () => {
@@ -1183,7 +1231,7 @@ describe("addCustomInstructions", () => {
 
 		// Paths in output should be relative
 		const expectedRelativeRule1Path =
-			process.platform === "win32" ? ".roo\\rules-test-mode\\rule1.txt" : ".alpha/rules-test-mode/rule1.txt"
+			process.platform === "win32" ? ".alpha\\rules-test-mode\\rule1.txt" : ".alpha/rules-test-mode/rule1.txt"
 
 		expect(result).toContain(`# Rules from ${expectedRelativeRule1Path}:`)
 		expect(result).toContain("mode specific rule content")
@@ -1213,7 +1261,8 @@ describe("Directory existence checks", () => {
 		await loadRuleFiles("/fake/path")
 
 		// Verify stat was called to check directory existence
-		const expectedRulesDir = process.platform === "win32" ? "\\fake\\path\\.roo\\rules" : "/fake/path/.alpha/rules"
+		const expectedRulesDir =
+			process.platform === "win32" ? "\\fake\\path\\.alpha\\rules" : "/fake/path/.alpha/rules"
 		expect(statMock).toHaveBeenCalledWith(expectedRulesDir)
 	})
 
@@ -1268,7 +1317,11 @@ describe("Rules directory reading", () => {
 				},
 			] as any)
 			.mockResolvedValueOnce([
-				{ name: "subdir_link.txt", isFile: () => true, parentPath: "/fake/path/.alpha/rules/symlink-target-dir" },
+				{
+					name: "subdir_link.txt",
+					isFile: () => true,
+					parentPath: "/fake/path/.alpha/rules/symlink-target-dir",
+				},
 			] as any)
 
 		// Simulate readlink response
@@ -1329,15 +1382,15 @@ describe("Rules directory reading", () => {
 
 		// Verify both regular file and symlink target content are included (paths should be relative)
 		const expectedRelativeRegularPath =
-			process.platform === "win32" ? ".roo\\rules\\regular.txt" : ".alpha/rules/regular.txt"
+			process.platform === "win32" ? ".alpha\\rules\\regular.txt" : ".alpha/rules/regular.txt"
 		const expectedRelativeSymlinkPath =
-			process.platform === "win32" ? ".roo\\symlink-target.txt" : ".alpha/symlink-target.txt"
+			process.platform === "win32" ? ".alpha\\symlink-target.txt" : ".alpha/symlink-target.txt"
 		const expectedRelativeSubdirPath =
 			process.platform === "win32"
-				? ".roo\\rules\\symlink-target-dir\\subdir_link.txt"
+				? ".alpha\\rules\\symlink-target-dir\\subdir_link.txt"
 				: ".alpha/rules/symlink-target-dir/subdir_link.txt"
 		const expectedRelativeNestedPath =
-			process.platform === "win32" ? ".roo\\nested-symlink-target.txt" : ".alpha/nested-symlink-target.txt"
+			process.platform === "win32" ? ".alpha\\nested-symlink-target.txt" : ".alpha/nested-symlink-target.txt"
 
 		expect(result).toContain(`# Rules from ${expectedRelativeRegularPath}:`)
 		expect(result).toContain("regular file content")
@@ -1409,11 +1462,11 @@ describe("Rules directory reading", () => {
 
 		// Paths in output should be relative
 		const expectedRelativeFile1Path =
-			process.platform === "win32" ? ".roo\\rules\\file1.txt" : ".alpha/rules/file1.txt"
+			process.platform === "win32" ? ".alpha\\rules\\file1.txt" : ".alpha/rules/file1.txt"
 		const expectedRelativeFile2Path =
-			process.platform === "win32" ? ".roo\\rules\\file2.txt" : ".alpha/rules/file2.txt"
+			process.platform === "win32" ? ".alpha\\rules\\file2.txt" : ".alpha/rules/file2.txt"
 		const expectedRelativeFile3Path =
-			process.platform === "win32" ? ".roo\\rules\\file3.txt" : ".alpha/rules/file3.txt"
+			process.platform === "win32" ? ".alpha\\rules\\file3.txt" : ".alpha/rules/file3.txt"
 
 		expect(result).toContain(`# Rules from ${expectedRelativeFile1Path}:`)
 		expect(result).toContain("content of file1")
@@ -1469,10 +1522,11 @@ describe("Rules directory reading", () => {
 
 		// Verify the expected file paths are in the result (should be relative)
 		const expectedRelativeAlphaPath =
-			process.platform === "win32" ? ".roo\\rules\\alpha.txt" : ".alpha/rules/alpha.txt"
-		const expectedRelativeBetaPath = process.platform === "win32" ? ".roo\\rules\\Beta.txt" : ".alpha/rules/Beta.txt"
+			process.platform === "win32" ? ".alpha\\rules\\alpha.txt" : ".alpha/rules/alpha.txt"
+		const expectedRelativeBetaPath =
+			process.platform === "win32" ? ".alpha\\rules\\Beta.txt" : ".alpha/rules/Beta.txt"
 		const expectedRelativeZebraPath =
-			process.platform === "win32" ? ".roo\\rules\\zebra.txt" : ".alpha/rules/zebra.txt"
+			process.platform === "win32" ? ".alpha\\rules\\zebra.txt" : ".alpha/rules/zebra.txt"
 
 		expect(result).toContain(`# Rules from ${expectedRelativeAlphaPath}:`)
 		expect(result).toContain(`# Rules from ${expectedRelativeBetaPath}:`)

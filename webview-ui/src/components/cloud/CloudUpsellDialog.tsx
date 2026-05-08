@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next"
 import { Dialog, DialogContent, DialogHeader, Button } from "@/components/ui"
-import RooHero from "../welcome/RooHero"
+import AlphaHero from "../welcome/AlphaHero"
 import { ArrowRight, Brain, Cable, CircleDollarSign, FileStack, Router, Users2 } from "lucide-react"
 import { DialogTitle } from "@radix-ui/react-dialog"
 
@@ -15,7 +15,7 @@ export const renderCloudBenefitsContent = (t: any) => {
 	return (
 		<div className="text-left cursor-default">
 			<div className="w-15">
-				<RooHero />
+				<AlphaHero />
 			</div>
 			<h1 className="text-xl font-bold text-vscode-foreground">{t("cloud:cloudBenefitsTitle")}</h1>
 			<div className="text-lg">

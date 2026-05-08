@@ -1,7 +1,7 @@
 import { Box, Text } from "ink"
 import { Select } from "@inkjs/ui"
 
-import { OnboardingProviderChoice, ASCII_ROO } from "@/types/index.js"
+import { OnboardingProviderChoice, ASCII_ALPHA } from "@/types/index.js"
 
 export interface OnboardingScreenProps {
 	onSelect: (choice: OnboardingProviderChoice) => void
@@ -11,7 +11,7 @@ export function OnboardingScreen({ onSelect }: OnboardingScreenProps) {
 	return (
 		<Box flexDirection="column" gap={1}>
 			<Text bold color="cyan">
-				{ASCII_ROO}
+				{ASCII_ALPHA}
 			</Text>
 			<Text dimColor>Welcome! How would you like to connect to an LLM provider?</Text>
 			<Select

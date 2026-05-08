@@ -1,9 +1,9 @@
 import { GoogleGenAI, type GoogleGenAIOptions, type EmbedContentResponse, type ContentEmbedding } from "@google/genai"
 import { OAuth2Client, type JWTInput } from "google-auth-library"
-import { safeJsonParse } from "@roo-code/core"
-import type { ProviderSettings } from "@roo-code/types"
-import { TelemetryEventName } from "@roo-code/types"
-import { TelemetryService } from "@roo-code/telemetry"
+import { safeJsonParse } from "@alpha-code/core"
+import type { ProviderSettings } from "@alpha-code/types"
+import { TelemetryEventName } from "@alpha-code/types"
+import { TelemetryService } from "@alpha-code/telemetry"
 
 import { t } from "../../../i18n"
 import {

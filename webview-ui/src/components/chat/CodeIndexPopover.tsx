@@ -13,7 +13,7 @@ import {
 import * as ProgressPrimitive from "@radix-ui/react-progress"
 import { AlertTriangle } from "lucide-react"
 
-import { type IndexingStatus, type EmbedderProvider, CODEBASE_INDEX_DEFAULTS, VERTEX_REGIONS } from "@roo-code/types"
+import { type IndexingStatus, type EmbedderProvider, CODEBASE_INDEX_DEFAULTS, VERTEX_REGIONS } from "@alpha-code/types"
 
 import { vscode } from "@src/utils/vscode"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
@@ -41,7 +41,7 @@ import {
 	StandardTooltip,
 	Button,
 } from "@src/components/ui"
-import { useRooPortal } from "@src/components/ui/hooks/useRooPortal"
+import { useAlphaPortal } from "@src/components/ui/hooks/useAlphaPortal"
 import { useEscapeKey } from "@src/hooks/useEscapeKey"
 import {
 	useOpenRouterModelProviders,
@@ -352,10 +352,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 	// Current settings state - tracks user changes
 	const [currentSettings, setCurrentSettings] = useState<LocalCodeIndexSettings>(getDefaultSettings())
 
-	const hasSavedSecret = useCallback(
-		(field: SecretField) => savedSecretStatus[field],
-		[savedSecretStatus],
-	)
+	const hasSavedSecret = useCallback((field: SecretField) => savedSecretStatus[field], [savedSecretStatus])
 
 	const getSecretPlaceholder = useCallback(
 		(field: SecretField, placeholderKey: string) =>
@@ -393,7 +390,8 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 			const settings = {
 				codebaseIndexEnabled: codebaseIndexConfig.codebaseIndexEnabled ?? true,
 				codebaseIndexVectorStoreProvider: codebaseIndexConfig.codebaseIndexVectorStoreProvider || "lancedb",
-				codebaseIndexLocalIndexPath: codebaseIndexConfig.codebaseIndexLocalIndexPath || DEFAULT_LOCAL_INDEX_PATH,
+				codebaseIndexLocalIndexPath:
+					codebaseIndexConfig.codebaseIndexLocalIndexPath || DEFAULT_LOCAL_INDEX_PATH,
 				codebaseIndexQdrantUrl: codebaseIndexConfig.codebaseIndexQdrantUrl || "",
 				codebaseIndexEmbedderProvider: embedderProvider,
 				codebaseIndexEmbedderBaseUrl: codebaseIndexConfig.codebaseIndexEmbedderBaseUrl || "",
@@ -797,7 +795,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 		},
 	)
 
-	const portalContainer = useRooPortal("roo-portal")
+	const portalContainer = useAlphaPortal("alpha-portal")
 
 	return (
 		<>
@@ -907,8 +905,14 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 											onValueChange={(value: VectorStoreProvider) => {
 												updateSetting("codebaseIndexVectorStoreProvider", value)
 
-												if (value === "lancedb" && !currentSettings.codebaseIndexLocalIndexPath) {
-													updateSetting("codebaseIndexLocalIndexPath", DEFAULT_LOCAL_INDEX_PATH)
+												if (
+													value === "lancedb" &&
+													!currentSettings.codebaseIndexLocalIndexPath
+												) {
+													updateSetting(
+														"codebaseIndexLocalIndexPath",
+														DEFAULT_LOCAL_INDEX_PATH,
+													)
 												}
 
 												if (value === "qdrant" && !currentSettings.codebaseIndexQdrantUrl) {

@@ -250,7 +250,9 @@ export class LanceDbVectorStore implements IVectorStore {
 			return
 		}
 
-		const normalizedPaths = filePaths.map((filePath) => `'${this.escapeSqlString(this.normalizeStoredPath(filePath))}'`)
+		const normalizedPaths = filePaths.map(
+			(filePath) => `'${this.escapeSqlString(this.normalizeStoredPath(filePath))}'`,
+		)
 		await table.delete(`filePath IN (${normalizedPaths.join(", ")})`)
 	}
 

@@ -12,24 +12,24 @@ import { appendImages } from "@src/utils/imageUtils"
 import { getCostBreakdownIfNeeded } from "@src/utils/costFormatting"
 import { batchConsecutive } from "@src/utils/batchConsecutive"
 
-import type { ClineAsk, ClineSayTool, ClineMessage, ExtensionMessage, AudioType } from "@roo-code/types"
-import { isRetiredProvider } from "@roo-code/types"
+import type { ClineAsk, ClineSayTool, ClineMessage, ExtensionMessage, AudioType } from "@alpha-code/types"
+import { isRetiredProvider } from "@alpha-code/types"
 
-import { findLast } from "@roo/array"
-import { SuggestionItem } from "@roo-code/types"
-import { combineApiRequests } from "@roo/combineApiRequests"
-import { combineCommandSequences } from "@roo/combineCommandSequences"
-import { getApiMetrics } from "@roo/getApiMetrics"
-import { getAllModes } from "@roo/modes"
-import { ProfileValidator } from "@roo/ProfileValidator"
-import { getLatestTodo } from "@roo/todo"
+import { findLast } from "@alpha/array"
+import { SuggestionItem } from "@alpha-code/types"
+import { combineApiRequests } from "@alpha/combineApiRequests"
+import { combineCommandSequences } from "@alpha/combineCommandSequences"
+import { getApiMetrics } from "@alpha/getApiMetrics"
+import { getAllModes } from "@alpha/modes"
+import { ProfileValidator } from "@alpha/ProfileValidator"
+import { getLatestTodo } from "@alpha/todo"
 
 import { vscode } from "@src/utils/vscode"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 import { useSelectedModel } from "@src/components/ui/hooks/useSelectedModel"
-import RooHero from "@src/components/welcome/RooHero"
-import RooTips from "@src/components/welcome/RooTips"
+import AlphaHero from "@src/components/welcome/AlphaHero"
+import AlphaTips from "@src/components/welcome/AlphaTips"
 import { StandardTooltip, Button } from "@src/components/ui"
 import { CloudUpsellDialog } from "@src/components/cloud/CloudUpsellDialog"
 
@@ -1732,9 +1732,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							className="absolute top-2 right-3 z-10"
 						/>
 						<div className="flex flex-col gap-4 w-full">
-							<RooHero />
-							{/* Show RooTips when authenticated or when user is new */}
-							{taskHistory.length < 6 && <RooTips />}
+							<AlphaHero />
+							{/* Show AlphaTips when authenticated or when user is new */}
+							{taskHistory.length < 6 && <AlphaTips />}
 							{/* Everyone should see their task history if any */}
 							{taskHistory.length > 0 && <HistoryPreview />}
 						</div>
@@ -1932,7 +1932,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				</div>
 			)}
 
-			<div id="roo-portal" />
+			<div id="alpha-portal" />
 			<CloudUpsellDialog open={isUpsellOpen} onOpenChange={closeUpsell} onConnect={handleConnect} />
 		</div>
 	)

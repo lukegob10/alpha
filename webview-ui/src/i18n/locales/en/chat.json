@@ -128,7 +128,7 @@
 	"about": "Alpha is a whole AI dev team in your editor",
 	"docs": "Check our <DocsLink>docs</DocsLink> to get started",
 	"onboarding": "What would you like to do?",
-	"rooTips": {
+	"alphaTips": {
 		"customizableModes": {
 			"title": "Customizable modes that don't swerve",
 			"description": "Specialized personas that stay on-task and deliver."

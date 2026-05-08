@@ -1,6 +1,6 @@
 import { distance } from "fastest-levenshtein"
 
-import { ToolProgressStatus } from "@roo-code/types"
+import { ToolProgressStatus } from "@alpha-code/types"
 
 import { addLineNumbers, everyLineHasLineNumbers, stripLineNumbers } from "../../../integrations/misc/extract-text"
 import { ToolUse, DiffStrategy, DiffResult } from "../../../shared/tools"
@@ -258,32 +258,32 @@ export class MultiSearchReplaceDiffStrategy implements DiffStrategy {
 
 		/*
 			Regex parts:
-			
-			1. (?:^|\n)  
+
+			1. (?:^|\n)
 			  Ensures the first marker starts at the beginning of the file or right after a newline.
 
-			2. (?<!\\)<<<<<<< SEARCH\s*\n  
+			2. (?<!\\)<<<<<<< SEARCH\s*\n
 			  Matches the line "<<<<<<< SEARCH" (ignoring any trailing spaces) – the negative lookbehind makes sure it isn't escaped.
 
-			3. ((?:\:start_line:\s*(\d+)\s*\n))?  
+			3. ((?:\:start_line:\s*(\d+)\s*\n))?
 			  Optionally matches a ":start_line:" line. The outer capturing group is group 1 and the inner (\d+) is group 2.
 
-			4. ((?:\:end_line:\s*(\d+)\s*\n))?  
+			4. ((?:\:end_line:\s*(\d+)\s*\n))?
 			  Optionally matches a ":end_line:" line. Group 3 is the whole match and group 4 is the digits.
 
-			5. ((?<!\\)-------\s*\n)?  
+			5. ((?<!\\)-------\s*\n)?
 			  Optionally matches the "-------" marker line (group 5).
 
-			6. ([\s\S]*?)(?:\n)?  
+			6. ([\s\S]*?)(?:\n)?
 			  Non‐greedy match for the "search content" (group 6) up to the next marker.
 
-			7. (?:(?<=\n)(?<!\\)=======\s*\n)  
+			7. (?:(?<=\n)(?<!\\)=======\s*\n)
 			  Matches the "=======" marker on its own line.
 
-			8. ([\s\S]*?)(?:\n)?  
+			8. ([\s\S]*?)(?:\n)?
 			  Non‐greedy match for the "replace content" (group 7).
 
-			9. (?:(?<=\n)(?<!\\)>>>>>>> REPLACE)(?=\n|$)  
+			9. (?:(?<=\n)(?<!\\)>>>>>>> REPLACE)(?=\n|$)
 			  Matches the final ">>>>>>> REPLACE" marker on its own line (and requires a following newline or the end of file).
 		*/
 

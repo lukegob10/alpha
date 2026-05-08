@@ -16,9 +16,9 @@ import {
 	geminiDefaultModelId,
 	geminiModels,
 	ApiProviderError,
-} from "@roo-code/types"
-import { safeJsonParse } from "@roo-code/core"
-import { TelemetryService } from "@roo-code/telemetry"
+} from "@alpha-code/types"
+import { safeJsonParse } from "@alpha-code/core"
+import { TelemetryService } from "@alpha-code/telemetry"
 
 import type { ApiHandlerOptions } from "../../shared/api"
 

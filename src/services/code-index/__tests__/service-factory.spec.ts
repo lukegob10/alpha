@@ -24,7 +24,7 @@ vitest.mock("../../../shared/embeddingModels", () => ({
 }))
 
 // Mock TelemetryService
-vitest.mock("@roo-code/telemetry", () => ({
+vitest.mock("@alpha-code/telemetry", () => ({
 	TelemetryService: {
 		instance: {
 			captureEvent: vitest.fn(),
@@ -704,11 +704,7 @@ describe("CodeIndexServiceFactory", () => {
 			factory.createVectorStore()
 
 			// Assert
-			expect(MockedLanceDbVectorStore).toHaveBeenCalledWith(
-				"/test/workspace",
-				".alpha/code-index/lancedb",
-				1536,
-			)
+			expect(MockedLanceDbVectorStore).toHaveBeenCalledWith("/test/workspace", ".alpha/code-index/lancedb", 1536)
 			expect(MockedQdrantVectorStore).not.toHaveBeenCalled()
 		})
 

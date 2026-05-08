@@ -4,7 +4,7 @@ import { EmbedderProvider } from "./interfaces/manager"
 import { CodeIndexConfig, PreviousConfigSnapshot, VectorStoreProvider } from "./interfaces/config"
 import { DEFAULT_LOCAL_INDEX_PATH, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_MAX_SEARCH_RESULTS } from "./constants"
 import { getDefaultModelId, getModelDimension, getModelScoreThreshold } from "../../shared/embeddingModels"
-import type { ProviderSettings } from "@roo-code/types"
+import type { ProviderSettings } from "@alpha-code/types"
 
 /**
  * Manages configuration state and validation for the code indexing feature.
@@ -86,7 +86,10 @@ export class CodeIndexConfigManager {
 		return activeVertexOptions || hasCodeIndexVertexSettings ? resolved : undefined
 	}
 
-	private resolveVectorStoreProvider(codebaseIndexConfig: Record<string, any>, qdrantApiKey?: string): VectorStoreProvider {
+	private resolveVectorStoreProvider(
+		codebaseIndexConfig: Record<string, any>,
+		qdrantApiKey?: string,
+	): VectorStoreProvider {
 		const configuredProvider = codebaseIndexConfig.codebaseIndexVectorStoreProvider
 		if (configuredProvider === "qdrant" || configuredProvider === "lancedb") {
 			return configuredProvider
@@ -235,11 +238,11 @@ export class CodeIndexConfigManager {
 	 */
 	public async loadConfiguration(): Promise<{
 		configSnapshot: PreviousConfigSnapshot
-			currentConfig: {
-				isConfigured: boolean
-				embedderProvider: EmbedderProvider
-				vectorStoreProvider?: VectorStoreProvider
-				modelId?: string
+		currentConfig: {
+			isConfigured: boolean
+			embedderProvider: EmbedderProvider
+			vectorStoreProvider?: VectorStoreProvider
+			modelId?: string
 			modelDimension?: number
 			openAiOptions?: ApiHandlerOptions
 			ollamaOptions?: ApiHandlerOptions
@@ -250,11 +253,11 @@ export class CodeIndexConfigManager {
 			vercelAiGatewayOptions?: { apiKey: string }
 			bedrockOptions?: { region: string; profile?: string }
 			openRouterOptions?: { apiKey: string }
-				qdrantUrl?: string
-				qdrantApiKey?: string
-				localIndexPath?: string
-				searchMinScore?: number
-			}
+			qdrantUrl?: string
+			qdrantApiKey?: string
+			localIndexPath?: string
+			searchMinScore?: number
+		}
 		requiresRestart: boolean
 	}> {
 		// Capture the ACTUAL previous state before loading new configuration
