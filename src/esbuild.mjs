@@ -30,6 +30,28 @@ async function removeDirWithRetries(dirPath, retries = 5, retryDelayMs = 200) {
 	}
 }
 
+async function cleanDistDir(distDir) {
+	try {
+		await removeDirWithRetries(distDir)
+		return
+	} catch (error) {
+		const lockedLanceDbBinding = path.join(distDir, "lancedb.win32-x64-msvc.node")
+
+		if (process.platform !== "win32" || error?.code !== "EPERM" || !fs.existsSync(lockedLanceDbBinding)) {
+			throw error
+		}
+
+		console.warn(`[extension] Reusing locked LanceDB native binding: ${lockedLanceDbBinding}`)
+
+		const entries = await fs.promises.readdir(distDir)
+		await Promise.all(
+			entries
+				.filter((entry) => entry !== path.basename(lockedLanceDbBinding))
+				.map((entry) => fs.promises.rm(path.join(distDir, entry), { recursive: true, force: true })),
+		)
+	}
+}
+
 function resolveLanceDbNativeBinding() {
 	if (process.platform !== "win32" || process.arch !== "x64") {
 		return undefined
@@ -49,7 +71,20 @@ function copyLanceDbNativeBinding(distDir) {
 
 	fs.mkdirSync(distDir, { recursive: true })
 	const target = path.join(distDir, path.basename(nativeBinding))
-	fs.copyFileSync(nativeBinding, target)
+	try {
+		fs.copyFileSync(nativeBinding, target)
+	} catch (error) {
+		if (
+			process.platform === "win32" &&
+			(error?.code === "EBUSY" || error?.code === "EPERM") &&
+			fs.existsSync(target)
+		) {
+			console.warn(`[copyLanceDbNativeBinding] Reusing locked native binding at ${target}`)
+			return
+		}
+
+		throw error
+	}
 	console.log(`[copyLanceDbNativeBinding] Copied ${nativeBinding} to ${target}`)
 }
 
@@ -79,7 +114,7 @@ async function main() {
 
 	if (fs.existsSync(distDir)) {
 		console.log(`[${name}] Cleaning dist directory: ${distDir}`)
-		await removeDirWithRetries(distDir)
+		await cleanDistDir(distDir)
 	}
 
 	/**

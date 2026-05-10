@@ -769,6 +769,20 @@ describe("ClineProvider", () => {
 		expect(state).toHaveProperty("writeDelayMs")
 	})
 
+	test("getState preserves code index embedding rate limit settings", async () => {
+		await provider.contextProxy.setValue("codebaseIndexConfig", {
+			codebaseIndexEnabled: true,
+			codebaseIndexEmbedderProvider: "openai",
+			codebaseIndexEmbeddingRateLimitEnabled: true,
+			codebaseIndexEmbeddingRateLimitSeconds: 2.5,
+		})
+
+		const state = await provider.getState()
+
+		expect(state.codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitEnabled).toBe(true)
+		expect(state.codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitSeconds).toBe(2.5)
+	})
+
 	test("language is set to VSCode language", async () => {
 		// Mock VSCode language as Spanish
 		;(vscode.env as any).language = "pt-BR"

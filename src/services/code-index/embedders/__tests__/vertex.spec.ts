@@ -106,13 +106,12 @@ describe("VertexGeminiEmbedder", () => {
 			vertexRegion: "us-central1",
 		} as any)
 
-		mockEmbedContent
-			.mockResolvedValueOnce({
-				embeddings: [{ values: [0.1, 0.2], statistics: { tokenCount: 4 } }],
-			})
-			.mockResolvedValueOnce({
-				embeddings: [{ values: [0.3, 0.4], statistics: { tokenCount: 5 } }],
-			})
+		mockEmbedContent.mockResolvedValueOnce({
+			embeddings: [
+				{ values: [0.1, 0.2], statistics: { tokenCount: 4 } },
+				{ values: [0.3, 0.4], statistics: { tokenCount: 5 } },
+			],
+		})
 
 		const response = await embedder.createEmbeddings(["first text", "second text"])
 
@@ -126,13 +125,10 @@ describe("VertexGeminiEmbedder", () => {
 				totalTokens: 9,
 			},
 		})
-		expect(mockEmbedContent).toHaveBeenNthCalledWith(1, {
+		expect(mockEmbedContent).toHaveBeenCalledTimes(1)
+		expect(mockEmbedContent).toHaveBeenCalledWith({
 			model: "gemini-embedding-001",
-			contents: "first text",
-		})
-		expect(mockEmbedContent).toHaveBeenNthCalledWith(2, {
-			model: "gemini-embedding-001",
-			contents: "second text",
+			contents: ["first text", "second text"],
 		})
 	})
 
@@ -170,7 +166,7 @@ describe("VertexGeminiEmbedder", () => {
 		)
 		expect(mockEmbedContent).toHaveBeenCalledWith({
 			model: "gateway-embedding-model",
-			contents: "text",
+			contents: ["text"],
 			config: {
 				httpOptions: {
 					baseUrl: "https://gateway.example.com/vertex",
@@ -201,7 +197,7 @@ describe("VertexGeminiEmbedder", () => {
 
 		expect(mockEmbedContent).toHaveBeenCalledWith({
 			model: "gateway-embedding-model",
-			contents: "text",
+			contents: ["text"],
 			config: {
 				httpOptions: {
 					baseUrl: "https://gateway.example.com/vertex",
@@ -255,6 +251,29 @@ describe("VertexGeminiEmbedder", () => {
 		)
 	})
 
+	it("retries rate-limited batch requests instead of failing after one attempt", async () => {
+		const embedder = new VertexGeminiEmbedder({
+			apiProvider: "vertex",
+			vertexProjectId: "test-project",
+			vertexRegion: "us-central1",
+		} as any)
+		mockEmbedContent
+			.mockRejectedValueOnce(
+				Object.assign(new Error("Rate limit exceeded"), {
+					status: 429,
+					headers: { "retry-after": "0" },
+				}),
+			)
+			.mockResolvedValueOnce({
+				embeddings: [{ values: [0.1, 0.2], statistics: { tokenCount: 2 } }],
+			})
+
+		const response = await embedder.createEmbeddings(["text"])
+
+		expect(response.embeddings).toEqual([[0.1, 0.2]])
+		expect(mockEmbedContent).toHaveBeenCalledTimes(2)
+	})
+
 	it("uses the larger item token limit for gemini-embedding-2", async () => {
 		const embedder = new VertexGeminiEmbedder({
 			apiProvider: "vertex",
@@ -271,7 +290,7 @@ describe("VertexGeminiEmbedder", () => {
 		expect(response.embeddings).toEqual([[0.1, 0.2]])
 		expect(mockEmbedContent).toHaveBeenCalledWith({
 			model: "gemini-embedding-2",
-			contents: textOverGemini001Limit,
+			contents: [textOverGemini001Limit],
 		})
 	})
 
@@ -288,7 +307,7 @@ describe("VertexGeminiEmbedder", () => {
 		await expect(embedder.validateConfiguration()).resolves.toEqual({ valid: true })
 		expect(mockEmbedContent).toHaveBeenCalledWith({
 			model: "gemini-embedding-001",
-			contents: "test",
+			contents: ["test"],
 		})
 	})
 })

@@ -174,7 +174,7 @@ export class ClineProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "may-2026-v1.0.0-alpha-release" // v1.0.0 Alpha release
+	public readonly latestAnnouncementId = "may-2026-v1.0.3-alpha-v1-welcome" // v1.0.3 Alpha v1 welcome
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -2402,6 +2402,8 @@ export class ClineProvider
 				codebaseIndexOpenAiCompatibleBaseUrl: codebaseIndexConfig?.codebaseIndexOpenAiCompatibleBaseUrl,
 				codebaseIndexSearchMaxResults: codebaseIndexConfig?.codebaseIndexSearchMaxResults,
 				codebaseIndexSearchMinScore: codebaseIndexConfig?.codebaseIndexSearchMinScore,
+				codebaseIndexEmbeddingRateLimitEnabled: codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitEnabled,
+				codebaseIndexEmbeddingRateLimitSeconds: codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitSeconds,
 				codebaseIndexBedrockRegion: codebaseIndexConfig?.codebaseIndexBedrockRegion,
 				codebaseIndexBedrockProfile: codebaseIndexConfig?.codebaseIndexBedrockProfile,
 				codebaseIndexVertexProjectId: codebaseIndexConfig?.codebaseIndexVertexProjectId,
@@ -2641,6 +2643,10 @@ export class ClineProvider
 					stateValues.codebaseIndexConfig?.codebaseIndexOpenAiCompatibleBaseUrl,
 				codebaseIndexSearchMaxResults: stateValues.codebaseIndexConfig?.codebaseIndexSearchMaxResults,
 				codebaseIndexSearchMinScore: stateValues.codebaseIndexConfig?.codebaseIndexSearchMinScore,
+				codebaseIndexEmbeddingRateLimitEnabled:
+					stateValues.codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitEnabled,
+				codebaseIndexEmbeddingRateLimitSeconds:
+					stateValues.codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitSeconds,
 				codebaseIndexBedrockRegion: stateValues.codebaseIndexConfig?.codebaseIndexBedrockRegion,
 				codebaseIndexBedrockProfile: stateValues.codebaseIndexConfig?.codebaseIndexBedrockProfile,
 				codebaseIndexVertexProjectId: stateValues.codebaseIndexConfig?.codebaseIndexVertexProjectId,
