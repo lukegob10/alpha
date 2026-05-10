@@ -28,7 +28,7 @@
 		"useAnotherProvider": "Nhà cung cấp bên thứ ba",
 		"useAnotherProviderDescription": "Nhập khóa API và bắt đầu.",
 		"noApiKeys": "Bạn không muốn xử lý các khóa API và tài khoản riêng biệt?",
-		"backToRoo": "Sử dụng Nhà cung cấp Alpha Cloud.",
+		"backToAlpha": "Sử dụng Nhà cung cấp Alpha Cloud.",
 		"goBack": "Quay lại",
 		"finish": "Hoàn thành"
 	},

@@ -1,7 +1,6 @@
 import { memo, useState } from "react"
 
-import { Package } from "@roo/package"
-import { useAppTranslation } from "@src/i18n/TranslationContext"
+import { Package } from "@alpha/package"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@src/components/ui"
 
 interface AnnouncementProps {
@@ -18,7 +17,6 @@ interface AnnouncementProps {
  */
 
 const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
-	const { t } = useAppTranslation()
 	const [open, setOpen] = useState(true)
 
 	return (
@@ -33,21 +31,15 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 			}}>
 			<DialogContent>
 				<DialogHeader>
-					<DialogTitle>{t("chat:announcement.title", { version: Package.version })}</DialogTitle>
+					<DialogTitle>Welcome to Alpha v{Package.version}</DialogTitle>
 				</DialogHeader>
 				<div>
-					{/* Regular Release Highlights */}
-					<div className="mb-4">
-						<p className="mb-3">{t("chat:announcement.release.heading")}</p>
-						<ul className="list-disc list-inside text-sm space-y-1.5">
-							<li>{t("chat:announcement.release.gpt54")}</li>
-							<li>{t("chat:announcement.release.slashSkills")}</li>
-						</ul>
-					</div>
-
-					</div>
-				</DialogContent>
-			</Dialog>
+					<p className="text-sm">
+						Alpha v1 is here. Welcome to the first release of the Alpha-branded extension.
+					</p>
+				</div>
+			</DialogContent>
+		</Dialog>
 	)
 }
 

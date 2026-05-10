@@ -4,7 +4,7 @@ import { EmbedderProvider } from "./interfaces/manager"
 import { CodeIndexConfig, PreviousConfigSnapshot, VectorStoreProvider } from "./interfaces/config"
 import { DEFAULT_LOCAL_INDEX_PATH, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_MAX_SEARCH_RESULTS } from "./constants"
 import { getDefaultModelId, getModelDimension, getModelScoreThreshold } from "../../shared/embeddingModels"
-import type { ProviderSettings } from "@roo-code/types"
+import type { ProviderSettings } from "@alpha-code/types"
 
 /**
  * Manages configuration state and validation for the code indexing feature.
@@ -30,6 +30,7 @@ export class CodeIndexConfigManager {
 	private localIndexPath?: string = DEFAULT_LOCAL_INDEX_PATH
 	private searchMinScore?: number
 	private searchMaxResults?: number
+	private embeddingRateLimitSeconds?: number
 
 	constructor(private readonly contextProxy: ContextProxy) {
 		// Initialize with current configuration to avoid false restart triggers
@@ -48,27 +49,56 @@ export class CodeIndexConfigManager {
 		activeVertexOptions?: ProviderSettings,
 		vertexJsonCredentials?: string,
 	): ProviderSettings | undefined {
+		const projectId =
+			codebaseIndexConfig.codebaseIndexVertexProjectId ||
+			activeVertexOptions?.projectId ||
+			activeVertexOptions?.vertexProjectId
+		const location =
+			codebaseIndexConfig.codebaseIndexVertexRegion ||
+			activeVertexOptions?.location ||
+			activeVertexOptions?.vertexRegion
+		const gatewayBaseUrl =
+			codebaseIndexConfig.codebaseIndexVertexGatewayBaseUrl ||
+			activeVertexOptions?.gatewayBaseUrl ||
+			activeVertexOptions?.vertexGatewayBaseUrl
+		const pemCaBundlePath =
+			codebaseIndexConfig.codebaseIndexVertexGatewayCaBundlePath ||
+			activeVertexOptions?.pemCaBundlePath ||
+			activeVertexOptions?.vertexGatewayCaBundlePath
+		const helixCommand =
+			codebaseIndexConfig.codebaseIndexVertexGatewayHelixCommand ||
+			activeVertexOptions?.helixCommand ||
+			activeVertexOptions?.vertexGatewayHelixCommand
+		const refreshIntervalMinutes =
+			codebaseIndexConfig.codebaseIndexVertexGatewayTokenRefreshMinutes ??
+			activeVertexOptions?.refreshIntervalMinutes ??
+			activeVertexOptions?.vertexGatewayTokenRefreshMinutes
+		const modelRoutingMap =
+			codebaseIndexConfig.codebaseIndexVertexGatewayModelRoutingMap ||
+			activeVertexOptions?.modelRoutingMap ||
+			activeVertexOptions?.vertexGatewayModelRoutingMap
+
 		const resolved: ProviderSettings = {
 			...(activeVertexOptions ?? {}),
 			apiProvider: "vertex",
-			vertexProjectId: codebaseIndexConfig.codebaseIndexVertexProjectId || activeVertexOptions?.vertexProjectId,
-			vertexRegion: codebaseIndexConfig.codebaseIndexVertexRegion || activeVertexOptions?.vertexRegion,
+			projectId,
+			location,
+			vertexProjectId: projectId,
+			vertexRegion: location,
 			vertexKeyFile: codebaseIndexConfig.codebaseIndexVertexKeyFile || activeVertexOptions?.vertexKeyFile,
 			vertexJsonCredentials: vertexJsonCredentials || activeVertexOptions?.vertexJsonCredentials,
-			vertexGatewayBaseUrl:
-				codebaseIndexConfig.codebaseIndexVertexGatewayBaseUrl || activeVertexOptions?.vertexGatewayBaseUrl,
-			vertexGatewayCaBundlePath:
-				codebaseIndexConfig.codebaseIndexVertexGatewayCaBundlePath ||
-				activeVertexOptions?.vertexGatewayCaBundlePath,
-			vertexGatewayHelixCommand:
-				codebaseIndexConfig.codebaseIndexVertexGatewayHelixCommand ||
-				activeVertexOptions?.vertexGatewayHelixCommand,
-			vertexGatewayTokenRefreshMinutes:
-				codebaseIndexConfig.codebaseIndexVertexGatewayTokenRefreshMinutes ??
-				activeVertexOptions?.vertexGatewayTokenRefreshMinutes,
-			vertexGatewayModelRoutingMap:
-				codebaseIndexConfig.codebaseIndexVertexGatewayModelRoutingMap ||
-				activeVertexOptions?.vertexGatewayModelRoutingMap,
+			gatewayBaseUrl,
+			pemCaBundlePath,
+			helixCommand,
+			helixParseMode: activeVertexOptions?.helixParseMode,
+			helixTokenKey: activeVertexOptions?.helixTokenKey,
+			refreshIntervalMinutes,
+			modelRoutingMap,
+			vertexGatewayBaseUrl: gatewayBaseUrl,
+			vertexGatewayCaBundlePath: pemCaBundlePath,
+			vertexGatewayHelixCommand: helixCommand,
+			vertexGatewayTokenRefreshMinutes: refreshIntervalMinutes,
+			vertexGatewayModelRoutingMap: typeof modelRoutingMap === "string" ? modelRoutingMap : undefined,
 		}
 
 		const hasCodeIndexVertexSettings = [
@@ -86,7 +116,10 @@ export class CodeIndexConfigManager {
 		return activeVertexOptions || hasCodeIndexVertexSettings ? resolved : undefined
 	}
 
-	private resolveVectorStoreProvider(codebaseIndexConfig: Record<string, any>, qdrantApiKey?: string): VectorStoreProvider {
+	private resolveVectorStoreProvider(
+		codebaseIndexConfig: Record<string, any>,
+		qdrantApiKey?: string,
+	): VectorStoreProvider {
 		const configuredProvider = codebaseIndexConfig.codebaseIndexVectorStoreProvider
 		if (configuredProvider === "qdrant" || configuredProvider === "lancedb") {
 			return configuredProvider
@@ -115,6 +148,8 @@ export class CodeIndexConfigManager {
 			codebaseIndexEmbedderModelId: "",
 			codebaseIndexSearchMinScore: undefined,
 			codebaseIndexSearchMaxResults: undefined,
+			codebaseIndexEmbeddingRateLimitEnabled: false,
+			codebaseIndexEmbeddingRateLimitSeconds: undefined,
 			codebaseIndexBedrockRegion: "us-east-1",
 			codebaseIndexBedrockProfile: "",
 			codebaseIndexVertexProjectId: "",
@@ -137,6 +172,8 @@ export class CodeIndexConfigManager {
 			codebaseIndexEmbedderModelId,
 			codebaseIndexSearchMinScore,
 			codebaseIndexSearchMaxResults,
+			codebaseIndexEmbeddingRateLimitEnabled,
+			codebaseIndexEmbeddingRateLimitSeconds,
 		} = codebaseIndexConfig
 
 		const openAiKey = this.contextProxy?.getSecret("codeIndexOpenAiKey") ?? ""
@@ -163,6 +200,10 @@ export class CodeIndexConfigManager {
 		this.localIndexPath = localIndexPath
 		this.searchMinScore = codebaseIndexSearchMinScore
 		this.searchMaxResults = codebaseIndexSearchMaxResults
+		this.embeddingRateLimitSeconds =
+			codebaseIndexEmbeddingRateLimitEnabled && typeof codebaseIndexEmbeddingRateLimitSeconds === "number"
+				? codebaseIndexEmbeddingRateLimitSeconds
+				: undefined
 
 		// Validate and set model dimension
 		const rawDimension = codebaseIndexConfig.codebaseIndexEmbedderModelDimension
@@ -235,11 +276,11 @@ export class CodeIndexConfigManager {
 	 */
 	public async loadConfiguration(): Promise<{
 		configSnapshot: PreviousConfigSnapshot
-			currentConfig: {
-				isConfigured: boolean
-				embedderProvider: EmbedderProvider
-				vectorStoreProvider?: VectorStoreProvider
-				modelId?: string
+		currentConfig: {
+			isConfigured: boolean
+			embedderProvider: EmbedderProvider
+			vectorStoreProvider?: VectorStoreProvider
+			modelId?: string
 			modelDimension?: number
 			openAiOptions?: ApiHandlerOptions
 			ollamaOptions?: ApiHandlerOptions
@@ -250,11 +291,13 @@ export class CodeIndexConfigManager {
 			vercelAiGatewayOptions?: { apiKey: string }
 			bedrockOptions?: { region: string; profile?: string }
 			openRouterOptions?: { apiKey: string }
-				qdrantUrl?: string
-				qdrantApiKey?: string
-				localIndexPath?: string
-				searchMinScore?: number
-			}
+			qdrantUrl?: string
+			qdrantApiKey?: string
+			localIndexPath?: string
+			searchMinScore?: number
+			searchMaxResults?: number
+			embeddingRateLimitSeconds?: number
+		}
 		requiresRestart: boolean
 	}> {
 		// Capture the ACTUAL previous state before loading new configuration
@@ -270,15 +313,23 @@ export class CodeIndexConfigManager {
 			openAiCompatibleBaseUrl: this.openAiCompatibleOptions?.baseUrl ?? "",
 			openAiCompatibleApiKey: this.openAiCompatibleOptions?.apiKey ?? "",
 			geminiApiKey: this.geminiOptions?.apiKey ?? "",
-			vertexProjectId: this.vertexOptions?.vertexProjectId ?? "",
-			vertexRegion: this.vertexOptions?.vertexRegion ?? "",
+			vertexProjectId: this.vertexOptions?.projectId ?? this.vertexOptions?.vertexProjectId ?? "",
+			vertexRegion: this.vertexOptions?.location ?? this.vertexOptions?.vertexRegion ?? "",
 			vertexKeyFile: this.vertexOptions?.vertexKeyFile ?? "",
 			vertexJsonCredentials: this.vertexOptions?.vertexJsonCredentials ?? "",
-			vertexGatewayBaseUrl: this.vertexOptions?.vertexGatewayBaseUrl ?? "",
-			vertexGatewayCaBundlePath: this.vertexOptions?.vertexGatewayCaBundlePath ?? "",
-			vertexGatewayHelixCommand: this.vertexOptions?.vertexGatewayHelixCommand ?? "",
-			vertexGatewayTokenRefreshMinutes: this.vertexOptions?.vertexGatewayTokenRefreshMinutes,
-			vertexGatewayModelRoutingMap: this.vertexOptions?.vertexGatewayModelRoutingMap ?? "",
+			vertexGatewayBaseUrl: this.vertexOptions?.gatewayBaseUrl ?? this.vertexOptions?.vertexGatewayBaseUrl ?? "",
+			vertexGatewayCaBundlePath:
+				this.vertexOptions?.pemCaBundlePath ?? this.vertexOptions?.vertexGatewayCaBundlePath ?? "",
+			vertexGatewayHelixCommand:
+				this.vertexOptions?.helixCommand ?? this.vertexOptions?.vertexGatewayHelixCommand ?? "",
+			vertexGatewayTokenRefreshMinutes:
+				this.vertexOptions?.refreshIntervalMinutes ?? this.vertexOptions?.vertexGatewayTokenRefreshMinutes,
+			vertexGatewayModelRoutingMap:
+				typeof this.vertexOptions?.modelRoutingMap === "string"
+					? this.vertexOptions.modelRoutingMap
+					: this.vertexOptions?.modelRoutingMap
+						? JSON.stringify(this.vertexOptions.modelRoutingMap)
+						: (this.vertexOptions?.vertexGatewayModelRoutingMap ?? ""),
 			mistralApiKey: this.mistralOptions?.apiKey ?? "",
 			vercelAiGatewayApiKey: this.vercelAiGatewayOptions?.apiKey ?? "",
 			bedrockRegion: this.bedrockOptions?.region ?? "",
@@ -288,6 +339,7 @@ export class CodeIndexConfigManager {
 			qdrantUrl: this.qdrantUrl ?? "",
 			qdrantApiKey: this.qdrantApiKey ?? "",
 			localIndexPath: this.localIndexPath ?? DEFAULT_LOCAL_INDEX_PATH,
+			embeddingRateLimitSeconds: this.embeddingRateLimitSeconds,
 		}
 
 		// Refresh secrets from VSCode storage to ensure we have the latest values
@@ -319,6 +371,8 @@ export class CodeIndexConfigManager {
 				qdrantApiKey: this.qdrantApiKey,
 				localIndexPath: this.localIndexPath,
 				searchMinScore: this.currentSearchMinScore,
+				searchMaxResults: this.currentSearchMaxResults,
+				embeddingRateLimitSeconds: this.embeddingRateLimitSeconds,
 			},
 			requiresRestart,
 		}
@@ -349,8 +403,8 @@ export class CodeIndexConfigManager {
 		} else if (this.embedderProvider === "vertex") {
 			const isConfigured = !!(
 				this.vertexOptions?.apiProvider === "vertex" &&
-				this.vertexOptions.vertexProjectId &&
-				this.vertexOptions.vertexRegion &&
+				(this.vertexOptions.projectId || this.vertexOptions.vertexProjectId) &&
+				(this.vertexOptions.location || this.vertexOptions.vertexRegion) &&
 				hasVectorStore
 			)
 			return isConfigured
@@ -431,6 +485,7 @@ export class CodeIndexConfigManager {
 		const prevQdrantUrl = prev?.qdrantUrl ?? ""
 		const prevQdrantApiKey = prev?.qdrantApiKey ?? ""
 		const prevLocalIndexPath = prev?.localIndexPath ?? DEFAULT_LOCAL_INDEX_PATH
+		const prevEmbeddingRateLimitSeconds = prev?.embeddingRateLimitSeconds
 
 		// 1. Transition from disabled/unconfigured to enabled/configured
 		if ((!prevEnabled || !prevConfigured) && this.codebaseIndexEnabled && nowConfigured) {
@@ -469,15 +524,24 @@ export class CodeIndexConfigManager {
 		const currentOpenAiCompatibleApiKey = this.openAiCompatibleOptions?.apiKey ?? ""
 		const currentModelDimension = this.modelDimension
 		const currentGeminiApiKey = this.geminiOptions?.apiKey ?? ""
-		const currentVertexProjectId = this.vertexOptions?.vertexProjectId ?? ""
-		const currentVertexRegion = this.vertexOptions?.vertexRegion ?? ""
+		const currentVertexProjectId = this.vertexOptions?.projectId ?? this.vertexOptions?.vertexProjectId ?? ""
+		const currentVertexRegion = this.vertexOptions?.location ?? this.vertexOptions?.vertexRegion ?? ""
 		const currentVertexKeyFile = this.vertexOptions?.vertexKeyFile ?? ""
 		const currentVertexJsonCredentials = this.vertexOptions?.vertexJsonCredentials ?? ""
-		const currentVertexGatewayBaseUrl = this.vertexOptions?.vertexGatewayBaseUrl ?? ""
-		const currentVertexGatewayCaBundlePath = this.vertexOptions?.vertexGatewayCaBundlePath ?? ""
-		const currentVertexGatewayHelixCommand = this.vertexOptions?.vertexGatewayHelixCommand ?? ""
-		const currentVertexGatewayTokenRefreshMinutes = this.vertexOptions?.vertexGatewayTokenRefreshMinutes
-		const currentVertexGatewayModelRoutingMap = this.vertexOptions?.vertexGatewayModelRoutingMap ?? ""
+		const currentVertexGatewayBaseUrl =
+			this.vertexOptions?.gatewayBaseUrl ?? this.vertexOptions?.vertexGatewayBaseUrl ?? ""
+		const currentVertexGatewayCaBundlePath =
+			this.vertexOptions?.pemCaBundlePath ?? this.vertexOptions?.vertexGatewayCaBundlePath ?? ""
+		const currentVertexGatewayHelixCommand =
+			this.vertexOptions?.helixCommand ?? this.vertexOptions?.vertexGatewayHelixCommand ?? ""
+		const currentVertexGatewayTokenRefreshMinutes =
+			this.vertexOptions?.refreshIntervalMinutes ?? this.vertexOptions?.vertexGatewayTokenRefreshMinutes
+		const currentVertexGatewayModelRoutingMap =
+			typeof this.vertexOptions?.modelRoutingMap === "string"
+				? this.vertexOptions.modelRoutingMap
+				: this.vertexOptions?.modelRoutingMap
+					? JSON.stringify(this.vertexOptions.modelRoutingMap)
+					: (this.vertexOptions?.vertexGatewayModelRoutingMap ?? "")
 		const currentMistralApiKey = this.mistralOptions?.apiKey ?? ""
 		const currentVercelAiGatewayApiKey = this.vercelAiGatewayOptions?.apiKey ?? ""
 		const currentBedrockRegion = this.bedrockOptions?.region ?? ""
@@ -487,6 +551,7 @@ export class CodeIndexConfigManager {
 		const currentQdrantUrl = this.qdrantUrl ?? ""
 		const currentQdrantApiKey = this.qdrantApiKey ?? ""
 		const currentLocalIndexPath = this.localIndexPath ?? DEFAULT_LOCAL_INDEX_PATH
+		const currentEmbeddingRateLimitSeconds = this.embeddingRateLimitSeconds
 
 		if (prevOpenAiKey !== currentOpenAiKey) {
 			return true
@@ -563,6 +628,10 @@ export class CodeIndexConfigManager {
 			return true
 		}
 
+		if (prevEmbeddingRateLimitSeconds !== currentEmbeddingRateLimitSeconds) {
+			return true
+		}
+
 		// Vector dimension changes (still important for compatibility)
 		if (this._hasVectorDimensionChanged(prevProvider, prev?.modelId)) {
 			return true
@@ -621,6 +690,7 @@ export class CodeIndexConfigManager {
 			localIndexPath: this.localIndexPath,
 			searchMinScore: this.currentSearchMinScore,
 			searchMaxResults: this.currentSearchMaxResults,
+			embeddingRateLimitSeconds: this.embeddingRateLimitSeconds,
 		}
 	}
 

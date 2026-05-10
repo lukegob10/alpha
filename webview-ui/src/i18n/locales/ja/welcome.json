@@ -28,7 +28,7 @@
 		"useAnotherProvider": "サードパーティプロバイダー",
 		"useAnotherProviderDescription": "APIキーを入力して開始します。",
 		"noApiKeys": "APIキーと別のアカウントを処理したくありませんか?",
-		"backToRoo": "Alpha Cloudプロバイダーを選択してください。",
+		"backToAlpha": "Alpha Cloudプロバイダーを選択してください。",
 		"goBack": "戻る",
 		"finish": "完了"
 	},

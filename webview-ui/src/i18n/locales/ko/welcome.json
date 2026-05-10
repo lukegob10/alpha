@@ -28,7 +28,7 @@
 		"useAnotherProvider": "타사 공급자",
 		"useAnotherProviderDescription": "API 키를 입력하고 시작하세요.",
 		"noApiKeys": "API 키와 별도의 계정을 다루고 싶지 않으신가요?",
-		"backToRoo": "Alpha Cloud 공급자를 선택하세요.",
+		"backToAlpha": "Alpha Cloud 공급자를 선택하세요.",
 		"goBack": "뒤로",
 		"finish": "완료"
 	},

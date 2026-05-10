@@ -27,7 +27,7 @@ import {
 	providerSettingsSchema,
 	getModelId,
 	EVALS_SETTINGS,
-} from "@roo-code/types"
+} from "@alpha-code/types"
 
 import { createRun } from "@/actions/runs"
 import { getExercises } from "@/actions/exercises"
@@ -48,11 +48,11 @@ import {
 } from "@/lib/schemas"
 import { cn } from "@/lib/utils"
 
-import { loadRooLastModelSelection, saveRooLastModelSelection } from "@/lib/roo-last-model-selection"
+import { loadAlphaLastModelSelection, saveAlphaLastModelSelection } from "@/lib/alpha-last-model-selection"
 import { normalizeCreateRunForSubmit } from "@/lib/normalize-create-run"
 
 import { useOpenRouterModels } from "@/hooks/use-open-router-models"
-import { useRooCodeCloudModels } from "@/hooks/use-roo-code-cloud-models"
+import { useAlphaCodeCloudModels } from "@/hooks/use-alpha-code-cloud-models"
 
 import {
 	Button,
@@ -123,11 +123,11 @@ export function NewRun() {
 	])
 
 	const openRouter = useOpenRouterModels()
-	const rooCodeCloud = useRooCodeCloudModels()
-	const models = provider === "openrouter" ? openRouter.data : rooCodeCloud.data
-	const searchValue = provider === "openrouter" ? openRouter.searchValue : rooCodeCloud.searchValue
-	const setSearchValue = provider === "openrouter" ? openRouter.setSearchValue : rooCodeCloud.setSearchValue
-	const onFilter = provider === "openrouter" ? openRouter.onFilter : rooCodeCloud.onFilter
+	const alphaCodeCloud = useAlphaCodeCloudModels()
+	const models = provider === "openrouter" ? openRouter.data : alphaCodeCloud.data
+	const searchValue = provider === "openrouter" ? openRouter.searchValue : alphaCodeCloud.searchValue
+	const setSearchValue = provider === "openrouter" ? openRouter.setSearchValue : alphaCodeCloud.setSearchValue
+	const onFilter = provider === "openrouter" ? openRouter.onFilter : alphaCodeCloud.onFilter
 
 	const exercises = useQuery({ queryKey: ["getExercises"], queryFn: () => getExercises() })
 
@@ -279,7 +279,7 @@ export function NewRun() {
 		if (provider !== "roo") return
 		if (selectedModelIds.length > 0) return
 
-		const last = loadRooLastModelSelection()
+		const last = loadAlphaLastModelSelection()
 		if (last.length > 0) {
 			applyModelIds(last)
 		}
@@ -288,7 +288,7 @@ export function NewRun() {
 	// Persist last-used Alpha provider model selection
 	useEffect(() => {
 		if (provider !== "roo") return
-		saveRooLastModelSelection(selectedModelIds)
+		saveAlphaLastModelSelection(selectedModelIds)
 	}, [provider, selectedModelIds])
 
 	// Extract unique languages from exercises
@@ -788,11 +788,11 @@ export function NewRun() {
 											</TooltipTrigger>
 											<TooltipContent side="right" className="max-w-xs">
 												<p>
-													If you have access to the Alpha Cloud repository and the
-													decryption key for the .env.* files, generate a token with:
+													If you have access to the Alpha Cloud repository and the decryption
+													key for the .env.* files, generate a token with:
 												</p>
 												<code className="text-xs block mt-1">
-													pnpm --filter @roo-code-cloud/auth production:create-auth-token
+													pnpm --filter @alpha-code-cloud/auth production:create-auth-token
 													[email] [org] [ttl]
 												</code>
 											</TooltipContent>

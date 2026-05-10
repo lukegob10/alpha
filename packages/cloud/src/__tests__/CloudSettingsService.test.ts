@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "vscode"
 
-import type { OrganizationSettings, AuthService } from "@roo-code/types"
+import type { OrganizationSettings, AuthService } from "@alpha-code/types"
 
 import { CloudSettingsService } from "../CloudSettingsService.js"
 import { RefreshTimer } from "../RefreshTimer.js"

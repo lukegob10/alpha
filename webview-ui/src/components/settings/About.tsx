@@ -4,9 +4,9 @@ import { Trans } from "react-i18next"
 import { Download, Upload, TriangleAlert } from "lucide-react"
 import { VSCodeCheckbox, VSCodeLink } from "@vscode/webview-ui-toolkit/react"
 
-import type { TelemetrySetting } from "@roo-code/types"
+import type { TelemetrySetting } from "@alpha-code/types"
 
-import { Package } from "@roo/package"
+import { Package } from "@alpha/package"
 
 import { vscode } from "@/utils/vscode"
 import { cn } from "@/lib/utils"
@@ -52,7 +52,9 @@ export const About = ({ telemetrySetting, setTelemetrySetting, debug, setDebug, 
 						<Trans
 							i18nKey="settings:footer.telemetry.description"
 							components={{
-								privacyLink: <VSCodeLink href="https://github.com/AlphaInc/Alpha/blob/main/PRIVACY.md" />,
+								privacyLink: (
+									<VSCodeLink href="https://github.com/AlphaInc/Alpha/blob/main/PRIVACY.md" />
+								),
 							}}
 						/>
 					</p>
@@ -61,7 +63,10 @@ export const About = ({ telemetrySetting, setTelemetrySetting, debug, setDebug, 
 
 			{setDebug && (
 				<Section className="space-y-0">
-					<SearchableSetting settingId="about-debug-mode" section="about" label={t("settings:about.debugMode.label")}>
+					<SearchableSetting
+						settingId="about-debug-mode"
+						section="about"
+						label={t("settings:about.debugMode.label")}>
 						<VSCodeCheckbox
 							checked={debug ?? false}
 							onChange={(e: any) => {

@@ -12,6 +12,10 @@ export const CODEBASE_INDEX_DEFAULTS = {
 	MAX_SEARCH_SCORE: 1,
 	DEFAULT_SEARCH_MIN_SCORE: 0.4,
 	SEARCH_SCORE_STEP: 0.05,
+	MIN_EMBEDDING_RATE_LIMIT_SECONDS: 0.1,
+	MAX_EMBEDDING_RATE_LIMIT_SECONDS: 60,
+	DEFAULT_EMBEDDING_RATE_LIMIT_SECONDS: 1,
+	EMBEDDING_RATE_LIMIT_STEP: 0.1,
 } as const
 
 /**
@@ -44,6 +48,12 @@ export const codebaseIndexConfigSchema = z.object({
 		.number()
 		.min(CODEBASE_INDEX_DEFAULTS.MIN_SEARCH_RESULTS)
 		.max(CODEBASE_INDEX_DEFAULTS.MAX_SEARCH_RESULTS)
+		.optional(),
+	codebaseIndexEmbeddingRateLimitEnabled: z.boolean().optional(),
+	codebaseIndexEmbeddingRateLimitSeconds: z
+		.number()
+		.min(CODEBASE_INDEX_DEFAULTS.MIN_EMBEDDING_RATE_LIMIT_SECONDS)
+		.max(CODEBASE_INDEX_DEFAULTS.MAX_EMBEDDING_RATE_LIMIT_SECONDS)
 		.optional(),
 	// OpenAI Compatible specific fields
 	codebaseIndexOpenAiCompatibleBaseUrl: z.string().optional(),

@@ -1,6 +1,6 @@
 ---
 name: evals-context
-description: Provides context about the Alpha evals system structure in this monorepo. Use when tasks mention "evals", "evaluation", "eval runs", "eval exercises", or working with the evals infrastructure. Helps distinguish between the evals execution system (packages/evals, apps/web-evals) and the public website evals display page (apps/web-roo-code/src/app/evals).
+description: Provides context about the Alpha evals system structure in this monorepo. Use when tasks mention "evals", "evaluation", "eval runs", "eval exercises", or working with the evals infrastructure. Helps distinguish between the evals execution system (packages/evals, apps/web-evals) and the evals web app (apps/web-evals/src/app/evals).
 ---
 
 # Evals Codebase Context
@@ -12,7 +12,7 @@ Use this skill when the task involves:
 - Modifying or debugging the evals execution infrastructure
 - Adding new eval exercises or languages
 - Working with the evals web interface (apps/web-evals)
-- Modifying the public evals display page on roocode.com
+- Modifying the public evals display page on Alpha repository
 - Understanding where evals code lives in this monorepo
 
 ## When NOT to Use This Skill
@@ -27,12 +27,12 @@ Do NOT use this skill when:
 
 This monorepo has **two distinct evals-related locations** that can cause confusion:
 
-| Component                   | Path                                                           | Purpose                                                        |
-| --------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------- |
-| **Evals Execution System**  | `packages/evals/`                                              | Core eval infrastructure: CLI, DB schema, Docker configs       |
-| **Evals Management UI**     | `apps/web-evals/`                                              | Next.js app for creating/monitoring eval runs (localhost:3446) |
-| **Website Evals Page**      | `apps/web-roo-code/src/app/evals/`                             | Public roocode.com page displaying eval results                |
-| **External Exercises Repo** | [Alpha-Evals](https://github.com/RooCodeInc/Alpha-Evals) | Actual coding exercises (NOT in this monorepo)                 |
+| Component                   | Path                                                   | Purpose                                                        |
+| --------------------------- | ------------------------------------------------------ | -------------------------------------------------------------- |
+| **Evals Execution System**  | `packages/evals/`                                      | Core eval infrastructure: CLI, DB schema, Docker configs       |
+| **Evals Management UI**     | `apps/web-evals/`                                      | Next.js app for creating/monitoring eval runs (localhost:3446) |
+| **Website Evals Page**      | `apps/web-evals/`                                      | Public Alpha repository page displaying eval results           |
+| **External Exercises Repo** | [Alpha-Evals](https://github.com/AlphaInc/Alpha-Evals) | Actual coding exercises (NOT in this monorepo)                 |
 
 ## Directory Structure Reference
 
@@ -84,17 +84,17 @@ apps/web-evals/
 │   └── lib/                 # Utilities and schemas
 ```
 
-### `apps/web-roo-code/src/app/evals/` - Public Website Evals Page
+### `apps/web-evals/` - Evals Web App
 
 ```
-apps/web-roo-code/src/app/evals/
+apps/web-evals/
 ├── page.tsx      # Fetches and displays public eval results
 ├── evals.tsx     # Main evals display component
 ├── plot.tsx      # Visualization component
 └── types.ts      # EvalRun type (extends packages/evals types)
 ```
 
-This page **displays** eval results on the public roocode.com website. It imports types from `@roo-code/evals` but does NOT run evals.
+This page **displays** eval results on the public Alpha repository website. It imports types from `@alpha-code/evals` but does NOT run evals.
 
 ## Architecture Overview
 
@@ -123,7 +123,7 @@ The evals system is a distributed evaluation platform that runs AI coding tasks 
 
 ### Adding a New Eval Exercise
 
-1. Add exercise to [Alpha-Evals](https://github.com/RooCodeInc/Alpha-Evals) repo (external)
+1. Add exercise to [Alpha-Evals](https://github.com/AlphaInc/Alpha-Evals) repo (external)
 2. See [`packages/evals/ADDING-EVALS.md`](packages/evals/ADDING-EVALS.md) for structure
 
 ### Modifying Eval CLI Behavior
@@ -143,10 +143,10 @@ Edit files in [`apps/web-evals/src/`](apps/web-evals/src/):
 
 ### Modifying the Public Evals Display Page
 
-Edit files in [`apps/web-roo-code/src/app/evals/`](apps/web-roo-code/src/app/evals/):
+Edit files in [`apps/web-evals/`](apps/web-evals/):
 
-- [`evals.tsx`](apps/web-roo-code/src/app/evals/evals.tsx) - Display component
-- [`plot.tsx`](apps/web-roo-code/src/app/evals/plot.tsx) - Charts
+- [`evals.tsx`](apps/web-evals/evals.tsx) - Display component
+- [`plot.tsx`](apps/web-evals/plot.tsx) - Charts
 
 ### Database Schema Changes
 
@@ -179,10 +179,10 @@ cd packages/evals && npx vitest run
 cd apps/web-evals && npx vitest run
 ```
 
-## Key Types/Exports from `@roo-code/evals`
+## Key Types/Exports from `@alpha-code/evals`
 
 The package exports are defined in [`packages/evals/src/index.ts`](packages/evals/src/index.ts):
 
 - Database queries: `getRuns`, `getTasks`, `getTaskMetrics`, etc.
 - Schema types: `Run`, `Task`, `TaskMetrics`
-- Used by both `apps/web-evals` and `apps/web-roo-code`
+- Used by both `apps/web-evals` and `apps/web-evals`

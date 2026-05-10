@@ -1,4 +1,4 @@
-import type { HistoryItem } from "@roo-code/types"
+import type { HistoryItem } from "@alpha-code/types"
 
 import { render, screen, fireEvent } from "@/utils/test-utils"
 import { vscode } from "@/utils/vscode"
@@ -155,6 +155,7 @@ describe("TaskActions", () => {
 
 			expect(mockPostMessage).toHaveBeenCalledWith({
 				type: "shareCurrentTask",
+				taskId: "test-task-id",
 				visibility: "organization",
 			})
 		})
@@ -171,6 +172,7 @@ describe("TaskActions", () => {
 
 			expect(mockPostMessage).toHaveBeenCalledWith({
 				type: "shareCurrentTask",
+				taskId: "test-task-id",
 				visibility: "public",
 			})
 		})
@@ -347,6 +349,7 @@ describe("TaskActions", () => {
 
 			expect(mockPostMessage).toHaveBeenCalledWith({
 				type: "exportCurrentTask",
+				taskId: "test-task-id",
 			})
 		})
 
@@ -504,6 +507,7 @@ describe("TaskActions", () => {
 
 			expect(mockPostMessage).toHaveBeenCalledWith({
 				type: "openDebugApiHistory",
+				taskId: "test-task-id",
 			})
 		})
 
@@ -522,6 +526,7 @@ describe("TaskActions", () => {
 
 			expect(mockPostMessage).toHaveBeenCalledWith({
 				type: "openDebugUiHistory",
+				taskId: "test-task-id",
 			})
 		})
 	})

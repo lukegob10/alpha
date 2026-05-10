@@ -28,7 +28,7 @@
 		"useAnotherProvider": "第三方供應商",
 		"useAnotherProviderDescription": "輸入 API 金鑰並開始使用。",
 		"noApiKeys": "不想處理 API 金鑰和個別帳戶嗎？",
-		"backToRoo": "選擇 Alpha Router。",
+		"backToAlpha": "選擇 Alpha Router。",
 		"goBack": "返回",
 		"finish": "完成"
 	},

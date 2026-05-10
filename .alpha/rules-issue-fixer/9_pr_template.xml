@@ -15,7 +15,7 @@ Thank you for contributing to Alpha!
 
 Before submitting your PR, please ensure:
 - It's linked to an approved GitHub Issue.
-- You've reviewed our [Contributing Guidelines](../CONTRIBUTING.md).
+- You've reviewed [CONTRIBUTING.md](../CONTRIBUTING.md).
 -->
 
 ### Related GitHub Issue
@@ -27,9 +27,8 @@ Closes: #[ISSUE_NUMBER] <!-- Replace with the issue number, e.g., Closes: #123 -
 ### Alpha Task Context (Optional)
 
 <!--
-If you used Alpha to help create this PR, you can share public task links here.
+If you used Alpha to help create this PR, summarize the task context here.
 This helps reviewers understand your development process and provides additional context.
-Example: https://app.roocode.com/share/task-id
 -->
 
 [TASK_CONTEXT]
@@ -65,7 +64,7 @@ Detail the steps to test your changes. This helps reviewers verify your work.
 - [x] **Self-Review**: I have performed a thorough self-review of my code.
 - [x] **Testing**: New and/or updated tests have been added to cover my changes (if applicable).
 - [x] **Documentation Impact**: I have considered if my changes require documentation updates (see "Documentation Updates" section below).
-- [x] **Contribution Guidelines**: I have read and agree to the [Contributor Guidelines](/CONTRIBUTING.md).
+- [x] **Contribution Flow**: I have followed [CONTRIBUTING.md](/CONTRIBUTING.md).
 
 ### Screenshots / Videos
 
@@ -91,14 +90,6 @@ Does this PR necessitate updates to user-facing documentation?
 <!-- Add any other context, questions, or information for reviewers here. -->
 
 [ADDITIONAL_NOTES_CONTENT]
-
-### Get in Touch
-
-<!--
-Please provide your Discord username for reviewers or maintainers to reach you if they have questions about your PR
--->
-
-[DISCORD_USERNAME]
     ]]></template>
   </pr_body_template>
 
@@ -106,7 +97,7 @@ Please provide your Discord username for reviewers or maintainers to reach you i
     <description>
       Valid GitHub CLI commands for creating PRs with the proper template
     </description>
-    
+
     <create_pr_command>
       <description>Create a PR using the filled template</description>
       <command><![CDATA[
@@ -162,8 +153,7 @@ gh repo fork [owner]/[repo] --clone=false
         <example>123</example>
       </placeholder>
       <placeholder name="TASK_CONTEXT">
-        <description>Optional Alpha task links if used during development</description>
-        <example>https://app.roocode.com/share/task-abc123</example>
+        <description>Optional Alpha task context if used during development</description>
         <default>_No Alpha task context for this PR_</default>
       </placeholder>
       <placeholder name="DESCRIPTION_CONTENT">
@@ -195,10 +185,6 @@ gh repo fork [owner]/[repo] --clone=false
       <placeholder name="ADDITIONAL_NOTES_CONTENT">
         <description>Any extra context for reviewers</description>
         <default>_No additional notes_</default>
-      </placeholder>
-      <placeholder name="DISCORD_USERNAME">
-        <description>Discord username for communication</description>
-        <example>@username</example>
       </placeholder>
     </placeholders>
   </placeholder_guidance>

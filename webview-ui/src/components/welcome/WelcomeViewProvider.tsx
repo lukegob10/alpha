@@ -1,12 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import {
-	VSCodeProgressRing,
-	VSCodeRadio,
-	VSCodeRadioGroup,
-	VSCodeTextField,
-} from "@vscode/webview-ui-toolkit/react"
+import { VSCodeProgressRing, VSCodeRadio, VSCodeRadioGroup, VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 
-import type { ProviderSettings } from "@roo-code/types"
+import type { ProviderSettings } from "@alpha-code/types"
 
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 import { validateApiConfiguration } from "@src/utils/validate"
@@ -17,7 +12,7 @@ import { Button } from "@src/components/ui"
 import ApiOptions from "../settings/ApiOptions"
 import { Tab, TabContent } from "../common/Tab"
 
-import RooHero from "./RooHero"
+import AlphaHero from "./AlphaHero"
 import { Trans } from "react-i18next"
 import { ArrowLeft, ArrowRight, BadgeInfo, Brain, TriangleAlert } from "lucide-react"
 import { buildDocLink } from "@/utils/docLinks"
@@ -253,7 +248,7 @@ const WelcomeViewProvider = () => {
 												components={{
 													DocsLink: (
 														<a
-															href={buildDocLink("roo-code-cloud/login", "setup")}
+															href={buildDocLink("alpha-cloud/login", "setup")}
 															target="_blank"
 															rel="noopener noreferrer"
 															className="text-vscode-textLink-foreground hover:underline">
@@ -285,37 +280,37 @@ const WelcomeViewProvider = () => {
 		)
 	}
 
-		// Landing screen - shown when selectedProvider === null
-		if (selectedProvider === null) {
-			return (
-				<Tab>
-					<TabContent className="relative flex flex-col gap-4 p-6 justify-center overflow-hidden bg-vscode-sideBar-background">
-						<div className="mb-6 flex w-full max-w-[720px] flex-col items-start gap-8">
-							<RooHero variant="welcome" />
-							<h2 className="m-0 w-fit max-w-full bg-[#4b00ff] px-5 py-3 text-[42px] font-black leading-none tracking-normal text-white shadow-[0_0_36px_rgba(75,0,255,0.34)]">
-								Welcome to Alpha.
-							</h2>
-						</div>
+	// Landing screen - shown when selectedProvider === null
+	if (selectedProvider === null) {
+		return (
+			<Tab>
+				<TabContent className="relative flex flex-col gap-4 p-6 justify-center overflow-hidden bg-vscode-sideBar-background">
+					<div className="mb-6 flex w-full max-w-[720px] flex-col items-start gap-8">
+						<AlphaHero variant="welcome" />
+						<h2 className="m-0 w-fit max-w-full bg-[#4b00ff] px-5 py-3 text-[42px] font-black leading-none tracking-normal text-white shadow-[0_0_36px_rgba(75,0,255,0.34)]">
+							Welcome to Alpha.
+						</h2>
+					</div>
 
-						<div className="space-y-4 leading-normal">
-							<p className="text-base text-vscode-foreground">
-								<Trans i18nKey="welcome:landing.introduction" />
-							</p>
-						</div>
+					<div className="space-y-4 leading-normal">
+						<p className="text-base text-vscode-foreground">
+							<Trans i18nKey="welcome:landing.introduction" />
+						</p>
+					</div>
 
-						<div className="mt-2 flex gap-2 items-center">
-							<Button onClick={handleChooseProvider} variant="primary">
-								Set up local provider
-							</Button>
-						</div>
+					<div className="mt-2 flex gap-2 items-center">
+						<Button onClick={handleChooseProvider} variant="primary">
+							Set up local provider
+						</Button>
+					</div>
 
 					<div className="absolute bottom-6 left-6">
 						<button
-								onClick={() => vscode.postMessage({ type: "importSettings" })}
-								className="cursor-pointer bg-transparent border-none p-0 text-vscode-foreground hover:underline">
-								Import Settings
-							</button>
-						</div>
+							onClick={() => vscode.postMessage({ type: "importSettings" })}
+							className="cursor-pointer bg-transparent border-none p-0 text-vscode-foreground hover:underline">
+							Import Settings
+						</button>
+					</div>
 				</TabContent>
 			</Tab>
 		)
@@ -324,13 +319,13 @@ const WelcomeViewProvider = () => {
 	// Provider Selection screen - shown when selectedProvider is "roo" or "custom"
 	return (
 		<Tab>
-				<TabContent className="flex flex-col gap-4 p-6 justify-center">
-					<Brain className="size-8" strokeWidth={1.5} />
-					<h2 className="mt-0 mb-0 text-xl">Set up local provider</h2>
+			<TabContent className="flex flex-col gap-4 p-6 justify-center">
+				<Brain className="size-8" strokeWidth={1.5} />
+				<h2 className="mt-0 mb-0 text-xl">Set up local provider</h2>
 
-					<p className="text-base text-vscode-foreground">
-						Choose an LLM provider to use with Alpha. You can add more providers later.
-					</p>
+				<p className="text-base text-vscode-foreground">
+					Choose an LLM provider to use with Alpha. You can add more providers later.
+				</p>
 
 				<div>
 					<VSCodeRadioGroup
@@ -340,15 +335,13 @@ const WelcomeViewProvider = () => {
 								(e.target as HTMLInputElement)) as HTMLInputElement
 							setSelectedProvider(target.value as ProviderOption)
 						}}>
-							<VSCodeRadio value="custom" className="flex items-start gap-2">
-								<div className="flex-1 space-y-1 cursor-pointer">
-									<p className="text-lg font-semibold block -mt-1">
-										3rd-party Provider
-									</p>
-									<p className="text-base text-vscode-descriptionForeground mt-0">
-										Enter an API key and get going.
-									</p>
-								</div>
+						<VSCodeRadio value="custom" className="flex items-start gap-2">
+							<div className="flex-1 space-y-1 cursor-pointer">
+								<p className="text-lg font-semibold block -mt-1">3rd-party Provider</p>
+								<p className="text-base text-vscode-descriptionForeground mt-0">
+									Enter an API key and get going.
+								</p>
+							</div>
 						</VSCodeRadio>
 					</VSCodeRadioGroup>
 
@@ -369,13 +362,13 @@ const WelcomeViewProvider = () => {
 				</div>
 
 				<div className="-mt-4 flex gap-2">
-						<Button onClick={handleBackToLanding} variant="secondary">
-							<ArrowLeft className="size-4" />
-							Back
-						</Button>
-						<Button onClick={handleGetStarted} variant="primary">
-							Finish →
-						</Button>
+					<Button onClick={handleBackToLanding} variant="secondary">
+						<ArrowLeft className="size-4" />
+						Back
+					</Button>
+					<Button onClick={handleGetStarted} variant="primary">
+						Finish →
+					</Button>
 				</div>
 			</TabContent>
 		</Tab>

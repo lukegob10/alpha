@@ -1,9 +1,9 @@
 import * as vscode from "vscode"
 import { Ignore } from "ignore"
 
-import type { EmbedderProvider } from "@roo-code/types"
-import { TelemetryService } from "@roo-code/telemetry"
-import { TelemetryEventName } from "@roo-code/types"
+import type { EmbedderProvider } from "@alpha-code/types"
+import { TelemetryService } from "@alpha-code/telemetry"
+import { TelemetryEventName } from "@alpha-code/types"
 
 import { t } from "../../i18n"
 
@@ -82,8 +82,8 @@ export class CodeIndexServiceFactory {
 		} else if (provider === "vertex") {
 			if (
 				config.vertexOptions?.apiProvider !== "vertex" ||
-				!config.vertexOptions.vertexProjectId ||
-				!config.vertexOptions.vertexRegion
+				!(config.vertexOptions.projectId || config.vertexOptions.vertexProjectId) ||
+				!(config.vertexOptions.location || config.vertexOptions.vertexRegion)
 			) {
 				throw new Error(t("embeddings:serviceFactory.vertexConfigMissing"))
 			}
@@ -179,7 +179,11 @@ export class CodeIndexServiceFactory {
 		const vectorStoreProvider = config.vectorStoreProvider ?? "qdrant"
 
 		if (vectorStoreProvider === "lancedb") {
-			return new LanceDbVectorStore(this.workspacePath, config.localIndexPath || DEFAULT_LOCAL_INDEX_PATH, vectorSize)
+			return new LanceDbVectorStore(
+				this.workspacePath,
+				config.localIndexPath || DEFAULT_LOCAL_INDEX_PATH,
+				vectorSize,
+			)
 		}
 
 		if (!config.qdrantUrl) {
@@ -198,6 +202,7 @@ export class CodeIndexServiceFactory {
 		parser: ICodeParser,
 		ignoreInstance: Ignore,
 	): DirectoryScanner {
+		const config = this.configManager.getConfig()
 		// Get the configurable batch size from VSCode settings
 		let batchSize: number
 		try {
@@ -208,7 +213,15 @@ export class CodeIndexServiceFactory {
 			// In test environment, vscode.workspace might not be available
 			batchSize = BATCH_SEGMENT_THRESHOLD
 		}
-		return new DirectoryScanner(embedder, vectorStore, parser, this.cacheManager, ignoreInstance, batchSize)
+		return new DirectoryScanner(
+			embedder,
+			vectorStore,
+			parser,
+			this.cacheManager,
+			ignoreInstance,
+			batchSize,
+			config.embeddingRateLimitSeconds,
+		)
 	}
 
 	/**
@@ -222,6 +235,7 @@ export class CodeIndexServiceFactory {
 		ignoreInstance: Ignore,
 		rooIgnoreController?: RooIgnoreController,
 	): IFileWatcher {
+		const config = this.configManager.getConfig()
 		// Get the configurable batch size from VSCode settings
 		let batchSize: number
 		try {
@@ -241,6 +255,7 @@ export class CodeIndexServiceFactory {
 			ignoreInstance,
 			rooIgnoreController,
 			batchSize,
+			config.embeddingRateLimitSeconds,
 		)
 	}
 

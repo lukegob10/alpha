@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, act } from "@/utils/test-utils"
 
-import type { Worktree, WorktreeListResponse } from "@roo-code/types"
+import type { Worktree, WorktreeListResponse } from "@alpha-code/types"
 
 import { WorktreeSelector } from "../WorktreeSelector"
 
@@ -18,8 +18,8 @@ vi.mock("@/i18n/TranslationContext", () => ({
 	}),
 }))
 
-vi.mock("@/components/ui/hooks/useRooPortal", () => ({
-	useRooPortal: () => document.body,
+vi.mock("@/components/ui/hooks/useAlphaPortal", () => ({
+	useAlphaPortal: () => document.body,
 }))
 
 const mockWorktrees: Worktree[] = [

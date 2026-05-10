@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 
-import type { ExtensionMessage } from "@roo-code/types"
+import type { ExtensionMessage } from "@alpha-code/types"
 
 import { vscode } from "@src/utils/vscode"
 

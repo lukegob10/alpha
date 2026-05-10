@@ -13,7 +13,7 @@ import {
 import * as ProgressPrimitive from "@radix-ui/react-progress"
 import { AlertTriangle } from "lucide-react"
 
-import { type IndexingStatus, type EmbedderProvider, CODEBASE_INDEX_DEFAULTS, VERTEX_REGIONS } from "@roo-code/types"
+import { type IndexingStatus, type EmbedderProvider, CODEBASE_INDEX_DEFAULTS, VERTEX_REGIONS } from "@alpha-code/types"
 
 import { vscode } from "@src/utils/vscode"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
@@ -41,7 +41,7 @@ import {
 	StandardTooltip,
 	Button,
 } from "@src/components/ui"
-import { useRooPortal } from "@src/components/ui/hooks/useRooPortal"
+import { useAlphaPortal } from "@src/components/ui/hooks/useAlphaPortal"
 import { useEscapeKey } from "@src/hooks/useEscapeKey"
 import {
 	useOpenRouterModelProviders,
@@ -74,6 +74,8 @@ interface LocalCodeIndexSettings {
 	codebaseIndexEmbedderModelDimension?: number // Generic dimension for all providers
 	codebaseIndexSearchMaxResults?: number
 	codebaseIndexSearchMinScore?: number
+	codebaseIndexEmbeddingRateLimitEnabled?: boolean
+	codebaseIndexEmbeddingRateLimitSeconds?: number
 
 	// Bedrock-specific settings
 	codebaseIndexBedrockRegion?: string
@@ -168,6 +170,18 @@ const createValidationSchema = (provider: EmbedderProvider, vectorStoreProvider:
 		codebaseIndexEnabled: z.boolean(),
 		codebaseIndexVectorStoreProvider: z.enum(["qdrant", "lancedb"]),
 		codeIndexQdrantApiKey: z.string().optional(),
+		codebaseIndexEmbeddingRateLimitEnabled: z.boolean().optional(),
+		codebaseIndexEmbeddingRateLimitSeconds: z
+			.number()
+			.min(
+				CODEBASE_INDEX_DEFAULTS.MIN_EMBEDDING_RATE_LIMIT_SECONDS,
+				t("settings:codeIndex.validation.embeddingRateLimitSecondsRange"),
+			)
+			.max(
+				CODEBASE_INDEX_DEFAULTS.MAX_EMBEDDING_RATE_LIMIT_SECONDS,
+				t("settings:codeIndex.validation.embeddingRateLimitSecondsRange"),
+			)
+			.optional(),
 		...vectorStoreSchema,
 	})
 
@@ -324,6 +338,8 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 		codebaseIndexEmbedderModelDimension: undefined,
 		codebaseIndexSearchMaxResults: CODEBASE_INDEX_DEFAULTS.DEFAULT_SEARCH_RESULTS,
 		codebaseIndexSearchMinScore: CODEBASE_INDEX_DEFAULTS.DEFAULT_SEARCH_MIN_SCORE,
+		codebaseIndexEmbeddingRateLimitEnabled: false,
+		codebaseIndexEmbeddingRateLimitSeconds: CODEBASE_INDEX_DEFAULTS.DEFAULT_EMBEDDING_RATE_LIMIT_SECONDS,
 		codebaseIndexBedrockRegion: "",
 		codebaseIndexBedrockProfile: "",
 		codebaseIndexVertexProjectId: "",
@@ -352,10 +368,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 	// Current settings state - tracks user changes
 	const [currentSettings, setCurrentSettings] = useState<LocalCodeIndexSettings>(getDefaultSettings())
 
-	const hasSavedSecret = useCallback(
-		(field: SecretField) => savedSecretStatus[field],
-		[savedSecretStatus],
-	)
+	const hasSavedSecret = useCallback((field: SecretField) => savedSecretStatus[field], [savedSecretStatus])
 
 	const getSecretPlaceholder = useCallback(
 		(field: SecretField, placeholderKey: string) =>
@@ -393,7 +406,8 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 			const settings = {
 				codebaseIndexEnabled: codebaseIndexConfig.codebaseIndexEnabled ?? true,
 				codebaseIndexVectorStoreProvider: codebaseIndexConfig.codebaseIndexVectorStoreProvider || "lancedb",
-				codebaseIndexLocalIndexPath: codebaseIndexConfig.codebaseIndexLocalIndexPath || DEFAULT_LOCAL_INDEX_PATH,
+				codebaseIndexLocalIndexPath:
+					codebaseIndexConfig.codebaseIndexLocalIndexPath || DEFAULT_LOCAL_INDEX_PATH,
 				codebaseIndexQdrantUrl: codebaseIndexConfig.codebaseIndexQdrantUrl || "",
 				codebaseIndexEmbedderProvider: embedderProvider,
 				codebaseIndexEmbedderBaseUrl: codebaseIndexConfig.codebaseIndexEmbedderBaseUrl || "",
@@ -406,31 +420,51 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 					codebaseIndexConfig.codebaseIndexSearchMaxResults ?? CODEBASE_INDEX_DEFAULTS.DEFAULT_SEARCH_RESULTS,
 				codebaseIndexSearchMinScore:
 					codebaseIndexConfig.codebaseIndexSearchMinScore ?? CODEBASE_INDEX_DEFAULTS.DEFAULT_SEARCH_MIN_SCORE,
+				codebaseIndexEmbeddingRateLimitEnabled:
+					codebaseIndexConfig.codebaseIndexEmbeddingRateLimitEnabled ?? false,
+				codebaseIndexEmbeddingRateLimitSeconds:
+					codebaseIndexConfig.codebaseIndexEmbeddingRateLimitSeconds ??
+					CODEBASE_INDEX_DEFAULTS.DEFAULT_EMBEDDING_RATE_LIMIT_SECONDS,
 				codebaseIndexBedrockRegion: codebaseIndexConfig.codebaseIndexBedrockRegion || "",
 				codebaseIndexBedrockProfile: codebaseIndexConfig.codebaseIndexBedrockProfile || "",
 				codebaseIndexVertexProjectId:
-					codebaseIndexConfig.codebaseIndexVertexProjectId || activeVertexConfig?.vertexProjectId || "",
+					codebaseIndexConfig.codebaseIndexVertexProjectId ||
+					activeVertexConfig?.projectId ||
+					activeVertexConfig?.vertexProjectId ||
+					"",
 				codebaseIndexVertexRegion:
-					codebaseIndexConfig.codebaseIndexVertexRegion || activeVertexConfig?.vertexRegion || "",
+					codebaseIndexConfig.codebaseIndexVertexRegion ||
+					activeVertexConfig?.location ||
+					activeVertexConfig?.vertexRegion ||
+					"",
 				codebaseIndexVertexKeyFile:
 					codebaseIndexConfig.codebaseIndexVertexKeyFile || activeVertexConfig?.vertexKeyFile || "",
 				codebaseIndexVertexGatewayBaseUrl:
 					codebaseIndexConfig.codebaseIndexVertexGatewayBaseUrl ||
+					activeVertexConfig?.gatewayBaseUrl ||
 					activeVertexConfig?.vertexGatewayBaseUrl ||
 					"",
 				codebaseIndexVertexGatewayCaBundlePath:
 					codebaseIndexConfig.codebaseIndexVertexGatewayCaBundlePath ||
+					activeVertexConfig?.pemCaBundlePath ||
 					activeVertexConfig?.vertexGatewayCaBundlePath ||
 					"",
 				codebaseIndexVertexGatewayHelixCommand:
 					codebaseIndexConfig.codebaseIndexVertexGatewayHelixCommand ||
+					activeVertexConfig?.helixCommand ||
 					activeVertexConfig?.vertexGatewayHelixCommand ||
 					"",
 				codebaseIndexVertexGatewayTokenRefreshMinutes:
 					codebaseIndexConfig.codebaseIndexVertexGatewayTokenRefreshMinutes ??
+					activeVertexConfig?.refreshIntervalMinutes ??
 					activeVertexConfig?.vertexGatewayTokenRefreshMinutes,
 				codebaseIndexVertexGatewayModelRoutingMap:
 					codebaseIndexConfig.codebaseIndexVertexGatewayModelRoutingMap ||
+					(typeof activeVertexConfig?.modelRoutingMap === "string"
+						? activeVertexConfig.modelRoutingMap
+						: activeVertexConfig?.modelRoutingMap
+							? JSON.stringify(activeVertexConfig.modelRoutingMap)
+							: "") ||
 					activeVertexConfig?.vertexGatewayModelRoutingMap ||
 					"",
 				codeIndexOpenAiKey: "",
@@ -797,7 +831,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 		},
 	)
 
-	const portalContainer = useRooPortal("roo-portal")
+	const portalContainer = useAlphaPortal("alpha-portal")
 
 	return (
 		<>
@@ -907,8 +941,14 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 											onValueChange={(value: VectorStoreProvider) => {
 												updateSetting("codebaseIndexVectorStoreProvider", value)
 
-												if (value === "lancedb" && !currentSettings.codebaseIndexLocalIndexPath) {
-													updateSetting("codebaseIndexLocalIndexPath", DEFAULT_LOCAL_INDEX_PATH)
+												if (
+													value === "lancedb" &&
+													!currentSettings.codebaseIndexLocalIndexPath
+												) {
+													updateSetting(
+														"codebaseIndexLocalIndexPath",
+														DEFAULT_LOCAL_INDEX_PATH,
+													)
 												}
 
 												if (value === "qdrant" && !currentSettings.codebaseIndexQdrantUrl) {
@@ -971,20 +1011,33 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 												}
 
 												if (value === "vertex" && apiConfiguration?.apiProvider === "vertex") {
+													const routingMap =
+														typeof apiConfiguration.modelRoutingMap === "string"
+															? apiConfiguration.modelRoutingMap
+															: apiConfiguration.modelRoutingMap
+																? JSON.stringify(apiConfiguration.modelRoutingMap)
+																: apiConfiguration.vertexGatewayModelRoutingMap
+
 													const vertexFallbacks: Partial<LocalCodeIndexSettings> = {
-														codebaseIndexVertexProjectId: apiConfiguration.vertexProjectId,
-														codebaseIndexVertexRegion: apiConfiguration.vertexRegion,
+														codebaseIndexVertexProjectId:
+															apiConfiguration.projectId ||
+															apiConfiguration.vertexProjectId,
+														codebaseIndexVertexRegion:
+															apiConfiguration.location || apiConfiguration.vertexRegion,
 														codebaseIndexVertexKeyFile: apiConfiguration.vertexKeyFile,
 														codebaseIndexVertexGatewayBaseUrl:
+															apiConfiguration.gatewayBaseUrl ||
 															apiConfiguration.vertexGatewayBaseUrl,
 														codebaseIndexVertexGatewayCaBundlePath:
+															apiConfiguration.pemCaBundlePath ||
 															apiConfiguration.vertexGatewayCaBundlePath,
 														codebaseIndexVertexGatewayHelixCommand:
+															apiConfiguration.helixCommand ||
 															apiConfiguration.vertexGatewayHelixCommand,
 														codebaseIndexVertexGatewayTokenRefreshMinutes:
+															apiConfiguration.refreshIntervalMinutes ??
 															apiConfiguration.vertexGatewayTokenRefreshMinutes,
-														codebaseIndexVertexGatewayModelRoutingMap:
-															apiConfiguration.vertexGatewayModelRoutingMap,
+														codebaseIndexVertexGatewayModelRoutingMap: routingMap,
 													}
 
 													Object.entries(vertexFallbacks).forEach(([key, fallbackValue]) => {
@@ -2143,6 +2196,64 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 													updateSetting(
 														"codebaseIndexSearchMaxResults",
 														CODEBASE_INDEX_DEFAULTS.DEFAULT_SEARCH_RESULTS,
+													)
+												}>
+												<span className="codicon codicon-discard" />
+											</VSCodeButton>
+										</div>
+									</div>
+
+									{/* Embedding Rate Limit */}
+									<div className="space-y-2">
+										<div className="flex items-center gap-2">
+											<VSCodeCheckbox
+												checked={
+													currentSettings.codebaseIndexEmbeddingRateLimitEnabled ?? false
+												}
+												onChange={(e: any) =>
+													updateSetting(
+														"codebaseIndexEmbeddingRateLimitEnabled",
+														e.target.checked,
+													)
+												}>
+												{t("settings:codeIndex.embeddingRateLimitLabel")}
+											</VSCodeCheckbox>
+											<StandardTooltip
+												content={t("settings:codeIndex.embeddingRateLimitDescription")}>
+												<span className="codicon codicon-info text-xs text-vscode-descriptionForeground cursor-help" />
+											</StandardTooltip>
+										</div>
+										<div className="flex items-center gap-2">
+											<Slider
+												min={CODEBASE_INDEX_DEFAULTS.MIN_EMBEDDING_RATE_LIMIT_SECONDS}
+												max={CODEBASE_INDEX_DEFAULTS.MAX_EMBEDDING_RATE_LIMIT_SECONDS}
+												step={CODEBASE_INDEX_DEFAULTS.EMBEDDING_RATE_LIMIT_STEP}
+												value={[
+													currentSettings.codebaseIndexEmbeddingRateLimitSeconds ??
+														CODEBASE_INDEX_DEFAULTS.DEFAULT_EMBEDDING_RATE_LIMIT_SECONDS,
+												]}
+												onValueChange={(values) =>
+													updateSetting("codebaseIndexEmbeddingRateLimitSeconds", values[0])
+												}
+												disabled={!currentSettings.codebaseIndexEmbeddingRateLimitEnabled}
+												className="flex-1"
+												data-testid="embedding-rate-limit-slider"
+											/>
+											<span className="w-16 text-center">
+												{(
+													currentSettings.codebaseIndexEmbeddingRateLimitSeconds ??
+													CODEBASE_INDEX_DEFAULTS.DEFAULT_EMBEDDING_RATE_LIMIT_SECONDS
+												).toFixed(1)}
+												s
+											</span>
+											<VSCodeButton
+												appearance="icon"
+												title={t("settings:codeIndex.resetToDefault")}
+												disabled={!currentSettings.codebaseIndexEmbeddingRateLimitEnabled}
+												onClick={() =>
+													updateSetting(
+														"codebaseIndexEmbeddingRateLimitSeconds",
+														CODEBASE_INDEX_DEFAULTS.DEFAULT_EMBEDDING_RATE_LIMIT_SECONDS,
 													)
 												}>
 												<span className="codicon codicon-discard" />

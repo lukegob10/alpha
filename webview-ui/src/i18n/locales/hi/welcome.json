@@ -28,7 +28,7 @@
 		"useAnotherProvider": "तृतीय-पक्ष प्रदाता",
 		"useAnotherProviderDescription": "एक API कुंजी दर्ज करें और शुरू करें।",
 		"noApiKeys": "क्या आप API कुंजी और अलग खातों से निपटना नहीं चाहते?",
-		"backToRoo": "Alpha Cloud प्रदाता के साथ जाएं।",
+		"backToAlpha": "Alpha Cloud प्रदाता के साथ जाएं।",
 		"goBack": "वापस",
 		"finish": "समाप्त"
 	},

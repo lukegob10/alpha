@@ -1,6 +1,6 @@
 import { memo, useContext, type KeyboardEvent } from "react"
 import { ArrowRight, Folder } from "lucide-react"
-import { TaskLifecycleState, TaskStatus, type LiveTaskMetadata } from "@roo-code/types"
+import { TaskLifecycleState, TaskStatus, type LiveTaskMetadata } from "@alpha-code/types"
 import type { DisplayHistoryItem } from "./types"
 
 import { vscode } from "@/utils/vscode"

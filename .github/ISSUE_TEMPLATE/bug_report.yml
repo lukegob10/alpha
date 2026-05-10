@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Thank you for your report! Please search existing issues first:
-        https://github.com/RooCodeInc/Alpha/issues
+        https://github.com/AlphaInc/Alpha/issues
 
   - type: textarea
     id: problem
@@ -105,7 +105,7 @@ body:
       description: Exact model name (e.g., Claude 3.7 Sonnet). Use N/A if irrelevant.
 
   - type: textarea
-    id: roo-code-tasks
+    id: alpha-tasks
     attributes:
       label: Alpha Task Links (optional)
       description: If you have any publicly shared Alpha task links that demonstrate the issue, paste them here.

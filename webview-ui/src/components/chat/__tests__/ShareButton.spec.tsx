@@ -97,6 +97,7 @@ describe("ShareButton", () => {
 
 		expect(mockVscode.postMessage).toHaveBeenCalledWith({
 			type: "shareCurrentTask",
+			taskId: "test-task-id",
 			visibility: "organization",
 		})
 	})
@@ -118,6 +119,7 @@ describe("ShareButton", () => {
 
 		expect(mockVscode.postMessage).toHaveBeenCalledWith({
 			type: "shareCurrentTask",
+			taskId: "test-task-id",
 			visibility: "public",
 		})
 	})
@@ -279,6 +281,7 @@ describe("ShareButton", () => {
 		// Verify first share message was sent
 		expect(mockVscode.postMessage).toHaveBeenCalledWith({
 			type: "shareCurrentTask",
+			taskId: "test-task-id",
 			visibility: "organization",
 		})
 
@@ -319,6 +322,7 @@ describe("ShareButton", () => {
 		// Verify the share message was sent again (no success message should be showing)
 		expect(mockVscode.postMessage).toHaveBeenCalledWith({
 			type: "shareCurrentTask",
+			taskId: "test-task-id",
 			visibility: "organization",
 		})
 

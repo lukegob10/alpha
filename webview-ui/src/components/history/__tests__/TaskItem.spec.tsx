@@ -1,5 +1,5 @@
 import { render, screen, fireEvent } from "@/utils/test-utils"
-import { TaskLifecycleState, TaskStatus, type LiveTaskMetadata } from "@roo-code/types"
+import { TaskLifecycleState, TaskStatus, type LiveTaskMetadata } from "@alpha-code/types"
 import { ExtensionStateContext } from "@/context/ExtensionStateContext"
 import { vscode } from "@/utils/vscode"
 

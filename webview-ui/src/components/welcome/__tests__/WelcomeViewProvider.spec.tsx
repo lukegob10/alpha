@@ -51,9 +51,9 @@ vi.mock("../../common/Tab", () => ({
 	TabContent: ({ children }: any) => <div data-testid="tab-content">{children}</div>,
 }))
 
-// Mock RooHero
-vi.mock("../RooHero", () => ({
-	default: () => <div data-testid="roo-hero">Alpha Hero</div>,
+// Mock AlphaHero
+vi.mock("../AlphaHero", () => ({
+	default: () => <div data-testid="alpha-hero">Alpha Hero</div>,
 }))
 
 // Mock lucide-react icons
@@ -90,7 +90,8 @@ vi.mock("@src/i18n/TranslationContext", () => ({
 
 // Mock buildDocLink
 vi.mock("@/utils/docLinks", () => ({
-	buildDocLink: (path: string, source: string) => `https://docs.roocode.com/${path}?utm_source=${source}`,
+	buildDocLink: (path: string, source: string) =>
+		`https://github.com/AlphaInc/Alpha/tree/main/docs/${path}?utm_source=${source}`,
 }))
 
 const renderWelcomeViewProvider = (extensionState = {}) => {
@@ -122,127 +123,59 @@ describe("WelcomeViewProvider", () => {
 		it("renders landing screen by default", () => {
 			renderWelcomeViewProvider()
 
-			// Should show the landing greeting
-			expect(screen.getByText(/welcome:landing.greeting/)).toBeInTheDocument()
+			expect(screen.getByText("Welcome to Alpha.")).toBeInTheDocument()
 
-			// Should show introduction
 			expect(screen.getByTestId("trans-welcome:landing.introduction")).toBeInTheDocument()
 
-			// Should show account mention
-			expect(screen.getByTestId("trans-welcome:landing.accountMention")).toBeInTheDocument()
-
-			// Should show "Get Started" button
+			expect(screen.getByTestId("alpha-hero")).toBeInTheDocument()
 			expect(screen.getByTestId("button-primary")).toBeInTheDocument()
-
-			// Should show "no account" link
-			const noAccountLink = screen
-				.getAllByTestId("vscode-link")
-				.find((link) => link.textContent?.includes("welcome:landing.noAccount"))
-			expect(noAccountLink).toBeInTheDocument()
+			expect(screen.getByText("Set up local provider")).toBeInTheDocument()
 		})
 
-		it("triggers auth when 'Get Started' is clicked on landing", () => {
+		it("navigates to provider selection when local provider setup is clicked", () => {
 			renderWelcomeViewProvider()
 
 			const getStartedButton = screen.getByTestId("button-primary")
 			fireEvent.click(getStartedButton)
 
-			expect(vscode.postMessage).toHaveBeenCalledWith({
-				type: "rooCloudSignIn",
-				useProviderSignup: true,
-			})
-		})
-
-		it("shows auth in progress after clicking 'Get Started' on landing", () => {
-			renderWelcomeViewProvider()
-
-			const getStartedButton = screen.getByTestId("button-primary")
-			fireEvent.click(getStartedButton)
-
-			// Should show progress ring
-			expect(screen.getByTestId("progress-ring")).toBeInTheDocument()
-
-			// Should show waiting heading
-			expect(screen.getByText(/welcome:waitingForCloud.heading/)).toBeInTheDocument()
-		})
-
-		it("navigates to provider selection when 'no account' is clicked", () => {
-			renderWelcomeViewProvider()
-
-			// Click the "no account" link
-			const noAccountLink = screen
-				.getAllByTestId("vscode-link")
-				.find((link) => link.textContent?.includes("welcome:landing.noAccount"))
-			fireEvent.click(noAccountLink!)
-
-			// Should now show provider selection screen with radio buttons
 			expect(screen.getByTestId("radio-group")).toBeInTheDocument()
-			expect(screen.getByTestId("radio-roo")).toBeInTheDocument()
 			expect(screen.getByTestId("radio-custom")).toBeInTheDocument()
-			expect(screen.getByTestId("trans-welcome:providerSignup.chooseProvider")).toBeInTheDocument()
+			expect(screen.getByText("Set up local provider")).toBeInTheDocument()
 		})
 	})
 
 	describe("Provider Selection Screen", () => {
 		const navigateToProviderSelection = () => {
-			const noAccountLink = screen
-				.getAllByTestId("vscode-link")
-				.find((link) => link.textContent?.includes("welcome:landing.noAccount"))
-			fireEvent.click(noAccountLink!)
+			fireEvent.click(screen.getByTestId("button-primary"))
 		}
 
-		it("shows radio buttons for Alpha and Custom providers", () => {
+		it("shows the custom provider option", () => {
 			renderWelcomeViewProvider()
 			navigateToProviderSelection()
 
-			// Should show radio group
 			expect(screen.getByTestId("radio-group")).toBeInTheDocument()
-
-			// Should show both radio options
-			expect(screen.getByTestId("radio-roo")).toBeInTheDocument()
 			expect(screen.getByTestId("radio-custom")).toBeInTheDocument()
-
-			// Should show Alpha provider description
-			expect(screen.getByText(/welcome:providerSignup.rooCloudDescription/)).toBeInTheDocument()
-
-			// Should show custom provider description
-			expect(screen.getByText(/welcome:providerSignup.useAnotherProviderDescription/)).toBeInTheDocument()
+			expect(screen.getByText("3rd-party Provider")).toBeInTheDocument()
+			expect(screen.getByText("Enter an API key and get going.")).toBeInTheDocument()
 		})
 
-		it("Alpha provider is selected by default", () => {
+		it("custom provider is selected by default", () => {
 			renderWelcomeViewProvider()
 			navigateToProviderSelection()
 
 			const radioGroup = screen.getByTestId("radio-group")
-			expect(radioGroup).toHaveAttribute("data-value", "roo")
+			expect(radioGroup).toHaveAttribute("data-value", "custom")
 		})
 
-		it("does not show API options when Alpha provider is selected", () => {
+		it("shows API options for custom provider", () => {
 			renderWelcomeViewProvider()
 			navigateToProviderSelection()
 
-			// API options exist but should be hidden with max-h-0 (collapsed via CSS)
-			// We can't easily test CSS visibility, so just verify the element is in the DOM
-			// but would be hidden by the transition class
-			const apiOptions = screen.queryByTestId("api-options")
-			expect(apiOptions).toBeInTheDocument()
+			expect(screen.getByTestId("api-options")).toBeInTheDocument()
 		})
 
-		it("triggers auth when Get Started is clicked on Alpha provider (not authenticated)", () => {
-			renderWelcomeViewProvider({ cloudIsAuthenticated: false })
-			navigateToProviderSelection()
-
-			const getStartedButton = screen.getByTestId("button-primary")
-			fireEvent.click(getStartedButton)
-
-			expect(vscode.postMessage).toHaveBeenCalledWith({
-				type: "rooCloudSignIn",
-				useProviderSignup: true,
-			})
-		})
-
-		it("saves config immediately when Get Started is clicked on Alpha provider (already authenticated)", () => {
-			renderWelcomeViewProvider({ cloudIsAuthenticated: true })
+		it("saves custom provider config when Finish is clicked", () => {
+			renderWelcomeViewProvider({ apiConfiguration: { apiProvider: "openai", openAiApiKey: "test-key" } })
 			navigateToProviderSelection()
 
 			const getStartedButton = screen.getByTestId("button-primary")
@@ -251,9 +184,7 @@ describe("WelcomeViewProvider", () => {
 			expect(vscode.postMessage).toHaveBeenCalledWith({
 				type: "upsertApiConfiguration",
 				text: "default",
-				apiConfiguration: {
-					apiProvider: "roo",
-				},
+				apiConfiguration: { apiProvider: "openai", openAiApiKey: "test-key" },
 			})
 		})
 
@@ -271,81 +202,6 @@ describe("WelcomeViewProvider", () => {
 		it.skip("validates and saves configuration when Get Started is clicked on custom provider", () => {
 			// This test would require properly simulating the radio group onChange
 			// which is complex in the mocked environment
-		})
-	})
-
-	describe("Auth In Progress State", () => {
-		it("shows waiting state with progress ring", () => {
-			renderWelcomeViewProvider()
-
-			const getStartedButton = screen.getByTestId("button-primary")
-			fireEvent.click(getStartedButton)
-
-			// Should show progress ring
-			expect(screen.getByTestId("progress-ring")).toBeInTheDocument()
-
-			// Should show waiting heading
-			expect(screen.getByText(/welcome:waitingForCloud.heading/)).toBeInTheDocument()
-
-			// Should show description (it's rendered via t() not Trans)
-			expect(screen.getByText(/welcome:waitingForCloud.description/)).toBeInTheDocument()
-		})
-
-		it("shows Go Back button in waiting state", () => {
-			renderWelcomeViewProvider()
-
-			const getStartedButton = screen.getByTestId("button-primary")
-			fireEvent.click(getStartedButton)
-
-			// Should show secondary button (Go Back)
-			expect(screen.getByTestId("button-secondary")).toBeInTheDocument()
-			expect(screen.getByText(/welcome:waitingForCloud.goBack/)).toBeInTheDocument()
-		})
-
-		it("returns to landing screen when Go Back is clicked (auth from landing)", () => {
-			renderWelcomeViewProvider()
-
-			// Start auth from landing
-			const getStartedButton = screen.getByTestId("button-primary")
-			fireEvent.click(getStartedButton)
-
-			// Verify we're in auth progress
-			expect(screen.getByTestId("progress-ring")).toBeInTheDocument()
-
-			// Click Go Back
-			const goBackButton = screen.getByTestId("button-secondary")
-			fireEvent.click(goBackButton)
-
-			// Should be back on landing screen
-			expect(screen.getByText(/welcome:landing.greeting/)).toBeInTheDocument()
-			expect(screen.getByTestId("trans-welcome:landing.introduction")).toBeInTheDocument()
-			expect(screen.queryByTestId("progress-ring")).not.toBeInTheDocument()
-		})
-
-		it("returns to provider selection when Go Back is clicked (auth from provider selection)", () => {
-			renderWelcomeViewProvider({ cloudIsAuthenticated: false })
-
-			// Navigate to provider selection
-			const noAccountLink = screen
-				.getAllByTestId("vscode-link")
-				.find((link) => link.textContent?.includes("welcome:landing.noAccount"))
-			fireEvent.click(noAccountLink!)
-
-			// Start auth from provider selection (Alpha is selected by default)
-			const getStartedButton = screen.getByTestId("button-primary")
-			fireEvent.click(getStartedButton)
-
-			// Verify we're in auth progress
-			expect(screen.getByTestId("progress-ring")).toBeInTheDocument()
-
-			// Click Go Back
-			const goBackButton = screen.getByTestId("button-secondary")
-			fireEvent.click(goBackButton)
-
-			// Should be back on provider selection screen
-			expect(screen.getByTestId("radio-group")).toBeInTheDocument()
-			expect(screen.getByTestId("trans-welcome:providerSignup.chooseProvider")).toBeInTheDocument()
-			expect(screen.queryByTestId("progress-ring")).not.toBeInTheDocument()
 		})
 	})
 })

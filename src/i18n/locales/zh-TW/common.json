@@ -187,8 +187,8 @@
 	},
 	"storage": {
 		"prompt_custom_path": "輸入自訂會話歷史儲存路徑，留空以使用預設位置",
-		"path_placeholder": "D:\\RooCodeStorage",
-		"enter_absolute_path": "請輸入絕對路徑（例如 D:\\RooCodeStorage 或 /home/user/storage）",
+		"path_placeholder": "D:\\AlphaCodeStorage",
+		"enter_absolute_path": "請輸入絕對路徑（例如 D:\\AlphaCodeStorage 或 /home/user/storage）",
 		"enter_valid_path": "請輸入有效的路徑"
 	},
 	"input": {
@@ -250,6 +250,6 @@
 	},
 	"docsLink": {
 		"label": "Docs",
-		"url": "https://docs.roocode.com"
+		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
 	}
 }

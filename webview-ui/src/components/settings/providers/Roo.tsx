@@ -3,7 +3,7 @@ import {
 	type OrganizationAllowList,
 	type RouterModels,
 	rooDefaultModelId,
-} from "@roo-code/types"
+} from "@alpha-code/types"
 
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { vscode } from "@src/utils/vscode"

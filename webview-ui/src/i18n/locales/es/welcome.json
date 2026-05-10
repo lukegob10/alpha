@@ -28,7 +28,7 @@
 		"useAnotherProvider": "Proveedor de terceros",
 		"useAnotherProviderDescription": "Introduce una clave API y comienza.",
 		"noApiKeys": "¿No quieres lidiar con claves API y cuentas separadas?",
-		"backToRoo": "Ve con el Proveedor de Alpha Cloud.",
+		"backToAlpha": "Ve con el Proveedor de Alpha Cloud.",
 		"goBack": "Atrás",
 		"finish": "Finalizar"
 	},

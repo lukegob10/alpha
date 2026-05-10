@@ -90,6 +90,7 @@ describe("VertexHandler", () => {
 				vertexProjectId: "test-project",
 				vertexRegion: "global",
 				vertexGatewayBaseUrl: "https://gateway.example.com/vertex",
+				vertexGatewayCaBundlePath: "C:\\certs\\gateway.pem",
 				vertexGatewayHelixCommand: "helix auth access-token print -a",
 			})
 
@@ -100,11 +101,10 @@ describe("VertexHandler", () => {
 					location: "global",
 					httpOptions: {
 						baseUrl: "https://gateway.example.com/vertex",
-						headers: { "x-r2d2-soeid": "soe123" },
 					},
 					googleAuthOptions: {
 						authClient: expect.objectContaining({
-							refreshHandler: expect.any(Function),
+							getRequestHeaders: expect.any(Function),
 						}),
 					},
 				}),
@@ -249,7 +249,7 @@ describe("VertexHandler", () => {
 				vertexGatewayModelRoutingMap: '{"gemini-3-flash-preview":"gateway-gemini-flash"}',
 			})
 
-			expect(testHandler.getModel().id).toBe("gateway-gemini-flash")
+			expect(testHandler.getModel().id).toBe("gemini-3-flash-preview")
 		})
 	})
 

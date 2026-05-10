@@ -90,7 +90,7 @@
 	"required": ["customModes"],
 	"additionalProperties": false,
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"$id": "https://github.com/RooCodeInc/Alpha/blob/main/schemas/alphamodes.json",
+	"$id": "https://github.com/AlphaInc/Alpha/blob/main/schemas/alphamodes.json",
 	"title": "Alpha Custom Modes",
 	"description": "Schema for .alphamodes configuration files used by Alpha to define custom modes."
 }

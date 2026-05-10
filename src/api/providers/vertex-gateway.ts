@@ -4,7 +4,7 @@ import { homedir } from "os"
 import { parse } from "shell-quote"
 import { Agent, fetch as undiciFetch, getGlobalDispatcher, setGlobalDispatcher } from "undici"
 
-import type { ProviderSettings } from "@roo-code/types"
+import type { ProviderSettings } from "@alpha-code/types"
 
 export const DEFAULT_VERTEX_GATEWAY_HELIX_COMMAND = "helix auth access-token print -a"
 export const DEFAULT_VERTEX_GATEWAY_TOKEN_REFRESH_MINUTES = 10

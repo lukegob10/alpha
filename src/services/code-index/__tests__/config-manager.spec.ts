@@ -1885,6 +1885,61 @@ describe("CodeIndexConfigManager", () => {
 			expect(config).toHaveProperty("embedderProvider")
 			expect(config.embedderProvider).toBe("openai")
 		})
+
+		it("should expose embedding rate limit only when enabled", () => {
+			mockContextProxy.getGlobalState.mockReturnValue({
+				codebaseIndexEnabled: true,
+				codebaseIndexEmbedderProvider: "openai",
+				codebaseIndexQdrantUrl: "http://localhost:6333",
+				codebaseIndexEmbeddingRateLimitEnabled: true,
+				codebaseIndexEmbeddingRateLimitSeconds: 2.5,
+			})
+			mockContextProxy.getSecret.mockImplementation((key: string) => {
+				if (key === "codeIndexOpenAiKey") return "test-key"
+				return undefined
+			})
+
+			configManager = new CodeIndexConfigManager(mockContextProxy)
+			expect(configManager.getConfig().embeddingRateLimitSeconds).toBe(2.5)
+
+			mockContextProxy.getGlobalState.mockReturnValue({
+				codebaseIndexEnabled: true,
+				codebaseIndexEmbedderProvider: "openai",
+				codebaseIndexQdrantUrl: "http://localhost:6333",
+				codebaseIndexEmbeddingRateLimitEnabled: false,
+				codebaseIndexEmbeddingRateLimitSeconds: 2.5,
+			})
+
+			configManager = new CodeIndexConfigManager(mockContextProxy)
+			expect(configManager.getConfig().embeddingRateLimitSeconds).toBeUndefined()
+		})
+
+		it("should require restart when embedding rate limit changes", async () => {
+			mockContextProxy.getGlobalState
+				.mockReturnValueOnce({
+					codebaseIndexEnabled: true,
+					codebaseIndexEmbedderProvider: "openai",
+					codebaseIndexQdrantUrl: "http://localhost:6333",
+					codebaseIndexEmbeddingRateLimitEnabled: false,
+					codebaseIndexEmbeddingRateLimitSeconds: undefined,
+				})
+				.mockReturnValue({
+					codebaseIndexEnabled: true,
+					codebaseIndexEmbedderProvider: "openai",
+					codebaseIndexQdrantUrl: "http://localhost:6333",
+					codebaseIndexEmbeddingRateLimitEnabled: true,
+					codebaseIndexEmbeddingRateLimitSeconds: 2,
+				})
+			mockContextProxy.getSecret.mockImplementation((key: string) => {
+				if (key === "codeIndexOpenAiKey") return "test-key"
+				return undefined
+			})
+
+			configManager = new CodeIndexConfigManager(mockContextProxy)
+			const { requiresRestart } = await configManager.loadConfiguration()
+
+			expect(requiresRestart).toBe(true)
+		})
 	})
 
 	describe("isConfigured", () => {

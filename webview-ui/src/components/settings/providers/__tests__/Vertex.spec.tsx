@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react"
 import { Vertex } from "../Vertex"
-import type { ProviderSettings } from "@roo-code/types"
-import { VERTEX_REGIONS } from "@roo-code/types"
+import type { ProviderSettings } from "@alpha-code/types"
+import { VERTEX_REGIONS } from "@alpha-code/types"
 
 vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 	VSCodeTextField: ({ children, value, onInput, type, ...props }: any) => (
@@ -181,17 +181,14 @@ describe("Vertex", () => {
 		})
 
 		expect(mockSetApiConfigurationField).toHaveBeenCalledWith(
-			"vertexGatewayBaseUrl",
+			"gatewayBaseUrl",
 			"https://gateway.example.com/vertex",
 		)
-		expect(mockSetApiConfigurationField).toHaveBeenCalledWith("vertexGatewayCaBundlePath", "/certs/corp.pem")
+		expect(mockSetApiConfigurationField).toHaveBeenCalledWith("pemCaBundlePath", "/certs/corp.pem")
+		expect(mockSetApiConfigurationField).toHaveBeenCalledWith("helixCommand", "helix auth access-token print -a")
+		expect(mockSetApiConfigurationField).toHaveBeenCalledWith("refreshIntervalMinutes", 20)
 		expect(mockSetApiConfigurationField).toHaveBeenCalledWith(
-			"vertexGatewayHelixCommand",
-			"helix auth access-token print -a",
-		)
-		expect(mockSetApiConfigurationField).toHaveBeenCalledWith("vertexGatewayTokenRefreshMinutes", 20)
-		expect(mockSetApiConfigurationField).toHaveBeenCalledWith(
-			"vertexGatewayModelRoutingMap",
+			"modelRoutingMap",
 			'{"gemini-3-flash-preview":"gateway-gemini-flash"}',
 		)
 	})
