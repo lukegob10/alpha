@@ -29,7 +29,7 @@
 		"@alpha-code/evals": "workspace:^",
 		"@alpha-code/types": "workspace:^",
 		"@tanstack/react-query": "^5.69.0",
-		"archiver": "^7.0.1",
+		"archiver": "^8.0.0",
 		"class-variance-authority": "^0.7.1",
 		"clsx": "^2.1.1",
 		"cmdk": "^1.1.0",
