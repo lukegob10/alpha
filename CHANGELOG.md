@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.4
+
+### Patch Changes
+
+- [codex] Fix release workflow automation
+
 All notable changes to Alpha will be documented in this file starting from the Alpha rebrand baseline.
 
 ## Unreleased
