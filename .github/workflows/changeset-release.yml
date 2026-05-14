@@ -40,9 +40,40 @@ jobs:
           echo "Changesets diff with previous version: $NEW_CHANGESETS"
           echo "new_changesets=$NEW_CHANGESETS" >> $GITHUB_OUTPUT
 
+      - name: Generate default release changeset
+        id: generate-default-changeset
+        if: github.event_name == 'pull_request' && steps.check-changesets.outputs.new_changesets == '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs")
+            const path = require("path")
+
+            const pr = context.payload.pull_request
+            const labels = pr.labels.map((label) => label.name.toLowerCase())
+            const releaseText = `${pr.title}\n${pr.body || ""}`.toLowerCase()
+            const isMajorRelease =
+              labels.includes("release:v2") ||
+              labels.includes("v2") ||
+              /\[(release:\s*)?v2\]/i.test(releaseText) ||
+              /(^|\s)release:\s*v2(\s|$)/i.test(releaseText)
+            const bump = isMajorRelease ? "major" : "patch"
+            const summary = pr.title.replace(/\r?\n/g, " ").trim() || `PR #${pr.number}`
+            const changesetDir = path.join(process.cwd(), ".changeset")
+            const changesetPath = path.join(changesetDir, `auto-pr-${pr.number}.md`)
+
+            fs.mkdirSync(changesetDir, { recursive: true })
+            fs.writeFileSync(
+              changesetPath,
+              `---\n"alpha": ${bump}\n---\n\n${summary}\n`,
+            )
+
+            core.info(`Generated ${bump} changeset at ${changesetPath}`)
+            core.setOutput("generated", "true")
+
       # Create version bump PR using changesets/action if there are new changesets
       - name: Changeset Pull Request
-        if: steps.check-changesets.outputs.new_changesets != '0'
+        if: steps.check-changesets.outputs.new_changesets != '0' || steps.generate-default-changeset.outputs.generated == 'true'
         id: changesets
         uses: changesets/action@v1
         with:

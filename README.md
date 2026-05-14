@@ -69,6 +69,12 @@ Alpha adapts to how you work:
 
 ## Local Setup & Development
 
+### Release Automation
+
+Pull requests now produce a VSIX artifact automatically in GitHub Actions, so reviewers can download the packaged extension from the PR workflow run instead of building or uploading one by hand.
+
+When a PR is merged into `main`, the release workflow creates a version bump PR. If the merged PR does not include a changeset, the workflow generates a patch changeset by default. Mark the PR with `v2`, `release:v2`, `[v2]`, or `release: v2` when the release should be a major version bump instead.
+
 1. **Clone** the repo:
 
 ```sh
