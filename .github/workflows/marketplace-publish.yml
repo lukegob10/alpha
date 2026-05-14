@@ -10,7 +10,7 @@ env:
 
 jobs:
   publish-extension:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     permissions:
       contents: write # Required for pushing tags.
     if: >
@@ -27,12 +27,18 @@ jobs:
       - name: Setup Node.js and pnpm
         uses: ./.github/actions/setup-node-pnpm
       - name: Configure Git
+        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
       - name: Create .env file
+        shell: bash
         run: echo "POSTHOG_API_KEY=${{ secrets.POSTHOG_API_KEY }}" >> .env
+      - name: Build workspace types
+        shell: bash
+        run: pnpm --filter @alpha-code/types build
       - name: Package Extension
+        shell: bash
         run: |
           current_package_version=$(node -p "require('./src/package.json').version")
           pnpm vsix
@@ -53,6 +59,7 @@ jobs:
           # Clean up temporary file.
           rm /tmp/alpha-code-vsix-contents.txt
       - name: Create and Push Git Tag
+        shell: bash
         run: |
           current_package_version=$(node -p "require('./src/package.json').version")
           git tag -a "v${current_package_version}" -m "Release v${current_package_version}"
@@ -62,6 +69,7 @@ jobs:
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        shell: bash
         run: |
           current_package_version=$(node -p "require('./src/package.json').version")
           pnpm --filter alpha publish:marketplace
@@ -69,6 +77,7 @@ jobs:
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
           current_package_version=$(node -p "require('./src/package.json').version")
 
