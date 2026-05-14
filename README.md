@@ -32,7 +32,7 @@ Alpha v1 is here. Welcome to the first release of the Alpha-branded extension.
 - [简体中文](locales/zh-CN/README.md)
 - [繁體中文](locales/zh-TW/README.md)
 - ...
-      </details>
+  </details>
 
 ---
 
@@ -73,7 +73,7 @@ Alpha adapts to how you work:
 
 Pull requests now produce a VSIX artifact automatically in GitHub Actions, so reviewers can download the packaged extension from the PR workflow run instead of building or uploading one by hand.
 
-When a PR is merged into `main`, the release workflow creates a version bump PR. If the merged PR does not include a changeset, the workflow generates a patch changeset by default. Mark the PR with `v2`, `release:v2`, `[v2]`, or `release: v2` when the release should be a major version bump instead.
+When a PR is merged into `main`, the release workflow creates a version bump PR. If the merged PR does not include a changeset, the workflow generates a patch changeset by default. Add a `v2` or `release:v2` label, or put `[v2]` or `release: v2` in the PR title, when the release should be a major version bump instead.
 
 1. **Clone** the repo:
 

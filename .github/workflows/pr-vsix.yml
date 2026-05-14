@@ -8,7 +8,7 @@ on:
 
 jobs:
   package-vsix:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -18,6 +18,9 @@ jobs:
 
       - name: Create .env file
         run: echo "POSTHOG_API_KEY=${{ secrets.POSTHOG_API_KEY }}" >> .env
+
+      - name: Build workspace types
+        run: pnpm --filter @alpha-code/types build
 
       - name: Package Extension
         run: pnpm vsix
