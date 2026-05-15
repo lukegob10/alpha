@@ -2,7 +2,7 @@
  * Defines profiles for different embedding models, including their dimensions.
  */
 
-import type { EmbedderProvider, EmbeddingModelProfiles } from "@roo-code/types"
+import type { EmbedderProvider, EmbeddingModelProfiles } from "@alpha-code/types"
 
 // Example profiles - expand this list as needed
 export const EMBEDDING_MODEL_PROFILES: EmbeddingModelProfiles = {
@@ -38,6 +38,12 @@ export const EMBEDDING_MODEL_PROFILES: EmbeddingModelProfiles = {
 		// Deprecated: text-embedding-004 is migrated to gemini-embedding-001 in GeminiEmbedder
 		// Kept here for backward-compatible dimension lookup in createVectorStore()
 		"text-embedding-004": { dimension: 3072, scoreThreshold: 0.4 },
+	},
+	vertex: {
+		"gemini-embedding-2": { dimension: 3072, scoreThreshold: 0.4 },
+		"gemini-embedding-001": { dimension: 3072, scoreThreshold: 0.4 },
+		"text-embedding-005": { dimension: 768, scoreThreshold: 0.4 },
+		"text-multilingual-embedding-002": { dimension: 768, scoreThreshold: 0.4 },
 	},
 	mistral: {
 		"codestral-embed-2505": { dimension: 1536, scoreThreshold: 0.4 },
@@ -172,6 +178,7 @@ export function getDefaultModelId(provider: EmbedderProvider): string {
 		}
 
 		case "gemini":
+		case "vertex":
 			return "gemini-embedding-001"
 
 		case "mistral":

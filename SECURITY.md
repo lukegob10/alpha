@@ -6,7 +6,7 @@ We actively patch only the most recent minor release of Alpha Code. Older versi
 
 ## Reporting a Vulnerability
 
-Email security@roocode.com with:
+Report vulnerabilities privately through GitHub Security Advisories with:
 
 - A short summary of the issue
 - Steps to reproduce or a proof of concept

@@ -1,14 +1,13 @@
 // npx vitest run src/api/providers/__tests__/anthropic-vertex.spec.ts
 
-import { Anthropic } from "@anthropic-ai/sdk"
-import { AnthropicVertex } from "@anthropic-ai/vertex-sdk"
-
-import { VERTEX_1M_CONTEXT_MODEL_IDS } from "@roo-code/types"
-
-import { ApiStreamChunk } from "../../transform/stream"
-
-import { AnthropicVertexHandler } from "../anthropic-vertex"
-
+const { mockGoogleAuth, mockOAuth2Client } = vitest.hoisted(() => ({
+	mockGoogleAuth: vitest.fn(function (_options: unknown) {
+		return { options: _options }
+	}),
+	mockOAuth2Client: vitest.fn(function (_options: unknown) {
+		return { options: _options }
+	}),
+}))
 vitest.mock("@anthropic-ai/vertex-sdk", () => ({
 	AnthropicVertex: vitest.fn().mockImplementation(() => ({
 		messages: {
@@ -50,8 +49,35 @@ vitest.mock("@anthropic-ai/vertex-sdk", () => ({
 	})),
 }))
 
+vitest.mock("google-auth-library", () => ({
+	GoogleAuth: mockGoogleAuth,
+	OAuth2Client: mockOAuth2Client,
+}))
+
+import { Anthropic } from "@anthropic-ai/sdk"
+import { AnthropicVertex } from "@anthropic-ai/vertex-sdk"
+
+import { VERTEX_1M_CONTEXT_MODEL_IDS } from "@alpha-code/types"
+
+import { ApiStreamChunk } from "../../transform/stream"
+
+import { AnthropicVertexHandler } from "../anthropic-vertex"
+
 describe("VertexHandler", () => {
 	let handler: AnthropicVertexHandler
+	const originalUsername = process.env.USERNAME
+	const originalUser = process.env.USER
+
+	beforeEach(() => {
+		vitest.clearAllMocks()
+		restoreEnv("USERNAME", originalUsername)
+		restoreEnv("USER", originalUser)
+	})
+
+	afterAll(() => {
+		restoreEnv("USERNAME", originalUsername)
+		restoreEnv("USER", originalUser)
+	})
 
 	describe("constructor", () => {
 		it("should initialize with provided config for Claude", () => {
@@ -64,6 +90,61 @@ describe("VertexHandler", () => {
 			expect(AnthropicVertex).toHaveBeenCalledWith({
 				projectId: "test-project",
 				region: "us-central1",
+			})
+		})
+
+		it("should initialize with Vertex gateway config for Claude", () => {
+			process.env.USERNAME = "soe123"
+
+			handler = new AnthropicVertexHandler({
+				apiModelId: "claude-sonnet-4-5@20250929",
+				vertexProjectId: "test-project",
+				vertexRegion: "global",
+				vertexGatewayBaseUrl: " https://gateway.example.com/vertex/v1/ ",
+				vertexGatewayCaBundlePath: "C:\\certs\\gateway.pem",
+				vertexGatewayHelixCommand: "helix auth access-token print -a",
+			})
+
+			expect(mockOAuth2Client).not.toHaveBeenCalled()
+			expect(mockGoogleAuth).not.toHaveBeenCalled()
+			expect(AnthropicVertex).toHaveBeenCalledWith({
+				baseURL: "https://gateway.example.com/vertex/v1/",
+				projectId: "test-project",
+				region: "global",
+				fetch: expect.any(Function),
+				googleAuth: expect.objectContaining({
+					getClient: expect.any(Function),
+				}),
+			})
+		})
+
+		it("should preserve JSON credentials auth when gateway is not configured", () => {
+			handler = new AnthropicVertexHandler({
+				apiModelId: "claude-3-5-sonnet-v2@20241022",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+				vertexJsonCredentials: '{"client_email":"test@example.com","private_key":"key"}',
+			})
+
+			expect(AnthropicVertex).toHaveBeenCalledWith({
+				projectId: "test-project",
+				region: "us-central1",
+				googleAuth: { options: expect.objectContaining({ credentials: expect.any(Object) }) },
+			})
+		})
+
+		it("should preserve key file auth when gateway is not configured", () => {
+			handler = new AnthropicVertexHandler({
+				apiModelId: "claude-3-5-sonnet-v2@20241022",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+				vertexKeyFile: "/path/to/key.json",
+			})
+
+			expect(AnthropicVertex).toHaveBeenCalledWith({
+				projectId: "test-project",
+				region: "us-central1",
+				googleAuth: { options: expect.objectContaining({ keyFile: "/path/to/key.json" }) },
 			})
 		})
 	})
@@ -763,18 +844,21 @@ describe("VertexHandler", () => {
 
 			const result = await handler.completePrompt("Test prompt")
 			expect(result).toBe("Test response")
-			expect(handler["client"].messages.create).toHaveBeenCalledWith({
-				model: "claude-3-5-sonnet-v2@20241022",
-				max_tokens: 8192,
-				temperature: 0,
-				messages: [
-					{
-						role: "user",
-						content: [{ type: "text", text: "Test prompt", cache_control: { type: "ephemeral" } }],
-					},
-				],
-				stream: false,
-			})
+			expect(handler["client"].messages.create).toHaveBeenCalledWith(
+				expect.objectContaining({
+					model: "claude-3-5-sonnet-v2@20241022",
+					max_tokens: 8192,
+					temperature: 0,
+					messages: [
+						{
+							role: "user",
+							content: [{ type: "text", text: "Test prompt", cache_control: { type: "ephemeral" } }],
+						},
+					],
+					stream: false,
+				}),
+				undefined,
+			)
 		})
 
 		it("should handle API errors for Claude", async () => {
@@ -867,6 +951,20 @@ describe("VertexHandler", () => {
 			expect(result.maxTokens).toBe(8192)
 			expect(result.reasoningBudget).toBeUndefined()
 			expect(result.temperature).toBe(0)
+		})
+
+		it("should route Claude model IDs through the Vertex gateway map", () => {
+			const handler = new AnthropicVertexHandler({
+				apiModelId: "claude-3-7-sonnet@20250219:thinking",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+				vertexGatewayModelRoutingMap:
+					'{"claude-3-7-sonnet@20250219:thinking":"gateway-claude-3-7-sonnet:thinking"}',
+			})
+
+			const result = handler.getModel()
+			expect(result.id).toBe("claude-3-7-sonnet@20250219")
+			expect(result.reasoningBudget).toBeDefined()
 		})
 
 		it("should enable 1M context for Claude Sonnet 4 when beta flag is set", () => {
@@ -1448,3 +1546,12 @@ describe("VertexHandler", () => {
 		})
 	})
 })
+
+function restoreEnv(name: string, value: string | undefined): void {
+	if (value === undefined) {
+		delete process.env[name]
+		return
+	}
+
+	process.env[name] = value
+}

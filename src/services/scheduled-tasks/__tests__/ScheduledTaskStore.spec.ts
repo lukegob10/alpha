@@ -2,7 +2,7 @@ import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
 
-import type { ScheduledTask, ScheduledTaskRun } from "@roo-code/types"
+import type { ScheduledTask, ScheduledTaskRun } from "@alpha-code/types"
 
 import { ScheduledTaskStore } from "../ScheduledTaskStore"
 

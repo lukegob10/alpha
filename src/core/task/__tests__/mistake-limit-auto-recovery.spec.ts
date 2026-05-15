@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import { Task } from "../Task"
 
-vi.mock("@roo-code/telemetry", () => ({
+vi.mock("@alpha-code/telemetry", () => ({
 	TelemetryService: {
 		instance: {
 			captureConsecutiveMistakeError: vi.fn(),

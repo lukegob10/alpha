@@ -28,7 +28,7 @@
 		"useAnotherProvider": "Провайдер третьей стороны",
 		"useAnotherProviderDescription": "Введите API-ключ и начните.",
 		"noApiKeys": "Не хотите иметь дело с API-ключами и отдельными аккаунтами?",
-		"backToRoo": "Выберите провайдер Alpha Cloud.",
+		"backToAlpha": "Выберите провайдер Alpha Cloud.",
 		"goBack": "Назад",
 		"finish": "Завершить"
 	},

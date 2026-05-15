@@ -1,3 +1,3 @@
 export * from "./useClipboard"
-export * from "./useRooPortal"
+export * from "./useAlphaPortal"
 export * from "./useNonInteractiveClick"

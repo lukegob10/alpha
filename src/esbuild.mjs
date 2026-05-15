@@ -1,14 +1,16 @@
 import * as esbuild from "esbuild"
 import * as fs from "fs"
 import * as path from "path"
+import { createRequire } from "module"
 import { fileURLToPath } from "url"
 import process from "node:process"
 import * as console from "node:console"
 
-import { copyPaths, copyWasms, copyLocales, setupLocaleWatcher } from "@roo-code/build"
+import { copyPaths, copyWasms, copyLocales, setupLocaleWatcher } from "@alpha-code/build"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+const require = createRequire(import.meta.url)
 
 async function removeDirWithRetries(dirPath, retries = 5, retryDelayMs = 200) {
 	for (let attempt = 0; attempt <= retries; attempt++) {
@@ -26,6 +28,64 @@ async function removeDirWithRetries(dirPath, retries = 5, retryDelayMs = 200) {
 			await new Promise((resolve) => globalThis.setTimeout(resolve, retryDelayMs * (attempt + 1)))
 		}
 	}
+}
+
+async function cleanDistDir(distDir) {
+	try {
+		await removeDirWithRetries(distDir)
+		return
+	} catch (error) {
+		const lockedLanceDbBinding = path.join(distDir, "lancedb.win32-x64-msvc.node")
+
+		if (process.platform !== "win32" || error?.code !== "EPERM" || !fs.existsSync(lockedLanceDbBinding)) {
+			throw error
+		}
+
+		console.warn(`[extension] Reusing locked LanceDB native binding: ${lockedLanceDbBinding}`)
+
+		const entries = await fs.promises.readdir(distDir)
+		await Promise.all(
+			entries
+				.filter((entry) => entry !== path.basename(lockedLanceDbBinding))
+				.map((entry) => fs.promises.rm(path.join(distDir, entry), { recursive: true, force: true })),
+		)
+	}
+}
+
+function resolveLanceDbNativeBinding() {
+	if (process.platform !== "win32" || process.arch !== "x64") {
+		return undefined
+	}
+
+	const lanceDbEntry = require.resolve("@lancedb/lancedb")
+	const lanceDbRequire = createRequire(lanceDbEntry)
+	return lanceDbRequire.resolve("@lancedb/lancedb-win32-x64-msvc/lancedb.win32-x64-msvc.node")
+}
+
+function copyLanceDbNativeBinding(distDir) {
+	const nativeBinding = resolveLanceDbNativeBinding()
+
+	if (!nativeBinding) {
+		return
+	}
+
+	fs.mkdirSync(distDir, { recursive: true })
+	const target = path.join(distDir, path.basename(nativeBinding))
+	try {
+		fs.copyFileSync(nativeBinding, target)
+	} catch (error) {
+		if (
+			process.platform === "win32" &&
+			(error?.code === "EBUSY" || error?.code === "EPERM") &&
+			fs.existsSync(target)
+		) {
+			console.warn(`[copyLanceDbNativeBinding] Reusing locked native binding at ${target}`)
+			return
+		}
+
+		throw error
+	}
+	console.log(`[copyLanceDbNativeBinding] Copied ${nativeBinding} to ${target}`)
 }
 
 async function main() {
@@ -54,7 +114,7 @@ async function main() {
 
 	if (fs.existsSync(distDir)) {
 		console.log(`[${name}] Cleaning dist directory: ${distDir}`)
-		await removeDirWithRetries(distDir)
+		await cleanDistDir(distDir)
 	}
 
 	/**
@@ -93,6 +153,16 @@ async function main() {
 			},
 		},
 		{
+			name: "copyLanceDbNativeBinding",
+			setup(build) {
+				build.onEnd((result) => {
+					if (result.errors.length === 0) {
+						copyLanceDbNativeBinding(distDir)
+					}
+				})
+			},
+		},
+		{
 			name: "esbuild-problem-matcher",
 			setup(build) {
 				build.onStart(() => console.log("[esbuild-problem-matcher#onStart]"))
@@ -121,7 +191,7 @@ async function main() {
 		// global-agent must be external because it dynamically patches Node.js http/https modules
 		// which breaks when bundled. It needs access to the actual Node.js module instances.
 		// undici must be bundled because our VSIX is packaged with `--no-dependencies`.
-		external: ["vscode", "esbuild", "global-agent"],
+		external: ["vscode", "esbuild", "global-agent", "@lancedb/lancedb-win32-x64-msvc"],
 	}
 
 	/**

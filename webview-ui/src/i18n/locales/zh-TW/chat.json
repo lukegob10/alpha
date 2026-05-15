@@ -128,7 +128,7 @@
 	"about": "Alpha 是編輯器中的完整 AI 開發團隊。",
 	"docs": "請參閱 <DocsLink>說明文件</DocsLink> 開始使用。",
 	"onboarding": "想要做什麼呢？",
-	"rooTips": {
+	"alphaTips": {
 		"customizableModes": {
 			"title": "可自訂模式，專注任務不偏離",
 			"description": "專注於任務並交付成果的專業角色。"

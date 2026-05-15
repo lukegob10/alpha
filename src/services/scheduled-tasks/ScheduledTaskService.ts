@@ -13,7 +13,7 @@ import {
 	type ScheduledTaskRun,
 	type ScheduledTaskState,
 	type UpdateScheduledTaskPayload,
-} from "@roo-code/types"
+} from "@alpha-code/types"
 
 import type { ClineProvider } from "../../core/webview/ClineProvider"
 import { Package } from "../../shared/package"

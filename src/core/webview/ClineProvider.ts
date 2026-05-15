@@ -48,10 +48,10 @@ import {
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	getModelId,
 	isRetiredProvider,
-} from "@roo-code/types"
+} from "@alpha-code/types"
 import { aggregateTaskCostsRecursive, type AggregatedCosts } from "./aggregateTaskCosts"
-import { TelemetryService } from "@roo-code/telemetry"
-import { CloudService, getRooCodeApiUrl } from "@roo-code/cloud"
+import { TelemetryService } from "@alpha-code/telemetry"
+import { CloudService, getRooCodeApiUrl } from "@alpha-code/cloud"
 
 import { Package } from "../../shared/package"
 import { findLast } from "../../shared/array"
@@ -100,7 +100,7 @@ import { Task } from "../task/Task"
 import { WorkspaceMutationGate } from "../task/WorkspaceMutationGate"
 
 import { webviewMessageHandler } from "./webviewMessageHandler"
-import type { ClineMessage, LiveTaskMetadata, TodoItem } from "@roo-code/types"
+import type { ClineMessage, LiveTaskMetadata, TodoItem } from "@alpha-code/types"
 import { readApiMessages, saveApiMessages, saveTaskMessages, TaskHistoryStore } from "../task-persistence"
 import { readTaskMessages } from "../task-persistence/taskMessages"
 import { getNonce } from "./getNonce"
@@ -178,7 +178,7 @@ export class ClineProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "apr-2026-v3.52.0-poe-xai-minimax" // v3.52.0 Poe provider, xAI improvements, and MiniMax fixes
+	public readonly latestAnnouncementId = "may-2026-v1.0.3-alpha-v1-welcome" // v1.0.3 Alpha v1 welcome
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -1819,7 +1819,7 @@ export class ClineProvider
 			await fs.mkdir(mcpServersDir, { recursive: true })
 		} catch (error) {
 			// Fallback to a relative path if directory creation fails
-			return path.join(os.homedir(), ".roo-code", "mcp")
+			return path.join(os.homedir(), ".alpha-code", "mcp")
 		}
 		return mcpServersDir
 	}
@@ -2456,6 +2456,9 @@ export class ClineProvider
 			codebaseIndexModels: codebaseIndexModels ?? EMBEDDING_MODEL_PROFILES,
 			codebaseIndexConfig: {
 				codebaseIndexEnabled: codebaseIndexConfig?.codebaseIndexEnabled ?? false,
+				codebaseIndexVectorStoreProvider: codebaseIndexConfig?.codebaseIndexVectorStoreProvider ?? "lancedb",
+				codebaseIndexLocalIndexPath:
+					codebaseIndexConfig?.codebaseIndexLocalIndexPath ?? ".alpha/code-index/lancedb",
 				codebaseIndexQdrantUrl: codebaseIndexConfig?.codebaseIndexQdrantUrl ?? "http://localhost:6333",
 				codebaseIndexEmbedderProvider: codebaseIndexConfig?.codebaseIndexEmbedderProvider ?? "openai",
 				codebaseIndexEmbedderBaseUrl: codebaseIndexConfig?.codebaseIndexEmbedderBaseUrl ?? "",
@@ -2464,8 +2467,20 @@ export class ClineProvider
 				codebaseIndexOpenAiCompatibleBaseUrl: codebaseIndexConfig?.codebaseIndexOpenAiCompatibleBaseUrl,
 				codebaseIndexSearchMaxResults: codebaseIndexConfig?.codebaseIndexSearchMaxResults,
 				codebaseIndexSearchMinScore: codebaseIndexConfig?.codebaseIndexSearchMinScore,
+				codebaseIndexEmbeddingRateLimitEnabled: codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitEnabled,
+				codebaseIndexEmbeddingRateLimitSeconds: codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitSeconds,
 				codebaseIndexBedrockRegion: codebaseIndexConfig?.codebaseIndexBedrockRegion,
 				codebaseIndexBedrockProfile: codebaseIndexConfig?.codebaseIndexBedrockProfile,
+				codebaseIndexVertexProjectId: codebaseIndexConfig?.codebaseIndexVertexProjectId,
+				codebaseIndexVertexRegion: codebaseIndexConfig?.codebaseIndexVertexRegion,
+				codebaseIndexVertexKeyFile: codebaseIndexConfig?.codebaseIndexVertexKeyFile,
+				codebaseIndexVertexGatewayBaseUrl: codebaseIndexConfig?.codebaseIndexVertexGatewayBaseUrl,
+				codebaseIndexVertexGatewayCaBundlePath: codebaseIndexConfig?.codebaseIndexVertexGatewayCaBundlePath,
+				codebaseIndexVertexGatewayHelixCommand: codebaseIndexConfig?.codebaseIndexVertexGatewayHelixCommand,
+				codebaseIndexVertexGatewayTokenRefreshMinutes:
+					codebaseIndexConfig?.codebaseIndexVertexGatewayTokenRefreshMinutes,
+				codebaseIndexVertexGatewayModelRoutingMap:
+					codebaseIndexConfig?.codebaseIndexVertexGatewayModelRoutingMap,
 				codebaseIndexOpenRouterSpecificProvider: codebaseIndexConfig?.codebaseIndexOpenRouterSpecificProvider,
 			},
 			// Only set mdmCompliant if there's an actual MDM policy
@@ -2679,6 +2694,10 @@ export class ClineProvider
 			codebaseIndexModels: stateValues.codebaseIndexModels ?? EMBEDDING_MODEL_PROFILES,
 			codebaseIndexConfig: {
 				codebaseIndexEnabled: stateValues.codebaseIndexConfig?.codebaseIndexEnabled ?? false,
+				codebaseIndexVectorStoreProvider:
+					stateValues.codebaseIndexConfig?.codebaseIndexVectorStoreProvider ?? "lancedb",
+				codebaseIndexLocalIndexPath:
+					stateValues.codebaseIndexConfig?.codebaseIndexLocalIndexPath ?? ".alpha/code-index/lancedb",
 				codebaseIndexQdrantUrl:
 					stateValues.codebaseIndexConfig?.codebaseIndexQdrantUrl ?? "http://localhost:6333",
 				codebaseIndexEmbedderProvider:
@@ -2691,8 +2710,24 @@ export class ClineProvider
 					stateValues.codebaseIndexConfig?.codebaseIndexOpenAiCompatibleBaseUrl,
 				codebaseIndexSearchMaxResults: stateValues.codebaseIndexConfig?.codebaseIndexSearchMaxResults,
 				codebaseIndexSearchMinScore: stateValues.codebaseIndexConfig?.codebaseIndexSearchMinScore,
+				codebaseIndexEmbeddingRateLimitEnabled:
+					stateValues.codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitEnabled,
+				codebaseIndexEmbeddingRateLimitSeconds:
+					stateValues.codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitSeconds,
 				codebaseIndexBedrockRegion: stateValues.codebaseIndexConfig?.codebaseIndexBedrockRegion,
 				codebaseIndexBedrockProfile: stateValues.codebaseIndexConfig?.codebaseIndexBedrockProfile,
+				codebaseIndexVertexProjectId: stateValues.codebaseIndexConfig?.codebaseIndexVertexProjectId,
+				codebaseIndexVertexRegion: stateValues.codebaseIndexConfig?.codebaseIndexVertexRegion,
+				codebaseIndexVertexKeyFile: stateValues.codebaseIndexConfig?.codebaseIndexVertexKeyFile,
+				codebaseIndexVertexGatewayBaseUrl: stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayBaseUrl,
+				codebaseIndexVertexGatewayCaBundlePath:
+					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayCaBundlePath,
+				codebaseIndexVertexGatewayHelixCommand:
+					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayHelixCommand,
+				codebaseIndexVertexGatewayTokenRefreshMinutes:
+					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayTokenRefreshMinutes,
+				codebaseIndexVertexGatewayModelRoutingMap:
+					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayModelRoutingMap,
 				codebaseIndexOpenRouterSpecificProvider:
 					stateValues.codebaseIndexConfig?.codebaseIndexOpenRouterSpecificProvider,
 			},

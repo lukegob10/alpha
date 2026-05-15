@@ -1,6 +1,6 @@
 import * as assert from "assert"
 
-import { RooCodeEventName, type ClineMessage } from "@roo-code/types"
+import { RooCodeEventName, type ClineMessage } from "@alpha-code/types"
 
 import { waitUntilCompleted } from "./utils"
 import { setDefaultSuiteTimeout } from "./test-utils"
@@ -28,7 +28,8 @@ suite("Alpha Task", function () {
 
 		assert.ok(
 			!!messages.find(
-				({ say, text }) => (say === "completion_result" || say === "text") && text?.includes("My name is Alpha"),
+				({ say, text }) =>
+					(say === "completion_result" || say === "text") && text?.includes("My name is Alpha"),
 			),
 			`Completion should include "My name is Alpha"`,
 		)

@@ -24,11 +24,35 @@ describe("embeddingModels", () => {
 			expect(geminiProfiles!["text-embedding-004"]).toBeDefined()
 			expect(geminiProfiles!["text-embedding-004"].dimension).toBe(3072)
 		})
+
+		it("should have vertex provider with gemini-embedding-001 model", () => {
+			const vertexProfiles = EMBEDDING_MODEL_PROFILES.vertex
+			expect(vertexProfiles).toBeDefined()
+			expect(vertexProfiles!["gemini-embedding-001"]).toBeDefined()
+			expect(vertexProfiles!["gemini-embedding-001"].dimension).toBe(3072)
+		})
+
+		it("should include current Vertex text embedding models", () => {
+			const vertexProfiles = EMBEDDING_MODEL_PROFILES.vertex
+			expect(vertexProfiles!["gemini-embedding-2"].dimension).toBe(3072)
+			expect(vertexProfiles!["text-embedding-005"].dimension).toBe(768)
+			expect(vertexProfiles!["text-multilingual-embedding-002"].dimension).toBe(768)
+		})
 	})
 
 	describe("getModelDimension", () => {
 		it("should return dimension for gemini-embedding-001", () => {
 			const dimension = getModelDimension("gemini", "gemini-embedding-001")
+			expect(dimension).toBe(3072)
+		})
+
+		it("should return dimension for vertex gemini-embedding-001", () => {
+			const dimension = getModelDimension("vertex", "gemini-embedding-001")
+			expect(dimension).toBe(3072)
+		})
+
+		it("should return dimension for vertex gemini-embedding-2", () => {
+			const dimension = getModelDimension("vertex", "gemini-embedding-2")
 			expect(dimension).toBe(3072)
 		})
 
@@ -79,6 +103,11 @@ describe("embeddingModels", () => {
 	describe("getDefaultModelId", () => {
 		it("should return gemini-embedding-001 for gemini provider", () => {
 			const defaultModel = getDefaultModelId("gemini")
+			expect(defaultModel).toBe("gemini-embedding-001")
+		})
+
+		it("should return gemini-embedding-001 for vertex provider", () => {
+			const defaultModel = getDefaultModelId("vertex")
 			expect(defaultModel).toBe("gemini-embedding-001")
 		})
 

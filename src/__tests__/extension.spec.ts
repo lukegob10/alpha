@@ -1,7 +1,7 @@
 // npx vitest run __tests__/extension.spec.ts
 
 import type * as vscode from "vscode"
-import type { AuthState } from "@roo-code/types"
+import type { AuthState } from "@alpha-code/types"
 
 vi.mock("vscode", () => ({
 	window: {
@@ -61,7 +61,7 @@ const mockCloudServiceInstance = {
 	},
 }
 
-vi.mock("@roo-code/cloud", () => ({
+vi.mock("@alpha-code/cloud", () => ({
 	CloudService: {
 		createInstance: vi.fn(),
 		hasInstance: vi.fn().mockReturnValue(true),
@@ -72,7 +72,7 @@ vi.mock("@roo-code/cloud", () => ({
 	getRooCodeApiUrl: vi.fn().mockReturnValue("https://app.roocode.com"),
 }))
 
-vi.mock("@roo-code/telemetry", () => ({
+vi.mock("@alpha-code/telemetry", () => ({
 	TelemetryService: {
 		createInstance: vi.fn().mockReturnValue({
 			register: vi.fn(),
@@ -273,7 +273,7 @@ describe("extension.ts", () => {
 				getSessionToken: vi.fn().mockReturnValue("test-session-token"),
 			}
 
-			const { CloudService } = await import("@roo-code/cloud")
+			const { CloudService } = await import("@alpha-code/cloud")
 
 			vi.mocked(CloudService.createInstance).mockImplementation(async (_context, _logger, handlers) => {
 				if (handlers?.["auth-state-changed"]) {
@@ -313,7 +313,7 @@ describe("extension.ts", () => {
 
 		test("flushModels is called when auth state changes to logged-out", async () => {
 			const { flushModels } = await import("../api/providers/fetchers/modelCache")
-			const { CloudService } = await import("@roo-code/cloud")
+			const { CloudService } = await import("@alpha-code/cloud")
 
 			vi.mocked(CloudService.createInstance).mockImplementation(async (_context, _logger, handlers) => {
 				if (handlers?.["auth-state-changed"]) {

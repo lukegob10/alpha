@@ -1,7 +1,7 @@
 import * as fs from "fs/promises"
 import * as path from "path"
 
-import type { ScheduledTask, ScheduledTaskRun, ScheduledTaskState } from "@roo-code/types"
+import type { ScheduledTask, ScheduledTaskRun, ScheduledTaskState } from "@alpha-code/types"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { safeWriteJson } from "../../utils/safeWriteJson"

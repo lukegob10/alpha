@@ -8,7 +8,7 @@ vi.mock("execa", () => ({
 	execa: vi.fn(),
 }))
 
-vi.mock("@roo-code/telemetry", () => ({
+vi.mock("@alpha-code/telemetry", () => ({
 	TelemetryService: {
 		instance: {
 			captureTitleButtonClicked: vi.fn(),

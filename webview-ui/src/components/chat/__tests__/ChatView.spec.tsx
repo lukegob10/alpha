@@ -1,4 +1,4 @@
-// pnpm --filter @roo-code/vscode-webview test src/components/chat/__tests__/ChatView.spec.tsx
+// pnpm --filter @alpha-code/vscode-webview test src/components/chat/__tests__/ChatView.spec.tsx
 
 import React from "react"
 import { render, waitFor, act, fireEvent } from "@/utils/test-utils"
@@ -133,16 +133,16 @@ vi.mock("../QueuedMessages", () => ({
 	},
 }))
 
-// Mock RooTips component
-vi.mock("@src/components/welcome/RooTips", () => ({
-	default: function MockRooTips() {
+// Mock AlphaTips component
+vi.mock("@src/components/welcome/AlphaTips", () => ({
+	default: function MockAlphaTips() {
 		return <div data-testid="roo-tips">Tips content</div>
 	},
 }))
 
-// Mock RooHero component
-vi.mock("@src/components/welcome/RooHero", () => ({
-	default: function MockRooHero() {
+// Mock AlphaHero component
+vi.mock("@src/components/welcome/AlphaHero", () => ({
+	default: function MockAlphaHero() {
 		return <div data-testid="roo-hero">Hero content</div>
 	},
 }))
@@ -760,14 +760,14 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 		await waitFor(() => {
 			// Should not show DismissibleUpsell during active task
 			expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
-			// Should not show RooTips either since the entire welcome screen is hidden during active tasks
+			// Should not show AlphaTips either since the entire welcome screen is hidden during active tasks
 			expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
-			// Should not show RooHero either since the entire welcome screen is hidden during active tasks
+			// Should not show AlphaHero either since the entire welcome screen is hidden during active tasks
 			expect(queryByTestId("roo-hero")).not.toBeInTheDocument()
 		})
 	})
 
-	it("shows RooTips when user is authenticated (instead of DismissibleUpsell)", () => {
+	it("shows AlphaTips when user is authenticated (instead of DismissibleUpsell)", () => {
 		const { queryByTestId, getByTestId } = renderChatView()
 
 		// Hydrate state with user authenticated to cloud
@@ -782,12 +782,12 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 			clineMessages: [], // No active task
 		})
 
-		// Should not show DismissibleUpsell but should show RooTips
+		// Should not show DismissibleUpsell but should show AlphaTips
 		expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
 		expect(getByTestId("roo-tips")).toBeInTheDocument()
 	})
 
-	it("shows RooTips when user has fewer than 6 tasks (instead of DismissibleUpsell)", () => {
+	it("shows AlphaTips when user has fewer than 6 tasks (instead of DismissibleUpsell)", () => {
 		const { queryByTestId, getByTestId } = renderChatView()
 
 		// Hydrate state with user not authenticated but fewer than 4 tasks
@@ -801,7 +801,7 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 			clineMessages: [], // No active task
 		})
 
-		// Should not show DismissibleUpsell but should show RooTips
+		// Should not show DismissibleUpsell but should show AlphaTips
 		expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
 		expect(getByTestId("roo-tips")).toBeInTheDocument()
 	})

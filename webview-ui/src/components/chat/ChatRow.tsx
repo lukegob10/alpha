@@ -11,12 +11,12 @@ import type {
 	ClineApiReqInfo,
 	ClineAskUseMcpServer,
 	ClineSayTool,
-} from "@roo-code/types"
+} from "@alpha-code/types"
 
-import { Mode } from "@roo/modes"
+import { Mode } from "@alpha/modes"
 
-import { COMMAND_OUTPUT_STRING } from "@roo/combineCommandSequences"
-import { safeJsonParse } from "@roo/core"
+import { COMMAND_OUTPUT_STRING } from "@alpha/combineCommandSequences"
+import { safeJsonParse } from "@alpha/core"
 
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 import { findMatchingResourceOrTemplate } from "@src/utils/mcp"
@@ -1127,7 +1127,7 @@ export const ChatRowContent = ({
 								// Non-HTTP-status-code error message - store full text as errorDetails
 								body = t("chat:apiRequest.errorMessage.unknown")
 								docsURL =
-									"mailto:support@roocode.com?subject=Unknown API Error&body=[Please include full error details]"
+									"mailto:support@alpha.invalid?subject=Unknown API Error&body=[Please include full error details]"
 							}
 						}
 

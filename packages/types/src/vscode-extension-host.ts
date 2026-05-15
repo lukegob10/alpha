@@ -681,12 +681,15 @@ export interface WebviewMessage {
 	codeIndexSettings?: {
 		// Global state settings
 		codebaseIndexEnabled: boolean
+		codebaseIndexVectorStoreProvider?: "qdrant" | "lancedb"
+		codebaseIndexLocalIndexPath?: string
 		codebaseIndexQdrantUrl: string
 		codebaseIndexEmbedderProvider:
 			| "openai"
 			| "ollama"
 			| "openai-compatible"
 			| "gemini"
+			| "vertex"
 			| "mistral"
 			| "vercel-ai-gateway"
 			| "bedrock"
@@ -697,8 +700,18 @@ export interface WebviewMessage {
 		codebaseIndexOpenAiCompatibleBaseUrl?: string
 		codebaseIndexBedrockRegion?: string
 		codebaseIndexBedrockProfile?: string
+		codebaseIndexVertexProjectId?: string
+		codebaseIndexVertexRegion?: string
+		codebaseIndexVertexKeyFile?: string
+		codebaseIndexVertexGatewayBaseUrl?: string
+		codebaseIndexVertexGatewayCaBundlePath?: string
+		codebaseIndexVertexGatewayHelixCommand?: string
+		codebaseIndexVertexGatewayTokenRefreshMinutes?: number
+		codebaseIndexVertexGatewayModelRoutingMap?: string
 		codebaseIndexSearchMaxResults?: number
 		codebaseIndexSearchMinScore?: number
+		codebaseIndexEmbeddingRateLimitEnabled?: boolean
+		codebaseIndexEmbeddingRateLimitSeconds?: number
 		codebaseIndexOpenRouterSpecificProvider?: string // OpenRouter provider routing
 
 		// Secret settings
@@ -706,6 +719,7 @@ export interface WebviewMessage {
 		codeIndexQdrantApiKey?: string
 		codebaseIndexOpenAiCompatibleApiKey?: string
 		codebaseIndexGeminiApiKey?: string
+		codebaseIndexVertexJsonCredentials?: string
 		codebaseIndexMistralApiKey?: string
 		codebaseIndexVercelAiGatewayApiKey?: string
 		codebaseIndexOpenRouterApiKey?: string

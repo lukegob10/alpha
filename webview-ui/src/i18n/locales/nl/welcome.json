@@ -28,7 +28,7 @@
 		"useAnotherProvider": "Provider van derden",
 		"useAnotherProviderDescription": "Voer een API-sleutel in en begin.",
 		"noApiKeys": "Wil je je niet bezighouden met API-sleutels en aparte accounts?",
-		"backToRoo": "Kies de Alpha Router.",
+		"backToAlpha": "Kies de Alpha Router.",
 		"goBack": "Terug",
 		"finish": "Klaar"
 	},

@@ -1,4 +1,4 @@
-import { RooCodeEventName, TodoItem } from "@roo-code/types"
+import { RooCodeEventName, TodoItem } from "@alpha-code/types"
 
 import { AttemptCompletionToolUse } from "../../../shared/tools"
 
@@ -14,7 +14,7 @@ vi.mock("../../prompts/responses", () => ({
 const { mockCaptureTaskCompleted } = vi.hoisted(() => ({
 	mockCaptureTaskCompleted: vi.fn(),
 }))
-vi.mock("@roo-code/telemetry", () => ({
+vi.mock("@alpha-code/telemetry", () => ({
 	TelemetryService: {
 		instance: {
 			captureTaskCompleted: mockCaptureTaskCompleted,

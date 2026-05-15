@@ -1,9 +1,9 @@
 import * as vscode from "vscode"
 import { Ignore } from "ignore"
 
-import type { EmbedderProvider } from "@roo-code/types"
-import { TelemetryService } from "@roo-code/telemetry"
-import { TelemetryEventName } from "@roo-code/types"
+import type { EmbedderProvider } from "@alpha-code/types"
+import { TelemetryService } from "@alpha-code/telemetry"
+import { TelemetryEventName } from "@alpha-code/types"
 
 import { t } from "../../i18n"
 
@@ -16,16 +16,18 @@ import { OpenAiEmbedder } from "./embedders/openai"
 import { CodeIndexOllamaEmbedder } from "./embedders/ollama"
 import { OpenAICompatibleEmbedder } from "./embedders/openai-compatible"
 import { GeminiEmbedder } from "./embedders/gemini"
+import { VertexGeminiEmbedder } from "./embedders/vertex"
 import { MistralEmbedder } from "./embedders/mistral"
 import { VercelAiGatewayEmbedder } from "./embedders/vercel-ai-gateway"
 import { BedrockEmbedder } from "./embedders/bedrock"
 import { OpenRouterEmbedder } from "./embedders/openrouter"
 import { QdrantVectorStore } from "./vector-store/qdrant-client"
+import { LanceDbVectorStore } from "./vector-store/lancedb-client"
 import { codeParser, DirectoryScanner, FileWatcher } from "./processors"
 import { ICodeParser, IEmbedder, IFileWatcher, IVectorStore } from "./interfaces"
 import { CodeIndexConfigManager } from "./config-manager"
 import { CacheManager } from "./cache-manager"
-import { BATCH_SEGMENT_THRESHOLD } from "./constants"
+import { BATCH_SEGMENT_THRESHOLD, DEFAULT_LOCAL_INDEX_PATH } from "./constants"
 
 /**
  * Factory class responsible for creating and configuring code indexing service dependencies.
@@ -77,6 +79,15 @@ export class CodeIndexServiceFactory {
 				throw new Error(t("embeddings:serviceFactory.geminiConfigMissing"))
 			}
 			return new GeminiEmbedder(config.geminiOptions.apiKey, config.modelId)
+		} else if (provider === "vertex") {
+			if (
+				config.vertexOptions?.apiProvider !== "vertex" ||
+				!(config.vertexOptions.projectId || config.vertexOptions.vertexProjectId) ||
+				!(config.vertexOptions.location || config.vertexOptions.vertexRegion)
+			) {
+				throw new Error(t("embeddings:serviceFactory.vertexConfigMissing"))
+			}
+			return new VertexGeminiEmbedder(config.vertexOptions, config.modelId)
 		} else if (provider === "mistral") {
 			if (!config.mistralOptions?.apiKey) {
 				throw new Error(t("embeddings:serviceFactory.mistralConfigMissing"))
@@ -165,11 +176,20 @@ export class CodeIndexServiceFactory {
 			}
 		}
 
+		const vectorStoreProvider = config.vectorStoreProvider ?? "qdrant"
+
+		if (vectorStoreProvider === "lancedb") {
+			return new LanceDbVectorStore(
+				this.workspacePath,
+				config.localIndexPath || DEFAULT_LOCAL_INDEX_PATH,
+				vectorSize,
+			)
+		}
+
 		if (!config.qdrantUrl) {
 			throw new Error(t("embeddings:serviceFactory.qdrantUrlMissing"))
 		}
 
-		// Assuming constructor is updated: new QdrantVectorStore(workspacePath, url, vectorSize, apiKey?)
 		return new QdrantVectorStore(this.workspacePath, config.qdrantUrl, vectorSize, config.qdrantApiKey)
 	}
 
@@ -182,6 +202,7 @@ export class CodeIndexServiceFactory {
 		parser: ICodeParser,
 		ignoreInstance: Ignore,
 	): DirectoryScanner {
+		const config = this.configManager.getConfig()
 		// Get the configurable batch size from VSCode settings
 		let batchSize: number
 		try {
@@ -192,7 +213,15 @@ export class CodeIndexServiceFactory {
 			// In test environment, vscode.workspace might not be available
 			batchSize = BATCH_SEGMENT_THRESHOLD
 		}
-		return new DirectoryScanner(embedder, vectorStore, parser, this.cacheManager, ignoreInstance, batchSize)
+		return new DirectoryScanner(
+			embedder,
+			vectorStore,
+			parser,
+			this.cacheManager,
+			ignoreInstance,
+			batchSize,
+			config.embeddingRateLimitSeconds,
+		)
 	}
 
 	/**
@@ -206,6 +235,7 @@ export class CodeIndexServiceFactory {
 		ignoreInstance: Ignore,
 		rooIgnoreController?: RooIgnoreController,
 	): IFileWatcher {
+		const config = this.configManager.getConfig()
 		// Get the configurable batch size from VSCode settings
 		let batchSize: number
 		try {
@@ -225,6 +255,7 @@ export class CodeIndexServiceFactory {
 			ignoreInstance,
 			rooIgnoreController,
 			batchSize,
+			config.embeddingRateLimitSeconds,
 		)
 	}
 

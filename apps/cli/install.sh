@@ -3,16 +3,16 @@
 # Usage: curl -fsSL https://raw.githubusercontent.com/AlphaInc/Alpha/main/apps/cli/install.sh | sh
 #
 # Environment variables:
-#   ROO_INSTALL_DIR   - Installation directory (default: ~/.alpha/cli)
-#   ROO_BIN_DIR       - Binary symlink directory (default: ~/.local/bin)
-#   ROO_VERSION       - Specific version to install (default: latest)
-#   ROO_LOCAL_TARBALL - Path to local tarball to install (skips download)
+#   ALPHA_INSTALL_DIR   - Installation directory (default: ~/.alpha/cli)
+#   ALPHA_BIN_DIR       - Binary symlink directory (default: ~/.local/bin)
+#   ALPHA_VERSION       - Specific version to install (default: latest)
+#   ALPHA_LOCAL_TARBALL - Path to local tarball to install (skips download)
 
 set -e
 
 # Configuration
-INSTALL_DIR="${ROO_INSTALL_DIR:-$HOME/.alpha/cli}"
-BIN_DIR="${ROO_BIN_DIR:-$HOME/.local/bin}"
+INSTALL_DIR="${ALPHA_INSTALL_DIR:-$HOME/.alpha/cli}"
+BIN_DIR="${ALPHA_BIN_DIR:-$HOME/.local/bin}"
 REPO="AlphaInc/Alpha"
 MIN_NODE_VERSION=20
 
@@ -47,14 +47,14 @@ Install Node.js:
   - Linux: https://nodejs.org/en/download/package-manager
   - Or use a version manager like fnm, nvm, or mise"
     fi
-    
+
     NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
     if [ "$NODE_VERSION" -lt "$MIN_NODE_VERSION" ]; then
         error "Node.js $MIN_NODE_VERSION+ required. Found: $(node -v)
 
 Please upgrade Node.js to version $MIN_NODE_VERSION or higher."
     fi
-    
+
     info "Found Node.js $(node -v)"
 }
 
@@ -62,22 +62,22 @@ Please upgrade Node.js to version $MIN_NODE_VERSION or higher."
 detect_platform() {
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     ARCH=$(uname -m)
-    
+
     case "$OS" in
         darwin) OS="darwin" ;;
         linux) OS="linux" ;;
-        mingw*|msys*|cygwin*) 
+        mingw*|msys*|cygwin*)
             error "Windows is not supported by this installer. Please use WSL or install manually."
             ;;
         *) error "Unsupported OS: $OS" ;;
     esac
-    
+
     case "$ARCH" in
         x86_64|amd64) ARCH="x64" ;;
         arm64|aarch64) ARCH="arm64" ;;
         *) error "Unsupported architecture: $ARCH" ;;
     esac
-    
+
     PLATFORM="${OS}-${ARCH}"
     info "Detected platform: $PLATFORM"
 }
@@ -85,25 +85,25 @@ detect_platform() {
 # Get latest release version or use specified version
 get_version() {
     # Skip version fetch if using local tarball
-    if [ -n "$ROO_LOCAL_TARBALL" ]; then
-        VERSION="${ROO_VERSION:-local}"
+    if [ -n "$ALPHA_LOCAL_TARBALL" ]; then
+        VERSION="${ALPHA_VERSION:-local}"
         info "Using local tarball (version: $VERSION)"
         return
     fi
-    
-    if [ -n "$ROO_VERSION" ]; then
-        VERSION="$ROO_VERSION"
+
+    if [ -n "$ALPHA_VERSION" ]; then
+        VERSION="$ALPHA_VERSION"
         info "Using specified version: $VERSION"
         return
     fi
-    
+
     info "Fetching latest version..."
-    
+
     # Try to get the latest cli release
     RELEASES_JSON=$(curl -fsSL "https://api.github.com/repos/$REPO/releases" 2>/dev/null) || {
         error "Failed to fetch releases from GitHub. Check your internet connection."
     }
-    
+
     # Extract highest cli-v* tag by semantic version (do not rely on API ordering)
     VERSION=$(printf "%s" "$RELEASES_JSON" | node -e '
 const fs = require("fs")
@@ -158,34 +158,34 @@ if (latestVersion) {
   process.stdout.write(latestVersion)
 }
 ')
-    
+
     if [ -z "$VERSION" ]; then
         error "Could not find any CLI releases. The CLI may not have been released yet."
     fi
-    
+
     info "Latest version: $VERSION"
 }
 
 # Download and extract
 download_and_install() {
-    TARBALL="roo-cli-${PLATFORM}.tar.gz"
-    
+    TARBALL="alpha-cli-${PLATFORM}.tar.gz"
+
     # Create temp directory
     TMP_DIR=$(mktemp -d)
     trap "rm -rf $TMP_DIR" EXIT
-    
+
     # Use local tarball if provided, otherwise download
-    if [ -n "$ROO_LOCAL_TARBALL" ]; then
-        if [ ! -f "$ROO_LOCAL_TARBALL" ]; then
-            error "Local tarball not found: $ROO_LOCAL_TARBALL"
+    if [ -n "$ALPHA_LOCAL_TARBALL" ]; then
+        if [ ! -f "$ALPHA_LOCAL_TARBALL" ]; then
+            error "Local tarball not found: $ALPHA_LOCAL_TARBALL"
         fi
-        info "Using local tarball: $ROO_LOCAL_TARBALL"
-        cp "$ROO_LOCAL_TARBALL" "$TMP_DIR/$TARBALL"
+        info "Using local tarball: $ALPHA_LOCAL_TARBALL"
+        cp "$ALPHA_LOCAL_TARBALL" "$TMP_DIR/$TARBALL"
     else
         URL="https://github.com/$REPO/releases/download/cli-v${VERSION}/${TARBALL}"
-        
+
         info "Downloading from $URL..."
-        
+
         # Download with progress indicator
         HTTP_CODE=$(curl -fsSL -w "%{http_code}" "$URL" -o "$TMP_DIR/$TARBALL" 2>/dev/null) || {
             if [ "$HTTP_CODE" = "404" ]; then
@@ -207,22 +207,22 @@ Available at: https://github.com/$REPO/releases"
         info "Removing previous installation..."
         rm -rf "$INSTALL_DIR"
     fi
-    
+
     mkdir -p "$INSTALL_DIR"
-    
+
     # Extract
     info "Extracting to $INSTALL_DIR..."
     tar -xzf "$TMP_DIR/$TARBALL" -C "$INSTALL_DIR" --strip-components=1 || {
         error "Failed to extract tarball. The download may be corrupted."
     }
-    
+
     # Save ripgrep binary before npm install (npm install will overwrite node_modules)
     RIPGREP_BIN=""
     if [ -f "$INSTALL_DIR/node_modules/@vscode/ripgrep/bin/rg" ]; then
         RIPGREP_BIN="$TMP_DIR/rg"
         cp "$INSTALL_DIR/node_modules/@vscode/ripgrep/bin/rg" "$RIPGREP_BIN"
     fi
-    
+
     # Install npm dependencies
     info "Installing dependencies..."
     cd "$INSTALL_DIR"
@@ -233,17 +233,17 @@ Available at: https://github.com/$REPO/releases"
         }
     }
     cd - > /dev/null
-    
+
     # Restore ripgrep binary after npm install
     if [ -n "$RIPGREP_BIN" ] && [ -f "$RIPGREP_BIN" ]; then
         mkdir -p "$INSTALL_DIR/node_modules/@vscode/ripgrep/bin"
         cp "$RIPGREP_BIN" "$INSTALL_DIR/node_modules/@vscode/ripgrep/bin/rg"
         chmod +x "$INSTALL_DIR/node_modules/@vscode/ripgrep/bin/rg"
     fi
-    
+
     # Make executable
-    chmod +x "$INSTALL_DIR/bin/roo"
-    
+    chmod +x "$INSTALL_DIR/bin/alpha"
+
     # Also make ripgrep executable if it exists
     if [ -f "$INSTALL_DIR/bin/rg" ]; then
         chmod +x "$INSTALL_DIR/bin/rg"
@@ -253,30 +253,30 @@ Available at: https://github.com/$REPO/releases"
 # Create symlink in bin directory
 setup_bin() {
     mkdir -p "$BIN_DIR"
-    
+
     # Remove old symlink if exists
-    if [ -L "$BIN_DIR/roo" ] || [ -f "$BIN_DIR/roo" ]; then
-        rm -f "$BIN_DIR/roo"
+    if [ -L "$BIN_DIR/alpha" ] || [ -f "$BIN_DIR/alpha" ]; then
+        rm -f "$BIN_DIR/alpha"
     fi
-    
-    ln -sf "$INSTALL_DIR/bin/roo" "$BIN_DIR/roo"
-    info "Created symlink: $BIN_DIR/roo"
+
+    ln -sf "$INSTALL_DIR/bin/alpha" "$BIN_DIR/alpha"
+    info "Created symlink: $BIN_DIR/alpha"
 }
 
 # Check if bin dir is in PATH and provide instructions
 check_path() {
     case ":$PATH:" in
-        *":$BIN_DIR:"*) 
+        *":$BIN_DIR:"*)
             # Already in PATH
             return 0
             ;;
     esac
-    
+
     warn "$BIN_DIR is not in your PATH"
     echo ""
     echo "Add this line to your shell profile:"
     echo ""
-    
+
     # Detect shell and provide specific instructions
     SHELL_NAME=$(basename "$SHELL")
     case "$SHELL_NAME" in
@@ -305,10 +305,10 @@ check_path() {
 
 # Verify installation
 verify_install() {
-    if [ -x "$BIN_DIR/roo" ]; then
+    if [ -x "$BIN_DIR/alpha" ]; then
         info "Verifying installation..."
         # Just check if it runs without error
-        "$BIN_DIR/roo" --version >/dev/null 2>&1 || true
+        "$BIN_DIR/alpha" --version >/dev/null 2>&1 || true
     fi
 }
 
@@ -318,15 +318,15 @@ print_success() {
     printf "${GREEN}${BOLD}✓ Alpha CLI installed successfully!${NC}\n"
     echo ""
     echo "  Installation: $INSTALL_DIR"
-    echo "  Binary: $BIN_DIR/roo"
+    echo "  Binary: $BIN_DIR/alpha"
     echo "  Version: $VERSION"
     echo ""
     echo "  ${BOLD}Get started:${NC}"
-    echo "    roo --help"
+    echo "    alpha --help"
     echo ""
     echo "  ${BOLD}Example:${NC}"
     echo "    export OPENROUTER_API_KEY=sk-or-v1-..."
-    echo "    cd ~/my-project && roo \"What is this project?\""
+    echo "    cd ~/my-project && alpha \"What is this project?\""
     echo ""
 }
 
@@ -339,7 +339,7 @@ main() {
     echo "  ╰─────────────────────────────────╯"
     printf "${NC}"
     echo ""
-    
+
     check_node
     detect_platform
     get_version

@@ -101,7 +101,7 @@
 	"about": "Alpha é uma equipe inteira de desenvolvimento de IA em seu editor.",
 	"docs": "Confira nossa <DocsLink>documentação</DocsLink> para saber mais.",
 	"onboarding": "Sua lista de tarefas neste espaço de trabalho está vazia.",
-	"rooTips": {
+	"alphaTips": {
 		"customizableModes": {
 			"title": "Modos personalizáveis",
 			"description": "Personas especializadas que mantêm o foco na tarefa e entregam resultados."

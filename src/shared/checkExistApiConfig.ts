@@ -1,4 +1,4 @@
-import { SECRET_STATE_KEYS, GLOBAL_SECRET_KEYS, ProviderSettings } from "@roo-code/types"
+import { SECRET_STATE_KEYS, GLOBAL_SECRET_KEYS, ProviderSettings } from "@alpha-code/types"
 
 export function checkExistKey(config: ProviderSettings | undefined) {
 	if (!config) {
@@ -19,6 +19,14 @@ export function checkExistKey(config: ProviderSettings | undefined) {
 	const hasOtherConfig = [
 		config.awsRegion,
 		config.vertexProjectId,
+		config.projectId,
+		config.location,
+		config.gatewayBaseUrl,
+		config.pemCaBundlePath,
+		config.helixCommand,
+		config.vertexGatewayBaseUrl,
+		config.vertexGatewayCaBundlePath,
+		config.vertexGatewayHelixCommand,
 		config.ollamaModelId,
 		config.lmStudioModelId,
 		config.vsCodeLmModelSelector,

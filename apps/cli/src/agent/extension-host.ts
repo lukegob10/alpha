@@ -22,9 +22,9 @@ import type {
 	ReasoningEffortExtended,
 	RooCodeSettings,
 	WebviewMessage,
-} from "@roo-code/types"
-import { createVSCodeAPI, IExtensionHost, ExtensionHostEventMap, setRuntimeConfigValues } from "@roo-code/vscode-shim"
-import { DebugLogger, setDebugLogEnabled } from "@roo-code/core/cli"
+} from "@alpha-code/types"
+import { createVSCodeAPI, IExtensionHost, ExtensionHostEventMap, setRuntimeConfigValues } from "@alpha-code/vscode-shim"
+import { DebugLogger, setDebugLogEnabled } from "@alpha-code/core/cli"
 
 import { DEFAULT_FLAGS, type SupportedProvider } from "@/types/index.js"
 import type { User } from "@/lib/sdk/index.js"
@@ -42,7 +42,7 @@ import { AskDispatcher } from "./ask-dispatcher.js"
 const cliLogger = new DebugLogger("CLI")
 
 // Get the CLI package root directory (for finding node_modules/@vscode/ripgrep)
-// When running from a release tarball, ROO_CLI_ROOT is set by the wrapper script.
+// When running from a release tarball, ALPHA_CLI_ROOT is set by the wrapper script.
 // In development, we fall back to finding the CLI package root by walking up to package.json.
 // This works whether running from dist/ (bundled) or src/agent/ (tsx dev).
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -61,7 +61,7 @@ function findCliPackageRoot(): string {
 	return path.resolve(__dirname, "..")
 }
 
-const CLI_PACKAGE_ROOT = process.env.ROO_CLI_ROOT || findCliPackageRoot()
+const CLI_PACKAGE_ROOT = process.env.ALPHA_CLI_ROOT || findCliPackageRoot()
 
 export interface ExtensionHostOptions {
 	mode: string

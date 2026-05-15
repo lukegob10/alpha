@@ -12,8 +12,8 @@ import path from "path"
 import * as fs from "fs/promises"
 import { isBinaryFile } from "isbinaryfile"
 
-import type { ReadFileParams, ReadFileMode, ReadFileToolParams, FileEntry, LineRange } from "@roo-code/types"
-import { isLegacyReadFileParams, type ClineSayTool } from "@roo-code/types"
+import type { ReadFileParams, ReadFileMode, ReadFileToolParams, FileEntry, LineRange } from "@alpha-code/types"
+import { isLegacyReadFileParams, type ClineSayTool } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
@@ -292,7 +292,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				output = `IMPORTANT: File content truncated.
 	Status: Showing lines ${start}-${end} of ${result.totalLines} total lines.
 	To read more: Use the read_file tool with offset=${nextOffset} and limit=${effectiveLimit}.
-	
+
 	${result.content}`
 			} else if (result.includedRanges.length > 0) {
 				const rangeStr = result.includedRanges.map(([s, e]) => `${s}-${e}`).join(", ")
@@ -320,7 +320,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 			output = `IMPORTANT: File content truncated.
 	Status: Showing lines ${startLine}-${endLine} of ${result.totalLines} total lines.
 	To read more: Use the read_file tool with offset=${nextOffset} and limit=${limit}.
-	
+
 	${result.content}`
 		} else if (result.returnedLines === 0) {
 			output = "Note: File is empty"

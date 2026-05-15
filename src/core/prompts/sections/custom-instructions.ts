@@ -3,13 +3,12 @@ import path from "path"
 import * as os from "os"
 import { Dirent } from "fs"
 
-import { isLanguage } from "@roo-code/types"
+import { isLanguage } from "@alpha-code/types"
 
 import type { SystemPromptSettings } from "../types"
 
 import { LANGUAGES } from "../../../shared/language"
 import {
-	getRooDirectoriesForCwd,
 	getAllRooDirectoriesForCwd,
 	getAgentsDirectoriesForCwd,
 	getGlobalRooDirectory,
@@ -196,6 +195,28 @@ function formatDirectoryContent(files: Array<{ filename: string; content: string
 		.join("\n\n")
 }
 
+function getAlphaDirectoriesForCwd(cwd: string): string[] {
+	return [path.join(os.homedir(), ".alpha"), path.join(cwd, ".alpha")]
+}
+
+async function getRuleDirectoriesForCwd(cwd: string, enableSubfolderRules: boolean): Promise<string[]> {
+	const alphaDirectories = getAlphaDirectoriesForCwd(cwd)
+
+	if (!enableSubfolderRules) {
+		return alphaDirectories
+	}
+
+	const legacyDirectories = await getAllRooDirectoriesForCwd(cwd)
+	const alphaSubfolders = legacyDirectories
+		.map((dir) => {
+			const parent = path.dirname(dir)
+			return path.join(parent, ".alpha")
+		})
+		.filter((dir) => !alphaDirectories.includes(dir))
+
+	return [...alphaDirectories, ...alphaSubfolders]
+}
+
 /**
  * Load rule files from global, project-local, and optionally subfolder directories
  * Rules are loaded in order: global first, then project-local, then subfolders (alphabetically)
@@ -206,11 +227,14 @@ function formatDirectoryContent(files: Array<{ filename: string; content: string
 export async function loadRuleFiles(cwd: string, enableSubfolderRules: boolean = false): Promise<string> {
 	const rules: string[] = []
 	// Use recursive discovery only if enableSubfolderRules is true
-	const rooDirectories = enableSubfolderRules ? await getAllRooDirectoriesForCwd(cwd) : getRooDirectoriesForCwd(cwd)
+	const alphaDirectories = await getRuleDirectoriesForCwd(cwd, enableSubfolderRules)
+	const legacyDirectories = enableSubfolderRules
+		? await getAllRooDirectoriesForCwd(cwd)
+		: [getGlobalRooDirectory(), path.join(cwd, ".roo")]
 
 	// Check for .alpha/rules/ directories in order (global, project-local, and optionally subfolders)
-	for (const rooDir of rooDirectories) {
-		const rulesDir = path.join(rooDir, "rules")
+	for (const alphaDir of alphaDirectories) {
+		const rulesDir = path.join(alphaDir, "rules")
 		if (await directoryExists(rulesDir)) {
 			const files = await readTextFilesFromDirectory(rulesDir)
 			if (files.length > 0) {
@@ -222,11 +246,26 @@ export async function loadRuleFiles(cwd: string, enableSubfolderRules: boolean =
 
 	// If we found rules in .alpha/rules/ directories, return them
 	if (rules.length > 0) {
-		return "\n# Rules from .roo directories:\n\n" + rules.join("\n\n")
+		return "\n# Rules from .alpha directories:\n\n" + rules.join("\n\n")
 	}
 
-	// Fall back to existing behavior for legacy .alpharules/.alpharules files
-	const ruleFiles = [".alpharules", ".alpharules"]
+	for (const legacyDir of legacyDirectories) {
+		const rulesDir = path.join(legacyDir, "rules")
+		if (await directoryExists(rulesDir)) {
+			const files = await readTextFilesFromDirectory(rulesDir)
+			if (files.length > 0) {
+				const content = formatDirectoryContent(files, cwd)
+				rules.push(content)
+			}
+		}
+	}
+
+	if (rules.length > 0) {
+		return "\n# Rules from legacy .roo directories:\n\n" + rules.join("\n\n")
+	}
+
+	// Fall back to existing behavior for legacy .alpharules/.clinerules files.
+	const ruleFiles = [".alpharules", ".clinerules"]
 
 	for (const file of ruleFiles) {
 		const content = await safeReadFile(path.join(cwd, file))
@@ -402,13 +441,14 @@ export async function addCustomInstructions(
 	if (mode) {
 		const modeRules: string[] = []
 		// Use recursive discovery only if enableSubfolderRules is true
-		const rooDirectories = enableSubfolderRules
+		const alphaDirectories = await getRuleDirectoriesForCwd(cwd, enableSubfolderRules)
+		const legacyDirectories = enableSubfolderRules
 			? await getAllRooDirectoriesForCwd(cwd)
-			: getRooDirectoriesForCwd(cwd)
+			: [getGlobalRooDirectory(), path.join(cwd, ".roo")]
 
 		// Check for .alpha/rules-${mode}/ directories in order (global, project-local, and optionally subfolders)
-		for (const rooDir of rooDirectories) {
-			const modeRulesDir = path.join(rooDir, `rules-${mode}`)
+		for (const alphaDir of alphaDirectories) {
+			const modeRulesDir = path.join(alphaDir, `rules-${mode}`)
 			if (await directoryExists(modeRulesDir)) {
 				const files = await readTextFilesFromDirectory(modeRulesDir)
 				if (files.length > 0) {
@@ -423,13 +463,28 @@ export async function addCustomInstructions(
 			modeRuleContent = "\n" + modeRules.join("\n\n")
 			usedRuleFile = `rules-${mode} directories`
 		} else {
+			for (const legacyDir of legacyDirectories) {
+				const modeRulesDir = path.join(legacyDir, `rules-${mode}`)
+				if (await directoryExists(modeRulesDir)) {
+					const files = await readTextFilesFromDirectory(modeRulesDir)
+					if (files.length > 0) {
+						modeRules.push(formatDirectoryContent(files, cwd))
+					}
+				}
+			}
+		}
+
+		if (!modeRuleContent && modeRules.length > 0) {
+			modeRuleContent = "\n" + modeRules.join("\n\n")
+			usedRuleFile = `legacy rules-${mode} directories`
+		} else if (!modeRuleContent) {
 			// Fall back to existing behavior for legacy files
 			const rooModeRuleFile = `.alpharules-${mode}`
 			modeRuleContent = await safeReadFile(path.join(cwd, rooModeRuleFile))
 			if (modeRuleContent) {
 				usedRuleFile = rooModeRuleFile
 			} else {
-				const clineModeRuleFile = `.alpharules-${mode}`
+				const clineModeRuleFile = `.clinerules-${mode}`
 				modeRuleContent = await safeReadFile(path.join(cwd, clineModeRuleFile))
 				if (modeRuleContent) {
 					usedRuleFile = clineModeRuleFile

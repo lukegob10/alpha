@@ -21,10 +21,10 @@ import {
 	ExperimentId,
 	checkoutDiffPayloadSchema,
 	checkoutRestorePayloadSchema,
-} from "@roo-code/types"
-import { customToolRegistry } from "@roo-code/core"
-import { CloudService } from "@roo-code/cloud"
-import { TelemetryService } from "@roo-code/telemetry"
+} from "@alpha-code/types"
+import { customToolRegistry } from "@alpha-code/core"
+import { CloudService } from "@alpha-code/cloud"
+import { TelemetryService } from "@alpha-code/telemetry"
 
 import { type ApiMessage } from "../task-persistence/apiMessages"
 import { saveTaskMessages } from "../task-persistence"
@@ -2578,6 +2578,8 @@ export const webviewMessageHandler = async (
 				const globalStateConfig = {
 					...currentConfig,
 					codebaseIndexEnabled: settings.codebaseIndexEnabled,
+					codebaseIndexVectorStoreProvider: settings.codebaseIndexVectorStoreProvider,
+					codebaseIndexLocalIndexPath: settings.codebaseIndexLocalIndexPath,
 					codebaseIndexQdrantUrl: settings.codebaseIndexQdrantUrl,
 					codebaseIndexEmbedderProvider: settings.codebaseIndexEmbedderProvider,
 					codebaseIndexEmbedderBaseUrl: settings.codebaseIndexEmbedderBaseUrl,
@@ -2586,8 +2588,19 @@ export const webviewMessageHandler = async (
 					codebaseIndexOpenAiCompatibleBaseUrl: settings.codebaseIndexOpenAiCompatibleBaseUrl,
 					codebaseIndexBedrockRegion: settings.codebaseIndexBedrockRegion,
 					codebaseIndexBedrockProfile: settings.codebaseIndexBedrockProfile,
+					codebaseIndexVertexProjectId: settings.codebaseIndexVertexProjectId,
+					codebaseIndexVertexRegion: settings.codebaseIndexVertexRegion,
+					codebaseIndexVertexKeyFile: settings.codebaseIndexVertexKeyFile,
+					codebaseIndexVertexGatewayBaseUrl: settings.codebaseIndexVertexGatewayBaseUrl,
+					codebaseIndexVertexGatewayCaBundlePath: settings.codebaseIndexVertexGatewayCaBundlePath,
+					codebaseIndexVertexGatewayHelixCommand: settings.codebaseIndexVertexGatewayHelixCommand,
+					codebaseIndexVertexGatewayTokenRefreshMinutes:
+						settings.codebaseIndexVertexGatewayTokenRefreshMinutes,
+					codebaseIndexVertexGatewayModelRoutingMap: settings.codebaseIndexVertexGatewayModelRoutingMap,
 					codebaseIndexSearchMaxResults: settings.codebaseIndexSearchMaxResults,
 					codebaseIndexSearchMinScore: settings.codebaseIndexSearchMinScore,
+					codebaseIndexEmbeddingRateLimitEnabled: settings.codebaseIndexEmbeddingRateLimitEnabled,
+					codebaseIndexEmbeddingRateLimitSeconds: settings.codebaseIndexEmbeddingRateLimitSeconds,
 					codebaseIndexOpenRouterSpecificProvider: settings.codebaseIndexOpenRouterSpecificProvider,
 				}
 
@@ -2611,6 +2624,12 @@ export const webviewMessageHandler = async (
 					await provider.contextProxy.storeSecret(
 						"codebaseIndexGeminiApiKey",
 						settings.codebaseIndexGeminiApiKey,
+					)
+				}
+				if (settings.codebaseIndexVertexJsonCredentials !== undefined) {
+					await provider.contextProxy.storeSecret(
+						"codebaseIndexVertexJsonCredentials",
+						settings.codebaseIndexVertexJsonCredentials,
 					)
 				}
 				if (settings.codebaseIndexMistralApiKey !== undefined) {
@@ -2733,7 +2752,7 @@ export const webviewMessageHandler = async (
 						processedItems: 0,
 						totalItems: 0,
 						currentItemUnit: "items",
-						workerspacePath: undefined,
+						workspacePath: undefined,
 					},
 				})
 				return
@@ -2764,6 +2783,9 @@ export const webviewMessageHandler = async (
 				"codebaseIndexOpenAiCompatibleApiKey",
 			))
 			const hasGeminiApiKey = !!(await provider.context.secrets.get("codebaseIndexGeminiApiKey"))
+			const hasVertexJsonCredentials = !!(await provider.context.secrets.get(
+				"codebaseIndexVertexJsonCredentials",
+			))
 			const hasMistralApiKey = !!(await provider.context.secrets.get("codebaseIndexMistralApiKey"))
 			const hasVercelAiGatewayApiKey = !!(await provider.context.secrets.get(
 				"codebaseIndexVercelAiGatewayApiKey",
@@ -2777,6 +2799,7 @@ export const webviewMessageHandler = async (
 					hasQdrantApiKey,
 					hasOpenAiCompatibleApiKey,
 					hasGeminiApiKey,
+					hasVertexJsonCredentials,
 					hasMistralApiKey,
 					hasVercelAiGatewayApiKey,
 					hasOpenRouterApiKey,

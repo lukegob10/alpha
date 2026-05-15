@@ -7,7 +7,7 @@ import type {
 	ScheduledTaskExecution,
 	ScheduledTaskNotificationPreference,
 	ScheduledTaskSchedule,
-} from "@roo-code/types"
+} from "@alpha-code/types"
 import { getAllModes } from "@roo/modes"
 
 import { useExtensionState } from "@/context/ExtensionStateContext"

@@ -12,6 +12,10 @@ export const CODEBASE_INDEX_DEFAULTS = {
 	MAX_SEARCH_SCORE: 1,
 	DEFAULT_SEARCH_MIN_SCORE: 0.4,
 	SEARCH_SCORE_STEP: 0.05,
+	MIN_EMBEDDING_RATE_LIMIT_SECONDS: 0.1,
+	MAX_EMBEDDING_RATE_LIMIT_SECONDS: 60,
+	DEFAULT_EMBEDDING_RATE_LIMIT_SECONDS: 1,
+	EMBEDDING_RATE_LIMIT_STEP: 0.1,
 } as const
 
 /**
@@ -20,6 +24,8 @@ export const CODEBASE_INDEX_DEFAULTS = {
 
 export const codebaseIndexConfigSchema = z.object({
 	codebaseIndexEnabled: z.boolean().optional(),
+	codebaseIndexVectorStoreProvider: z.enum(["qdrant", "lancedb"]).optional(),
+	codebaseIndexLocalIndexPath: z.string().optional(),
 	codebaseIndexQdrantUrl: z.string().optional(),
 	codebaseIndexEmbedderProvider: z
 		.enum([
@@ -27,6 +33,7 @@ export const codebaseIndexConfigSchema = z.object({
 			"ollama",
 			"openai-compatible",
 			"gemini",
+			"vertex",
 			"mistral",
 			"vercel-ai-gateway",
 			"bedrock",
@@ -42,12 +49,27 @@ export const codebaseIndexConfigSchema = z.object({
 		.min(CODEBASE_INDEX_DEFAULTS.MIN_SEARCH_RESULTS)
 		.max(CODEBASE_INDEX_DEFAULTS.MAX_SEARCH_RESULTS)
 		.optional(),
+	codebaseIndexEmbeddingRateLimitEnabled: z.boolean().optional(),
+	codebaseIndexEmbeddingRateLimitSeconds: z
+		.number()
+		.min(CODEBASE_INDEX_DEFAULTS.MIN_EMBEDDING_RATE_LIMIT_SECONDS)
+		.max(CODEBASE_INDEX_DEFAULTS.MAX_EMBEDDING_RATE_LIMIT_SECONDS)
+		.optional(),
 	// OpenAI Compatible specific fields
 	codebaseIndexOpenAiCompatibleBaseUrl: z.string().optional(),
 	codebaseIndexOpenAiCompatibleModelDimension: z.number().optional(),
 	// Bedrock specific fields
 	codebaseIndexBedrockRegion: z.string().optional(),
 	codebaseIndexBedrockProfile: z.string().optional(),
+	// Vertex specific fields
+	codebaseIndexVertexProjectId: z.string().optional(),
+	codebaseIndexVertexRegion: z.string().optional(),
+	codebaseIndexVertexKeyFile: z.string().optional(),
+	codebaseIndexVertexGatewayBaseUrl: z.string().optional(),
+	codebaseIndexVertexGatewayCaBundlePath: z.string().optional(),
+	codebaseIndexVertexGatewayHelixCommand: z.string().optional(),
+	codebaseIndexVertexGatewayTokenRefreshMinutes: z.number().int().positive().optional(),
+	codebaseIndexVertexGatewayModelRoutingMap: z.string().optional(),
 	// OpenRouter specific fields
 	codebaseIndexOpenRouterSpecificProvider: z.string().optional(),
 })
@@ -63,6 +85,7 @@ export const codebaseIndexModelsSchema = z.object({
 	ollama: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
 	"openai-compatible": z.record(z.string(), z.object({ dimension: z.number() })).optional(),
 	gemini: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
+	vertex: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
 	mistral: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
 	"vercel-ai-gateway": z.record(z.string(), z.object({ dimension: z.number() })).optional(),
 	openrouter: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
@@ -82,6 +105,7 @@ export const codebaseIndexProviderSchema = z.object({
 	codebaseIndexOpenAiCompatibleApiKey: z.string().optional(),
 	codebaseIndexOpenAiCompatibleModelDimension: z.number().optional(),
 	codebaseIndexGeminiApiKey: z.string().optional(),
+	codebaseIndexVertexJsonCredentials: z.string().optional(),
 	codebaseIndexMistralApiKey: z.string().optional(),
 	codebaseIndexVercelAiGatewayApiKey: z.string().optional(),
 	codebaseIndexOpenRouterApiKey: z.string().optional(),

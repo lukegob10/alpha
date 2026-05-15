@@ -28,7 +28,7 @@
 		"useAnotherProvider": "Penyedia Pihak Ketiga",
 		"useAnotherProviderDescription": "Masukkan kunci API dan mulai.",
 		"noApiKeys": "Tidak ingin berurusan dengan kunci API dan akun terpisah?",
-		"backToRoo": "Pilih Penyedia Alpha Cloud.",
+		"backToAlpha": "Pilih Penyedia Alpha Cloud.",
 		"goBack": "Kembali",
 		"finish": "Selesai"
 	},

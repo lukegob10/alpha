@@ -1,4 +1,4 @@
-import type { ScheduledTaskSchedule } from "@roo-code/types"
+import type { ScheduledTaskSchedule } from "@alpha-code/types"
 
 import { getNextRunAt } from "../schedule"
 

@@ -19,14 +19,14 @@ import {
 	RouterModels,
 	ORGANIZATION_ALLOW_ALL,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
-} from "@roo-code/types"
+} from "@alpha-code/types"
 
-import { findLastIndex } from "@roo/array"
+import { findLastIndex } from "@alpha/array"
 
-import { checkExistKey } from "@roo/checkExistApiConfig"
-import { Mode, defaultModeSlug, defaultPrompts } from "@roo/modes"
-import { CustomSupportPrompts } from "@roo/support-prompt"
-import { experimentDefault } from "@roo/experiments"
+import { checkExistKey } from "@alpha/checkExistApiConfig"
+import { Mode, defaultModeSlug, defaultPrompts } from "@alpha/modes"
+import { CustomSupportPrompts } from "@alpha/support-prompt"
+import { experimentDefault } from "@alpha/experiments"
 
 import { vscode } from "@src/utils/vscode"
 import { convertTextMateToHljs } from "@src/utils/textMateToHljs"
@@ -253,14 +253,24 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		profileThresholds: {},
 		codebaseIndexConfig: {
 			codebaseIndexEnabled: true,
+			codebaseIndexVectorStoreProvider: "lancedb",
+			codebaseIndexLocalIndexPath: ".alpha/code-index/lancedb",
 			codebaseIndexQdrantUrl: "http://localhost:6333",
 			codebaseIndexEmbedderProvider: "openai",
 			codebaseIndexEmbedderBaseUrl: "",
 			codebaseIndexEmbedderModelId: "",
 			codebaseIndexSearchMaxResults: undefined,
 			codebaseIndexSearchMinScore: undefined,
+			codebaseIndexVertexProjectId: "",
+			codebaseIndexVertexRegion: "",
+			codebaseIndexVertexKeyFile: "",
+			codebaseIndexVertexGatewayBaseUrl: "",
+			codebaseIndexVertexGatewayCaBundlePath: "",
+			codebaseIndexVertexGatewayHelixCommand: "",
+			codebaseIndexVertexGatewayTokenRefreshMinutes: undefined,
+			codebaseIndexVertexGatewayModelRoutingMap: "",
 		},
-		codebaseIndexModels: { ollama: {}, openai: {} },
+		codebaseIndexModels: { ollama: {}, openai: {}, vertex: {} },
 		includeDiagnosticMessages: true,
 		maxDiagnosticMessages: 50,
 		openRouterImageApiKey: "",

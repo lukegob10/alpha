@@ -12,7 +12,7 @@ Starts a new task with optional configuration and initial message.
 
 **Parameters:**
 
-- `configuration`: RooCode settings object
+- `configuration`: Alpha settings object
 - `text`: Initial task message (string)
 - `images`: Array of image data URIs (optional)
 - `newTab`: Whether to open in a new tab (boolean, optional)
@@ -49,7 +49,7 @@ Resumes a task from history.
 ## Usage Example
 
 ```typescript
-import { IpcClient } from "@roo-code/ipc"
+import { IpcClient } from "@alpha-code/ipc"
 
 const client = new IpcClient("/path/to/socket")
 
@@ -64,7 +64,7 @@ client.sendCommand({
 	commandName: "StartNewTask",
 	data: {
 		configuration: {
-			/* RooCode settings */
+			/* Alpha settings */
 		},
 		text: "Hello, world!",
 		images: [],
@@ -86,5 +86,5 @@ The IPC interface also emits task events that clients can listen to:
 
 The socket path is typically located in the system's temporary directory and follows the pattern:
 
-- Unix/Linux/macOS: `/tmp/roo-code-{id}.sock`
-- Windows: `\\.\pipe\roo-code-{id}`
+- Unix/Linux/macOS: `/tmp/alpha-code-{id}.sock`
+- Windows: `\\.\pipe\alpha-code-{id}`

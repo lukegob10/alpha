@@ -46,7 +46,7 @@ const main = async () => {
 
 if (!fs.existsSync(EVALS_REPO_PATH)) {
 	console.error(
-		`Exercises do not exist at ${EVALS_REPO_PATH}. Please run "git clone https://github.com/RooCodeInc/Alpha-Evals.git evals".`,
+		`Exercises do not exist at ${EVALS_REPO_PATH}. Please run "git clone https://github.com/AlphaInc/Alpha-Evals.git evals".`,
 	)
 
 	process.exit(1)
