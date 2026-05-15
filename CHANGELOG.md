@@ -4,6 +4,7 @@
 
 ### Patch Changes
 
+- [codex] Fix orchestration delegation recovery loops
 - Add scheduled task agents
 
 ## 1.0.4

@@ -574,11 +574,23 @@ export async function presentAssistantMessage(cline: Task) {
 					)
 
 				if (hasMixedNewTaskBatch) {
-					pushToolResult(
-						formatResponse.toolError(
-							"new_task must be called by itself in a message turn. Do not batch it with any other tool; retry by calling only new_task after any required setup is complete.",
-						),
+					const isolationError = formatResponse.toolError(
+						"new_task must be called by itself in a message turn. No tools from this turn were executed. Retry by calling only new_task after any required setup is complete.",
 					)
+
+					for (const toolBlock of toolBlocks) {
+						if ("id" in toolBlock && toolBlock.id) {
+							cline.pushToolResultToUserContent({
+								type: "tool_result",
+								tool_use_id: toolBlock.id,
+								content: isolationError,
+								is_error: true,
+							})
+						}
+					}
+
+					cline.currentStreamingContentIndex = cline.assistantMessageContent.length
+					cline.userMessageContentReady = true
 					break
 				}
 			}
