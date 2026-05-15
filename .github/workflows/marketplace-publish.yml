@@ -1,131 +1,131 @@
 name: Publish Extension
 
 on:
-    pull_request:
-        types: [closed]
-    workflow_dispatch:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
 
 env:
-    GIT_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'main' }}
+  GIT_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'main' }}
 
 jobs:
-    publish-extension:
-        runs-on: windows-latest
-        permissions:
-            contents: write # Required for pushing tags.
-        if: >
-            ( github.event_name == 'pull_request' &&
-            github.event.pull_request.merged == true &&
-            github.event.pull_request.base.ref == 'main' &&
-            contains(github.event.pull_request.title, 'Changeset version bump') ) ||
-            github.event_name == 'workflow_dispatch'
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
-              with:
-                  ref: ${{ env.GIT_REF }}
-            - name: Setup Node.js and pnpm
-              uses: ./.github/actions/setup-node-pnpm
-            - name: Configure Git
-              shell: bash
-              run: |
-                  git config user.name "github-actions[bot]"
-                  git config user.email "github-actions[bot]@users.noreply.github.com"
-            - name: Create .env file
-              shell: bash
-              run: echo "POSTHOG_API_KEY=${{ secrets.POSTHOG_API_KEY }}" >> .env
-            - name: Build workspace types
-              shell: bash
-              run: pnpm --filter @alpha-code/types build
-            - name: Package Extension
-              shell: bash
-              run: |
-                  current_package_version=$(node -p "require('./src/package.json').version")
-                  pnpm vsix
+  publish-extension:
+    runs-on: windows-latest
+    permissions:
+      contents: write # Required for pushing tags.
+    if: >
+        ( github.event_name == 'pull_request' &&
+        github.event.pull_request.merged == true &&
+        github.event.pull_request.base.ref == 'main' &&
+        contains(github.event.pull_request.title, 'Changeset version bump') ) ||
+        github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.GIT_REF }}
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+      - name: Configure Git
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Create .env file
+        shell: bash
+        run: echo "POSTHOG_API_KEY=${{ secrets.POSTHOG_API_KEY }}" >> .env
+      - name: Build workspace types
+        shell: bash
+        run: pnpm --filter @alpha-code/types build
+      - name: Package Extension
+        shell: bash
+        run: |
+          current_package_version=$(node -p "require('./src/package.json').version")
+          pnpm vsix
 
-                  # Save VSIX contents to a temporary file to avoid broken pipe issues.
-                  unzip -l bin/alpha-${current_package_version}.vsix > /tmp/alpha-code-vsix-contents.txt
+          # Save VSIX contents to a temporary file to avoid broken pipe issues.
+          unzip -l bin/alpha-${current_package_version}.vsix > /tmp/alpha-code-vsix-contents.txt
 
-                  # Check for required files.
-                  grep -q "extension/package.json" /tmp/alpha-code-vsix-contents.txt || exit 1
-                  grep -q "extension/package.nls.json" /tmp/alpha-code-vsix-contents.txt || exit 1
-                  grep -q "extension/dist/extension.js" /tmp/alpha-code-vsix-contents.txt || exit 1
-                  grep -q "extension/webview-ui/audio/celebration.wav" /tmp/alpha-code-vsix-contents.txt || exit 1
-                  grep -q "extension/webview-ui/build/assets/index.js" /tmp/alpha-code-vsix-contents.txt || exit 1
-                  grep -q "extension/assets/codicons/codicon.ttf" /tmp/alpha-code-vsix-contents.txt || exit 1
-                  grep -q "extension/assets/vscode-material-icons/icons/3d.svg" /tmp/alpha-code-vsix-contents.txt || exit 1
-                  grep -q ".env" /tmp/alpha-code-vsix-contents.txt || exit 1
+          # Check for required files.
+          grep -q "extension/package.json" /tmp/alpha-code-vsix-contents.txt || exit 1
+          grep -q "extension/package.nls.json" /tmp/alpha-code-vsix-contents.txt || exit 1
+          grep -q "extension/dist/extension.js" /tmp/alpha-code-vsix-contents.txt || exit 1
+          grep -q "extension/webview-ui/audio/celebration.wav" /tmp/alpha-code-vsix-contents.txt || exit 1
+          grep -q "extension/webview-ui/build/assets/index.js" /tmp/alpha-code-vsix-contents.txt || exit 1
+          grep -q "extension/assets/codicons/codicon.ttf" /tmp/alpha-code-vsix-contents.txt || exit 1
+          grep -q "extension/assets/vscode-material-icons/icons/3d.svg" /tmp/alpha-code-vsix-contents.txt || exit 1
+          grep -q ".env" /tmp/alpha-code-vsix-contents.txt || exit 1
 
-                  # Clean up temporary file.
-                  rm /tmp/alpha-code-vsix-contents.txt
-            - name: Create and Push Git Tag
-              shell: bash
-              run: |
-                  current_package_version=$(node -p "require('./src/package.json').version")
-                  tag_name="v${current_package_version}"
+          # Clean up temporary file.
+          rm /tmp/alpha-code-vsix-contents.txt
+      - name: Create and Push Git Tag
+        shell: bash
+        run: |
+          current_package_version=$(node -p "require('./src/package.json').version")
+          tag_name="v${current_package_version}"
 
-                  if git ls-remote --exit-code --tags origin "refs/tags/${tag_name}" > /dev/null 2>&1; then
-                    echo "Tag ${tag_name} already exists"
-                  else
-                    git tag -a "${tag_name}" -m "Release ${tag_name}"
-                    git push origin "${tag_name}" --no-verify
-                    echo "Successfully created and pushed git tag ${tag_name}"
-                  fi
-            - name: Check marketplace credentials
-              id: marketplace-credentials
-              env:
-                  VSCE_PAT: ${{ secrets.VSCE_PAT }}
-                  OVSX_PAT: ${{ secrets.OVSX_PAT }}
-              shell: bash
-              run: |
-                  if [[ -n "$VSCE_PAT" && -n "$OVSX_PAT" ]]; then
-                    echo "has_credentials=true" >> "$GITHUB_OUTPUT"
-                  else
-                    echo "Marketplace credentials are not configured; skipping marketplace publish."
-                    echo "has_credentials=false" >> "$GITHUB_OUTPUT"
-                  fi
-            - name: Publish Extension
-              if: steps.marketplace-credentials.outputs.has_credentials == 'true'
-              env:
-                  VSCE_PAT: ${{ secrets.VSCE_PAT }}
-                  OVSX_PAT: ${{ secrets.OVSX_PAT }}
-              shell: bash
-              run: |
-                  current_package_version=$(node -p "require('./src/package.json').version")
-                  pnpm --filter alpha publish:marketplace
-                  echo "Successfully published version $current_package_version to VS Code Marketplace"
-            - name: Create GitHub Release
-              env:
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              shell: bash
-              run: |
-                  current_package_version=$(node -p "require('./src/package.json').version")
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag_name}" > /dev/null 2>&1; then
+            echo "Tag ${tag_name} already exists"
+          else
+            git tag -a "${tag_name}" -m "Release ${tag_name}"
+            git push origin "${tag_name}" --no-verify
+            echo "Successfully created and pushed git tag ${tag_name}"
+          fi
+      - name: Check marketplace credentials
+        id: marketplace-credentials
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        shell: bash
+        run: |
+          if [[ -n "$VSCE_PAT" && -n "$OVSX_PAT" ]]; then
+            echo "has_credentials=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Marketplace credentials are not configured; skipping marketplace publish."
+            echo "has_credentials=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish Extension
+        if: steps.marketplace-credentials.outputs.has_credentials == 'true'
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        shell: bash
+        run: |
+          current_package_version=$(node -p "require('./src/package.json').version")
+          pnpm --filter alpha publish:marketplace
+          echo "Successfully published version $current_package_version to VS Code Marketplace"
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          current_package_version=$(node -p "require('./src/package.json').version")
 
-                  # Extract changelog for current version
-                  echo "Extracting changelog for version ${current_package_version}"
-                  changelog_content=$(sed -n "/## \\[${current_package_version}\\]/,/## \\[/p" CHANGELOG.md | sed '$d')
+          # Extract changelog for current version
+          echo "Extracting changelog for version ${current_package_version}"
+          changelog_content=$(sed -n "/## \\[${current_package_version}\\]/,/## \\[/p" CHANGELOG.md | sed '$d')
 
-                  # If changelog extraction failed, use a default message
-                  if [ -z "$changelog_content" ]; then
-                    echo "Warning: No changelog section found for version ${current_package_version}"
-                    changelog_content="Release v${current_package_version}"
-                  else
-                    echo "Found changelog section for version ${current_package_version}"
-                  fi
+          # If changelog extraction failed, use a default message
+          if [ -z "$changelog_content" ]; then
+            echo "Warning: No changelog section found for version ${current_package_version}"
+            changelog_content="Release v${current_package_version}"
+          else
+            echo "Found changelog section for version ${current_package_version}"
+          fi
 
-                  # Create release with changelog content
-                  tag_name="v${current_package_version}"
-                  vsix_path="bin/alpha-${current_package_version}.vsix"
+          # Create release with changelog content
+          tag_name="v${current_package_version}"
+          vsix_path="bin/alpha-${current_package_version}.vsix"
 
-                  if gh release view "$tag_name" > /dev/null 2>&1; then
-                    echo "GitHub Release ${tag_name} already exists; updating VSIX asset"
-                    gh release upload "$tag_name" "$vsix_path" --clobber
-                  else
-                    gh release create "$tag_name" \
-                      --title "Release ${tag_name}" \
-                      --notes "$changelog_content" \
-                      --target ${{ env.GIT_REF }} \
-                      "$vsix_path"
-                  fi
+          if gh release view "$tag_name" > /dev/null 2>&1; then
+            echo "GitHub Release ${tag_name} already exists; updating VSIX asset"
+            gh release upload "$tag_name" "$vsix_path" --clobber
+          else
+            gh release create "$tag_name" \
+              --title "Release ${tag_name}" \
+              --notes "$changelog_content" \
+              --target ${{ env.GIT_REF }} \
+              "$vsix_path"
+          fi
 
-                  echo "Successfully published GitHub Release ${tag_name}"
+          echo "Successfully published GitHub Release ${tag_name}"
