@@ -2,56 +2,51 @@
  * Tests for new_task tool isolation enforcement.
  *
  * These tests verify the runtime enforcement that prevents tools from executing
- * after `new_task` in parallel tool calls. When `new_task` is called alongside
- * other tools, any tools that come after it in the assistant message are truncated
- * and their tool_results are pre-injected with error messages.
+ * when `new_task` appears in a parallel tool batch. When `new_task` is called
+ * alongside other tools, the whole tool turn is rejected and every tool_use gets
+ * a matching error tool_result.
  *
- * This prevents orphaned tools when delegation disposes the parent task.
+ * This prevents orphaned tools when delegation disposes the parent task and
+ * keeps provider-native tool histories valid.
  */
 
 import type { Anthropic } from "@anthropic-ai/sdk"
 
 describe("new_task Tool Isolation Enforcement", () => {
 	/**
-	 * Simulates the new_task isolation enforcement logic from Task.ts.
-	 * This tests the truncation and error injection that happens when building
-	 * assistant message content for the API.
+	 * Simulates the new_task isolation enforcement logic from Task.ts. This tests
+	 * the all-or-nothing rejection that happens when building assistant message
+	 * content for the API.
 	 */
 	const enforceNewTaskIsolation = (
 		assistantContent: Array<Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam>,
 	): {
-		truncatedContent: Array<Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam>
+		content: Array<Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam>
 		injectedToolResults: Anthropic.ToolResultBlockParam[]
 	} => {
 		const injectedToolResults: Anthropic.ToolResultBlockParam[] = []
 
-		// Find the index of new_task tool in the assistantContent array
-		const newTaskIndex = assistantContent.findIndex(
-			(block) => block.type === "tool_use" && block.name === "new_task",
+		const assistantToolUses = assistantContent.filter(
+			(block): block is Anthropic.ToolUseBlockParam => block.type === "tool_use",
 		)
+		const hasMixedNewTaskBatch =
+			assistantToolUses.length > 1 && assistantToolUses.some((block) => block.name === "new_task")
 
-		if (newTaskIndex !== -1 && newTaskIndex < assistantContent.length - 1) {
-			// new_task found but not last - truncate subsequent tools
-			const truncatedTools = assistantContent.slice(newTaskIndex + 1)
-			const truncatedContent = assistantContent.slice(0, newTaskIndex + 1)
-
-			// Pre-inject error tool_results for truncated tools
-			for (const tool of truncatedTools) {
-				if (tool.type === "tool_use" && tool.id) {
+		if (hasMixedNewTaskBatch) {
+			for (const tool of assistantToolUses) {
+				if (tool.id) {
 					injectedToolResults.push({
 						type: "tool_result",
 						tool_use_id: tool.id,
 						content:
-							"This tool was not executed because new_task was called in the same message turn. The new_task tool must be the last tool in a message.",
+							"new_task must be called by itself in a message turn. No tools from this turn were executed. Retry by calling only new_task after any required setup is complete.",
 						is_error: true,
 					})
 				}
 			}
-
-			return { truncatedContent, injectedToolResults }
 		}
 
-		return { truncatedContent: assistantContent, injectedToolResults: [] }
+		return { content: assistantContent, injectedToolResults }
 	}
 
 	describe("new_task as last tool (no truncation needed)", () => {
@@ -67,11 +62,11 @@ describe("new_task Tool Isolation Enforcement", () => {
 
 			const result = enforceNewTaskIsolation(assistantContent)
 
-			expect(result.truncatedContent).toHaveLength(1)
+			expect(result.content).toHaveLength(1)
 			expect(result.injectedToolResults).toHaveLength(0)
 		})
 
-		it("should not truncate when new_task is the last tool", () => {
+		it("should reject when new_task is batched after another tool", () => {
 			const assistantContent: Anthropic.ToolUseBlockParam[] = [
 				{
 					type: "tool_use",
@@ -89,8 +84,11 @@ describe("new_task Tool Isolation Enforcement", () => {
 
 			const result = enforceNewTaskIsolation(assistantContent)
 
-			expect(result.truncatedContent).toHaveLength(2)
-			expect(result.injectedToolResults).toHaveLength(0)
+			expect(result.content).toHaveLength(2)
+			expect(result.injectedToolResults.map((result) => result.tool_use_id)).toEqual([
+				"toolu_read_1",
+				"toolu_new_task_1",
+			])
 		})
 
 		it("should not truncate when there is no new_task tool", () => {
@@ -111,13 +109,13 @@ describe("new_task Tool Isolation Enforcement", () => {
 
 			const result = enforceNewTaskIsolation(assistantContent)
 
-			expect(result.truncatedContent).toHaveLength(2)
+			expect(result.content).toHaveLength(2)
 			expect(result.injectedToolResults).toHaveLength(0)
 		})
 	})
 
-	describe("new_task followed by other tools (truncation required)", () => {
-		it("should truncate tools after new_task", () => {
+	describe("new_task batched with other tools (turn rejection required)", () => {
+		it("should preserve API history content and reject every tool", () => {
 			const assistantContent: Anthropic.ToolUseBlockParam[] = [
 				{
 					type: "tool_use",
@@ -135,12 +133,15 @@ describe("new_task Tool Isolation Enforcement", () => {
 
 			const result = enforceNewTaskIsolation(assistantContent)
 
-			expect(result.truncatedContent).toHaveLength(1)
-			expect(result.truncatedContent[0].type).toBe("tool_use")
-			expect((result.truncatedContent[0] as Anthropic.ToolUseBlockParam).name).toBe("new_task")
+			expect(result.content).toHaveLength(2)
+			expect(result.injectedToolResults).toHaveLength(2)
+			expect(result.injectedToolResults.map((toolResult) => toolResult.tool_use_id)).toEqual([
+				"toolu_new_task_1",
+				"toolu_read_1",
+			])
 		})
 
-		it("should inject error tool_results for truncated tools", () => {
+		it("should inject error tool_results for the whole mixed turn", () => {
 			const assistantContent: Anthropic.ToolUseBlockParam[] = [
 				{
 					type: "tool_use",
@@ -158,16 +159,21 @@ describe("new_task Tool Isolation Enforcement", () => {
 
 			const result = enforceNewTaskIsolation(assistantContent)
 
-			expect(result.injectedToolResults).toHaveLength(1)
+			expect(result.injectedToolResults).toHaveLength(2)
 			expect(result.injectedToolResults[0]).toMatchObject({
+				type: "tool_result",
+				tool_use_id: "toolu_new_task_1",
+				is_error: true,
+			})
+			expect(result.injectedToolResults[1]).toMatchObject({
 				type: "tool_result",
 				tool_use_id: "toolu_read_1",
 				is_error: true,
 			})
-			expect(result.injectedToolResults[0].content).toContain("new_task was called")
+			expect(result.injectedToolResults[0].content).toContain("new_task must be called by itself")
 		})
 
-		it("should truncate multiple tools after new_task", () => {
+		it("should reject multiple tools batched with new_task", () => {
 			const assistantContent: Anthropic.ToolUseBlockParam[] = [
 				{
 					type: "tool_use",
@@ -197,17 +203,17 @@ describe("new_task Tool Isolation Enforcement", () => {
 
 			const result = enforceNewTaskIsolation(assistantContent)
 
-			expect(result.truncatedContent).toHaveLength(1)
-			expect(result.injectedToolResults).toHaveLength(3)
+			expect(result.content).toHaveLength(4)
+			expect(result.injectedToolResults).toHaveLength(4)
 
-			// Verify all truncated tools get error results
-			const truncatedIds = result.injectedToolResults.map((r) => r.tool_use_id)
-			expect(truncatedIds).toContain("toolu_read_1")
-			expect(truncatedIds).toContain("toolu_write_1")
-			expect(truncatedIds).toContain("toolu_execute_1")
+			const rejectedIds = result.injectedToolResults.map((r) => r.tool_use_id)
+			expect(rejectedIds).toContain("toolu_new_task_1")
+			expect(rejectedIds).toContain("toolu_read_1")
+			expect(rejectedIds).toContain("toolu_write_1")
+			expect(rejectedIds).toContain("toolu_execute_1")
 		})
 
-		it("should preserve tools before new_task", () => {
+		it("should reject tools before new_task too", () => {
 			const assistantContent: Anthropic.ToolUseBlockParam[] = [
 				{
 					type: "tool_use",
@@ -231,14 +237,12 @@ describe("new_task Tool Isolation Enforcement", () => {
 
 			const result = enforceNewTaskIsolation(assistantContent)
 
-			// Should preserve read_file and new_task, truncate write_to_file
-			expect(result.truncatedContent).toHaveLength(2)
-			expect((result.truncatedContent[0] as Anthropic.ToolUseBlockParam).name).toBe("read_file")
-			expect((result.truncatedContent[1] as Anthropic.ToolUseBlockParam).name).toBe("new_task")
-
-			// Should inject error for write_to_file only
-			expect(result.injectedToolResults).toHaveLength(1)
-			expect(result.injectedToolResults[0].tool_use_id).toBe("toolu_write_1")
+			expect(result.content).toHaveLength(3)
+			expect(result.injectedToolResults.map((toolResult) => toolResult.tool_use_id)).toEqual([
+				"toolu_read_1",
+				"toolu_new_task_1",
+				"toolu_write_1",
+			])
 		})
 	})
 
@@ -265,13 +269,12 @@ describe("new_task Tool Isolation Enforcement", () => {
 
 			const result = enforceNewTaskIsolation(assistantContent)
 
-			// Should preserve text and new_task, truncate read_file
-			expect(result.truncatedContent).toHaveLength(2)
-			expect(result.truncatedContent[0].type).toBe("text")
-			expect((result.truncatedContent[1] as Anthropic.ToolUseBlockParam).name).toBe("new_task")
-
-			expect(result.injectedToolResults).toHaveLength(1)
-			expect(result.injectedToolResults[0].tool_use_id).toBe("toolu_read_1")
+			expect(result.content).toHaveLength(3)
+			expect(result.injectedToolResults).toHaveLength(2)
+			expect(result.injectedToolResults.map((toolResult) => toolResult.tool_use_id)).toEqual([
+				"toolu_new_task_1",
+				"toolu_read_1",
+			])
 		})
 
 		it("should not count text blocks when checking if new_task is last tool", () => {
@@ -294,9 +297,8 @@ describe("new_task Tool Isolation Enforcement", () => {
 
 			const result = enforceNewTaskIsolation(assistantContent)
 
-			// Text after new_task gets truncated but doesn't need tool_result
-			expect(result.truncatedContent).toHaveLength(1)
-			expect(result.injectedToolResults).toHaveLength(0) // Text blocks don't get tool_results
+			expect(result.content).toHaveLength(2)
+			expect(result.injectedToolResults).toHaveLength(0)
 		})
 	})
 
@@ -306,7 +308,7 @@ describe("new_task Tool Isolation Enforcement", () => {
 
 			const result = enforceNewTaskIsolation(assistantContent)
 
-			expect(result.truncatedContent).toHaveLength(0)
+			expect(result.content).toHaveLength(0)
 			expect(result.injectedToolResults).toHaveLength(0)
 		})
 
@@ -328,12 +330,12 @@ describe("new_task Tool Isolation Enforcement", () => {
 
 			const result = enforceNewTaskIsolation(assistantContent)
 
-			expect(result.truncatedContent).toHaveLength(1)
-			// No error result for tool without ID
-			expect(result.injectedToolResults).toHaveLength(0)
+			expect(result.content).toHaveLength(2)
+			expect(result.injectedToolResults).toHaveLength(1)
+			expect(result.injectedToolResults[0].tool_use_id).toBe("toolu_new_task_1")
 		})
 
-		it("should only consider the first new_task if multiple exist", () => {
+		it("should reject every valid tool id when multiple new_task calls exist", () => {
 			const assistantContent: Anthropic.ToolUseBlockParam[] = [
 				{
 					type: "tool_use",
@@ -357,14 +359,12 @@ describe("new_task Tool Isolation Enforcement", () => {
 
 			const result = enforceNewTaskIsolation(assistantContent)
 
-			// Should find first new_task and truncate everything after it
-			expect(result.truncatedContent).toHaveLength(2)
-			expect((result.truncatedContent[0] as Anthropic.ToolUseBlockParam).name).toBe("read_file")
-			expect((result.truncatedContent[1] as Anthropic.ToolUseBlockParam).id).toBe("toolu_new_task_1")
-
-			// Second new_task should get error result
-			expect(result.injectedToolResults).toHaveLength(1)
-			expect(result.injectedToolResults[0].tool_use_id).toBe("toolu_new_task_2")
+			expect(result.content).toHaveLength(3)
+			expect(result.injectedToolResults.map((toolResult) => toolResult.tool_use_id)).toEqual([
+				"toolu_read_1",
+				"toolu_new_task_1",
+				"toolu_new_task_2",
+			])
 		})
 	})
 
@@ -387,8 +387,8 @@ describe("new_task Tool Isolation Enforcement", () => {
 
 			const result = enforceNewTaskIsolation(assistantContent)
 
-			expect(result.injectedToolResults[0].content).toContain("new_task was called")
-			expect(result.injectedToolResults[0].content).toContain("must be the last tool")
+			expect(result.injectedToolResults[0].content).toContain("new_task must be called by itself")
+			expect(result.injectedToolResults[0].content).toContain("No tools from this turn were executed")
 		})
 
 		it("should mark error results with is_error: true", () => {

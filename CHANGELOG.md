@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.5
+
+### Patch Changes
+
+- [codex] Fix orchestration delegation recovery loops
+
 ## 1.0.4
 
 ### Patch Changes
