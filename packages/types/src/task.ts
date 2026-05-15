@@ -3,6 +3,7 @@ import { z } from "zod"
 import { RooCodeEventName } from "./events.js"
 import type { RooCodeSettings } from "./global-settings.js"
 import type { ClineMessage, QueuedMessage, TokenUsage } from "./message.js"
+import type { ProviderSettings } from "./provider-settings.js"
 import type { ToolUsage, ToolName } from "./tool.js"
 import type { StaticAppProperties, GitProperties, TelemetryProperties } from "./telemetry.js"
 import type { TodoItem } from "./todo.js"
@@ -90,6 +91,16 @@ export type TaskProviderEvents = {
 
 export interface CreateTaskOptions {
 	taskId?: string
+	/** Create the task without making it the active foreground task. */
+	background?: boolean
+	/** Workspace root to use for the task execution context. */
+	workspacePath?: string
+	/** Mode slug to use for this task without changing the foreground UI mode. */
+	taskMode?: string
+	/** Provider profile name to use for this task without changing the foreground UI profile. */
+	taskApiConfigName?: string
+	/** Resolved provider settings for this task lane. Internal callers use this to avoid global profile reads. */
+	apiConfiguration?: ProviderSettings
 	enableCheckpoints?: boolean
 	consecutiveMistakeLimit?: number
 	experiments?: Record<string, boolean>

@@ -1350,7 +1350,11 @@ export const webviewMessageHandler = async (
 				}
 
 				try {
-					await task?.checkpointRestore(result.data)
+					if (task) {
+						await provider.runWorkspaceMutation(task, "checkpoint_restore", () =>
+							task.checkpointRestore(result.data),
+						)
+					}
 				} catch (error) {
 					vscode.window.showErrorMessage(t("common:errors.checkpoint_failed"))
 				}
@@ -3087,6 +3091,81 @@ export const webviewMessageHandler = async (
 					values: message.values,
 				})
 			}
+			break
+		}
+		case "createScheduledTask": {
+			const service = provider.getScheduledTaskService()
+			if (!service || !message.scheduledTask) {
+				vscode.window.showErrorMessage("Scheduled task service is not available.")
+				break
+			}
+			try {
+				await service.createTask(message.scheduledTask)
+			} catch (error) {
+				vscode.window.showErrorMessage(
+					`Failed to create scheduled task: ${error instanceof Error ? error.message : String(error)}`,
+				)
+			}
+			break
+		}
+		case "updateScheduledTask": {
+			const service = provider.getScheduledTaskService()
+			if (!service || !message.scheduledTaskId || !message.scheduledTaskUpdate) {
+				vscode.window.showErrorMessage("Scheduled task update is missing required data.")
+				break
+			}
+			try {
+				await service.updateTask(message.scheduledTaskId, message.scheduledTaskUpdate)
+			} catch (error) {
+				vscode.window.showErrorMessage(
+					`Failed to update scheduled task: ${error instanceof Error ? error.message : String(error)}`,
+				)
+			}
+			break
+		}
+		case "deleteScheduledTask": {
+			const service = provider.getScheduledTaskService()
+			if (!service || !message.scheduledTaskId) {
+				vscode.window.showErrorMessage("Scheduled task delete is missing required data.")
+				break
+			}
+			await service.deleteTask(message.scheduledTaskId)
+			break
+		}
+		case "pauseScheduledTask": {
+			const service = provider.getScheduledTaskService()
+			if (!service || !message.scheduledTaskId) {
+				vscode.window.showErrorMessage("Scheduled task pause is missing required data.")
+				break
+			}
+			await service.pauseTask(message.scheduledTaskId)
+			break
+		}
+		case "resumeScheduledTask": {
+			const service = provider.getScheduledTaskService()
+			if (!service || !message.scheduledTaskId) {
+				vscode.window.showErrorMessage("Scheduled task resume is missing required data.")
+				break
+			}
+			await service.resumeTask(message.scheduledTaskId)
+			break
+		}
+		case "runScheduledTaskNow": {
+			const service = provider.getScheduledTaskService()
+			if (!service || !message.scheduledTaskId) {
+				vscode.window.showErrorMessage("Scheduled task run is missing required data.")
+				break
+			}
+			await service.runNow(message.scheduledTaskId)
+			break
+		}
+		case "duplicateScheduledTask": {
+			const service = provider.getScheduledTaskService()
+			if (!service || !message.scheduledTaskId) {
+				vscode.window.showErrorMessage("Scheduled task duplicate is missing required data.")
+				break
+			}
+			await service.duplicateTask(message.scheduledTaskId)
 			break
 		}
 		case "requestCommands": {

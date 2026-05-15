@@ -195,6 +195,8 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		version: "",
 		clineMessages: [],
 		taskHistory: [],
+		scheduledTasks: [],
+		scheduledTaskRuns: [],
 		currentView: { type: "newTaskDraft" },
 		liveTaskIds: [],
 		liveTasksById: {},
@@ -473,6 +475,14 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 								prevState.currentTaskItem?.id === item.id ? item : prevState.currentTaskItem,
 						}
 					})
+					break
+				}
+				case "scheduledTasksUpdated": {
+					setState((prevState) => ({
+						...prevState,
+						scheduledTasks: message.scheduledTasks ?? message.scheduledTaskState?.tasks ?? [],
+						scheduledTaskRuns: message.scheduledTaskRuns ?? message.scheduledTaskState?.runs ?? [],
+					}))
 					break
 				}
 			}

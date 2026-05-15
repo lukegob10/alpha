@@ -388,7 +388,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private _started = false
 	// No streaming parser is required.
 	assistantMessageParser?: undefined
-	private providerProfileChangeListener?: (config: { name: string; provider?: string }) => void
 
 	// Native tool call streaming state (track which index each tool is at)
 	private streamingToolCallIndices: Map<string, number> = new Map()
@@ -435,6 +434,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		onCreated,
 		initialTodos,
 		workspacePath,
+		taskMode,
+		taskApiConfigName,
 		initialStatus,
 	}: TaskOptions) {
 		super()
@@ -508,11 +509,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.taskApiConfigReady = Promise.resolve()
 			TelemetryService.instance.captureTaskRestarted(this.taskId)
 		} else {
-			// For new tasks, don't set the mode/apiConfigName yet - wait for async initialization.
-			this._taskMode = undefined
-			this._taskApiConfigName = undefined
-			this.taskModeReady = this.initializeTaskMode(provider)
-			this.taskApiConfigReady = this.initializeTaskApiConfigName(provider)
+			this._taskMode = taskMode
+			this._taskApiConfigName = taskApiConfigName
+			this.taskModeReady = taskMode ? Promise.resolve() : this.initializeTaskMode(provider)
+			this.taskApiConfigReady = taskApiConfigName ? Promise.resolve() : this.initializeTaskApiConfigName(provider)
 			TelemetryService.instance.captureTaskCreated(this.taskId)
 		}
 
@@ -527,9 +527,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		this.messageQueueService.on("stateChanged", this.messageQueueStateChangedHandler)
-
-		// Listen for provider profile changes to update parser state
-		this.setupProviderProfileChangeListener(provider)
 
 		// Set up diff strategy
 		this.diffStrategy = new MultiSearchReplaceDiffStrategy()
@@ -650,35 +647,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const errorMessage = `Failed to initialize task API config name: ${error instanceof Error ? error.message : String(error)}`
 			provider.log(errorMessage)
 		}
-	}
-
-	/**
-	 * Sets up a listener for provider profile changes.
-	 *
-	 * @private
-	 * @param provider - The ClineProvider instance to listen to
-	 */
-	private setupProviderProfileChangeListener(provider: ClineProvider): void {
-		// Only set up listener if provider has the on method (may not exist in test mocks)
-		if (typeof provider.on !== "function") {
-			return
-		}
-
-		this.providerProfileChangeListener = async () => {
-			try {
-				const newState = await provider.getState()
-				if (newState?.apiConfiguration) {
-					this.updateApiConfiguration(newState.apiConfiguration)
-				}
-			} catch (error) {
-				console.error(
-					`[Task#${this.taskId}.${this.instanceId}] Failed to update API configuration on profile change:`,
-					error,
-				)
-			}
-		}
-
-		provider.on(RooCodeEventName.ProviderProfileChanged, this.providerProfileChangeListener)
 	}
 
 	/**
@@ -836,6 +804,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 */
 	public setTaskApiConfigName(apiConfigName: string | undefined): void {
 		this._taskApiConfigName = apiConfigName
+		this.taskApiConfigReady = Promise.resolve()
+	}
+
+	/**
+	 * Update this task's execution mode without changing the foreground provider mode.
+	 */
+	public setTaskMode(mode: string): void {
+		this._taskMode = mode
+		this.taskModeReady = Promise.resolve()
 	}
 
 	static create(options: TaskOptions): [Task, Promise<void>] {
@@ -1258,6 +1235,158 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return undefined
 	}
 
+	private getOffscreenAutoAskResponse(
+		type: ClineAsk,
+		text?: string,
+		isProtected?: boolean,
+	): { response: ClineAskResponse; text?: string; images?: string[] } | undefined {
+		const provider = this.providerRef.deref()
+
+		if (!provider || provider.isTaskOnScreen(this.taskId) || isProtected) {
+			return undefined
+		}
+
+		if (type === "command_output") {
+			return { response: "messageResponse" }
+		}
+
+		if (type === "mistake_limit_reached") {
+			return { response: "messageResponse", text: this.getOffscreenMistakeLimitGuidance() }
+		}
+
+		if (type === "completion_result" || type === "resume_task" || type === "resume_completed_task") {
+			return { response: "yesButtonClicked" }
+		}
+
+		if (type !== "tool") {
+			return undefined
+		}
+
+		try {
+			const payload = JSON.parse(text ?? "{}")
+			if (["newTask", "switchMode", "finishTask"].includes(payload?.tool)) {
+				return { response: "yesButtonClicked" }
+			}
+		} catch {
+			return undefined
+		}
+
+		return undefined
+	}
+
+	private getMistakeLimitGuidance(): string {
+		const details = [
+			`Task lane: mode=${this._taskMode || defaultModeSlug}, providerProfile=${this._taskApiConfigName ?? "unknown"}.`,
+			`Consecutive mistake count: ${this.consecutiveMistakeCount}/${this.consecutiveMistakeLimit}.`,
+		]
+
+		if (this.consecutiveNoToolUseCount > 0) {
+			details.push(`Recent provider responses without tool use: ${this.consecutiveNoToolUseCount}.`)
+		}
+
+		if (this.consecutiveNoAssistantMessagesCount > 0) {
+			details.push(
+				`Recent provider responses without assistant messages: ${this.consecutiveNoAssistantMessagesCount}.`,
+			)
+		}
+
+		details.push(
+			"Recovery guidance: continue with one concrete next action. Use a tool if work remains, use attempt_completion if the task is finished, and use ask_followup_question only when a specific missing input blocks progress.",
+			"If delegating, call new_task by itself in its own assistant turn. Do not batch new_task with any other tool.",
+		)
+
+		return `${t("common:errors.mistake_limit_guidance")}\n\n${details.map((detail) => `- ${detail}`).join("\n")}`
+	}
+
+	private getAutomaticMistakeLimitGuidance(): string {
+		const details = [
+			"Automatic recovery from repeated invalid or unproductive model turns. Continue without waiting for user input.",
+			`Task lane: mode=${this._taskMode || defaultModeSlug}, providerProfile=${this._taskApiConfigName ?? "unknown"}.`,
+			`Consecutive mistake count before recovery: ${this.consecutiveMistakeCount}/${this.consecutiveMistakeLimit}.`,
+		]
+
+		if (this.consecutiveNoToolUseCount > 0) {
+			details.push(`Recent provider responses without tool use: ${this.consecutiveNoToolUseCount}.`)
+		}
+
+		if (this.consecutiveNoAssistantMessagesCount > 0) {
+			details.push(
+				`Recent provider responses without assistant messages: ${this.consecutiveNoAssistantMessagesCount}.`,
+			)
+		}
+
+		details.push(
+			"Use exactly one concrete next action now: call one valid tool with complete arguments if work remains, call attempt_completion if finished, or call ask_followup_question only when a specific missing input blocks progress.",
+			"If delegating, call new_task by itself in its own assistant turn. Do not batch new_task with any other tool.",
+		)
+
+		return details.join("\n")
+	}
+
+	private async shouldAutoRecoverFromMistakeLimit(): Promise<boolean> {
+		const provider = this.providerRef.deref()
+
+		if (!provider) {
+			return true
+		}
+
+		if (!provider.isTaskOnScreen(this.taskId)) {
+			return true
+		}
+
+		const state = await provider.getState()
+		return state?.autoApprovalEnabled === true
+	}
+
+	private async handleConsecutiveMistakeLimit(currentUserContent: Anthropic.Messages.ContentBlockParam[]) {
+		// Track consecutive mistake errors in telemetry via event and PostHog exception tracking.
+		// The reason is "no_tools_used" because this limit is reached via initiateTaskLoop
+		// which increments consecutiveMistakeCount when the model doesn't use any tools.
+		TelemetryService.instance.captureConsecutiveMistakeError(this.taskId)
+		TelemetryService.instance.captureException(
+			new ConsecutiveMistakeError(
+				`Task reached consecutive mistake limit (${this.consecutiveMistakeLimit})`,
+				this.taskId,
+				this.consecutiveMistakeCount,
+				this.consecutiveMistakeLimit,
+				"no_tools_used",
+				this.apiConfiguration.apiProvider,
+				getModelId(this.apiConfiguration),
+			),
+		)
+
+		if (await this.shouldAutoRecoverFromMistakeLimit()) {
+			const text = this.getAutomaticMistakeLimitGuidance()
+			currentUserContent.push({ type: "text", text: formatResponse.tooManyMistakes(text) })
+			await this.say("user_feedback", text)
+			this.consecutiveMistakeCount = 0
+			return
+		}
+
+		const { response, text, images } = await this.ask("mistake_limit_reached", this.getMistakeLimitGuidance())
+
+		if (response === "messageResponse") {
+			currentUserContent.push(
+				...[
+					{ type: "text" as const, text: formatResponse.tooManyMistakes(text) },
+					...formatResponse.imageBlocks(images),
+				],
+			)
+
+			await this.say("user_feedback", text, images)
+		}
+
+		this.consecutiveMistakeCount = 0
+	}
+
+	private getOffscreenMistakeLimitGuidance(): string {
+		return [
+			"Continue the current task without waiting for the user because this task lane is not currently on-screen.",
+			"Recover from the previous invalid or unproductive turns with exactly one concrete next action.",
+			"If work remains, use the most appropriate tool now. If delegating, call new_task by itself and do not include any other tool in the same turn. If complete, use attempt_completion.",
+		].join(" ")
+	}
+
 	// Note that `partial` has three valid states true (partial message),
 	// false (completion of partial message), undefined (individual complete
 	// message).
@@ -1363,9 +1492,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Automatically approve if the ask according to the user's settings.
 		const provider = this.providerRef.deref()
 		const state = provider ? await provider.getState() : undefined
-		const approval = await checkAutoApproval({ state, ask: type, text, isProtected })
+		const offscreenAutoResponse = this.getOffscreenAutoAskResponse(type, text, isProtected)
+		const approval = offscreenAutoResponse
+			? ({ decision: "ask" } as const)
+			: await checkAutoApproval({ state, ask: type, text, isProtected })
 
-		if (approval.decision === "approve") {
+		if (offscreenAutoResponse) {
+			this.handleWebviewAskResponse(
+				offscreenAutoResponse.response,
+				offscreenAutoResponse.text,
+				offscreenAutoResponse.images,
+			)
+		} else if (approval.decision === "approve") {
 			this.approveAsk()
 		} else if (approval.decision === "deny") {
 			this.denyAsk()
@@ -1600,18 +1738,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			if (provider) {
 				if (mode) {
-					await provider.setMode(mode)
+					await provider.setTaskMode(this.taskId, mode)
 				}
 
 				if (providerProfile) {
-					await provider.setProviderProfile(providerProfile)
-
-					// Update this task's API configuration to match the new profile
-					// This ensures the parser state is synchronized with the selected model
-					const newState = await provider.getState()
-					if (newState?.apiConfiguration) {
-						this.updateApiConfiguration(newState.apiConfiguration)
-					}
+					await provider.setTaskProviderProfile(this.taskId, providerProfile)
 				}
 
 				this.emit(RooCodeEventName.TaskUserMessage, this.taskId)
@@ -1655,7 +1786,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Get condensing configuration
 		const state = await this.providerRef.deref()?.getState()
 		const customCondensingPrompt = state?.customSupportPrompts?.CONDENSE
-		const { mode, apiConfiguration } = state ?? {}
+		const mode = await this.getTaskMode()
+		const apiConfiguration = this.apiConfiguration
 
 		const { contextTokens: prevContextTokens } = this.getTokenUsage()
 
@@ -2298,19 +2430,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			console.error("Error cancelling current request:", error)
 		}
 
-		// Remove provider profile change listener
-		try {
-			if (this.providerProfileChangeListener) {
-				const provider = this.providerRef.deref()
-				if (provider) {
-					provider.off(RooCodeEventName.ProviderProfileChanged, this.providerProfileChangeListener)
-				}
-				this.providerProfileChangeListener = undefined
-			}
-		} catch (error) {
-			console.error("Error removing provider profile change listener:", error)
-		}
-
 		// Dispose message queue and remove event listeners.
 		try {
 			if (this.messageQueueStateChangedHandler) {
@@ -2526,39 +2645,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 
 			if (this.consecutiveMistakeLimit > 0 && this.consecutiveMistakeCount >= this.consecutiveMistakeLimit) {
-				// Track consecutive mistake errors in telemetry via event and PostHog exception tracking.
-				// The reason is "no_tools_used" because this limit is reached via initiateTaskLoop
-				// which increments consecutiveMistakeCount when the model doesn't use any tools.
-				TelemetryService.instance.captureConsecutiveMistakeError(this.taskId)
-				TelemetryService.instance.captureException(
-					new ConsecutiveMistakeError(
-						`Task reached consecutive mistake limit (${this.consecutiveMistakeLimit})`,
-						this.taskId,
-						this.consecutiveMistakeCount,
-						this.consecutiveMistakeLimit,
-						"no_tools_used",
-						this.apiConfiguration.apiProvider,
-						getModelId(this.apiConfiguration),
-					),
-				)
-
-				const { response, text, images } = await this.ask(
-					"mistake_limit_reached",
-					t("common:errors.mistake_limit_guidance"),
-				)
-
-				if (response === "messageResponse") {
-					currentUserContent.push(
-						...[
-							{ type: "text" as const, text: formatResponse.tooManyMistakes(text) },
-							...formatResponse.imageBlocks(images),
-						],
-					)
-
-					await this.say("user_feedback", text, images)
-				}
-
-				this.consecutiveMistakeCount = 0
+				await this.handleConsecutiveMistakeLimit(currentUserContent)
 			}
 
 			// Getting verbose details is an expensive operation, it uses ripgrep to
@@ -2598,7 +2685,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const showRooIgnoredFiles = state?.showRooIgnoredFiles ?? false
 			const includeDiagnosticMessages = state?.includeDiagnosticMessages ?? true
 			const maxDiagnosticMessages = state?.maxDiagnosticMessages ?? 50
-			const currentMode = state?.mode ?? defaultModeSlug
+			const currentMode = await this.getTaskMode()
 
 			const { content: parsedUserContent, mode: slashCommandMode } = await processUserContentMentions({
 				userContent: currentUserContent,
@@ -2619,7 +2706,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					const state = await provider.getState()
 					const targetMode = getModeBySlug(slashCommandMode, state?.customModes)
 					if (targetMode) {
-						await provider.handleModeSwitch(slashCommandMode)
+						await provider.setTaskMode(this.taskId, slashCommandMode)
 					}
 				}
 			}
@@ -3779,16 +3866,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		const state = await this.providerRef.deref()?.getState()
 
-		const {
-			mode,
-			customModes,
-			customModePrompts,
-			customInstructions,
-			experiments,
-			language,
-			apiConfiguration,
-			enableSubfolderRules,
-		} = state ?? {}
+		const { customModes, customModePrompts, customInstructions, experiments, language, enableSubfolderRules } =
+			state ?? {}
+		const mode = await this.getTaskMode()
+		const apiConfiguration = this.apiConfiguration
 
 		return await (async () => {
 			const provider = this.providerRef.deref()
@@ -3805,7 +3886,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				false,
 				mcpHub,
 				this.diffStrategy,
-				mode ?? defaultModeSlug,
+				mode,
 				customModePrompts,
 				customModes,
 				customInstructions,
@@ -3829,16 +3910,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		})()
 	}
 
-	private getCurrentProfileId(state: any): string {
+	private async getCurrentProfileId(state: any): Promise<string> {
+		const taskApiConfigName = await this.getTaskApiConfigName()
 		return (
-			state?.listApiConfigMeta?.find((profile: any) => profile.name === state?.currentApiConfigName)?.id ??
-			"default"
+			state?.listApiConfigMeta?.find(
+				(profile: any) => profile.name === (taskApiConfigName ?? state?.currentApiConfigName),
+			)?.id ?? "default"
 		)
 	}
 
 	private async handleContextWindowExceededError(): Promise<void> {
 		const state = await this.providerRef.deref()?.getState()
-		const { profileThresholds = {}, mode, apiConfiguration } = state ?? {}
+		const { profileThresholds = {} } = state ?? {}
+		const mode = await this.getTaskMode()
+		const apiConfiguration = this.apiConfiguration
 
 		const { contextTokens } = this.getTokenUsage()
 		const modelInfo = this.api.getModel().info
@@ -3852,7 +3937,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const contextWindow = modelInfo.contextWindow
 
 		// Get the current profile ID using the helper method
-		const currentProfileId = this.getCurrentProfileId(state)
+		const currentProfileId = await this.getCurrentProfileId(state)
 
 		// Log the context window error for debugging
 		console.warn(
@@ -4002,14 +4087,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const state = await this.providerRef.deref()?.getState()
 
 		const {
-			apiConfiguration,
 			autoApprovalEnabled,
 			requestDelaySeconds,
-			mode,
 			autoCondenseContext = true,
 			autoCondenseContextPercent = 100,
 			profileThresholds = {},
 		} = state ?? {}
+		const mode = await this.getTaskMode()
+		const apiConfiguration = this.apiConfiguration
 
 		// Get condensing configuration for automatic triggers.
 		const customCondensingPrompt = state?.customSupportPrompts?.CONDENSE
@@ -4042,7 +4127,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const contextWindow = modelInfo.contextWindow
 
 			// Get the current profile ID using the helper method
-			const currentProfileId = this.getCurrentProfileId(state)
+			const currentProfileId = await this.getCurrentProfileId(state)
 			// Check if context management will likely run (threshold check)
 			// This allows us to show an in-progress indicator to the user
 			// We use the centralized willManageContext helper to avoid duplicating threshold logic

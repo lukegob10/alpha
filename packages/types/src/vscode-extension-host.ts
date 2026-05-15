@@ -23,6 +23,13 @@ import type { ModelRecord, RouterModels } from "./model.js"
 import type { OpenAiCodexRateLimitInfo } from "./providers/openai-codex-rate-limits.js"
 import type { SkillMetadata } from "./skills.js"
 import type { WorktreeIncludeStatus } from "./worktree.js"
+import type {
+	CreateScheduledTaskPayload,
+	ScheduledTask,
+	ScheduledTaskRun,
+	ScheduledTaskState,
+	UpdateScheduledTaskPayload,
+} from "./scheduled-task.js"
 
 /**
  * ExtensionMessage
@@ -105,10 +112,14 @@ export interface ExtensionMessage {
 		| "folderSelected"
 		| "skills"
 		| "fileContent"
+		| "scheduledTasksUpdated"
 	text?: string
 	taskId?: string
 	/** For fileContent: { path, content, error? } */
 	fileContent?: { path: string; content: string | null; error?: string }
+	scheduledTasks?: ScheduledTask[]
+	scheduledTaskRuns?: ScheduledTaskRun[]
+	scheduledTaskState?: ScheduledTaskState
 	payload?: any // eslint-disable-line @typescript-eslint/no-explicit-any
 	checkpointWarning?: {
 		type: "WAIT_TIMEOUT" | "INIT_TIMEOUT"
@@ -378,6 +389,8 @@ export type ExtensionState = Pick<
 	mcpServers?: McpServer[]
 	mdmCompliant?: boolean
 	taskSyncEnabled: boolean
+	scheduledTasks?: ScheduledTask[]
+	scheduledTaskRuns?: ScheduledTaskRun[]
 	openAiCodexIsAuthenticated?: boolean
 	debug?: boolean
 
@@ -589,10 +602,20 @@ export interface WebviewMessage {
 		| "moveSkill"
 		| "updateSkillModes"
 		| "openSkillFile"
+		| "createScheduledTask"
+		| "updateScheduledTask"
+		| "deleteScheduledTask"
+		| "pauseScheduledTask"
+		| "resumeScheduledTask"
+		| "runScheduledTaskNow"
+		| "duplicateScheduledTask"
 	text?: string
 	taskId?: string
+	scheduledTaskId?: string
+	scheduledTask?: CreateScheduledTaskPayload
+	scheduledTaskUpdate?: UpdateScheduledTaskPayload
 	editedMessageContent?: string
-	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "marketplace" | "cloud"
+	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "marketplace" | "cloud" | "scheduledTasks"
 	disabled?: boolean
 	context?: string
 	dataUri?: string

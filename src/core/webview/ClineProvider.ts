@@ -78,6 +78,7 @@ import { CodeIndexManager } from "../../services/code-index/manager"
 import type { IndexProgressUpdate } from "../../services/code-index/interfaces/manager"
 import { MdmService } from "../../services/mdm/MdmService"
 import { SkillsManager } from "../../services/skills/SkillsManager"
+import type { ScheduledTaskService } from "../../services/scheduled-tasks"
 
 import { fileExistsAtPath } from "../../utils/fs"
 import { setTtsEnabled, setTtsSpeed } from "../../utils/tts"
@@ -96,6 +97,7 @@ import { ContextProxy } from "../config/ContextProxy"
 import { ProviderSettingsManager } from "../config/ProviderSettingsManager"
 import { CustomModesManager } from "../config/CustomModesManager"
 import { Task } from "../task/Task"
+import { WorkspaceMutationGate } from "../task/WorkspaceMutationGate"
 
 import { webviewMessageHandler } from "./webviewMessageHandler"
 import type { ClineMessage, LiveTaskMetadata, TodoItem } from "@alpha-code/types"
@@ -142,11 +144,13 @@ export class ClineProvider
 	private clineStack: Task[] = []
 	private taskSessions = new TaskSessionRegistry()
 	private currentView: CurrentTaskView = { type: "newTaskDraft" }
+	private readonly workspaceMutationGate = new WorkspaceMutationGate()
 	private codeIndexStatusSubscription?: vscode.Disposable
 	private codeIndexManager?: CodeIndexManager
 	private _workspaceTracker?: WorkspaceTracker // workSpaceTracker read-only for access outside this class
 	protected mcpHub?: McpHub // Change from private to protected
 	protected skillsManager?: SkillsManager
+	private scheduledTaskService?: ScheduledTaskService
 	private marketplaceManager: MarketplaceManager
 	private mdmService?: MdmService
 	private taskCreationCallback: (task: Task) => void
@@ -275,9 +279,10 @@ export class ClineProvider
 						const { historyItem } = await this.getTaskWithId(instance.taskId)
 						const rootTask = instance.rootTask
 						const parentTask = instance.parentTask
+						const background = !this.isTaskOnScreen(instance.taskId)
 						await this.createTaskWithHistoryItem(
 							{ ...historyItem, rootTask, parentTask },
-							{ preserveExisting: true },
+							{ preserveExisting: true, background },
 						)
 					}
 				} catch (error) {
@@ -500,20 +505,25 @@ export class ClineProvider
 	// The instance is pushed to the top of the stack (LIFO order).
 	// When the task is completed, the top instance is removed, reactivating the
 	// previous task.
-	async addClineToStack(task: Task) {
+	async addClineToStack(task: Task, options: { focus?: boolean } = {}) {
 		// Add this cline instance into the stack that represents the order of
 		// all the called tasks.
 		const previous = this.getActiveTask()
+		const shouldFocus = options.focus ?? true
 		if (!this.clineStack.some((cline) => cline.taskId === task.taskId)) {
 			this.clineStack.push(task)
 		}
-		this.taskSessions.register(task, { focus: true })
-		this.currentView = { type: "task", taskId: task.taskId }
+		this.taskSessions.register(task, { focus: shouldFocus })
+		if (shouldFocus) {
+			this.currentView = { type: "task", taskId: task.taskId }
+		}
 		this.taskSessions.markLifecycle(task.taskId, TaskLifecycleState.Initializing)
-		if (previous && previous.taskId !== task.taskId) {
+		if (shouldFocus && previous && previous.taskId !== task.taskId) {
 			previous.emit(RooCodeEventName.TaskUnfocused)
 		}
-		task.emit(RooCodeEventName.TaskFocused)
+		if (shouldFocus) {
+			task.emit(RooCodeEventName.TaskFocused)
+		}
 
 		// Perform special setup provider specific tasks.
 		await this.performPreparationTasks(task)
@@ -763,6 +773,8 @@ export class ClineProvider
 		this.marketplaceManager?.cleanup()
 		this.customModesManager?.dispose()
 		this.taskHistoryStore.dispose()
+		this.scheduledTaskService?.dispose()
+		this.scheduledTaskService = undefined
 		this.flushGlobalStateWriteThrough()
 		this.log("Disposed all disposables")
 		ClineProvider.activeInstances.delete(this)
@@ -1012,17 +1024,21 @@ export class ClineProvider
 
 	public async createTaskWithHistoryItem(
 		historyItem: HistoryItem & { rootTask?: Task; parentTask?: Task },
-		options?: { startTask?: boolean; preserveExisting?: boolean },
+		options?: { startTask?: boolean; preserveExisting?: boolean; background?: boolean },
 	) {
 		const isCliRuntime = process.env.ROO_CLI_RUNTIME === "1"
 		// CLI injects runtime provider settings from command flags/env at startup.
 		// Restoring provider profiles from task history can overwrite those
 		// runtime settings with stale/incomplete persisted profiles.
 		const skipProfileRestoreFromHistory = isCliRuntime
+		let restoredApiConfiguration: ProviderSettings | undefined
 
-		// Check if we're rehydrating the current task to avoid flicker
-		const currentTask = this.getCurrentTask() ?? this.clineStack?.at(-1)
-		const isRehydratingCurrentTask = currentTask && currentTask.taskId === historyItem.id
+		// Check if we're replacing an already-live task. Foreground replacement avoids
+		// flicker; background replacement must not steal the selected chat.
+		const existingTask =
+			this.getLiveTask(historyItem.id) ?? this.clineStack?.find((task) => task.taskId === historyItem.id)
+		const isRehydratingCurrentTask = Boolean(existingTask)
+		const shouldFocus = !options?.background
 
 		if (!isRehydratingCurrentTask && !options?.preserveExisting) {
 			await this.removeClineFromStack()
@@ -1099,10 +1115,7 @@ export class ClineProvider
 
 			if (profile?.name) {
 				try {
-					await this.activateProviderProfile(
-						{ name: profile.name },
-						{ persistModeConfig: false, persistTaskHistory: false },
-					)
+					restoredApiConfiguration = await this.getProviderSettingsForProfileName(profile.name)
 				} catch (error) {
 					// Log the error but continue with task restoration.
 					this.log(
@@ -1123,12 +1136,20 @@ export class ClineProvider
 			)
 		}
 
-		const { apiConfiguration, enableCheckpoints, checkpointTimeout, experiments, cloudUserInfo, taskSyncEnabled } =
-			await this.getState()
+		const {
+			apiConfiguration: currentApiConfiguration,
+			enableCheckpoints,
+			checkpointTimeout,
+			experiments,
+			cloudUserInfo,
+			taskSyncEnabled,
+		} = await this.getState()
+		const apiConfiguration = restoredApiConfiguration ?? currentApiConfiguration
 
 		const task = new Task({
 			provider: this,
 			apiConfiguration,
+			taskApiConfigName: historyItem.apiConfigName,
 			enableCheckpoints,
 			checkpointTimeout,
 			consecutiveMistakeLimit: apiConfiguration.consecutiveMistakeLimit,
@@ -1149,7 +1170,7 @@ export class ClineProvider
 			const stackIndex = this.clineStack.findIndex((cline) => cline.taskId === historyItem.id)
 
 			// Properly dispose of the old task to ensure garbage collection
-			const oldTask = stackIndex >= 0 ? this.clineStack[stackIndex] : currentTask
+			const oldTask = stackIndex >= 0 ? this.clineStack[stackIndex] : existingTask!
 
 			// Abort the old task to stop running processes and mark as abandoned
 			try {
@@ -1173,9 +1194,13 @@ export class ClineProvider
 			} else {
 				this.clineStack.push(task)
 			}
-			this.taskSessions.register(task, { focus: true })
-			this.currentView = { type: "task", taskId: task.taskId }
-			task.emit(RooCodeEventName.TaskFocused)
+			this.taskSessions.register(task, { focus: shouldFocus })
+			if (shouldFocus) {
+				this.currentView = { type: "task", taskId: task.taskId }
+				task.emit(RooCodeEventName.TaskFocused)
+			} else if (this.getActiveTaskId() === task.taskId) {
+				this.taskSessions.clearFocus()
+			}
 
 			// Perform preparation tasks and set up event listeners
 			await this.performPreparationTasks(task)
@@ -1184,7 +1209,7 @@ export class ClineProvider
 				`[createTaskWithHistoryItem] rehydrated task ${task.taskId}.${task.instanceId} in-place (flicker-free)`,
 			)
 		} else {
-			await this.addClineToStack(task)
+			await this.addClineToStack(task, { focus: shouldFocus })
 
 			this.log(
 				`[createTaskWithHistoryItem] ${task.parentTask ? "child" : "parent"} task ${task.taskId}.${task.instanceId} instantiated`,
@@ -1452,21 +1477,8 @@ export class ClineProvider
 		const task = this.getCurrentTask()
 
 		if (task) {
-			TelemetryService.instance.captureModeSwitch(task.taskId, newMode)
-			task.emit(RooCodeEventName.TaskModeSwitched, task.taskId, newMode)
-
 			try {
-				// Update the task history with the new mode first.
-				const taskHistoryItem =
-					this.taskHistoryStore.get(task.taskId) ??
-					(this.getGlobalState("taskHistory") ?? []).find((item) => item.id === task.taskId)
-
-				if (taskHistoryItem) {
-					await this.updateTaskHistory({ ...taskHistoryItem, mode: newMode })
-				}
-
-				// Only update the task's mode after successful persistence.
-				;(task as any)._taskMode = newMode
+				await this.setTaskMode(task.taskId, newMode)
 			} catch (error) {
 				// If persistence fails, log the error but don't update the in-memory state.
 				this.log(
@@ -1548,9 +1560,9 @@ export class ClineProvider
 	 */
 	private updateTaskApiHandlerIfNeeded(
 		providerSettings: ProviderSettings,
-		options: { forceRebuild?: boolean } = {},
+		options: { forceRebuild?: boolean; task?: Task } = {},
 	): void {
-		const task = this.getCurrentTask()
+		const task = options.task ?? this.getCurrentTask()
 		if (!task) return
 
 		const { forceRebuild = false } = options
@@ -1572,6 +1584,56 @@ export class ClineProvider
 		} else {
 			// No rebuild needed, just sync apiConfiguration
 			;(task as any).apiConfiguration = providerSettings
+		}
+	}
+
+	private async getProviderSettingsForProfileName(name: string): Promise<ProviderSettings | undefined> {
+		const { name: _name, id: _id, ...providerSettings } = await this.providerSettingsManager.getProfile({ name })
+		return providerSettings.apiProvider ? providerSettings : undefined
+	}
+
+	public async setTaskMode(taskId: string, mode: string): Promise<void> {
+		const task = this.getLiveTask(taskId)
+		if (!task) {
+			throw new Error(`Cannot switch mode for unknown task ${taskId}`)
+		}
+
+		TelemetryService.instance.captureModeSwitch(task.taskId, mode)
+		task.emit(RooCodeEventName.TaskModeSwitched, task.taskId, mode)
+
+		const taskHistoryItem =
+			this.taskHistoryStore.get(task.taskId) ??
+			(this.getGlobalState("taskHistory") ?? []).find((item) => item.id === task.taskId)
+
+		if (taskHistoryItem) {
+			await this.updateTaskHistory({ ...taskHistoryItem, mode })
+		}
+
+		task.setTaskMode(mode)
+	}
+
+	public async setTaskProviderProfile(
+		taskId: string,
+		apiConfigName: string,
+		providerSettings?: ProviderSettings,
+	): Promise<void> {
+		const task = this.getLiveTask(taskId)
+		if (!task) {
+			throw new Error(`Cannot switch provider profile for unknown task ${taskId}`)
+		}
+
+		const resolvedProviderSettings =
+			providerSettings ?? (await this.getProviderSettingsForProfileName(apiConfigName)) ?? task.apiConfiguration
+
+		task.setTaskApiConfigName(apiConfigName)
+		this.updateTaskApiHandlerIfNeeded(resolvedProviderSettings, { forceRebuild: true, task })
+
+		const taskHistoryItem =
+			this.taskHistoryStore.get(task.taskId) ??
+			(this.getGlobalState("taskHistory") ?? []).find((item) => item.id === task.taskId)
+
+		if (taskHistoryItem) {
+			await this.updateTaskHistory({ ...taskHistoryItem, apiConfigName })
 		}
 	}
 
@@ -2302,6 +2364,7 @@ export class ClineProvider
 		const mergedDeniedCommands = this.mergeDeniedCommands(deniedCommands)
 		const cwd = this.cwd
 		const currentTask = this.currentView.type === "task" ? this.getLiveTask(this.currentView.taskId) : undefined
+		const scheduledTaskState = this.scheduledTaskService?.getState()
 
 		return {
 			version: this.context.extension?.packageJSON?.version ?? "",
@@ -2331,6 +2394,8 @@ export class ClineProvider
 			currentTaskTodos: currentTask?.todoList || [],
 			messageQueue: currentTask?.messageQueueService?.messages,
 			taskHistory: this.taskHistoryStore.getAll().filter((item: HistoryItem) => item.ts && item.task),
+			scheduledTasks: scheduledTaskState?.tasks ?? [],
+			scheduledTaskRuns: scheduledTaskState?.runs ?? [],
 			soundEnabled: soundEnabled ?? false,
 			ttsEnabled: ttsEnabled ?? false,
 			ttsSpeed: ttsSpeed ?? 1.0,
@@ -2574,6 +2639,8 @@ export class ClineProvider
 			autoCondenseContext: stateValues.autoCondenseContext ?? true,
 			autoCondenseContextPercent: stateValues.autoCondenseContextPercent ?? 100,
 			taskHistory: this.taskHistoryStore.getAll(),
+			scheduledTasks: this.scheduledTaskService?.getState().tasks ?? [],
+			scheduledTaskRuns: this.scheduledTaskService?.getState().runs ?? [],
 			allowedCommands: stateValues.allowedCommands,
 			deniedCommands: stateValues.deniedCommands,
 			soundEnabled: stateValues.soundEnabled ?? false,
@@ -2854,6 +2921,14 @@ export class ClineProvider
 		return this.skillsManager
 	}
 
+	public setScheduledTaskService(service: ScheduledTaskService): void {
+		this.scheduledTaskService = service
+	}
+
+	public getScheduledTaskService(): ScheduledTaskService | undefined {
+		return this.scheduledTaskService
+	}
+
 	/**
 	 * Check if the current state is compliant with MDM policy
 	 * @returns true if compliant or no MDM policy exists, false if MDM policy exists and user is non-compliant
@@ -2957,6 +3032,10 @@ export class ClineProvider
 
 	public getLiveTask(taskId: string | undefined): Task | undefined {
 		return this.taskSessions.getTask(taskId)
+	}
+
+	public isTaskOnScreen(taskId: string): boolean {
+		return this.currentView.type === "task" && this.currentView.taskId === taskId
 	}
 
 	public getTaskForMessage(message: Pick<WebviewMessage, "taskId">): Task | undefined {
@@ -3101,8 +3180,16 @@ export class ClineProvider
 			}
 		}
 
-		const { apiConfiguration, organizationAllowList, enableCheckpoints, checkpointTimeout, experiments } =
-			await this.getState()
+		const {
+			apiConfiguration: currentApiConfiguration,
+			currentApiConfigName,
+			organizationAllowList,
+			enableCheckpoints,
+			checkpointTimeout,
+			experiments,
+		} = await this.getState()
+		const apiConfiguration = options.apiConfiguration ?? currentApiConfiguration
+		const taskApiConfigName = options.taskApiConfigName ?? currentApiConfigName ?? "default"
 
 		// Single-open-task invariant: always enforce for user-initiated top-level tasks
 		if (!parentTask && !options.preserveExisting) {
@@ -3123,6 +3210,12 @@ export class ClineProvider
 			throw new OrganizationAllowListViolationError(t("common:errors.violated_organization_allowlist"))
 		}
 
+		const {
+			background,
+			apiConfiguration: _optionApiConfiguration,
+			taskApiConfigName: _optionTaskApiConfigName,
+			...taskOptions
+		} = options
 		const task = new Task({
 			provider: this,
 			apiConfiguration,
@@ -3136,14 +3229,15 @@ export class ClineProvider
 			parentTask,
 			taskNumber: this.clineStack.length + 1,
 			onCreated: this.taskCreationCallback,
-			initialTodos: options.initialTodos,
+			initialTodos: taskOptions.initialTodos,
+			taskApiConfigName,
 			// Ensure this task is present in clineStack before startTask() emits
 			// its initial state update, so state.currentTaskId is available ASAP.
 			startTask: false,
-			...options,
+			...taskOptions,
 		})
 
-		await this.addClineToStack(task)
+		await this.addClineToStack(task, { focus: !background })
 		await this.postStateToWebviewWithoutTaskHistory()
 		task.start()
 
@@ -3349,7 +3443,11 @@ export class ClineProvider
 	}
 
 	private async getTaskProperties(): Promise<DynamicAppProperties & TaskProperties> {
-		const { language = "en", mode, apiConfiguration } = await this.getState()
+		const {
+			language = "en",
+			mode: foregroundMode,
+			apiConfiguration: foregroundApiConfiguration,
+		} = await this.getState()
 
 		const task = this.getCurrentTask()
 		const todoList = task?.todoList
@@ -3364,11 +3462,13 @@ export class ClineProvider
 			}
 		}
 
+		const taskMode = task ? await task.getTaskMode() : foregroundMode
+		const apiConfiguration = task?.apiConfiguration ?? foregroundApiConfiguration
 		const apiProvider = apiConfiguration?.apiProvider
 
 		return {
 			language,
-			mode,
+			mode: taskMode,
 			taskId: task?.taskId,
 			parentTaskId: task?.parentTaskId,
 			apiProvider: apiProvider && !isRetiredProvider(apiProvider) ? apiProvider : undefined,
@@ -3404,6 +3504,10 @@ export class ClineProvider
 		return this.currentWorkspacePath || getWorkspacePath()
 	}
 
+	public async runWorkspaceMutation<T>(task: Task, label: string, run: () => Promise<T>): Promise<T> {
+		return this.workspaceMutationGate.run(task.taskId, label, run, () => task.abort)
+	}
+
 	/**
 	 * Delegate parent task and open child task.
 	 *
@@ -3422,16 +3526,21 @@ export class ClineProvider
 
 		// Metadata-driven delegation is always enabled
 
-		// 1) Get parent (must be current task)
-		const parent = this.getCurrentTask()
+		// 1) Get parent by lane id. Delegation can be triggered by a task that is not
+		// currently focused, so do not rely on the foreground task pointer here.
+		const parent = this.getLiveTask(parentTaskId) ?? this.getCurrentTask()
 		if (!parent) {
-			throw new Error("[delegateParentAndOpenChild] No current task")
+			throw new Error(`[delegateParentAndOpenChild] Parent task ${parentTaskId} is not live`)
 		}
 		if (parent.taskId !== parentTaskId) {
 			throw new Error(
-				`[delegateParentAndOpenChild] Parent mismatch: expected ${parentTaskId}, current ${parent.taskId}`,
+				`[delegateParentAndOpenChild] Parent mismatch: expected ${parentTaskId}, resolved ${parent.taskId}`,
 			)
 		}
+		const childTaskMode = mode
+		const childTaskApiConfigName = (await parent.getTaskApiConfigName()) ?? (await this.getProviderProfile())
+		const childApiConfiguration = parent.apiConfiguration
+		const childRunsInBackground = !this.isTaskOnScreen(parentTaskId)
 		// 2) Flush pending tool results to API history BEFORE disposing the parent.
 		//    This is critical: when tools are called before new_task,
 		//    their tool_result blocks are in userMessageContent but not yet saved to API history.
@@ -3470,7 +3579,7 @@ export class ClineProvider
 		//    This ensures we never have >1 tasks open at any time during delegation.
 		//    Await abort completion to ensure clean disposal and prevent unhandled rejections.
 		try {
-			await this.removeClineFromStack({ skipDelegationRepair: true })
+			await this.removeClineFromStack({ taskId: parentTaskId, skipDelegationRepair: true })
 		} catch (error) {
 			this.log(
 				`[delegateParentAndOpenChild] Error during parent disposal (non-fatal): ${
@@ -3478,20 +3587,6 @@ export class ClineProvider
 				}`,
 			)
 			// Non-fatal: proceed with child creation even if parent cleanup had issues
-		}
-
-		// 3) Switch provider mode to child's requested mode BEFORE creating the child task
-		//    This ensures the child's system prompt and configuration are based on the correct mode.
-		//    The mode switch must happen before createTask() because the Task constructor
-		//    initializes its mode from provider.getState() during initializeTaskMode().
-		try {
-			await this.handleModeSwitch(mode as any)
-		} catch (e) {
-			this.log(
-				`[delegateParentAndOpenChild] handleModeSwitch failed for mode '${mode}': ${
-					(e as Error)?.message ?? String(e)
-				}`,
-			)
 		}
 
 		// 4) Create child as sole active (parent reference preserved for lineage)
@@ -3509,6 +3604,10 @@ export class ClineProvider
 			initialTodos,
 			initialStatus: "active",
 			startTask: false,
+			taskMode: childTaskMode,
+			taskApiConfigName: childTaskApiConfigName,
+			apiConfiguration: childApiConfiguration,
+			background: childRunsInBackground,
 		})
 
 		// 5) Persist parent delegation metadata BEFORE the child starts writing.
@@ -3554,6 +3653,10 @@ export class ClineProvider
 	}): Promise<void> {
 		const { parentTaskId, childTaskId, completionResultSummary } = params
 		const globalStoragePath = this.contextProxy.globalStorageUri.fsPath
+		const childWasOnScreen =
+			typeof this.isTaskOnScreen === "function"
+				? this.isTaskOnScreen(childTaskId)
+				: this.getCurrentTask()?.taskId === childTaskId
 
 		// 1) Load parent from history and current persisted messages
 		const { historyItem } = await this.getTaskWithId(parentTaskId)
@@ -3673,9 +3776,14 @@ export class ClineProvider
 		//    removeClineFromStack() → abortTask(true) → saveClineMessages() writes
 		//    the historyItem with initialStatus (typically "active"), which would
 		//    overwrite a "completed" status set earlier.
-		const current = this.getCurrentTask()
-		if (current?.taskId === childTaskId) {
-			await this.removeClineFromStack()
+		const liveChild =
+			typeof this.getLiveTask === "function"
+				? this.getLiveTask(childTaskId)
+				: this.getCurrentTask()?.taskId === childTaskId
+					? this.getCurrentTask()
+					: undefined
+		if (liveChild) {
+			await this.removeClineFromStack({ taskId: childTaskId })
 		}
 
 		// 4) Update child metadata to "completed" status.
@@ -3714,9 +3822,13 @@ export class ClineProvider
 			// non-fatal
 		}
 
-		// 7) Reopen the parent from history as the sole active task (restores saved mode)
+		// 7) Reopen the parent from history (restores saved mode). If the child was
+		//    off-screen, keep the parent off-screen too.
 		//    IMPORTANT: startTask=false to suppress resume-from-history ask scheduling
-		const parentInstance = await this.createTaskWithHistoryItem(updatedHistory, { startTask: false })
+		const parentInstance = await this.createTaskWithHistoryItem(
+			updatedHistory,
+			childWasOnScreen ? { startTask: false } : { startTask: false, preserveExisting: true, background: true },
+		)
 
 		// 8) Inject restored histories into the in-memory instance before resuming
 		if (parentInstance) {

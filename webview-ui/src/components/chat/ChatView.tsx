@@ -156,7 +156,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			return
 		}
 
-		const providerSelectedTask = currentView?.type === "task" && currentTaskId && hasSeenProviderDraftRef.current
+		const providerSelectedTask =
+			currentView?.type === "task" &&
+			currentTaskId &&
+			(currentTaskId !== blankTaskSourceIdRef.current || messages.length === 0) &&
+			hasSeenProviderDraftRef.current
 		const legacySelectedDifferentTask =
 			!currentView && currentTaskId && currentTaskId !== blankTaskSourceIdRef.current
 
@@ -164,7 +168,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			setIsBlankTaskView(false)
 			isBlankTaskPendingRef.current = false
 		}
-	}, [currentTaskId, currentView, isBlankTaskView])
+	}, [currentTaskId, currentView, isBlankTaskView, messages.length])
 
 	// Leaving this less safe version here since if the first message is not a
 	// task, then the extension is in a bad state and needs to be debugged (see
