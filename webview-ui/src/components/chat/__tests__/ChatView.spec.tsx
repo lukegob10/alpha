@@ -887,6 +887,39 @@ describe("ChatView - Message Queueing Tests", () => {
 			expect(queryByTestId("roo-tips")).toBeInTheDocument()
 		})
 
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			currentTaskItem: {
+				id: "task-1",
+				number: 1,
+				ts: 100,
+				task: "Old running task",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				workspace: "/test/workspace",
+			},
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: 100,
+					text: "Old running task",
+				},
+				{
+					type: "say",
+					say: "api_req_started",
+					ts: 102,
+					text: JSON.stringify({ apiProtocol: "anthropic" }),
+				},
+			],
+		})
+
+		await waitFor(() => {
+			expect(queryByTestId("roo-tips")).toBeInTheDocument()
+		})
+
 		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 
 		await act(async () => {

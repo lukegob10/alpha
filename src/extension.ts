@@ -36,6 +36,7 @@ import { openAiCodexOAuthManager } from "./integrations/openai-codex/oauth"
 import { McpServerManager } from "./services/mcp/McpServerManager"
 import { CodeIndexManager } from "./services/code-index/manager"
 import { MdmService } from "./services/mdm/MdmService"
+import { ScheduledTaskService } from "./services/scheduled-tasks"
 import { migrateSettings } from "./utils/migrateSettings"
 import { autoImportSettings } from "./utils/autoImportSettings"
 import { API } from "./extension/api"
@@ -193,6 +194,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	// Initialize the provider *before* the Alpha Cloud service.
 	const provider = new ClineProvider(context, outputChannel, "sidebar", contextProxy, mdmService)
+	const scheduledTaskService = new ScheduledTaskService(context, provider, outputChannel)
+	provider.setScheduledTaskService(scheduledTaskService)
+	context.subscriptions.push(scheduledTaskService)
+	void scheduledTaskService.initialize().catch((error) => {
+		outputChannel.appendLine(
+			`[ScheduledTaskService] Error during initialization: ${error instanceof Error ? error.message : String(error)}`,
+		)
+	})
 
 	// Initialize Alpha Cloud service.
 	const postStateListener = () => ClineProvider.getVisibleInstance()?.postStateToWebviewWithoutClineMessages()

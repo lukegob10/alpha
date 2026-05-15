@@ -637,7 +637,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 				status: "active",
 				completedByChildId: "child-rpd02",
 			}),
-			{ startTask: false },
+			{ startTask: false, preserveExisting: true, background: true },
 		)
 		expect(parentInstance.resumeAfterDelegation).toHaveBeenCalledTimes(1)
 	})

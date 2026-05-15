@@ -553,6 +553,36 @@ export async function presentAssistantMessage(cline: Task) {
 				pushToolResult(formatResponse.toolError(errorString))
 			}
 
+			const runWorkspaceMutation = async (label: string, run: () => Promise<void>) => {
+				const provider = cline.providerRef.deref()
+				if (!provider) {
+					await run()
+					return
+				}
+
+				await provider.runWorkspaceMutation(cline, label, run)
+			}
+
+			if (!block.partial) {
+				const toolBlocks = cline.assistantMessageContent.filter(
+					(contentBlock) => contentBlock.type === "tool_use" || contentBlock.type === "mcp_tool_use",
+				)
+				const hasMixedNewTaskBatch =
+					toolBlocks.length > 1 &&
+					toolBlocks.some(
+						(contentBlock) => contentBlock.type === "tool_use" && contentBlock.name === "new_task",
+					)
+
+				if (hasMixedNewTaskBatch) {
+					pushToolResult(
+						formatResponse.toolError(
+							"new_task must be called by itself in a message turn. Do not batch it with any other tool; retry by calling only new_task after any required setup is complete.",
+						),
+					)
+					break
+				}
+			}
+
 			if (!block.partial) {
 				// Check if this is a custom tool - if so, record as "custom_tool" (like MCP tools)
 				const isCustomTool = stateExperiments?.customTools && customToolRegistry.has(block.name)
@@ -677,11 +707,13 @@ export async function presentAssistantMessage(cline: Task) {
 
 			switch (block.name) {
 				case "write_to_file":
-					await checkpointSaveAndMark(cline)
-					await writeToFileTool.handle(cline, block as ToolUse<"write_to_file">, {
-						askApproval,
-						handleError,
-						pushToolResult,
+					await runWorkspaceMutation("write_to_file", async () => {
+						await checkpointSaveAndMark(cline)
+						await writeToFileTool.handle(cline, block as ToolUse<"write_to_file">, {
+							askApproval,
+							handleError,
+							pushToolResult,
+						})
 					})
 					break
 				case "update_todo_list":
@@ -692,44 +724,54 @@ export async function presentAssistantMessage(cline: Task) {
 					})
 					break
 				case "apply_diff":
-					await checkpointSaveAndMark(cline)
-					await applyDiffToolClass.handle(cline, block as ToolUse<"apply_diff">, {
-						askApproval,
-						handleError,
-						pushToolResult,
+					await runWorkspaceMutation("apply_diff", async () => {
+						await checkpointSaveAndMark(cline)
+						await applyDiffToolClass.handle(cline, block as ToolUse<"apply_diff">, {
+							askApproval,
+							handleError,
+							pushToolResult,
+						})
 					})
 					break
 				case "edit":
 				case "search_and_replace":
-					await checkpointSaveAndMark(cline)
-					await editTool.handle(cline, block as ToolUse<"edit">, {
-						askApproval,
-						handleError,
-						pushToolResult,
+					await runWorkspaceMutation("edit", async () => {
+						await checkpointSaveAndMark(cline)
+						await editTool.handle(cline, block as ToolUse<"edit">, {
+							askApproval,
+							handleError,
+							pushToolResult,
+						})
 					})
 					break
 				case "search_replace":
-					await checkpointSaveAndMark(cline)
-					await searchReplaceTool.handle(cline, block as ToolUse<"search_replace">, {
-						askApproval,
-						handleError,
-						pushToolResult,
+					await runWorkspaceMutation("search_replace", async () => {
+						await checkpointSaveAndMark(cline)
+						await searchReplaceTool.handle(cline, block as ToolUse<"search_replace">, {
+							askApproval,
+							handleError,
+							pushToolResult,
+						})
 					})
 					break
 				case "edit_file":
-					await checkpointSaveAndMark(cline)
-					await editFileTool.handle(cline, block as ToolUse<"edit_file">, {
-						askApproval,
-						handleError,
-						pushToolResult,
+					await runWorkspaceMutation("edit_file", async () => {
+						await checkpointSaveAndMark(cline)
+						await editFileTool.handle(cline, block as ToolUse<"edit_file">, {
+							askApproval,
+							handleError,
+							pushToolResult,
+						})
 					})
 					break
 				case "apply_patch":
-					await checkpointSaveAndMark(cline)
-					await applyPatchTool.handle(cline, block as ToolUse<"apply_patch">, {
-						askApproval,
-						handleError,
-						pushToolResult,
+					await runWorkspaceMutation("apply_patch", async () => {
+						await checkpointSaveAndMark(cline)
+						await applyPatchTool.handle(cline, block as ToolUse<"apply_patch">, {
+							askApproval,
+							handleError,
+							pushToolResult,
+						})
 					})
 					break
 				case "read_file":
@@ -762,17 +804,21 @@ export async function presentAssistantMessage(cline: Task) {
 					})
 					break
 				case "execute_command":
-					await executeCommandTool.handle(cline, block as ToolUse<"execute_command">, {
-						askApproval,
-						handleError,
-						pushToolResult,
+					await runWorkspaceMutation("execute_command", async () => {
+						await executeCommandTool.handle(cline, block as ToolUse<"execute_command">, {
+							askApproval,
+							handleError,
+							pushToolResult,
+						})
 					})
 					break
 				case "read_command_output":
-					await readCommandOutputTool.handle(cline, block as ToolUse<"read_command_output">, {
-						askApproval,
-						handleError,
-						pushToolResult,
+					await runWorkspaceMutation("read_command_output", async () => {
+						await readCommandOutputTool.handle(cline, block as ToolUse<"read_command_output">, {
+							askApproval,
+							handleError,
+							pushToolResult,
+						})
 					})
 					break
 				case "use_mcp_tool":
@@ -804,12 +850,14 @@ export async function presentAssistantMessage(cline: Task) {
 					})
 					break
 				case "new_task":
-					await checkpointSaveAndMark(cline)
-					await newTaskTool.handle(cline, block as ToolUse<"new_task">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-						toolCallId: block.id,
+					await runWorkspaceMutation("new_task_checkpoint", async () => {
+						await checkpointSaveAndMark(cline)
+						await newTaskTool.handle(cline, block as ToolUse<"new_task">, {
+							askApproval,
+							handleError,
+							pushToolResult,
+							toolCallId: block.id,
+						})
 					})
 					break
 				case "attempt_completion": {
@@ -842,11 +890,13 @@ export async function presentAssistantMessage(cline: Task) {
 					})
 					break
 				case "generate_image":
-					await checkpointSaveAndMark(cline)
-					await generateImageTool.handle(cline, block as ToolUse<"generate_image">, {
-						askApproval,
-						handleError,
-						pushToolResult,
+					await runWorkspaceMutation("generate_image", async () => {
+						await checkpointSaveAndMark(cline)
+						await generateImageTool.handle(cline, block as ToolUse<"generate_image">, {
+							askApproval,
+							handleError,
+							pushToolResult,
+						})
 					})
 					break
 				default: {

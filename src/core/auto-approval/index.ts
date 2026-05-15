@@ -153,12 +153,16 @@ export async function checkAutoApproval({
 			return { decision: "approve" }
 		}
 
+		// Mode and delegation controls are non-mutating flow-control actions. Once
+		// auto-approval is enabled, do not pause the task on Continue/New task for
+		// these asks; the tools used by the resulting lane still apply their own
+		// read/write/command approval rules.
 		if (tool?.tool === "switchMode") {
-			return state.alwaysAllowModeSwitch === true ? { decision: "approve" } : { decision: "ask" }
+			return { decision: "approve" }
 		}
 
 		if (["newTask", "finishTask"].includes(tool?.tool)) {
-			return state.alwaysAllowSubtasks === true ? { decision: "approve" } : { decision: "ask" }
+			return { decision: "approve" }
 		}
 
 		const isOutsideWorkspace = !!tool.isOutsideWorkspace

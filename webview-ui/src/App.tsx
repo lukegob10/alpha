@@ -20,11 +20,12 @@ import { CheckpointRestoreDialog } from "./components/chat/CheckpointRestoreDial
 import { DeleteMessageDialog, EditMessageDialog } from "./components/chat/MessageModificationConfirmationDialog"
 import ErrorBoundary from "./components/ErrorBoundary"
 import { CloudView } from "./components/cloud/CloudView"
+import ScheduledTasksView from "./components/scheduled-tasks/ScheduledTasksView"
 import { useAddNonInteractiveClickListener } from "./components/ui/hooks/useNonInteractiveClick"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { STANDARD_TOOLTIP_DELAY } from "./components/ui/standard-tooltip"
 
-type Tab = "settings" | "history" | "chat" | "marketplace" | "cloud"
+type Tab = "settings" | "history" | "chat" | "marketplace" | "cloud" | "scheduledTasks"
 
 interface DeleteMessageDialogState {
 	isOpen: boolean
@@ -73,6 +74,7 @@ const App = () => {
 
 	const [showAnnouncement, setShowAnnouncement] = useState(false)
 	const [tab, setTab] = useState<Tab>("chat")
+	const [scheduledTaskTargetId, setScheduledTaskTargetId] = useState<string | undefined>(undefined)
 
 	const [deleteMessageDialogState, setDeleteMessageDialogState] = useState<DeleteMessageDialogState>({
 		isOpen: false,
@@ -124,6 +126,9 @@ const App = () => {
 				// Handle switchTab action with tab parameter
 				if (message.action === "switchTab" && message.tab) {
 					const targetTab = message.tab as Tab
+					if (targetTab === "scheduledTasks") {
+						setScheduledTaskTargetId(message.values?.scheduledTaskId as string | undefined)
+					}
 					switchTab(targetTab)
 					// Extract targetSection from values if provided
 					const targetSection = message.values?.section as string | undefined
@@ -250,6 +255,9 @@ const App = () => {
 					cloudApiUrl={cloudApiUrl}
 					organizations={cloudOrganizations}
 				/>
+			)}
+			{tab === "scheduledTasks" && (
+				<ScheduledTasksView onDone={() => switchTab("chat")} targetTaskId={scheduledTaskTargetId} />
 			)}
 			<ChatView
 				ref={chatViewRef}

@@ -6,4 +6,6 @@ export const GlobalFileNames = {
 	taskMetadata: "task_metadata.json",
 	historyItem: "history_item.json",
 	historyIndex: "_index.json",
+	scheduledTasks: "scheduled_tasks.json",
+	scheduledTaskRuns: "scheduled_task_runs.json",
 }

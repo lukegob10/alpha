@@ -81,6 +81,11 @@
 				"icon": "$(history)"
 			},
 			{
+				"command": "alpha.scheduledTasksButtonClicked",
+				"title": "%command.scheduledTasks.title%",
+				"icon": "$(calendar)"
+			},
+			{
 				"command": "alpha.marketplaceButtonClicked",
 				"title": "%command.marketplace.title%",
 				"icon": "$(extensions)"
@@ -239,8 +244,13 @@
 					"when": "view == alpha.SidebarProvider"
 				},
 				{
-					"command": "alpha.popoutButtonClicked",
+					"command": "alpha.scheduledTasksButtonClicked",
 					"group": "overflow@2",
+					"when": "view == alpha.SidebarProvider"
+				},
+				{
+					"command": "alpha.popoutButtonClicked",
+					"group": "overflow@3",
 					"when": "view == alpha.SidebarProvider"
 				}
 			],
@@ -271,8 +281,13 @@
 					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
 				},
 				{
-					"command": "alpha.popoutButtonClicked",
+					"command": "alpha.scheduledTasksButtonClicked",
 					"group": "overflow@2",
+					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
+				},
+				{
+					"command": "alpha.popoutButtonClicked",
+					"group": "overflow@3",
 					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
 				}
 			]
