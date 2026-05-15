@@ -8,7 +8,7 @@ import type {
 	ScheduledTaskNotificationPreference,
 	ScheduledTaskSchedule,
 } from "@alpha-code/types"
-import { getAllModes } from "@roo/modes"
+import { getAllModes } from "@alpha/modes"
 
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { vscode } from "@/utils/vscode"
