@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.6
+
+### Patch Changes
+
+- [codex] Fix Orchestrator delegation recovery for mode-specific subtasks
+
 ## 1.0.5
 
 ### Patch Changes

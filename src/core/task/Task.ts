@@ -3603,41 +3603,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						}
 					}
 
-					// Enforce new_task isolation: if new_task is called alongside other tools,
-					// truncate any tools that come after it and inject error tool_results.
-					// This prevents orphaned tools when delegation disposes the parent task.
-					const newTaskIndex = assistantContent.findIndex(
-						(block) => block.type === "tool_use" && block.name === "new_task",
+					// Enforce new_task isolation before any tools execute. A mixed new_task batch
+					// must be rejected as a complete turn so every saved tool_use has a matching
+					// tool_result and delegation cannot dispose the parent with dangling calls.
+					const assistantToolUses = assistantContent.filter(
+						(block): block is Anthropic.ToolUseBlockParam => block.type === "tool_use",
 					)
+					const hasMixedNewTaskBatch =
+						assistantToolUses.length > 1 && assistantToolUses.some((block) => block.name === "new_task")
 
-					if (newTaskIndex !== -1 && newTaskIndex < assistantContent.length - 1) {
-						// new_task found but not last - truncate subsequent tools
-						const truncatedTools = assistantContent.slice(newTaskIndex + 1)
-						assistantContent.length = newTaskIndex + 1 // Truncate API history array
+					if (hasMixedNewTaskBatch) {
+						const isolationError =
+							"new_task must be called by itself in a message turn. No tools from this turn were executed. Retry by calling only new_task after any required setup is complete."
 
-						// ALSO truncate the execution array (assistantMessageContent) to prevent
-						// tools after new_task from being executed by presentAssistantMessage().
-						// Find new_task index in assistantMessageContent (may differ from assistantContent
-						// due to text blocks being structured differently).
-						const executionNewTaskIndex = this.assistantMessageContent.findIndex(
-							(block) => block.type === "tool_use" && block.name === "new_task",
-						)
-						if (executionNewTaskIndex !== -1) {
-							this.assistantMessageContent.length = executionNewTaskIndex + 1
+						for (const tool of assistantToolUses) {
+							this.pushToolResultToUserContent({
+								type: "tool_result",
+								tool_use_id: tool.id,
+								content: isolationError,
+								is_error: true,
+							})
 						}
 
-						// Pre-inject error tool_results for truncated tools
-						for (const tool of truncatedTools) {
-							if (tool.type === "tool_use" && (tool as Anthropic.ToolUseBlockParam).id) {
-								this.pushToolResultToUserContent({
-									type: "tool_result",
-									tool_use_id: (tool as Anthropic.ToolUseBlockParam).id,
-									content:
-										"This tool was not executed because new_task was called in the same message turn. The new_task tool must be the last tool in a message.",
-									is_error: true,
-								})
-							}
-						}
+						this.assistantMessageContent = []
+						this.currentStreamingContentIndex = 0
+						this.userMessageContentReady = true
 					}
 
 					// Save assistant message BEFORE executing tools
@@ -3687,9 +3677,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 					// If the model did not tool use, then we need to tell it to
 					// either use a tool or attempt_completion.
-					const didToolUse = this.assistantMessageContent.some(
-						(block) => block.type === "tool_use" || block.type === "mcp_tool_use",
-					)
+					const didToolUse = hasToolUses
 
 					if (!didToolUse) {
 						// Increment consecutive no-tool-use counter

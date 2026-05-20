@@ -621,6 +621,20 @@ describe("FileRestrictionError", () => {
 		})
 	})
 
+	describe("orchestrator mode", () => {
+		it("delegates simple mode-specific requests instead of narrating mode switches", () => {
+			const orchestratorMode = modes.find((mode) => mode.slug === "orchestrator")
+
+			expect(orchestratorMode?.customInstructions).toContain(
+				"Do not narrate that you need to switch to Ask, Code, Architect, or Debug mode",
+			)
+			expect(orchestratorMode?.customInstructions).toContain("delegate a single subtask immediately")
+			expect(orchestratorMode?.customInstructions).toContain(
+				"Do not use `switch_mode` as your normal delegation mechanism",
+			)
+		})
+	})
+
 	describe("getFullModeDetails", () => {
 		beforeEach(() => {
 			vi.clearAllMocks()
