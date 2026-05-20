@@ -19,6 +19,7 @@ describe("runSlashCommandTool", () => {
 		vi.clearAllMocks()
 
 		mockTask = {
+			taskId: "task-1",
 			consecutiveMistakeCount: 0,
 			recordToolError: vi.fn(),
 			sayAndCreateMissingParamError: vi.fn().mockResolvedValue("Missing parameter error"),
@@ -437,7 +438,7 @@ Deploy application to production`,
 	})
 
 	it("should switch mode when mode is specified in command", async () => {
-		const mockHandleModeSwitch = vi.fn()
+		const mockSetTaskMode = vi.fn()
 		const block: ToolUse<"run_slash_command"> = {
 			type: "tool_use" as const,
 			name: "run_slash_command" as const,
@@ -464,14 +465,14 @@ Deploy application to production`,
 				},
 				customModes: undefined,
 			}),
-			handleModeSwitch: mockHandleModeSwitch,
+			setTaskMode: mockSetTaskMode,
 		})
 
 		vi.mocked(getCommand).mockResolvedValue(mockCommand)
 
 		await runSlashCommandTool.handle(mockTask as Task, block, mockCallbacks)
 
-		expect(mockHandleModeSwitch).toHaveBeenCalledWith("debug")
+		expect(mockSetTaskMode).toHaveBeenCalledWith("task-1", "debug")
 		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(
 			`Command: /debug-app
 Description: Debug the application

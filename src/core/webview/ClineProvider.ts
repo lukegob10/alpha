@@ -1478,7 +1478,7 @@ export class ClineProvider
 
 		if (task) {
 			try {
-				await this.setTaskMode(task.taskId, newMode)
+				await this.setTaskMode(task.taskId, newMode, { postState: false })
 			} catch (error) {
 				// If persistence fails, log the error but don't update the in-memory state.
 				this.log(
@@ -1592,11 +1592,12 @@ export class ClineProvider
 		return providerSettings.apiProvider ? providerSettings : undefined
 	}
 
-	public async setTaskMode(taskId: string, mode: string): Promise<void> {
+	public async setTaskMode(taskId: string, mode: string, options: { postState?: boolean } = {}): Promise<void> {
 		const task = this.getLiveTask(taskId)
 		if (!task) {
 			throw new Error(`Cannot switch mode for unknown task ${taskId}`)
 		}
+		const { postState = true } = options
 
 		TelemetryService.instance.captureModeSwitch(task.taskId, mode)
 		task.emit(RooCodeEventName.TaskModeSwitched, task.taskId, mode)
@@ -1609,18 +1610,28 @@ export class ClineProvider
 			await this.updateTaskHistory({ ...taskHistoryItem, mode })
 		}
 
-		task.setTaskMode(mode)
+		if (typeof task.setTaskMode === "function") {
+			task.setTaskMode(mode)
+		} else {
+			;(task as any)._taskMode = mode
+		}
+
+		if (postState && this.isTaskOnScreen(task.taskId)) {
+			await this.postStateToWebview()
+		}
 	}
 
 	public async setTaskProviderProfile(
 		taskId: string,
 		apiConfigName: string,
 		providerSettings?: ProviderSettings,
+		options: { postState?: boolean } = {},
 	): Promise<void> {
 		const task = this.getLiveTask(taskId)
 		if (!task) {
 			throw new Error(`Cannot switch provider profile for unknown task ${taskId}`)
 		}
+		const { postState = true } = options
 
 		const resolvedProviderSettings =
 			providerSettings ?? (await this.getProviderSettingsForProfileName(apiConfigName)) ?? task.apiConfiguration
@@ -1634,6 +1645,10 @@ export class ClineProvider
 
 		if (taskHistoryItem) {
 			await this.updateTaskHistory({ ...taskHistoryItem, apiConfigName })
+		}
+
+		if (postState && this.isTaskOnScreen(task.taskId)) {
+			await this.postStateToWebview()
 		}
 	}
 
@@ -2364,6 +2379,28 @@ export class ClineProvider
 		const mergedDeniedCommands = this.mergeDeniedCommands(deniedCommands)
 		const cwd = this.cwd
 		const currentTask = this.currentView.type === "task" ? this.getLiveTask(this.currentView.taskId) : undefined
+		let currentTaskMode: string | undefined
+		let currentTaskApiConfigName: string | undefined
+		if (currentTask) {
+			try {
+				currentTaskMode = await currentTask.getTaskMode()
+			} catch (error) {
+				this.log(
+					`[getStateToPostToWebview] Failed to resolve task mode for ${currentTask.taskId}: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				)
+			}
+			try {
+				currentTaskApiConfigName = await currentTask.getTaskApiConfigName()
+			} catch (error) {
+				this.log(
+					`[getStateToPostToWebview] Failed to resolve task API config for ${currentTask.taskId}: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				)
+			}
+		}
 		const scheduledTaskState = this.scheduledTaskService?.getState()
 
 		return {
@@ -2416,10 +2453,10 @@ export class ClineProvider
 			terminalZshP10k: terminalZshP10k ?? false,
 			terminalZdotdir: terminalZdotdir ?? false,
 			mcpEnabled: mcpEnabled ?? true,
-			currentApiConfigName: currentApiConfigName ?? "default",
+			currentApiConfigName: currentTaskApiConfigName ?? currentApiConfigName ?? "default",
 			listApiConfigMeta: listApiConfigMeta ?? [],
 			pinnedApiConfigs: pinnedApiConfigs ?? {},
-			mode: mode ?? defaultModeSlug,
+			mode: currentTaskMode ?? mode ?? defaultModeSlug,
 			customModePrompts: customModePrompts ?? {},
 			customSupportPrompts: customSupportPrompts ?? {},
 			enhancementApiConfigId,

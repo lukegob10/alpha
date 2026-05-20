@@ -58,23 +58,40 @@ vi.mock("vscode", () => ({
 let taskIdCounter = 0
 
 vi.mock("../../task/Task", () => ({
-	Task: vi.fn().mockImplementation((options) => ({
-		taskId: options.taskId || `test-task-id-${++taskIdCounter}`,
-		saveClineMessages: vi.fn(),
-		clineMessages: [],
-		apiConversationHistory: [],
-		overwriteClineMessages: vi.fn(),
-		overwriteApiConversationHistory: vi.fn(),
-		abortTask: vi.fn(),
-		handleWebviewAskResponse: vi.fn(),
-		getTaskNumber: vi.fn().mockReturnValue(0),
-		setTaskNumber: vi.fn(),
-		setParentTask: vi.fn(),
-		setRootTask: vi.fn(),
-		emit: vi.fn(),
-		parentTask: options.parentTask,
-		updateApiConfiguration: vi.fn(),
-	})),
+	Task: vi.fn().mockImplementation((options) => {
+		const task = {
+			taskId: options.taskId || `test-task-id-${++taskIdCounter}`,
+			_taskMode: options.taskMode ?? options.historyItem?.mode ?? "code",
+			_taskApiConfigName: options.taskApiConfigName ?? options.historyItem?.apiConfigName ?? "default",
+			saveClineMessages: vi.fn(),
+			clineMessages: [],
+			apiConversationHistory: [],
+			overwriteClineMessages: vi.fn(),
+			overwriteApiConversationHistory: vi.fn(),
+			abortTask: vi.fn(),
+			handleWebviewAskResponse: vi.fn(),
+			getTaskNumber: vi.fn().mockReturnValue(0),
+			setTaskNumber: vi.fn(),
+			setParentTask: vi.fn(),
+			setRootTask: vi.fn(),
+			emit: vi.fn(),
+			parentTask: options.parentTask,
+			updateApiConfiguration: vi.fn(),
+			getTaskMode: vi.fn(async function (this: any) {
+				return this._taskMode
+			}),
+			setTaskMode: vi.fn(function (this: any, mode: string) {
+				this._taskMode = mode
+			}),
+			getTaskApiConfigName: vi.fn(async function (this: any) {
+				return this._taskApiConfigName
+			}),
+			setTaskApiConfigName: vi.fn(function (this: any, name: string | undefined) {
+				this._taskApiConfigName = name
+			}),
+		}
+		return task
+	}),
 }))
 
 vi.mock("../../prompts/sections/custom-instructions")
@@ -288,6 +305,47 @@ describe("ClineProvider - Sticky Mode", () => {
 			listResources: vi.fn().mockResolvedValue([]),
 			readResource: vi.fn().mockResolvedValue({ contents: [] }),
 			getAllServers: vi.fn().mockReturnValue([]),
+		})
+	})
+
+	describe("Visible lane state", () => {
+		it("projects the visible task mode instead of the global default mode", async () => {
+			const task = new Task({
+				provider,
+				apiConfiguration: { apiProvider: "openrouter" },
+				taskMode: "architect",
+				taskApiConfigName: "lane-profile",
+			})
+
+			await provider.addClineToStack(task as any)
+
+			const state = await provider.getStateToPostToWebview()
+
+			expect(state.mode).toBe("architect")
+			expect(state.currentApiConfigName).toBe("lane-profile")
+		})
+
+		it("refreshes visible state after a task-local mode switch", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			const task = new Task({
+				provider,
+				apiConfiguration: { apiProvider: "openrouter" },
+				taskMode: "orchestrator",
+				taskApiConfigName: "lane-profile",
+			})
+
+			await provider.addClineToStack(task as any)
+			mockPostMessage.mockClear()
+
+			await provider.setTaskMode((task as any).taskId, "code")
+
+			expect((task as any)._taskMode).toBe("code")
+			expect(mockPostMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "state",
+					state: expect.objectContaining({ mode: "code" }),
+				}),
+			)
 		})
 	})
 
