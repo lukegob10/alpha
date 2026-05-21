@@ -89,3 +89,19 @@ describe("filterNativeToolsForMode - disabledTools", () => {
 		expect(resultNames).not.toContain("edit")
 	})
 })
+
+describe("filterNativeToolsForMode - orchestrator delegation", () => {
+	const nativeTools: OpenAI.Chat.ChatCompletionTool[] = [
+		makeTool("new_task"),
+		makeTool("switch_mode"),
+		makeTool("read_file"),
+	]
+
+	it("keeps delegation tools available in orchestrator mode", () => {
+		const result = filterNativeToolsForMode(nativeTools, "orchestrator", undefined, undefined, undefined, {})
+
+		const resultNames = result.map((t) => (t as any).function.name)
+		expect(resultNames).toContain("new_task")
+		expect(resultNames).toContain("switch_mode")
+	})
+})
