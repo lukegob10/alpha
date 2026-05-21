@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.9
+
+### Patch Changes
+
+- [codex] Reissue the orchestrator native tool delegation fix from merged `main`
+- [codex] Preserve streamed `new_task` arguments so orchestrator can create mode-specific subtasks
+
 ## 1.0.6
 
 ### Patch Changes
