@@ -467,6 +467,56 @@ describe("VercelAiGatewayHandler", () => {
 				})
 			})
 
+			it("should yield tool_call_end chunks when gateway finishes tool calls", async () => {
+				mockCreate.mockImplementation(async () => ({
+					[Symbol.asyncIterator]: async function* () {
+						yield {
+							choices: [
+								{
+									delta: {
+										tool_calls: [
+											{
+												index: 0,
+												id: "call_123",
+												function: {
+													name: "test_tool",
+													arguments: '{"arg1":"value"}',
+												},
+											},
+										],
+									},
+									index: 0,
+								},
+							],
+						}
+						yield {
+							choices: [
+								{
+									delta: {},
+									finish_reason: "tool_calls",
+									index: 0,
+								},
+							],
+						}
+					},
+				}))
+
+				const handler = new VercelAiGatewayHandler(mockOptions)
+
+				const stream = handler.createMessage("test prompt", [], {
+					taskId: "test-task-id",
+					tools: testTools,
+				})
+
+				const chunks = []
+				for await (const chunk of stream) {
+					chunks.push(chunk)
+				}
+
+				const toolCallEndChunks = chunks.filter((chunk) => chunk.type === "tool_call_end")
+				expect(toolCallEndChunks).toEqual([{ type: "tool_call_end", id: "call_123" }])
+			})
+
 			it("should include stream_options with include_usage", async () => {
 				const handler = new VercelAiGatewayHandler(mockOptions)
 
