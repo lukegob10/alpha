@@ -1478,7 +1478,7 @@ export class ClineProvider
 
 		if (task) {
 			try {
-				await this.setTaskMode(task.taskId, newMode, { postState: false })
+				await this.setTaskMode(task.taskId, newMode, { postState: false, applyModeProfile: false })
 			} catch (error) {
 				// If persistence fails, log the error but don't update the in-memory state.
 				this.log(
@@ -1592,12 +1592,63 @@ export class ClineProvider
 		return providerSettings.apiProvider ? providerSettings : undefined
 	}
 
-	public async setTaskMode(taskId: string, mode: string, options: { postState?: boolean } = {}): Promise<void> {
+	private async getModeProviderProfile(
+		mode: string,
+	): Promise<{ name: string; providerSettings: ProviderSettings } | undefined> {
+		const lockApiConfigAcrossModes = this.context.workspaceState.get("lockApiConfigAcrossModes", false)
+		if (lockApiConfigAcrossModes) {
+			return undefined
+		}
+
+		try {
+			const savedConfigId = await this.providerSettingsManager.getModeConfigId(mode)
+			if (!savedConfigId) {
+				return undefined
+			}
+
+			const listApiConfig = await this.providerSettingsManager.listConfig()
+			const profile = listApiConfig.find(({ id }) => id === savedConfigId)
+			if (!profile?.name) {
+				return undefined
+			}
+
+			const providerSettings = await this.getProviderSettingsForProfileName(profile.name)
+			if (!providerSettings) {
+				return undefined
+			}
+
+			return { name: profile.name, providerSettings }
+		} catch (error) {
+			this.log(
+				`Failed to resolve provider profile for mode ${mode}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			)
+			return undefined
+		}
+	}
+
+	private async applyModeProviderProfileToTask(task: Task, mode: string): Promise<void> {
+		const modeProviderProfile = await this.getModeProviderProfile(mode)
+		if (!modeProviderProfile) {
+			return
+		}
+
+		await this.setTaskProviderProfile(task.taskId, modeProviderProfile.name, modeProviderProfile.providerSettings, {
+			postState: false,
+		})
+	}
+
+	public async setTaskMode(
+		taskId: string,
+		mode: string,
+		options: { postState?: boolean; applyModeProfile?: boolean } = {},
+	): Promise<void> {
 		const task = this.getLiveTask(taskId)
 		if (!task) {
 			throw new Error(`Cannot switch mode for unknown task ${taskId}`)
 		}
-		const { postState = true } = options
+		const { postState = true, applyModeProfile = true } = options
 
 		TelemetryService.instance.captureModeSwitch(task.taskId, mode)
 		task.emit(RooCodeEventName.TaskModeSwitched, task.taskId, mode)
@@ -1614,6 +1665,10 @@ export class ClineProvider
 			task.setTaskMode(mode)
 		} else {
 			;(task as any)._taskMode = mode
+		}
+
+		if (applyModeProfile) {
+			await this.applyModeProviderProfileToTask(task, mode)
 		}
 
 		if (postState && this.isTaskOnScreen(task.taskId)) {
@@ -2401,11 +2456,12 @@ export class ClineProvider
 				)
 			}
 		}
+		const currentTaskApiConfiguration = currentTask?.apiConfiguration ?? apiConfiguration
 		const scheduledTaskState = this.scheduledTaskService?.getState()
 
 		return {
 			version: this.context.extension?.packageJSON?.version ?? "",
-			apiConfiguration,
+			apiConfiguration: currentTaskApiConfiguration,
 			customInstructions,
 			alwaysAllowReadOnly: alwaysAllowReadOnly ?? false,
 			alwaysAllowReadOnlyOutsideWorkspace: alwaysAllowReadOnlyOutsideWorkspace ?? false,
@@ -3577,8 +3633,10 @@ export class ClineProvider
 			)
 		}
 		const childTaskMode = mode
-		const childTaskApiConfigName = (await parent.getTaskApiConfigName()) ?? (await this.getProviderProfile())
-		const childApiConfiguration = parent.apiConfiguration
+		const modeProviderProfile = await this.getModeProviderProfile(mode)
+		const childTaskApiConfigName =
+			modeProviderProfile?.name ?? (await parent.getTaskApiConfigName()) ?? (await this.getProviderProfile())
+		const childApiConfiguration = modeProviderProfile?.providerSettings ?? parent.apiConfiguration
 		const childRunsInBackground = !this.isTaskOnScreen(parentTaskId)
 		// 2) Flush pending tool results to API history BEFORE disposing the parent.
 		//    This is critical: when tools are called before new_task,

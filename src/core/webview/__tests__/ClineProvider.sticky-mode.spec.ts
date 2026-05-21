@@ -63,12 +63,16 @@ vi.mock("../../task/Task", () => ({
 			taskId: options.taskId || `test-task-id-${++taskIdCounter}`,
 			_taskMode: options.taskMode ?? options.historyItem?.mode ?? "code",
 			_taskApiConfigName: options.taskApiConfigName ?? options.historyItem?.apiConfigName ?? "default",
+			apiConfiguration: options.apiConfiguration,
 			saveClineMessages: vi.fn(),
 			clineMessages: [],
 			apiConversationHistory: [],
 			overwriteClineMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),
 			abortTask: vi.fn(),
+			flushPendingToolResultsToHistory: vi.fn().mockResolvedValue(true),
+			retrySaveApiConversationHistory: vi.fn().mockResolvedValue(true),
+			start: vi.fn(),
 			handleWebviewAskResponse: vi.fn(),
 			getTaskNumber: vi.fn().mockReturnValue(0),
 			setTaskNumber: vi.fn(),
@@ -76,7 +80,9 @@ vi.mock("../../task/Task", () => ({
 			setRootTask: vi.fn(),
 			emit: vi.fn(),
 			parentTask: options.parentTask,
-			updateApiConfiguration: vi.fn(),
+			updateApiConfiguration: vi.fn(function (this: any, providerSettings: any) {
+				this.apiConfiguration = providerSettings
+			}),
 			getTaskMode: vi.fn(async function (this: any) {
 				return this._taskMode
 			}),
@@ -312,7 +318,7 @@ describe("ClineProvider - Sticky Mode", () => {
 		it("projects the visible task mode instead of the global default mode", async () => {
 			const task = new Task({
 				provider,
-				apiConfiguration: { apiProvider: "openrouter" },
+				apiConfiguration: { apiProvider: "openrouter", openRouterModelId: "lane-model" },
 				taskMode: "architect",
 				taskApiConfigName: "lane-profile",
 			})
@@ -323,6 +329,8 @@ describe("ClineProvider - Sticky Mode", () => {
 
 			expect(state.mode).toBe("architect")
 			expect(state.currentApiConfigName).toBe("lane-profile")
+			expect(state.apiConfiguration.apiProvider).toBe("openrouter")
+			expect(state.apiConfiguration.openRouterModelId).toBe("lane-model")
 		})
 
 		it("refreshes visible state after a task-local mode switch", async () => {
@@ -346,6 +354,153 @@ describe("ClineProvider - Sticky Mode", () => {
 					state: expect.objectContaining({ mode: "code" }),
 				}),
 			)
+		})
+
+		it("applies the target mode provider profile to the task lane during task-local mode switches", async () => {
+			const task = new Task({
+				provider,
+				apiConfiguration: { apiProvider: "anthropic" },
+				taskMode: "orchestrator",
+				taskApiConfigName: "orchestrator-profile",
+			})
+
+			await provider.taskHistoryStore.upsert({
+				id: (task as any).taskId,
+				ts: Date.now(),
+				task: "Test task",
+				number: 1,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			})
+
+			const updateTaskHistorySpy = vi
+				.spyOn(provider, "updateTaskHistory")
+				.mockImplementation((item) => Promise.resolve([item]))
+			vi.spyOn(provider.providerSettingsManager, "getModeConfigId").mockResolvedValue("ask-profile-id")
+			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+				{ name: "ask-profile", id: "ask-profile-id", apiProvider: "openrouter" },
+			])
+			vi.spyOn(provider.providerSettingsManager, "getProfile").mockResolvedValue({
+				name: "ask-profile",
+				id: "ask-profile-id",
+				apiProvider: "openrouter",
+				openRouterModelId: "anthropic/claude-sonnet-4.6",
+			} as any)
+
+			await provider.addClineToStack(task as any)
+
+			await provider.setTaskMode((task as any).taskId, "ask")
+
+			expect((task as any)._taskMode).toBe("ask")
+			expect(await (task as any).getTaskApiConfigName()).toBe("ask-profile")
+			expect((task as any).apiConfiguration).toMatchObject({
+				apiProvider: "openrouter",
+				openRouterModelId: "anthropic/claude-sonnet-4.6",
+			})
+			expect(updateTaskHistorySpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					id: (task as any).taskId,
+					mode: "ask",
+				}),
+			)
+			expect(updateTaskHistorySpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					id: (task as any).taskId,
+					apiConfigName: "ask-profile",
+				}),
+			)
+		})
+
+		it("keeps the existing task provider profile when mode profile lookup is locked", async () => {
+			vi.mocked(mockContext.workspaceState.get).mockImplementation((key: string) => {
+				if (key === "lockApiConfigAcrossModes") return true
+				return undefined
+			})
+
+			const task = new Task({
+				provider,
+				apiConfiguration: { apiProvider: "anthropic" },
+				taskMode: "orchestrator",
+				taskApiConfigName: "orchestrator-profile",
+			})
+
+			const getModeConfigIdSpy = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
+			await provider.addClineToStack(task as any)
+
+			await provider.setTaskMode((task as any).taskId, "ask")
+
+			expect((task as any)._taskMode).toBe("ask")
+			expect(await (task as any).getTaskApiConfigName()).toBe("orchestrator-profile")
+			expect((task as any).apiConfiguration).toMatchObject({ apiProvider: "anthropic" })
+			expect(getModeConfigIdSpy).not.toHaveBeenCalled()
+		})
+
+		it("creates delegated child tasks with the provider profile mapped to the child mode", async () => {
+			const parentTask = new Task({
+				provider,
+				apiConfiguration: { apiProvider: "anthropic" },
+				taskMode: "orchestrator",
+				taskApiConfigName: "orchestrator-profile",
+			})
+			const childTask = {
+				taskId: "child-task-id",
+				start: vi.fn(),
+			}
+
+			vi.spyOn(provider.providerSettingsManager, "getModeConfigId").mockResolvedValue("code-profile-id")
+			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+				{ name: "code-profile", id: "code-profile-id", apiProvider: "openrouter" },
+			])
+			vi.spyOn(provider.providerSettingsManager, "getProfile").mockResolvedValue({
+				name: "code-profile",
+				id: "code-profile-id",
+				apiProvider: "openrouter",
+				openRouterModelId: "anthropic/claude-sonnet-4.6",
+			} as any)
+			vi.spyOn(provider, "getTaskWithId").mockResolvedValue({
+				historyItem: {
+					id: (parentTask as any).taskId,
+					number: 1,
+					ts: Date.now(),
+					task: "Parent task",
+					tokensIn: 0,
+					tokensOut: 0,
+					cacheWrites: 0,
+					cacheReads: 0,
+					totalCost: 0,
+				},
+				taskDirPath: "/test/task/path",
+				apiConversationHistoryFilePath: "/test/task/path/api_conversation_history.json",
+				uiMessagesFilePath: "/test/task/path/ui_messages.json",
+				apiConversationHistory: [],
+			})
+			vi.spyOn(provider, "updateTaskHistory").mockImplementation((item) => Promise.resolve([item]))
+			const createTaskSpy = vi.spyOn(provider, "createTask").mockResolvedValue(childTask as any)
+
+			await provider.addClineToStack(parentTask as any)
+
+			await provider.delegateParentAndOpenChild({
+				parentTaskId: (parentTask as any).taskId,
+				message: "Analyze this",
+				initialTodos: [],
+				mode: "code",
+			})
+
+			expect(createTaskSpy).toHaveBeenCalledWith(
+				"Analyze this",
+				undefined,
+				parentTask,
+				expect.objectContaining({
+					taskMode: "code",
+					taskApiConfigName: "code-profile",
+					apiConfiguration: expect.objectContaining({
+						apiProvider: "openrouter",
+						openRouterModelId: "anthropic/claude-sonnet-4.6",
+					}),
+				}),
+			)
+			expect(childTask.start).toHaveBeenCalled()
 		})
 	})
 
