@@ -1331,6 +1331,58 @@ describe("VertexHandler", () => {
 			)
 		})
 
+		it("should require a tool choice for Vertex gateway requests when tools are available", async () => {
+			handler = new AnthropicVertexHandler({
+				apiModelId: "claude-sonnet-4-6",
+				vertexProjectId: "test-project",
+				vertexRegion: "global",
+				vertexGatewayBaseUrl: "https://gateway.example.com/vertex/v1/",
+				vertexGatewayCaBundlePath: "C:\\certs\\gateway.pem",
+				vertexGatewayHelixCommand: "helix auth access-token print -a",
+			})
+
+			vitest.spyOn(handler as any, "ensureGatewayTransportConfigured").mockResolvedValue(undefined)
+			vitest.spyOn(handler as any, "ensureGatewayAccessToken").mockResolvedValue("test-token")
+
+			const asyncIterator = {
+				async *[Symbol.asyncIterator]() {
+					yield {
+						type: "message_start",
+						message: {
+							usage: {
+								input_tokens: 10,
+								output_tokens: 0,
+							},
+						},
+					}
+				},
+			}
+
+			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
+			;(handler["client"].messages as any).create = mockCreate
+
+			const stream = handler.createMessage(systemPrompt, messages, {
+				taskId: "test-task",
+				tools: mockTools,
+				tool_choice: "auto",
+			})
+
+			for await (const _chunk of stream) {
+				// Just consume
+			}
+
+			expect(mockCreate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					tool_choice: { type: "any", disable_parallel_tool_use: false },
+				}),
+				expect.objectContaining({
+					headers: expect.objectContaining({
+						Authorization: "Bearer test-token",
+					}),
+				}),
+			)
+		})
+
 		it("should include tools when tools are provided", async () => {
 			handler = new AnthropicVertexHandler({
 				apiModelId: "claude-3-5-sonnet-v2@20241022",
@@ -1543,6 +1595,85 @@ describe("VertexHandler", () => {
 				name: undefined,
 				arguments: '"London"}',
 			})
+
+			const toolCallEndChunk = chunks.find((chunk) => chunk.type === "tool_call_end")
+			expect(toolCallEndChunk).toEqual({
+				type: "tool_call_end",
+				id: "toolu_123",
+			})
+		})
+
+		it("should preserve complete tool input from content_block_start for gateway-buffered streams", async () => {
+			handler = new AnthropicVertexHandler({
+				apiModelId: "claude-sonnet-4-6",
+				vertexProjectId: "test-project",
+				vertexRegion: "global",
+			})
+
+			const mockStream = [
+				{
+					type: "content_block_start",
+					index: 0,
+					content_block: {
+						type: "tool_use",
+						id: "toolu_switch",
+						name: "switch_mode",
+						input: {
+							mode_slug: "ask",
+							reason: "The user asked for investigation without edits.",
+						},
+					},
+				},
+				{
+					type: "content_block_stop",
+					index: 0,
+				},
+			]
+
+			const asyncIterator = {
+				async *[Symbol.asyncIterator]() {
+					for (const chunk of mockStream) {
+						yield chunk
+					}
+				},
+			}
+
+			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
+			;(handler["client"].messages as any).create = mockCreate
+
+			const stream = handler.createMessage(systemPrompt, messages, {
+				taskId: "test-task",
+				tools: mockTools,
+			})
+
+			const chunks: ApiStreamChunk[] = []
+			for await (const chunk of stream) {
+				chunks.push(chunk)
+			}
+
+			expect(chunks).toEqual([
+				{
+					type: "tool_call_partial",
+					index: 0,
+					id: "toolu_switch",
+					name: "switch_mode",
+					arguments: undefined,
+				},
+				{
+					type: "tool_call_partial",
+					index: 0,
+					id: undefined,
+					name: undefined,
+					arguments: JSON.stringify({
+						mode_slug: "ask",
+						reason: "The user asked for investigation without edits.",
+					}),
+				},
+				{
+					type: "tool_call_end",
+					id: "toolu_switch",
+				},
+			])
 		})
 	})
 })
