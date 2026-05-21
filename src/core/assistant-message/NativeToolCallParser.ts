@@ -79,8 +79,10 @@ export class NativeToolCallParser {
 		return `${scope ?? this.defaultScope}:${id}`
 	}
 
-	private static rawChunkKey(scope: string | undefined, index: number, id?: string): string {
-		return this.scopedKey(scope, id ? `id:${id}` : `index:${index}`)
+	private static rawChunkKey(scope: string | undefined, index: number): string {
+		// Tool-call streams often send the id only on the start chunk; argument deltas
+		// are correlated by the provider's stable per-message chunk index.
+		return this.scopedKey(scope, `index:${index}`)
 	}
 
 	private static coerceOptionalBoolean(value: unknown): boolean | undefined {
@@ -117,7 +119,7 @@ export class NativeToolCallParser {
 	): ToolCallStreamEvent[] {
 		const events: ToolCallStreamEvent[] = []
 		const { index, id, name, arguments: args } = chunk
-		const key = this.rawChunkKey(scope, index, id)
+		const key = this.rawChunkKey(scope, index)
 
 		let tracked = this.rawChunkTracker.get(key)
 

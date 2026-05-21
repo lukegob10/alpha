@@ -294,6 +294,40 @@ describe("NativeToolCallParser", () => {
 	})
 
 	describe("scoped streaming state", () => {
+		it("attaches index-only argument deltas to a tool call started with an id", () => {
+			const taskId = "orchestrator-task"
+			let finalToolUse: ReturnType<typeof NativeToolCallParser.finalizeStreamingToolCall> = null
+
+			const events = [
+				...NativeToolCallParser.processRawChunk({ index: 0, id: "toolu_123", name: "new_task" }, taskId),
+				...NativeToolCallParser.processRawChunk({ index: 0, arguments: '{"mode":"code",' }, taskId),
+				...NativeToolCallParser.processRawChunk(
+					{ index: 0, arguments: '"message":"Inspect the code path"}' },
+					taskId,
+				),
+				...NativeToolCallParser.finalizeRawChunks(taskId),
+			]
+
+			for (const event of events) {
+				if (event.type === "tool_call_start") {
+					NativeToolCallParser.startStreamingToolCall(event.id, event.name, taskId)
+				} else if (event.type === "tool_call_delta") {
+					NativeToolCallParser.processStreamingChunk(event.id, event.delta, taskId)
+				} else if (event.type === "tool_call_end") {
+					finalToolUse = NativeToolCallParser.finalizeStreamingToolCall(event.id, taskId)
+				}
+			}
+
+			expect(finalToolUse?.type).toBe("tool_use")
+			if (finalToolUse?.type === "tool_use") {
+				expect(finalToolUse.name).toBe("new_task")
+				expect(finalToolUse.nativeArgs).toMatchObject({
+					mode: "code",
+					message: "Inspect the code path",
+				})
+			}
+		})
+
 		it("keeps concurrent task streams isolated even when chunk indices match", () => {
 			const taskA = "task-a"
 			const taskB = "task-b"
