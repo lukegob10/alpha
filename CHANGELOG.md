@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.0
+
+### Minor Changes
+
+- [codex] Fix corporate gateway native tool event handling for orchestrator and mode delegation
+- [codex] Ensure gateway streamed tool calls complete before task recovery logic runs
+
 ## 1.0.9
 
 ### Patch Changes
