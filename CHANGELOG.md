@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.1
+
+### Patch Changes
+
+- [codex] Fix task lane mode and provider isolation when switching modes from tools or slash commands
+- [codex] Ensure delegated child tasks use the provider profile mapped to the child mode
+- [codex] Keep focused lane state aligned with that lane's provider settings
+
 ## 1.1.0
 
 ### Minor Changes

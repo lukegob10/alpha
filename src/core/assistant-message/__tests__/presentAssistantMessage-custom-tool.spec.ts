@@ -60,6 +60,7 @@ describe("presentAssistantMessage - Custom Tool Recording", () => {
 			api: {
 				getModel: () => ({ id: "test-model", info: {} }),
 			},
+			getTaskMode: vi.fn().mockResolvedValue("code"),
 			recordToolUsage: vi.fn(),
 			recordToolError: vi.fn(),
 			toolRepetitionDetector: {
@@ -300,6 +301,84 @@ describe("presentAssistantMessage - Custom Tool Recording", () => {
 	})
 
 	describe("Validation requirements", () => {
+		it("validates regular tools against the task lane mode instead of the provider foreground mode", async () => {
+			const toolCallId = "tool_call_validation_lane_mode_123"
+			mockTask.getTaskMode = vi.fn().mockResolvedValue("ask")
+			mockTask.assistantMessageContent = [
+				{
+					type: "tool_use",
+					id: toolCallId,
+					name: "some_unknown_tool",
+					params: {},
+					partial: false,
+				},
+			]
+
+			mockTask.providerRef = {
+				deref: () => ({
+					getState: vi.fn().mockResolvedValue({
+						mode: "orchestrator",
+						customModes: [],
+						experiments: {
+							customTools: false,
+						},
+					}),
+				}),
+			}
+
+			await presentAssistantMessage(mockTask)
+
+			expect(validateToolUse).toHaveBeenCalledWith(
+				"some_unknown_tool",
+				"ask",
+				[],
+				{},
+				{},
+				{ customTools: false },
+				undefined,
+			)
+		})
+
+		it("passes the task lane mode into custom tool execution context", async () => {
+			const execute = vi.fn().mockResolvedValue("Custom tool result")
+			mockTask.getTaskMode = vi.fn().mockResolvedValue("ask")
+			mockTask.assistantMessageContent = [
+				{
+					type: "tool_use",
+					id: "tool_call_custom_lane_mode_123",
+					name: "my_custom_tool",
+					params: { value: "test" },
+					partial: false,
+				},
+			]
+
+			mockTask.providerRef = {
+				deref: () => ({
+					getState: vi.fn().mockResolvedValue({
+						mode: "orchestrator",
+						customModes: [],
+						experiments: {
+							customTools: true,
+						},
+					}),
+				}),
+			}
+
+			vi.mocked(customToolRegistry.has).mockReturnValue(true)
+			vi.mocked(customToolRegistry.get).mockReturnValue({
+				name: "my_custom_tool",
+				description: "A custom tool",
+				execute,
+			})
+
+			await presentAssistantMessage(mockTask)
+
+			expect(execute).toHaveBeenCalledWith(undefined, {
+				mode: "ask",
+				task: mockTask,
+			})
+		})
+
 		it("normalizes disabledTools aliases before validateToolUse", async () => {
 			const toolCallId = "tool_call_validation_alias_123"
 			mockTask.assistantMessageContent = [

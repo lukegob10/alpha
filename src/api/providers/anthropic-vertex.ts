@@ -580,6 +580,42 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 		}
 	}
 
+	private stringifyInitialToolInput(input: unknown): string | undefined {
+		if (input == null) {
+			return undefined
+		}
+
+		if (typeof input === "string") {
+			return input.trim() ? input : undefined
+		}
+
+		if (typeof input === "object") {
+			if (!Array.isArray(input) && Object.keys(input).length === 0) {
+				return undefined
+			}
+
+			try {
+				return JSON.stringify(input)
+			} catch {
+				return undefined
+			}
+		}
+
+		return undefined
+	}
+
+	private getToolChoiceForRequest(
+		metadata?: ApiHandlerCreateMessageMetadata,
+	): ApiHandlerCreateMessageMetadata["tool_choice"] {
+		const toolChoice = metadata?.tool_choice
+
+		if (this.vertexGatewaySettings && metadata?.tools?.length && (!toolChoice || toolChoice === "auto")) {
+			return "required"
+		}
+
+		return toolChoice
+	}
+
 	override async *createMessage(
 		systemPrompt: string,
 		messages: Anthropic.Messages.MessageParam[],
@@ -594,7 +630,10 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 
 		const nativeToolParams = {
 			tools: convertOpenAIToolsToAnthropic(metadata?.tools ?? []),
-			tool_choice: convertOpenAIToolChoiceToAnthropic(metadata?.tool_choice, metadata?.parallelToolCalls),
+			tool_choice: convertOpenAIToolChoiceToAnthropic(
+				this.getToolChoiceForRequest(metadata),
+				metadata?.parallelToolCalls,
+			),
 		}
 		const uncachedMessages = this.removeCacheControlFromMessages(sanitizedMessages)
 
@@ -640,6 +679,14 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 			}
 			const requestOptions = this.mergeRequestOptions(betaRequestOptions, requestContext.requestOptions)
 			let emittedAnyStreamChunk = false
+			const activeToolUseBlocks = new Map<
+				number,
+				{
+					id: string
+					initialArguments?: string
+					sawInputJsonDelta: boolean
+				}
+			>()
 
 			try {
 				const stream = await requestContext.client.messages.create(requestParams, requestOptions)
@@ -689,12 +736,22 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 									break
 								}
 								case "tool_use": {
+									const toolUseBlock = chunk.content_block as Anthropic.Messages.ToolUseBlock & {
+										input?: unknown
+									}
+									const index = chunk.index!
+									activeToolUseBlocks.set(index, {
+										id: toolUseBlock.id,
+										initialArguments: this.stringifyInitialToolInput(toolUseBlock.input),
+										sawInputJsonDelta: false,
+									})
+
 									// Emit initial tool call partial with id and name
 									yield {
 										type: "tool_call_partial",
-										index: chunk.index,
-										id: chunk.content_block!.id,
-										name: chunk.content_block!.name,
+										index,
+										id: toolUseBlock.id,
+										name: toolUseBlock.name,
 										arguments: undefined,
 									}
 									break
@@ -714,6 +771,11 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 									break
 								}
 								case "input_json_delta": {
+									const activeToolUseBlock = activeToolUseBlocks.get(chunk.index!)
+									if (activeToolUseBlock) {
+										activeToolUseBlock.sawInputJsonDelta = true
+									}
+
 									// Emit tool call partial chunks as arguments stream in
 									yield {
 										type: "tool_call_partial",
@@ -729,8 +791,25 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 							break
 						}
 						case "content_block_stop": {
-							// Block complete - no action needed for now.
-							// NativeToolCallParser handles tool call completion
+							const activeToolUseBlock = activeToolUseBlocks.get(chunk.index!)
+							if (activeToolUseBlock) {
+								if (!activeToolUseBlock.sawInputJsonDelta && activeToolUseBlock.initialArguments) {
+									yield {
+										type: "tool_call_partial",
+										index: chunk.index,
+										id: undefined,
+										name: undefined,
+										arguments: activeToolUseBlock.initialArguments,
+									}
+								}
+
+								yield {
+									type: "tool_call_end",
+									id: activeToolUseBlock.id,
+								}
+								activeToolUseBlocks.delete(chunk.index!)
+							}
+
 							// Note: Signature for multi-turn thinking would require using stream.finalMessage()
 							// after iteration completes, which requires restructuring the streaming approach.
 							break
