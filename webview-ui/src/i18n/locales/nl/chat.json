@@ -20,8 +20,6 @@
 		"shareWithOrganizationDescription": "Alleen leden van je organisatie kunnen toegang krijgen",
 		"sharePublicly": "Openbaar delen",
 		"sharePubliclyDescription": "Iedereen met de link kan toegang krijgen",
-		"connectToCloud": "Verbind met Cloud",
-		"connectToCloudDescription": "Meld je aan bij Alpha Cloud om taken te delen",
 		"sharingDisabledByOrganization": "Delen uitgeschakeld door organisatie",
 		"shareSuccessOrganization": "Organisatielink gekopieerd naar klembord",
 		"shareSuccessPublic": "Openbare link gekopieerd naar klembord",
@@ -314,10 +312,7 @@
 		"title": "Alpha {{version}} uitgebracht",
 		"support": "Steun Alpha door ons een ster te geven op <githubLink>GitHub</githubLink>.",
 		"stealthModel": {
-			"feature": "<bold>Beperkt tijd GRATIS stealth model</bold> - Code Supernova: Nu geüpgraded met een <bold>1M token contextvenster</bold>! Een veelzijdig agentisch codeermodel dat beeldinvoer ondersteunt, beschikbaar via Alpha Cloud.",
 			"note": "(Opmerking: prompts en aanvullingen worden gelogd door de modelmaker en gebruikt om het model te verbeteren)",
-			"connectButton": "Verbinden met Alpha Cloud",
-			"selectModel": "Selecteer <code>roo/code-supernova</code> van de Alpha Cloud provider in Instellingen om te beginnen.",
 			"goToSettingsButton": "Ga naar Instellingen"
 		},
 		"release": {
@@ -327,12 +322,6 @@
 			"geminiPro": "Gemini 3.1 Pro ondersteuning: Ondersteuning voor het Gemini 3.1 Pro model is toegevoegd en ingesteld als standaard Gemini-model voor betere prestaties.",
 			"cliNdjson": "CLI NDJSON-protocol: Nieuw NDJSON stdin-protocol, list-subopdrachten en gemodulariseerd run-commando voor flexibelere CLI-workflows.",
 			"cliRelease": "CLI v0.1.0: De Alpha CLI bereikt zijn eerste officiële release met een stabiele opdrachtinterface."
-		},
-		"cloudAgents": {
-			"heading": "Nieuw in de Cloud:",
-			"specialized": "Introductie van <bold>Explainer</bold>, <bold>Planner</bold> en <bold>Coder</bold> - drie gespecialiseerde cloud-agents om je workflows te verbeteren.",
-			"description": "De agents werken samen in de cloud en kunnen worden geactiveerd vanaf het web of via Slack.",
-			"tryButton": "Probeer Cloud-agents"
 		}
 	},
 	"reasoning": {
@@ -433,11 +422,6 @@
 	},
 	"versionIndicator": {
 		"ariaLabel": "Versie {{version}} - Klik om release notes te bekijken"
-	},
-	"rooCloudCTA": {
-		"title": "Alpha Cloud evolueert!",
-		"description": "Voer externe agenten uit in de cloud, krijg overal toegang tot je taken, werk samen met anderen en nog veel meer.",
-		"joinWaitlist": "Meld je aan om de laatste updates te ontvangen."
 	},
 	"editMessage": {
 		"placeholder": "Bewerk je bericht..."

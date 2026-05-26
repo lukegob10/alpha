@@ -455,16 +455,6 @@
 		"cacheUsageNote": "Nota: Si no ve el uso del caché, intente seleccionar un modelo diferente y luego seleccionar nuevamente su modelo deseado.",
 		"vscodeLmModel": "Modelo de lenguaje",
 		"vscodeLmWarning": "Nota: Los modelos a los que se accede a través de la API de modelos de lenguaje de VS Code pueden estar envueltos o ajustados por el proveedor, por lo que su comportamiento puede diferir del uso directo del mismo modelo desde un proveedor o enrutador típico. Para usar un modelo del menú desplegable «Language Model», primero cambia a ese modelo y luego haz clic en «Aceptar» en el aviso de Copilot Chat; de lo contrario, puedes ver un error como 400 «The requested model is not supported».",
-		"googleCloudSetup": {
-			"title": "Para usar Google Cloud Vertex AI, necesita:",
-			"step1": "1. Crear una cuenta de Google Cloud, habilitar la API de Vertex AI y habilitar los modelos Claude deseados.",
-			"step2": "2. Instalar Google Cloud CLI y configurar las credenciales predeterminadas de la aplicación.",
-			"step3": "3. O crear una cuenta de servicio con credenciales."
-		},
-		"googleCloudCredentials": "Credenciales de Google Cloud",
-		"googleCloudKeyFile": "Ruta del archivo de clave de Google Cloud",
-		"googleCloudProjectId": "ID del proyecto de Google Cloud",
-		"googleCloudRegion": "Región de Google Cloud",
 		"lmStudio": {
 			"baseUrl": "URL base (opcional)",
 			"modelId": "ID del modelo",
@@ -485,10 +475,7 @@
 			"description": "Ollama le permite ejecutar modelos localmente en su computadora. Para obtener instrucciones sobre cómo comenzar, consulte la guía de inicio rápido.",
 			"warning": "Nota: Alpha utiliza prompts complejos y funciona mejor con modelos Claude. Los modelos menos capaces pueden no funcionar como se espera."
 		},
-		"roo": {
-			"authenticatedMessage": "Autenticado de forma segura a través de tu cuenta de Alpha Cloud.",
-			"connectButton": "Conectar a Alpha Cloud"
-		},
+		"roo": {},
 		"openRouter": {
 			"providerRouting": {
 				"title": "Enrutamiento de Proveedores de OpenRouter",
@@ -899,7 +886,6 @@
 	"validation": {
 		"apiKey": "Debe proporcionar una clave API válida.",
 		"awsRegion": "Debe elegir una región para usar con Amazon Bedrock.",
-		"googleCloud": "Debe proporcionar un ID de proyecto y región de Google Cloud válidos.",
 		"modelId": "Debe proporcionar un ID de modelo válido.",
 		"modelSelector": "Debe proporcionar un selector de modelo válido.",
 		"openAi": "Debe proporcionar una URL base, clave API y ID de modelo válidos.",

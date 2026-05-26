@@ -455,16 +455,6 @@
 		"cacheUsageNote": "Nota: Se non vedi l'utilizzo della cache, prova a selezionare un modello diverso e poi seleziona nuovamente il modello desiderato.",
 		"vscodeLmModel": "Modello linguistico",
 		"vscodeLmWarning": "Nota: I modelli accessibili tramite la VS Code Language Model API possono essere incapsulati o perfezionati dal provider, quindi il comportamento può differire dall’uso diretto dello stesso modello presso un provider o router tipico. Per usare un modello dal menu a discesa «Language Model», passa prima a quel modello e poi fai clic su «Accetta» nell’avviso di Copilot Chat; in caso contrario potresti visualizzare un errore come 400 «The requested model is not supported».",
-		"googleCloudSetup": {
-			"title": "Per utilizzare Google Cloud Vertex AI, è necessario:",
-			"step1": "1. Creare un account Google Cloud, abilitare l'API Vertex AI e abilitare i modelli Claude desiderati.",
-			"step2": "2. Installare Google Cloud CLI e configurare le credenziali predefinite dell'applicazione.",
-			"step3": "3. Oppure creare un account di servizio con credenziali."
-		},
-		"googleCloudCredentials": "Credenziali Google Cloud",
-		"googleCloudKeyFile": "Percorso file chiave Google Cloud",
-		"googleCloudProjectId": "ID progetto Google Cloud",
-		"googleCloudRegion": "Regione Google Cloud",
 		"lmStudio": {
 			"baseUrl": "URL base (opzionale)",
 			"modelId": "ID modello",
@@ -485,10 +475,7 @@
 			"description": "Ollama ti permette di eseguire modelli localmente sul tuo computer. Per iniziare, consulta la guida rapida.",
 			"warning": "Nota: Alpha utiliza prompt complessi e funziona meglio con i modelli Claude. I modelli con capacità inferiori potrebbero non funzionare come previsto."
 		},
-		"roo": {
-			"authenticatedMessage": "Autenticato in modo sicuro tramite il tuo account Alpha Cloud.",
-			"connectButton": "Connetti a Alpha Cloud"
-		},
+		"roo": {},
 		"openRouter": {
 			"providerRouting": {
 				"title": "Routing dei fornitori OpenRouter",
@@ -899,7 +886,6 @@
 	"validation": {
 		"apiKey": "È necessario fornire una chiave API valida.",
 		"awsRegion": "È necessario scegliere una regione per utilizzare Amazon Bedrock.",
-		"googleCloud": "È necessario fornire un ID progetto e una regione Google Cloud validi.",
 		"modelId": "È necessario fornire un ID modello valido.",
 		"modelSelector": "È necessario fornire un selettore di modello valido.",
 		"openAi": "È necessario fornire un URL base, una chiave API e un ID modello validi.",

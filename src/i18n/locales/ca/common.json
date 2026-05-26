@@ -114,9 +114,7 @@
 			"thinking_complete_safety": "(Pensament completat, però la sortida s'ha bloquejat a causa de la configuració de seguretat.)",
 			"thinking_complete_recitation": "(Pensament completat, però la sortida s'ha bloquejat a causa de la comprovació de recitació.)"
 		},
-		"roo": {
-			"authenticationRequired": "El proveïdor Alpha requereix autenticació al núvol. Si us plau, inicieu sessió a Alpha Cloud."
-		},
+		"roo": {},
 		"openAiCodex": {
 			"notAuthenticated": "No esteu autenticat amb OpenAI Codex. Si us plau, inicieu sessió mitjançant el flux OAuth d'OpenAI Codex.",
 			"invalidRequest": "Sol·licitud no vàlida a l'API de Codex. Si us plau, comproveu els paràmetres d'entrada.",
@@ -222,8 +220,6 @@
 	},
 	"mdm": {
 		"errors": {
-			"cloud_auth_required": "La teva organització requereix autenticació de Alpha Cloud. Si us plau, inicia sessió per continuar.",
-			"organization_mismatch": "Has d'estar autenticat amb el compte de Alpha Cloud de la teva organització.",
 			"manual_url_empty": "Si us plau, introdueix una URL de callback vàlida",
 			"manual_url_no_query": "URL de callback no vàlida: falten paràmetres de consulta",
 			"manual_url_missing_params": "URL de callback no vàlida: falten paràmetres requerits (code i state)",

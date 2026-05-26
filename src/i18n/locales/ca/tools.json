@@ -24,8 +24,6 @@
 		"invalidImageData": "Dades d'imatge no vàlides en la resposta",
 		"invalidImageFormat": "Format d'imatge no vàlid rebut",
 		"unknownError": "S'ha produït un error desconegut",
-		"roo": {
-			"authRequired": "Es requereix autenticació de Alpha Cloud per a la generació d'imatges. Inicia sessió a Alpha Cloud."
-		}
+		"roo": {}
 	}
 }

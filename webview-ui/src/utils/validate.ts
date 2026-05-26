@@ -162,7 +162,7 @@ function validateProviderAgainstOrganizationSettings(
 			return undefined
 		}
 
-		const providerConfig = organizationAllowList.providers[provider]
+		const providerConfig = organizationAllowList.providers?.[provider]
 
 		if (!providerConfig) {
 			return {

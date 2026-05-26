@@ -27,7 +27,45 @@ describe("MarketplaceView", () => {
 		vi.clearAllMocks()
 		stateManager = new MarketplaceViewStateManager()
 
-		// Initialize state manager with some test data
+		mockExtensionState = {
+			organizationSettingsVersion: 1,
+			// Add other required properties for the context
+			didHydrateState: true,
+			showWelcome: false,
+			theme: {},
+			mcpServers: [],
+			filePaths: [],
+			openedTabs: [],
+			commands: [],
+			organizationAllowList: { allowAll: true, providers: {} },
+			hasOpenedModeSelector: false,
+			setHasOpenedModeSelector: vi.fn(),
+			alwaysAllowFollowupQuestions: false,
+			setAlwaysAllowFollowupQuestions: vi.fn(),
+			followupAutoApproveTimeoutMs: 60000,
+			setFollowupAutoApproveTimeoutMs: vi.fn(),
+			profileThresholds: {},
+			setProfileThresholds: vi.fn(),
+			checkpointTimeout: DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
+			// ... other required context properties
+		}
+	})
+
+	it("should trigger fetchMarketplaceData on initial mount when no marketplace data is loaded", async () => {
+		render(
+			<ExtensionStateContext.Provider value={mockExtensionState}>
+				<MarketplaceView stateManager={stateManager} />
+			</ExtensionStateContext.Provider>,
+		)
+
+		await waitFor(() => {
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "fetchMarketplaceData",
+			})
+		})
+	})
+
+	it("should not trigger fetchMarketplaceData when marketplace data is already loaded", async () => {
 		stateManager.transition({
 			type: "FETCH_COMPLETE",
 			payload: {
@@ -46,45 +84,16 @@ describe("MarketplaceView", () => {
 			},
 		})
 
-		mockExtensionState = {
-			organizationSettingsVersion: 1,
-			// Add other required properties for the context
-			didHydrateState: true,
-			showWelcome: false,
-			theme: {},
-			mcpServers: [],
-			filePaths: [],
-			openedTabs: [],
-			commands: [],
-			organizationAllowList: { allowAll: true, providers: {} },
-			cloudIsAuthenticated: false,
-			sharingEnabled: false,
-			hasOpenedModeSelector: false,
-			setHasOpenedModeSelector: vi.fn(),
-			alwaysAllowFollowupQuestions: false,
-			setAlwaysAllowFollowupQuestions: vi.fn(),
-			followupAutoApproveTimeoutMs: 60000,
-			setFollowupAutoApproveTimeoutMs: vi.fn(),
-			profileThresholds: {},
-			setProfileThresholds: vi.fn(),
-			checkpointTimeout: DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
-			// ... other required context properties
-		}
-	})
-
-	it("should trigger fetchMarketplaceData when organization settings version changes", async () => {
 		const { rerender } = render(
 			<ExtensionStateContext.Provider value={mockExtensionState}>
 				<MarketplaceView stateManager={stateManager} />
 			</ExtensionStateContext.Provider>,
 		)
 
-		// Initial render should not trigger fetch (version hasn't changed)
 		expect(vscode.postMessage).not.toHaveBeenCalledWith({
 			type: "fetchMarketplaceData",
 		})
 
-		// Update the organization settings version
 		mockExtensionState = {
 			...mockExtensionState,
 			organizationSettingsVersion: 2,
@@ -98,43 +107,23 @@ describe("MarketplaceView", () => {
 			</ExtensionStateContext.Provider>,
 		)
 
-		// Wait for the effect to run
-		await waitFor(() => {
-			expect(vscode.postMessage).toHaveBeenCalledWith({
-				type: "fetchMarketplaceData",
-			})
+		expect(vscode.postMessage).not.toHaveBeenCalledWith({
+			type: "fetchMarketplaceData",
 		})
 	})
 
-	it("should trigger fetchMarketplaceData when organization settings version changes from -1", async () => {
-		// Start with -1 version (default)
+	it("should trigger fetchMarketplaceData when mounted with no data and organization version starts at -1", async () => {
 		mockExtensionState = {
 			...mockExtensionState,
 			organizationSettingsVersion: -1,
 		}
 
-		const { rerender } = render(
+		render(
 			<ExtensionStateContext.Provider value={mockExtensionState}>
 				<MarketplaceView stateManager={stateManager} />
 			</ExtensionStateContext.Provider>,
 		)
 
-		// Clear any initial calls
-		vi.clearAllMocks()
-
-		// Update to a defined version
-		mockExtensionState = {
-			...mockExtensionState,
-			organizationSettingsVersion: 1,
-		}
-
-		rerender(
-			<ExtensionStateContext.Provider value={mockExtensionState}>
-				<MarketplaceView stateManager={stateManager} />
-			</ExtensionStateContext.Provider>,
-		)
-
-		// Should trigger fetch when transitioning from -1 to 1
 		await waitFor(() => {
 			expect(vscode.postMessage).toHaveBeenCalledWith({
 				type: "fetchMarketplaceData",
@@ -143,6 +132,24 @@ describe("MarketplaceView", () => {
 	})
 
 	it("should not trigger fetchMarketplaceData when organization settings version remains the same", async () => {
+		stateManager.transition({
+			type: "FETCH_COMPLETE",
+			payload: {
+				items: [
+					{
+						id: "test-mcp",
+						name: "Test MCP",
+						type: "mcp" as const,
+						description: "Test MCP server",
+						tags: ["test"],
+						content: "Test content",
+						url: "https://test.com",
+						author: "Test Author",
+					},
+				],
+			},
+		})
+
 		const { rerender } = render(
 			<ExtensionStateContext.Provider value={mockExtensionState}>
 				<MarketplaceView stateManager={stateManager} />

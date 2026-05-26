@@ -455,16 +455,6 @@
 		"cacheUsageNote": "注意：キャッシュの使用が表示されない場合は、別のモデルを選択してから希望のモデルを再度選択してみてください。",
 		"vscodeLmModel": "言語モデル",
 		"vscodeLmWarning": "注意: VS Code Language Model API を通じて利用されるモデルは、プロバイダーによってラップまたは微調整されている場合があります。したがって、一般的なプロバイダーやルーターから同じモデルを直接使用する場合と挙動が異なることがあります。『Language Model』ドロップダウンのモデルを使用するには、まずそのモデルに切り替え、Copilot Chat のプロンプトで『承認』をクリックしてください。そうしないと、400『The requested model is not supported』などのエラーが表示されることがあります。",
-		"googleCloudSetup": {
-			"title": "Google Cloud Vertex AIを使用するには：",
-			"step1": "1. Google Cloudアカウントを作成し、Vertex AI APIを有効にして、希望するClaudeモデルを有効にします。",
-			"step2": "2. Google Cloud CLIをインストールし、アプリケーションのデフォルト認証情報を設定します。",
-			"step3": "3. または、認証情報付きのサービスアカウントを作成します。"
-		},
-		"googleCloudCredentials": "Google Cloud認証情報",
-		"googleCloudKeyFile": "Google Cloudキーファイルパス",
-		"googleCloudProjectId": "Google Cloudプロジェクトid",
-		"googleCloudRegion": "Google Cloudリージョン",
 		"lmStudio": {
 			"baseUrl": "ベースURL（オプション）",
 			"modelId": "モデルID",
@@ -485,10 +475,7 @@
 			"description": "Ollamaを使用すると、ローカルコンピューターでモデルを実行できます。始め方については、クイックスタートガイドをご覧ください。",
 			"warning": "注意：Alphaは複雑なプロンプトを使用し、Claudeモデルで最適に動作します。能力の低いモデルは期待通りに動作しない場合があります。"
 		},
-		"roo": {
-			"authenticatedMessage": "Alpha Cloudアカウントを通じて安全に認証されています。",
-			"connectButton": "Alpha Cloudに接続"
-		},
+		"roo": {},
 		"openRouter": {
 			"providerRouting": {
 				"title": "OpenRouterプロバイダールーティング",
@@ -899,7 +886,6 @@
 	"validation": {
 		"apiKey": "有効なAPIキーを入力してください。",
 		"awsRegion": "Amazon Bedrockを使用するにはリージョンを選択してください。",
-		"googleCloud": "有効なGoogle CloudプロジェクトIDとリージョンを入力してください。",
 		"modelId": "有効なモデルIDを入力してください。",
 		"modelSelector": "有効なモデルセレクターを入力してください。",
 		"openAi": "有効なベースURL、APIキー、モデルIDを入力してください。",

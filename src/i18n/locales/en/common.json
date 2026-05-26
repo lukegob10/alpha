@@ -111,9 +111,7 @@
 			"thinking_complete_safety": "(Thinking complete, but output was blocked due to safety settings.)",
 			"thinking_complete_recitation": "(Thinking complete, but output was blocked due to recitation check.)"
 		},
-		"roo": {
-			"authenticationRequired": "Alpha provider requires cloud authentication. Please sign in to Alpha Cloud."
-		},
+		"roo": {},
 		"openAiCodex": {
 			"notAuthenticated": "Not authenticated with OpenAI Codex. Please sign in using the OpenAI Codex OAuth flow.",
 			"invalidRequest": "Invalid request to Codex API. Please check your input parameters.",
@@ -219,8 +217,6 @@
 	},
 	"mdm": {
 		"errors": {
-			"cloud_auth_required": "Your organization requires Alpha Cloud authentication. Please sign in to continue.",
-			"organization_mismatch": "You must be authenticated with your organization's Alpha Cloud account.",
 			"verification_failed": "Unable to verify organization authentication."
 		},
 		"info": {

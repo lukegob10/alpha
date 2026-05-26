@@ -111,9 +111,7 @@
 			"thinking_complete_safety": "(Đã suy nghĩ xong nhưng kết quả bị chặn do cài đặt an toàn.)",
 			"thinking_complete_recitation": "(Đã suy nghĩ xong nhưng kết quả bị chặn do kiểm tra trích dẫn.)"
 		},
-		"roo": {
-			"authenticationRequired": "Nhà cung cấp Alpha yêu cầu xác thực đám mây. Vui lòng đăng nhập vào Alpha Cloud."
-		},
+		"roo": {},
 		"api": {
 			"invalidKeyInvalidChars": "Khóa API chứa ký tự không hợp lệ.",
 			"apiRequestFailed": "Yêu cầu API thất bại ({{status}})"
@@ -222,8 +220,6 @@
 	},
 	"mdm": {
 		"errors": {
-			"cloud_auth_required": "Tổ chức của bạn yêu cầu xác thực Alpha Cloud. Vui lòng đăng nhập để tiếp tục.",
-			"organization_mismatch": "Bạn phải được xác thực bằng tài khoản Alpha Cloud của tổ chức.",
 			"manual_url_empty": "Vui lòng nhập URL callback hợp lệ",
 			"manual_url_no_query": "URL callback không hợp lệ: thiếu tham số truy vấn",
 			"manual_url_missing_params": "URL callback không hợp lệ: thiếu tham số bắt buộc (code và state)",

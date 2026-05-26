@@ -31,8 +31,7 @@ RUN mkdir -p \
   packages/config-typescript \
   packages/evals \
   packages/ipc \
-  packages/types \
-  packages/cloud
+  packages/types
 
 COPY ./package.json                            ./
 COPY ./pnpm-lock.yaml                          ./
@@ -44,7 +43,6 @@ COPY ./packages/config-typescript/package.json ./packages/config-typescript/
 COPY ./packages/evals/package.json             ./packages/evals/
 COPY ./packages/ipc/package.json               ./packages/ipc/
 COPY ./packages/types/package.json             ./packages/types/
-COPY ./packages/cloud/package.json             ./packages/cloud/
 
 RUN pnpm install
 

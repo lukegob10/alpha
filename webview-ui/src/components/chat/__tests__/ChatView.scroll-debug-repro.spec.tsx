@@ -19,7 +19,6 @@ interface ExtensionStateMessage {
 		shouldShowAnnouncement: boolean
 		allowedCommands: string[]
 		alwaysAllowExecute: boolean
-		cloudIsAuthenticated: boolean
 		telemetrySetting: "enabled" | "disabled" | "unset"
 	}
 }
@@ -257,7 +256,6 @@ const postState = (clineMessages: ClineMessage[]) => {
 			shouldShowAnnouncement: false,
 			allowedCommands: [],
 			alwaysAllowExecute: false,
-			cloudIsAuthenticated: false,
 			telemetrySetting: "enabled",
 		},
 	}

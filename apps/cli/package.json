@@ -16,8 +16,8 @@
 		"test:integration": "tsx scripts/integration/run.ts",
 		"build": "tsup",
 		"build:extension": "pnpm --filter alpha bundle",
-		"dev": "ROO_AUTH_BASE_URL=https://app.roocode.com ROO_SDK_BASE_URL=https://cloud-api.roocode.com ROO_CODE_PROVIDER_URL=https://api.roocode.com/proxy tsx src/index.ts",
-		"dev:local": "ROO_AUTH_BASE_URL=http://localhost:3000 ROO_SDK_BASE_URL=http://localhost:3001 ROO_CODE_PROVIDER_URL=http://localhost:8080/proxy tsx src/index.ts",
+		"dev": "tsx src/index.ts",
+		"dev:local": "tsx src/index.ts",
 		"clean": "rimraf dist .turbo"
 	},
 	"dependencies": {
@@ -25,7 +25,6 @@
 		"@alpha-code/core": "workspace:^",
 		"@alpha-code/types": "workspace:^",
 		"@alpha-code/vscode-shim": "workspace:^",
-		"@trpc/client": "^11.8.1",
 		"@vscode/ripgrep": "^1.15.9",
 		"commander": "^12.1.0",
 		"cross-spawn": "^7.0.6",
@@ -34,7 +33,6 @@
 		"ink": "^6.6.0",
 		"p-wait-for": "^5.0.2",
 		"react": "^19.1.0",
-		"superjson": "^2.2.6",
 		"zustand": "^5.0.0"
 	},
 	"devDependencies": {

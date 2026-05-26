@@ -275,9 +275,9 @@ describe("handleOpenAIError (backward compatibility)", () => {
 		const error = new Error("Authentication failed") as any
 		error.status = 401
 
-		const result = handleOpenAIError(error, "Alpha Cloud")
+		const result = handleOpenAIError(error, "OpenAI-compatible")
 
-		expect(result.message).toBe("Alpha Cloud completion error: Authentication failed")
+		expect(result.message).toBe("OpenAI-compatible completion error: Authentication failed")
 		expect((result as any).status).toBe(401)
 	})
 })

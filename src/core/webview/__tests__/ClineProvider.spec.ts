@@ -9,7 +9,6 @@ import {
 	type ClineMessage,
 	type ExtensionMessage,
 	type ExtensionState,
-	ORGANIZATION_ALLOW_ALL,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -291,19 +290,6 @@ vi.mock("../diff/strategies/multi-search-replace", () => ({
 	})),
 }))
 
-vi.mock("@alpha-code/cloud", () => ({
-	CloudService: {
-		hasInstance: vi.fn().mockReturnValue(true),
-		get instance() {
-			return {
-				isAuthenticated: vi.fn().mockReturnValue(false),
-				off: vi.fn(),
-			}
-		},
-	},
-	getRooCodeApiUrl: vi.fn().mockReturnValue("https://app.roocode.com"),
-}))
-
 afterAll(() => {
 	vi.restoreAllMocks()
 })
@@ -485,7 +471,7 @@ describe("ClineProvider", () => {
 
 		// Verify Content Security Policy contains the necessary PostHog domains
 		expect(mockWebviewView.webview.html).toContain(
-			"connect-src vscode-webview://test-csp-source https://openrouter.ai https://api.requesty.ai https://ph.roocode.com",
+			"connect-src vscode-webview://test-csp-source https://openrouter.ai https://api.requesty.ai",
 		)
 
 		// Extract the script-src directive section and verify required security elements
@@ -539,19 +525,13 @@ describe("ClineProvider", () => {
 			renderContext: "sidebar",
 			maxImageFileSize: 5,
 			maxTotalImageSize: 20,
-			cloudUserInfo: null,
-			organizationAllowList: ORGANIZATION_ALLOW_ALL,
 			autoCondenseContext: true,
 			autoCondenseContextPercent: 100,
-			cloudIsAuthenticated: false,
-			sharingEnabled: false,
-			publicSharingEnabled: false,
 			profileThresholds: {},
 			hasOpenedModeSelector: false,
 			diagnosticsEnabled: true,
 			openRouterImageApiKey: undefined,
 			openRouterImageGenerationSelectedModel: undefined,
-			taskSyncEnabled: false,
 			checkpointTimeout: DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 		}
 
@@ -2263,6 +2243,7 @@ describe("getTelemetryProperties", () => {
 				info: { contextWindow: 200000 },
 			}),
 		}
+		;(mockCline as any).getTaskMode = vi.fn().mockResolvedValue("code")
 	})
 
 	test("includes basic properties in telemetry", async () => {
@@ -2280,96 +2261,6 @@ describe("getTelemetryProperties", () => {
 		const properties = await provider.getTelemetryProperties()
 
 		expect(properties).toHaveProperty("modelId", "claude-sonnet-4-20250514")
-	})
-
-	describe("cloud authentication telemetry", () => {
-		beforeEach(() => {
-			// Reset all mocks before each test
-			vi.clearAllMocks()
-		})
-
-		test("includes cloud authentication property when user is authenticated", async () => {
-			// Import the CloudService mock and update it
-			const { CloudService } = await import("@alpha-code/cloud")
-			const mockCloudService = {
-				isAuthenticated: vi.fn().mockReturnValue(true),
-			}
-
-			// Update the existing mock
-			Object.defineProperty(CloudService, "instance", {
-				get: vi.fn().mockReturnValue(mockCloudService),
-				configurable: true,
-			})
-
-			const properties = await provider.getTelemetryProperties()
-
-			expect(properties).toHaveProperty("cloudIsAuthenticated", true)
-		})
-
-		test("includes cloud authentication property when user is not authenticated", async () => {
-			// Import the CloudService mock and update it
-			const { CloudService } = await import("@alpha-code/cloud")
-			const mockCloudService = {
-				isAuthenticated: vi.fn().mockReturnValue(false),
-			}
-
-			// Update the existing mock
-			Object.defineProperty(CloudService, "instance", {
-				get: vi.fn().mockReturnValue(mockCloudService),
-				configurable: true,
-			})
-
-			const properties = await provider.getTelemetryProperties()
-
-			expect(properties).toHaveProperty("cloudIsAuthenticated", false)
-		})
-
-		test("handles CloudService errors gracefully", async () => {
-			// Import the CloudService mock and update it to throw an error
-			const { CloudService } = await import("@alpha-code/cloud")
-			Object.defineProperty(CloudService, "instance", {
-				get: vi.fn().mockImplementation(() => {
-					throw new Error("CloudService not available")
-				}),
-				configurable: true,
-			})
-
-			const properties = await provider.getTelemetryProperties()
-
-			// Should still include basic telemetry properties
-			expect(properties).toHaveProperty("vscodeVersion")
-			expect(properties).toHaveProperty("platform")
-			expect(properties).toHaveProperty("appVersion", "1.0.0")
-
-			// Cloud property should be undefined when CloudService is not available
-			expect(properties).toHaveProperty("cloudIsAuthenticated", undefined)
-		})
-
-		test("handles CloudService method errors gracefully", async () => {
-			// Import the CloudService mock and update it
-			const { CloudService } = await import("@alpha-code/cloud")
-			const mockCloudService = {
-				isAuthenticated: vi.fn().mockImplementation(() => {
-					throw new Error("Authentication check error")
-				}),
-			}
-
-			// Update the existing mock
-			Object.defineProperty(CloudService, "instance", {
-				get: vi.fn().mockReturnValue(mockCloudService),
-				configurable: true,
-			})
-
-			const properties = await provider.getTelemetryProperties()
-
-			// Should still include basic telemetry properties
-			expect(properties).toHaveProperty("vscodeVersion")
-			expect(properties).toHaveProperty("platform")
-			expect(properties).toHaveProperty("appVersion", "1.0.0")
-
-			// Property that errored should be undefined
-			expect(properties).toHaveProperty("cloudIsAuthenticated", undefined)
-		})
 	})
 })
 
@@ -2484,12 +2375,6 @@ describe("ClineProvider - Router Models", () => {
 		expect(getModels).toHaveBeenCalledWith({ provider: "requesty", apiKey: "requesty-key" })
 		expect(getModels).toHaveBeenCalledWith({ provider: "unbound" })
 		expect(getModels).toHaveBeenCalledWith({ provider: "vercel-ai-gateway" })
-		expect(getModels).toHaveBeenCalledWith(
-			expect.objectContaining({
-				provider: "roo",
-				baseUrl: expect.any(String),
-			}),
-		)
 		expect(getModels).toHaveBeenCalledWith({
 			provider: "litellm",
 			apiKey: "litellm-key",
@@ -2503,7 +2388,6 @@ describe("ClineProvider - Router Models", () => {
 				openrouter: mockModels,
 				requesty: mockModels,
 				unbound: mockModels,
-				roo: mockModels,
 				litellm: mockModels,
 				ollama: {},
 				lmstudio: {},
@@ -2538,7 +2422,6 @@ describe("ClineProvider - Router Models", () => {
 			.mockRejectedValueOnce(new Error("Requesty API error")) // requesty fail
 			.mockResolvedValueOnce(mockModels) // unbound success
 			.mockResolvedValueOnce(mockModels) // vercel-ai-gateway success
-			.mockResolvedValueOnce(mockModels) // roo success
 			.mockRejectedValueOnce(new Error("LiteLLM connection failed")) // litellm fail
 
 		await messageHandler({ type: "requestRouterModels" })
@@ -2550,7 +2433,6 @@ describe("ClineProvider - Router Models", () => {
 				openrouter: mockModels,
 				requesty: {},
 				unbound: mockModels,
-				roo: mockModels,
 				ollama: {},
 				lmstudio: {},
 				litellm: {},
@@ -2645,7 +2527,6 @@ describe("ClineProvider - Router Models", () => {
 				openrouter: mockModels,
 				requesty: mockModels,
 				unbound: mockModels,
-				roo: mockModels,
 				litellm: {},
 				ollama: {},
 				lmstudio: {},

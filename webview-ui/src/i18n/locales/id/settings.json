@@ -455,16 +455,6 @@
 		"cacheUsageNote": "Catatan: Jika kamu tidak melihat penggunaan cache, coba pilih model yang berbeda lalu pilih model yang kamu inginkan lagi.",
 		"vscodeLmModel": "Model Bahasa",
 		"vscodeLmWarning": "Catatan: Model yang diakses melalui VS Code Language Model API dapat dibungkus atau disetel‑halus oleh penyedia, sehingga perilakunya dapat berbeda dibandingkan menggunakan model yang sama secara langsung dari penyedia atau router tipikal. Untuk menggunakan model dari menu tarik‑turun «Language Model», pertama beralihlah ke model tersebut lalu klik «Terima» pada prompt Copilot Chat; jika tidak, Anda mungkin melihat kesalahan seperti 400 «The requested model is not supported».",
-		"googleCloudSetup": {
-			"title": "Untuk menggunakan Google Cloud Vertex AI, kamu perlu:",
-			"step1": "1. Buat akun Google Cloud, aktifkan Vertex AI API & aktifkan model Claude yang diinginkan.",
-			"step2": "2. Instal Google Cloud CLI & konfigurasi application default credentials.",
-			"step3": "3. Atau buat service account dengan credentials."
-		},
-		"googleCloudCredentials": "Google Cloud Credentials",
-		"googleCloudKeyFile": "Path File Key Google Cloud",
-		"googleCloudProjectId": "Google Cloud Project ID",
-		"googleCloudRegion": "Google Cloud Region",
 		"lmStudio": {
 			"baseUrl": "Base URL (opsional)",
 			"modelId": "Model ID",
@@ -485,10 +475,7 @@
 			"description": "Ollama memungkinkan kamu menjalankan model secara lokal di komputer. Untuk instruksi cara memulai, lihat panduan quickstart mereka.",
 			"warning": "Catatan: Alpha menggunakan prompt kompleks dan bekerja terbaik dengan model Claude. Model yang kurang mampu mungkin tidak bekerja seperti yang diharapkan."
 		},
-		"roo": {
-			"authenticatedMessage": "Terautentikasi dengan aman melalui akun Alpha Cloud Anda.",
-			"connectButton": "Hubungkan ke Alpha Cloud"
-		},
+		"roo": {},
 		"openRouter": {
 			"providerRouting": {
 				"title": "OpenRouter Provider Routing",
@@ -899,7 +886,6 @@
 	"validation": {
 		"apiKey": "Kamu harus menyediakan API key yang valid.",
 		"awsRegion": "Kamu harus memilih region untuk digunakan dengan Amazon Bedrock.",
-		"googleCloud": "Kamu harus menyediakan Google Cloud Project ID dan Region yang valid.",
 		"modelId": "Kamu harus menyediakan model ID yang valid.",
 		"modelSelector": "Kamu harus menyediakan model selector yang valid.",
 		"openAi": "Kamu harus menyediakan base URL, API key, dan model ID yang valid.",

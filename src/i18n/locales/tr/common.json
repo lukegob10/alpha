@@ -111,9 +111,7 @@
 			"thinking_complete_safety": "(Düşünme tamamlandı, ancak çıktı güvenlik ayarları nedeniyle engellendi.)",
 			"thinking_complete_recitation": "(Düşünme tamamlandı, ancak çıktı okuma kontrolü nedeniyle engellendi.)"
 		},
-		"roo": {
-			"authenticationRequired": "Alpha sağlayıcısı bulut kimlik doğrulaması gerektirir. Lütfen Alpha Cloud'a giriş yapın."
-		},
+		"roo": {},
 		"api": {
 			"invalidKeyInvalidChars": "API anahtarı geçersiz karakterler içeriyor.",
 			"apiRequestFailed": "API isteği başarısız oldu ({{status}})"
@@ -222,8 +220,6 @@
 	},
 	"mdm": {
 		"errors": {
-			"cloud_auth_required": "Kuruluşunuz Alpha Cloud kimlik doğrulaması gerektiriyor. Devam etmek için giriş yapın.",
-			"organization_mismatch": "Kuruluşunuzun Alpha Cloud hesabıyla kimlik doğrulaması yapmalısınız.",
 			"manual_url_empty": "Lütfen geçerli bir callback URL'si girin",
 			"manual_url_no_query": "Geçersiz callback URL'si: sorgu parametreleri eksik",
 			"manual_url_missing_params": "Geçersiz callback URL'si: gerekli parametreler eksik (code ve state)",

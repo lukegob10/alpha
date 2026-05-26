@@ -111,9 +111,7 @@
 			"thinking_complete_safety": "(Nadenken voltooid, maar uitvoer is geblokkeerd vanwege veiligheidsinstellingen.)",
 			"thinking_complete_recitation": "(Nadenken voltooid, maar uitvoer is geblokkeerd vanwege recitatiecontrole.)"
 		},
-		"roo": {
-			"authenticationRequired": "Alpha provider vereist cloud authenticatie. Log in bij Alpha Cloud."
-		},
+		"roo": {},
 		"api": {
 			"invalidKeyInvalidChars": "API-sleutel bevat ongeldige karakters.",
 			"apiRequestFailed": "API-verzoek mislukt ({{status}})"
@@ -222,8 +220,6 @@
 	},
 	"mdm": {
 		"errors": {
-			"cloud_auth_required": "Je organisatie vereist Alpha Cloud-authenticatie. Log in om door te gaan.",
-			"organization_mismatch": "Je moet geauthenticeerd zijn met het Alpha Cloud-account van je organisatie.",
 			"manual_url_empty": "Voer een geldige callback-URL in",
 			"manual_url_no_query": "Ongeldige callback-URL: query-parameters ontbreken",
 			"manual_url_missing_params": "Ongeldige callback-URL: vereiste parameters ontbreken (code en state)",

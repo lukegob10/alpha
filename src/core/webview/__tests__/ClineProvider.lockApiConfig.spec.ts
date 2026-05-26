@@ -101,18 +101,6 @@ vi.mock("../../diff/strategies/multi-search-replace", () => ({
 	})),
 }))
 
-vi.mock("@alpha-code/cloud", () => ({
-	CloudService: {
-		hasInstance: vi.fn().mockReturnValue(true),
-		get instance() {
-			return {
-				isAuthenticated: vi.fn().mockReturnValue(false),
-			}
-		},
-	},
-	getRooCodeApiUrl: vi.fn().mockReturnValue("https://app.roocode.com"),
-}))
-
 vi.mock("../../../shared/modes", () => {
 	const mockModes = [
 		{

@@ -35,7 +35,6 @@ export const createRunSchema = z
 		concurrency: z.number().int().min(CONCURRENCY_MIN).max(CONCURRENCY_MAX),
 		timeout: z.number().int().min(TIMEOUT_MIN).max(TIMEOUT_MAX),
 		iterations: z.number().int().min(ITERATIONS_MIN).max(ITERATIONS_MAX),
-		jobToken: z.string().optional(),
 		executionMethod: executionMethodSchema,
 	})
 	.refine((data) => data.suite === "full" || (data.exercises || []).length > 0, {

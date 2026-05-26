@@ -24,8 +24,6 @@
 		"invalidImageData": "Dados de imagem inválidos na resposta",
 		"invalidImageFormat": "Formato de imagem inválido recebido",
 		"unknownError": "Ocorreu um erro desconhecido",
-		"roo": {
-			"authRequired": "A autenticação do Alpha Cloud é necessária para geração de imagens. Faça login no Alpha Cloud."
-		}
+		"roo": {}
 	}
 }

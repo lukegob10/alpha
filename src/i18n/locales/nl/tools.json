@@ -24,8 +24,6 @@
 		"invalidImageData": "Ongeldige afbeeldingsgegevens in het antwoord",
 		"invalidImageFormat": "Ongeldig afbeeldingsformaat ontvangen",
 		"unknownError": "Er is een onbekende fout opgetreden",
-		"roo": {
-			"authRequired": "Alpha Cloud-authenticatie is vereist voor het genereren van afbeeldingen. Log in bij Alpha Cloud."
-		}
+		"roo": {}
 	}
 }

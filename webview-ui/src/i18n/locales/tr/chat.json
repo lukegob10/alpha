@@ -20,8 +20,6 @@
 		"shareWithOrganizationDescription": "Sadece kuruluşunuzun üyeleri erişebilir",
 		"sharePublicly": "Herkese açık paylaş",
 		"sharePubliclyDescription": "Bağlantıya sahip herkes erişebilir",
-		"connectToCloud": "Buluta bağlan",
-		"connectToCloudDescription": "Görevleri paylaşmak için Alpha Cloud'a giriş yap",
 		"sharingDisabledByOrganization": "Paylaşım kuruluş tarafından devre dışı bırakıldı",
 		"shareSuccessOrganization": "Organizasyon bağlantısı panoya kopyalandı",
 		"shareSuccessPublic": "Genel bağlantı panoya kopyalandı",
@@ -342,10 +340,7 @@
 		"title": "Alpha {{version}} Yayınlandı",
 		"support": "<githubLink>GitHub</githubLink>'da yıldız vererek Alpha'u destekle.",
 		"stealthModel": {
-			"feature": "<bold>Sınırlı süre ÜCRETSİZ gizli model</bold> - Code Supernova: Artık <bold>1M token bağlam penceresi</bold> ile yükseltildi! Görüntü girişlerini destekleyen çok amaçlı acentik kodlama modeli, Alpha Cloud üzerinden kullanılabilir.",
 			"note": "(Not: istemler ve tamamlamalar model yaratıcısı tarafından kaydedilir ve modeli geliştirmek için kullanılır)",
-			"connectButton": "Alpha Cloud'a bağlan",
-			"selectModel": "Başlamak için Ayarlar'da Alpha Cloud sağlayıcısından <code>roo/code-supernova</code>'yı seçin.",
 			"goToSettingsButton": "Ayarlar'a Git"
 		},
 		"release": {
@@ -355,12 +350,6 @@
 			"geminiPro": "Gemini 3.1 Pro Desteği: Gemini 3.1 Pro model desteği eklendi ve daha iyi performans için varsayılan Gemini modeli olarak ayarlandı.",
 			"cliNdjson": "CLI NDJSON Protokolü: Yeni NDJSON stdin protokolü, list alt komutları ve daha esnek CLI iş akışları için modüler run komutu.",
 			"cliRelease": "CLI v0.1.0: Alpha CLI, kararlı bir komut arayüzüyle ilk resmi sürümüne ulaştı."
-		},
-		"cloudAgents": {
-			"heading": "Cloud'daki yenilikler:",
-			"specialized": "<bold>Explainer</bold>, <bold>Planner</bold> ve <bold>Coder</bold> tanıtımı - iş akışlarını geliştirmek için üç özel bulut ajanı.",
-			"description": "Ajanlar bulutta birlikte çalışır ve web'den veya Slack üzerinden tetiklenebilir.",
-			"tryButton": "Bulut Ajanlarını Dene"
 		}
 	},
 	"costs": {
@@ -434,11 +423,6 @@
 	},
 	"versionIndicator": {
 		"ariaLabel": "Sürüm {{version}} - Sürüm notlarını görüntülemek için tıklayın"
-	},
-	"rooCloudCTA": {
-		"title": "Alpha Cloud gelişiyor!",
-		"description": "Bulutta uzak ajanlar çalıştırın, görevlerinize her yerden erişin, başkalarıyla işbirliği yapın ve daha fazlası.",
-		"joinWaitlist": "En son güncellemeleri almak için kaydolun."
 	},
 	"editMessage": {
 		"placeholder": "Mesajını düzenle..."

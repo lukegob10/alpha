@@ -24,8 +24,6 @@
 		"invalidImageData": "回應中的圖像資料無效",
 		"invalidImageFormat": "收到的圖像格式無效",
 		"unknownError": "發生未知錯誤",
-		"roo": {
-			"authRequired": "圖像生成需要 Alpha Cloud 認證。請登入 Alpha Cloud。"
-		}
+		"roo": {}
 	}
 }

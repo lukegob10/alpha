@@ -312,11 +312,6 @@ function getSelectedModel({
 			const info = fireworksModels[id as keyof typeof fireworksModels]
 			return { id, info }
 		}
-		case "roo": {
-			const id = getValidatedModelId(apiConfiguration.apiModelId, routerModels.roo, defaultModelId)
-			const info = routerModels.roo?.[id]
-			return { id, info }
-		}
 		case "poe": {
 			const id = apiConfiguration.apiModelId ?? defaultModelId
 			const info = routerModels.poe?.[id]

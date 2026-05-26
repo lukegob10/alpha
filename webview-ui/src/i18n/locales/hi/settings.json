@@ -455,16 +455,6 @@
 		"cacheUsageNote": "नोट: यदि आप कैश उपयोग नहीं देखते हैं, तो एक अलग मॉडल चुनने का प्रयास करें और फिर अपने वांछित मॉडल को पुनः चुनें।",
 		"vscodeLmModel": "भाषा मॉडल",
 		"vscodeLmWarning": "नोट: VS Code Language Model API के माध्यम से उपलब्ध मॉडल प्रदाता द्वारा रैप या फाइन‑ट्यून किए जा सकते हैं, इसलिए इनका व्यवहार किसी सामान्य प्रदाता या राउटर से सीधे उसी मॉडल का उपयोग करने की तुलना में अलग हो सकता है। «Language Model» ड्रॉपडाउन से मॉडल उपयोग करने के लिए पहले उसी मॉडल पर स्विच करें और फिर Copilot Chat प्रॉम्प्ट में «Accept» पर क्लिक करें; अन्यथा 400 \"The requested model is not supported\" जैसी त्रुटि दिखाई दे सकती है।",
-		"googleCloudSetup": {
-			"title": "Google Cloud Vertex AI का उपयोग करने के लिए, आपको आवश्यकता है:",
-			"step1": "1. Google Cloud खाता बनाएं, Vertex AI API सक्षम करें और वांछित Claude मॉडल सक्षम करें।",
-			"step2": "2. Google Cloud CLI इंस्टॉल करें और एप्लिकेशन डिफ़ॉल्ट क्रेडेंशियल्स कॉन्फ़िगर करें।",
-			"step3": "3. या क्रेडेंशियल्स के साथ एक सर्विस अकाउंट बनाएं।"
-		},
-		"googleCloudCredentials": "Google Cloud क्रेडेंशियल्स",
-		"googleCloudKeyFile": "Google Cloud कुंजी फ़ाइल पथ",
-		"googleCloudProjectId": "Google Cloud प्रोजेक्ट ID",
-		"googleCloudRegion": "Google Cloud क्षेत्र",
 		"lmStudio": {
 			"baseUrl": "बेस URL (वैकल्पिक)",
 			"modelId": "मॉडल ID",
@@ -485,10 +475,7 @@
 			"description": "Ollama आपको अपने कंप्यूटर पर स्थानीय रूप से मॉडल चलाने की अनुमति देता है। आरंभ करने के निर्देशों के लिए, उनकी क्विकस्टार्ट गाइड देखें।",
 			"warning": "नोट: Alpha जटिल प्रॉम्प्ट्स का उपयोग करता है और Claude मॉडल के साथ सबसे अच्छा काम करता है। कम क्षमता वाले मॉडल अपेक्षित रूप से काम नहीं कर सकते हैं।"
 		},
-		"roo": {
-			"authenticatedMessage": "आपके Alpha Cloud खाते के माध्यम से सुरक्षित रूप से प्रमाणित।",
-			"connectButton": "Alpha Cloud से कनेक्ट करें"
-		},
+		"roo": {},
 		"openRouter": {
 			"providerRouting": {
 				"title": "OpenRouter प्रदाता रूटिंग",
@@ -899,7 +886,6 @@
 	"validation": {
 		"apiKey": "आपको एक मान्य API कुंजी प्रदान करनी होगी।",
 		"awsRegion": "Amazon Bedrock का उपयोग करने के लिए आपको एक क्षेत्र चुनना होगा।",
-		"googleCloud": "आपको एक मान्य Google Cloud प्रोजेक्ट ID और क्षेत्र प्रदान करना होगा।",
 		"modelId": "आपको एक मान्य मॉडल ID प्रदान करनी होगी।",
 		"modelSelector": "आपको एक मान्य मॉडल चयनकर्ता प्रदान करना होगा।",
 		"openAi": "आपको एक मान्य बेस URL, API कुंजी और मॉडल ID प्रदान करनी होगी।",

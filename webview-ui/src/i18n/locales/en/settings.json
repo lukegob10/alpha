@@ -504,16 +504,6 @@
 		"cacheUsageNote": "Note: If you don't see cache usage, try selecting a different model and then selecting your desired model again.",
 		"vscodeLmModel": "Language Model",
 		"vscodeLmWarning": "Note: Models accessed via the VS Code Language Model API may be wrapped or fine-tuned by the provider, so behavior can differ from using the same model directly from a typical provider or router. To use a model from the Language Model dropdown, first switch to that model and then click Accept in the Copilot Chat prompt; otherwise you may see an error such as 400 \"The requested model is not supported\".",
-		"googleCloudSetup": {
-			"title": "To use Google Cloud Vertex AI, you need to:",
-			"step1": "1. Create a Google Cloud account, enable the Vertex AI API & enable the desired Claude models.",
-			"step2": "2. Install the Google Cloud CLI & configure application default credentials.",
-			"step3": "3. Or create a service account with credentials."
-		},
-		"googleCloudCredentials": "Google Cloud Credentials",
-		"googleCloudKeyFile": "Google Cloud Key File Path",
-		"googleCloudProjectId": "Google Cloud Project ID",
-		"googleCloudRegion": "Google Cloud Region",
 		"vertexGatewayBaseUrl": "Vertex Gateway Base URL",
 		"vertexGatewayCaBundlePath": "Vertex Gateway CA Bundle Path",
 		"vertexGatewayHelixCommand": "Vertex Gateway Helix Command",
@@ -544,10 +534,7 @@
 			"description": "Ollama allows you to run models locally on your computer. For instructions on how to get started, see their quickstart guide.",
 			"warning": "Note: Alpha uses complex prompts and works best with Claude models. Less capable models may not work as expected."
 		},
-		"roo": {
-			"authenticatedMessage": "Securely authenticated through your Alpha Cloud account.",
-			"connectButton": "Connect to Alpha Cloud"
-		},
+		"roo": {},
 		"openRouter": {
 			"providerRouting": {
 				"title": "OpenRouter Provider Routing",
@@ -958,7 +945,6 @@
 	"validation": {
 		"apiKey": "You must provide a valid API key.",
 		"awsRegion": "You must choose a region to use with Amazon Bedrock.",
-		"googleCloud": "You must provide a valid Google Cloud Project ID and Region.",
 		"vertexGateway": "Vertex gateway requires a base URL, CA bundle path, and Helix command.",
 		"vertexGatewayModelRoutingMap": "Vertex Gateway Model Routing Map must be a JSON object with string model IDs.",
 		"modelId": "You must provide a valid model ID.",

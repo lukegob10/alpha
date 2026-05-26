@@ -101,7 +101,6 @@ const renderWelcomeViewProvider = (extensionState = {}) => {
 		currentApiConfigName: "default",
 		setApiConfiguration: vi.fn(),
 		uriScheme: "vscode",
-		cloudIsAuthenticated: false,
 		...extensionState,
 	} as any)
 
@@ -129,7 +128,7 @@ describe("WelcomeViewProvider", () => {
 
 			expect(screen.getByTestId("alpha-hero")).toBeInTheDocument()
 			expect(screen.getByTestId("button-primary")).toBeInTheDocument()
-			expect(screen.getByText("Set up local provider")).toBeInTheDocument()
+			expect(screen.getByText("Set up provider")).toBeInTheDocument()
 		})
 
 		it("navigates to provider selection when local provider setup is clicked", () => {
@@ -138,9 +137,8 @@ describe("WelcomeViewProvider", () => {
 			const getStartedButton = screen.getByTestId("button-primary")
 			fireEvent.click(getStartedButton)
 
-			expect(screen.getByTestId("radio-group")).toBeInTheDocument()
-			expect(screen.getByTestId("radio-custom")).toBeInTheDocument()
-			expect(screen.getByText("Set up local provider")).toBeInTheDocument()
+			expect(screen.getByText("Set up provider")).toBeInTheDocument()
+			expect(screen.getByTestId("api-options")).toBeInTheDocument()
 		})
 	})
 
@@ -149,22 +147,19 @@ describe("WelcomeViewProvider", () => {
 			fireEvent.click(screen.getByTestId("button-primary"))
 		}
 
-		it("shows the custom provider option", () => {
+		it("shows embedded API options", () => {
 			renderWelcomeViewProvider()
 			navigateToProviderSelection()
 
-			expect(screen.getByTestId("radio-group")).toBeInTheDocument()
-			expect(screen.getByTestId("radio-custom")).toBeInTheDocument()
-			expect(screen.getByText("3rd-party Provider")).toBeInTheDocument()
-			expect(screen.getByText("Enter an API key and get going.")).toBeInTheDocument()
+			expect(screen.getByTestId("api-options")).toBeInTheDocument()
+			expect(screen.queryByTestId("radio-group")).not.toBeInTheDocument()
 		})
 
-		it("custom provider is selected by default", () => {
+		it("starts on provider setup", () => {
 			renderWelcomeViewProvider()
 			navigateToProviderSelection()
 
-			const radioGroup = screen.getByTestId("radio-group")
-			expect(radioGroup).toHaveAttribute("data-value", "custom")
+			expect(screen.getByText("Set up provider")).toBeInTheDocument()
 		})
 
 		it("shows API options for custom provider", () => {

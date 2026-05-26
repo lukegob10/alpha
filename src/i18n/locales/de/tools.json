@@ -24,8 +24,6 @@
 		"invalidImageData": "Ungültige Bilddaten in der Antwort",
 		"invalidImageFormat": "Ungültiges Bildformat erhalten",
 		"unknownError": "Unbekannter Fehler aufgetreten",
-		"roo": {
-			"authRequired": "Alpha Cloud-Authentifizierung ist für die Bildgenerierung erforderlich. Bitte melde dich bei Alpha Cloud an."
-		}
+		"roo": {}
 	}
 }

@@ -6,41 +6,22 @@
 		},
 		"openrouter": {
 			"description": "LLM向けの統一インターフェース"
-		},
-		"roo": {
-			"description": "始めるための最高の無料モデル",
-			"incentive": "Alphaを無料で試す"
 		}
 	},
 	"landing": {
 		"greeting": "Alphaへようこそ！",
 		"introduction": "組み込みおよび拡張可能なモードを備えたAlphaは、計画、アーキテクチャ設計、コーディング、デバッグ、そして今までにない生産性向上を可能にします。",
-		"accountMention": "始めるには、Alpha Cloudアカウントを作成してください。強力なモデル、ウェブコントロール、分析、サポート、その他をご利用いただけます。",
 		"getStarted": "Alphaアカウントを作成",
 		"noAccount": "またはアカウントなしで使用"
 	},
 	"providerSignup": {
 		"heading": "プロバイダーを選択",
 		"chooseProvider": "Alphaが機能するにはLLMプロバイダーが必要です。始めるために1つを選択してください。後から追加することもできます。",
-		"rooCloudProvider": "Alpha Cloudプロバイダー",
-		"rooCloudDescription": "始める最も簡単な方法は、Alpha Cloudプロバイダーを使用することです。無料および有料モデルの厳選されたミックスを低コストで提供します。",
 		"learnMore": "詳細を見る",
 		"useAnotherProvider": "サードパーティプロバイダー",
 		"useAnotherProviderDescription": "APIキーを入力して開始します。",
-		"noApiKeys": "APIキーと別のアカウントを処理したくありませんか?",
-		"backToAlpha": "Alpha Cloudプロバイダーを選択してください。",
 		"goBack": "戻る",
 		"finish": "完了"
-	},
-	"waitingForCloud": {
-		"heading": "Alpha Cloudにログイン中...",
-		"description": "Alpha Cloudに登録するためにブラウザーに移動します。その後、ここに戻って完了します。",
-		"noPrompt": "URLを開くように求められない場合は、<clickHere>ここをクリック</clickHere>してください。",
-		"havingTrouble": "登録を完了しましたがトラブルが発生している場合は、<clickHere>ここをクリック</clickHere>してください。",
-		"pasteUrl": "ブラウザーに表示されているコールバックURLを貼り付けます:",
-		"docsLink": "機能していませんか？<DocsLink>ドキュメントを確認</DocsLink>してください。",
-		"invalidURL": "有効なコールバックURLのようには見えません。Alpha Cloudがブラウザーに表示しているものをコピーしてください。",
-		"goBack": "戻る"
 	},
 	"startRouter": "LLMルーターの使用をお勧めします:",
 	"startCustom": "または、独自のAPIキーを持ってくることもできます:",

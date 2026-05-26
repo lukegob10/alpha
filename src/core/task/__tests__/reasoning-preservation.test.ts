@@ -75,12 +75,6 @@ vi.mock("@alpha-code/telemetry", () => ({
 	},
 }))
 
-vi.mock("@alpha-code/cloud", () => ({
-	CloudService: {
-		isEnabled: () => false,
-	},
-}))
-
 // Mock delay to prevent actual delays
 vi.mock("delay", () => ({
 	__esModule: true,

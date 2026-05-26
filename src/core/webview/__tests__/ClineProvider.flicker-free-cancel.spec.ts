@@ -70,17 +70,6 @@ vi.mock("@alpha-code/telemetry", () => ({
 	},
 }))
 
-// Mock CloudService
-vi.mock("@alpha-code/cloud", () => ({
-	CloudService: {
-		hasInstance: vi.fn().mockReturnValue(false),
-		instance: {
-			isAuthenticated: vi.fn().mockReturnValue(false),
-		},
-	},
-	getRooCodeApiUrl: vi.fn().mockReturnValue("https://api.alpha.invalid"),
-}))
-
 vi.mock("../../../shared/embeddingModels", () => ({
 	EMBEDDING_MODEL_PROFILES: [],
 }))

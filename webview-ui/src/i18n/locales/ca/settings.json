@@ -455,16 +455,6 @@
 		"cacheUsageNote": "Nota: Si no veieu l'ús de la caché, proveu de seleccionar un model diferent i després tornar a seleccionar el model desitjat.",
 		"vscodeLmModel": "Model de llenguatge",
 		"vscodeLmWarning": "Nota: Els models accessibles a través de l’API VS Code Language Model poden estar encapsulats o ajustats pel proveïdor; per tant, el comportament pot diferir de l’ús directe del mateix model des d’un proveïdor o enrutador típic. Per utilitzar un model del desplegable «Language Model», primer canvia a aquest model i després fes clic a «Acceptar» a l’avís de Copilot Chat; en cas contrari pots veure un error com 400 «The requested model is not supported».",
-		"googleCloudSetup": {
-			"title": "Per utilitzar Google Cloud Vertex AI, necessiteu:",
-			"step1": "1. Crear un compte de Google Cloud, habilitar l'API de Vertex AI i habilitar els models Claude necessaris.",
-			"step2": "2. Instal·lar Google Cloud CLI i configurar les credencials d'aplicació per defecte.",
-			"step3": "3. O crear un compte de servei amb credencials."
-		},
-		"googleCloudCredentials": "Credencials de Google Cloud",
-		"googleCloudKeyFile": "Ruta del fitxer de clau de Google Cloud",
-		"googleCloudProjectId": "ID del projecte de Google Cloud",
-		"googleCloudRegion": "Regió de Google Cloud",
 		"lmStudio": {
 			"baseUrl": "URL base (opcional)",
 			"modelId": "ID del model",
@@ -485,10 +475,7 @@
 			"description": "Ollama permet executar models localment al vostre ordinador. Per a instruccions sobre com començar, consulteu la Guia d'inici ràpid.",
 			"warning": "Nota: Alpha utilitza prompts complexos i funciona millor amb models Claude. Els models menys capaços poden no funcionar com s'espera."
 		},
-		"roo": {
-			"authenticatedMessage": "Autenticat de forma segura a través del teu compte de Alpha Cloud.",
-			"connectButton": "Connecta amb Alpha Cloud"
-		},
+		"roo": {},
 		"openRouter": {
 			"providerRouting": {
 				"title": "Encaminament de Proveïdors d'OpenRouter",
@@ -899,7 +886,6 @@
 	"validation": {
 		"apiKey": "Heu de proporcionar una clau API vàlida.",
 		"awsRegion": "Heu de triar una regió per utilitzar Amazon Bedrock.",
-		"googleCloud": "Heu de proporcionar un ID de projecte i regió de Google Cloud vàlids.",
 		"modelId": "Heu de proporcionar un ID de model vàlid.",
 		"modelSelector": "Heu de proporcionar un selector de model vàlid.",
 		"openAi": "Heu de proporcionar una URL base, clau API i ID de model vàlids.",

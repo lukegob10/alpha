@@ -455,16 +455,6 @@
 		"cacheUsageNote": "Lưu ý: Nếu bạn không thấy việc sử dụng bộ nhớ đệm, hãy thử chọn một mô hình khác và sau đó chọn lại mô hình mong muốn của bạn.",
 		"vscodeLmModel": "Mô hình ngôn ngữ",
 		"vscodeLmWarning": "Lưu ý: Các mô hình truy cập qua VS Code Language Model API có thể được nhà cung cấp bao bọc hoặc tinh chỉnh, vì vậy hành vi có thể khác so với khi dùng trực tiếp cùng mô hình từ nhà cung cấp hoặc router thông thường. Để dùng một mô hình trong menu «Language Model», trước tiên hãy chuyển sang mô hình đó rồi nhấp «Chấp nhận» trong lời nhắc Copilot Chat; nếu không bạn có thể gặp lỗi như 400 «The requested model is not supported».",
-		"googleCloudSetup": {
-			"title": "Để sử dụng Google Cloud Vertex AI, bạn cần:",
-			"step1": "1. Tạo tài khoản Google Cloud, kích hoạt Vertex AI API và kích hoạt các mô hình Claude mong muốn.",
-			"step2": "2. Cài đặt Google Cloud CLI và cấu hình thông tin xác thực mặc định của ứng dụng.",
-			"step3": "3. Hoặc tạo tài khoản dịch vụ với thông tin xác thực."
-		},
-		"googleCloudCredentials": "Thông tin xác thực Google Cloud",
-		"googleCloudKeyFile": "Đường dẫn tệp khóa Google Cloud",
-		"googleCloudProjectId": "ID dự án Google Cloud",
-		"googleCloudRegion": "Vùng Google Cloud",
 		"lmStudio": {
 			"baseUrl": "URL cơ sở (tùy chọn)",
 			"modelId": "ID mô hình",
@@ -485,10 +475,7 @@
 			"description": "Ollama cho phép bạn chạy các mô hình cục bộ trên máy tính của bạn. Để biết hướng dẫn về cách bắt đầu, xem hướng dẫn nhanh của họ.",
 			"warning": "Lưu ý: Alpha sử dụng các lời nhắc phức tạp và hoạt động tốt nhất với các mô hình Claude. Các mô hình kém mạnh hơn có thể không hoạt động như mong đợi."
 		},
-		"roo": {
-			"authenticatedMessage": "Đã xác thực an toàn thông qua tài khoản Alpha Cloud của bạn.",
-			"connectButton": "Kết nối với Alpha Cloud"
-		},
+		"roo": {},
 		"openRouter": {
 			"providerRouting": {
 				"title": "Định tuyến nhà cung cấp OpenRouter",
@@ -899,7 +886,6 @@
 	"validation": {
 		"apiKey": "Bạn phải cung cấp khóa API hợp lệ.",
 		"awsRegion": "Bạn phải chọn một vùng để sử dụng Amazon Bedrock.",
-		"googleCloud": "Bạn phải cung cấp ID dự án và vùng Google Cloud hợp lệ.",
 		"modelId": "Bạn phải cung cấp ID mô hình hợp lệ.",
 		"modelSelector": "Bạn phải cung cấp bộ chọn mô hình hợp lệ.",
 		"openAi": "Bạn phải cung cấp URL cơ sở, khóa API và ID mô hình hợp lệ.",

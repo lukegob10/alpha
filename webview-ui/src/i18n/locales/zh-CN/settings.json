@@ -455,16 +455,6 @@
 		"cacheUsageNote": "提示：若未显示缓存使用情况，请切换模型后重新选择",
 		"vscodeLmModel": "VSCode LM 模型",
 		"vscodeLmWarning": "注意：通过 VS Code Language Model API 访问的模型可能由提供商进行封装或微调，因此其行为可能与直接从常见提供商或路由器使用同一模型时不同。要使用「Language Model」下拉列表中的模型，请先切换到该模型，然后在 Copilot Chat 提示中点击「接受」；否则可能会出现 400「The requested model is not supported」等错误。",
-		"googleCloudSetup": {
-			"title": "要使用 Google Cloud Vertex AI，您需要：",
-			"step1": "1. 注册Google Cloud账号并启用Vertex AI API",
-			"step2": "2. 安装配置Google Cloud CLI工具",
-			"step3": "3. 创建服务账号获取凭证"
-		},
-		"googleCloudCredentials": "Google Cloud 凭证",
-		"googleCloudKeyFile": "Google Cloud 密钥文件路径",
-		"googleCloudProjectId": "Google Cloud 项目 ID",
-		"googleCloudRegion": "Google Cloud 区域",
 		"lmStudio": {
 			"baseUrl": "基础 URL（可选）",
 			"modelId": "模型 ID",
@@ -485,10 +475,7 @@
 			"description": "Ollama 允许您在本地计算机上运行模型。有关如何开始使用的说明，请参阅其快速入门指南。",
 			"warning": "注意：Alpha 使用复杂的提示，与 Claude 模型配合最佳。功能较弱的模型可能无法按预期工作。"
 		},
-		"roo": {
-			"authenticatedMessage": "已通过 Alpha Cloud 账户安全认证。",
-			"connectButton": "连接到 Alpha Cloud"
-		},
+		"roo": {},
 		"openRouter": {
 			"providerRouting": {
 				"title": "OpenRouter 提供商路由",
@@ -899,7 +886,6 @@
 	"validation": {
 		"apiKey": "您必须提供有效的 API 密钥。",
 		"awsRegion": "您必须选择一个区域来使用 Amazon Bedrock。",
-		"googleCloud": "您必须提供有效的 Google Cloud 项目 ID 和区域。",
 		"modelId": "您必须提供有效的模型 ID。",
 		"modelSelector": "您必须提供有效的模型选择器。",
 		"openAi": "您必须提供有效的基础 URL、API 密钥和模型 ID。",

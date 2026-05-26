@@ -111,9 +111,7 @@
 			"thinking_complete_safety": "(생각 완료, 안전 설정으로 출력 차단됨)",
 			"thinking_complete_recitation": "(생각 완료, 암송 확인으로 출력 차단됨)"
 		},
-		"roo": {
-			"authenticationRequired": "Alpha 제공업체는 클라우드 인증이 필요합니다. Alpha Cloud에 로그인하세요."
-		},
+		"roo": {},
 		"api": {
 			"invalidKeyInvalidChars": "API 키에 유효하지 않은 문자가 포함되어 있습니다.",
 			"apiRequestFailed": "API 요청 실패 ({{status}})"
@@ -222,8 +220,6 @@
 	},
 	"mdm": {
 		"errors": {
-			"cloud_auth_required": "조직에서 Alpha Cloud 인증이 필요합니다. 계속하려면 로그인하세요.",
-			"organization_mismatch": "조직의 Alpha Cloud 계정으로 인증해야 합니다.",
 			"manual_url_empty": "유효한 콜백 URL을 입력하세요",
 			"manual_url_no_query": "유효하지 않은 콜백 URL: 쿼리 매개변수 누락",
 			"manual_url_missing_params": "유효하지 않은 콜백 URL: 필요한 매개변수 누락 (code와 state)",

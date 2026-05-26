@@ -111,9 +111,7 @@
 			"thinking_complete_safety": "(Réflexion terminée, mais la sortie a été bloquée en raison des paramètres de sécurité.)",
 			"thinking_complete_recitation": "(Réflexion terminée, mais la sortie a été bloquée en raison de la vérification de récitation.)"
 		},
-		"roo": {
-			"authenticationRequired": "Le fournisseur Alpha nécessite une authentification cloud. Veuillez vous connecter à Alpha Cloud."
-		},
+		"roo": {},
 		"api": {
 			"invalidKeyInvalidChars": "La clé API contient des caractères invalides.",
 			"apiRequestFailed": "La requête API a échoué ({{status}})"
@@ -222,8 +220,6 @@
 	},
 	"mdm": {
 		"errors": {
-			"cloud_auth_required": "Votre organisation nécessite une authentification Alpha Cloud. Veuillez vous connecter pour continuer.",
-			"organization_mismatch": "Vous devez être authentifié avec le compte Alpha Cloud de votre organisation.",
 			"manual_url_empty": "Veuillez entrer une URL de callback valide",
 			"manual_url_no_query": "URL de callback invalide : paramètres de requête manquants",
 			"manual_url_missing_params": "URL de callback invalide : paramètres requis manquants (code et state)",

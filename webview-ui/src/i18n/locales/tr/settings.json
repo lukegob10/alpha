@@ -455,16 +455,6 @@
 		"cacheUsageNote": "Not: Önbellek kullanımını görmüyorsanız, farklı bir model seçip ardından istediğiniz modeli tekrar seçmeyi deneyin.",
 		"vscodeLmModel": "Dil Modeli",
 		"vscodeLmWarning": "Not: VS Code Language Model API üzerinden erişilen modeller sağlayıcı tarafından sarılmış veya ince ayarlanmış olabilir; bu nedenle davranış, aynı modelin tipik bir sağlayıcı ya da yönlendirici üzerinden doğrudan kullanılmasından farklı olabilir. «Language Model» açılır menüsünden bir model kullanmak için önce o modele geçin ve ardından Copilot Chat isteminde «Kabul Et»e tıklayın; aksi takdirde 400 «The requested model is not supported» gibi bir hata görebilirsiniz.",
-		"googleCloudSetup": {
-			"title": "Google Cloud Vertex AI'yi kullanmak için şunları yapmanız gerekir:",
-			"step1": "1. Google Cloud hesabı oluşturun, Vertex AI API'sini etkinleştirin ve istediğiniz Claude modellerini etkinleştirin.",
-			"step2": "2. Google Cloud CLI'yi yükleyin ve uygulama varsayılan kimlik bilgilerini yapılandırın.",
-			"step3": "3. Veya kimlik bilgileriyle bir hizmet hesabı oluşturun."
-		},
-		"googleCloudCredentials": "Google Cloud Kimlik Bilgileri",
-		"googleCloudKeyFile": "Google Cloud Anahtar Dosyası Yolu",
-		"googleCloudProjectId": "Google Cloud Proje Kimliği",
-		"googleCloudRegion": "Google Cloud Bölgesi",
 		"lmStudio": {
 			"baseUrl": "Temel URL (İsteğe bağlı)",
 			"modelId": "Model Kimliği",
@@ -485,10 +475,7 @@
 			"description": "Ollama, modelleri bilgisayarınızda yerel olarak çalıştırmanıza olanak tanır. Başlamak için hızlı başlangıç kılavuzlarına bakın.",
 			"warning": "Not: Alpha karmaşık istemler kullanır ve Claude modelleriyle en iyi şekilde çalışır. Daha az yetenekli modeller beklendiği gibi çalışmayabilir."
 		},
-		"roo": {
-			"authenticatedMessage": "Alpha Cloud hesabın üzerinden güvenli bir şekilde kimlik doğrulandı.",
-			"connectButton": "Alpha Cloud'a Bağlan"
-		},
+		"roo": {},
 		"openRouter": {
 			"providerRouting": {
 				"title": "OpenRouter Sağlayıcı Yönlendirmesi",
@@ -899,7 +886,6 @@
 	"validation": {
 		"apiKey": "Geçerli bir API anahtarı sağlamalısınız.",
 		"awsRegion": "Amazon Bedrock kullanmak için bir bölge seçmelisiniz.",
-		"googleCloud": "Geçerli bir Google Cloud proje kimliği ve bölge sağlamalısınız.",
 		"modelId": "Geçerli bir model kimliği sağlamalısınız.",
 		"modelSelector": "Geçerli bir model seçici sağlamalısınız.",
 		"openAi": "Geçerli bir temel URL, API anahtarı ve model kimliği sağlamalısınız.",

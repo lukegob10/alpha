@@ -24,8 +24,6 @@
 		"invalidImageData": "प्रतिक्रिया में अमान्य छवि डेटा",
 		"invalidImageFormat": "अमान्य छवि प्रारूप प्राप्त हुआ",
 		"unknownError": "एक अज्ञात त्रुटि हुई",
-		"roo": {
-			"authRequired": "छवि निर्माण के लिए Alpha Cloud प्रमाणीकरण आवश्यक है। कृपया Alpha Cloud में साइन इन करें।"
-		}
+		"roo": {}
 	}
 }
