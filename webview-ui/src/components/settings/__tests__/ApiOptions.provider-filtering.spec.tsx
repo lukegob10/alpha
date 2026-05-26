@@ -13,7 +13,6 @@ import { MODELS_BY_PROVIDER, PROVIDERS } from "../constants"
 vi.mock("@src/context/ExtensionStateContext", () => ({
 	useExtensionState: vi.fn(() => ({
 		organizationAllowList: undefined,
-		cloudIsAuthenticated: false,
 	})),
 }))
 
@@ -170,21 +169,20 @@ describe("ApiOptions Provider Filtering", () => {
 		expect(providerValues).toContain("requesty")
 	})
 
-	it("should filter static providers based on organization allow list", () => {
-		// Create a mock organization allow list that only allows certain models
+	it("should ignore organization allow list when provider filtering is disabled", () => {
 		const allowList: OrganizationAllowList = {
 			allowAll: false,
 			providers: {
 				anthropic: {
 					allowAll: false,
-					models: ["claude-3-5-sonnet-20241022"], // Only allow one model
+					models: ["claude-3-5-sonnet-20241022"],
 				},
 				gemini: {
 					allowAll: false,
-					models: [], // No models allowed
+					models: [],
 				},
 				openrouter: {
-					allowAll: true, // Dynamic provider with all models allowed
+					allowAll: true,
 				},
 			},
 		}
@@ -192,7 +190,6 @@ describe("ApiOptions Provider Filtering", () => {
 		// Mock the extension state with the allow list
 		vi.mocked(useExtensionState).mockReturnValue({
 			organizationAllowList: allowList,
-			cloudIsAuthenticated: false,
 		} as any)
 
 		renderWithProviders()
@@ -204,15 +201,15 @@ describe("ApiOptions Provider Filtering", () => {
 		// Should include anthropic (has allowed models)
 		expect(providerValues).toContain("anthropic")
 
-		// Should NOT include gemini (no allowed models)
-		expect(providerValues).not.toContain("gemini")
+		// Organization filtering is disabled, so providers are not removed by the allow list.
+		expect(providerValues).toContain("gemini")
 
 		// Should include openrouter (dynamic provider)
 		expect(providerValues).toContain("openrouter")
 
-		// Should NOT include providers not in the allow list
-		expect(providerValues).not.toContain("openai-native")
-		expect(providerValues).not.toContain("mistral")
+		// Providers not present in the allow list remain available.
+		expect(providerValues).toContain("openai-native")
+		expect(providerValues).toContain("mistral")
 	})
 
 	it("should show static provider when allowAll is true for that provider", () => {
@@ -227,7 +224,6 @@ describe("ApiOptions Provider Filtering", () => {
 
 		vi.mocked(useExtensionState).mockReturnValue({
 			organizationAllowList: allowList,
-			cloudIsAuthenticated: false,
 		} as any)
 
 		renderWithProviders()
@@ -261,7 +257,6 @@ describe("ApiOptions Provider Filtering", () => {
 
 		vi.mocked(useExtensionState).mockReturnValue({
 			organizationAllowList: allowList,
-			cloudIsAuthenticated: false,
 		} as any)
 
 		// Mock the selected model hook to return testEmptyProvider as the selected provider

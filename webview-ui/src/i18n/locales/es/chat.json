@@ -20,8 +20,6 @@
 		"shareWithOrganizationDescription": "Solo los miembros de tu organización pueden acceder",
 		"sharePublicly": "Compartir públicamente",
 		"sharePubliclyDescription": "Cualquiera con el enlace puede acceder",
-		"connectToCloud": "Conectar al Cloud",
-		"connectToCloudDescription": "Inicia sesión en Alpha Cloud para compartir tareas",
 		"sharingDisabledByOrganization": "Compartir deshabilitado por la organización",
 		"shareSuccessOrganization": "Enlace de organización copiado al portapapeles",
 		"shareSuccessPublic": "Enlace público copiado al portapapeles",
@@ -341,10 +339,7 @@
 		"title": "Alpha {{version}} publicado",
 		"support": "Por favor, apoya a Alpha dándonos una estrella en <githubLink>GitHub</githubLink>.",
 		"stealthModel": {
-			"feature": "<bold>Modelo stealth GRATUITO por tiempo limitado</bold> - Code Supernova: ¡Ahora actualizado con una <bold>ventana de contexto de 1M tokens</bold>! Un modelo de codificación agéntica versátil que soporta entradas de imágenes, accesible a través de Alpha Cloud.",
 			"note": "(Nota: los prompts y completaciones son registrados por el creador del modelo y utilizados para mejorarlo)",
-			"connectButton": "Conectar a Alpha Cloud",
-			"selectModel": "Selecciona <code>roo/code-supernova</code> del proveedor Alpha Cloud en Configuración para comenzar.",
 			"goToSettingsButton": "Ir a Configuración"
 		},
 		"release": {
@@ -354,12 +349,6 @@
 			"geminiPro": "Soporte para Gemini 3.1 Pro: Se añadió soporte para el modelo Gemini 3.1 Pro y se estableció como modelo Gemini predeterminado para un mejor rendimiento.",
 			"cliNdjson": "Protocolo NDJSON del CLI: Nuevo protocolo NDJSON por stdin, subcomandos de listado y comando de ejecución modularizado para flujos de trabajo CLI más flexibles.",
 			"cliRelease": "CLI v0.1.0: El CLI de Alpha alcanza su primera versión oficial con una interfaz de comandos estable."
-		},
-		"cloudAgents": {
-			"heading": "Novedades en la Nube:",
-			"specialized": "Presentamos <bold>Explainer</bold>, <bold>Planner</bold> y <bold>Coder</bold> - tres agentes en la nube especializados para mejorar tus flujos de trabajo.",
-			"description": "Los agentes trabajan juntos en la nube y se pueden activar desde la web o mediante Slack.",
-			"tryButton": "Prueba los Agentes en la Nube"
 		}
 	},
 	"costs": {
@@ -433,11 +422,6 @@
 	},
 	"versionIndicator": {
 		"ariaLabel": "Versión {{version}} - Haz clic para ver las notas de la versión"
-	},
-	"rooCloudCTA": {
-		"title": "¡Alpha Cloud está evolucionando!",
-		"description": "Ejecuta agentes remotos en la nube, accede a tus tareas desde cualquier lugar, colabora con otros y mucho más.",
-		"joinWaitlist": "Regístrate para recibir las últimas actualizaciones."
 	},
 	"editMessage": {
 		"placeholder": "Edita tu mensaje..."

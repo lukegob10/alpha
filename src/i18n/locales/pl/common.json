@@ -111,9 +111,7 @@
 			"thinking_complete_safety": "(Myślenie zakończone, ale dane wyjściowe zostały zablokowane przez ustawienia bezpieczeństwa.)",
 			"thinking_complete_recitation": "(Myślenie zakończone, ale dane wyjściowe zostały zablokowane przez kontrolę recytacji.)"
 		},
-		"roo": {
-			"authenticationRequired": "Dostawca Alpha wymaga uwierzytelnienia w chmurze. Zaloguj się do Alpha Cloud."
-		},
+		"roo": {},
 		"api": {
 			"invalidKeyInvalidChars": "Klucz API zawiera nieprawidłowe znaki.",
 			"apiRequestFailed": "Żądanie API nie powiodło się ({{status}})"
@@ -222,8 +220,6 @@
 	},
 	"mdm": {
 		"errors": {
-			"cloud_auth_required": "Twoja organizacja wymaga uwierzytelnienia Alpha Cloud. Zaloguj się, aby kontynuować.",
-			"organization_mismatch": "Musisz być uwierzytelniony kontem Alpha Cloud swojej organizacji.",
 			"manual_url_empty": "Wprowadź prawidłowy URL callback",
 			"manual_url_no_query": "Nieprawidłowy URL callback: brak parametrów zapytania",
 			"manual_url_missing_params": "Nieprawidłowy URL callback: brak wymaganych parametrów (code i state)",

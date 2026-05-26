@@ -20,8 +20,6 @@
 		"shareWithOrganizationDescription": "Chỉ thành viên tổ chức của bạn mới có thể truy cập",
 		"sharePublicly": "Chia sẻ công khai",
 		"sharePubliclyDescription": "Bất kỳ ai có liên kết đều có thể truy cập",
-		"connectToCloud": "Kết nối với Cloud",
-		"connectToCloudDescription": "Đăng nhập vào Alpha Cloud để chia sẻ tác vụ",
 		"sharingDisabledByOrganization": "Chia sẻ bị tổ chức vô hiệu hóa",
 		"shareSuccessOrganization": "Liên kết tổ chức đã được sao chép vào clipboard",
 		"shareSuccessPublic": "Liên kết công khai đã được sao chép vào clipboard",
@@ -342,10 +340,7 @@
 		"title": "Alpha {{version}} Đã phát hành",
 		"support": "Hãy ủng hộ Alpha bằng cách gắn sao cho chúng tôi trên <githubLink>GitHub</githubLink>.",
 		"stealthModel": {
-			"feature": "<bold>Mô hình stealth MIỄN PHÍ có thời hạn</bold> - Code Supernova: Hiện đã được nâng cấp với <bold>cửa sổ ngữ cảnh 1M token</bold>! Một mô hình lập trình agentic đa năng hỗ trợ đầu vào hình ảnh, có sẵn qua Alpha Cloud.",
 			"note": "(Lưu ý: các prompt và completion được ghi lại bởi người tạo mô hình và được sử dụng để cải thiện mô hình)",
-			"connectButton": "Kết nối với Alpha Cloud",
-			"selectModel": "Chọn <code>roo/code-supernova</code> từ nhà cung cấp Alpha Cloud trong Cài đặt để bắt đầu.",
 			"goToSettingsButton": "Đi tới Cài đặt"
 		},
 		"release": {
@@ -355,12 +350,6 @@
 			"geminiPro": "Hỗ trợ Gemini 3.1 Pro: Đã thêm hỗ trợ model Gemini 3.1 Pro và đặt làm model Gemini mặc định để cải thiện hiệu suất.",
 			"cliNdjson": "Giao thức NDJSON CLI: Giao thức NDJSON stdin mới, lệnh con list, và lệnh run được module hóa cho quy trình CLI linh hoạt hơn.",
 			"cliRelease": "CLI v0.1.0: CLI Alpha đạt bản phát hành chính thức đầu tiên với giao diện lệnh ổn định."
-		},
-		"cloudAgents": {
-			"heading": "Mới trên Cloud:",
-			"specialized": "Giới thiệu <bold>Explainer</bold>, <bold>Planner</bold> và <bold>Coder</bold> - ba agent đám mây chuyên biệt để nâng cao quy trình làm việc của bạn.",
-			"description": "Các agent làm việc cùng nhau trên đám mây và có thể được kích hoạt từ web hoặc qua Slack.",
-			"tryButton": "Dùng thử Agents trên Cloud"
 		}
 	},
 	"costs": {
@@ -434,11 +423,6 @@
 	},
 	"versionIndicator": {
 		"ariaLabel": "Phiên bản {{version}} - Nhấp để xem ghi chú phát hành"
-	},
-	"rooCloudCTA": {
-		"title": "Alpha Cloud đang phát triển!",
-		"description": "Chạy các agent từ xa trên cloud, truy cập các tác vụ của bạn từ mọi nơi, cộng tác với người khác và nhiều hơn nữa.",
-		"joinWaitlist": "Đăng ký để nhận các cập nhật mới nhất."
 	},
 	"editMessage": {
 		"placeholder": "Chỉnh sửa tin nhắn của bạn..."

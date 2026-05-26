@@ -111,9 +111,7 @@
 			"thinking_complete_safety": "(सोचना पूरा हुआ, लेकिन सुरक्षा सेटिंग्स के कारण आउटपुट अवरुद्ध कर दिया गया।)",
 			"thinking_complete_recitation": "(सोचना पूरा हुआ, लेकिन पाठ जाँच के कारण आउटपुट अवरुद्ध कर दिया गया।)"
 		},
-		"roo": {
-			"authenticationRequired": "Alpha प्रदाता को क्लाउड प्रमाणीकरण की आवश्यकता है। कृपया Alpha Cloud में साइन इन करें।"
-		},
+		"roo": {},
 		"api": {
 			"invalidKeyInvalidChars": "API कुंजी में अमान्य वर्ण हैं।",
 			"apiRequestFailed": "API अनुरोध विफल ({{status}})"
@@ -222,8 +220,6 @@
 	},
 	"mdm": {
 		"errors": {
-			"cloud_auth_required": "आपके संगठन को Alpha Cloud प्रमाणीकरण की आवश्यकता है। कृपया जारी रखने के लिए साइन इन करें।",
-			"organization_mismatch": "आपको अपने संगठन के Alpha Cloud खाते से प्रमाणित होना होगा।",
 			"manual_url_empty": "कृपया एक वैध callback URL दर्ज करें",
 			"manual_url_no_query": "अवैध callback URL: क्वेरी पैरामीटर गुम हैं",
 			"manual_url_missing_params": "अवैध callback URL: आवश्यक पैरामीटर गुम हैं (code और state)",

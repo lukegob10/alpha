@@ -111,9 +111,7 @@
 			"thinking_complete_safety": "(Pensamiento completado, pero la salida fue bloqueada debido a la configuración de seguridad.)",
 			"thinking_complete_recitation": "(Pensamiento completado, pero la salida fue bloqueada debido a la comprobación de recitación.)"
 		},
-		"roo": {
-			"authenticationRequired": "El proveedor Alpha requiere autenticación en la nube. Por favor, inicia sesión en Alpha Cloud."
-		},
+		"roo": {},
 		"api": {
 			"invalidKeyInvalidChars": "La clave API contiene caracteres inválidos.",
 			"apiRequestFailed": "La solicitud API falló ({{status}})"
@@ -222,8 +220,6 @@
 	},
 	"mdm": {
 		"errors": {
-			"cloud_auth_required": "Tu organización requiere autenticación de Alpha Cloud. Por favor, inicia sesión para continuar.",
-			"organization_mismatch": "Debes estar autenticado con la cuenta de Alpha Cloud de tu organización.",
 			"verification_failed": "No se pudo verificar la autenticación de la organización."
 		},
 		"info": {

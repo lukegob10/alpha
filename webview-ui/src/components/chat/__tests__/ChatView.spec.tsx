@@ -282,7 +282,6 @@ const mockPostMessage = (state: Partial<ExtensionState>) => {
 				shouldShowAnnouncement: false,
 				allowedCommands: [],
 				alwaysAllowExecute: false,
-				cloudIsAuthenticated: false,
 				telemetrySetting: "enabled",
 				...state,
 			},
@@ -678,7 +677,6 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 
 		// Hydrate state with user authenticated to cloud
 		mockPostMessage({
-			cloudIsAuthenticated: true,
 			taskHistory: [
 				{ id: "1", ts: Date.now() - 3000 },
 				{ id: "2", ts: Date.now() - 2000 },
@@ -697,7 +695,6 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 
 		// Hydrate state with user not authenticated but only 3 tasks
 		mockPostMessage({
-			cloudIsAuthenticated: false,
 			taskHistory: [
 				{ id: "1", ts: Date.now() - 2000 },
 				{ id: "2", ts: Date.now() - 1000 },
@@ -710,12 +707,11 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 		expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
 	})
 
-	it("shows DismissibleUpsell when user is not authenticated and has run 6 or more tasks", async () => {
-		const { getByTestId } = renderChatView()
+	it("does not show DismissibleUpsell when user has run 6 or more tasks", async () => {
+		const { queryByTestId } = renderChatView()
 
 		// Hydrate state with user not authenticated and 4 tasks
 		mockPostMessage({
-			cloudIsAuthenticated: false,
 			taskHistory: [
 				{ id: "1", ts: Date.now() - 6000 },
 				{ id: "2", ts: Date.now() - 5000 },
@@ -728,9 +724,9 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 			clineMessages: [], // No active task
 		})
 
-		// Wait for component to render and show DismissibleUpsell
+		// Cloud upsell surfaces are removed, so the welcome screen should stay on Alpha tips.
 		await waitFor(() => {
-			expect(getByTestId("dismissible-upsell")).toBeInTheDocument()
+			expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
 		})
 	})
 
@@ -739,7 +735,6 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 
 		// Hydrate state with active task
 		mockPostMessage({
-			cloudIsAuthenticated: false,
 			taskHistory: [
 				{ id: "1", ts: Date.now() - 3000 },
 				{ id: "2", ts: Date.now() - 2000 },
@@ -772,7 +767,6 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 
 		// Hydrate state with user authenticated to cloud
 		mockPostMessage({
-			cloudIsAuthenticated: true,
 			taskHistory: [
 				{ id: "1", ts: Date.now() - 3000 },
 				{ id: "2", ts: Date.now() - 2000 },
@@ -792,7 +786,6 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 
 		// Hydrate state with user not authenticated but fewer than 4 tasks
 		mockPostMessage({
-			cloudIsAuthenticated: false,
 			taskHistory: [
 				{ id: "1", ts: Date.now() - 2000 },
 				{ id: "2", ts: Date.now() - 1000 },

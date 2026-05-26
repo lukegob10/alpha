@@ -455,16 +455,6 @@
 		"cacheUsageNote": "Let op: als je geen cachegebruik ziet, probeer dan een ander model te selecteren en vervolgens weer je gewenste model.",
 		"vscodeLmModel": "Taalmodel",
 		"vscodeLmWarning": "Let op: Modellen die via de VS Code Language Model API worden benaderd kunnen door de provider worden verpakt of fijn‑afgesteld, waardoor het gedrag kan afwijken van het rechtstreeks gebruiken van hetzelfde model bij een typische provider of router. Om een model uit de keuzelijst ‘Language Model’ te gebruiken, schakel eerst naar dat model en klik vervolgens op ‘Accepteren’ in de Copilot Chat‑prompt; anders kun je een fout zien zoals 400 ‘The requested model is not supported’.",
-		"googleCloudSetup": {
-			"title": "Om Google Cloud Vertex AI te gebruiken, moet je:",
-			"step1": "1. Maak een Google Cloud-account aan, schakel de Vertex AI API in en activeer de gewenste Claude-modellen.",
-			"step2": "2. Installeer de Google Cloud CLI en configureer standaardreferenties voor applicaties.",
-			"step3": "3. Of maak een serviceaccount met referenties."
-		},
-		"googleCloudCredentials": "Google Cloud-referenties",
-		"googleCloudKeyFile": "Google Cloud-sleutelbestandspad",
-		"googleCloudProjectId": "Google Cloud-project-ID",
-		"googleCloudRegion": "Google Cloud-regio",
 		"lmStudio": {
 			"baseUrl": "Basis-URL (optioneel)",
 			"modelId": "Model-ID",
@@ -485,10 +475,7 @@
 			"description": "Ollama laat je modellen lokaal op je computer draaien. Zie hun quickstart-gids voor instructies.",
 			"warning": "Let op: Alpha gebruikt complexe prompts en werkt het beste met Claude-modellen. Minder krachtige modellen werken mogelijk niet zoals verwacht."
 		},
-		"roo": {
-			"authenticatedMessage": "Veilig geauthenticeerd via je Alpha Cloud-account.",
-			"connectButton": "Verbinden met Alpha Cloud"
-		},
+		"roo": {},
 		"openRouter": {
 			"providerRouting": {
 				"title": "OpenRouter-providerroutering",
@@ -899,7 +886,6 @@
 	"validation": {
 		"apiKey": "Je moet een geldige API-sleutel opgeven.",
 		"awsRegion": "Je moet een regio kiezen om Amazon Bedrock te gebruiken.",
-		"googleCloud": "Je moet een geldig Google Cloud Project-ID en regio opgeven.",
 		"modelId": "Je moet een geldig model-ID opgeven.",
 		"modelSelector": "Je moet een geldige modelselector opgeven.",
 		"openAi": "Je moet een geldige basis-URL, API-sleutel en model-ID opgeven.",

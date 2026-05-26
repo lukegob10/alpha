@@ -399,12 +399,6 @@ describe("webviewMessageHandler - requestRouterModels", () => {
 			}),
 		)
 		expect(mockGetModels).toHaveBeenCalledWith({ provider: "vercel-ai-gateway" })
-		expect(mockGetModels).toHaveBeenCalledWith(
-			expect.objectContaining({
-				provider: "roo",
-				baseUrl: expect.any(String),
-			}),
-		)
 		expect(mockGetModels).toHaveBeenCalledWith({
 			provider: "litellm",
 			apiKey: "litellm-key",
@@ -419,7 +413,6 @@ describe("webviewMessageHandler - requestRouterModels", () => {
 				requesty: mockModels,
 				unbound: mockModels,
 				litellm: mockModels,
-				roo: mockModels,
 				ollama: {},
 				lmstudio: {},
 				"vercel-ai-gateway": mockModels,
@@ -504,7 +497,6 @@ describe("webviewMessageHandler - requestRouterModels", () => {
 				openrouter: mockModels,
 				requesty: mockModels,
 				unbound: mockModels,
-				roo: mockModels,
 				litellm: {},
 				ollama: {},
 				lmstudio: {},
@@ -531,7 +523,6 @@ describe("webviewMessageHandler - requestRouterModels", () => {
 			.mockRejectedValueOnce(new Error("Requesty API error")) // requesty
 			.mockResolvedValueOnce(mockModels) // unbound
 			.mockResolvedValueOnce(mockModels) // vercel-ai-gateway
-			.mockResolvedValueOnce(mockModels) // roo
 			.mockRejectedValueOnce(new Error("LiteLLM connection failed")) // litellm
 
 		await webviewMessageHandler(mockClineProvider, {
@@ -560,7 +551,6 @@ describe("webviewMessageHandler - requestRouterModels", () => {
 				openrouter: mockModels,
 				requesty: {},
 				unbound: mockModels,
-				roo: mockModels,
 				litellm: {},
 				ollama: {},
 				lmstudio: {},
@@ -578,7 +568,6 @@ describe("webviewMessageHandler - requestRouterModels", () => {
 			.mockRejectedValueOnce(new Error("Requesty API error")) // requesty
 			.mockRejectedValueOnce(new Error("Unbound error")) // unbound
 			.mockRejectedValueOnce(new Error("Vercel AI Gateway error")) // vercel-ai-gateway
-			.mockRejectedValueOnce(new Error("Alpha API error")) // roo
 			.mockRejectedValueOnce(new Error("LiteLLM connection failed")) // litellm
 
 		await webviewMessageHandler(mockClineProvider, {
@@ -612,13 +601,6 @@ describe("webviewMessageHandler - requestRouterModels", () => {
 			success: false,
 			error: "Vercel AI Gateway error",
 			values: { provider: "vercel-ai-gateway" },
-		})
-
-		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "singleRouterModelFetchResponse",
-			success: false,
-			error: "Alpha API error",
-			values: { provider: "roo" },
 		})
 
 		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({

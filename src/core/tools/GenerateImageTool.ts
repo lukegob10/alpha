@@ -14,7 +14,6 @@ import { getReadablePath } from "../../utils/path"
 import { isPathOutsideWorkspace } from "../../utils/pathUtils"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { OpenRouterHandler } from "../../api/providers/openrouter"
-import { RooHandler } from "../../api/providers/roo"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import type { ToolUse } from "../../shared/tools"
 import { t } from "../../i18n"
@@ -149,10 +148,6 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 			selectedModel = modelInfo?.value || IMAGE_GENERATION_MODEL_IDS[0]
 		}
 
-		// Use the provider selection
-		const modelProvider = imageProvider
-		const apiMethod = modelInfo?.apiMethod
-
 		// Validate API key for OpenRouter
 		const openRouterApiKey = state?.openRouterImageApiKey
 
@@ -189,16 +184,13 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 				return
 			}
 
-			let result
-			if (modelProvider === "roo") {
-				// Use Alpha Cloud provider (supports both chat completions and images API)
-				const rooHandler = new RooHandler({} as any)
-				result = await rooHandler.generateImage(prompt, selectedModel, inputImageData, apiMethod)
-			} else {
-				// Use OpenRouter provider (only supports chat completions API)
-				const openRouterHandler = new OpenRouterHandler({} as any)
-				result = await openRouterHandler.generateImage(prompt, selectedModel, openRouterApiKey!, inputImageData)
-			}
+			const openRouterHandler = new OpenRouterHandler({} as any)
+			const result = await openRouterHandler.generateImage(
+				prompt,
+				selectedModel,
+				openRouterApiKey!,
+				inputImageData,
+			)
 
 			if (!result.success) {
 				await task.say("error", result.error || "Failed to generate image")

@@ -111,9 +111,7 @@
 			"thinking_complete_safety": "（思考完了、安全設定により出力ブロック）",
 			"thinking_complete_recitation": "（思考完了、引用チェックにより出力ブロック）"
 		},
-		"roo": {
-			"authenticationRequired": "Alphaプロバイダーはクラウド認証が必要です。Alpha Cloudにサインインしてください。"
-		},
+		"roo": {},
 		"api": {
 			"invalidKeyInvalidChars": "APIキーに無効な文字が含まれています。",
 			"apiRequestFailed": "APIリクエストが失敗しました ({{status}})"
@@ -222,8 +220,6 @@
 	},
 	"mdm": {
 		"errors": {
-			"cloud_auth_required": "あなたの組織では Alpha Cloud 認証が必要です。続行するにはサインインしてください。",
-			"organization_mismatch": "組織の Alpha Cloud アカウントで認証する必要があります。",
 			"manual_url_empty": "有効なコールバック URL を入力してください",
 			"manual_url_no_query": "無効なコールバック URL：クエリパラメータがありません",
 			"manual_url_missing_params": "無効なコールバック URL：必要なパラメータ（code と state）がありません",

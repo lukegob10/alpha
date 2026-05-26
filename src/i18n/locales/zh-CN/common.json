@@ -116,9 +116,7 @@
 			"thinking_complete_safety": "（思考完成，但由于安全设置输出被阻止。）",
 			"thinking_complete_recitation": "（思考完成，但由于引用检查输出被阻止。）"
 		},
-		"roo": {
-			"authenticationRequired": "Alpha 提供商需要云认证。请登录 Alpha Cloud。"
-		},
+		"roo": {},
 		"api": {
 			"invalidKeyInvalidChars": "API 密钥包含无效字符.",
 			"apiRequestFailed": "API 请求失败 ({{status}})"
@@ -227,8 +225,6 @@
 	},
 	"mdm": {
 		"errors": {
-			"cloud_auth_required": "您的组织需要 Alpha Cloud 身份验证。请登录以继续。",
-			"organization_mismatch": "您必须使用组织的 Alpha Cloud 账户进行身份验证。",
 			"manual_url_empty": "请输入有效的回调 URL",
 			"manual_url_no_query": "无效的回调 URL：缺少查询参数",
 			"manual_url_missing_params": "无效的回调 URL：缺少必需参数（code 和 state）",

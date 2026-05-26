@@ -16,14 +16,12 @@ services:
             - ../../packages/evals:/roo/repo/packages/evals:delegated
             - ../../packages/types:/roo/repo/packages/types:delegated
             - ../../packages/ipc:/roo/repo/packages/ipc:delegated
-            - ../../packages/cloud:/roo/repo/packages/cloud:delegated
             # Exclude node_modules from being overwritten
             - /roo/repo/node_modules
             - /roo/repo/apps/web-evals/node_modules
             - /roo/repo/packages/evals/node_modules
             - /roo/repo/packages/types/node_modules
             - /roo/repo/packages/ipc/node_modules
-            - /roo/repo/packages/cloud/node_modules
         entrypoint: []
         command:
             - sh

@@ -20,8 +20,6 @@
 		"shareWithOrganizationDescription": "組織のメンバーのみがアクセスできます",
 		"sharePublicly": "公開で共有",
 		"sharePubliclyDescription": "リンクを持つ誰でもアクセスできます",
-		"connectToCloud": "クラウドに接続",
-		"connectToCloudDescription": "タスクを共有するためにAlpha Cloudにサインイン",
 		"sharingDisabledByOrganization": "組織により共有が無効化されています",
 		"shareSuccessOrganization": "組織リンクをクリップボードにコピーしました",
 		"shareSuccessPublic": "公開リンクをクリップボードにコピーしました",
@@ -341,10 +339,7 @@
 		"title": "Alpha {{version}} リリース",
 		"support": "<githubLink>GitHub</githubLink>でスターを付けてAlphaを応援してください。",
 		"stealthModel": {
-			"feature": "<bold>期間限定無料ステルスモデル</bold> - Code Supernova：<bold>1Mトークンコンテキストウィンドウ</bold>にアップグレード！画像入力をサポートする多目的エージェントコーディングモデル、Alpha Cloud 経由で利用可能。",
 			"note": "(注意：プロンプトと補完はモデル作成者によってログに記録され、モデルの改善に使用されます)",
-			"connectButton": "Alpha Cloud に接続",
-			"selectModel": "設定で Alpha Cloud プロバイダーから <code>roo/code-supernova</code> を選択して開始してください。",
 			"goToSettingsButton": "設定に移動"
 		},
 		"release": {
@@ -354,12 +349,6 @@
 			"geminiPro": "Gemini 3.1 Pro サポート: Gemini 3.1 Pro モデルのサポートを追加し、パフォーマンス向上のためデフォルトの Gemini モデルに設定しました。",
 			"cliNdjson": "CLI NDJSON プロトコル: 新しい NDJSON stdin プロトコル、list サブコマンド、より柔軟な CLI ワークフローのためのモジュール化された run コマンド。",
 			"cliRelease": "CLI v0.1.0: Alpha CLI が安定したコマンドインターフェースで初の正式リリースに到達しました。"
-		},
-		"cloudAgents": {
-			"heading": "クラウドの新機能:",
-			"specialized": "<bold>Explainer</bold>、<bold>Planner</bold>、<bold>Coder</bold> の 3 つの専門クラウドエージェントを紹介します。ワークフローを強化します。",
-			"description": "エージェントはクラウドで連携して動作し、Web または Slack からトリガーできます。",
-			"tryButton": "クラウドエージェントを試す"
 		}
 	},
 	"costs": {
@@ -433,11 +422,6 @@
 	},
 	"versionIndicator": {
 		"ariaLabel": "バージョン {{version}} - クリックしてリリースノートを表示"
-	},
-	"rooCloudCTA": {
-		"title": "Alpha Cloud が進化中！",
-		"description": "クラウドでリモートエージェントを実行し、どこからでもタスクにアクセスし、他の人と協力し、その他多くの機能を利用できます。",
-		"joinWaitlist": "最新のアップデートを受け取るためにサインアップしてください。"
 	},
 	"editMessage": {
 		"placeholder": "メッセージを編集..."

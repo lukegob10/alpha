@@ -2,17 +2,7 @@ import { Command } from "commander"
 
 import { DEFAULT_FLAGS } from "@/types/constants.js"
 import { VERSION } from "@/lib/utils/version.js"
-import {
-	run,
-	login,
-	logout,
-	status,
-	listCommands,
-	listModes,
-	listModels,
-	listSessions,
-	upgrade,
-} from "@/commands/index.js"
+import { run, listCommands, listModes, listModels, listSessions, upgrade } from "@/commands/index.js"
 
 const program = new Command()
 
@@ -45,7 +35,7 @@ program
 	.option("-d, --debug", "Enable debug output (includes detailed debug information)", false)
 	.option("-a, --require-approval", "Require manual approval for actions", false)
 	.option("-k, --api-key <key>", "API key for the LLM provider")
-	.option("--provider <provider>", "API provider (alpha-cloud, anthropic, openai, openrouter, etc.)")
+	.option("--provider <provider>", "API provider (anthropic, openai, openrouter, etc.)")
 	.option("-m, --model <model>", "Model to use", DEFAULT_FLAGS.model)
 	.option("--mode <mode>", "Mode to start in (code, architect, ask, debug, etc.)", DEFAULT_FLAGS.mode)
 	.option("--terminal-shell <path>", "Absolute path to shell executable for inline terminal commands")
@@ -134,35 +124,6 @@ program
 	.description("Upgrade Alpha CLI to the latest version")
 	.action(async () => {
 		await runUpgradeAction(() => upgrade())
-	})
-
-const authCommand = program.command("auth").description("Manage authentication for Alpha Cloud")
-
-authCommand
-	.command("login")
-	.description("Authenticate with Alpha Cloud")
-	.option("-v, --verbose", "Enable verbose output", false)
-	.action(async (options: { verbose: boolean }) => {
-		const result = await login({ verbose: options.verbose })
-		process.exit(result.success ? 0 : 1)
-	})
-
-authCommand
-	.command("logout")
-	.description("Log out from Alpha Cloud")
-	.option("-v, --verbose", "Enable verbose output", false)
-	.action(async (options: { verbose: boolean }) => {
-		const result = await logout({ verbose: options.verbose })
-		process.exit(result.success ? 0 : 1)
-	})
-
-authCommand
-	.command("status")
-	.description("Show authentication status")
-	.option("-v, --verbose", "Enable verbose output", false)
-	.action(async (options: { verbose: boolean }) => {
-		const result = await status({ verbose: options.verbose })
-		process.exit(result.authenticated ? 0 : 1)
 	})
 
 program.parse()

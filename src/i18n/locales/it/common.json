@@ -111,9 +111,7 @@
 			"thinking_complete_safety": "(Pensiero completato, ma l'output è stato bloccato a causa delle impostazioni di sicurezza.)",
 			"thinking_complete_recitation": "(Pensiero completato, ma l'output è stato bloccato a causa del controllo di recitazione.)"
 		},
-		"roo": {
-			"authenticationRequired": "Il provider Alpha richiede l'autenticazione cloud. Accedi a Alpha Cloud."
-		},
+		"roo": {},
 		"api": {
 			"invalidKeyInvalidChars": "La chiave API contiene caratteri non validi.",
 			"apiRequestFailed": "Richiesta API fallita ({{status}})"
@@ -222,8 +220,6 @@
 	},
 	"mdm": {
 		"errors": {
-			"cloud_auth_required": "La tua organizzazione richiede l'autenticazione Alpha Cloud. Accedi per continuare.",
-			"organization_mismatch": "Devi essere autenticato con l'account Alpha Cloud della tua organizzazione.",
 			"manual_url_empty": "Inserisci un URL di callback valido",
 			"manual_url_no_query": "URL di callback non valido: parametri di query mancanti",
 			"manual_url_missing_params": "URL di callback non valido: parametri richiesti mancanti (code e state)",

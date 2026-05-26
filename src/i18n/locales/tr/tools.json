@@ -24,8 +24,6 @@
 		"invalidImageData": "Yanıtta geçersiz görüntü verisi",
 		"invalidImageFormat": "Geçersiz görüntü formatı alındı",
 		"unknownError": "Bilinmeyen bir hata oluştu",
-		"roo": {
-			"authRequired": "Görüntü oluşturma için Alpha Cloud kimlik doğrulaması gereklidir. Lütfen Alpha Cloud'da oturum açın."
-		}
+		"roo": {}
 	}
 }

@@ -20,8 +20,6 @@
 		"shareWithOrganizationDescription": "Tylko członkowie twojej organizacji mogą uzyskać dostęp",
 		"sharePublicly": "Udostępnij publicznie",
 		"sharePubliclyDescription": "Każdy z linkiem może uzyskać dostęp",
-		"connectToCloud": "Połącz z chmurą",
-		"connectToCloudDescription": "Zaloguj się do Alpha Cloud, aby udostępniać zadania",
 		"sharingDisabledByOrganization": "Udostępnianie wyłączone przez organizację",
 		"shareSuccessOrganization": "Link organizacji skopiowany do schowka",
 		"shareSuccessPublic": "Link publiczny skopiowany do schowka",
@@ -341,10 +339,7 @@
 		"title": "Alpha {{version}} wydany",
 		"support": "Wesprzyj Alpha, dając nam gwiazdkę na <githubLink>GitHub</githubLink>.",
 		"stealthModel": {
-			"feature": "<bold>Darmowy model stealth na ograniczony czas</bold> - Code Supernova: Teraz ulepszony z <bold>oknem kontekstu 1M tokenów</bold>! Wszechstronny model kodowania agentowego, który obsługuje wprowadzanie obrazów, dostępny przez Alpha Cloud.",
 			"note": "(Uwaga: prompty i uzupełnienia są rejestrowane przez twórcę modelu i używane do jego ulepszania)",
-			"connectButton": "Połącz z Alpha Cloud",
-			"selectModel": "Wybierz <code>roo/code-supernova</code> od dostawcy Alpha Cloud w Ustawieniach, aby rozpocząć.",
 			"goToSettingsButton": "Przejdź do Ustawień"
 		},
 		"release": {
@@ -354,12 +349,6 @@
 			"geminiPro": "Wsparcie dla Gemini 3.1 Pro: Dodano wsparcie dla modelu Gemini 3.1 Pro i ustawiono go jako domyślny model Gemini dla lepszej wydajności.",
 			"cliNdjson": "Protokół NDJSON w CLI: Nowy protokół NDJSON przez stdin, podkomendy list oraz zmodularyzowana komenda run dla bardziej elastycznych przepływów pracy CLI.",
 			"cliRelease": "CLI v0.1.0: CLI Alpha osiąga swoją pierwszą oficjalną wersję ze stabilnym interfejsem poleceń."
-		},
-		"cloudAgents": {
-			"heading": "Nowości w chmurze:",
-			"specialized": "Przedstawiamy <bold>Explainer</bold>, <bold>Planner</bold> i <bold>Coder</bold> - trzech wyspecjalizowanych agentów chmurowych, aby ulepszyć Twoje przepływy pracy.",
-			"description": "Agenci pracują razem w chmurze i mogą być uruchamiani z sieci lub przez Slack.",
-			"tryButton": "Wypróbuj agentów chmurowych"
 		}
 	},
 	"costs": {
@@ -433,11 +422,6 @@
 	},
 	"versionIndicator": {
 		"ariaLabel": "Wersja {{version}} - Kliknij, aby wyświetlić informacje o wydaniu"
-	},
-	"rooCloudCTA": {
-		"title": "Alpha Cloud się rozwija!",
-		"description": "Uruchamiaj zdalne agenty w chmurze, uzyskuj dostęp do swoich zadań z dowolnego miejsca, współpracuj z innymi i wiele więcej.",
-		"joinWaitlist": "Zarejestruj się, aby otrzymywać najnowsze aktualizacje."
 	},
 	"editMessage": {
 		"placeholder": "Edytuj swoją wiadomość..."

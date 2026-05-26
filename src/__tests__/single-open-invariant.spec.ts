@@ -48,7 +48,6 @@ describe("Single-open-task invariant", () => {
 				organizationAllowList: "*",
 				enableCheckpoints: true,
 				checkpointTimeout: 60,
-				cloudUserInfo: null,
 			}),
 			removeClineFromStack,
 			addClineToStack,
@@ -89,7 +88,6 @@ describe("Single-open-task invariant", () => {
 				organizationAllowList: "*",
 				enableCheckpoints: true,
 				checkpointTimeout: 60,
-				cloudUserInfo: null,
 			}),
 			removeClineFromStack,
 			addClineToStack,
@@ -129,7 +127,6 @@ describe("Single-open-task invariant", () => {
 				organizationAllowList: "*",
 				enableCheckpoints: true,
 				checkpointTimeout: 60,
-				cloudUserInfo: null,
 			}),
 			removeClineFromStack: vi.fn(),
 			addClineToStack,
@@ -207,6 +204,7 @@ describe("Single-open-task invariant", () => {
 
 		const provider = {
 			getCurrentTask: vi.fn(() => undefined), // ensure not rehydrating
+			getLiveTask: vi.fn(() => undefined),
 			removeClineFromStack,
 			addClineToStack,
 			updateGlobalState,
@@ -221,8 +219,6 @@ describe("Single-open-task invariant", () => {
 				enableCheckpoints: true,
 				checkpointTimeout: 60,
 				experiments: {},
-				cloudUserInfo: null,
-				taskSyncEnabled: false,
 			}),
 			// Methods used by createTaskWithHistoryItem for pending edit cleanup
 			getPendingEditOperation: vi.fn().mockReturnValue(undefined),

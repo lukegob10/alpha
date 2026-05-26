@@ -111,9 +111,7 @@
 			"thinking_complete_safety": "(Denken abgeschlossen, aber die Ausgabe wurde aufgrund von Sicherheitseinstellungen blockiert.)",
 			"thinking_complete_recitation": "(Denken abgeschlossen, aber die Ausgabe wurde aufgrund der Rezitationsprüfung blockiert.)"
 		},
-		"roo": {
-			"authenticationRequired": "Alpha-Anbieter erfordert Cloud-Authentifizierung. Bitte melde dich bei Alpha Cloud an."
-		},
+		"roo": {},
 		"openAiCodex": {
 			"notAuthenticated": "Nicht bei OpenAI Codex authentifiziert. Bitte melde dich über den OpenAI Codex OAuth-Flow an.",
 			"invalidRequest": "Ungültige Anfrage an die Codex-API. Bitte überprüfe deine Eingabeparameter.",
@@ -222,8 +220,6 @@
 	},
 	"mdm": {
 		"errors": {
-			"cloud_auth_required": "Deine Organisation erfordert eine Alpha Cloud-Authentifizierung. Bitte melde dich an, um fortzufahren.",
-			"organization_mismatch": "Du musst mit dem Alpha Cloud-Konto deiner Organisation authentifiziert sein.",
 			"verification_failed": "Die Organisationsauthentifizierung konnte nicht verifiziert werden."
 		},
 		"info": {

@@ -56,7 +56,7 @@ const ApiConfigManager = ({
 		const provider = profile.apiProvider
 		if (!provider) return true
 
-		const providerConfig = organizationAllowList.providers[provider]
+		const providerConfig = organizationAllowList.providers?.[provider]
 		if (!providerConfig) {
 			return false
 		}

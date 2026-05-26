@@ -110,9 +110,7 @@
 			"thinking_complete_safety": "（思考完成，但由於安全設定輸出被阻止。）",
 			"thinking_complete_recitation": "（思考完成，但由於引用檢查輸出被阻止。）"
 		},
-		"roo": {
-			"authenticationRequired": "Alpha 提供者需要雲端認證。請登入 Alpha Cloud。"
-		},
+		"roo": {},
 		"api": {
 			"invalidKeyInvalidChars": "API 金鑰包含無效字元。",
 			"apiRequestFailed": "API 請求失敗 ({{status}})"
@@ -222,8 +220,6 @@
 	},
 	"mdm": {
 		"errors": {
-			"cloud_auth_required": "您的組織需要 Alpha Cloud 身份驗證。請登入以繼續。",
-			"organization_mismatch": "您必須使用組織的 Alpha Cloud 帳戶進行身份驗證。",
 			"manual_url_empty": "請輸入有效的回呼 URL",
 			"manual_url_no_query": "無效的回呼 URL：缺少查詢參數",
 			"manual_url_missing_params": "無效的回呼 URL：缺少必要參數（code 和 state）",

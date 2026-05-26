@@ -98,16 +98,9 @@ export const dynamicAppPropertiesSchema = z.object({
 
 export type DynamicAppProperties = z.infer<typeof dynamicAppPropertiesSchema>
 
-export const cloudAppPropertiesSchema = z.object({
-	cloudIsAuthenticated: z.boolean().optional(),
-})
-
-export type CloudAppProperties = z.infer<typeof cloudAppPropertiesSchema>
-
 export const appPropertiesSchema = z.object({
 	...staticAppPropertiesSchema.shape,
 	...dynamicAppPropertiesSchema.shape,
-	...cloudAppPropertiesSchema.shape,
 })
 
 export type AppProperties = z.infer<typeof appPropertiesSchema>

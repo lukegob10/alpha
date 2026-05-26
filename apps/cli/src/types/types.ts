@@ -7,7 +7,6 @@ export const supportedProviders = [
 	"gemini",
 	"openrouter",
 	"vercel-ai-gateway",
-	"roo",
 ] as const satisfies ProviderName[]
 
 export type SupportedProvider = (typeof supportedProviders)[number]
@@ -21,7 +20,7 @@ export function normalizeProviderName(provider: string | undefined): SupportedPr
 		return undefined
 	}
 
-	return provider === "alpha-cloud" ? "roo" : (provider as SupportedProvider)
+	return provider as SupportedProvider
 }
 
 export type ReasoningEffortFlagOptions = ReasoningEffortExtended | "unspecified" | "disabled"
@@ -52,7 +51,6 @@ export type FlagOptions = {
 }
 
 export enum OnboardingProviderChoice {
-	Alpha = "roo",
 	Byok = "byok",
 }
 
