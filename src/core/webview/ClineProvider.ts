@@ -72,6 +72,7 @@ import { CodeIndexManager } from "../../services/code-index/manager"
 import type { IndexProgressUpdate } from "../../services/code-index/interfaces/manager"
 import { SkillsManager } from "../../services/skills/SkillsManager"
 import type { ScheduledTaskService } from "../../services/scheduled-tasks"
+import type { GoalSeekService } from "../../services/goal-seek"
 
 import { fileExistsAtPath } from "../../utils/fs"
 import { setTtsEnabled, setTtsSpeed } from "../../utils/tts"
@@ -143,6 +144,7 @@ export class ClineProvider
 	protected mcpHub?: McpHub // Change from private to protected
 	protected skillsManager?: SkillsManager
 	private scheduledTaskService?: ScheduledTaskService
+	private goalSeekService?: GoalSeekService
 	private marketplaceManager: MarketplaceManager
 	private taskCreationCallback: (task: Task) => void
 	private taskEventListeners: WeakMap<Task, Array<() => void>> = new WeakMap()
@@ -662,6 +664,8 @@ export class ClineProvider
 		this.taskHistoryStore.dispose()
 		this.scheduledTaskService?.dispose()
 		this.scheduledTaskService = undefined
+		this.goalSeekService?.dispose()
+		this.goalSeekService = undefined
 		this.flushGlobalStateWriteThrough()
 		this.log("Disposed all disposables")
 		ClineProvider.activeInstances.delete(this)
@@ -2286,6 +2290,7 @@ export class ClineProvider
 		}
 		const currentTaskApiConfiguration = currentTask?.apiConfiguration ?? apiConfiguration
 		const scheduledTaskState = this.scheduledTaskService?.getState()
+		const goalSeekState = this.goalSeekService?.getState()
 
 		return {
 			version: this.context.extension?.packageJSON?.version ?? "",
@@ -2318,6 +2323,9 @@ export class ClineProvider
 			taskHistory: this.taskHistoryStore.getAll().filter((item: HistoryItem) => item.ts && item.task),
 			scheduledTasks: scheduledTaskState?.tasks ?? [],
 			scheduledTaskRuns: scheduledTaskState?.runs ?? [],
+			goalSeekJobs: goalSeekState?.jobs ?? [],
+			goalSeekRuns: goalSeekState?.runs ?? [],
+			goalSeekAttempts: goalSeekState?.attempts ?? [],
 			soundEnabled: soundEnabled ?? false,
 			ttsEnabled: ttsEnabled ?? false,
 			ttsSpeed: ttsSpeed ?? 1.0,
@@ -2476,6 +2484,9 @@ export class ClineProvider
 			taskHistory: this.taskHistoryStore.getAll(),
 			scheduledTasks: this.scheduledTaskService?.getState().tasks ?? [],
 			scheduledTaskRuns: this.scheduledTaskService?.getState().runs ?? [],
+			goalSeekJobs: this.goalSeekService?.getState().jobs ?? [],
+			goalSeekRuns: this.goalSeekService?.getState().runs ?? [],
+			goalSeekAttempts: this.goalSeekService?.getState().attempts ?? [],
 			allowedCommands: stateValues.allowedCommands,
 			deniedCommands: stateValues.deniedCommands,
 			soundEnabled: stateValues.soundEnabled ?? false,
@@ -2743,6 +2754,14 @@ export class ClineProvider
 
 	public getScheduledTaskService(): ScheduledTaskService | undefined {
 		return this.scheduledTaskService
+	}
+
+	public setGoalSeekService(service: GoalSeekService): void {
+		this.goalSeekService = service
+	}
+
+	public getGoalSeekService(): GoalSeekService | undefined {
+		return this.goalSeekService
 	}
 
 	/**

@@ -86,6 +86,11 @@
 				"icon": "$(calendar)"
 			},
 			{
+				"command": "alpha.goalSeekButtonClicked",
+				"title": "%command.goalSeek.title%",
+				"icon": "$(target)"
+			},
+			{
 				"command": "alpha.marketplaceButtonClicked",
 				"title": "%command.marketplace.title%",
 				"icon": "$(extensions)"
@@ -239,8 +244,13 @@
 					"when": "view == alpha.SidebarProvider"
 				},
 				{
-					"command": "alpha.popoutButtonClicked",
+					"command": "alpha.goalSeekButtonClicked",
 					"group": "overflow@3",
+					"when": "view == alpha.SidebarProvider"
+				},
+				{
+					"command": "alpha.popoutButtonClicked",
+					"group": "overflow@4",
 					"when": "view == alpha.SidebarProvider"
 				}
 			],
@@ -271,8 +281,13 @@
 					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
 				},
 				{
-					"command": "alpha.popoutButtonClicked",
+					"command": "alpha.goalSeekButtonClicked",
 					"group": "overflow@3",
+					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
+				},
+				{
+					"command": "alpha.popoutButtonClicked",
+					"group": "overflow@4",
 					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
 				}
 			]
