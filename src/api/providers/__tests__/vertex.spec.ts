@@ -343,6 +343,19 @@ describe("VertexHandler", () => {
 
 			expect(testHandler.getModel().id).toBe("gemini-3-flash-preview")
 		})
+
+		it("should pass through unknown Vertex Gemini model IDs with Gemini defaults", () => {
+			const testHandler = new VertexHandler({
+				apiModelId: "gemini-new-preview-model",
+				vertexProjectId: "test-project",
+				vertexRegion: "global",
+			})
+
+			const modelInfo = testHandler.getModel()
+
+			expect(modelInfo.id).toBe("gemini-new-preview-model")
+			expect(modelInfo.info.maxTokens).toBeDefined()
+		})
 	})
 
 	describe("gateway auth", () => {

@@ -174,6 +174,18 @@ describe("GeminiHandler", () => {
 			expect(modelInfo.id).toBe(geminiDefaultModelId) // Default model
 		})
 
+		it("should pass through unknown Gemini model IDs with Gemini defaults", () => {
+			const newModelHandler = new GeminiHandler({
+				apiModelId: "gemini-new-preview-model",
+				geminiApiKey: "test-key",
+			})
+
+			const modelInfo = newModelHandler.getModel()
+
+			expect(modelInfo.id).toBe("gemini-new-preview-model")
+			expect(modelInfo.info.maxTokens).toBeDefined()
+		})
+
 		it("should exclude apply_diff and include edit in tool preferences", () => {
 			const modelInfo = handler.getModel()
 			expect(modelInfo.info.excludedTools).toContain("apply_diff")

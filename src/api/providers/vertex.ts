@@ -14,8 +14,17 @@ export class VertexHandler extends GeminiHandler implements SingleCompletionHand
 
 	override getModel() {
 		const modelId = this.options.apiModelId
-		let id = modelId && modelId in vertexModels ? (modelId as VertexModelId) : vertexDefaultModelId
-		let info: ModelInfo = vertexModels[id]
+		let id: string = modelId && modelId in vertexModels ? (modelId as VertexModelId) : vertexDefaultModelId
+		let info: ModelInfo = vertexModels[id as VertexModelId]
+
+		// Keep newly-released Gemini model IDs usable before the static model catalog is updated.
+		// Falling back to the default Claude ID would route a Gemini request through the Gemini handler
+		// with a Claude model name, which Vertex rejects as an invalid request.
+		if (modelId?.startsWith("gemini-") && !(modelId in vertexModels)) {
+			id = modelId
+			info = vertexModels["gemini-3-flash-preview"]
+		}
+
 		const params = getModelParams({
 			format: "gemini",
 			modelId: id,

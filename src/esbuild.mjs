@@ -12,6 +12,18 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const require = createRequire(import.meta.url)
 
+const lancedbNativePackages = [
+	"@lancedb/lancedb-win32-x64-msvc",
+	"@lancedb/lancedb-linux-x64-gnu",
+	"@lancedb/lancedb-linux-x64-musl",
+]
+
+const lancedbNativeBindingFiles = [
+	"lancedb.win32-x64-msvc.node",
+	"lancedb.linux-x64-gnu.node",
+	"lancedb.linux-x64-musl.node",
+]
+
 async function removeDirWithRetries(dirPath, retries = 5, retryDelayMs = 200) {
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		try {
@@ -52,40 +64,56 @@ async function cleanDistDir(distDir) {
 	}
 }
 
-function resolveLanceDbNativeBinding() {
-	if (process.platform !== "win32" || process.arch !== "x64") {
-		return undefined
-	}
-
+function resolveLanceDbNativeBindings() {
+	const nativeBindings = []
 	const lanceDbEntry = require.resolve("@lancedb/lancedb")
 	const lanceDbRequire = createRequire(lanceDbEntry)
-	return lanceDbRequire.resolve("@lancedb/lancedb-win32-x64-msvc/lancedb.win32-x64-msvc.node")
+
+	for (const nativePackage of lancedbNativePackages) {
+		try {
+			const nativePackageJson = lanceDbRequire.resolve(`${nativePackage}/package.json`)
+			const nativePackageDir = path.dirname(nativePackageJson)
+			const nativeBinding = lancedbNativeBindingFiles
+				.map((fileName) => path.join(nativePackageDir, fileName))
+				.find((filePath) => fs.existsSync(filePath))
+
+			if (nativeBinding) {
+				nativeBindings.push(nativeBinding)
+			}
+		} catch {
+			// Optional native packages are only installed for the current package manager environment.
+		}
+	}
+
+	return nativeBindings
 }
 
-function copyLanceDbNativeBinding(distDir) {
-	const nativeBinding = resolveLanceDbNativeBinding()
+function copyLanceDbNativeBindings(distDir) {
+	const nativeBindings = resolveLanceDbNativeBindings()
 
-	if (!nativeBinding) {
+	if (nativeBindings.length === 0) {
 		return
 	}
 
 	fs.mkdirSync(distDir, { recursive: true })
-	const target = path.join(distDir, path.basename(nativeBinding))
-	try {
-		fs.copyFileSync(nativeBinding, target)
-	} catch (error) {
-		if (
-			process.platform === "win32" &&
-			(error?.code === "EBUSY" || error?.code === "EPERM") &&
-			fs.existsSync(target)
-		) {
-			console.warn(`[copyLanceDbNativeBinding] Reusing locked native binding at ${target}`)
-			return
-		}
+	for (const nativeBinding of nativeBindings) {
+		const target = path.join(distDir, path.basename(nativeBinding))
+		try {
+			fs.copyFileSync(nativeBinding, target)
+		} catch (error) {
+			if (
+				process.platform === "win32" &&
+				(error?.code === "EBUSY" || error?.code === "EPERM") &&
+				fs.existsSync(target)
+			) {
+				console.warn(`[copyLanceDbNativeBindings] Reusing locked native binding at ${target}`)
+				continue
+			}
 
-		throw error
+			throw error
+		}
+		console.log(`[copyLanceDbNativeBindings] Copied ${nativeBinding} to ${target}`)
 	}
-	console.log(`[copyLanceDbNativeBinding] Copied ${nativeBinding} to ${target}`)
 }
 
 async function main() {
@@ -153,11 +181,11 @@ async function main() {
 			},
 		},
 		{
-			name: "copyLanceDbNativeBinding",
+			name: "copyLanceDbNativeBindings",
 			setup(build) {
 				build.onEnd((result) => {
 					if (result.errors.length === 0) {
-						copyLanceDbNativeBinding(distDir)
+						copyLanceDbNativeBindings(distDir)
 					}
 				})
 			},
@@ -191,7 +219,7 @@ async function main() {
 		// global-agent must be external because it dynamically patches Node.js http/https modules
 		// which breaks when bundled. It needs access to the actual Node.js module instances.
 		// undici must be bundled because our VSIX is packaged with `--no-dependencies`.
-		external: ["vscode", "esbuild", "global-agent", "@lancedb/lancedb-win32-x64-msvc"],
+		external: ["vscode", "esbuild", "global-agent", ...lancedbNativePackages],
 	}
 
 	/**
