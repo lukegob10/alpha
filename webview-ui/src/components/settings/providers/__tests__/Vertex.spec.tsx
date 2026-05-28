@@ -26,7 +26,18 @@ vi.mock("vscrui", () => ({
 }))
 
 vi.mock("@src/i18n/TranslationContext", () => ({
-	useAppTranslation: () => ({ t: (key: string) => key }),
+	useAppTranslation: () => ({
+		t: (key: string) => {
+			const translations: Record<string, string> = {
+				"settings:providers.googleCloudSetup.title": "Google Cloud setup",
+				"settings:providers.googleCloudSetup.step1": "Enable Vertex AI and model access",
+				"settings:providers.googleCloudSetup.step2": "Set up Application Default Credentials",
+				"settings:providers.googleCloudSetup.step3": "Create a service account key",
+			}
+
+			return translations[key] ?? key
+		},
+	}),
 }))
 
 vi.mock("@src/components/ui", () => ({
@@ -154,6 +165,21 @@ describe("Vertex", () => {
 		expect(screen.getByTestId("vertex-gateway-model-routing-map")).toHaveValue(
 			'{"gemini-3-flash-preview":"gateway-gemini-flash"}',
 		)
+	})
+
+	it("should render readable Google Cloud setup text", () => {
+		render(
+			<Vertex
+				apiConfiguration={defaultApiConfiguration}
+				setApiConfigurationField={mockSetApiConfigurationField}
+			/>,
+		)
+
+		expect(screen.getByText("Google Cloud setup")).toBeInTheDocument()
+		expect(screen.getByText("Enable Vertex AI and model access")).toBeInTheDocument()
+		expect(screen.getByText("Set up Application Default Credentials")).toBeInTheDocument()
+		expect(screen.getByText("Create a service account key")).toBeInTheDocument()
+		expect(screen.queryByText("settings:providers.googleCloudSetup.title")).not.toBeInTheDocument()
 	})
 
 	it("should render the streaming checkbox checked by default", () => {

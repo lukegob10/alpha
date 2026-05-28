@@ -506,6 +506,16 @@
 		"cacheUsageNote": "Note: If you don't see cache usage, try selecting a different model and then selecting your desired model again.",
 		"vscodeLmModel": "Language Model",
 		"vscodeLmWarning": "Note: Models accessed via the VS Code Language Model API may be wrapped or fine-tuned by the provider, so behavior can differ from using the same model directly from a typical provider or router. To use a model from the Language Model dropdown, first switch to that model and then click Accept in the Copilot Chat prompt; otherwise you may see an error such as 400 \"The requested model is not supported\".",
+		"googleCloudProjectId": "Google Cloud Project ID",
+		"googleCloudRegion": "Google Cloud Region",
+		"googleCloudCredentials": "Google Cloud Credentials JSON",
+		"googleCloudKeyFile": "Google Cloud Key File",
+		"googleCloudSetup": {
+			"title": "Google Cloud setup",
+			"step1": "Enable Vertex AI and model access",
+			"step2": "Set up Application Default Credentials",
+			"step3": "Create a service account key"
+		},
 		"vertexGatewayBaseUrl": "Vertex Gateway Base URL",
 		"vertexGatewayCaBundlePath": "Vertex Gateway CA Bundle Path",
 		"vertexGatewayHelixCommand": "Vertex Gateway Helix Command",
@@ -947,6 +957,7 @@
 	"validation": {
 		"apiKey": "You must provide a valid API key.",
 		"awsRegion": "You must choose a region to use with Amazon Bedrock.",
+		"googleCloud": "You must provide a Google Cloud project ID and region.",
 		"vertexGateway": "Vertex gateway requires a base URL, CA bundle path, and Helix command.",
 		"vertexGatewayModelRoutingMap": "Vertex Gateway Model Routing Map must be a JSON object with string model IDs.",
 		"modelId": "You must provide a valid model ID.",
