@@ -121,38 +121,130 @@ describe("VertexHandler", () => {
 		const systemPrompt = "You are a helpful assistant"
 
 		it("should handle streaming responses correctly for Gemini", async () => {
-			// Let's examine the test expectations and adjust our mock accordingly
-			// The test expects 4 chunks:
-			// 1. Usage chunk with input tokens
-			// 2. Text chunk with "Gemini response part 1"
-			// 3. Text chunk with " part 2"
-			// 4. Usage chunk with output tokens
-
-			// Let's modify our approach and directly mock the createMessage method
-			// instead of mocking the client
-			vitest.spyOn(handler, "createMessage").mockImplementation(async function* () {
-				yield { type: "usage", inputTokens: 10, outputTokens: 0 }
-				yield { type: "text", text: "Gemini response part 1" }
-				yield { type: "text", text: " part 2" }
-				yield { type: "usage", inputTokens: 0, outputTokens: 5 }
+			;(handler["client"].models.generateContentStream as any).mockResolvedValue({
+				async *[Symbol.asyncIterator]() {
+					yield {
+						candidates: [{ content: { parts: [{ text: "Gemini response part 1" }] } }],
+					}
+					yield {
+						candidates: [{ content: { parts: [{ text: " part 2" }] }, finishReason: "STOP" }],
+						responseId: "response-1",
+						usageMetadata: {
+							promptTokenCount: 10,
+							candidatesTokenCount: 5,
+						},
+					}
+				},
 			})
-
-			const stream = handler.createMessage(systemPrompt, mockMessages)
-
 			const chunks: ApiStreamChunk[] = []
-
-			for await (const chunk of stream) {
+			for await (const chunk of handler.createMessage(systemPrompt, mockMessages)) {
 				chunks.push(chunk)
 			}
 
-			expect(chunks.length).toBe(4)
-			expect(chunks[0]).toEqual({ type: "usage", inputTokens: 10, outputTokens: 0 })
-			expect(chunks[1]).toEqual({ type: "text", text: "Gemini response part 1" })
-			expect(chunks[2]).toEqual({ type: "text", text: " part 2" })
-			expect(chunks[3]).toEqual({ type: "usage", inputTokens: 0, outputTokens: 5 })
+			expect(handler["client"].models.generateContentStream).toHaveBeenCalled()
+			expect(handler["client"].models.generateContent).not.toHaveBeenCalled()
+			expect(chunks).toEqual([
+				{ type: "text", text: "Gemini response part 1" },
+				{ type: "text", text: " part 2" },
+				expect.objectContaining({ type: "usage", inputTokens: 10, outputTokens: 5 }),
+			])
+		})
 
-			// Since we're directly mocking createMessage, we don't need to verify
-			// that generateContentStream was called
+		it("should use non-streaming responses when Vertex streaming is disabled for Gemini", async () => {
+			handler = new VertexHandler({
+				apiModelId: "gemini-2.0-flash-001",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+				vertexStreamingEnabled: false,
+			})
+			handler["client"] = {
+				models: {
+					generateContentStream: vitest.fn(),
+					generateContent: vitest.fn().mockResolvedValue({
+						responseId: "response-1",
+						candidates: [
+							{
+								content: {
+									parts: [
+										{ text: "Completed response" },
+										{ thought: true, text: "Reasoning trace" },
+										{ functionCall: { name: "read_file", args: { path: "src/index.ts" } } },
+									],
+								},
+								groundingMetadata: {
+									groundingChunks: [{ web: { uri: "https://example.com", title: "Example" } }],
+								},
+							},
+						],
+						usageMetadata: {
+							promptTokenCount: 11,
+							candidatesTokenCount: 7,
+							cachedContentTokenCount: 2,
+							thoughtsTokenCount: 3,
+						},
+					}),
+					getGenerativeModel: vitest.fn(),
+				},
+			} as any
+
+			const chunks: ApiStreamChunk[] = []
+			for await (const chunk of handler.createMessage(systemPrompt, mockMessages)) {
+				chunks.push(chunk)
+			}
+
+			expect(handler["client"].models.generateContent).toHaveBeenCalled()
+			expect(handler["client"].models.generateContentStream).not.toHaveBeenCalled()
+			expect(chunks).toEqual([
+				{ type: "text", text: "Completed response" },
+				{ type: "reasoning", text: "Reasoning trace" },
+				{ type: "tool_call", id: "read_file-0", name: "read_file", arguments: '{"path":"src/index.ts"}' },
+				{ type: "grounding", sources: [{ title: "Example", url: "https://example.com" }] },
+				expect.objectContaining({
+					type: "usage",
+					inputTokens: 11,
+					outputTokens: 7,
+					cacheReadTokens: 2,
+					reasoningTokens: 3,
+				}),
+			])
+		})
+
+		it("should retry auth failures before emitting chunks when Vertex streaming is disabled", async () => {
+			handler = new VertexHandler({
+				apiModelId: "gemini-2.0-flash-001",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+				vertexStreamingEnabled: false,
+			})
+			const generateContent = vitest
+				.fn()
+				.mockRejectedValueOnce(new Error("401 unauthorized"))
+				.mockResolvedValueOnce({
+					candidates: [{ content: { parts: [{ text: "Retried response" }] } }],
+					usageMetadata: {
+						promptTokenCount: 3,
+						candidatesTokenCount: 4,
+					},
+				})
+			handler["client"] = {
+				models: {
+					generateContentStream: vitest.fn(),
+					generateContent,
+					getGenerativeModel: vitest.fn(),
+				},
+			} as any
+			vitest.spyOn(handler as any, "shouldRetryWithRefreshedGatewayToken").mockResolvedValueOnce(true)
+
+			const chunks: ApiStreamChunk[] = []
+			for await (const chunk of handler.createMessage(systemPrompt, mockMessages)) {
+				chunks.push(chunk)
+			}
+
+			expect(generateContent).toHaveBeenCalledTimes(2)
+			expect(chunks).toEqual([
+				{ type: "text", text: "Retried response" },
+				expect.objectContaining({ type: "usage", inputTokens: 3, outputTokens: 4 }),
+			])
 		})
 	})
 

@@ -632,6 +632,94 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 			let emittedAnyStreamChunk = false
 
 			try {
+				if (this.isVertex && this.options.vertexStreamingEnabled === false) {
+					const result = await requestContext.client.models.generateContent(params)
+
+					let toolCallCounter = 0
+					let hasContent = false
+					let hasReasoning = false
+					const candidate = result.candidates?.[0]
+
+					if (result.responseId) {
+						this.lastResponseId = result.responseId
+					}
+
+					if (candidate?.content?.parts) {
+						for (const part of candidate.content.parts as Array<{
+							thought?: boolean
+							text?: string
+							thoughtSignature?: string
+							functionCall?: { name: string; args?: Record<string, unknown> }
+						}>) {
+							const thoughtSignature = part.thoughtSignature
+							if (includeThoughtSignatures && thoughtSignature) {
+								this.lastThoughtSignature = thoughtSignature
+							}
+
+							if (part.thought) {
+								if (part.text) {
+									hasReasoning = true
+									yield { type: "reasoning", text: part.text }
+								}
+							} else if (part.functionCall) {
+								hasContent = true
+								const callId = `${part.functionCall.name}-${toolCallCounter}`
+								yield {
+									type: "tool_call",
+									id: callId,
+									name: part.functionCall.name,
+									arguments: JSON.stringify(part.functionCall.args ?? {}),
+								}
+								toolCallCounter++
+							} else if (part.text) {
+								hasContent = true
+								yield { type: "text", text: part.text }
+							}
+						}
+					} else if (result.text) {
+						hasContent = true
+						yield { type: "text", text: result.text }
+					}
+
+					if (candidate?.groundingMetadata) {
+						const sources = this.extractGroundingSources(candidate.groundingMetadata)
+						if (sources.length > 0) {
+							yield { type: "grounding", sources }
+						}
+					}
+
+					if (result.usageMetadata) {
+						const inputTokens = result.usageMetadata.promptTokenCount ?? 0
+						const outputTokens = result.usageMetadata.candidatesTokenCount ?? 0
+						const cacheReadTokens = result.usageMetadata.cachedContentTokenCount
+						const reasoningTokens = result.usageMetadata.thoughtsTokenCount
+
+						yield {
+							type: "usage",
+							inputTokens,
+							outputTokens,
+							cacheReadTokens,
+							reasoningTokens,
+							totalCost: this.calculateCost({
+								info,
+								inputTokens,
+								outputTokens,
+								cacheReadTokens,
+								reasoningTokens,
+							}),
+						}
+					}
+
+					if (!hasContent && !hasReasoning) {
+						const finishReason = candidate?.finishReason
+						if (finishReason === "MAX_TOKENS") {
+							yield { type: "text", text: "[Response truncated due to max tokens limit]" }
+						}
+					}
+
+					return
+				}
+
 				const result = await requestContext.client.models.generateContentStream(params)
 
 				let lastUsageMetadata: GenerateContentResponseUsageMetadata | undefined

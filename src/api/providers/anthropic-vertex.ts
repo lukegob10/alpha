@@ -604,6 +604,10 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 		return undefined
 	}
 
+	private stringifyToolArguments(input: unknown): string {
+		return this.stringifyInitialToolInput(input) ?? "{}"
+	}
+
 	private getToolChoiceForRequest(
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): ApiHandlerCreateMessageMetadata["tool_choice"] {
@@ -660,7 +664,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 			 * This ensures we stay under the 4-block limit while maintaining effective caching
 			 * for the most relevant context.
 			 */
-			const params: Anthropic.Messages.MessageCreateParamsStreaming = {
+			const params = {
 				model: id,
 				max_tokens: maxTokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS,
 				temperature,
@@ -669,13 +673,13 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 					? [{ text: systemPrompt, type: "text" as const, cache_control: { type: "ephemeral" } }]
 					: systemPrompt,
 				messages: usePromptCache ? addCacheBreakpoints(sanitizedMessages) : uncachedMessages,
-				stream: true,
 				...nativeToolParams,
 			}
 
-			const requestParams: Anthropic.Messages.MessageCreateParamsStreaming = {
+			const requestParams = {
 				...params,
 				model: requestContext.model,
+				stream: this.options.vertexStreamingEnabled !== false,
 			}
 			const requestOptions = this.mergeRequestOptions(betaRequestOptions, requestContext.requestOptions)
 			let emittedAnyStreamChunk = false
@@ -689,7 +693,58 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 			>()
 
 			try {
-				const stream = await requestContext.client.messages.create(requestParams, requestOptions)
+				if (requestParams.stream === false) {
+					const response = await requestContext.client.messages.create(
+						requestParams as Anthropic.Messages.MessageCreateParamsNonStreaming,
+						requestOptions,
+					)
+
+					if (response.usage) {
+						yield {
+							type: "usage",
+							inputTokens: response.usage.input_tokens || 0,
+							outputTokens: response.usage.output_tokens || 0,
+							cacheWriteTokens: response.usage.cache_creation_input_tokens || undefined,
+							cacheReadTokens: response.usage.cache_read_input_tokens || undefined,
+						}
+					}
+
+					for (const [index, block] of response.content.entries()) {
+						switch (block.type) {
+							case "text": {
+								if (index > 0) {
+									yield { type: "text", text: "\n" }
+								}
+								yield { type: "text", text: block.text }
+								break
+							}
+							case "thinking": {
+								if (index > 0) {
+									yield { type: "reasoning", text: "\n" }
+								}
+								yield { type: "reasoning", text: (block as any).thinking }
+								break
+							}
+							case "tool_use": {
+								const toolUseBlock = block as Anthropic.Messages.ToolUseBlock & { input?: unknown }
+								yield {
+									type: "tool_call",
+									id: toolUseBlock.id,
+									name: toolUseBlock.name,
+									arguments: this.stringifyToolArguments(toolUseBlock.input),
+								}
+								break
+							}
+						}
+					}
+
+					return
+				}
+
+				const stream = await requestContext.client.messages.create(
+					requestParams as Anthropic.Messages.MessageCreateParamsStreaming,
+					requestOptions,
+				)
 
 				for await (const chunk of stream) {
 					emittedAnyStreamChunk = true

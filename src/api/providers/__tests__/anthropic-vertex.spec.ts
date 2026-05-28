@@ -280,6 +280,55 @@ describe("VertexHandler", () => {
 			)
 		})
 
+		it("should use non-streaming responses when Vertex streaming is disabled for Claude", async () => {
+			handler = new AnthropicVertexHandler({
+				apiModelId: "claude-3-5-sonnet-v2@20241022",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+				vertexStreamingEnabled: false,
+			})
+
+			const mockCreate = vitest.fn().mockResolvedValue({
+				id: "test-completion",
+				content: [
+					{ type: "text", text: "Completed response" },
+					{ type: "tool_use", id: "toolu_1", name: "read_file", input: { path: "src/index.ts" } },
+				],
+				role: "assistant",
+				model: "claude-3-5-sonnet-v2@20241022",
+				usage: {
+					input_tokens: 12,
+					output_tokens: 7,
+					cache_creation_input_tokens: 3,
+					cache_read_input_tokens: 4,
+				},
+			})
+			;(handler["client"].messages as any).create = mockCreate
+
+			const chunks: ApiStreamChunk[] = []
+			for await (const chunk of handler.createMessage(systemPrompt, mockMessages)) {
+				chunks.push(chunk)
+			}
+
+			expect(mockCreate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					stream: false,
+				}),
+				undefined,
+			)
+			expect(chunks).toEqual([
+				{
+					type: "usage",
+					inputTokens: 12,
+					outputTokens: 7,
+					cacheWriteTokens: 3,
+					cacheReadTokens: 4,
+				},
+				{ type: "text", text: "Completed response" },
+				{ type: "tool_call", id: "toolu_1", name: "read_file", arguments: '{"path":"src/index.ts"}' },
+			])
+		})
+
 		it("should handle multiple content blocks with line breaks for Claude", async () => {
 			handler = new AnthropicVertexHandler({
 				apiModelId: "claude-3-5-sonnet-v2@20241022",

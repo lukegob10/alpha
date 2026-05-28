@@ -192,6 +192,20 @@ export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexPro
 				</div>
 			</div>
 
+			<div>
+				<Checkbox
+					data-testid="checkbox-vertex-streaming-enabled"
+					checked={apiConfiguration?.vertexStreamingEnabled ?? true}
+					onChange={(checked: boolean) => {
+						setApiConfigurationField("vertexStreamingEnabled", checked)
+					}}>
+					{t("settings:providers.vertexStreamingEnabledLabel")}
+				</Checkbox>
+				<div className="text-sm text-vscode-descriptionForeground mt-1 ml-6">
+					{t("settings:providers.vertexStreamingEnabledDescription")}
+				</div>
+			</div>
+
 			{supports1MContextBeta && (
 				<div>
 					<Checkbox

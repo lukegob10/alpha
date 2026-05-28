@@ -838,6 +838,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		mockPostMessage({
 			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
 			currentTaskItem: {
 				id: "task-1",
 				number: 1,
@@ -982,6 +983,76 @@ describe("ChatView - Message Queueing Tests", () => {
 			currentView: { type: "task", taskId: "task-1" },
 			currentTaskItem: taskItem,
 			clineMessages: [],
+			taskHistory: [taskItem],
+		})
+
+		await waitFor(() => {
+			expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
+			expect(queryByText("Original task")).toBeInTheDocument()
+		})
+	})
+
+	it("opens the same running task after the provider confirms the new-task window", async () => {
+		const { getByTestId, queryByTestId, queryByText } = renderChatView()
+
+		const taskItem = {
+			id: "task-1",
+			number: 1,
+			ts: 100,
+			task: "Original task",
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+			workspace: "/test/workspace",
+		}
+
+		const taskMessages = [
+			{
+				type: "say" as const,
+				say: "task" as const,
+				ts: 100,
+				text: "Original task",
+			},
+			{
+				type: "say" as const,
+				say: "api_req_started" as const,
+				ts: 101,
+				text: JSON.stringify({ apiProtocol: "anthropic" }),
+			},
+		]
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			currentTaskItem: taskItem,
+			clineMessages: taskMessages,
+		})
+
+		await waitFor(() => {
+			expect(getByTestId("chat-textarea")).toBeInTheDocument()
+		})
+
+		await act(async () => {
+			window.postMessage({ type: "invoke", invoke: "newChat" }, "*")
+		})
+
+		mockPostMessage({
+			currentTaskId: undefined,
+			currentView: { type: "newTaskDraft" },
+			currentTaskItem: undefined,
+			clineMessages: [],
+			taskHistory: [taskItem],
+		})
+
+		await waitFor(() => {
+			expect(queryByTestId("roo-tips")).toBeInTheDocument()
+		})
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			currentTaskItem: taskItem,
+			clineMessages: taskMessages,
 			taskHistory: [taskItem],
 		})
 
