@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.2
+
+### Patch Changes
+
+- [codex] Package and publish the Alpha VSIX release for v1.1.2.
+
 ## 1.1.1
 
 ### Patch Changes
