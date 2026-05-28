@@ -883,8 +883,14 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 
 	override getModel() {
 		const modelId = this.options.apiModelId
-		let id = modelId && modelId in geminiModels ? (modelId as GeminiModelId) : geminiDefaultModelId
-		let info: ModelInfo = geminiModels[id]
+		let id: string = modelId && modelId in geminiModels ? (modelId as GeminiModelId) : geminiDefaultModelId
+		let info: ModelInfo = geminiModels[id as GeminiModelId]
+
+		// Keep newly-released Gemini model IDs usable before the static model catalog is updated.
+		if (modelId?.startsWith("gemini-") && !(modelId in geminiModels)) {
+			id = modelId
+			info = geminiModels["gemini-3-flash-preview"]
+		}
 
 		const params = getModelParams({
 			format: "gemini",
