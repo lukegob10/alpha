@@ -146,11 +146,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			return
 		}
 
-		const providerSelectedTask =
-			currentView?.type === "task" &&
-			currentTaskId &&
-			(currentTaskId !== blankTaskSourceIdRef.current || messages.length === 0) &&
-			hasSeenProviderDraftRef.current
+		const providerSelectedTask = currentView?.type === "task" && currentTaskId && hasSeenProviderDraftRef.current
 		const legacySelectedDifferentTask =
 			!currentView && currentTaskId && currentTaskId !== blankTaskSourceIdRef.current
 
