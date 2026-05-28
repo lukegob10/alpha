@@ -156,6 +156,30 @@ describe("Vertex", () => {
 		)
 	})
 
+	it("should render the streaming checkbox checked by default", () => {
+		render(
+			<Vertex
+				apiConfiguration={defaultApiConfiguration}
+				setApiConfigurationField={mockSetApiConfigurationField}
+			/>,
+		)
+
+		expect(screen.getByTestId("checkbox-vertex-streaming-enabled").querySelector("input")).toBeChecked()
+	})
+
+	it("should update the streaming setting through cached api configuration callbacks", () => {
+		render(
+			<Vertex
+				apiConfiguration={defaultApiConfiguration}
+				setApiConfigurationField={mockSetApiConfigurationField}
+			/>,
+		)
+
+		fireEvent.click(screen.getByTestId("checkbox-vertex-streaming-enabled").querySelector("input")!)
+
+		expect(mockSetApiConfigurationField).toHaveBeenCalledWith("vertexStreamingEnabled", false)
+	})
+
 	it("should update Vertex gateway settings through cached api configuration callbacks", () => {
 		render(
 			<Vertex

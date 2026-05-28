@@ -252,6 +252,7 @@ const vertexSchema = apiModelIdProviderModelSchema.extend({
 	vertexGatewayHelixCommand: z.string().optional(),
 	vertexGatewayTokenRefreshMinutes: z.number().int().positive().optional(),
 	vertexGatewayModelRoutingMap: z.string().optional(),
+	vertexStreamingEnabled: z.boolean().optional(),
 	vertex1MContext: z.boolean().optional(), // Enable 'context-1m-2025-08-07' beta for 1M context window.
 })
 

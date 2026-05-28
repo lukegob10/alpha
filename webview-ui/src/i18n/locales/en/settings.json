@@ -439,6 +439,8 @@
 		"anthropic1MContextBetaDescription": "Extends context window to 1 million tokens for Claude Sonnet 4.x / Claude Opus 4.6",
 		"awsBedrock1MContextBetaLabel": "Enable 1M context window (Beta)",
 		"awsBedrock1MContextBetaDescription": "Extends context window to 1 million tokens for Claude Sonnet 4.x / Claude Opus 4.6",
+		"vertexStreamingEnabledLabel": "Enable streaming responses",
+		"vertexStreamingEnabledDescription": "Disable this when a gateway or model does not support streaming. Responses will appear after completion.",
 		"vertex1MContextBetaLabel": "Enable 1M context window (Beta)",
 		"vertex1MContextBetaDescription": "Extends context window to 1 million tokens for Claude Sonnet 4.x / Claude Opus 4.6",
 		"basetenApiKey": "Baseten API Key",
