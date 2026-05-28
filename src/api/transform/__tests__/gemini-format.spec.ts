@@ -130,6 +130,7 @@ describe("convertAnthropicMessageToGemini", () => {
 					{ text: "Let me calculate that for you." },
 					{
 						functionCall: {
+							id: "calc-123",
 							name: "calculator",
 							args: { operation: "add", numbers: [2, 3] },
 						},
@@ -186,6 +187,7 @@ describe("convertAnthropicMessageToGemini", () => {
 					{ text: "Here's the result:" },
 					{
 						functionResponse: {
+							id: "calculator-123",
 							name: "calculator",
 							response: {
 								name: "calculator",
@@ -242,6 +244,7 @@ describe("convertAnthropicMessageToGemini", () => {
 				parts: [
 					{
 						functionResponse: {
+							id: "search-123",
 							name: "search",
 							response: {
 								name: "search",
@@ -295,6 +298,7 @@ describe("convertAnthropicMessageToGemini", () => {
 				parts: [
 					{
 						functionResponse: {
+							id: "search-123",
 							name: "search",
 							response: {
 								name: "search",
@@ -351,6 +355,7 @@ describe("convertAnthropicMessageToGemini", () => {
 				parts: [
 					{
 						functionResponse: {
+							id: "imagesearch-123",
 							name: "imagesearch",
 							response: {
 								name: "imagesearch",
@@ -392,6 +397,7 @@ describe("convertAnthropicMessageToGemini", () => {
 				parts: [
 					{
 						functionResponse: {
+							id: "search-files-123",
 							name: "search-files",
 							response: {
 								name: "search-files",

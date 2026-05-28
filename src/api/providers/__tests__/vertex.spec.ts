@@ -168,7 +168,13 @@ describe("VertexHandler", () => {
 									parts: [
 										{ text: "Completed response" },
 										{ thought: true, text: "Reasoning trace" },
-										{ functionCall: { name: "read_file", args: { path: "src/index.ts" } } },
+										{
+											functionCall: {
+												id: "vertex-call-123",
+												name: "read_file",
+												args: { path: "src/index.ts" },
+											},
+										},
 									],
 								},
 								groundingMetadata: {
@@ -197,7 +203,7 @@ describe("VertexHandler", () => {
 			expect(chunks).toEqual([
 				{ type: "text", text: "Completed response" },
 				{ type: "reasoning", text: "Reasoning trace" },
-				{ type: "tool_call", id: "read_file-0", name: "read_file", arguments: '{"path":"src/index.ts"}' },
+				{ type: "tool_call", id: "vertex-call-123", name: "read_file", arguments: '{"path":"src/index.ts"}' },
 				{ type: "grounding", sources: [{ title: "Example", url: "https://example.com" }] },
 				expect.objectContaining({
 					type: "usage",

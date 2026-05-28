@@ -4270,9 +4270,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		// Gemini requires all tool definitions to be present for history compatibility,
 		// but uses allowedFunctionNames to restrict which tools can be called.
+		// Vertex Gemini uses the same GenAI request format and validation rules.
 		// Other providers (Anthropic, OpenAI, etc.) don't support this feature yet,
 		// so they continue to receive only the filtered tools for the current mode.
-		const supportsAllowedFunctionNames = apiConfiguration?.apiProvider === "gemini"
+		const supportsAllowedFunctionNames =
+			apiConfiguration?.apiProvider === "gemini" || apiConfiguration?.apiProvider === "vertex"
 
 		{
 			const provider = this.providerRef.deref()
