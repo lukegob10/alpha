@@ -583,8 +583,9 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 		if (metadata?.allowedFunctionNames && metadata.allowedFunctionNames.length > 0) {
 			config.toolConfig = {
 				functionCallingConfig: {
-					// Use ANY mode to allow calling any of the allowed functions
-					mode: FunctionCallingConfigMode.ANY,
+					// VALIDATED restricts function calls to the allowed set while still
+					// allowing natural-language responses when a tool is not appropriate.
+					mode: FunctionCallingConfigMode.VALIDATED,
 					allowedFunctionNames: metadata.allowedFunctionNames,
 				},
 			}
@@ -649,7 +650,7 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 							thought?: boolean
 							text?: string
 							thoughtSignature?: string
-							functionCall?: { name: string; args?: Record<string, unknown> }
+							functionCall?: { id?: string; name: string; args?: Record<string, unknown> }
 						}>) {
 							const thoughtSignature = part.thoughtSignature
 							if (includeThoughtSignatures && thoughtSignature) {
@@ -663,7 +664,7 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 								}
 							} else if (part.functionCall) {
 								hasContent = true
-								const callId = `${part.functionCall.name}-${toolCallCounter}`
+								const callId = part.functionCall.id || `${part.functionCall.name}-${toolCallCounter}`
 								yield {
 									type: "tool_call",
 									id: callId,
@@ -752,7 +753,7 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 								thought?: boolean
 								text?: string
 								thoughtSignature?: string
-								functionCall?: { name: string; args: Record<string, unknown> }
+								functionCall?: { id?: string; name: string; args: Record<string, unknown> }
 							}>) {
 								// Capture thought signatures so they can be persisted into API history.
 								const thoughtSignature = part.thoughtSignature
@@ -773,7 +774,8 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 									hasContent = true
 									// Gemini sends complete function calls in a single chunk
 									// Emit as partial chunks for consistent handling with NativeToolCallParser
-									const callId = `${part.functionCall.name}-${toolCallCounter}`
+									const callId =
+										part.functionCall.id || `${part.functionCall.name}-${toolCallCounter}`
 									const args = JSON.stringify(part.functionCall.args)
 
 									// Emit name first

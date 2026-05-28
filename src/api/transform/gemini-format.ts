@@ -78,6 +78,7 @@ export function convertAnthropicContentToGemini(
 				// signature to every parallel call in a single assistant message.
 				return {
 					functionCall: {
+						id: block.id,
 						name: block.name,
 						args: block.input as Record<string, unknown>,
 					},
@@ -104,7 +105,11 @@ export function convertAnthropicContentToGemini(
 
 				if (typeof block.content === "string") {
 					return {
-						functionResponse: { name: toolName, response: { name: toolName, content: block.content } },
+						functionResponse: {
+							id: block.tool_use_id,
+							name: toolName,
+							response: { name: toolName, content: block.content },
+						},
 					}
 				}
 
@@ -130,7 +135,13 @@ export function convertAnthropicContentToGemini(
 
 				// Return function response followed by any images
 				return [
-					{ functionResponse: { name: toolName, response: { name: toolName, content: contentText } } },
+					{
+						functionResponse: {
+							id: block.tool_use_id,
+							name: toolName,
+							response: { name: toolName, content: contentText },
+						},
+					},
 					...imageParts,
 				]
 			}

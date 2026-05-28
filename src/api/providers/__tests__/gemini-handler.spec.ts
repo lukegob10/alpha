@@ -196,7 +196,7 @@ describe("GeminiHandler backend support", () => {
 			const config = stub.mock.calls[0][0].config
 			expect(config.toolConfig).toEqual({
 				functionCallingConfig: {
-					mode: FunctionCallingConfigMode.ANY,
+					mode: FunctionCallingConfigMode.VALIDATED,
 					allowedFunctionNames: ["read_file", "write_to_file"],
 				},
 			})
@@ -245,8 +245,8 @@ describe("GeminiHandler backend support", () => {
 				.next()
 
 			const config = stub.mock.calls[0][0].config
-			// allowedFunctionNames should take precedence - mode should be ANY, not AUTO
-			expect(config.toolConfig.functionCallingConfig.mode).toBe(FunctionCallingConfigMode.ANY)
+			// allowedFunctionNames should take precedence - mode should be VALIDATED, not AUTO
+			expect(config.toolConfig.functionCallingConfig.mode).toBe(FunctionCallingConfigMode.VALIDATED)
 			expect(config.toolConfig.functionCallingConfig.allowedFunctionNames).toEqual(["read_file"])
 		})
 
