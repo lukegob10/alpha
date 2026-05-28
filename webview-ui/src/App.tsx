@@ -20,11 +20,12 @@ import { CheckpointRestoreDialog } from "./components/chat/CheckpointRestoreDial
 import { DeleteMessageDialog, EditMessageDialog } from "./components/chat/MessageModificationConfirmationDialog"
 import ErrorBoundary from "./components/ErrorBoundary"
 import ScheduledTasksView from "./components/scheduled-tasks/ScheduledTasksView"
+import GoalSeekView from "./components/goal-seek/GoalSeekView"
 import { useAddNonInteractiveClickListener } from "./components/ui/hooks/useNonInteractiveClick"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { STANDARD_TOOLTIP_DELAY } from "./components/ui/standard-tooltip"
 
-type Tab = "settings" | "history" | "chat" | "marketplace" | "scheduledTasks"
+type Tab = "settings" | "history" | "chat" | "marketplace" | "scheduledTasks" | "goalSeek"
 
 interface DeleteMessageDialogState {
 	isOpen: boolean
@@ -68,6 +69,7 @@ const App = () => {
 	const [showAnnouncement, setShowAnnouncement] = useState(false)
 	const [tab, setTab] = useState<Tab>("chat")
 	const [scheduledTaskTargetId, setScheduledTaskTargetId] = useState<string | undefined>(undefined)
+	const [goalSeekTargetId, setGoalSeekTargetId] = useState<string | undefined>(undefined)
 
 	const [deleteMessageDialogState, setDeleteMessageDialogState] = useState<DeleteMessageDialogState>({
 		isOpen: false,
@@ -110,6 +112,9 @@ const App = () => {
 					const targetTab = message.tab as Tab
 					if (targetTab === "scheduledTasks") {
 						setScheduledTaskTargetId(message.values?.scheduledTaskId as string | undefined)
+					}
+					if (targetTab === "goalSeek") {
+						setGoalSeekTargetId(message.values?.goalSeekJobId as string | undefined)
 					}
 					switchTab(targetTab)
 					// Extract targetSection from values if provided
@@ -233,6 +238,7 @@ const App = () => {
 			{tab === "scheduledTasks" && (
 				<ScheduledTasksView onDone={() => switchTab("chat")} targetTaskId={scheduledTaskTargetId} />
 			)}
+			{tab === "goalSeek" && <GoalSeekView onDone={() => switchTab("chat")} targetJobId={goalSeekTargetId} />}
 			<ChatView
 				ref={chatViewRef}
 				isHidden={tab !== "chat"}

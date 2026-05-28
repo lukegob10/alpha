@@ -8,4 +8,7 @@ export const GlobalFileNames = {
 	historyIndex: "_index.json",
 	scheduledTasks: "scheduled_tasks.json",
 	scheduledTaskRuns: "scheduled_task_runs.json",
+	goalSeekJobs: "goal_seek_jobs.json",
+	goalSeekRuns: "goal_seek_runs.json",
+	goalSeekAttempts: "goal_seek_attempts.json",
 }

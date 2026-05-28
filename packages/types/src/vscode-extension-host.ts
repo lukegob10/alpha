@@ -29,6 +29,14 @@ import type {
 	ScheduledTaskState,
 	UpdateScheduledTaskPayload,
 } from "./scheduled-task.js"
+import type {
+	CreateGoalSeekJobPayload,
+	GoalSeekAttempt,
+	GoalSeekJob,
+	GoalSeekRun,
+	GoalSeekState,
+	UpdateGoalSeekJobPayload,
+} from "./goal-seek.js"
 
 /**
  * ExtensionMessage
@@ -108,6 +116,7 @@ export interface ExtensionMessage {
 		| "skills"
 		| "fileContent"
 		| "scheduledTasksUpdated"
+		| "goalSeekUpdated"
 	text?: string
 	taskId?: string
 	/** For fileContent: { path, content, error? } */
@@ -115,6 +124,10 @@ export interface ExtensionMessage {
 	scheduledTasks?: ScheduledTask[]
 	scheduledTaskRuns?: ScheduledTaskRun[]
 	scheduledTaskState?: ScheduledTaskState
+	goalSeekJobs?: GoalSeekJob[]
+	goalSeekRuns?: GoalSeekRun[]
+	goalSeekAttempts?: GoalSeekAttempt[]
+	goalSeekState?: GoalSeekState
 	payload?: any // eslint-disable-line @typescript-eslint/no-explicit-any
 	checkpointWarning?: {
 		type: "WAIT_TIMEOUT" | "INIT_TIMEOUT"
@@ -369,6 +382,9 @@ export type ExtensionState = Pick<
 	mcpServers?: McpServer[]
 	scheduledTasks?: ScheduledTask[]
 	scheduledTaskRuns?: ScheduledTaskRun[]
+	goalSeekJobs?: GoalSeekJob[]
+	goalSeekRuns?: GoalSeekRun[]
+	goalSeekAttempts?: GoalSeekAttempt[]
 	openAiCodexIsAuthenticated?: boolean
 	debug?: boolean
 
@@ -574,13 +590,22 @@ export interface WebviewMessage {
 		| "resumeScheduledTask"
 		| "runScheduledTaskNow"
 		| "duplicateScheduledTask"
+		| "createGoalSeekJob"
+		| "updateGoalSeekJob"
+		| "deleteGoalSeekJob"
+		| "runGoalSeekJob"
+		| "cancelGoalSeekRun"
 	text?: string
 	taskId?: string
 	scheduledTaskId?: string
 	scheduledTask?: CreateScheduledTaskPayload
 	scheduledTaskUpdate?: UpdateScheduledTaskPayload
+	goalSeekJobId?: string
+	goalSeekRunId?: string
+	goalSeekJob?: CreateGoalSeekJobPayload
+	goalSeekJobUpdate?: UpdateGoalSeekJobPayload
 	editedMessageContent?: string
-	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "marketplace" | "scheduledTasks"
+	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "marketplace" | "scheduledTasks" | "goalSeek"
 	disabled?: boolean
 	context?: string
 	dataUri?: string
