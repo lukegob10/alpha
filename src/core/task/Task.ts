@@ -1104,6 +1104,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		await this.saveApiConversationHistory()
 	}
 
+	private async restoreRemovedApiUserMessage(removedUserMessage: ApiMessage | undefined) {
+		if (!removedUserMessage) {
+			return
+		}
+
+		const lastMessage = this.apiConversationHistory[this.apiConversationHistory.length - 1]
+		if (lastMessage !== removedUserMessage) {
+			this.apiConversationHistory.push(removedUserMessage)
+			await this.saveApiConversationHistory()
+		}
+	}
+
 	// NOTE: We intentionally do NOT mutate stored messages to merge consecutive user turns.
 	// For API requests, consecutive same-role messages are merged via mergeConsecutiveApiMessages()
 	// so rewind/edit behavior can still reference original message boundaries.
@@ -3694,11 +3706,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// we need to remove that message before retrying to avoid having two consecutive
 					// user messages (which would cause tool_result validation errors).
 					let state = await this.providerRef.deref()?.getState()
+					let removedUserMessage: ApiMessage | undefined
 					if (this.apiConversationHistory.length > 0) {
 						const lastMessage = this.apiConversationHistory[this.apiConversationHistory.length - 1]
 						if (lastMessage.role === "user") {
 							// Remove the last user message that we added earlier
-							this.apiConversationHistory.pop()
+							removedUserMessage = this.apiConversationHistory.pop()
 						}
 					}
 
@@ -3718,6 +3731,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							console.log(
 								`[Task#${this.taskId}.${this.instanceId}] Task aborted during empty-assistant retry backoff`,
 							)
+							await this.restoreRemovedApiUserMessage(removedUserMessage)
 							break
 						}
 
@@ -3727,17 +3741,29 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							userContent: currentUserContent,
 							includeFileDetails: false,
 							retryAttempt: (currentItem.retryAttempt ?? 0) + 1,
-							userMessageWasRemoved: true,
+							userMessageWasRemoved: Boolean(removedUserMessage),
 						})
 
 						// Continue to retry the request
 						continue
 					} else {
 						// Prompt the user for retry decision
-						const { response } = await this.ask(
-							"api_req_failed",
-							"The model returned no assistant messages. This may indicate an issue with the API or the model's output.",
-						)
+						let response: string
+						try {
+							const askResponse = await this.ask(
+								"api_req_failed",
+								"The model returned no assistant messages. This may indicate an issue with the API or the model's output.",
+							)
+							response = askResponse.response
+						} catch (error) {
+							await this.restoreRemovedApiUserMessage(removedUserMessage)
+							throw error
+						}
+
+						if (this.abort) {
+							await this.restoreRemovedApiUserMessage(removedUserMessage)
+							break
+						}
 
 						if (response === "yesButtonClicked") {
 							await this.say("api_req_retried")
@@ -3747,17 +3773,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								userContent: currentUserContent,
 								includeFileDetails: false,
 								retryAttempt: (currentItem.retryAttempt ?? 0) + 1,
+								userMessageWasRemoved: Boolean(removedUserMessage),
 							})
 
 							// Continue to retry the request
 							continue
 						} else {
 							// User declined to retry
-							// Re-add the user message we removed.
-							await this.addToApiConversationHistory({
-								role: "user",
-								content: currentUserContent,
-							})
+							// Re-add the exact user message we removed, including environment details.
+							await this.restoreRemovedApiUserMessage(removedUserMessage)
 
 							await this.say(
 								"error",

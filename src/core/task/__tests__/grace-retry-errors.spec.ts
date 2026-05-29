@@ -351,6 +351,56 @@ describe("Grace Retry Error Handling", () => {
 		})
 	})
 
+	describe("API history restoration", () => {
+		it("should restore the exact user message removed during no-assistant retry", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+
+			const removedUserMessage = {
+				role: "user" as const,
+				content: [
+					{ type: "text" as const, text: "original request" },
+					{ type: "text" as const, text: "<environment_details>cwd</environment_details>" },
+				],
+				ts: 123,
+			}
+
+			;(task as any).apiConversationHistory = [{ role: "assistant", content: "previous response", ts: 100 }]
+
+			await (task as any).restoreRemovedApiUserMessage(removedUserMessage)
+
+			expect((task as any).apiConversationHistory).toEqual([
+				{ role: "assistant", content: "previous response", ts: 100 },
+				removedUserMessage,
+			])
+		})
+
+		it("should not duplicate a user message that was already restored", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+
+			const removedUserMessage = {
+				role: "user" as const,
+				content: [{ type: "text" as const, text: "original request" }],
+				ts: 123,
+			}
+
+			;(task as any).apiConversationHistory = [removedUserMessage]
+
+			await (task as any).restoreRemovedApiUserMessage(removedUserMessage)
+
+			expect((task as any).apiConversationHistory).toEqual([removedUserMessage])
+		})
+	})
+
 	describe("Counter Reset on Success", () => {
 		it("should be able to simulate counter reset when valid content is received", () => {
 			const task = new Task({
