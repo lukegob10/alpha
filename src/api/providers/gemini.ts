@@ -486,6 +486,36 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 		}
 	}
 
+	private getNoVisibleContentMessage(finishReason?: string): string {
+		switch (finishReason) {
+			case "MAX_TOKENS":
+			case "FINISH_REASON_MAX_TOKENS":
+				return t("common:errors.gemini.thinking_complete_truncated")
+			case "SAFETY":
+			case "IMAGE_SAFETY":
+			case "PROHIBITED_CONTENT":
+			case "SPII":
+			case "BLOCKLIST":
+			case "IMAGE_PROHIBITED_CONTENT":
+			case "FINISH_REASON_SAFETY":
+			case "FINISH_REASON_BLOCKLIST":
+			case "FINISH_REASON_PROHIBITED_CONTENT":
+			case "FINISH_REASON_IMAGE_PROHIBITED_CONTENT":
+			case "FINISH_REASON_SPII":
+				return t("common:errors.gemini.thinking_complete_safety")
+			case "RECITATION":
+			case "FINISH_REASON_RECITATION":
+				return t("common:errors.gemini.thinking_complete_recitation")
+			case undefined:
+			case "STOP":
+			case "FINISH_REASON_UNSPECIFIED":
+			case "FINISH_REASON_STOP":
+				return t("common:errors.gemini.thinking_complete_no_output")
+			default:
+				return `${t("common:errors.gemini.thinking_complete_no_output")} Finish reason: ${finishReason}.`
+		}
+	}
+
 	async *createMessage(
 		systemInstruction: string,
 		messages: Anthropic.Messages.MessageParam[],
@@ -638,7 +668,6 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 
 					let toolCallCounter = 0
 					let hasContent = false
-					let hasReasoning = false
 					const candidate = result.candidates?.[0]
 
 					if (result.responseId) {
@@ -659,7 +688,6 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 
 							if (part.thought) {
 								if (part.text) {
-									hasReasoning = true
 									yield { type: "reasoning", text: part.text }
 								}
 							} else if (part.functionCall) {
@@ -711,11 +739,8 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 						}
 					}
 
-					if (!hasContent && !hasReasoning) {
-						const finishReason = candidate?.finishReason
-						if (finishReason === "MAX_TOKENS") {
-							yield { type: "text", text: "[Response truncated due to max tokens limit]" }
-						}
+					if (!hasContent) {
+						yield { type: "text", text: this.getNoVisibleContentMessage(candidate?.finishReason) }
 					}
 
 					return
@@ -730,7 +755,6 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 
 				let toolCallCounter = 0
 				let hasContent = false
-				let hasReasoning = false
 
 				for await (const chunk of result) {
 					emittedAnyStreamChunk = true
@@ -767,7 +791,6 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 								if (part.thought) {
 									// This is a thinking/reasoning part
 									if (part.text) {
-										hasReasoning = true
 										yield { type: "reasoning", text: part.text }
 									}
 								} else if (part.functionCall) {
@@ -852,6 +875,10 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 							reasoningTokens,
 						}),
 					}
+				}
+
+				if (!hasContent) {
+					yield { type: "text", text: this.getNoVisibleContentMessage(finishReason) }
 				}
 
 				return

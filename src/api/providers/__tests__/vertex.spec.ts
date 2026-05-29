@@ -215,6 +215,75 @@ describe("VertexHandler", () => {
 			])
 		})
 
+		it("should emit fallback text when Vertex returns only reasoning", async () => {
+			handler = new VertexHandler({
+				apiModelId: "gemini-2.0-flash-001",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+				vertexStreamingEnabled: false,
+			})
+			handler["client"] = {
+				models: {
+					generateContentStream: vitest.fn(),
+					generateContent: vitest.fn().mockResolvedValue({
+						candidates: [
+							{
+								content: {
+									parts: [{ thought: true, text: "Reasoning trace without final answer" }],
+								},
+								finishReason: "STOP",
+							},
+						],
+						usageMetadata: {
+							promptTokenCount: 11,
+							candidatesTokenCount: 0,
+							thoughtsTokenCount: 9,
+						},
+					}),
+					getGenerativeModel: vitest.fn(),
+				},
+			} as any
+
+			const chunks: ApiStreamChunk[] = []
+			for await (const chunk of handler.createMessage(systemPrompt, mockMessages)) {
+				chunks.push(chunk)
+			}
+
+			expect(chunks).toContainEqual({ type: "reasoning", text: "Reasoning trace without final answer" })
+			expect(chunks).toContainEqual({
+				type: "text",
+				text: t("common:errors.gemini.thinking_complete_no_output"),
+			})
+			expect(chunks).toContainEqual(
+				expect.objectContaining({ type: "usage", inputTokens: 11, outputTokens: 0, reasoningTokens: 9 }),
+			)
+		})
+
+		it("should emit a safety fallback text when streaming finishes without visible content", async () => {
+			;(handler["client"].models.generateContentStream as any).mockResolvedValue({
+				async *[Symbol.asyncIterator]() {
+					yield {
+						candidates: [{ finishReason: "SAFETY" }],
+						usageMetadata: {
+							promptTokenCount: 8,
+							candidatesTokenCount: 0,
+						},
+					}
+				},
+			})
+
+			const chunks: ApiStreamChunk[] = []
+			for await (const chunk of handler.createMessage(systemPrompt, mockMessages)) {
+				chunks.push(chunk)
+			}
+
+			expect(chunks).toContainEqual({
+				type: "text",
+				text: t("common:errors.gemini.thinking_complete_safety"),
+			})
+			expect(chunks).toContainEqual(expect.objectContaining({ type: "usage", inputTokens: 8, outputTokens: 0 }))
+		})
+
 		it("should retry auth failures before emitting chunks when Vertex streaming is disabled", async () => {
 			handler = new VertexHandler({
 				apiModelId: "gemini-2.0-flash-001",
