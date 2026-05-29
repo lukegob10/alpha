@@ -1016,6 +1016,22 @@ describe("VertexHandler", () => {
 			expect(result.reasoningBudget).toBeDefined()
 		})
 
+		it("should return native Vertex model info for Claude Opus 4.8", () => {
+			const handler = new AnthropicVertexHandler({
+				apiModelId: "claude-opus-4-8",
+				vertexProjectId: "test-project",
+				vertexRegion: "global",
+			})
+
+			const model = handler.getModel()
+			expect(model.id).toBe("claude-opus-4-8")
+			expect(model.info.maxTokens).toBe(128_000)
+			expect(model.info.contextWindow).toBe(1_000_000)
+			expect(model.info.inputPrice).toBe(5.5)
+			expect(model.info.outputPrice).toBe(27.5)
+			expect(model.betas).toBeUndefined()
+		})
+
 		it("should enable 1M context for Claude Sonnet 4 when beta flag is set", () => {
 			const handler = new AnthropicVertexHandler({
 				apiModelId: VERTEX_1M_CONTEXT_MODEL_IDS[0],
