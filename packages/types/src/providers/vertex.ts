@@ -64,6 +64,20 @@ export const vertexModels = {
 			},
 		],
 	},
+	"gemini-3.5-flash": {
+		maxTokens: 65_535,
+		contextWindow: 1_048_576,
+		supportsImages: true,
+		supportsPromptCache: true,
+		supportsReasoningEffort: ["minimal", "low", "medium", "high"],
+		reasoningEffort: "medium",
+
+		supportsTemperature: true,
+		defaultTemperature: 1,
+		inputPrice: 1.5,
+		outputPrice: 9.0,
+		cacheReadsPrice: 0.15,
+	},
 	"gemini-3-pro-preview": {
 		maxTokens: 65_536,
 		contextWindow: 1_048_576,
@@ -105,6 +119,20 @@ export const vertexModels = {
 		inputPrice: 0.5,
 		outputPrice: 3.0,
 		cacheReadsPrice: 0.05,
+	},
+	"gemini-3.1-flash-lite": {
+		maxTokens: 65_535,
+		contextWindow: 1_048_576,
+		supportsImages: true,
+		supportsPromptCache: true,
+		supportsReasoningEffort: ["minimal", "low", "medium", "high"],
+		reasoningEffort: "medium",
+
+		supportsTemperature: true,
+		defaultTemperature: 1,
+		inputPrice: 0.25,
+		outputPrice: 1.5,
+		cacheReadsPrice: 0.025,
 	},
 	"gemini-2.5-flash-preview-05-20:thinking": {
 		maxTokens: 65_535,
@@ -373,6 +401,17 @@ export const vertexModels = {
 				cacheReadsPrice: 1.0, // $1.00 per million tokens (>200K context)
 			},
 		],
+	},
+	"claude-opus-4-8": {
+		maxTokens: 128_000,
+		contextWindow: 1_000_000,
+		supportsImages: true,
+		supportsPromptCache: true,
+		inputPrice: 5.5,
+		outputPrice: 27.5,
+		cacheWritesPrice: 6.875,
+		cacheReadsPrice: 0.55,
+		supportsReasoningBudget: true,
 	},
 	"claude-opus-4-7": {
 		maxTokens: 8192,

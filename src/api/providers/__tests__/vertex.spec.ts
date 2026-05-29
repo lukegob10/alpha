@@ -382,6 +382,25 @@ describe("VertexHandler", () => {
 			expect(modelInfo.info.contextWindow).toBe(1048576)
 		})
 
+		it.each([
+			["gemini-3.5-flash", 65_535, 1.5, 9.0],
+			["gemini-3.1-flash-lite", 65_535, 0.25, 1.5],
+		])("should return native Vertex model info for %s", (apiModelId, maxTokens, inputPrice, outputPrice) => {
+			const testHandler = new VertexHandler({
+				apiModelId,
+				vertexProjectId: "test-project",
+				vertexRegion: "global",
+			})
+
+			const modelInfo = testHandler.getModel()
+			expect(modelInfo.id).toBe(apiModelId)
+			expect(modelInfo.info.maxTokens).toBe(maxTokens)
+			expect(modelInfo.info.contextWindow).toBe(1_048_576)
+			expect(modelInfo.info.inputPrice).toBe(inputPrice)
+			expect(modelInfo.info.outputPrice).toBe(outputPrice)
+			expect(modelInfo.info.supportsReasoningEffort).toEqual(["minimal", "low", "medium", "high"])
+		})
+
 		it("should exclude apply_diff and include edit in tool preferences", () => {
 			const testHandler = new VertexHandler({
 				apiModelId: "gemini-2.0-flash-001",
