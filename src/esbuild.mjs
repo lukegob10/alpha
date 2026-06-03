@@ -24,6 +24,48 @@ const lancedbNativeBindingFiles = [
 	"lancedb.linux-x64-musl.node",
 ]
 
+const ripgrepPackages = ["@vscode/ripgrep", "@vscode/ripgrep-universal"]
+
+function resolveRipgrepPackageJson(packageName) {
+	const packageJsonRequest = `${packageName}/package.json`
+	const resolutionBases = [
+		import.meta.url,
+		path.join(__dirname, "..", "package.json"),
+		path.join(__dirname, "..", "apps", "cli", "package.json"),
+	]
+
+	for (const resolutionBase of resolutionBases) {
+		try {
+			return createRequire(resolutionBase).resolve(packageJsonRequest)
+		} catch {
+			// Continue looking from the next workspace package root.
+		}
+	}
+
+	return undefined
+}
+
+function copyBundledRipgrepDependencies(distDir) {
+	for (const packageName of ripgrepPackages) {
+		try {
+			const packageJsonPath = resolveRipgrepPackageJson(packageName)
+			if (!packageJsonPath) {
+				continue
+			}
+
+			const packageDir = path.dirname(packageJsonPath)
+			const targetDir = path.join(distDir, "node_modules", ...packageName.split("/"))
+
+			fs.rmSync(targetDir, { recursive: true, force: true })
+			fs.mkdirSync(path.dirname(targetDir), { recursive: true })
+			fs.cpSync(packageDir, targetDir, { recursive: true })
+			console.log(`[copyBundledRipgrepDependencies] Copied ${packageName} to ${targetDir}`)
+		} catch {
+			// @vscode/ripgrep-universal may not be installed in older dependency sets.
+		}
+	}
+}
+
 async function removeDirWithRetries(dirPath, retries = 5, retryDelayMs = 200) {
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		try {
@@ -186,6 +228,7 @@ async function main() {
 				build.onEnd((result) => {
 					if (result.errors.length === 0) {
 						copyLanceDbNativeBindings(distDir)
+						copyBundledRipgrepDependencies(distDir)
 					}
 				})
 			},
