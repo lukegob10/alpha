@@ -1,5 +1,17 @@
 import type { Mock } from "vitest"
 
+const { mockGetApiRequestTimeoutSetting, mockCancellationSources } = vi.hoisted(() => ({
+	mockGetApiRequestTimeoutSetting: vi.fn(() => 600),
+	mockCancellationSources: [] as Array<{
+		token: {
+			isCancellationRequested: boolean
+			onCancellationRequested: ReturnType<typeof vi.fn>
+		}
+		cancel: ReturnType<typeof vi.fn>
+		dispose: ReturnType<typeof vi.fn>
+	}>,
+}))
+
 // Mocks must come first, before imports
 vi.mock("vscode", () => {
 	class MockLanguageModelTextPart {
@@ -21,15 +33,25 @@ vi.mock("vscode", () => {
 			onDidChangeConfiguration: vi.fn((_callback) => ({
 				dispose: vi.fn(),
 			})),
+			getConfiguration: vi.fn(() => ({
+				get: mockGetApiRequestTimeoutSetting,
+			})),
 		},
-		CancellationTokenSource: vi.fn(() => ({
-			token: {
+		CancellationTokenSource: vi.fn(() => {
+			const token = {
 				isCancellationRequested: false,
-				onCancellationRequested: vi.fn(),
-			},
-			cancel: vi.fn(),
-			dispose: vi.fn(),
-		})),
+				onCancellationRequested: vi.fn(() => ({ dispose: vi.fn() })),
+			}
+			const source = {
+				token,
+				cancel: vi.fn(() => {
+					token.isCancellationRequested = true
+				}),
+				dispose: vi.fn(),
+			}
+			mockCancellationSources.push(source)
+			return source
+		}),
 		CancellationError: class CancellationError extends Error {
 			constructor() {
 				super("Operation cancelled")
@@ -81,6 +103,8 @@ describe("VsCodeLmHandler", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
+		mockCancellationSources.length = 0
+		mockGetApiRequestTimeoutSetting.mockReturnValue(600)
 		handler = new VsCodeLmHandler(defaultOptions)
 	})
 
@@ -391,6 +415,52 @@ describe("VsCodeLmHandler", () => {
 
 			await expect(handler.createMessage(systemPrompt, messages).next()).rejects.toThrow("API Error")
 		})
+
+		it("should cancel when VS Code LM request startup hangs past the API timeout", async () => {
+			mockGetApiRequestTimeoutSetting.mockReturnValue(0.001)
+
+			const systemPrompt = "You are a helpful assistant"
+			const messages: Anthropic.Messages.MessageParam[] = [
+				{
+					role: "user" as const,
+					content: "Hello",
+				},
+			]
+
+			mockLanguageModelChat.sendRequest.mockImplementationOnce(() => new Promise(() => undefined))
+
+			await expect(handler.createMessage(systemPrompt, messages).next()).rejects.toThrow(
+				/VS Code LM request .* timed out after 1 second/,
+			)
+			expect(mockCancellationSources[0]?.cancel).toHaveBeenCalled()
+		})
+
+		it("should cancel when VS Code LM response stream stalls past the API timeout", async () => {
+			mockGetApiRequestTimeoutSetting.mockReturnValue(0.001)
+
+			const systemPrompt = "You are a helpful assistant"
+			const messages: Anthropic.Messages.MessageParam[] = [
+				{
+					role: "user" as const,
+					content: "Hello",
+				},
+			]
+
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: {
+					[Symbol.asyncIterator]() {
+						return {
+							next: () => new Promise(() => undefined),
+						}
+					},
+				},
+			})
+
+			await expect(handler.createMessage(systemPrompt, messages).next()).rejects.toThrow(
+				/VS Code LM response stream .* timed out after 1 second/,
+			)
+			expect(mockCancellationSources[0]?.cancel).toHaveBeenCalled()
+		})
 	})
 
 	describe("getModel", () => {
@@ -470,7 +540,7 @@ describe("VsCodeLmHandler", () => {
 			const result = await handler.countTokens(content)
 
 			expect(result).toBe(50)
-			expect(mockLanguageModelChat.countTokens).toHaveBeenCalledWith("Test content", mockCancellation.token)
+			expect(mockLanguageModelChat.countTokens).toHaveBeenCalledWith("Test content", expect.any(Object))
 		})
 
 		it("should return 0 when no client is available", async () => {

@@ -12,6 +12,7 @@ import { ApiStream } from "../transform/stream"
 import { convertToVsCodeLmMessages, extractTextCountFromMessage } from "../transform/vscode-lm-format"
 
 import { BaseProvider } from "./base-provider"
+import { getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
 import type { SingleCompletionHandler, ApiHandlerCreateMessageMetadata } from "../index"
 
 /**
@@ -235,15 +236,19 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			return 0
 		}
 
-		// Create a temporary cancellation token if we don't have one (e.g., when called outside a request)
+		// Token counting can involve the same provider backend as generation. Keep it cancellable,
+		// but isolate count-token cancellation from the main request token.
 		let cancellationToken: vscode.CancellationToken
 		let tempCancellation: vscode.CancellationTokenSource | null = null
+		let linkedCancellation: vscode.Disposable | undefined
+
+		tempCancellation = new vscode.CancellationTokenSource()
+		cancellationToken = tempCancellation.token
 
 		if (this.currentRequestCancellation) {
-			cancellationToken = this.currentRequestCancellation.token
-		} else {
-			tempCancellation = new vscode.CancellationTokenSource()
-			cancellationToken = tempCancellation.token
+			linkedCancellation = this.currentRequestCancellation.token.onCancellationRequested(() => {
+				tempCancellation?.cancel()
+			})
 		}
 
 		try {
@@ -251,7 +256,12 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			let tokenCount: number
 
 			if (typeof text === "string") {
-				tokenCount = await this.client.countTokens(text, cancellationToken)
+				tokenCount = await withApiRequestTimeout(
+					this.client.countTokens(text, cancellationToken),
+					"VS Code LM token counting",
+					getApiRequestTimeout(),
+					() => tempCancellation?.cancel(),
+				)
 			} else if (text instanceof vscode.LanguageModelChatMessage) {
 				// For chat messages, ensure we have content
 				if (!text.content || (Array.isArray(text.content) && text.content.length === 0)) {
@@ -259,7 +269,12 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 					return 0
 				}
 				const countMessage = extractTextCountFromMessage(text)
-				tokenCount = await this.client.countTokens(countMessage, cancellationToken)
+				tokenCount = await withApiRequestTimeout(
+					this.client.countTokens(countMessage, cancellationToken),
+					"VS Code LM token counting",
+					getApiRequestTimeout(),
+					() => tempCancellation?.cancel(),
+				)
 			} else {
 				console.warn("Alpha <Language Model API>: Invalid input type for token counting")
 				return 0
@@ -295,6 +310,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			return 0 // Fallback to prevent stream interruption
 		} finally {
 			// Clean up temporary cancellation token
+			linkedCancellation?.dispose()
 			if (tempCancellation) {
 				tempCancellation.dispose()
 			}
@@ -399,14 +415,29 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				tools: convertToVsCodeLmTools(metadata?.tools ?? []),
 			}
 
-			const response: vscode.LanguageModelChatResponse = await client.sendRequest(
-				vsCodeLmMessages,
-				requestOptions,
-				this.currentRequestCancellation.token,
+			const response: vscode.LanguageModelChatResponse = await withApiRequestTimeout(
+				client.sendRequest(vsCodeLmMessages, requestOptions, this.currentRequestCancellation.token),
+				`VS Code LM request for ${client.name}`,
+				getApiRequestTimeout(),
+				() => this.currentRequestCancellation?.cancel(),
 			)
 
 			// Consume the stream and handle both text and tool call chunks
-			for await (const chunk of response.stream) {
+			const responseIterator = response.stream[Symbol.asyncIterator]()
+
+			while (true) {
+				const nextChunk = await withApiRequestTimeout(
+					responseIterator.next(),
+					`VS Code LM response stream for ${client.name}`,
+					getApiRequestTimeout(),
+					() => this.currentRequestCancellation?.cancel(),
+				)
+
+				if (nextChunk.done) {
+					break
+				}
+
+				const chunk = nextChunk.value
 				if (chunk instanceof vscode.LanguageModelTextPart) {
 					// Validate text part value
 					if (typeof chunk.value !== "string") {
@@ -502,6 +533,8 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				console.error("Alpha <Language Model API>: Unknown stream error:", errorMessage)
 				throw new Error(`Alpha <Language Model API>: Response stream error: ${errorMessage}`)
 			}
+		} finally {
+			this.ensureCleanState()
 		}
 	}
 
@@ -563,15 +596,34 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	}
 
 	async completePrompt(prompt: string): Promise<string> {
+		let cancellation: vscode.CancellationTokenSource | undefined
+
 		try {
 			const client = await this.getClient()
-			const response = await client.sendRequest(
-				[vscode.LanguageModelChatMessage.User(prompt)],
-				{},
-				new vscode.CancellationTokenSource().token,
+			const requestCancellation = new vscode.CancellationTokenSource()
+			cancellation = requestCancellation
+			const response = await withApiRequestTimeout(
+				client.sendRequest([vscode.LanguageModelChatMessage.User(prompt)], {}, requestCancellation.token),
+				`VS Code LM completion request for ${client.name}`,
+				getApiRequestTimeout(),
+				() => requestCancellation.cancel(),
 			)
 			let result = ""
-			for await (const chunk of response.stream) {
+			const responseIterator = response.stream[Symbol.asyncIterator]()
+
+			while (true) {
+				const nextChunk = await withApiRequestTimeout(
+					responseIterator.next(),
+					`VS Code LM completion stream for ${client.name}`,
+					getApiRequestTimeout(),
+					() => requestCancellation.cancel(),
+				)
+
+				if (nextChunk.done) {
+					break
+				}
+
+				const chunk = nextChunk.value
 				if (chunk instanceof vscode.LanguageModelTextPart) {
 					result += chunk.value
 				}
@@ -582,6 +634,8 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				throw new Error(`VSCode LM completion error: ${error.message}`)
 			}
 			throw error
+		} finally {
+			cancellation?.dispose()
 		}
 	}
 }

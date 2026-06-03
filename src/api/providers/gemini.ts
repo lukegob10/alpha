@@ -29,6 +29,7 @@ import { getModelParams } from "../transform/model-params"
 import type { SingleCompletionHandler, ApiHandlerCreateMessageMetadata } from "../index"
 import { BaseProvider } from "./base-provider"
 import { HelixTokenManager, type HelixParseMode } from "./utils/helix-token-manager"
+import { getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
 import { configureVertexGatewayTransport } from "./utils/vertex-gateway-transport"
 
 type GeminiHandlerOptions = ApiHandlerOptions & {
@@ -463,6 +464,23 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 		return undefined
 	}
 
+	private captureProviderException(error: ApiProviderError): void {
+		try {
+			TelemetryService.instance.captureException(error)
+		} catch (telemetryError) {
+			console.warn("Gemini telemetry capture failed:", telemetryError)
+		}
+	}
+
+	private formatProviderError(translationKey: string, fallbackPrefix: string, errorMessage: string): string {
+		const translated = t(translationKey, { error: errorMessage })
+		if (typeof translated === "string" && translated.trim().length > 0) {
+			return translated
+		}
+
+		return `${fallbackPrefix}: ${errorMessage}`
+	}
+
 	private mergeHttpOptions(
 		baseHttpOptions: GenerateContentConfig["httpOptions"],
 		overrideHttpOptions: GenerateContentConfig["httpOptions"],
@@ -648,15 +666,25 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 		}
 
 		let didRetryForGatewayAuth = false
+		const requestTimeoutMs = getApiRequestTimeout()
 
 		while (true) {
 			const requestContext = await this.getRequestContext(model)
+			const requestAbortController = requestTimeoutMs ? new AbortController() : undefined
+			const timeoutHttpOptions: GenerateContentConfig["httpOptions"] = requestTimeoutMs
+				? { timeout: requestTimeoutMs }
+				: undefined
+			const httpOptions = this.mergeHttpOptions(
+				this.mergeHttpOptions(config.httpOptions, requestContext.httpOptions),
+				timeoutHttpOptions,
+			)
 			const params: GenerateContentParameters = {
 				model: requestContext.model,
 				contents,
 				config: {
 					...config,
-					httpOptions: this.mergeHttpOptions(config.httpOptions, requestContext.httpOptions),
+					httpOptions,
+					...(requestAbortController ? { abortSignal: requestAbortController.signal } : {}),
 				},
 			}
 
@@ -664,7 +692,12 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 
 			try {
 				if (this.isVertex && this.options.vertexStreamingEnabled === false) {
-					const result = await requestContext.client.models.generateContent(params)
+					const result = await withApiRequestTimeout(
+						requestContext.client.models.generateContent(params),
+						`${this.providerName} request for ${requestContext.model}`,
+						requestTimeoutMs,
+						() => requestAbortController?.abort(),
+					)
 
 					let toolCallCounter = 0
 					let hasContent = false
@@ -746,7 +779,12 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 					return
 				}
 
-				const result = await requestContext.client.models.generateContentStream(params)
+				const result = await withApiRequestTimeout(
+					requestContext.client.models.generateContentStream(params),
+					`${this.providerName} stream request for ${requestContext.model}`,
+					requestTimeoutMs,
+					() => requestAbortController?.abort(),
+				)
 
 				let lastUsageMetadata: GenerateContentResponseUsageMetadata | undefined
 				let pendingGroundingMetadata: GroundingMetadata | undefined
@@ -756,7 +794,21 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 				let toolCallCounter = 0
 				let hasContent = false
 
-				for await (const chunk of result) {
+				const resultIterator = result[Symbol.asyncIterator]()
+
+				while (true) {
+					const nextChunk = await withApiRequestTimeout(
+						resultIterator.next(),
+						`${this.providerName} stream response for ${requestContext.model}`,
+						requestTimeoutMs,
+						() => requestAbortController?.abort(),
+					)
+
+					if (nextChunk.done) {
+						break
+					}
+
+					const chunk = nextChunk.value
 					emittedAnyStreamChunk = true
 
 					// Track the final structured response (per SDK pattern: candidate.finishReason)
@@ -899,10 +951,16 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 					requestContext.model,
 					"createMessage",
 				)
-				TelemetryService.instance.captureException(apiError)
+				this.captureProviderException(apiError)
 
 				if (error instanceof Error) {
-					throw new Error(t("common:errors.gemini.generate_stream", { error: error.message }))
+					throw new Error(
+						this.formatProviderError(
+							"common:errors.gemini.generate_stream",
+							"Gemini stream error",
+							error.message,
+						),
+					)
 				}
 
 				throw error
@@ -980,9 +1038,11 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 	async completePrompt(prompt: string): Promise<string> {
 		const { id: model, info } = this.getModel()
 		let didRetryForGatewayAuth = false
+		const requestTimeoutMs = getApiRequestTimeout()
 
 		while (true) {
 			const requestContext = await this.getRequestContext(model)
+			const requestAbortController = requestTimeoutMs ? new AbortController() : undefined
 
 			const supportsTemperature = info.supportsTemperature !== false
 			const temperatureConfig: number | undefined = supportsTemperature
@@ -991,9 +1051,13 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 
 			const promptConfig: GenerateContentConfig = {
 				httpOptions: this.mergeHttpOptions(
-					this.options.googleGeminiBaseUrl ? { baseUrl: this.options.googleGeminiBaseUrl } : undefined,
-					requestContext.httpOptions,
+					this.mergeHttpOptions(
+						this.options.googleGeminiBaseUrl ? { baseUrl: this.options.googleGeminiBaseUrl } : undefined,
+						requestContext.httpOptions,
+					),
+					requestTimeoutMs ? { timeout: requestTimeoutMs } : undefined,
 				),
+				...(requestAbortController ? { abortSignal: requestAbortController.signal } : {}),
 				temperature: temperatureConfig,
 			}
 
@@ -1004,7 +1068,12 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 			}
 
 			try {
-				const result = await requestContext.client.models.generateContent(request)
+				const result = await withApiRequestTimeout(
+					requestContext.client.models.generateContent(request),
+					`${this.providerName} completion request for ${requestContext.model}`,
+					requestTimeoutMs,
+					() => requestAbortController?.abort(),
+				)
 
 				let text = result.text ?? ""
 
@@ -1030,10 +1099,16 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 					requestContext.model,
 					"completePrompt",
 				)
-				TelemetryService.instance.captureException(apiError)
+				this.captureProviderException(apiError)
 
 				if (error instanceof Error) {
-					throw new Error(t("common:errors.gemini.generate_complete_prompt", { error: error.message }))
+					throw new Error(
+						this.formatProviderError(
+							"common:errors.gemini.generate_complete_prompt",
+							"Gemini completion error",
+							error.message,
+						),
+					)
 				}
 
 				throw error
