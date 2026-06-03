@@ -12,7 +12,17 @@ const { mockExecFile, mockGoogleGenAI } = vitest.hoisted(() => ({
 }))
 
 // Mock vscode first to avoid import errors
-vitest.mock("vscode", () => ({}))
+const { mockGetApiRequestTimeoutSetting } = vitest.hoisted(() => ({
+	mockGetApiRequestTimeoutSetting: vitest.fn(() => 600),
+}))
+
+vitest.mock("vscode", () => ({
+	workspace: {
+		getConfiguration: vitest.fn(() => ({
+			get: mockGetApiRequestTimeoutSetting,
+		})),
+	},
+}))
 
 vitest.mock("child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("child_process")>()
@@ -53,6 +63,7 @@ describe("VertexHandler", () => {
 		resetVertexGatewayCaBundleForTests()
 		restoreEnv("USERNAME", originalUsername)
 		restoreEnv("USER", originalUser)
+		mockGetApiRequestTimeoutSetting.mockReturnValue(600)
 
 		// Create mock functions
 		const mockGenerateContentStream = vitest.fn()
@@ -282,6 +293,40 @@ describe("VertexHandler", () => {
 				text: t("common:errors.gemini.thinking_complete_safety"),
 			})
 			expect(chunks).toContainEqual(expect.objectContaining({ type: "usage", inputTokens: 8, outputTokens: 0 }))
+		})
+
+		it("should abort when Vertex streaming request startup hangs past the API timeout", async () => {
+			mockGetApiRequestTimeoutSetting.mockReturnValue(0.001)
+			let abortSignal: AbortSignal | undefined
+			;(handler["client"].models.generateContentStream as any).mockImplementation((params: any) => {
+				abortSignal = params.config.abortSignal
+				return new Promise(() => undefined)
+			})
+
+			await expect(handler.createMessage(systemPrompt, mockMessages).next()).rejects.toThrow(
+				/Gemini stream request .* timed out after 1 second/,
+			)
+			expect(abortSignal?.aborted).toBe(true)
+		})
+
+		it("should abort when Vertex streaming response stalls past the API timeout", async () => {
+			mockGetApiRequestTimeoutSetting.mockReturnValue(0.001)
+			let abortSignal: AbortSignal | undefined
+			;(handler["client"].models.generateContentStream as any).mockImplementation((params: any) => {
+				abortSignal = params.config.abortSignal
+				return {
+					[Symbol.asyncIterator]() {
+						return {
+							next: () => new Promise(() => undefined),
+						}
+					},
+				}
+			})
+
+			await expect(handler.createMessage(systemPrompt, mockMessages).next()).rejects.toThrow(
+				/Gemini stream response .* timed out after 1 second/,
+			)
+			expect(abortSignal?.aborted).toBe(true)
 		})
 
 		it("should retry auth failures before emitting chunks when Vertex streaming is disabled", async () => {
