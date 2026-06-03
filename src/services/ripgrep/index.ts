@@ -1,4 +1,6 @@
 import * as childProcess from "child_process"
+import * as fs from "fs"
+import { createRequire } from "module"
 import * as path from "path"
 import * as readline from "readline"
 
@@ -11,7 +13,7 @@ This file provides functionality to perform regex searches on files using ripgre
 Inspired by: https://github.com/DiscreteTom/vscode-ripgrep-utils
 
 Key components:
-1. getBinPath: Locates the ripgrep binary within the VSCode installation.
+1. getBinPath: Resolves ripgrep from bundled dependencies, PATH, then VS Code internals.
 2. execRipgrep: Executes the ripgrep command and returns the output.
 3. regexSearchFiles: The main function that performs regex searches on files.
    - Parameters:
@@ -48,8 +50,34 @@ rel/path/to/helper.ts
 │----
 */
 
-const isWindows = process.platform.startsWith("win")
-const binName = isWindows ? "rg.exe" : "rg"
+export type RipgrepResolutionSource = "bundled" | "system" | "vscode-internal"
+
+export interface RipgrepResolution {
+	path: string
+	source: RipgrepResolutionSource
+	reason: string
+}
+
+interface RipgrepResolverOptions {
+	appRoot?: string
+	bundledPackageRoots?: Array<{ packageName: string; packageRoot: string }>
+	skipRuntimePackageLookup?: boolean
+	env?: NodeJS.ProcessEnv
+	platform?: NodeJS.Platform
+	logger?: Pick<Console, "info" | "warn">
+}
+
+const BUNDLED_RIPGREP_PACKAGES = ["@vscode/ripgrep", "@vscode/ripgrep-universal"]
+const INTERNAL_RIPGREP_DIRS = [
+	"node_modules/@vscode/ripgrep/bin",
+	"node_modules/@vscode/ripgrep-universal/bin",
+	"node_modules/vscode-ripgrep/bin",
+	"node_modules.asar.unpacked/@vscode/ripgrep/bin",
+	"node_modules.asar.unpacked/@vscode/ripgrep-universal/bin",
+	"node_modules.asar.unpacked/vscode-ripgrep/bin",
+]
+const MAX_PACKAGE_SCAN_DEPTH = 5
+let cachedResolution: RipgrepResolution | undefined
 
 interface SearchFileResult {
 	file: string
@@ -66,7 +94,7 @@ interface SearchLineResult {
 	isMatch: boolean
 	column?: number
 }
-// Constants
+
 const MAX_RESULTS = 300
 const MAX_LINE_LENGTH = 500
 
@@ -79,21 +107,218 @@ const MAX_LINE_LENGTH = 500
 export function truncateLine(line: string, maxLength: number = MAX_LINE_LENGTH): string {
 	return line.length > maxLength ? line.substring(0, maxLength) + " [truncated...]" : line
 }
-/**
- * Get the path to the ripgrep binary within the VSCode installation
- */
-export async function getBinPath(vscodeAppRoot: string): Promise<string | undefined> {
-	const checkPath = async (pkgFolder: string) => {
-		const fullPath = path.join(vscodeAppRoot, pkgFolder, binName)
-		return (await fileExistsAtPath(fullPath)) ? fullPath : undefined
+
+function getExecutableName(platform: NodeJS.Platform = process.platform): string {
+	return platform === "win32" ? "rg.exe" : "rg"
+}
+
+async function findExecutableUnderDirectory(
+	directory: string,
+	executableName: string,
+	maxDepth = MAX_PACKAGE_SCAN_DEPTH,
+): Promise<string | undefined> {
+	const queue: Array<{ dir: string; depth: number }> = [{ dir: directory, depth: 0 }]
+
+	while (queue.length > 0) {
+		const current = queue.shift()
+
+		if (!current) {
+			continue
+		}
+
+		let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>
+		try {
+			entries = (await fs.promises.readdir(current.dir, { withFileTypes: true })) as typeof entries
+		} catch {
+			continue
+		}
+
+		for (const entry of entries) {
+			const entryPath = path.join(current.dir, entry.name)
+			if (entry.isFile() && entry.name === executableName) {
+				return entryPath
+			}
+		}
+
+		if (current.depth >= maxDepth) {
+			continue
+		}
+
+		for (const entry of entries) {
+			if (entry.isDirectory()) {
+				queue.push({ dir: path.join(current.dir, entry.name), depth: current.depth + 1 })
+			}
+		}
 	}
 
-	return (
-		(await checkPath("node_modules/@vscode/ripgrep/bin/")) ||
-		(await checkPath("node_modules/vscode-ripgrep/bin")) ||
-		(await checkPath("node_modules.asar.unpacked/vscode-ripgrep/bin/")) ||
-		(await checkPath("node_modules.asar.unpacked/@vscode/ripgrep/bin/"))
+	return undefined
+}
+
+async function resolveBundledPackageRoot(
+	packageName: string,
+	packageRoot: string,
+	platform: NodeJS.Platform,
+): Promise<{ path: string; packageName: string } | undefined> {
+	const foundPath = await findExecutableUnderDirectory(packageRoot, getExecutableName(platform))
+	return foundPath ? { path: foundPath, packageName } : undefined
+}
+
+async function resolveBundledRipgrep(
+	platform: NodeJS.Platform,
+	bundledPackageRoots: RipgrepResolverOptions["bundledPackageRoots"] = [],
+	skipRuntimePackageLookup = false,
+): Promise<{ path: string; packageName: string } | undefined> {
+	for (const { packageName, packageRoot } of bundledPackageRoots) {
+		const resolved = await resolveBundledPackageRoot(packageName, packageRoot, platform)
+		if (resolved) {
+			return resolved
+		}
+	}
+
+	if (skipRuntimePackageLookup) {
+		return undefined
+	}
+
+	const runtimeRequire = createRequire(__filename)
+
+	for (const packageName of BUNDLED_RIPGREP_PACKAGES) {
+		try {
+			const packageJsonPath = runtimeRequire.resolve(`${packageName}/package.json`)
+			const packageRoot = path.dirname(packageJsonPath)
+			const packageRequire = runtimeRequire(packageName) as { rgPath?: string }
+			const exportedPath = packageRequire.rgPath
+
+			if (exportedPath && (await fileExistsAtPath(exportedPath))) {
+				return { path: exportedPath, packageName }
+			}
+
+			const resolved = await resolveBundledPackageRoot(packageName, packageRoot, platform)
+			if (resolved) {
+				return resolved
+			}
+		} catch {
+			// Optional dependency not installed or not resolvable from the runtime bundle.
+		}
+	}
+
+	return undefined
+}
+
+async function resolveSystemRipgrep(
+	env: NodeJS.ProcessEnv,
+	platform: NodeJS.Platform,
+): Promise<string | undefined> {
+	const pathValue = env.PATH || env.Path || env.path
+	if (!pathValue) {
+		return undefined
+	}
+
+	const executableNames = [getExecutableName(platform)]
+	if (platform === "win32") {
+		const pathExts = (env.PATHEXT || ".EXE;.CMD;.BAT;.COM")
+			.split(";")
+			.map((ext) => ext.toLowerCase())
+		if (!pathExts.includes(".exe")) {
+			executableNames.push("rg.exe")
+		}
+	}
+
+	for (const pathEntry of pathValue.split(path.delimiter).filter(Boolean)) {
+		for (const executableName of executableNames) {
+			const candidate = path.join(pathEntry, executableName)
+			if (await fileExistsAtPath(candidate)) {
+				return candidate
+			}
+		}
+	}
+
+	return undefined
+}
+
+async function resolveInternalRipgrep(appRoot: string, platform: NodeJS.Platform): Promise<string | undefined> {
+	const executableName = getExecutableName(platform)
+
+	for (const relativeDir of INTERNAL_RIPGREP_DIRS) {
+		const candidate = path.join(appRoot, relativeDir, executableName)
+		if (await fileExistsAtPath(candidate)) {
+			return candidate
+		}
+	}
+
+	return undefined
+}
+
+function logResolution(resolution: RipgrepResolution, logger: Pick<Console, "info" | "warn">): void {
+	const message = `[ripgrep] Selected binary: ${resolution.path} (${resolution.reason})`
+
+	if (resolution.source === "vscode-internal") {
+		logger.warn(message)
+	} else {
+		logger.info(message)
+	}
+}
+
+export function clearRipgrepPathCache(): void {
+	cachedResolution = undefined
+}
+
+export async function resolveRipgrepBinary(options: RipgrepResolverOptions = {}): Promise<RipgrepResolution | undefined> {
+	if (cachedResolution) {
+		return cachedResolution
+	}
+
+	const env = options.env ?? process.env
+	const platform = options.platform ?? process.platform
+	const logger = options.logger ?? console
+
+	const bundledRipgrep = await resolveBundledRipgrep(
+		platform,
+		options.bundledPackageRoots,
+		options.skipRuntimePackageLookup,
 	)
+	if (bundledRipgrep) {
+		cachedResolution = {
+			path: bundledRipgrep.path,
+			source: "bundled",
+			reason: `using extension-bundled ${bundledRipgrep.packageName}`,
+		}
+		logResolution(cachedResolution, logger)
+		return cachedResolution
+	}
+
+	const systemRipgrep = await resolveSystemRipgrep(env, platform)
+	if (systemRipgrep) {
+		cachedResolution = {
+			path: systemRipgrep,
+			source: "system",
+			reason: "extension-bundled ripgrep was unavailable; using rg from PATH",
+		}
+		logResolution(cachedResolution, logger)
+		return cachedResolution
+	}
+
+	if (options.appRoot) {
+		const internalRipgrep = await resolveInternalRipgrep(options.appRoot, platform)
+		if (internalRipgrep) {
+			cachedResolution = {
+				path: internalRipgrep,
+				source: "vscode-internal",
+				reason: "bundled and system ripgrep were unavailable; using VS Code internal compatibility fallback",
+			}
+			logResolution(cachedResolution, logger)
+			return cachedResolution
+		}
+	}
+
+	logger.warn("[ripgrep] No ripgrep binary found in bundled dependencies, PATH, or VS Code internal fallbacks")
+	return undefined
+}
+
+/**
+ * Get the path to the ripgrep binary.
+ */
+export async function getBinPath(vscodeAppRoot?: string): Promise<string | undefined> {
+	return (await resolveRipgrepBinary({ appRoot: vscodeAppRoot ?? vscode.env.appRoot }))?.path
 }
 
 async function execRipgrep(bin: string, args: string[]): Promise<string> {
@@ -143,8 +368,7 @@ export async function regexSearchFiles(
 	filePattern?: string,
 	rooIgnoreController?: RooIgnoreController,
 ): Promise<string> {
-	const vscodeAppRoot = vscode.env.appRoot
-	const rgPath = await getBinPath(vscodeAppRoot)
+	const rgPath = await getBinPath()
 
 	if (!rgPath) {
 		throw new Error("Could not find ripgrep binary")

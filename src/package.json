@@ -486,6 +486,7 @@
 		"@alpha-code/telemetry": "workspace:^",
 		"@alpha-code/types": "workspace:^",
 		"@vscode/codicons": "^0.0.36",
+		"@vscode/ripgrep": "^1.17.0",
 		"ai-sdk-provider-poe": "2.0.18",
 		"async-mutex": "^0.5.0",
 		"axios": "^1.12.0",

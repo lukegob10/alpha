@@ -2,7 +2,6 @@ import os from "os"
 import * as path from "path"
 import * as fs from "fs"
 import * as childProcess from "child_process"
-import * as vscode from "vscode"
 import ignore from "ignore"
 import { arePathsEqual } from "../../utils/path"
 import { getBinPath } from "../../services/ripgrep"
@@ -184,8 +183,7 @@ async function handleSpecialDirectories(dirPath: string): Promise<[string[], boo
  * Get the path to the ripgrep binary
  */
 async function getRipgrepPath(): Promise<string> {
-	const vscodeAppRoot = vscode.env.appRoot
-	const rgPath = await getBinPath(vscodeAppRoot)
+	const rgPath = await getBinPath()
 
 	if (!rgPath) {
 		throw new Error("Could not find ripgrep binary")
