@@ -252,6 +252,39 @@ describe("VsCodeLmHandler", () => {
 			})
 		})
 
+		it("should ignore VS Code LM metadata chunks", async () => {
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+			const responseText = "Text before metadata"
+
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart(responseText)
+					yield { mimeType: "stateful_marker", data: new Uint8Array() }
+					yield { mimeType: "usage", data: new Uint8Array() }
+				})(),
+			})
+
+			const chunks = []
+			for await (const chunk of handler.createMessage("System", [{ role: "user", content: "Hello" }])) {
+				chunks.push(chunk)
+			}
+
+			expect(chunks[0]).toEqual({
+				type: "text",
+				text: responseText,
+			})
+			expect(chunks.at(-1)).toMatchObject({
+				type: "usage",
+				inputTokens: expect.any(Number),
+				outputTokens: expect.any(Number),
+			})
+			expect(warnSpy).not.toHaveBeenCalledWith(
+				"Alpha <Language Model API>: Unknown chunk type received:",
+				expect.anything(),
+			)
+			warnSpy.mockRestore()
+		})
+
 		it("should emit tool_call chunks when tools are provided", async () => {
 			const systemPrompt = "You are a helpful assistant"
 			const messages: Anthropic.Messages.MessageParam[] = [

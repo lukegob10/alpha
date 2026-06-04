@@ -59,6 +59,7 @@ import { TelemetryService } from "@alpha-code/telemetry"
 import { ApiHandler, ApiHandlerCreateMessageMetadata, buildApiHandler } from "../../api"
 import { ApiStream, GroundingSource } from "../../api/transform/stream"
 import { maybeRemoveImageBlocks } from "../../api/transform/image-cleaning"
+import { getApiRequestTimeout, withApiRequestTimeout } from "../../api/providers/utils/timeout-config"
 
 // shared
 import { findLastIndex } from "../../shared/array"
@@ -2969,36 +2970,52 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				try {
 					const iterator = stream[Symbol.asyncIterator]()
 
-					// Helper to race iterator.next() with abort signal
-					const nextChunkWithAbort = async () => {
+					// Helper to race iterator.next() with abort signal and the configured API timeout.
+					const nextChunkWithAbort = async (
+						operationName = `API response stream for ${cachedModelId}`,
+						timeoutMs = getApiRequestTimeout(),
+					) => {
 						const nextPromise = iterator.next()
+						let removeAbortListener: (() => void) | undefined
 
 						// If we have an abort controller, race it with the next chunk
-						if (this.currentRequestAbortController) {
-							const abortPromise = new Promise<never>((_, reject) => {
+						const abortPromise = this.currentRequestAbortController
+							? new Promise<never>((_, reject) => {
 								const signal = this.currentRequestAbortController!.signal
+								const onAbort = () => reject(new Error("Request cancelled by user"))
 								if (signal.aborted) {
-									reject(new Error("Request cancelled by user"))
+									onAbort()
 								} else {
-									signal.addEventListener("abort", () => {
-										reject(new Error("Request cancelled by user"))
+									signal.addEventListener("abort", onAbort, { once: true })
+									removeAbortListener = () => signal.removeEventListener("abort", onAbort)
+								}
+							})
+							: undefined
+
+						const operation = abortPromise ? Promise.race([nextPromise, abortPromise]) : nextPromise
+
+						try {
+							return await withApiRequestTimeout(operation, operationName, timeoutMs, () => {
+								this.currentRequestAbortController?.abort()
+								const iteratorReturn = iterator.return?.(undefined)
+								if (iteratorReturn) {
+									void Promise.resolve(iteratorReturn).catch((error) => {
+										console.warn("Failed to close stalled API response stream:", error)
 									})
 								}
 							})
-							return await Promise.race([nextPromise, abortPromise])
+						} finally {
+							removeAbortListener?.()
 						}
-
-						// No abort controller, just return the next chunk normally
-						return await nextPromise
 					}
 
 					let item = await nextChunkWithAbort()
 					while (!item.done) {
 						const chunk = item.value
-						item = await nextChunkWithAbort()
 						if (!chunk) {
 							// Sometimes chunk is undefined, no idea that can cause
 							// it, but this workaround seems to fix it.
+							item = await nextChunkWithAbort()
 							continue
 						}
 
@@ -3137,6 +3154,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								"\n\n[Response interrupted by a tool use result. Only one tool may be used at a time and should be placed at the end of the message.]"
 							break
 						}
+
+						item = await nextChunkWithAbort()
 					}
 
 					// Create a copy of current token values to avoid race conditions
@@ -3250,7 +3269,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								}
 
 								const chunk = item.value
-								item = await iterator.next()
+								const remainingTimeoutMs = timeoutMs - (performance.now() - startTime)
+								item = await nextChunkWithAbort(
+									`Background usage collection stream for ${modelId}`,
+									remainingTimeoutMs,
+								)
 								chunkCount++
 
 								if (chunk && chunk.type === "usage") {
@@ -4376,7 +4399,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 			})
 
-			const firstChunk = await Promise.race([firstChunkPromise, abortPromise])
+			const firstChunk = await withApiRequestTimeout(
+				Promise.race([firstChunkPromise, abortPromise]),
+				`API response stream for ${this.api.getModel().id}`,
+				getApiRequestTimeout(),
+				() => this.currentRequestAbortController?.abort(),
+			)
 			yield firstChunk.value
 			this.isWaitingForFirstChunk = false
 		} catch (error) {
