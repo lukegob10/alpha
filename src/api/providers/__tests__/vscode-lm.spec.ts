@@ -566,6 +566,35 @@ describe("VsCodeLmHandler", () => {
 			})
 		})
 
+		it("should pass selected extra-high reasoning effort through model options", async () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				enableReasoningEffort: true,
+				reasoningEffort: "xhigh",
+			})
+			handler["client"] = mockLanguageModelChat
+
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Extra reasoned response")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "Think hardest" }])) {
+				// consume stream
+			}
+
+			expect(mockLanguageModelChat.sendRequest).toHaveBeenCalledWith(
+				expect.any(Array),
+				expect.objectContaining({
+					modelOptions: {
+						reasoningEffort: "xhigh",
+					},
+				}),
+				expect.anything(),
+			)
+		})
+
 		it("should omit reasoning effort model options when disabled", async () => {
 			handler = new VsCodeLmHandler({
 				...defaultOptions,
@@ -688,6 +717,40 @@ describe("VsCodeLmHandler", () => {
 			const model = handler.getModel()
 			expect(model.info).toBeDefined()
 			expect(model.info.contextWindow).toBe(4096)
+		})
+
+		it("should return Copilot GPT-5.5 reasoning effort support from static model metadata", async () => {
+			const mockModel = {
+				...mockLanguageModelChat,
+				id: "copilot-gpt-5.5",
+				name: "GPT-5.5",
+				vendor: "copilot",
+				family: "gpt-5.5",
+				version: "2026-06-01",
+				maxInputTokens: 128_000,
+			}
+			handler["client"] = mockModel as any
+
+			const model = handler.getModel()
+			expect(model.info.supportsReasoningEffort).toEqual(["none", "low", "medium", "high", "xhigh"])
+			expect(model.info.contextWindow).toBe(128_000)
+		})
+
+		it("should not return reasoning effort support for Copilot Claude Opus 4.7", async () => {
+			const mockModel = {
+				...mockLanguageModelChat,
+				id: "copilot-claude-opus-4.7",
+				name: "Claude Opus 4.7",
+				vendor: "copilot",
+				family: "claude-opus-4.7",
+				version: "2026-06-01",
+				maxInputTokens: 1_000_000,
+			}
+			handler["client"] = mockModel as any
+
+			const model = handler.getModel()
+			expect(model.info.supportsReasoningEffort).toBeUndefined()
+			expect(model.info.contextWindow).toBe(1_000_000)
 		})
 
 		it("should return fallback model info when no client exists", () => {
