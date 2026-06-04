@@ -183,6 +183,40 @@ describe("executeCommandTool", () => {
 			const result = mockPushToolResult.mock.calls[0][0]
 			expect(result).toContain("/custom/path")
 		})
+
+		it("should not execute GitHub CLI commands", async () => {
+			mockToolUse.params.command = "gh pr create --fill"
+			mockToolUse.nativeArgs = { command: "gh pr create --fill" }
+			;(formatResponse.toolError as any).mockReturnValue("GitHub CLI disabled")
+
+			await executeCommandTool.handle(mockCline as unknown as Task, mockToolUse, {
+				askApproval: mockAskApproval as unknown as AskApproval,
+				handleError: mockHandleError as unknown as HandleError,
+				pushToolResult: mockPushToolResult as unknown as PushToolResult,
+			})
+
+			expect(mockCline.recordToolError).toHaveBeenCalledWith("execute_command")
+			expect(formatResponse.toolError).toHaveBeenCalledWith(
+				expect.stringContaining("GitHub CLI commands are disabled"),
+			)
+			expect(mockPushToolResult).toHaveBeenCalledWith("GitHub CLI disabled")
+			expect(mockAskApproval).not.toHaveBeenCalled()
+			expect(executeCommandModule.executeCommandInTerminal).not.toHaveBeenCalled()
+		})
+
+		it("should still allow local git commands", async () => {
+			mockToolUse.params.command = "git push origin feature"
+			mockToolUse.nativeArgs = { command: "git push origin feature" }
+
+			await executeCommandTool.handle(mockCline as unknown as Task, mockToolUse, {
+				askApproval: mockAskApproval as unknown as AskApproval,
+				handleError: mockHandleError as unknown as HandleError,
+				pushToolResult: mockPushToolResult as unknown as PushToolResult,
+			})
+
+			expect(mockAskApproval).toHaveBeenCalledWith("command", "git push origin feature")
+			expect(mockPushToolResult).toHaveBeenCalled()
+		})
 	})
 
 	describe("Error handling", () => {

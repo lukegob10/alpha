@@ -38,6 +38,11 @@ export function resolveAgentTimeoutMs(timeoutSeconds: number | null | undefined)
 	return process.env.ROO_CLI_RUNTIME === "1" ? 0 : requestedAgentTimeout
 }
 
+export function isGitHubCliCommand(command: string): boolean {
+	const normalized = command.trim().toLowerCase()
+	return /(?:^|[;&|]\s*)(?:gh|github)\b/.test(normalized)
+}
+
 export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 	readonly name = "execute_command" as const
 
@@ -54,6 +59,16 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			}
 
 			const canonicalCommand = unescapeHtmlEntities(command)
+
+			if (isGitHubCliCommand(canonicalCommand)) {
+				task.recordToolError("execute_command")
+				pushToolResult(
+					formatResponse.toolError(
+						"GitHub CLI commands are disabled in Alpha. Use the native github_api tool for pull request, check, merge, and comment operations. Use local git commands only for clone, pull, commit, and push.",
+					),
+				)
+				return
+			}
 
 			const ignoredFileAttemptedToAccess = task.rooIgnoreController?.validateCommand(canonicalCommand)
 
