@@ -12,6 +12,7 @@ import React, {
 import {
 	CheckCheck,
 	GitBranch,
+	Github,
 	Bell,
 	Database,
 	SquareTerminal,
@@ -78,6 +79,7 @@ import PromptsSettings from "./PromptsSettings"
 import { SlashCommandsSettings } from "./SlashCommandsSettings"
 import { SkillsSettings } from "./SkillsSettings"
 import { UISettings } from "./UISettings"
+import { GitHubSettings } from "./GitHubSettings"
 import ModesView from "../modes/ModesView"
 import McpView from "../mcp/McpView"
 import { WorktreesView } from "../worktrees/WorktreesView"
@@ -106,6 +108,7 @@ export const sectionNames = [
 	"terminal",
 	"modes",
 	"mcp",
+	"github",
 	"worktrees",
 	"prompts",
 	"ui",
@@ -197,6 +200,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		includeTaskHistoryInEnhance,
 		imageGenerationProvider,
 		openRouterImageApiKey,
+		githubToken,
 		openRouterImageGenerationSelectedModel,
 		reasoningBlockCollapsed,
 		enterBehavior,
@@ -332,6 +336,16 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		})
 	}, [])
 
+	const setGithubToken = useCallback((token: string) => {
+		setCachedState((prevState) => {
+			if (prevState.githubToken !== token) {
+				setChangeDetected(true)
+			}
+
+			return { ...prevState, githubToken: token }
+		})
+	}, [])
+
 	const setImageGenerationSelectedModel = useCallback((model: string) => {
 		setCachedState((prevState) => {
 			if (prevState.openRouterImageGenerationSelectedModel !== model) {
@@ -419,6 +433,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					profileThresholds,
 					imageGenerationProvider,
 					openRouterImageApiKey,
+					githubToken,
 					openRouterImageGenerationSelectedModel,
 					experiments,
 					customSupportPrompts,
@@ -514,6 +529,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			{ id: "slashCommands", icon: SquareSlash },
 			{ id: "autoApprove", icon: CheckCheck },
 			{ id: "mcp", icon: Server },
+			{ id: "github", icon: Github },
 			{ id: "checkpoints", icon: GitCommitVertical },
 			{ id: "notifications", icon: Bell },
 			{ id: "contextManagement", icon: Database },
@@ -871,6 +887,14 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 						{/* MCP Section */}
 						{renderTab === "mcp" && <McpView />}
+
+						{/* GitHub Section */}
+						{renderTab === "github" && (
+							<GitHubSettings
+								githubToken={githubToken as string | undefined}
+								setGithubToken={setGithubToken}
+							/>
+						)}
 
 						{/* Worktrees Section */}
 						{renderTab === "worktrees" && <WorktreesView />}

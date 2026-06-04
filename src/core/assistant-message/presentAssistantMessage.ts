@@ -34,6 +34,7 @@ import { updateTodoListTool } from "../tools/UpdateTodoListTool"
 import { runSlashCommandTool } from "../tools/RunSlashCommandTool"
 import { skillTool } from "../tools/SkillTool"
 import { generateImageTool } from "../tools/GenerateImageTool"
+import { githubApiTool } from "../tools/GitHubApiTool"
 import { applyDiffTool as applyDiffToolClass } from "../tools/ApplyDiffTool"
 import { isValidToolName, validateToolUse } from "../tools/validateToolUse"
 import { codebaseSearchTool } from "../tools/CodebaseSearchTool"
@@ -387,6 +388,8 @@ export async function presentAssistantMessage(cline: Task) {
 						return `[${block.name} for '${block.params.skill}'${block.params.args ? ` with args: ${block.params.args}` : ""}]`
 					case "generate_image":
 						return `[${block.name} for '${block.params.path}']`
+					case "github_api":
+						return `[${block.name} ${block.params.action ?? ""} for '${block.params.owner ?? ""}/${block.params.repo ?? ""}']`
 					default:
 						return `[${block.name}]`
 				}
@@ -913,6 +916,13 @@ export async function presentAssistantMessage(cline: Task) {
 							handleError,
 							pushToolResult,
 						})
+					})
+					break
+				case "github_api":
+					await githubApiTool.handle(cline, block as ToolUse<"github_api">, {
+						askApproval,
+						handleError,
+						pushToolResult,
 					})
 					break
 				default: {

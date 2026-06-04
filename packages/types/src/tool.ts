@@ -4,7 +4,7 @@ import { z } from "zod"
  * ToolGroup
  */
 
-export const toolGroups = ["read", "edit", "command", "mcp", "modes"] as const
+export const toolGroups = ["read", "edit", "command", "mcp", "github", "modes"] as const
 
 export const toolGroupsSchema = z.enum(toolGroups)
 
@@ -45,6 +45,7 @@ export const toolNames = [
 	"run_slash_command",
 	"skill",
 	"generate_image",
+	"github_api",
 	"custom_tool",
 ] as const
 

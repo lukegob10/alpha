@@ -257,6 +257,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		includeDiagnosticMessages: true,
 		maxDiagnosticMessages: 50,
 		openRouterImageApiKey: "",
+		githubToken: "",
 		openRouterImageGenerationSelectedModel: "",
 		includeCurrentTime: true,
 		includeCurrentCost: true,
