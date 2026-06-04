@@ -24,10 +24,38 @@ const lancedbNativeBindingFiles = [
 	"lancedb.linux-x64-musl.node",
 ]
 
-const ripgrepPackages = ["@vscode/ripgrep", "@vscode/ripgrep-universal"]
+const ripgrepPackages = [
+	"@vscode/ripgrep",
+	"@vscode/ripgrep-universal",
+	"@vscode/ripgrep-darwin-x64",
+	"@vscode/ripgrep-darwin-arm64",
+	"@vscode/ripgrep-win32-x64",
+	"@vscode/ripgrep-win32-arm64",
+	"@vscode/ripgrep-win32-ia32",
+	"@vscode/ripgrep-linux-x64",
+	"@vscode/ripgrep-linux-arm64",
+	"@vscode/ripgrep-linux-arm",
+	"@vscode/ripgrep-linux-ppc64",
+	"@vscode/ripgrep-linux-riscv64",
+	"@vscode/ripgrep-linux-s390x",
+	"@vscode/ripgrep-linux-ia32",
+]
 
-function resolveRipgrepPackageJson(packageName) {
-	const packageJsonRequest = `${packageName}/package.json`
+function findPackageRoot(resolvedPath, packageName) {
+	let current = path.dirname(resolvedPath)
+	const expectedPackageName = packageName.split("/").pop()
+
+	while (current && current !== path.dirname(current)) {
+		if (path.basename(current) === expectedPackageName && fs.existsSync(path.join(current, "package.json"))) {
+			return current
+		}
+		current = path.dirname(current)
+	}
+
+	return path.dirname(resolvedPath)
+}
+
+function resolveRipgrepPackageDir(packageName) {
 	const resolutionBases = [
 		import.meta.url,
 		path.join(__dirname, "..", "package.json"),
@@ -36,9 +64,16 @@ function resolveRipgrepPackageJson(packageName) {
 
 	for (const resolutionBase of resolutionBases) {
 		try {
-			return createRequire(resolutionBase).resolve(packageJsonRequest)
+			return findPackageRoot(createRequire(resolutionBase).resolve(packageName), packageName)
 		} catch {
 			// Continue looking from the next workspace package root.
+		}
+
+		try {
+			const packageJsonPath = createRequire(resolutionBase).resolve(`${packageName}/package.json`)
+			return path.dirname(packageJsonPath)
+		} catch {
+			// Platform packages expose package.json, while @vscode/ripgrep itself does not.
 		}
 	}
 
@@ -48,12 +83,11 @@ function resolveRipgrepPackageJson(packageName) {
 function copyBundledRipgrepDependencies(distDir) {
 	for (const packageName of ripgrepPackages) {
 		try {
-			const packageJsonPath = resolveRipgrepPackageJson(packageName)
-			if (!packageJsonPath) {
+			const packageDir = resolveRipgrepPackageDir(packageName)
+			if (!packageDir) {
 				continue
 			}
 
-			const packageDir = path.dirname(packageJsonPath)
 			const targetDir = path.join(distDir, "node_modules", ...packageName.split("/"))
 
 			fs.rmSync(targetDir, { recursive: true, force: true })

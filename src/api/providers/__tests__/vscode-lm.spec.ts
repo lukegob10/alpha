@@ -72,6 +72,9 @@ vi.mock("vscode", () => {
 		LanguageModelToolCallPart: MockLanguageModelToolCallPart,
 		lm: {
 			selectChatModels: vi.fn(),
+			onDidChangeChatModels: vi.fn((_callback) => ({
+				dispose: vi.fn(),
+			})),
 		},
 	}
 })
@@ -124,6 +127,15 @@ describe("VsCodeLmHandler", () => {
 			// Should reset client when config changes
 			expect(handler["client"]).toBeNull()
 		})
+
+		it("should reset client when VS Code chat models change", () => {
+			handler["client"] = mockLanguageModelChat as any
+			const callback = (vscode.lm.onDidChangeChatModels as Mock).mock.calls[0][0]
+
+			callback()
+
+			expect(handler["client"]).toBeNull()
+		})
 	})
 
 	describe("createClient", () => {
@@ -144,14 +156,12 @@ describe("VsCodeLmHandler", () => {
 			})
 		})
 
-		it("should return default client when no models available", async () => {
+		it("should throw a clear error when no models are available", async () => {
 			;(vscode.lm.selectChatModels as Mock).mockResolvedValueOnce([])
 
-			const client = await handler["createClient"]({})
-
-			expect(client).toBeDefined()
-			expect(client.id).toBe("default-lm")
-			expect(client.vendor).toBe("vscode")
+			await expect(handler["createClient"]({})).rejects.toThrow(
+				"No VS Code language models matched the selected provider/model",
+			)
 		})
 	})
 
@@ -201,6 +211,44 @@ describe("VsCodeLmHandler", () => {
 				type: "usage",
 				inputTokens: expect.any(Number),
 				outputTokens: expect.any(Number),
+			})
+		})
+
+		it("should stream structurally compatible text parts", async () => {
+			const responseText = "Structural text part"
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield { value: responseText }
+				})(),
+			})
+
+			const chunks = []
+			for await (const chunk of handler.createMessage("System", [{ role: "user", content: "Hello" }])) {
+				chunks.push(chunk)
+			}
+
+			expect(chunks[0]).toEqual({
+				type: "text",
+				text: responseText,
+			})
+		})
+
+		it("should stream plain string chunks defensively", async () => {
+			const responseText = "Plain text chunk"
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield responseText
+				})(),
+			})
+
+			const chunks = []
+			for await (const chunk of handler.createMessage("System", [{ role: "user", content: "Hello" }])) {
+				chunks.push(chunk)
+			}
+
+			expect(chunks[0]).toEqual({
+				type: "text",
+				text: responseText,
 			})
 		})
 
@@ -261,6 +309,55 @@ describe("VsCodeLmHandler", () => {
 			}
 
 			expect(chunks).toHaveLength(2) // Tool call chunk + usage chunk
+			expect(chunks[0]).toEqual({
+				type: "tool_call",
+				id: toolCallData.callId,
+				name: toolCallData.name,
+				arguments: JSON.stringify(toolCallData.arguments),
+			})
+		})
+
+		it("should emit structurally compatible tool calls when tools are provided", async () => {
+			const toolCallData = {
+				name: "calculator",
+				arguments: { operation: "add", numbers: [2, 2] },
+				callId: "call-1",
+			}
+
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield {
+						callId: toolCallData.callId,
+						name: toolCallData.name,
+						input: toolCallData.arguments,
+					}
+				})(),
+			})
+
+			const tools = [
+				{
+					type: "function" as const,
+					function: {
+						name: "calculator",
+						description: "A simple calculator",
+						parameters: {
+							type: "object",
+							properties: {
+								operation: { type: "string" },
+							},
+						},
+					},
+				},
+			]
+
+			const chunks = []
+			for await (const chunk of handler.createMessage("System", [{ role: "user", content: "Calculate 2+2" }], {
+				taskId: "test-task",
+				tools,
+			})) {
+				chunks.push(chunk)
+			}
+
 			expect(chunks[0]).toEqual({
 				type: "tool_call",
 				id: toolCallData.callId,
@@ -397,6 +494,67 @@ describe("VsCodeLmHandler", () => {
 							},
 						},
 					],
+				}),
+				expect.anything(),
+			)
+		})
+
+		it("should pass selected reasoning effort through model options", async () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				enableReasoningEffort: true,
+				reasoningEffort: "high",
+			})
+			handler["client"] = mockLanguageModelChat
+
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Reasoned response")
+				})(),
+			})
+
+			const chunks = []
+			for await (const chunk of handler.createMessage("System", [{ role: "user", content: "Think carefully" }])) {
+				chunks.push(chunk)
+			}
+
+			expect(mockLanguageModelChat.sendRequest).toHaveBeenCalledWith(
+				expect.any(Array),
+				expect.objectContaining({
+					modelOptions: {
+						reasoningEffort: "high",
+					},
+				}),
+				expect.anything(),
+			)
+			expect(chunks[0]).toEqual({
+				type: "text",
+				text: "Reasoned response",
+			})
+		})
+
+		it("should omit reasoning effort model options when disabled", async () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				enableReasoningEffort: false,
+				reasoningEffort: "high",
+			})
+			handler["client"] = mockLanguageModelChat
+
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Fast response")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "Answer quickly" }])) {
+				// consume stream
+			}
+
+			expect(mockLanguageModelChat.sendRequest).toHaveBeenCalledWith(
+				expect.any(Array),
+				expect.not.objectContaining({
+					modelOptions: expect.anything(),
 				}),
 				expect.anything(),
 			)

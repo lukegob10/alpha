@@ -1,0 +1,133 @@
+import { act, render, screen } from "@/utils/test-utils"
+import type { ProviderSettings } from "@alpha-code/types"
+import type { LanguageModelChatSelector } from "vscode"
+
+import { VSCodeLM } from "../VSCodeLM"
+
+const modelPickerProps: any[] = []
+const thinkingBudgetProps: any[] = []
+let messageHandler: ((event: MessageEvent) => void) | undefined
+
+vi.mock("../../ModelPicker", () => ({
+	ModelPicker: (props: any) => {
+		modelPickerProps.push(props)
+		return <div data-testid="model-picker">Model Picker</div>
+	},
+}))
+
+vi.mock("../../ThinkingBudget", () => ({
+	ThinkingBudget: (props: any) => {
+		thinkingBudgetProps.push(props)
+		return <div data-testid="thinking-budget">Thinking Budget</div>
+	},
+}))
+
+vi.mock("react-use", () => ({
+	useEvent: (_eventName: string, handler: (event: MessageEvent) => void) => {
+		messageHandler = handler
+	},
+}))
+
+vi.mock("@src/i18n/TranslationContext", () => ({
+	useAppTranslation: () => ({
+		t: (key: string) => key,
+	}),
+}))
+
+describe("VSCodeLM", () => {
+	const setApiConfigurationField = vi.fn()
+
+	beforeEach(() => {
+		modelPickerProps.length = 0
+		thinkingBudgetProps.length = 0
+		messageHandler = undefined
+		vi.clearAllMocks()
+	})
+
+	function renderProvider(apiConfiguration: ProviderSettings = { apiProvider: "vscode-lm" }) {
+		render(<VSCodeLM apiConfiguration={apiConfiguration} setApiConfigurationField={setApiConfigurationField} />)
+	}
+
+	it("keys models by full selector so reasoning variants do not collide", () => {
+		renderProvider()
+
+		const models: LanguageModelChatSelector[] = [
+			{
+				vendor: "copilot",
+				family: "gpt-5.5",
+				version: "low",
+				id: "copilot-gpt-5.5-low",
+				name: "GPT-5.5",
+			},
+			{
+				vendor: "copilot",
+				family: "gpt-5.5",
+				version: "high",
+				id: "copilot-gpt-5.5-high",
+				name: "GPT-5.5",
+			},
+		] as any
+
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: models } } as MessageEvent)
+		})
+
+		const props = modelPickerProps.at(-1)
+		expect(props.models).toEqual(
+			expect.objectContaining({
+				"copilot/gpt-5.5/low/copilot-gpt-5.5-low": expect.any(Object),
+				"copilot/gpt-5.5/high/copilot-gpt-5.5-high": expect.any(Object),
+			}),
+		)
+		expect(props.labelTransform("copilot/gpt-5.5/high/copilot-gpt-5.5-high")).toBe("GPT 5.5 - High")
+	})
+
+	it("stores the exact selector for a selected reasoning variant", () => {
+		const selectedModel = {
+			vendor: "copilot",
+			family: "gpt-5.5",
+			version: "high",
+			id: "copilot-gpt-5.5-high",
+			name: "GPT-5.5",
+		}
+
+		renderProvider()
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
+		})
+
+		const props = modelPickerProps.at(-1)
+
+		expect(props.valueTransform("copilot/gpt-5.5/high/copilot-gpt-5.5-high")).toEqual(selectedModel)
+		expect(props.displayTransform(selectedModel)).toBe("copilot/gpt-5.5/high/copilot-gpt-5.5-high")
+		expect(screen.getByTestId("model-picker")).toBeInTheDocument()
+	})
+
+	it("renders reasoning effort settings for the selected VS Code LM model", () => {
+		const selectedModel = {
+			vendor: "copilot",
+			family: "gpt-5-mini",
+			version: "2026-05-01",
+			id: "copilot-gpt-5-mini",
+			name: "GPT-5 mini",
+			maxInputTokens: 128_000,
+		}
+
+		renderProvider({
+			apiProvider: "vscode-lm",
+			vsCodeLmModelSelector: selectedModel,
+		})
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
+		})
+
+		const props = thinkingBudgetProps.at(-1)
+		expect(screen.getByTestId("thinking-budget")).toBeInTheDocument()
+		expect(props.modelInfo).toEqual(
+			expect.objectContaining({
+				contextWindow: 128_000,
+				supportsReasoningEffort: ["none", "low", "medium", "high"],
+			}),
+		)
+	})
+})

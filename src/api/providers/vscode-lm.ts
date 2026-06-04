@@ -2,14 +2,19 @@ import { Anthropic } from "@anthropic-ai/sdk"
 import * as vscode from "vscode"
 import OpenAI from "openai"
 
-import { type ModelInfo, openAiModelInfoSaneDefaults } from "@alpha-code/types"
+import { type ModelInfo, type ProviderSettings, openAiModelInfoSaneDefaults } from "@alpha-code/types"
 
 import type { ApiHandlerOptions } from "../../shared/api"
 import { SELECTOR_SEPARATOR, stringifyVsCodeLmModelSelector } from "../../shared/vsCodeSelectorUtils"
 import { normalizeToolSchema } from "../../utils/json-schema"
 
 import { ApiStream } from "../transform/stream"
-import { convertToVsCodeLmMessages, extractTextCountFromMessage } from "../transform/vscode-lm-format"
+import {
+	convertToVsCodeLmMessages,
+	extractTextCountFromMessage,
+	isLanguageModelTextPartLike,
+	isLanguageModelToolCallPartLike,
+} from "../transform/vscode-lm-format"
 
 import { BaseProvider } from "./base-provider"
 import { getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
@@ -32,6 +37,19 @@ function convertToVsCodeLmTools(tools: OpenAI.Chat.ChatCompletionTool[]): vscode
 				? normalizeToolSchema(tool.function.parameters as Record<string, unknown>)
 				: undefined,
 		}))
+}
+
+function getVsCodeLmReasoningEffortModelOptions(
+	enableReasoningEffort: boolean | undefined,
+	reasoningEffort: ProviderSettings["reasoningEffort"],
+): vscode.LanguageModelChatRequestOptions["modelOptions"] | undefined {
+	if (!enableReasoningEffort || !reasoningEffort || reasoningEffort === "disable") {
+		return undefined
+	}
+
+	return {
+		reasoningEffort,
+	}
 }
 
 /**
@@ -64,29 +82,37 @@ function convertToVsCodeLmTools(tools: OpenAI.Chat.ChatCompletionTool[]): vscode
 export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHandler {
 	protected options: ApiHandlerOptions
 	private client: vscode.LanguageModelChat | null
-	private disposable: vscode.Disposable | null
+	private disposables: vscode.Disposable[]
 	private currentRequestCancellation: vscode.CancellationTokenSource | null
 
 	constructor(options: ApiHandlerOptions) {
 		super()
 		this.options = options
 		this.client = null
-		this.disposable = null
+		this.disposables = []
 		this.currentRequestCancellation = null
 
 		try {
 			// Listen for model changes and reset client
-			this.disposable = vscode.workspace.onDidChangeConfiguration((event) => {
-				if (event.affectsConfiguration("lm")) {
-					try {
-						this.client = null
-						this.ensureCleanState()
-					} catch (error) {
-						console.error("Error during configuration change cleanup:", error)
+			this.disposables.push(
+				vscode.workspace.onDidChangeConfiguration((event) => {
+					if (event.affectsConfiguration("lm")) {
+						try {
+							this.resetClient()
+						} catch (error) {
+							console.error("Error during configuration change cleanup:", error)
+						}
 					}
-				}
-			})
-			this.initializeClient()
+				}),
+			)
+
+			if (vscode.lm.onDidChangeChatModels) {
+				this.disposables.push(
+					vscode.lm.onDidChangeChatModels(() => {
+						this.resetClient()
+					}),
+				)
+			}
 		} catch (error) {
 			// Ensure cleanup if constructor fails
 			this.dispose()
@@ -133,36 +159,23 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	 */
 	async createClient(selector: vscode.LanguageModelChatSelector): Promise<vscode.LanguageModelChat> {
 		try {
-			const models = await vscode.lm.selectChatModels(selector)
+			if (!vscode.lm?.selectChatModels) {
+				throw new Error("VS Code Language Model API is not available in this VS Code build.")
+			}
 
-			// Use first available model or create a minimal model object
+			const models = await withApiRequestTimeout(
+				vscode.lm.selectChatModels(selector),
+				"VS Code LM model selection",
+				getApiRequestTimeout(),
+			)
+
 			if (models && Array.isArray(models) && models.length > 0) {
 				return models[0]
 			}
 
-			// Create a minimal model if no models are available
-			return {
-				id: "default-lm",
-				name: "Default Language Model",
-				vendor: "vscode",
-				family: "lm",
-				version: "1.0",
-				maxInputTokens: 8192,
-				sendRequest: async (_messages, _options, _token) => {
-					// Provide a minimal implementation
-					return {
-						stream: (async function* () {
-							yield new vscode.LanguageModelTextPart(
-								"Language model functionality is limited. Please check VS Code configuration.",
-							)
-						})(),
-						text: (async function* () {
-							yield "Language model functionality is limited. Please check VS Code configuration."
-						})(),
-					}
-				},
-				countTokens: async () => 0,
-			}
+			throw new Error(
+				"No VS Code language models matched the selected provider/model. Open 'Chat: Manage Language Models' and select an available model.",
+			)
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "Unknown error"
 			throw new Error(`Alpha <Language Model API>: Failed to select model: ${errorMessage}`)
@@ -187,9 +200,10 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	 * Tool calls handling is currently a work in progress.
 	 */
 	dispose(): void {
-		if (this.disposable) {
-			this.disposable.dispose()
+		for (const disposable of this.disposables) {
+			disposable.dispose()
 		}
+		this.disposables = []
 
 		if (this.currentRequestCancellation) {
 			this.currentRequestCancellation.cancel()
@@ -331,6 +345,11 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		}
 	}
 
+	private resetClient(): void {
+		this.client = null
+		this.ensureCleanState()
+	}
+
 	private async getClient(): Promise<vscode.LanguageModelChat> {
 		if (!this.client) {
 			console.debug("Alpha <Language Model API>: Getting client with options:", {
@@ -412,7 +431,19 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			// Create the response stream with required options
 			const requestOptions: vscode.LanguageModelChatRequestOptions = {
 				justification: `Alpha would like to use '${client.name}' from '${client.vendor}', Click 'Allow' to proceed.`,
-				tools: convertToVsCodeLmTools(metadata?.tools ?? []),
+			}
+			const modelOptions = getVsCodeLmReasoningEffortModelOptions(
+				this.options.enableReasoningEffort,
+				this.options.reasoningEffort,
+			)
+			const tools = convertToVsCodeLmTools(metadata?.tools ?? [])
+
+			if (modelOptions) {
+				requestOptions.modelOptions = modelOptions
+			}
+
+			if (tools.length > 0) {
+				requestOptions.tools = tools
 			}
 
 			const response: vscode.LanguageModelChatResponse = await withApiRequestTimeout(
@@ -438,7 +469,13 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				}
 
 				const chunk = nextChunk.value
-				if (chunk instanceof vscode.LanguageModelTextPart) {
+				if (typeof chunk === "string") {
+					accumulatedText += chunk
+					yield {
+						type: "text",
+						text: chunk,
+					}
+				} else if (isLanguageModelTextPartLike(chunk)) {
 					// Validate text part value
 					if (typeof chunk.value !== "string") {
 						console.warn("Alpha <Language Model API>: Invalid text part value received:", chunk.value)
@@ -450,7 +487,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 						type: "text",
 						text: chunk.value,
 					}
-				} else if (chunk instanceof vscode.LanguageModelToolCallPart) {
+				} else if (isLanguageModelToolCallPartLike(chunk)) {
 					try {
 						// Validate tool call parameters
 						if (!chunk.name || typeof chunk.name !== "string") {
@@ -624,7 +661,9 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				}
 
 				const chunk = nextChunk.value
-				if (chunk instanceof vscode.LanguageModelTextPart) {
+				if (typeof chunk === "string") {
+					result += chunk
+				} else if (isLanguageModelTextPartLike(chunk)) {
 					result += chunk.value
 				}
 			}
@@ -645,7 +684,12 @@ const VSCODE_LM_STATIC_BLACKLIST: string[] = ["claude-3.7-sonnet", "claude-3.7-s
 
 export async function getVsCodeLmModels() {
 	try {
-		const models = (await vscode.lm.selectChatModels({})) || []
+		const models =
+			(await withApiRequestTimeout(
+				vscode.lm.selectChatModels({}),
+				"VS Code LM model list refresh",
+				getApiRequestTimeout(),
+			)) || []
 		return models.filter((model) => !VSCODE_LM_STATIC_BLACKLIST.includes(model.id))
 	} catch (error) {
 		console.error(

@@ -735,7 +735,7 @@ const ApiOptions = ({
 						</>
 					)}
 
-					{!fromWelcomeView && (
+					{!fromWelcomeView && selectedProvider !== "vscode-lm" && (
 						<ThinkingBudget
 							key={`${selectedProvider}-${selectedModelId}`}
 							apiConfiguration={apiConfiguration}

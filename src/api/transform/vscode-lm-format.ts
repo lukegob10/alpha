@@ -28,6 +28,47 @@ function asObjectSafe(value: any): object {
 	}
 }
 
+type LanguageModelTextPartLike = vscode.LanguageModelTextPart | { value: string }
+type LanguageModelToolCallPartLike = vscode.LanguageModelToolCallPart | { callId: string; name: string; input: object }
+type LanguageModelToolResultPartLike = vscode.LanguageModelToolResultPart | { callId: string; content: unknown[] }
+
+export function isLanguageModelTextPartLike(value: unknown): value is LanguageModelTextPartLike {
+	return (
+		value instanceof vscode.LanguageModelTextPart ||
+		(typeof value === "object" &&
+			value !== null &&
+			"value" in value &&
+			typeof (value as { value?: unknown }).value === "string")
+	)
+}
+
+export function isLanguageModelToolCallPartLike(value: unknown): value is LanguageModelToolCallPartLike {
+	return (
+		value instanceof vscode.LanguageModelToolCallPart ||
+		(typeof value === "object" &&
+			value !== null &&
+			"callId" in value &&
+			"name" in value &&
+			"input" in value &&
+			typeof (value as { callId?: unknown }).callId === "string" &&
+			typeof (value as { name?: unknown }).name === "string" &&
+			typeof (value as { input?: unknown }).input === "object" &&
+			(value as { input?: unknown }).input !== null)
+	)
+}
+
+export function isLanguageModelToolResultPartLike(value: unknown): value is LanguageModelToolResultPartLike {
+	return (
+		value instanceof vscode.LanguageModelToolResultPart ||
+		(typeof value === "object" &&
+			value !== null &&
+			"callId" in value &&
+			"content" in value &&
+			typeof (value as { callId?: unknown }).callId === "string" &&
+			Array.isArray((value as { content?: unknown }).content))
+	)
+}
+
 export function convertToVsCodeLmMessages(
 	anthropicMessages: Anthropic.Messages.MessageParam[],
 ): vscode.LanguageModelChatMessage[] {
@@ -166,18 +207,18 @@ export function extractTextCountFromMessage(message: vscode.LanguageModelChatMes
 	let text = ""
 	if (Array.isArray(message.content)) {
 		for (const item of message.content) {
-			if (item instanceof vscode.LanguageModelTextPart) {
+			if (isLanguageModelTextPartLike(item)) {
 				text += item.value
 			}
-			if (item instanceof vscode.LanguageModelToolResultPart) {
+			if (isLanguageModelToolResultPartLike(item)) {
 				text += item.callId
 				for (const part of item.content) {
-					if (part instanceof vscode.LanguageModelTextPart) {
+					if (isLanguageModelTextPartLike(part)) {
 						text += part.value
 					}
 				}
 			}
-			if (item instanceof vscode.LanguageModelToolCallPart) {
+			if (isLanguageModelToolCallPartLike(item)) {
 				text += item.name
 				text += item.callId
 				if (item.input && Object.keys(item.input).length > 0) {

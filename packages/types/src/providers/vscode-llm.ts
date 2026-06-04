@@ -2,190 +2,172 @@ import type { ModelInfo } from "../model.js"
 
 export type VscodeLlmModelId = keyof typeof vscodeLlmModels
 
-export const vscodeLlmDefaultModelId: VscodeLlmModelId = "claude-3.5-sonnet"
+export const vscodeLlmDefaultModelId: VscodeLlmModelId = "gpt-5.5"
 
-// https://docs.cline.bot/provider-config/vscode-language-model-api
+const COPILOT_DEFAULT_CONTEXT_WINDOW = 128_000
+const COPILOT_EXTENDED_CONTEXT_WINDOW = 1_000_000
+const COPILOT_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["none", "low", "medium", "high"]
+
+function copilotModel({
+	name,
+	family,
+	version = family,
+	contextWindow = COPILOT_DEFAULT_CONTEXT_WINDOW,
+	supportsImages = false,
+	supportsReasoningEffort,
+	deprecated,
+}: {
+	name: string
+	family: string
+	version?: string
+	contextWindow?: number
+	supportsImages?: boolean
+	supportsReasoningEffort?: ModelInfo["supportsReasoningEffort"]
+	deprecated?: boolean
+}) {
+	return {
+		contextWindow,
+		maxInputTokens: contextWindow,
+		maxTokens: -1,
+		supportsImages,
+		supportsPromptCache: false,
+		inputPrice: 0,
+		outputPrice: 0,
+		family,
+		version,
+		name,
+		supportsToolCalling: true,
+		supportsReasoningEffort,
+		deprecated,
+	}
+}
+
+// Mirrors the current GitHub Copilot supported-models documentation. The live
+// VS Code LM provider still uses vscode.lm.selectChatModels() as the source of truth.
+// https://docs.github.com/en/copilot/reference/ai-models/supported-models
 export const vscodeLlmModels = {
-	"gpt-3.5-turbo": {
-		contextWindow: 12114,
-		supportsImages: false,
-		supportsPromptCache: false,
-		inputPrice: 0,
-		outputPrice: 0,
-		family: "gpt-3.5-turbo",
-		version: "gpt-3.5-turbo-0613",
-		name: "GPT 3.5 Turbo",
-		supportsToolCalling: true,
-		maxInputTokens: 12114,
-	},
-	"gpt-4o-mini": {
-		contextWindow: 12115,
-		supportsImages: false,
-		supportsPromptCache: false,
-		inputPrice: 0,
-		outputPrice: 0,
-		family: "gpt-4o-mini",
-		version: "gpt-4o-mini-2024-07-18",
-		name: "GPT-4o mini",
-		supportsToolCalling: true,
-		maxInputTokens: 12115,
-	},
-	"gpt-4": {
-		contextWindow: 28501,
-		supportsImages: false,
-		supportsPromptCache: false,
-		inputPrice: 0,
-		outputPrice: 0,
-		family: "gpt-4",
-		version: "gpt-4-0613",
-		name: "GPT 4",
-		supportsToolCalling: true,
-		maxInputTokens: 28501,
-	},
-	"gpt-4-0125-preview": {
-		contextWindow: 63826,
-		supportsImages: false,
-		supportsPromptCache: false,
-		inputPrice: 0,
-		outputPrice: 0,
-		family: "gpt-4-turbo",
-		version: "gpt-4-0125-preview",
-		name: "GPT 4 Turbo",
-		supportsToolCalling: true,
-		maxInputTokens: 63826,
-	},
-	"gpt-4o": {
-		contextWindow: 63827,
-		supportsImages: true,
-		supportsPromptCache: false,
-		inputPrice: 0,
-		outputPrice: 0,
-		family: "gpt-4o",
-		version: "gpt-4o-2024-11-20",
-		name: "GPT-4o",
-		supportsToolCalling: true,
-		maxInputTokens: 63827,
-	},
-	o1: {
-		contextWindow: 19827,
-		supportsImages: false,
-		supportsPromptCache: false,
-		inputPrice: 0,
-		outputPrice: 0,
-		family: "o1-ga",
-		version: "o1-2024-12-17",
-		name: "o1 (Preview)",
-		supportsToolCalling: true,
-		maxInputTokens: 19827,
-	},
-	"o3-mini": {
-		contextWindow: 63827,
-		supportsImages: false,
-		supportsPromptCache: false,
-		inputPrice: 0,
-		outputPrice: 0,
-		family: "o3-mini",
-		version: "o3-mini-2025-01-31",
-		name: "o3-mini",
-		supportsToolCalling: true,
-		maxInputTokens: 63827,
-	},
-	"claude-3.5-sonnet": {
-		contextWindow: 81638,
-		supportsImages: true,
-		supportsPromptCache: false,
-		inputPrice: 0,
-		outputPrice: 0,
-		family: "claude-3.5-sonnet",
-		version: "claude-3.5-sonnet",
-		name: "Claude 3.5 Sonnet",
-		supportsToolCalling: true,
-		maxInputTokens: 81638,
-	},
-	"claude-4-sonnet": {
-		contextWindow: 128000,
-		supportsImages: true,
-		supportsPromptCache: false,
-		inputPrice: 0,
-		outputPrice: 0,
-		family: "claude-sonnet-4",
-		version: "claude-sonnet-4",
-		name: "Claude Sonnet 4",
-		supportsToolCalling: true,
-		maxInputTokens: 111836,
-	},
-	"gemini-2.0-flash-001": {
-		contextWindow: 127827,
-		supportsImages: true,
-		supportsPromptCache: false,
-		inputPrice: 0,
-		outputPrice: 0,
-		family: "gemini-2.0-flash",
-		version: "gemini-2.0-flash-001",
-		name: "Gemini 2.0 Flash",
-		supportsToolCalling: false,
-		maxInputTokens: 127827,
-	},
-	"gemini-2.5-pro": {
-		contextWindow: 128000,
-		supportsImages: true,
-		supportsPromptCache: false,
-		inputPrice: 0,
-		outputPrice: 0,
-		family: "gemini-2.5-pro",
-		version: "gemini-2.5-pro-preview-03-25",
-		name: "Gemini 2.5 Pro (Preview)",
-		supportsToolCalling: true,
-		maxInputTokens: 108637,
-	},
-	"o4-mini": {
-		contextWindow: 128000,
-		supportsImages: false,
-		supportsPromptCache: false,
-		inputPrice: 0,
-		outputPrice: 0,
-		family: "o4-mini",
-		version: "o4-mini-2025-04-16",
-		name: "o4-mini (Preview)",
-		supportsToolCalling: true,
-		maxInputTokens: 111452,
-	},
-	"gpt-4.1": {
-		contextWindow: 128000,
-		supportsImages: true,
-		supportsPromptCache: false,
-		inputPrice: 0,
-		outputPrice: 0,
-		family: "gpt-4.1",
-		version: "gpt-4.1-2025-04-14",
-		name: "GPT-4.1 (Preview)",
-		supportsToolCalling: true,
-		maxInputTokens: 111452,
-	},
-	"gpt-5-mini": {
-		contextWindow: 128000,
-		supportsImages: true,
-		supportsPromptCache: false,
-		inputPrice: 0,
-		outputPrice: 0,
+	"gpt-5-mini": copilotModel({
+		name: "GPT-5 mini",
 		family: "gpt-5-mini",
-		version: "gpt-5-mini",
-		name: "GPT-5 mini (Preview)",
-		supportsToolCalling: true,
-		maxInputTokens: 108637,
-	},
-	"gpt-5": {
-		contextWindow: 128000,
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+	}),
+	"gpt-5.3-codex": copilotModel({
+		name: "GPT-5.3-Codex",
+		family: "gpt-5.3-codex",
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+	}),
+	"gpt-5.4": copilotModel({
+		name: "GPT-5.4",
+		family: "gpt-5.4",
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+	}),
+	"gpt-5.4-mini": copilotModel({
+		name: "GPT-5.4 mini",
+		family: "gpt-5.4-mini",
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+	}),
+	"gpt-5.4-nano": copilotModel({
+		name: "GPT-5.4 nano",
+		family: "gpt-5.4-nano",
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+	}),
+	"gpt-5.5": copilotModel({
+		name: "GPT-5.5",
+		family: "gpt-5.5",
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+	}),
+	"claude-haiku-4.5": copilotModel({
+		name: "Claude Haiku 4.5",
+		family: "claude-haiku-4.5",
+	}),
+	"claude-sonnet-4.5": copilotModel({
+		name: "Claude Sonnet 4.5",
+		family: "claude-sonnet-4.5",
 		supportsImages: true,
-		supportsPromptCache: false,
-		inputPrice: 0,
-		outputPrice: 0,
-		family: "gpt-5",
-		version: "gpt-5",
-		name: "GPT-5 (Preview)",
-		supportsToolCalling: true,
-		maxInputTokens: 108637,
-	},
+	}),
+	"claude-sonnet-4.6": copilotModel({
+		name: "Claude Sonnet 4.6",
+		family: "claude-sonnet-4.6",
+		contextWindow: COPILOT_EXTENDED_CONTEXT_WINDOW,
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+	}),
+	"claude-opus-4.5": copilotModel({
+		name: "Claude Opus 4.5",
+		family: "claude-opus-4.5",
+		supportsImages: true,
+	}),
+	"claude-opus-4.6": copilotModel({
+		name: "Claude Opus 4.6",
+		family: "claude-opus-4.6",
+		contextWindow: COPILOT_EXTENDED_CONTEXT_WINDOW,
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+	}),
+	"claude-opus-4.6-fast": copilotModel({
+		name: "Claude Opus 4.6 (fast mode)",
+		family: "claude-opus-4.6-fast",
+		contextWindow: COPILOT_EXTENDED_CONTEXT_WINDOW,
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+	}),
+	"claude-opus-4.7": copilotModel({
+		name: "Claude Opus 4.7",
+		family: "claude-opus-4.7",
+		contextWindow: COPILOT_EXTENDED_CONTEXT_WINDOW,
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+	}),
+	"claude-opus-4.8": copilotModel({
+		name: "Claude Opus 4.8",
+		family: "claude-opus-4.8",
+		contextWindow: COPILOT_EXTENDED_CONTEXT_WINDOW,
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+	}),
+	"gemini-2.5-pro": copilotModel({
+		name: "Gemini 2.5 Pro",
+		family: "gemini-2.5-pro",
+		supportsImages: true,
+	}),
+	"gemini-3-flash": copilotModel({
+		name: "Gemini 3 Flash",
+		family: "gemini-3-flash",
+		supportsImages: true,
+	}),
+	"gemini-3.1-pro": copilotModel({
+		name: "Gemini 3.1 Pro",
+		family: "gemini-3.1-pro",
+		supportsImages: true,
+	}),
+	"gemini-3.5-flash": copilotModel({
+		name: "Gemini 3.5 Flash",
+		family: "gemini-3.5-flash",
+		supportsImages: true,
+	}),
+	"mai-code-1-flash": copilotModel({
+		name: "MAI-Code-1-Flash",
+		family: "mai-code-1-flash",
+	}),
+	"raptor-mini": copilotModel({
+		name: "Raptor mini",
+		family: "raptor-mini",
+	}),
+	"gpt-4.1": copilotModel({
+		name: "GPT-4.1",
+		family: "gpt-4.1",
+		deprecated: true,
+	}),
+	"gpt-5.2": copilotModel({
+		name: "GPT-5.2",
+		family: "gpt-5.2",
+		deprecated: true,
+	}),
+	"gpt-5.2-codex": copilotModel({
+		name: "GPT-5.2-Codex",
+		family: "gpt-5.2-codex",
+		deprecated: true,
+	}),
 } as const satisfies Record<
 	string,
 	ModelInfo & {
