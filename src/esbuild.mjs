@@ -82,21 +82,17 @@ function resolveRipgrepPackageDir(packageName) {
 
 function copyBundledRipgrepDependencies(distDir) {
 	for (const packageName of ripgrepPackages) {
-		try {
-			const packageDir = resolveRipgrepPackageDir(packageName)
-			if (!packageDir) {
-				continue
-			}
-
-			const targetDir = path.join(distDir, "node_modules", ...packageName.split("/"))
-
-			fs.rmSync(targetDir, { recursive: true, force: true })
-			fs.mkdirSync(path.dirname(targetDir), { recursive: true })
-			fs.cpSync(packageDir, targetDir, { recursive: true })
-			console.log(`[copyBundledRipgrepDependencies] Copied ${packageName} to ${targetDir}`)
-		} catch {
-			// @vscode/ripgrep-universal may not be installed in older dependency sets.
+		const packageDir = resolveRipgrepPackageDir(packageName)
+		if (!packageDir) {
+			continue
 		}
+
+		const targetDir = path.join(distDir, "node_modules", ...packageName.split("/"))
+
+		fs.rmSync(targetDir, { recursive: true, force: true })
+		fs.mkdirSync(path.dirname(targetDir), { recursive: true })
+		fs.cpSync(packageDir, targetDir, { recursive: true })
+		console.log(`[copyBundledRipgrepDependencies] Copied ${packageName} to ${targetDir}`)
 	}
 }
 

@@ -751,6 +751,33 @@ describe("VsCodeLmHandler", () => {
 			expect(mockLanguageModelChat.sendRequest).toHaveBeenCalled()
 		})
 
+		it("should pass selected reasoning effort through single prompt completions", async () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				enableReasoningEffort: true,
+				reasoningEffort: "medium",
+			})
+			handler["client"] = mockLanguageModelChat
+
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Completed text")
+				})(),
+			})
+
+			await handler.completePrompt("Test prompt")
+
+			expect(mockLanguageModelChat.sendRequest).toHaveBeenCalledWith(
+				expect.any(Array),
+				expect.objectContaining({
+					modelOptions: {
+						reasoningEffort: "medium",
+					},
+				}),
+				expect.anything(),
+			)
+		})
+
 		it("should handle errors during completion", async () => {
 			const mockModel = { ...mockLanguageModelChat }
 			;(vscode.lm.selectChatModels as Mock).mockResolvedValueOnce([mockModel])

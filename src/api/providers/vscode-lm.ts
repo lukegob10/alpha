@@ -639,8 +639,20 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			const client = await this.getClient()
 			const requestCancellation = new vscode.CancellationTokenSource()
 			cancellation = requestCancellation
+			const requestOptions: vscode.LanguageModelChatRequestOptions = {}
+			const modelOptions = getVsCodeLmReasoningEffortModelOptions(
+				this.options.enableReasoningEffort,
+				this.options.reasoningEffort,
+			)
+			if (modelOptions) {
+				requestOptions.modelOptions = modelOptions
+			}
 			const response = await withApiRequestTimeout(
-				client.sendRequest([vscode.LanguageModelChatMessage.User(prompt)], {}, requestCancellation.token),
+				client.sendRequest(
+					[vscode.LanguageModelChatMessage.User(prompt)],
+					requestOptions,
+					requestCancellation.token,
+				),
 				`VS Code LM completion request for ${client.name}`,
 				getApiRequestTimeout(),
 				() => requestCancellation.cancel(),

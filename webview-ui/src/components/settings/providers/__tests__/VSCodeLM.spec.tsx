@@ -130,4 +130,95 @@ describe("VSCodeLM", () => {
 			}),
 		)
 	})
+
+	it("matches exact static model ids before prefix matches", () => {
+		const selectedModel = {
+			vendor: "copilot",
+			family: "gpt-5.4-mini",
+			version: "2026-05-01",
+			id: "copilot-gpt-5.4-mini",
+			name: "GPT-5.4 mini",
+			maxInputTokens: 128_000,
+		}
+
+		renderProvider({
+			apiProvider: "vscode-lm",
+			vsCodeLmModelSelector: selectedModel,
+		})
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
+		})
+
+		const props = thinkingBudgetProps.at(-1)
+		expect(props.modelInfo).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("GPT-5.4 mini"),
+			}),
+		)
+		expect(props.modelInfo.name).toBe("GPT-5.4 mini")
+		expect(props.modelInfo.family).toBe("gpt-5.4-mini")
+	})
+
+	it("uses live model capabilities for legacy vendor/family selectors when there is one match", () => {
+		const liveModel = {
+			vendor: "copilot",
+			family: "gpt-5-mini",
+			version: "2026-05-01",
+			id: "copilot-gpt-5-mini",
+			name: "GPT-5 mini",
+			maxInputTokens: 128_000,
+		}
+
+		renderProvider({
+			apiProvider: "vscode-lm",
+			vsCodeLmModelSelector: {
+				vendor: "copilot",
+				family: "gpt-5-mini",
+			},
+		})
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [liveModel] } } as MessageEvent)
+		})
+
+		const props = thinkingBudgetProps.at(-1)
+		expect(props.modelInfo).toEqual(
+			expect.objectContaining({
+				supportsReasoningEffort: ["none", "low", "medium", "high"],
+			}),
+		)
+		expect(setApiConfigurationField).not.toHaveBeenCalledWith("vsCodeLmModelSelector", expect.anything())
+	})
+
+	it("does not infer reasoning settings from ambiguous legacy selectors", () => {
+		const models = [
+			{
+				vendor: "copilot",
+				family: "gpt-5.5",
+				version: "low",
+				id: "copilot-gpt-5.5-low",
+				name: "GPT-5.5",
+			},
+			{
+				vendor: "copilot",
+				family: "gpt-5.5",
+				version: "high",
+				id: "copilot-gpt-5.5-high",
+				name: "GPT-5.5",
+			},
+		]
+
+		renderProvider({
+			apiProvider: "vscode-lm",
+			vsCodeLmModelSelector: {
+				vendor: "copilot",
+				family: "gpt-5.5",
+			},
+		})
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: models } } as MessageEvent)
+		})
+
+		const props = thinkingBudgetProps.at(-1)
+		expect(props.modelInfo).toBeUndefined()
+	})
 })

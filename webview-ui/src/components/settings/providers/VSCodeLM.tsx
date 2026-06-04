@@ -94,12 +94,42 @@ function findStaticVsCodeLmModelInfo(model: VSCodeLmModel): ModelInfo | undefine
 		.map((value) => value!.toLowerCase())
 
 	for (const [modelId, modelInfo] of Object.entries(vscodeLlmModels)) {
-		if (searchableValues.some((value) => value === modelId || value.includes(modelId))) {
+		if (searchableValues.some((value) => value === modelId)) {
+			return modelInfo
+		}
+	}
+
+	const longestModelIdsFirst = Object.entries(vscodeLlmModels).sort(
+		([leftModelId], [rightModelId]) => rightModelId.length - leftModelId.length,
+	)
+
+	for (const [modelId, modelInfo] of longestModelIdsFirst) {
+		if (searchableValues.some((value) => includesCompleteModelId(value, modelId))) {
 			return modelInfo
 		}
 	}
 
 	return undefined
+}
+
+function includesCompleteModelId(value: string, modelId: string): boolean {
+	let searchFromIndex = 0
+
+	while (searchFromIndex < value.length) {
+		const matchIndex = value.indexOf(modelId, searchFromIndex)
+		if (matchIndex === -1) {
+			return false
+		}
+
+		const nextCharacter = value[matchIndex + modelId.length]
+		if (!nextCharacter || !/[a-z0-9.-]/i.test(nextCharacter)) {
+			return true
+		}
+
+		searchFromIndex = matchIndex + modelId.length
+	}
+
+	return false
 }
 
 function inferVsCodeLmReasoningEffortSupport(model: VSCodeLmModel): ModelInfo["supportsReasoningEffort"] | undefined {
@@ -124,6 +154,33 @@ function buildVsCodeLmModelInfo(model: VSCodeLmModel): ModelInfo {
 		supportsReasoningEffort,
 		description: [model.name, model.vendor, model.family, model.version, model.id].filter(Boolean).join(" - "),
 	}
+}
+
+function selectorMatchesModel(selector: LanguageModelChatSelector, model: VSCodeLmModel): boolean {
+	return (
+		(!selector.vendor || selector.vendor === model.vendor) &&
+		(!selector.family || selector.family === model.family) &&
+		(!selector.version || selector.version === model.version) &&
+		(!selector.id || selector.id === model.id)
+	)
+}
+
+function findMatchingModelId(
+	selector: LanguageModelChatSelector | undefined,
+	models: VSCodeLmModel[],
+): string | undefined {
+	if (!selector) {
+		return undefined
+	}
+
+	const exactKey = stringifyVsCodeLmModelSelector(selector)
+	const exactMatch = models.find((model) => stringifyVsCodeLmModelSelector(model) === exactKey)
+	if (exactMatch) {
+		return stringifyVsCodeLmModelSelector(exactMatch)
+	}
+
+	const compatibleMatches = models.filter((model) => selectorMatchesModel(selector, model))
+	return compatibleMatches.length === 1 ? stringifyVsCodeLmModelSelector(compatibleMatches[0]) : undefined
 }
 
 export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeLMProps) => {
@@ -176,7 +233,10 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 		return stringifyVsCodeLmModelSelector(value as LanguageModelChatSelector)
 	}, [])
 
-	const selectedModelId = displayTransform(apiConfiguration.vsCodeLmModelSelector)
+	const selectedModelId = useMemo(
+		() => findMatchingModelId(apiConfiguration.vsCodeLmModelSelector, vsCodeLmModels),
+		[apiConfiguration.vsCodeLmModelSelector, vsCodeLmModels],
+	)
 	const selectedModelInfo = selectedModelId ? modelsRecord[selectedModelId] : undefined
 
 	return (
