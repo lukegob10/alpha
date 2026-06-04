@@ -1,6 +1,11 @@
+import { execFile } from "child_process"
 import * as vscode from "vscode"
 
-import { getGitHubProxyConfig } from "../GitHubApiClient"
+import { GitHubApiClient, getGitHubProxyConfig } from "../GitHubApiClient"
+
+vi.mock("child_process", () => ({
+	execFile: vi.fn(),
+}))
 
 vi.mock("vscode", () => ({
 	workspace: {
@@ -50,6 +55,7 @@ describe("GitHubApiClient proxy configuration", () => {
 			proxyAuthorization: "Basic token",
 			strictSSL: false,
 			source: "vscode",
+			useProxyNegotiate: true,
 		})
 	})
 
@@ -63,6 +69,7 @@ describe("GitHubApiClient proxy configuration", () => {
 		expect(getGitHubProxyConfig("https://api.github.com/repos/owner/repo")).toEqual({
 			strictSSL: true,
 			source: "none",
+			useProxyNegotiate: false,
 		})
 	})
 
@@ -75,6 +82,7 @@ describe("GitHubApiClient proxy configuration", () => {
 		expect(getGitHubProxyConfig("https://api.github.com/repos/owner/repo")).toEqual({
 			strictSSL: true,
 			source: "none",
+			useProxyNegotiate: false,
 		})
 	})
 
@@ -85,6 +93,7 @@ describe("GitHubApiClient proxy configuration", () => {
 			proxyUrl: "http://env-proxy.example.com:8080",
 			strictSSL: true,
 			source: "environment",
+			useProxyNegotiate: false,
 		})
 	})
 
@@ -95,7 +104,39 @@ describe("GitHubApiClient proxy configuration", () => {
 		expect(getGitHubProxyConfig("https://api.github.com/repos/owner/repo")).toEqual({
 			strictSSL: true,
 			source: "none",
+			useProxyNegotiate: false,
 		})
+	})
+
+	it("uses curl with negotiate authentication for VS Code proxy requests", async () => {
+		mockHttpConfiguration({
+			proxy: "http://proxy.example.com:8080",
+		})
+		vi.mocked(execFile).mockImplementation((_command, _args, _options, callback) => {
+			callback?.(
+				null,
+				JSON.stringify({ html_url: "https://github.com/owner/repo/pull/1", number: 1 }) +
+					"\n__ALPHA_GITHUB_HTTP_STATUS__:200",
+				"",
+			)
+			return undefined as any
+		})
+
+		await new GitHubApiClient("test-token").getPullRequest({ owner: "owner", repo: "repo", pull_number: 1 })
+
+		const [command, args] = vi.mocked(execFile).mock.calls[0]
+		expect(command).toBe("curl")
+		expect(args).toEqual(
+			expect.arrayContaining([
+				"--proxy",
+				"http://proxy.example.com:8080",
+				"--proxy-user",
+				":",
+				"--proxy-negotiate",
+				"--header",
+				"Authorization: Bearer test-token",
+			]),
+		)
 	})
 })
 

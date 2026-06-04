@@ -1,3 +1,4 @@
+import { execFile } from "child_process"
 import * as vscode from "vscode"
 
 export type GitHubMergeMethod = "merge" | "squash" | "rebase"
@@ -60,6 +61,7 @@ type GitHubProxyConfig = {
 	proxyAuthorization?: string
 	strictSSL: boolean
 	source: "vscode" | "environment" | "none"
+	useProxyNegotiate: boolean
 }
 
 export class GitHubApiClient {
@@ -178,47 +180,133 @@ export class GitHubApiClient {
 
 	private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
 		const url = `${this.baseUrl}${path}`
+		const headers = {
+			Authorization: `Bearer ${this.token}`,
+			Accept: "application/vnd.github+json",
+			"X-GitHub-Api-Version": "2022-11-28",
+			...(body === undefined ? {} : { "Content-Type": "application/json" }),
+		}
+		const bodyText = body === undefined ? undefined : JSON.stringify(body)
+		const proxyConfig = getGitHubProxyConfig(url)
+
+		if (proxyConfig.proxyUrl) {
+			return requestWithCurl<T>(url, method, headers, bodyText, proxyConfig)
+		}
+
 		let response: Response
 
 		try {
-			response = await fetchWithProxy(url, {
+			response = await fetch(url, {
 				method,
-				headers: {
-					Authorization: `Bearer ${this.token}`,
-					Accept: "application/vnd.github+json",
-					"X-GitHub-Api-Version": "2022-11-28",
-					...(body === undefined ? {} : { "Content-Type": "application/json" }),
-				},
-				body: body === undefined ? undefined : JSON.stringify(body),
+				headers,
+				body: bodyText,
 			})
 		} catch (error) {
-			throw new GitHubApiError(formatNetworkError(url, error))
+			throw new GitHubApiError(formatNetworkError(url, error, proxyConfig))
 		}
 
 		if (!response.ok) {
-			throw new GitHubApiError(await getErrorMessage(response), response.status)
+			throw new GitHubApiError(await getFetchErrorMessage(response), response.status)
 		}
-
 		return (await response.json()) as T
 	}
 }
 
-async function fetchWithProxy(url: string, init: RequestInit): Promise<Response> {
-	const proxyConfig = getGitHubProxyConfig(url)
-	if (!proxyConfig.proxyUrl) {
-		return fetch(url, init)
+async function requestWithCurl<T>(
+	url: string,
+	method: string,
+	headers: Record<string, string>,
+	body: string | undefined,
+	proxyConfig: GitHubProxyConfig,
+): Promise<T> {
+	const statusMarker = "__ALPHA_GITHUB_HTTP_STATUS__:"
+	const args = [
+		"--silent",
+		"--show-error",
+		"--request",
+		method,
+		"--url",
+		url,
+		"--write-out",
+		`\n${statusMarker}%{http_code}`,
+	]
+
+	for (const [name, value] of Object.entries(headers)) {
+		args.push("--header", `${name}: ${value}`)
 	}
 
-	const { fetch: undiciFetch, ProxyAgent } = (await import("undici")) as any
-	return undiciFetch(url, {
-		...init,
-		dispatcher: new ProxyAgent({
-			uri: proxyConfig.proxyUrl,
-			token: proxyConfig.proxyAuthorization,
-			requestTls: proxyConfig.strictSSL ? undefined : { rejectUnauthorized: false },
-			proxyTls: proxyConfig.strictSSL ? undefined : { rejectUnauthorized: false },
-		}),
-	}) as Promise<Response>
+	if (body !== undefined) {
+		args.push("--data", body)
+	}
+
+	if (proxyConfig.proxyUrl) {
+		args.push("--proxy", proxyConfig.proxyUrl)
+	}
+
+	if (proxyConfig.proxyAuthorization) {
+		args.push("--proxy-header", `Proxy-Authorization: ${proxyConfig.proxyAuthorization}`)
+	} else if (proxyConfig.useProxyNegotiate) {
+		args.push("--proxy-user", ":", "--proxy-negotiate")
+	}
+
+	if (process.platform === "win32") {
+		args.push("--ssl-no-revoke")
+	}
+
+	if (!proxyConfig.strictSSL) {
+		args.push("--insecure")
+	}
+
+	let stdout: string
+	try {
+		stdout = await runCurl(args)
+	} catch (error) {
+		throw new GitHubApiError(formatCurlNetworkError(error, proxyConfig))
+	}
+
+	const markerIndex = stdout.lastIndexOf(statusMarker)
+	if (markerIndex === -1) {
+		throw new GitHubApiError("GitHub API curl request failed before returning an HTTP status.")
+	}
+
+	const responseBody = stdout.slice(0, markerIndex).trim()
+	const status = Number(stdout.slice(markerIndex + statusMarker.length).trim())
+
+	if (!Number.isFinite(status)) {
+		throw new GitHubApiError("GitHub API curl request returned an invalid HTTP status.")
+	}
+
+	if (status < 200 || status >= 300) {
+		throw new GitHubApiError(getCurlErrorMessage(responseBody, status), status)
+	}
+
+	try {
+		return JSON.parse(responseBody) as T
+	} catch {
+		throw new GitHubApiError(`GitHub API curl request returned invalid JSON with status ${status}.`)
+	}
+}
+
+function runCurl(args: string[]): Promise<string> {
+	return new Promise((resolve, reject) => {
+		execFile(
+			"curl",
+			args,
+			{
+				encoding: "utf8",
+				maxBuffer: 10 * 1024 * 1024,
+				windowsHide: true,
+			},
+			(error, stdout) => {
+				if (error) {
+					reject(error)
+					return
+				}
+
+				resolve(stdout)
+			},
+		)
+	})
 }
 
 export function getGitHubProxyConfig(targetUrl: string): GitHubProxyConfig {
@@ -228,11 +316,11 @@ export function getGitHubProxyConfig(targetUrl: string): GitHubProxyConfig {
 	const vscodeNoProxy = httpConfig.get<string | string[]>("noProxy")
 
 	if (matchesNoProxy(targetHost, vscodeNoProxy)) {
-		return { strictSSL: true, source: "none" }
+		return { strictSSL: true, source: "none", useProxyNegotiate: false }
 	}
 
 	if (proxySupport === "off") {
-		return { strictSSL: true, source: "none" }
+		return { strictSSL: true, source: "none", useProxyNegotiate: false }
 	}
 
 	const vscodeProxy = normalizeSettingString(httpConfig.get<string>("proxy"))
@@ -242,6 +330,7 @@ export function getGitHubProxyConfig(targetUrl: string): GitHubProxyConfig {
 			proxyAuthorization: normalizeSettingString(httpConfig.get<string>("proxyAuthorization")),
 			strictSSL: httpConfig.get<boolean>("proxyStrictSSL", true) !== false,
 			source: "vscode",
+			useProxyNegotiate: true,
 		}
 	}
 
@@ -250,8 +339,8 @@ export function getGitHubProxyConfig(targetUrl: string): GitHubProxyConfig {
 	)
 
 	return environmentProxy
-		? { proxyUrl: environmentProxy, strictSSL: true, source: "environment" }
-		: { strictSSL: true, source: "none" }
+		? { proxyUrl: environmentProxy, strictSSL: true, source: "environment", useProxyNegotiate: false }
+		: { strictSSL: true, source: "none", useProxyNegotiate: false }
 }
 
 function matchesNoProxy(host: string, vscodeNoProxy?: string | string[]): boolean {
@@ -281,8 +370,7 @@ function normalizeSettingString(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined
 }
 
-function formatNetworkError(url: string, error: unknown): string {
-	const proxyConfig = getGitHubProxyConfig(url)
+function formatNetworkError(url: string, error: unknown, proxyConfig = getGitHubProxyConfig(url)): string {
 	const detail = error instanceof Error ? error.message : String(error)
 
 	if (proxyConfig.proxyUrl) {
@@ -290,6 +378,17 @@ function formatNetworkError(url: string, error: unknown): string {
 	}
 
 	return `GitHub API request failed without a configured proxy. ${detail}`
+}
+
+function formatCurlNetworkError(error: unknown, proxyConfig: GitHubProxyConfig): string {
+	const detail = error instanceof Error ? error.message : String(error)
+
+	if (proxyConfig.proxyUrl) {
+		const authMode = proxyConfig.useProxyNegotiate ? " with proxy negotiate authentication" : ""
+		return `GitHub API curl request failed using ${proxyConfig.source} proxy ${redactProxyUrl(proxyConfig.proxyUrl)}${authMode}. ${detail}`
+	}
+
+	return `GitHub API curl request failed without a configured proxy. ${detail}`
 }
 
 function redactProxyUrl(proxyUrl: string): string {
@@ -303,7 +402,7 @@ function redactProxyUrl(proxyUrl: string): string {
 	}
 }
 
-async function getErrorMessage(response: Response): Promise<string> {
+async function getFetchErrorMessage(response: Response): Promise<string> {
 	const fallback = `GitHub API request failed with status ${response.status}`
 	try {
 		const payload = (await response.json()) as { message?: string; errors?: unknown }
@@ -311,5 +410,16 @@ async function getErrorMessage(response: Response): Promise<string> {
 		return `${payload.message ?? fallback}.${errors}`
 	} catch {
 		return fallback
+	}
+}
+
+function getCurlErrorMessage(responseBody: string, status: number): string {
+	const fallback = `GitHub API request failed with status ${status}`
+	try {
+		const payload = JSON.parse(responseBody) as { message?: string; errors?: unknown }
+		const errors = payload.errors ? ` Errors: ${JSON.stringify(payload.errors)}` : ""
+		return `${payload.message ?? fallback}.${errors}`
+	} catch {
+		return responseBody ? `${fallback}: ${responseBody}` : fallback
 	}
 }
