@@ -291,6 +291,66 @@ describe("NativeToolCallParser", () => {
 				})
 			})
 		})
+
+		describe("github_api tool", () => {
+			it("should parse create_pull_request args with null placeholders", () => {
+				const toolCall = {
+					id: "call_QawDRvuALJVWw9VinUGjZCuu",
+					name: "github_api" as const,
+					arguments: JSON.stringify({
+						action: "create_pull_request",
+						owner: "lukegob10",
+						repo: "ftp-sample",
+						pull_number: null,
+						issue_number: null,
+						head: "update-readme",
+						base: "main",
+						title: "Update README: add contributing and license notes",
+						body: "This PR updates README.md to add contributing instructions and reference the repository license.",
+						sha: null,
+						merge_method: null,
+					}),
+				}
+
+				const result = NativeToolCallParser.parseToolCall(toolCall)
+
+				expect(result).not.toBeNull()
+				expect(result?.type).toBe("tool_use")
+				if (result?.type === "tool_use") {
+					expect(result.name).toBe("github_api")
+					expect(result.nativeArgs).toEqual({
+						action: "create_pull_request",
+						owner: "lukegob10",
+						repo: "ftp-sample",
+						head: "update-readme",
+						base: "main",
+						title: "Update README: add contributing and license notes",
+						body: "This PR updates README.md to add contributing instructions and reference the repository license.",
+					})
+				}
+			})
+
+			it("should reject github_api create_pull_request without required branch fields", () => {
+				const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				const toolCall = {
+					id: "call_missing_head",
+					name: "github_api" as const,
+					arguments: JSON.stringify({
+						action: "create_pull_request",
+						owner: "lukegob10",
+						repo: "ftp-sample",
+						head: null,
+						base: "main",
+						title: "Update README",
+					}),
+				}
+
+				const result = NativeToolCallParser.parseToolCall(toolCall)
+
+				expect(result).toBeNull()
+				errorSpy.mockRestore()
+			})
+		})
 	})
 
 	describe("scoped streaming state", () => {

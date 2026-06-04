@@ -971,6 +971,88 @@ export class NativeToolCallParser {
 					}
 					break
 
+				case "github_api": {
+					const baseParamsAreValid =
+						typeof args.action === "string" && typeof args.owner === "string" && typeof args.repo === "string"
+
+					if (!baseParamsAreValid) {
+						break
+					}
+
+					switch (args.action) {
+						case "create_pull_request":
+							if (
+								typeof args.head === "string" &&
+								typeof args.base === "string" &&
+								typeof args.title === "string"
+							) {
+								nativeArgs = {
+									action: args.action,
+									owner: args.owner,
+									repo: args.repo,
+									head: args.head,
+									base: args.base,
+									title: args.title,
+									body: typeof args.body === "string" || args.body === null ? args.body : undefined,
+								} as NativeArgsFor<TName>
+							}
+							break
+						case "get_pull_request":
+							if (typeof args.pull_number === "number") {
+								nativeArgs = {
+									action: args.action,
+									owner: args.owner,
+									repo: args.repo,
+									pull_number: args.pull_number,
+								} as NativeArgsFor<TName>
+							}
+							break
+						case "list_checks":
+							if (typeof args.sha === "string") {
+								nativeArgs = {
+									action: args.action,
+									owner: args.owner,
+									repo: args.repo,
+									sha: args.sha,
+								} as NativeArgsFor<TName>
+							}
+							break
+						case "merge_pull_request":
+							if (typeof args.pull_number === "number") {
+								nativeArgs = {
+									action: args.action,
+									owner: args.owner,
+									repo: args.repo,
+									pull_number: args.pull_number,
+									merge_method:
+										args.merge_method === "merge" ||
+										args.merge_method === "squash" ||
+										args.merge_method === "rebase" ||
+										args.merge_method === null
+											? args.merge_method
+											: undefined,
+									title: typeof args.title === "string" || args.title === null ? args.title : undefined,
+									message:
+										typeof args.message === "string" || args.message === null ? args.message : undefined,
+								} as NativeArgsFor<TName>
+							}
+							break
+						case "comment":
+							if (typeof args.issue_number === "number" && typeof args.body === "string") {
+								nativeArgs = {
+									action: args.action,
+									owner: args.owner,
+									repo: args.repo,
+									issue_number: args.issue_number,
+									body: args.body,
+								} as NativeArgsFor<TName>
+							}
+							break
+					}
+
+					break
+				}
+
 				case "access_mcp_resource":
 					if (args.server_name !== undefined && args.uri !== undefined) {
 						nativeArgs = {
