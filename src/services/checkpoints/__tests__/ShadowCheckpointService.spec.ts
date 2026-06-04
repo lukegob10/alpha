@@ -961,6 +961,52 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 					await fs.rm(externalGitDir, { recursive: true, force: true })
 				}
 			})
+
+			it("isolates checkpoint operations from GIT_CONFIG_COUNT environment config", async () => {
+				const testShadowDir = path.join(tmpDir, `shadow-git-config-test-${Date.now()}`)
+				const testWorkspaceDir = path.join(tmpDir, `workspace-git-config-test-${Date.now()}`)
+				await initWorkspaceRepo({ workspaceDir: testWorkspaceDir })
+
+				const originalGitConfigCount = process.env.GIT_CONFIG_COUNT
+				const originalGitConfigKey0 = process.env.GIT_CONFIG_KEY_0
+				const originalGitConfigValue0 = process.env.GIT_CONFIG_VALUE_0
+
+				process.env.GIT_CONFIG_COUNT = "1"
+				process.env.GIT_CONFIG_KEY_0 = "core.autocrlf"
+				process.env.GIT_CONFIG_VALUE_0 = "false"
+
+				try {
+					const testService = await klass.create({
+						taskId: `test-git-config-${Date.now()}`,
+						shadowDir: testShadowDir,
+						workspaceDir: testWorkspaceDir,
+						log: () => {},
+					})
+
+					await expect(testService.initShadowGit()).resolves.not.toThrow()
+				} finally {
+					if (originalGitConfigCount !== undefined) {
+						process.env.GIT_CONFIG_COUNT = originalGitConfigCount
+					} else {
+						delete process.env.GIT_CONFIG_COUNT
+					}
+
+					if (originalGitConfigKey0 !== undefined) {
+						process.env.GIT_CONFIG_KEY_0 = originalGitConfigKey0
+					} else {
+						delete process.env.GIT_CONFIG_KEY_0
+					}
+
+					if (originalGitConfigValue0 !== undefined) {
+						process.env.GIT_CONFIG_VALUE_0 = originalGitConfigValue0
+					} else {
+						delete process.env.GIT_CONFIG_VALUE_0
+					}
+
+					await fs.rm(testShadowDir, { recursive: true, force: true })
+					await fs.rm(testWorkspaceDir, { recursive: true, force: true })
+				}
+			})
 		})
 	},
 )
