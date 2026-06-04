@@ -7,6 +7,8 @@ export const vscodeLlmDefaultModelId: VscodeLlmModelId = "gpt-5.5"
 const COPILOT_DEFAULT_CONTEXT_WINDOW = 128_000
 const COPILOT_EXTENDED_CONTEXT_WINDOW = 1_000_000
 const COPILOT_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["none", "low", "medium", "high"]
+const COPILOT_EXTRA_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["none", "low", "medium", "high", "xhigh"]
+const COPILOT_CODEX_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "medium", "high", "xhigh"]
 
 function copilotModel({
 	name,
@@ -54,7 +56,7 @@ export const vscodeLlmModels = {
 	"gpt-5.3-codex": copilotModel({
 		name: "GPT-5.3-Codex",
 		family: "gpt-5.3-codex",
-		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+		supportsReasoningEffort: COPILOT_CODEX_REASONING_EFFORTS,
 	}),
 	"gpt-5.4": copilotModel({
 		name: "GPT-5.4",
@@ -74,7 +76,7 @@ export const vscodeLlmModels = {
 	"gpt-5.5": copilotModel({
 		name: "GPT-5.5",
 		family: "gpt-5.5",
-		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+		supportsReasoningEffort: COPILOT_EXTRA_REASONING_EFFORTS,
 	}),
 	"claude-haiku-4.5": copilotModel({
 		name: "Claude Haiku 4.5",
@@ -116,7 +118,6 @@ export const vscodeLlmModels = {
 		family: "claude-opus-4.7",
 		contextWindow: COPILOT_EXTENDED_CONTEXT_WINDOW,
 		supportsImages: true,
-		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
 	}),
 	"claude-opus-4.8": copilotModel({
 		name: "Claude Opus 4.8",

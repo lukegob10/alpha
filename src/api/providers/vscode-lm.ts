@@ -2,7 +2,7 @@ import { Anthropic } from "@anthropic-ai/sdk"
 import * as vscode from "vscode"
 import OpenAI from "openai"
 
-import { type ModelInfo, type ProviderSettings, openAiModelInfoSaneDefaults } from "@alpha-code/types"
+import { type ModelInfo, type ProviderSettings, openAiModelInfoSaneDefaults, vscodeLlmModels } from "@alpha-code/types"
 
 import type { ApiHandlerOptions } from "../../shared/api"
 import { SELECTOR_SEPARATOR, stringifyVsCodeLmModelSelector } from "../../shared/vsCodeSelectorUtils"
@@ -64,6 +64,71 @@ function getVsCodeLmMetadataMimeType(chunk: unknown): string | undefined {
 function isIgnorableVsCodeLmMetadataChunk(chunk: unknown): boolean {
 	const mimeType = getVsCodeLmMetadataMimeType(chunk)
 	return mimeType === "stateful_marker" || mimeType === "usage"
+}
+
+function includesCompleteModelId(value: string, modelId: string): boolean {
+	let searchFromIndex = 0
+
+	while (searchFromIndex < value.length) {
+		const matchIndex = value.indexOf(modelId, searchFromIndex)
+		if (matchIndex === -1) {
+			return false
+		}
+
+		const nextCharacter = value[matchIndex + modelId.length]
+		if (!nextCharacter || !/[a-z0-9.-]/i.test(nextCharacter)) {
+			return true
+		}
+
+		searchFromIndex = matchIndex + modelId.length
+	}
+
+	return false
+}
+
+function findStaticVsCodeLmModelInfo(
+	model: vscode.LanguageModelChat | vscode.LanguageModelChatSelector,
+): ModelInfo | undefined {
+	const searchableValues = [model.family, model.id, model.version]
+		.filter(Boolean)
+		.map((value) => value!.toLowerCase())
+
+	for (const [modelId, modelInfo] of Object.entries(vscodeLlmModels)) {
+		if (searchableValues.some((value) => value === modelId)) {
+			return modelInfo
+		}
+	}
+
+	const longestModelIdsFirst = Object.entries(vscodeLlmModels).sort(
+		([leftModelId], [rightModelId]) => rightModelId.length - leftModelId.length,
+	)
+
+	for (const [modelId, modelInfo] of longestModelIdsFirst) {
+		if (searchableValues.some((value) => includesCompleteModelId(value, modelId))) {
+			return modelInfo
+		}
+	}
+
+	return undefined
+}
+
+function buildVsCodeLmModelInfo(client: vscode.LanguageModelChat): ModelInfo {
+	const staticInfo = findStaticVsCodeLmModelInfo(client)
+
+	return {
+		...openAiModelInfoSaneDefaults,
+		...staticInfo,
+		maxTokens: staticInfo?.maxTokens ?? -1,
+		contextWindow:
+			typeof client.maxInputTokens === "number"
+				? Math.max(0, client.maxInputTokens)
+				: (staticInfo?.contextWindow ?? openAiModelInfoSaneDefaults.contextWindow),
+		supportsImages: staticInfo?.supportsImages ?? false,
+		supportsPromptCache: staticInfo?.supportsPromptCache ?? true,
+		inputPrice: staticInfo?.inputPrice ?? 0,
+		outputPrice: staticInfo?.outputPrice ?? 0,
+		description: [client.name, client.vendor, client.family, client.version, client.id].filter(Boolean).join(" - "),
+	}
 }
 
 /**
@@ -544,7 +609,10 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 						continue
 					}
 				} else if (isIgnorableVsCodeLmMetadataChunk(chunk)) {
-					console.debug("Alpha <Language Model API>: Ignoring metadata chunk:", getVsCodeLmMetadataMimeType(chunk))
+					console.debug(
+						"Alpha <Language Model API>: Ignoring metadata chunk:",
+						getVsCodeLmMetadataMimeType(chunk),
+					)
 				} else {
 					console.warn("Alpha <Language Model API>: Unknown chunk type received:", chunk)
 				}
@@ -615,19 +683,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 			const modelId = this.client.id || modelParts.join(SELECTOR_SEPARATOR)
 
-			// Build model info with conservative defaults for missing values
-			const modelInfo: ModelInfo = {
-				maxTokens: -1, // Unlimited tokens by default
-				contextWindow:
-					typeof this.client.maxInputTokens === "number"
-						? Math.max(0, this.client.maxInputTokens)
-						: openAiModelInfoSaneDefaults.contextWindow,
-				supportsImages: false, // VSCode Language Model API currently doesn't support image inputs
-				supportsPromptCache: true,
-				inputPrice: 0,
-				outputPrice: 0,
-				description: `VSCode Language Model: ${modelId}`,
-			}
+			const modelInfo = buildVsCodeLmModelInfo(this.client)
 
 			return { id: modelId, info: modelInfo }
 		}

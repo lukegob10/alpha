@@ -42,10 +42,11 @@ const REASONING_LEVEL_LABELS: Record<string, string> = {
 	xhigh: "xHigh",
 }
 const COPILOT_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["none", "low", "medium", "high"]
-const COPILOT_REASONING_MODEL_PATTERNS = [
-	/gpt[-\s]?5(?:\.3[-\s]?codex|\.4(?:[-\s]?(?:mini|nano))?|\.5|[-\s]?mini)\b/i,
-	/claude[-\s](?:sonnet|opus)[-\s]4\.(?:6|7|8)\b/i,
-]
+const COPILOT_EXTRA_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["none", "low", "medium", "high", "xhigh"]
+const COPILOT_CODEX_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "medium", "high", "xhigh"]
+const COPILOT_REASONING_MODEL_PATTERNS = [/gpt[-\s]?5(?:\.4(?:[-\s]?(?:mini|nano))?|[-\s]?mini)\b/i]
+const COPILOT_EXTRA_REASONING_MODEL_PATTERNS = [/gpt[-\s]?5\.5\b/i]
+const COPILOT_CODEX_REASONING_MODEL_PATTERNS = [/gpt[-\s]?5\.3[-\s]?codex\b/i]
 
 function titleCaseIdentifier(value: string): string {
 	return value
@@ -134,15 +135,24 @@ function includesCompleteModelId(value: string, modelId: string): boolean {
 
 function inferVsCodeLmReasoningEffortSupport(model: VSCodeLmModel): ModelInfo["supportsReasoningEffort"] | undefined {
 	const searchableText = [model.family, model.id, model.name, model.version].filter(Boolean).join(" ")
-	return COPILOT_REASONING_MODEL_PATTERNS.some((pattern) => pattern.test(searchableText))
-		? COPILOT_REASONING_EFFORTS
-		: undefined
+	if (COPILOT_EXTRA_REASONING_MODEL_PATTERNS.some((pattern) => pattern.test(searchableText))) {
+		return COPILOT_EXTRA_REASONING_EFFORTS
+	}
+
+	if (COPILOT_CODEX_REASONING_MODEL_PATTERNS.some((pattern) => pattern.test(searchableText))) {
+		return COPILOT_CODEX_REASONING_EFFORTS
+	}
+
+	if (COPILOT_REASONING_MODEL_PATTERNS.some((pattern) => pattern.test(searchableText))) {
+		return COPILOT_REASONING_EFFORTS
+	}
+
+	return undefined
 }
 
 function buildVsCodeLmModelInfo(model: VSCodeLmModel): ModelInfo {
 	const staticInfo = findStaticVsCodeLmModelInfo(model)
-	const supportsReasoningEffort =
-		staticInfo?.supportsReasoningEffort ?? inferVsCodeLmReasoningEffortSupport(model)
+	const supportsReasoningEffort = staticInfo?.supportsReasoningEffort ?? inferVsCodeLmReasoningEffortSupport(model)
 
 	return {
 		...openAiModelInfoSaneDefaults,

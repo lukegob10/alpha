@@ -131,6 +131,84 @@ describe("VSCodeLM", () => {
 		)
 	})
 
+	it("renders all Copilot GPT-5.5 reasoning efforts including extra high", () => {
+		const selectedModel = {
+			vendor: "copilot",
+			family: "gpt-5.5",
+			version: "2026-06-01",
+			id: "copilot-gpt-5.5",
+			name: "GPT-5.5",
+			maxInputTokens: 128_000,
+		}
+
+		renderProvider({
+			apiProvider: "vscode-lm",
+			vsCodeLmModelSelector: selectedModel,
+		})
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
+		})
+
+		const props = thinkingBudgetProps.at(-1)
+		expect(props.modelInfo).toEqual(
+			expect.objectContaining({
+				supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh"],
+			}),
+		)
+	})
+
+	it("renders Copilot GPT-5.3 Codex reasoning efforts including extra high", () => {
+		const selectedModel = {
+			vendor: "copilot",
+			family: "gpt-5.3-codex",
+			version: "2026-06-01",
+			id: "copilot-gpt-5.3-codex",
+			name: "GPT-5.3-Codex",
+			maxInputTokens: 128_000,
+		}
+
+		renderProvider({
+			apiProvider: "vscode-lm",
+			vsCodeLmModelSelector: selectedModel,
+		})
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
+		})
+
+		const props = thinkingBudgetProps.at(-1)
+		expect(props.modelInfo).toEqual(
+			expect.objectContaining({
+				supportsReasoningEffort: ["low", "medium", "high", "xhigh"],
+			}),
+		)
+	})
+
+	it("does not render reasoning effort settings for Copilot Claude Opus 4.7", () => {
+		const selectedModel = {
+			vendor: "copilot",
+			family: "claude-opus-4.7",
+			version: "2026-06-01",
+			id: "copilot-claude-opus-4.7",
+			name: "Claude Opus 4.7",
+			maxInputTokens: 1_000_000,
+		}
+
+		renderProvider({
+			apiProvider: "vscode-lm",
+			vsCodeLmModelSelector: selectedModel,
+		})
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
+		})
+
+		const props = thinkingBudgetProps.at(-1)
+		expect(props.modelInfo).toEqual(
+			expect.objectContaining({
+				supportsReasoningEffort: undefined,
+			}),
+		)
+	})
+
 	it("matches exact static model ids before prefix matches", () => {
 		const selectedModel = {
 			vendor: "copilot",
