@@ -16,6 +16,13 @@ import { t } from "../../i18n"
 import { CheckpointDiff, CheckpointResult, CheckpointEventMap } from "./types"
 import { getExcludePatterns } from "./excludes"
 
+type CheckpointSimpleGitOptions = Partial<SimpleGitOptions> & {
+	unsafe?: NonNullable<SimpleGitOptions["unsafe"]> & {
+		allowUnsafeConfigEnvCount?: boolean
+		allowUnsafeTemplateDir?: boolean
+	}
+}
+
 /**
  * Creates a SimpleGit instance with sanitized environment variables to prevent
  * interference from inherited git environment variables like GIT_DIR and GIT_WORK_TREE.
@@ -63,7 +70,7 @@ function createSanitizedGit(baseDir: string): SimpleGit {
 		)
 	}
 
-	const options: Partial<SimpleGitOptions> = {
+	const options: CheckpointSimpleGitOptions = {
 		baseDir,
 		config: [],
 		unsafe: {
