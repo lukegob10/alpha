@@ -33,6 +33,7 @@ function createSanitizedGit(baseDir: string): SimpleGit {
 	// Copy all environment variables except git-specific ones
 	for (const [key, value] of Object.entries(process.env)) {
 		// Skip git environment variables that would override repository location
+		// or inject process-level Git config into checkpoint operations.
 		if (
 			key === "GIT_DIR" ||
 			key === "GIT_WORK_TREE" ||
@@ -40,7 +41,10 @@ function createSanitizedGit(baseDir: string): SimpleGit {
 			key === "GIT_OBJECT_DIRECTORY" ||
 			key === "GIT_ALTERNATE_OBJECT_DIRECTORIES" ||
 			key === "GIT_CEILING_DIRECTORIES" ||
-			key === "GIT_TEMPLATE_DIR"
+			key === "GIT_TEMPLATE_DIR" ||
+			key === "GIT_CONFIG_COUNT" ||
+			key === "GIT_CONFIG_PARAMETERS" ||
+			/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)
 		) {
 			removedVars.push(`${key}=${value}`)
 			continue
@@ -62,6 +66,10 @@ function createSanitizedGit(baseDir: string): SimpleGit {
 	const options: Partial<SimpleGitOptions> = {
 		baseDir,
 		config: [],
+		unsafe: {
+			allowUnsafeConfigEnvCount: true,
+			allowUnsafeTemplateDir: true,
+		},
 	}
 
 	// Create git instance and set the sanitized environment
