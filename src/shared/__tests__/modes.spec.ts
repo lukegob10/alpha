@@ -206,12 +206,20 @@ describe("isToolAllowedForMode", () => {
 			).toBe(true)
 		})
 
-		it("allows architect mode to edit markdown files only", () => {
+		it("allows architect mode to edit markdown and HTML files only", () => {
 			// Should allow editing markdown files
 			expect(
 				isToolAllowedForMode("write_to_file", "architect", [], undefined, {
 					path: "test.md",
 					content: "# Test",
+				}),
+			).toBe(true)
+
+			// Should allow editing HTML files
+			expect(
+				isToolAllowedForMode("write_to_file", "architect", [], undefined, {
+					path: "spec.html",
+					content: "<!doctype html><title>Spec</title>",
 				}),
 			).toBe(true)
 
@@ -235,7 +243,7 @@ describe("isToolAllowedForMode", () => {
 					path: "test.js",
 					content: "console.log('test')",
 				}),
-			).toThrow(/Markdown files only/)
+			).toThrow(/Markdown and HTML files only/)
 
 			// Should maintain read capabilities
 			expect(isToolAllowedForMode("read_file", "architect", [])).toBe(true)
@@ -253,7 +261,15 @@ describe("isToolAllowedForMode", () => {
 				}),
 			).toBe(true)
 
-			// Non-markdown file should throw
+			// Should allow HTML files in architect mode
+			expect(
+				isToolAllowedForMode("apply_diff", "architect", [], undefined, {
+					path: "spec.html",
+					diff: "- old content\n+ new content",
+				}),
+			).toBe(true)
+
+			// Non-markdown/HTML file should throw
 			expect(() =>
 				isToolAllowedForMode("apply_diff", "architect", [], undefined, {
 					path: "test.py",
@@ -265,7 +281,7 @@ describe("isToolAllowedForMode", () => {
 					path: "test.py",
 					diff: "- old content\n+ new content",
 				}),
-			).toThrow(/Markdown files only/)
+			).toThrow(/Markdown and HTML files only/)
 		})
 
 		it("applies restrictions to apply_patch (custom tool)", () => {
@@ -614,7 +630,7 @@ describe("FileRestrictionError", () => {
 				name: "🪲 Debug",
 				roleDefinition:
 					"You are Alpha, an expert software debugger specializing in systematic problem diagnosis and resolution.",
-				groups: ["read", "edit", "command", "mcp"],
+				groups: ["read", "edit", "command", "mcp", "github"],
 			})
 			expect(debugMode?.customInstructions).toContain(
 				"Reflect on 5-7 different possible sources of the problem, distill those down to 1-2 most likely sources, and then add logs to validate your assumptions. Explicitly ask the user to confirm the diagnosis before fixing the problem.",
