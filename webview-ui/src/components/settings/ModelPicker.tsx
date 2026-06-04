@@ -63,6 +63,8 @@ interface ModelPickerProps {
 	valueTransform?: (modelId: string) => unknown
 	/** Transform stored configuration value back to display string */
 	displayTransform?: (value: unknown) => string
+	/** Render a friendlier visible label while preserving the real model ID value. */
+	labelTransform?: (modelId: string, modelInfo?: ModelInfo) => string
 	/** Callback when model changes - useful for side effects like clearing related fields */
 	onModelChange?: (modelId: string) => void
 }
@@ -82,6 +84,7 @@ export const ModelPicker = ({
 	label,
 	valueTransform,
 	displayTransform,
+	labelTransform,
 	onModelChange,
 }: ModelPickerProps) => {
 	const { t } = useAppTranslation()
@@ -104,6 +107,10 @@ export const ModelPicker = ({
 		}
 		return selectedModelId
 	}, [displayTransform, apiConfiguration, modelIdKey, selectedModelId])
+
+	const displayLabel = useMemo(() => {
+		return displayValue ? (labelTransform?.(displayValue, selectedModelInfo) ?? displayValue) : undefined
+	}, [displayValue, labelTransform, selectedModelInfo])
 
 	const activeProvider =
 		apiConfiguration.apiProvider && isRetiredProvider(apiConfiguration.apiProvider)
@@ -217,7 +224,7 @@ export const ModelPicker = ({
 							aria-expanded={open}
 							className="w-full justify-between"
 							data-testid="model-picker-button">
-							<div className="truncate">{displayValue ?? t("settings:common.select")}</div>
+							<div className="truncate">{displayLabel ?? t("settings:common.select")}</div>
 							<ChevronsUpDown className="opacity-50" />
 						</Button>
 					</PopoverTrigger>
@@ -256,8 +263,15 @@ export const ModelPicker = ({
 											value={model}
 											onSelect={onSelect}
 											data-testid={`model-option-${model}`}>
-											<span className="truncate" title={model}>
-												{model}
+											<span className="min-w-0 flex flex-col">
+												<span className="truncate" title={model}>
+													{labelTransform?.(model, models?.[model]) ?? model}
+												</span>
+												{labelTransform && labelTransform(model, models?.[model]) !== model && (
+													<span className="truncate text-xs opacity-70" title={model}>
+														{model}
+													</span>
+												)}
 											</span>
 											<Check
 												className={cn(

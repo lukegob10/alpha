@@ -53,7 +53,6 @@ describe("Ripgrep line truncation", () => {
 	})
 })
 
-
 describe("Ripgrep binary resolution", () => {
 	let tempDir: string
 	let logger: { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> }
@@ -173,6 +172,26 @@ describe("Ripgrep binary resolution", () => {
 		})
 
 		expect(resolution?.path).toBe(bundledRg)
+	})
+
+	it("supports @vscode/ripgrep platform package layouts", async () => {
+		const packageRoot = path.join(tempDir, "extension", "node_modules", "@vscode", "ripgrep-win32-x64")
+		const bundledRg = path.join(packageRoot, "bin", "rg.exe")
+		await writeExecutable(bundledRg)
+
+		const resolution = await resolveRipgrepBinary({
+			bundledPackageRoots: [{ packageName: "@vscode/ripgrep-win32-x64", packageRoot }],
+			env: {},
+			logger,
+			platform: "win32",
+			skipRuntimePackageLookup: true,
+		})
+
+		expect(resolution).toEqual({
+			path: bundledRg,
+			source: "bundled",
+			reason: "using extension-bundled @vscode/ripgrep-win32-x64",
+		})
 	})
 
 	it("warns when no ripgrep binary can be found", async () => {

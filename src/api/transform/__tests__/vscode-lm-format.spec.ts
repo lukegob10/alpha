@@ -215,6 +215,16 @@ describe("extractTextCountFromMessage", () => {
 		expect(result).toBe("Text content")
 	})
 
+	it("should extract text from structurally compatible text parts", () => {
+		const message = {
+			role: "user",
+			content: [{ value: "Text content" }],
+		} as any
+
+		const result = extractTextCountFromMessage(message)
+		expect(result).toBe("Text content")
+	})
+
 	it("should extract text from multiple LanguageModelTextParts", () => {
 		const mockTextPart1 = new (vitest.mocked(vscode).LanguageModelTextPart)("First part")
 		const mockTextPart2 = new (vitest.mocked(vscode).LanguageModelTextPart)("Second part")
@@ -235,6 +245,21 @@ describe("extractTextCountFromMessage", () => {
 		const message = {
 			role: "user",
 			content: [mockToolResultPart],
+		} as any
+
+		const result = extractTextCountFromMessage(message)
+		expect(result).toBe("tool-result-idTool result content")
+	})
+
+	it("should extract text from structurally compatible tool result parts", () => {
+		const message = {
+			role: "user",
+			content: [
+				{
+					callId: "tool-result-id",
+					content: [{ value: "Tool result content" }],
+				},
+			],
 		} as any
 
 		const result = extractTextCountFromMessage(message)
@@ -262,6 +287,17 @@ describe("extractTextCountFromMessage", () => {
 		const message = {
 			role: "assistant",
 			content: [mockToolCallPart],
+		} as any
+
+		const result = extractTextCountFromMessage(message)
+		expect(result).toBe(`calculatorcall-id${JSON.stringify(mockInput)}`)
+	})
+
+	it("should extract text from structurally compatible tool call parts", () => {
+		const mockInput = { operation: "add", numbers: [1, 2, 3] }
+		const message = {
+			role: "assistant",
+			content: [{ callId: "call-id", name: "calculator", input: mockInput }],
 		} as any
 
 		const result = extractTextCountFromMessage(message)

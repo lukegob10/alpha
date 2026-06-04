@@ -67,13 +67,52 @@ interface RipgrepResolverOptions {
 	logger?: Pick<Console, "info" | "warn">
 }
 
-const BUNDLED_RIPGREP_PACKAGES = ["@vscode/ripgrep", "@vscode/ripgrep-universal"]
+const BUNDLED_RIPGREP_PACKAGES = [
+	"@vscode/ripgrep",
+	"@vscode/ripgrep-universal",
+	"@vscode/ripgrep-darwin-x64",
+	"@vscode/ripgrep-darwin-arm64",
+	"@vscode/ripgrep-win32-x64",
+	"@vscode/ripgrep-win32-arm64",
+	"@vscode/ripgrep-win32-ia32",
+	"@vscode/ripgrep-linux-x64",
+	"@vscode/ripgrep-linux-arm64",
+	"@vscode/ripgrep-linux-arm",
+	"@vscode/ripgrep-linux-ppc64",
+	"@vscode/ripgrep-linux-riscv64",
+	"@vscode/ripgrep-linux-s390x",
+	"@vscode/ripgrep-linux-ia32",
+]
 const INTERNAL_RIPGREP_DIRS = [
 	"node_modules/@vscode/ripgrep/bin",
 	"node_modules/@vscode/ripgrep-universal/bin",
+	"node_modules/@vscode/ripgrep-darwin-x64/bin",
+	"node_modules/@vscode/ripgrep-darwin-arm64/bin",
+	"node_modules/@vscode/ripgrep-win32-x64/bin",
+	"node_modules/@vscode/ripgrep-win32-arm64/bin",
+	"node_modules/@vscode/ripgrep-win32-ia32/bin",
+	"node_modules/@vscode/ripgrep-linux-x64/bin",
+	"node_modules/@vscode/ripgrep-linux-arm64/bin",
+	"node_modules/@vscode/ripgrep-linux-arm/bin",
+	"node_modules/@vscode/ripgrep-linux-ppc64/bin",
+	"node_modules/@vscode/ripgrep-linux-riscv64/bin",
+	"node_modules/@vscode/ripgrep-linux-s390x/bin",
+	"node_modules/@vscode/ripgrep-linux-ia32/bin",
 	"node_modules/vscode-ripgrep/bin",
 	"node_modules.asar.unpacked/@vscode/ripgrep/bin",
 	"node_modules.asar.unpacked/@vscode/ripgrep-universal/bin",
+	"node_modules.asar.unpacked/@vscode/ripgrep-darwin-x64/bin",
+	"node_modules.asar.unpacked/@vscode/ripgrep-darwin-arm64/bin",
+	"node_modules.asar.unpacked/@vscode/ripgrep-win32-x64/bin",
+	"node_modules.asar.unpacked/@vscode/ripgrep-win32-arm64/bin",
+	"node_modules.asar.unpacked/@vscode/ripgrep-win32-ia32/bin",
+	"node_modules.asar.unpacked/@vscode/ripgrep-linux-x64/bin",
+	"node_modules.asar.unpacked/@vscode/ripgrep-linux-arm64/bin",
+	"node_modules.asar.unpacked/@vscode/ripgrep-linux-arm/bin",
+	"node_modules.asar.unpacked/@vscode/ripgrep-linux-ppc64/bin",
+	"node_modules.asar.unpacked/@vscode/ripgrep-linux-riscv64/bin",
+	"node_modules.asar.unpacked/@vscode/ripgrep-linux-s390x/bin",
+	"node_modules.asar.unpacked/@vscode/ripgrep-linux-ia32/bin",
 	"node_modules.asar.unpacked/vscode-ripgrep/bin",
 ]
 const MAX_PACKAGE_SCAN_DEPTH = 5
@@ -182,32 +221,58 @@ async function resolveBundledRipgrep(
 	const runtimeRequire = createRequire(__filename)
 
 	for (const packageName of BUNDLED_RIPGREP_PACKAGES) {
+		let packageRoot: string | undefined
+
 		try {
 			const packageJsonPath = runtimeRequire.resolve(`${packageName}/package.json`)
-			const packageRoot = path.dirname(packageJsonPath)
+			packageRoot = path.dirname(packageJsonPath)
+		} catch {
+			// Package not installed or package.json not exported by this package.
+		}
+
+		if (!packageRoot) {
+			try {
+				let current = path.dirname(runtimeRequire.resolve(packageName))
+				const expectedPackageName = packageName.split("/").pop()
+
+				while (current && current !== path.dirname(current)) {
+					if (
+						path.basename(current) === expectedPackageName &&
+						(await fileExistsAtPath(path.join(current, "package.json")))
+					) {
+						packageRoot = current
+						break
+					}
+					current = path.dirname(current)
+				}
+			} catch {
+				// Package not installed or not resolvable from the runtime bundle.
+			}
+		}
+
+		try {
 			const packageRequire = runtimeRequire(packageName) as { rgPath?: string }
 			const exportedPath = packageRequire.rgPath
 
 			if (exportedPath && (await fileExistsAtPath(exportedPath))) {
 				return { path: exportedPath, packageName }
 			}
+		} catch {
+			// Platform packages may only ship bin/rg and no importable module.
+		}
 
+		if (packageRoot) {
 			const resolved = await resolveBundledPackageRoot(packageName, packageRoot, platform)
 			if (resolved) {
 				return resolved
 			}
-		} catch {
-			// Optional dependency not installed or not resolvable from the runtime bundle.
 		}
 	}
 
 	return undefined
 }
 
-async function resolveSystemRipgrep(
-	env: NodeJS.ProcessEnv,
-	platform: NodeJS.Platform,
-): Promise<string | undefined> {
+async function resolveSystemRipgrep(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): Promise<string | undefined> {
 	const pathValue = env.PATH || env.Path || env.path
 	if (!pathValue) {
 		return undefined
@@ -215,9 +280,7 @@ async function resolveSystemRipgrep(
 
 	const executableNames = [getExecutableName(platform)]
 	if (platform === "win32") {
-		const pathExts = (env.PATHEXT || ".EXE;.CMD;.BAT;.COM")
-			.split(";")
-			.map((ext) => ext.toLowerCase())
+		const pathExts = (env.PATHEXT || ".EXE;.CMD;.BAT;.COM").split(";").map((ext) => ext.toLowerCase())
 		if (!pathExts.includes(".exe")) {
 			executableNames.push("rg.exe")
 		}
@@ -262,7 +325,9 @@ export function clearRipgrepPathCache(): void {
 	cachedResolution = undefined
 }
 
-export async function resolveRipgrepBinary(options: RipgrepResolverOptions = {}): Promise<RipgrepResolution | undefined> {
+export async function resolveRipgrepBinary(
+	options: RipgrepResolverOptions = {},
+): Promise<RipgrepResolution | undefined> {
 	if (cachedResolution) {
 		return cachedResolution
 	}

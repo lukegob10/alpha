@@ -1,45 +1,29 @@
-import { LanguageModelChatSelector } from "vscode"
+import { describe, expect, it } from "vitest"
 
-import { stringifyVsCodeLmModelSelector } from "../vsCodeSelectorUtils"
+import { parseVsCodeLmModelSelector, stringifyVsCodeLmModelSelector } from "../vsCodeSelectorUtils"
 
 describe("vsCodeSelectorUtils", () => {
-	describe("stringifyVsCodeLmModelSelector", () => {
-		it("should join all defined selector properties with separator", () => {
-			const selector: LanguageModelChatSelector = {
-				vendor: "test-vendor",
-				family: "test-family",
-				version: "v1",
-				id: "test-id",
-			}
+	it("stringifies the full VS Code LM selector", () => {
+		expect(
+			stringifyVsCodeLmModelSelector({
+				vendor: "copilot",
+				family: "gpt-5.5",
+				version: "high",
+				id: "copilot-gpt-5.5-high",
+			}),
+		).toBe("copilot/gpt-5.5/high/copilot-gpt-5.5-high")
+	})
 
-			const result = stringifyVsCodeLmModelSelector(selector)
-			expect(result).toBe("test-vendor/test-family/v1/test-id")
-		})
+	it("preserves legacy vendor/family selectors", () => {
+		expect(stringifyVsCodeLmModelSelector({ vendor: "copilot", family: "gpt-5.5" })).toBe("copilot/gpt-5.5")
+	})
 
-		it("should skip undefined properties", () => {
-			const selector: LanguageModelChatSelector = {
-				vendor: "test-vendor",
-				family: "test-family",
-			}
-
-			const result = stringifyVsCodeLmModelSelector(selector)
-			expect(result).toBe("test-vendor/test-family")
-		})
-
-		it("should handle empty selector", () => {
-			const selector: LanguageModelChatSelector = {}
-
-			const result = stringifyVsCodeLmModelSelector(selector)
-			expect(result).toBe("")
-		})
-
-		it("should handle selector with only one property", () => {
-			const selector: LanguageModelChatSelector = {
-				vendor: "test-vendor",
-			}
-
-			const result = stringifyVsCodeLmModelSelector(selector)
-			expect(result).toBe("test-vendor")
+	it("parses full selectors back to selector objects", () => {
+		expect(parseVsCodeLmModelSelector("copilot/gpt-5.5/high/copilot-gpt-5.5-high")).toEqual({
+			vendor: "copilot",
+			family: "gpt-5.5",
+			version: "high",
+			id: "copilot-gpt-5.5-high",
 		})
 	})
 })

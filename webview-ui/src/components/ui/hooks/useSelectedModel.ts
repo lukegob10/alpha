@@ -37,6 +37,7 @@ import { useRouterModels } from "./useRouterModels"
 import { useOpenRouterModelProviders } from "./useOpenRouterModelProviders"
 import { useLmStudioModels } from "./useLmStudioModels"
 import { useOllamaModels } from "./useOllamaModels"
+import { stringifyVsCodeLmModelSelector } from "../../../../../src/shared/vsCodeSelectorUtils"
 
 /**
  * Helper to get a validated model ID for dynamic providers.
@@ -296,7 +297,7 @@ function getSelectedModel({
 		}
 		case "vscode-lm": {
 			const id = apiConfiguration?.vsCodeLmModelSelector
-				? `${apiConfiguration.vsCodeLmModelSelector.vendor}/${apiConfiguration.vsCodeLmModelSelector.family}`
+				? stringifyVsCodeLmModelSelector(apiConfiguration.vsCodeLmModelSelector)
 				: vscodeLlmDefaultModelId
 			const modelFamily = apiConfiguration?.vsCodeLmModelSelector?.family ?? vscodeLlmDefaultModelId
 			const info = vscodeLlmModels[modelFamily as keyof typeof vscodeLlmModels]
