@@ -52,19 +52,17 @@ export class TerminalRegistry {
 					const stream = e.execution.read()
 					const terminal = this.getTerminalByVSCETerminal(e.terminal)
 
-					console.info("[onDidStartTerminalShellExecution]", {
-						command: e.execution?.commandLine?.value,
-						terminalId: terminal?.id,
-					})
-
 					if (terminal) {
+						console.info("[onDidStartTerminalShellExecution]", {
+							command: e.execution?.commandLine?.value,
+							terminalId: terminal.id,
+						})
 						terminal.setActiveStream(stream)
 						terminal.busy = true // Mark terminal as busy when shell execution starts
 					} else {
-						console.error(
-							"[onDidStartTerminalShellExecution] Shell execution started, but not from a Alpha-registered terminal:",
-							e,
-						)
+						console.debug("[onDidStartTerminalShellExecution] Ignoring unregistered terminal shell execution.", {
+							command: e.execution?.commandLine?.value,
+						})
 					}
 				},
 			)
@@ -79,20 +77,20 @@ export class TerminalRegistry {
 					const process = terminal?.process
 					const exitDetails = TerminalProcess.interpretExitCode(e.exitCode)
 
-					console.info("[onDidEndTerminalShellExecution]", {
-						command: e.execution?.commandLine?.value,
-						terminalId: terminal?.id,
-						...exitDetails,
-					})
-
 					if (!terminal) {
-						console.error(
-							"[onDidEndTerminalShellExecution] Shell execution ended, but not from a Alpha-registered terminal:",
-							e,
-						)
+						console.debug("[onDidEndTerminalShellExecution] Ignoring unregistered terminal shell execution.", {
+							command: e.execution?.commandLine?.value,
+							...exitDetails,
+						})
 
 						return
 					}
+
+					console.info("[onDidEndTerminalShellExecution]", {
+						command: e.execution?.commandLine?.value,
+						terminalId: terminal.id,
+						...exitDetails,
+					})
 
 					if (!terminal.running) {
 						console.error(

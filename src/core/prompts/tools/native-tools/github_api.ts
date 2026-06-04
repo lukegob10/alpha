@@ -1,6 +1,6 @@
 import type OpenAI from "openai"
 
-const GITHUB_API_DESCRIPTION = `Use the native GitHub API integration for pull request workflow actions. Use this for GitHub API operations after local git work is done in the terminal. Do not use this tool for clone, pull, commit, or push; use execute_command for local git operations.
+const GITHUB_API_DESCRIPTION = `Use the native GitHub API integration for pull request workflow actions. Use this for GitHub API operations after local git work is done in the terminal. Do not use GitHub CLI, gh, or raw GitHub curl commands for these actions. Do not use this tool for clone, pull, commit, or push; use execute_command with local git commands for local repository operations.
 
 The GitHub token is supplied by Alpha from secure settings or environment variables. Never include a token in tool arguments.
 
