@@ -81,6 +81,17 @@ export const toolParamNames = [
 	// read_file legacy format parameter (backward compatibility)
 	"files",
 	"line_ranges",
+	// github_api parameters
+	"owner",
+	"repo",
+	"pull_number",
+	"issue_number",
+	"head",
+	"base",
+	"title",
+	"body",
+	"sha",
+	"merge_method",
 ] as const
 
 export type ToolParamName = (typeof toolParamNames)[number]
@@ -116,6 +127,44 @@ export type NativeToolArgs = {
 	update_todo_list: { todos: string }
 	use_mcp_tool: { server_name: string; tool_name: string; arguments?: Record<string, unknown> }
 	write_to_file: { path: string; content: string }
+	github_api:
+		| {
+				action: "create_pull_request"
+				owner: string
+				repo: string
+				head: string
+				base: string
+				title: string
+				body?: string | null
+		  }
+		| {
+				action: "get_pull_request"
+				owner: string
+				repo: string
+				pull_number: number
+		  }
+		| {
+				action: "list_checks"
+				owner: string
+				repo: string
+				sha: string
+		  }
+		| {
+				action: "merge_pull_request"
+				owner: string
+				repo: string
+				pull_number: number
+				merge_method?: "merge" | "squash" | "rebase" | null
+				title?: string | null
+				message?: string | null
+		  }
+		| {
+				action: "comment"
+				owner: string
+				repo: string
+				issue_number: number
+				body: string
+		  }
 	// Add more tools as they are migrated to native protocol
 }
 
@@ -258,6 +307,27 @@ export interface GenerateImageToolUse extends ToolUse<"generate_image"> {
 	params: Partial<Pick<Record<ToolParamName, string>, "prompt" | "path" | "image">>
 }
 
+export interface GitHubApiToolUse extends ToolUse<"github_api"> {
+	name: "github_api"
+	params: Partial<
+		Pick<
+			Record<ToolParamName, string>,
+			| "action"
+			| "owner"
+			| "repo"
+			| "pull_number"
+			| "issue_number"
+			| "head"
+			| "base"
+			| "title"
+			| "body"
+			| "sha"
+			| "merge_method"
+			| "message"
+		>
+	>
+}
+
 // Define tool group configuration
 export type ToolGroupConfig = {
 	tools: readonly string[]
@@ -289,6 +359,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	run_slash_command: "run slash command",
 	skill: "load skill",
 	generate_image: "generate images",
+	github_api: "use GitHub API",
 	custom_tool: "use custom tools",
 } as const
 
@@ -306,6 +377,9 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 	},
 	mcp: {
 		tools: ["use_mcp_tool", "access_mcp_resource"],
+	},
+	github: {
+		tools: ["github_api"],
 	},
 	modes: {
 		tools: ["switch_mode", "new_task"],

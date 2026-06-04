@@ -29,6 +29,7 @@
 		"providers": "Providers",
 		"modes": "Modes",
 		"mcp": "MCP Servers",
+		"github": "GitHub",
 		"worktrees": "Worktrees",
 		"skills": "Skills",
 		"autoApprove": "Auto-Approve",
@@ -42,6 +43,11 @@
 		"experimental": "Experimental",
 		"language": "Language",
 		"about": "About Alpha"
+	},
+	"github": {
+		"tokenLabel": "GitHub token",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "Stored securely in VS Code Secret Storage. Used by the native GitHub API tool for pull requests, checks, comments, and merges."
 	},
 	"about": {
 		"manageSettings": "Manage Settings",
