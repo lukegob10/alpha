@@ -52,6 +52,20 @@ function getVsCodeLmReasoningEffortModelOptions(
 	}
 }
 
+function getVsCodeLmMetadataMimeType(chunk: unknown): string | undefined {
+	if (!chunk || typeof chunk !== "object") {
+		return undefined
+	}
+
+	const mimeType = (chunk as { mimeType?: unknown }).mimeType
+	return typeof mimeType === "string" ? mimeType : undefined
+}
+
+function isIgnorableVsCodeLmMetadataChunk(chunk: unknown): boolean {
+	const mimeType = getVsCodeLmMetadataMimeType(chunk)
+	return mimeType === "stateful_marker" || mimeType === "usage"
+}
+
 /**
  * Handles interaction with VS Code's Language Model API for chat-based operations.
  * This handler extends BaseProvider to provide VS Code LM specific functionality.
@@ -529,6 +543,8 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 						// Continue processing other chunks even if one fails
 						continue
 					}
+				} else if (isIgnorableVsCodeLmMetadataChunk(chunk)) {
+					console.debug("Alpha <Language Model API>: Ignoring metadata chunk:", getVsCodeLmMetadataMimeType(chunk))
 				} else {
 					console.warn("Alpha <Language Model API>: Unknown chunk type received:", chunk)
 				}
@@ -677,6 +693,11 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 					result += chunk
 				} else if (isLanguageModelTextPartLike(chunk)) {
 					result += chunk.value
+				} else if (isIgnorableVsCodeLmMetadataChunk(chunk)) {
+					console.debug(
+						"Alpha <Language Model API>: Ignoring completion metadata chunk:",
+						getVsCodeLmMetadataMimeType(chunk),
+					)
 				}
 			}
 			return result
