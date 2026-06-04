@@ -75,7 +75,11 @@ describe("alphamodes JSON schema", () => {
 					roleDefinition: "You are an experienced technical leader.",
 					whenToUse: "Use this mode when you need to plan.",
 					description: "Plan and design before implementation",
-					groups: ["read", ["edit", { fileRegex: "\\.md$", description: "Markdown files only" }], "mcp"],
+					groups: [
+						"read",
+						["edit", { fileRegex: "\\.(md|html)$", description: "Markdown and HTML files only" }],
+						"mcp",
+					],
 					source: "project",
 				},
 			],
