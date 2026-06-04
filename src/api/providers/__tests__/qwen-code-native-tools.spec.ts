@@ -73,6 +73,40 @@ describe("QwenCodeHandler Native Tools", () => {
 		NativeToolCallParser.clearRawChunkState()
 	})
 
+	describe("OAuth credential loading", () => {
+		it("should tolerate appended JSON after a valid credentials object", async () => {
+			const validCredentials = {
+				access_token: "test-access-token",
+				refresh_token: "test-refresh-token",
+				token_type: "Bearer",
+				expiry_date: Date.now() + 3600000,
+				resource_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+			}
+			;(fs.readFile as any).mockResolvedValueOnce(
+				`${JSON.stringify(validCredentials)}${JSON.stringify({ stale: true })}`,
+			)
+			mockCreate.mockImplementationOnce(() => ({
+				[Symbol.asyncIterator]: async function* () {
+					yield {
+						choices: [{ delta: { content: "Recovered credentials" } }],
+					}
+				},
+			}))
+
+			const stream = handler.createMessage("test prompt", [], {
+				taskId: "test-task-id",
+				tools: testTools,
+			})
+			const firstChunk = await stream.next()
+
+			expect(firstChunk.value).toEqual({
+				type: "text",
+				text: "Recovered credentials",
+			})
+			expect(mockCreate).toHaveBeenCalled()
+		})
+	})
+
 	describe("Native Tool Calling Support", () => {
 		it("should include tools in request when model supports native tools and tools are provided", async () => {
 			mockCreate.mockImplementationOnce(() => ({

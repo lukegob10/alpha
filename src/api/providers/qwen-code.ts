@@ -34,6 +34,88 @@ interface QwenCodeHandlerOptions extends ApiHandlerOptions {
 	qwenCodeOauthPath?: string
 }
 
+function isQwenOAuthCredentials(value: unknown): value is QwenOAuthCredentials {
+	if (!value || typeof value !== "object") {
+		return false
+	}
+
+	const credentials = value as Partial<QwenOAuthCredentials>
+	return (
+		typeof credentials.access_token === "string" &&
+		typeof credentials.refresh_token === "string" &&
+		typeof credentials.token_type === "string" &&
+		typeof credentials.expiry_date === "number"
+	)
+}
+
+function findFirstJsonObjectEnd(input: string): number | undefined {
+	let depth = 0
+	let inString = false
+	let escaped = false
+	let started = false
+
+	for (let index = 0; index < input.length; index++) {
+		const char = input[index]
+
+		if (!started) {
+			if (/\s/.test(char)) {
+				continue
+			}
+			if (char !== "{") {
+				return undefined
+			}
+			started = true
+			depth = 1
+			continue
+		}
+
+		if (inString) {
+			if (escaped) {
+				escaped = false
+			} else if (char === "\\") {
+				escaped = true
+			} else if (char === '"') {
+				inString = false
+			}
+			continue
+		}
+
+		if (char === '"') {
+			inString = true
+		} else if (char === "{" || char === "[") {
+			depth++
+		} else if (char === "}" || char === "]") {
+			depth--
+			if (depth === 0) {
+				return index + 1
+			}
+		}
+	}
+
+	return undefined
+}
+
+function parseQwenCredentialsFile(content: string): QwenOAuthCredentials {
+	const trimmed = content.trim()
+	let parsed: unknown
+
+	try {
+		parsed = JSON.parse(trimmed)
+	} catch (error) {
+		const objectEnd = findFirstJsonObjectEnd(trimmed)
+		if (!objectEnd) {
+			throw error
+		}
+		parsed = JSON.parse(trimmed.slice(0, objectEnd))
+	}
+
+	if (!isQwenOAuthCredentials(parsed)) {
+		throw new Error("Qwen OAuth credentials file does not contain the required credential fields.")
+	}
+
+	return parsed
+}
+
 function getQwenCachedCredentialPath(customPath?: string): string {
 	if (customPath) {
 		// Support custom path that starts with ~/ or is absolute
@@ -84,7 +166,7 @@ export class QwenCodeHandler extends BaseProvider implements SingleCompletionHan
 		try {
 			const keyFile = getQwenCachedCredentialPath(this.options.qwenCodeOauthPath)
 			const credsStr = await fs.readFile(keyFile, "utf-8")
-			return JSON.parse(credsStr)
+			return parseQwenCredentialsFile(credsStr)
 		} catch (error) {
 			console.error(
 				`Error reading or parsing credentials file at ${getQwenCachedCredentialPath(this.options.qwenCodeOauthPath)}`,
