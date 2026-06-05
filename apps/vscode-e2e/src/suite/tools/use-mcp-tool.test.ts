@@ -21,7 +21,7 @@ suite.skip("Alpha use_mcp_tool Tool", function () {
 
 	// Create a temporary directory and test files
 	suiteSetup(async () => {
-		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "roo-test-mcp-"))
+		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-test-mcp-"))
 
 		// Create test files in VSCode workspace directory
 		const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || tempDir

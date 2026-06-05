@@ -16,7 +16,7 @@ suite.skip("Alpha write_to_file Tool", function () {
 
 	// Create a temporary directory for test files
 	suiteSetup(async () => {
-		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "roo-test-"))
+		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-test-"))
 	})
 
 	// Clean up temporary directory after tests
@@ -167,7 +167,7 @@ suite.skip("Alpha write_to_file Tool", function () {
 				testFilePath, // Expected location
 				path.join(tempDir, baseFileName), // In temp directory
 				path.join(process.cwd(), baseFileName), // In current working directory
-				path.join("/tmp/roo-test-workspace-" + "*", baseFileName), // In workspace created by runTest.ts
+				path.join("/tmp/alpha-test-workspace-" + "*", baseFileName), // In workspace created by runTest.ts
 			]
 
 			let fileFound = false
@@ -177,7 +177,7 @@ suite.skip("Alpha write_to_file Tool", function () {
 			// First check the workspace directory that was created
 			const workspaceDirs = await fs
 				.readdir("/tmp")
-				.then((files) => files.filter((f) => f.startsWith("roo-test-workspace-")))
+				.then((files) => files.filter((f) => f.startsWith("alpha-test-workspace-")))
 				.catch(() => [])
 
 			for (const wsDir of workspaceDirs) {
@@ -238,7 +238,7 @@ suite.skip("Alpha write_to_file Tool", function () {
 					const tmpFiles = await fs.readdir("/tmp")
 					console.log(
 						"Test files in /tmp:",
-						tmpFiles.filter((f) => f.includes("test-file") || f.includes("roo-test")),
+						tmpFiles.filter((f) => f.includes("test-file") || f.includes("alpha-test")),
 					)
 				} catch (e) {
 					console.log("Could not list /tmp:", e)
@@ -355,7 +355,7 @@ suite.skip("Alpha write_to_file Tool", function () {
 			// Check workspace directories
 			const workspaceDirs = await fs
 				.readdir("/tmp")
-				.then((files) => files.filter((f) => f.startsWith("roo-test-workspace-")))
+				.then((files) => files.filter((f) => f.startsWith("alpha-test-workspace-")))
 				.catch(() => [])
 
 			for (const wsDir of workspaceDirs) {

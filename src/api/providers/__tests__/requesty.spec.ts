@@ -58,9 +58,9 @@ describe("RequestyHandler", () => {
 			baseURL: "https://router.requesty.ai/v1",
 			apiKey: mockOptions.requestyApiKey,
 			defaultHeaders: {
-				"HTTP-Referer": "https://github.com/RooVetGit/Alpha-Alpha",
+				"HTTP-Referer": "https://github.com/lukegob10/alpha",
 				"X-Title": "Alpha",
-				"User-Agent": `RooCode/${Package.version}`,
+				"User-Agent": `Alpha/${Package.version}`,
 			},
 		})
 	})
@@ -73,9 +73,9 @@ describe("RequestyHandler", () => {
 			baseURL: "https://custom.requesty.ai/v1",
 			apiKey: mockOptions.requestyApiKey,
 			defaultHeaders: {
-				"HTTP-Referer": "https://github.com/RooVetGit/Alpha-Alpha",
+				"HTTP-Referer": "https://github.com/lukegob10/alpha",
 				"X-Title": "Alpha",
-				"User-Agent": `RooCode/${Package.version}`,
+				"User-Agent": `Alpha/${Package.version}`,
 			},
 		})
 	})

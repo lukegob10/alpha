@@ -42,7 +42,7 @@ export const SambaNova = ({ apiConfiguration, setApiConfigurationField }: SambaN
 			</div>
 			{!apiConfiguration?.sambaNovaApiKey && (
 				<VSCodeButtonLink
-					href="https://cloud.sambanova.ai/?utm_source=roocode&utm_medium=external&utm_campaign=cloud_signup"
+					href="https://cloud.sambanova.ai/?utm_source=alpha&utm_medium=external&utm_campaign=cloud_signup"
 					appearance="secondary">
 					{t("settings:providers.getSambaNovaApiKey")}
 				</VSCodeButtonLink>

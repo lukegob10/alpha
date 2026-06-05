@@ -1492,7 +1492,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// simply removes the reference to this instance, but the instance is
 		// still alive until this promise resolves or rejects.)
 		if (this.abort) {
-			throw new Error(`[RooCode#ask] task ${this.taskId}.${this.instanceId} aborted`)
+			throw new Error(`[Alpha#ask] task ${this.taskId}.${this.instanceId} aborted`)
 		}
 
 		let askTs: number
@@ -1984,7 +1984,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		contextTruncation?: ContextTruncation,
 	): Promise<undefined> {
 		if (this.abort) {
-			throw new Error(`[RooCode#say] task ${this.taskId}.${this.instanceId} aborted`)
+			throw new Error(`[Alpha#say] task ${this.taskId}.${this.instanceId} aborted`)
 		}
 
 		if (partial !== undefined) {
@@ -2727,7 +2727,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const currentIncludeFileDetails = currentItem.includeFileDetails
 
 			if (this.abort) {
-				throw new Error(`[RooCode#recursivelyMakeRooRequests] task ${this.taskId}.${this.instanceId} aborted`)
+				throw new Error(`[Alpha#recursivelyMakeRequests] task ${this.taskId}.${this.instanceId} aborted`)
 			}
 
 			if (this.consecutiveMistakeLimit > 0 && this.consecutiveMistakeCount >= this.consecutiveMistakeLimit) {
@@ -2981,15 +2981,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						// If we have an abort controller, race it with the next chunk
 						const abortPromise = this.currentRequestAbortController
 							? new Promise<never>((_, reject) => {
-								const signal = this.currentRequestAbortController!.signal
-								const onAbort = () => reject(new Error("Request cancelled by user"))
-								if (signal.aborted) {
-									onAbort()
-								} else {
-									signal.addEventListener("abort", onAbort, { once: true })
-									removeAbortListener = () => signal.removeEventListener("abort", onAbort)
-								}
-							})
+									const signal = this.currentRequestAbortController!.signal
+									const onAbort = () => reject(new Error("Request cancelled by user"))
+									if (signal.aborted) {
+										onAbort()
+									} else {
+										signal.addEventListener("abort", onAbort, { once: true })
+										removeAbortListener = () => signal.removeEventListener("abort", onAbort)
+									}
+								})
 							: undefined
 
 						const operation = abortPromise ? Promise.race([nextPromise, abortPromise]) : nextPromise
@@ -3399,9 +3399,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				// Need to call here in case the stream was aborted.
 				if (this.abort || this.abandoned) {
-					throw new Error(
-						`[RooCode#recursivelyMakeRooRequests] task ${this.taskId}.${this.instanceId} aborted`,
-					)
+					throw new Error(`[Alpha#recursivelyMakeRequests] task ${this.taskId}.${this.instanceId} aborted`)
 				}
 
 				this.didCompleteReadingStream = true

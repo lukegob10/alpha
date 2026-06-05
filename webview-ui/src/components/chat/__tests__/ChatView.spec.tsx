@@ -136,14 +136,14 @@ vi.mock("../QueuedMessages", () => ({
 // Mock AlphaTips component
 vi.mock("@src/components/welcome/AlphaTips", () => ({
 	default: function MockAlphaTips() {
-		return <div data-testid="roo-tips">Tips content</div>
+		return <div data-testid="alpha-tips">Tips content</div>
 	},
 }))
 
 // Mock AlphaHero component
 vi.mock("@src/components/welcome/AlphaHero", () => ({
 	default: function MockAlphaHero() {
-		return <div data-testid="roo-hero">Hero content</div>
+		return <div data-testid="alpha-hero">Hero content</div>
 	},
 }))
 
@@ -756,9 +756,9 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 			// Should not show DismissibleUpsell during active task
 			expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
 			// Should not show AlphaTips either since the entire welcome screen is hidden during active tasks
-			expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
+			expect(queryByTestId("alpha-tips")).not.toBeInTheDocument()
 			// Should not show AlphaHero either since the entire welcome screen is hidden during active tasks
-			expect(queryByTestId("roo-hero")).not.toBeInTheDocument()
+			expect(queryByTestId("alpha-hero")).not.toBeInTheDocument()
 		})
 	})
 
@@ -778,7 +778,7 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 
 		// Should not show DismissibleUpsell but should show AlphaTips
 		expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
-		expect(getByTestId("roo-tips")).toBeInTheDocument()
+		expect(getByTestId("alpha-tips")).toBeInTheDocument()
 	})
 
 	it("shows AlphaTips when user has fewer than 6 tasks (instead of DismissibleUpsell)", () => {
@@ -796,7 +796,7 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 
 		// Should not show DismissibleUpsell but should show AlphaTips
 		expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
-		expect(getByTestId("roo-tips")).toBeInTheDocument()
+		expect(getByTestId("alpha-tips")).toBeInTheDocument()
 	})
 })
 
@@ -830,7 +830,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		expect(queryByText("Second task")).toBeInTheDocument()
-		expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
+		expect(queryByTestId("alpha-tips")).not.toBeInTheDocument()
 	})
 
 	it("enters an empty new-task window before backend state clears the old running task", async () => {
@@ -878,7 +878,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		await waitFor(() => {
 			const input = getByTestId("chat-textarea").querySelector("input")!
 			expect(input.getAttribute("data-sending-disabled")).toBe("false")
-			expect(queryByTestId("roo-tips")).toBeInTheDocument()
+			expect(queryByTestId("alpha-tips")).toBeInTheDocument()
 		})
 
 		mockPostMessage({
@@ -911,7 +911,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("roo-tips")).toBeInTheDocument()
+			expect(queryByTestId("alpha-tips")).toBeInTheDocument()
 		})
 
 		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
@@ -975,7 +975,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("roo-tips")).toBeInTheDocument()
+			expect(queryByTestId("alpha-tips")).toBeInTheDocument()
 		})
 
 		mockPostMessage({
@@ -987,7 +987,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
+			expect(queryByTestId("alpha-tips")).not.toBeInTheDocument()
 			expect(queryByText("Original task")).toBeInTheDocument()
 		})
 	})
@@ -1045,7 +1045,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("roo-tips")).toBeInTheDocument()
+			expect(queryByTestId("alpha-tips")).toBeInTheDocument()
 		})
 
 		mockPostMessage({
@@ -1057,7 +1057,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
+			expect(queryByTestId("alpha-tips")).not.toBeInTheDocument()
 			expect(queryByText("Original task")).toBeInTheDocument()
 		})
 	})
