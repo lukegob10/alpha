@@ -2256,6 +2256,7 @@ export class ClineProvider
 			maxGitStatusFiles,
 			imageGenerationProvider,
 			openRouterImageApiKey,
+			githubToken,
 			openRouterImageGenerationSelectedModel,
 			lockApiConfigAcrossModes,
 		} = await this.getState()
@@ -2417,6 +2418,7 @@ export class ClineProvider
 			maxGitStatusFiles: maxGitStatusFiles ?? 0,
 			imageGenerationProvider,
 			openRouterImageApiKey,
+			githubToken,
 			openRouterImageGenerationSelectedModel,
 			openAiCodexIsAuthenticated: await (async () => {
 				try {
@@ -2581,6 +2583,7 @@ export class ClineProvider
 			maxGitStatusFiles: stateValues.maxGitStatusFiles ?? 0,
 			imageGenerationProvider: stateValues.imageGenerationProvider,
 			openRouterImageApiKey: stateValues.openRouterImageApiKey,
+			githubToken: stateValues.githubToken,
 			openRouterImageGenerationSelectedModel: stateValues.openRouterImageGenerationSelectedModel,
 		}
 	}
