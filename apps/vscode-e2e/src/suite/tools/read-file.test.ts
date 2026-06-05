@@ -24,7 +24,7 @@ suite.skip("Alpha read_file Tool", function () {
 
 	// Create a temporary directory and test files
 	suiteSetup(async () => {
-		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "roo-test-read-"))
+		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-test-read-"))
 
 		// Create test files in VSCode workspace directory
 		const workspaceDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || tempDir

@@ -7,7 +7,7 @@ Use this when asking another coding agent to port the Vertex/GCP gateway work fr
 The implementation already exists here:
 
 ```powershell
-cd F:\roo-fork\Roo-Code-Forked
+cd F:\roo-fork\Alpha-Code
 git fetch --all --tags
 git checkout refresh/vertex-gateway-main-20260330
 ```
@@ -47,7 +47,7 @@ The gateway mode must:
 In the source repo, inspect this exact diff:
 
 ```powershell
-cd F:\roo-fork\Roo-Code-Forked
+cd F:\roo-fork\Alpha-Code
 git diff --stat 8b9229069^..dca345a78
 git diff 8b9229069^..dca345a78 -- `
   packages/types/src/provider-settings.ts `
@@ -233,7 +233,7 @@ Give the target coding agent this prompt:
 ```text
 Port the Vertex/GCP gateway implementation from:
 
-F:\roo-fork\Roo-Code-Forked
+F:\roo-fork\Alpha-Code
 branch: refresh/vertex-gateway-main-20260330
 
 Use these commits as the source reference:
