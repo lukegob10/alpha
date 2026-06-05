@@ -749,6 +749,16 @@ describe("ClineProvider", () => {
 		expect(state).toHaveProperty("writeDelayMs")
 	})
 
+	test("includes saved GitHub token in state posted to webview", async () => {
+		await provider.contextProxy.setValue("githubToken", "ghp-test-token")
+
+		const state = await provider.getState()
+		const webviewState = await provider.getStateToPostToWebview()
+
+		expect(state.githubToken).toBe("ghp-test-token")
+		expect(webviewState.githubToken).toBe("ghp-test-token")
+	})
+
 	test("getState preserves code index embedding rate limit settings", async () => {
 		await provider.contextProxy.setValue("codebaseIndexConfig", {
 			codebaseIndexEnabled: true,
