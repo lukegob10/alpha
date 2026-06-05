@@ -59,7 +59,7 @@
 		"contact": {
 			"label": "Нужно с нами связаться? Напишите"
 		},
-		"community": "Хотите получить советы или просто пообщаться с другими пользователями Alpha? Присоединяйтесь к <redditLink>reddit.com/r/RooCode</redditLink> или <discordLink>discord.gg/roocode</discordLink>",
+		"community": "Хотите получить советы или просто пообщаться с другими пользователями Alpha? Присоединяйтесь к <redditLink>Alpha community</redditLink> или <discordLink>Alpha updates</discordLink>",
 		"contactAndCommunity": "Контакты и Сообщество",
 		"manageSettings": "Управление Настройками",
 		"debugMode": {

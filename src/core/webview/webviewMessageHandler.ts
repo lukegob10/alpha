@@ -3268,7 +3268,7 @@ export const webviewMessageHandler = async (
 				try {
 					const tmpDir = os.tmpdir()
 					const timestamp = Date.now()
-					const tempFileName = `roo-preview-${timestamp}.md`
+					const tempFileName = `alpha-preview-${timestamp}.md`
 					const tempFilePath = path.join(tmpDir, tempFileName)
 
 					await fs.writeFile(tempFilePath, message.text, "utf8")
@@ -3356,7 +3356,7 @@ export const webviewMessageHandler = async (
 				// Create a temporary file
 				const tmpDir = os.tmpdir()
 				const timestamp = Date.now()
-				const tempFileName = `roo-debug-${message.type === "openDebugApiHistory" ? "api" : "ui"}-${currentTask.taskId.slice(0, 8)}-${timestamp}.json`
+				const tempFileName = `alpha-debug-${message.type === "openDebugApiHistory" ? "api" : "ui"}-${currentTask.taskId.slice(0, 8)}-${timestamp}.json`
 				const tempFilePath = path.join(tmpDir, tempFileName)
 
 				await fs.writeFile(tempFilePath, prettifiedContent, "utf8")
