@@ -488,6 +488,13 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 				// Handle Enter key based on enterBehavior setting
 				if (event.key === "Enter" && !isComposing) {
+					if (isEditMode && !event.shiftKey) {
+						event.preventDefault()
+						resetHistoryNavigation()
+						onSend()
+						return
+					}
+
 					if (enterBehavior === "newline") {
 						// New behavior: Enter = newline, Shift+Enter or Ctrl+Enter = send
 						if (event.shiftKey || event.ctrlKey || event.metaKey) {
@@ -568,6 +575,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				resetHistoryNavigation,
 				commands,
 				enterBehavior,
+				isEditMode,
 			],
 		)
 
@@ -1301,7 +1309,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 													: t("chat:pressToSend", { keyCombination: sendKeyCombination })
 										}
 										disabled={false}
-										onClick={isStreaming ? onStop : onSend}
+										onClick={isEditMode ? onSend : isStreaming ? onStop : onSend}
 										className={cn(
 											"relative inline-flex items-center justify-center",
 											"bg-transparent border-none p-1.5",
@@ -1317,10 +1325,11 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 											(isEditMode || isStreaming || hasInputContent) &&
 												"active:bg-[rgba(255,255,255,0.1)]",
 											(isEditMode || isStreaming || hasInputContent) && "cursor-pointer",
-											isStreaming &&
+											!isEditMode &&
+												isStreaming &&
 												"bg-vscode-button-background hover:bg-vscode-button-background",
 										)}>
-										{isStreaming ? (
+										{!isEditMode && isStreaming ? (
 											<Square className="size-4 stroke-none fill-vscode-button-foreground" />
 										) : (
 											<SendHorizontal className="size-4" />

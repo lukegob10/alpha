@@ -15,6 +15,7 @@ import {
 	type Command as SlashCommand,
 	type WebviewMessage,
 	type EditQueuedMessagePayload,
+	type ReorderQueuedMessagePayload,
 	TelemetryEventName,
 	RooCodeSettings,
 	ExperimentId,
@@ -3215,6 +3216,20 @@ export const webviewMessageHandler = async (
 			)
 			break
 		}
+		case "steerQueuedMessage": {
+			const task = getRequiredTaskForMessage(provider, message, "steerQueuedMessage")
+			if (!task) {
+				break
+			}
+
+			const queued = task.messageQueueService.takeMessage(message.text ?? "")
+
+			if (queued) {
+				await task.steerUserMessage(queued.text, queued.images)
+			}
+
+			break
+		}
 		case "editQueuedMessage": {
 			if (message.payload) {
 				const { id, text, images } = message.payload as EditQueuedMessagePayload
@@ -3222,6 +3237,17 @@ export const webviewMessageHandler = async (
 					id,
 					text,
 					images,
+				)
+			}
+
+			break
+		}
+		case "reorderQueuedMessage": {
+			if (message.payload) {
+				const { id, toIndex } = message.payload as ReorderQueuedMessagePayload
+				getRequiredTaskForMessage(provider, message, "reorderQueuedMessage")?.messageQueueService.moveMessage(
+					id,
+					toIndex,
 				)
 			}
 
@@ -3268,7 +3294,7 @@ export const webviewMessageHandler = async (
 				try {
 					const tmpDir = os.tmpdir()
 					const timestamp = Date.now()
-					const tempFileName = `alpha-preview-${timestamp}.md`
+					const tempFileName = `roo-preview-${timestamp}.md`
 					const tempFilePath = path.join(tmpDir, tempFileName)
 
 					await fs.writeFile(tempFilePath, message.text, "utf8")
@@ -3356,7 +3382,7 @@ export const webviewMessageHandler = async (
 				// Create a temporary file
 				const tmpDir = os.tmpdir()
 				const timestamp = Date.now()
-				const tempFileName = `alpha-debug-${message.type === "openDebugApiHistory" ? "api" : "ui"}-${currentTask.taskId.slice(0, 8)}-${timestamp}.json`
+				const tempFileName = `roo-debug-${message.type === "openDebugApiHistory" ? "api" : "ui"}-${currentTask.taskId.slice(0, 8)}-${timestamp}.json`
 				const tempFilePath = path.join(tmpDir, tempFileName)
 
 				await fs.writeFile(tempFilePath, prettifiedContent, "utf8")

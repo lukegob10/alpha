@@ -259,6 +259,60 @@ describe("webviewMessageHandler - image mentions", () => {
 	})
 })
 
+describe("webviewMessageHandler - queued message steering", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("removes the selected queued message and steers it into the active task", async () => {
+		const queuedMessage = {
+			id: "queued-1",
+			timestamp: Date.now(),
+			text: "steer this now",
+			images: ["img1.png"],
+		}
+		const takeMessage = vi.fn().mockReturnValue(queuedMessage)
+		const steerUserMessage = vi.fn().mockResolvedValue(undefined)
+
+		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue({
+			messageQueueService: {
+				takeMessage,
+			},
+			steerUserMessage,
+		} as any)
+
+		await webviewMessageHandler(mockClineProvider, {
+			type: "steerQueuedMessage",
+			text: "queued-1",
+			taskId: "task-1",
+		})
+
+		expect(takeMessage).toHaveBeenCalledWith("queued-1")
+		expect(steerUserMessage).toHaveBeenCalledWith("steer this now", ["img1.png"])
+	})
+
+	it("moves the selected queued message on the resolved task", async () => {
+		const moveMessage = vi.fn().mockReturnValue(true)
+
+		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue({
+			messageQueueService: {
+				moveMessage,
+			},
+		} as any)
+
+		await webviewMessageHandler(mockClineProvider, {
+			type: "reorderQueuedMessage",
+			payload: {
+				id: "queued-2",
+				toIndex: 0,
+			},
+			taskId: "task-1",
+		})
+
+		expect(moveMessage).toHaveBeenCalledWith("queued-2", 0)
+	})
+})
+
 describe("webviewMessageHandler - newTask", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()

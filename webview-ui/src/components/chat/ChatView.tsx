@@ -10,7 +10,7 @@ import { appendImages } from "@src/utils/imageUtils"
 import { getCostBreakdownIfNeeded } from "@src/utils/costFormatting"
 import { batchConsecutive } from "@src/utils/batchConsecutive"
 
-import type { ClineAsk, ClineSayTool, ClineMessage, ExtensionMessage, AudioType } from "@alpha-code/types"
+import type { ClineAsk, ClineSayTool, ClineMessage, ExtensionMessage, AudioType, QueuedMessage } from "@alpha-code/types"
 import { isRetiredProvider } from "@alpha-code/types"
 
 import { findLast } from "@alpha/array"
@@ -207,6 +207,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const textAreaRef = useRef<HTMLTextAreaElement>(null)
 	const [sendingDisabled, setSendingDisabled] = useState(false)
 	const [selectedImages, setSelectedImages] = useState<string[]>([])
+	const selectedImagesRef = useRef(selectedImages)
+	const [editingQueuedMessage, setEditingQueuedMessage] = useState<{
+		id: string
+		priorText: string
+		priorImages: string[]
+	} | null>(null)
 
 	// We need to hold on to the ask because useEffect > lastMessage will always
 	// let us know when an ask comes in and handle it, but by the time
@@ -257,6 +263,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	useEffect(() => {
 		inputValueRef.current = inputValue
 	}, [inputValue])
+
+	useEffect(() => {
+		selectedImagesRef.current = selectedImages
+	}, [selectedImages])
 
 	// Compute whether auto-approval is paused (user is typing in a followup)
 	const isFollowUpAutoApprovalPaused = useMemo(() => {
@@ -671,6 +681,22 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				return
 			}
 
+			if (editingQueuedMessage) {
+				vscode.postMessage({
+					type: "editQueuedMessage",
+					payload: {
+						id: editingQueuedMessage.id,
+						text,
+						images,
+					},
+					...visibleTaskPayload,
+				})
+				setInputValue(editingQueuedMessage.priorText)
+				setSelectedImages(editingQueuedMessage.priorImages)
+				setEditingQueuedMessage(null)
+				return
+			}
+
 			// Intercept when the active provider is retired; show a WarningRow instead of sending.
 			if (apiConfiguration?.apiProvider && isRetiredProvider(apiConfiguration.apiProvider)) {
 				setShowRetiredProviderWarning(true)
@@ -720,6 +746,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			visibleMessageQueue.length,
 			apiConfiguration?.apiProvider,
 			visibleTaskPayload,
+			editingQueuedMessage,
 		], // messagesRef and clineAskRef are stable
 	)
 
@@ -763,6 +790,31 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			setSelectedImages([])
 		}
 	}, [visibleTaskPayload, inputValue, selectedImages])
+
+	const startQueuedMessageEdit = useCallback(
+		(message: QueuedMessage) => {
+			setEditingQueuedMessage({
+				id: message.id,
+				priorText: editingQueuedMessage?.priorText ?? inputValueRef.current,
+				priorImages: editingQueuedMessage?.priorImages ?? selectedImagesRef.current,
+			})
+			setInputValue(message.text)
+			setSelectedImages(message.images ?? [])
+			setTimeout(() => textAreaRef.current?.focus(), 0)
+		},
+		[editingQueuedMessage],
+	)
+
+	const cancelQueuedMessageEdit = useCallback(() => {
+		if (!editingQueuedMessage) {
+			return
+		}
+
+		setInputValue(editingQueuedMessage.priorText)
+		setSelectedImages(editingQueuedMessage.priorImages)
+		setEditingQueuedMessage(null)
+		setTimeout(() => textAreaRef.current?.focus(), 0)
+	}, [editingQueuedMessage])
 
 	// This logic depends on the useEffect[messages] above to set clineAsk,
 	// after which buttons are shown and we then send an askResponse to the
@@ -1610,6 +1662,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		acceptInput: () => {
 			const hasInput = inputValue.trim() || selectedImages.length > 0
 
+			if (editingQueuedMessage && hasInput) {
+				handleSendMessage(inputValue, selectedImages)
+				return
+			}
+
 			// Special case: during command_output, queue the message instead of
 			// triggering the primary button action (which would lose the message)
 			if (clineAskRef.current === "command_output" && hasInput) {
@@ -1830,6 +1887,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			<QueuedMessages
 				queue={visibleMessageQueue}
+				editingMessageId={editingQueuedMessage?.id}
 				onRemove={(index) => {
 					if (visibleMessageQueue[index]) {
 						vscode.postMessage({
@@ -1839,14 +1897,27 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						})
 					}
 				}}
-				onUpdate={(index, newText) => {
+				onSteer={(index) => {
 					if (visibleMessageQueue[index]) {
 						vscode.postMessage({
-							type: "editQueuedMessage",
+							type: "steerQueuedMessage",
+							text: visibleMessageQueue[index].id,
+							...visibleTaskPayload,
+						})
+					}
+				}}
+				onEdit={(index) => {
+					if (visibleMessageQueue[index]) {
+						startQueuedMessageEdit(visibleMessageQueue[index])
+					}
+				}}
+				onReorder={(fromIndex, toIndex) => {
+					if (visibleMessageQueue[fromIndex]) {
+						vscode.postMessage({
+							type: "reorderQueuedMessage",
 							payload: {
-								id: visibleMessageQueue[index].id,
-								text: newText,
-								images: visibleMessageQueue[index].images,
+								id: visibleMessageQueue[fromIndex].id,
+								toIndex,
 							},
 							...visibleTaskPayload,
 						})
@@ -1883,6 +1954,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				mode={mode}
 				setMode={setMode}
 				modeShortcutText={modeShortcutText}
+				isEditMode={Boolean(editingQueuedMessage)}
+				onCancel={cancelQueuedMessageEdit}
 				isStreaming={isStreaming}
 				onStop={handleStopTask}
 				onEnqueueMessage={handleEnqueueCurrentMessage}

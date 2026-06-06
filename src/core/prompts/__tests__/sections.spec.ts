@@ -199,6 +199,16 @@ describe("getRulesSection shell-aware command chaining", () => {
 		expect(result).toContain("PowerShell's `-replace` operator")
 	})
 
+	it("includes PowerShell-safe wait guidance", () => {
+		vi.spyOn(shellUtils, "getShell").mockReturnValue(
+			"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+		)
+		const result = getRulesSection(cwd)
+
+		expect(result).toContain("Start-Sleep -Seconds N")
+		expect(result).toContain("timeout /t N > nul")
+	})
+
 	it("includes Unix utility guidance for cmd.exe", () => {
 		vi.spyOn(shellUtils, "getShell").mockReturnValue("C:\\Windows\\System32\\cmd.exe")
 		const result = getRulesSection(cwd)
