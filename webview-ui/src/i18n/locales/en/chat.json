@@ -446,7 +446,14 @@
 	},
 	"queuedMessages": {
 		"title": "Queued Messages",
-		"clickToEdit": "Click to edit message"
+		"clickToEdit": "Click to edit message",
+		"edit": "Edit",
+		"editTooltip": "Edit this queued message",
+		"editing": "Editing in composer",
+		"dragHandle": "Drag queued message",
+		"dragTooltip": "Drag to reorder this queued message",
+		"steer": "Steer",
+		"steerTooltip": "Send this queued message into the current turn"
 	},
 	"contextMenu": {
 		"noResults": "No results",

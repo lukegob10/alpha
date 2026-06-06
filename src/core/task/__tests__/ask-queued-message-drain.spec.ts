@@ -26,12 +26,32 @@ describe("Task.ask queued message drain", () => {
 		return task
 	}
 
-	it("consumes queued message while blocked on followup ask", async () => {
+	it.each(["followup", "tool", "command"] as const)(
+		"does not consume queued messages while blocked on %s ask",
+		async (askType) => {
+			const task = await createAskOnlyTask()
+
+			const askPromise = task.ask(askType, "Q?", false)
+			;(task as any).messageQueueService.addMessage("queued next turn")
+
+			setTimeout(() => {
+				;(task as any).handleWebviewAskResponse("messageResponse", "manual response")
+			}, 0)
+
+			const result = await askPromise
+
+			expect(result.response).toBe("messageResponse")
+			expect(result.text).toBe("manual response")
+			expect((task as any).messageQueueService.isEmpty()).toBe(false)
+			expect((task as any).messageQueueService.messages[0]?.text).toBe("queued next turn")
+		},
+	)
+
+	it("consumes queued message while blocked on completion ask", async () => {
 		const task = await createAskOnlyTask()
 
-		const askPromise = task.ask("followup", "Q?", false)
+		const askPromise = task.ask("completion_result", "Done", false)
 
-		// Simulate webview queuing the user's selection text while the ask is pending.
 		;(task as any).messageQueueService.addMessage("picked answer")
 
 		const result = await askPromise

@@ -63,6 +63,18 @@ export class MessageQueueService extends EventEmitter<QueueEvents> {
 		return true
 	}
 
+	public takeMessage(id: string): QueuedMessage | undefined {
+		const { index, message } = this.findMessage(id)
+
+		if (!message) {
+			return undefined
+		}
+
+		this._messages.splice(index, 1)
+		this.emit("stateChanged", this._messages)
+		return message
+	}
+
 	public updateMessage(id: string, text: string, images?: string[]): boolean {
 		const { message } = this.findMessage(id)
 
@@ -73,6 +85,25 @@ export class MessageQueueService extends EventEmitter<QueueEvents> {
 		message.timestamp = Date.now()
 		message.text = text
 		message.images = images
+		this.emit("stateChanged", this._messages)
+		return true
+	}
+
+	public moveMessage(id: string, toIndex: number): boolean {
+		const { index, message } = this.findMessage(id)
+
+		if (!message) {
+			return false
+		}
+
+		const clampedIndex = Math.max(0, Math.min(toIndex, this._messages.length - 1))
+
+		if (index === clampedIndex) {
+			return true
+		}
+
+		this._messages.splice(index, 1)
+		this._messages.splice(clampedIndex, 0, message)
 		this.emit("stateChanged", this._messages)
 		return true
 	}

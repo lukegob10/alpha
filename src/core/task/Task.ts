@@ -7,6 +7,13 @@ import EventEmitter from "events"
 
 import { AskIgnoredError } from "./AskIgnoredError"
 
+class SteerRequestInterruptError extends Error {
+	constructor() {
+		super("Request interrupted by steered user message")
+		this.name = "SteerRequestInterruptError"
+	}
+}
+
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 import debounce from "lodash.debounce"
@@ -266,6 +273,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private readonly globalStoragePath: string
 	abort: boolean = false
 	currentRequestAbortController?: AbortController
+	private pendingSteerMessage?: { text: string; images: string[] }
+	private isTaskLoopActive = false
 	skipPrevResponseIdOnce: boolean = false
 
 	// TaskStatus
@@ -312,6 +321,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private askResponse?: ClineAskResponse
 	private askResponseText?: string
 	private askResponseImages?: string[]
+	private activeAsk?: { type: ClineAsk; ts: number }
 	public lastMessageTs?: number
 	private autoApprovalTimeoutRef?: NodeJS.Timeout
 
@@ -1117,6 +1127,39 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	private buildUserMessageContent(text?: string, images?: string[]): Anthropic.Messages.ContentBlockParam[] {
+		const userContent: Anthropic.Messages.ContentBlockParam[] = []
+
+		if (text) {
+			userContent.push({
+				type: "text",
+				text: `<user_message>\n${text}\n</user_message>`,
+			})
+		}
+
+		if (images && images.length > 0) {
+			userContent.push(...formatResponse.imageBlocks(images))
+		}
+
+		return userContent
+	}
+
+	private takeLastApiUserMessageContent(): Anthropic.Messages.ContentBlockParam[] {
+		const lastMessage = this.apiConversationHistory.at(-1)
+
+		if (lastMessage?.role !== "user") {
+			return []
+		}
+
+		this.apiConversationHistory.pop()
+
+		if (Array.isArray(lastMessage.content)) {
+			return lastMessage.content as Anthropic.Messages.ContentBlockParam[]
+		}
+
+		return [{ type: "text", text: lastMessage.content }]
+	}
+
 	// NOTE: We intentionally do NOT mutate stored messages to merge consecutive user turns.
 	// For API requests, consecutive same-role messages are merged via mergeConsecutiveApiMessages()
 	// so rewind/edit behavior can still reference original message boundaries.
@@ -1492,7 +1535,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// simply removes the reference to this instance, but the instance is
 		// still alive until this promise resolves or rejects.)
 		if (this.abort) {
-			throw new Error(`[Alpha#ask] task ${this.taskId}.${this.instanceId} aborted`)
+			throw new Error(`[RooCode#ask] task ${this.taskId}.${this.instanceId} aborted`)
 		}
 
 		let askTs: number
@@ -1573,6 +1616,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await this.addToClineMessages({ ts: askTs, type: "ask", ask: type, text, isProtected })
 		}
 
+		this.activeAsk = { type, ts: askTs }
+
 		let timeouts: NodeJS.Timeout[] = []
 
 		// Automatically approve if the ask according to the user's settings.
@@ -1607,9 +1652,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// block (via the `pWaitFor`).
 		const isBlocking = !(this.askResponse !== undefined || this.lastMessageTs !== askTs)
 		const isMessageQueued = !this.messageQueueService.isEmpty()
-		// Keep queued user messages intact during command_output asks. Those asks
-		// are terminal flow-control, not conversational turns.
-		const shouldDrainQueuedMessageForAsk = type !== "command_output"
+		// Queued messages represent the next conversational turn. Only drain them
+		// at completion/resume boundaries unless the user explicitly steers one.
+		const shouldDrainQueuedMessageForAsk =
+			type === "completion_result" || type === "resume_task" || type === "resume_completed_task"
 		const isStatusMutable = !partial && isBlocking && !isMessageQueued && approval.decision === "ask"
 
 		if (isStatusMutable) {
@@ -1654,16 +1700,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const message = this.messageQueueService.dequeueMessage()
 
 			if (message) {
-				// Check if this is a tool approval ask that needs to be handled.
-				if (type === "tool" || type === "command" || type === "use_mcp_server") {
-					// For tool approvals, we need to approve first, then send
-					// the message if there's text/images.
-					this.handleWebviewAskResponse("yesButtonClicked", message.text, message.images)
-				} else {
-					// For other ask types (like followup or command_output), fulfill the ask
-					// directly.
-					this.handleWebviewAskResponse("messageResponse", message.text, message.images)
-				}
+				this.handleWebviewAskResponse("messageResponse", message.text, message.images)
 			}
 		}
 
@@ -1680,13 +1717,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (shouldDrainQueuedMessageForAsk && !this.messageQueueService.isEmpty()) {
 					const message = this.messageQueueService.dequeueMessage()
 					if (message) {
-						// If this is a tool approval ask, we need to approve first (yesButtonClicked)
-						// and include any queued text/images.
-						if (type === "tool" || type === "command" || type === "use_mcp_server") {
-							this.handleWebviewAskResponse("yesButtonClicked", message.text, message.images)
-						} else {
-							this.handleWebviewAskResponse("messageResponse", message.text, message.images)
-						}
+						this.handleWebviewAskResponse("messageResponse", message.text, message.images)
 					}
 				}
 
@@ -1696,6 +1727,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		)
 
 		if (this.lastMessageTs !== askTs) {
+			if (this.activeAsk?.ts === askTs) {
+				this.activeAsk = undefined
+			}
 			// Could happen if we send multiple asks in a row i.e. with
 			// command_output. It's important that when we know an ask could
 			// fail, it is handled gracefully.
@@ -1703,6 +1737,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		const result = { response: this.askResponse!, text: this.askResponseText, images: this.askResponseImages }
+		if (this.activeAsk?.ts === askTs) {
+			this.activeAsk = undefined
+		}
 		this.askResponse = undefined
 		this.askResponseText = undefined
 		this.askResponseImages = undefined
@@ -1845,6 +1882,30 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	public async steerUserMessage(text: string, images?: string[]): Promise<void> {
+		text = (text ?? "").trim()
+		images = images ?? []
+
+		if (text.length === 0 && images.length === 0) {
+			return
+		}
+
+		if (this.activeAsk) {
+			this.handleWebviewAskResponse("messageResponse", text, images)
+			return
+		}
+
+		if (this.isStreaming || this.isTaskLoopActive) {
+			this.cancelAutoApprovalTimeout()
+			this.pendingSteerMessage = { text, images }
+			this.emit(RooCodeEventName.TaskUserMessage, this.taskId)
+			this.currentRequestAbortController?.abort()
+			return
+		}
+
+		await this.submitUserMessage(text, images)
+	}
+
 	async handleTerminalOperation(terminalOperation: "continue" | "abort") {
 		if (terminalOperation === "continue") {
 			this.terminalProcess?.continue()
@@ -1984,7 +2045,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		contextTruncation?: ContextTruncation,
 	): Promise<undefined> {
 		if (this.abort) {
-			throw new Error(`[Alpha#say] task ${this.taskId}.${this.instanceId} aborted`)
+			throw new Error(`[RooCode#say] task ${this.taskId}.${this.instanceId} aborted`)
 		}
 
 		if (partial !== undefined) {
@@ -2720,14 +2781,30 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		const stack: StackItem[] = [{ userContent, includeFileDetails, retryAttempt: 0 }]
+		const wasTaskLoopActive = this.isTaskLoopActive
+		this.isTaskLoopActive = true
 
+		try {
 		while (stack.length > 0) {
 			const currentItem = stack.pop()!
 			const currentUserContent = currentItem.userContent
 			const currentIncludeFileDetails = currentItem.includeFileDetails
 
 			if (this.abort) {
-				throw new Error(`[Alpha#recursivelyMakeRequests] task ${this.taskId}.${this.instanceId} aborted`)
+				throw new Error(`[RooCode#recursivelyMakeRooRequests] task ${this.taskId}.${this.instanceId} aborted`)
+			}
+
+			const pendingSteer = this.pendingSteerMessage
+			if (pendingSteer) {
+				this.pendingSteerMessage = undefined
+				await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
+				stack.push({
+					userContent: [...currentUserContent, ...this.buildUserMessageContent(pendingSteer.text, pendingSteer.images)],
+					includeFileDetails: currentIncludeFileDetails,
+					retryAttempt: currentItem.retryAttempt,
+					userMessageWasRemoved: currentItem.userMessageWasRemoved,
+				})
+				continue
 			}
 
 			if (this.consecutiveMistakeLimit > 0 && this.consecutiveMistakeCount >= this.consecutiveMistakeLimit) {
@@ -2981,15 +3058,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						// If we have an abort controller, race it with the next chunk
 						const abortPromise = this.currentRequestAbortController
 							? new Promise<never>((_, reject) => {
-									const signal = this.currentRequestAbortController!.signal
-									const onAbort = () => reject(new Error("Request cancelled by user"))
-									if (signal.aborted) {
-										onAbort()
-									} else {
-										signal.addEventListener("abort", onAbort, { once: true })
-										removeAbortListener = () => signal.removeEventListener("abort", onAbort)
-									}
-								})
+								const signal = this.currentRequestAbortController!.signal
+								const onAbort = () => reject(new Error("Request cancelled by user"))
+								if (signal.aborted) {
+									onAbort()
+								} else {
+									signal.addEventListener("abort", onAbort, { once: true })
+									removeAbortListener = () => signal.removeEventListener("abort", onAbort)
+								}
+							})
 							: undefined
 
 						const operation = abortPromise ? Promise.race([nextPromise, abortPromise]) : nextPromise
@@ -3341,6 +3418,24 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// Alpha instance to finish aborting (error is thrown here when
 					// any function in the for loop throws due to this.abort).
 					if (!this.abandoned) {
+						const pendingSteer = this.pendingSteerMessage
+
+						if (pendingSteer) {
+							this.pendingSteerMessage = undefined
+							await abortStream("user_cancelled")
+							await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
+
+							stack.push({
+								userContent: [
+									...this.takeLastApiUserMessageContent(),
+									...this.buildUserMessageContent(pendingSteer.text, pendingSteer.images),
+								],
+								includeFileDetails: false,
+							})
+
+							continue
+						}
+
 						// Determine cancellation reason
 						const cancelReason: ClineApiReqCancelReason = this.abort ? "user_cancelled" : "streaming_failed"
 
@@ -3399,7 +3494,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				// Need to call here in case the stream was aborted.
 				if (this.abort || this.abandoned) {
-					throw new Error(`[Alpha#recursivelyMakeRequests] task ${this.taskId}.${this.instanceId} aborted`)
+					throw new Error(
+						`[RooCode#recursivelyMakeRooRequests] task ${this.taskId}.${this.instanceId} aborted`,
+					)
 				}
 
 				this.didCompleteReadingStream = true
@@ -3832,6 +3929,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		// If we exit the while loop normally (stack is empty), return false
 		return false
+		} finally {
+			this.isTaskLoopActive = wasTaskLoopActive
+		}
 	}
 
 	private async getSystemPrompt(): Promise<string> {
@@ -4389,10 +4489,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const firstChunkPromise = iterator.next()
 			const abortPromise = new Promise<never>((_, reject) => {
 				if (abortSignal.aborted) {
-					reject(new Error("Request cancelled by user"))
+					reject(this.pendingSteerMessage ? new SteerRequestInterruptError() : new Error("Request cancelled by user"))
 				} else {
 					abortSignal.addEventListener("abort", () => {
-						reject(new Error("Request cancelled by user"))
+						reject(
+							this.pendingSteerMessage
+								? new SteerRequestInterruptError()
+								: new Error("Request cancelled by user"),
+						)
 					})
 				}
 			})
@@ -4408,6 +4512,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		} catch (error) {
 			this.isWaitingForFirstChunk = false
 			this.currentRequestAbortController = undefined
+			if (error instanceof SteerRequestInterruptError) {
+				throw error
+			}
+
 			const isContextWindowExceededError = checkContextWindowExceededError(error)
 
 			// If it's a context window error and we haven't exceeded max retries for this error type
@@ -4803,26 +4911,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	/**
-	 * Process any queued messages by dequeuing and submitting them.
-	 * This ensures that queued user messages are sent when appropriate,
-	 * preventing them from getting stuck in the queue.
-	 *
-	 * @param context - Context string for logging (e.g., the calling tool name)
+	 * Queued messages are intentionally drained only from completion/resume asks.
+	 * Tool-level callers still invoke this as a compatibility hook, but it must
+	 * not promote queued messages mid-turn.
 	 */
 	public processQueuedMessages(): void {
-		try {
-			if (!this.messageQueueService.isEmpty()) {
-				const queued = this.messageQueueService.dequeueMessage()
-				if (queued) {
-					setTimeout(() => {
-						this.submitUserMessage(queued.text, queued.images).catch((err) =>
-							console.error(`[Task] Failed to submit queued message:`, err),
-						)
-					}, 0)
-				}
-			}
-		} catch (e) {
-			console.error(`[Task] Queue processing error:`, e)
-		}
+		// Intentionally empty.
 	}
 }

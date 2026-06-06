@@ -1594,10 +1594,130 @@ describe("Alpha", () => {
 				// Restore console.error
 				consoleErrorSpy.mockRestore()
 			})
+			})
 		})
-	})
 
-	describe("abortTask", () => {
+		describe("steerUserMessage", () => {
+			it("responds like a user message when the task is waiting on an ask", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "initial task",
+					startTask: false,
+				})
+				const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
+
+				await task.steerUserMessage("new context", ["image1.png"])
+
+				expect(handleResponseSpy).toHaveBeenCalledWith("messageResponse", "new context", ["image1.png"])
+			})
+
+			it("aborts the active request without aborting the task when steering during streaming", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "initial task",
+					startTask: false,
+				})
+				const abortController = new AbortController()
+				const abortSpy = vi.spyOn(abortController, "abort")
+				const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
+
+				task.isStreaming = true
+				task.currentRequestAbortController = abortController
+
+				await task.steerUserMessage("interrupt with this", ["image1.png"])
+
+				expect(abortSpy).toHaveBeenCalled()
+				expect(task.abort).toBe(false)
+				expect(handleResponseSpy).not.toHaveBeenCalled()
+				expect((task as any).pendingSteerMessage).toEqual({
+					text: "interrupt with this",
+					images: ["image1.png"],
+				})
+			})
+
+			it("retains steered content when the task loop is active before streaming starts", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "initial task",
+					startTask: false,
+				})
+				const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
+
+				;(task as any).isTaskLoopActive = true
+
+				await task.steerUserMessage("skip data", [])
+
+				expect(handleResponseSpy).not.toHaveBeenCalled()
+				expect((task as any).pendingSteerMessage).toEqual({
+					text: "skip data",
+					images: [],
+				})
+			})
+
+			it("does not surface a provider failure when steering before the first chunk arrives", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "initial task",
+					startTask: false,
+				})
+				const askSpy = vi.spyOn(task, "ask")
+
+				async function* neverRespondingStream(): AsyncGenerator<ApiStreamChunk> {
+					await new Promise<void>(() => {})
+					yield { type: "text", text: "unreachable" }
+				}
+
+				vi.spyOn(task.api, "createMessage").mockReturnValue(neverRespondingStream())
+
+				;(task as any).isTaskLoopActive = true
+				const nextChunk = task.attemptApiRequest(0).next()
+
+				await vi.waitFor(() => {
+					expect(task.currentRequestAbortController).toBeDefined()
+				})
+
+				await task.steerUserMessage("add this context", [])
+
+				await expect(nextChunk).rejects.toThrow("Request interrupted by steered user message")
+				expect(askSpy).not.toHaveBeenCalledWith("api_req_failed", expect.anything())
+				expect((task as any).pendingSteerMessage).toEqual({
+					text: "add this context",
+					images: [],
+				})
+			})
+
+			it("merges steered content with the interrupted user turn", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "initial task",
+					startTask: false,
+				})
+				task.apiConversationHistory = [
+					{
+						role: "user",
+						content: [{ type: "text", text: "<user_message>\noriginal\n</user_message>" }],
+					} as any,
+				]
+
+				const mergedContent = [
+					...(task as any).takeLastApiUserMessageContent(),
+					...(task as any).buildUserMessageContent("steered context", []),
+				]
+
+				expect(mergedContent).toEqual([
+					{ type: "text", text: "<user_message>\noriginal\n</user_message>" },
+					{ type: "text", text: "<user_message>\nsteered context\n</user_message>" },
+				])
+				expect(task.apiConversationHistory).toEqual([])
+			})
+		})
+
+		describe("abortTask", () => {
 		it("should set abort flag and emit TaskAborted event", async () => {
 			const task = new Task({
 				provider: mockProvider,
@@ -1911,7 +2031,7 @@ describe("Queued message processing after condense", () => {
 		apiKey: "test-api-key",
 	} as any
 
-	it("processes queued message after condense completes", async () => {
+	it("keeps queued message after condense completes", async () => {
 		const provider = createProvider()
 		const task = new Task({
 			provider,
@@ -1927,16 +2047,11 @@ describe("Queued message processing after condense", () => {
 		// Queue a message during condensing
 		task.messageQueueService.addMessage("queued text", ["img1.png"])
 
-		// Use fake timers to capture setTimeout(0) in processQueuedMessages
-		vi.useFakeTimers()
 		await task.condenseContext()
 
-		// Flush the microtask that submits the queued message
-		vi.runAllTimers()
-		vi.useRealTimers()
-
-		expect(submitSpy).toHaveBeenCalledWith("queued text", ["img1.png"])
-		expect(task.messageQueueService.isEmpty()).toBe(true)
+		expect(submitSpy).not.toHaveBeenCalled()
+		expect(task.messageQueueService.isEmpty()).toBe(false)
+		expect(task.messageQueueService.messages[0]?.text).toBe("queued text")
 	})
 
 	it("does not cross-drain queues between separate tasks", async () => {
@@ -1965,24 +2080,20 @@ describe("Queued message processing after condense", () => {
 		taskA.messageQueueService.addMessage("A message")
 		taskB.messageQueueService.addMessage("B message")
 
-		// Condense in task A should only drain A's queue
-		vi.useFakeTimers()
+		// Condense should not drain either task's queue.
 		await taskA.condenseContext()
-		vi.runAllTimers()
-		vi.useRealTimers()
 
-		expect(spyA).toHaveBeenCalledWith("A message", undefined)
+		expect(spyA).not.toHaveBeenCalled()
 		expect(spyB).not.toHaveBeenCalled()
+		expect(taskA.messageQueueService.isEmpty()).toBe(false)
 		expect(taskB.messageQueueService.isEmpty()).toBe(false)
 
-		// Now condense in task B should drain B's queue
-		vi.useFakeTimers()
 		await taskB.condenseContext()
-		vi.runAllTimers()
-		vi.useRealTimers()
 
-		expect(spyB).toHaveBeenCalledWith("B message", undefined)
-		expect(taskB.messageQueueService.isEmpty()).toBe(true)
+		expect(spyA).not.toHaveBeenCalled()
+		expect(spyB).not.toHaveBeenCalled()
+		expect(taskA.messageQueueService.isEmpty()).toBe(false)
+		expect(taskB.messageQueueService.isEmpty()).toBe(false)
 	})
 })
 

@@ -1212,6 +1212,29 @@ describe("ChatTextArea", () => {
 				expect(onSend).toHaveBeenCalledTimes(2)
 				expect(shiftEnterEvent.defaultPrevented).toBe(true)
 			})
+
+			it("should save queued edit on plain Enter even when normal Enter behavior is newline", () => {
+				const onSend = vi.fn()
+
+				;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+					filePaths: [],
+					openedTabs: [],
+					taskHistory: [],
+					cwd: "/test/workspace",
+					enterBehavior: "newline",
+				})
+
+				const { container } = render(
+					<ChatTextArea {...defaultProps} inputValue="Updated queued prompt" isEditMode={true} onSend={onSend} />,
+				)
+
+				const textarea = container.querySelector("textarea")!
+				const plainEnterEvent = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })
+				fireEvent(textarea, plainEnterEvent)
+
+				expect(onSend).toHaveBeenCalledTimes(1)
+				expect(plainEnterEvent.defaultPrevented).toBe(true)
+			})
 		})
 	})
 

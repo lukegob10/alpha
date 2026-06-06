@@ -110,10 +110,17 @@ vi.mock("../QueuedMessages", () => ({
 	QueuedMessages: function MockQueuedMessages({
 		queue = [],
 		onRemove,
+		onSteer,
+		onEdit,
+		onReorder,
+		editingMessageId,
 	}: {
 		queue?: Array<{ id: string; text: string; images?: string[] }>
 		onRemove?: (index: number) => void
-		onUpdate?: (index: number, newText: string) => void
+		onSteer?: (index: number) => void
+		onEdit?: (index: number) => void
+		onReorder?: (fromIndex: number, toIndex: number) => void
+		editingMessageId?: string
 	}) {
 		if (!queue || queue.length === 0) {
 			return null
@@ -123,8 +130,18 @@ vi.mock("../QueuedMessages", () => ({
 				{queue.map((msg, index) => (
 					<div key={msg.id}>
 						<span>{msg.text}</span>
+						{editingMessageId === msg.id && <span>Editing in composer</span>}
 						<button aria-label="Remove message" onClick={() => onRemove?.(index)}>
 							Remove
+						</button>
+						<button aria-label={`Edit ${msg.id}`} onClick={() => onEdit?.(index)}>
+							Edit
+						</button>
+						<button aria-label="Steer" onClick={() => onSteer?.(index)}>
+							Steer
+						</button>
+						<button aria-label={`Move ${msg.id} to front`} onClick={() => onReorder?.(index, 0)}>
+							Move front
 						</button>
 					</div>
 				))}
@@ -136,14 +153,14 @@ vi.mock("../QueuedMessages", () => ({
 // Mock AlphaTips component
 vi.mock("@src/components/welcome/AlphaTips", () => ({
 	default: function MockAlphaTips() {
-		return <div data-testid="alpha-tips">Tips content</div>
+		return <div data-testid="roo-tips">Tips content</div>
 	},
 }))
 
 // Mock AlphaHero component
 vi.mock("@src/components/welcome/AlphaHero", () => ({
 	default: function MockAlphaHero() {
-		return <div data-testid="alpha-hero">Hero content</div>
+		return <div data-testid="roo-hero">Hero content</div>
 	},
 }))
 
@@ -181,6 +198,8 @@ interface ChatTextAreaProps {
 	placeholderText?: string
 	selectedImages?: string[]
 	shouldDisableImages?: boolean
+	isEditMode?: boolean
+	onCancel?: () => void
 }
 
 const mockInputRef = React.createRef<HTMLInputElement>()
@@ -212,6 +231,11 @@ vi.mock("../ChatTextArea", () => {
 						}
 					}}
 					onKeyDown={(e) => {
+						if (props.isEditMode && e.key === "Escape") {
+							e.preventDefault()
+							props.onCancel?.()
+							return
+						}
 						// Only call onSend when Enter is pressed (simulating real behavior)
 						if (e.key === "Enter" && !e.shiftKey) {
 							e.preventDefault()
@@ -756,9 +780,9 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 			// Should not show DismissibleUpsell during active task
 			expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
 			// Should not show AlphaTips either since the entire welcome screen is hidden during active tasks
-			expect(queryByTestId("alpha-tips")).not.toBeInTheDocument()
+			expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
 			// Should not show AlphaHero either since the entire welcome screen is hidden during active tasks
-			expect(queryByTestId("alpha-hero")).not.toBeInTheDocument()
+			expect(queryByTestId("roo-hero")).not.toBeInTheDocument()
 		})
 	})
 
@@ -778,7 +802,7 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 
 		// Should not show DismissibleUpsell but should show AlphaTips
 		expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
-		expect(getByTestId("alpha-tips")).toBeInTheDocument()
+		expect(getByTestId("roo-tips")).toBeInTheDocument()
 	})
 
 	it("shows AlphaTips when user has fewer than 6 tasks (instead of DismissibleUpsell)", () => {
@@ -796,7 +820,7 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 
 		// Should not show DismissibleUpsell but should show AlphaTips
 		expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
-		expect(getByTestId("alpha-tips")).toBeInTheDocument()
+		expect(getByTestId("roo-tips")).toBeInTheDocument()
 	})
 })
 
@@ -830,7 +854,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		expect(queryByText("Second task")).toBeInTheDocument()
-		expect(queryByTestId("alpha-tips")).not.toBeInTheDocument()
+		expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
 	})
 
 	it("enters an empty new-task window before backend state clears the old running task", async () => {
@@ -878,7 +902,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		await waitFor(() => {
 			const input = getByTestId("chat-textarea").querySelector("input")!
 			expect(input.getAttribute("data-sending-disabled")).toBe("false")
-			expect(queryByTestId("alpha-tips")).toBeInTheDocument()
+			expect(queryByTestId("roo-tips")).toBeInTheDocument()
 		})
 
 		mockPostMessage({
@@ -911,7 +935,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("alpha-tips")).toBeInTheDocument()
+			expect(queryByTestId("roo-tips")).toBeInTheDocument()
 		})
 
 		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
@@ -975,7 +999,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("alpha-tips")).toBeInTheDocument()
+			expect(queryByTestId("roo-tips")).toBeInTheDocument()
 		})
 
 		mockPostMessage({
@@ -987,7 +1011,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("alpha-tips")).not.toBeInTheDocument()
+			expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
 			expect(queryByText("Original task")).toBeInTheDocument()
 		})
 	})
@@ -1045,7 +1069,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("alpha-tips")).toBeInTheDocument()
+			expect(queryByTestId("roo-tips")).toBeInTheDocument()
 		})
 
 		mockPostMessage({
@@ -1057,7 +1081,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("alpha-tips")).not.toBeInTheDocument()
+			expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
 			expect(queryByText("Original task")).toBeInTheDocument()
 		})
 	})
@@ -1184,6 +1208,9 @@ describe("ChatView - Message Queueing Tests", () => {
 				images: [],
 			})
 		})
+		await waitFor(() => {
+			expect(input.value).toBe("")
+		})
 
 		// Verify it was NOT sent as a direct askResponse (which would get lost)
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(
@@ -1192,6 +1219,179 @@ describe("ChatView - Message Queueing Tests", () => {
 				askResponse: "messageResponse",
 			}),
 		)
+	})
+
+	it("renders a steer button for queued messages and posts steerQueuedMessage with the task id", async () => {
+		const { getByTestId, getByLabelText } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: Date.now() - 2000,
+					text: "Initial task",
+				},
+				{
+					type: "say",
+					say: "api_req_started",
+					ts: Date.now(),
+					text: JSON.stringify({ apiProtocol: "anthropic" }),
+				},
+			],
+			messageQueue: [{ id: "msg1", text: "queued message 1", images: [] }],
+		})
+
+		await waitFor(() => {
+			expect(getByTestId("queued-messages")).toBeInTheDocument()
+		})
+
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.click(getByLabelText("Steer"))
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "steerQueuedMessage",
+			text: "msg1",
+			taskId: "task-1",
+		})
+	})
+
+	it("edits a queued message from the composer and preserves the queued id", async () => {
+		const { getByTestId, getByLabelText, getByText } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: Date.now() - 2000,
+					text: "Initial task",
+				},
+				{
+					type: "say",
+					say: "api_req_started",
+					ts: Date.now(),
+					text: JSON.stringify({ apiProtocol: "anthropic" }),
+				},
+			],
+			messageQueue: [{ id: "msg1", text: "queued message 1", images: ["img1.png"] }],
+		})
+
+		await waitFor(() => {
+			expect(getByTestId("queued-messages")).toBeInTheDocument()
+		})
+
+		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.click(getByLabelText("Edit msg1"))
+
+		await waitFor(() => {
+			expect(input.value).toBe("queued message 1")
+			expect(getByText("Editing in composer")).toBeInTheDocument()
+		})
+
+		await act(async () => {
+			fireEvent.change(input, { target: { value: "edited queued message" } })
+			fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		})
+
+		await waitFor(() => {
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "editQueuedMessage",
+				payload: {
+					id: "msg1",
+					text: "edited queued message",
+					images: ["img1.png"],
+				},
+				taskId: "task-1",
+			})
+		})
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
+	})
+
+	it("cancels queued message editing and restores the prior composer draft", async () => {
+		const { getByTestId, getByLabelText } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: Date.now() - 2000,
+					text: "Initial task",
+				},
+				{
+					type: "say",
+					say: "api_req_started",
+					ts: Date.now(),
+					text: JSON.stringify({ apiProtocol: "anthropic" }),
+				},
+			],
+			messageQueue: [{ id: "msg1", text: "queued message 1", images: [] }],
+		})
+
+		await waitFor(() => {
+			expect(getByTestId("queued-messages")).toBeInTheDocument()
+		})
+
+		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "unsent draft" } })
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.click(getByLabelText("Edit msg1"))
+		await waitFor(() => expect(input.value).toBe("queued message 1"))
+
+		fireEvent.keyDown(input, { key: "Escape", code: "Escape" })
+
+		await waitFor(() => expect(input.value).toBe("unsent draft"))
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "editQueuedMessage" }))
+	})
+
+	it("posts reorderQueuedMessage when moving a queued message to the front", async () => {
+		const { getByTestId, getByLabelText } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: Date.now() - 2000,
+					text: "Initial task",
+				},
+				{
+					type: "say",
+					say: "api_req_started",
+					ts: Date.now(),
+					text: JSON.stringify({ apiProtocol: "anthropic" }),
+				},
+			],
+			messageQueue: [
+				{ id: "msg1", text: "queued message 1", images: [] },
+				{ id: "msg2", text: "queued message 2", images: [] },
+			],
+		})
+
+		await waitFor(() => {
+			expect(getByTestId("queued-messages")).toBeInTheDocument()
+		})
+
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(getByLabelText("Move msg2 to front"))
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "reorderQueuedMessage",
+			payload: {
+				id: "msg2",
+				toIndex: 0,
+			},
+			taskId: "task-1",
+		})
 	})
 
 	it("sends messages normally when API request is complete (cost present)", async () => {
