@@ -3,6 +3,16 @@ import { type ClineAsk, type LiveTaskMetadata, TaskLifecycleState, TaskStatus } 
 import type { Task } from "../task/Task"
 
 export const DEFAULT_MAX_LIVE_TASKS = 3
+export const MIN_MAX_LIVE_TASKS = 1
+export const MAX_MAX_LIVE_TASKS = 50
+
+export const normalizeMaxLiveTasks = (value: unknown): number => {
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		return DEFAULT_MAX_LIVE_TASKS
+	}
+
+	return Math.min(Math.max(Math.trunc(value), MIN_MAX_LIVE_TASKS), MAX_MAX_LIVE_TASKS)
+}
 
 type TaskSession = {
 	task: Task
@@ -27,7 +37,17 @@ export class TaskSessionRegistry {
 	private readonly sessions = new Map<string, TaskSession>()
 	private activeTaskId: string | undefined
 
-	constructor(private readonly maxLiveTasks = DEFAULT_MAX_LIVE_TASKS) {}
+	constructor(private maxLiveTasks = DEFAULT_MAX_LIVE_TASKS) {
+		this.maxLiveTasks = normalizeMaxLiveTasks(maxLiveTasks)
+	}
+
+	setMaxLiveTasks(maxLiveTasks: number): void {
+		this.maxLiveTasks = normalizeMaxLiveTasks(maxLiveTasks)
+	}
+
+	getMaxLiveTasks(): number {
+		return this.maxLiveTasks
+	}
 
 	getActiveTaskId(): string | undefined {
 		return this.activeTaskId

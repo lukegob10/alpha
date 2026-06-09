@@ -2,6 +2,7 @@ import { HTMLAttributes, useMemo } from "react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
 import { telemetryClient } from "@/utils/TelemetryClient"
+import { DEFAULT_MAX_CONCURRENT_TASKS, MAX_MAX_CONCURRENT_TASKS, MIN_MAX_CONCURRENT_TASKS } from "@alpha-code/types"
 
 import { SetCachedStateField } from "./types"
 import { SectionHeader } from "./SectionHeader"
@@ -12,12 +13,14 @@ import { ExtensionStateContextType } from "@/context/ExtensionStateContext"
 interface UISettingsProps extends HTMLAttributes<HTMLDivElement> {
 	reasoningBlockCollapsed: boolean
 	enterBehavior: "send" | "newline"
+	maxConcurrentTasks: number
 	setCachedStateField: SetCachedStateField<keyof ExtensionStateContextType>
 }
 
 export const UISettings = ({
 	reasoningBlockCollapsed,
 	enterBehavior,
+	maxConcurrentTasks,
 	setCachedStateField,
 	...props
 }: UISettingsProps) => {
@@ -46,6 +49,15 @@ export const UISettings = ({
 		telemetryClient.capture("ui_settings_enter_behavior_changed", {
 			behavior: newBehavior,
 		})
+	}
+
+	const handleMaxConcurrentTasksChange = (rawValue: string) => {
+		const parsedValue = Number(rawValue)
+		const nextValue = Number.isFinite(parsedValue)
+			? Math.min(Math.max(Math.trunc(parsedValue), MIN_MAX_CONCURRENT_TASKS), MAX_MAX_CONCURRENT_TASKS)
+			: DEFAULT_MAX_CONCURRENT_TASKS
+
+		setCachedStateField("maxConcurrentTasks", nextValue)
 	}
 
 	return (
@@ -88,6 +100,31 @@ export const UISettings = ({
 							</VSCodeCheckbox>
 							<div className="text-vscode-descriptionForeground text-sm ml-5 mt-1">
 								{t("settings:ui.requireCtrlEnterToSend.description", { primaryMod })}
+							</div>
+						</div>
+					</SearchableSetting>
+
+					<SearchableSetting
+						settingId="ui-max-concurrent-tasks"
+						section="ui"
+						label={t("settings:ui.maxConcurrentTasks.label")}>
+						<div className="flex flex-col gap-2">
+							<label className="font-medium" htmlFor="max-concurrent-tasks-input">
+								{t("settings:ui.maxConcurrentTasks.label")}
+							</label>
+							<input
+								id="max-concurrent-tasks-input"
+								className="w-24 bg-vscode-input-background text-vscode-input-foreground border border-vscode-input-border px-2 py-1"
+								type="number"
+								min={MIN_MAX_CONCURRENT_TASKS}
+								max={MAX_MAX_CONCURRENT_TASKS}
+								step={1}
+								value={maxConcurrentTasks}
+								onChange={(event) => handleMaxConcurrentTasksChange(event.target.value)}
+								data-testid="max-concurrent-tasks-input"
+							/>
+							<div className="text-vscode-descriptionForeground text-sm">
+								{t("settings:ui.maxConcurrentTasks.description")}
 							</div>
 						</div>
 					</SearchableSetting>

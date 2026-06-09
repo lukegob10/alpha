@@ -62,6 +62,18 @@ describe("TaskSessionRegistry", () => {
 		expect(registry.canCreateTask()).toBe(false)
 	})
 
+	it("updates the live task cap at runtime", () => {
+		const registry = new TaskSessionRegistry(1)
+
+		registry.register(createTask("task-a"))
+		expect(registry.canCreateTask()).toBe(false)
+
+		registry.setMaxLiveTasks(2)
+
+		expect(registry.getMaxLiveTasks()).toBe(2)
+		expect(registry.canCreateTask()).toBe(true)
+	})
+
 	it("does not count terminal task sessions against the live task cap", () => {
 		const registry = new TaskSessionRegistry(1)
 

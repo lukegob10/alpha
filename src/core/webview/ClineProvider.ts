@@ -40,6 +40,7 @@ import {
 	requestyDefaultModelId,
 	openRouterDefaultModelId,
 	DEFAULT_WRITE_DELAY_MS,
+	DEFAULT_MAX_CONCURRENT_TASKS,
 	DEFAULT_MODES,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	getModelId,
@@ -100,7 +101,7 @@ import { getNonce } from "./getNonce"
 import { getUri } from "./getUri"
 import { REQUESTY_BASE_URL } from "../../shared/utils/requesty"
 import { validateAndFixToolResultIds } from "../task/validateToolResultIds"
-import { DEFAULT_MAX_LIVE_TASKS, TaskSessionRegistry } from "./TaskSessionRegistry"
+import { normalizeMaxLiveTasks, TaskSessionRegistry } from "./TaskSessionRegistry"
 
 /**
  * https://github.com/microsoft/vscode-webview-ui-toolkit-samples/blob/main/default/weather-webview/src/providers/WeatherViewProvider.ts
@@ -135,7 +136,7 @@ export class ClineProvider
 	private webviewDisposables: vscode.Disposable[] = []
 	private view?: vscode.WebviewView | vscode.WebviewPanel
 	private clineStack: Task[] = []
-	private taskSessions = new TaskSessionRegistry()
+	private taskSessions: TaskSessionRegistry
 	private currentView: CurrentTaskView = { type: "newTaskDraft" }
 	private readonly workspaceMutationGate = new WorkspaceMutationGate()
 	private codeIndexStatusSubscription?: vscode.Disposable
@@ -179,6 +180,7 @@ export class ClineProvider
 	) {
 		super()
 		this.currentWorkspacePath = getWorkspacePath()
+		this.taskSessions = new TaskSessionRegistry(this.getConfiguredMaxConcurrentTasks())
 
 		ClineProvider.activeInstances.add(this)
 
@@ -243,42 +245,12 @@ export class ClineProvider
 				this.markTaskLifecycle(taskId, TaskLifecycleState.Completed)
 				this.emit(RooCodeEventName.TaskCompleted, taskId, tokenUsage, toolUsage)
 			}
-			const onTaskAborted = async () => {
+			const onTaskAborted = () => {
 				this.markTaskLifecycle(
 					instance.taskId,
 					instance.abortReason === "streaming_failed" ? TaskLifecycleState.Failed : TaskLifecycleState.Closed,
 				)
 				this.emit(RooCodeEventName.TaskAborted, instance.taskId)
-
-				try {
-					// Only rehydrate on genuine streaming failures.
-					// User-initiated cancels are handled by cancelTask().
-					if (instance.abortReason === "streaming_failed") {
-						// Defensive safeguard: if another path already replaced this instance, skip
-						const current = this.getLiveTask(instance.taskId)
-						if (current && current.instanceId !== instance.instanceId) {
-							this.log(
-								`[onTaskAborted] Skipping rehydrate: current instance ${current.instanceId} != aborted ${instance.instanceId}`,
-							)
-							return
-						}
-
-						const { historyItem } = await this.getTaskWithId(instance.taskId)
-						const rootTask = instance.rootTask
-						const parentTask = instance.parentTask
-						const background = !this.isTaskOnScreen(instance.taskId)
-						await this.createTaskWithHistoryItem(
-							{ ...historyItem, rootTask, parentTask },
-							{ preserveExisting: true, background },
-						)
-					}
-				} catch (error) {
-					this.log(
-						`[onTaskAborted] Failed to rehydrate after streaming failure: ${
-							error instanceof Error ? error.message : String(error)
-						}`,
-					)
-				}
 			}
 			const onTaskFocused = () => this.emit(RooCodeEventName.TaskFocused, instance.taskId)
 			const onTaskUnfocused = () => this.emit(RooCodeEventName.TaskUnfocused, instance.taskId)
@@ -2199,6 +2171,7 @@ export class ClineProvider
 			alwaysAllowMcp,
 			alwaysAllowModeSwitch,
 			alwaysAllowSubtasks,
+			maxConcurrentTasks,
 			allowedMaxRequests,
 			allowedMaxCost,
 			autoCondenseContext,
@@ -2307,6 +2280,7 @@ export class ClineProvider
 			alwaysAllowMcp: alwaysAllowMcp ?? false,
 			alwaysAllowModeSwitch: alwaysAllowModeSwitch ?? false,
 			alwaysAllowSubtasks: alwaysAllowSubtasks ?? false,
+			maxConcurrentTasks: maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS,
 			allowedMaxRequests,
 			allowedMaxCost,
 			autoCondenseContext: autoCondenseContext ?? true,
@@ -2476,6 +2450,7 @@ export class ClineProvider
 			alwaysAllowMcp: stateValues.alwaysAllowMcp ?? false,
 			alwaysAllowModeSwitch: stateValues.alwaysAllowModeSwitch ?? false,
 			alwaysAllowSubtasks: stateValues.alwaysAllowSubtasks ?? false,
+			maxConcurrentTasks: this.getConfiguredMaxConcurrentTasks(),
 			alwaysAllowFollowupQuestions: stateValues.alwaysAllowFollowupQuestions ?? false,
 			followupAutoApproveTimeoutMs: stateValues.followupAutoApproveTimeoutMs ?? 60000,
 			diagnosticsEnabled: stateValues.diagnosticsEnabled ?? true,
@@ -2633,6 +2608,14 @@ export class ClineProvider
 				)
 			}
 		}, ClineProvider.GLOBAL_STATE_WRITE_THROUGH_DEBOUNCE_MS)
+	}
+
+	private getConfiguredMaxConcurrentTasks(): number {
+		return normalizeMaxLiveTasks(this.contextProxy.getValue("maxConcurrentTasks"))
+	}
+
+	public setMaxConcurrentTasks(maxConcurrentTasks: number): void {
+		this.taskSessions.setMaxLiveTasks(maxConcurrentTasks)
 	}
 
 	/**
@@ -3020,7 +3003,7 @@ export class ClineProvider
 		}
 
 		if (!parentTask && options.preserveExisting && !this.taskSessions.canCreateTask()) {
-			const message = `Maximum live task limit reached (${DEFAULT_MAX_LIVE_TASKS}). Close a running task before starting another.`
+			const message = `Maximum live task limit reached (${this.taskSessions.getMaxLiveTasks()}). Close a running task before starting another.`
 			vscode.window.showErrorMessage(message)
 			throw new Error(message)
 		}

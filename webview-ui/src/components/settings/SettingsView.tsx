@@ -204,6 +204,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		openRouterImageGenerationSelectedModel,
 		reasoningBlockCollapsed,
 		enterBehavior,
+		maxConcurrentTasks,
 		includeCurrentTime,
 		includeCurrentCost,
 		maxGitStatusFiles,
@@ -395,6 +396,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					allowedMaxCost: allowedMaxCost ?? null,
 					autoCondenseContext,
 					autoCondenseContextPercent,
+					maxConcurrentTasks: Math.min(Math.max(1, maxConcurrentTasks ?? 3), 50),
 					soundEnabled: soundEnabled ?? true,
 					soundVolume: soundVolume ?? 0.5,
 					ttsEnabled,
@@ -916,6 +918,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 							<UISettings
 								reasoningBlockCollapsed={reasoningBlockCollapsed ?? true}
 								enterBehavior={enterBehavior ?? "send"}
+								maxConcurrentTasks={maxConcurrentTasks ?? 3}
 								setCachedStateField={setCachedStateField}
 							/>
 						)}

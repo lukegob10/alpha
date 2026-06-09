@@ -152,6 +152,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "Require {{primaryMod}}+Enter to send messages",
 			"description": "When enabled, you must press {{primaryMod}}+Enter to send messages instead of just Enter"
+		},
+		"maxConcurrentTasks": {
+			"label": "Maximum parallel tasks",
+			"description": "The number of live tasks that can run at the same time. Failed and completed tasks do not count against this limit."
 		}
 	},
 	"prompts": {
