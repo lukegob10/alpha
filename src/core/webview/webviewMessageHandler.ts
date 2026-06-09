@@ -758,6 +758,9 @@ export const webviewMessageHandler = async (
 						if (mcpHub) {
 							await mcpHub.handleMcpEnabledChange(newValue as boolean)
 						}
+					} else if (key === "maxConcurrentTasks") {
+						newValue = value ?? 3
+						provider.setMaxConcurrentTasks(newValue as number)
 					} else if (key === "experiments") {
 						if (!value) {
 							continue

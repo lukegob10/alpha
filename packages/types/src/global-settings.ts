@@ -22,6 +22,9 @@ import { languagesSchema } from "./vscode.js"
  * need time to automatically clean up unused imports.
  */
 export const DEFAULT_WRITE_DELAY_MS = 1000
+export const DEFAULT_MAX_CONCURRENT_TASKS = 3
+export const MIN_MAX_CONCURRENT_TASKS = 1
+export const MAX_MAX_CONCURRENT_TASKS = 50
 
 /**
  * Terminal output preview size options for persisted command output.
@@ -121,6 +124,7 @@ export const globalSettingsSchema = z.object({
 	allowedMaxCost: z.number().nullish(),
 	autoCondenseContext: z.boolean().optional(),
 	autoCondenseContextPercent: z.number().optional(),
+	maxConcurrentTasks: z.number().int().min(MIN_MAX_CONCURRENT_TASKS).max(MAX_MAX_CONCURRENT_TASKS).optional(),
 
 	/**
 	 * Whether to include current time in the environment details

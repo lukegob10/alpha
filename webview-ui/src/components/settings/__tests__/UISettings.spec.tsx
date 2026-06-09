@@ -6,6 +6,7 @@ describe("UISettings", () => {
 	const defaultProps = {
 		reasoningBlockCollapsed: false,
 		enterBehavior: "send" as const,
+		maxConcurrentTasks: 3,
 		setCachedStateField: vi.fn(),
 	}
 
@@ -40,5 +41,16 @@ describe("UISettings", () => {
 
 		rerender(<UISettings {...defaultProps} reasoningBlockCollapsed={true} />)
 		expect(checkbox.checked).toBe(true)
+	})
+
+	it("calls setCachedStateField when max concurrent tasks changes", async () => {
+		const setCachedStateField = vi.fn()
+		const { getByTestId } = render(<UISettings {...defaultProps} setCachedStateField={setCachedStateField} />)
+
+		fireEvent.change(getByTestId("max-concurrent-tasks-input"), { target: { value: "8" } })
+
+		await waitFor(() => {
+			expect(setCachedStateField).toHaveBeenCalledWith("maxConcurrentTasks", 8)
+		})
 	})
 })
