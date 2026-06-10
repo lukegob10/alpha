@@ -1394,6 +1394,99 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 	})
 
+	it("does not attach composer text when approving a tool request", async () => {
+		const { getByTestId, getByText } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: Date.now() - 2000,
+					text: "Initial task",
+				},
+				{
+					type: "ask",
+					ask: "tool",
+					ts: Date.now(),
+					text: JSON.stringify({ tool: "readFile", path: "test.txt" }),
+					partial: false,
+				},
+			],
+		})
+
+		await waitFor(() => {
+			expect(getByText("chat:approve.title")).toBeInTheDocument()
+		})
+
+		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "run this after approval" } })
+
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(getByText("chat:approve.title"))
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "askResponse",
+			askResponse: "yesButtonClicked",
+			taskId: "task-1",
+		})
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "askResponse",
+				text: "run this after approval",
+			}),
+		)
+		expect(input.value).toBe("run this after approval")
+	})
+
+	it("queues composer text submitted while a tool approval is pending", async () => {
+		const { getByTestId, getByText } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: Date.now() - 2000,
+					text: "Initial task",
+				},
+				{
+					type: "ask",
+					ask: "tool",
+					ts: Date.now(),
+					text: JSON.stringify({ tool: "readFile", path: "test.txt" }),
+					partial: false,
+				},
+			],
+		})
+
+		await waitFor(() => {
+			expect(getByText("chat:approve.title")).toBeInTheDocument()
+		})
+
+		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+
+		vi.mocked(vscode.postMessage).mockClear()
+		await act(async () => {
+			fireEvent.change(input, { target: { value: "run this after approval" } })
+			fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		})
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "queueMessage",
+			text: "run this after approval",
+			images: [],
+			taskId: "task-1",
+		})
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "askResponse",
+			}),
+		)
+	})
+
 	it("sends messages normally when API request is complete (cost present)", async () => {
 		const { getByTestId } = renderChatView()
 
