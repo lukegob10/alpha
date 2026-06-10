@@ -58,14 +58,12 @@ export const MAX_IMAGES_PER_MESSAGE = 20 // This is the Anthropic limit.
 const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0
 const messageResponseAskTypes = new Set<ClineAsk>([
 	"followup",
-	"tool",
-	"command",
-	"use_mcp_server",
 	"completion_result",
 	"resume_task",
 	"resume_completed_task",
 	"mistake_limit_reached",
 ])
+const approvalAskTypes = new Set<ClineAsk>(["tool", "command", "use_mcp_server"])
 
 const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewProps> = (
 	{ isHidden, showAnnouncement, hideAnnouncement },
@@ -707,7 +705,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				sendingDisabled ||
 				isStreaming ||
 				visibleMessageQueue.length > 0 ||
-				clineAskRef.current === "command_output"
+				clineAskRef.current === "command_output" ||
+				(clineAskRef.current !== undefined && approvalAskTypes.has(clineAskRef.current))
 
 			if (shouldQueueMessage) {
 				vscode.postMessage({ type: "queueMessage", text, images, ...visibleTaskPayload })
@@ -828,9 +827,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			switch (clineAsk) {
 				case "api_req_failed":
-				case "command":
-				case "tool":
-				case "use_mcp_server":
 				case "mistake_limit_reached":
 					// Only send text/images if they exist
 					if (trimmedInput || (images && images.length > 0)) {
@@ -851,6 +847,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							...visibleTaskPayload,
 						})
 					}
+					break
+				case "command":
+				case "tool":
+				case "use_mcp_server":
+					vscode.postMessage({
+						type: "askResponse",
+						askResponse: "yesButtonClicked",
+						...visibleTaskPayload,
+					})
 					break
 				case "resume_task":
 					// For completed subtasks (tasks with a parentTaskId and a completion_result),
@@ -908,11 +913,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	)
 
 	const handleSecondaryButtonClick = useCallback(
-		(text?: string, images?: string[]) => {
+		() => {
 			// Mark that user has responded
 			userRespondedRef.current = true
-
-			const trimmedInput = text?.trim()
 
 			if (isStreaming) {
 				vscode.postMessage({ type: "cancelTask", ...visibleTaskPayload })
@@ -929,26 +932,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				case "command":
 				case "tool":
 				case "use_mcp_server":
-					// Only send text/images if they exist
-					if (trimmedInput || (images && images.length > 0)) {
-						vscode.postMessage({
-							type: "askResponse",
-							askResponse: "noButtonClicked",
-							text: trimmedInput,
-							images: images,
-							...visibleTaskPayload,
-						})
-						// Clear input state after sending
-						setInputValue("")
-						setSelectedImages([])
-					} else {
-						// Responds to the API with a "This operation failed" and lets it try again
-						vscode.postMessage({
-							type: "askResponse",
-							askResponse: "noButtonClicked",
-							...visibleTaskPayload,
-						})
-					}
+					// Responds to the API with a "This operation failed" and lets it try again.
+					vscode.postMessage({
+						type: "askResponse",
+						askResponse: "noButtonClicked",
+						...visibleTaskPayload,
+					})
 					break
 				case "command_output":
 					vscode.postMessage({
@@ -1012,7 +1001,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							handlePrimaryButtonClick(message.text ?? "", message.images ?? [])
 							break
 						case "secondaryButtonClick":
-							handleSecondaryButtonClick(message.text ?? "", message.images ?? [])
+							handleSecondaryButtonClick()
 							break
 					}
 					break
@@ -1873,7 +1862,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 												variant="secondary"
 												disabled={!enableButtons}
 												className="flex-1 ml-[6px]"
-												onClick={() => handleSecondaryButtonClick(inputValue, selectedImages)}>
+												onClick={() => handleSecondaryButtonClick()}>
 												{secondaryButtonText}
 											</Button>
 										</StandardTooltip>

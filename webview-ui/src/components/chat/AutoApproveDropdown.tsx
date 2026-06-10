@@ -30,17 +30,73 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 
 	const {
 		autoApprovalEnabled,
+		allowedCommands,
 		setAutoApprovalEnabled,
 		setAlwaysAllowReadOnly,
+		setAlwaysAllowReadOnlyOutsideWorkspace,
 		setAlwaysAllowWrite,
+		setAlwaysAllowWriteOutsideWorkspace,
+		setAlwaysAllowWriteProtected,
 		setAlwaysAllowExecute,
 		setAlwaysAllowMcp,
 		setAlwaysAllowModeSwitch,
 		setAlwaysAllowSubtasks,
 		setAlwaysAllowFollowupQuestions,
+		setAllowedCommands,
 	} = useExtensionState()
 
 	const toggles = useAutoApprovalToggles()
+
+	const enableAllAutoApproval = React.useCallback(() => {
+		const nextAllowedCommands = allowedCommands?.includes("*") ? allowedCommands : [...(allowedCommands ?? []), "*"]
+		const updatedSettings = {
+			alwaysAllowReadOnly: true,
+			alwaysAllowReadOnlyOutsideWorkspace: true,
+			alwaysAllowWrite: true,
+			alwaysAllowWriteOutsideWorkspace: true,
+			alwaysAllowWriteProtected: true,
+			alwaysAllowExecute: true,
+			alwaysAllowMcp: true,
+			alwaysAllowModeSwitch: true,
+			alwaysAllowSubtasks: true,
+			alwaysAllowFollowupQuestions: true,
+			allowedCommands: nextAllowedCommands,
+		}
+
+		vscode.postMessage({ type: "updateSettings", updatedSettings })
+
+		setAlwaysAllowReadOnly(true)
+		setAlwaysAllowReadOnlyOutsideWorkspace(true)
+		setAlwaysAllowWrite(true)
+		setAlwaysAllowWriteOutsideWorkspace(true)
+		setAlwaysAllowWriteProtected(true)
+		setAlwaysAllowExecute(true)
+		setAlwaysAllowMcp(true)
+		setAlwaysAllowModeSwitch(true)
+		setAlwaysAllowSubtasks(true)
+		setAlwaysAllowFollowupQuestions(true)
+		setAllowedCommands(nextAllowedCommands)
+
+		if (!autoApprovalEnabled) {
+			setAutoApprovalEnabled(true)
+			vscode.postMessage({ type: "autoApprovalEnabled", bool: true })
+		}
+	}, [
+		allowedCommands,
+		autoApprovalEnabled,
+		setAllowedCommands,
+		setAlwaysAllowExecute,
+		setAlwaysAllowFollowupQuestions,
+		setAlwaysAllowMcp,
+		setAlwaysAllowModeSwitch,
+		setAlwaysAllowReadOnly,
+		setAlwaysAllowReadOnlyOutsideWorkspace,
+		setAlwaysAllowSubtasks,
+		setAlwaysAllowWrite,
+		setAlwaysAllowWriteOutsideWorkspace,
+		setAlwaysAllowWriteProtected,
+		setAutoApprovalEnabled,
+	])
 
 	const onAutoApproveToggle = React.useCallback(
 		(key: AutoApproveSetting, value: boolean) => {
@@ -90,16 +146,8 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 	)
 
 	const handleSelectAll = React.useCallback(() => {
-		// Enable all options
-		Object.keys(autoApproveSettingsConfig).forEach((key) => {
-			onAutoApproveToggle(key as AutoApproveSetting, true)
-		})
-		// Enable master auto-approval
-		if (!autoApprovalEnabled) {
-			setAutoApprovalEnabled(true)
-			vscode.postMessage({ type: "autoApprovalEnabled", bool: true })
-		}
-	}, [onAutoApproveToggle, autoApprovalEnabled, setAutoApprovalEnabled])
+		enableAllAutoApproval()
+	}, [enableAllAutoApproval])
 
 	const handleSelectNone = React.useCallback(() => {
 		// Disable all options
@@ -117,9 +165,14 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 	// Handle the main auto-approval toggle
 	const handleAutoApprovalToggle = React.useCallback(() => {
 		const newValue = !(autoApprovalEnabled ?? false)
+		if (newValue) {
+			enableAllAutoApproval()
+			return
+		}
+
 		setAutoApprovalEnabled(newValue)
 		vscode.postMessage({ type: "autoApprovalEnabled", bool: newValue })
-	}, [autoApprovalEnabled, setAutoApprovalEnabled])
+	}, [autoApprovalEnabled, enableAllAutoApproval, setAutoApprovalEnabled])
 
 	// Calculate enabled and total counts as separate properties
 	const settingsArray = Object.values(autoApproveSettingsConfig)
