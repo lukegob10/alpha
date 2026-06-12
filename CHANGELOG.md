@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.5
+
+### Patch Changes
+
+- [codex] Fix extension command auto-approval settings.
+- [codex] Clean up GitHub Copilot Claude model handling, including Opus 4.7 reasoning support and duplicate picker entries.
+
 ## 1.1.2
 
 ### Patch Changes
