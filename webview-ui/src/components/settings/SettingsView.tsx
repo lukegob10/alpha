@@ -193,6 +193,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		maxTotalImageSize,
 		customSupportPrompts,
 		profileThresholds,
+		autoApprovalEnabled,
 		alwaysAllowFollowupQuestions,
 		followupAutoApproveTimeoutMs,
 		includeDiagnosticMessages,
@@ -385,6 +386,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					alwaysAllowWriteOutsideWorkspace: alwaysAllowWriteOutsideWorkspace ?? undefined,
 					alwaysAllowWriteProtected: alwaysAllowWriteProtected ?? undefined,
 					alwaysAllowExecute: alwaysAllowExecute ?? undefined,
+					autoApprovalEnabled: autoApprovalEnabled ?? false,
 					alwaysAllowMcp,
 					alwaysAllowModeSwitch,
 					allowedCommands: allowedCommands ?? [],
@@ -808,6 +810,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 								alwaysAllowSubtasks={alwaysAllowSubtasks}
 								alwaysAllowExecute={alwaysAllowExecute}
 								alwaysAllowFollowupQuestions={alwaysAllowFollowupQuestions}
+								autoApprovalEnabled={autoApprovalEnabled}
 								followupAutoApproveTimeoutMs={followupAutoApproveTimeoutMs}
 								allowedCommands={allowedCommands}
 								allowedMaxRequests={allowedMaxRequests ?? undefined}

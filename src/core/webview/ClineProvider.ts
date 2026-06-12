@@ -2121,28 +2121,44 @@ export class ClineProvider
 	 * @param globalStateCommands - Commands from global state
 	 * @returns Merged and deduplicated command list
 	 */
+	private normalizeCommandList(commands?: unknown): string[] {
+		if (!Array.isArray(commands)) {
+			return []
+		}
+
+		return [
+			...new Set(
+				commands
+					.filter((cmd): cmd is string => typeof cmd === "string" && cmd.trim().length > 0)
+					.map((cmd) => cmd.trim()),
+			),
+		]
+	}
+
+	private getConfiguredCommandList(configKey: "allowedCommands" | "deniedCommands"): string[] {
+		const configuration = vscode.workspace.getConfiguration(Package.name)
+		const inspectedConfig =
+			typeof configuration.inspect === "function" ? configuration.inspect<string[]>(configKey) : undefined
+
+		return [
+			...this.normalizeCommandList(inspectedConfig?.globalValue),
+			...this.normalizeCommandList(inspectedConfig?.workspaceValue),
+			...this.normalizeCommandList(inspectedConfig?.workspaceFolderValue),
+		]
+	}
+
 	private mergeCommandLists(
 		configKey: "allowedCommands" | "deniedCommands",
 		commandType: "allowed" | "denied",
 		globalStateCommands?: string[],
 	): string[] {
 		try {
-			// Validate and sanitize global state commands
-			const validGlobalCommands = Array.isArray(globalStateCommands)
-				? globalStateCommands.filter((cmd) => typeof cmd === "string" && cmd.trim().length > 0)
-				: []
-
-			// Get workspace configuration commands
-			const workspaceCommands = vscode.workspace.getConfiguration(Package.name).get<string[]>(configKey) || []
-
-			// Validate and sanitize workspace commands
-			const validWorkspaceCommands = Array.isArray(workspaceCommands)
-				? workspaceCommands.filter((cmd) => typeof cmd === "string" && cmd.trim().length > 0)
-				: []
+			const validGlobalCommands = this.normalizeCommandList(globalStateCommands)
+			const validConfiguredCommands = this.getConfiguredCommandList(configKey)
 
 			// Combine and deduplicate commands
 			// Global state takes precedence over workspace configuration
-			const mergedCommands = [...new Set([...validGlobalCommands, ...validWorkspaceCommands])]
+			const mergedCommands = [...new Set([...validGlobalCommands, ...validConfiguredCommands])]
 
 			return mergedCommands
 		} catch (error) {
@@ -2464,8 +2480,8 @@ export class ClineProvider
 			goalSeekJobs: this.goalSeekService?.getState().jobs ?? [],
 			goalSeekRuns: this.goalSeekService?.getState().runs ?? [],
 			goalSeekAttempts: this.goalSeekService?.getState().attempts ?? [],
-			allowedCommands: stateValues.allowedCommands,
-			deniedCommands: stateValues.deniedCommands,
+			allowedCommands: this.mergeAllowedCommands(stateValues.allowedCommands),
+			deniedCommands: this.mergeDeniedCommands(stateValues.deniedCommands),
 			soundEnabled: stateValues.soundEnabled ?? false,
 			ttsEnabled: stateValues.ttsEnabled ?? false,
 			ttsSpeed: stateValues.ttsSpeed ?? 1.0,
@@ -2944,19 +2960,17 @@ export class ClineProvider
 		configuration: RooCodeSettings = {},
 	): Promise<Task> {
 		if (configuration) {
-			await this.setValues(configuration)
-
-			if (configuration.allowedCommands) {
-				await vscode.workspace
-					.getConfiguration(Package.name)
-					.update("allowedCommands", configuration.allowedCommands, vscode.ConfigurationTarget.Global)
+			const sanitizedConfiguration = {
+				...configuration,
+				...(configuration.allowedCommands !== undefined
+					? { allowedCommands: this.normalizeCommandList(configuration.allowedCommands) }
+					: {}),
+				...(configuration.deniedCommands !== undefined
+					? { deniedCommands: this.normalizeCommandList(configuration.deniedCommands) }
+					: {}),
 			}
 
-			if (configuration.deniedCommands) {
-				await vscode.workspace
-					.getConfiguration(Package.name)
-					.update("deniedCommands", configuration.deniedCommands, vscode.ConfigurationTarget.Global)
-			}
+			await this.setValues(sanitizedConfiguration)
 
 			if (configuration.commandExecutionTimeout !== undefined) {
 				await vscode.workspace
@@ -3003,7 +3017,16 @@ export class ClineProvider
 		}
 
 		if (!parentTask && options.preserveExisting && !this.taskSessions.canCreateTask()) {
-			const message = `Maximum live task limit reached (${this.taskSessions.getMaxLiveTasks()}). Close a running task before starting another.`
+			const configuredMaxLiveTasks = normalizeMaxLiveTasks(
+				(this.contextProxy as { getValue?: (key: string) => unknown } | undefined)?.getValue?.(
+					"maxConcurrentTasks",
+				) ?? DEFAULT_MAX_CONCURRENT_TASKS,
+			)
+			const maxLiveTasks =
+				typeof this.taskSessions.getMaxLiveTasks === "function"
+					? this.taskSessions.getMaxLiveTasks()
+					: configuredMaxLiveTasks
+			const message = `Maximum live task limit reached (${maxLiveTasks}). Close a running task before starting another.`
 			vscode.window.showErrorMessage(message)
 			throw new Error(message)
 		}

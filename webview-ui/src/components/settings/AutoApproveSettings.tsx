@@ -14,9 +14,6 @@ import { Section } from "./Section"
 import { SearchableSetting } from "./SearchableSetting"
 import { AutoApproveToggle } from "./AutoApproveToggle"
 import { MaxLimitInputs } from "./MaxLimitInputs"
-import { useExtensionState } from "@/context/ExtensionStateContext"
-import { useAutoApprovalState } from "@/hooks/useAutoApprovalState"
-import { useAutoApprovalToggles } from "@/hooks/useAutoApprovalToggles"
 
 type AutoApproveSettingsProps = HTMLAttributes<HTMLDivElement> & {
 	alwaysAllowReadOnly?: boolean
@@ -29,6 +26,7 @@ type AutoApproveSettingsProps = HTMLAttributes<HTMLDivElement> & {
 	alwaysAllowSubtasks?: boolean
 	alwaysAllowExecute?: boolean
 	alwaysAllowFollowupQuestions?: boolean
+	autoApprovalEnabled?: boolean
 	followupAutoApproveTimeoutMs?: number
 	allowedCommands?: string[]
 	allowedMaxRequests?: number | undefined
@@ -45,6 +43,7 @@ type AutoApproveSettingsProps = HTMLAttributes<HTMLDivElement> & {
 		| "alwaysAllowSubtasks"
 		| "alwaysAllowExecute"
 		| "alwaysAllowFollowupQuestions"
+		| "autoApprovalEnabled"
 		| "followupAutoApproveTimeoutMs"
 		| "allowedCommands"
 		| "allowedMaxRequests"
@@ -64,6 +63,7 @@ export const AutoApproveSettings = ({
 	alwaysAllowSubtasks,
 	alwaysAllowExecute,
 	alwaysAllowFollowupQuestions,
+	autoApprovalEnabled,
 	followupAutoApproveTimeoutMs = 60000,
 	allowedCommands,
 	allowedMaxRequests,
@@ -75,31 +75,27 @@ export const AutoApproveSettings = ({
 	const { t } = useAppTranslation()
 	const [commandInput, setCommandInput] = useState("")
 	const [deniedCommandInput, setDeniedCommandInput] = useState("")
-	const { autoApprovalEnabled, setAutoApprovalEnabled } = useExtensionState()
-
-	const toggles = useAutoApprovalToggles()
-
-	const { effectiveAutoApprovalEnabled } = useAutoApprovalState(toggles, autoApprovalEnabled)
+	const effectiveAutoApprovalEnabled = autoApprovalEnabled ?? false
 
 	const handleAddCommand = () => {
 		const currentCommands = allowedCommands ?? []
+		const command = commandInput.trim()
 
-		if (commandInput && !currentCommands.includes(commandInput)) {
-			const newCommands = [...currentCommands, commandInput]
+		if (command && !currentCommands.includes(command)) {
+			const newCommands = [...currentCommands, command]
 			setCachedStateField("allowedCommands", newCommands)
 			setCommandInput("")
-			vscode.postMessage({ type: "updateSettings", updatedSettings: { allowedCommands: newCommands } })
 		}
 	}
 
 	const handleAddDeniedCommand = () => {
 		const currentCommands = deniedCommands ?? []
+		const command = deniedCommandInput.trim()
 
-		if (deniedCommandInput && !currentCommands.includes(deniedCommandInput)) {
-			const newCommands = [...currentCommands, deniedCommandInput]
+		if (command && !currentCommands.includes(command)) {
+			const newCommands = [...currentCommands, command]
 			setCachedStateField("deniedCommands", newCommands)
 			setDeniedCommandInput("")
-			vscode.postMessage({ type: "updateSettings", updatedSettings: { deniedCommands: newCommands } })
 		}
 	}
 
@@ -117,9 +113,7 @@ export const AutoApproveSettings = ({
 							checked={effectiveAutoApprovalEnabled}
 							aria-label={t("settings:autoApprove.toggleAriaLabel")}
 							onChange={() => {
-								const newValue = !(autoApprovalEnabled ?? false)
-								setAutoApprovalEnabled(newValue)
-								vscode.postMessage({ type: "autoApprovalEnabled", bool: newValue })
+								setCachedStateField("autoApprovalEnabled", !effectiveAutoApprovalEnabled)
 							}}>
 							<span className="font-medium">{t("settings:autoApprove.enabled")}</span>
 						</VSCodeCheckbox>
@@ -317,11 +311,6 @@ export const AutoApproveSettings = ({
 									onClick={() => {
 										const newCommands = (allowedCommands ?? []).filter((_, i) => i !== index)
 										setCachedStateField("allowedCommands", newCommands)
-
-										vscode.postMessage({
-											type: "updateSettings",
-											updatedSettings: { allowedCommands: newCommands },
-										})
 									}}>
 									<div className="flex flex-row items-center gap-1">
 										<div>{cmd}</div>
@@ -376,11 +365,6 @@ export const AutoApproveSettings = ({
 									onClick={() => {
 										const newCommands = (deniedCommands ?? []).filter((_, i) => i !== index)
 										setCachedStateField("deniedCommands", newCommands)
-
-										vscode.postMessage({
-											type: "updateSettings",
-											updatedSettings: { deniedCommands: newCommands },
-										})
 									}}>
 									<div className="flex flex-row items-center gap-1">
 										<div>{cmd}</div>

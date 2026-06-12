@@ -566,13 +566,15 @@ describe("SettingsView - Allowed Commands", () => {
 		// Verify command was added
 		expect(within(content).getByText("npm test")).toBeInTheDocument()
 
-		// Verify VSCode message was sent
-		expect(vscode.postMessage).toHaveBeenCalledWith({
-			type: "updateSettings",
-			updatedSettings: {
-				allowedCommands: ["npm test"],
-			},
-		})
+		// SettingsView buffers edits until Save.
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({
+					allowedCommands: ["npm test"],
+				}),
+			}),
+		)
 	})
 
 	it("removes command from the list", () => {
@@ -600,13 +602,15 @@ describe("SettingsView - Allowed Commands", () => {
 		// Verify command was removed
 		expect(within(content).queryByText("npm test")).not.toBeInTheDocument()
 
-		// Verify VSCode message was sent
-		expect(vscode.postMessage).toHaveBeenLastCalledWith({
-			type: "updateSettings",
-			updatedSettings: {
-				allowedCommands: [],
-			},
-		})
+		// SettingsView buffers edits until Save.
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({
+					allowedCommands: [],
+				}),
+			}),
+		)
 	})
 
 	describe("SettingsView - Tab Navigation", () => {
@@ -709,6 +713,42 @@ describe("SettingsView - Duplicate Commands", () => {
 				type: "updateSettings",
 				updatedSettings: expect.objectContaining({
 					allowedCommands: ["npm test"],
+				}),
+			}),
+		)
+	})
+
+	it("saves auto-approval master and execute toggles together", () => {
+		const { activateTab, getSettingsContent } = renderSettingsView()
+
+		activateTab("autoApprove")
+
+		const content = getSettingsContent()
+		const autoApproveCheckbox = within(content)
+			.getByText("settings:autoApprove.enabled")
+			.closest("label")
+			?.querySelector("input")
+		if (!autoApproveCheckbox) {
+			throw new Error("Missing auto-approve checkbox")
+		}
+		fireEvent.click(autoApproveCheckbox)
+
+		const executeCheckbox = within(content).getByTestId("always-allow-execute-toggle")
+		fireEvent.click(executeCheckbox)
+
+		const input = within(content).getByTestId("command-input")
+		fireEvent.change(input, { target: { value: " * " } })
+		fireEvent.click(within(content).getByTestId("add-command-button"))
+
+		fireEvent.click(screen.getByTestId("save-button"))
+
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({
+					autoApprovalEnabled: true,
+					alwaysAllowExecute: true,
+					allowedCommands: ["*"],
 				}),
 			}),
 		)
