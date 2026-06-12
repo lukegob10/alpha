@@ -2,7 +2,12 @@ import { Anthropic } from "@anthropic-ai/sdk"
 import * as vscode from "vscode"
 import OpenAI from "openai"
 
-import { type ModelInfo, type ProviderSettings, openAiModelInfoSaneDefaults, vscodeLlmModels } from "@alpha-code/types"
+import {
+	type ModelInfo,
+	type ProviderSettings,
+	openAiModelInfoSaneDefaults,
+	getVscodeLlmModelInfo,
+} from "@alpha-code/types"
 
 import type { ApiHandlerOptions } from "../../shared/api"
 import { SELECTOR_SEPARATOR, stringifyVsCodeLmModelSelector } from "../../shared/vsCodeSelectorUtils"
@@ -40,10 +45,20 @@ function convertToVsCodeLmTools(tools: OpenAI.Chat.ChatCompletionTool[]): vscode
 }
 
 function getVsCodeLmReasoningEffortModelOptions(
+	model: vscode.LanguageModelChat | vscode.LanguageModelChatSelector,
 	enableReasoningEffort: boolean | undefined,
 	reasoningEffort: ProviderSettings["reasoningEffort"],
 ): vscode.LanguageModelChatRequestOptions["modelOptions"] | undefined {
 	if (!enableReasoningEffort || !reasoningEffort || reasoningEffort === "disable") {
+		return undefined
+	}
+
+	const supportsReasoningEffort = getVscodeLlmModelInfo(model)?.supportsReasoningEffort
+	if (Array.isArray(supportsReasoningEffort) && !supportsReasoningEffort.includes(reasoningEffort)) {
+		return undefined
+	}
+
+	if (!supportsReasoningEffort) {
 		return undefined
 	}
 
@@ -66,54 +81,8 @@ function isIgnorableVsCodeLmMetadataChunk(chunk: unknown): boolean {
 	return mimeType === "stateful_marker" || mimeType === "usage"
 }
 
-function includesCompleteModelId(value: string, modelId: string): boolean {
-	let searchFromIndex = 0
-
-	while (searchFromIndex < value.length) {
-		const matchIndex = value.indexOf(modelId, searchFromIndex)
-		if (matchIndex === -1) {
-			return false
-		}
-
-		const nextCharacter = value[matchIndex + modelId.length]
-		if (!nextCharacter || !/[a-z0-9.-]/i.test(nextCharacter)) {
-			return true
-		}
-
-		searchFromIndex = matchIndex + modelId.length
-	}
-
-	return false
-}
-
-function findStaticVsCodeLmModelInfo(
-	model: vscode.LanguageModelChat | vscode.LanguageModelChatSelector,
-): ModelInfo | undefined {
-	const searchableValues = [model.family, model.id, model.version]
-		.filter(Boolean)
-		.map((value) => value!.toLowerCase())
-
-	for (const [modelId, modelInfo] of Object.entries(vscodeLlmModels)) {
-		if (searchableValues.some((value) => value === modelId)) {
-			return modelInfo
-		}
-	}
-
-	const longestModelIdsFirst = Object.entries(vscodeLlmModels).sort(
-		([leftModelId], [rightModelId]) => rightModelId.length - leftModelId.length,
-	)
-
-	for (const [modelId, modelInfo] of longestModelIdsFirst) {
-		if (searchableValues.some((value) => includesCompleteModelId(value, modelId))) {
-			return modelInfo
-		}
-	}
-
-	return undefined
-}
-
 function buildVsCodeLmModelInfo(client: vscode.LanguageModelChat): ModelInfo {
-	const staticInfo = findStaticVsCodeLmModelInfo(client)
+	const staticInfo = getVscodeLlmModelInfo(client)
 
 	return {
 		...openAiModelInfoSaneDefaults,
@@ -512,6 +481,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				justification: `Alpha would like to use '${client.name}' from '${client.vendor}', Click 'Allow' to proceed.`,
 			}
 			const modelOptions = getVsCodeLmReasoningEffortModelOptions(
+				client,
 				this.options.enableReasoningEffort,
 				this.options.reasoningEffort,
 			)
@@ -713,6 +683,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			cancellation = requestCancellation
 			const requestOptions: vscode.LanguageModelChatRequestOptions = {}
 			const modelOptions = getVsCodeLmReasoningEffortModelOptions(
+				client,
 				this.options.enableReasoningEffort,
 				this.options.reasoningEffort,
 			)

@@ -6,8 +6,8 @@ import {
 	type ProviderSettings,
 	type ExtensionMessage,
 	type ModelInfo,
-	vscodeLlmModels,
 	openAiModelInfoSaneDefaults,
+	getVscodeLlmModelInfo,
 } from "@alpha-code/types"
 
 import { useAppTranslation } from "@src/i18n/TranslationContext"
@@ -78,7 +78,8 @@ function formatVsCodeLmModelLabel(model: VSCodeLmModel | undefined, fallbackId: 
 		return fallbackId
 	}
 
-	const baseName = model.name || model.family || model.id || fallbackId
+	const staticInfo = getVscodeLlmModelInfo(model)
+	const baseName = staticInfo?.name || model.name || model.family || model.id || fallbackId
 	const cleanedName = titleCaseIdentifier(baseName.replace(/^copilot[-/\s]+/i, ""))
 	const reasoningLevel = inferReasoningLevel(model)
 
@@ -86,51 +87,15 @@ function formatVsCodeLmModelLabel(model: VSCodeLmModel | undefined, fallbackId: 
 		return cleanedName
 	}
 
-	return `${cleanedName} - ${reasoningLevel}`
+	return `${cleanedName} · ${reasoningLevel}`
 }
 
-function findStaticVsCodeLmModelInfo(model: VSCodeLmModel): ModelInfo | undefined {
-	const searchableValues = [model.family, model.id, model.name, model.version]
-		.filter(Boolean)
-		.map((value) => value!.toLowerCase())
-
-	for (const [modelId, modelInfo] of Object.entries(vscodeLlmModels)) {
-		if (searchableValues.some((value) => value === modelId)) {
-			return modelInfo
-		}
+function formatVsCodeLmModelDetail(model: VSCodeLmModel | undefined): string | undefined {
+	if (!model || getVscodeLlmModelInfo(model)) {
+		return undefined
 	}
 
-	const longestModelIdsFirst = Object.entries(vscodeLlmModels).sort(
-		([leftModelId], [rightModelId]) => rightModelId.length - leftModelId.length,
-	)
-
-	for (const [modelId, modelInfo] of longestModelIdsFirst) {
-		if (searchableValues.some((value) => includesCompleteModelId(value, modelId))) {
-			return modelInfo
-		}
-	}
-
-	return undefined
-}
-
-function includesCompleteModelId(value: string, modelId: string): boolean {
-	let searchFromIndex = 0
-
-	while (searchFromIndex < value.length) {
-		const matchIndex = value.indexOf(modelId, searchFromIndex)
-		if (matchIndex === -1) {
-			return false
-		}
-
-		const nextCharacter = value[matchIndex + modelId.length]
-		if (!nextCharacter || !/[a-z0-9.-]/i.test(nextCharacter)) {
-			return true
-		}
-
-		searchFromIndex = matchIndex + modelId.length
-	}
-
-	return false
+	return [model.vendor, model.family, model.version, model.id].filter(Boolean).join(" / ") || undefined
 }
 
 function inferVsCodeLmReasoningEffortSupport(model: VSCodeLmModel): ModelInfo["supportsReasoningEffort"] | undefined {
@@ -151,7 +116,7 @@ function inferVsCodeLmReasoningEffortSupport(model: VSCodeLmModel): ModelInfo["s
 }
 
 function buildVsCodeLmModelInfo(model: VSCodeLmModel): ModelInfo {
-	const staticInfo = findStaticVsCodeLmModelInfo(model)
+	const staticInfo = getVscodeLlmModelInfo(model)
 	const supportsReasoningEffort = staticInfo?.supportsReasoningEffort ?? inferVsCodeLmReasoningEffortSupport(model)
 
 	return {
@@ -159,11 +124,43 @@ function buildVsCodeLmModelInfo(model: VSCodeLmModel): ModelInfo {
 		...staticInfo,
 		maxTokens: staticInfo?.maxTokens ?? 0,
 		contextWindow: model.maxInputTokens ?? staticInfo?.contextWindow ?? openAiModelInfoSaneDefaults.contextWindow,
-		supportsImages: false,
+		supportsImages: staticInfo?.supportsImages ?? false,
 		supportsPromptCache: staticInfo?.supportsPromptCache ?? false,
 		supportsReasoningEffort,
 		description: [model.name, model.vendor, model.family, model.version, model.id].filter(Boolean).join(" - "),
 	}
+}
+
+function getVsCodeLmModelDedupeKey(model: VSCodeLmModel): string {
+	const staticInfo = getVscodeLlmModelInfo(model)
+	const canonicalModel = staticInfo?.family ?? model.family ?? model.id ?? model.name ?? ""
+	const reasoningLevel = inferReasoningLevel(model)?.toLowerCase() ?? ""
+
+	return [model.vendor ?? "", canonicalModel.toLowerCase(), reasoningLevel].join("/")
+}
+
+function dedupeVsCodeLmModels(models: VSCodeLmModel[], selectedSelector: LanguageModelChatSelector | undefined) {
+	const selectedKey = selectedSelector ? stringifyVsCodeLmModelSelector(selectedSelector) : undefined
+	const dedupedModels: VSCodeLmModel[] = []
+	const keyToIndex = new Map<string, number>()
+
+	for (const model of models) {
+		const dedupeKey = getVsCodeLmModelDedupeKey(model)
+		const modelKey = stringifyVsCodeLmModelSelector(model)
+		const existingIndex = keyToIndex.get(dedupeKey)
+
+		if (existingIndex === undefined) {
+			keyToIndex.set(dedupeKey, dedupedModels.length)
+			dedupedModels.push(model)
+			continue
+		}
+
+		if (modelKey === selectedKey) {
+			dedupedModels[existingIndex] = model
+		}
+	}
+
+	return dedupedModels
 }
 
 function selectorMatchesModel(selector: LanguageModelChatSelector, model: VSCodeLmModel): boolean {
@@ -213,9 +210,14 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 
 	useEvent("message", onMessage)
 
+	const visibleVsCodeLmModels = useMemo(
+		() => dedupeVsCodeLmModels(vsCodeLmModels, apiConfiguration.vsCodeLmModelSelector),
+		[apiConfiguration.vsCodeLmModelSelector, vsCodeLmModels],
+	)
+
 	// Convert VSCode LM models array to Record format for ModelPicker
 	const modelsRecord = useMemo((): Record<string, ModelInfo> => {
-		return vsCodeLmModels.reduce(
+		return visibleVsCodeLmModels.reduce(
 			(acc, model) => {
 				const modelId = stringifyVsCodeLmModelSelector(model)
 				acc[modelId] = buildVsCodeLmModelInfo(model)
@@ -223,11 +225,11 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 			},
 			{} as Record<string, ModelInfo>,
 		)
-	}, [vsCodeLmModels])
+	}, [visibleVsCodeLmModels])
 
 	const modelsById = useMemo(() => {
-		return new Map(vsCodeLmModels.map((model) => [stringifyVsCodeLmModelSelector(model), model]))
-	}, [vsCodeLmModels])
+		return new Map(visibleVsCodeLmModels.map((model) => [stringifyVsCodeLmModelSelector(model), model]))
+	}, [visibleVsCodeLmModels])
 
 	// Transform the full picker key back to the exact VS Code LM selector.
 	const valueTransform = useCallback(
@@ -244,14 +246,37 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 	}, [])
 
 	const selectedModelId = useMemo(
-		() => findMatchingModelId(apiConfiguration.vsCodeLmModelSelector, vsCodeLmModels),
-		[apiConfiguration.vsCodeLmModelSelector, vsCodeLmModels],
+		() => findMatchingModelId(apiConfiguration.vsCodeLmModelSelector, visibleVsCodeLmModels),
+		[apiConfiguration.vsCodeLmModelSelector, visibleVsCodeLmModels],
 	)
 	const selectedModelInfo = selectedModelId ? modelsRecord[selectedModelId] : undefined
 
+	const onModelChange = useCallback(
+		(modelId: string) => {
+			const supportsReasoningEffort = modelsRecord[modelId]?.supportsReasoningEffort
+			const configuredReasoningEffort = apiConfiguration.reasoningEffort
+
+			if (!supportsReasoningEffort) {
+				setApiConfigurationField("enableReasoningEffort", false)
+				setApiConfigurationField("reasoningEffort", undefined)
+				return
+			}
+
+			if (
+				configuredReasoningEffort &&
+				configuredReasoningEffort !== "disable" &&
+				Array.isArray(supportsReasoningEffort) &&
+				!supportsReasoningEffort.includes(configuredReasoningEffort)
+			) {
+				setApiConfigurationField("reasoningEffort", undefined)
+			}
+		},
+		[apiConfiguration.reasoningEffort, modelsRecord, setApiConfigurationField],
+	)
+
 	return (
 		<>
-			{vsCodeLmModels.length > 0 ? (
+			{visibleVsCodeLmModels.length > 0 ? (
 				<>
 					<ModelPicker
 						apiConfiguration={apiConfiguration}
@@ -264,6 +289,8 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 						valueTransform={valueTransform}
 						displayTransform={displayTransform}
 						labelTransform={(modelId) => formatVsCodeLmModelLabel(modelsById.get(modelId), modelId)}
+						secondaryLabelTransform={(modelId) => formatVsCodeLmModelDetail(modelsById.get(modelId))}
+						onModelChange={onModelChange}
 						hidePricing
 					/>
 					<ThinkingBudget

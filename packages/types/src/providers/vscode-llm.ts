@@ -1,6 +1,13 @@
 import type { ModelInfo } from "../model.js"
 
 export type VscodeLlmModelId = keyof typeof vscodeLlmModels
+export type VscodeLlmModelInfo = (typeof vscodeLlmModels)[VscodeLlmModelId]
+export type VscodeLlmModelSelectorLike = {
+	family?: string
+	id?: string
+	name?: string
+	version?: string
+}
 
 export const vscodeLlmDefaultModelId: VscodeLlmModelId = "gpt-5.5"
 
@@ -118,6 +125,7 @@ export const vscodeLlmModels = {
 		family: "claude-opus-4.7",
 		contextWindow: COPILOT_EXTENDED_CONTEXT_WINDOW,
 		supportsImages: true,
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
 	}),
 	"claude-opus-4.8": copilotModel({
 		name: "Claude Opus 4.8",
@@ -179,3 +187,47 @@ export const vscodeLlmModels = {
 		maxInputTokens: number
 	}
 >
+
+function includesCompleteModelId(value: string, modelId: string): boolean {
+	let searchFromIndex = 0
+
+	while (searchFromIndex < value.length) {
+		const matchIndex = value.indexOf(modelId, searchFromIndex)
+		if (matchIndex === -1) {
+			return false
+		}
+
+		const nextCharacter = value[matchIndex + modelId.length]
+		if (!nextCharacter || !/[a-z0-9.-]/i.test(nextCharacter)) {
+			return true
+		}
+
+		searchFromIndex = matchIndex + modelId.length
+	}
+
+	return false
+}
+
+export function getVscodeLlmModelInfo(model: VscodeLlmModelSelectorLike): VscodeLlmModelInfo | undefined {
+	const searchableValues = [model.family, model.id, model.name, model.version]
+		.filter(Boolean)
+		.map((value) => value!.toLowerCase())
+
+	for (const [modelId, modelInfo] of Object.entries(vscodeLlmModels)) {
+		if (searchableValues.some((value) => value === modelId)) {
+			return modelInfo
+		}
+	}
+
+	const longestModelIdsFirst = Object.entries(vscodeLlmModels).sort(
+		([leftModelId], [rightModelId]) => rightModelId.length - leftModelId.length,
+	)
+
+	for (const [modelId, modelInfo] of longestModelIdsFirst) {
+		if (searchableValues.some((value) => includesCompleteModelId(value, modelId))) {
+			return modelInfo
+		}
+	}
+
+	return undefined
+}

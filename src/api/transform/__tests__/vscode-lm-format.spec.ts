@@ -26,7 +26,13 @@ interface MockLanguageModelToolCallPart {
 interface MockLanguageModelToolResultPart {
 	type: "tool_result"
 	callId: string
-	content: MockLanguageModelTextPart[]
+	content: Array<MockLanguageModelTextPart | MockLanguageModelDataPart>
+}
+
+interface MockLanguageModelDataPart {
+	type: "data"
+	mimeType: string
+	data: Uint8Array
 }
 
 // Mock vscode namespace
@@ -54,8 +60,20 @@ vitest.mock("vscode", () => {
 		type = "tool_result"
 		constructor(
 			public callId: string,
-			public content: MockLanguageModelTextPart[],
+			public content: Array<MockLanguageModelTextPart | MockLanguageModelDataPart>,
 		) {}
+	}
+
+	class MockLanguageModelDataPart {
+		type = "data"
+		constructor(
+			public data: Uint8Array,
+			public mimeType: string,
+		) {}
+
+		static image(data: Uint8Array, mimeType: string) {
+			return new MockLanguageModelDataPart(data, mimeType)
+		}
 	}
 
 	return {
@@ -75,6 +93,7 @@ vitest.mock("vscode", () => {
 		LanguageModelTextPart: MockLanguageModelTextPart,
 		LanguageModelToolCallPart: MockLanguageModelToolCallPart,
 		LanguageModelToolResultPart: MockLanguageModelToolResultPart,
+		LanguageModelDataPart: MockLanguageModelDataPart,
 	}
 })
 
@@ -150,7 +169,7 @@ describe("convertToVsCodeLmMessages", () => {
 		expect(toolCall.type).toBe("tool_call")
 	})
 
-	it("should handle image blocks with appropriate placeholders", () => {
+	it("should convert base64 image blocks to VS Code data parts", () => {
 		const messages: Anthropic.Messages.MessageParam[] = [
 			{
 				role: "user",
@@ -161,7 +180,7 @@ describe("convertToVsCodeLmMessages", () => {
 						source: {
 							type: "base64",
 							media_type: "image/png",
-							data: "base64data",
+							data: "aGVsbG8=",
 						},
 					},
 				],
@@ -171,8 +190,10 @@ describe("convertToVsCodeLmMessages", () => {
 		const result = convertToVsCodeLmMessages(messages)
 
 		expect(result).toHaveLength(1)
-		const imagePlaceholder = result[0].content[1] as MockLanguageModelTextPart
-		expect(imagePlaceholder.value).toContain("[Image (base64): image/png not supported by VSCode LM API]")
+		const imagePart = result[0].content[1] as MockLanguageModelDataPart
+		expect(imagePart.type).toBe("data")
+		expect(imagePart.mimeType).toBe("image/png")
+		expect(Array.from(imagePart.data)).toEqual([104, 101, 108, 108, 111])
 	})
 })
 
