@@ -31,6 +31,7 @@ function asObjectSafe(value: any): object {
 type LanguageModelTextPartLike = vscode.LanguageModelTextPart | { value: string }
 type LanguageModelToolCallPartLike = vscode.LanguageModelToolCallPart | { callId: string; name: string; input: object }
 type LanguageModelToolResultPartLike = vscode.LanguageModelToolResultPart | { callId: string; content: unknown[] }
+type LanguageModelDataPartLike = vscode.LanguageModelDataPart | { mimeType: string; data: Uint8Array }
 
 export function isLanguageModelTextPartLike(value: unknown): value is LanguageModelTextPartLike {
 	return (
@@ -66,6 +67,32 @@ export function isLanguageModelToolResultPartLike(value: unknown): value is Lang
 			"content" in value &&
 			typeof (value as { callId?: unknown }).callId === "string" &&
 			Array.isArray((value as { content?: unknown }).content))
+	)
+}
+
+export function isLanguageModelDataPartLike(value: unknown): value is LanguageModelDataPartLike {
+	return (
+		value instanceof vscode.LanguageModelDataPart ||
+		(typeof value === "object" &&
+			value !== null &&
+			"mimeType" in value &&
+			"data" in value &&
+			typeof (value as { mimeType?: unknown }).mimeType === "string" &&
+			(value as { data?: unknown }).data instanceof Uint8Array)
+	)
+}
+
+function convertAnthropicImagePart(
+	part: Anthropic.ImageBlockParam,
+): vscode.LanguageModelDataPart | vscode.LanguageModelTextPart {
+	const source = part.source as { type?: string; media_type?: string; data?: string }
+
+	if (source.type === "base64" && source.media_type && source.data) {
+		return vscode.LanguageModelDataPart.image(Buffer.from(source.data, "base64"), source.media_type)
+	}
+
+	return new vscode.LanguageModelTextPart(
+		`[Image (${source.type || "Unknown source-type"}): ${source.media_type || "unknown media-type"} not supported by VSCode LM API]`,
 	)
 }
 
@@ -108,14 +135,12 @@ export function convertToVsCodeLmMessages(
 					// Convert tool messages to ToolResultParts
 					...toolMessages.map((toolMessage) => {
 						// Process tool result content into TextParts
-						const toolContentParts: vscode.LanguageModelTextPart[] =
+						const toolContentParts: Array<vscode.LanguageModelTextPart | vscode.LanguageModelDataPart> =
 							typeof toolMessage.content === "string"
 								? [new vscode.LanguageModelTextPart(toolMessage.content)]
 								: (toolMessage.content?.map((part) => {
 										if (part.type === "image") {
-											return new vscode.LanguageModelTextPart(
-												`[Image (${part.source?.type || "Unknown source-type"}): ${part.source?.media_type || "unknown media-type"} not supported by VSCode LM API]`,
-											)
+											return convertAnthropicImagePart(part)
 										}
 										return new vscode.LanguageModelTextPart(part.text)
 									}) ?? [new vscode.LanguageModelTextPart("")])
@@ -126,9 +151,7 @@ export function convertToVsCodeLmMessages(
 					// Convert non-tool messages to TextParts after tool messages
 					...nonToolMessages.map((part) => {
 						if (part.type === "image") {
-							return new vscode.LanguageModelTextPart(
-								`[Image (${part.source?.type || "Unknown source-type"}): ${part.source?.media_type || "unknown media-type"} not supported by VSCode LM API]`,
-							)
+							return convertAnthropicImagePart(part)
 						}
 						return new vscode.LanguageModelTextPart(part.text)
 					}),
@@ -161,7 +184,7 @@ export function convertToVsCodeLmMessages(
 					// Convert non-tool messages to TextParts first
 					...nonToolMessages.map((part) => {
 						if (part.type === "image") {
-							return new vscode.LanguageModelTextPart("[Image generation not supported by VSCode LM API]")
+							return convertAnthropicImagePart(part)
 						}
 						return new vscode.LanguageModelTextPart(part.text)
 					}),
@@ -216,6 +239,9 @@ export function extractTextCountFromMessage(message: vscode.LanguageModelChatMes
 					if (isLanguageModelTextPartLike(part)) {
 						text += part.value
 					}
+					if (isLanguageModelDataPartLike(part)) {
+						text += part.mimeType
+					}
 				}
 			}
 			if (isLanguageModelToolCallPartLike(item)) {
@@ -228,6 +254,9 @@ export function extractTextCountFromMessage(message: vscode.LanguageModelChatMes
 						console.error("Alpha <Language Model API>: Failed to stringify tool call input:", error)
 					}
 				}
+			}
+			if (isLanguageModelDataPartLike(item)) {
+				text += item.mimeType
 			}
 		}
 	} else if (typeof message.content === "string") {

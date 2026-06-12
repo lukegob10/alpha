@@ -65,6 +65,8 @@ interface ModelPickerProps {
 	displayTransform?: (value: unknown) => string
 	/** Render a friendlier visible label while preserving the real model ID value. */
 	labelTransform?: (modelId: string, modelInfo?: ModelInfo) => string
+	/** Render optional secondary text below the visible label in the dropdown. */
+	secondaryLabelTransform?: (modelId: string, modelInfo?: ModelInfo) => string | undefined
 	/** Callback when model changes - useful for side effects like clearing related fields */
 	onModelChange?: (modelId: string) => void
 }
@@ -85,6 +87,7 @@ export const ModelPicker = ({
 	valueTransform,
 	displayTransform,
 	labelTransform,
+	secondaryLabelTransform,
 	onModelChange,
 }: ModelPickerProps) => {
 	const { t } = useAppTranslation()
@@ -267,9 +270,11 @@ export const ModelPicker = ({
 												<span className="truncate" title={model}>
 													{labelTransform?.(model, models?.[model]) ?? model}
 												</span>
-												{labelTransform && labelTransform(model, models?.[model]) !== model && (
-													<span className="truncate text-xs opacity-70" title={model}>
-														{model}
+												{secondaryLabelTransform?.(model, models?.[model]) && (
+													<span
+														className="truncate text-xs opacity-70"
+														title={secondaryLabelTransform(model, models?.[model])}>
+														{secondaryLabelTransform(model, models?.[model])}
 													</span>
 												)}
 											</span>

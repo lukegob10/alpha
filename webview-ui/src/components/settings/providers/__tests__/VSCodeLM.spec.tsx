@@ -79,7 +79,7 @@ describe("VSCodeLM", () => {
 				"copilot/gpt-5.5/high/copilot-gpt-5.5-high": expect.any(Object),
 			}),
 		)
-		expect(props.labelTransform("copilot/gpt-5.5/high/copilot-gpt-5.5-high")).toBe("GPT 5.5 - High")
+		expect(props.labelTransform("copilot/gpt-5.5/high/copilot-gpt-5.5-high")).toBe("GPT 5.5 · High")
 	})
 
 	it("stores the exact selector for a selected reasoning variant", () => {
@@ -183,7 +183,7 @@ describe("VSCodeLM", () => {
 		)
 	})
 
-	it("does not render reasoning effort settings for Copilot Claude Opus 4.7", () => {
+	it("renders reasoning effort settings for Copilot Claude Opus 4.7", () => {
 		const selectedModel = {
 			vendor: "copilot",
 			family: "claude-opus-4.7",
@@ -204,9 +204,103 @@ describe("VSCodeLM", () => {
 		const props = thinkingBudgetProps.at(-1)
 		expect(props.modelInfo).toEqual(
 			expect.objectContaining({
-				supportsReasoningEffort: undefined,
+				contextWindow: 1_000_000,
+				supportsImages: true,
+				supportsReasoningEffort: ["none", "low", "medium", "high"],
 			}),
 		)
+	})
+
+	it("deduplicates equivalent Copilot Claude model selectors", () => {
+		const models = [
+			{
+				vendor: "copilot",
+				family: "claude-opus-4.7",
+				version: "2026-06-01",
+				id: "copilot-claude-opus-4.7",
+				name: "Claude Opus 4.7",
+			},
+			{
+				vendor: "copilot",
+				family: "claude-opus-4.7",
+				version: "2026-06-02",
+				id: "copilot-claude-opus-4.7-alt",
+				name: "Claude Opus 4.7",
+			},
+		]
+
+		renderProvider()
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: models } } as MessageEvent)
+		})
+
+		const props = modelPickerProps.at(-1)
+		expect(Object.keys(props.models)).toHaveLength(1)
+		expect(props.labelTransform(Object.keys(props.models)[0])).toBe("Claude Opus 4.7")
+		expect(props.secondaryLabelTransform(Object.keys(props.models)[0])).toBeUndefined()
+	})
+
+	it("keeps the selected duplicate selector visible when it was already configured", () => {
+		const selectedModel = {
+			vendor: "copilot",
+			family: "claude-opus-4.7",
+			version: "2026-06-02",
+			id: "copilot-claude-opus-4.7-alt",
+			name: "Claude Opus 4.7",
+		}
+		const models = [
+			{
+				vendor: "copilot",
+				family: "claude-opus-4.7",
+				version: "2026-06-01",
+				id: "copilot-claude-opus-4.7",
+				name: "Claude Opus 4.7",
+			},
+			selectedModel,
+		]
+
+		renderProvider({
+			apiProvider: "vscode-lm",
+			vsCodeLmModelSelector: selectedModel,
+		})
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: models } } as MessageEvent)
+		})
+
+		const props = modelPickerProps.at(-1)
+		expect(Object.keys(props.models)).toEqual(["copilot/claude-opus-4.7/2026-06-02/copilot-claude-opus-4.7-alt"])
+		expect(thinkingBudgetProps.at(-1).modelInfo).toEqual(
+			expect.objectContaining({
+				supportsReasoningEffort: ["none", "low", "medium", "high"],
+			}),
+		)
+	})
+
+	it("clears stale reasoning settings when switching to a non-reasoning model", () => {
+		const models = [
+			{
+				vendor: "copilot",
+				family: "claude-opus-4.5",
+				version: "2026-06-01",
+				id: "copilot-claude-opus-4.5",
+				name: "Claude Opus 4.5",
+			},
+		]
+
+		renderProvider({
+			apiProvider: "vscode-lm",
+			enableReasoningEffort: true,
+			reasoningEffort: "high",
+		})
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: models } } as MessageEvent)
+		})
+
+		const props = modelPickerProps.at(-1)
+		props.onModelChange("copilot/claude-opus-4.5/2026-06-01/copilot-claude-opus-4.5")
+
+		expect(setApiConfigurationField).toHaveBeenCalledWith("enableReasoningEffort", false)
+		expect(setApiConfigurationField).toHaveBeenCalledWith("reasoningEffort", undefined)
 	})
 
 	it("matches exact static model ids before prefix matches", () => {

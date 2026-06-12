@@ -95,6 +95,15 @@ const mockLanguageModelChat = {
 	countTokens: vi.fn(),
 }
 
+const mockCopilotGpt55LanguageModelChat = {
+	...mockLanguageModelChat,
+	id: "copilot-gpt-5.5",
+	name: "GPT-5.5",
+	vendor: "copilot",
+	family: "gpt-5.5",
+	version: "2026-06-01",
+}
+
 describe("VsCodeLmHandler", () => {
 	let handler: VsCodeLmHandler
 	const defaultOptions: ApiHandlerOptions = {
@@ -538,9 +547,9 @@ describe("VsCodeLmHandler", () => {
 				enableReasoningEffort: true,
 				reasoningEffort: "high",
 			})
-			handler["client"] = mockLanguageModelChat
+			handler["client"] = mockCopilotGpt55LanguageModelChat as any
 
-			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+			mockCopilotGpt55LanguageModelChat.sendRequest.mockResolvedValueOnce({
 				stream: (async function* () {
 					yield new vscode.LanguageModelTextPart("Reasoned response")
 				})(),
@@ -551,7 +560,7 @@ describe("VsCodeLmHandler", () => {
 				chunks.push(chunk)
 			}
 
-			expect(mockLanguageModelChat.sendRequest).toHaveBeenCalledWith(
+			expect(mockCopilotGpt55LanguageModelChat.sendRequest).toHaveBeenCalledWith(
 				expect.any(Array),
 				expect.objectContaining({
 					modelOptions: {
@@ -572,9 +581,9 @@ describe("VsCodeLmHandler", () => {
 				enableReasoningEffort: true,
 				reasoningEffort: "xhigh",
 			})
-			handler["client"] = mockLanguageModelChat
+			handler["client"] = mockCopilotGpt55LanguageModelChat as any
 
-			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+			mockCopilotGpt55LanguageModelChat.sendRequest.mockResolvedValueOnce({
 				stream: (async function* () {
 					yield new vscode.LanguageModelTextPart("Extra reasoned response")
 				})(),
@@ -584,12 +593,47 @@ describe("VsCodeLmHandler", () => {
 				// consume stream
 			}
 
-			expect(mockLanguageModelChat.sendRequest).toHaveBeenCalledWith(
+			expect(mockCopilotGpt55LanguageModelChat.sendRequest).toHaveBeenCalledWith(
 				expect.any(Array),
 				expect.objectContaining({
 					modelOptions: {
 						reasoningEffort: "xhigh",
 					},
+				}),
+				expect.anything(),
+			)
+		})
+
+		it("should omit stale reasoning effort model options for models without reasoning support", async () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				enableReasoningEffort: true,
+				reasoningEffort: "high",
+			})
+			const unsupportedModel = {
+				...mockLanguageModelChat,
+				id: "copilot-claude-opus-4.5",
+				name: "Claude Opus 4.5",
+				vendor: "copilot",
+				family: "claude-opus-4.5",
+				version: "2026-06-01",
+			}
+			handler["client"] = unsupportedModel as any
+
+			unsupportedModel.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Plain response")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "Answer" }])) {
+				// consume stream
+			}
+
+			expect(unsupportedModel.sendRequest).toHaveBeenCalledWith(
+				expect.any(Array),
+				expect.not.objectContaining({
+					modelOptions: expect.anything(),
 				}),
 				expect.anything(),
 			)
@@ -736,7 +780,7 @@ describe("VsCodeLmHandler", () => {
 			expect(model.info.contextWindow).toBe(128_000)
 		})
 
-		it("should not return reasoning effort support for Copilot Claude Opus 4.7", async () => {
+		it("should return reasoning effort support for Copilot Claude Opus 4.7", async () => {
 			const mockModel = {
 				...mockLanguageModelChat,
 				id: "copilot-claude-opus-4.7",
@@ -749,7 +793,7 @@ describe("VsCodeLmHandler", () => {
 			handler["client"] = mockModel as any
 
 			const model = handler.getModel()
-			expect(model.info.supportsReasoningEffort).toBeUndefined()
+			expect(model.info.supportsReasoningEffort).toEqual(["none", "low", "medium", "high"])
 			expect(model.info.contextWindow).toBe(1_000_000)
 		})
 
@@ -853,9 +897,9 @@ describe("VsCodeLmHandler", () => {
 				enableReasoningEffort: true,
 				reasoningEffort: "medium",
 			})
-			handler["client"] = mockLanguageModelChat
+			handler["client"] = mockCopilotGpt55LanguageModelChat as any
 
-			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+			mockCopilotGpt55LanguageModelChat.sendRequest.mockResolvedValueOnce({
 				stream: (async function* () {
 					yield new vscode.LanguageModelTextPart("Completed text")
 				})(),
@@ -863,7 +907,7 @@ describe("VsCodeLmHandler", () => {
 
 			await handler.completePrompt("Test prompt")
 
-			expect(mockLanguageModelChat.sendRequest).toHaveBeenCalledWith(
+			expect(mockCopilotGpt55LanguageModelChat.sendRequest).toHaveBeenCalledWith(
 				expect.any(Array),
 				expect.objectContaining({
 					modelOptions: {

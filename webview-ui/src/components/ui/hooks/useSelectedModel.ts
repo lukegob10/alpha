@@ -17,6 +17,7 @@ import {
 	xaiModels,
 	vscodeLlmModels,
 	vscodeLlmDefaultModelId,
+	getVscodeLlmModelInfo,
 	openAiCodexModels,
 	sambaNovaModels,
 	internationalZAiModels,
@@ -299,9 +300,10 @@ function getSelectedModel({
 			const id = apiConfiguration?.vsCodeLmModelSelector
 				? stringifyVsCodeLmModelSelector(apiConfiguration.vsCodeLmModelSelector)
 				: vscodeLlmDefaultModelId
-			const modelFamily = apiConfiguration?.vsCodeLmModelSelector?.family ?? vscodeLlmDefaultModelId
-			const info = vscodeLlmModels[modelFamily as keyof typeof vscodeLlmModels]
-			return { id, info: { ...openAiModelInfoSaneDefaults, ...info, supportsImages: false } } // VSCode LM API currently doesn't support images.
+			const info = apiConfiguration?.vsCodeLmModelSelector
+				? getVscodeLlmModelInfo(apiConfiguration.vsCodeLmModelSelector)
+				: vscodeLlmModels[vscodeLlmDefaultModelId]
+			return { id, info: { ...openAiModelInfoSaneDefaults, ...info } }
 		}
 		case "sambanova": {
 			const id = apiConfiguration.apiModelId ?? defaultModelId
