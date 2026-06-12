@@ -945,6 +945,41 @@ describe("webviewMessageHandler - mcpEnabled", () => {
 	})
 })
 
+describe("webviewMessageHandler - command auto-approval settings", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("sanitizes command lists from updateSettings and stores them in global state", async () => {
+		await webviewMessageHandler(mockClineProvider, {
+			type: "updateSettings",
+			updatedSettings: {
+				allowedCommands: [" git ", "", "git", 7 as any, "*"],
+				deniedCommands: [" rm ", null as any, "rm"],
+			},
+		})
+
+		expect(mockClineProvider.contextProxy.setValue).toHaveBeenCalledWith("allowedCommands", ["git", "*"])
+		expect(mockClineProvider.contextProxy.setValue).toHaveBeenCalledWith("deniedCommands", ["rm"])
+		expect(mockClineProvider.postStateToWebview).toHaveBeenCalledTimes(1)
+	})
+
+	it("sanitizes command lists from legacy command messages", async () => {
+		await webviewMessageHandler(mockClineProvider, {
+			type: "allowedCommands",
+			commands: [" npm test ", "", "npm test", false as any],
+		})
+
+		await webviewMessageHandler(mockClineProvider, {
+			type: "deniedCommands",
+			commands: [" rm -rf ", undefined as any, "rm -rf"],
+		})
+
+		expect(mockClineProvider.contextProxy.setValue).toHaveBeenCalledWith("allowedCommands", ["npm test"])
+		expect(mockClineProvider.contextProxy.setValue).toHaveBeenCalledWith("deniedCommands", ["rm -rf"])
+	})
+})
+
 describe("webviewMessageHandler - requestCommands", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()

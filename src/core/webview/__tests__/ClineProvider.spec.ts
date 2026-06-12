@@ -134,6 +134,7 @@ vi.mock("vscode", () => ({
 	workspace: {
 		getConfiguration: vi.fn().mockReturnValue({
 			get: vi.fn().mockReturnValue([]),
+			inspect: vi.fn().mockReturnValue({}),
 			update: vi.fn(),
 		}),
 		onDidChangeConfiguration: vi.fn().mockImplementation(() => ({
@@ -519,6 +520,7 @@ describe("ClineProvider", () => {
 			experiments: experimentDefault,
 			maxOpenTabsContext: 20,
 			maxWorkspaceFiles: 200,
+			maxConcurrentTasks: 1,
 			telemetrySetting: "unset",
 			showRooIgnoredFiles: false,
 			enableSubfolderRules: false,
@@ -747,6 +749,39 @@ describe("ClineProvider", () => {
 		expect(state).toHaveProperty("soundEnabled")
 		expect(state).toHaveProperty("ttsEnabled")
 		expect(state).toHaveProperty("writeDelayMs")
+	})
+
+	test("getState uses merged command lists for runtime auto-approval", async () => {
+		await provider.contextProxy.setValue("allowedCommands", ["git", "npm"])
+		await provider.contextProxy.setValue("deniedCommands", ["rm"])
+
+		const inspectConfigValue = vi.fn((key: string) => {
+			if (key === "allowedCommands") {
+				return { globalValue: [" * ", "npm"] }
+			}
+			if (key === "deniedCommands") {
+				return { workspaceValue: [" rm -rf "] }
+			}
+			return {}
+		})
+		vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+			get: vi.fn().mockReturnValue([]),
+			inspect: inspectConfigValue,
+			update: vi.fn(),
+		} as any)
+
+		try {
+			const state = await provider.getState()
+
+			expect(state.allowedCommands).toEqual(["git", "npm", "*"])
+			expect(state.deniedCommands).toEqual(["rm", "rm -rf"])
+		} finally {
+			vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+				get: vi.fn().mockReturnValue([]),
+				inspect: vi.fn().mockReturnValue({}),
+				update: vi.fn(),
+			} as any)
+		}
 	})
 
 	test("includes saved GitHub token in state posted to webview", async () => {

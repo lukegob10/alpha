@@ -87,6 +87,20 @@ import {
 
 const ALLOWED_VSCODE_SETTINGS = new Set(["terminal.integrated.inheritEnv"])
 
+function sanitizeCommandList(commands: unknown): string[] {
+	if (!Array.isArray(commands)) {
+		return []
+	}
+
+	return [
+		...new Set(
+			commands
+				.filter((cmd): cmd is string => typeof cmd === "string" && cmd.trim().length > 0)
+				.map((cmd) => cmd.trim()),
+		),
+	]
+}
+
 function getTaskForMessage(
 	provider: ClineProvider,
 	message: WebviewMessage,
@@ -692,25 +706,9 @@ export const webviewMessageHandler = async (
 						newValue = value ?? "en"
 						changeLanguage(newValue as Language)
 					} else if (key === "allowedCommands") {
-						const commands = value ?? []
-
-						newValue = Array.isArray(commands)
-							? commands.filter((cmd) => typeof cmd === "string" && cmd.trim().length > 0)
-							: []
-
-						await vscode.workspace
-							.getConfiguration(Package.name)
-							.update("allowedCommands", newValue, vscode.ConfigurationTarget.Global)
+						newValue = sanitizeCommandList(value)
 					} else if (key === "deniedCommands") {
-						const commands = value ?? []
-
-						newValue = Array.isArray(commands)
-							? commands.filter((cmd) => typeof cmd === "string" && cmd.trim().length > 0)
-							: []
-
-						await vscode.workspace
-							.getConfiguration(Package.name)
-							.update("deniedCommands", newValue, vscode.ConfigurationTarget.Global)
+						newValue = sanitizeCommandList(value)
 					} else if (key === "ttsEnabled") {
 						newValue = value ?? true
 						setTtsEnabled(newValue as boolean)
@@ -1268,34 +1266,16 @@ export const webviewMessageHandler = async (
 			getRequiredTaskForMessage(provider, message, "cancelAutoApproval")?.cancelAutoApprovalTimeout()
 			break
 		case "allowedCommands": {
-			// Validate and sanitize the commands array
-			const commands = message.commands ?? []
-			const validCommands = Array.isArray(commands)
-				? commands.filter((cmd) => typeof cmd === "string" && cmd.trim().length > 0)
-				: []
+			const validCommands = sanitizeCommandList(message.commands)
 
 			await updateGlobalState("allowedCommands", validCommands)
-
-			// Also update workspace settings.
-			await vscode.workspace
-				.getConfiguration(Package.name)
-				.update("allowedCommands", validCommands, vscode.ConfigurationTarget.Global)
 
 			break
 		}
 		case "deniedCommands": {
-			// Validate and sanitize the commands array
-			const commands = message.commands ?? []
-			const validCommands = Array.isArray(commands)
-				? commands.filter((cmd) => typeof cmd === "string" && cmd.trim().length > 0)
-				: []
+			const validCommands = sanitizeCommandList(message.commands)
 
 			await updateGlobalState("deniedCommands", validCommands)
-
-			// Also update workspace settings.
-			await vscode.workspace
-				.getConfiguration(Package.name)
-				.update("deniedCommands", validCommands, vscode.ConfigurationTarget.Global)
 
 			break
 		}
