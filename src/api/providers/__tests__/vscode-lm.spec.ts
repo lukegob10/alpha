@@ -541,7 +541,7 @@ describe("VsCodeLmHandler", () => {
 			)
 		})
 
-		it("should pass selected reasoning effort through model options", async () => {
+		it("should pass selected reasoning effort through request options", async () => {
 			handler = new VsCodeLmHandler({
 				...defaultOptions,
 				enableReasoningEffort: true,
@@ -566,6 +566,9 @@ describe("VsCodeLmHandler", () => {
 					modelOptions: {
 						reasoningEffort: "high",
 					},
+					configuration: {
+						reasoningEffort: "high",
+					},
 				}),
 				expect.anything(),
 			)
@@ -575,7 +578,7 @@ describe("VsCodeLmHandler", () => {
 			})
 		})
 
-		it("should pass selected extra-high reasoning effort through model options", async () => {
+		it("should pass selected extra-high reasoning effort through request options", async () => {
 			handler = new VsCodeLmHandler({
 				...defaultOptions,
 				enableReasoningEffort: true,
@@ -597,6 +600,9 @@ describe("VsCodeLmHandler", () => {
 				expect.any(Array),
 				expect.objectContaining({
 					modelOptions: {
+						reasoningEffort: "xhigh",
+					},
+					configuration: {
 						reasoningEffort: "xhigh",
 					},
 				}),
@@ -634,9 +640,13 @@ describe("VsCodeLmHandler", () => {
 				expect.any(Array),
 				expect.not.objectContaining({
 					modelOptions: expect.anything(),
+					configuration: expect.anything(),
 				}),
 				expect.anything(),
 			)
+			const requestOptions = unsupportedModel.sendRequest.mock.calls.at(-1)?.[1]
+			expect(requestOptions).not.toHaveProperty("modelOptions")
+			expect(requestOptions).not.toHaveProperty("configuration")
 		})
 
 		it("should omit reasoning effort model options when disabled", async () => {
@@ -661,9 +671,13 @@ describe("VsCodeLmHandler", () => {
 				expect.any(Array),
 				expect.not.objectContaining({
 					modelOptions: expect.anything(),
+					configuration: expect.anything(),
 				}),
 				expect.anything(),
 			)
+			const requestOptions = mockLanguageModelChat.sendRequest.mock.calls.at(-1)?.[1]
+			expect(requestOptions).not.toHaveProperty("modelOptions")
+			expect(requestOptions).not.toHaveProperty("configuration")
 		})
 
 		it("should handle errors", async () => {
@@ -891,7 +905,7 @@ describe("VsCodeLmHandler", () => {
 			expect(mockLanguageModelChat.sendRequest).toHaveBeenCalled()
 		})
 
-		it("should pass selected reasoning effort through single prompt completions", async () => {
+		it("should pass selected reasoning effort through single prompt completion request options", async () => {
 			handler = new VsCodeLmHandler({
 				...defaultOptions,
 				enableReasoningEffort: true,
@@ -911,6 +925,9 @@ describe("VsCodeLmHandler", () => {
 				expect.any(Array),
 				expect.objectContaining({
 					modelOptions: {
+						reasoningEffort: "medium",
+					},
+					configuration: {
 						reasoningEffort: "medium",
 					},
 				}),
