@@ -44,11 +44,11 @@ function convertToVsCodeLmTools(tools: OpenAI.Chat.ChatCompletionTool[]): vscode
 		}))
 }
 
-function getVsCodeLmReasoningEffortModelOptions(
+function getVsCodeLmReasoningEffortOption(
 	model: vscode.LanguageModelChat | vscode.LanguageModelChatSelector,
 	enableReasoningEffort: boolean | undefined,
 	reasoningEffort: ProviderSettings["reasoningEffort"],
-): vscode.LanguageModelChatRequestOptions["modelOptions"] | undefined {
+): { reasoningEffort: Exclude<ProviderSettings["reasoningEffort"], undefined | "disable"> } | undefined {
 	if (!enableReasoningEffort || !reasoningEffort || reasoningEffort === "disable") {
 		return undefined
 	}
@@ -64,6 +64,30 @@ function getVsCodeLmReasoningEffortModelOptions(
 
 	return {
 		reasoningEffort,
+	}
+}
+
+function applyVsCodeLmReasoningEffortOptions(
+	requestOptions: vscode.LanguageModelChatRequestOptions,
+	reasoningEffortOption: ReturnType<typeof getVsCodeLmReasoningEffortOption>,
+): void {
+	if (!reasoningEffortOption) {
+		return
+	}
+
+	requestOptions.modelOptions = {
+		...(requestOptions.modelOptions ?? {}),
+		...reasoningEffortOption,
+	}
+
+	// Current VS Code forwards this internal/proposed field to provider-side
+	// modelConfiguration, which Copilot reads for per-request thinking effort.
+	const requestOptionsWithConfiguration = requestOptions as vscode.LanguageModelChatRequestOptions & {
+		configuration?: Record<string, unknown>
+	}
+	requestOptionsWithConfiguration.configuration = {
+		...(requestOptionsWithConfiguration.configuration ?? {}),
+		...reasoningEffortOption,
 	}
 }
 
@@ -480,16 +504,14 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			const requestOptions: vscode.LanguageModelChatRequestOptions = {
 				justification: `Alpha would like to use '${client.name}' from '${client.vendor}', Click 'Allow' to proceed.`,
 			}
-			const modelOptions = getVsCodeLmReasoningEffortModelOptions(
+			const reasoningEffortOption = getVsCodeLmReasoningEffortOption(
 				client,
 				this.options.enableReasoningEffort,
 				this.options.reasoningEffort,
 			)
 			const tools = convertToVsCodeLmTools(metadata?.tools ?? [])
 
-			if (modelOptions) {
-				requestOptions.modelOptions = modelOptions
-			}
+			applyVsCodeLmReasoningEffortOptions(requestOptions, reasoningEffortOption)
 
 			if (tools.length > 0) {
 				requestOptions.tools = tools
@@ -682,14 +704,12 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			const requestCancellation = new vscode.CancellationTokenSource()
 			cancellation = requestCancellation
 			const requestOptions: vscode.LanguageModelChatRequestOptions = {}
-			const modelOptions = getVsCodeLmReasoningEffortModelOptions(
+			const reasoningEffortOption = getVsCodeLmReasoningEffortOption(
 				client,
 				this.options.enableReasoningEffort,
 				this.options.reasoningEffort,
 			)
-			if (modelOptions) {
-				requestOptions.modelOptions = modelOptions
-			}
+			applyVsCodeLmReasoningEffortOptions(requestOptions, reasoningEffortOption)
 			const response = await withApiRequestTimeout(
 				client.sendRequest(
 					[vscode.LanguageModelChatMessage.User(prompt)],
