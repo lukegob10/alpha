@@ -2,7 +2,8 @@
 Semantics for Reasoning Effort (ThinkingBudget)
 
 Capability surface:
-- modelInfo.supportsReasoningEffort: boolean | Array&lt;"disable" | "none" | "minimal" | "low" | "medium" | "high"&gt;
+- modelInfo.supportsReasoningEffort:
+  boolean | Array&lt;"disable" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh"&gt;
   - true  → UI shows ["low","medium","high"]
   - array → UI shows exactly the provided values
 
@@ -17,7 +18,7 @@ Selection behavior:
   - set enableReasoningEffort = true
   - persist reasoningEffort = "none"
   - request builders include reasoning with value "none"
-- "minimal" | "low" | "medium" | "high":
+- "minimal" | "low" | "medium" | "high" | "xhigh":
   - set enableReasoningEffort = true
   - persist the selected value
   - request builders include reasoning with the selected effort
