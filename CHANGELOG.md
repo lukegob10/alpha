@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.6
+
+### Patch Changes
+
+- [codex] Fix completed parallel task follow-up routing and refresh skill discovery from `.agents/skills`.
+
 ## 1.1.5
 
 ### Patch Changes

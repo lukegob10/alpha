@@ -103,8 +103,30 @@ describe("TaskSessionRegistry", () => {
 		expect(registry.canCreateTask()).toBe(true)
 		expect(registry.getMetadata()["task-a"]).toMatchObject({
 			lifecycle: TaskLifecycleState.Completed,
-			isWaitingForInput: true,
-			waitingReason: "idle",
+			isWaitingForInput: false,
+			waitingReason: undefined,
+		})
+	})
+
+	it("does not expose stale follow-up asks on completed tasks as waiting input", () => {
+		const registry = new TaskSessionRegistry(1)
+
+		registry.register(
+			createTask("task-a", {
+				isStreaming: false,
+				taskAsk: { ts: 101, type: "ask", ask: "followup", text: "Still need input?" },
+			} as Partial<Task>),
+		)
+		registry.markLifecycle("task-a", TaskLifecycleState.Completed)
+
+		expect(registry.getLiveTaskIds()).toEqual([])
+		expect(registry.getLiveTaskCount()).toBe(0)
+		expect(registry.canCreateTask()).toBe(true)
+		expect(registry.canAcceptInput("task-a")).toBe(false)
+		expect(registry.getMetadata()["task-a"]).toMatchObject({
+			lifecycle: TaskLifecycleState.Completed,
+			isWaitingForInput: false,
+			waitingReason: undefined,
 		})
 	})
 

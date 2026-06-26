@@ -15,7 +15,7 @@ export async function handleRequestSkills(provider: ClineProvider): Promise<Skil
 	try {
 		const skillsManager = provider.getSkillsManager()
 		if (skillsManager) {
-			const skills = skillsManager.getSkillsMetadata()
+			const skills = await skillsManager.refreshSkills()
 			await provider.postMessageToWebview({ type: "skills", skills })
 			return skills
 		} else {

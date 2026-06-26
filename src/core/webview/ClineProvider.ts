@@ -2853,6 +2853,10 @@ export class ClineProvider
 		return this.taskSessions.getTask(taskId)
 	}
 
+	public canAcceptTaskInput(taskId: string | undefined): boolean {
+		return this.taskSessions.canAcceptInput(taskId)
+	}
+
 	public isTaskOnScreen(taskId: string): boolean {
 		return this.currentView.type === "task" && this.currentView.taskId === taskId
 	}

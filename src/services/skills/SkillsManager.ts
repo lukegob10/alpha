@@ -60,6 +60,16 @@ export class SkillsManager {
 		}
 	}
 
+	async refreshSkills(): Promise<SkillMetadata[]> {
+		await this.discoverSkills()
+		return this.getSkillsMetadata()
+	}
+
+	private async refreshSkillsAndNotify(): Promise<void> {
+		const skills = await this.refreshSkills()
+		await this.providerRef.deref()?.postMessageToWebview({ type: "skills", skills })
+	}
+
 	/**
 	 * Scan a skills directory for skill subdirectories.
 	 * Handles two symlink cases:
@@ -665,57 +675,37 @@ Add your skill instructions here.
 		const provider = this.providerRef.deref()
 		if (!provider?.cwd) return
 
-		// Watch for changes in skills directories
-		const globalAlphaDir = getGlobalAlphaDirectory()
-		const globalAgentsDir = getGlobalAgentsDirectory()
-		const projectAlphaDir = getProjectAlphaDirectoryForCwd(provider.cwd)
-		const projectAgentsDir = getProjectAgentsDirectoryForCwd(provider.cwd)
-
-		// Watch global .alpha skills directory
-		this.watchDirectory(path.join(globalAlphaDir, "skills"))
-
-		// Watch global .agents skills directory
-		this.watchDirectory(path.join(globalAgentsDir, "skills"))
-
-		// Watch project .alpha skills directory
-		this.watchDirectory(path.join(projectAlphaDir, "skills"))
-
-		// Watch project .agents skills directory
-		this.watchDirectory(path.join(projectAgentsDir, "skills"))
-
-		// Watch mode-specific directories for all available modes
-		const modesList = await this.getAvailableModes()
-		for (const mode of modesList) {
-			// .alpha mode-specific
-			this.watchDirectory(path.join(globalAlphaDir, `skills-${mode}`))
-			this.watchDirectory(path.join(projectAlphaDir, `skills-${mode}`))
-			// .agents mode-specific
-			this.watchDirectory(path.join(globalAgentsDir, `skills-${mode}`))
-			this.watchDirectory(path.join(projectAgentsDir, `skills-${mode}`))
-		}
+		this.watchSkillsTree(os.homedir(), ".alpha")
+		this.watchSkillsTree(os.homedir(), ".agents")
+		this.watchSkillsTree(provider.cwd, ".alpha")
+		this.watchSkillsTree(provider.cwd, ".agents")
 	}
 
-	private watchDirectory(dirPath: string): void {
+	private watchSkillsTree(basePath: string, configDirName: string): void {
+		this.watchPattern(basePath, `${configDirName}/{skills,skills-*}/**/SKILL.md`)
+	}
+
+	private watchPattern(basePath: string, globPattern: string): void {
 		if (process.env.NODE_ENV === "test" || !vscode.workspace.createFileSystemWatcher) {
 			return
 		}
 
-		const pattern = new vscode.RelativePattern(dirPath, "**/SKILL.md")
+		const pattern = new vscode.RelativePattern(basePath, globPattern)
 		const watcher = vscode.workspace.createFileSystemWatcher(pattern)
 
 		watcher.onDidChange(async (uri) => {
 			if (this.isDisposed) return
-			await this.discoverSkills()
+			await this.refreshSkillsAndNotify()
 		})
 
 		watcher.onDidCreate(async (uri) => {
 			if (this.isDisposed) return
-			await this.discoverSkills()
+			await this.refreshSkillsAndNotify()
 		})
 
 		watcher.onDidDelete(async (uri) => {
 			if (this.isDisposed) return
-			await this.discoverSkills()
+			await this.refreshSkillsAndNotify()
 		})
 
 		this.disposables.push(watcher)
