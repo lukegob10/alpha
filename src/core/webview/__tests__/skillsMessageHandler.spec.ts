@@ -46,6 +46,7 @@ import {
 describe("skillsMessageHandler", () => {
 	const mockLog = vi.fn()
 	const mockPostMessageToWebview = vi.fn()
+	const mockRefreshSkills = vi.fn()
 	const mockGetSkillsMetadata = vi.fn()
 	const mockCreateSkill = vi.fn()
 	const mockDeleteSkill = vi.fn()
@@ -56,6 +57,7 @@ describe("skillsMessageHandler", () => {
 	const createMockProvider = (hasSkillsManager: boolean = true): ClineProvider => {
 		const skillsManager = hasSkillsManager
 			? {
+					refreshSkills: mockRefreshSkills,
 					getSkillsMetadata: mockGetSkillsMetadata,
 					createSkill: mockCreateSkill,
 					deleteSkill: mockDeleteSkill,
@@ -95,11 +97,13 @@ describe("skillsMessageHandler", () => {
 	describe("handleRequestSkills", () => {
 		it("returns skills when skills manager is available", async () => {
 			const provider = createMockProvider(true)
-			mockGetSkillsMetadata.mockReturnValue(mockSkills)
+			mockRefreshSkills.mockResolvedValue(mockSkills)
 
 			const result = await handleRequestSkills(provider)
 
 			expect(result).toEqual(mockSkills)
+			expect(mockRefreshSkills).toHaveBeenCalled()
+			expect(mockGetSkillsMetadata).not.toHaveBeenCalled()
 			expect(mockPostMessageToWebview).toHaveBeenCalledWith({ type: "skills", skills: mockSkills })
 		})
 
@@ -114,9 +118,7 @@ describe("skillsMessageHandler", () => {
 
 		it("handles errors and returns empty skills", async () => {
 			const provider = createMockProvider(true)
-			mockGetSkillsMetadata.mockImplementation(() => {
-				throw new Error("Test error")
-			})
+			mockRefreshSkills.mockRejectedValue(new Error("Test error"))
 
 			const result = await handleRequestSkills(provider)
 

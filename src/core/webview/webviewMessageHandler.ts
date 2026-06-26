@@ -117,7 +117,14 @@ function getRequiredTaskForMessage(provider: ClineProvider, message: WebviewMess
 	const task = getTaskForMessage(provider, message)
 	if (!task) {
 		provider.log(`[webviewMessageHandler] Ignoring ${action}: missing or unknown taskId`)
+		return undefined
 	}
+
+	if (!provider.canAcceptTaskInput(message.taskId)) {
+		provider.log(`[webviewMessageHandler] Ignoring ${action}: task ${message.taskId} is terminal`)
+		return undefined
+	}
+
 	return task
 }
 
@@ -688,12 +695,12 @@ export const webviewMessageHandler = async (
 
 		case "askResponse":
 			{
+				const task = getRequiredTaskForMessage(provider, message, "askResponse")
+				if (!task) {
+					break
+				}
 				const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
-				getRequiredTaskForMessage(provider, message, "askResponse")?.handleWebviewAskResponse(
-					message.askResponse!,
-					resolved.text,
-					resolved.images,
-				)
+				task.handleWebviewAskResponse(message.askResponse!, resolved.text, resolved.images)
 			}
 			break
 
@@ -3186,11 +3193,12 @@ export const webviewMessageHandler = async (
 		 */
 
 		case "queueMessage": {
+			const task = getRequiredTaskForMessage(provider, message, "queueMessage")
+			if (!task) {
+				break
+			}
 			const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
-			getRequiredTaskForMessage(provider, message, "queueMessage")?.messageQueueService.addMessage(
-				resolved.text,
-				resolved.images,
-			)
+			task.messageQueueService.addMessage(resolved.text, resolved.images)
 			break
 		}
 		case "removeQueuedMessage": {

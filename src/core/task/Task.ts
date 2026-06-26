@@ -1831,6 +1831,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.lastMessageTs = Date.now()
 	}
 
+	public markCompleted(): void {
+		this.cancelAutoApprovalTimeout()
+		this.activeAsk = undefined
+		this.askResponse = undefined
+		this.askResponseText = undefined
+		this.askResponseImages = undefined
+		this.idleAsk = undefined
+		this.resumableAsk = undefined
+		this.interactiveAsk = undefined
+		this.messageQueueService.clear()
+	}
+
 	/**
 	 * Updates the API configuration and rebuilds the API handler.
 	 * There is no tool-protocol switching or tool parser swapping.

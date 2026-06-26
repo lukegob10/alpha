@@ -14,20 +14,42 @@ const {
 	mockRm,
 	mockRename,
 	mockRmdir,
-} = vi.hoisted(() => ({
-	mockStat: vi.fn(),
-	mockReadFile: vi.fn(),
-	mockReaddir: vi.fn(),
-	mockHomedir: vi.fn(),
-	mockDirectoryExists: vi.fn(),
-	mockFileExists: vi.fn(),
-	mockRealpath: vi.fn(),
-	mockMkdir: vi.fn(),
-	mockWriteFile: vi.fn(),
-	mockRm: vi.fn(),
-	mockRename: vi.fn(),
-	mockRmdir: vi.fn(),
-}))
+	mockCreateFileSystemWatcher,
+	mockWatchers,
+} = vi.hoisted(() => {
+	const watchers: Array<{
+		onDidChange: ReturnType<typeof vi.fn>
+		onDidCreate: ReturnType<typeof vi.fn>
+		onDidDelete: ReturnType<typeof vi.fn>
+		dispose: ReturnType<typeof vi.fn>
+	}> = []
+
+	return {
+		mockStat: vi.fn(),
+		mockReadFile: vi.fn(),
+		mockReaddir: vi.fn(),
+		mockHomedir: vi.fn(),
+		mockDirectoryExists: vi.fn(),
+		mockFileExists: vi.fn(),
+		mockRealpath: vi.fn(),
+		mockMkdir: vi.fn(),
+		mockWriteFile: vi.fn(),
+		mockRm: vi.fn(),
+		mockRename: vi.fn(),
+		mockRmdir: vi.fn(),
+		mockWatchers: watchers,
+		mockCreateFileSystemWatcher: vi.fn(() => {
+			const watcher = {
+				onDidChange: vi.fn(),
+				onDidCreate: vi.fn(),
+				onDidDelete: vi.fn(),
+				dispose: vi.fn(),
+			}
+			watchers.push(watcher)
+			return watcher
+		}),
+	}
+})
 
 // Platform-agnostic test paths
 // Use forward slashes for consistency, then normalize with path.normalize
@@ -70,14 +92,17 @@ vi.mock("os", () => ({
 // Mock vscode
 vi.mock("vscode", () => ({
 	workspace: {
-		createFileSystemWatcher: vi.fn(() => ({
-			onDidChange: vi.fn(),
-			onDidCreate: vi.fn(),
-			onDidDelete: vi.fn(),
-			dispose: vi.fn(),
-		})),
+		createFileSystemWatcher: mockCreateFileSystemWatcher,
 	},
 	RelativePattern: vi.fn(),
+}))
+
+// @alpha-code/types imports provider defaults as value exports; keep this unit test independent
+// of optional provider package resolution.
+vi.mock("ai-sdk-provider-poe/code", () => ({
+	POE_DEFAULT_BASE_URL: "https://api.poe.com/v1",
+	poeDefaultModelId: "poe-default-model",
+	getPoeDefaultModelInfo: vi.fn(() => ({})),
 }))
 
 // Global alpha directory - computed once
@@ -109,7 +134,7 @@ vi.mock("../../../i18n", () => ({
 }))
 
 import { SkillsManager } from "../SkillsManager"
-import { ClineProvider } from "../../../core/webview/ClineProvider"
+import type { ClineProvider } from "../../../core/webview/ClineProvider"
 
 describe("SkillsManager", () => {
 	let skillsManager: SkillsManager
@@ -129,11 +154,13 @@ describe("SkillsManager", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
+		mockWatchers.length = 0
 		mockHomedir.mockReturnValue(HOME_DIR)
 
 		// Create mock provider
 		mockProvider = {
 			cwd: PROJECT_DIR,
+			postMessageToWebview: vi.fn(),
 			customModesManager: {
 				getCustomModes: vi.fn().mockResolvedValue([]),
 			} as any,
@@ -716,6 +743,49 @@ Instructions here...`
 			expect(skills[0].source).toBe("project")
 		})
 
+		it("should refresh skills from project .agents directory on demand", async () => {
+			const projectAgentSkillDir = p(projectAgentsSkillsDir, "refreshed-agent-skill")
+			const projectAgentSkillMd = p(projectAgentSkillDir, "SKILL.md")
+
+			mockDirectoryExists.mockImplementation(async (dir: string) => {
+				return dir === projectAgentsSkillsDir
+			})
+			mockRealpath.mockImplementation(async (pathArg: string) => pathArg)
+			mockReaddir.mockImplementation(async (dir: string) => {
+				if (dir === projectAgentsSkillsDir) {
+					return ["refreshed-agent-skill"]
+				}
+				return []
+			})
+			mockStat.mockImplementation(async (pathArg: string) => {
+				if (pathArg === projectAgentSkillDir) {
+					return { isDirectory: () => true }
+				}
+				throw new Error("Not found")
+			})
+			mockFileExists.mockImplementation(async (file: string) => file === projectAgentSkillMd)
+			mockReadFile.mockImplementation(async (file: string) => {
+				if (file === projectAgentSkillMd) {
+					return `---
+name: refreshed-agent-skill
+description: Refreshed from project .agents
+---
+
+# Refreshed Agent Skill`
+				}
+				throw new Error("File not found")
+			})
+
+			const skills = await skillsManager.refreshSkills()
+
+			expect(skills).toHaveLength(1)
+			expect(skills[0]).toMatchObject({
+				name: "refreshed-agent-skill",
+				description: "Refreshed from project .agents",
+				source: "project",
+			})
+		})
+
 		it("should prioritize .alpha skills over .agents skills with same name", async () => {
 			const agentSkillDir = p(globalAgentsSkillsDir, "common-skill")
 			const agentSkillMd = p(agentSkillDir, "SKILL.md")
@@ -823,6 +893,68 @@ Instructions here...`
 			expect(skills).toHaveLength(1)
 			expect(skills[0].name).toBe("agent-code-skill")
 			expect(skills[0].mode).toBe("code")
+		})
+	})
+
+	describe("file watchers", () => {
+		it("watches stable roots and posts refreshed skills when SKILL.md changes", async () => {
+			const previousNodeEnv = process.env.NODE_ENV
+			process.env.NODE_ENV = "development"
+
+			try {
+				const projectAgentSkillDir = p(projectAgentsSkillsDir, "watched-agent-skill")
+				const projectAgentSkillMd = p(projectAgentSkillDir, "SKILL.md")
+
+				mockDirectoryExists.mockImplementation(async (dir: string) => {
+					return dir === projectAgentsSkillsDir
+				})
+				mockRealpath.mockImplementation(async (pathArg: string) => pathArg)
+				mockReaddir.mockImplementation(async (dir: string) => {
+					if (dir === projectAgentsSkillsDir) {
+						return ["watched-agent-skill"]
+					}
+					return []
+				})
+				mockStat.mockImplementation(async (pathArg: string) => {
+					if (pathArg === projectAgentSkillDir) {
+						return { isDirectory: () => true }
+					}
+					throw new Error("Not found")
+				})
+				mockFileExists.mockImplementation(async (file: string) => file === projectAgentSkillMd)
+				mockReadFile.mockImplementation(async (file: string) => {
+					if (file === projectAgentSkillMd) {
+						return `---
+name: watched-agent-skill
+description: Updated through watcher refresh
+---
+
+# Watched Agent Skill`
+					}
+					throw new Error("File not found")
+				})
+
+				await skillsManager.initialize()
+
+				expect(mockCreateFileSystemWatcher).toHaveBeenCalledTimes(4)
+				const createHandler = mockWatchers[3].onDidCreate.mock.calls[0]?.[0]
+				expect(createHandler).toBeTypeOf("function")
+
+				await createHandler({ fsPath: projectAgentSkillMd })
+
+				expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({
+					type: "skills",
+					skills: [
+						expect.objectContaining({
+							name: "watched-agent-skill",
+							description: "Updated through watcher refresh",
+							source: "project",
+						}),
+					],
+				})
+			} finally {
+				process.env.NODE_ENV = previousNodeEnv
+			}
 		})
 	})
 

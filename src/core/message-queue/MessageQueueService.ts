@@ -114,6 +114,15 @@ export class MessageQueueService extends EventEmitter<QueueEvents> {
 		return message
 	}
 
+	public clear(): void {
+		if (this._messages.length === 0) {
+			return
+		}
+
+		this._messages = []
+		this.emit("stateChanged", this._messages)
+	}
+
 	public get messages(): QueuedMessage[] {
 		return this._messages
 	}

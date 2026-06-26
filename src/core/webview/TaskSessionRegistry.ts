@@ -33,6 +33,10 @@ const isTerminalLifecycle = (lifecycle: TaskLifecycleState) => terminalLifecycle
 
 const isTerminalAsk = (ask: ClineAsk | undefined) => Boolean(ask && terminalAskTypes.has(ask))
 
+const resumableAskTypes = new Set<ClineAsk>(["resume_task", "resume_completed_task"])
+
+const isResumableTaskAsk = (ask: ClineAsk | undefined) => Boolean(ask && resumableAskTypes.has(ask))
+
 export class TaskSessionRegistry {
 	private readonly sessions = new Map<string, TaskSession>()
 	private activeTaskId: string | undefined
@@ -59,6 +63,24 @@ export class TaskSessionRegistry {
 
 	getTask(taskId: string | undefined): Task | undefined {
 		return taskId ? this.sessions.get(taskId)?.task : undefined
+	}
+
+	canAcceptInput(taskId: string | undefined): boolean {
+		if (!taskId) {
+			return false
+		}
+
+		const session = this.sessions.get(taskId)
+		if (!session) {
+			return false
+		}
+
+		const lifecycle = this.getEffectiveLifecycle(session)
+		if (!isTerminalLifecycle(lifecycle)) {
+			return true
+		}
+
+		return isResumableTaskAsk(session.task.taskAsk?.ask)
 	}
 
 	getLiveTaskIds(): string[] {
@@ -160,15 +182,16 @@ export class TaskSessionRegistry {
 			const tokenUsage = task.tokenUsage
 			const lifecycle = this.getEffectiveLifecycle(session)
 			const taskAsk = task.taskAsk
+			const isTerminal = isTerminalLifecycle(lifecycle)
 			const metadata: LiveTaskMetadata = {
 				id: task.taskId,
 				status: task.taskStatus ?? TaskStatus.None,
 				lifecycle,
 				isActive: task.taskId === this.activeTaskId,
 				isStreaming: task.isStreaming,
-				isWaitingForInput: Boolean(taskAsk),
+				isWaitingForInput: !isTerminal && Boolean(taskAsk),
 				lastUpdatedAt: task.clineMessages.at(-1)?.ts ?? session.lastActivityAt,
-				waitingReason: session.waitingReason ?? taskAsk?.ask,
+				waitingReason: isTerminal ? undefined : (session.waitingReason ?? taskAsk?.ask),
 				queueCount: task.messageQueueService?.messages?.length ?? task.queuedMessages?.length ?? 0,
 				tokensIn: tokenUsage?.totalTokensIn ?? 0,
 				tokensOut: tokenUsage?.totalTokensOut ?? 0,

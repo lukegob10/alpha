@@ -76,6 +76,7 @@ const mockClineProvider = {
 	postStateToWebview: vi.fn(),
 	getCurrentTask: vi.fn(),
 	getLiveTask: vi.fn(),
+	canAcceptTaskInput: vi.fn(() => true),
 	getTaskWithId: vi.fn(),
 	createTask: vi.fn(),
 	createTaskWithHistoryItem: vi.fn(),
@@ -164,6 +165,10 @@ vi.mock("../../mentions/resolveImageMentions", () => ({
 }))
 
 import { resolveImageMentions } from "../../mentions/resolveImageMentions"
+
+beforeEach(() => {
+	vi.mocked(mockClineProvider.canAcceptTaskInput).mockReturnValue(true)
+})
 
 describe("webviewMessageHandler - requestLmStudioModels", () => {
 	beforeEach(() => {
@@ -257,6 +262,29 @@ describe("webviewMessageHandler - image mentions", () => {
 			"[webviewMessageHandler] Ignoring askResponse: missing or unknown taskId",
 		)
 	})
+
+	it("does not route askResponse to terminal tasks", async () => {
+		const mockHandleWebviewAskResponse = vi.fn()
+		vi.mocked(mockClineProvider.canAcceptTaskInput).mockReturnValue(false)
+		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue({
+			cwd: "/mock/workspace",
+			rooIgnoreController: undefined,
+			handleWebviewAskResponse: mockHandleWebviewAskResponse,
+		} as any)
+
+		await webviewMessageHandler(mockClineProvider, {
+			type: "askResponse",
+			askResponse: "messageResponse",
+			text: "stale followup",
+			images: [],
+			taskId: "task-1",
+		})
+
+		expect(mockHandleWebviewAskResponse).not.toHaveBeenCalled()
+		expect(mockClineProvider.log).toHaveBeenCalledWith(
+			"[webviewMessageHandler] Ignoring askResponse: task task-1 is terminal",
+		)
+	})
 })
 
 describe("webviewMessageHandler - queued message steering", () => {
@@ -289,6 +317,42 @@ describe("webviewMessageHandler - queued message steering", () => {
 
 		expect(takeMessage).toHaveBeenCalledWith("queued-1")
 		expect(steerUserMessage).toHaveBeenCalledWith("steer this now", ["img1.png"])
+	})
+
+	it("does not queue or steer messages into terminal tasks", async () => {
+		const addMessage = vi.fn()
+		const takeMessage = vi.fn()
+		const steerUserMessage = vi.fn()
+		vi.mocked(mockClineProvider.canAcceptTaskInput).mockReturnValue(false)
+		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue({
+			messageQueueService: {
+				addMessage,
+				takeMessage,
+			},
+			steerUserMessage,
+		} as any)
+
+		await webviewMessageHandler(mockClineProvider, {
+			type: "queueMessage",
+			text: "queued stale message",
+			images: [],
+			taskId: "task-1",
+		})
+		await webviewMessageHandler(mockClineProvider, {
+			type: "steerQueuedMessage",
+			text: "queued-1",
+			taskId: "task-1",
+		})
+
+		expect(addMessage).not.toHaveBeenCalled()
+		expect(takeMessage).not.toHaveBeenCalled()
+		expect(steerUserMessage).not.toHaveBeenCalled()
+		expect(mockClineProvider.log).toHaveBeenCalledWith(
+			"[webviewMessageHandler] Ignoring queueMessage: task task-1 is terminal",
+		)
+		expect(mockClineProvider.log).toHaveBeenCalledWith(
+			"[webviewMessageHandler] Ignoring steerQueuedMessage: task task-1 is terminal",
+		)
 	})
 
 	it("moves the selected queued message on the resolved task", async () => {

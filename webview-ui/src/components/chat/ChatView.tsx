@@ -11,7 +11,7 @@ import { getCostBreakdownIfNeeded } from "@src/utils/costFormatting"
 import { batchConsecutive } from "@src/utils/batchConsecutive"
 
 import type { ClineAsk, ClineSayTool, ClineMessage, ExtensionMessage, AudioType, QueuedMessage } from "@alpha-code/types"
-import { isRetiredProvider } from "@alpha-code/types"
+import { isRetiredProvider, TaskLifecycleState } from "@alpha-code/types"
 
 import { findLast } from "@alpha/array"
 import { SuggestionItem } from "@alpha-code/types"
@@ -92,6 +92,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		soundEnabled,
 		soundVolume,
 		messageQueue = [],
+		liveTasksById,
 		showWorktreesInHomeScreen,
 	} = useExtensionState()
 
@@ -117,6 +118,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		() => (visibleCurrentTaskId ? { taskId: visibleCurrentTaskId } : {}),
 		[visibleCurrentTaskId],
 	)
+	const visibleLiveTask = visibleCurrentTaskId ? liveTasksById?.[visibleCurrentTaskId] : undefined
+	const isVisibleTaskCompleted = visibleLiveTask?.lifecycle === TaskLifecycleState.Completed
 	const visibleCurrentTaskItem = isDraftView ? undefined : currentTaskItem
 	const visibleCurrentTaskTodos = useMemo(
 		() => (isDraftView ? [] : currentTaskTodos),
@@ -288,6 +291,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// would have to true again even if messages didn't change.
 	const lastMessage = useMemo(() => activeMessages.at(-1), [activeMessages])
 	const secondLastMessage = useMemo(() => activeMessages.at(-2), [activeMessages])
+	const isLastFollowUpAnswered = lastMessage?.ask === "followup" && lastMessage.isAnswered === true
 
 	const volume = typeof soundVolume === "number" ? soundVolume : 0.5
 	const [playNotification] = useSound(`${audioBaseUri}/notification.wav`, { volume, soundEnabled, interrupt: true })
@@ -358,6 +362,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							setSecondaryButtonText(t("chat:startNewTask.title"))
 							break
 						case "followup":
+							if (lastMessage.isAnswered || isVisibleTaskCompleted) {
+								setSendingDisabled(false)
+								setClineAsk(undefined)
+								setEnableButtons(false)
+								setPrimaryButtonText(undefined)
+								setSecondaryButtonText(undefined)
+								break
+							}
 							setSendingDisabled(isPartial)
 							setClineAsk("followup")
 							// setting enable buttons to `false` would trigger a focus grab when
@@ -517,7 +529,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					break
 			}
 		}
-	}, [lastMessage, secondLastMessage])
+	}, [lastMessage, secondLastMessage, isVisibleTaskCompleted])
 
 	// Update button text when messages change (e.g., completion_result is added) for subtasks in resume_task state
 	useEffect(() => {
@@ -701,6 +713,20 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				return
 			}
 
+			if (isVisibleTaskCompleted) {
+				isBlankTaskPendingRef.current = false
+				vscode.postMessage({ type: "newTask", text, images })
+				handleChatReset()
+				return
+			}
+
+			if (isLastFollowUpAnswered) {
+				vscode.postMessage({ type: "queueMessage", text, images, ...visibleTaskPayload })
+				setInputValue("")
+				setSelectedImages([])
+				return
+			}
+
 			const shouldQueueMessage =
 				sendingDisabled ||
 				isStreaming ||
@@ -746,6 +772,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			apiConfiguration?.apiProvider,
 			visibleTaskPayload,
 			editingQueuedMessage,
+			isVisibleTaskCompleted,
+			isLastFollowUpAnswered,
 		], // messagesRef and clineAskRef are stable
 	)
 
@@ -1565,7 +1593,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					onSuggestionClick={handleSuggestionClickInRow} // This was already stabilized
 					onBatchFileResponse={handleBatchFileResponse}
 					onFollowUpUnmount={handleFollowUpUnmount}
-					isFollowUpAnswered={messageOrGroup.isAnswered === true || messageOrGroup.ts === currentFollowUpTs}
+					isFollowUpAnswered={
+						messageOrGroup.isAnswered === true || messageOrGroup.ts === currentFollowUpTs || isVisibleTaskCompleted
+					}
 					isFollowUpAutoApprovalPaused={isFollowUpAutoApprovalPaused}
 					editable={
 						messageOrGroup.type === "ask" &&
@@ -1598,6 +1628,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			handleBatchFileResponse,
 			handleFollowUpUnmount,
 			currentFollowUpTs,
+			isVisibleTaskCompleted,
 			isFollowUpAutoApprovalPaused,
 			enableButtons,
 			primaryButtonText,
