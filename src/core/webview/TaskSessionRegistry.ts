@@ -33,9 +33,9 @@ const isTerminalLifecycle = (lifecycle: TaskLifecycleState) => terminalLifecycle
 
 const isTerminalAsk = (ask: ClineAsk | undefined) => Boolean(ask && terminalAskTypes.has(ask))
 
-const resumableAskTypes = new Set<ClineAsk>(["resume_task", "resume_completed_task"])
+const terminalInputAskTypes = new Set<ClineAsk>(["completion_result", "resume_task", "resume_completed_task"])
 
-const isResumableTaskAsk = (ask: ClineAsk | undefined) => Boolean(ask && resumableAskTypes.has(ask))
+const canAcceptTerminalAskInput = (ask: ClineAsk | undefined) => Boolean(ask && terminalInputAskTypes.has(ask))
 
 export class TaskSessionRegistry {
 	private readonly sessions = new Map<string, TaskSession>()
@@ -80,7 +80,7 @@ export class TaskSessionRegistry {
 			return true
 		}
 
-		return isResumableTaskAsk(session.task.taskAsk?.ask)
+		return canAcceptTerminalAskInput(session.task.taskAsk?.ask)
 	}
 
 	getLiveTaskIds(): string[] {

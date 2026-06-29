@@ -10,7 +10,14 @@ import { appendImages } from "@src/utils/imageUtils"
 import { getCostBreakdownIfNeeded } from "@src/utils/costFormatting"
 import { batchConsecutive } from "@src/utils/batchConsecutive"
 
-import type { ClineAsk, ClineSayTool, ClineMessage, ExtensionMessage, AudioType, QueuedMessage } from "@alpha-code/types"
+import type {
+	ClineAsk,
+	ClineSayTool,
+	ClineMessage,
+	ExtensionMessage,
+	AudioType,
+	QueuedMessage,
+} from "@alpha-code/types"
 import { isRetiredProvider, TaskLifecycleState } from "@alpha-code/types"
 
 import { findLast } from "@alpha/array"
@@ -63,7 +70,10 @@ const messageResponseAskTypes = new Set<ClineAsk>([
 	"resume_completed_task",
 	"mistake_limit_reached",
 ])
+const completedTaskResponseAskTypes = new Set<ClineAsk>(["completion_result", "resume_completed_task"])
 const approvalAskTypes = new Set<ClineAsk>(["tool", "command", "use_mcp_server"])
+
+const isCompletedTaskResponseAsk = (ask: ClineAsk | undefined) => Boolean(ask && completedTaskResponseAskTypes.has(ask))
 
 const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewProps> = (
 	{ isHidden, showAnnouncement, hideAnnouncement },
@@ -713,7 +723,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				return
 			}
 
-			if (isVisibleTaskCompleted) {
+			const lastMessage = messagesRef.current.at(-1)
+			const isAwaitingCompletedTaskResponse =
+				isCompletedTaskResponseAsk(clineAskRef.current) ||
+				(lastMessage?.type === "ask" && isCompletedTaskResponseAsk(lastMessage.ask))
+
+			if (isVisibleTaskCompleted && !isAwaitingCompletedTaskResponse) {
 				isBlankTaskPendingRef.current = false
 				vscode.postMessage({ type: "newTask", text, images })
 				handleChatReset()
@@ -940,47 +955,44 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[clineAsk, visibleTaskPayload, startNewTask, visibleCurrentTaskItem?.parentTaskId],
 	)
 
-	const handleSecondaryButtonClick = useCallback(
-		() => {
-			// Mark that user has responded
-			userRespondedRef.current = true
+	const handleSecondaryButtonClick = useCallback(() => {
+		// Mark that user has responded
+		userRespondedRef.current = true
 
-			if (isStreaming) {
-				vscode.postMessage({ type: "cancelTask", ...visibleTaskPayload })
-				setDidClickCancel(true)
-				return
-			}
+		if (isStreaming) {
+			vscode.postMessage({ type: "cancelTask", ...visibleTaskPayload })
+			setDidClickCancel(true)
+			return
+		}
 
-			switch (clineAsk) {
-				case "api_req_failed":
-				case "mistake_limit_reached":
-				case "resume_task":
-					startNewTask()
-					break
-				case "command":
-				case "tool":
-				case "use_mcp_server":
-					// Responds to the API with a "This operation failed" and lets it try again.
-					vscode.postMessage({
-						type: "askResponse",
-						askResponse: "noButtonClicked",
-						...visibleTaskPayload,
-					})
-					break
-				case "command_output":
-					vscode.postMessage({
-						type: "terminalOperation",
-						terminalOperation: "abort",
-						...visibleTaskPayload,
-					})
-					break
-			}
-			setSendingDisabled(true)
-			setClineAsk(undefined)
-			setEnableButtons(false)
-		},
-		[clineAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel],
-	)
+		switch (clineAsk) {
+			case "api_req_failed":
+			case "mistake_limit_reached":
+			case "resume_task":
+				startNewTask()
+				break
+			case "command":
+			case "tool":
+			case "use_mcp_server":
+				// Responds to the API with a "This operation failed" and lets it try again.
+				vscode.postMessage({
+					type: "askResponse",
+					askResponse: "noButtonClicked",
+					...visibleTaskPayload,
+				})
+				break
+			case "command_output":
+				vscode.postMessage({
+					type: "terminalOperation",
+					terminalOperation: "abort",
+					...visibleTaskPayload,
+				})
+				break
+		}
+		setSendingDisabled(true)
+		setClineAsk(undefined)
+		setEnableButtons(false)
+	}, [clineAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel])
 
 	const { info: model } = useSelectedModel(apiConfiguration)
 
@@ -1594,7 +1606,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					onBatchFileResponse={handleBatchFileResponse}
 					onFollowUpUnmount={handleFollowUpUnmount}
 					isFollowUpAnswered={
-						messageOrGroup.isAnswered === true || messageOrGroup.ts === currentFollowUpTs || isVisibleTaskCompleted
+						messageOrGroup.isAnswered === true ||
+						messageOrGroup.ts === currentFollowUpTs ||
+						isVisibleTaskCompleted
 					}
 					isFollowUpAutoApprovalPaused={isFollowUpAutoApprovalPaused}
 					editable={

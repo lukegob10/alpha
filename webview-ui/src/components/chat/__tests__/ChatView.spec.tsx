@@ -1619,6 +1619,70 @@ describe("ChatView - Message Queueing Tests", () => {
 		)
 	})
 
+	it("sends completion feedback to the current completed task", async () => {
+		const { getByTestId } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			liveTasksById: {
+				"task-1": {
+					id: "task-1",
+					status: "running",
+					lifecycle: "completed",
+					isActive: true,
+					isStreaming: false,
+					isWaitingForInput: false,
+					lastUpdatedAt: Date.now(),
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: Date.now() - 2000,
+					text: "Initial task",
+				},
+				{
+					type: "ask",
+					ask: "completion_result",
+					ts: Date.now(),
+					text: "Task completed",
+					partial: false,
+				},
+			],
+		})
+
+		await waitFor(() => {
+			expect(getByTestId("chat-textarea")).toBeInTheDocument()
+		})
+
+		vi.mocked(vscode.postMessage).mockClear()
+		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+
+		await act(async () => {
+			fireEvent.change(input, { target: { value: "continue with this" } })
+			fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		})
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "askResponse",
+			askResponse: "messageResponse",
+			text: "continue with this",
+			images: [],
+			taskId: "task-1",
+		})
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "newTask",
+			}),
+		)
+	})
+
 	it("queues input instead of re-answering an already answered follow-up", async () => {
 		const { getByTestId } = renderChatView()
 
