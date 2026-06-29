@@ -1385,6 +1385,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			return { response: "messageResponse", text: this.getOffscreenMistakeLimitGuidance() }
 		}
 
+		if (type === "completion_result") {
+			return { response: "yesButtonClicked" }
+		}
+
 		if (type === "followup") {
 			try {
 				const suggestion = (JSON.parse(text ?? "{}") as FollowUpData).suggest?.[0]

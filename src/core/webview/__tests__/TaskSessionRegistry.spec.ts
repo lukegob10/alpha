@@ -101,6 +101,7 @@ describe("TaskSessionRegistry", () => {
 		expect(registry.getLiveTaskIds()).toEqual([])
 		expect(registry.getLiveTaskCount()).toBe(0)
 		expect(registry.canCreateTask()).toBe(true)
+		expect(registry.canAcceptInput("task-a")).toBe(true)
 		expect(registry.getMetadata()["task-a"]).toMatchObject({
 			lifecycle: TaskLifecycleState.Completed,
 			isWaitingForInput: false,

@@ -145,7 +145,22 @@ describe("Task.ask queued message drain", () => {
 		expect(result.text).toContain("Continue without waiting for the user")
 	})
 
-	it.each(["completion_result", "resume_task", "resume_completed_task"] as const)(
+	it("auto-approves off-screen completion asks so background tasks finalize", async () => {
+		const task = await createAskOnlyTask()
+		;(task as any).providerRef = {
+			deref: () => ({
+				getState: vi.fn(async () => undefined),
+				isTaskOnScreen: vi.fn(() => false),
+			}),
+		}
+
+		const result = await task.ask("completion_result", "Done", false)
+
+		expect(result.response).toBe("yesButtonClicked")
+		expect(result.text).toBeUndefined()
+	})
+
+	it.each(["resume_task", "resume_completed_task"] as const)(
 		"does not auto-approve off-screen %s asks",
 		async (askType) => {
 			const task = await createAskOnlyTask()
