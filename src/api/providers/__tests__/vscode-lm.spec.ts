@@ -104,6 +104,15 @@ const mockCopilotGpt55LanguageModelChat = {
 	version: "2026-06-01",
 }
 
+const mockCopilotGpt53CodexLanguageModelChat = {
+	...mockLanguageModelChat,
+	id: "copilot-gpt-5.3-codex",
+	name: "GPT-5.3-Codex",
+	vendor: "copilot",
+	family: "gpt-5.3-codex",
+	version: "2026-06-01",
+}
+
 describe("VsCodeLmHandler", () => {
 	let handler: VsCodeLmHandler
 	const defaultOptions: ApiHandlerOptions = {
@@ -610,6 +619,40 @@ describe("VsCodeLmHandler", () => {
 			)
 		})
 
+		it("should pass selected high reasoning effort through request options for Copilot GPT-5.3 Codex", async () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				enableReasoningEffort: true,
+				reasoningEffort: "high",
+			})
+			handler["client"] = mockCopilotGpt53CodexLanguageModelChat as any
+
+			mockCopilotGpt53CodexLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Codex high reasoning response")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System", [
+				{ role: "user", content: "Think carefully" },
+			])) {
+				// consume stream
+			}
+
+			expect(mockCopilotGpt53CodexLanguageModelChat.sendRequest).toHaveBeenCalledWith(
+				expect.any(Array),
+				expect.objectContaining({
+					modelOptions: {
+						reasoningEffort: "high",
+					},
+					configuration: {
+						reasoningEffort: "high",
+					},
+				}),
+				expect.anything(),
+			)
+		})
+
 		it("should omit stale reasoning effort model options for models without reasoning support", async () => {
 			handler = new VsCodeLmHandler({
 				...defaultOptions,
@@ -791,6 +834,23 @@ describe("VsCodeLmHandler", () => {
 
 			const model = handler.getModel()
 			expect(model.info.supportsReasoningEffort).toEqual(["none", "low", "medium", "high", "xhigh"])
+			expect(model.info.contextWindow).toBe(128_000)
+		})
+
+		it("should return Copilot GPT-5.3 Codex reasoning effort support from static model metadata", async () => {
+			const mockModel = {
+				...mockLanguageModelChat,
+				id: "copilot-gpt-5.3-codex",
+				name: "GPT-5.3-Codex",
+				vendor: "copilot",
+				family: "gpt-5.3-codex",
+				version: "2026-06-01",
+				maxInputTokens: 128_000,
+			}
+			handler["client"] = mockModel as any
+
+			const model = handler.getModel()
+			expect(model.info.supportsReasoningEffort).toEqual(["low", "medium", "high", "xhigh"])
 			expect(model.info.contextWindow).toBe(128_000)
 		})
 
