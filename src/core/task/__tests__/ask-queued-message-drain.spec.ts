@@ -108,6 +108,68 @@ describe("Task.ask queued message drain", () => {
 		expect(result.text).toContain("new_task by itself")
 	})
 
+	it("auto-answers off-screen follow-up asks with the first suggestion", async () => {
+		const task = await createAskOnlyTask()
+		;(task as any).providerRef = {
+			deref: () => ({
+				getState: vi.fn(async () => undefined),
+				isTaskOnScreen: vi.fn(() => false),
+			}),
+		}
+
+		const result = await task.ask(
+			"followup",
+			JSON.stringify({
+				question: "Which path?",
+				suggest: [{ answer: "Use option A" }, { answer: "Use option B" }],
+			}),
+			false,
+		)
+
+		expect(result.response).toBe("messageResponse")
+		expect(result.text).toBe("Use option A")
+	})
+
+	it("auto-answers off-screen follow-up asks with guidance when no suggestion is available", async () => {
+		const task = await createAskOnlyTask()
+		;(task as any).providerRef = {
+			deref: () => ({
+				getState: vi.fn(async () => undefined),
+				isTaskOnScreen: vi.fn(() => false),
+			}),
+		}
+
+		const result = await task.ask("followup", JSON.stringify({ question: "Which path?", suggest: [] }), false)
+
+		expect(result.response).toBe("messageResponse")
+		expect(result.text).toContain("Continue without waiting for the user")
+	})
+
+	it.each(["completion_result", "resume_task", "resume_completed_task"] as const)(
+		"does not auto-approve off-screen %s asks",
+		async (askType) => {
+			const task = await createAskOnlyTask()
+			;(task as any).providerRef = {
+				deref: () => ({
+					getState: vi.fn(async () => undefined),
+					isTaskOnScreen: vi.fn(() => false),
+				}),
+			}
+
+			const askPromise = task.ask(askType, "Done", false)
+
+			await new Promise((resolve) => setTimeout(resolve, 20))
+
+			expect((task as any).askResponse).toBeUndefined()
+			;(task as any).handleWebviewAskResponse("messageResponse", "manual response")
+
+			const result = await askPromise
+
+			expect(result.response).toBe("messageResponse")
+			expect(result.text).toBe("manual response")
+		},
+	)
+
 	it("keeps on-screen mistake-limit asks interactive", async () => {
 		const task = await createAskOnlyTask()
 		;(task as any).providerRef = {
