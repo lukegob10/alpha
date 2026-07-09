@@ -4,8 +4,58 @@ export function checkContextWindowExceededError(error: unknown): boolean {
 	return (
 		checkIsOpenAIContextWindowError(error) ||
 		checkIsOpenRouterContextWindowError(error) ||
-		checkIsAnthropicContextWindowError(error)
+		checkIsAnthropicContextWindowError(error) ||
+		checkIsPlainContextWindowError(error)
 	)
+}
+
+function getErrorMessage(error: unknown): string {
+	if (!error) {
+		return ""
+	}
+
+	if (error instanceof Error) {
+		return error.message
+	}
+
+	if (typeof error === "string") {
+		return error
+	}
+
+	if (typeof error === "object") {
+		const err = error as Record<string, any>
+		return String(err.message || err.error?.message || err.error?.error?.message || "")
+	}
+
+	return ""
+}
+
+function checkIsPlainContextWindowError(error: unknown): boolean {
+	try {
+		if (!(error instanceof Error) && typeof error !== "string") {
+			return false
+		}
+
+		const message = getErrorMessage(error)
+		if (!message) {
+			return false
+		}
+
+		const contextWindowPatterns = [
+			/\bprompt\s+is\s+too\s+long\b/i,
+			/\bmax(?:imum)?\s+input\s+tokens?\b/i,
+			/\bcontext\s*(?:length|window)\b/i,
+			/\btoo\s+many\s+tokens?\b/i,
+			/\b(?:input\s*)?tokens?\s*exceed/i,
+			/\bexceeds?\s+(?:the\s+)?(?:maximum\s+)?(?:context|token|input)/i,
+			/\btoken\s+limit\b/i,
+			/\bcontext_length_exceeded\b/i,
+		] as const
+
+		return contextWindowPatterns.some((pattern) => pattern.test(message))
+	} catch {
+		return false
+	}
 }
 
 function checkIsOpenRouterContextWindowError(error: unknown): boolean {

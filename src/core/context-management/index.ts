@@ -8,6 +8,7 @@ import { MAX_CONDENSE_THRESHOLD, MIN_CONDENSE_THRESHOLD, summarizeConversation, 
 import { ApiMessage } from "../task-persistence/apiMessages"
 import { ANTHROPIC_DEFAULT_MAX_TOKENS } from "@alpha-code/types"
 import { RooIgnoreController } from "../ignore/RooIgnoreController"
+import { checkContextWindowExceededError } from "../context/context-management/context-error-handling"
 
 /**
  * Context Management
@@ -266,6 +267,7 @@ export async function manageContext({
 	let error: string | undefined
 	let errorDetails: string | undefined
 	let cost = 0
+	let forceTruncation = false
 	// Calculate the maximum tokens reserved for response
 	const reservedTokens = maxTokens || ANTHROPIC_DEFAULT_MAX_TOKENS
 
@@ -324,6 +326,9 @@ export async function manageContext({
 				error = result.error
 				errorDetails = result.errorDetails
 				cost = result.cost
+				forceTruncation = checkContextWindowExceededError(
+					new Error([result.error, result.errorDetails].filter(Boolean).join("\n\n")),
+				)
 			} else {
 				return { ...result, prevContextTokens }
 			}
@@ -331,7 +336,7 @@ export async function manageContext({
 	}
 
 	// Fall back to sliding window truncation if needed
-	if (prevContextTokens > allowedTokens) {
+	if (prevContextTokens > allowedTokens || forceTruncation) {
 		const truncationResult = truncateConversation(messages, 0.5, taskId)
 
 		// Calculate new context tokens after truncation by counting non-truncated messages
