@@ -683,6 +683,9 @@ Add your skill instructions here.
 
 	private watchSkillsTree(basePath: string, configDirName: string): void {
 		this.watchPattern(basePath, `${configDirName}/{skills,skills-*}/**/SKILL.md`)
+		this.watchPattern(basePath, configDirName)
+		this.watchPattern(basePath, `${configDirName}/{skills,skills-*}`)
+		this.watchPattern(basePath, `${configDirName}/{skills,skills-*}/*`)
 	}
 
 	private watchPattern(basePath: string, globPattern: string): void {
