@@ -936,8 +936,8 @@ description: Updated through watcher refresh
 
 				await skillsManager.initialize()
 
-				expect(mockCreateFileSystemWatcher).toHaveBeenCalledTimes(4)
-				const createHandler = mockWatchers[3].onDidCreate.mock.calls[0]?.[0]
+				expect(mockCreateFileSystemWatcher).toHaveBeenCalledTimes(16)
+				const createHandler = mockWatchers[12].onDidCreate.mock.calls[0]?.[0]
 				expect(createHandler).toBeTypeOf("function")
 
 				await createHandler({ fsPath: projectAgentSkillMd })
@@ -948,6 +948,70 @@ description: Updated through watcher refresh
 						expect.objectContaining({
 							name: "watched-agent-skill",
 							description: "Updated through watcher refresh",
+							source: "project",
+						}),
+					],
+				})
+			} finally {
+				process.env.NODE_ENV = previousNodeEnv
+			}
+		})
+
+		it("refreshes project .agents skills when the skills tree is created after startup", async () => {
+			const previousNodeEnv = process.env.NODE_ENV
+			process.env.NODE_ENV = "development"
+
+			try {
+				const projectAgentSkillDir = p(projectAgentsSkillsDir, "new-agent-skill")
+				const projectAgentSkillMd = p(projectAgentSkillDir, "SKILL.md")
+				let projectAgentsSkillsAvailable = false
+
+				mockDirectoryExists.mockImplementation(async (dir: string) => {
+					return projectAgentsSkillsAvailable && dir === projectAgentsSkillsDir
+				})
+				mockRealpath.mockImplementation(async (pathArg: string) => pathArg)
+				mockReaddir.mockImplementation(async (dir: string) => {
+					if (projectAgentsSkillsAvailable && dir === projectAgentsSkillsDir) {
+						return ["new-agent-skill"]
+					}
+					return []
+				})
+				mockStat.mockImplementation(async (pathArg: string) => {
+					if (projectAgentsSkillsAvailable && pathArg === projectAgentSkillDir) {
+						return { isDirectory: () => true }
+					}
+					throw new Error("Not found")
+				})
+				mockFileExists.mockImplementation(async (file: string) => {
+					return projectAgentsSkillsAvailable && file === projectAgentSkillMd
+				})
+				mockReadFile.mockImplementation(async (file: string) => {
+					if (projectAgentsSkillsAvailable && file === projectAgentSkillMd) {
+						return `---
+name: new-agent-skill
+description: Added by the skills hub
+---
+
+# New Agent Skill`
+					}
+					throw new Error("File not found")
+				})
+
+				await skillsManager.initialize()
+				expect(skillsManager.getAllSkills()).toHaveLength(0)
+
+				projectAgentsSkillsAvailable = true
+				const createHandler = mockWatchers[15].onDidCreate.mock.calls[0]?.[0]
+				expect(createHandler).toBeTypeOf("function")
+
+				await createHandler({ fsPath: projectAgentSkillDir })
+
+				expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({
+					type: "skills",
+					skills: [
+						expect.objectContaining({
+							name: "new-agent-skill",
+							description: "Added by the skills hub",
 							source: "project",
 						}),
 					],

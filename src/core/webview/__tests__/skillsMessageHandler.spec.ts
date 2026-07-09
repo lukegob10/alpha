@@ -107,6 +107,25 @@ describe("skillsMessageHandler", () => {
 			expect(mockPostMessageToWebview).toHaveBeenCalledWith({ type: "skills", skills: mockSkills })
 		})
 
+		it("returns refreshed project skills discovered from .agents/skills", async () => {
+			const provider = createMockProvider(true)
+			const agentsSkills: SkillMetadata[] = [
+				{
+					name: "agent-project-skill",
+					description: "Project skill from the shared agents directory",
+					path: "/project/.agents/skills/agent-project-skill/SKILL.md",
+					source: "project",
+				},
+			]
+			mockRefreshSkills.mockResolvedValue(agentsSkills)
+
+			const result = await handleRequestSkills(provider)
+
+			expect(result).toEqual(agentsSkills)
+			expect(mockRefreshSkills).toHaveBeenCalled()
+			expect(mockPostMessageToWebview).toHaveBeenCalledWith({ type: "skills", skills: agentsSkills })
+		})
+
 		it("returns empty skills when skills manager is not available", async () => {
 			const provider = createMockProvider(false)
 

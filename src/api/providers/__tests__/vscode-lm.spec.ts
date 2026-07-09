@@ -834,7 +834,7 @@ describe("VsCodeLmHandler", () => {
 
 			const model = handler.getModel()
 			expect(model.info.supportsReasoningEffort).toEqual(["none", "low", "medium", "high", "xhigh"])
-			expect(model.info.contextWindow).toBe(128_000)
+			expect(model.info.contextWindow).toBe(400_000)
 		})
 
 		it("should return Copilot GPT-5.3 Codex reasoning effort support from static model metadata", async () => {
@@ -851,7 +851,7 @@ describe("VsCodeLmHandler", () => {
 
 			const model = handler.getModel()
 			expect(model.info.supportsReasoningEffort).toEqual(["low", "medium", "high", "xhigh"])
-			expect(model.info.contextWindow).toBe(128_000)
+			expect(model.info.contextWindow).toBe(400_000)
 		})
 
 		it("should return reasoning effort support for Copilot Claude Opus 4.7", async () => {

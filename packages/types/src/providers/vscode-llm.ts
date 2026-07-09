@@ -12,6 +12,7 @@ export type VscodeLlmModelSelectorLike = {
 export const vscodeLlmDefaultModelId: VscodeLlmModelId = "gpt-5.5"
 
 const COPILOT_DEFAULT_CONTEXT_WINDOW = 128_000
+const COPILOT_GPT_5_CONTEXT_WINDOW = 400_000
 const COPILOT_EXTENDED_CONTEXT_WINDOW = 1_000_000
 const COPILOT_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["none", "low", "medium", "high"]
 const COPILOT_EXTRA_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["none", "low", "medium", "high", "xhigh"]
@@ -63,6 +64,7 @@ export const vscodeLlmModels = {
 	"gpt-5.3-codex": copilotModel({
 		name: "GPT-5.3-Codex",
 		family: "gpt-5.3-codex",
+		contextWindow: COPILOT_GPT_5_CONTEXT_WINDOW,
 		supportsReasoningEffort: COPILOT_CODEX_REASONING_EFFORTS,
 	}),
 	"gpt-5.4": copilotModel({
@@ -83,6 +85,7 @@ export const vscodeLlmModels = {
 	"gpt-5.5": copilotModel({
 		name: "GPT-5.5",
 		family: "gpt-5.5",
+		contextWindow: COPILOT_GPT_5_CONTEXT_WINDOW,
 		supportsReasoningEffort: COPILOT_EXTRA_REASONING_EFFORTS,
 	}),
 	"claude-haiku-4.5": copilotModel({

@@ -107,15 +107,17 @@ function isIgnorableVsCodeLmMetadataChunk(chunk: unknown): boolean {
 
 function buildVsCodeLmModelInfo(client: vscode.LanguageModelChat): ModelInfo {
 	const staticInfo = getVscodeLlmModelInfo(client)
+	const liveContextWindow = typeof client.maxInputTokens === "number" ? Math.max(0, client.maxInputTokens) : undefined
+	const contextWindow =
+		typeof staticInfo?.contextWindow === "number" && typeof liveContextWindow === "number"
+			? Math.max(staticInfo.contextWindow, liveContextWindow)
+			: (liveContextWindow ?? staticInfo?.contextWindow ?? openAiModelInfoSaneDefaults.contextWindow)
 
 	return {
 		...openAiModelInfoSaneDefaults,
 		...staticInfo,
 		maxTokens: staticInfo?.maxTokens ?? -1,
-		contextWindow:
-			typeof client.maxInputTokens === "number"
-				? Math.max(0, client.maxInputTokens)
-				: (staticInfo?.contextWindow ?? openAiModelInfoSaneDefaults.contextWindow),
+		contextWindow,
 		supportsImages: staticInfo?.supportsImages ?? false,
 		supportsPromptCache: staticInfo?.supportsPromptCache ?? true,
 		inputPrice: staticInfo?.inputPrice ?? 0,
