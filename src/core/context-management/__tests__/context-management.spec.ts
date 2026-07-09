@@ -846,6 +846,44 @@ describe("Context Management", () => {
 			// Clean up
 			summarizeSpy.mockRestore()
 		})
+
+		it("should force truncation when automatic condensation fails with a context-window error", async () => {
+			const summarizeSpy = vi.spyOn(condenseModule, "summarizeConversation").mockResolvedValue({
+				messages,
+				summary: "",
+				cost: 0,
+				error: "Condense API failed: Alpha <Language Model API>: max input tokens exceeded",
+				errorDetails: "Error: prompt is too long for the selected VS Code language model",
+			})
+
+			const modelInfo = createModelInfo(100000, 30000)
+			const messagesWithSmallContent = [
+				...messages.slice(0, -1),
+				{ ...messages[messages.length - 1], content: "" },
+			]
+
+			const result = await manageContext({
+				messages: messagesWithSmallContent,
+				totalTokens: 50000,
+				contextWindow: modelInfo.contextWindow,
+				maxTokens: modelInfo.maxTokens,
+				apiHandler: mockApiHandler,
+				autoCondenseContext: true,
+				autoCondenseContextPercent: 40,
+				systemPrompt: "System prompt",
+				taskId,
+				profileThresholds: {},
+				currentProfileId: "default",
+			})
+
+			expect(summarizeSpy).toHaveBeenCalled()
+			expect(result.truncationId).toBeDefined()
+			expect(result.messagesRemoved).toBe(2)
+			expect(result.error).toContain("max input tokens exceeded")
+			expect(result.prevContextTokens).toBe(50000)
+
+			summarizeSpy.mockRestore()
+		})
 	})
 
 	/**

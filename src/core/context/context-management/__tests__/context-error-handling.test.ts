@@ -194,6 +194,24 @@ describe("checkContextWindowExceededError", () => {
 	})
 
 	describe("Edge cases", () => {
+		it("should detect plain VS Code LM context window errors", () => {
+			const errors = [
+				new Error("Alpha <Language Model API>: prompt is too long for this model"),
+				new Error("VS Code LM request failed: max input tokens exceeded"),
+				new Error("GitHub Copilot rejected the request because input tokens exceed the model limit"),
+				new Error("Request exceeds the context window"),
+			]
+
+			for (const error of errors) {
+				expect(checkContextWindowExceededError(error)).toBe(true)
+			}
+		})
+
+		it("should not detect unrelated plain errors as context window errors", () => {
+			expect(checkContextWindowExceededError(new Error("Network timeout"))).toBe(false)
+			expect(checkContextWindowExceededError(new Error("Invalid API key"))).toBe(false)
+		})
+
 		it("should handle null input", () => {
 			expect(checkContextWindowExceededError(null)).toBe(false)
 		})
