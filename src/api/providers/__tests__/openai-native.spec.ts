@@ -303,6 +303,22 @@ describe("OpenAiNativeHandler", () => {
 			])
 		})
 
+		it.each(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"])(
+			"should expose GPT-5.6 %s with all supported reasoning levels",
+			(modelId) => {
+				const gpt56Handler = new OpenAiNativeHandler({
+					...mockOptions,
+					apiModelId: modelId,
+				})
+
+				const modelInfo = gpt56Handler.getModel()
+
+				expect(modelInfo.id).toBe(modelId)
+				expect(modelInfo.info.supportsReasoningEffort).toEqual(["low", "medium", "high", "xhigh", "max"])
+				expect(modelInfo.info.reasoningEffort).toBe("medium")
+			},
+		)
+
 		it("should return GPT-5.3 Chat model info when selected", () => {
 			const chatHandler = new OpenAiNativeHandler({
 				...mockOptions,
@@ -716,6 +732,44 @@ describe("OpenAiNativeHandler", () => {
 				"https://api.openai.com/v1/responses",
 				expect.objectContaining({
 					body: expect.stringContaining('"effort":"xhigh"'),
+				}),
+			)
+		})
+
+		it("should support max reasoning effort for GPT-5.6 models", async () => {
+			const mockFetch = vitest.fn().mockResolvedValue({
+				ok: true,
+				body: new ReadableStream({
+					start(controller) {
+						controller.enqueue(
+							new TextEncoder().encode(
+								'data: {"type":"response.output_item.added","item":{"type":"text","text":"Max effort"}}\n\n',
+							),
+						)
+						controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"))
+						controller.close()
+					},
+				}),
+			})
+			global.fetch = mockFetch as any
+
+			mockResponsesCreate.mockRejectedValue(new Error("SDK not available"))
+
+			handler = new OpenAiNativeHandler({
+				...mockOptions,
+				apiModelId: "gpt-5.6-luna",
+				reasoningEffort: "max",
+			})
+
+			const stream = handler.createMessage(systemPrompt, messages)
+			for await (const _chunk of stream) {
+				// drain
+			}
+
+			expect(mockFetch).toHaveBeenCalledWith(
+				"https://api.openai.com/v1/responses",
+				expect.objectContaining({
+					body: expect.stringContaining('"effort":"max"'),
 				}),
 			)
 		})

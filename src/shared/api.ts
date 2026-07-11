@@ -68,6 +68,7 @@ export const shouldUseReasoningEffort = ({
 		| "medium"
 		| "high"
 		| "xhigh"
+		| "max"
 		| undefined
 
 	// "disable" explicitly omits reasoning
@@ -94,6 +95,7 @@ export const shouldUseReasoningEffort = ({
 		| "medium"
 		| "high"
 		| "xhigh"
+		| "max"
 		| undefined
 	return !!modelDefaultEffort
 }
