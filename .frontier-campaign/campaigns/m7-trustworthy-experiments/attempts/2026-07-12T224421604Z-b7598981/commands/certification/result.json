@@ -1,0 +1,18 @@
+{
+	"id": "certification",
+	"command": "pnpm",
+	"args": ["--filter", "@alpha-code/evals", "test:certification"],
+	"cwd": ".",
+	"startedAt": "2026-07-12T22:44:23.631Z",
+	"finishedAt": "2026-07-12T22:44:43.641Z",
+	"durationMs": 20008,
+	"exitCode": 0,
+	"status": "passed",
+	"stdoutArtifact": "attempts/2026-07-12T224421604Z-b7598981/commands/certification/stdout.txt",
+	"stderrArtifact": "attempts/2026-07-12T224421604Z-b7598981/commands/certification/stderr.txt",
+	"stdoutDigest": "22af83916139a3390687fd53f569d9caa636dbc930223cd81a7490f58735f2f6",
+	"stderrDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	"stdoutBytes": 1079,
+	"stderrBytes": 0,
+	"outputTruncated": false
+}

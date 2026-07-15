@@ -1,0 +1,106 @@
+.                                        |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+src                                      |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+
+> @alpha-code/evals@0.0.1 test:all F:\roo-fork\Alpha-Code\packages\evals
+> pnpm test && pnpm test:migrations && pnpm test:integration
+
+
+> @alpha-code/evals@0.0.1 test F:\roo-fork\Alpha-Code\packages\evals
+> pnpm test:unit && pnpm test:contract
+
+
+> @alpha-code/evals@0.0.1 test:unit F:\roo-fork\Alpha-Code\packages\evals
+> vitest run --config vitest.unit.config.ts
+
+
+ RUN  v3.2.4 F:/roo-fork/Alpha-Code/packages/evals
+
+ ✓ src/orchestration/__tests__/processRunner.spec.ts (3 tests) 8ms
+ ✓ src/cli/__tests__/messageLogDeduper.test.ts (4 tests) 5ms
+ ✓ src/lifecycle/__tests__/stateMachine.spec.ts (36 tests) 13ms
+ ✓ src/orchestration/__tests__/orchestration.spec.ts (13 tests) 22ms
+ ✓ src/testing/__tests__/hostileRuntime.spec.ts (25 tests) 35ms
+ ✓ src/infrastructure/__tests__/infrastructure.spec.ts (6 tests) 25ms
+ ✓ src/experiments/__tests__/experiments.spec.ts (15 tests) 43ms
+ ✓ src/cli/__tests__/runUnitTest.spec.ts (2 tests) 13ms
+ ✓ src/cli/__tests__/processTask.lifecycle.spec.ts (13 tests) 61ms
+ ✓ src/grading/__tests__/grading.spec.ts (26 tests) 288ms
+ ✓ src/benchmark/__tests__/benchmark.spec.ts (7 tests) 375ms
+ ✓ src/evidence/__tests__/evidence.spec.ts (22 tests) 1397ms
+   ✓ M4 evidence contracts > derives task and variant identities from the actual fixture, prompt, settings, and workspace revision  1179ms
+
+ Test Files  12 passed (12)
+      Tests  172 passed (172)
+   Start at  22:45:46
+   Duration  2.99s (transform 1.65s, setup 0ms, collect 8.08s, tests 2.29s, environment 4ms, prepare 3.44s)
+
+
+> @alpha-code/evals@0.0.1 test:contract F:\roo-fork\Alpha-Code\packages\evals
+> vitest run --config vitest.contract.config.ts
+
+
+ RUN  v3.2.4 F:/roo-fork/Alpha-Code/packages/evals
+
+ ✓ src/campaign/__tests__/campaign.spec.ts (12 tests) 230ms
+ ✓ src/evidence/__contracts__/reconstruction.spec.ts (2 tests) 836ms
+   ✓ M4 reconstruction contract > collects the final tracked and untracked workspace without mutating it  768ms
+ ✓ src/grading/__contracts__/localFixtures.spec.ts (3 tests) 17487ms
+   ✓ local ready eval fixtures > reproduces the declared initial visible-test baseline for every ready task fixture  5949ms
+   ✓ local ready eval fixtures > passes the known-good calibration solution twenty consecutive times  10447ms
+   ✓ local ready eval fixtures > fails a deliberately broken copy for the intended command reason  1089ms
+
+ Test Files  3 passed (3)
+      Tests  17 passed (17)
+   Start at  22:45:50
+   Duration  18.62s (transform 293ms, setup 0ms, collect 1.28s, tests 18.55s, environment 1ms, prepare 860ms)
+
+
+> @alpha-code/evals@0.0.1 test:migrations F:\roo-fork\Alpha-Code\packages\evals
+> pnpm drizzle-kit:test migrate
+
+
+> @alpha-code/evals@0.0.1 drizzle-kit:test F:\roo-fork\Alpha-Code\packages\evals
+> dotenvx run -f .env.test -- tsx node_modules/drizzle-kit/bin.cjs "migrate"
+
+[dotenvx@1.44.2] injecting env (3) from .env.test
+No config path provided, using default 'drizzle.config.ts'
+Reading config file 'F:\roo-fork\Alpha-Code\packages\evals\drizzle.config.ts'
+Using 'postgres' driver for database querying
+[⣷] applying migrations...{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '42P06',
+  message: 'schema "drizzle" already exists, skipping',
+  file: 'schemacmds.c',
+  line: '131',
+  routine: 'CreateSchemaCommand'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '42P07',
+  message: 'relation "__drizzle_migrations" already exists, skipping',
+  file: 'parse_utilcmd.c',
+  line: '207',
+  routine: 'transformCreateStmt'
+}
+[2K[1G[✓] migrations applied successfully!
+> @alpha-code/evals@0.0.1 test:integration F:\roo-fork\Alpha-Code\packages\evals
+> dotenvx run -f .env.test -- vitest run --config vitest.config.ts
+
+[dotenvx@1.44.2] injecting env (3) from .env.test
+
+ RUN  v3.2.4 F:/roo-fork/Alpha-Code/packages/evals
+
+Created isolated integration database evals_test_58636_1783910773510
+ ✓ src/db/queries/__tests__/lifecycle.spec.ts (12 tests) 1032ms
+ ✓ src/db/queries/__tests__/copyRun.spec.ts (3 tests) 333ms
+ ✓ src/db/queries/__tests__/runs.test.ts (1 test) 79ms
+ ✓ src/db/queries/__tests__/experiments.spec.ts (2 tests) 124ms
+ ✓ src/db/queries/__tests__/evidence.spec.ts (1 test) 83ms
+ ✓ src/db/queries/__tests__/graderResults.spec.ts (2 tests) 123ms
+
+ Test Files  6 passed (6)
+      Tests  21 passed (21)
+   Start at  22:46:13
+   Duration  6.64s (transform 358ms, setup 0ms, collect 1.64s, tests 1.77s, environment 0ms, prepare 152ms)

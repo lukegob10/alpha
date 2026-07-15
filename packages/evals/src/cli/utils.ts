@@ -24,6 +24,11 @@ export const isDockerContainer = () => {
 }
 
 export const resetEvalsRepo = async ({ run, cwd }: { run: Run; cwd: string }) => {
+	// The versioned benchmark catalog is intentionally not a Git working tree.
+	// Never run the legacy repository reset against it: `git clean -fd` would
+	// delete public manifests and generated task fixtures before the campaign.
+	if (process.env.ALPHA_EVALS_REPO_PATH && path.resolve(cwd) === path.resolve(process.env.ALPHA_EVALS_REPO_PATH))
+		return
 	await execa({ cwd })`git config user.name "Alpha"`
 	await execa({ cwd })`git config user.email "support@alpha.invalid"`
 	await execa({ cwd })`git checkout -f`
@@ -32,6 +37,8 @@ export const resetEvalsRepo = async ({ run, cwd }: { run: Run; cwd: string }) =>
 }
 
 export const commitEvalsRepoChanges = async ({ run, cwd }: { run: Run; cwd: string }) => {
+	if (process.env.ALPHA_EVALS_REPO_PATH && path.resolve(cwd) === path.resolve(process.env.ALPHA_EVALS_REPO_PATH))
+		return
 	await execa({ cwd })`git add .`
 	await execa({ cwd })`git commit -m ${`Run #${run.id}`} --no-verify`
 }
@@ -53,6 +60,10 @@ export class Logger {
 	private logStream: fs.WriteStream | undefined
 	private logFilePath: string
 	private tag: string
+
+	public get path(): string {
+		return this.logFilePath
+	}
 
 	constructor({ logDir, filename, tag }: LoggerOptions) {
 		this.tag = tag
@@ -79,7 +90,7 @@ export class Logger {
 			const timestamp = new Date().toISOString()
 
 			const logLine = `[${timestamp} | ${level} | ${this.tag}] ${message} ${
-				args.length > 0 ? JSON.stringify(args) : ""
+				args.length > 0 ? JSON.stringify(args, serializeError) : ""
 			}\n`
 
 			console.log(logLine.trim())
@@ -136,6 +147,16 @@ export class Logger {
 	}
 }
 
+function serializeError(_key: string, value: unknown): unknown {
+	if (!(value instanceof Error)) return value
+	return {
+		name: value.name,
+		message: value.message,
+		stack: value.stack,
+		...(value.cause === undefined ? {} : { cause: value.cause }),
+	}
+}
+
 /**
  * Copy conversation history files from VS Code extension storage to the log directory.
  * This allows us to preserve the api_conversation_history.json and ui_messages.json
@@ -148,6 +169,7 @@ export async function copyConversationHistory({
 	exercise,
 	iteration,
 	logger,
+	storageRoot = "/roo/.vscode/User/globalStorage/alphainc.alpha",
 }: {
 	rooTaskId: string
 	logDir: string
@@ -155,12 +177,11 @@ export async function copyConversationHistory({
 	exercise: string
 	iteration: number
 	logger: Logger
+	storageRoot?: string
 }): Promise<void> {
-	// VS Code extension global storage path within the container
-	const extensionStoragePath = "/roo/.vscode/User/globalStorage/alphainc.alpha"
-	const taskStoragePath = path.join(extensionStoragePath, "tasks", rooTaskId)
+	const taskStoragePath = path.join(storageRoot, "tasks", rooTaskId)
 
-	const filesToCopy = ["api_conversation_history.json", "ui_messages.json"]
+	const filesToCopy = ["api_conversation_history.json", "ui_messages.json", "agent_turn_events.jsonl"]
 
 	for (const filename of filesToCopy) {
 		const sourcePath = path.join(taskStoragePath, filename)

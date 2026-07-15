@@ -1,0 +1,18 @@
+{
+	"id": "eval-typecheck",
+	"command": "pnpm",
+	"args": ["--filter", "@alpha-code/evals", "check-types"],
+	"cwd": ".",
+	"startedAt": "2026-07-12T21:57:18.272Z",
+	"finishedAt": "2026-07-12T21:57:26.944Z",
+	"durationMs": 8667,
+	"exitCode": 0,
+	"status": "passed",
+	"stdoutArtifact": "attempts/2026-07-12T215641542Z-b9c635cc/commands/eval-typecheck/stdout.txt",
+	"stderrArtifact": "attempts/2026-07-12T215641542Z-b9c635cc/commands/eval-typecheck/stderr.txt",
+	"stdoutDigest": "3f971158e30e3b5e16d45d90eabc6b57d9581ec03b32d45fadb87be549d9b685",
+	"stderrDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	"stdoutBytes": 388,
+	"stderrBytes": 0,
+	"outputTruncated": false
+}

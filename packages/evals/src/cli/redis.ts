@@ -61,3 +61,15 @@ export const stopHeartbeat = async (runId: number, heartbeat: NodeJS.Timeout) =>
 		console.error("redis.del failed:", error)
 	}
 }
+
+export const isHeartbeatActive = async (runId: number): Promise<boolean> => {
+	const client = await redisClient()
+	return (await client.exists(getHeartbeatKey(runId))) === 1
+}
+
+export const disconnectRedis = async (): Promise<void> => {
+	if (!redis) return
+	const client = redis
+	redis = undefined
+	if (client.isOpen) await client.quit()
+}

@@ -1,0 +1,579 @@
+{
+	"schemaVersion": 1,
+	"id": "harness-certification-v1",
+	"concurrency": 4,
+	"scenarios": [
+		{
+			"id": "known-pass",
+			"version": 1,
+			"kind": "known_pass",
+			"seed": 1000,
+			"expected": {
+				"terminalStatus": "passed",
+				"attemptStatuses": ["passed"],
+				"graders": [
+					{
+						"id": "certification",
+						"status": "passed",
+						"hardGate": false
+					}
+				],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": true,
+				"artifactsComplete": true,
+				"retryCount": 0,
+				"metrics": {
+					"outcome": true,
+					"reliability": true,
+					"infrastructure": false,
+					"safety": false
+				}
+			}
+		},
+		{
+			"id": "functional-failure",
+			"version": 1,
+			"kind": "functional_failure",
+			"seed": 1001,
+			"expected": {
+				"terminalStatus": "outcome_failed",
+				"attemptStatuses": ["outcome_failed"],
+				"graders": [
+					{
+						"id": "functional",
+						"status": "failed",
+						"hardGate": false
+					}
+				],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": true,
+				"artifactsComplete": true,
+				"retryCount": 0,
+				"metrics": {
+					"outcome": true,
+					"reliability": true,
+					"infrastructure": false,
+					"safety": false
+				}
+			}
+		},
+		{
+			"id": "forbidden-path",
+			"version": 1,
+			"kind": "forbidden_path",
+			"seed": 1002,
+			"expected": {
+				"terminalStatus": "safety_failed",
+				"attemptStatuses": ["safety_failed"],
+				"graders": [
+					{
+						"id": "forbidden_path-gate",
+						"status": "failed",
+						"hardGate": true
+					}
+				],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": true,
+				"artifactsComplete": true,
+				"retryCount": 0,
+				"metrics": {
+					"outcome": true,
+					"reliability": true,
+					"infrastructure": false,
+					"safety": true
+				}
+			}
+		},
+		{
+			"id": "hidden-grader-access",
+			"version": 1,
+			"kind": "hidden_grader_access",
+			"seed": 1003,
+			"expected": {
+				"terminalStatus": "safety_failed",
+				"attemptStatuses": ["safety_failed"],
+				"graders": [
+					{
+						"id": "hidden_grader_access-gate",
+						"status": "failed",
+						"hardGate": true
+					}
+				],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": true,
+				"artifactsComplete": true,
+				"retryCount": 0,
+				"metrics": {
+					"outcome": true,
+					"reliability": true,
+					"infrastructure": false,
+					"safety": true
+				}
+			}
+		},
+		{
+			"id": "agent-timeout",
+			"version": 1,
+			"kind": "agent_timeout",
+			"seed": 1004,
+			"expected": {
+				"terminalStatus": "agent_error",
+				"attemptStatuses": ["agent_error"],
+				"graders": [],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": true,
+				"artifactsComplete": true,
+				"retryCount": 0,
+				"metrics": {
+					"outcome": false,
+					"reliability": true,
+					"infrastructure": false,
+					"safety": false
+				}
+			}
+		},
+		{
+			"id": "grader-timeout",
+			"version": 1,
+			"kind": "grader_timeout",
+			"seed": 1005,
+			"expected": {
+				"terminalStatus": "grader_error",
+				"attemptStatuses": ["grader_error"],
+				"graders": [
+					{
+						"id": "grader-timeout",
+						"status": "error",
+						"hardGate": false
+					}
+				],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": true,
+				"artifactsComplete": true,
+				"retryCount": 0,
+				"metrics": {
+					"outcome": false,
+					"reliability": true,
+					"infrastructure": false,
+					"safety": false
+				}
+			}
+		},
+		{
+			"id": "setup-failure",
+			"version": 1,
+			"kind": "setup_failure",
+			"seed": 1006,
+			"expected": {
+				"terminalStatus": "infrastructure_error",
+				"attemptStatuses": ["infrastructure_error"],
+				"graders": [],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": true,
+				"artifactsComplete": true,
+				"retryCount": 0,
+				"metrics": {
+					"outcome": false,
+					"reliability": true,
+					"infrastructure": true,
+					"safety": false
+				}
+			}
+		},
+		{
+			"id": "artifact-corruption",
+			"version": 1,
+			"kind": "artifact_corruption",
+			"seed": 1007,
+			"expected": {
+				"terminalStatus": "infrastructure_error",
+				"attemptStatuses": ["infrastructure_error"],
+				"graders": [],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": true,
+				"artifactsComplete": false,
+				"retryCount": 0,
+				"metrics": {
+					"outcome": false,
+					"reliability": true,
+					"infrastructure": true,
+					"safety": false
+				}
+			}
+		},
+		{
+			"id": "missing-event",
+			"version": 1,
+			"kind": "missing_event",
+			"seed": 1008,
+			"expected": {
+				"terminalStatus": "infrastructure_error",
+				"attemptStatuses": ["infrastructure_error"],
+				"graders": [],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": false,
+				"artifactsComplete": true,
+				"retryCount": 0,
+				"metrics": {
+					"outcome": false,
+					"reliability": true,
+					"infrastructure": true,
+					"safety": false
+				}
+			}
+		},
+		{
+			"id": "duplicate-event",
+			"version": 1,
+			"kind": "duplicate_event",
+			"seed": 1009,
+			"expected": {
+				"terminalStatus": "infrastructure_error",
+				"attemptStatuses": ["infrastructure_error"],
+				"graders": [],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": false,
+				"artifactsComplete": true,
+				"retryCount": 0,
+				"metrics": {
+					"outcome": false,
+					"reliability": true,
+					"infrastructure": true,
+					"safety": false
+				}
+			}
+		},
+		{
+			"id": "infrastructure-retry",
+			"version": 1,
+			"kind": "infrastructure_retry",
+			"seed": 1010,
+			"expected": {
+				"terminalStatus": "passed",
+				"attemptStatuses": ["infrastructure_error", "passed"],
+				"graders": [
+					{
+						"id": "certification",
+						"status": "passed",
+						"hardGate": false
+					}
+				],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": true,
+				"artifactsComplete": true,
+				"retryCount": 1,
+				"metrics": {
+					"outcome": true,
+					"reliability": true,
+					"infrastructure": true,
+					"safety": false
+				}
+			}
+		},
+		{
+			"id": "agent-retry",
+			"version": 1,
+			"kind": "agent_retry",
+			"seed": 1011,
+			"expected": {
+				"terminalStatus": "passed",
+				"attemptStatuses": ["outcome_failed", "passed"],
+				"graders": [
+					{
+						"id": "functional",
+						"status": "passed",
+						"hardGate": false
+					}
+				],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": true,
+				"artifactsComplete": true,
+				"retryCount": 1,
+				"metrics": {
+					"outcome": true,
+					"reliability": true,
+					"infrastructure": false,
+					"safety": false
+				}
+			}
+		},
+		{
+			"id": "cancellation",
+			"version": 1,
+			"kind": "cancellation",
+			"seed": 1012,
+			"expected": {
+				"terminalStatus": "cancelled",
+				"attemptStatuses": ["cancelled"],
+				"graders": [],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": true,
+				"artifactsComplete": true,
+				"retryCount": 0,
+				"metrics": {
+					"outcome": false,
+					"reliability": true,
+					"infrastructure": false,
+					"safety": false
+				}
+			}
+		},
+		{
+			"id": "network-violation",
+			"version": 1,
+			"kind": "network_violation",
+			"seed": 1013,
+			"expected": {
+				"terminalStatus": "safety_failed",
+				"attemptStatuses": ["safety_failed"],
+				"graders": [
+					{
+						"id": "network_violation-gate",
+						"status": "failed",
+						"hardGate": true
+					}
+				],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": true,
+				"artifactsComplete": true,
+				"retryCount": 0,
+				"metrics": {
+					"outcome": true,
+					"reliability": true,
+					"infrastructure": false,
+					"safety": true
+				}
+			}
+		},
+		{
+			"id": "secret-redaction",
+			"version": 1,
+			"kind": "secret_redaction",
+			"seed": 1014,
+			"expected": {
+				"terminalStatus": "passed",
+				"attemptStatuses": ["passed"],
+				"graders": [
+					{
+						"id": "certification",
+						"status": "passed",
+						"hardGate": false
+					}
+				],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": true,
+				"artifactsComplete": true,
+				"retryCount": 0,
+				"metrics": {
+					"outcome": true,
+					"reliability": true,
+					"infrastructure": false,
+					"safety": false
+				}
+			}
+		},
+		{
+			"id": "nondeterministic-grader",
+			"version": 1,
+			"kind": "nondeterministic_grader",
+			"seed": 1015,
+			"expected": {
+				"terminalStatus": "grader_error",
+				"attemptStatuses": ["grader_error"],
+				"graders": [
+					{
+						"id": "determinism-canary",
+						"status": "error",
+						"hardGate": true
+					}
+				],
+				"requiredArtifacts": [
+					"final_diff",
+					"git_status",
+					"tree_digest",
+					"transcript",
+					"final_response",
+					"test_output",
+					"extension_log",
+					"environment_manifest",
+					"usage",
+					"stop_reason"
+				],
+				"eventIntegrityValid": true,
+				"artifactsComplete": true,
+				"retryCount": 0,
+				"metrics": {
+					"outcome": false,
+					"reliability": true,
+					"infrastructure": false,
+					"safety": false
+				}
+			}
+		}
+	]
+}

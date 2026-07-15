@@ -1,0 +1,18 @@
+{
+	"id": "web-tests",
+	"command": "pnpm",
+	"args": ["--filter", "@alpha-code/web-evals", "test"],
+	"cwd": ".",
+	"startedAt": "2026-07-13T02:41:43.715Z",
+	"finishedAt": "2026-07-13T02:41:46.043Z",
+	"durationMs": 2325,
+	"exitCode": 0,
+	"status": "passed",
+	"stdoutArtifact": "attempts/2026-07-13T023923118Z-97c66425/commands/web-tests/stdout.txt",
+	"stderrArtifact": "attempts/2026-07-13T023923118Z-97c66425/commands/web-tests/stderr.txt",
+	"stdoutDigest": "d07ac5f2929fe646a801bb9173be01bf73654ed4445385e0dcb6aaebd0acf25f",
+	"stderrDigest": "58a0a1ec3f3bc587b1e3fbe70325a65b1cb8d571ef78f0ba1f7b3359e806466a",
+	"stdoutBytes": 4642,
+	"stderrBytes": 1181,
+	"outputTruncated": false
+}

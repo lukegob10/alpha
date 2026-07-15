@@ -1,0 +1,18 @@
+{
+	"id": "real-infrastructure",
+	"command": "pnpm",
+	"args": ["--filter", "@alpha-code/evals", "test:infrastructure"],
+	"cwd": ".",
+	"startedAt": "2026-07-12T22:27:20.044Z",
+	"finishedAt": "2026-07-12T22:27:31.456Z",
+	"durationMs": 11410,
+	"exitCode": 0,
+	"status": "passed",
+	"stdoutArtifact": "attempts/2026-07-12T222652685Z-1acb2d9a/commands/real-infrastructure/stdout.txt",
+	"stderrArtifact": "attempts/2026-07-12T222652685Z-1acb2d9a/commands/real-infrastructure/stderr.txt",
+	"stdoutDigest": "c3c5faa5bd06fc6b743d19e81aa9b30fa8c822f2a9b53f8207f44690e6fd97a7",
+	"stderrDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	"stdoutBytes": 1584,
+	"stderrBytes": 0,
+	"outputTruncated": false
+}

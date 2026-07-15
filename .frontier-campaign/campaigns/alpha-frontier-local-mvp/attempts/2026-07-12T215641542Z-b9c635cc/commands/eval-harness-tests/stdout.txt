@@ -1,0 +1,39 @@
+.                                        |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+src                                      |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+
+> @alpha-code/evals@0.0.1 test F:\roo-fork\Alpha-Code\packages\evals
+> pnpm test:unit && pnpm test:contract
+
+
+> @alpha-code/evals@0.0.1 test:unit F:\roo-fork\Alpha-Code\packages\evals
+> vitest run --config vitest.unit.config.ts
+
+
+ RUN  v3.2.4 F:/roo-fork/Alpha-Code/packages/evals
+
+ ✓ src/cli/__tests__/messageLogDeduper.test.ts (4 tests) 5ms
+ ✓ src/orchestration/__tests__/processRunner.spec.ts (3 tests) 7ms
+ ✓ src/lifecycle/__tests__/stateMachine.spec.ts (36 tests) 12ms
+ ✓ src/orchestration/__tests__/orchestration.spec.ts (13 tests) 27ms
+ ✓ src/testing/__tests__/hostileRuntime.spec.ts (24 tests) 34ms
+ ✓ src/grading/__tests__/grading.spec.ts (16 tests) 123ms
+ ✓ src/cli/__tests__/processTask.lifecycle.spec.ts (8 tests) 12ms
+
+ Test Files  7 passed (7)
+      Tests  104 passed (104)
+   Start at  17:56:42
+   Duration  1.36s (transform 580ms, setup 0ms, collect 2.50s, tests 220ms, environment 2ms, prepare 1.78s)
+
+
+> @alpha-code/evals@0.0.1 test:contract F:\roo-fork\Alpha-Code\packages\evals
+> vitest run --config vitest.contract.config.ts
+
+
+ RUN  v3.2.4 F:/roo-fork/Alpha-Code/packages/evals
+
+ ✓ src/campaign/__tests__/campaign.spec.ts (12 tests) 251ms
+
+ Test Files  1 passed (1)
+      Tests  12 passed (12)
+   Start at  17:56:45
+   Duration  1.11s (transform 90ms, setup 0ms, collect 352ms, tests 251ms, environment 0ms, prepare 188ms)

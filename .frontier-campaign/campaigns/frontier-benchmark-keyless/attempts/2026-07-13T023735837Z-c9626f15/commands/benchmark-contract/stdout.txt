@@ -1,0 +1,22 @@
+.                                        |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+src                                      |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+
+> @alpha-code/evals@0.0.1 benchmark:validate F:\roo-fork\Alpha-Code\packages\evals
+> tsx src/benchmark/cli.ts validate "--" "--require-private"
+
+{
+  "valid": true,
+  "suites": 2,
+  "tasks": 48,
+  "partitions": {
+    "smoke": 8,
+    "development": 20,
+    "regression": 8,
+    "holdout": 12
+  },
+  "admissions": {
+    "admitted": 8,
+    "calibrating": 40
+  },
+  "privateBundles": 40
+}

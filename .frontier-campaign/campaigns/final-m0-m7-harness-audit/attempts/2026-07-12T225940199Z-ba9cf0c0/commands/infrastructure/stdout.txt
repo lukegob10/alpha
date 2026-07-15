@@ -1,0 +1,23 @@
+.                                        |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+src                                      |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+
+> @alpha-code/evals@0.0.1 test:infrastructure F:\roo-fork\Alpha-Code\packages\evals
+> vitest run --config vitest.infrastructure.config.ts
+
+
+ RUN  v3.2.4 F:/roo-fork/Alpha-Code/packages/evals
+
+ ✓ src/infrastructure/__contracts__/docker.spec.ts (9 tests) 9733ms
+   ✓ real Docker certification > observes a real 'redis' outage as infrastructure failure  974ms
+   ✓ real Docker certification > observes a real 'postgres' outage as infrastructure failure  2759ms
+   ✓ real Docker certification > records pinned image/runtime/resource/network provenance and enforces the limits  886ms
+   ✓ real Docker certification > keeps workspaces isolated and hidden state unmounted  1089ms
+   ✓ real Docker certification > kills a timed-out process tree and leaves no labeled container  887ms
+   ✓ real Docker certification > does not expose secret values in container argv or process listings  759ms
+   ✓ real Docker certification > cleans only the selected attempt under concurrent execution  1383ms
+   ✓ real Docker certification > retains an output artifact before automatic container removal  732ms
+
+ Test Files  1 passed (1)
+      Tests  9 passed (9)
+   Start at  19:00:11
+   Duration  10.87s (transform 141ms, setup 0ms, collect 839ms, tests 9.73s, environment 0ms, prepare 125ms)

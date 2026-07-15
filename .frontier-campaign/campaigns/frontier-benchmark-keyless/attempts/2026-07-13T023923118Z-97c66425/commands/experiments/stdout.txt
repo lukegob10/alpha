@@ -1,0 +1,15 @@
+.                                        |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+src                                      |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+
+> @alpha-code/evals@0.0.1 test:experiments F:\roo-fork\Alpha-Code\packages\evals
+> vitest run --config vitest.unit.config.ts src/experiments/__tests__
+
+
+ RUN  v3.2.4 F:/roo-fork/Alpha-Code/packages/evals
+
+ ✓ src/experiments/__tests__/experiments.spec.ts (15 tests) 33ms
+
+ Test Files  1 passed (1)
+      Tests  15 passed (15)
+   Start at  22:40:53
+   Duration  1.01s (transform 204ms, setup 0ms, collect 398ms, tests 33ms, environment 0ms, prepare 210ms)

@@ -1,0 +1,18 @@
+{
+	"id": "infrastructure",
+	"command": "pnpm",
+	"args": ["--filter", "@alpha-code/evals", "test:infrastructure"],
+	"cwd": ".",
+	"startedAt": "2026-07-13T02:40:11.016Z",
+	"finishedAt": "2026-07-13T02:40:27.046Z",
+	"durationMs": 16025,
+	"exitCode": 0,
+	"status": "passed",
+	"stdoutArtifact": "attempts/2026-07-13T023923118Z-97c66425/commands/infrastructure/stdout.txt",
+	"stderrArtifact": "attempts/2026-07-13T023923118Z-97c66425/commands/infrastructure/stderr.txt",
+	"stdoutDigest": "1f55ee54968d22388c4ac828476e5ad9870b82e09c310c0b6125e9cc1b0992ce",
+	"stderrDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	"stdoutBytes": 1590,
+	"stderrBytes": 0,
+	"outputTruncated": false
+}

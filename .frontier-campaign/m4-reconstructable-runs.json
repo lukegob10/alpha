@@ -1,0 +1,40 @@
+{
+	"version": 1,
+	"id": "m4-reconstructable-runs",
+	"target": "docs/testing-harness-convergence-plans/m4-reconstructable-runs.md",
+	"suite": "evals/suite.yaml",
+	"artifactRoot": ".frontier-campaign/campaigns",
+	"budgets": {
+		"maxCampaignWallMs": 900000,
+		"maxCommandWallMs": 300000,
+		"maxCommands": 8,
+		"maxOutputBytesPerCommand": 1048576
+	},
+	"allowedCommandPrefixes": [
+		["pnpm", "--filter", "@alpha-code/evals", "test:all"],
+		["pnpm", "--filter", "@alpha-code/evals", "test:coverage"],
+		["pnpm", "--filter", "@alpha-code/evals", "check-types"],
+		["pnpm", "--filter", "@alpha-code/evals", "lint"],
+		["pnpm", "--filter", "@alpha-code/web-evals", "test"],
+		["pnpm", "--filter", "@alpha-code/web-evals", "check-types"]
+	],
+	"validationCommands": [
+		{ "id": "eval-all", "command": "pnpm", "args": ["--filter", "@alpha-code/evals", "test:all"], "cwd": "." },
+		{
+			"id": "eval-coverage",
+			"command": "pnpm",
+			"args": ["--filter", "@alpha-code/evals", "test:coverage"],
+			"cwd": "."
+		},
+		{ "id": "eval-types", "command": "pnpm", "args": ["--filter", "@alpha-code/evals", "check-types"], "cwd": "." },
+		{ "id": "eval-lint", "command": "pnpm", "args": ["--filter", "@alpha-code/evals", "lint"], "cwd": "." },
+		{ "id": "web-tests", "command": "pnpm", "args": ["--filter", "@alpha-code/web-evals", "test"], "cwd": "." },
+		{
+			"id": "web-types",
+			"command": "pnpm",
+			"args": ["--filter", "@alpha-code/web-evals", "check-types"],
+			"cwd": "."
+		}
+	],
+	"model": { "enabled": false }
+}

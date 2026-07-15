@@ -1,0 +1,18 @@
+{
+	"id": "eval-lint",
+	"command": "pnpm",
+	"args": ["--filter", "@alpha-code/evals", "lint"],
+	"cwd": ".",
+	"startedAt": "2026-07-12T22:18:12.763Z",
+	"finishedAt": "2026-07-12T22:18:15.704Z",
+	"durationMs": 2939,
+	"exitCode": 0,
+	"status": "passed",
+	"stdoutArtifact": "attempts/2026-07-12T221732448Z-41d7532a/commands/eval-lint/stdout.txt",
+	"stderrArtifact": "attempts/2026-07-12T221732448Z-41d7532a/commands/eval-lint/stderr.txt",
+	"stdoutDigest": "fac90f4c39acdb3ae39dfeaae447f89935bb6a691345858bf7c3aac9bbf4e728",
+	"stderrDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	"stdoutBytes": 405,
+	"stderrBytes": 0,
+	"outputTruncated": false
+}

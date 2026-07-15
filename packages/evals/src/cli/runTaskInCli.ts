@@ -1,4 +1,5 @@
 import * as path from "path"
+import * as fs from "fs"
 import * as os from "node:os"
 
 import pWaitFor from "p-wait-for"
@@ -8,19 +9,22 @@ import { type ToolUsage, TaskCommandName, RooCodeEventName, IpcMessageType } fro
 import { IpcClient } from "@alpha-code/ipc"
 
 import { updateTask, createTaskMetrics, updateTaskMetrics, createToolError } from "../db/index"
-import { EVALS_REPO_PATH } from "../exercises/index"
+import { getTaskWorkspacePath } from "../exercises/index"
 
 import { type RunTaskOptions } from "./types"
-import { mergeToolUsage, waitForSubprocessWithTimeout } from "./utils"
+import { copyConversationHistory, mergeToolUsage, waitForSubprocessWithTimeout } from "./utils"
 
 /**
  * Run a task using the Alpha CLI (headless mode).
  * Uses the same IPC protocol as VSCode since the CLI loads the same extension bundle.
  */
-export const runTaskWithCli = async ({ run, task, publish, logger, jobToken }: RunTaskOptions) => {
+export const runTaskWithCli = async ({ run, task, publish, logger, jobToken, workspaceRoot }: RunTaskOptions) => {
 	const { language, exercise } = task
-	const promptSourcePath = path.resolve(EVALS_REPO_PATH, `prompts/${language}.md`)
-	const workspacePath = path.resolve(EVALS_REPO_PATH, language, exercise)
+	const workspacePath = workspaceRoot ?? getTaskWorkspacePath(task)
+	const cliStartedAt = Date.now()
+	const taskPromptPath = path.resolve(workspacePath, "prompt.md")
+	if (!fs.existsSync(taskPromptPath)) throw new Error(`Task prompt is missing: ${taskPromptPath}`)
+	const promptSourcePath = taskPromptPath
 	const ipcSocketPath = path.resolve(os.tmpdir(), `evals-cli-${run.id}-${task.id}.sock`)
 
 	const env: Record<string, string> = {
@@ -34,17 +38,19 @@ export const runTaskWithCli = async ({ run, task, publish, logger, jobToken }: R
 
 	const controller = new AbortController()
 	const cancelSignal = controller.signal
+	const reasoningEffort =
+		run.settings?.reasoningEffort === "disable" ? "disabled" : (run.settings?.reasoningEffort ?? "unspecified")
 
 	const cliArgs = [
 		"--filter",
 		"@alpha-code/cli",
-		"start",
+		"dev",
 		"--prompt-file",
 		promptSourcePath,
 		"--workspace",
 		workspacePath,
 		"--reasoning-effort",
-		"disabled",
+		reasoningEffort,
 		"--oneshot",
 	]
 
@@ -166,6 +172,7 @@ export const runTaskWithCli = async ({ run, task, publish, logger, jobToken }: R
 	let taskFinishedAt: number | undefined
 	let taskAbortedAt: number | undefined
 	let taskTimedOut: boolean = false
+	let taskBudgetExhausted = false
 	const taskMetricsId = taskMetrics.id // Already set, no need to wait for TaskStarted.
 	let rooTaskId: string | undefined
 	let isClientDisconnected = false
@@ -217,8 +224,18 @@ export const runTaskWithCli = async ({ run, task, publish, logger, jobToken }: R
 			const incomingToolUsage: ToolUsage = payload[2] ?? {}
 			mergeToolUsage(accumulatedToolUsage, incomingToolUsage)
 
+			const cost =
+				totalCost > 0
+					? totalCost
+					: estimateKnownModelCost(
+							run.model,
+							totalTokensIn,
+							totalTokensOut,
+							totalCacheWrites ?? 0,
+							totalCacheReads ?? 0,
+						)
 			await updateTaskMetrics(taskMetricsId, {
-				cost: totalCost,
+				cost,
 				tokensIn: totalTokensIn,
 				tokensOut: totalTokensOut,
 				tokensContext: contextTokens,
@@ -227,6 +244,19 @@ export const runTaskWithCli = async ({ run, task, publish, logger, jobToken }: R
 				cacheReads: totalCacheReads ?? 0,
 				toolUsage: accumulatedToolUsage,
 			})
+			const taskCostCapUsd = run.taskCostCapUsd
+			if (
+				shouldExhaustTaskBudget({
+					eventName,
+					alreadyExhausted: taskBudgetExhausted,
+					cost,
+					cap: taskCostCapUsd,
+				})
+			) {
+				taskBudgetExhausted = true
+				logger.error(`task cost cap reached: $${cost.toFixed(4)} >= $${taskCostCapUsd!.toFixed(4)}`)
+				client?.sendCommand({ commandName: TaskCommandName.CancelTask })
+			}
 		}
 
 		if (eventName === RooCodeEventName.TaskAborted) {
@@ -253,7 +283,7 @@ export const runTaskWithCli = async ({ run, task, publish, logger, jobToken }: R
 	try {
 		const timeoutMs = (run.timeout || 5) * 60 * 1_000
 
-		await pWaitFor(() => !!taskFinishedAt || !!taskAbortedAt || isClientDisconnected, {
+		await pWaitFor(() => !!taskFinishedAt || !!taskAbortedAt || taskBudgetExhausted || isClientDisconnected, {
 			interval: 1_000,
 			timeout: timeoutMs,
 		})
@@ -270,7 +300,7 @@ export const runTaskWithCli = async ({ run, task, publish, logger, jobToken }: R
 		taskFinishedAt = Date.now()
 	}
 
-	if (!taskFinishedAt && !taskTimedOut) {
+	if (!taskFinishedAt && !taskTimedOut && !taskAbortedAt && !taskBudgetExhausted) {
 		// With -x flag, CLI exits immediately after task completion, which can cause
 		// IPC disconnection before we receive the TaskCompleted event.
 		// If subprocess exited cleanly (code 0), treat as successful completion.
@@ -301,10 +331,111 @@ export const runTaskWithCli = async ({ run, task, publish, logger, jobToken }: R
 	controller.abort()
 
 	await waitForSubprocessWithTimeout({ subprocess, logger })
+	const historyTaskId =
+		rooTaskId ??
+		findRecentWorkspaceTaskId({
+			storageRoot: path.join(os.homedir(), ".vscode-mock", "global-storage"),
+			workspacePath,
+			startedAfter: cliStartedAt,
+		})
+	if (historyTaskId) {
+		await copyConversationHistory({
+			rooTaskId: historyTaskId,
+			logDir: path.dirname(logger.path),
+			language,
+			exercise,
+			iteration: task.iteration,
+			logger,
+			storageRoot: path.join(os.homedir(), ".vscode-mock", "global-storage"),
+		})
+	}
 
 	logger.close()
 
 	if (isApiUnstable && !taskFinishedAt) {
 		throw new Error("API is unstable, throwing to trigger a retry.")
 	}
+
+	return taskTimedOut
+		? "agent_error"
+		: taskBudgetExhausted
+			? "budget_exhausted"
+			: taskAbortedAt
+				? "cancelled"
+				: "completed"
+}
+
+export function shouldExhaustTaskBudget({
+	eventName,
+	alreadyExhausted,
+	cost,
+	cap,
+}: {
+	eventName: RooCodeEventName
+	alreadyExhausted: boolean
+	cost: number
+	cap: number | null
+}): boolean {
+	return !alreadyExhausted && cap !== null && cost >= cap && eventName !== RooCodeEventName.TaskCompleted
+}
+
+function findRecentWorkspaceTaskId({
+	storageRoot,
+	workspacePath,
+	startedAfter,
+}: {
+	storageRoot: string
+	workspacePath: string
+	startedAfter: number
+}): string | undefined {
+	const tasksRoot = path.join(storageRoot, "tasks")
+	let entries: fs.Dirent[]
+	try {
+		entries = fs.readdirSync(tasksRoot, { withFileTypes: true })
+	} catch {
+		return undefined
+	}
+	const expectedWorkspace = canonicalWorkspacePath(workspacePath)
+	return entries
+		.filter((entry) => entry.isDirectory())
+		.flatMap((entry) => {
+			try {
+				const history = JSON.parse(
+					fs.readFileSync(path.join(tasksRoot, entry.name, "history_item.json"), "utf8"),
+				) as { workspace?: string; ts?: number }
+				if (
+					typeof history.workspace !== "string" ||
+					typeof history.ts !== "number" ||
+					history.ts < startedAfter ||
+					canonicalWorkspacePath(history.workspace) !== expectedWorkspace
+				)
+					return []
+				return [{ id: entry.name, timestamp: history.ts }]
+			} catch {
+				return []
+			}
+		})
+		.sort((left, right) => right.timestamp - left.timestamp)[0]?.id
+}
+
+function canonicalWorkspacePath(value: string): string {
+	const resolved = path.resolve(value)
+	return process.platform === "win32" ? resolved.toLowerCase() : resolved
+}
+
+/**
+ * Keep accounting usable when a newly released model is callable before its
+ * provider catalog metadata has propagated into the extension. Prices are USD
+ * per million tokens; OpenAI input tokens include cached tokens.
+ */
+function estimateKnownModelCost(
+	model: string,
+	inputTokens: number,
+	outputTokens: number,
+	cacheWrites: number,
+	cacheReads: number,
+): number {
+	if (model !== "gpt-5.6-luna") return 0
+	const uncachedInput = Math.max(0, inputTokens - cacheWrites - cacheReads)
+	return (uncachedInput * 1 + cacheWrites * 1.25 + cacheReads * 0.1 + outputTokens * 6) / 1_000_000
 }

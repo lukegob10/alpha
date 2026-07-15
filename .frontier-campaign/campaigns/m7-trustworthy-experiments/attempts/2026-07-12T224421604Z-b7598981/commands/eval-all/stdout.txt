@@ -1,0 +1,410 @@
+.                                        |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+src                                      |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+
+> @alpha-code/evals@0.0.1 test:all F:\roo-fork\Alpha-Code\packages\evals
+> pnpm test && pnpm test:migrations && pnpm test:integration
+
+
+> @alpha-code/evals@0.0.1 test F:\roo-fork\Alpha-Code\packages\evals
+> pnpm test:unit && pnpm test:contract
+
+
+> @alpha-code/evals@0.0.1 test:unit F:\roo-fork\Alpha-Code\packages\evals
+> vitest run --config vitest.unit.config.ts
+
+
+ RUN  v3.2.4 F:/roo-fork/Alpha-Code/packages/evals
+
+ ✓ src/cli/__tests__/messageLogDeduper.test.ts (4 tests) 4ms
+ ✓ src/orchestration/__tests__/processRunner.spec.ts (3 tests) 6ms
+ ✓ src/lifecycle/__tests__/stateMachine.spec.ts (36 tests) 13ms
+ ✓ src/infrastructure/__tests__/infrastructure.spec.ts (6 tests) 13ms
+ ✓ src/orchestration/__tests__/orchestration.spec.ts (13 tests) 19ms
+ ✓ src/testing/__tests__/hostileRuntime.spec.ts (25 tests) 37ms
+ ✓ src/experiments/__tests__/experiments.spec.ts (15 tests) 44ms
+ ✓ src/cli/__tests__/runUnitTest.spec.ts (2 tests) 10ms
+ ✓ src/evidence/__tests__/evidence.spec.ts (20 tests) 318ms
+ ✓ src/cli/__tests__/processTask.lifecycle.spec.ts (11 tests) 27ms
+ ✓ src/grading/__tests__/grading.spec.ts (24 tests) 201ms
+
+ Test Files  11 passed (11)
+      Tests  159 passed (159)
+   Start at  18:44:45
+   Duration  1.56s (transform 1.17s, setup 0ms, collect 5.30s, tests 693ms, environment 3ms, prepare 2.90s)
+
+
+> @alpha-code/evals@0.0.1 test:contract F:\roo-fork\Alpha-Code\packages\evals
+> vitest run --config vitest.contract.config.ts
+
+
+ RUN  v3.2.4 F:/roo-fork/Alpha-Code/packages/evals
+
+ ✓ src/campaign/__tests__/campaign.spec.ts (12 tests) 208ms
+ ✓ src/evidence/__contracts__/reconstruction.spec.ts (2 tests) 813ms
+   ✓ M4 reconstruction contract > collects the final tracked and untracked workspace without mutating it  752ms
+ ✓ src/grading/__contracts__/localFixtures.spec.ts (3 tests) 14745ms
+   ✓ local ready eval fixtures > reproduces the declared initial visible-test baseline for every ready task fixture  5175ms
+   ✓ local ready eval fixtures > passes the known-good calibration solution twenty consecutive times  8691ms
+   ✓ local ready eval fixtures > fails a deliberately broken copy for the intended command reason  876ms
+
+ Test Files  3 passed (3)
+      Tests  17 passed (17)
+   Start at  18:44:47
+   Duration  15.65s (transform 312ms, setup 0ms, collect 1.17s, tests 15.77s, environment 1ms, prepare 593ms)
+
+
+> @alpha-code/evals@0.0.1 test:migrations F:\roo-fork\Alpha-Code\packages\evals
+> pnpm drizzle-kit:test migrate
+
+
+> @alpha-code/evals@0.0.1 drizzle-kit:test F:\roo-fork\Alpha-Code\packages\evals
+> dotenvx run -f .env.test -- tsx node_modules/drizzle-kit/bin.cjs "migrate"
+
+[dotenvx@1.44.2] injecting env (3) from .env.test
+No config path provided, using default 'drizzle.config.ts'
+Reading config file 'F:\roo-fork\Alpha-Code\packages\evals\drizzle.config.ts'
+Using 'postgres' driver for database querying
+[⣷] applying migrations...{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '42P06',
+  message: 'schema "drizzle" already exists, skipping',
+  file: 'schemacmds.c',
+  line: '131',
+  routine: 'CreateSchemaCommand'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '42P07',
+  message: 'relation "__drizzle_migrations" already exists, skipping',
+  file: 'parse_utilcmd.c',
+  line: '207',
+  routine: 'transformCreateStmt'
+}
+[2K[1G[✓] migrations applied successfully!
+> @alpha-code/evals@0.0.1 test:integration F:\roo-fork\Alpha-Code\packages\evals
+> dotenvx run -f .env.test -- vitest run --config vitest.config.ts
+
+[dotenvx@1.44.2] injecting env (3) from .env.test
+
+ RUN  v3.2.4 F:/roo-fork/Alpha-Code/packages/evals
+
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "runs"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "tasks"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "toolErrors"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "trials"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "attempts"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "experiment_pairs"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "graderResults"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "artifacts"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "eval_events"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "tasks"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "toolErrors"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "trials"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "attempts"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "experiment_pairs"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "graderResults"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "artifacts"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "eval_events"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "toolErrors"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "trials"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "attempts"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "experiment_pairs"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "graderResults"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "artifacts"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "eval_events"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "attempts"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "experiment_pairs"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "graderResults"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "artifacts"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "eval_events"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "graderResults"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "artifacts"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "eval_events"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "experiment_pairs"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+{
+  severity_local: 'NOTICE',
+  severity: 'NOTICE',
+  code: '00000',
+  message: 'truncate cascades to table "experiment_reports"',
+  file: 'tablecmds.c',
+  line: '1826',
+  routine: 'ExecuteTruncateGuts'
+}
+[postgres://postgres:password@localhost:5433/evals_test] TRUNCATE taskMetrics, runs, tasks, graderResults, task_definitions, variants, trials, attempts, experiments, experiment_reports, experiment_task_sets, experiment_variants, baselines, promotions, toolErrors, artifacts, experiment_pairs, eval_events
+ ✓ src/db/queries/__tests__/lifecycle.spec.ts (12 tests) 826ms
+ ✓ src/db/queries/__tests__/copyRun.spec.ts (3 tests) 237ms
+ ✓ src/db/queries/__tests__/experiments.spec.ts (2 tests) 95ms
+ ✓ src/db/queries/__tests__/graderResults.spec.ts (2 tests) 93ms
+ ✓ src/db/queries/__tests__/evidence.spec.ts (1 test) 75ms
+ ✓ src/db/queries/__tests__/runs.test.ts (1 test) 61ms
+
+ Test Files  6 passed (6)
+      Tests  21 passed (21)
+   Start at  18:45:06
+   Duration  4.81s (transform 285ms, setup 0ms, collect 1.30s, tests 1.39s, environment 0ms, prepare 124ms)

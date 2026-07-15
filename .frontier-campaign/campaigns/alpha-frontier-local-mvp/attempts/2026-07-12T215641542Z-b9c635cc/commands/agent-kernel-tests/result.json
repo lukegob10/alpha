@@ -1,0 +1,29 @@
+{
+	"id": "agent-kernel-tests",
+	"command": "pnpm",
+	"args": [
+		"--filter",
+		"alpha",
+		"exec",
+		"vitest",
+		"run",
+		"core/agent/__tests__/AgentTurnEngine.spec.ts",
+		"core/agent/__tests__/AgentTurnEventLog.spec.ts",
+		"core/agent/__tests__/StepContext.spec.ts",
+		"core/agent/__tests__/ToolPolicy.spec.ts",
+		"core/agent/__tests__/ToolScheduler.spec.ts"
+	],
+	"cwd": ".",
+	"startedAt": "2026-07-12T21:57:26.951Z",
+	"finishedAt": "2026-07-12T21:58:01.530Z",
+	"durationMs": 34575,
+	"exitCode": 0,
+	"status": "passed",
+	"stdoutArtifact": "attempts/2026-07-12T215641542Z-b9c635cc/commands/agent-kernel-tests/stdout.txt",
+	"stderrArtifact": "attempts/2026-07-12T215641542Z-b9c635cc/commands/agent-kernel-tests/stderr.txt",
+	"stdoutDigest": "7fc123223ddcd29889a5a2dacf14ffe68afb24a71f9ecd83bee2a74c6d0a1028",
+	"stderrDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	"stdoutBytes": 616,
+	"stderrBytes": 0,
+	"outputTruncated": false
+}

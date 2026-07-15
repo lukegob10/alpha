@@ -1,0 +1,18 @@
+{
+	"id": "web-types",
+	"command": "pnpm",
+	"args": ["--filter", "@alpha-code/web-evals", "check-types"],
+	"cwd": ".",
+	"startedAt": "2026-07-13T02:47:58.229Z",
+	"finishedAt": "2026-07-13T02:48:13.277Z",
+	"durationMs": 15045,
+	"exitCode": 0,
+	"status": "passed",
+	"stdoutArtifact": "attempts/2026-07-13T024540987Z-1bcb0f21/commands/web-types/stdout.txt",
+	"stderrArtifact": "attempts/2026-07-13T024540987Z-1bcb0f21/commands/web-types/stderr.txt",
+	"stdoutDigest": "424331119da2ee518bf37d4f0b035ee4263e9cb96fc75002fdaf2bb07b60108c",
+	"stderrDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	"stdoutBytes": 386,
+	"stderrBytes": 0,
+	"outputTruncated": false
+}

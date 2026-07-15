@@ -1,0 +1,8 @@
+{
+	"name": "alpha-frontier-alpha-resume-idempotency",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "node --test test/behavior.test.js"
+	}
+}

@@ -1,0 +1,18 @@
+{
+	"id": "agent-typecheck",
+	"command": "pnpm",
+	"args": ["--filter", "alpha", "check-types"],
+	"cwd": ".",
+	"startedAt": "2026-07-12T21:56:46.490Z",
+	"finishedAt": "2026-07-12T21:57:18.270Z",
+	"durationMs": 31778,
+	"exitCode": 0,
+	"status": "passed",
+	"stdoutArtifact": "attempts/2026-07-12T215641542Z-b9c635cc/commands/agent-typecheck/stdout.txt",
+	"stderrArtifact": "attempts/2026-07-12T215641542Z-b9c635cc/commands/agent-typecheck/stderr.txt",
+	"stdoutDigest": "d61bcd5f718c1af0444b1bf7e957847e936c665f35cc23f2b5431d5bc50bbd39",
+	"stderrDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	"stdoutBytes": 365,
+	"stderrBytes": 0,
+	"outputTruncated": false
+}

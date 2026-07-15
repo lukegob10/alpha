@@ -1,0 +1,18 @@
+{
+	"id": "eval-coverage",
+	"command": "pnpm",
+	"args": ["--filter", "@alpha-code/evals", "test:coverage"],
+	"cwd": ".",
+	"startedAt": "2026-07-12T22:17:59.841Z",
+	"finishedAt": "2026-07-12T22:18:03.401Z",
+	"durationMs": 3559,
+	"exitCode": 0,
+	"status": "passed",
+	"stdoutArtifact": "attempts/2026-07-12T221732448Z-41d7532a/commands/eval-coverage/stdout.txt",
+	"stderrArtifact": "attempts/2026-07-12T221732448Z-41d7532a/commands/eval-coverage/stderr.txt",
+	"stdoutDigest": "cc61775b6155337fa57890b5914f6628c24bfcc40eafb8ebda6b2c2114f951ed",
+	"stderrDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	"stdoutBytes": 6022,
+	"stderrBytes": 0,
+	"outputTruncated": false
+}

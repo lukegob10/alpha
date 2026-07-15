@@ -1,0 +1,13 @@
+stderr | src/actions/__tests__/killRun.spec.ts > killRun > should handle docker ps failure gracefully
+Failed to list task containers: Error: Docker error
+    at F:\roo-fork\Alpha-Code\apps\web-evals\src\actions\__tests__\killRun.spec.ts:133:11
+    at mockCall (file:///F:/roo-fork/Alpha-Code/node_modules/.pnpm/@vitest+spy@3.2.4/node_modules/@vitest/spy/dist/index.js:96:15)
+    at spy (file:///F:/roo-fork/Alpha-Code/node_modules/.pnpm/tinyspy@4.0.3/node_modules/tinyspy/dist/index.js:47:103)
+    at Module.killRun (F:\roo-fork\Alpha-Code\apps\web-evals\src\actions\runs.ts:183:19)
+
+stderr | src/actions/__tests__/killRun.spec.ts > killRun > should handle individual task kill failures
+Failed to kill container evals-task-222-300.0: Error: Kill failed
+    at F:\roo-fork\Alpha-Code\apps\web-evals\src\actions\__tests__\killRun.spec.ts:153:11
+    at mockCall (file:///F:/roo-fork/Alpha-Code/node_modules/.pnpm/@vitest+spy@3.2.4/node_modules/@vitest/spy/dist/index.js:96:15)
+    at spy (file:///F:/roo-fork/Alpha-Code/node_modules/.pnpm/tinyspy@4.0.3/node_modules/tinyspy/dist/index.js:47:103)
+    at Module.killRun (F:\roo-fork\Alpha-Code\apps\web-evals\src\actions\runs.ts:199:5)

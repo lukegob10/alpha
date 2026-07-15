@@ -1,0 +1,73 @@
+{
+	"version": 1,
+	"id": "alpha-frontier-local-mvp",
+	"target": "docs/core-harness-comparison.md",
+	"suite": "evals/suite.yaml",
+	"artifactRoot": ".frontier-campaign/campaigns",
+	"budgets": {
+		"maxCampaignWallMs": 900000,
+		"maxCommandWallMs": 300000,
+		"maxCommands": 8,
+		"maxOutputBytesPerCommand": 1048576
+	},
+	"allowedCommandPrefixes": [
+		["pnpm", "--filter", "@alpha-code/evals", "test"],
+		["pnpm", "--filter", "alpha", "check-types"],
+		["pnpm", "--filter", "alpha", "exec", "vitest", "run"],
+		["pnpm", "--filter", "@alpha-code/evals", "check-types"],
+		["pnpm", "--filter", "@alpha-code/web-evals", "check-types"],
+		["pnpm", "--filter", "@alpha-code/web-evals", "test"]
+	],
+	"validationCommands": [
+		{
+			"id": "eval-harness-tests",
+			"command": "pnpm",
+			"args": ["--filter", "@alpha-code/evals", "test"],
+			"cwd": "."
+		},
+		{
+			"id": "agent-typecheck",
+			"command": "pnpm",
+			"args": ["--filter", "alpha", "check-types"],
+			"cwd": "."
+		},
+		{
+			"id": "eval-typecheck",
+			"command": "pnpm",
+			"args": ["--filter", "@alpha-code/evals", "check-types"],
+			"cwd": "."
+		},
+		{
+			"id": "agent-kernel-tests",
+			"command": "pnpm",
+			"args": [
+				"--filter",
+				"alpha",
+				"exec",
+				"vitest",
+				"run",
+				"core/agent/__tests__/AgentTurnEngine.spec.ts",
+				"core/agent/__tests__/AgentTurnEventLog.spec.ts",
+				"core/agent/__tests__/StepContext.spec.ts",
+				"core/agent/__tests__/ToolPolicy.spec.ts",
+				"core/agent/__tests__/ToolScheduler.spec.ts"
+			],
+			"cwd": "."
+		},
+		{
+			"id": "web-eval-typecheck",
+			"command": "pnpm",
+			"args": ["--filter", "@alpha-code/web-evals", "check-types"],
+			"cwd": "."
+		},
+		{
+			"id": "web-eval-tests",
+			"command": "pnpm",
+			"args": ["--filter", "@alpha-code/web-evals", "test"],
+			"cwd": "."
+		}
+	],
+	"model": {
+		"enabled": false
+	}
+}

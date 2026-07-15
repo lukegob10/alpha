@@ -1,0 +1,8 @@
+{
+	"name": "alpha-frontier-repo-rate-limit-window",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "node --test test/behavior.test.js"
+	}
+}

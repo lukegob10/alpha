@@ -1,0 +1,18 @@
+{
+	"id": "eval-harness-tests",
+	"command": "pnpm",
+	"args": ["--filter", "@alpha-code/evals", "test"],
+	"cwd": ".",
+	"startedAt": "2026-07-12T21:56:41.545Z",
+	"finishedAt": "2026-07-12T21:56:46.488Z",
+	"durationMs": 4941,
+	"exitCode": 0,
+	"status": "passed",
+	"stdoutArtifact": "attempts/2026-07-12T215641542Z-b9c635cc/commands/eval-harness-tests/stdout.txt",
+	"stderrArtifact": "attempts/2026-07-12T215641542Z-b9c635cc/commands/eval-harness-tests/stderr.txt",
+	"stdoutDigest": "db9ed6c5ce8a98988ccb619603d8daf30035aa90ae29d6f326464b52bd4f8d85",
+	"stderrDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	"stdoutBytes": 1657,
+	"stderrBytes": 0,
+	"outputTruncated": false
+}

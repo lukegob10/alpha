@@ -1,4 +1,4 @@
-import { desc, eq, inArray, sql, sum } from "drizzle-orm"
+import { desc, eq, inArray, sql } from "drizzle-orm"
 
 import type { ToolUsage } from "@alpha-code/types"
 
@@ -54,20 +54,23 @@ export const getRuns = async () =>
 export const finishRun = async (runId: number) => {
 	const [values] = await db
 		.select({
-			tokensIn: sum(schema.taskMetrics.tokensIn).mapWith(Number),
-			tokensOut: sum(schema.taskMetrics.tokensOut).mapWith(Number),
-			tokensContext: sum(schema.taskMetrics.tokensContext).mapWith(Number),
-			cacheWrites: sum(schema.taskMetrics.cacheWrites).mapWith(Number),
-			cacheReads: sum(schema.taskMetrics.cacheReads).mapWith(Number),
-			cost: sum(schema.taskMetrics.cost).mapWith(Number),
-			duration: sum(schema.taskMetrics.duration).mapWith(Number),
-			passed: sql<number>`sum(CASE WHEN ${schema.tasks.passed} THEN 1 ELSE 0 END)`,
-			failed: sql<number>`sum(CASE WHEN ${schema.tasks.passed} THEN 0 ELSE 1 END)`,
+			tokensIn: sql<number>`coalesce(sum(${schema.taskMetrics.tokensIn}), 0)`.mapWith(Number),
+			tokensOut: sql<number>`coalesce(sum(${schema.taskMetrics.tokensOut}), 0)`.mapWith(Number),
+			tokensContext: sql<number>`coalesce(sum(${schema.taskMetrics.tokensContext}), 0)`.mapWith(Number),
+			cacheWrites: sql<number>`coalesce(sum(${schema.taskMetrics.cacheWrites}), 0)`.mapWith(Number),
+			cacheReads: sql<number>`coalesce(sum(${schema.taskMetrics.cacheReads}), 0)`.mapWith(Number),
+			cost: sql<number>`coalesce(sum(${schema.taskMetrics.cost}), 0)`.mapWith(Number),
+			duration: sql<number>`coalesce(sum(${schema.taskMetrics.duration}), 0)`.mapWith(Number),
+			passed: sql<number>`coalesce(sum(CASE WHEN ${schema.tasks.passed} IS TRUE THEN 1 ELSE 0 END), 0)`.mapWith(
+				Number,
+			),
+			failed: sql<number>`coalesce(sum(CASE WHEN ${schema.tasks.passed} IS FALSE THEN 1 ELSE 0 END), 0)`.mapWith(
+				Number,
+			),
 		})
-		.from(schema.taskMetrics)
-		.innerJoin(schema.tasks, eq(schema.taskMetrics.id, schema.tasks.taskMetricsId))
-		.innerJoin(schema.runs, eq(schema.tasks.runId, schema.runs.id))
-		.where(eq(schema.runs.id, runId))
+		.from(schema.tasks)
+		.leftJoin(schema.taskMetrics, eq(schema.taskMetrics.id, schema.tasks.taskMetricsId))
+		.where(eq(schema.tasks.runId, runId))
 
 	if (!values) {
 		throw new RecordNotFoundError()
@@ -85,9 +88,10 @@ export const finishRun = async (runId: number) => {
 
 		return acc
 	}, {} as ToolUsage)
+	const requestUsage = tasks.flatMap((task) => task.taskMetrics?.requestUsage ?? [])
 
 	const { passed, failed, ...rest } = values
-	const taskMetrics = await createTaskMetrics({ ...rest, toolUsage })
+	const taskMetrics = await createTaskMetrics({ ...rest, toolUsage, requestUsage })
 	await updateRun(runId, { taskMetricsId: taskMetrics.id, passed, failed })
 
 	const run = await findRun(runId)

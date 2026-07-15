@@ -1,0 +1,92 @@
+.                                        |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+src                                      |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+
+> @alpha-code/web-evals@0.0.1 test F:\roo-fork\Alpha-Code\apps\web-evals
+> pnpm test:unit
+
+
+> @alpha-code/web-evals@0.0.1 test:unit F:\roo-fork\Alpha-Code\apps\web-evals
+> vitest run
+
+
+ RUN  v3.2.4 F:/roo-fork/Alpha-Code/apps/web-evals
+
+ ✓ src/lib/__tests__/normalize-create-run.spec.ts (3 tests) 6ms
+ ✓ src/lib/__tests__/task-lifecycle-status.spec.ts (7 tests) 5ms
+ ✓ src/lib/__tests__/formatters.spec.ts (4 tests) 5ms
+ ✓ src/lib/server/__tests__/sse-stream.spec.ts (8 tests) 20ms
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should kill controller first, wait, then kill task containers
+Killing controller: evals-controller-123
+Killed controller container: evals-controller-123
+Waiting 10 seconds before killing runners...
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should kill controller first, wait, then kill task containers
+Killed task container: evals-task-123-456.0
+Killed task container: evals-task-123-789.1
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should kill controller first, wait, then kill task containers
+Cleared Redis keys: heartbeat:123, runners:123
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should continue killing runners even if controller is not running
+Killing controller: evals-controller-456
+Controller evals-controller-456 not running or already stopped
+Waiting 10 seconds before killing runners...
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should continue killing runners even if controller is not running
+Killed task container: evals-task-456-100.0
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should continue killing runners even if controller is not running
+Cleared Redis keys: heartbeat:456, runners:456
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should clear Redis state after killing containers
+Killing controller: evals-controller-789
+Killed controller container: evals-controller-789
+Waiting 10 seconds before killing runners...
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should clear Redis state after killing containers
+Cleared Redis keys: heartbeat:789, runners:789
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should handle docker ps failure gracefully
+Killing controller: evals-controller-111
+Killed controller container: evals-controller-111
+Waiting 10 seconds before killing runners...
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should handle docker ps failure gracefully
+Cleared Redis keys: heartbeat:111, runners:111
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should handle individual task kill failures
+Killing controller: evals-controller-222
+Killed controller container: evals-controller-222
+Waiting 10 seconds before killing runners...
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should handle individual task kill failures
+Killed task container: evals-task-222-400.0
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should handle individual task kill failures
+Cleared Redis keys: heartbeat:222, runners:222
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should return success with no containers when nothing is running
+Killing controller: evals-controller-333
+Controller evals-controller-333 not running or already stopped
+Waiting 10 seconds before killing runners...
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should return success with no containers when nothing is running
+Cleared Redis keys: heartbeat:333, runners:333
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should only kill containers belonging to the specific run
+Killing controller: evals-controller-555
+Killed controller container: evals-controller-555
+Waiting 10 seconds before killing runners...
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should only kill containers belonging to the specific run
+Killed task container: evals-task-555-100.0
+
+stdout | src/actions/__tests__/killRun.spec.ts > killRun > should only kill containers belonging to the specific run
+Cleared Redis keys: heartbeat:555, runners:555
+
+ ✓ src/actions/__tests__/killRun.spec.ts (7 tests) 26ms
+
+ Test Files  5 passed (5)
+      Tests  29 passed (29)
+   Start at  22:41:44
+   Duration  863ms (transform 324ms, setup 0ms, collect 653ms, tests 63ms, environment 1ms, prepare 972ms)

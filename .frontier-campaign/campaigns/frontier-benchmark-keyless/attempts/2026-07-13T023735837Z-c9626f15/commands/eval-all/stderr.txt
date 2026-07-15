@@ -1,0 +1,46 @@
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/db/queries/__tests__/runs.test.ts > finishRun > aggregates task metrics, including tool usage
+AssertionError: expected { id: 16, tokensIn: 175000, …(9) } to deeply equal { id: Any<Number>, …(9) }
+
+- Expected
++ Received
+
+@@ -3,10 +3,24 @@
+    "cacheWrites": 0,
+    "cost": 0.09,
+    "createdAt": Any<Date>,
+    "duration": 75000,
+    "id": Any<Number>,
++   "requestUsage": {
++     "initial": {
++       "cacheReadTokens": 0,
++       "inputTokens": 0,
++       "outputTokens": 0,
++       "requests": 0,
++     },
++     "retry": {
++       "cacheReadTokens": 0,
++       "inputTokens": 0,
++       "outputTokens": 0,
++       "requests": 0,
++     },
++   },
+    "tokensContext": 178000,
+    "tokensIn": 175000,
+    "tokensOut": 3000,
+    "toolUsage": {
+      "apply_diff": {
+
+ ❯ src/db/queries/__tests__/runs.test.ts:71:23
+     69|   const { taskMetrics } = await finishRun(run.id)
+     70| 
+     71|   expect(taskMetrics).toEqual({
+       |                       ^
+     72|    id: expect.any(Number),
+     73|    tokensIn: 175000,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+Command failed with exit code 1: F:\roo-fork\Alpha-Code\packages\evals\node_modules\.bin\vitest.CMD run --config vitest.config.ts

@@ -1,0 +1,18 @@
+{
+	"id": "benchmark-contract",
+	"command": "pnpm",
+	"args": ["--filter", "@alpha-code/evals", "benchmark:validate", "--", "--require-private"],
+	"cwd": ".",
+	"startedAt": "2026-07-13T02:45:40.990Z",
+	"finishedAt": "2026-07-13T02:45:44.612Z",
+	"durationMs": 3619,
+	"exitCode": 0,
+	"status": "passed",
+	"stdoutArtifact": "attempts/2026-07-13T024540987Z-1bcb0f21/commands/benchmark-contract/stdout.txt",
+	"stderrArtifact": "attempts/2026-07-13T024540987Z-1bcb0f21/commands/benchmark-contract/stderr.txt",
+	"stdoutDigest": "69cc1d550183c5dba718d1c95b5f4ac6a8084d71321a3cc57cc1ae3588c8904d",
+	"stderrDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	"stdoutBytes": 680,
+	"stderrBytes": 0,
+	"outputTruncated": false
+}

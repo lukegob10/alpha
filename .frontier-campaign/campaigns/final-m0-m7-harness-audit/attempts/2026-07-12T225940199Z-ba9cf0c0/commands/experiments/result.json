@@ -1,0 +1,18 @@
+{
+	"id": "experiments",
+	"command": "pnpm",
+	"args": ["--filter", "@alpha-code/evals", "test:experiments"],
+	"cwd": ".",
+	"startedAt": "2026-07-12T23:00:43.425Z",
+	"finishedAt": "2026-07-12T23:00:45.178Z",
+	"durationMs": 1751,
+	"exitCode": 0,
+	"status": "passed",
+	"stdoutArtifact": "attempts/2026-07-12T225940199Z-ba9cf0c0/commands/experiments/stdout.txt",
+	"stderrArtifact": "attempts/2026-07-12T225940199Z-ba9cf0c0/commands/experiments/stderr.txt",
+	"stdoutDigest": "05ae0392972602eeaeb05f2079fd6dccb15f87dc296169f7573204899904800c",
+	"stderrDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	"stdoutBytes": 753,
+	"stderrBytes": 0,
+	"outputTruncated": false
+}

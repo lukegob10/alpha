@@ -1,0 +1,42 @@
+{
+	"schemaVersion": 1,
+	"taskIdentity": "alpha-repository-rules@1",
+	"fixtureInitiallyFails": true,
+	"restraint": false,
+	"gold": {
+		"repetitions": 20,
+		"passed": 20
+	},
+	"broken": [
+		{
+			"id": "narrow",
+			"repetitions": 20,
+			"rejected": 20,
+			"expectedCode": "functional-edge-case"
+		},
+		{
+			"id": "compatibility",
+			"repetitions": 20,
+			"rejected": 20,
+			"expectedCode": "compatibility-export-contract"
+		},
+		{
+			"id": "mutation",
+			"repetitions": 20,
+			"rejected": 20,
+			"expectedCode": "safety-workspace-mutated"
+		}
+	],
+	"determinism": {
+		"repetitions": 50,
+		"distinctDigests": 1
+	},
+	"models": [],
+	"humanReview": {
+		"unresolvedFalsePositivePasses": 0,
+		"reviewedTrialIds": [],
+		"reviewer": "",
+		"qualityApproved": false
+	},
+	"admitted": false
+}

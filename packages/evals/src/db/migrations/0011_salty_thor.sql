@@ -1,0 +1,1 @@
+ALTER TABLE "taskMetrics" ADD COLUMN "request_usage" jsonb;

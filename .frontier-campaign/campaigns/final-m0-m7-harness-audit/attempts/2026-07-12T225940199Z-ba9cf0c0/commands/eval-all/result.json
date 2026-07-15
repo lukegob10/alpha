@@ -1,0 +1,18 @@
+{
+	"id": "eval-all",
+	"command": "pnpm",
+	"args": ["--filter", "@alpha-code/evals", "test:all"],
+	"cwd": ".",
+	"startedAt": "2026-07-12T22:59:40.202Z",
+	"finishedAt": "2026-07-12T23:00:10.964Z",
+	"durationMs": 30758,
+	"exitCode": 0,
+	"status": "passed",
+	"stdoutArtifact": "attempts/2026-07-12T225940199Z-ba9cf0c0/commands/eval-all/stdout.txt",
+	"stderrArtifact": "attempts/2026-07-12T225940199Z-ba9cf0c0/commands/eval-all/stderr.txt",
+	"stdoutDigest": "df03f5e54b171d43a47c130976f5509328024b020dde4d3689a3c284bfaeba19",
+	"stderrDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	"stdoutBytes": 4683,
+	"stderrBytes": 0,
+	"outputTruncated": false
+}

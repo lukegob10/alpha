@@ -1,0 +1,84 @@
+.                                        |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+src                                      |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+
+> @alpha-code/evals@0.0.1 test:coverage F:\roo-fork\Alpha-Code\packages\evals
+> vitest run --config vitest.coverage.config.ts --coverage
+
+
+ RUN  v3.2.4 F:/roo-fork/Alpha-Code/packages/evals
+      Coverage enabled with v8
+
+ ✓ src/cli/__tests__/messageLogDeduper.test.ts (4 tests) 5ms
+ ✓ src/orchestration/__tests__/processRunner.spec.ts (3 tests) 10ms
+ ✓ src/lifecycle/__tests__/stateMachine.spec.ts (36 tests) 12ms
+ ✓ src/orchestration/__tests__/orchestration.spec.ts (13 tests) 25ms
+ ✓ src/testing/__tests__/hostileRuntime.spec.ts (25 tests) 40ms
+ ✓ src/cli/__tests__/runUnitTest.spec.ts (2 tests) 14ms
+ ✓ src/evidence/__tests__/evidence.spec.ts (20 tests) 359ms
+ ✓ src/campaign/__tests__/campaign.spec.ts (12 tests) 275ms
+ ✓ src/cli/__tests__/processTask.lifecycle.spec.ts (11 tests) 34ms
+ ✓ src/grading/__tests__/grading.spec.ts (24 tests) 264ms
+ ✓ src/evidence/__contracts__/reconstruction.spec.ts (2 tests) 840ms
+   ✓ M4 reconstruction contract > collects the final tracked and untracked workspace without mutating it  774ms
+
+ Test Files  11 passed (11)
+      Tests  152 passed (152)
+   Start at  18:18:00
+   Duration  2.45s (transform 1.33s, setup 0ms, collect 5.67s, tests 1.88s, environment 5ms, prepare 3.50s)
+
+ % Coverage report from v8
+-------------------|---------|----------|---------|---------|-------------------
+File               | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s 
+-------------------|---------|----------|---------|---------|-------------------
+All files          |   96.13 |    94.37 |   96.38 |   96.13 |                   
+ campaign          |   84.45 |    87.65 |   85.71 |   84.45 |                   
+  artifacts.ts     |     100 |      100 |     100 |     100 |                   
+  budget.ts        |    93.1 |     87.5 |     100 |    93.1 | 23-24             
+  process.ts       |    8.69 |      100 |       0 |    8.69 | 5-10,14-49        
+  runner.ts        |   95.55 |    83.33 |   91.66 |   95.55 | ...22-123,163-166 
+  schema.ts        |   91.48 |      100 |   66.66 |   91.48 | 32-35             
+  types.ts         |       0 |        0 |       0 |       0 |                   
+ cli               |   82.85 |       75 |     100 |   82.85 |                   
+  ...LogDeduper.ts |   82.85 |       75 |     100 |   82.85 | 13-14,18-19,26-27 
+ evidence          |   99.43 |     95.9 |     100 |   99.43 |                   
+  artifactStore.ts |   95.45 |    92.85 |     100 |   95.45 | 60-61             
+  canonical.ts     |     100 |      100 |     100 |     100 |                   
+  collector.ts     |     100 |     90.9 |     100 |     100 | 42                
+  eventJournal.ts  |     100 |      100 |     100 |     100 |                   
+  eventRegistry.ts |     100 |       90 |     100 |     100 | 10                
+  integrity.ts     |     100 |    95.65 |     100 |     100 | 51                
+  manifests.ts     |     100 |      100 |     100 |     100 |                   
+  reconstruct.ts   |     100 |    85.71 |     100 |     100 | 19                
+  redaction.ts     |     100 |      100 |     100 |     100 |                   
+  ...eCollector.ts |     100 |      100 |     100 |     100 |                   
+  types.ts         |     100 |      100 |     100 |     100 |                   
+ grading           |     100 |    98.83 |     100 |     100 |                   
+  aggregate.ts     |     100 |      100 |     100 |     100 |                   
+  boundary.ts      |     100 |      100 |     100 |     100 |                   
+  catalog.ts       |     100 |    97.43 |     100 |     100 | 101               
+  evidence.ts      |     100 |      100 |     100 |     100 |                   
+  index.ts         |     100 |      100 |     100 |     100 |                   
+  registry.ts      |     100 |      100 |     100 |     100 |                   
+  types.ts         |     100 |      100 |     100 |     100 |                   
+ grading/plugins   |     100 |    97.22 |     100 |     100 |                   
+  command.ts       |     100 |      100 |     100 |     100 |                   
+  diffPolicy.ts    |     100 |      100 |     100 |     100 |                   
+  filesystem.ts    |     100 |      100 |     100 |     100 |                   
+  ...icAnalysis.ts |     100 |    77.77 |     100 |     100 | 26,36             
+  ...eAssertion.ts |     100 |      100 |     100 |     100 |                   
+ lifecycle         |     100 |    97.36 |     100 |     100 |                   
+  index.ts         |     100 |      100 |     100 |     100 |                   
+  stateMachine.ts  |     100 |    97.36 |     100 |     100 | 83                
+  types.ts         |     100 |      100 |     100 |     100 |                   
+ orchestration     |     100 |    95.38 |     100 |     100 |                   
+  errors.ts        |     100 |      100 |     100 |     100 |                   
+  ...uteAttempt.ts |     100 |    91.42 |     100 |     100 | 73-74,82          
+  index.ts         |     100 |      100 |     100 |     100 |                   
+  ports.ts         |       0 |        0 |       0 |       0 |                   
+  processRunner.ts |     100 |      100 |     100 |     100 |                   
+  retryPolicy.ts   |     100 |      100 |     100 |     100 |                   
+  systemPorts.ts   |     100 |      100 |     100 |     100 |                   
+ testing           |   98.36 |    92.96 |   96.61 |   98.36 |                   
+  ...ileRuntime.ts |   98.35 |    92.96 |   96.61 |   98.35 | 83-84,195-197     
+  index.ts         |     100 |      100 |     100 |     100 |                   
+-------------------|---------|----------|---------|---------|-------------------

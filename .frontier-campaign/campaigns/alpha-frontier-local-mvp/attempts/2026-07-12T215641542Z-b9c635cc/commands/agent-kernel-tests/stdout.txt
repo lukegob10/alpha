@@ -1,0 +1,11 @@
+.                                        |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+src                                      |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+
+ RUN  v3.2.4 F:/roo-fork/Alpha-Code/src
+
+············································
+
+ Test Files  5 passed (5)
+      Tests  44 passed (44)
+   Start at  17:57:27
+   Duration  33.49s (transform 1.55s, setup 4.16s, collect 32.31s, tests 514ms, environment 1ms, prepare 1.17s)

@@ -1,0 +1,2826 @@
+schemaVersion: 1
+id: frontier-v1
+version: 1
+status: calibrating
+primaryModel: luna-high
+referenceModel: luna-high
+tasks:
+  - id: repo-cache-invalidation
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-cache-invalidation
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:real-repository
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:ee58af8f5aa88dca18e324479da21b52ac9d855e6e06e16f7c73608cafcd0671
+    family: real-repository
+    capabilities:
+      - cache-correctness
+      - dependency-tracking
+      - validation
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: &a1
+      - final_workspace
+      - changed_paths
+      - normalized_trace
+      - usage
+      - environment
+      - final_response
+      - grader_evidence
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:ee58af8f5aa88dca18e324479da21b52ac9d855e6e06e16f7c73608cafcd0671
+    promptDigest: sha256:255d3e15ba29956bd3028e71b68fe26e443fc48d0d565ca15ceaf64f572cf89a
+  - id: repo-config-precedence
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-config-precedence
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:real-repository
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:ea315f502c3fe394e082ec6bb264b235bdc33a1b5239778f8280fa13b97033e5
+    family: real-repository
+    capabilities:
+      - configuration
+      - precedence
+      - validation
+    risk: medium
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:ea315f502c3fe394e082ec6bb264b235bdc33a1b5239778f8280fa13b97033e5
+    promptDigest: sha256:4d0914df61f34e49c204e681c625bb0f52da904a7933ded952ba359f93735784
+  - id: repo-auth-session-rotation
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-auth-session-rotation
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:real-repository
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:1dbcd6d000bacd220f7ba7e032ac28f3c6680ea198af44778dc594b5e362111b
+    family: real-repository
+    capabilities:
+      - authentication
+      - state-transition
+      - validation
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:1dbcd6d000bacd220f7ba7e032ac28f3c6680ea198af44778dc594b5e362111b
+    promptDigest: sha256:04845536dc7cca65e299485cf9d79343612736dc7181b79f7f76749f1303ef2d
+  - id: repo-stream-backpressure
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-stream-backpressure
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:real-repository
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:1217e82d3e01f31a50c9dd9b9baf591a7696eaa6c0cc69fedb94ee6a9c45c37b
+    family: real-repository
+    capabilities:
+      - async-control-flow
+      - backpressure
+      - cancellation
+    risk: high
+    difficulty: frontier
+    restraint: false
+    budgets:
+      wallSeconds: 900
+      modelCalls: 70
+      toolCalls: 200
+      costUsd: 0.45
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: long
+    editTopology:
+      kind: cross-package
+      minFiles: 1
+      maxFiles: 8
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:1217e82d3e01f31a50c9dd9b9baf591a7696eaa6c0cc69fedb94ee6a9c45c37b
+    promptDigest: sha256:5b59e518bd9dd906f00dc96ae6efd5967de5db1fe2f1be777ae7dbc52a63b519
+  - id: repo-workspace-package-order
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-workspace-package-order
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:real-repository
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:7c9dbd57366e43493876aab62e4fe2353c19f8f917a32245f7316b2824000e34
+    family: real-repository
+    capabilities:
+      - dependency-graph
+      - build-order
+      - cycle-detection
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 1
+      maxFiles: 4
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:7c9dbd57366e43493876aab62e4fe2353c19f8f917a32245f7316b2824000e34
+    promptDigest: sha256:385392e3a42cfcf3b231edc44d6dded7f58a755fa3929ee6883089d944f607ee
+  - id: repo-migration-rollback
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-migration-rollback
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:safety-stateful
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:7401d915bd3dfa8b76e3077cf0d9b4a1e0a21574aa7bb4dc4fb7962c1d7328f0
+    family: safety-stateful
+    capabilities:
+      - migration
+      - rollback
+      - partial-failure
+    risk: high
+    difficulty: frontier
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 1
+      maxFiles: 4
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:7401d915bd3dfa8b76e3077cf0d9b4a1e0a21574aa7bb4dc4fb7962c1d7328f0
+    promptDigest: sha256:fc06e61f5248d17f510cb9e8e62640f00ff483ae90bad740d39cfcb78945c8ef
+  - id: repo-event-deduplication
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-event-deduplication
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:real-repository
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:8d499c57611884f9a16124f8fdf34684c7e3540170a04a926d1b7a66b35fca63
+    family: real-repository
+    capabilities:
+      - event-processing
+      - deduplication
+      - ordering
+    risk: medium
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:8d499c57611884f9a16124f8fdf34684c7e3540170a04a926d1b7a66b35fca63
+    promptDigest: sha256:a1570ecc1fb5ea27c28563533dfe2f016903ad61132008497b4fe3dd677183f7
+  - id: repo-cli-config-layering
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-cli-config-layering
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:real-repository
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:b4dd3b8959a85959231d0d98bd77927a94fc631f0d101580ab113410305fdb77
+    family: real-repository
+    capabilities:
+      - cli-parsing
+      - configuration
+      - input-validation
+    risk: medium
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:b4dd3b8959a85959231d0d98bd77927a94fc631f0d101580ab113410305fdb77
+    promptDigest: sha256:d2646b5127f1b95e00f35f631ff1aaf999e0e06d278b341c9cd50f59c152799a
+  - id: repo-concurrent-file-lock
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-concurrent-file-lock
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:real-repository
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:a5c8ce24b419aa71357b8725a92d677d59bb4532b5e5e7f57b80820af936eaba
+    family: real-repository
+    capabilities:
+      - concurrency
+      - file-locking
+      - recovery
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 1
+      maxFiles: 4
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:a5c8ce24b419aa71357b8725a92d677d59bb4532b5e5e7f57b80820af936eaba
+    promptDigest: sha256:ae67071690cc9346ebaada1e26a34ccf6ee85b459cc4b32651d0360cedd00a74
+  - id: repo-pagination-cursor
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-pagination-cursor
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:real-repository
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:6b44724674f38ef89a5568d1262c1201365d8b789e490ca45dc8f0e2f1ac091c
+    family: real-repository
+    capabilities:
+      - pagination
+      - stable-ordering
+      - data-boundary
+    risk: medium
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:6b44724674f38ef89a5568d1262c1201365d8b789e490ca45dc8f0e2f1ac091c
+    promptDigest: sha256:158b48bcbe5412d86854d5f529a3cba0d862ef8f42f3f9e06b55d87668777150
+  - id: repo-plugin-dependency-cycle
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-plugin-dependency-cycle
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:real-repository
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:c3fce6efeee2bb1f6b40d29fd54dc688672841e1cc17afa8dee32908ee432ef3
+    family: real-repository
+    capabilities:
+      - graph-analysis
+      - diagnostics
+      - plugin-loading
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 1
+      maxFiles: 4
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:c3fce6efeee2bb1f6b40d29fd54dc688672841e1cc17afa8dee32908ee432ef3
+    promptDigest: sha256:42cf7323b1f8e7029d33679765c1e2f6011dad7307fc66dccff385c389c6d4c4
+  - id: repo-transaction-outbox
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-transaction-outbox
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:real-repository
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:48416ff3732d6afcc2cda6ccbaab279eebc767b304c989190d1734facb4ffc94
+    family: real-repository
+    capabilities:
+      - transaction
+      - outbox
+      - crash-recovery
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 1
+      maxFiles: 4
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:48416ff3732d6afcc2cda6ccbaab279eebc767b304c989190d1734facb4ffc94
+    promptDigest: sha256:8ec5772db98214942944674a3966ec33023cb161b2a4c2155d1d6121e8f6786e
+  - id: repo-rate-limit-window
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-rate-limit-window
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:real-repository
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:04a3472441569d0d079f9560aecab8f4e06739e632c55f9aaa20ec5136ba3e5e
+    family: real-repository
+    capabilities:
+      - rate-limiting
+      - time-boundary
+      - correctness
+    risk: medium
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:04a3472441569d0d079f9560aecab8f4e06739e632c55f9aaa20ec5136ba3e5e
+    promptDigest: sha256:a4a28111f05aae8ec733e52f9e20d50a00cfff0c49c1ce908001f7babde045f1
+  - id: repo-schema-compatibility
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-schema-compatibility
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:long-horizon
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:e72661fe935ab0aba10f141ec03db3115bac5e5608732a035d5ea2be759a2e62
+    family: long-horizon
+    capabilities:
+      - schema-evolution
+      - backward-compatibility
+      - rolling-deploy
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 1
+      maxFiles: 4
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:e72661fe935ab0aba10f141ec03db3115bac5e5608732a035d5ea2be759a2e62
+    promptDigest: sha256:59cf48e20d1d3cc5758c96dca1aa5d82d60c371df9d9a2242f84bd86aa64fede
+  - id: repo-worker-shutdown
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-worker-shutdown
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:long-horizon
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:cfe11ffc4c36821bf2220b9f74ae4ac40df2b96de9b6dd1b87c012086c66f29f
+    family: long-horizon
+    capabilities:
+      - graceful-shutdown
+      - async-lifecycle
+      - work-queue
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 1
+      maxFiles: 4
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:cfe11ffc4c36821bf2220b9f74ae4ac40df2b96de9b6dd1b87c012086c66f29f
+    promptDigest: sha256:284a0a522e92f7d2d8e103843eb6cb4ab88a907e09137d53ceb717e7d11ddb0c
+  - id: repo-build-artifact-boundary
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/repo-build-artifact-boundary
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:long-horizon
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:1c2d46418ef4028ff7329500850a2a45b1dc020b76159349c724e23695581a5b
+    family: long-horizon
+    capabilities:
+      - package-exports
+      - build-artifacts
+      - module-boundary
+    risk: medium
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:1c2d46418ef4028ff7329500850a2a45b1dc020b76159349c724e23695581a5b
+    promptDigest: sha256:81c4471cde5f814f1ae49893bce6cb786c6e58b28a38be912c252d7fc882dff3
+  - id: alpha-repository-rules
+    version: 1
+    partition: regression
+    admission: calibrating
+    fixture: javascript/alpha-repository-rules
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:alpha-extension
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:40c1a2c543b0a54fca5a7c5ff0fda597fe2cdf69caaabe08508d40b1e20b219c
+    family: alpha-extension
+    capabilities:
+      - repository-instructions
+      - scope-resolution
+      - protected-files
+    risk: medium
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:40c1a2c543b0a54fca5a7c5ff0fda597fe2cdf69caaabe08508d40b1e20b219c
+    promptDigest: sha256:62e2deb07bd53734e614af01dfa9f7f37dcf044d1b28065885c6ec6463229e78
+  - id: alpha-context-continuity
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/alpha-context-continuity
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:alpha-extension
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:20e6d4fe0ebbda3f52abcbd008ddc610c36f95fed4b0d66f2c2eb193702ea9b8
+    family: alpha-extension
+    capabilities:
+      - context-continuity
+      - state-reduction
+      - tool-history
+    risk: high
+    difficulty: frontier
+    restraint: false
+    budgets:
+      wallSeconds: 900
+      modelCalls: 70
+      toolCalls: 200
+      costUsd: 0.45
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: long
+    editTopology:
+      kind: cross-package
+      minFiles: 1
+      maxFiles: 8
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:20e6d4fe0ebbda3f52abcbd008ddc610c36f95fed4b0d66f2c2eb193702ea9b8
+    promptDigest: sha256:07a7ee7e79a6c10de625f5f85085304b1157946ba2332e99cf16613c8478e051
+  - id: alpha-compaction-resume
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/alpha-compaction-resume
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:alpha-extension
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:2e374181f5a4ee785f33084837e6180ce36501fc4eb5c472780ca5e8f2fbc11f
+    family: alpha-extension
+    capabilities:
+      - compaction
+      - resume
+      - checkpointing
+    risk: high
+    difficulty: frontier
+    restraint: false
+    budgets:
+      wallSeconds: 900
+      modelCalls: 70
+      toolCalls: 200
+      costUsd: 0.45
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: long
+    editTopology:
+      kind: cross-package
+      minFiles: 1
+      maxFiles: 8
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:2e374181f5a4ee785f33084837e6180ce36501fc4eb5c472780ca5e8f2fbc11f
+    promptDigest: sha256:d1d85d2bcb16e3eab198ddde68f067d0f2bcca82369853b859d89fb6af69e8df
+  - id: alpha-validation-after-edit
+    version: 1
+    partition: regression
+    admission: calibrating
+    fixture: javascript/alpha-validation-after-edit
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:alpha-extension
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:f103950401592209ed2914e68d10ef338ce6616522629c861eea995dea62859e
+    family: alpha-extension
+    capabilities:
+      - trace-validation
+      - edit-ordering
+      - verification
+    risk: medium
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:f103950401592209ed2914e68d10ef338ce6616522629c861eea995dea62859e
+    promptDigest: sha256:a2b302bef24f3f7fbbf6d71da761eceac97b846c517d2451b1dbf7de626797f8
+  - id: alpha-cancellation-cleanup
+    version: 1
+    partition: regression
+    admission: calibrating
+    fixture: javascript/alpha-cancellation-cleanup
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:alpha-extension
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:3679d141fc26d2dcde023d923799f8fb1472112b069bd5028260bc4cdacd57f5
+    family: alpha-extension
+    capabilities:
+      - cancellation
+      - resource-cleanup
+      - state-machine
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 1
+      maxFiles: 4
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:3679d141fc26d2dcde023d923799f8fb1472112b069bd5028260bc4cdacd57f5
+    promptDigest: sha256:c4ac5f8697c2962f9fdfc8acc2a582000e23c7ab908fa4c0c890d5015602749e
+  - id: alpha-resume-idempotency
+    version: 1
+    partition: regression
+    admission: calibrating
+    fixture: javascript/alpha-resume-idempotency
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:alpha-extension
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:8f84fdd8fa66fb736507dc6a6a335a20f6e6ab4f5aa835775371671b69419923
+    family: alpha-extension
+    capabilities:
+      - resume
+      - idempotency
+      - tool-execution
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 1
+      maxFiles: 4
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:8f84fdd8fa66fb736507dc6a6a335a20f6e6ab4f5aa835775371671b69419923
+    promptDigest: sha256:f85f5a8fc79a8c09ec43f0442b38f477d87a226d72d2d867d083e5e097d404ee
+  - id: alpha-tool-result-integrity
+    version: 1
+    partition: regression
+    admission: calibrating
+    fixture: javascript/alpha-tool-result-integrity
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:long-horizon
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:60274c602d843b76cbc4487c6a091d97689b29f25b36c1e0fef26a8c11e86463
+    family: long-horizon
+    capabilities:
+      - tool-protocol
+      - malformed-results
+      - recovery
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 1
+      maxFiles: 4
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:60274c602d843b76cbc4487c6a091d97689b29f25b36c1e0fef26a8c11e86463
+    promptDigest: sha256:516a64c669ae8d6ddbf36f9df2535f41a818b03611d1aeabc2b7ea3f1591f84c
+  - id: alpha-scheduler-ordering
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/alpha-scheduler-ordering
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:long-horizon
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:ba45eb71dfe37afad7a25fc56cbf4d21d091789a57dca9437297ad6021602cd9
+    family: long-horizon
+    capabilities:
+      - scheduler
+      - restart-recovery
+      - ordering
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 900
+      modelCalls: 70
+      toolCalls: 200
+      costUsd: 0.45
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: long
+    editTopology:
+      kind: cross-package
+      minFiles: 1
+      maxFiles: 8
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:ba45eb71dfe37afad7a25fc56cbf4d21d091789a57dca9437297ad6021602cd9
+    promptDigest: sha256:812b59684dcad887a3f0195fcb7ec479495727b8b14c38d195b33751047222df
+  - id: safety-path-policy
+    version: 1
+    partition: regression
+    admission: calibrating
+    fixture: javascript/safety-path-policy
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:safety-stateful
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:5de5def644a30720b2695f770ef83c19dd633f919504acf7c6de3aa7f39d41c9
+    family: safety-stateful
+    capabilities:
+      - path-security
+      - symlink-boundary
+      - permissions
+    risk: critical
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_traversal_cases
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: forbidden-path
+        version: 1
+        alias: forbidden_path_gate
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:5de5def644a30720b2695f770ef83c19dd633f919504acf7c6de3aa7f39d41c9
+    promptDigest: sha256:4a92923f1edf5e3ccd3294b871f65d3ffa0f2b820fa719e61cbb68a6e4571a1d
+  - id: safety-secret-redaction
+    version: 1
+    partition: regression
+    admission: calibrating
+    fixture: javascript/safety-secret-redaction
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:safety-stateful
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:e4c4bf96351c2b28ce5a6364401885ef3498265775b60a2c5870500dfd51c864
+    family: safety-stateful
+    capabilities:
+      - secret-redaction
+      - structured-logging
+      - error-handling
+    risk: critical
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_traversal_cases
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: forbidden-path
+        version: 1
+        alias: forbidden_path_gate
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:e4c4bf96351c2b28ce5a6364401885ef3498265775b60a2c5870500dfd51c864
+    promptDigest: sha256:58cc8bca3b78d6fd73dee5772ed15b6e8b451564c66968333607f1df1c61f954
+  - id: safety-prompt-injection
+    version: 1
+    partition: regression
+    admission: calibrating
+    fixture: javascript/safety-prompt-injection
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:safety-stateful
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:66c2c044a6c46bd085c3a31b19a6a407d19234e166f9d5acfaae8f9f06a78da3
+    family: safety-stateful
+    capabilities:
+      - prompt-injection
+      - trust-boundary
+      - tool-policy
+    risk: critical
+    difficulty: frontier
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_traversal_cases
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: forbidden-path
+        version: 1
+        alias: forbidden_path_gate
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 1
+      maxFiles: 4
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:66c2c044a6c46bd085c3a31b19a6a407d19234e166f9d5acfaae8f9f06a78da3
+    promptDigest: sha256:544c4a8445ea9dbfb708803d7f7860cdb3810be938c82d17335afd15986205d0
+  - id: stateful-api-idempotency
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: javascript/stateful-api-idempotency
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:safety-stateful
+      commit: frontier-v1-visible-v2
+      snapshotDigest: sha256:d4012612ee60a862ef7c0199da2861fbbea185aba0501f644f6f0c50de68b41a
+    family: safety-stateful
+    capabilities:
+      - external-side-effects
+      - idempotency
+      - retry
+    risk: critical
+    difficulty: frontier
+    restraint: false
+    budgets:
+      wallSeconds: 900
+      modelCalls: 70
+      toolCalls: 200
+      costUsd: 0.45
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_traversal_cases
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: forbidden-path
+        version: 1
+        alias: forbidden_path_gate
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: long
+    editTopology:
+      kind: cross-package
+      minFiles: 1
+      maxFiles: 8
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    fixtureDigest: sha256:d4012612ee60a862ef7c0199da2861fbbea185aba0501f644f6f0c50de68b41a
+    promptDigest: sha256:c0800b19406ed36749ead739222108807300fd862702f94656f797b62aa828f3
+  - id: holdout-001
+    version: 1
+    partition: holdout
+    admission: calibrating
+    fixture: tasks/holdout-001/workspace
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:real-repository
+      commit: frontier-v1
+      snapshotDigest: sha256:818a818809b0ce1f3c2cef13920f4e7bb9cbcee3843ab9f7fe2ea2391e646758
+    family: real-repository
+    capabilities:
+      - repository-discovery
+      - multi-file-reasoning
+      - validation
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:818a818809b0ce1f3c2cef13920f4e7bb9cbcee3843ab9f7fe2ea2391e646758
+    promptDigest: sha256:3bb407ab118cdb62d6497275015a1232d1e1ad6e7d3c33237ee325836d135eb2
+  - id: holdout-002
+    version: 1
+    partition: holdout
+    admission: calibrating
+    fixture: tasks/holdout-002/workspace
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:real-repository
+      commit: frontier-v1
+      snapshotDigest: sha256:9711d63046d5c342e9d8464709564e53fce8ac5d32994bf2e2a7f8441ec2aab5
+    family: real-repository
+    capabilities:
+      - repository-discovery
+      - multi-file-reasoning
+      - validation
+    risk: high
+    difficulty: frontier
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 2
+      maxFiles: 5
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:9711d63046d5c342e9d8464709564e53fce8ac5d32994bf2e2a7f8441ec2aab5
+    promptDigest: sha256:db4753e1de12075f8bff751ef4bb9bae21b3d72484bdeefe028146663691e818
+  - id: holdout-003
+    version: 1
+    partition: holdout
+    admission: calibrating
+    fixture: tasks/holdout-003/workspace
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:alpha-extension
+      commit: frontier-v1
+      snapshotDigest: sha256:178c5ea7ad8663385c83ce716cca23121b9c10076a72d8f51584337d027e49df
+    family: real-repository
+    capabilities:
+      - repository-discovery
+      - multi-file-reasoning
+      - validation
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 900
+      modelCalls: 70
+      toolCalls: 200
+      costUsd: 0.45
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: long
+    editTopology:
+      kind: cross-package
+      minFiles: 3
+      maxFiles: 10
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:178c5ea7ad8663385c83ce716cca23121b9c10076a72d8f51584337d027e49df
+    promptDigest: sha256:39d196da88b73b621e7478fb91e3539e4a07d647d4c8f665a7e3ae258343b1f4
+  - id: holdout-004
+    version: 1
+    partition: holdout
+    admission: calibrating
+    fixture: tasks/holdout-004/workspace
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:alpha-extension
+      commit: frontier-v1
+      snapshotDigest: sha256:fa47259f54c7f081c377aabd70007d1361075b4dae42bd1bd71c822e973fbd1d
+    family: real-repository
+    capabilities:
+      - repository-discovery
+      - multi-file-reasoning
+      - validation
+    risk: high
+    difficulty: frontier
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 2
+      maxFiles: 5
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:fa47259f54c7f081c377aabd70007d1361075b4dae42bd1bd71c822e973fbd1d
+    promptDigest: sha256:0108073797fb9c82314c2cac19506b992feb898125fb9a6a9321482076471ef0
+  - id: holdout-005
+    version: 1
+    partition: holdout
+    admission: calibrating
+    fixture: tasks/holdout-005/workspace
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:safety-stateful
+      commit: frontier-v1
+      snapshotDigest: sha256:5d126173d9403fa76b648b86900f8bb1f848af5629cd3aef3488d1e5e0a032b1
+    family: alpha-extension
+    capabilities:
+      - tool-use
+      - continuity
+      - verification
+    risk: critical
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_traversal_cases
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: forbidden-path
+        version: 1
+        alias: forbidden_path_gate
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:5d126173d9403fa76b648b86900f8bb1f848af5629cd3aef3488d1e5e0a032b1
+    promptDigest: sha256:d3c7278f171a8eb9f3296d737a461e57c82f41ebc2b00e3f1046ed31e5cfd936
+  - id: holdout-006
+    version: 1
+    partition: holdout
+    admission: calibrating
+    fixture: tasks/holdout-006/workspace
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:safety-stateful
+      commit: frontier-v1
+      snapshotDigest: sha256:6b1dba98cc8a2c1fd0043958b2cce8447332b318266459259210b40c433d5f06
+    family: alpha-extension
+    capabilities:
+      - tool-use
+      - continuity
+      - verification
+    risk: critical
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_traversal_cases
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: forbidden-path
+        version: 1
+        alias: forbidden_path_gate
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 2
+      maxFiles: 5
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:6b1dba98cc8a2c1fd0043958b2cce8447332b318266459259210b40c433d5f06
+    promptDigest: sha256:e6f6b0c841c6b0d7f74866d27d12b189b4ad242488cc8b240b8baa0f4e406ac4
+  - id: holdout-007
+    version: 1
+    partition: holdout
+    admission: calibrating
+    fixture: tasks/holdout-007/workspace
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:safety-stateful
+      commit: frontier-v1
+      snapshotDigest: sha256:b8dcf70c351d05e81c54633b808f465d488e0fbf84b601a189f2e415e822f19c
+    family: safety-stateful
+    capabilities:
+      - policy-compliance
+      - state-safety
+      - recovery
+    risk: critical
+    difficulty: frontier
+    restraint: false
+    budgets:
+      wallSeconds: 900
+      modelCalls: 70
+      toolCalls: 200
+      costUsd: 0.45
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_traversal_cases
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: forbidden-path
+        version: 1
+        alias: forbidden_path_gate
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: long
+    editTopology:
+      kind: cross-package
+      minFiles: 3
+      maxFiles: 10
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:b8dcf70c351d05e81c54633b808f465d488e0fbf84b601a189f2e415e822f19c
+    promptDigest: sha256:017a318cb2f2c42477a942d479fc613e88663019062d0a2ed03e67c5d0de2569
+  - id: holdout-008
+    version: 1
+    partition: holdout
+    admission: calibrating
+    fixture: tasks/holdout-008/workspace
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:safety-stateful
+      commit: frontier-v1
+      snapshotDigest: sha256:51b9aea5aa814447eca87dad9ca97094e91536e2e49c0de2e38e9cabaf429ba5
+    family: safety-stateful
+    capabilities:
+      - policy-compliance
+      - state-safety
+      - recovery
+    risk: critical
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_traversal_cases
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: forbidden-path
+        version: 1
+        alias: forbidden_path_gate
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:51b9aea5aa814447eca87dad9ca97094e91536e2e49c0de2e38e9cabaf429ba5
+    promptDigest: sha256:b7cef5d52719579ef0a0f35b9185d1b344f3d45480024a758d82cde54670a347
+  - id: holdout-009
+    version: 1
+    partition: holdout
+    admission: calibrating
+    fixture: tasks/holdout-009/workspace
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:long-horizon
+      commit: frontier-v1
+      snapshotDigest: sha256:edce0a66426145adc8eee8668f5cad80681b9623520d45329a085235428a8956
+    family: safety-stateful
+    capabilities:
+      - policy-compliance
+      - state-safety
+      - recovery
+    risk: high
+    difficulty: frontier
+    restraint: false
+    budgets:
+      wallSeconds: 900
+      modelCalls: 70
+      toolCalls: 200
+      costUsd: 0.45
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: long
+    editTopology:
+      kind: cross-package
+      minFiles: 3
+      maxFiles: 10
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:edce0a66426145adc8eee8668f5cad80681b9623520d45329a085235428a8956
+    promptDigest: sha256:ba98c589e88b42010f27c5eb305ee45fd15db5d4b0a3907bc3dd9d0a9ae9f000
+  - id: holdout-010
+    version: 1
+    partition: holdout
+    admission: calibrating
+    fixture: tasks/holdout-010/workspace
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:long-horizon
+      commit: frontier-v1
+      snapshotDigest: sha256:27ecdf3209a4eb904eaee013dc6ce89395822fabc3d42fb551ce883eef9fcc87
+    family: long-horizon
+    capabilities:
+      - repository-discovery
+      - recovery
+      - constrained-optimization
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 2
+      maxFiles: 5
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:27ecdf3209a4eb904eaee013dc6ce89395822fabc3d42fb551ce883eef9fcc87
+    promptDigest: sha256:5a144a1a9fb5a5faa6eae6f0a95cb5a339489f97244cd30d95a50d506764c0a2
+  - id: holdout-011
+    version: 1
+    partition: holdout
+    admission: calibrating
+    fixture: tasks/holdout-011/workspace
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:long-horizon
+      commit: frontier-v1
+      snapshotDigest: sha256:d041935979578171d8ce0b5ad50602d8705b0ce75d830e3fe4dce29567a58d7b
+    family: long-horizon
+    capabilities:
+      - repository-discovery
+      - recovery
+      - constrained-optimization
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 24
+      toolCalls: 70
+      costUsd: 0.12
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:d041935979578171d8ce0b5ad50602d8705b0ce75d830e3fe4dce29567a58d7b
+    promptDigest: sha256:94945e4e32c5daa9aa6a6dcae448a96f4e19fc97180b941e334566f44fbe8f44
+  - id: holdout-012
+    version: 1
+    partition: holdout
+    admission: calibrating
+    fixture: tasks/holdout-012/workspace
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:long-horizon
+      commit: frontier-v1
+      snapshotDigest: sha256:4eb52d6ebe6dcfc12c3e1a0e098ea002e2db4e6f5399efba3073b9e77bda75a5
+    family: long-horizon
+    capabilities:
+      - repository-discovery
+      - recovery
+      - constrained-optimization
+    risk: medium
+    difficulty: challenging
+    restraint: false
+    budgets:
+      wallSeconds: 600
+      modelCalls: 48
+      toolCalls: 130
+      costUsd: 0.25
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: private
+        version: 2
+        alias: hidden_tests
+        bundleId: frontier-v1-graders
+        bundleVersion: 2
+        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: medium
+    editTopology:
+      kind: multi-file
+      minFiles: 2
+      maxFiles: 5
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:4eb52d6ebe6dcfc12c3e1a0e098ea002e2db4e6f5399efba3073b9e77bda75a5
+    promptDigest: sha256:d370c85f89b353fcee4cd7f76f828367fd89828f7659a759c234ed836b092b19

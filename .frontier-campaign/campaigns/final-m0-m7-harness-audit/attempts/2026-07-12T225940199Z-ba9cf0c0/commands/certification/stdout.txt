@@ -1,0 +1,18 @@
+.                                        |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+src                                      |  WARN  Unsupported engine: wanted: {"node":"20.19.2"} (current: {"node":"v22.22.3","pnpm":"10.8.1"})
+
+> @alpha-code/evals@0.0.1 test:certification F:\roo-fork\Alpha-Code\packages\evals
+> vitest run --config vitest.certification.config.ts
+
+
+ RUN  v3.2.4 F:/roo-fork/Alpha-Code/packages/evals
+
+ ✓ src/certification/__contracts__/certification.spec.ts (5 tests) 18552ms
+   ✓ golden harness certification > passes twenty consecutive serial runs without drift or misclassification  8240ms
+   ✓ golden harness certification > passes five consecutive production-concurrency runs without drift  1009ms
+   ✓ golden harness certification > is a cached mandatory preflight for model-backed runs  9225ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  19:00:23
+   Duration  19.49s (transform 157ms, setup 0ms, collect 503ms, tests 18.55s, environment 0ms, prepare 188ms)

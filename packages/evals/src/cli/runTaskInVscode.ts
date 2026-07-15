@@ -16,30 +16,34 @@ import {
 import { IpcClient } from "@alpha-code/ipc"
 
 import { updateTask, createTaskMetrics, updateTaskMetrics, createToolError } from "../db/index"
-import { EVALS_REPO_PATH } from "../exercises/index"
+import { EVALS_REPO_PATH, getTaskWorkspacePath } from "../exercises/index"
 
 import { type RunTaskOptions } from "./types"
 import { isDockerContainer, copyConversationHistory, mergeToolUsage, waitForSubprocessWithTimeout } from "./utils"
 import { MessageLogDeduper } from "./messageLogDeduper"
 
-export const runTaskInVscode = async ({ run, task, publish, logger, jobToken }: RunTaskOptions) => {
+export const runTaskInVscode = async ({ run, task, publish, logger, jobToken, workspaceRoot }: RunTaskOptions) => {
 	const { language, exercise } = task
-	const prompt = fs.readFileSync(path.resolve(EVALS_REPO_PATH, `prompts/${language}.md`), "utf-8")
-	const workspacePath = path.resolve(EVALS_REPO_PATH, language, exercise)
+	const workspacePath = workspaceRoot ?? getTaskWorkspacePath(task)
+	const taskPromptPath = path.join(workspacePath, "prompt.md")
+	const prompt = fs.readFileSync(
+		fs.existsSync(taskPromptPath) ? taskPromptPath : path.resolve(EVALS_REPO_PATH, `prompts/${language}.md`),
+		"utf-8",
+	)
 	const ipcSocketPath = path.resolve(os.tmpdir(), `evals-${run.id}-${task.id}.sock`)
-	const env = { ROO_CODE_IPC_SOCKET_PATH: ipcSocketPath }
+	const env: Record<string, string> = {
+		...(process.env as Record<string, string>),
+		ROO_CODE_IPC_SOCKET_PATH: ipcSocketPath,
+	}
+	if (jobToken) env.ROO_CODE_CLOUD_TOKEN = jobToken
 	const controller = new AbortController()
 	const cancelSignal = controller.signal
 	const containerized = isDockerContainer()
 	const logDir = containerized ? `/var/log/evals/runs/${run.id}` : `/tmp/evals/runs/${run.id}`
 
-	let codeCommand = containerized
+	const codeCommand = containerized
 		? `xvfb-run --auto-servernum --server-num=1 code --wait --log trace --disable-workspace-trust --disable-gpu --disable-lcd-text --no-sandbox --user-data-dir /roo/.vscode --password-store="basic" -n ${workspacePath}`
 		: `code --disable-workspace-trust -n ${workspacePath}`
-
-	if (jobToken) {
-		codeCommand = `ROO_CODE_CLOUD_TOKEN=${jobToken} ${codeCommand}`
-	}
 
 	logger.info(codeCommand)
 
@@ -277,7 +281,7 @@ export const runTaskInVscode = async ({ run, task, publish, logger, jobToken }: 
 		taskFinishedAt = Date.now()
 	}
 
-	if (!taskFinishedAt && !taskTimedOut) {
+	if (!taskFinishedAt && !taskTimedOut && !taskAbortedAt) {
 		logger.error("client disconnected before task finished")
 		throw new Error("Client disconnected before task completion.")
 	}
@@ -324,4 +328,6 @@ export const runTaskInVscode = async ({ run, task, publish, logger, jobToken }: 
 	if (isApiUnstable && !taskFinishedAt) {
 		throw new Error("API is unstable, throwing to trigger a retry.")
 	}
+
+	return taskTimedOut ? "agent_error" : taskAbortedAt ? "cancelled" : "completed"
 }

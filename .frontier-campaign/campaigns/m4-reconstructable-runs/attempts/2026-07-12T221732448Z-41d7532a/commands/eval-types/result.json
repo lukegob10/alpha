@@ -1,0 +1,18 @@
+{
+	"id": "eval-types",
+	"command": "pnpm",
+	"args": ["--filter", "@alpha-code/evals", "check-types"],
+	"cwd": ".",
+	"startedAt": "2026-07-12T22:18:03.404Z",
+	"finishedAt": "2026-07-12T22:18:12.757Z",
+	"durationMs": 9349,
+	"exitCode": 0,
+	"status": "passed",
+	"stdoutArtifact": "attempts/2026-07-12T221732448Z-41d7532a/commands/eval-types/stdout.txt",
+	"stderrArtifact": "attempts/2026-07-12T221732448Z-41d7532a/commands/eval-types/stderr.txt",
+	"stdoutDigest": "3f971158e30e3b5e16d45d90eabc6b57d9581ec03b32d45fadb87be549d9b685",
+	"stderrDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	"stdoutBytes": 388,
+	"stderrBytes": 0,
+	"outputTruncated": false
+}

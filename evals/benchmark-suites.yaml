@@ -1,0 +1,6 @@
+schemaVersion: 1
+suites:
+  - "smoke-v1.yaml"
+
+  - "frontier-v1.yaml"
+

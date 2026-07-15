@@ -1,0 +1,90 @@
+{
+	"schemaVersion": 1,
+	"dialect": "postgresql",
+	"migrations": [
+		{
+			"idx": 0,
+			"tag": "0000_young_trauma",
+			"when": 1748937674449,
+			"sha256": "b7dd3edeab55607f5230de40b4e2262af93006cc6fd884837238ad19c30485dc"
+		},
+		{
+			"idx": 1,
+			"tag": "0001_lowly_captain_flint",
+			"when": 1753198630651,
+			"sha256": "60319863d806b189a6b77fb824d000c4c64d3de071b3e23830edb4a1f773e01f"
+		},
+		{
+			"idx": 2,
+			"tag": "0002_bouncy_blazing_skull",
+			"when": 1757191027855,
+			"sha256": "d6fc541223af2f692dd43f10677be22cdc82bd9ad9eb6706c061bc9ae654eb97"
+		},
+		{
+			"idx": 3,
+			"tag": "0003_simple_retro_girl",
+			"when": 1763797232454,
+			"sha256": "25e425268b2413650f2299123df93b8830e8da2fdf8f2d1c9a3643979f121ce0"
+		},
+		{
+			"idx": 4,
+			"tag": "0004_sloppy_black_knight",
+			"when": 1764201678953,
+			"sha256": "9008e5436ae05563065d852ad0b75bdc9ec286a5540ee6acfa5caa3063f1d495"
+		},
+		{
+			"idx": 5,
+			"tag": "0005_strong_skrulls",
+			"when": 1765167049182,
+			"sha256": "d4fa1b77be2341c6bb057ab47dc4962de9c61aaacd345e191b29f4b8fbe4b3ce"
+		},
+		{
+			"idx": 6,
+			"tag": "0006_worried_spectrum",
+			"when": 1767550126096,
+			"sha256": "2154e30b04f7292d84328ebf860638485122ba7b068d3902fbabeb707aedf194"
+		},
+		{
+			"idx": 7,
+			"tag": "0007_slow_lorna_dane",
+			"when": 1783891524488,
+			"sha256": "a669194015b882f7b25c5c7bbe4c8e860a8454e1ea40002405cda8eb6b99e933"
+		},
+		{
+			"idx": 8,
+			"tag": "0008_aspiring_marvel_zombies",
+			"when": 1783893226741,
+			"sha256": "6799cb703025879020feab82f07e1c2464d7b03fc2e88a037fcc3113e97df693"
+		},
+		{
+			"idx": 9,
+			"tag": "0009_solid_taskmaster",
+			"when": 1783894448741,
+			"sha256": "a46c869dcced6eb3a5fe1d8433cc63224f82552f56223aa40d1f67f06a53395c"
+		},
+		{
+			"idx": 10,
+			"tag": "0010_brainy_sheva_callister",
+			"when": 1783895894704,
+			"sha256": "2e405ceda5de825a6312761d1c86c0219f7074bda06b76ba406e9036002c5dd0"
+		},
+		{
+			"idx": 11,
+			"tag": "0011_salty_thor",
+			"when": 1783908839487,
+			"sha256": "0b7d75af682cf4bd675a21bc766926fc20a217a1bbd48afa4491732d7b02ac32"
+		},
+		{
+			"idx": 12,
+			"tag": "0012_melodic_gabe_jones",
+			"when": 1783909169023,
+			"sha256": "646a1e3aabdbf35609615720882e60ed7c7b6a5dafb903efbdd6d21d67603b80"
+		},
+		{
+			"idx": 13,
+			"tag": "0013_fluffy_black_crow",
+			"when": 1783951256936,
+			"sha256": "0a85b295a5d21bdd9f20596f85c6331b69ea71b547a8c6c8bebb959d24f99cdc"
+		}
+	]
+}
