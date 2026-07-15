@@ -139,6 +139,12 @@ import { AutoApprovalHandler, checkAutoApproval } from "../auto-approval"
 import { MessageManager } from "../message-manager"
 import { validateAndFixToolResultIds } from "./validateToolResultIds"
 import { mergeConsecutiveApiMessages } from "./mergeConsecutiveApiMessages"
+import {
+	AgentTurnEngine,
+	type AgentResponse,
+	type AgentResponseItem,
+	type AgentTurnHost,
+} from "../agent/AgentTurnEngine"
 
 const MAX_EXPONENTIAL_BACKOFF_SECONDS = 600 // 10 minutes
 const DEFAULT_USAGE_COLLECTION_TIMEOUT_MS = 5000 // 5 seconds
@@ -433,10 +439,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// Store the ID for native protocol
 				;(partialToolUse as any).id = event.id
 
-				// Add to content and present
+				// Add to the response buffer. Tool execution is deferred until the
+				// provider stream has completed and the assistant message is saved.
 				this.assistantMessageContent.push(partialToolUse)
 				this.userMessageContentReady = false
-				presentAssistantMessage(this)
 			} else if (event.type === "tool_call_delta") {
 				// Process chunk using streaming JSON parser
 				const partialToolUse = NativeToolCallParser.processStreamingChunk(event.id, event.delta, this.taskId)
@@ -450,9 +456,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 						// Update the existing tool use with new partial data
 						this.assistantMessageContent[toolUseIndex] = partialToolUse
-
-						// Present updated tool use
-						presentAssistantMessage(this)
 					}
 				}
 			} else if (event.type === "tool_call_end") {
@@ -476,9 +479,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 					// Mark that we have new content to process
 					this.userMessageContentReady = false
-
-					// Present the finalized tool call
-					presentAssistantMessage(this)
 				} else if (toolUseIndex !== undefined) {
 					// finalizeStreamingToolCall returned null (malformed JSON or missing args)
 					// Mark the tool as non-partial so it's presented as complete, but execution
@@ -495,9 +495,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 					// Mark that we have new content to process
 					this.userMessageContentReady = false
-
-					// Present the tool call - validation will handle missing params
-					presentAssistantMessage(this)
 				}
 			}
 		}
@@ -1197,10 +1194,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// conversation history, causing API errors like:
 		// "unexpected `tool_use_id` found in `tool_result` blocks"
 		//
-		// This can happen when parallel tools are called (e.g., update_todo_list + new_task).
-		// Tools execute during streaming via presentAssistantMessage, BEFORE the assistant
-		// message is saved. When new_task triggers delegation, it calls this method to
-		// flush pending results - but the assistant message hasn't been saved yet.
+		// This can happen when multiple tools are called (e.g., update_todo_list + new_task).
+		// Tool execution is deferred until the complete assistant response is saved.
+		// When new_task triggers delegation, it calls this method to flush pending
+		// results after that history boundary has been established.
 		//
 		// The assistantMessageSavedToHistory flag is:
 		// - Reset to false at the start of each API request
@@ -2771,34 +2768,39 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Kicks off the checkpoints initialization process in the background.
 		getCheckpointService(this)
 
-		let nextUserContent = userContent
-		let includeFileDetails = true
-
 		this.emit(RooCodeEventName.TaskStarted)
 
-		while (!this.abort && !this.didComplete) {
-			const didEndLoop = await this.recursivelyMakeClineRequests(nextUserContent, includeFileDetails)
-			includeFileDetails = false // We only need file details the first time.
-
-			// The way this agentic loop works is that cline will be given a
-			// task that he then calls tools to complete. Unless there's an
-			// attempt_completion call, we keep responding back to him with his
-			// tool's responses until he either attempt_completion or does not
-			// use anymore tools. If he does not use anymore tools, we ask him
-			// to consider if he's completed the task and then call
-			// attempt_completion, otherwise proceed with completing the task.
-			// There is a MAX_REQUESTS_PER_TASK limit to prevent infinite
-			// requests, but Alpha is prompted to finish the task as efficiently
-			// as he can.
-
-			if (didEndLoop) {
-				// For now a task never 'completes'. This will only happen if
-				// the user hits max requests and denies resetting the count.
-				break
-			} else {
-				nextUserContent = [{ type: "text", text: formatResponse.noToolsUsed() }]
-			}
+		type TaskTurnInput = {
+			userContent: Anthropic.Messages.ContentBlockParam[]
+			includeFileDetails: boolean
 		}
+
+		const host: AgentTurnHost<TaskTurnInput> = {
+			shouldAbort: () => this.abort,
+			runStep: async (input) => {
+				const didEndLoop = await this.recursivelyMakeClineRequests(input.userContent, input.includeFileDetails)
+				const response = this.buildCurrentAgentResponse()
+
+				if (didEndLoop || this.abort || this.didComplete) {
+					return { response, nextInput: "complete" }
+				}
+
+				const nextUserContent =
+					this.userMessageContent.length > 0
+						? [...this.userMessageContent]
+						: [{ type: "text" as const, text: formatResponse.noToolsUsed() }]
+
+				return {
+					response,
+					nextInput: {
+						userContent: nextUserContent,
+						includeFileDetails: false,
+					},
+				}
+			},
+		}
+
+		await new AgentTurnEngine(host).run({ userContent, includeFileDetails: true })
 	}
 
 	public async recursivelyMakeClineRequests(
@@ -3227,9 +3229,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									// Mark that we have new content to process
 									this.userMessageContentReady = false
 
-									// Present the tool call to user - presentAssistantMessage will execute
-									// tools sequentially and accumulate all results in userMessageContent
-									presentAssistantMessage(this)
 									break
 								}
 								case "text": {
@@ -3590,9 +3589,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 								// Mark that we have new content to process
 								this.userMessageContentReady = false
-
-								// Present the finalized tool call
-								presentAssistantMessage(this)
 							} else if (toolUseIndex !== undefined) {
 								// finalizeStreamingToolCall returned null (malformed JSON or missing args)
 								// We still need to mark the tool as non-partial so it gets executed
@@ -3609,9 +3605,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 								// Mark that we have new content to process
 								this.userMessageContentReady = false
-
-								// Present the tool call - validation will handle missing params
-								presentAssistantMessage(this)
 							}
 						}
 					}
@@ -3792,9 +3785,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						TelemetryService.instance.captureConversationMessage(this.taskId, "assistant")
 					}
 
-					// Present any partial blocks that were just completed.
-					// Tool calls are typically presented during streaming via tool_call_partial events,
-					// but we still present here if any partial blocks remain (e.g., malformed streams).
+					// Tool calls are intentionally presented only after the complete
+					// assistant response has been persisted. This preserves native
+					// tool_use/tool_result ordering and prevents a streaming tool call
+					// from interrupting the provider response.
+					if (hasToolUses) {
+						await presentAssistantMessage(this)
+					}
+
+					// Present any partial blocks that were just completed. This is a
+					// recovery path for malformed streams; normal tool calls are presented
+					// only after the complete assistant response is persisted above.
 					// NOTE: This MUST happen AFTER saving the assistant message to API history.
 					// When new_task is in the batch, it triggers delegation which calls flushPendingToolResultsToHistory().
 					// If the assistant message isn't saved yet, tool_results would appear before tool_use blocks.
@@ -3853,19 +3854,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							this.consecutiveNoToolUseCount = 0
 						}
 
-						// Push to stack if there's content OR if we're paused waiting for a subtask.
-						// When paused, we push an empty item so the loop continues to the pause check.
-						if (this.userMessageContent.length > 0 || this.isPaused) {
-							stack.push({
-								userContent: [...this.userMessageContent], // Create a copy to avoid mutation issues
-								includeFileDetails: false, // Subsequent iterations don't need file details
-							})
-
-							// Add periodic yielding to prevent blocking
-							await new Promise((resolve) => setImmediate(resolve))
-						}
-
-						continue
+						// Return after one complete model/tool turn. AgentTurnEngine owns
+						// continuation sequencing; keeping this method to one step makes
+						// the assistant-response/tool-result boundary explicit.
+						return false
 					} else {
 						// If there's no assistant_responses, that means we got no text
 						// or tool_use content blocks from API which we should assume is
@@ -3996,6 +3988,58 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			return false
 		} finally {
 			this.isTaskLoopActive = wasTaskLoopActive
+		}
+	}
+
+	/**
+	 * Converts the current assistant turn into the provider-neutral response
+	 * model used by AgentTurnEngine. API history remains Anthropic-shaped; this
+	 * view is only the control-flow boundary between Task and the engine.
+	 */
+	private buildCurrentAgentResponse(): AgentResponse {
+		const items: AgentResponseItem[] = []
+
+		for (const block of this.assistantMessageContent) {
+			if (block.type === "text") {
+				items.push({ type: "text", text: block.content })
+				continue
+			}
+
+			if (block.type === "tool_use" || block.type === "mcp_tool_use") {
+				const candidate = block as unknown as {
+					id?: unknown
+					name?: unknown
+					nativeArgs?: unknown
+					params?: unknown
+					arguments?: unknown
+				}
+				const id = typeof candidate.id === "string" ? candidate.id : undefined
+				const name = typeof candidate.name === "string" ? candidate.name : undefined
+
+				if (!id || !name) {
+					items.push({ type: "error", message: "Tool call was missing a valid ID or name." })
+					continue
+				}
+
+				items.push({
+					type: "tool_call",
+					id,
+					name,
+					arguments: candidate.nativeArgs ?? candidate.arguments ?? candidate.params ?? {},
+				})
+			}
+		}
+
+		return {
+			items,
+			text: items
+				.filter((item): item is Extract<AgentResponseItem, { type: "text" }> => item.type === "text")
+				.map((item) => item.text)
+				.join(""),
+			reasoning: "",
+			toolCalls: items.filter(
+				(item): item is Extract<AgentResponseItem, { type: "tool_call" }> => item.type === "tool_call",
+			),
 		}
 	}
 
