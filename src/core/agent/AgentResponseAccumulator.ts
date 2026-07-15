@@ -10,7 +10,7 @@ interface PendingToolCall {
 
 function parseToolArguments(argumentsText: string): unknown {
 	if (!argumentsText.trim()) {
-		return undefined
+		return {}
 	}
 
 	try {
@@ -143,7 +143,7 @@ export class AgentResponseAccumulator {
 				if (chunk.name && !pending.name) {
 					pending.name = chunk.name
 				}
-				if (typeof chunk.arguments === "string" && chunk.arguments.length > 0) {
+				if (chunk.arguments) {
 					pending.arguments += chunk.arguments
 				}
 
@@ -192,9 +192,7 @@ export class AgentResponseAccumulator {
 			await this.emit(
 				{
 					type: "error",
-					message: argumentsText.trim()
-						? `Unable to parse arguments for tool call "${name}" (${id}).`
-						: `Tool call "${name}" (${id}) did not provide complete arguments.`,
+					message: `Unable to parse arguments for tool call "${name}" (${id}).`,
 					callId: id,
 					toolName: name,
 				},

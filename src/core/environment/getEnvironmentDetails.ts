@@ -20,6 +20,7 @@ import { getGitStatus } from "../../utils/git"
 
 import { Task } from "../task/Task"
 import { formatReminderSection } from "./reminder"
+import type { EnvironmentSnapshot } from "./EnvironmentSnapshot"
 
 export async function getEnvironmentDetails(cline: Task, includeFileDetails: boolean = false) {
 	let details = ""
@@ -264,4 +265,34 @@ export async function getEnvironmentDetails(cline: Task, includeFileDetails: boo
 			: true
 	const reminderSection = todoListEnabled ? formatReminderSection(cline.todoList) : ""
 	return `<environment_details>\n${details.trim()}\n${reminderSection}\n</environment_details>`
+}
+
+/**
+ * Captures the environment once at a model-step boundary. The legacy string
+ * renderer is deliberately retained for provider and history compatibility;
+ * callers that need reproducibility should retain this snapshot and reuse its
+ * renderedDetails for retries.
+ */
+export async function collectEnvironmentSnapshot(
+	cline: Task,
+	includeFileDetails: boolean = false,
+): Promise<EnvironmentSnapshot> {
+	const renderedDetails = await getEnvironmentDetails(cline, includeFileDetails)
+	const provider = cline.providerRef.deref()
+	const state = await provider?.getState()
+
+	return {
+		stable: {
+			workspaceRoot: cline.cwd,
+			roots: [cline.cwd],
+			mode: state?.mode,
+			modelId: cline.api.getModel().id,
+			capabilities: [],
+		},
+		volatile: {
+			renderedDetails,
+			capturedAt: Date.now(),
+		},
+		renderedDetails,
+	}
 }

@@ -490,8 +490,8 @@ describe("SYSTEM_PROMPT", () => {
 			settings, // settings
 		)
 
-		// update_todo_list is still referenced by mode instructions, but tool catalogs are not embedded.
-		expect(prompt).toContain("update_todo_list")
+		// Work keeps tool catalogs and completion mechanics out of the stable prompt prefix.
+		expect(prompt).not.toContain("update_todo_list")
 		expect(prompt).not.toContain("## update_todo_list")
 	})
 
@@ -518,8 +518,8 @@ describe("SYSTEM_PROMPT", () => {
 			settings, // settings
 		)
 
-		// update_todo_list is still referenced by mode instructions, but tool catalogs are not embedded.
-		expect(prompt).toContain("update_todo_list")
+		// Work keeps tool catalogs and completion mechanics out of the stable prompt prefix.
+		expect(prompt).not.toContain("update_todo_list")
 		expect(prompt).not.toContain("## update_todo_list")
 	})
 
@@ -549,7 +549,7 @@ describe("SYSTEM_PROMPT", () => {
 		// Should contain TOOL USE section with native note
 		expect(prompt).toContain("TOOL USE")
 		expect(prompt).toContain("provider-native tool-calling mechanism")
-		expect(prompt).toContain("Do not include XML markup or examples")
+		expect(prompt).toContain("Tool schemas and runtime policy are authoritative")
 
 		// Should NOT contain XML-style tags or examples
 		expect(prompt).not.toContain("<actual_tool_name>")
@@ -569,7 +569,8 @@ describe("SYSTEM_PROMPT", () => {
 
 		// Should still contain role definition and other non-XML sections
 		expect(prompt).toContain(modes[0].roleDefinition)
-		expect(prompt).toContain("CAPABILITIES")
+		expect(prompt).not.toContain("CAPABILITIES")
+		expect(prompt).not.toContain("MODES")
 		expect(prompt).toContain("RULES")
 		expect(prompt).toContain("SYSTEM INFORMATION")
 		expect(prompt).toContain("OBJECTIVE")

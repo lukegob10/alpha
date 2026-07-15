@@ -313,6 +313,22 @@ describe("Alpha", () => {
 	})
 
 	describe("constructor", () => {
+		it("does not schedule a synthetic noToolsUsed follow-up for a normal final response", async () => {
+			const cline = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			const requestSpy = vi.spyOn(cline, "recursivelyMakeClineRequests").mockResolvedValue(false)
+
+			await (cline as any).initiateTaskLoop([{ type: "text", text: "request" }])
+
+			expect(requestSpy).toHaveBeenCalledTimes(1)
+			expect(requestSpy).toHaveBeenCalledWith([{ type: "text", text: "request" }], true)
+			expect((cline as any).consecutiveNoToolUseCount).toBe(0)
+		})
+
 		it("should always have diff strategy defined", async () => {
 			const cline = new Task({
 				provider: mockProvider,
@@ -1594,130 +1610,129 @@ describe("Alpha", () => {
 				// Restore console.error
 				consoleErrorSpy.mockRestore()
 			})
+		})
+	})
+
+	describe("steerUserMessage", () => {
+		it("responds like a user message when the task is waiting on an ask", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
+
+			await task.steerUserMessage("new context", ["image1.png"])
+
+			expect(handleResponseSpy).toHaveBeenCalledWith("messageResponse", "new context", ["image1.png"])
+		})
+
+		it("aborts the active request without aborting the task when steering during streaming", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			const abortController = new AbortController()
+			const abortSpy = vi.spyOn(abortController, "abort")
+			const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
+
+			task.isStreaming = true
+			task.currentRequestAbortController = abortController
+
+			await task.steerUserMessage("interrupt with this", ["image1.png"])
+
+			expect(abortSpy).toHaveBeenCalled()
+			expect(task.abort).toBe(false)
+			expect(handleResponseSpy).not.toHaveBeenCalled()
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "interrupt with this",
+				images: ["image1.png"],
 			})
 		})
 
-		describe("steerUserMessage", () => {
-			it("responds like a user message when the task is waiting on an ask", async () => {
-				const task = new Task({
-					provider: mockProvider,
-					apiConfiguration: mockApiConfig,
-					task: "initial task",
-					startTask: false,
-				})
-				const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
-
-				await task.steerUserMessage("new context", ["image1.png"])
-
-				expect(handleResponseSpy).toHaveBeenCalledWith("messageResponse", "new context", ["image1.png"])
+		it("retains steered content when the task loop is active before streaming starts", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
 			})
+			const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
 
-			it("aborts the active request without aborting the task when steering during streaming", async () => {
-				const task = new Task({
-					provider: mockProvider,
-					apiConfiguration: mockApiConfig,
-					task: "initial task",
-					startTask: false,
-				})
-				const abortController = new AbortController()
-				const abortSpy = vi.spyOn(abortController, "abort")
-				const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
+			;(task as any).isTaskLoopActive = true
 
-				task.isStreaming = true
-				task.currentRequestAbortController = abortController
+			await task.steerUserMessage("skip data", [])
 
-				await task.steerUserMessage("interrupt with this", ["image1.png"])
-
-				expect(abortSpy).toHaveBeenCalled()
-				expect(task.abort).toBe(false)
-				expect(handleResponseSpy).not.toHaveBeenCalled()
-				expect((task as any).pendingSteerMessage).toEqual({
-					text: "interrupt with this",
-					images: ["image1.png"],
-				})
-			})
-
-			it("retains steered content when the task loop is active before streaming starts", async () => {
-				const task = new Task({
-					provider: mockProvider,
-					apiConfiguration: mockApiConfig,
-					task: "initial task",
-					startTask: false,
-				})
-				const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
-
-				;(task as any).isTaskLoopActive = true
-
-				await task.steerUserMessage("skip data", [])
-
-				expect(handleResponseSpy).not.toHaveBeenCalled()
-				expect((task as any).pendingSteerMessage).toEqual({
-					text: "skip data",
-					images: [],
-				})
-			})
-
-			it("does not surface a provider failure when steering before the first chunk arrives", async () => {
-				const task = new Task({
-					provider: mockProvider,
-					apiConfiguration: mockApiConfig,
-					task: "initial task",
-					startTask: false,
-				})
-				const askSpy = vi.spyOn(task, "ask")
-
-				async function* neverRespondingStream(): AsyncGenerator<ApiStreamChunk> {
-					await new Promise<void>(() => {})
-					yield { type: "text", text: "unreachable" }
-				}
-
-				vi.spyOn(task.api, "createMessage").mockReturnValue(neverRespondingStream())
-
-				;(task as any).isTaskLoopActive = true
-				const nextChunk = task.attemptApiRequest(0).next()
-
-				await vi.waitFor(() => {
-					expect(task.currentRequestAbortController).toBeDefined()
-				})
-
-				await task.steerUserMessage("add this context", [])
-
-				await expect(nextChunk).rejects.toThrow("Request interrupted by steered user message")
-				expect(askSpy).not.toHaveBeenCalledWith("api_req_failed", expect.anything())
-				expect((task as any).pendingSteerMessage).toEqual({
-					text: "add this context",
-					images: [],
-				})
-			})
-
-			it("merges steered content with the interrupted user turn", async () => {
-				const task = new Task({
-					provider: mockProvider,
-					apiConfiguration: mockApiConfig,
-					task: "initial task",
-					startTask: false,
-				})
-				task.apiConversationHistory = [
-					{
-						role: "user",
-						content: [{ type: "text", text: "<user_message>\noriginal\n</user_message>" }],
-					} as any,
-				]
-
-				const mergedContent = [
-					...(task as any).takeLastApiUserMessageContent(),
-					...(task as any).buildUserMessageContent("steered context", []),
-				]
-
-				expect(mergedContent).toEqual([
-					{ type: "text", text: "<user_message>\noriginal\n</user_message>" },
-					{ type: "text", text: "<user_message>\nsteered context\n</user_message>" },
-				])
-				expect(task.apiConversationHistory).toEqual([])
+			expect(handleResponseSpy).not.toHaveBeenCalled()
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "skip data",
+				images: [],
 			})
 		})
 
-		describe("abortTask", () => {
+		it("does not surface a provider failure when steering before the first chunk arrives", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			const askSpy = vi.spyOn(task, "ask")
+
+			async function* neverRespondingStream(): AsyncGenerator<ApiStreamChunk> {
+				await new Promise<void>(() => {})
+				yield { type: "text", text: "unreachable" }
+			}
+
+			vi.spyOn(task.api, "createMessage").mockReturnValue(neverRespondingStream())
+			;(task as any).isTaskLoopActive = true
+			const nextChunk = task.attemptApiRequest(0).next()
+
+			await vi.waitFor(() => {
+				expect(task.currentRequestAbortController).toBeDefined()
+			})
+
+			await task.steerUserMessage("add this context", [])
+
+			await expect(nextChunk).rejects.toThrow("Request interrupted by steered user message")
+			expect(askSpy).not.toHaveBeenCalledWith("api_req_failed", expect.anything())
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "add this context",
+				images: [],
+			})
+		})
+
+		it("merges steered content with the interrupted user turn", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			task.apiConversationHistory = [
+				{
+					role: "user",
+					content: [{ type: "text", text: "<user_message>\noriginal\n</user_message>" }],
+				} as any,
+			]
+
+			const mergedContent = [
+				...(task as any).takeLastApiUserMessageContent(),
+				...(task as any).buildUserMessageContent("steered context", []),
+			]
+
+			expect(mergedContent).toEqual([
+				{ type: "text", text: "<user_message>\noriginal\n</user_message>" },
+				{ type: "text", text: "<user_message>\nsteered context\n</user_message>" },
+			])
+			expect(task.apiConversationHistory).toEqual([])
+		})
+	})
+
+	describe("abortTask", () => {
 		it("should set abort flag and emit TaskAborted event", async () => {
 			const task = new Task({
 				provider: mockProvider,

@@ -8,7 +8,7 @@ import type {
 	ScheduledTaskNotificationPreference,
 	ScheduledTaskSchedule,
 } from "@alpha-code/types"
-import { getAllModes } from "@alpha/modes"
+import { getRecommendedModes } from "@alpha/modes"
 
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { vscode } from "@/utils/vscode"
@@ -143,7 +143,6 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 	const [selectedId, setSelectedId] = useState<string | undefined>(scheduledTasks[0]?.id)
 	const selectedTask = scheduledTasks.find((task) => task.id === selectedId)
 	const nowPlusHour = Date.now() + 60 * 60 * 1000
-	const modes = useMemo(() => getAllModes(customModes), [customModes])
 
 	const [name, setName] = useState("")
 	const [prompt, setPrompt] = useState("")
@@ -154,6 +153,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 	const [pluginName, setPluginName] = useState("")
 	const [executionArguments, setExecutionArguments] = useState("")
 	const [taskMode, setTaskMode] = useState<string>(mode)
+	const modes = useMemo(() => getRecommendedModes(customModes, taskMode), [customModes, taskMode])
 	const [autoApproval, setAutoApproval] = useState<ScheduledTaskAutoApproval>(defaultAutoApproval)
 	const [scheduleType, setScheduleType] = useState<ScheduleKind>("daily")
 	const [startAt, setStartAt] = useState(localDateTimeValue(nowPlusHour))

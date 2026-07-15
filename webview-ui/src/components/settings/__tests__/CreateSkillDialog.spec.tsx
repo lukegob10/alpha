@@ -396,8 +396,8 @@ describe("CreateSkillDialog", () => {
 		expect(screen.getByTestId("checkbox-create-mode-any")).toBeInTheDocument()
 		expect(screen.getByTestId("checkbox-create-mode-any")).toBeChecked()
 		// Should have built-in mode checkboxes
-		expect(screen.getByTestId("checkbox-create-mode-code")).toBeInTheDocument()
-		expect(screen.getByTestId("checkbox-create-mode-architect")).toBeInTheDocument()
+		expect(screen.getByTestId("checkbox-create-mode-work")).toBeInTheDocument()
+		expect(screen.getByTestId("checkbox-create-mode-plan")).toBeInTheDocument()
 		// Should have custom mode checkbox from state
 		expect(screen.getByTestId("checkbox-create-mode-custom-mode")).toBeInTheDocument()
 	})
@@ -414,14 +414,14 @@ describe("CreateSkillDialog", () => {
 
 		// Initially "Any mode" is checked
 		expect(screen.getByTestId("checkbox-create-mode-any")).toBeChecked()
-		expect(screen.getByTestId("checkbox-create-mode-code")).not.toBeChecked()
+		expect(screen.getByTestId("checkbox-create-mode-work")).not.toBeChecked()
 
-		// Click on "Code" mode checkbox
-		fireEvent.click(screen.getByTestId("checkbox-create-mode-code"))
+		// Click on "Work" mode checkbox
+		fireEvent.click(screen.getByTestId("checkbox-create-mode-work"))
 
-		// "Any mode" should be unchecked and "Code" should be checked
+		// "Any mode" should be unchecked and "Work" should be checked
 		expect(screen.getByTestId("checkbox-create-mode-any")).not.toBeChecked()
-		expect(screen.getByTestId("checkbox-create-mode-code")).toBeChecked()
+		expect(screen.getByTestId("checkbox-create-mode-work")).toBeChecked()
 	})
 
 	it("reverts to 'Any mode' when all specific modes are unchecked", () => {
@@ -435,16 +435,16 @@ describe("CreateSkillDialog", () => {
 		)
 
 		// Select a specific mode
-		fireEvent.click(screen.getByTestId("checkbox-create-mode-code"))
+		fireEvent.click(screen.getByTestId("checkbox-create-mode-work"))
 		expect(screen.getByTestId("checkbox-create-mode-any")).not.toBeChecked()
-		expect(screen.getByTestId("checkbox-create-mode-code")).toBeChecked()
+		expect(screen.getByTestId("checkbox-create-mode-work")).toBeChecked()
 
 		// Uncheck it
-		fireEvent.click(screen.getByTestId("checkbox-create-mode-code"))
+		fireEvent.click(screen.getByTestId("checkbox-create-mode-work"))
 
 		// Should revert to "Any mode"
 		expect(screen.getByTestId("checkbox-create-mode-any")).toBeChecked()
-		expect(screen.getByTestId("checkbox-create-mode-code")).not.toBeChecked()
+		expect(screen.getByTestId("checkbox-create-mode-work")).not.toBeChecked()
 	})
 
 	it("sends selected modes when creating skill with specific modes", async () => {
@@ -463,9 +463,9 @@ describe("CreateSkillDialog", () => {
 		fireEvent.change(nameInput, { target: { value: "my-skill" } })
 		fireEvent.change(descInput, { target: { value: "My skill description" } })
 
-		// Select "Code" and "Architect" modes
-		fireEvent.click(screen.getByTestId("checkbox-create-mode-code"))
-		fireEvent.click(screen.getByTestId("checkbox-create-mode-architect"))
+		// Select "Work" and "Plan" modes
+		fireEvent.click(screen.getByTestId("checkbox-create-mode-work"))
+		fireEvent.click(screen.getByTestId("checkbox-create-mode-plan"))
 
 		const buttons = screen.getAllByTestId("button")
 		const createButton = buttons.find((btn) => btn.getAttribute("data-variant") === "primary")
@@ -478,7 +478,7 @@ describe("CreateSkillDialog", () => {
 				skillName: "my-skill",
 				source: "project",
 				skillDescription: "My skill description",
-				skillModeSlugs: ["code", "architect"],
+				skillModeSlugs: ["work", "plan"],
 			})
 		})
 	})

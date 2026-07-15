@@ -11,6 +11,7 @@ import { findLast } from "../../shared/array"
 import { supportPrompt } from "../../shared/support-prompt"
 import { RooIgnoreController } from "../ignore/RooIgnoreController"
 import { generateFoldedFileContext } from "./foldedFileContext"
+import type { StepContext } from "../agent/StepContext"
 
 export type { FoldedFileContextResult, FoldedFileContextOptions } from "./foldedFileContext"
 
@@ -233,6 +234,12 @@ export type SummarizeConversationOptions = {
 	filesReadByRoo?: string[]
 	cwd?: string
 	rooIgnoreController?: RooIgnoreController
+	/** Creates the immutable request snapshot for this compaction sampling call. */
+	createStepContext?: (input: {
+		systemPrompt: string
+		messages: ApiMessage[]
+		metadata?: ApiHandlerCreateMessageMetadata
+	}) => StepContext | Promise<StepContext>
 }
 
 /**
@@ -266,6 +273,7 @@ export async function summarizeConversation(options: SummarizeConversationOption
 		filesReadByRoo,
 		cwd,
 		rooIgnoreController,
+		createStepContext,
 	} = options
 	TelemetryService.instance.captureContextCondensed(
 		taskId,
@@ -332,7 +340,18 @@ export async function summarizeConversation(options: SummarizeConversationOption
 	let outputTokens = 0
 
 	try {
-		const stream = apiHandler.createMessage(promptToUse, requestMessages, metadata)
+		const compactionContext = createStepContext
+			? await createStepContext({
+					systemPrompt: promptToUse,
+					messages: requestMessages as ApiMessage[],
+					metadata,
+				})
+			: undefined
+		const stream = apiHandler.createMessage(
+			compactionContext?.instructions.systemPrompt ?? promptToUse,
+			(compactionContext?.transcript.messages ?? requestMessages) as Anthropic.Messages.MessageParam[],
+			(compactionContext?.request.metadata as unknown as ApiHandlerCreateMessageMetadata) ?? metadata,
+		)
 
 		for await (const chunk of stream) {
 			if (chunk.type === "text") {

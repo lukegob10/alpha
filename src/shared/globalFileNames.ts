@@ -12,4 +12,5 @@ export const GlobalFileNames = {
 	goalSeekJobs: "goal_seek_jobs.json",
 	goalSeekRuns: "goal_seek_runs.json",
 	goalSeekAttempts: "goal_seek_attempts.json",
+	agentTurnEvents: "agent_turn_events.jsonl",
 }

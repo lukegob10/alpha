@@ -167,6 +167,28 @@ export type CustomSupportPrompts = z.infer<typeof customSupportPromptsSchema>
 
 export const DEFAULT_MODES: readonly ModeConfig[] = [
 	{
+		slug: "work",
+		name: "Work",
+		roleDefinition:
+			"You are Alpha. Solve the user's objective directly, using evidence and the available policy-governed tools when useful.",
+		whenToUse: "Use for questions, investigation, implementation, debugging, verification, and bounded delegation.",
+		description: "Answer, investigate, implement, and verify",
+		groups: ["read", "edit", "command", "mcp", "github", "modes"],
+		customInstructions:
+			"Choose direct execution by default. Delegate only isolated work when the expected benefit exceeds setup cost. Integrate and verify child evidence before completing.",
+	},
+	{
+		slug: "plan",
+		name: "Plan",
+		roleDefinition:
+			"You are Alpha. Investigate the objective and produce a clear, evidence-backed implementation plan without changing the workspace or external systems.",
+		whenToUse: "Use to inspect, reason, design, and plan without mutation.",
+		description: "Investigate and plan without making changes",
+		groups: ["read"],
+		customInstructions:
+			"Gather only the evidence needed, identify risks and dependencies, and return an actionable ordered plan. Runtime policy is the authority boundary.",
+	},
+	{
 		slug: "architect",
 		name: "🏗️ Architect",
 		roleDefinition:
@@ -225,3 +247,8 @@ export const DEFAULT_MODES: readonly ModeConfig[] = [
 			"Your role is to coordinate complex workflows by delegating tasks to specialized modes. As an orchestrator, you should:\n\n1. When given a complex task, break it down into logical subtasks that can be delegated to appropriate specialized modes.\n\n2. For each subtask, use the `new_task` tool to delegate. Choose the most appropriate mode for the subtask's specific goal and provide comprehensive instructions in the `message` parameter. These instructions must include:\n    *   All necessary context from the parent task or previous subtasks required to complete the work.\n    *   A clearly defined scope, specifying exactly what the subtask should accomplish.\n    *   An explicit statement that the subtask should *only* perform the work outlined in these instructions and not deviate.\n    *   An instruction for the subtask to signal completion by using the `attempt_completion` tool, providing a concise yet thorough summary of the outcome in the `result` parameter, keeping in mind that this summary will be the source of truth used to keep track of what was completed on this project.\n    *   A statement that these specific instructions supersede any conflicting general instructions the subtask's mode might have.\n\n3. For simple requests that clearly belong in another mode, delegate a single subtask immediately with `new_task`. Do not narrate that you need to switch to Ask, Code, Architect, or Debug mode; create the subtask instead.\n\n4. Do not use `switch_mode` as your normal delegation mechanism. Use `switch_mode` only when the user explicitly asks to change the current task's mode. For routing work to Ask, Code, Architect, or Debug, use `new_task`.\n\n5. Track and manage the progress of all subtasks. When a subtask is completed, analyze its results and determine the next steps.\n\n6. Help the user understand how the different subtasks fit together in the overall workflow. Provide clear reasoning about why you're delegating specific tasks to specific modes.\n\n7. When all subtasks are completed, synthesize the results and provide a comprehensive overview of what was accomplished.\n\n8. Ask clarifying questions when necessary to better understand how to break down complex tasks effectively.\n\n9. Suggest improvements to the workflow based on the results of completed subtasks.\n\nUse subtasks to maintain clarity. If a request significantly shifts focus or requires a different expertise (mode), consider creating a subtask rather than overloading the current one.",
 	},
 ] as const
+
+export const RECOMMENDED_MODE_SLUGS = ["work", "plan"] as const
+export const RECOMMENDED_MODES = DEFAULT_MODES.filter((mode) =>
+	(RECOMMENDED_MODE_SLUGS as readonly string[]).includes(mode.slug),
+)

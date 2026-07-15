@@ -58,8 +58,6 @@ export interface StepContextData {
 
 	mode: {
 		slug: string
-		executionProfileId?: "work" | "plan"
-		executionProfileDigest?: string
 		profileName?: string
 		profileId?: string
 		customModeDigest?: string
@@ -126,9 +124,6 @@ export interface StepContextMetadata {
 	stepContextModel: string
 	stepContextProfile?: string
 	stepContextMode: string
-	stepContextExecutionProfile?: "work" | "plan"
-	stepContextExecutionProfileDigest?: string
-	stepContextModelDigest: string
 	stepContextPromptDigest: string
 	stepContextEnvironmentDigest: string
 	stepContextStableEnvironmentDigest: string
@@ -248,13 +243,6 @@ export function toStepContextMetadata(context: StepContext, retryAttempt = conte
 		stepContextModel: context.provider.modelId,
 		stepContextProfile: context.mode.profileName,
 		stepContextMode: context.mode.slug,
-		stepContextExecutionProfile: context.mode.executionProfileId,
-		stepContextExecutionProfileDigest: context.mode.executionProfileDigest,
-		stepContextModelDigest: digestValue({
-			provider: context.provider.apiProvider,
-			modelId: context.provider.modelId,
-			options: context.provider.options,
-		}),
 		stepContextPromptDigest: promptDigest,
 		stepContextEnvironmentDigest: environmentDigest,
 		stepContextStableEnvironmentDigest: stableEnvironmentDigest,

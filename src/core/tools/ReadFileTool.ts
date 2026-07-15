@@ -34,6 +34,7 @@ import {
 	ImageMemoryTracker,
 } from "./helpers/imageHelpers"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { fingerprintContent } from "./contentVersion"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -163,7 +164,11 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 			}
 
 			// Phase 2: Request user approval
-			await this.requestApproval(task, filesToApprove, updateFileResult)
+			// Complete tool execution runs through the scheduler's approval callback.
+			// That callback owns the task-scoped approval mutex, which is required when
+			// independent read_file calls are executing concurrently. The legacy path
+			// remains on its original response-based approval flow below.
+			await this.requestApproval(task, filesToApprove, updateFileResult, callbacks.askApproval)
 
 			// Phase 3: Process approved files
 			const imageMemoryTracker = new ImageMemoryTracker()
@@ -221,7 +226,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 					await task.fileContextTracker.trackFileContext(relPath, "read_tool" as RecordSource)
 
 					updateFileResult(relPath, {
-						nativeContent: `File: ${relPath}\n${result}`,
+						nativeContent: `File: ${relPath}\nContent fingerprint: sha256:${fingerprintContent(fileContent)}\n${result}`,
 					})
 				} catch (error) {
 					const errorMsg = error instanceof Error ? error.message : String(error)
@@ -428,6 +433,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		task: Task,
 		filesToApprove: FileResult[],
 		updateFileResult: (path: string, updates: Partial<FileResult>) => void,
+		coordinatedAskApproval?: ToolCallbacks["askApproval"],
 	): Promise<void> {
 		if (filesToApprove.length === 0) return
 
@@ -446,6 +452,17 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 			})
 
 			const completeMessage = JSON.stringify({ tool: "readFile", batchFiles } satisfies ClineSayTool)
+
+			if (coordinatedAskApproval) {
+				const approved = await coordinatedAskApproval("tool", completeMessage)
+				filesToApprove.forEach((fr) => {
+					updateFileResult(fr.path, {
+						status: approved ? "approved" : "denied",
+						...(approved ? {} : { nativeContent: `File: ${fr.path}\nStatus: Denied by user` }),
+					})
+				})
+				return
+			}
 			const { response, text, images } = await task.ask("tool", completeMessage, false)
 
 			if (response === "yesButtonClicked") {
@@ -514,6 +531,15 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				reason: lineSnippet,
 				startLine,
 			} satisfies ClineSayTool)
+
+			if (coordinatedAskApproval) {
+				const approved = await coordinatedAskApproval("tool", completeMessage)
+				updateFileResult(relPath, {
+					status: approved ? "approved" : "denied",
+					...(approved ? {} : { nativeContent: `File: ${relPath}\nStatus: Denied by user` }),
+				})
+				return
+			}
 
 			const { response, text, images } = await task.ask("tool", completeMessage, false)
 
@@ -585,7 +611,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		if (deniedWithFeedback?.feedbackText) {
 			statusMessage = formatResponse.toolDeniedWithFeedback(deniedWithFeedback.feedbackText)
 			feedbackImages = deniedWithFeedback.feedbackImages || []
-		} else if (task.didRejectTool) {
+		} else if (fileResults.some((fileResult) => fileResult.status === "denied")) {
 			statusMessage = formatResponse.toolDenied()
 		} else {
 			const approvedWithFeedback = fileResults.find((r) => r.status === "approved" && r.feedbackText)
@@ -713,16 +739,12 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				reason: lineSnippet || undefined,
 			} satisfies ClineSayTool)
 
-			const { response, text, images } = await task.ask("tool", completeMessage, false)
+			const approved = await callbacks.askApproval("tool", completeMessage)
 
-			if (response !== "yesButtonClicked") {
-				if (text) await task.say("user_feedback", text, images)
-				task.didRejectTool = true
+			if (!approved) {
 				results.push(`File: ${relPath}\nStatus: Denied by user`)
 				continue
 			}
-
-			if (text) await task.say("user_feedback", text, images)
 
 			try {
 				// Check if the path is a directory
@@ -794,7 +816,9 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 					}
 				}
 
-				results.push(`File: ${relPath}\n${content}`)
+				results.push(
+					`File: ${relPath}\nContent fingerprint: sha256:${fingerprintContent(rawContent)}\n${content}`,
+				)
 
 				// Track file in context
 				await task.fileContextTracker.trackFileContext(relPath, "read_tool")

@@ -32,14 +32,14 @@ Alpha v1 is here. Welcome to the first release of the Alpha-branded extension.
 - [简体中文](locales/zh-CN/README.md)
 - [繁體中文](locales/zh-TW/README.md)
 - ...
-  </details>
+      </details>
 
 ---
 
 ## What Can Alpha Do For YOU?
 
 - Generate Code from natural language descriptions and specs
-- Adapt with Modes: Code, Architect, Ask, Debug, and Custom Modes
+- Choose Work for normal tasks or Plan for guaranteed non-mutating investigation
 - Refactor & Debug existing code
 - Write & Update documentation
 - Answer Questions about your codebase
@@ -53,11 +53,11 @@ Developer note: the implementation and future swarm plan are documented in [Mult
 
 Alpha adapts to how you work:
 
-- Code Mode: everyday coding, edits, and file ops
-- Architect Mode: plan systems, specs, and migrations
-- Ask Mode: fast answers, explanations, and docs
-- Debug Mode: trace issues, add logs, isolate root causes
+- Work: answer, investigate, implement, execute, verify, and delegate bounded internal work
+- Plan: inspect and produce an implementation plan without workspace or external-system mutation
 - Custom Modes: build specialized modes for your team or workflow
+
+Legacy Code, Architect, Ask, Debug, and Orchestrator identifiers remain compatible with saved tasks and API inputs, but are not recommended for new tasks.
 
 ## Resources
 

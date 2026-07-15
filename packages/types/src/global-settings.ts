@@ -188,6 +188,8 @@ export const globalSettingsSchema = z.object({
 	diagnosticsEnabled: z.boolean().optional(),
 
 	rateLimitSeconds: z.number().optional(),
+	requestsPerMinute: z.number().positive().optional(),
+	tokensPerMinute: z.number().positive().optional(),
 	experiments: experimentsSchema.optional(),
 
 	codebaseIndexModels: codebaseIndexModelsSchema.optional(),
@@ -371,6 +373,8 @@ export const EVALS_SETTINGS: RooCodeSettings = {
 	enableCheckpoints: false,
 
 	rateLimitSeconds: 0,
+	requestsPerMinute: undefined,
+	tokensPerMinute: undefined,
 	maxOpenTabsContext: 20,
 	maxWorkspaceFiles: 200,
 	maxGitStatusFiles: 20,
@@ -384,7 +388,7 @@ export const EVALS_SETTINGS: RooCodeSettings = {
 
 	mcpEnabled: false,
 
-	mode: "code", // "architect",
+	mode: "work",
 
 	customModes: [],
 }

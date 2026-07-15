@@ -59,7 +59,15 @@ describe("ProviderSettingsManager", () => {
 							id: "default",
 						},
 					},
-					modeApiConfigs: {},
+					modeApiConfigs: {
+						work: "default",
+						plan: "default",
+						architect: "default",
+						code: "default",
+						ask: "default",
+						debug: "default",
+						orchestrator: "default",
+					},
 					migrations: {
 						rateLimitSecondsMigrated: true,
 						openAiHeadersMigrated: true,

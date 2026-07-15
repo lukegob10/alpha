@@ -5,6 +5,13 @@ import { customToolRegistry } from "@alpha-code/core"
 import { type Mode, FileRestrictionError, getModeBySlug, getGroupName } from "../../shared/modes"
 import { EXPERIMENT_IDS } from "../../shared/experiments"
 import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS, TOOL_ALIASES } from "../../shared/tools"
+import { isMcpTool } from "../../utils/mcp-name"
+
+function isDynamicMcpToolName(toolName: string): boolean {
+	// Keep accepting the legacy mcp_server_tool spelling while preferring the
+	// collision-resistant mcp--server--tool form used by provider schemas.
+	return toolName.startsWith("mcp_") || isMcpTool(toolName)
+}
 
 /**
  * Checks if a tool name is a valid, known tool.
@@ -22,7 +29,7 @@ export function isValidToolName(toolName: string, experiments?: Record<string, b
 	}
 
 	// Check if it's a dynamic MCP tool (mcp_serverName_toolName format).
-	if (toolName.startsWith("mcp_")) {
+	if (isDynamicMcpToolName(toolName)) {
 		return true
 	}
 
@@ -158,7 +165,7 @@ export function isToolAllowedForMode(
 
 	// Check if this is a dynamic MCP tool (mcp_serverName_toolName)
 	// These should be allowed if the mcp group is allowed for the mode
-	const isDynamicMcpTool = tool.startsWith("mcp_")
+	const isDynamicMcpTool = isDynamicMcpToolName(tool)
 
 	if (experiments && Object.values(EXPERIMENT_IDS).includes(tool as ExperimentId)) {
 		if (!experiments[tool]) {

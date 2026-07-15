@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react"
 import { ArrowLeft, Plus, RotateCcw, Target, Trash2, XCircle } from "lucide-react"
 
 import type { GoalSeekJob, GoalSeekScoreDirection, GoalSeekVerifier, GoalSeekVerifierResult } from "@alpha-code/types"
-import { getAllModes } from "@alpha/modes"
+import { getRecommendedModes } from "@alpha/modes"
 
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { vscode } from "@/utils/vscode"
@@ -28,7 +28,6 @@ const scoreLabel = (result?: GoalSeekVerifierResult) => {
 
 const GoalSeekView = ({ onDone, targetJobId }: GoalSeekViewProps) => {
 	const { goalSeekJobs = [], goalSeekRuns = [], goalSeekAttempts = [], cwd, mode, customModes } = useExtensionState()
-	const modes = useMemo(() => getAllModes(customModes), [customModes])
 	const [selectedId, setSelectedId] = useState<string | undefined>(targetJobId ?? goalSeekJobs[0]?.id)
 	const selectedJob = goalSeekJobs.find((job) => job.id === selectedId)
 	const selectedRuns = goalSeekRuns.filter((run) => run.jobId === selectedId)
@@ -46,6 +45,7 @@ const GoalSeekView = ({ onDone, targetJobId }: GoalSeekViewProps) => {
 	const [maxFailedAttempts, setMaxFailedAttempts] = useState(3)
 	const [candidateCount, setCandidateCount] = useState(10)
 	const [jobMode, setJobMode] = useState<string>(mode)
+	const modes = useMemo(() => getRecommendedModes(customModes, jobMode), [customModes, jobMode])
 
 	const resetForm = () => {
 		setSelectedId(undefined)

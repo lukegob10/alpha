@@ -42,14 +42,6 @@ export type AgentTurnEvent =
 	| { type: "retry"; attempt: number; reason: string; delayMs?: number }
 	| { type: "model_request_started"; attempt: number }
 	| {
-			type: "request_usage"
-			requestIndex: number
-			retry: boolean
-			inputTokens: number
-			outputTokens: number
-			cacheReadTokens: number
-	  }
-	| {
 			type: "context_refreshed"
 			stableDigest: string
 			volatileDigest: string
@@ -60,16 +52,16 @@ export type AgentTurnEvent =
 			toolCount: number
 	  }
 	| {
-			type: "profile_resolved"
-			sourceMode: string
-			profileId: "work" | "plan"
-			legacyAdapter: boolean
-	  }
-	| {
 			type: "turn_completed"
 			status: "completed" | "aborted"
 			toolCallCount: number
 			retryCount: number
+	  }
+	| {
+			type: "profile_resolved"
+			sourceMode: string
+			profileId: "work" | "plan"
+			legacyAdapter: boolean
 	  }
 	| {
 			type: "task_completed"

@@ -12,10 +12,11 @@ import {
 	getEffectiveApiHistory,
 	extractCommandBlocks,
 } from "../index"
+import type { StepContext } from "../../agent/StepContext"
 
 // Create a mock ApiHandler for testing
 class MockApiHandler extends BaseProvider {
-	createMessage(): any {
+	createMessage(_systemPrompt?: string, _messages?: unknown[], _metadata?: unknown): any {
 		// Mock implementation for testing - returns an async iterable stream
 		const mockStream = {
 			async *[Symbol.asyncIterator]() {
@@ -159,6 +160,44 @@ Line 2
 			expect(effectiveHistory.length).toBe(1)
 			expect(effectiveHistory[0].isSummary).toBe(true)
 			expect(effectiveHistory[0].role).toBe("user")
+		})
+
+		it("uses the immutable compaction context as the provider request boundary", async () => {
+			let captured: { systemPrompt: string; messages: unknown[]; metadata: unknown } | undefined
+			class ContextCapturingApiHandler extends MockApiHandler {
+				override createMessage(systemPrompt?: string, messages?: unknown[], metadata?: unknown): any {
+					captured = { systemPrompt: systemPrompt ?? "", messages: messages ?? [], metadata }
+					return super.createMessage()
+				}
+			}
+
+			const messages: ApiMessage[] = [
+				{ role: "user", content: "First" },
+				{ role: "assistant", content: "Second" },
+				{ role: "user", content: "Third" },
+			]
+			const handler = new ContextCapturingApiHandler()
+			const contextMessages: ApiMessage[] = [{ role: "user", content: "Frozen compaction transcript" }]
+			const contextMetadata = { taskId, mode: "compaction" }
+			const context = {
+				instructions: { systemPrompt: "Frozen compaction prompt" },
+				transcript: { messages: contextMessages },
+				request: { metadata: contextMetadata },
+			} as unknown as StepContext
+
+			await summarizeConversation({
+				messages,
+				apiHandler: handler,
+				systemPrompt: "Live prompt that must not be used",
+				taskId,
+				createStepContext: () => context,
+			})
+
+			expect(captured).toEqual({
+				systemPrompt: "Frozen compaction prompt",
+				messages: contextMessages,
+				metadata: contextMetadata,
+			})
 		})
 
 		it("should tag ALL messages with condenseParent", async () => {

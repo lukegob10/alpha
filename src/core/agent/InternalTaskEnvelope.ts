@@ -81,7 +81,7 @@ const AUTHORITY_KEYS = ["read", "execute", "mutate", "delegate", "network", "ext
 function validateScope(roots: string[], allowedPaths: string[] | undefined): void {
 	if (roots.length === 0) throw new Error("Internal task scope requires at least one workspace root")
 	for (const candidate of allowedPaths ?? []) {
-		const resolved = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(roots[0], candidate)
+		const resolved = path.resolve(candidate)
 		if (
 			!roots.some((root) => {
 				const relative = path.relative(path.resolve(root), resolved)
@@ -140,11 +140,7 @@ export function buildInternalTaskEnvelope(input: BuildInternalTaskEnvelopeInput)
 			(agentKind ? [...internalAgentDefinitions[agentKind].expectedOutput] : ["summary", "evidence"]),
 		scope: {
 			workspaceRoots: [...new Set(input.workspaceRoots.map((root) => path.resolve(root)))].sort(),
-			allowedPaths: input.allowedPaths
-				?.map((item) =>
-					path.isAbsolute(item) ? path.resolve(item) : path.resolve(input.workspaceRoots[0], item),
-				)
-				.sort(),
+			allowedPaths: input.allowedPaths?.map((item) => path.resolve(item)).sort(),
 			sharedWorkspace: input.sharedWorkspace ?? true,
 			contextRefs: [...new Set(input.contextRefs ?? [])].sort(),
 		},
@@ -160,9 +156,4 @@ export function buildInternalTaskEnvelope(input: BuildInternalTaskEnvelopeInput)
 const SECRET_PATTERN = /(api.?key|secret|password|authorization|token)/i
 export function serializeInternalTaskEnvelope(envelope: InternalTaskEnvelope): string {
 	return JSON.stringify(envelope, (key, value) => (SECRET_PATTERN.test(key) ? "[redacted]" : value))
-}
-
-export function isValidInternalTaskEnvelope(envelope: InternalTaskEnvelope): boolean {
-	const { digest, ...contents } = envelope
-	return digest === digestValue(contents)
 }

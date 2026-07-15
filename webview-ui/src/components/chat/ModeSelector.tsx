@@ -4,7 +4,7 @@ import { Check, X } from "lucide-react"
 
 import { type ModeConfig, type CustomModePrompts, TelemetryEventName } from "@alpha-code/types"
 
-import { type Mode, getAllModes, defaultModeSlug } from "@alpha/modes"
+import { type Mode, getRecommendedModes, defaultModeSlug } from "@alpha/modes"
 
 import { vscode } from "@/utils/vscode"
 import { telemetryClient } from "@/utils/TelemetryClient"
@@ -64,13 +64,13 @@ export const ModeSelector = ({
 
 	// Get all modes including custom modes and merge custom prompt descriptions.
 	const modes = React.useMemo(() => {
-		const allModes = getAllModes(customModes)
+		const allModes = getRecommendedModes(customModes, value)
 
 		return allModes.map((mode) => ({
 			...mode,
 			description: customModePrompts?.[mode.slug]?.description ?? mode.description,
 		}))
-	}, [customModes, customModePrompts])
+	}, [customModes, customModePrompts, value])
 
 	// Find the selected mode, falling back to default if current mode doesn't exist (e.g., after workspace switch)
 	const selectedMode = React.useMemo(() => {

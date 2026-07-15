@@ -325,9 +325,9 @@ describe("executeCommandTool", () => {
 			expect(mockOptions.commandExecutionTimeout).toBeDefined()
 		})
 
-		it("should ignore model timeout in CLI runtime", () => {
+		it("should preserve model timeout in CLI runtime for effective timeout calculation", () => {
 			process.env.ROO_CLI_RUNTIME = "1"
-			expect(executeCommandModule.resolveAgentTimeoutMs(30)).toBe(0)
+			expect(executeCommandModule.resolveAgentTimeoutMs(30)).toBe(30000)
 		})
 
 		it("should honor model timeout outside CLI runtime", () => {

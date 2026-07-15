@@ -6,20 +6,23 @@ import type { ToolUse, HandleError, PushToolResult, AskApproval, NativeToolArgs 
 /**
  * Callbacks passed to tool execution
  */
-export interface ToolResultMetadata {
-	status?: "success" | "error" | "denied" | "cancelled"
-	exitCode?: number
-	timedOut?: boolean
-}
-
 export interface ToolCallbacks {
 	askApproval: AskApproval
 	handleError: HandleError
 	pushToolResult: PushToolResult
+	/** Optional structured outcome for harnesses that need more than tool text. */
 	setResultMetadata?: (metadata: ToolResultMetadata) => void
 	toolCallId?: string
+	/** Cancellation signal owned by the current agent turn. */
 	signal?: AbortSignal
-	resolveCommandTimeoutMs?: (requestedTimeoutMs: number | null | undefined, command: string) => number
+	/** Resolves the single effective command timeout for the current policy. */
+	resolveCommandTimeoutMs?: (requestedTimeoutMs: number, command: string) => number
+}
+
+export interface ToolResultMetadata {
+	status?: "success" | "error" | "denied" | "cancelled"
+	exitCode?: number
+	timedOut?: boolean
 }
 
 /**

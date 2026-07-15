@@ -4,7 +4,7 @@ import { Trans } from "react-i18next"
 
 import type { SkillMetadata } from "@alpha-code/types"
 
-import { getAllModes } from "@alpha/modes"
+import { getRecommendedModes } from "@alpha/modes"
 
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -53,8 +53,8 @@ export const SkillsSettings: React.FC = () => {
 
 	// Get available modes for the checkboxes (built-in + custom modes)
 	const availableModes = useMemo(() => {
-		return getAllModes(customModes).map((m) => ({ slug: m.slug, name: m.name }))
-	}, [customModes])
+		return getRecommendedModes(customModes, selectedModes).map((m) => ({ slug: m.slug, name: m.name }))
+	}, [customModes, selectedModes])
 
 	const handleRefresh = useCallback(() => {
 		vscode.postMessage({ type: "requestSkills" })

@@ -910,6 +910,34 @@ export interface ClineApiReqInfo {
 	cancelReason?: ClineApiReqCancelReason
 	streamingFailedMessage?: string
 	apiProtocol?: "anthropic" | "openai"
+	/** Sanitized immutable StepContext metadata; request bodies are never persisted here. */
+	stepContextId?: string
+	stepContextKind?: "agent" | "compaction"
+	stepContextParentId?: string
+	stepContextRetryAttempt?: number
+	stepContextProvider?: string
+	stepContextProtocol?: string
+	stepContextModel?: string
+	stepContextProfile?: string
+	stepContextMode?: string
+	stepContextPromptDigest?: string
+	stepContextEnvironmentDigest?: string
+	stepContextInstructionDigest?: string
+	stepContextTranscriptDigest?: string
+	stepContextTranscriptStart?: number
+	stepContextTranscriptEnd?: number
+	stepContextToolSchemaDigest?: string
+	stepContextPolicyDigest?: string
+	stepContextContextWindow?: number
+	stepContextMaxOutputTokens?: number
+	stepContextInputTokens?: number
+	stepContextEstimatedInputTokens?: number
+	stepContextRemainingTokens?: number
+	stepContextCompactionAction?: "none" | "summary" | "truncation"
+	stepContextCompactionAttempted?: boolean
+	stepContextCompactionId?: string
+	stepContextTruncationId?: string
+	stepContextMessagesRemoved?: number
 }
 
 export type ClineApiReqCancelReason = "streaming_failed" | "user_cancelled"

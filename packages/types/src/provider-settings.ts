@@ -182,6 +182,8 @@ const baseProviderSettingsSchema = z.object({
 	todoListEnabled: z.boolean().optional(),
 	modelTemperature: z.number().nullish(),
 	rateLimitSeconds: z.number().optional(),
+	requestsPerMinute: z.number().positive().optional(),
+	tokensPerMinute: z.number().positive().optional(),
 	consecutiveMistakeLimit: z.number().min(0).optional(),
 
 	// Model reasoning.

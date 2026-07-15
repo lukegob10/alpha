@@ -110,6 +110,16 @@ export class ProviderSettingsManager {
 					providerProfiles.modeApiConfigs = Object.fromEntries(modes.map((m) => [m.slug, seedId]))
 					isDirty = true
 				}
+				const fallbackConfigId =
+					providerProfiles.apiConfigs[providerProfiles.currentApiConfigName]?.id ??
+					Object.values(providerProfiles.apiConfigs)[0]?.id ??
+					this.defaultConfigId
+				for (const mode of modes) {
+					if (!providerProfiles.modeApiConfigs[mode.slug]) {
+						providerProfiles.modeApiConfigs[mode.slug] = fallbackConfigId
+						isDirty = true
+					}
+				}
 
 				// Apply model migrations for all providers
 				if (this.applyModelMigrations(providerProfiles)) {

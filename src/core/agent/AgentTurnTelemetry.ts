@@ -15,7 +15,6 @@ export interface AgentTurnTelemetryMetrics {
 
 export interface AgentTurnTelemetryProperties {
 	toolCallCount: number
-	malformedToolCallCount: number
 	batchSize: number
 	parallelBatchCount: number
 	parallelToolCount: number
@@ -46,14 +45,9 @@ export function buildAgentTurnTelemetryProperties(
 		}
 		return []
 	})
-	const malformedToolCallCount = response.items.filter(
-		(item) => item.type === "error" && (!!item.callId || !!item.toolName),
-	).length
-	const toolCallCount = response.items.filter((item) => item.type === "tool_call").length
 
 	return {
-		toolCallCount,
-		malformedToolCallCount,
+		toolCallCount: metrics.batchSize,
 		batchSize: metrics.batchSize,
 		parallelBatchCount: metrics.parallelBatchCount,
 		parallelToolCount: metrics.parallelToolCount ?? 0,

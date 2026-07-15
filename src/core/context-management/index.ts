@@ -9,6 +9,7 @@ import { ApiMessage } from "../task-persistence/apiMessages"
 import { ANTHROPIC_DEFAULT_MAX_TOKENS } from "@alpha-code/types"
 import { RooIgnoreController } from "../ignore/RooIgnoreController"
 import { checkContextWindowExceededError } from "../context/context-management/context-error-handling"
+import type { StepContext } from "../agent/StepContext"
 
 /**
  * Context Management
@@ -25,6 +26,35 @@ import { checkContextWindowExceededError } from "../context/context-management/c
  * Used by Context Management to determine when to trigger condensation or (fallback) sliding window truncation.
  */
 export const TOKEN_BUFFER_PERCENTAGE = 0.1
+
+/**
+ * A compaction boundary is safe only when every persisted tool call has a
+ * matching result. This prevents the next model request from receiving a
+ * partial tool transaction.
+ */
+export function isSafeCompactionBoundary(messages: ApiMessage[]): boolean {
+	const toolCallIds = new Set<string>()
+	const toolResultIds = new Set<string>()
+
+	for (const message of messages) {
+		if (message.role === "assistant" && Array.isArray(message.content)) {
+			for (const block of message.content) {
+				if (block.type === "tool_use") {
+					toolCallIds.add(block.id)
+				}
+			}
+		}
+		if (message.role === "user" && Array.isArray(message.content)) {
+			for (const block of message.content) {
+				if (block.type === "tool_result") {
+					toolResultIds.add(block.tool_use_id)
+				}
+			}
+		}
+	}
+
+	return [...toolCallIds].every((id) => toolResultIds.has(id))
+}
 
 /**
  * Counts tokens for user content using the provider's token counting implementation.
@@ -230,6 +260,14 @@ export type ContextManagementOptions = {
 	cwd?: string
 	/** Optional controller for file access validation */
 	rooIgnoreController?: RooIgnoreController
+	/** Creates the immutable context for an automatic compaction sampling call. */
+	createStepContext?: (input: {
+		systemPrompt: string
+		messages: ApiMessage[]
+		metadata?: ApiHandlerCreateMessageMetadata
+	}) => StepContext | Promise<StepContext>
+	/** Waits until the active model/tool transaction is complete. */
+	waitForSafeBoundary?: () => Promise<void>
 }
 
 export type ContextManagementResult = SummarizeResponse & {
@@ -263,6 +301,8 @@ export async function manageContext({
 	filesReadByRoo,
 	cwd,
 	rooIgnoreController,
+	createStepContext,
+	waitForSafeBoundary,
 }: ContextManagementOptions): Promise<ContextManagementResult> {
 	let error: string | undefined
 	let errorDetails: string | undefined
@@ -308,6 +348,7 @@ export async function manageContext({
 	if (autoCondenseContext) {
 		const contextPercent = (100 * prevContextTokens) / contextWindow
 		if (contextPercent >= effectiveThreshold || prevContextTokens > allowedTokens) {
+			await waitForSafeBoundary?.()
 			// Attempt to intelligently condense the context
 			const result = await summarizeConversation({
 				messages,
@@ -321,6 +362,7 @@ export async function manageContext({
 				filesReadByRoo,
 				cwd,
 				rooIgnoreController,
+				createStepContext,
 			})
 			if (result.error) {
 				error = result.error
@@ -337,6 +379,7 @@ export async function manageContext({
 
 	// Fall back to sliding window truncation if needed
 	if (prevContextTokens > allowedTokens || forceTruncation) {
+		await waitForSafeBoundary?.()
 		const truncationResult = truncateConversation(messages, 0.5, taskId)
 
 		// Calculate new context tokens after truncation by counting non-truncated messages

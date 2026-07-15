@@ -5,21 +5,17 @@ describe("getSharedToolUseSection", () => {
 		const section = getSharedToolUseSection()
 
 		expect(section).toContain("provider-native tool-calling mechanism")
-		expect(section).toContain("Do not include XML markup or examples")
+		expect(section).toContain("Tool schemas and runtime policy are authoritative")
 	})
 
-	it("should include multiple tools per message guidance", () => {
+	it("does not duplicate scheduler or completion mechanics in prose", () => {
 		const section = getSharedToolUseSection()
 
-		expect(section).toContain("You must call at least one tool per assistant response")
-		expect(section).toContain("Prefer calling as many tools as are reasonably needed")
-	})
-
-	it("should call out new_task as a batching exception", () => {
-		const section = getSharedToolUseSection()
-
-		expect(section).toContain("new_task is a delegation boundary")
-		expect(section).toContain("must always be called alone")
+		expect(section).not.toContain("normal final answer")
+		expect(section).not.toContain("Independent read-only inspections")
+		expect(section).not.toContain("Keep edits and commands ordered")
+		expect(section).not.toContain("new_task is a delegation boundary")
+		expect(section).not.toContain("attempt_completion")
 	})
 
 	it("should NOT include single tool per message restriction", () => {

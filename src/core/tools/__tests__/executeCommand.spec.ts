@@ -328,11 +328,12 @@ describe("executeCommand", () => {
 			}
 
 			// Execute
-			const [rejected, result] = await executeCommandInTerminal(mockTask, options)
+			const [rejected, result, metadata] = await executeCommandInTerminal(mockTask, options)
 
 			// Verify
 			expect(rejected).toBe(false)
 			expect(result).toContain("Exit code: 0")
+			expect(metadata).toEqual({ status: "success", exitCode: 0 })
 			expect(result).toContain("within working directory '/test/project'")
 		})
 
@@ -353,12 +354,13 @@ describe("executeCommand", () => {
 			}
 
 			// Execute
-			const [rejected, result] = await executeCommandInTerminal(mockTask, options)
+			const [rejected, result, metadata] = await executeCommandInTerminal(mockTask, options)
 
 			// Verify
 			expect(rejected).toBe(false)
 			expect(result).toContain("Command execution was not successful")
 			expect(result).toContain("Exit code: 1")
+			expect(metadata).toEqual({ status: "error", exitCode: 1 })
 			expect(result).toContain("within working directory '/test/project'")
 		})
 
@@ -392,6 +394,43 @@ describe("executeCommand", () => {
 			expect(rejected).toBe(false)
 			expect(result).toContain("Process terminated by signal SIGINT")
 			expect(result).toContain("within working directory '/test/project'")
+		})
+
+		it("should abort an active process and return a structured cancelled result", async () => {
+			let resolveProcess!: () => void
+			const cancellableProcess: any = new Promise<void>((resolve) => {
+				resolveProcess = resolve
+			})
+			cancellableProcess.abort = vitest.fn(() => {
+				resolveProcess()
+			})
+			mockTask.terminalProcess = undefined
+			mockTerminal.runCommand.mockImplementation((_command: string, callbacks: RooTerminalCallbacks) => {
+				cancellableProcess.abort.mockImplementationOnce(() => {
+					callbacks.onCompleted("Command cancelled", cancellableProcess)
+					callbacks.onShellExecutionComplete(
+						{ exitCode: undefined, signalName: "SIGINT" },
+						cancellableProcess,
+					)
+					resolveProcess()
+				})
+				return cancellableProcess
+			})
+
+			const controller = new AbortController()
+			const resultPromise = executeCommandInTerminal(mockTask, {
+				executionId: "cancelled-command",
+				command: "long-running-command",
+				terminalShellIntegrationDisabled: false,
+				signal: controller.signal,
+			})
+			controller.abort()
+
+			const [rejected, result, metadata] = await resultPromise
+			expect(rejected).toBe(false)
+			expect(result).toContain("cancelled")
+			expect(metadata).toEqual({ status: "cancelled" })
+			expect(cancellableProcess.abort).toHaveBeenCalled()
 		})
 	})
 

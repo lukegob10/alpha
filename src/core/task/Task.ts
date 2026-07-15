@@ -60,6 +60,7 @@ import {
 	ConsecutiveMistakeError,
 	MAX_MCP_TOOLS_THRESHOLD,
 	countEnabledMcpTools,
+	TelemetryEventName,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
@@ -79,6 +80,7 @@ import { ClineAskResponse } from "../../shared/WebviewMessage"
 import { defaultModeSlug, getModeBySlug } from "../../shared/modes"
 import { DiffStrategy, type ToolUse, type ToolParamName, toolParamNames } from "../../shared/tools"
 import { getModelMaxOutputTokens } from "../../shared/api"
+import { TokenAwareRequestPacer } from "../agent/RequestPacing"
 
 // services
 import { McpHub } from "../../services/mcp/McpHub"
@@ -110,8 +112,8 @@ import { FileContextTracker } from "../context-tracking/FileContextTracker"
 import { RooIgnoreController } from "../ignore/RooIgnoreController"
 import { RooProtectedController } from "../protect/RooProtectedController"
 import { type AssistantMessageContent, presentAssistantMessage } from "../assistant-message"
-import { NativeToolCallParser, type ToolCallStreamEvent } from "../assistant-message/NativeToolCallParser"
-import { manageContext, willManageContext } from "../context-management"
+import { NativeToolCallParser } from "../assistant-message/NativeToolCallParser"
+import { isSafeCompactionBoundary, manageContext, willManageContext } from "../context-management"
 import { ClineProvider } from "../webview/ClineProvider"
 import { MultiSearchReplaceDiffStrategy } from "../diff/strategies/multi-search-replace"
 import {
@@ -122,7 +124,8 @@ import {
 	saveTaskMessages,
 	taskMetadata,
 } from "../task-persistence"
-import { getEnvironmentDetails } from "../environment/getEnvironmentDetails"
+import { collectEnvironmentSnapshot, getEnvironmentDetails } from "../environment/getEnvironmentDetails"
+import type { EnvironmentSnapshot } from "../environment/EnvironmentSnapshot"
 import { checkContextWindowExceededError } from "../context/context-management/context-error-handling"
 import {
 	type CheckpointDiffOptions,
@@ -140,11 +143,26 @@ import { MessageManager } from "../message-manager"
 import { validateAndFixToolResultIds } from "./validateToolResultIds"
 import { mergeConsecutiveApiMessages } from "./mergeConsecutiveApiMessages"
 import {
+	AgentResponseAccumulator,
 	AgentTurnEngine,
 	type AgentResponse,
 	type AgentResponseItem,
 	type AgentTurnHost,
 } from "../agent/AgentTurnEngine"
+import { buildAgentTurnTelemetryProperties } from "../agent/AgentTurnTelemetry"
+import { ToolScheduler, type ToolSchedulerOutcome } from "../agent/ToolScheduler"
+import { createTaskToolRegistry, getToolCapabilities } from "../tools/ToolRegistry"
+import {
+	createStepContext,
+	digestValue,
+	toStepContextMetadata,
+	type StepCompactionMetadata,
+	type StepContext,
+	type StepContextKind,
+} from "../agent/StepContext"
+import type { AgentTurnEvent } from "../agent/AgentTurnEvents"
+import { AgentTurnEventLog } from "../agent/AgentTurnEventLog"
+import { createToolPolicySnapshot, type ToolPolicySnapshot } from "../agent/ToolPolicy"
 
 const MAX_EXPONENTIAL_BACKOFF_SECONDS = 600 // 10 minutes
 const DEFAULT_USAGE_COLLECTION_TIMEOUT_MS = 5000 // 5 seconds
@@ -173,6 +191,7 @@ export interface TaskOptions extends CreateTaskOptions {
 }
 
 export class Task extends EventEmitter<TaskEvents> implements TaskLike {
+	private static readonly requestPacer = new TokenAwareRequestPacer()
 	readonly taskId: string
 	readonly rootTaskId?: string
 	readonly parentTaskId?: string
@@ -278,6 +297,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	providerRef: WeakRef<ClineProvider>
 	private readonly globalStoragePath: string
+	private readonly taskAbortController = new AbortController()
+	private agentTurnEventLog?: AgentTurnEventLog
 	abort: boolean = false
 	currentRequestAbortController?: AbortController
 	private readonly taskCancellationController = new AbortController()
@@ -285,6 +306,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private pendingSteerMessage?: { text: string; images: string[] }
 	private isTaskLoopActive = false
 	private didComplete = false
+	private completionFinalized = false
 	skipPrevResponseIdOnce: boolean = false
 
 	// TaskStatus
@@ -380,6 +402,24 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	assistantMessageSavedToHistory = false
 
 	/**
+	 * The canonical response collected for the current model turn. Keeping the
+	 * accumulator's result intact lets AgentTurnEngine consumers observe
+	 * reasoning, usage, grounding, and structured errors in addition to text and
+	 * tool calls.
+	 */
+	private completedAgentResponse?: AgentResponse
+	private completedStepContext?: StepContext
+	private retryStepContext?: StepContext
+	private lastCompactionStepContext?: StepContext
+	private currentStepEnvironmentDetails?: string
+	private currentStepEnvironmentSnapshot?: EnvironmentSnapshot
+	private lastAgentTurnRetryCount = 0
+	private streamingBoundary: Promise<void> = Promise.resolve()
+	private toolBatchBoundary: Promise<void> = Promise.resolve()
+	private resolveStreamingBoundary?: () => void
+	private resolveToolBatchBoundary?: () => void
+
+	/**
 	 * Push a tool_result block to userMessageContent, preventing duplicates.
 	 * Duplicate tool_use_ids cause API errors.
 	 *
@@ -401,107 +441,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return true
 	}
 
-	private processNativeToolCallStreamEvents(events: ToolCallStreamEvent[]): void {
-		for (const event of events) {
-			if (event.type === "tool_call_start") {
-				// Guard against duplicate tool_call_start events for the same tool ID.
-				// This can occur due to stream retry, reconnection, or API quirks.
-				// Without this check, duplicate tool_use blocks with the same ID would
-				// be added to assistantMessageContent, causing API 400 errors:
-				// "tool_use ids must be unique"
-				if (this.streamingToolCallIndices.has(event.id)) {
-					console.warn(
-						`[Task#${this.taskId}] Ignoring duplicate tool_call_start for ID: ${event.id} (tool: ${event.name})`,
-					)
-					continue
-				}
-
-				// Initialize streaming in NativeToolCallParser
-				NativeToolCallParser.startStreamingToolCall(event.id, event.name as ToolName, this.taskId)
-
-				// Before adding a new tool, finalize any preceding text block
-				// This prevents the text block from blocking tool presentation
-				const lastBlock = this.assistantMessageContent[this.assistantMessageContent.length - 1]
-				if (lastBlock?.type === "text" && lastBlock.partial) {
-					lastBlock.partial = false
-				}
-
-				// Track the index where this tool will be stored
-				const toolUseIndex = this.assistantMessageContent.length
-				this.streamingToolCallIndices.set(event.id, toolUseIndex)
-
-				// Create initial partial tool use
-				const partialToolUse: ToolUse = {
-					type: "tool_use",
-					name: event.name as ToolName,
-					params: {},
-					partial: true,
-				}
-
-				// Store the ID for native protocol
-				;(partialToolUse as any).id = event.id
-
-				// Add to the response buffer. Tool execution is deferred until the
-				// provider stream has completed and the assistant message is saved.
-				this.assistantMessageContent.push(partialToolUse)
-				this.userMessageContentReady = false
-			} else if (event.type === "tool_call_delta") {
-				// Process chunk using streaming JSON parser
-				const partialToolUse = NativeToolCallParser.processStreamingChunk(event.id, event.delta, this.taskId)
-
-				if (partialToolUse) {
-					// Get the index for this tool call
-					const toolUseIndex = this.streamingToolCallIndices.get(event.id)
-					if (toolUseIndex !== undefined) {
-						// Store the ID for native protocol
-						;(partialToolUse as any).id = event.id
-
-						// Update the existing tool use with new partial data
-						this.assistantMessageContent[toolUseIndex] = partialToolUse
-					}
-				}
-			} else if (event.type === "tool_call_end") {
-				// Finalize the streaming tool call
-				const finalToolUse = NativeToolCallParser.finalizeStreamingToolCall(event.id, this.taskId)
-
-				// Get the index for this tool call
-				const toolUseIndex = this.streamingToolCallIndices.get(event.id)
-
-				if (finalToolUse) {
-					// Store the tool call ID
-					;(finalToolUse as any).id = event.id
-
-					// Get the index and replace partial with final
-					if (toolUseIndex !== undefined) {
-						this.assistantMessageContent[toolUseIndex] = finalToolUse
-					}
-
-					// Clean up tracking
-					this.streamingToolCallIndices.delete(event.id)
-
-					// Mark that we have new content to process
-					this.userMessageContentReady = false
-				} else if (toolUseIndex !== undefined) {
-					// finalizeStreamingToolCall returned null (malformed JSON or missing args)
-					// Mark the tool as non-partial so it's presented as complete, but execution
-					// will be short-circuited in presentAssistantMessage with a structured tool_result.
-					const existingToolUse = this.assistantMessageContent[toolUseIndex]
-					if (existingToolUse && existingToolUse.type === "tool_use") {
-						existingToolUse.partial = false
-						// Ensure it has the ID for native protocol
-						;(existingToolUse as any).id = event.id
-					}
-
-					// Clean up tracking
-					this.streamingToolCallIndices.delete(event.id)
-
-					// Mark that we have new content to process
-					this.userMessageContentReady = false
-				}
-			}
-		}
-	}
-
 	didRejectTool = false
 	didAlreadyUseTool = false
 	didToolFailInCurrentTurn = false
@@ -511,7 +450,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	assistantMessageParser?: undefined
 
 	// Native tool call streaming state (track which index each tool is at)
-	private streamingToolCallIndices: Map<string, number> = new Map()
 
 	// Cached model info for current streaming session (set at start of each API request)
 	// This prevents excessive getModel() calls during tool execution
@@ -1437,7 +1375,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		details.push(
-			"Recovery guidance: continue with one concrete next action. Use a tool if work remains, use attempt_completion if the task is finished, and use ask_followup_question only when a specific missing input blocks progress.",
+			"Recovery guidance: continue with the next concrete action. Independent read-only inspections may be batched; use attempt_completion if the task is finished, and use ask_followup_question only when a specific missing input blocks progress.",
 			"If delegating, call new_task by itself in its own assistant turn. Do not batch new_task with any other tool.",
 		)
 
@@ -1462,7 +1400,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		details.push(
-			"Use exactly one concrete next action now: call one valid tool with complete arguments if work remains, call attempt_completion if finished, or call ask_followup_question only when a specific missing input blocks progress.",
+			"Continue with the next concrete action now: independent read-only inspections may be batched, while attempt_completion, new_task, switch_mode, and ask_followup_question remain isolated.",
 			"If delegating, call new_task by itself in its own assistant turn. Do not batch new_task with any other tool.",
 		)
 
@@ -1528,7 +1466,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private getOffscreenMistakeLimitGuidance(): string {
 		return [
 			"Continue the current task without waiting for the user because this task lane is not currently on-screen.",
-			"Recover from the previous invalid or unproductive turns with exactly one concrete next action.",
+			"Recover from the previous invalid or unproductive turns with the next concrete action; independent read-only inspections may be batched.",
 			"If work remains, use the most appropriate tool now. If delegating, call new_task by itself and do not include any other tool in the same turn. If complete, use attempt_completion.",
 		].join(" ")
 	}
@@ -1863,6 +1801,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	/**
+	 * Finalize a genuinely completed task through the lifecycle observed by the provider.
+	 * This is idempotent because attempt_completion can finalize during a model step and
+	 * the turn engine will observe the same completed outcome immediately afterwards.
+	 */
+	public finalizeCompletion(): boolean {
+		if (
+			this.completionFinalized ||
+			this.abort ||
+			this.abandoned ||
+			this.abortReason === "user_cancelled" ||
+			this.activeAsk ||
+			this.taskAsk
+		) {
+			return false
+		}
+
+		this.completionFinalized = true
+		this.markCompleted()
+		this.emitFinalTokenUsageUpdate()
+		TelemetryService.instance.captureTaskCompleted(this.taskId)
+		this.emit(RooCodeEventName.TaskCompleted, this.taskId, this.getTokenUsage(), this.toolUsage)
+		return true
+	}
+
+	/**
 	 * Updates the API configuration and rebuilds the API handler.
 	 * There is no tool-protocol switching or tool parser swapping.
 	 *
@@ -1955,6 +1918,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public async condenseContext(): Promise<void> {
+		await this.waitForCompactionBoundary()
 		// CRITICAL: Flush any pending tool results before condensing
 		// to ensure tool_use/tool_result pairs are complete in history
 		await this.flushPendingToolResultsToHistory()
@@ -1966,6 +1930,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const customCondensingPrompt = state?.customSupportPrompts?.CONDENSE
 		const mode = await this.getTaskMode()
 		const apiConfiguration = this.apiConfiguration
+		const modelInfo = this.api.getModel().info
 
 		const { contextTokens: prevContextTokens } = this.getTokenUsage()
 
@@ -1973,7 +1938,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const provider = this.providerRef.deref()
 		let allTools: import("openai").default.Chat.ChatCompletionTool[] = []
 		if (provider) {
-			const modelInfo = this.api.getModel().info
 			const toolsResult = await buildNativeToolsArrayWithRestrictions({
 				provider,
 				cwd: this.cwd,
@@ -2025,6 +1989,27 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			filesReadByRoo,
 			cwd: this.cwd,
 			rooIgnoreController: this.rooIgnoreController,
+			createStepContext: async ({ systemPrompt: compactionPrompt, messages, metadata: compactionMetadata }) => {
+				const context = await this.createStepContextSnapshot({
+					kind: "compaction",
+					contextId: crypto.randomUUID(),
+					parentContextId: this.completedStepContext?.contextId,
+					retryAttempt: 0,
+					state,
+					mode,
+					systemPrompt: compactionPrompt,
+					environmentDetails,
+					environmentSnapshot: this.currentStepEnvironmentSnapshot,
+					transcript: messages,
+					metadata: compactionMetadata ?? metadata,
+					tools: allTools,
+					modelInfo,
+					contextTokens: prevContextTokens,
+					compaction: { action: "none", attempted: true },
+				})
+				this.lastCompactionStepContext = context
+				return context
+			},
 		})
 		if (error) {
 			await this.say(
@@ -2573,6 +2558,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		this.abort = true
+		this.taskAbortController.abort()
+		void this.recordAgentTurnEvent({ type: "cancelled", reason: this.abortReason ?? "user_cancelled" })
 
 		// Reset consecutive error counters on abort (manual intervention)
 		this.consecutiveNoToolUseCount = 0
@@ -2783,18 +2770,37 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			runStep: async (input) => {
 				const didEndLoop = await this.recursivelyMakeClineRequests(input.userContent, input.includeFileDetails)
 				const response = this.buildCurrentAgentResponse()
+				// Real provider turns always set this in attemptApiRequest. The
+				// compatibility fallback keeps tests and older internal callers that
+				// stub recursivelyMakeClineRequests inside the host contract valid.
+				const context = this.completedStepContext ?? this.createCompatibilityStepContext()
+				const hasToolActivity = response.items.some((item) => item.type === "tool_call")
 
-				if (didEndLoop || this.abort || this.didComplete) {
-					return { response, nextInput: "complete" }
+				if (!this.abort && !this.didComplete && this.hasPendingChildVerification() && !hasToolActivity) {
+					return {
+						response,
+						context,
+						nextInput: {
+							userContent: [
+								{
+									type: "text",
+									text: "A child changed the workspace. Review the changed files and run an appropriate verification command before completing.",
+								},
+							],
+							includeFileDetails: false,
+						},
+					}
 				}
 
-				const nextUserContent =
-					this.userMessageContent.length > 0
-						? [...this.userMessageContent]
-						: [{ type: "text" as const, text: formatResponse.noToolsUsed() }]
+				if (didEndLoop || this.abort || this.didComplete || !hasToolActivity) {
+					return { response, context, nextInput: "complete" }
+				}
+
+				const nextUserContent = [...this.userMessageContent]
 
 				return {
 					response,
+					context,
 					nextInput: {
 						userContent: nextUserContent,
 						includeFileDetails: false,
@@ -2803,7 +2809,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			},
 		}
 
-		await new AgentTurnEngine(host).run({ userContent, includeFileDetails: true })
+		const outcome = await new AgentTurnEngine(host).run({ userContent, includeFileDetails: true })
+		if (outcome.status === "completed") {
+			this.finalizeCompletion()
+		}
+		await this.recordAgentTurnEvent({
+			type: "task_completed",
+			status: outcome.status,
+			toolCallCount: this.completedAgentResponse?.toolCalls.length ?? 0,
+			retryCount: this.lastAgentTurnRetryCount,
+		})
 	}
 
 	public async recursivelyMakeClineRequests(
@@ -2920,7 +2935,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 				}
 
-				const environmentDetails = await getEnvironmentDetails(this, currentIncludeFileDetails)
+				// Some legacy task tests and extension hosts mock only the string
+				// renderer. Keep the compatibility fallback while all production
+				// requests use the typed boundary capture.
+				const environmentSnapshot =
+					typeof collectEnvironmentSnapshot === "function"
+						? await collectEnvironmentSnapshot(this, currentIncludeFileDetails)
+						: await (async () => {
+								const renderedDetails = await getEnvironmentDetails(this, currentIncludeFileDetails)
+								return {
+									stable: { workspaceRoot: this.cwd, roots: [this.cwd], capabilities: [] },
+									volatile: { renderedDetails, capturedAt: Date.now() },
+									renderedDetails,
+								}
+							})()
+				const environmentDetails = environmentSnapshot.renderedDetails
+				this.currentStepEnvironmentSnapshot = environmentSnapshot
+				this.currentStepEnvironmentDetails = environmentDetails
+				await this.recordAgentTurnEvent(
+					{
+						type: "context_refreshed",
+						stableDigest: digestValue(environmentSnapshot.stable),
+						volatileDigest: digestValue(environmentSnapshot.volatile),
+					},
+					this.completedStepContext,
+				)
 
 				// Remove any existing environment_details blocks before adding fresh ones.
 				// This prevents duplicate environment details when resuming tasks,
@@ -3070,15 +3109,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.didRejectTool = false
 					this.didAlreadyUseTool = false
 					this.assistantMessageSavedToHistory = false
+					this.completedAgentResponse = undefined
+					this.completedStepContext = undefined
+					this.lastAgentTurnRetryCount = 0
 					// Reset tool failure flag for each new assistant turn - this ensures that tool failures
 					// only prevent attempt_completion within the same assistant message, not across turns
 					// (e.g., if a tool fails, then user sends a message saying "just complete anyway")
 					this.didToolFailInCurrentTurn = false
 					this.presentAssistantMessageLocked = false
 					this.presentAssistantMessageHasPendingUpdates = false
-					// No legacy text-stream tool parser.
-					this.streamingToolCallIndices.clear()
-					// Clear any leftover streaming tool call state from previous interrupted streams
+					// Clear any leftover streaming tool call state from previous interrupted streams.
+					// The normalizer owns response buffering; these clears protect any
+					// provider/parser state retained by the native tool parser.
 					NativeToolCallParser.clearAllStreamingToolCalls(this.taskId)
 					NativeToolCallParser.clearRawChunkState(this.taskId)
 
@@ -3099,7 +3141,109 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					let assistantMessage = ""
 					let reasoningMessage = ""
 					let pendingGroundingSources: GroundingSource[] = []
+					const responseAccumulator = new AgentResponseAccumulator()
+					this.beginStreamingBoundary()
 					this.isStreaming = true
+
+					const appendInvalidToolUse = (id: string, name: string) => {
+						const alreadyStaged = this.assistantMessageContent.some(
+							(block) => (block.type === "tool_use" || block.type === "mcp_tool_use") && block.id === id,
+						)
+						if (alreadyStaged) {
+							return
+						}
+
+						const invalidToolUse: ToolUse = {
+							type: "tool_use",
+							name: name as ToolName,
+							params: {},
+							partial: false,
+							id,
+						}
+						this.assistantMessageContent.push(invalidToolUse)
+						this.userMessageContentReady = false
+					}
+
+					const consumeResponseItem = async (responseItem: AgentResponseItem): Promise<void> => {
+						switch (responseItem.type) {
+							case "reasoning": {
+								reasoningMessage += responseItem.text
+								let formattedReasoning = reasoningMessage
+								if (reasoningMessage.includes("**")) {
+									formattedReasoning = reasoningMessage.replace(
+										/([.!?])\*\*([^*\n]+)\*\*/g,
+										"$1\n\n**$2**",
+									)
+								}
+								await this.say("reasoning", formattedReasoning, undefined, true)
+								break
+							}
+							case "usage":
+								inputTokens += responseItem.inputTokens
+								outputTokens += responseItem.outputTokens
+								cacheWriteTokens += responseItem.cacheWriteTokens ?? 0
+								cacheReadTokens += responseItem.cacheReadTokens ?? 0
+								totalCost = responseItem.totalCost
+								break
+							case "grounding":
+								if (responseItem.sources.length > 0) {
+									pendingGroundingSources.push(...responseItem.sources)
+								}
+								break
+							case "tool_call": {
+								const toolUse = NativeToolCallParser.parseToolCall({
+									id: responseItem.id,
+									name: responseItem.name as ToolName,
+									arguments: JSON.stringify(responseItem.arguments) ?? "{}",
+								})
+
+								if (!toolUse) {
+									appendInvalidToolUse(responseItem.id, responseItem.name)
+									break
+								}
+
+								const lastBlock = this.assistantMessageContent[this.assistantMessageContent.length - 1]
+								if (lastBlock?.type === "text" && lastBlock.partial) {
+									lastBlock.partial = false
+								}
+
+								toolUse.id = responseItem.id
+								this.assistantMessageContent.push(toolUse)
+								this.userMessageContentReady = false
+								break
+							}
+							case "error":
+								if (responseItem.callId && responseItem.toolName) {
+									appendInvalidToolUse(responseItem.callId, responseItem.toolName)
+								} else {
+									console.error(`[Task#${this.taskId}] Agent response error: ${responseItem.message}`)
+								}
+								break
+							case "text": {
+								assistantMessage += responseItem.text
+								const lastTextBlock =
+									this.assistantMessageContent[this.assistantMessageContent.length - 1]
+								if (lastTextBlock?.type === "text" && lastTextBlock.partial) {
+									lastTextBlock.content = assistantMessage
+								} else {
+									this.assistantMessageContent.push({
+										type: "text",
+										content: assistantMessage,
+										partial: true,
+									})
+									this.userMessageContentReady = false
+								}
+								// Stream text directly. The compatibility presenter also owns
+								// complete-tool execution, so it must not be involved while a
+								// response is still being assembled.
+								const visibleText = assistantMessage
+									.replace(/<thinking>\s?/g, "")
+									.replace(/\s?<\/thinking>/g, "")
+								await this.say("text", visibleText, undefined, true)
+								break
+							}
+						}
+					}
 
 					try {
 						const iterator = stream[Symbol.asyncIterator]()
@@ -3153,108 +3297,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								continue
 							}
 
-							switch (chunk.type) {
-								case "reasoning": {
-									reasoningMessage += chunk.text
-									// Only apply formatting if the message contains sentence-ending punctuation followed by **
-									let formattedReasoning = reasoningMessage
-									if (reasoningMessage.includes("**")) {
-										// Add line breaks before **Title** patterns that appear after sentence endings
-										// This targets section headers like "...end of sentence.**Title Here**"
-										// Handles periods, exclamation marks, and question marks
-										formattedReasoning = reasoningMessage.replace(
-											/([.!?])\*\*([^*\n]+)\*\*/g,
-											"$1\n\n**$2**",
-										)
-									}
-									await this.say("reasoning", formattedReasoning, undefined, true)
-									break
-								}
-								case "usage":
-									inputTokens += chunk.inputTokens
-									outputTokens += chunk.outputTokens
-									cacheWriteTokens += chunk.cacheWriteTokens ?? 0
-									cacheReadTokens += chunk.cacheReadTokens ?? 0
-									totalCost = chunk.totalCost
-									break
-								case "grounding":
-									// Handle grounding sources separately from regular content
-									// to prevent state persistence issues - store them separately
-									if (chunk.sources && chunk.sources.length > 0) {
-										pendingGroundingSources.push(...chunk.sources)
-									}
-									break
-								case "tool_call_partial": {
-									// Process raw tool call chunk through NativeToolCallParser
-									// which handles tracking, buffering, and emits events
-									const events = NativeToolCallParser.processRawChunk(
-										{
-											index: chunk.index,
-											id: chunk.id,
-											name: chunk.name,
-											arguments: chunk.arguments,
-										},
-										this.taskId,
-									)
-
-									this.processNativeToolCallStreamEvents(events)
-									break
-								}
-
-								case "tool_call_start":
-								case "tool_call_delta":
-								case "tool_call_end": {
-									this.processNativeToolCallStreamEvents([chunk])
-									break
-								}
-
-								case "tool_call": {
-									// Legacy: Handle complete tool calls (for backward compatibility)
-									// Convert native tool call to ToolUse format
-									const toolUse = NativeToolCallParser.parseToolCall({
-										id: chunk.id,
-										name: chunk.name as ToolName,
-										arguments: chunk.arguments,
-									})
-
-									if (!toolUse) {
-										console.error(`Failed to parse tool call for task ${this.taskId}:`, chunk)
-										break
-									}
-
-									// Store the tool call ID on the ToolUse object for later reference
-									// This is needed to create tool_result blocks that reference the correct tool_use_id
-									toolUse.id = chunk.id
-
-									// Add the tool use to assistant message content
-									this.assistantMessageContent.push(toolUse)
-
-									// Mark that we have new content to process
-									this.userMessageContentReady = false
-
-									break
-								}
-								case "text": {
-									assistantMessage += chunk.text
-
-									// Native tool calling: text chunks are plain text.
-									// Create or update a text content block directly
-									const lastBlock =
-										this.assistantMessageContent[this.assistantMessageContent.length - 1]
-									if (lastBlock?.type === "text" && lastBlock.partial) {
-										lastBlock.content = assistantMessage
-									} else {
-										this.assistantMessageContent.push({
-											type: "text",
-											content: assistantMessage,
-											partial: true,
-										})
-										this.userMessageContentReady = false
-									}
-									presentAssistantMessage(this)
-									break
-								}
-							}
+							await responseAccumulator.add(chunk, consumeResponseItem)
 
 							if (this.abort) {
 								console.log(`aborting stream, this.abandoned = ${this.abandoned}`)
@@ -3278,12 +3321,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								// present iterator to finish and set
 								// userMessageContentReady when its ready.
 								// this.userMessageContentReady = true
-								break
-							}
-
-							if (this.didAlreadyUseTool) {
-								assistantMessage +=
-									"\n\n[Response interrupted by a tool use result. Only one tool may be used at a time and should be placed at the end of the message.]"
 								break
 							}
 
@@ -3545,6 +3582,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						}
 					} finally {
 						this.isStreaming = false
+						this.endStreamingBoundary()
 						// Clean up the abort controller when streaming completes
 						this.currentRequestAbortController = undefined
 					}
@@ -3556,6 +3594,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						)
 					}
 
+					// Finalize buffered tool calls only after the provider stream has
+					// completed and the abort check has passed.
+					this.completedAgentResponse = await responseAccumulator.finish(consumeResponseItem)
+
 					this.didCompleteReadingStream = true
 
 					// Set any blocks to be complete to allow `presentAssistantMessage`
@@ -3566,54 +3608,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// to be completed or the user to reject a block in order to proceed
 					// and eventually set userMessageContentReady to true.)
 
-					// Finalize any remaining streaming tool calls that weren't explicitly ended
-					// This is critical for MCP tools which need tool_call_end events to be properly
-					// converted from ToolUse to McpToolUse via finalizeStreamingToolCall()
-					const finalizeEvents = NativeToolCallParser.finalizeRawChunks(this.taskId)
-					for (const event of finalizeEvents) {
-						if (event.type === "tool_call_end") {
-							// Finalize the streaming tool call
-							const finalToolUse = NativeToolCallParser.finalizeStreamingToolCall(event.id, this.taskId)
-
-							// Get the index for this tool call
-							const toolUseIndex = this.streamingToolCallIndices.get(event.id)
-
-							if (finalToolUse) {
-								// Store the tool call ID
-								;(finalToolUse as any).id = event.id
-
-								// Get the index and replace partial with final
-								if (toolUseIndex !== undefined) {
-									this.assistantMessageContent[toolUseIndex] = finalToolUse
-								}
-
-								// Clean up tracking
-								this.streamingToolCallIndices.delete(event.id)
-
-								// Mark that we have new content to process
-								this.userMessageContentReady = false
-							} else if (toolUseIndex !== undefined) {
-								// finalizeStreamingToolCall returned null (malformed JSON or missing args)
-								// We still need to mark the tool as non-partial so it gets executed
-								// The tool's validation will catch any missing required parameters
-								const existingToolUse = this.assistantMessageContent[toolUseIndex]
-								if (existingToolUse && existingToolUse.type === "tool_use") {
-									existingToolUse.partial = false
-									// Ensure it has the ID for native protocol
-									;(existingToolUse as any).id = event.id
-								}
-
-								// Clean up tracking
-								this.streamingToolCallIndices.delete(event.id)
-
-								// Mark that we have new content to process
-								this.userMessageContentReady = false
-							}
-						}
-					}
-
-					// IMPORTANT: Capture partialBlocks AFTER finalizeRawChunks() to avoid double-presentation.
-					// Tools finalized above are already presented, so we only want blocks still partial after finalization.
+					// Capture any blocks that remain partial after the complete response
+					// has been normalized. Tool calls have not been presented yet.
 					const partialBlocks = this.assistantMessageContent.filter((block) => block.partial)
 					partialBlocks.forEach((block) => (block.partial = false))
 
@@ -3748,33 +3744,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							}
 						}
 
-						// Enforce new_task isolation before any tools execute. A mixed new_task batch
-						// must be rejected as a complete turn so every saved tool_use has a matching
-						// tool_result and delegation cannot dispose the parent with dangling calls.
-						const assistantToolUses = assistantContent.filter(
-							(block): block is Anthropic.ToolUseBlockParam => block.type === "tool_use",
-						)
-						const hasMixedNewTaskBatch =
-							assistantToolUses.length > 1 && assistantToolUses.some((block) => block.name === "new_task")
-
-						if (hasMixedNewTaskBatch) {
-							const isolationError =
-								"new_task must be called by itself in a message turn. No tools from this turn were executed. Retry by calling only new_task after any required setup is complete."
-
-							for (const tool of assistantToolUses) {
-								this.pushToolResultToUserContent({
-									type: "tool_result",
-									tool_use_id: tool.id,
-									content: isolationError,
-									is_error: true,
-								})
-							}
-
-							this.assistantMessageContent = []
-							this.currentStreamingContentIndex = 0
-							this.userMessageContentReady = true
-						}
-
 						// Save assistant message BEFORE executing tools
 						// This is critical for new_task: when it triggers delegation, flushPendingToolResultsToHistory()
 						// will save the user message with tool_results. The assistant message must already be in history
@@ -3788,12 +3757,43 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						TelemetryService.instance.captureConversationMessage(this.taskId, "assistant")
 					}
 
-					// Tool calls are intentionally presented only after the complete
-					// assistant response has been persisted. This preserves native
-					// tool_use/tool_result ordering and prevents a streaming tool call
-					// from interrupting the provider response.
+					// Tool calls are scheduled only after the complete assistant response
+					// has been persisted. This preserves native tool_use/tool_result ordering,
+					// allows independent reads to run concurrently, and prevents a streaming
+					// tool call from interrupting the provider response.
+					let schedulerOutcome: ToolSchedulerOutcome | undefined
 					if (hasToolUses) {
-						await presentAssistantMessage(this)
+						const state = await this.providerRef.deref()?.getState()
+						const modelInfo = this.api.getModel().info
+						const registry = await createTaskToolRegistry(this)
+						const stepContext: StepContext | undefined = this.completedStepContext
+						const scheduler = new ToolScheduler({
+							task: this,
+							registry,
+							mode: await this.getTaskMode(),
+							customModes: state?.customModes,
+							experiments: state?.experiments,
+							disabledTools: state?.disabledTools,
+							includedTools: modelInfo.includedTools,
+							policy: (stepContext as StepContext | undefined)?.policy,
+							signal: this.taskAbortController.signal,
+							onEvent: (event) => this.recordAgentTurnEvent(event, stepContext),
+						})
+
+						try {
+							this.beginToolBatchBoundary()
+							schedulerOutcome = await scheduler.run(this.buildCurrentAgentResponse())
+						} finally {
+							this.endToolBatchBoundary()
+							await this.recordAgentTurnEvent(
+								{ type: "progress", text: "Tool batch boundary closed" },
+								stepContext,
+							)
+						}
+						if (schedulerOutcome.status === "aborted") {
+							throw new Error(`[Task#${this.taskId}.${this.instanceId}] tool scheduling aborted`)
+						}
+						this.userMessageContentReady = true
 					}
 
 					// Present any partial blocks that were just completed. This is a
@@ -3802,11 +3802,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// NOTE: This MUST happen AFTER saving the assistant message to API history.
 					// When new_task is in the batch, it triggers delegation which calls flushPendingToolResultsToHistory().
 					// If the assistant message isn't saved yet, tool_results would appear before tool_use blocks.
-					if (partialBlocks.length > 0) {
+					if (partialBlocks.length > 0 && !hasToolUses) {
 						// If there is content to update then it will complete and
 						// update `this.userMessageContentReady` to true, which we
 						// `pWaitFor` before making the next request.
 						presentAssistantMessage(this)
+					}
+					if (hasTextContent && !hasToolUses) {
+						this.userMessageContentReady = true
 					}
 
 					if (hasTextContent || hasToolUses) {
@@ -3828,34 +3831,30 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 						await pWaitFor(() => this.userMessageContentReady)
 
+						this.captureAgentTurnTelemetry(
+							this.buildCurrentAgentResponse(),
+							schedulerOutcome ?? {
+								batchSize: 0,
+								parallelBatchCount: 0,
+								parallelToolCount: 0,
+								durationMs: 0,
+								approvalRequestCount: 0,
+								approvalDeniedCount: 0,
+								approvalCancelledCount: 0,
+								supersededAskCount: 0,
+								completedToolResultCount: 0,
+								outputTruncatedCount: 0,
+							},
+							currentItem.retryAttempt ?? 0,
+						)
+
 						if (this.didComplete) {
 							return true
 						}
 
-						// If the model did not tool use, then we need to tell it to
-						// either use a tool or attempt_completion.
-						const didToolUse = hasToolUses
-
-						if (!didToolUse) {
-							// Increment consecutive no-tool-use counter
-							this.consecutiveNoToolUseCount++
-
-							// Only show error and count toward mistake limit after 2 consecutive failures
-							if (this.consecutiveNoToolUseCount >= 2) {
-								await this.say("error", "MODEL_NO_TOOLS_USED")
-								// Only count toward mistake limit after second consecutive failure
-								this.consecutiveMistakeCount++
-							}
-
-							// Use the task's locked protocol for consistent behavior
-							this.userMessageContent.push({
-								type: "text",
-								text: formatResponse.noToolsUsed(),
-							})
-						} else {
-							// Reset counter when tools are used successfully
-							this.consecutiveNoToolUseCount = 0
-						}
+						// A normal text-only assistant response is a valid terminal
+						// response. Do not coerce it into another tool-use turn.
+						this.consecutiveNoToolUseCount = 0
 
 						// Return after one complete model/tool turn. AgentTurnEngine owns
 						// continuation sequencing; keeping this method to one step makes
@@ -3865,6 +3864,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						// If there's no assistant_responses, that means we got no text
 						// or tool_use content blocks from API which we should assume is
 						// an error.
+						this.captureAgentTurnTelemetry(
+							this.buildCurrentAgentResponse(),
+							{
+								batchSize: 0,
+								parallelBatchCount: 0,
+								parallelToolCount: 0,
+								durationMs: 0,
+								approvalRequestCount: 0,
+								approvalDeniedCount: 0,
+								approvalCancelledCount: 0,
+								supersededAskCount: 0,
+								completedToolResultCount: 0,
+								outputTruncatedCount: 0,
+							},
+							currentItem.retryAttempt ?? 0,
+						)
 
 						// Increment consecutive no-assistant-messages counter
 						this.consecutiveNoAssistantMessagesCount++
@@ -4000,6 +4015,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * view is only the control-flow boundary between Task and the engine.
 	 */
 	private buildCurrentAgentResponse(): AgentResponse {
+		if (this.completedAgentResponse) {
+			return this.completedAgentResponse
+		}
+
 		const items: AgentResponseItem[] = []
 
 		for (const block of this.assistantMessageContent) {
@@ -4044,6 +4063,292 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				(item): item is Extract<AgentResponseItem, { type: "tool_call" }> => item.type === "tool_call",
 			),
 		}
+	}
+
+	private captureAgentTurnTelemetry(
+		response: AgentResponse,
+		metrics: Pick<
+			ToolSchedulerOutcome,
+			| "batchSize"
+			| "parallelBatchCount"
+			| "parallelToolCount"
+			| "durationMs"
+			| "approvalRequestCount"
+			| "approvalDeniedCount"
+			| "approvalCancelledCount"
+			| "supersededAskCount"
+			| "completedToolResultCount"
+			| "outputTruncatedCount"
+		>,
+		retries: number,
+	): void {
+		if (!TelemetryService.hasInstance()) {
+			return
+		}
+
+		TelemetryService.instance.captureEvent(TelemetryEventName.AGENT_TURN, {
+			taskId: this.taskId,
+			...buildAgentTurnTelemetryProperties(response, metrics, retries),
+		})
+		void this.recordAgentTurnEvent(
+			{
+				type: "turn_completed",
+				status: this.abort ? "aborted" : "completed",
+				toolCallCount: response.toolCalls.length,
+				retryCount: retries,
+			},
+			this.completedStepContext,
+		)
+	}
+
+	private async recordAgentTurnEvent(event: AgentTurnEvent, context?: StepContext): Promise<void> {
+		try {
+			this.agentTurnEventLog ??= new AgentTurnEventLog(this.taskId, this.globalStoragePath)
+			await this.agentTurnEventLog.append(event, context)
+		} catch (error) {
+			console.warn(`[Task#${this.taskId}] Failed to persist harness event:`, error)
+		}
+	}
+
+	public async recordInternalTaskEvent(
+		event: Extract<AgentTurnEvent, { type: "internal_task_started" | "internal_task_completed" }>,
+	): Promise<void> {
+		await this.recordAgentTurnEvent(event, this.completedStepContext)
+	}
+
+	private beginStreamingBoundary(): void {
+		this.streamingBoundary = new Promise<void>((resolve) => {
+			this.resolveStreamingBoundary = resolve
+		})
+	}
+
+	private endStreamingBoundary(): void {
+		this.resolveStreamingBoundary?.()
+		this.resolveStreamingBoundary = undefined
+	}
+
+	private beginToolBatchBoundary(): void {
+		this.toolBatchBoundary = new Promise<void>((resolve) => {
+			this.resolveToolBatchBoundary = resolve
+		})
+	}
+
+	private endToolBatchBoundary(): void {
+		this.resolveToolBatchBoundary?.()
+		this.resolveToolBatchBoundary = undefined
+	}
+
+	private async waitForCompactionBoundary(): Promise<void> {
+		await this.streamingBoundary
+		await this.toolBatchBoundary
+		if (!isSafeCompactionBoundary(this.apiConversationHistory)) {
+			throw new Error("Context compaction deferred until all tool call results are committed.")
+		}
+	}
+
+	public getTaskCancellationSignal(): AbortSignal {
+		return this.taskAbortController.signal
+	}
+
+	private async createStepContextSnapshot(input: {
+		kind: StepContextKind
+		contextId?: string
+		parentContextId?: string
+		retryAttempt: number
+		state: any
+		mode: string
+		systemPrompt: string
+		environmentDetails?: string
+		environmentSnapshot?: EnvironmentSnapshot
+		transcript: ApiMessage[]
+		metadata: ApiHandlerCreateMessageMetadata
+		tools: OpenAI.Chat.ChatCompletionTool[]
+		allowedFunctionNames?: string[]
+		modelInfo: ModelInfo
+		contextTokens?: number
+		compaction: StepCompactionMetadata
+		policy?: ToolPolicySnapshot
+	}): Promise<StepContext> {
+		const apiProvider = this.apiConfiguration.apiProvider
+		const modelId = this.api.getModel().id
+		const apiProtocol = getApiProtocol(
+			apiProvider && !isRetiredProvider(apiProvider) ? apiProvider : undefined,
+			modelId,
+		)
+		const profileName = await this.getTaskApiConfigName()
+		const profileId = await this.getCurrentProfileId(input.state)
+		const toolNames = input.tools.flatMap((tool) => (tool.type === "function" ? [tool.function.name] : []))
+		const allowedTools = input.allowedFunctionNames ?? toolNames
+		const disabledTools = input.state?.disabledTools ?? []
+		const policyBase = input.policy ?? {
+			visibleTools: toolNames,
+			allowedTools,
+			disabledTools,
+			autoApprovalEnabled: input.state?.autoApprovalEnabled === true,
+			capabilities: Object.fromEntries(toolNames.map((name) => [name, getToolCapabilities(name)])),
+			outputLimits: {},
+			digest: digestValue({ toolNames, allowedTools, disabledTools }),
+		}
+		const policy = createToolPolicySnapshot(policyBase)
+		const contextWindow = input.modelInfo.contextWindow
+		const maxOutputTokens = getModelMaxOutputTokens({
+			modelId,
+			model: input.modelInfo,
+			settings: this.apiConfiguration,
+		})
+		const inputTokens = input.contextTokens
+
+		return createStepContext({
+			contextId: input.contextId,
+			kind: input.kind,
+			parentContextId: input.parentContextId,
+			retryAttempt: input.retryAttempt,
+			task: {
+				taskId: this.taskId,
+				cwd: this.cwd,
+				rootTaskId: this.rootTaskId,
+				parentTaskId: this.parentTaskId,
+			},
+			mode: {
+				slug: input.mode,
+				profileName,
+				profileId,
+				customModeDigest: digestValue({
+					customModes: input.state?.customModes,
+					customModePrompts: input.state?.customModePrompts,
+					customInstructions: input.state?.customInstructions,
+				}),
+			},
+			provider: {
+				apiProvider,
+				apiProtocol,
+				modelId,
+				modelInfo: input.modelInfo,
+				options: this.apiConfiguration as unknown as Record<string, unknown>,
+			},
+			instructions: {
+				systemPrompt: input.systemPrompt,
+				environmentDetails: input.environmentDetails,
+				environmentSnapshot: input.environmentSnapshot,
+				sources: [
+					{
+						kind: "system_prompt",
+						path: "src/core/prompts/system.ts",
+						digest: digestValue(input.systemPrompt),
+					},
+					{
+						kind: "environment_details",
+						path: "src/core/environment/getEnvironmentDetails.ts",
+						digest: digestValue(input.environmentDetails ?? ""),
+					},
+					{
+						kind: "mode",
+						path: `mode:${input.mode}`,
+						digest: digestValue(input.state?.customModes?.find?.((mode: any) => mode.slug === input.mode)),
+					},
+				],
+			},
+			environment: {
+				roots: [this.cwd, this.globalStoragePath],
+				capabilities: toolNames,
+			},
+			transcript: {
+				messages: input.transcript,
+				boundary: {
+					startIndex: Math.max(0, this.apiConversationHistory.length - input.transcript.length),
+					endIndex: this.apiConversationHistory.length,
+					messageCount: input.transcript.length,
+					digest: digestValue(input.transcript),
+				},
+			},
+			tools: {
+				schemas: input.tools,
+				allowedFunctionNames: input.allowedFunctionNames,
+				toolChoice: input.metadata.tool_choice,
+				parallelToolCalls: input.metadata.parallelToolCalls ?? true,
+				digest: digestValue(input.tools),
+			},
+			policy: {
+				...policy,
+				digest: digestValue(policy),
+			},
+			budget: {
+				contextWindow,
+				maxOutputTokens,
+				inputTokens,
+				estimatedInputTokens: inputTokens,
+				remainingTokens:
+					inputTokens === undefined
+						? undefined
+						: Math.max(0, contextWindow - inputTokens - (maxOutputTokens ?? 0)),
+				compaction: input.compaction,
+			},
+			request: {
+				metadata: input.metadata,
+			},
+		})
+	}
+
+	private createCompatibilityStepContext(): StepContext {
+		const model = this.api.getModel()
+		const emptyTools: OpenAI.Chat.ChatCompletionTool[] = []
+		const emptyPolicy = {
+			allowedTools: [],
+			disabledTools: [],
+			approval: { liveRevalidation: true },
+			capabilities: {},
+		}
+		const metadata: ApiHandlerCreateMessageMetadata = { taskId: this.taskId }
+
+		return createStepContext({
+			contextId: crypto.randomUUID(),
+			kind: "agent",
+			retryAttempt: 0,
+			task: { taskId: this.taskId, cwd: this.cwd, rootTaskId: this.rootTaskId, parentTaskId: this.parentTaskId },
+			mode: { slug: defaultModeSlug },
+			provider: {
+				apiProvider: this.apiConfiguration.apiProvider,
+				apiProtocol: getApiProtocol(
+					this.apiConfiguration.apiProvider && !isRetiredProvider(this.apiConfiguration.apiProvider)
+						? this.apiConfiguration.apiProvider
+						: undefined,
+					model.id,
+				),
+				modelId: model.id,
+				modelInfo: model.info,
+				options: this.apiConfiguration as unknown as Record<string, unknown>,
+			},
+			instructions: { systemPrompt: "", sources: [] },
+			environment: { roots: [this.cwd], capabilities: [] },
+			transcript: {
+				messages: [],
+				boundary: { startIndex: 0, endIndex: 0, messageCount: 0, digest: digestValue([]) },
+			},
+			tools: { schemas: emptyTools, parallelToolCalls: true, digest: digestValue(emptyTools) },
+			policy: { ...emptyPolicy, digest: digestValue(emptyPolicy) },
+			budget: { contextWindow: model.info.contextWindow, compaction: { action: "none", attempted: false } },
+			request: { metadata },
+		})
+	}
+
+	private async persistStepContextMetadata(context: StepContext, retryAttempt: number): Promise<void> {
+		const requestIndex = findLastIndex(this.clineMessages, (message) => message.say === "api_req_started")
+		if (requestIndex < 0) {
+			return
+		}
+
+		let existing: ClineApiReqInfo = {}
+		try {
+			existing = JSON.parse(this.clineMessages[requestIndex].text || "{}") as ClineApiReqInfo
+		} catch {
+			// Preserve the request record even if an older version wrote malformed metadata.
+		}
+
+		this.clineMessages[requestIndex].text = JSON.stringify({
+			...existing,
+			...toStepContextMetadata(context, retryAttempt),
+		})
+		await this.updateClineMessage(this.clineMessages[requestIndex])
 	}
 
 	private async getSystemPrompt(): Promise<string> {
@@ -4264,15 +4569,38 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const rateLimitSeconds =
 			state?.apiConfiguration?.rateLimitSeconds ?? this.apiConfiguration?.rateLimitSeconds ?? 0
 
-		if (rateLimitSeconds <= 0 || !Task.lastGlobalApiRequestTime) {
-			return
-		}
-
 		const now = performance.now()
-		const timeSinceLastRequest = now - Task.lastGlobalApiRequestTime
-		const rateLimitDelay = Math.ceil(
-			Math.min(rateLimitSeconds, Math.max(0, rateLimitSeconds * 1000 - timeSinceLastRequest) / 1000),
-		)
+		const configuration = (state?.apiConfiguration ?? this.apiConfiguration) as typeof this.apiConfiguration & {
+			requestsPerMinute?: number
+			tokensPerMinute?: number
+		}
+		const hasProviderLimits = Boolean(configuration.requestsPerMinute || configuration.tokensPerMinute)
+		if (!hasProviderLimits && (rateLimitSeconds <= 0 || !Task.lastGlobalApiRequestTime)) return
+		const { contextTokens = 0 } = this.getTokenUsage()
+		const reservedOutputTokens =
+			getModelMaxOutputTokens({
+				modelId: this.api.getModel().id,
+				model: this.api.getModel().info,
+				settings: this.apiConfiguration,
+			}) ?? 0
+		const rateLimitDelay = hasProviderLimits
+			? Math.ceil(
+					Task.requestPacer.reserve(
+						now,
+						{ estimatedInputTokens: contextTokens, reservedOutputTokens, retry: retryAttempt > 0 },
+						{
+							requestsPerMinute: configuration.requestsPerMinute,
+							tokensPerMinute: configuration.tokensPerMinute,
+							minimumSpacingMs: Math.max(0, rateLimitSeconds * 1000),
+						},
+					) / 1000,
+				)
+			: Math.ceil(
+					Math.min(
+						rateLimitSeconds,
+						Math.max(0, rateLimitSeconds * 1000 - (now - (Task.lastGlobalApiRequestTime ?? now))) / 1000,
+					),
+				)
 
 		// Only show the countdown UX on the first attempt. Retry flows have their own delay messaging.
 		if (rateLimitDelay > 0 && retryAttempt === 0) {
@@ -4291,6 +4619,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		retryAttempt: number = 0,
 		options: { skipProviderRateLimit?: boolean } = {},
 	): ApiStream {
+		this.lastAgentTurnRetryCount = Math.max(this.lastAgentTurnRetryCount, retryAttempt)
+		if (retryAttempt === 0) {
+			this.retryStepContext = undefined
+		}
+		const reusedStepContext = this.retryStepContext
+		const compactionParentContextId = reusedStepContext ? undefined : this.lastCompactionStepContext?.contextId
+
 		const state = await this.providerRef.deref()?.getState()
 
 		const {
@@ -4300,7 +4635,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			autoCondenseContextPercent = 100,
 			profileThresholds = {},
 		} = state ?? {}
-		const mode = await this.getTaskMode()
+		const mode = reusedStepContext?.mode.slug ?? (await this.getTaskMode())
 		const apiConfiguration = this.apiConfiguration
 
 		// Get condensing configuration for automatic triggers.
@@ -4319,10 +4654,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// in the caller.
 		Task.lastGlobalApiRequestTime = performance.now()
 
-		const systemPrompt = await this.getSystemPrompt()
-		const { contextTokens } = this.getTokenUsage()
+		const systemPrompt = reusedStepContext?.instructions.systemPrompt ?? (await this.getSystemPrompt())
+		const { contextTokens } =
+			reusedStepContext?.budget.inputTokens !== undefined
+				? { contextTokens: reusedStepContext.budget.inputTokens }
+				: this.getTokenUsage()
+		let compactionMetadata: StepCompactionMetadata = {
+			action: "none",
+			attempted: false,
+		}
+		const pendingAgentContextId = reusedStepContext?.contextId ?? crypto.randomUUID()
 
-		if (contextTokens) {
+		if (contextTokens && !reusedStepContext) {
 			const modelInfo = this.api.getModel().info
 
 			const maxTokens = getModelMaxOutputTokens({
@@ -4433,6 +4776,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					filesReadByRoo: contextMgmtFilesReadByRoo,
 					cwd: this.cwd,
 					rooIgnoreController: this.rooIgnoreController,
+					createStepContext: async ({
+						systemPrompt: compactionPrompt,
+						messages,
+						metadata: compactionMetadata,
+					}) => {
+						const context = await this.createStepContextSnapshot({
+							kind: "compaction",
+							contextId: crypto.randomUUID(),
+							parentContextId: pendingAgentContextId,
+							retryAttempt: 0,
+							state,
+							mode,
+							systemPrompt: compactionPrompt,
+							environmentDetails: contextMgmtEnvironmentDetails,
+							environmentSnapshot: this.currentStepEnvironmentSnapshot,
+							transcript: messages,
+							metadata: compactionMetadata ?? contextMgmtMetadata,
+							tools: contextMgmtTools,
+							modelInfo,
+							contextTokens,
+							compaction: { action: "none", attempted: true },
+						})
+						this.lastCompactionStepContext = context
+						return context
+					},
 				})
 				if (truncateResult.messages !== this.apiConversationHistory) {
 					await this.overwriteApiConversationHistory(truncateResult.messages)
@@ -4441,6 +4809,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					await this.say("condense_context_error", truncateResult.error)
 				}
 				if (truncateResult.summary) {
+					compactionMetadata = {
+						action: "summary",
+						attempted: true,
+						prevContextTokens: truncateResult.prevContextTokens,
+						newContextTokens: truncateResult.newContextTokens,
+						summaryId: truncateResult.condenseId,
+						cost: truncateResult.cost,
+					}
 					const { summary, cost, prevContextTokens, newContextTokens = 0, condenseId } = truncateResult
 					const contextCondense: ContextCondense = {
 						summary,
@@ -4460,6 +4836,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						contextCondense,
 					)
 				} else if (truncateResult.truncationId) {
+					compactionMetadata = {
+						action: "truncation",
+						attempted: true,
+						prevContextTokens: truncateResult.prevContextTokens,
+						newContextTokens: truncateResult.newContextTokensAfterTruncation,
+						truncationId: truncateResult.truncationId,
+						messagesRemoved: truncateResult.messagesRemoved,
+						cost: truncateResult.cost,
+					}
 					// Sliding window truncation occurred (fallback when condensing fails or is disabled)
 					const contextTruncation: ContextTruncation = {
 						truncationId: truncateResult.truncationId,
@@ -4479,6 +4864,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						contextTruncation,
 					)
 				}
+				await this.recordAgentTurnEvent(
+					{
+						type: "compaction_completed",
+						action: compactionMetadata.action,
+						messagesRemoved: compactionMetadata.messagesRemoved,
+						previousTokens: compactionMetadata.prevContextTokens,
+						newTokens: compactionMetadata.newContextTokens,
+					},
+					this.lastCompactionStepContext,
+				)
 			} finally {
 				// Notify webview that context management is complete (sets isCondensing = false)
 				// This removes the in-progress spinner and allows the completed result to show
@@ -4494,13 +4889,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Get the effective API history by filtering out condensed messages
 		// This allows non-destructive condensing where messages are tagged but not deleted,
 		// enabling accurate rewind operations while still sending condensed history to the API.
-		const effectiveHistory = getEffectiveApiHistory(this.apiConversationHistory)
-		const messagesSinceLastSummary = getMessagesSinceLastSummary(effectiveHistory)
-		// For API only: merge consecutive user messages (excludes summary messages per
-		// mergeConsecutiveApiMessages implementation) without mutating stored history.
-		const mergedForApi = mergeConsecutiveApiMessages(messagesSinceLastSummary, { roles: ["user"] })
-		const messagesWithoutImages = maybeRemoveImageBlocks(mergedForApi, this.api)
-		const cleanConversationHistory = this.buildCleanConversationHistory(messagesWithoutImages as ApiMessage[])
+		const cleanConversationHistory = reusedStepContext
+			? (reusedStepContext.transcript.messages as unknown as ApiMessage[])
+			: (() => {
+					const effectiveHistory = getEffectiveApiHistory(this.apiConversationHistory)
+					const messagesSinceLastSummary = getMessagesSinceLastSummary(effectiveHistory)
+					// For API only: merge consecutive user messages (excludes summary messages per
+					// mergeConsecutiveApiMessages implementation) without mutating stored history.
+					const mergedForApi = mergeConsecutiveApiMessages(messagesSinceLastSummary, { roles: ["user"] })
+					const messagesWithoutImages = maybeRemoveImageBlocks(mergedForApi, this.api)
+					return this.buildCleanConversationHistory(messagesWithoutImages as ApiMessage[])
+				})()
 
 		// Check auto-approval limits
 		const approvalResult = await this.autoApprovalHandler.checkAutoApprovalLimits(
@@ -4515,15 +4914,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		// Whether we include tools is determined by whether we have any tools to send.
-		const modelInfo = this.api.getModel().info
+		const modelInfo = (reusedStepContext?.provider.modelInfo as ModelInfo | undefined) ?? this.api.getModel().info
 
 		// Build complete tools array: native tools + dynamic MCP tools
 		// When includeAllToolsWithRestrictions is true, returns all tools but provides
 		// allowedFunctionNames for providers (like Gemini) that need to see all tool
 		// definitions in history while restricting callable tools for the current mode.
 		// Only Gemini currently supports this - other providers filter tools normally.
-		let allTools: OpenAI.Chat.ChatCompletionTool[] = []
-		let allowedFunctionNames: string[] | undefined
+		let allTools: OpenAI.Chat.ChatCompletionTool[] = reusedStepContext
+			? (reusedStepContext.tools.schemas as unknown as OpenAI.Chat.ChatCompletionTool[])
+			: []
+		let allowedFunctionNames: string[] | undefined = reusedStepContext?.tools.allowedFunctionNames
+			? [...reusedStepContext.tools.allowedFunctionNames]
+			: undefined
 
 		// Gemini requires all tool definitions to be present for history compatibility,
 		// but uses allowedFunctionNames to restrict which tools can be called.
@@ -4533,7 +4936,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const supportsAllowedFunctionNames =
 			apiConfiguration?.apiProvider === "gemini" || apiConfiguration?.apiProvider === "vertex"
 
-		{
+		if (!reusedStepContext) {
 			const provider = this.providerRef.deref()
 			if (!provider) {
 				throw new Error("Provider reference lost during tool building")
@@ -4556,22 +4959,63 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		const shouldIncludeTools = allTools.length > 0
 
-		const metadata: ApiHandlerCreateMessageMetadata = {
-			mode: mode,
-			taskId: this.taskId,
-			suppressPreviousResponseId: this.skipPrevResponseIdOnce,
-			// Include tools whenever they are present.
-			...(shouldIncludeTools
-				? {
-						tools: allTools,
-						tool_choice: "auto",
-						parallelToolCalls: true,
-						// When mode restricts tools, provide allowedFunctionNames so providers
-						// like Gemini can see all tools in history but only call allowed ones
-						...(allowedFunctionNames ? { allowedFunctionNames } : {}),
-					}
-				: {}),
-		}
+		const metadata: ApiHandlerCreateMessageMetadata = reusedStepContext
+			? (reusedStepContext.request.metadata as unknown as ApiHandlerCreateMessageMetadata)
+			: {
+					mode: mode,
+					taskId: this.taskId,
+					suppressPreviousResponseId: this.skipPrevResponseIdOnce,
+					// Include tools whenever they are present.
+					...(shouldIncludeTools
+						? {
+								tools: allTools,
+								tool_choice: "auto",
+								parallelToolCalls: true,
+								// When mode restricts tools, provide allowedFunctionNames so providers
+								// like Gemini can see all tools in history but only call allowed ones
+								...(allowedFunctionNames ? { allowedFunctionNames } : {}),
+							}
+						: {}),
+				}
+
+		const stepContext =
+			this.retryStepContext ??
+			(await this.createStepContextSnapshot({
+				kind: "agent",
+				contextId: pendingAgentContextId,
+				parentContextId: compactionParentContextId,
+				retryAttempt,
+				state,
+				mode,
+				systemPrompt,
+				environmentDetails: this.currentStepEnvironmentDetails,
+				environmentSnapshot: this.currentStepEnvironmentSnapshot,
+				transcript: cleanConversationHistory as unknown as ApiMessage[],
+				metadata,
+				tools: allTools,
+				allowedFunctionNames,
+				modelInfo,
+				contextTokens,
+				compaction: compactionMetadata,
+			}))
+		this.retryStepContext = stepContext
+		this.completedStepContext = stepContext
+		this.lastCompactionStepContext = undefined
+		await this.persistStepContextMetadata(stepContext, retryAttempt)
+		await this.recordAgentTurnEvent(
+			{ type: "policy_snapshot", digest: stepContext.policy.digest, toolCount: stepContext.tools.schemas.length },
+			stepContext,
+		)
+		await this.recordAgentTurnEvent(
+			{
+				type: "profile_resolved",
+				sourceMode: stepContext.mode.slug,
+				profileId: stepContext.mode.executionProfileId ?? "work",
+				legacyAdapter: !["work", "plan"].includes(stepContext.mode.slug),
+			},
+			stepContext,
+		)
+		await this.recordAgentTurnEvent({ type: "model_request_started", attempt: retryAttempt }, stepContext)
 
 		// Create an AbortController to allow cancelling the request mid-stream
 		this.currentRequestAbortController = new AbortController()
@@ -4581,9 +5025,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		// The provider accepts reasoning items alongside standard messages; cast to the expected parameter type.
 		const stream = this.api.createMessage(
-			systemPrompt,
-			cleanConversationHistory as unknown as Anthropic.Messages.MessageParam[],
-			metadata,
+			stepContext.instructions.systemPrompt,
+			stepContext.transcript.messages as unknown as Anthropic.Messages.MessageParam[],
+			stepContext.request.metadata as unknown as ApiHandlerCreateMessageMetadata,
 		)
 		const iterator = stream[Symbol.asyncIterator]()
 
@@ -4642,6 +5086,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						`Attempting automatic truncation...`,
 				)
 				await this.handleContextWindowExceededError()
+				this.retryStepContext = undefined
+				await this.recordAgentTurnEvent(
+					{ type: "retry", attempt: retryAttempt + 1, reason: "context_window_exceeded" },
+					this.lastCompactionStepContext,
+				)
 				// Retry the request after handling the context window error
 				yield* this.attemptApiRequest(retryAttempt + 1)
 				return
@@ -4660,6 +5109,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						`[Task#attemptApiRequest] task ${this.taskId}.${this.instanceId} aborted during retry`,
 					)
 				}
+				await this.recordAgentTurnEvent(
+					{ type: "retry", attempt: retryAttempt + 1, reason: "provider_request_failed" },
+					this.retryStepContext,
+				)
 
 				// Delegate generator output from the recursive call with
 				// incremented retry count.
@@ -4679,9 +5132,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 
 				await this.say("api_req_retried")
+				await this.recordAgentTurnEvent(
+					{ type: "retry", attempt: retryAttempt + 1, reason: "user_retry" },
+					this.retryStepContext,
+				)
 
 				// Delegate generator output from the recursive call.
-				yield* this.attemptApiRequest()
+				yield* this.attemptApiRequest(retryAttempt + 1)
 				return
 			}
 		}
@@ -4707,6 +5164,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				Math.ceil(baseDelay * Math.pow(2, retryAttempt)),
 				MAX_EXPONENTIAL_BACKOFF_SECONDS,
 			)
+			const retryAfterMs = this.getRetryAfterMs(error)
+			if (retryAfterMs > 0) {
+				Task.requestPacer.observeRetryAfter(performance.now(), retryAfterMs)
+				exponentialDelay = Math.max(exponentialDelay, Math.ceil(retryAfterMs / 1000))
+			}
 
 			// Respect provider rate limit window
 			let rateLimitDelay = 0
@@ -4769,6 +5231,27 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			console.error("Exponential backoff failed:", err)
 		}
+	}
+
+	private getRetryAfterMs(error: any, now = Date.now()): number {
+		const headers = error?.headers ?? error?.response?.headers
+		const readHeader = (name: string): unknown =>
+			typeof headers?.get === "function"
+				? headers.get(name)
+				: (headers?.[name] ?? headers?.[name.toLowerCase()] ?? headers?.[name.toUpperCase()])
+		const retryAfter = readHeader("retry-after")
+		if (retryAfter !== undefined && retryAfter !== null) {
+			const seconds = Number(retryAfter)
+			if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000)
+			const date = Date.parse(String(retryAfter))
+			if (Number.isFinite(date)) return Math.max(0, date - now)
+		}
+		const reset = Number(readHeader("x-ratelimit-reset"))
+		if (Number.isFinite(reset) && reset > 0) {
+			const resetMs = reset > 10_000_000_000 ? reset : reset * 1000
+			return Math.max(0, resetMs - now)
+		}
+		return 0
 	}
 
 	// Checkpoints

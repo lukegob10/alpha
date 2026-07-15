@@ -111,7 +111,6 @@ const CHECKPOINT_TOOLS = new Set([
 const TASK_TOOLS = new Set([
 	"update_todo_list",
 	"new_task",
-	"delegate_task",
 	"attempt_completion",
 	"switch_mode",
 	"ask_followup_question",

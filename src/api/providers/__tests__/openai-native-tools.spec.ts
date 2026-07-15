@@ -3,6 +3,7 @@ import OpenAI from "openai"
 import { OpenAiHandler } from "../openai"
 import { OpenAiNativeHandler } from "../openai-native"
 import type { ApiHandlerOptions } from "../../../shared/api"
+import { collectAgentResponse } from "../../../core/agent/AgentResponseAccumulator"
 
 describe("OpenAiHandler native tools", () => {
 	it("includes tools in request when tools are provided via metadata (regression test)", async () => {
@@ -338,26 +339,40 @@ describe("OpenAiNativeHandler MCP tool schema handling", () => {
 
 		const chunks: any[] = []
 		for await (const chunk of stream) {
-			if (chunk.type === "tool_call_partial") {
-				chunks.push(chunk)
-			}
+			chunks.push(chunk)
 		}
+		const partialChunks = chunks.filter((chunk) => chunk.type === "tool_call_partial")
+		const normalized = await collectAgentResponse(
+			(async function* () {
+				for (const chunk of chunks) {
+					yield chunk
+				}
+			})(),
+		)
 
-		expect(chunks.length).toBe(2)
-		expect(chunks[0]).toEqual({
+		expect(partialChunks.length).toBe(2)
+		expect(partialChunks[0]).toEqual({
 			type: "tool_call_partial",
 			index: 0,
 			id: "call_123", // Should be filled from pendingToolCallId
 			name: "read_file", // Should be filled from pendingToolCallName
 			arguments: '{"path":',
 		})
-		expect(chunks[1]).toEqual({
+		expect(partialChunks[1]).toEqual({
 			type: "tool_call_partial",
 			index: 0,
 			id: "call_123",
 			name: "read_file",
 			arguments: '"/tmp/test.txt"}',
 		})
+		expect(normalized.toolCalls).toEqual([
+			{
+				type: "tool_call",
+				id: "call_123",
+				name: "read_file",
+				arguments: { path: "/tmp/test.txt" },
+			},
+		])
 	})
 })
 
@@ -382,6 +397,77 @@ describe("OpenAiNativeHandler done-event fallbacks", () => {
 
 		return handler
 	}
+
+	it("keeps multiple Responses function calls associated by item_id and output_index", async () => {
+		const handler = createHandlerWithEvents([
+			{
+				type: "response.output_item.added",
+				output_index: 0,
+				item: { type: "function_call", id: "fc-item-1", call_id: "call-1", name: "read_file", arguments: "" },
+			},
+			{
+				type: "response.output_item.added",
+				output_index: 1,
+				item: { type: "function_call", id: "fc-item-2", call_id: "call-2", name: "read_file", arguments: "" },
+			},
+			{
+				type: "response.function_call_arguments.delta",
+				item_id: "fc-item-1",
+				output_index: 0,
+				delta: '{"path":"first.ts"}',
+			},
+			{
+				type: "response.function_call_arguments.delta",
+				item_id: "fc-item-2",
+				output_index: 1,
+				delta: '{"path":"second.ts"}',
+			},
+			{
+				type: "response.output_item.done",
+				output_index: 0,
+				item: {
+					type: "function_call",
+					id: "fc-item-1",
+					call_id: "call-1",
+					name: "read_file",
+					arguments: '{"path":"first.ts"}',
+				},
+			},
+			{
+				type: "response.output_item.done",
+				output_index: 1,
+				item: {
+					type: "function_call",
+					id: "fc-item-2",
+					call_id: "call-2",
+					name: "read_file",
+					arguments: '{"path":"second.ts"}',
+				},
+			},
+			{
+				type: "response.completed",
+				response: { output: [], usage: { input_tokens: 10, output_tokens: 5 } },
+			},
+		])
+
+		const chunks = []
+		for await (const chunk of handler.createMessage("system", [], { taskId: "multi-call" })) {
+			chunks.push(chunk)
+		}
+
+		const normalized = await collectAgentResponse(
+			(async function* () {
+				for (const chunk of chunks) {
+					yield chunk
+				}
+			})(),
+		)
+
+		expect(normalized.toolCalls).toEqual([
+			{ type: "tool_call", id: "call-1", name: "read_file", arguments: { path: "first.ts" } },
+			{ type: "tool_call", id: "call-2", name: "read_file", arguments: { path: "second.ts" } },
+		])
+	})
 
 	const collectChunksFromEvents = async (events: any[]) => {
 		const handler = createHandlerWithEvents(events)

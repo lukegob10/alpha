@@ -55,15 +55,4 @@ describe("bounded delegation", () => {
 		const manager = new BoundedDelegationManager(async (item) => result(item.id))
 		await expect(manager.run({ ...envelope("a"), policy: { ...policy, delegate: true } })).rejects.toThrow("depth")
 	})
-
-	it("returns a timed-out structured result instead of corrupting the parent", async () => {
-		const manager = new BoundedDelegationManager(
-			async (_item, signal) =>
-				await new Promise((_, reject) =>
-					signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
-				),
-		)
-		const timed = { ...envelope("a"), budget: { ...envelope("a").budget, timeoutMs: 1 } }
-		await expect(manager.run(timed)).resolves.toMatchObject({ taskId: "a", status: "timed_out" })
-	})
 })

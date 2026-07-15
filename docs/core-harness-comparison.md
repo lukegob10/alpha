@@ -22,6 +22,8 @@ The source review was performed against the following benchmark-era snapshots:
 
 Alpha was inspected on the `codex/agent-harness-experiment` branch. The `main` branch remains untouched.
 
+> **Implementation status (July 2026):** This document began as a gap analysis. The experiment branch now implements the shared turn engine, provider-neutral response items, multi-tool scheduling, immutable step context, centralized execution policy, safe-boundary compaction, replayable event telemetry, structured tool outcomes, and normal final-response completion. The legacy mode/profile system has not been replaced. Internal delegation, objective-driven child task definitions, model routing for child work, prompt consolidation, and advanced hash/anchor edit recovery remain future work. The remaining implementation sequence is defined in [`core-harness-comparison-final-phases.md`](./core-harness-comparison-final-phases.md).
+
 ## Executive conclusion
 
 Alpha does not primarily need a larger mode prompt or a more elaborate orchestrator prompt. It needs a stronger agent kernel.
@@ -39,7 +41,7 @@ objective
   -> verify, compact, continue, or complete
 ```
 
-Alpha currently has a chat-oriented streaming presenter in the middle of this process. It begins executing tool calls while the assistant response is still being assembled, interrupts the response after a tool, and effectively limits each response to one tool. Its prompt asks the model to use multiple tools, but the runtime contradicts that instruction. Its Orchestrator mode delegates instead of providing a full problem-solving environment.
+At the start of the experiment, Alpha had a chat-oriented streaming presenter in the middle of this process. It began executing tool calls while the assistant response was still being assembled, interrupted the response after a tool, and effectively limited each response to one tool. Phases 1â€“3 replaced that live path with a provider-neutral turn engine and scheduler. The remaining architectural mismatch is now above the kernel: Alpha still exposes the legacy Code, Architect, Ask, Debug, and Orchestrator mode topology, and Orchestrator remains a prompt-driven delegator rather than a bounded runtime capability.
 
 The target should be a hybrid of the strongest ideas:
 
@@ -203,14 +205,16 @@ Codex’s tradeoff is implementation weight. Alpha is TypeScript and extension-h
 
 Alpha’s main task loop is in [`src/core/task/Task.ts`](../src/core/task/Task.ts). `initiateTaskLoop` repeatedly calls `recursivelyMakeClineRequests`, while the streaming response is presented through [`presentAssistantMessage.ts`](../src/core/assistant-message/presentAssistantMessage.ts).
 
-The current behavior has four important characteristics:
+Before the Phase 2 scheduler change, the execution path had four important characteristics:
 
-1. The response presenter begins tool handling while the assistant response is still being assembled.
-2. `didAlreadyUseTool` and the interruption path effectively enforce one tool per assistant response.
-3. The loop injects `formatResponse.noToolsUsed()` when a response did not use a tool, coercing the model toward tool use.
-4. `parallelToolCalls: true` appears in request/configuration paths, but the execution path is still sequential/single-tool in practice.
+1. The response presenter began tool handling while the assistant response was still being assembled.
+2. `didAlreadyUseTool` and the interruption path effectively enforced one tool per assistant response.
+3. The loop injected `formatResponse.noToolsUsed()` when a response did not use a tool, coercing the model toward tool use.
+4. `parallelToolCalls: true` appeared in request/configuration paths, but the execution path was still sequential/single-tool in practice.
 
-This is the central contradiction:
+Phase 2 now collects the complete response before scheduling, so the live path no longer uses those single-tool and no-tool coercion behaviors. The legacy presenter remains only for compatibility with isolated presentation helpers.
+
+This was the central contradiction:
 
 ```text
 Prompt: “Prefer calling as many tools as reasonably needed in a single response.”
@@ -404,17 +408,18 @@ The runtime should enforce:
 - step limits and compaction;
 - child-agent bounds.
 
-The current shared Alpha tool instruction says to prefer as many tools as reasonably needed in one response, but the runtime interrupts after one. Once the engine supports batches, that instruction becomes truthful. Until then, shortening or enlarging the prompt is mostly cosmetic.
+Before Phase 2, the shared Alpha tool instruction said to prefer as many tools as reasonably needed in one response, but the runtime interrupted after one. The Phase 2 scheduler makes the targeted batching instruction truthful; broad prompt changes remain out of scope.
 
-Recommended profiles:
+Recommended user-facing modes:
 
-| Profile                    | Direct capability                                                 | Typical use                                 |
-| -------------------------- | ----------------------------------------------------------------- | ------------------------------------------- |
-| Build                      | Full coding tools, diagnostics, verification, optional delegation | Default software problem solving            |
-| Explore                    | Read/search/inspect only                                          | Repository discovery and evidence gathering |
-| Plan                       | Read/search plus plan artifact; no mutation                       | Design before implementation                |
-| General                    | Broad tools with bounded task output                              | Delegated multi-step work                   |
-| Orchestrator compatibility | Same engine as Build, delegation preferred by policy              | Existing Alpha workflows during migration   |
+| Mode | Direct capability                                                            | Typical use                                                                  |
+| ---- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Work | Full problem-solving loop with policy-governed tools and optional delegation | Default questions, diagnosis, implementation, verification, and general work |
+| Plan | Read/search/inspect plus a plan artifact; no workspace or external mutation  | Design and review before implementation                                      |
+
+Model choice is a separate axis. Work and Plan may each remember a default model, reasoning level, and cost setting, while the user can override the model per task. Internal children receive an explicit model route in their task envelope.
+
+Explore, Diagnose, Design, Implement, Verify, Review, Document, Operate, and Analyze are internal task roles, not user-facing modes. Skills and workflows attach to those roles as reusable procedures. Orchestrator is not part of the target product surface.
 
 ## Implementation sequence on the experiment branch
 
@@ -438,7 +443,7 @@ Create the `AgentTurnEngine` behind the current `Task` façade. Initially adapt 
 
 ### Phase 2 — Remove the single-tool contradiction
 
-Collect complete assistant responses, normalize all tool calls, and execute multiple calls in one batch. Remove the `noToolsUsed` re-prompt. Preserve `attempt_completion` only as a compatibility tool; do not require it for a normal final response.
+The experiment branch now collects complete assistant responses, normalizes all tool calls, and executes multiple calls in one batch. It removes the `noToolsUsed` re-prompt and preserves `attempt_completion` only as a compatibility tool; it is not required for a normal final response.
 
 Acceptance tests:
 
@@ -497,6 +502,11 @@ The decisive shift is from “a mode prompt drives a streaming chat presenter”
 ### Alpha
 
 - [`src/core/task/Task.ts`](../src/core/task/Task.ts)
+- [`src/core/agent/AgentTurnEngine.ts`](../src/core/agent/AgentTurnEngine.ts)
+- [`src/core/agent/StepContext.ts`](../src/core/agent/StepContext.ts)
+- [`src/core/agent/ToolPolicy.ts`](../src/core/agent/ToolPolicy.ts)
+- [`src/core/agent/ToolScheduler.ts`](../src/core/agent/ToolScheduler.ts)
+- [`src/core/tools/ToolRegistry.ts`](../src/core/tools/ToolRegistry.ts)
 - [`src/core/assistant-message/presentAssistantMessage.ts`](../src/core/assistant-message/presentAssistantMessage.ts)
 - [`src/core/prompts/system.ts`](../src/core/prompts/system.ts)
 - [`src/core/prompts/sections/tool-use.ts`](../src/core/prompts/sections/tool-use.ts)
@@ -536,3 +546,9 @@ The decisive shift is from “a mode prompt drives a streaming chat presenter”
 - [`codex-rs/core/src/tools/registry.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/registry.rs)
 - [`codex-rs/core/src/compact.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs)
 - [`codex-rs/core/tests/suite/tool_parallelism.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/tests/suite/tool_parallelism.rs)
+
+### Frontier orchestration direction
+
+- [OpenAI: A practical guide to building agents](https://openai.com/business/guides-and-resources/a-practical-guide-to-building-ai-agents/)
+- [OpenAI: Symphony orchestration specification](https://openai.com/index/open-source-codex-orchestration-symphony/)
+- [Anthropic: Building Effective AI Agents](https://resources.anthropic.com/building-effective-ai-agents)

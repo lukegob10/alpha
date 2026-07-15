@@ -22,17 +22,10 @@ describe("buildAgentTurnTelemetryProperties", () => {
 
 		expect(properties).toEqual({
 			toolCallCount: 1,
-			malformedToolCallCount: 1,
 			batchSize: 2,
 			parallelBatchCount: 1,
 			parallelToolCount: 2,
 			executionDurationMs: 42,
-			approvalRequestCount: 0,
-			approvalDeniedCount: 0,
-			approvalCancelledCount: 0,
-			supersededAskCount: 0,
-			completedToolResultCount: 0,
-			outputTruncatedCount: 0,
 			retries: 3,
 			noToolCoercions: 0,
 			toolCallNames: ["read_file", "list_files"],
@@ -47,9 +40,6 @@ describe("buildAgentTurnTelemetryProperties", () => {
 		)
 
 		expect(properties.toolCallCount).toBe(0)
-		expect(properties.malformedToolCallCount).toBe(0)
 		expect(properties.noToolCoercions).toBe(0)
-		expect(properties.completedToolResultCount).toBe(0)
-		expect(properties.outputTruncatedCount).toBe(0)
 	})
 })

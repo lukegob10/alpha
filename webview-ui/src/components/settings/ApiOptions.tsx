@@ -777,6 +777,22 @@ const ApiOptions = ({
 									value={apiConfiguration.rateLimitSeconds || 0}
 									onChange={(value) => setApiConfigurationField("rateLimitSeconds", value)}
 								/>
+								<div className="grid grid-cols-2 gap-2">
+									<VSCodeTextField
+										value={apiConfiguration.requestsPerMinute?.toString() ?? ""}
+										onInput={handleInputChange("requestsPerMinute", (value) =>
+											value ? Number(value) : undefined,
+										)}>
+										<label className="block font-medium mb-1">Requests per minute</label>
+									</VSCodeTextField>
+									<VSCodeTextField
+										value={apiConfiguration.tokensPerMinute?.toString() ?? ""}
+										onInput={handleInputChange("tokensPerMinute", (value) =>
+											value ? Number(value) : undefined,
+										)}>
+										<label className="block font-medium mb-1">Tokens per minute</label>
+									</VSCodeTextField>
+								</div>
 								<ConsecutiveMistakeLimitControl
 									value={
 										apiConfiguration.consecutiveMistakeLimit !== undefined

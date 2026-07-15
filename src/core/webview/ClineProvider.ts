@@ -41,7 +41,7 @@ import {
 	openRouterDefaultModelId,
 	DEFAULT_WRITE_DELAY_MS,
 	DEFAULT_MAX_CONCURRENT_TASKS,
-	DEFAULT_MODES,
+	RECOMMENDED_MODES,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	getModelId,
 	isRetiredProvider,
@@ -92,6 +92,12 @@ import { ProviderSettingsManager } from "../config/ProviderSettingsManager"
 import { CustomModesManager } from "../config/CustomModesManager"
 import { Task } from "../task/Task"
 import { WorkspaceMutationGate } from "../task/WorkspaceMutationGate"
+import {
+	BoundedDelegationManager,
+	type InternalTaskResult,
+	type InternalTaskRunner,
+} from "../agent/BoundedDelegationManager"
+import { isValidInternalTaskEnvelope, type InternalTaskEnvelope } from "../agent/InternalTaskEnvelope"
 
 import { webviewMessageHandler } from "./webviewMessageHandler"
 import type { ClineMessage, LiveTaskMetadata, TodoItem } from "@alpha-code/types"
@@ -126,6 +132,14 @@ export class ClineProvider
 	extends EventEmitter<TaskProviderEvents>
 	implements vscode.WebviewViewProvider, TelemetryPropertiesProvider, TaskProviderLike
 {
+	private internalDelegationManager?: BoundedDelegationManager
+	private readonly pendingInternalChildren = new Map<
+		string,
+		{
+			envelope: InternalTaskEnvelope
+			resolve: (result: Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">) => void
+		}
+	>()
 	// Used in package.json as the view's id. This value cannot be changed due
 	// to how VSCode caches views based on their id, and updating the id would
 	// break existing instances of the extension.
@@ -3196,9 +3210,9 @@ export class ClineProvider
 	public async getModes(): Promise<{ slug: string; name: string }[]> {
 		try {
 			const customModes = await this.customModesManager.getCustomModes()
-			return [...DEFAULT_MODES, ...customModes].map(({ slug, name }) => ({ slug, name }))
+			return [...RECOMMENDED_MODES, ...customModes].map(({ slug, name }) => ({ slug, name }))
 		} catch (error) {
-			return DEFAULT_MODES.map(({ slug, name }) => ({ slug, name }))
+			return RECOMMENDED_MODES.map(({ slug, name }) => ({ slug, name }))
 		}
 	}
 
@@ -3315,6 +3329,125 @@ export class ClineProvider
 
 	public async runWorkspaceMutation<T>(task: Task, label: string, run: () => Promise<T>): Promise<T> {
 		return this.workspaceMutationGate.run(task.taskId, label, run, () => task.abort)
+	}
+
+	public async runInternalTaskEnvelope(
+		envelope: InternalTaskEnvelope,
+		parentSignal?: AbortSignal,
+	): Promise<InternalTaskResult> {
+		if (!isValidInternalTaskEnvelope(envelope)) throw new Error("Invalid or tampered internal task envelope")
+		this.internalDelegationManager ??= new BoundedDelegationManager(this.createInternalTaskRunner(), 2)
+		return this.internalDelegationManager.run(envelope, parentSignal)
+	}
+
+	public async completeInternalTaskIfPending(childTaskId: string, result: string): Promise<boolean> {
+		const pending = this.pendingInternalChildren.get(childTaskId)
+		if (!pending) return false
+		this.pendingInternalChildren.delete(childTaskId)
+		const childUsage = this.getLiveTask(childTaskId)?.getTokenUsage()
+		const parsed = this.parseInternalTaskResult(pending.envelope, result, childUsage)
+		await this.getLiveTask(pending.envelope.parentTaskId)?.recordInternalTaskEvent({
+			type: "internal_task_completed",
+			envelopeId: pending.envelope.id,
+			childTaskId,
+			status: parsed.status,
+			inputTokens: parsed.usage.inputTokens,
+			outputTokens: parsed.usage.outputTokens,
+		})
+		pending.resolve(parsed)
+		try {
+			await this.removeClineFromStack({ taskId: childTaskId, skipDelegationRepair: true })
+		} catch (error) {
+			this.log(
+				`[internal-task] Failed to close child ${childTaskId}: ${error instanceof Error ? error.message : String(error)}`,
+			)
+		}
+		return true
+	}
+
+	private createInternalTaskRunner(): InternalTaskRunner {
+		return async (envelope, signal) => {
+			const parent = this.getLiveTask(envelope.parentTaskId)
+			if (!parent) throw new Error(`Internal task parent ${envelope.parentTaskId} is not live`)
+			const apiConfiguration = { ...parent.apiConfiguration } as Record<string, unknown>
+			if (envelope.modelRoute.provider) apiConfiguration.apiProvider = envelope.modelRoute.provider
+			if (envelope.modelRoute.model) {
+				apiConfiguration.apiModelId = envelope.modelRoute.model
+				apiConfiguration.openAiNativeModelId = envelope.modelRoute.model
+				apiConfiguration.openRouterModelId = envelope.modelRoute.model
+			}
+			const instructions = [
+				`Internal objective: ${envelope.objective}`,
+				`Expected output: ${envelope.expectedOutput.join(", ")}`,
+				`Allowed paths: ${envelope.scope.allowedPaths?.join(", ") || envelope.scope.workspaceRoots.join(", ")}`,
+				`Context references: ${envelope.scope.contextRefs.join(", ") || "none"}`,
+				"Return a concise structured result with summary, evidence, changedFiles, verification, and remainingRisks.",
+			].join("\n")
+			const child = await this.createTask(instructions, undefined, parent, {
+				initialStatus: "active",
+				startTask: false,
+				taskMode: envelope.policy.mutate ? "work" : "plan",
+				taskApiConfigName: await parent.getTaskApiConfigName(),
+				apiConfiguration: apiConfiguration as ProviderSettings,
+				background: true,
+			})
+			await parent.recordInternalTaskEvent({
+				type: "internal_task_started",
+				envelopeId: envelope.id,
+				childTaskId: child.taskId,
+				agentKind: envelope.agentKind,
+				modelRouteId: envelope.modelRoute.id,
+			})
+			return await new Promise((resolve, reject) => {
+				const cancel = () => {
+					this.pendingInternalChildren.delete(child.taskId)
+					void this.removeClineFromStack({ taskId: child.taskId, skipDelegationRepair: true })
+					reject(signal.reason ?? new Error("Internal task cancelled"))
+				}
+				this.pendingInternalChildren.set(child.taskId, {
+					envelope,
+					resolve: (result) => {
+						signal.removeEventListener("abort", cancel)
+						resolve(result)
+					},
+				})
+				signal.addEventListener("abort", cancel, { once: true })
+				child.start()
+			})
+		}
+	}
+
+	private parseInternalTaskResult(
+		envelope: InternalTaskEnvelope,
+		result: string,
+		usage?: TokenUsage,
+	): Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification"> {
+		let value: Record<string, unknown> = {}
+		try {
+			value = JSON.parse(result) as Record<string, unknown>
+		} catch {
+			value = { summary: result }
+		}
+		return {
+			taskId: envelope.id,
+			status: "completed",
+			summary: typeof value.summary === "string" ? value.summary : result,
+			evidence: Array.isArray(value.evidence) ? (value.evidence as InternalTaskResult["evidence"]) : [],
+			changedFiles: Array.isArray(value.changedFiles)
+				? value.changedFiles.filter((item): item is string => typeof item === "string")
+				: [],
+			verification: Array.isArray(value.verification)
+				? (value.verification as InternalTaskResult["verification"])
+				: [],
+			remainingRisks: Array.isArray(value.remainingRisks)
+				? value.remainingRisks.filter((item): item is string => typeof item === "string")
+				: [],
+			usage: {
+				inputTokens: usage?.totalTokensIn,
+				outputTokens: usage?.totalTokensOut,
+				durationMs: 0,
+			},
+		}
 	}
 
 	/**

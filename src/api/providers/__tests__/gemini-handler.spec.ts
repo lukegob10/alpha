@@ -3,6 +3,7 @@ import { FunctionCallingConfigMode } from "@google/genai"
 
 import { GeminiHandler } from "../gemini"
 import type { ApiHandlerOptions } from "../../../shared/api"
+import { collectAgentResponse } from "../../../core/agent/AgentResponseAccumulator"
 
 describe("GeminiHandler backend support", () => {
 	it("createMessage uses function declarations (URL context and grounding are only for completePrompt)", async () => {
@@ -126,6 +127,74 @@ describe("GeminiHandler backend support", () => {
 				expect(groundingMessage.sources[0].url).toBe("https://example.com")
 				expect(groundingMessage.sources[0].title).toBe("Example Site")
 			}
+		})
+
+		it("feeds Gemini reasoning, tool calls, and grounding through the shared response model", async () => {
+			const handler = new GeminiHandler({ apiProvider: "gemini", enableGrounding: true } as ApiHandlerOptions)
+			const mockStream = async function* () {
+				yield {
+					candidates: [
+						{
+							content: {
+								parts: [{ thought: true, text: "I will inspect the repository." }],
+							},
+							groundingMetadata: {
+								groundingChunks: [{ web: { uri: "https://example.com/repo", title: "Repository" } }],
+							},
+						},
+					],
+					usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5 },
+				}
+				yield {
+					candidates: [
+						{
+							finishReason: "STOP",
+							content: {
+								parts: [
+									{
+										functionCall: {
+											id: "gemini-call-1",
+											name: "read_file",
+											args: { path: "README.md" },
+										},
+									},
+								],
+							},
+						},
+					],
+					usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, thoughtsTokenCount: 2 },
+				}
+			}
+
+			const stub = vi.fn().mockReturnValue(mockStream())
+			// @ts-ignore access private client
+			handler["client"].models.generateContentStream = stub
+
+			const chunks = []
+			for await (const chunk of handler.createMessage("test", [] as any, { taskId: "test-task" })) {
+				chunks.push(chunk)
+			}
+			const normalized = await collectAgentResponse(
+				(async function* () {
+					for (const chunk of chunks) {
+						yield chunk
+					}
+				})(),
+			)
+
+			expect(normalized.reasoning).toBe("I will inspect the repository.")
+			expect(normalized.toolCalls).toEqual([
+				{
+					type: "tool_call",
+					id: "gemini-call-1",
+					name: "read_file",
+					arguments: { path: "README.md" },
+				},
+			])
+			expect(normalized.items).toContainEqual({
+				type: "grounding",
+				sources: [{ title: "Repository", url: "https://example.com/repo" }],
+			})
 		})
 
 		it("should handle API errors when tools are enabled", async () => {

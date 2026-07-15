@@ -4,7 +4,7 @@ import pWaitFor from "p-wait-for"
 import delay from "delay"
 import type { Mock } from "vitest"
 
-import { getEnvironmentDetails } from "../getEnvironmentDetails"
+import { collectEnvironmentSnapshot, getEnvironmentDetails } from "../getEnvironmentDetails"
 import { getFullModeDetails } from "../../../shared/modes-extension"
 import { isToolAllowedForMode } from "../../tools/validateToolUse"
 import { getApiMetrics } from "../../../shared/getApiMetrics"
@@ -161,6 +161,16 @@ describe("getEnvironmentDetails", () => {
 		})
 
 		expect(getApiMetrics).toHaveBeenCalledWith(mockCline.clineMessages)
+	})
+
+	it("should capture a typed stable and volatile snapshot without changing the rendered format", async () => {
+		const snapshot = await collectEnvironmentSnapshot(mockCline as Task)
+
+		expect(snapshot.stable.workspaceRoot).toBe(mockCwd)
+		expect(snapshot.stable.mode).toBe("code")
+		expect(snapshot.stable.modelId).toBe("test-model")
+		expect(snapshot.volatile.renderedDetails).toContain("<environment_details>")
+		expect(snapshot.renderedDetails).toBe(snapshot.volatile.renderedDetails)
 	})
 
 	it("should include file details when includeFileDetails is true", async () => {

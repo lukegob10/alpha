@@ -27,6 +27,11 @@ export const apply_diff = {
 					type: "string",
 					description: DIFF_PARAMETER_DESCRIPTION,
 				},
+				observed_fingerprint: {
+					type: "string",
+					description:
+						"The sha256 content fingerprint returned by read_file. When supplied, stale or ambiguous edits fail before writing.",
+				},
 			},
 			required: ["path", "diff"],
 			additionalProperties: false,

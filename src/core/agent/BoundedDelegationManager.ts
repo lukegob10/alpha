@@ -46,20 +46,6 @@ export class BoundedDelegationManager {
 				modelRouteId: envelope.modelRoute.id,
 				requiresParentVerification: result.changedFiles.length > 0,
 			}
-		} catch (error) {
-			const status = controller.signal.aborted ? (parentSignal?.aborted ? "cancelled" : "timed_out") : "failed"
-			return {
-				taskId: envelope.id,
-				status,
-				summary: error instanceof Error ? error.message : String(error),
-				evidence: [],
-				changedFiles: [],
-				verification: [],
-				remainingRisks: ["Child task did not complete successfully"],
-				usage: { durationMs: Date.now() - started },
-				modelRouteId: envelope.modelRoute.id,
-				requiresParentVerification: false,
-			}
 		} finally {
 			clearTimeout(timer)
 			parentSignal?.removeEventListener("abort", cancel)

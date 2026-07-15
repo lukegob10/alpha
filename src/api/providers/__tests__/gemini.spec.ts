@@ -128,14 +128,17 @@ describe("GeminiHandler", () => {
 			expect(result).toBe("Test response")
 
 			// Verify the call to generateContent
-			expect(handler["client"].models.generateContent).toHaveBeenCalledWith({
-				model: GEMINI_MODEL_NAME,
-				contents: [{ role: "user", parts: [{ text: "Test prompt" }] }],
-				config: {
-					httpOptions: undefined,
-					temperature: 1,
-				},
-			})
+			expect(handler["client"].models.generateContent).toHaveBeenCalledWith(
+				expect.objectContaining({
+					model: GEMINI_MODEL_NAME,
+					contents: [{ role: "user", parts: [{ text: "Test prompt" }] }],
+					config: expect.objectContaining({
+						temperature: 1,
+						httpOptions: expect.objectContaining({ timeout: expect.any(Number) }),
+						abortSignal: expect.any(AbortSignal),
+					}),
+				}),
+			)
 		})
 
 		it("should handle API errors", async () => {

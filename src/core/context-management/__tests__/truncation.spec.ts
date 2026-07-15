@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import { TelemetryService } from "@alpha-code/telemetry"
-import { truncateConversation } from "../index"
+import { isSafeCompactionBoundary, truncateConversation } from "../index"
 import { getEffectiveApiHistory, cleanupAfterTruncation } from "../../condense"
 import { ApiMessage } from "../../task-persistence/apiMessages"
 
@@ -433,5 +433,33 @@ describe("Non-Destructive Sliding Window Truncation", () => {
 			// Should return same messages unchanged
 			expect(cleaned).toEqual(messagesWithoutTags)
 		})
+	})
+})
+
+describe("Safe compaction boundaries", () => {
+	it("rejects a transcript with an unmatched tool call", () => {
+		const pending: ApiMessage[] = [
+			{ role: "user", content: "Read a file", ts: 1 },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "call-1", name: "read_file", input: { path: "a.ts" } }],
+				ts: 2,
+			},
+		]
+
+		expect(isSafeCompactionBoundary(pending)).toBe(false)
+	})
+
+	it("accepts a complete tool call/result transaction", () => {
+		const complete: ApiMessage[] = [
+			{ role: "assistant", content: [{ type: "tool_use", id: "call-1", name: "read_file", input: {} }], ts: 1 },
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "call-1", content: "contents" }],
+				ts: 2,
+			},
+		]
+
+		expect(isSafeCompactionBoundary(complete)).toBe(true)
 	})
 })

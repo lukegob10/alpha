@@ -15,10 +15,12 @@ import { computeDiffStats, sanitizeUnifiedDiff } from "../diff/stats"
 import type { ToolUse } from "../../shared/tools"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { checkObservedContentVersion } from "./contentVersion"
 
 interface ApplyDiffParams {
 	path: string
 	diff: string
+	observed_fingerprint?: string
 }
 
 export class ApplyDiffTool extends BaseTool<"apply_diff"> {
@@ -69,6 +71,24 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			}
 
 			const originalContent: string = await fs.readFile(absolutePath, "utf-8")
+			const versionCheck = checkObservedContentVersion(
+				originalContent,
+				diffContent,
+				params.observed_fingerprint?.replace(/^sha256:/, ""),
+			)
+			if (versionCheck.status === "stale_context") {
+				task.consecutiveMistakeCount++
+				task.recordToolError("apply_diff", versionCheck.error)
+				task.didToolFailInCurrentTurn = true
+				pushToolResult(
+					JSON.stringify({
+						status: "stale_context",
+						error: versionCheck.error,
+						fingerprint: versionCheck.fingerprint,
+					}),
+				)
+				return
+			}
 
 			// Apply the diff to the original content
 			const diffResult = (await task.diffStrategy?.applyDiff(
@@ -248,9 +268,11 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 					: ""
 
 			if (partFailHint) {
-				pushToolResult(partFailHint + message + singleBlockNotice)
+				pushToolResult(
+					partFailHint + message + singleBlockNotice + this.formatRecoveryMetadata(versionCheck.metadata),
+				)
 			} else {
-				pushToolResult(message + singleBlockNotice)
+				pushToolResult(message + singleBlockNotice + this.formatRecoveryMetadata(versionCheck.metadata))
 			}
 
 			await task.diffViewProvider.reset()
@@ -267,6 +289,10 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			task.processQueuedMessages()
 			return
 		}
+	}
+
+	private formatRecoveryMetadata(metadata?: { recovery: "unique_search_anchors"; anchorCount: number }): string {
+		return metadata ? `\n<recovery_metadata>${JSON.stringify(metadata)}</recovery_metadata>` : ""
 	}
 
 	override async handlePartial(task: Task, block: ToolUse<"apply_diff">): Promise<void> {

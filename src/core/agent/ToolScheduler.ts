@@ -292,8 +292,36 @@ export class ToolScheduler {
 		const startedAt = performance.now()
 		const calls = Array.isArray(response)
 			? response
-			: response.items.filter((item): item is AgentToolCall => item.type === "tool_call")
+			: response.items.flatMap((item): AgentToolCall[] => {
+					if (item.type === "tool_call") {
+						return [item]
+					}
+					if (item.type === "error" && item.callId && item.toolName) {
+						return [
+							{
+								type: "tool_call",
+								id: item.callId,
+								name: item.toolName,
+								arguments: {},
+							},
+						]
+					}
+					return []
+				})
 		const prepared = calls.map((call, index) => this.prepareCall(call, index))
+		const responseErrors = Array.isArray(response)
+			? new Map<string, string>()
+			: new Map(
+					response.items.flatMap((item) =>
+						item.type === "error" && item.callId ? [[item.callId, item.message] as const] : [],
+					),
+				)
+		for (const item of prepared) {
+			item.responseError = responseErrors.get(item.call.id)
+			if (item.responseError) {
+				item.validationError = item.responseError
+			}
+		}
 		const results = new Array<ToolSchedulerResult | undefined>(prepared.length)
 
 		if (prepared.length === 0) {
@@ -320,7 +348,7 @@ export class ToolScheduler {
 		let cursor = 0
 		let parallelBatchCount = 0
 		while (cursor < prepared.length) {
-			if (this.isCancelled()) {
+			if (this.options.task.abort) {
 				return this.metrics("aborted", [], calls.length, parallelBatchCount, startedAt)
 			}
 
@@ -471,7 +499,7 @@ export class ToolScheduler {
 
 	private async executeCall(prepared: PreparedCall): Promise<ToolSchedulerResult> {
 		const startedAt = performance.now()
-		if (this.isCancelled()) {
+		if (this.options.task.abort) {
 			return {
 				callId: prepared.call.id,
 				name: prepared.call.name,
@@ -580,30 +608,20 @@ export class ToolScheduler {
 				}),
 			handleError: async (action: string, error: Error) => {
 				if (error instanceof AskIgnoredError) {
-					this.supersededAskCount += 1
-					collector.setStatus(this.isCancelled() ? "cancelled" : "error")
-					collector.push(formatResponse.toolError(`Tool approval was superseded: ${error.message}`))
 					return
 				}
-				const cancelled = this.isCancelled()
-				if (!cancelled) {
-					this.options.task.didToolFailInCurrentTurn = true
-				}
-				collector.setStatus(cancelled ? "cancelled" : "error")
+				this.options.task.didToolFailInCurrentTurn = true
+				collector.setStatus("error")
 				const errorString = `Error ${action}: ${JSON.stringify(serializeError(error))}`
-				if (cancelled) {
-					collector.push(formatResponse.toolError("Tool execution was cancelled."))
-				} else {
-					await this.options.task.say("error", `Error ${action}:\n${error.message}`)
-					collector.push(formatResponse.toolError(errorString))
-				}
+				await this.options.task.say("error", `Error ${action}:\n${error.message}`)
+				collector.push(formatResponse.toolError(errorString))
 			},
 			pushToolResult: (content: ToolResponse) => collector.push(content),
 			setResultMetadata: (metadata: ToolResultMetadata) => collector.setMetadata(metadata),
 			toolCallId: prepared.call.id,
 			signal: this.options.signal,
 			resolveCommandTimeoutMs: (requestedTimeoutMs, command) =>
-				resolveCommandTimeoutMs(this.options.policy, requestedTimeoutMs ?? 0, command),
+				resolveCommandTimeoutMs(this.options.policy, requestedTimeoutMs, command),
 		}
 
 		try {
@@ -640,14 +658,9 @@ export class ToolScheduler {
 				callbacks,
 			})
 		} catch (error) {
-			const cancelled = this.isCancelled()
-			collector.setStatus(cancelled ? "cancelled" : "error")
+			collector.setStatus("error")
 			collector.push(
-				formatResponse.toolError(
-					cancelled
-						? "Tool execution was cancelled."
-						: `Error executing ${prepared.call.name}: ${this.errorMessage(error)}`,
-				),
+				formatResponse.toolError(`Error executing ${prepared.call.name}: ${this.errorMessage(error)}`),
 			)
 		}
 
@@ -675,13 +688,13 @@ export class ToolScheduler {
 		parallelBatchCount: number,
 		startedAt: number,
 	): Promise<ToolSchedulerOutcome> {
-		if (this.isCancelled()) {
+		if (this.options.task.abort) {
 			return this.metrics("aborted", [], batchSize, parallelBatchCount, startedAt)
 		}
 
 		const committed: ToolSchedulerResult[] = []
 		for (let index = 0; index < results.length; index += 1) {
-			if (this.isCancelled()) {
+			if (this.options.task.abort) {
 				return this.metrics("aborted", committed, batchSize, parallelBatchCount, startedAt)
 			}
 

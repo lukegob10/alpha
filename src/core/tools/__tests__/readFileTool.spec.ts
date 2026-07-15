@@ -168,10 +168,27 @@ function createMockTask(options: MockTaskOptions = {}) {
 	}
 }
 
-function createMockCallbacks() {
+function createMockCallbacks(task?: ReturnType<typeof createMockTask>) {
 	return {
 		pushToolResult: vi.fn(),
-		askApproval: vi.fn(),
+		askApproval: task
+			? vi.fn(async (...args: Parameters<NonNullable<typeof task.ask>>) => {
+					const result = await task.ask(...args)
+					if (result.response !== "yesButtonClicked") {
+						task.didRejectTool = true
+						if (result.text) {
+							await task.say("user_feedback", result.text, result.images)
+							formatResponse.toolDeniedWithFeedback(result.text)
+						}
+						return false
+					}
+					if (result.text) {
+						await task.say("user_feedback", result.text, result.images)
+						formatResponse.toolApprovedWithFeedback(result.text)
+					}
+					return true
+				})
+			: vi.fn().mockResolvedValue(true),
 		handleError: vi.fn(),
 	}
 }
@@ -288,7 +305,9 @@ describe("ReadFileTool", () => {
 
 			expect(mockTask.say).toHaveBeenCalledWith("rooignore_error", "secret.env")
 			expect(formatResponse.rooIgnoreError).toHaveBeenCalledWith("secret.env")
-			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("blocked by the .alphaignore"))
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(
+				expect.stringContaining("blocked by the .alphaignore"),
+			)
 		})
 	})
 
@@ -584,19 +603,19 @@ describe("ReadFileTool", () => {
 	describe("approval flow", () => {
 		it("should approve file read when user clicks yes", async () => {
 			const mockTask = createMockTask()
-			const callbacks = createMockCallbacks()
+			const callbacks = createMockCallbacks(mockTask)
 
 			mockTask.ask.mockResolvedValue({ response: "yesButtonClicked", text: undefined, images: undefined })
 
 			await readFileTool.execute({ path: "test.ts" }, mockTask as any, callbacks)
 
-			expect(mockTask.ask).toHaveBeenCalledWith("tool", expect.any(String), false)
+			expect(callbacks.askApproval).toHaveBeenCalledWith("tool", expect.any(String))
 			expect(mockTask.didRejectTool).toBe(false)
 		})
 
 		it("should deny file read when user clicks no", async () => {
 			const mockTask = createMockTask()
-			const callbacks = createMockCallbacks()
+			const callbacks = createMockCallbacks(mockTask)
 
 			mockTask.ask.mockResolvedValue({ response: "noButtonClicked", text: undefined, images: undefined })
 
@@ -608,7 +627,7 @@ describe("ReadFileTool", () => {
 
 		it("should include user feedback when provided with approval", async () => {
 			const mockTask = createMockTask()
-			const callbacks = createMockCallbacks()
+			const callbacks = createMockCallbacks(mockTask)
 
 			mockTask.ask.mockResolvedValue({
 				response: "yesButtonClicked",
@@ -632,7 +651,7 @@ describe("ReadFileTool", () => {
 
 		it("should include user feedback when provided with denial", async () => {
 			const mockTask = createMockTask()
-			const callbacks = createMockCallbacks()
+			const callbacks = createMockCallbacks(mockTask)
 
 			mockTask.ask.mockResolvedValue({
 				response: "noButtonClicked",

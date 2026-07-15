@@ -91,6 +91,8 @@ export const toolParamNames = [
 	"title",
 	"body",
 	"sha",
+	"envelope",
+	"observed_fingerprint",
 	"merge_method",
 ] as const
 
@@ -106,7 +108,7 @@ export type NativeToolArgs = {
 	read_command_output: { artifact_id: string; search?: string; offset?: number; limit?: number }
 	attempt_completion: { result: string }
 	execute_command: { command: string; cwd?: string; timeout?: number | null }
-	apply_diff: { path: string; diff: string }
+	apply_diff: { path: string; diff: string; observed_fingerprint?: string }
 	edit: { file_path: string; old_string: string; new_string: string; replace_all?: boolean }
 	search_and_replace: { file_path: string; old_string: string; new_string: string; replace_all?: boolean }
 	search_replace: { file_path: string; old_string: string; new_string: string }
@@ -114,29 +116,7 @@ export type NativeToolArgs = {
 	apply_patch: { patch: string }
 	list_files: { path: string; recursive?: boolean }
 	new_task: { mode: string; message: string; todos?: string }
-	delegate_task: {
-		tasks: Array<{
-			objective: string
-			agent_kind?: "general" | "explore" | "review"
-			expected_output?: string[]
-			allowed_paths?: string[]
-			context_refs?: string[]
-			skills?: string[]
-			model_route?: "fast" | "balanced" | "deep" | "user-configured"
-			provider?: string
-			model?: string
-			reasoning?: string
-			execute?: boolean
-			mutate?: boolean
-			network?: boolean
-			external_side_effects?: boolean
-			require_approval?: boolean
-			max_input_tokens?: number
-			max_output_tokens?: number
-			timeout_ms?: number
-			dependencies?: string[]
-		}>
-	}
+	delegate_task: { envelope: import("../core/agent/InternalTaskEnvelope").InternalTaskEnvelope }
 	ask_followup_question: {
 		question: string
 		follow_up: Array<{ text: string; mode?: string }>
@@ -377,7 +357,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	attempt_completion: "complete tasks",
 	switch_mode: "switch modes",
 	new_task: "create new task",
-	delegate_task: "delegate bounded tasks",
+	delegate_task: "delegate bounded internal task",
 	codebase_search: "codebase search",
 	update_todo_list: "update todo list",
 	run_slash_command: "run slash command",
@@ -417,7 +397,6 @@ export const ALWAYS_AVAILABLE_TOOLS: ToolName[] = [
 	"attempt_completion",
 	"switch_mode",
 	"new_task",
-	"delegate_task",
 	"update_todo_list",
 	"run_slash_command",
 	"skill",

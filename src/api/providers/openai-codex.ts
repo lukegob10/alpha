@@ -26,6 +26,7 @@ import { isMcpTool } from "../../utils/mcp-name"
 import { sanitizeOpenAiCallId } from "../../utils/tool-id"
 import { openAiCodexOAuthManager } from "../../integrations/openai-codex/oauth"
 import { t } from "../../i18n"
+import { OpenAiResponsesToolCallTracker } from "./openai-responses-tool-call"
 
 export type OpenAiCodexModel = ReturnType<OpenAiCodexHandler["getModel"]>
 
@@ -57,13 +58,7 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 	private abortController?: AbortController
 	// Session ID for the Codex API (persists for the lifetime of the handler)
 	private readonly sessionId: string
-	/**
-	 * Some Codex/Responses streams emit tool-call argument deltas without stable call id/name.
-	 * Track the last observed tool identity from output_item events so we can still
-	 * emit `tool_call_partial` chunks (tool-call-only streams).
-	 */
-	private pendingToolCallId: string | undefined
-	private pendingToolCallName: string | undefined
+	private readonly toolCallTracker = new OpenAiResponsesToolCallTracker()
 	// Tracks whether this response already emitted text to avoid duplicate done-event rendering.
 	private sawTextOutputInCurrentResponse = false
 	// Tracks whether text arrived through delta events so content_part events can be treated as fallback-only.
@@ -157,8 +152,7 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 		// Reset state for this request
 		this.lastResponseOutput = undefined
 		this.lastResponseId = undefined
-		this.pendingToolCallId = undefined
-		this.pendingToolCallName = undefined
+		this.toolCallTracker.reset()
 		this.sawTextOutputInCurrentResponse = false
 		this.sawTextDeltaInCurrentResponse = false
 		this.streamedToolCallIds.clear()
@@ -641,12 +635,7 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 								) {
 									const item = parsed.item
 									if (item && (item.type === "function_call" || item.type === "tool_call")) {
-										const callId = item.call_id || item.tool_call_id || item.id
-										const name = item.name || item.function?.name || item.function_name
-										if (typeof callId === "string" && callId.length > 0) {
-											this.pendingToolCallId = callId
-											this.pendingToolCallName = typeof name === "string" ? name : undefined
-										}
+										this.toolCallTracker.remember(item, parsed.output_index ?? parsed.index)
 									}
 								}
 
@@ -947,21 +936,19 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 			event?.type === "response.tool_call_arguments.delta" ||
 			event?.type === "response.function_call_arguments.delta"
 		) {
-			const callId = event.call_id || event.tool_call_id || event.id || this.pendingToolCallId
-			const name = event.name || event.function_name || this.pendingToolCallName
-			const args = event.delta || event.arguments
+			const identity = this.toolCallTracker.resolve(event)
+			const args = typeof event.delta === "string" ? event.delta : event.arguments
 
-			// Codex/Responses may stream tool-call arguments, but these delta events are not guaranteed
-			// to include a stable id/name. Avoid emitting incomplete tool_call_partial chunks because
-			// NativeToolCallParser requires a name to start a call.
-			if (typeof callId === "string" && callId.length > 0 && typeof name === "string" && name.length > 0) {
-				this.streamedToolCallIds.add(callId)
+			// Do not create an empty pending call. The argument-done event or the
+			// output-item fallback will provide the complete call if no delta exists.
+			if (identity?.name && typeof args === "string" && args.length > 0) {
+				this.streamedToolCallIds.add(identity.callId)
 				yield {
 					type: "tool_call_partial",
-					index: event.index ?? 0,
-					id: callId,
-					name,
-					arguments: typeof args === "string" ? args : "",
+					index: identity.index ?? 0,
+					id: identity.callId,
+					name: identity.name,
+					arguments: args,
 				}
 			}
 			return
@@ -972,6 +959,21 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 			event?.type === "response.tool_call_arguments.done" ||
 			event?.type === "response.function_call_arguments.done"
 		) {
+			const identity = this.toolCallTracker.resolve(event)
+			const args = typeof event.arguments === "string" ? event.arguments : event.delta
+			if (
+				identity?.name &&
+				typeof args === "string" &&
+				args.length > 0 &&
+				!this.streamedToolCallIds.has(identity.callId)
+			) {
+				yield {
+					type: "tool_call",
+					id: identity.callId,
+					name: identity.name,
+					arguments: args,
+				}
+			}
 			return
 		}
 
@@ -981,12 +983,7 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 			if (item) {
 				// Capture tool identity so subsequent argument deltas can be attributed.
 				if (item.type === "function_call" || item.type === "tool_call") {
-					const callId = item.call_id || item.tool_call_id || item.id
-					const name = item.name || item.function?.name || item.function_name
-					if (typeof callId === "string" && callId.length > 0) {
-						this.pendingToolCallId = callId
-						this.pendingToolCallName = typeof name === "string" ? name : undefined
-					}
+					this.toolCallTracker.remember(item, event.output_index ?? event.index)
 				}
 
 				// For "added" events, yield text/reasoning content (streaming path).
@@ -1013,8 +1010,7 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 					event.type === "response.output_item.done" &&
 					(item.type === "function_call" || item.type === "tool_call")
 				) {
-					const callId = item.call_id || item.tool_call_id || item.id
-					const name = item.name || item.function?.name || item.function_name
+					const identity = this.toolCallTracker.remember(item, event.output_index ?? event.index)
 					const argsRaw = item.arguments || item.function?.arguments || item.input
 					const args =
 						typeof argsRaw === "string"
@@ -1025,17 +1021,11 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 
 					// Fallback for models that only emit a complete function_call in output_item.done.
 					// If we already streamed partials for this ID, skip to avoid duplicate tool execution.
-					if (
-						typeof callId === "string" &&
-						callId.length > 0 &&
-						typeof name === "string" &&
-						name.length > 0 &&
-						!this.streamedToolCallIds.has(callId)
-					) {
+					if (identity?.name && args.length > 0 && !this.streamedToolCallIds.has(identity.callId)) {
 						yield {
 							type: "tool_call",
-							id: callId,
-							name,
+							id: identity.callId,
+							name: identity.name,
 							arguments: args,
 						}
 					}
@@ -1053,12 +1043,8 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 					}
 				}
 
-				// Note: We intentionally do NOT emit tool_call from response.output_item.done
-				// for function_call/tool_call items. The streaming path handles tool calls via:
-				// 1. tool_call_partial events during argument deltas
-				// 2. NativeToolCallParser.finalizeRawChunks() at stream end emitting tool_call_end
-				// 3. NativeToolCallParser.finalizeStreamingToolCall() creating the final ToolUse
-				// Emitting tool_call here would cause duplicate tool rendering.
+				// Complete output-item calls are emitted only when no argument deltas were
+				// seen for that call; streamed calls are already buffered above.
 			}
 			return
 		}

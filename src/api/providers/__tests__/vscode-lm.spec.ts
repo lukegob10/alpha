@@ -83,6 +83,7 @@ import * as vscode from "vscode"
 import { VsCodeLmHandler } from "../vscode-lm"
 import type { ApiHandlerOptions } from "../../../shared/api"
 import type { Anthropic } from "@anthropic-ai/sdk"
+import { collectAgentResponse } from "../../../core/agent/AgentResponseAccumulator"
 
 const mockLanguageModelChat = {
 	id: "test-model",
@@ -358,6 +359,13 @@ describe("VsCodeLmHandler", () => {
 			for await (const chunk of stream) {
 				chunks.push(chunk)
 			}
+			const normalized = await collectAgentResponse(
+				(async function* () {
+					for (const chunk of chunks) {
+						yield chunk
+					}
+				})(),
+			)
 
 			expect(chunks).toHaveLength(2) // Tool call chunk + usage chunk
 			expect(chunks[0]).toEqual({
@@ -366,6 +374,14 @@ describe("VsCodeLmHandler", () => {
 				name: toolCallData.name,
 				arguments: JSON.stringify(toolCallData.arguments),
 			})
+			expect(normalized.toolCalls).toEqual([
+				{
+					type: "tool_call",
+					id: toolCallData.callId,
+					name: toolCallData.name,
+					arguments: toolCallData.arguments,
+				},
+			])
 		})
 
 		it("should emit structurally compatible tool calls when tools are provided", async () => {

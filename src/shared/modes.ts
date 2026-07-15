@@ -7,6 +7,7 @@ import {
 	type ToolGroup,
 	type PromptComponent,
 	DEFAULT_MODES,
+	RECOMMENDED_MODES,
 } from "@alpha-code/types"
 
 import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS } from "./tools"
@@ -88,28 +89,28 @@ export function getAllModes(customModes?: ModeConfig[]): ModeConfig[] {
 	return allModes
 }
 
-/**
- * Return the simplified profile choices for new tasks while preserving custom
- * modes and the selected legacy mode for saved-task compatibility.
- */
-export function getRecommendedModes(customModes?: ModeConfig[], selectedMode?: string): ModeConfig[] {
-	const workSource = getModeBySlug("code") ?? modes[0]
-	const planSource = getModeBySlug("architect") ?? modes[0]
-	const recommended: ModeConfig[] = [
-		{ ...workSource, slug: "work", name: "Work" },
-		{ ...planSource, slug: "plan", name: "Plan" },
+export function getRecommendedModes(
+	customModes?: ModeConfig[],
+	selectedLegacySlug?: string | readonly string[],
+): ModeConfig[] {
+	const custom = customModes ?? []
+	const selectedSlugs = Array.isArray(selectedLegacySlug)
+		? selectedLegacySlug
+		: selectedLegacySlug
+			? [selectedLegacySlug]
+			: []
+	const selectedLegacy = selectedSlugs
+		.map((slug) => getModeBySlug(slug, customModes))
+		.filter((mode): mode is ModeConfig => Boolean(mode))
+	return [
+		...RECOMMENDED_MODES,
+		...custom,
+		...selectedLegacy.filter(
+			(selected) =>
+				!RECOMMENDED_MODES.some((mode) => mode.slug === selected.slug) &&
+				!custom.some((mode) => mode.slug === selected.slug),
+		),
 	]
-
-	if (selectedMode && !["work", "plan"].includes(selectedMode)) {
-		const selected = getModeBySlug(selectedMode, customModes)
-		if (selected) recommended.push(selected)
-	}
-
-	for (const customMode of customModes ?? []) {
-		if (!recommended.some((mode) => mode.slug === customMode.slug)) recommended.push(customMode)
-	}
-
-	return recommended
 }
 
 // Check if a mode is custom or an override

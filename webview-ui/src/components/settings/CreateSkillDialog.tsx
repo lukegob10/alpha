@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useMemo } from "react"
 import { validateSkillName as validateSkillNameShared, SkillNameValidationError } from "@alpha-code/types"
 
-import { getAllModes } from "@alpha/modes"
+import { getRecommendedModes } from "@alpha/modes"
 
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -89,7 +89,7 @@ export const CreateSkillDialog: React.FC<CreateSkillDialogProps> = ({
 
 	// Get available modes for the checkboxes (built-in + custom modes)
 	const availableModes = useMemo(() => {
-		return getAllModes(customModes).map((m) => ({ slug: m.slug, name: m.name }))
+		return getRecommendedModes(customModes).map((m) => ({ slug: m.slug, name: m.name }))
 	}, [customModes])
 
 	const resetForm = useCallback(() => {

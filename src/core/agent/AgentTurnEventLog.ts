@@ -21,11 +21,7 @@ export interface PersistedAgentTurnEvent {
 
 function boundValue(value: unknown): unknown {
 	if (typeof value === "string") {
-		if (value.length <= MAX_EVENT_VALUE_LENGTH) {
-			return value
-		}
-		const suffix = "\n[truncated]"
-		return `${value.slice(0, MAX_EVENT_VALUE_LENGTH - suffix.length)}${suffix}`
+		return value.length > MAX_EVENT_VALUE_LENGTH ? `${value.slice(0, MAX_EVENT_VALUE_LENGTH)}\n[truncated]` : value
 	}
 
 	if (Array.isArray(value)) {

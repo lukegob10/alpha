@@ -1,7 +1,6 @@
 import * as vscode from "vscode"
 
-import { RooCodeEventName, type HistoryItem } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
+import type { HistoryItem } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
@@ -31,6 +30,7 @@ interface DelegationProvider {
 		childTaskId: string
 		completionResultSummary: string
 	}): Promise<void>
+	completeInternalTaskIfPending?(childTaskId: string, result: string): Promise<boolean>
 }
 
 export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
@@ -79,12 +79,20 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			task.consecutiveMistakeCount = 0
 
 			await task.say("completion_result", result, undefined, false)
+			const provider = task.providerRef?.deref() as DelegationProvider | undefined
+			if (
+				provider?.completeInternalTaskIfPending &&
+				(await provider.completeInternalTaskIfPending(task.taskId, result))
+			) {
+				pushToolResult("")
+				this.emitTaskCompleted(task)
+				return
+			}
 
 			// Check for subtask using parentTaskId (metadata-driven delegation)
 			if (task.parentTaskId) {
 				// Check if this subtask has already completed and returned to parent
 				// to prevent duplicate tool_results when user revisits from history
-				const provider = task.providerRef.deref() as DelegationProvider | undefined
 				if (provider) {
 					try {
 						const { historyItem } = await provider.getTaskWithId(task.taskId)
@@ -197,14 +205,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 	}
 
 	private emitTaskCompleted(task: Task): void {
-		task.markCompleted?.()
-
-		// Force final token usage update before emitting TaskCompleted.
-		// This ensures the latest stats are captured regardless of throttle timer.
-		task.emitFinalTokenUsageUpdate()
-
-		TelemetryService.instance.captureTaskCompleted(task.taskId)
-		task.emit(RooCodeEventName.TaskCompleted, task.taskId, task.getTokenUsage(), task.toolUsage)
+		task.finalizeCompletion()
 	}
 }
 

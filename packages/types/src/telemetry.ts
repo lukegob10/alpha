@@ -24,6 +24,7 @@ export enum TelemetryEventName {
 	TASK_MESSAGE = "Task Message",
 	TASK_CONVERSATION_MESSAGE = "Conversation Message",
 	LLM_COMPLETION = "LLM Completion",
+	AGENT_TURN = "Agent Turn",
 	MODE_SWITCH = "Mode Switched",
 	MODE_SELECTOR_OPENED = "Mode Selector Opened",
 	TOOL_USED = "Tool Used",

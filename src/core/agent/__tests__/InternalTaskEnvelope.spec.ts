@@ -1,6 +1,5 @@
 import {
 	buildInternalTaskEnvelope,
-	isValidInternalTaskEnvelope,
 	serializeInternalTaskEnvelope,
 	type InternalTaskPolicy,
 } from "../InternalTaskEnvelope"
@@ -75,11 +74,5 @@ describe("internal task envelopes", () => {
 				requestedPolicy: { mutate: true },
 			}),
 		).toThrow("widen")
-	})
-
-	it("detects envelope tampering", () => {
-		const envelope = buildInternalTaskEnvelope(base)
-		expect(isValidInternalTaskEnvelope(envelope)).toBe(true)
-		expect(isValidInternalTaskEnvelope({ ...envelope, objective: "tampered" })).toBe(false)
 	})
 })

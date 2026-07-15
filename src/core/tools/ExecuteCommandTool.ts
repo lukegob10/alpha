@@ -30,12 +30,14 @@ interface ExecuteCommandParams {
 }
 
 export function resolveAgentTimeoutMs(timeoutSeconds: number | null | undefined): number {
-	const requestedAgentTimeout = typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds * 1000 : 0
+	return typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds * 1000 : 0
+}
 
-	// In CLI runtime, stdin harnesses expect command lifetime to be governed
-	// solely by commandExecutionTimeout (user setting), not model-provided
-	// background timeouts.
-	return process.env.ROO_CLI_RUNTIME === "1" ? 0 : requestedAgentTimeout
+class CommandCancelledError extends Error {
+	constructor() {
+		super("Command execution was cancelled")
+		this.name = "CommandCancelledError"
+	}
 }
 
 export function isGitHubCliCommand(command: string): boolean {
@@ -54,6 +56,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			if (!command) {
 				task.consecutiveMistakeCount++
 				task.recordToolError("execute_command")
+				callbacks.setResultMetadata?.({ status: "error" })
 				pushToolResult(await task.sayAndCreateMissingParamError("execute_command", "command"))
 				return
 			}
@@ -62,6 +65,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 
 			if (isGitHubCliCommand(canonicalCommand)) {
 				task.recordToolError("execute_command")
+				callbacks.setResultMetadata?.({ status: "error" })
 				pushToolResult(
 					formatResponse.toolError(
 						"GitHub CLI commands are disabled in Alpha. Use the native github_api tool for pull request, check, merge, and comment operations. Use local git commands only for clone, pull, commit, and push.",
@@ -73,6 +77,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			const ignoredFileAttemptedToAccess = task.rooIgnoreController?.validateCommand(canonicalCommand)
 
 			if (ignoredFileAttemptedToAccess) {
+				callbacks.setResultMetadata?.({ status: "error" })
 				await task.say("rooignore_error", ignoredFileAttemptedToAccess)
 				pushToolResult(formatResponse.rooIgnoreError(ignoredFileAttemptedToAccess))
 				return
@@ -108,10 +113,15 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			)
 
 			// Convert seconds to milliseconds for internal use, but skip timeout if command is allowlisted
-			const commandExecutionTimeout = isCommandAllowlisted ? 0 : commandExecutionTimeoutSeconds * 1000
+			const configuredTimeoutMs = isCommandAllowlisted ? 0 : commandExecutionTimeoutSeconds * 1000
 
 			// Convert agent-specified timeout from seconds to milliseconds
-			const agentTimeout = resolveAgentTimeoutMs(timeoutSeconds)
+			const requestedTimeoutMs = resolveAgentTimeoutMs(timeoutSeconds)
+			const commandExecutionTimeout =
+				callbacks.resolveCommandTimeoutMs?.(requestedTimeoutMs, canonicalCommand) ??
+				[configuredTimeoutMs, requestedTimeoutMs]
+					.filter((value) => value > 0)
+					.reduce((min, value) => Math.min(min, value), 0)
 
 			const options: ExecuteCommandOptions = {
 				executionId,
@@ -119,14 +129,17 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				customCwd,
 				terminalShellIntegrationDisabled,
 				commandExecutionTimeout,
-				agentTimeout,
+				signal: callbacks.signal,
 			}
 
 			try {
-				const [rejected, result] = await executeCommandInTerminal(task, options)
+				const [rejected, result, metadata] = await executeCommandInTerminal(task, options)
 
 				if (rejected) {
 					task.didRejectTool = true
+				}
+				if (metadata) {
+					callbacks.setResultMetadata?.(metadata)
 				}
 
 				pushToolResult(result)
@@ -139,7 +152,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				task.supersedePendingAsk()
 
 				if (error instanceof ShellIntegrationError) {
-					const [rejected, result] = await executeCommandInTerminal(task, {
+					const [rejected, result, metadata] = await executeCommandInTerminal(task, {
 						...options,
 						terminalShellIntegrationDisabled: true,
 					})
@@ -147,9 +160,13 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 					if (rejected) {
 						task.didRejectTool = true
 					}
+					if (metadata) {
+						callbacks.setResultMetadata?.(metadata)
+					}
 
 					pushToolResult(result)
 				} else {
+					callbacks.setResultMetadata?.({ status: "error" })
 					pushToolResult(`Command failed to execute in terminal due to a shell integration error.`)
 				}
 			}
@@ -173,7 +190,13 @@ export type ExecuteCommandOptions = {
 	customCwd?: string
 	terminalShellIntegrationDisabled?: boolean
 	commandExecutionTimeout?: number
-	agentTimeout?: number
+	signal?: AbortSignal
+}
+
+export interface CommandExecutionResult {
+	status: "success" | "error" | "cancelled"
+	exitCode?: number
+	timedOut?: boolean
 }
 
 export async function executeCommandInTerminal(
@@ -184,9 +207,9 @@ export async function executeCommandInTerminal(
 		customCwd,
 		terminalShellIntegrationDisabled = true,
 		commandExecutionTimeout = 0,
-		agentTimeout = 0,
+		signal,
 	}: ExecuteCommandOptions,
-): Promise<[boolean, ToolResponse]> {
+): Promise<[boolean, ToolResponse, CommandExecutionResult?]> {
 	// Convert milliseconds back to seconds for display purposes.
 	const commandExecutionTimeoutSeconds = commandExecutionTimeout / 1000
 	let workingDir: string
@@ -202,7 +225,7 @@ export async function executeCommandInTerminal(
 	try {
 		await fs.access(workingDir)
 	} catch (error) {
-		return [false, `Working directory '${workingDir}' does not exist.`]
+		return [false, `Working directory '${workingDir}' does not exist.`, { status: "error" }]
 	}
 
 	let message: { text?: string; images?: string[] } | undefined
@@ -400,23 +423,25 @@ export async function executeCommandInTerminal(
 	// - User timeout: aborts the command (kills it)
 	// Both timers run independently — the user timeout remains active as a safety net
 	// even after the agent timeout moves the command to the background.
-	let agentTimeoutId: NodeJS.Timeout | undefined
-	let userTimeoutId: NodeJS.Timeout | undefined
+	let commandTimeoutId: NodeJS.Timeout | undefined
 	let isUserTimedOut = false
+	let isCancelled = signal?.aborted === true
+	let signalListener: (() => void) | undefined
 
 	try {
 		const racers: Promise<void>[] = [process]
 
 		// Agent timeout: transition to background (command keeps running)
-		if (agentTimeout > 0) {
+		if (signal) {
 			racers.push(
-				new Promise<void>((resolve) => {
-					agentTimeoutId = setTimeout(() => {
-						runInBackground = true
-						process.continue()
-						task.supersedePendingAsk()
-						resolve()
-					}, agentTimeout)
+				new Promise<void>((_, reject) => {
+					signalListener = () => {
+						isCancelled = true
+						task.terminalProcess?.abort()
+						reject(new CommandCancelledError())
+					}
+					if (signal.aborted) signalListener()
+					else signal.addEventListener("abort", signalListener, { once: true })
 				}),
 			)
 		}
@@ -425,7 +450,7 @@ export async function executeCommandInTerminal(
 		if (commandExecutionTimeout > 0) {
 			racers.push(
 				new Promise<void>((_, reject) => {
-					userTimeoutId = setTimeout(() => {
+					commandTimeoutId = setTimeout(() => {
 						isUserTimedOut = true
 						task.terminalProcess?.abort()
 						reject(new Error(`Command execution timed out after ${commandExecutionTimeout}ms`))
@@ -435,7 +460,15 @@ export async function executeCommandInTerminal(
 		}
 
 		await Promise.race(racers)
+		if (isCancelled) throw new CommandCancelledError()
 	} catch (error) {
+		if (isCancelled || error instanceof CommandCancelledError) {
+			provider?.postMessageToWebview({
+				type: "commandExecutionStatus",
+				text: JSON.stringify({ executionId, status: "cancelled" } satisfies CommandExecutionStatus),
+			})
+			return [false, "The command was cancelled before it completed.", { status: "cancelled" }]
+		}
 		if (isUserTimedOut) {
 			const status: CommandExecutionStatus = { executionId, status: "timeout" }
 			provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
@@ -445,13 +478,14 @@ export async function executeCommandInTerminal(
 
 			return [
 				false,
-				`The command was terminated after exceeding a user-configured ${commandExecutionTimeoutSeconds}s timeout. Do not try to re-run the command.`,
+				`The command was terminated after exceeding the effective ${commandExecutionTimeoutSeconds}s timeout. Do not try to re-run the command.`,
+				{ status: "error", timedOut: true },
 			]
 		}
 		throw error
 	} finally {
-		clearTimeout(agentTimeoutId)
-		clearTimeout(userTimeoutId)
+		clearTimeout(commandTimeoutId)
+		if (signal && signalListener) signal.removeEventListener("abort", signalListener)
 		clearTimeout(pendingCommandOutputEmitTimer)
 		task.terminalProcess = undefined
 	}
@@ -494,7 +528,11 @@ export async function executeCommandInTerminal(
 
 		// Use persisted output format when output was truncated and spilled to disk
 		if (persistedResult?.truncated) {
-			return [false, formatPersistedOutput(persistedResult, exitDetails, currentWorkingDir)]
+			return [
+				false,
+				formatPersistedOutput(persistedResult, exitDetails, currentWorkingDir),
+				toCommandExecutionResult(exitDetails),
+			]
 		}
 
 		// Use inline format for small outputs (original behavior with exit status)
@@ -525,6 +563,7 @@ export async function executeCommandInTerminal(
 		return [
 			false,
 			`Command executed in terminal within working directory '${currentWorkingDir}'. ${exitStatus}\nOutput:\n${result}`,
+			toCommandExecutionResult(exitDetails),
 		]
 	} else {
 		return [
@@ -535,6 +574,13 @@ export async function executeCommandInTerminal(
 				"You will be updated on the terminal status and new output in the future.",
 			].join("\n"),
 		]
+	}
+}
+
+function toCommandExecutionResult(exitDetails: ExitCodeDetails | undefined): CommandExecutionResult {
+	return {
+		status: exitDetails?.exitCode === 0 && !exitDetails.signalName ? "success" : "error",
+		exitCode: exitDetails?.exitCode,
 	}
 }
 

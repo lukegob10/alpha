@@ -35,14 +35,14 @@ vi.mock("@/utils/TelemetryClient", () => ({
 	},
 }))
 
-// Create a variable to control what getAllModes returns.
+// Create a variable to control what getRecommendedModes returns.
 let mockModes: ModeConfig[] = []
 
 vi.mock("@alpha/modes", async () => {
 	const actual = await vi.importActual<typeof import("@alpha/modes")>("@alpha/modes")
 	return {
 		...actual,
-		getAllModes: () => mockModes,
+		getRecommendedModes: () => mockModes,
 		defaultModeSlug: "code", // Export the default mode slug for tests
 	}
 })
