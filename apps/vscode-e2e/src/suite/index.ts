@@ -8,7 +8,7 @@ import type { RooCodeAPI } from "@alpha-code/types"
 import { waitFor } from "./utils"
 
 export async function run() {
-	const extension = vscode.extensions.getExtension<RooCodeAPI>("Alpha.alpha")
+	const extension = vscode.extensions.getExtension<RooCodeAPI>("AlphaInc.alpha")
 
 	if (!extension) {
 		throw new Error("Extension not found")

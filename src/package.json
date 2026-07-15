@@ -462,6 +462,7 @@
 		"pretest": "turbo run bundle --cwd ..",
 		"test": "vitest run",
 		"format": "prettier --write .",
+		"prebundle": "pnpm --filter @alpha-code/build build && pnpm --filter @alpha-code/types build",
 		"bundle": "node esbuild.mjs",
 		"vscode:prepublish": "pnpm bundle --production",
 		"vsix": "mkdirp ../bin && vsce package --no-dependencies --out ../bin",

@@ -117,8 +117,8 @@ export type NativeToolArgs = {
 	list_files: { path: string; recursive?: boolean }
 	new_task: { mode: string; message: string; todos?: string }
 	delegate_task: {
-		envelope?: import("../core/agent/InternalTaskEnvelope").InternalTaskDraft
-		tasks?: import("../core/agent/InternalTaskEnvelope").InternalTaskDraft[]
+		envelope?: { objective?: string }
+		tasks?: Array<{ objective?: string }>
 	}
 	ask_followup_question: {
 		question: string

@@ -292,7 +292,10 @@ async function main() {
 		// global-agent must be external because it dynamically patches Node.js http/https modules
 		// which breaks when bundled. It needs access to the actual Node.js module instances.
 		// undici must be bundled because our VSIX is packaged with `--no-dependencies`.
-		external: ["vscode", "esbuild", "global-agent", ...lancedbNativePackages],
+		// LanceDB's generated loader contains static requires for every supported
+		// platform. Keep all native packages external so esbuild does not try to
+		// parse optional .node binaries that happen to be present in a pnpm store.
+		external: ["vscode", "esbuild", "global-agent", "@lancedb/lancedb-*"],
 	}
 
 	/**
