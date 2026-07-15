@@ -114,6 +114,29 @@ export type NativeToolArgs = {
 	apply_patch: { patch: string }
 	list_files: { path: string; recursive?: boolean }
 	new_task: { mode: string; message: string; todos?: string }
+	delegate_task: {
+		tasks: Array<{
+			objective: string
+			agent_kind?: "general" | "explore" | "review"
+			expected_output?: string[]
+			allowed_paths?: string[]
+			context_refs?: string[]
+			skills?: string[]
+			model_route?: "fast" | "balanced" | "deep" | "user-configured"
+			provider?: string
+			model?: string
+			reasoning?: string
+			execute?: boolean
+			mutate?: boolean
+			network?: boolean
+			external_side_effects?: boolean
+			require_approval?: boolean
+			max_input_tokens?: number
+			max_output_tokens?: number
+			timeout_ms?: number
+			dependencies?: string[]
+		}>
+	}
 	ask_followup_question: {
 		question: string
 		follow_up: Array<{ text: string; mode?: string }>
@@ -354,6 +377,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	attempt_completion: "complete tasks",
 	switch_mode: "switch modes",
 	new_task: "create new task",
+	delegate_task: "delegate bounded tasks",
 	codebase_search: "codebase search",
 	update_todo_list: "update todo list",
 	run_slash_command: "run slash command",
@@ -382,7 +406,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 		tools: ["github_api"],
 	},
 	modes: {
-		tools: ["switch_mode", "new_task"],
+		tools: ["switch_mode", "new_task", "delegate_task"],
 		alwaysAvailable: true,
 	},
 }
@@ -393,6 +417,7 @@ export const ALWAYS_AVAILABLE_TOOLS: ToolName[] = [
 	"attempt_completion",
 	"switch_mode",
 	"new_task",
+	"delegate_task",
 	"update_todo_list",
 	"run_slash_command",
 	"skill",

@@ -88,6 +88,30 @@ export function getAllModes(customModes?: ModeConfig[]): ModeConfig[] {
 	return allModes
 }
 
+/**
+ * Return the simplified profile choices for new tasks while preserving custom
+ * modes and the selected legacy mode for saved-task compatibility.
+ */
+export function getRecommendedModes(customModes?: ModeConfig[], selectedMode?: string): ModeConfig[] {
+	const workSource = getModeBySlug("code") ?? modes[0]
+	const planSource = getModeBySlug("architect") ?? modes[0]
+	const recommended: ModeConfig[] = [
+		{ ...workSource, slug: "work", name: "Work" },
+		{ ...planSource, slug: "plan", name: "Plan" },
+	]
+
+	if (selectedMode && !["work", "plan"].includes(selectedMode)) {
+		const selected = getModeBySlug(selectedMode, customModes)
+		if (selected) recommended.push(selected)
+	}
+
+	for (const customMode of customModes ?? []) {
+		if (!recommended.some((mode) => mode.slug === customMode.slug)) recommended.push(customMode)
+	}
+
+	return recommended
+}
+
 // Check if a mode is custom or an override
 export function isCustomMode(slug: string, customModes?: ModeConfig[]): boolean {
 	return !!customModes?.some((mode) => mode.slug === slug)

@@ -280,6 +280,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private readonly globalStoragePath: string
 	abort: boolean = false
 	currentRequestAbortController?: AbortController
+	private readonly taskCancellationController = new AbortController()
+	private readonly childTasksRequiringVerification = new Set<string>()
 	private pendingSteerMessage?: { text: string; images: string[] }
 	private isTaskLoopActive = false
 	private didComplete = false
@@ -2598,6 +2600,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public dispose(): void {
 		console.log(`[Task#dispose] disposing task ${this.taskId}.${this.instanceId}`)
+		this.taskCancellationController.abort()
 
 		// Cancel any in-progress HTTP request
 		try {
@@ -4951,6 +4954,40 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (error) {
 			this.emit(RooCodeEventName.TaskToolFailed, this.taskId, toolName, error)
 		}
+	}
+
+	public getTaskCancellationSignal(): AbortSignal {
+		return this.currentRequestAbortController?.signal ?? this.taskCancellationController.signal
+	}
+
+	public requireChildVerification(taskId: string): void {
+		this.childTasksRequiringVerification.add(taskId)
+	}
+
+	public getChildTasksRequiringVerification(): readonly string[] {
+		return [...this.childTasksRequiringVerification]
+	}
+
+	public shouldStopRepeatedToolCall(name: string, args: unknown): boolean {
+		const block = {
+			type: "tool_use",
+			name,
+			params: {},
+			nativeArgs: args,
+			partial: false,
+		} as ToolUse
+		return !this.toolRepetitionDetector.check(block).allowExecution
+	}
+
+	public recordToolCallForStopping(
+		_name: string,
+		_args: unknown,
+		_status: "success" | "error" | "denied" | "cancelled",
+		_commandCategory?: string,
+	): void {
+		// Repetition is recorded before execution by shouldStopRepeatedToolCall.
+		// This post-execution hook keeps the scheduler contract stable for future
+		// outcome-aware stopping policies without counting a call twice.
 	}
 
 	// Getters

@@ -14,7 +14,7 @@ tasks:
     repository:
       upstream: local-snapshot:real-repository
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:ee58af8f5aa88dca18e324479da21b52ac9d855e6e06e16f7c73608cafcd0671
+      snapshotDigest: sha256:8cd79bf103bfecf6873c108eb9a567c4898a7aa2c32804fc2da0160f903496b6
     family: real-repository
     capabilities:
       - cache-correctness
@@ -80,7 +80,7 @@ tasks:
       - grader_evidence
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:ee58af8f5aa88dca18e324479da21b52ac9d855e6e06e16f7c73608cafcd0671
+    fixtureDigest: sha256:8cd79bf103bfecf6873c108eb9a567c4898a7aa2c32804fc2da0160f903496b6
     promptDigest: sha256:255d3e15ba29956bd3028e71b68fe26e443fc48d0d565ca15ceaf64f572cf89a
   - id: repo-config-precedence
     version: 1
@@ -91,7 +91,7 @@ tasks:
     repository:
       upstream: local-snapshot:real-repository
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:ea315f502c3fe394e082ec6bb264b235bdc33a1b5239778f8280fa13b97033e5
+      snapshotDigest: sha256:f8c0742d9b14aede86df7d4ce41cb32adaec170f2dffc65f05c979d85bb3df13
     family: real-repository
     capabilities:
       - configuration
@@ -150,7 +150,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:ea315f502c3fe394e082ec6bb264b235bdc33a1b5239778f8280fa13b97033e5
+    fixtureDigest: sha256:f8c0742d9b14aede86df7d4ce41cb32adaec170f2dffc65f05c979d85bb3df13
     promptDigest: sha256:4d0914df61f34e49c204e681c625bb0f52da904a7933ded952ba359f93735784
   - id: repo-auth-session-rotation
     version: 1
@@ -161,7 +161,7 @@ tasks:
     repository:
       upstream: local-snapshot:real-repository
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:1dbcd6d000bacd220f7ba7e032ac28f3c6680ea198af44778dc594b5e362111b
+      snapshotDigest: sha256:57b5ea2241f5251f174fb8cd47cd4fdc7294d2372d42d482f1522fa3fd6ca1ab
     family: real-repository
     capabilities:
       - authentication
@@ -220,7 +220,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:1dbcd6d000bacd220f7ba7e032ac28f3c6680ea198af44778dc594b5e362111b
+    fixtureDigest: sha256:57b5ea2241f5251f174fb8cd47cd4fdc7294d2372d42d482f1522fa3fd6ca1ab
     promptDigest: sha256:04845536dc7cca65e299485cf9d79343612736dc7181b79f7f76749f1303ef2d
   - id: repo-stream-backpressure
     version: 1
@@ -231,7 +231,7 @@ tasks:
     repository:
       upstream: local-snapshot:real-repository
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:1217e82d3e01f31a50c9dd9b9baf591a7696eaa6c0cc69fedb94ee6a9c45c37b
+      snapshotDigest: sha256:c173830bd6e24d14e66ebdf850646d459aa2f750f11b78251d9ad154aac32665
     family: real-repository
     capabilities:
       - async-control-flow
@@ -290,7 +290,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:1217e82d3e01f31a50c9dd9b9baf591a7696eaa6c0cc69fedb94ee6a9c45c37b
+    fixtureDigest: sha256:c173830bd6e24d14e66ebdf850646d459aa2f750f11b78251d9ad154aac32665
     promptDigest: sha256:5b59e518bd9dd906f00dc96ae6efd5967de5db1fe2f1be777ae7dbc52a63b519
   - id: repo-workspace-package-order
     version: 1
@@ -301,7 +301,7 @@ tasks:
     repository:
       upstream: local-snapshot:real-repository
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:7c9dbd57366e43493876aab62e4fe2353c19f8f917a32245f7316b2824000e34
+      snapshotDigest: sha256:c1b10ec20be19f15492c88efaeee35bd33b826b981ead70bd2bf2bfcd08bb301
     family: real-repository
     capabilities:
       - dependency-graph
@@ -360,7 +360,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:7c9dbd57366e43493876aab62e4fe2353c19f8f917a32245f7316b2824000e34
+    fixtureDigest: sha256:c1b10ec20be19f15492c88efaeee35bd33b826b981ead70bd2bf2bfcd08bb301
     promptDigest: sha256:385392e3a42cfcf3b231edc44d6dded7f58a755fa3929ee6883089d944f607ee
   - id: repo-migration-rollback
     version: 1
@@ -371,7 +371,7 @@ tasks:
     repository:
       upstream: local-snapshot:safety-stateful
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:7401d915bd3dfa8b76e3077cf0d9b4a1e0a21574aa7bb4dc4fb7962c1d7328f0
+      snapshotDigest: sha256:2114cbc303529d15b0f1150e4804f2bfbd0649d122ff5e404d1e9e3a4643e159
     family: safety-stateful
     capabilities:
       - migration
@@ -430,7 +430,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:7401d915bd3dfa8b76e3077cf0d9b4a1e0a21574aa7bb4dc4fb7962c1d7328f0
+    fixtureDigest: sha256:2114cbc303529d15b0f1150e4804f2bfbd0649d122ff5e404d1e9e3a4643e159
     promptDigest: sha256:fc06e61f5248d17f510cb9e8e62640f00ff483ae90bad740d39cfcb78945c8ef
   - id: repo-event-deduplication
     version: 1
@@ -441,7 +441,7 @@ tasks:
     repository:
       upstream: local-snapshot:real-repository
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:8d499c57611884f9a16124f8fdf34684c7e3540170a04a926d1b7a66b35fca63
+      snapshotDigest: sha256:8db74ad50ffabc6ca5086811b18dc78090c7af907d89f22705815816b22e9549
     family: real-repository
     capabilities:
       - event-processing
@@ -500,7 +500,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:8d499c57611884f9a16124f8fdf34684c7e3540170a04a926d1b7a66b35fca63
+    fixtureDigest: sha256:8db74ad50ffabc6ca5086811b18dc78090c7af907d89f22705815816b22e9549
     promptDigest: sha256:a1570ecc1fb5ea27c28563533dfe2f016903ad61132008497b4fe3dd677183f7
   - id: repo-cli-config-layering
     version: 1
@@ -511,7 +511,7 @@ tasks:
     repository:
       upstream: local-snapshot:real-repository
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:b4dd3b8959a85959231d0d98bd77927a94fc631f0d101580ab113410305fdb77
+      snapshotDigest: sha256:9e6f631251259f97a240e079a54a3ea2ac0c9576d56a2dba6601406506da2d2d
     family: real-repository
     capabilities:
       - cli-parsing
@@ -570,7 +570,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:b4dd3b8959a85959231d0d98bd77927a94fc631f0d101580ab113410305fdb77
+    fixtureDigest: sha256:9e6f631251259f97a240e079a54a3ea2ac0c9576d56a2dba6601406506da2d2d
     promptDigest: sha256:d2646b5127f1b95e00f35f631ff1aaf999e0e06d278b341c9cd50f59c152799a
   - id: repo-concurrent-file-lock
     version: 1
@@ -581,7 +581,7 @@ tasks:
     repository:
       upstream: local-snapshot:real-repository
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:a5c8ce24b419aa71357b8725a92d677d59bb4532b5e5e7f57b80820af936eaba
+      snapshotDigest: sha256:1a26ea505e5400ee9089dc43fcb9e094f2b3b26c2d5bcbe19fdf8b2ea6c361da
     family: real-repository
     capabilities:
       - concurrency
@@ -640,7 +640,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:a5c8ce24b419aa71357b8725a92d677d59bb4532b5e5e7f57b80820af936eaba
+    fixtureDigest: sha256:1a26ea505e5400ee9089dc43fcb9e094f2b3b26c2d5bcbe19fdf8b2ea6c361da
     promptDigest: sha256:ae67071690cc9346ebaada1e26a34ccf6ee85b459cc4b32651d0360cedd00a74
   - id: repo-pagination-cursor
     version: 1
@@ -651,7 +651,7 @@ tasks:
     repository:
       upstream: local-snapshot:real-repository
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:6b44724674f38ef89a5568d1262c1201365d8b789e490ca45dc8f0e2f1ac091c
+      snapshotDigest: sha256:09ce14eadc58485bf15d6f42cc5553a4c6482ceba39adfacc00781f813d146ff
     family: real-repository
     capabilities:
       - pagination
@@ -710,7 +710,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:6b44724674f38ef89a5568d1262c1201365d8b789e490ca45dc8f0e2f1ac091c
+    fixtureDigest: sha256:09ce14eadc58485bf15d6f42cc5553a4c6482ceba39adfacc00781f813d146ff
     promptDigest: sha256:158b48bcbe5412d86854d5f529a3cba0d862ef8f42f3f9e06b55d87668777150
   - id: repo-plugin-dependency-cycle
     version: 1
@@ -721,7 +721,7 @@ tasks:
     repository:
       upstream: local-snapshot:real-repository
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:c3fce6efeee2bb1f6b40d29fd54dc688672841e1cc17afa8dee32908ee432ef3
+      snapshotDigest: sha256:0090eed95293a2327bc0ae8ac65dbd0161d525db8f02f0f5fb32e9dd95f936ba
     family: real-repository
     capabilities:
       - graph-analysis
@@ -780,7 +780,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:c3fce6efeee2bb1f6b40d29fd54dc688672841e1cc17afa8dee32908ee432ef3
+    fixtureDigest: sha256:0090eed95293a2327bc0ae8ac65dbd0161d525db8f02f0f5fb32e9dd95f936ba
     promptDigest: sha256:42cf7323b1f8e7029d33679765c1e2f6011dad7307fc66dccff385c389c6d4c4
   - id: repo-transaction-outbox
     version: 1
@@ -791,7 +791,7 @@ tasks:
     repository:
       upstream: local-snapshot:real-repository
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:48416ff3732d6afcc2cda6ccbaab279eebc767b304c989190d1734facb4ffc94
+      snapshotDigest: sha256:d444e47c34447c7c3430d3ea98f52c898bb67e2672a6422e72c3ea870604a756
     family: real-repository
     capabilities:
       - transaction
@@ -850,7 +850,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:48416ff3732d6afcc2cda6ccbaab279eebc767b304c989190d1734facb4ffc94
+    fixtureDigest: sha256:d444e47c34447c7c3430d3ea98f52c898bb67e2672a6422e72c3ea870604a756
     promptDigest: sha256:8ec5772db98214942944674a3966ec33023cb161b2a4c2155d1d6121e8f6786e
   - id: repo-rate-limit-window
     version: 1
@@ -861,7 +861,7 @@ tasks:
     repository:
       upstream: local-snapshot:real-repository
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:04a3472441569d0d079f9560aecab8f4e06739e632c55f9aaa20ec5136ba3e5e
+      snapshotDigest: sha256:7a8a1871a0439ab1672f607fb67609e92a72c83b8ea6464181c8a2a98515d6c1
     family: real-repository
     capabilities:
       - rate-limiting
@@ -920,7 +920,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:04a3472441569d0d079f9560aecab8f4e06739e632c55f9aaa20ec5136ba3e5e
+    fixtureDigest: sha256:7a8a1871a0439ab1672f607fb67609e92a72c83b8ea6464181c8a2a98515d6c1
     promptDigest: sha256:a4a28111f05aae8ec733e52f9e20d50a00cfff0c49c1ce908001f7babde045f1
   - id: repo-schema-compatibility
     version: 1
@@ -931,7 +931,7 @@ tasks:
     repository:
       upstream: local-snapshot:long-horizon
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:e72661fe935ab0aba10f141ec03db3115bac5e5608732a035d5ea2be759a2e62
+      snapshotDigest: sha256:ea58b30c06fcc966eafb1f81940f58de60226fe826844d876f0f1b5e53fd77dc
     family: long-horizon
     capabilities:
       - schema-evolution
@@ -990,7 +990,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:e72661fe935ab0aba10f141ec03db3115bac5e5608732a035d5ea2be759a2e62
+    fixtureDigest: sha256:ea58b30c06fcc966eafb1f81940f58de60226fe826844d876f0f1b5e53fd77dc
     promptDigest: sha256:59cf48e20d1d3cc5758c96dca1aa5d82d60c371df9d9a2242f84bd86aa64fede
   - id: repo-worker-shutdown
     version: 1
@@ -1001,7 +1001,7 @@ tasks:
     repository:
       upstream: local-snapshot:long-horizon
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:cfe11ffc4c36821bf2220b9f74ae4ac40df2b96de9b6dd1b87c012086c66f29f
+      snapshotDigest: sha256:8c03df7c229014bd499b3c7b93bb9b7956aa6c33ff2c83b31e3f87d1061f7119
     family: long-horizon
     capabilities:
       - graceful-shutdown
@@ -1060,7 +1060,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:cfe11ffc4c36821bf2220b9f74ae4ac40df2b96de9b6dd1b87c012086c66f29f
+    fixtureDigest: sha256:8c03df7c229014bd499b3c7b93bb9b7956aa6c33ff2c83b31e3f87d1061f7119
     promptDigest: sha256:284a0a522e92f7d2d8e103843eb6cb4ab88a907e09137d53ceb717e7d11ddb0c
   - id: repo-build-artifact-boundary
     version: 1
@@ -1071,7 +1071,7 @@ tasks:
     repository:
       upstream: local-snapshot:long-horizon
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:1c2d46418ef4028ff7329500850a2a45b1dc020b76159349c724e23695581a5b
+      snapshotDigest: sha256:4967f7e39771a9e62c4e06c18770d5a9c246bb81760f4d7d442460658c1122ee
     family: long-horizon
     capabilities:
       - package-exports
@@ -1130,7 +1130,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:1c2d46418ef4028ff7329500850a2a45b1dc020b76159349c724e23695581a5b
+    fixtureDigest: sha256:4967f7e39771a9e62c4e06c18770d5a9c246bb81760f4d7d442460658c1122ee
     promptDigest: sha256:81c4471cde5f814f1ae49893bce6cb786c6e58b28a38be912c252d7fc882dff3
   - id: alpha-repository-rules
     version: 1
@@ -1141,7 +1141,7 @@ tasks:
     repository:
       upstream: local-snapshot:alpha-extension
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:40c1a2c543b0a54fca5a7c5ff0fda597fe2cdf69caaabe08508d40b1e20b219c
+      snapshotDigest: sha256:ad315e0e781c63ef411cd59ac80c5c1612165ed47dda0ebd1135727207e964a8
     family: alpha-extension
     capabilities:
       - repository-instructions
@@ -1200,7 +1200,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:40c1a2c543b0a54fca5a7c5ff0fda597fe2cdf69caaabe08508d40b1e20b219c
+    fixtureDigest: sha256:ad315e0e781c63ef411cd59ac80c5c1612165ed47dda0ebd1135727207e964a8
     promptDigest: sha256:62e2deb07bd53734e614af01dfa9f7f37dcf044d1b28065885c6ec6463229e78
   - id: alpha-context-continuity
     version: 1
@@ -1211,7 +1211,7 @@ tasks:
     repository:
       upstream: local-snapshot:alpha-extension
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:20e6d4fe0ebbda3f52abcbd008ddc610c36f95fed4b0d66f2c2eb193702ea9b8
+      snapshotDigest: sha256:0b440b4e18f48423149a245896e4766578990b5f275fa228caadb08681f3946c
     family: alpha-extension
     capabilities:
       - context-continuity
@@ -1270,7 +1270,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:20e6d4fe0ebbda3f52abcbd008ddc610c36f95fed4b0d66f2c2eb193702ea9b8
+    fixtureDigest: sha256:0b440b4e18f48423149a245896e4766578990b5f275fa228caadb08681f3946c
     promptDigest: sha256:07a7ee7e79a6c10de625f5f85085304b1157946ba2332e99cf16613c8478e051
   - id: alpha-compaction-resume
     version: 1
@@ -1281,7 +1281,7 @@ tasks:
     repository:
       upstream: local-snapshot:alpha-extension
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:2e374181f5a4ee785f33084837e6180ce36501fc4eb5c472780ca5e8f2fbc11f
+      snapshotDigest: sha256:25866833d0438c75188cf9adab2df881604a697cd9340bbcec712ce5bb5c714e
     family: alpha-extension
     capabilities:
       - compaction
@@ -1340,7 +1340,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:2e374181f5a4ee785f33084837e6180ce36501fc4eb5c472780ca5e8f2fbc11f
+    fixtureDigest: sha256:25866833d0438c75188cf9adab2df881604a697cd9340bbcec712ce5bb5c714e
     promptDigest: sha256:d1d85d2bcb16e3eab198ddde68f067d0f2bcca82369853b859d89fb6af69e8df
   - id: alpha-validation-after-edit
     version: 1
@@ -1351,7 +1351,7 @@ tasks:
     repository:
       upstream: local-snapshot:alpha-extension
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:f103950401592209ed2914e68d10ef338ce6616522629c861eea995dea62859e
+      snapshotDigest: sha256:ce76f9d7348c824fba352932ceb1d07d551108759eab8db24dd5b32761c6e8fa
     family: alpha-extension
     capabilities:
       - trace-validation
@@ -1410,7 +1410,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:f103950401592209ed2914e68d10ef338ce6616522629c861eea995dea62859e
+    fixtureDigest: sha256:ce76f9d7348c824fba352932ceb1d07d551108759eab8db24dd5b32761c6e8fa
     promptDigest: sha256:a2b302bef24f3f7fbbf6d71da761eceac97b846c517d2451b1dbf7de626797f8
   - id: alpha-cancellation-cleanup
     version: 1
@@ -1421,7 +1421,7 @@ tasks:
     repository:
       upstream: local-snapshot:alpha-extension
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:3679d141fc26d2dcde023d923799f8fb1472112b069bd5028260bc4cdacd57f5
+      snapshotDigest: sha256:6461ec65884edd380788924d5171b24f730474d7a457eab4c8630fc9868a18ec
     family: alpha-extension
     capabilities:
       - cancellation
@@ -1480,7 +1480,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:3679d141fc26d2dcde023d923799f8fb1472112b069bd5028260bc4cdacd57f5
+    fixtureDigest: sha256:6461ec65884edd380788924d5171b24f730474d7a457eab4c8630fc9868a18ec
     promptDigest: sha256:c4ac5f8697c2962f9fdfc8acc2a582000e23c7ab908fa4c0c890d5015602749e
   - id: alpha-resume-idempotency
     version: 1
@@ -1491,7 +1491,7 @@ tasks:
     repository:
       upstream: local-snapshot:alpha-extension
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:8f84fdd8fa66fb736507dc6a6a335a20f6e6ab4f5aa835775371671b69419923
+      snapshotDigest: sha256:943fa77645748f16cc6b3123073143af0edba005d40d6f3fb355a1aafe088190
     family: alpha-extension
     capabilities:
       - resume
@@ -1550,7 +1550,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:8f84fdd8fa66fb736507dc6a6a335a20f6e6ab4f5aa835775371671b69419923
+    fixtureDigest: sha256:943fa77645748f16cc6b3123073143af0edba005d40d6f3fb355a1aafe088190
     promptDigest: sha256:f85f5a8fc79a8c09ec43f0442b38f477d87a226d72d2d867d083e5e097d404ee
   - id: alpha-tool-result-integrity
     version: 1
@@ -1561,7 +1561,7 @@ tasks:
     repository:
       upstream: local-snapshot:long-horizon
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:60274c602d843b76cbc4487c6a091d97689b29f25b36c1e0fef26a8c11e86463
+      snapshotDigest: sha256:08ff044eb110931c8763dc9babb476b7906442f0e25b1e0085b5d3a4fa36f00c
     family: long-horizon
     capabilities:
       - tool-protocol
@@ -1620,7 +1620,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:60274c602d843b76cbc4487c6a091d97689b29f25b36c1e0fef26a8c11e86463
+    fixtureDigest: sha256:08ff044eb110931c8763dc9babb476b7906442f0e25b1e0085b5d3a4fa36f00c
     promptDigest: sha256:516a64c669ae8d6ddbf36f9df2535f41a818b03611d1aeabc2b7ea3f1591f84c
   - id: alpha-scheduler-ordering
     version: 1
@@ -1631,7 +1631,7 @@ tasks:
     repository:
       upstream: local-snapshot:long-horizon
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:ba45eb71dfe37afad7a25fc56cbf4d21d091789a57dca9437297ad6021602cd9
+      snapshotDigest: sha256:205950e4e7756568229754abfba654464c38c04743eba42fd0bac5adad6de836
     family: long-horizon
     capabilities:
       - scheduler
@@ -1690,7 +1690,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:ba45eb71dfe37afad7a25fc56cbf4d21d091789a57dca9437297ad6021602cd9
+    fixtureDigest: sha256:205950e4e7756568229754abfba654464c38c04743eba42fd0bac5adad6de836
     promptDigest: sha256:812b59684dcad887a3f0195fcb7ec479495727b8b14c38d195b33751047222df
   - id: safety-path-policy
     version: 1
@@ -1701,7 +1701,7 @@ tasks:
     repository:
       upstream: local-snapshot:safety-stateful
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:5de5def644a30720b2695f770ef83c19dd633f919504acf7c6de3aa7f39d41c9
+      snapshotDigest: sha256:e3e832c5cf836bc2bea7c7ea7359e6cbab3371d18e697ddf6a55f60e162d99af
     family: safety-stateful
     capabilities:
       - path-security
@@ -1760,7 +1760,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:5de5def644a30720b2695f770ef83c19dd633f919504acf7c6de3aa7f39d41c9
+    fixtureDigest: sha256:e3e832c5cf836bc2bea7c7ea7359e6cbab3371d18e697ddf6a55f60e162d99af
     promptDigest: sha256:4a92923f1edf5e3ccd3294b871f65d3ffa0f2b820fa719e61cbb68a6e4571a1d
   - id: safety-secret-redaction
     version: 1
@@ -1771,7 +1771,7 @@ tasks:
     repository:
       upstream: local-snapshot:safety-stateful
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:e4c4bf96351c2b28ce5a6364401885ef3498265775b60a2c5870500dfd51c864
+      snapshotDigest: sha256:882ba83c2af65649627e09151fedfda7c58459521c06dd498f8499d3678c47bb
     family: safety-stateful
     capabilities:
       - secret-redaction
@@ -1830,7 +1830,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:e4c4bf96351c2b28ce5a6364401885ef3498265775b60a2c5870500dfd51c864
+    fixtureDigest: sha256:882ba83c2af65649627e09151fedfda7c58459521c06dd498f8499d3678c47bb
     promptDigest: sha256:58cc8bca3b78d6fd73dee5772ed15b6e8b451564c66968333607f1df1c61f954
   - id: safety-prompt-injection
     version: 1
@@ -1841,7 +1841,7 @@ tasks:
     repository:
       upstream: local-snapshot:safety-stateful
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:66c2c044a6c46bd085c3a31b19a6a407d19234e166f9d5acfaae8f9f06a78da3
+      snapshotDigest: sha256:453d70a0677fac969f612daf25cfb5461949f49a165e0b814fd3b0c11b81d2bd
     family: safety-stateful
     capabilities:
       - prompt-injection
@@ -1900,7 +1900,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:66c2c044a6c46bd085c3a31b19a6a407d19234e166f9d5acfaae8f9f06a78da3
+    fixtureDigest: sha256:453d70a0677fac969f612daf25cfb5461949f49a165e0b814fd3b0c11b81d2bd
     promptDigest: sha256:544c4a8445ea9dbfb708803d7f7860cdb3810be938c82d17335afd15986205d0
   - id: stateful-api-idempotency
     version: 1
@@ -1911,7 +1911,7 @@ tasks:
     repository:
       upstream: local-snapshot:safety-stateful
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:d4012612ee60a862ef7c0199da2861fbbea185aba0501f644f6f0c50de68b41a
+      snapshotDigest: sha256:b4e51e3d5c2631e3211a3b69b16b40465d3109c21542cf00281054c19571c384
     family: safety-stateful
     capabilities:
       - external-side-effects
@@ -1970,7 +1970,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:d4012612ee60a862ef7c0199da2861fbbea185aba0501f644f6f0c50de68b41a
+    fixtureDigest: sha256:b4e51e3d5c2631e3211a3b69b16b40465d3109c21542cf00281054c19571c384
     promptDigest: sha256:c0800b19406ed36749ead739222108807300fd862702f94656f797b62aa828f3
   - id: holdout-001
     version: 1

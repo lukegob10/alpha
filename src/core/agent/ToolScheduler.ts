@@ -603,7 +603,7 @@ export class ToolScheduler {
 			toolCallId: prepared.call.id,
 			signal: this.options.signal,
 			resolveCommandTimeoutMs: (requestedTimeoutMs, command) =>
-				resolveCommandTimeoutMs(this.options.policy, requestedTimeoutMs, command),
+				resolveCommandTimeoutMs(this.options.policy, requestedTimeoutMs ?? 0, command),
 		}
 
 		try {

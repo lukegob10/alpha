@@ -40,13 +40,14 @@ for (const suiteFile of ["smoke-v1.yaml", "frontier-v1.yaml"]) {
 			commands: [{ command: "node", args: ["--test", "test/workflow.test.js"] }],
 			network: "disabled",
 		}
-		task.contextBand = contextBand
-		task.editTopology = { ...topology, allowedRoots: ["src", "test"] }
-		task.validation = validation
-		task.evidenceRequirements = evidenceRequirements
-		for (const grader of task.graders) if (grader.bundleId) grader.bundleDigest = bundleDigest
+		task.contextBand ??= contextBand
+		task.editTopology ??= { ...topology, allowedRoots: ["src", "test"] }
+		task.validation ??= validation
+		task.evidenceRequirements ??= evidenceRequirements
+		for (const grader of task.graders)
+			if (grader.bundleId && !grader.bundleDigest) grader.bundleDigest = bundleDigest
 		task.graderReferenceDigest = sha256(canonicalJson(task.graders))
-		task.environmentDigest = sha256(canonicalJson(validation))
+		task.environmentDigest = sha256(canonicalJson(task.validation))
 
 		const fixture =
 			task.partition === "holdout"

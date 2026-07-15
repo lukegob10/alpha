@@ -497,7 +497,9 @@ describe("ToolScheduler", () => {
 		expect(peak).toBe(6)
 		expect(outcome.results).toHaveLength(6)
 		expect(outcome.results.every((result) => result.status === "success")).toBe(true)
-		expect(outcome.approvalRequestCount).toBe(6)
+		// ReadFileTool does not request approval; registry approval capability is
+		// scheduling metadata and must not create duplicate scheduler prompts.
+		expect(outcome.approvalRequestCount).toBe(0)
 		expect(outcome.supersededAskCount).toBe(0)
 		expect(outcome.completedToolResultCount).toBe(6)
 		expect(outcome.results.map((result) => (typeof result.content === "string" ? result.content : ""))).toEqual(

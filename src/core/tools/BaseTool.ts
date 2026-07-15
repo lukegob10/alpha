@@ -6,11 +6,20 @@ import type { ToolUse, HandleError, PushToolResult, AskApproval, NativeToolArgs 
 /**
  * Callbacks passed to tool execution
  */
+export interface ToolResultMetadata {
+	status?: "success" | "error" | "denied" | "cancelled"
+	exitCode?: number
+	timedOut?: boolean
+}
+
 export interface ToolCallbacks {
 	askApproval: AskApproval
 	handleError: HandleError
 	pushToolResult: PushToolResult
+	setResultMetadata?: (metadata: ToolResultMetadata) => void
 	toolCallId?: string
+	signal?: AbortSignal
+	resolveCommandTimeoutMs?: (requestedTimeoutMs: number | null | undefined, command: string) => number
 }
 
 /**

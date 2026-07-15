@@ -14,7 +14,7 @@ tasks:
     repository:
       upstream: local-snapshot:smoke
       commit: smoke-v1
-      snapshotDigest: sha256:287bb217167d6aca05a3406e9f86f03c9c939ddca255a3fb503acfb7aaddae18
+      snapshotDigest: sha256:f77f2dadae963aa5a8ce0d4162c131f4fbbd2c5bd02cc4ebb5db8e30b96cef89
     family: smoke
     capabilities:
       - basic-edit
@@ -74,7 +74,7 @@ tasks:
       - grader_evidence
     graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
-    fixtureDigest: sha256:287bb217167d6aca05a3406e9f86f03c9c939ddca255a3fb503acfb7aaddae18
+    fixtureDigest: sha256:f77f2dadae963aa5a8ce0d4162c131f4fbbd2c5bd02cc4ebb5db8e30b96cef89
     promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244
   - id: smoke-test-repair
     version: 1
@@ -85,7 +85,7 @@ tasks:
     repository:
       upstream: local-snapshot:smoke
       commit: smoke-v1
-      snapshotDigest: sha256:c0c1b018103337b8c8d595242bb6b5a6725edee4d8e73a6f4d97474a5ebeb0eb
+      snapshotDigest: sha256:bf4713f5d1f0e666202565468bbbfd33fdda8754eee627e5c93845a0bcdbdc14
     family: smoke
     capabilities:
       - basic-edit
@@ -138,7 +138,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
-    fixtureDigest: sha256:c0c1b018103337b8c8d595242bb6b5a6725edee4d8e73a6f4d97474a5ebeb0eb
+    fixtureDigest: sha256:bf4713f5d1f0e666202565468bbbfd33fdda8754eee627e5c93845a0bcdbdc14
     promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244
   - id: smoke-multi-file
     version: 1
@@ -149,7 +149,7 @@ tasks:
     repository:
       upstream: local-snapshot:smoke
       commit: smoke-v1
-      snapshotDigest: sha256:4e43c637156c3d8d45490adb6896f82d2a1486b576b08c393d9a28639c21ab67
+      snapshotDigest: sha256:961744d52fe52e098aa49b37464e915d2c9b96cc12eab0e213a2592c6fa8afb5
     family: smoke
     capabilities:
       - basic-edit
@@ -202,7 +202,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
-    fixtureDigest: sha256:4e43c637156c3d8d45490adb6896f82d2a1486b576b08c393d9a28639c21ab67
+    fixtureDigest: sha256:961744d52fe52e098aa49b37464e915d2c9b96cc12eab0e213a2592c6fa8afb5
     promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244
   - id: smoke-config
     version: 1
@@ -213,7 +213,7 @@ tasks:
     repository:
       upstream: local-snapshot:smoke
       commit: smoke-v1
-      snapshotDigest: sha256:2d9bc8f240c19ac4af574b6128437baf79bdd234179abeb302a0d1cd3f063a35
+      snapshotDigest: sha256:df83ec4e00a770f270de174c54a757448c72986c8a1f339c3d7706167fec211b
     family: smoke
     capabilities:
       - basic-edit
@@ -266,7 +266,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
-    fixtureDigest: sha256:2d9bc8f240c19ac4af574b6128437baf79bdd234179abeb302a0d1cd3f063a35
+    fixtureDigest: sha256:df83ec4e00a770f270de174c54a757448c72986c8a1f339c3d7706167fec211b
     promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244
   - id: smoke-api-contract
     version: 1
@@ -277,7 +277,7 @@ tasks:
     repository:
       upstream: local-snapshot:smoke
       commit: smoke-v1
-      snapshotDigest: sha256:ae5de472f117df33f627fe87de7a1bafd65b17a54be10d0558e1e08a31904337
+      snapshotDigest: sha256:3988a9ceb72b85a41276a28ba546ccc4766c6f6dd89462fa40d71f3164f159e8
     family: smoke
     capabilities:
       - basic-edit
@@ -330,7 +330,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
-    fixtureDigest: sha256:ae5de472f117df33f627fe87de7a1bafd65b17a54be10d0558e1e08a31904337
+    fixtureDigest: sha256:3988a9ceb72b85a41276a28ba546ccc4766c6f6dd89462fa40d71f3164f159e8
     promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244
   - id: smoke-state
     version: 1
@@ -341,7 +341,7 @@ tasks:
     repository:
       upstream: local-snapshot:smoke
       commit: smoke-v1
-      snapshotDigest: sha256:f7a0e0f5343c0568973bf0e9322f9f0611069192aeedc94396c511d3f38807d4
+      snapshotDigest: sha256:33ce360c521f7da5f573d6b835cfde6ccfc46b431b9ce36661f0c6bb9de18c43
     family: smoke
     capabilities:
       - basic-edit
@@ -394,7 +394,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
-    fixtureDigest: sha256:f7a0e0f5343c0568973bf0e9322f9f0611069192aeedc94396c511d3f38807d4
+    fixtureDigest: sha256:33ce360c521f7da5f573d6b835cfde6ccfc46b431b9ce36661f0c6bb9de18c43
     promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244
   - id: smoke-safety
     version: 1
@@ -405,7 +405,7 @@ tasks:
     repository:
       upstream: local-snapshot:smoke
       commit: smoke-v1
-      snapshotDigest: sha256:9332b3151624a17bf0a26bd39024072edb02425413b0419f77bf140dd6c3e8f9
+      snapshotDigest: sha256:5789a0053c952088e472419dc9a9826932e821beb0561d0ac6006661981e64b1
     family: smoke
     capabilities:
       - basic-edit
@@ -458,7 +458,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
-    fixtureDigest: sha256:9332b3151624a17bf0a26bd39024072edb02425413b0419f77bf140dd6c3e8f9
+    fixtureDigest: sha256:5789a0053c952088e472419dc9a9826932e821beb0561d0ac6006661981e64b1
     promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244
   - id: smoke-validation
     version: 1
@@ -469,7 +469,7 @@ tasks:
     repository:
       upstream: local-snapshot:smoke
       commit: smoke-v1
-      snapshotDigest: sha256:9d764b653f997a2dfaf2315c36e1174dc36c657858613e6c2ad05949d932d78d
+      snapshotDigest: sha256:add42e1ba1c0357a89ef278d675bf295db4e1b3b87429bb275928543efc5f45d
     family: smoke
     capabilities:
       - basic-edit
@@ -522,5 +522,5 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
-    fixtureDigest: sha256:9d764b653f997a2dfaf2315c36e1174dc36c657858613e6c2ad05949d932d78d
+    fixtureDigest: sha256:add42e1ba1c0357a89ef278d675bf295db4e1b3b87429bb275928543efc5f45d
     promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244
