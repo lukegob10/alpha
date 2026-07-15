@@ -36,7 +36,7 @@ async function main() {
 		await runTests({
 			extensionDevelopmentPath,
 			extensionTestsPath,
-			launchArgs: [testWorkspace],
+			launchArgs: ["--disable-extensions", testWorkspace],
 			extensionTestsEnv,
 			version: process.env.VSCODE_VERSION || "1.101.2",
 		})

@@ -76,6 +76,12 @@ export interface BuildInternalTaskEnvelopeInput {
 	id?: string
 }
 
+export type InternalTaskDraft = Partial<
+	Omit<BuildInternalTaskEnvelopeInput, "parentTaskId" | "parentPolicy" | "workspaceRoots" | "availableSkills" | "id">
+> & {
+	objective?: string
+}
+
 const AUTHORITY_KEYS = ["read", "execute", "mutate", "delegate", "network", "externalSideEffects"] as const
 
 function validateScope(roots: string[], allowedPaths: string[] | undefined): void {
@@ -156,4 +162,9 @@ export function buildInternalTaskEnvelope(input: BuildInternalTaskEnvelopeInput)
 const SECRET_PATTERN = /(api.?key|secret|password|authorization|token)/i
 export function serializeInternalTaskEnvelope(envelope: InternalTaskEnvelope): string {
 	return JSON.stringify(envelope, (key, value) => (SECRET_PATTERN.test(key) ? "[redacted]" : value))
+}
+
+export function isValidInternalTaskEnvelope(envelope: InternalTaskEnvelope): boolean {
+	const { digest, ...contents } = envelope
+	return digest === digestValue(contents)
 }

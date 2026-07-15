@@ -163,6 +163,7 @@ import {
 import type { AgentTurnEvent } from "../agent/AgentTurnEvents"
 import { AgentTurnEventLog } from "../agent/AgentTurnEventLog"
 import { createToolPolicySnapshot, type ToolPolicySnapshot } from "../agent/ToolPolicy"
+import { resolveExecutionProfile } from "../agent/ExecutionProfile"
 
 const MAX_EXPONENTIAL_BACKOFF_SECONDS = 600 // 10 minutes
 const DEFAULT_USAGE_COLLECTION_TIMEOUT_MS = 5000 // 5 seconds
@@ -4146,10 +4147,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
-	public getTaskCancellationSignal(): AbortSignal {
-		return this.taskAbortController.signal
-	}
-
 	private async createStepContextSnapshot(input: {
 		kind: StepContextKind
 		contextId?: string
@@ -4292,12 +4289,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private createCompatibilityStepContext(): StepContext {
 		const model = this.api.getModel()
 		const emptyTools: OpenAI.Chat.ChatCompletionTool[] = []
-		const emptyPolicy = {
+		const emptyPolicy = createToolPolicySnapshot({
+			visibleTools: [],
 			allowedTools: [],
 			disabledTools: [],
-			approval: { liveRevalidation: true },
 			capabilities: {},
-		}
+			digest: digestValue([]),
+		})
 		const metadata: ApiHandlerCreateMessageMetadata = { taskId: this.taskId }
 
 		return createStepContext({
@@ -4325,7 +4323,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				boundary: { startIndex: 0, endIndex: 0, messageCount: 0, digest: digestValue([]) },
 			},
 			tools: { schemas: emptyTools, parallelToolCalls: true, digest: digestValue(emptyTools) },
-			policy: { ...emptyPolicy, digest: digestValue(emptyPolicy) },
+			policy: emptyPolicy,
 			budget: { contextWindow: model.info.contextWindow, compaction: { action: "none", attempted: false } },
 			request: { metadata },
 		})
@@ -5010,7 +5008,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			{
 				type: "profile_resolved",
 				sourceMode: stepContext.mode.slug,
-				profileId: stepContext.mode.executionProfileId ?? "work",
+				profileId: resolveExecutionProfile(stepContext.mode.slug).id,
 				legacyAdapter: !["work", "plan"].includes(stepContext.mode.slug),
 			},
 			stepContext,
@@ -5449,6 +5447,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public getChildTasksRequiringVerification(): readonly string[] {
 		return [...this.childTasksRequiringVerification]
+	}
+
+	private hasPendingChildVerification(): boolean {
+		return this.childTasksRequiringVerification.size > 0
 	}
 
 	public shouldStopRepeatedToolCall(name: string, args: unknown): boolean {

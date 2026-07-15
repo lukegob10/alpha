@@ -290,38 +290,8 @@ export class ToolScheduler {
 		this.parallelToolCount = 0
 		this.outputTruncatedCount = 0
 		const startedAt = performance.now()
-		const calls = Array.isArray(response)
-			? response
-			: response.items.flatMap((item): AgentToolCall[] => {
-					if (item.type === "tool_call") {
-						return [item]
-					}
-					if (item.type === "error" && item.callId && item.toolName) {
-						return [
-							{
-								type: "tool_call",
-								id: item.callId,
-								name: item.toolName,
-								arguments: {},
-							},
-						]
-					}
-					return []
-				})
+		const calls = Array.isArray(response) ? response : response.toolCalls
 		const prepared = calls.map((call, index) => this.prepareCall(call, index))
-		const responseErrors = Array.isArray(response)
-			? new Map<string, string>()
-			: new Map(
-					response.items.flatMap((item) =>
-						item.type === "error" && item.callId ? [[item.callId, item.message] as const] : [],
-					),
-				)
-		for (const item of prepared) {
-			item.responseError = responseErrors.get(item.call.id)
-			if (item.responseError) {
-				item.validationError = item.responseError
-			}
-		}
 		const results = new Array<ToolSchedulerResult | undefined>(prepared.length)
 
 		if (prepared.length === 0) {
@@ -348,7 +318,7 @@ export class ToolScheduler {
 		let cursor = 0
 		let parallelBatchCount = 0
 		while (cursor < prepared.length) {
-			if (this.options.task.abort) {
+			if (this.isCancelled()) {
 				return this.metrics("aborted", [], calls.length, parallelBatchCount, startedAt)
 			}
 
@@ -688,13 +658,13 @@ export class ToolScheduler {
 		parallelBatchCount: number,
 		startedAt: number,
 	): Promise<ToolSchedulerOutcome> {
-		if (this.options.task.abort) {
+		if (this.isCancelled()) {
 			return this.metrics("aborted", [], batchSize, parallelBatchCount, startedAt)
 		}
 
 		const committed: ToolSchedulerResult[] = []
 		for (let index = 0; index < results.length; index += 1) {
-			if (this.options.task.abort) {
+			if (this.isCancelled()) {
 				return this.metrics("aborted", committed, batchSize, parallelBatchCount, startedAt)
 			}
 

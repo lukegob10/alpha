@@ -10,7 +10,7 @@
 			"type": "extensionHost",
 			"request": "launch",
 			"runtimeExecutable": "${execPath}",
-			"args": ["--extensionDevelopmentPath=${workspaceFolder}/src"],
+			"args": ["--disable-extensions", "--extensionDevelopmentPath=${workspaceFolder}/src"],
 			"sourceMaps": true,
 			"outFiles": ["${workspaceFolder}/src/dist/**/*.js"],
 			"preLaunchTask": "${defaultBuildTask}",

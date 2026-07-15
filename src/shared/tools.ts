@@ -116,7 +116,10 @@ export type NativeToolArgs = {
 	apply_patch: { patch: string }
 	list_files: { path: string; recursive?: boolean }
 	new_task: { mode: string; message: string; todos?: string }
-	delegate_task: { envelope: import("../core/agent/InternalTaskEnvelope").InternalTaskEnvelope }
+	delegate_task: {
+		envelope?: import("../core/agent/InternalTaskEnvelope").InternalTaskDraft
+		tasks?: import("../core/agent/InternalTaskEnvelope").InternalTaskDraft[]
+	}
 	ask_followup_question: {
 		question: string
 		follow_up: Array<{ text: string; mode?: string }>

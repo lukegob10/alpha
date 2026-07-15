@@ -97,7 +97,13 @@ import {
 	type InternalTaskResult,
 	type InternalTaskRunner,
 } from "../agent/BoundedDelegationManager"
-import { isValidInternalTaskEnvelope, type InternalTaskEnvelope } from "../agent/InternalTaskEnvelope"
+import {
+	buildInternalTaskEnvelope,
+	isValidInternalTaskEnvelope,
+	type InternalTaskDraft,
+	type InternalTaskEnvelope,
+	type InternalTaskPolicy,
+} from "../agent/InternalTaskEnvelope"
 
 import { webviewMessageHandler } from "./webviewMessageHandler"
 import type { ClineMessage, LiveTaskMetadata, TodoItem } from "@alpha-code/types"
@@ -3338,6 +3344,42 @@ export class ClineProvider
 		if (!isValidInternalTaskEnvelope(envelope)) throw new Error("Invalid or tampered internal task envelope")
 		this.internalDelegationManager ??= new BoundedDelegationManager(this.createInternalTaskRunner(), 2)
 		return this.internalDelegationManager.run(envelope, parentSignal)
+	}
+
+	public buildInternalTaskEnvelopeForTask(task: Task, draft: InternalTaskDraft): InternalTaskEnvelope {
+		const objective = draft.objective?.trim()
+		if (!objective) throw new Error("objective is required")
+		const parentPolicy: InternalTaskPolicy = {
+			read: true,
+			execute: true,
+			mutate: true,
+			delegate: true,
+			network: false,
+			externalSideEffects: false,
+			requireApproval: true,
+		}
+		return buildInternalTaskEnvelope({
+			...draft,
+			objective,
+			parentTaskId: task.taskId,
+			parentPolicy,
+			requestedPolicy: {
+				...draft.requestedPolicy,
+				delegate: false,
+				network: false,
+				externalSideEffects: false,
+			},
+			workspaceRoots: [task.cwd],
+		})
+	}
+
+	public async runInternalTaskEnvelopes(
+		envelopes: InternalTaskEnvelope[],
+		parentSignal?: AbortSignal,
+	): Promise<InternalTaskResult[]> {
+		if (!envelopes.every(isValidInternalTaskEnvelope)) throw new Error("Invalid or tampered internal task envelope")
+		this.internalDelegationManager ??= new BoundedDelegationManager(this.createInternalTaskRunner(), 2)
+		return this.internalDelegationManager.runBatch(envelopes, parentSignal)
 	}
 
 	public async completeInternalTaskIfPending(childTaskId: string, result: string): Promise<boolean> {

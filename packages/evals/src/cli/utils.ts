@@ -27,7 +27,10 @@ export const resetEvalsRepo = async ({ run, cwd }: { run: Run; cwd: string }) =>
 	// The versioned benchmark catalog is intentionally not a Git working tree.
 	// Never run the legacy repository reset against it: `git clean -fd` would
 	// delete public manifests and generated task fixtures before the campaign.
-	if (process.env.ALPHA_EVALS_REPO_PATH && path.resolve(cwd) === path.resolve(process.env.ALPHA_EVALS_REPO_PATH))
+	if (
+		!fs.existsSync(path.join(cwd, ".git")) ||
+		(process.env.ALPHA_EVALS_REPO_PATH && path.resolve(cwd) === path.resolve(process.env.ALPHA_EVALS_REPO_PATH))
+	)
 		return
 	await execa({ cwd })`git config user.name "Alpha"`
 	await execa({ cwd })`git config user.email "support@alpha.invalid"`
@@ -37,7 +40,10 @@ export const resetEvalsRepo = async ({ run, cwd }: { run: Run; cwd: string }) =>
 }
 
 export const commitEvalsRepoChanges = async ({ run, cwd }: { run: Run; cwd: string }) => {
-	if (process.env.ALPHA_EVALS_REPO_PATH && path.resolve(cwd) === path.resolve(process.env.ALPHA_EVALS_REPO_PATH))
+	if (
+		!fs.existsSync(path.join(cwd, ".git")) ||
+		(process.env.ALPHA_EVALS_REPO_PATH && path.resolve(cwd) === path.resolve(process.env.ALPHA_EVALS_REPO_PATH))
+	)
 		return
 	await execa({ cwd })`git add .`
 	await execa({ cwd })`git commit -m ${`Run #${run.id}`} --no-verify`
