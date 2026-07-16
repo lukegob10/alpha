@@ -132,17 +132,6 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 
 		visibleProvider.postMessageToWebview({ type: "action", action: "switchTab", tab: "scheduledTasks" })
 	},
-	goalSeekButtonClicked: () => {
-		const visibleProvider = getVisibleProviderOrLog(outputChannel)
-
-		if (!visibleProvider) {
-			return
-		}
-
-		TelemetryService.instance.captureTitleButtonClicked("goalSeek")
-
-		visibleProvider.postMessageToWebview({ type: "action", action: "switchTab", tab: "goalSeek" })
-	},
 	marketplaceButtonClicked: () => {
 		const visibleProvider = getVisibleProviderOrLog(outputChannel)
 		if (!visibleProvider) return

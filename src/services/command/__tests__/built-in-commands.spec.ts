@@ -5,8 +5,8 @@ describe("Built-in Commands", () => {
 		it("should return all built-in commands", async () => {
 			const commands = await getBuiltInCommands()
 
-			expect(commands).toHaveLength(1)
-			expect(commands.map((cmd) => cmd.name)).toEqual(expect.arrayContaining(["init"]))
+			expect(commands).toHaveLength(2)
+			expect(commands.map((cmd) => cmd.name)).toEqual(expect.arrayContaining(["goal", "init"]))
 
 			// Verify all commands have required properties
 			commands.forEach((command) => {
@@ -23,6 +23,13 @@ describe("Built-in Commands", () => {
 
 		it("should return commands with proper content", async () => {
 			const commands = await getBuiltInCommands()
+
+			const goalCommand = commands.find((cmd) => cmd.name === "goal")
+			expect(goalCommand).toBeDefined()
+			expect(goalCommand!.argumentHint).toBe("<goal>")
+			expect(goalCommand!.content).toContain("thread-scoped terminal objective")
+			expect(goalCommand!.content).toContain("Use attempt_completion only when the objective has been achieved")
+			expect(goalCommand!.content).not.toContain("Goal Seek")
 
 			const initCommand = commands.find((cmd) => cmd.name === "init")
 			expect(initCommand).toBeDefined()
@@ -48,6 +55,19 @@ describe("Built-in Commands", () => {
 			)
 		})
 
+		it("should return the goal workflow command", async () => {
+			const goalCommand = await getBuiltInCommand("goal")
+
+			expect(goalCommand).toMatchObject({
+				name: "goal",
+				source: "built-in",
+				filePath: "<built-in:goal>",
+				argumentHint: "<goal>",
+			})
+			expect(goalCommand!.content).toContain("Continue working autonomously")
+			expect(goalCommand!.content).toContain("An explicit cancellation ends it")
+		})
+
 		it("should return undefined for non-existent command", async () => {
 			const nonExistentCommand = await getBuiltInCommand("non-existent")
 			expect(nonExistentCommand).toBeUndefined()
@@ -63,10 +83,10 @@ describe("Built-in Commands", () => {
 		it("should return all built-in command names", async () => {
 			const names = await getBuiltInCommandNames()
 
-			expect(names).toHaveLength(1)
-			expect(names).toEqual(expect.arrayContaining(["init"]))
+			expect(names).toHaveLength(2)
+			expect(names).toEqual(expect.arrayContaining(["goal", "init"]))
 			// Order doesn't matter since it's based on filesystem order
-			expect(names.sort()).toEqual(["init"])
+			expect(names.sort()).toEqual(["goal", "init"])
 		})
 
 		it("should return array of strings", async () => {

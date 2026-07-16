@@ -33,7 +33,6 @@ import { openAiCodexOAuthManager } from "./integrations/openai-codex/oauth"
 import { McpServerManager } from "./services/mcp/McpServerManager"
 import { CodeIndexManager } from "./services/code-index/manager"
 import { ScheduledTaskService } from "./services/scheduled-tasks"
-import { GoalSeekService } from "./services/goal-seek"
 import { migrateSettings } from "./utils/migrateSettings"
 import { autoImportSettings } from "./utils/autoImportSettings"
 import { API } from "./extension/api"
@@ -181,15 +180,6 @@ export async function activate(context: vscode.ExtensionContext) {
 			`[ScheduledTaskService] Error during initialization: ${error instanceof Error ? error.message : String(error)}`,
 		)
 	})
-	const goalSeekService = new GoalSeekService(context, provider, outputChannel)
-	provider.setGoalSeekService(goalSeekService)
-	context.subscriptions.push(goalSeekService)
-	void goalSeekService.initialize().catch((error) => {
-		outputChannel.appendLine(
-			`[GoalSeekService] Error during initialization: ${error instanceof Error ? error.message : String(error)}`,
-		)
-	})
-
 	// Finish initializing the provider.
 	TelemetryService.instance.setProvider(provider)
 

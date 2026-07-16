@@ -186,9 +186,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		taskHistory: [],
 		scheduledTasks: [],
 		scheduledTaskRuns: [],
-		goalSeekJobs: [],
-		goalSeekRuns: [],
-		goalSeekAttempts: [],
 		currentView: { type: "newTaskDraft" },
 		liveTaskIds: [],
 		liveTasksById: {},
@@ -467,15 +464,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 						...prevState,
 						scheduledTasks: message.scheduledTasks ?? message.scheduledTaskState?.tasks ?? [],
 						scheduledTaskRuns: message.scheduledTaskRuns ?? message.scheduledTaskState?.runs ?? [],
-					}))
-					break
-				}
-				case "goalSeekUpdated": {
-					setState((prevState) => ({
-						...prevState,
-						goalSeekJobs: message.goalSeekJobs ?? message.goalSeekState?.jobs ?? [],
-						goalSeekRuns: message.goalSeekRuns ?? message.goalSeekState?.runs ?? [],
-						goalSeekAttempts: message.goalSeekAttempts ?? message.goalSeekState?.attempts ?? [],
 					}))
 					break
 				}

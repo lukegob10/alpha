@@ -8,6 +8,23 @@ interface BuiltInCommandDefinition {
 }
 
 const BUILT_IN_COMMANDS: Record<string, BuiltInCommandDefinition> = {
+	goal: {
+		name: "goal",
+		description: "Work on a goal until it is complete or genuinely blocked",
+		argumentHint: "<goal>",
+		content: `<goal_workflow>
+The text following /goal in the user's message is the active goal for this task.
+
+- If no goal was provided, ask the user for the goal before taking action.
+- Treat the goal as a thread-scoped terminal objective. Restate it concretely before acting and use the todo list, when available, to track meaningful progress.
+- Continue working autonomously until the objective is actually achieved. Do not stop after planning, partial implementation, or a description of next steps while safe in-scope work remains.
+- Verify the result in proportion to the risk before declaring success.
+- Use attempt_completion only when the objective has been achieved and no required work remains.
+- If progress requires missing user input or new authority, first exhaust safe in-scope checks and alternatives, then ask one specific question that explains the blocker.
+- User steering updates the active goal. An explicit cancellation ends it.
+- Keep the work in this task. Do not create background jobs, optimization runs, score loops, or an implicit token budget.
+</goal_workflow>`,
+	},
 	init: {
 		name: "init",
 		description: "Analyze codebase and create concise AGENTS.md files for AI assistants",
