@@ -1,11 +1,10 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="alpha">
-  <text
-    x="48"
-    y="76"
-    fill="#000"
-    font-family="DejaVu Sans, Arial, sans-serif"
-    font-size="86"
-    font-weight="700"
-    text-anchor="middle">α</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="Alpha">
+	<!-- A compact, geometric alpha mark designed for VS Code's 24 px activity bar. -->
+	<path
+		d="M75 18 57 67c-3 9-10 15-20 15-14 0-23-11-23-27 0-18 11-31 27-31 14 0 23 11 23 27v14c0 11 5 17 15 17h3"
+		fill="none"
+		stroke="#000"
+		stroke-width="10"
+		stroke-linecap="round"
+		stroke-linejoin="round" />
 </svg>

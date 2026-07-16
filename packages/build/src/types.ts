@@ -20,6 +20,8 @@ const viewsSchema = z.record(
 			type: z.string(),
 			id: z.string(),
 			name: z.string(),
+			icon: z.string().optional(),
+			contextualTitle: z.string().optional(),
 		}),
 	),
 )

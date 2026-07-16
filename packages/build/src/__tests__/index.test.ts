@@ -27,7 +27,9 @@ describe("generatePackageJson", () => {
 							{
 								type: "webview",
 								id: "alpha.SidebarProvider",
-								name: "",
+								name: "%views.sidebar.name%",
+								icon: "assets/icons/icon.svg",
+								contextualTitle: "%views.activitybar.title%",
 							},
 						],
 					},
@@ -140,7 +142,9 @@ describe("generatePackageJson", () => {
 						{
 							type: "webview",
 							id: "alpha-code-nightly.SidebarProvider",
-							name: "",
+							name: "%views.sidebar.name%",
+							icon: "assets/icons/icon.svg",
+							contextualTitle: "%views.activitybar.title%",
 						},
 					],
 				},
