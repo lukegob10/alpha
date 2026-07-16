@@ -144,6 +144,33 @@ describe("Vercel AI Gateway Fetchers", () => {
 			expect(models["anthropic/claude-sonnet-4"]).toBeDefined()
 			consoleErrorSpy.mockRestore()
 		})
+
+		it("quietly skips language models whose token limits are not published", async () => {
+			const consoleErrorSpy = vitest.spyOn(console, "error").mockImplementation(() => {})
+			mockedAxios.get.mockResolvedValueOnce({
+				data: {
+					object: "list",
+					data: [
+						{
+							id: "provider/model-without-limits",
+							object: "model",
+							created: 1640995200,
+							owned_by: "provider",
+							name: "Model without limits",
+							description: "Token limits are not published by the gateway",
+							type: "language",
+							pricing: { input: "1.00", output: "2.00" },
+						},
+					],
+				},
+			})
+
+			const models = await getVercelAiGatewayModels()
+
+			expect(models["provider/model-without-limits"]).toBeUndefined()
+			expect(consoleErrorSpy).not.toHaveBeenCalled()
+			consoleErrorSpy.mockRestore()
+		})
 	})
 
 	describe("parseVercelAiGatewayModel", () => {

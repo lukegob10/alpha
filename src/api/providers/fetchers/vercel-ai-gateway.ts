@@ -30,13 +30,20 @@ const vercelAiGatewayModelSchema = z.object({
 	owned_by: z.string(),
 	name: z.string(),
 	description: z.string(),
-	context_window: z.number(),
-	max_tokens: z.number(),
+	context_window: z.number().optional(),
+	max_tokens: z.number().optional(),
 	type: z.string(),
 	pricing: vercelAiGatewayPricingSchema,
 })
 
 export type VercelAiGatewayModel = z.infer<typeof vercelAiGatewayModelSchema>
+type VercelAiGatewayModelWithTokenLimits = VercelAiGatewayModel & {
+	context_window: number
+	max_tokens: number
+}
+
+const hasTokenLimits = (model: VercelAiGatewayModel): model is VercelAiGatewayModelWithTokenLimits =>
+	typeof model.context_window === "number" && typeof model.max_tokens === "number"
 
 /**
  * VercelAiGatewayModelsResponse
@@ -71,7 +78,7 @@ export async function getVercelAiGatewayModels(options?: ApiHandlerOptions): Pro
 
 			// Only include language models for chat inference.
 			// Embedding models are statically defined in embeddingModels.ts.
-			if (model.type !== "language") {
+			if (model.type !== "language" || !hasTokenLimits(model)) {
 				continue
 			}
 
@@ -90,7 +97,13 @@ export async function getVercelAiGatewayModels(options?: ApiHandlerOptions): Pro
  * parseVercelAiGatewayModel
  */
 
-export const parseVercelAiGatewayModel = ({ id, model }: { id: string; model: VercelAiGatewayModel }): ModelInfo => {
+export const parseVercelAiGatewayModel = ({
+	id,
+	model,
+}: {
+	id: string
+	model: VercelAiGatewayModelWithTokenLimits
+}): ModelInfo => {
 	const cacheWritesPrice = model.pricing?.input_cache_write
 		? parseApiPrice(model.pricing?.input_cache_write)
 		: undefined

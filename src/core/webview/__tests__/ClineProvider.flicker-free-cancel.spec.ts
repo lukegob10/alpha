@@ -162,7 +162,11 @@ describe("ClineProvider flicker-free cancel", () => {
 			instanceId: "instance-1",
 			emit: vi.fn(),
 			abortTask: vi.fn().mockResolvedValue(undefined),
+			cancelCurrentRequest: vi.fn(),
 			abandoned: false,
+			isStreaming: false,
+			didFinishAbortingStream: false,
+			isWaitingForFirstChunk: false,
 			dispose: vi.fn(),
 			on: vi.fn(),
 			off: vi.fn(),
@@ -304,5 +308,17 @@ describe("ClineProvider flicker-free cancel", () => {
 		expect((provider as any).clineStack).toHaveLength(2)
 		expect((provider as any).clineStack[0]).toBe(mockParentTask)
 		expect((provider as any).clineStack[1]).toBe(mockTask2)
+	})
+
+	it("should not rehydrate a task after programmatic cancellation", async () => {
+		;(provider as any).clineStack = [mockTask1]
+		vi.spyOn(provider, "getCurrentTask").mockReturnValue(mockTask1)
+		const rehydrateSpy = vi.spyOn(provider, "createTaskWithHistoryItem")
+
+		await provider.cancelTask(undefined, { rehydrate: false })
+
+		expect(mockTask1.cancelCurrentRequest).toHaveBeenCalledOnce()
+		expect(mockTask1.abortTask).toHaveBeenCalledOnce()
+		expect(rehydrateSpy).not.toHaveBeenCalled()
 	})
 })

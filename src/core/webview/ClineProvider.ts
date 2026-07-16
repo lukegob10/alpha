@@ -3095,7 +3095,7 @@ export class ClineProvider
 		return task
 	}
 
-	public async cancelTask(taskId?: string): Promise<void> {
+	public async cancelTask(taskId?: string, options: { rehydrate?: boolean } = {}): Promise<void> {
 		const task = this.getLiveTask(taskId) ?? this.getCurrentTask()
 
 		if (!task) {
@@ -3133,8 +3133,9 @@ export class ClineProvider
 		// This ensures the stream fails quickly rather than waiting for network timeout
 		task.cancelCurrentRequest()
 
-		// Begin abort (non-blocking)
-		task.abortTask()
+		// Begin abort immediately. Interactive cancellation rehydrates after the
+		// stream settles; programmatic/headless cancellation must remain terminal.
+		const abortPromise = task.abortTask()
 
 		// Immediately mark the original instance as abandoned to prevent any residual activity
 		task.abandoned = true
@@ -3154,6 +3155,11 @@ export class ClineProvider
 		).catch(() => {
 			console.error("Failed to abort task")
 		})
+
+		if (options.rehydrate === false) {
+			await abortPromise
+			return
+		}
 
 		// Defensive safeguard: if current instance already changed, skip rehydrate
 		const current = this.getLiveTask(task.taskId)

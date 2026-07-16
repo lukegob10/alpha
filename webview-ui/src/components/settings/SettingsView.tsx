@@ -88,10 +88,11 @@ import { useSearchIndexRegistry, SearchIndexProvider } from "./useSettingsSearch
 
 export const settingsTabsContainer = "flex min-h-0 flex-1 overflow-hidden [&.narrow_.tab-label]:hidden"
 export const settingsTabList =
-	"w-48 data-[compact=true]:w-12 flex-shrink-0 flex flex-col overflow-y-auto overflow-x-hidden border-r border-vscode-sideBar-background"
+	"w-52 data-[compact=true]:w-14 flex-shrink-0 flex flex-col gap-0.5 overflow-y-auto overflow-x-hidden border-r border-[var(--alpha-border-subtle)] bg-[var(--alpha-surface-sunken)] px-2 py-2 data-[compact=true]:px-1"
 export const settingsTabTrigger =
-	"whitespace-nowrap overflow-hidden min-w-0 h-12 px-4 py-3 box-border flex items-center border-l-2 border-transparent text-vscode-foreground opacity-70 hover:bg-vscode-list-hoverBackground data-[compact=true]:w-12 data-[compact=true]:p-4"
-export const settingsTabTriggerActive = "opacity-100 border-vscode-focusBorder bg-vscode-list-activeSelectionBackground"
+	"whitespace-nowrap overflow-hidden min-w-0 h-9 px-3 box-border flex items-center rounded-lg border border-transparent text-sm text-vscode-foreground opacity-70 transition-[background-color,border-color,color,opacity] hover:bg-vscode-list-hoverBackground hover:opacity-100 data-[compact=true]:w-12 data-[compact=true]:px-3"
+export const settingsTabTriggerActive =
+	"opacity-100 border-[var(--alpha-border-subtle)] bg-[var(--alpha-selection-background)] text-vscode-list-activeSelectionForeground shadow-[var(--alpha-shadow-sm)]"
 
 export interface SettingsViewRef {
 	checkUnsaveChanges: (then: () => void) => void
@@ -654,7 +655,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	)
 
 	return (
-		<Tab>
+		<Tab className="bg-vscode-editor-background">
 			<TabHeader className="flex justify-between items-center gap-2">
 				<div className="flex items-center gap-2 grow">
 					<StandardTooltip content={t("settings:header.doneButtonTooltip")}>
@@ -663,7 +664,9 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 							<span className="sr-only">{t("settings:common.done")}</span>
 						</Button>
 					</StandardTooltip>
-					<h3 className="text-vscode-foreground m-0 flex-shrink-0">{t("settings:header.title")}</h3>
+					<h3 className="m-0 flex-shrink-0 text-base font-semibold tracking-[-0.01em] text-vscode-foreground">
+						{t("settings:header.title")}
+					</h3>
 				</div>
 				<div className="flex items-center gap-2 shrink-0">
 					{isIndexingComplete && (

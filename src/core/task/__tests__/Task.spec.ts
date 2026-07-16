@@ -329,6 +329,29 @@ describe("Alpha", () => {
 			expect((cline as any).consecutiveNoToolUseCount).toBe(0)
 		})
 
+		it("publishes a normal text-only final response as a completion result", async () => {
+			const cline = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			vi.spyOn(cline, "recursivelyMakeClineRequests").mockResolvedValue(false)
+			;(cline as any).completedAgentResponse = {
+				items: [{ type: "text", text: "Task finished successfully." }],
+				text: "Task finished successfully.",
+				reasoning: "",
+				toolCalls: [],
+			}
+			const saySpy = vi.spyOn(cline, "say").mockResolvedValue(undefined)
+
+			await (cline as any).initiateTaskLoop([{ type: "text", text: "request" }])
+
+			expect(saySpy).toHaveBeenCalledTimes(1)
+			expect(saySpy).toHaveBeenCalledWith("completion_result", "Task finished successfully.", undefined, false)
+			expect((cline as any).didComplete).toBe(true)
+		})
+
 		it("should always have diff strategy defined", async () => {
 			const cline = new Task({
 				provider: mockProvider,

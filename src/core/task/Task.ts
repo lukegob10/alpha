@@ -1826,6 +1826,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return true
 	}
 
+	private async publishImplicitCompletionResult(response: AgentResponse): Promise<void> {
+		const result = response.text.trim()
+		if (
+			!result ||
+			this.clineMessages.some(
+				(message) => message.say === "completion_result" || message.ask === "completion_result",
+			)
+		) {
+			return
+		}
+
+		await this.say("completion_result", result, undefined, false)
+	}
+
 	/**
 	 * Updates the API configuration and rebuilds the API handler.
 	 * There is no tool-protocol switching or tool parser swapping.
@@ -2791,6 +2805,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							includeFileDetails: false,
 						},
 					}
+				}
+
+				if (!didEndLoop && !this.abort && !this.didComplete && !hasToolActivity) {
+					await this.publishImplicitCompletionResult(response)
 				}
 
 				if (didEndLoop || this.abort || this.didComplete || !hasToolActivity) {

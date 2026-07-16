@@ -1021,8 +1021,10 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		return (
 			<div
 				className={cn(
-					"flex flex-col gap-1 bg-editor-background outline-none border border-none box-border",
-					isEditMode ? "p-2 w-full" : "relative px-1.5 pb-1 w-[calc(100%-16px)] ml-auto mr-auto",
+					"flex flex-col gap-1 box-border outline-none",
+					isEditMode
+						? "w-full bg-editor-background p-2"
+						: "relative mb-2 ml-auto mr-auto w-[calc(100%-16px)] rounded-xl border border-[var(--alpha-border-subtle)] bg-[var(--alpha-surface-toolbar)] p-1.5 shadow-[var(--alpha-shadow-md)]",
 				)}>
 				<div className={cn(!isEditMode && "relative")}>
 					<div
@@ -1107,7 +1109,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									"text-vscode-editor-font-size",
 									"leading-vscode-editor-line-height",
 									isFocused
-										? "border border-vscode-focusBorder outline outline-vscode-focusBorder"
+										? "border border-vscode-focusBorder"
 										: isDraggingOver
 											? "border-2 border-dashed border-vscode-focusBorder"
 											: "border border-transparent",
@@ -1171,7 +1173,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									"cursor-text",
 									"py-2 pl-2",
 									isFocused
-										? "border border-vscode-focusBorder outline outline-vscode-focusBorder"
+										? "border border-vscode-focusBorder ring-1 ring-vscode-focusBorder"
 										: isDraggingOver
 											? "border-2 border-dashed border-vscode-focusBorder"
 											: "border border-transparent",
@@ -1182,7 +1184,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									"will-change-background-color",
 									"min-h-[94px]",
 									"box-border",
-									"rounded",
+									"rounded-lg",
 									"resize-none",
 									"overflow-x-hidden",
 									"overflow-y-auto",
@@ -1317,13 +1319,12 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 											"text-vscode-descriptionForeground hover:text-vscode-foreground",
 											"transition-all duration-200",
 											isEditMode || isStreaming || hasInputContent
-												? "opacity-100 hover:opacity-100 pointer-events-auto"
+												? "opacity-100 hover:opacity-100 pointer-events-auto bg-vscode-button-background text-vscode-button-foreground shadow-[var(--alpha-shadow-sm)]"
 												: "opacity-0 pointer-events-none",
 											(isEditMode || isStreaming || hasInputContent) &&
-												"hover:bg-[rgba(255,255,255,0.03)] hover:border-[rgba(255,255,255,0.15)]",
+												"hover:bg-vscode-button-hoverBackground hover:text-vscode-button-foreground",
 											"focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder",
-											(isEditMode || isStreaming || hasInputContent) &&
-												"active:bg-[rgba(255,255,255,0.1)]",
+											(isEditMode || isStreaming || hasInputContent) && "active:opacity-80",
 											(isEditMode || isStreaming || hasInputContent) && "cursor-pointer",
 											!isEditMode &&
 												isStreaming &&
@@ -1369,7 +1370,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					/>
 				)}
 
-				<div className="flex items-center gap-2">
+				<div className="flex items-center gap-2 border-t border-[var(--alpha-border-subtle)] pt-1.5">
 					<div className="flex items-center gap-2 min-w-0 overflow-clip flex-1">
 						<ModeSelector
 							value={mode}

@@ -21,14 +21,15 @@ Example: After completing implementation
 { "todos": "[x] Analyze requirements\\n[x] Design architecture\\n[x] Implement core logic\\n[-] Write tests\\n[ ] Update documentation\\n[ ] Add performance benchmarks" }
 
 When to Use:
-- Task involves multiple steps or requires ongoing tracking
+- Task has at least three independently meaningful work items or requires ongoing tracking across a long run
 - Need to update status of several todos at once
 - New actionable items are discovered during execution
 - Task is complex and benefits from stepwise progress tracking
 
 When NOT to Use:
 - Only a single, trivial task
-- Task can be completed in one or two simple steps
+- Routine inspect/edit/validate work that can be completed in one or two direct cycles
+- Merely to narrate progress already evident from tool results
 - Request is purely conversational or informational`
 
 const TODOS_PARAMETER_DESCRIPTION = `Full markdown checklist in execution order, using [ ] for pending, [x] for completed, and [-] for in progress`

@@ -26,6 +26,7 @@ describe("API - SendMessage Command", () => {
 		mockProvider = {
 			context: {} as vscode.ExtensionContext,
 			postMessageToWebview: mockPostMessageToWebview,
+			cancelTask: vi.fn().mockResolvedValue(undefined),
 			on: vi.fn(),
 			getCurrentTaskStack: vi.fn().mockReturnValue([]),
 			getCurrentTask: vi.fn().mockReturnValue(undefined),
@@ -152,5 +153,11 @@ describe("API - SendMessage Command", () => {
 			images,
 		})
 		expect(mockPostMessageToWebview).toHaveBeenCalledTimes(1)
+	})
+
+	it("should cancel programmatic tasks without rehydrating them", async () => {
+		await api.cancelCurrentTask()
+
+		expect(mockProvider.cancelTask).toHaveBeenCalledWith(undefined, { rehydrate: false })
 	})
 })

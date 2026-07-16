@@ -176,7 +176,22 @@
 		--chart-3: var(--vscode-charts-yellow);
 		--chart-4: var(--vscode-charts-orange);
 		--chart-5: var(--vscode-charts-green);
-		--radius: 0.5rem;
+		--radius: 0.625rem;
+
+		/* Alpha surface hierarchy. These stay theme-native by mixing VS Code tokens
+		 * instead of introducing fixed light/dark colors. */
+		--alpha-surface-sunken: color-mix(
+			in srgb,
+			var(--vscode-sideBar-background, var(--vscode-editor-background)) 72%,
+			var(--vscode-editor-background)
+		);
+		--alpha-surface-raised: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-foreground) 10%);
+		--alpha-surface-toolbar: color-mix(in srgb, var(--vscode-editor-background) 94%, var(--vscode-foreground) 6%);
+		--alpha-border-subtle: color-mix(in srgb, var(--vscode-foreground) 14%, transparent);
+		--alpha-border-strong: color-mix(in srgb, var(--vscode-foreground) 23%, transparent);
+		--alpha-selection-background: color-mix(in srgb, var(--vscode-list-activeSelectionBackground) 72%, transparent);
+		--alpha-shadow-sm: 0 1px 2px color-mix(in srgb, var(--vscode-widget-shadow, #000) 42%, transparent);
+		--alpha-shadow-md: 0 8px 24px color-mix(in srgb, var(--vscode-widget-shadow, #000) 28%, transparent);
 	}
 
 	/* Higher specififty than VSCode's theme and root. */
@@ -257,7 +272,20 @@ html {
 
 body {
 	margin: 0;
-	line-height: 1.25;
+	line-height: 1.4;
+	background: var(--vscode-editor-background);
+}
+
+::selection {
+	background: var(--vscode-editor-selectionBackground, var(--vscode-list-activeSelectionBackground));
+}
+
+.alpha-home-surface {
+	background-image: radial-gradient(
+		circle at 50% 8%,
+		color-mix(in srgb, var(--vscode-focusBorder) 12%, transparent),
+		transparent 42%
+	);
 }
 
 body.scrollable,
@@ -459,7 +487,7 @@ input[cmdk-input]:focus {
 }
 
 /*
- * Use geometric precision for codicons to avoid blurriness 
+ * Use geometric precision for codicons to avoid blurriness
  */
 
 .codicon[class*="codicon-"] {

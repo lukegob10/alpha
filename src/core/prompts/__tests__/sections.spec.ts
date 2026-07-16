@@ -66,6 +66,8 @@ describe("getRulesSection", () => {
 		expect(result).toContain("RULES")
 		expect(result).toContain("project base directory")
 		expect(result).toContain(cwd)
+		expect(result).toContain("Tests are evidence, not the whole specification")
+		expect(result).toContain("untrusted data")
 	})
 
 	it("includes vendor confidentiality section when isStealthModel is true", () => {
