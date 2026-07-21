@@ -1,0 +1,83 @@
+name: Release V2 Preview VSIX
+
+on:
+    push:
+        branches: [main-v2]
+    workflow_dispatch:
+
+permissions:
+    contents: write
+
+concurrency:
+    group: release-vsix-v2-preview-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    release-vsix-v2-preview:
+        runs-on: windows-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Setup Node.js and pnpm
+              uses: ./.github/actions/setup-node-pnpm
+
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
+
+            - name: Package extension
+              run: pnpm vsix
+
+            - name: Collect preview metadata
+              id: release
+              shell: pwsh
+              run: |
+                  $version = node -p "require('./src/package.json').version"
+                  $shortSha = "${{ github.sha }}".Substring(0, 7)
+                  $tag = "vsix-v2-preview-$version-$shortSha"
+                  $vsix = Get-ChildItem -Path bin -Filter "*.vsix" | Select-Object -First 1
+
+                  if (-not $vsix) {
+                    throw "No VSIX package found in bin."
+                  }
+
+                  "version=$version" >> $env:GITHUB_OUTPUT
+                  "short_sha=$shortSha" >> $env:GITHUB_OUTPUT
+                  "tag=$tag" >> $env:GITHUB_OUTPUT
+                  "vsix_path=$($vsix.FullName)" >> $env:GITHUB_OUTPUT
+                  "vsix_name=$($vsix.Name)" >> $env:GITHUB_OUTPUT
+
+            - name: Verify VSIX contents
+              run: node scripts/verify-vsix-contents.mjs "${{ steps.release.outputs.vsix_path }}"
+
+            - name: Create GitHub prerelease
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              shell: pwsh
+              run: |
+                  $tag = "${{ steps.release.outputs.tag }}"
+                  $version = "${{ steps.release.outputs.version }}"
+                  $shortSha = "${{ steps.release.outputs.short_sha }}"
+                  $vsix = "${{ steps.release.outputs.vsix_path }}"
+                  $releaseTitle = "Alpha V2 Preview v$version ($shortSha)"
+                  $notes = @"
+                  Preview VSIX build from main-v2. This is not published to the VS Code Marketplace.
+
+                  Commit: ${{ github.sha }}
+
+                  Test this build in an isolated VS Code profile or extension directory. Installing it over the stable
+                  extension replaces that installation because both channels intentionally share the production extension ID.
+
+                  ````bash
+                  code --install-extension ${{ steps.release.outputs.vsix_name }}
+                  ````
+                  "@
+
+                  if (gh release view "$tag" 2>$null) {
+                    gh release upload "$tag" "$vsix" --clobber
+                  } else {
+                    gh release create "$tag" "$vsix" --prerelease --title "$releaseTitle" --notes "$notes" --target "${{ github.sha }}"
+                  }
