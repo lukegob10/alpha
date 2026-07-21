@@ -157,6 +157,16 @@ describe("TaskHeader", () => {
 		expect(screen.queryByText(/\$/)).not.toBeInTheDocument()
 	})
 
+	it("notifies the scroll lifecycle before toggling the task details", () => {
+		const onExpandedChange = vi.fn()
+		renderTaskHeader({ onExpandedChange })
+
+		fireEvent.click(screen.getByText("Test task"))
+
+		expect(onExpandedChange).toHaveBeenCalledTimes(1)
+		expect(screen.getByText("chat:task.title")).toBeInTheDocument()
+	})
+
 	it("should render the condense context button when expanded", () => {
 		renderTaskHeader()
 		// First click to expand the task header

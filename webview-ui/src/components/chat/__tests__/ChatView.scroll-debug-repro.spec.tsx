@@ -38,6 +38,7 @@ interface MockVirtuosoProps {
 	followOutput?: FollowOutput
 	className?: string
 	initialTopMostItemIndex?: number
+	atBottomThreshold?: number
 }
 
 interface VirtuosoHarnessState {
@@ -54,6 +55,8 @@ interface VirtuosoHarnessState {
 	initialTopMostItemIndex: number | undefined
 	followOutput: FollowOutput | undefined
 	emitAtBottom: (isAtBottom: boolean) => void
+	emitLastRowHeightChange: (isTaller: boolean) => void
+	atBottomThreshold: number | undefined
 }
 
 const harness = vi.hoisted<VirtuosoHarnessState>(() => ({
@@ -66,6 +69,8 @@ const harness = vi.hoisted<VirtuosoHarnessState>(() => ({
 	initialTopMostItemIndex: undefined,
 	followOutput: undefined,
 	emitAtBottom: () => {},
+	emitLastRowHeightChange: () => {},
+	atBottomThreshold: undefined,
 }))
 
 function nullDefaultModule() {
@@ -90,7 +95,13 @@ vi.mock("../history/HistoryPreview", nullDefaultModule)
 vi.mock("@src/components/welcome/AlphaHero", nullDefaultModule)
 vi.mock("@src/components/welcome/AlphaTips", nullDefaultModule)
 vi.mock("../Announcement", nullDefaultModule)
-vi.mock("./TaskHeader", () => ({ default: () => <div data-testid="task-header" /> }))
+vi.mock("../TaskHeader", () => ({
+	default: ({ onExpandedChange }: { onExpandedChange?: () => void }) => (
+		<button data-testid="task-header" onClick={onExpandedChange}>
+			Toggle task header
+		</button>
+	),
+}))
 vi.mock("./ProfileViolationWarning", nullDefaultModule)
 vi.mock("../common/DismissibleUpsell", nullDefaultModule)
 
@@ -139,12 +150,25 @@ vi.mock("../ChatTextArea", () => {
 })
 
 vi.mock("../ChatRow", () => ({
-	default: ({ message }: { message: ClineMessage }) => <div data-testid="chat-row">{message.ts}</div>,
+	default: ({
+		message,
+		isLast,
+		onHeightChange,
+	}: {
+		message: ClineMessage
+		isLast: boolean
+		onHeightChange: (isTaller: boolean) => void
+	}) => {
+		if (isLast) {
+			harness.emitLastRowHeightChange = onHeightChange
+		}
+		return <div data-testid="chat-row">{message.ts}</div>
+	},
 }))
 
 vi.mock("react-virtuoso", () => {
 	const MockVirtuoso = React.forwardRef<MockVirtuosoHandle, MockVirtuosoProps>(function MockVirtuoso(
-		{ data, itemContent, atBottomStateChange, followOutput, className, initialTopMostItemIndex },
+		{ data, itemContent, atBottomStateChange, followOutput, className, initialTopMostItemIndex, atBottomThreshold },
 		ref,
 	) {
 		const atBottomRef = useRef(atBottomStateChange)
@@ -152,6 +176,7 @@ vi.mock("react-virtuoso", () => {
 
 		harness.followOutput = followOutput
 		harness.initialTopMostItemIndex = initialTopMostItemIndex
+		harness.atBottomThreshold = atBottomThreshold
 		harness.emitAtBottom = (isAtBottom: boolean) => {
 			atBottomRef.current?.(isAtBottom)
 		}
@@ -359,11 +384,18 @@ describe("ChatView scroll behavior regression coverage", () => {
 		harness.initialTopMostItemIndex = undefined
 		harness.followOutput = undefined
 		harness.emitAtBottom = () => {}
+		harness.emitLastRowHeightChange = () => {}
+		harness.atBottomThreshold = undefined
 	})
 
 	it("existing-task entry does not set a top-most initial anchor", async () => {
 		await hydrate(2)
 		expect(harness.initialTopMostItemIndex).toBeUndefined()
+	})
+
+	it("uses a practical near-bottom follow zone", async () => {
+		await hydrate(2)
+		expect(harness.atBottomThreshold).toBeGreaterThanOrEqual(48)
 	})
 
 	it("rehydration uses bounded bottom pinning", async () => {
@@ -404,6 +436,50 @@ describe("ChatView scroll behavior regression coverage", () => {
 		expect(harness.scrollCalls).toBe(2)
 		expect(resolveFollowOutput(false)).toBe("auto")
 		expect(document.querySelector(".codicon-chevron-down")).toBeNull()
+	})
+
+	it("does not recursively scroll when streaming briefly reports not-at-bottom", async () => {
+		const messages = buildMessages(Date.now() - 3_000)
+		messages[messages.length - 1] = { ...messages[messages.length - 1], partial: true }
+		await hydrate(2, messages)
+		await waitForCalls(2)
+		await waitForCallsSettled()
+
+		const callsBeforeSignal = harness.scrollCalls
+		await act(async () => {
+			harness.emitAtBottom(false)
+		})
+		await sleep(50)
+
+		expect(harness.scrollCalls).toBe(callsBeforeSignal)
+		expect(resolveFollowOutput(false)).toBe("auto")
+	})
+
+	it("uses non-animated correction for streaming row growth", async () => {
+		const messages = buildMessages(Date.now() - 3_000)
+		messages[messages.length - 1] = { ...messages[messages.length - 1], partial: true }
+		await hydrate(2, messages)
+		await waitForCalls(2)
+		await waitForCallsSettled()
+
+		await act(async () => {
+			harness.emitLastRowHeightChange(true)
+		})
+
+		expect(harness.scrollToIndexArgs.at(-1)).toMatchObject({ behavior: "auto" })
+	})
+
+	it("task-header layout changes disengage sticky follow before resizing the viewport", async () => {
+		await hydrate(2)
+		await waitForCalls(2)
+		await waitForCallsSettled()
+		expect(resolveFollowOutput(false)).toBe("auto")
+
+		await act(async () => {
+			fireEvent.click(document.querySelector("[data-testid='task-header']") as HTMLElement)
+		})
+
+		expect(resolveFollowOutput(false)).toBe(false)
 	})
 
 	it("user escape hatch during hydration prevents repinning", async () => {

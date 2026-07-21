@@ -19,13 +19,22 @@ import type { VirtuosoHandle } from "react-virtuoso"
 const HYDRATION_WINDOW_MS = 600
 const HYDRATION_RETRY_WINDOW_MS = 160
 
+// Leave enough tolerance for the chat controls and small virtualized-row
+// measurement corrections without treating deliberate history browsing as bottom-following.
+export const CHAT_BOTTOM_THRESHOLD_PX = 64
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export type ScrollPhase = "HYDRATING_PINNED_TO_BOTTOM" | "ANCHORED_FOLLOWING" | "USER_BROWSING_HISTORY"
 
-export type ScrollFollowDisengageSource = "wheel-up" | "row-expansion" | "keyboard-nav-up" | "pointer-scroll-up"
+export type ScrollFollowDisengageSource =
+	| "wheel-up"
+	| "row-expansion"
+	| "task-header-toggle"
+	| "keyboard-nav-up"
+	| "pointer-scroll-up"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -268,7 +277,11 @@ export function useScrollLifecycle({
 
 			const shouldForcePinForAnchoredStreaming = scrollPhaseRef.current === "ANCHORED_FOLLOWING" && isStreaming
 			if (isAtBottomRef.current || shouldForcePinForAnchoredStreaming) {
-				if (isTaller) {
+				if (isStreaming) {
+					// Streaming rows can resize several times per second. Repeated smooth
+					// animations compete with Virtuoso's measurements and visibly bounce.
+					scrollToBottomAuto()
+				} else if (isTaller) {
 					scrollToBottomSmooth()
 				} else {
 					scrollToBottomAuto()
@@ -332,15 +345,9 @@ export function useScrollLifecycle({
 				return
 			}
 
-			if (currentPhase === "ANCHORED_FOLLOWING" && isStreaming) {
-				scrollToBottomAuto()
-				setShowScrollToBottom(false)
-				return
-			}
-
 			setShowScrollToBottom(currentPhase === "USER_BROWSING_HISTORY")
 		},
-		[enterAnchoredFollowing, enterUserBrowsingHistory, isStreaming, scrollToBottomAuto],
+		[enterAnchoredFollowing, enterUserBrowsingHistory],
 	)
 
 	// -----------------------------------------------------------------------

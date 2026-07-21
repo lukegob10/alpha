@@ -37,6 +37,7 @@ export interface TaskHeaderProps {
 	buttonsDisabled: boolean
 	handleCondenseContext: (taskId: string) => void
 	todos?: any[]
+	onExpandedChange?: () => void
 }
 
 const TaskHeader = ({
@@ -54,6 +55,7 @@ const TaskHeader = ({
 	buttonsDisabled,
 	handleCondenseContext,
 	todos,
+	onExpandedChange,
 }: TaskHeaderProps) => {
 	const { t } = useTranslation()
 	const { apiConfiguration, currentTaskItem } = useExtensionState()
@@ -96,6 +98,11 @@ const TaskHeader = ({
 		if (parentTaskId) {
 			vscode.postMessage({ type: "showTaskWithId", text: parentTaskId })
 		}
+	}
+
+	const toggleTaskExpanded = () => {
+		onExpandedChange?.()
+		setIsTaskExpanded((expanded) => !expanded)
 	}
 
 	return (
@@ -144,7 +151,7 @@ const TaskHeader = ({
 						return
 					}
 
-					setIsTaskExpanded(!isTaskExpanded)
+					toggleTaskExpanded()
 				}}>
 				<div className="flex justify-between items-center gap-0">
 					<div className="flex items-center select-none grow min-w-0">
@@ -159,7 +166,7 @@ const TaskHeader = ({
 						<div className="flex items-center shrink-0 ml-2" onClick={(e) => e.stopPropagation()}>
 							<StandardTooltip content={isTaskExpanded ? t("chat:task.collapse") : t("chat:task.expand")}>
 								<button
-									onClick={() => setIsTaskExpanded(!isTaskExpanded)}
+									onClick={toggleTaskExpanded}
 									className="shrink-0 min-h-[20px] min-w-[20px] p-[2px] cursor-pointer opacity-85 hover:opacity-100 bg-transparent border-none rounded-md">
 									{isTaskExpanded ? (
 										<ChevronUp size={16} />

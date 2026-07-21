@@ -48,7 +48,7 @@ import { CheckpointWarning } from "./CheckpointWarning"
 import { QueuedMessages } from "./QueuedMessages"
 import { WorktreeSelector } from "./WorktreeSelector"
 import FileChangesPanel from "./FileChangesPanel"
-import { useScrollLifecycle } from "@src/hooks/useScrollLifecycle"
+import { CHAT_BOTTOM_THRESHOLD_PX, useScrollLifecycle } from "@src/hooks/useScrollLifecycle"
 
 export interface ChatViewProps {
 	isHidden: boolean
@@ -1598,6 +1598,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		handleScrollToBottomClick()
 	}, [handleScrollToBottomClick])
 
+	const handleTaskHeaderExpandedChange = useCallback(() => {
+		enterUserBrowsingHistory("task-header-toggle")
+	}, [enterUserBrowsingHistory])
+
 	const handleScrollToLatestCheckpoint = useCallback(() => {
 		if (checkpointIndices.length === 0) {
 			return
@@ -1817,6 +1821,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						buttonsDisabled={sendingDisabled}
 						handleCondenseContext={handleCondenseContext}
 						todos={latestTodos}
+						onExpandedChange={handleTaskHeaderExpandedChange}
 					/>
 
 					{checkpointWarning && (
@@ -1857,7 +1862,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							itemContent={itemContent}
 							followOutput={followOutputCallback}
 							atBottomStateChange={atBottomStateChangeCallback}
-							atBottomThreshold={10}
+							atBottomThreshold={CHAT_BOTTOM_THRESHOLD_PX}
 						/>
 					</div>
 					<FileChangesPanel clineMessages={activeMessages} taskId={visibleCurrentTaskId} />
