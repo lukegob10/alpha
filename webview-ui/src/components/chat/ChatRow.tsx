@@ -18,7 +18,7 @@ import { Mode } from "@alpha/modes"
 import { COMMAND_OUTPUT_STRING } from "@alpha/combineCommandSequences"
 import { safeJsonParse } from "@alpha/core"
 
-import { useExtensionState } from "@src/context/ExtensionStateContext"
+import { type ExtensionStateContextType, useExtensionState } from "@src/context/ExtensionStateContext"
 import { findMatchingResourceOrTemplate } from "@src/utils/mcp"
 import { vscode } from "@src/utils/vscode"
 import { formatPathTooltip } from "@src/utils/formatPathTooltip"
@@ -109,8 +109,24 @@ function getPreviousTodos(messages: ClineMessage[], currentMessageTs: number): a
 	return []
 }
 
+export interface ChatRowEnvironment
+	extends Pick<
+		ExtensionStateContextType,
+		| "mcpServers"
+		| "alwaysAllowMcp"
+		| "currentCheckpoint"
+		| "mode"
+		| "currentTaskItem"
+		| "currentTaskId"
+		| "reasoningBlockCollapsed"
+	> {
+	modelSupportsImages?: boolean
+	getClineMessages: () => ClineMessage[]
+}
+
 interface ChatRowProps {
 	message: ClineMessage
+	environment: ChatRowEnvironment
 	lastModifiedMessage?: ClineMessage
 	isExpanded: boolean
 	isLast: boolean
@@ -128,7 +144,11 @@ interface ChatRowProps {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-interface ChatRowContentProps extends Omit<ChatRowProps, "onHeightChange"> {}
+interface ChatRowContentProps extends Omit<ChatRowProps, "onHeightChange" | "environment"> {}
+
+interface ChatRowContentInnerProps extends ChatRowContentProps {
+	environment: ChatRowEnvironment
+}
 
 const ChatRow = memo(
 	(props: ChatRowProps) => {
@@ -139,7 +159,7 @@ const ChatRow = memo(
 
 		const [chatrow, { height }] = useSize(
 			<div className="px-[15px] py-[10px] pr-[6px]">
-				<ChatRowContent {...props} />
+				<ChatRowContentInner {...props} />
 			</div>,
 		)
 
@@ -166,8 +186,30 @@ const ChatRow = memo(
 
 export default ChatRow
 
-export const ChatRowContent = ({
+// Compatibility wrapper for focused row tests and non-virtualized consumers.
+// ChatView passes a stable environment directly to ChatRow so streamed transcript
+// updates do not make every visible row subscribe to the root extension state.
+export const ChatRowContent = (props: ChatRowContentProps) => {
+	const extensionState = useExtensionState()
+	const { info: model } = useSelectedModel(extensionState.apiConfiguration)
+	const environment: ChatRowEnvironment = {
+		mcpServers: extensionState.mcpServers,
+		alwaysAllowMcp: extensionState.alwaysAllowMcp,
+		currentCheckpoint: extensionState.currentCheckpoint,
+		mode: extensionState.mode,
+		currentTaskItem: extensionState.currentTaskItem,
+		currentTaskId: extensionState.currentTaskId,
+		reasoningBlockCollapsed: extensionState.reasoningBlockCollapsed,
+		modelSupportsImages: model?.supportsImages,
+		getClineMessages: () => extensionState.clineMessages,
+	}
+
+	return <ChatRowContentInner {...props} environment={environment} />
+}
+
+const ChatRowContentInner = ({
 	message,
+	environment,
 	lastModifiedMessage,
 	isExpanded,
 	isLast,
@@ -179,7 +221,7 @@ export const ChatRowContent = ({
 	isFollowUpAnswered,
 	isFollowUpAutoApprovalPaused,
 	onJumpToPreviousCheckpoint,
-}: ChatRowContentProps) => {
+}: ChatRowContentInnerProps) => {
 	const { t, i18n } = useTranslation()
 
 	const {
@@ -187,12 +229,13 @@ export const ChatRowContent = ({
 		alwaysAllowMcp,
 		currentCheckpoint,
 		mode,
-		apiConfiguration,
-		clineMessages,
 		currentTaskItem,
 		currentTaskId,
-	} = useExtensionState()
-	const { info: model } = useSelectedModel(apiConfiguration)
+		reasoningBlockCollapsed,
+		modelSupportsImages,
+		getClineMessages,
+	} = environment
+	const clineMessages = getClineMessages()
 	const [isEditing, setIsEditing] = useState(false)
 	const [editedContent, setEditedContent] = useState("")
 	const [editMode, setEditMode] = useState<Mode>(mode || "code")
@@ -1058,6 +1101,7 @@ export const ChatRowContent = ({
 							ts={message.ts}
 							isStreaming={isStreaming}
 							isLast={isLast}
+							collapsedByDefault={reasoningBlockCollapsed}
 						/>
 					)
 				case "api_req_started":
@@ -1236,7 +1280,7 @@ export const ChatRowContent = ({
 											setSelectedImages={setEditImages}
 											onSend={handleSaveEdit}
 											onSelectImages={handleSelectImages}
-											shouldDisableImages={!model?.supportsImages}
+											shouldDisableImages={!modelSupportsImages}
 											mode={editMode}
 											setMode={setEditMode}
 											modeShortcutText=""

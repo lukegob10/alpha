@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { useExtensionState } from "@src/context/ExtensionStateContext"
 
 import MarkdownBlock from "../common/MarkdownBlock"
 import { Lightbulb, ChevronUp } from "lucide-react"
@@ -11,22 +10,21 @@ interface ReasoningBlockProps {
 	ts: number
 	isStreaming: boolean
 	isLast: boolean
+	collapsedByDefault?: boolean
 	metadata?: any
 }
 
-export const ReasoningBlock = ({ content, isStreaming, isLast }: ReasoningBlockProps) => {
+export const ReasoningBlock = ({ content, isStreaming, isLast, collapsedByDefault }: ReasoningBlockProps) => {
 	const { t } = useTranslation()
-	const { reasoningBlockCollapsed } = useExtensionState()
-
-	const [isCollapsed, setIsCollapsed] = useState(reasoningBlockCollapsed)
+	const [isCollapsed, setIsCollapsed] = useState(collapsedByDefault ?? true)
 
 	const startTimeRef = useRef<number>(Date.now())
 	const [elapsed, setElapsed] = useState<number>(0)
 	const contentRef = useRef<HTMLDivElement>(null)
 
 	useEffect(() => {
-		setIsCollapsed(reasoningBlockCollapsed)
-	}, [reasoningBlockCollapsed])
+		setIsCollapsed(collapsedByDefault ?? true)
+	}, [collapsedByDefault])
 
 	useEffect(() => {
 		if (isLast && isStreaming) {
@@ -69,7 +67,7 @@ export const ReasoningBlock = ({ content, isStreaming, isLast }: ReasoningBlockP
 				<div
 					ref={contentRef}
 					className="border-l border-vscode-descriptionForeground/20 ml-2 pl-4 pb-1 text-vscode-descriptionForeground break-words">
-					<MarkdownBlock markdown={content} />
+					<MarkdownBlock markdown={content} partial={isLast && isStreaming} />
 				</div>
 			)}
 		</div>

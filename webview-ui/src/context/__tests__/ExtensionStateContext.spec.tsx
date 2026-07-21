@@ -49,7 +49,16 @@ const ApiConfigTestComponent = () => {
 	)
 }
 
+const MessagesTestComponent = () => {
+	const { clineMessages } = useExtensionState()
+	return <div data-testid="latest-message">{clineMessages.at(-1)?.text ?? ""}</div>
+}
+
 describe("ExtensionStateContext", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals()
+	})
+
 	it("initializes with empty allowedCommands array", () => {
 		render(
 			<ExtensionStateContextProvider>
@@ -182,6 +191,87 @@ describe("ExtensionStateContext", () => {
 				modelTemperature: 0.7, // Should add this from partial update
 			}),
 		)
+	})
+
+	it("coalesces partial message updates per animation frame and applies completion immediately", () => {
+		let frameCallback: FrameRequestCallback | undefined
+		vi.stubGlobal(
+			"requestAnimationFrame",
+			vi.fn((callback: FrameRequestCallback) => {
+				frameCallback = callback
+				return 1
+			}),
+		)
+		vi.stubGlobal("cancelAnimationFrame", vi.fn())
+
+		const baseMessage: ClineMessage = {
+			ts: 1,
+			type: "say",
+			say: "text",
+			text: "start",
+			partial: true,
+		}
+		render(
+			<ExtensionStateContextProvider>
+				<MessagesTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: { currentTaskId: "task-1", clineMessages: [baseMessage] },
+					},
+				}),
+			)
+		})
+
+		act(() => {
+			for (const text of ["first", "latest"]) {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "messageUpdated",
+							taskId: "task-1",
+							clineMessage: { ...baseMessage, text },
+						},
+					}),
+				)
+			}
+		})
+
+		expect(screen.getByTestId("latest-message")).toHaveTextContent("start")
+		expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
+
+		act(() => frameCallback?.(0))
+		expect(screen.getByTestId("latest-message")).toHaveTextContent("latest")
+
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "messageUpdated",
+						taskId: "task-1",
+						clineMessage: { ...baseMessage, text: "queued" },
+					},
+				}),
+			)
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "messageUpdated",
+						taskId: "task-1",
+						clineMessage: { ...baseMessage, text: "complete", partial: false },
+					},
+				}),
+			)
+		})
+
+		expect(screen.getByTestId("latest-message")).toHaveTextContent("complete")
+		act(() => frameCallback?.(0))
+		expect(screen.getByTestId("latest-message")).toHaveTextContent("complete")
 	})
 })
 

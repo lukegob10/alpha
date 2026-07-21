@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef, useCallback, useState } from "react"
 import styled from "styled-components"
 import { useCopyToClipboard } from "@src/utils/clipboard"
-import { getHighlighter, isLanguageLoaded, normalizeLanguage } from "@src/utils/highlighter"
+import { getHighlighter, normalizeLanguage } from "@src/utils/highlighter"
 import type { ShikiTransformer } from "shiki"
 import { toJsxRuntime } from "hast-util-to-jsx-runtime"
 import { Fragment, jsx, jsxs } from "react/jsx-runtime"
@@ -24,7 +24,7 @@ export const SCROLL_SNAP_TOLERANCE = 20
 /*
 overflowX: auto + inner div with padding results in an issue where the top/left/bottom padding renders but the right padding inside does not count as overflow as the width of the element is not exceeded. Once the inner div is outside the boundaries of the parent it counts as overflow.
 https://stackoverflow.com/questions/60778406/why-is-padding-right-clipped-with-overflowscroll/77292459#77292459
-this fixes the issue of right padding clipped off 
+this fixes the issue of right padding clipped off
 “ideal” size in a given axis when given infinite available space--allows the syntax highlighter to grow to largest possible width including its padding
 minWidth: "max-content",
 */
@@ -37,6 +37,7 @@ interface CodeBlockProps {
 	initialWordWrap?: boolean
 	collapsedHeight?: number
 	initialWindowShade?: boolean
+	partial?: boolean
 }
 
 const CodeBlockButton = styled.button`
@@ -174,47 +175,52 @@ const CodeBlock = memo(
 		initialWordWrap = true,
 		initialWindowShade = true,
 		collapsedHeight,
+		partial = false,
 	}: CodeBlockProps) => {
 		// Use word wrap from props, default to true
 		const wordWrap = initialWordWrap
 		const [windowShade, setWindowShade] = useState(initialWindowShade)
 		const currentLanguage = normalizeLanguage(language)
-		const [highlightedCode, setHighlightedCode] = useState<React.ReactNode>(null)
+		const [highlightedCode, setHighlightedCode] = useState<{
+			source: string
+			language: string
+			node: React.ReactNode
+		} | null>(null)
 		const [showCollapseButton, setShowCollapseButton] = useState(true)
 		const codeBlockRef = useRef<HTMLDivElement>(null)
 		const preRef = useRef<HTMLDivElement>(null)
 		const copyButtonWrapperRef = useRef<HTMLDivElement>(null)
 		const { showCopyFeedback, copyWithFeedback } = useCopyToClipboard()
 		const { t } = useAppTranslation()
-		const isMountedRef = useRef(true)
 		const buttonPositionTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 		const collapseTimeout1Ref = useRef<NodeJS.Timeout | null>(null)
 		const collapseTimeout2Ref = useRef<NodeJS.Timeout | null>(null)
 
-		// Syntax highlighting with cached Shiki instance and mounted state management
+		const sourceText = source || ""
+		const fallback = (
+			<pre style={{ padding: 0, margin: 0 }}>
+				<code className={`hljs language-${currentLanguage || "txt"}`}>{sourceText}</code>
+			</pre>
+		)
+		const displayedCode =
+			!partial && highlightedCode?.source === sourceText && highlightedCode.language === currentLanguage
+				? highlightedCode.node
+				: fallback
+
+		// Do not start expensive highlighter work for every fragment of a partial
+		// code fence. The final source is highlighted once when streaming ends.
 		useEffect(() => {
-			// Set mounted state at the beginning of this effect
-			isMountedRef.current = true
-
-			// Create a safe fallback using React elements instead of HTML string
-			const fallback = (
-				<pre style={{ padding: 0, margin: 0 }}>
-					<code className={`hljs language-${currentLanguage || "txt"}`}>{source || ""}</code>
-				</pre>
-			)
-
-			const highlight = async () => {
-				// Show plain text if language needs to be loaded.
-				if (currentLanguage && !isLanguageLoaded(currentLanguage)) {
-					if (isMountedRef.current) {
-						setHighlightedCode(fallback)
-					}
+			let cancelled = false
+			if (partial)
+				return () => {
+					cancelled = true
 				}
 
+			const highlight = async () => {
 				const highlighter = await getHighlighter(currentLanguage)
-				if (!isMountedRef.current) return
+				if (cancelled) return
 
-				const hast = await highlighter.codeToHast(source || "", {
+				const hast = await highlighter.codeToHast(sourceText, {
 					lang: currentLanguage || "txt",
 					theme: document.body.className.toLowerCase().includes("light") ? "github-light" : "github-dark",
 					transformers: [
@@ -236,7 +242,7 @@ const CodeBlock = memo(
 						},
 					] as ShikiTransformer[],
 				})
-				if (!isMountedRef.current) return
+				if (cancelled) return
 
 				// Convert HAST to React elements using hast-util-to-jsx-runtime
 				// This approach eliminates XSS vulnerabilities by avoiding dangerouslySetInnerHTML
@@ -249,27 +255,24 @@ const CodeBlock = memo(
 						// Don't override components - let them render as-is to maintain exact output
 					})
 
-					if (isMountedRef.current) {
-						setHighlightedCode(reactElement)
-					}
+					setHighlightedCode({ source: sourceText, language: currentLanguage, node: reactElement })
 				} catch (error) {
 					console.error("[CodeBlock] Error converting HAST to JSX:", error)
-					if (isMountedRef.current) {
-						setHighlightedCode(fallback)
-					}
 				}
 			}
 
 			highlight().catch((e) => {
+				if (cancelled) return
 				console.error("[CodeBlock] Syntax highlighting error:", e, "\nStack trace:", e.stack)
-				if (isMountedRef.current) {
-					setHighlightedCode(fallback)
-				}
 			})
 
-			// Cleanup function - manage mounted state and clear all timeouts
 			return () => {
-				isMountedRef.current = false
+				cancelled = true
+			}
+		}, [sourceText, currentLanguage, partial])
+
+		useEffect(() => {
+			return () => {
 				if (buttonPositionTimeoutRef.current) {
 					clearTimeout(buttonPositionTimeoutRef.current)
 					buttonPositionTimeoutRef.current = null
@@ -283,7 +286,7 @@ const CodeBlock = memo(
 					collapseTimeout2Ref.current = null
 				}
 			}
-		}, [source, currentLanguage, collapsedHeight])
+		}, [])
 
 		// Check if content height exceeds collapsed height whenever content changes
 		useEffect(() => {
@@ -293,7 +296,7 @@ const CodeBlock = memo(
 				const actualHeight = codeBlock.scrollHeight
 				setShowCollapseButton(actualHeight >= WINDOW_SHADE_SETTINGS.collapsedHeight)
 			}
-		}, [highlightedCode])
+		}, [sourceText, highlightedCode])
 
 		// Ref to track if user was scrolled up *before* the source update
 		// potentially changes scrollHeight
@@ -609,7 +612,7 @@ const CodeBlock = memo(
 					wordWrap={wordWrap}
 					windowShade={windowShade}
 					collapsedHeight={collapsedHeight}
-					highlightedCode={highlightedCode}
+					highlightedCode={displayedCode}
 					updateCodeBlockButtonPosition={updateCodeBlockButtonPosition}
 				/>
 				{!isSelecting && (

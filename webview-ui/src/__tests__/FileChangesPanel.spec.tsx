@@ -64,10 +64,10 @@ function createFileEditMessage(
 	}
 }
 
-function renderPanel(messages: ClineMessage[] | undefined) {
+function renderPanel(messages: ClineMessage[] | undefined, taskId?: string) {
 	return render(
 		<TranslationProvider>
-			<FileChangesPanel clineMessages={messages} />
+			<FileChangesPanel clineMessages={messages} taskId={taskId} />
 		</TranslationProvider>,
 	)
 }
@@ -195,5 +195,34 @@ describe("FileChangesPanel", () => {
 
 		expect(screen.getByTestId("total-added")).toHaveTextContent("+5")
 		expect(screen.getByTestId("total-removed")).toHaveTextContent("-6")
+	})
+
+	it("preserves expanded files during streaming and resets them only when the task changes", () => {
+		const edit = createFileEditMessage("src/foo.ts", "diff")
+		const { rerender } = renderPanel([edit], "task-a")
+
+		fireEvent.click(screen.getByText("1 file(s) changed in this conversation").closest("button")!)
+		fireEvent.click(screen.getByTestId("accordian-toggle"))
+		expect(screen.getByTestId("accordian-toggle")).toHaveTextContent("expanded")
+
+		rerender(
+			<TranslationProvider>
+				<FileChangesPanel
+					clineMessages={[
+						edit,
+						{ type: "say", say: "text", ts: edit.ts + 1, text: "streaming", partial: true },
+					]}
+					taskId="task-a"
+				/>
+			</TranslationProvider>,
+		)
+		expect(screen.getByTestId("accordian-toggle")).toHaveTextContent("expanded")
+
+		rerender(
+			<TranslationProvider>
+				<FileChangesPanel clineMessages={[edit]} taskId="task-b" />
+			</TranslationProvider>,
+		)
+		expect(screen.getByTestId("accordian-toggle")).toHaveTextContent("collapsed")
 	})
 })

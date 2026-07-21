@@ -40,7 +40,7 @@ import TelemetryBanner from "../common/TelemetryBanner"
 import VersionIndicator from "../common/VersionIndicator"
 import HistoryPreview from "../history/HistoryPreview"
 import Announcement from "./Announcement"
-import ChatRow from "./ChatRow"
+import ChatRow, { type ChatRowEnvironment } from "./ChatRow"
 import WarningRow from "./WarningRow"
 import { ChatTextArea } from "./ChatTextArea"
 import TaskHeader from "./TaskHeader"
@@ -104,6 +104,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		messageQueue = [],
 		liveTasksById,
 		showWorktreesInHomeScreen,
+		mcpServers,
+		alwaysAllowMcp,
+		currentCheckpoint,
+		reasoningBlockCollapsed,
 	} = useExtensionState()
 
 	// Show a WarningRow when the user sends a message with a retired provider.
@@ -137,6 +141,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	)
 	const messagesRef = useRef(activeMessages)
 	const isBlankTaskPendingRef = useRef(false)
+	const getClineMessages = useCallback(() => messagesRef.current, [])
 
 	useEffect(() => {
 		messagesRef.current = activeMessages
@@ -995,6 +1000,30 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [clineAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel])
 
 	const { info: model } = useSelectedModel(apiConfiguration)
+	const chatRowEnvironment = useMemo<ChatRowEnvironment>(
+		() => ({
+			mcpServers,
+			alwaysAllowMcp,
+			currentCheckpoint,
+			mode,
+			currentTaskItem: visibleCurrentTaskItem,
+			currentTaskId: visibleCurrentTaskId,
+			reasoningBlockCollapsed,
+			modelSupportsImages: model?.supportsImages,
+			getClineMessages,
+		}),
+		[
+			mcpServers,
+			alwaysAllowMcp,
+			currentCheckpoint,
+			mode,
+			visibleCurrentTaskItem,
+			visibleCurrentTaskId,
+			reasoningBlockCollapsed,
+			model?.supportsImages,
+			getClineMessages,
+		],
+	)
 
 	const selectImages = useCallback(() => vscode.postMessage({ type: "selectImages" }), [])
 
@@ -1589,17 +1618,18 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	const itemContent = useCallback(
 		(index: number, messageOrGroup: ClineMessage) => {
-			const hasCheckpoint = modifiedMessages.some((message) => message.say === "checkpoint_saved")
+			const isLast = index === groupedMessages.length - 1
 
 			// regular message
 			return (
 				<ChatRow
 					key={messageOrGroup.ts}
 					message={messageOrGroup}
+					environment={chatRowEnvironment}
 					isExpanded={expandedRows[messageOrGroup.ts] || false}
 					onToggleExpand={toggleRowExpansion} // This was already stabilized
-					lastModifiedMessage={modifiedMessages.at(-1)} // Original direct access
-					isLast={index === groupedMessages.length - 1} // Original direct access
+					lastModifiedMessage={isLast ? modifiedMessages.at(-1) : undefined}
+					isLast={isLast}
 					onHeightChange={handleRowHeightChange}
 					isStreaming={isStreaming}
 					onSuggestionClick={handleSuggestionClickInRow} // This was already stabilized
@@ -1626,12 +1656,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							return tool.tool === "updateTodoList" && enableButtons && !!primaryButtonText
 						})()
 					}
-					hasCheckpoint={hasCheckpoint}
+					hasCheckpoint={hasLatestCheckpoint}
 					onJumpToPreviousCheckpoint={handleScrollToLatestCheckpoint}
 				/>
 			)
 		},
 		[
+			chatRowEnvironment,
 			expandedRows,
 			toggleRowExpansion,
 			modifiedMessages,
@@ -1647,6 +1678,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			enableButtons,
 			primaryButtonText,
 			handleScrollToLatestCheckpoint,
+			hasLatestCheckpoint,
 		],
 	)
 
@@ -1828,7 +1860,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							atBottomThreshold={10}
 						/>
 					</div>
-					<FileChangesPanel clineMessages={activeMessages} />
+					<FileChangesPanel clineMessages={activeMessages} taskId={visibleCurrentTaskId} />
 					{areButtonsVisible && (
 						<div
 							className={`flex h-9 items-center mb-1 px-[15px] ${

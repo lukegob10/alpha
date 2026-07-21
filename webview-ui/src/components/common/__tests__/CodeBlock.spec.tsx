@@ -1,6 +1,6 @@
 // npx vitest run src/components/common/__tests__/CodeBlock.spec.tsx
 
-import { render, screen, fireEvent, act } from "@/utils/test-utils"
+import { render, screen, fireEvent, act, waitFor } from "@/utils/test-utils"
 
 import CodeBlock from "../CodeBlock"
 
@@ -193,6 +193,66 @@ describe("CodeBlock", () => {
 		// Verify getHighlighter was called with the right language
 		expect(highlighterUtil.getHighlighter).toHaveBeenCalledWith("typescript")
 		expect(highlighterUtil.normalizeLanguage).toHaveBeenCalledWith("typescript")
+	})
+
+	it("renders partial code as plain text without starting syntax highlighting", async () => {
+		const highlighterUtil = await import("../../../utils/highlighter")
+		const getHighlighter = vi.mocked(highlighterUtil.getHighlighter)
+		getHighlighter.mockClear()
+
+		const { rerender } = render(<CodeBlock source="const first = 1" language="typescript" partial />)
+		expect(screen.getByText("const first = 1")).toBeInTheDocument()
+		expect(getHighlighter).not.toHaveBeenCalled()
+
+		rerender(<CodeBlock source="const latest = 2" language="typescript" partial />)
+		expect(screen.getByText("const latest = 2")).toBeInTheDocument()
+		expect(screen.queryByText("const first = 1")).not.toBeInTheDocument()
+		expect(getHighlighter).not.toHaveBeenCalled()
+
+		rerender(<CodeBlock source="const latest = 2" language="typescript" partial={false} />)
+		await waitFor(() => expect(getHighlighter).toHaveBeenCalledTimes(1))
+	})
+
+	it("does not let stale asynchronous highlighting replace newer source", async () => {
+		const highlighterUtil = await import("../../../utils/highlighter")
+		const getHighlighter = vi.mocked(highlighterUtil.getHighlighter)
+		const defaultHighlighter = await getHighlighter("typescript")
+		const resolvers = new Map<string, (value: any) => void>()
+		const codeToHast = vi.fn(
+			(code: string) =>
+				new Promise((resolve) => {
+					resolvers.set(code, resolve)
+				}),
+		)
+		getHighlighter.mockResolvedValue({ ...defaultHighlighter, codeToHast } as any)
+
+		const makeHast = (text: string) => ({
+			type: "element",
+			tagName: "pre",
+			properties: {},
+			children: [
+				{
+					type: "element",
+					tagName: "code",
+					properties: {},
+					children: [{ type: "text", value: `${text} highlighted` }],
+				},
+			],
+		})
+
+		const { rerender } = render(<CodeBlock source="old source" language="typescript" />)
+		await waitFor(() => expect(resolvers.has("old source")).toBe(true))
+		rerender(<CodeBlock source="new source" language="typescript" />)
+		await waitFor(() => expect(resolvers.has("new source")).toBe(true))
+
+		await act(async () => resolvers.get("new source")?.(makeHast("new source")))
+		expect(await screen.findByText("new source highlighted")).toBeInTheDocument()
+
+		await act(async () => resolvers.get("old source")?.(makeHast("old source")))
+		expect(screen.queryByText("old source highlighted")).not.toBeInTheDocument()
+		expect(screen.getByText("new source highlighted")).toBeInTheDocument()
+
+		getHighlighter.mockResolvedValue(defaultHighlighter)
 	})
 
 	it("handles copy functionality", async () => {

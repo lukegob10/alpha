@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react"
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react"
 
 import {
 	type ProviderSettings,
@@ -10,6 +10,7 @@ import {
 	type TelemetrySetting,
 	type ExtensionMessage,
 	type ExtensionState,
+	type ClineMessage,
 	type MarketplaceInstalledMetadata,
 	type SkillMetadata,
 	type Command,
@@ -286,6 +287,8 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const [includeTaskHistoryInEnhance, setIncludeTaskHistoryInEnhance] = useState(true)
 	const [includeCurrentTime, setIncludeCurrentTime] = useState(true)
 	const [includeCurrentCost, setIncludeCurrentCost] = useState(true)
+	const pendingMessageUpdatesRef = useRef(new Map<string, { taskId?: string; clineMessage: ClineMessage }>())
+	const messageUpdateFrameRef = useRef<number | undefined>(undefined)
 
 	const setListApiConfigMeta = useCallback(
 		(value: ProviderSettingsEntry[]) => setState((prevState) => ({ ...prevState, listApiConfigMeta: value })),
@@ -302,11 +305,71 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		}))
 	}, [])
 
+	const applyMessageUpdates = useCallback((updates: Array<{ taskId?: string; clineMessage: ClineMessage }>) => {
+		if (updates.length === 0) return
+
+		setState((prevState) => {
+			let nextMessages = prevState.clineMessages
+			let didChange = false
+
+			for (const { taskId, clineMessage } of updates) {
+				if (taskId && taskId !== prevState.currentTaskId) continue
+
+				const index = findLastIndex(nextMessages, (msg) => msg.ts === clineMessage.ts)
+				if (index === -1) {
+					console.warn(
+						`[messageUpdated] Received update for unknown message ts=${clineMessage.ts}, dropping. ` +
+							`Frontend has ${nextMessages.length} messages.`,
+					)
+					continue
+				}
+
+				if (!didChange) {
+					nextMessages = [...nextMessages]
+					didChange = true
+				}
+				nextMessages[index] = clineMessage
+			}
+
+			return didChange ? { ...prevState, clineMessages: nextMessages } : prevState
+		})
+	}, [])
+
+	const flushPendingMessageUpdates = useCallback(() => {
+		if (messageUpdateFrameRef.current !== undefined) {
+			cancelAnimationFrame(messageUpdateFrameRef.current)
+			messageUpdateFrameRef.current = undefined
+		}
+
+		const updates = Array.from(pendingMessageUpdatesRef.current.values())
+		pendingMessageUpdatesRef.current.clear()
+		applyMessageUpdates(updates)
+	}, [applyMessageUpdates])
+
+	const queuePartialMessageUpdate = useCallback(
+		(taskId: string | undefined, clineMessage: ClineMessage) => {
+			const key = `${taskId ?? ""}:${clineMessage.ts}`
+			pendingMessageUpdatesRef.current.set(key, { taskId, clineMessage })
+
+			if (messageUpdateFrameRef.current !== undefined) return
+			messageUpdateFrameRef.current = requestAnimationFrame(() => {
+				messageUpdateFrameRef.current = undefined
+				const updates = Array.from(pendingMessageUpdatesRef.current.values())
+				pendingMessageUpdatesRef.current.clear()
+				applyMessageUpdates(updates)
+			})
+		},
+		[applyMessageUpdates],
+	)
+
 	const handleMessage = useCallback(
 		(event: MessageEvent) => {
 			const message: ExtensionMessage = event.data
 			switch (message.type) {
 				case "state": {
+					// Preserve event ordering: a newer state snapshot must not be followed by
+					// a previously queued partial update.
+					flushPendingMessageUpdates()
 					const newState = message.state ?? {}
 					setState((prevState) => mergeExtensionState(prevState, newState))
 					setShowWelcome(!checkExistKey(newState.apiConfiguration))
@@ -372,28 +435,16 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 				}
 				case "messageUpdated": {
 					const clineMessage = message.clineMessage!
-					setState((prevState) => {
-						if (message.taskId && message.taskId !== prevState.currentTaskId) {
-							return prevState
-						}
+					const key = `${message.taskId ?? ""}:${clineMessage.ts}`
 
-						// worth noting it will never be possible for a more up-to-date message to be sent here or in normal messages post since the presentAssistantContent function uses lock
-						const lastIndex = findLastIndex(prevState.clineMessages, (msg) => msg.ts === clineMessage.ts)
-						if (lastIndex !== -1) {
-							const newClineMessages = [...prevState.clineMessages]
-							newClineMessages[lastIndex] = clineMessage
-							return { ...prevState, clineMessages: newClineMessages }
-						}
-						// Log a warning if messageUpdated arrives for a timestamp not in the
-						// frontend's clineMessages. With the seq guard and state event isolation
-						// (layers 1+2), this should not happen under normal conditions. If it
-						// does, it signals a state synchronization issue worth investigating.
-						console.warn(
-							`[messageUpdated] Received update for unknown message ts=${clineMessage.ts}, dropping. ` +
-								`Frontend has ${prevState.clineMessages.length} messages.`,
-						)
-						return prevState
-					})
+					if (clineMessage.partial) {
+						queuePartialMessageUpdate(message.taskId, clineMessage)
+					} else {
+						// A terminal update supersedes any partial for the same message and is
+						// applied immediately so completion controls never lag behind the stream.
+						pendingMessageUpdatesRef.current.delete(key)
+						applyMessageUpdates([{ taskId: message.taskId, clineMessage }])
+					}
 					break
 				}
 				case "skills": {
@@ -481,13 +532,18 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 				}
 			}
 		},
-		[setListApiConfigMeta],
+		[applyMessageUpdates, flushPendingMessageUpdates, queuePartialMessageUpdate, setListApiConfigMeta],
 	)
 
 	useEffect(() => {
+		const pendingUpdates = pendingMessageUpdatesRef.current
 		window.addEventListener("message", handleMessage)
 		return () => {
 			window.removeEventListener("message", handleMessage)
+			if (messageUpdateFrameRef.current !== undefined) {
+				cancelAnimationFrame(messageUpdateFrameRef.current)
+			}
+			pendingUpdates.clear()
 		}
 	}, [handleMessage])
 

@@ -14,10 +14,11 @@ import CodeAccordion from "../common/CodeAccordion"
 
 interface FileChangesPanelProps {
 	clineMessages: ClineMessage[] | undefined
+	taskId?: string
 	className?: string
 }
 
-const FileChangesPanel = memo(({ clineMessages, className }: FileChangesPanelProps) => {
+const FileChangesPanel = memo(({ clineMessages, taskId, className }: FileChangesPanelProps) => {
 	const { t } = useTranslation()
 	const [panelExpanded, setPanelExpanded] = useState(false)
 	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
@@ -29,7 +30,7 @@ const FileChangesPanel = memo(({ clineMessages, className }: FileChangesPanelPro
 		setExpandedPaths(new Set())
 		setFinalContentByPath({})
 		pendingPathsRef.current = new Set()
-	}, [clineMessages])
+	}, [taskId])
 
 	const fileChanges = useMemo(() => fileChangesFromMessages(clineMessages), [clineMessages])
 

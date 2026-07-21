@@ -13,6 +13,7 @@ import MermaidBlock from "./MermaidBlock"
 
 interface MarkdownBlockProps {
 	markdown?: string
+	partial?: boolean
 }
 
 const StyledMarkdown = styled.div`
@@ -203,7 +204,7 @@ const StyledMarkdown = styled.div`
 	}
 `
 
-const MarkdownBlock = memo(({ markdown }: MarkdownBlockProps) => {
+const MarkdownBlock = memo(({ markdown, partial = false }: MarkdownBlockProps) => {
 	const components = useMemo(
 		() => ({
 			table: ({ children, ...props }: any) => {
@@ -275,7 +276,11 @@ const MarkdownBlock = memo(({ markdown }: MarkdownBlockProps) => {
 				if (className.includes("language-mermaid")) {
 					return (
 						<div style={{ margin: "1em 0" }}>
-							<MermaidBlock code={codeString} />
+							{partial ? (
+								<CodeBlock source={codeString} language="mermaid" partial />
+							) : (
+								<MermaidBlock code={codeString} />
+							)}
 						</div>
 					)
 				}
@@ -287,7 +292,7 @@ const MarkdownBlock = memo(({ markdown }: MarkdownBlockProps) => {
 				// Wrap CodeBlock in a div to ensure proper separation
 				return (
 					<div style={{ margin: "1em 0" }}>
-						<CodeBlock source={codeString} language={language} />
+						<CodeBlock source={codeString} language={language} partial={partial} />
 					</div>
 				)
 			},
@@ -300,7 +305,7 @@ const MarkdownBlock = memo(({ markdown }: MarkdownBlockProps) => {
 				)
 			},
 		}),
-		[],
+		[partial],
 	)
 
 	return (
