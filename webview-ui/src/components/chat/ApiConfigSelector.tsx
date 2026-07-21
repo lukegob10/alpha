@@ -99,9 +99,8 @@ export const ApiConfigSelector = ({
 					onClick={() => handleSelect(config.id)}
 					className={cn(
 						"px-3 py-1.5 text-sm cursor-pointer flex items-center group",
-						"hover:bg-vscode-list-hoverBackground",
-						isCurrentConfig &&
-							"bg-vscode-list-activeSelectionBackground text-vscode-list-activeSelectionForeground",
+						"hover:bg-[var(--alpha-accent-soft)]",
+						isCurrentConfig && "bg-[var(--alpha-accent-soft)] text-vscode-foreground",
 					)}>
 					<div className="flex-1 min-w-0 flex items-center gap-1 overflow-hidden">
 						<span className="flex-shrink-0">{config.name}</span>
@@ -153,11 +152,9 @@ export const ApiConfigSelector = ({
 					data-testid="dropdown-trigger"
 					className={cn(
 						"min-w-0 inline-flex items-center relative whitespace-nowrap px-1.5 py-1 text-xs",
-						"bg-transparent border border-[rgba(255,255,255,0.08)] rounded-md text-vscode-foreground",
+						"composer-control text-vscode-foreground",
 						"transition-all duration-150 focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder focus-visible:ring-inset",
-						disabled
-							? "opacity-50 cursor-not-allowed"
-							: "opacity-90 hover:opacity-100 hover:bg-[rgba(255,255,255,0.03)] hover:border-[rgba(255,255,255,0.15)] cursor-pointer",
+						disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer opacity-90 hover:opacity-100",
 						triggerClassName,
 					)}>
 					<span className="truncate">{displayName}</span>

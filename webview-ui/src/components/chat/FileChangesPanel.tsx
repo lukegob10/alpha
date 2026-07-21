@@ -105,15 +105,15 @@ const FileChangesPanel = memo(({ clineMessages, className }: FileChangesPanelPro
 		<Collapsible open={panelExpanded} onOpenChange={setPanelExpanded} className={cn("px-3", className)}>
 			<CollapsibleTrigger
 				className={cn(
-					"flex items-center gap-2 w-full py-2 rounded-md text-left text-vscode-foreground",
-					"hover:bg-vscode-list-hoverBackground",
+					"flex w-full items-center gap-2 rounded-xl border border-transparent py-2 text-left text-vscode-foreground transition-colors",
+					"hover:border-[var(--border-subtle)] hover:bg-[var(--alpha-accent-soft)]",
 				)}>
 				{panelExpanded ? (
 					<ChevronDown className="size-4 shrink-0" aria-hidden />
 				) : (
 					<ChevronRight className="size-4 shrink-0" aria-hidden />
 				)}
-				<FileDiff className="size-4 shrink-0" aria-hidden />
+				<FileDiff className="size-4 shrink-0 text-[var(--alpha-accent)]" aria-hidden />
 				<span className="text-sm font-medium">
 					{t("chat:fileChangesInConversation.header", { count: fileCount })}
 				</span>
@@ -150,7 +150,9 @@ const FileChangesPanel = memo(({ clineMessages, className }: FileChangesPanelPro
 						)
 						const isExpanded = expandedPaths.has(path)
 						return (
-							<div key={path} className="rounded border border-vscode-panel-border overflow-hidden">
+							<div
+								key={path}
+								className="overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-sunken)]">
 								<CodeAccordion
 									path={path}
 									code={displayDiff}

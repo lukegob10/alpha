@@ -19,6 +19,7 @@ export const LucideIconButton = forwardRef<HTMLButtonElement, LucideIconButtonPr
 			<StandardTooltip content={tooltip ? title : undefined}>
 				<Button
 					ref={ref}
+					variant="ghost"
 					aria-label={title}
 					className={cn(
 						"relative inline-flex items-center justify-center",
@@ -27,8 +28,8 @@ export const LucideIconButton = forwardRef<HTMLButtonElement, LucideIconButtonPr
 						"text-vscode-foreground opacity-85",
 						"transition-all duration-150",
 						"focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder",
-						"active:bg-[rgba(255,255,255,0.1)]",
-						!disabled && "cursor-pointer hover:opacity-100 hover:bg-[rgba(255,255,255,0.03)]",
+						"active:scale-95",
+						!disabled && "cursor-pointer hover:bg-[var(--alpha-accent-soft)] hover:opacity-100",
 						disabled && "cursor-not-allowed opacity-40 hover:bg-transparent active:bg-transparent",
 						className,
 					)}

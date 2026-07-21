@@ -233,7 +233,7 @@ export const McpExecution = ({
 				</div>
 			</div>
 
-			<div className="w-full bg-vscode-editor-background rounded-xs p-2">
+			<div className="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-sunken)] p-2">
 				{/* Tool information section */}
 				{useMcpServer?.type === "use_mcp_tool" && (
 					<div onClick={(e) => e.stopPropagation()}>

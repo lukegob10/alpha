@@ -69,6 +69,8 @@ interface ModelPickerProps {
 	secondaryLabelTransform?: (modelId: string, modelInfo?: ModelInfo) => string | undefined
 	/** Callback when model changes - useful for side effects like clearing related fields */
 	onModelChange?: (modelId: string) => void
+	/** Prefer live provider metadata for the selected model over static registry metadata. */
+	selectedModelInfoOverride?: ModelInfo
 }
 
 export const ModelPicker = ({
@@ -89,6 +91,7 @@ export const ModelPicker = ({
 	labelTransform,
 	secondaryLabelTransform,
 	onModelChange,
+	selectedModelInfoOverride,
 }: ModelPickerProps) => {
 	const { t } = useAppTranslation()
 
@@ -99,7 +102,7 @@ export const ModelPicker = ({
 	const selectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 	const closeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
-	const { id: selectedModelId, info: selectedModelInfo } = useSelectedModel(apiConfiguration)
+	const { id: selectedModelId, info: configuredSelectedModelInfo } = useSelectedModel(apiConfiguration)
 
 	// Get the display value for the current selection
 	// If displayTransform is provided, use it to convert the stored value to a display string
@@ -110,6 +113,8 @@ export const ModelPicker = ({
 		}
 		return selectedModelId
 	}, [displayTransform, apiConfiguration, modelIdKey, selectedModelId])
+	const selectedModelInfo =
+		selectedModelInfoOverride ?? (displayValue ? models?.[displayValue] : undefined) ?? configuredSelectedModelInfo
 
 	const displayLabel = useMemo(() => {
 		return displayValue ? (labelTransform?.(displayValue, selectedModelInfo) ?? displayValue) : undefined

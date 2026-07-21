@@ -7,6 +7,7 @@ import {
 	type ProviderSettings,
 	openAiModelInfoSaneDefaults,
 	getVscodeLlmModelInfo,
+	getVscodeLlmExtendedContextSize,
 } from "@alpha-code/types"
 
 import type { ApiHandlerOptions } from "../../shared/api"
@@ -44,6 +45,11 @@ function convertToVsCodeLmTools(tools: OpenAI.Chat.ChatCompletionTool[]): vscode
 		}))
 }
 
+type VsCodeLmModelConfiguration = {
+	reasoningEffort?: Exclude<ProviderSettings["reasoningEffort"], undefined | "disable">
+	contextSize?: number
+}
+
 function getVsCodeLmReasoningEffortOption(
 	model: vscode.LanguageModelChat | vscode.LanguageModelChatSelector,
 	enableReasoningEffort: boolean | undefined,
@@ -67,27 +73,51 @@ function getVsCodeLmReasoningEffortOption(
 	}
 }
 
-function applyVsCodeLmReasoningEffortOptions(
+function getVsCodeLmContextSizeOption(
+	model: vscode.LanguageModelChat,
+	contextSize: ProviderSettings["vsCodeLmContextSize"],
+): Pick<VsCodeLmModelConfiguration, "contextSize"> | undefined {
+	const extendedContextSize = getVscodeLlmExtendedContextSize(model)
+	if (!extendedContextSize || contextSize !== extendedContextSize) {
+		return undefined
+	}
+
+	return { contextSize }
+}
+
+function getVsCodeLmModelConfiguration(
+	model: vscode.LanguageModelChat,
+	options: ApiHandlerOptions,
+): VsCodeLmModelConfiguration | undefined {
+	const configuration = {
+		...getVsCodeLmReasoningEffortOption(model, options.enableReasoningEffort, options.reasoningEffort),
+		...getVsCodeLmContextSizeOption(model, options.vsCodeLmContextSize),
+	}
+
+	return Object.keys(configuration).length > 0 ? configuration : undefined
+}
+
+function applyVsCodeLmModelConfiguration(
 	requestOptions: vscode.LanguageModelChatRequestOptions,
-	reasoningEffortOption: ReturnType<typeof getVsCodeLmReasoningEffortOption>,
+	configuration: VsCodeLmModelConfiguration | undefined,
 ): void {
-	if (!reasoningEffortOption) {
+	if (!configuration) {
 		return
 	}
 
 	requestOptions.modelOptions = {
 		...(requestOptions.modelOptions ?? {}),
-		...reasoningEffortOption,
+		...configuration,
 	}
 
 	// Current VS Code forwards this internal/proposed field to provider-side
-	// modelConfiguration, which Copilot reads for per-request thinking effort.
+	// modelConfiguration, which Copilot reads for per-request model settings.
 	const requestOptionsWithConfiguration = requestOptions as vscode.LanguageModelChatRequestOptions & {
 		configuration?: Record<string, unknown>
 	}
 	requestOptionsWithConfiguration.configuration = {
 		...(requestOptionsWithConfiguration.configuration ?? {}),
-		...reasoningEffortOption,
+		...configuration,
 	}
 }
 
@@ -105,13 +135,20 @@ function isIgnorableVsCodeLmMetadataChunk(chunk: unknown): boolean {
 	return mimeType === "stateful_marker" || mimeType === "usage"
 }
 
-function buildVsCodeLmModelInfo(client: vscode.LanguageModelChat): ModelInfo {
+function buildVsCodeLmModelInfo(
+	client: vscode.LanguageModelChat,
+	configuredContextSize?: ProviderSettings["vsCodeLmContextSize"],
+): ModelInfo {
 	const staticInfo = getVscodeLlmModelInfo(client)
 	const liveContextWindow = typeof client.maxInputTokens === "number" ? Math.max(0, client.maxInputTokens) : undefined
-	const contextWindow =
-		typeof staticInfo?.contextWindow === "number" && typeof liveContextWindow === "number"
-			? Math.max(staticInfo.contextWindow, liveContextWindow)
-			: (liveContextWindow ?? staticInfo?.contextWindow ?? openAiModelInfoSaneDefaults.contextWindow)
+	const selectedExtendedContextSize = getVsCodeLmContextSizeOption(client, configuredContextSize)?.contextSize
+	const contextWindow = selectedExtendedContextSize
+		? Math.min(selectedExtendedContextSize, liveContextWindow ?? selectedExtendedContextSize)
+		: staticInfo?.supportsContextWindowConfiguration
+			? staticInfo.contextWindow
+			: typeof staticInfo?.contextWindow === "number" && typeof liveContextWindow === "number"
+				? Math.max(staticInfo.contextWindow, liveContextWindow)
+				: (liveContextWindow ?? staticInfo?.contextWindow ?? openAiModelInfoSaneDefaults.contextWindow)
 
 	return {
 		...openAiModelInfoSaneDefaults,
@@ -506,14 +543,9 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			const requestOptions: vscode.LanguageModelChatRequestOptions = {
 				justification: `Alpha would like to use '${client.name}' from '${client.vendor}', Click 'Allow' to proceed.`,
 			}
-			const reasoningEffortOption = getVsCodeLmReasoningEffortOption(
-				client,
-				this.options.enableReasoningEffort,
-				this.options.reasoningEffort,
-			)
 			const tools = convertToVsCodeLmTools(metadata?.tools ?? [])
 
-			applyVsCodeLmReasoningEffortOptions(requestOptions, reasoningEffortOption)
+			applyVsCodeLmModelConfiguration(requestOptions, getVsCodeLmModelConfiguration(client, this.options))
 
 			if (tools.length > 0) {
 				requestOptions.tools = tools
@@ -677,7 +709,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 			const modelId = this.client.id || modelParts.join(SELECTOR_SEPARATOR)
 
-			const modelInfo = buildVsCodeLmModelInfo(this.client)
+			const modelInfo = buildVsCodeLmModelInfo(this.client, this.options.vsCodeLmContextSize)
 
 			return { id: modelId, info: modelInfo }
 		}
@@ -706,12 +738,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			const requestCancellation = new vscode.CancellationTokenSource()
 			cancellation = requestCancellation
 			const requestOptions: vscode.LanguageModelChatRequestOptions = {}
-			const reasoningEffortOption = getVsCodeLmReasoningEffortOption(
-				client,
-				this.options.enableReasoningEffort,
-				this.options.reasoningEffort,
-			)
-			applyVsCodeLmReasoningEffortOptions(requestOptions, reasoningEffortOption)
+			applyVsCodeLmModelConfiguration(requestOptions, getVsCodeLmModelConfiguration(client, this.options))
 			const response = await withApiRequestTimeout(
 				client.sendRequest(
 					[vscode.LanguageModelChatMessage.User(prompt)],
@@ -761,9 +788,6 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	}
 }
 
-// Static blacklist of VS Code Language Model IDs that should be excluded from the model list e.g. because they will never work
-const VSCODE_LM_STATIC_BLACKLIST: string[] = ["claude-3.7-sonnet", "claude-3.7-sonnet-thought"]
-
 export async function getVsCodeLmModels() {
 	try {
 		const models =
@@ -772,7 +796,16 @@ export async function getVsCodeLmModels() {
 				"VS Code LM model list refresh",
 				getApiRequestTimeout(),
 			)) || []
-		return models.filter((model) => !VSCODE_LM_STATIC_BLACKLIST.includes(model.id))
+		// Return every model the VS Code LM API exposes. The extension providing the
+		// models is the authority on availability, policy, and account eligibility.
+		return models.map(({ vendor, family, version, id, name, maxInputTokens }) => ({
+			vendor,
+			family,
+			version,
+			id,
+			name,
+			maxInputTokens,
+		}))
 	} catch (error) {
 		console.error(
 			`Error fetching VS Code LM models: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,

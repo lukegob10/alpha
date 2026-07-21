@@ -406,7 +406,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 		tools: ["github_api"],
 	},
 	modes: {
-		tools: ["switch_mode", "new_task", "delegate_task"],
+		tools: ["switch_mode", "new_task"],
 		alwaysAvailable: true,
 	},
 }
@@ -417,7 +417,6 @@ export const ALWAYS_AVAILABLE_TOOLS: ToolName[] = [
 	"attempt_completion",
 	"switch_mode",
 	"new_task",
-	"delegate_task",
 	"update_todo_list",
 	"run_slash_command",
 	"skill",

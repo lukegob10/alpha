@@ -261,7 +261,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 					<Button variant="ghost" className="px-1.5 -ml-2" onClick={onDone} aria-label="Back to chat">
 						<ArrowLeft />
 					</Button>
-					<CalendarClock className="size-4" />
+					<CalendarClock className="size-4 text-[var(--alpha-accent)]" />
 					<h3 className="text-vscode-foreground m-0">Scheduled Tasks</h3>
 				</div>
 				<Button variant="secondary" onClick={resetForm}>
@@ -270,8 +270,8 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 				</Button>
 			</TabHeader>
 			<TabContent className="p-0">
-				<div className="grid grid-cols-[minmax(220px,0.9fr)_minmax(320px,1.3fr)] min-h-full">
-					<div className="border-r border-vscode-panel-border p-3 overflow-auto">
+				<div className="grid min-h-full grid-cols-1 min-[720px]:grid-cols-[minmax(220px,0.9fr)_minmax(320px,1.3fr)]">
+					<div className="overflow-auto border-b border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--surface-overlay)_78%,transparent)] p-3 min-[720px]:border-r min-[720px]:border-b-0">
 						{scheduledTasks.length === 0 ? (
 							<div className="text-vscode-descriptionForeground text-sm px-2 py-4">
 								No scheduled tasks yet.
@@ -281,10 +281,10 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 								{scheduledTasks.map((task) => (
 									<button
 										key={task.id}
-										className={`text-left border rounded-sm p-3 bg-vscode-editor-background hover:bg-vscode-list-hoverBackground ${
+										className={`surface-raised text-left border rounded-xl p-3 transition-[border-color,background-color,transform] hover:-translate-y-px hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)] ${
 											task.id === selectedId
-												? "border-vscode-focusBorder"
-												: "border-vscode-panel-border"
+												? "border-[var(--border-accent)] bg-[var(--alpha-accent-soft)]"
+												: "border-[var(--border-subtle)]"
 										}`}
 										onClick={() => editTask(task)}>
 										<div className="flex items-center justify-between gap-2">
@@ -308,8 +308,8 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 							</div>
 						)}
 					</div>
-					<div className="p-4 overflow-auto">
-						<div className="flex flex-col gap-3 max-w-3xl">
+					<div className="overflow-auto p-4">
+						<div className="surface-raised flex max-w-3xl flex-col gap-3 rounded-2xl p-4">
 							<label className="flex flex-col gap-1 text-sm">
 								Name
 								<Input value={name} onChange={(event) => setName(event.target.value)} />
@@ -648,7 +648,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 											runsForSelected.map((run) => (
 												<div
 													key={run.id}
-													className="border border-vscode-panel-border rounded-sm p-2">
+													className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-sunken)] p-3">
 													<div className="flex justify-between gap-2 text-sm">
 														<span>{run.status}</span>
 														<span className="text-vscode-descriptionForeground">

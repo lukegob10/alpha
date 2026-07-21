@@ -193,11 +193,9 @@ export const SelectDropdown = React.memo(
 					data-testid="dropdown-trigger"
 					className={cn(
 						"w-full min-w-0 max-w-full inline-flex items-center gap-1.5 relative whitespace-nowrap px-1.5 py-1 text-xs",
-						"bg-transparent border border-[rgba(255,255,255,0.08)] rounded-md text-vscode-foreground w-auto",
+						"composer-control text-vscode-foreground w-auto",
 						"transition-all duration-150 focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder focus-visible:ring-inset",
-						disabled
-							? "opacity-50 cursor-not-allowed"
-							: "opacity-90 hover:opacity-100 hover:bg-[rgba(255,255,255,0.03)] hover:border-[rgba(255,255,255,0.15)] cursor-pointer",
+						disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer opacity-90 hover:opacity-100",
 						triggerClassName,
 					)}>
 					<CaretUpIcon className="pointer-events-none opacity-80 flex-shrink-0 size-3" />
@@ -280,7 +278,7 @@ export const SelectDropdown = React.memo(
 															? "opacity-50 cursor-not-allowed"
 															: "hover:bg-vscode-list-hoverBackground",
 														option.value === value
-															? "bg-vscode-list-activeSelectionBackground text-vscode-list-activeSelectionForeground"
+															? "bg-[var(--alpha-accent-soft)] text-vscode-foreground"
 															: "",
 														itemClassName,
 													)}

@@ -285,6 +285,7 @@ const vsCodeLmSchema = baseProviderSettingsSchema.extend({
 			id: z.string().optional(),
 		})
 		.optional(),
+	vsCodeLmContextSize: z.number().int().positive().optional(),
 })
 
 const lmStudioSchema = baseProviderSettingsSchema.extend({

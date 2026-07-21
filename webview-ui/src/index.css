@@ -176,7 +176,50 @@
 		--chart-3: var(--vscode-charts-yellow);
 		--chart-4: var(--vscode-charts-orange);
 		--chart-5: var(--vscode-charts-green);
-		--radius: 0.5rem;
+		--radius: 0.75rem;
+		--alpha-brand-violet: #7a6ff0;
+		--alpha-brand-blue: #4f8de8;
+		--alpha-brand-teal: #36aaa4;
+		--alpha-accent: color-mix(
+			in srgb,
+			var(--vscode-focusBorder, var(--alpha-brand-blue)) 35%,
+			var(--alpha-brand-violet) 65%
+		);
+		--alpha-accent-hover: color-mix(in srgb, var(--alpha-accent) 90%, white 10%);
+		--alpha-accent-contrast: #ffffff;
+		--alpha-accent-soft: color-mix(in srgb, var(--alpha-accent) 7%, transparent);
+		--alpha-teal-soft: color-mix(in srgb, var(--alpha-brand-teal) 5%, transparent);
+		--surface-raised: color-mix(in srgb, var(--vscode-editor-background) 97%, var(--alpha-accent) 3%);
+		--surface-overlay: color-mix(in srgb, var(--vscode-editor-background) 98%, var(--alpha-accent) 2%);
+		--surface-sunken: color-mix(in srgb, var(--vscode-editor-background) 98.5%, var(--alpha-brand-blue) 1.5%);
+		--border-subtle: color-mix(in srgb, var(--alpha-accent) 10%, var(--vscode-panel-border, transparent));
+		--border-accent: color-mix(in srgb, var(--alpha-accent) 26%, transparent);
+		--shadow-raised: 0 14px 36px color-mix(in srgb, var(--vscode-widget-shadow, #000) 30%, transparent);
+		--shadow-accent: 0 8px 24px color-mix(in srgb, var(--alpha-accent) 9%, transparent);
+	}
+
+	.vscode-light {
+		--alpha-brand-violet: #6559d9;
+		--alpha-brand-blue: #3378cf;
+		--alpha-brand-teal: #238f8b;
+		--alpha-accent-soft: color-mix(in srgb, var(--alpha-accent) 5%, transparent);
+		--alpha-teal-soft: color-mix(in srgb, var(--alpha-brand-teal) 3.5%, transparent);
+		--shadow-raised: 0 12px 30px color-mix(in srgb, var(--vscode-widget-shadow, #000) 16%, transparent);
+	}
+
+	.vscode-high-contrast,
+	.vscode-high-contrast-light {
+		--alpha-accent: var(--vscode-focusBorder);
+		--alpha-accent-hover: var(--vscode-focusBorder);
+		--alpha-accent-soft: transparent;
+		--alpha-teal-soft: transparent;
+		--surface-raised: var(--vscode-editor-background);
+		--surface-overlay: var(--vscode-editor-background);
+		--surface-sunken: var(--vscode-editor-background);
+		--border-subtle: var(--vscode-contrastBorder, var(--vscode-panel-border));
+		--border-accent: var(--vscode-focusBorder);
+		--shadow-raised: none;
+		--shadow-accent: none;
 	}
 
 	/* Higher specififty than VSCode's theme and root. */
@@ -184,6 +227,15 @@
 
 	body {
 		--vscode-input-border: var(--border);
+	}
+
+	:focus-visible {
+		outline-color: var(--vscode-focusBorder);
+		outline-offset: 2px;
+	}
+
+	::selection {
+		background: var(--vscode-editor-selectionBackground);
 	}
 }
 
@@ -232,6 +284,116 @@
 	.animate-smooth-bounce {
 		animation: smooth-bounce 1s ease-in-out infinite;
 	}
+
+	.surface-raised {
+		background: linear-gradient(
+			145deg,
+			color-mix(in srgb, var(--surface-raised) 98%, var(--alpha-accent) 2%),
+			color-mix(in srgb, var(--surface-raised) 98.5%, var(--alpha-brand-teal) 1.5%)
+		);
+		border: 1px solid var(--border-subtle);
+		box-shadow: 0 1px 2px color-mix(in srgb, var(--vscode-widget-shadow, #000) 16%, transparent);
+	}
+
+	.surface-overlay {
+		background: linear-gradient(
+			145deg,
+			color-mix(in srgb, var(--surface-overlay) 98.5%, var(--alpha-accent) 1.5%),
+			var(--surface-overlay)
+		);
+		border: 1px solid var(--border-subtle);
+		box-shadow: var(--shadow-raised);
+	}
+
+	.app-shell {
+		background:
+			radial-gradient(ellipse 65% 46% at 100% 0%, var(--alpha-accent-soft), transparent 72%),
+			radial-gradient(ellipse 54% 38% at 0% 100%, var(--alpha-teal-soft), transparent 74%),
+			var(--vscode-editor-background);
+	}
+
+	.glass-header {
+		background: color-mix(in srgb, var(--surface-overlay) 88%, transparent);
+		border-color: var(--border-subtle);
+		box-shadow: 0 1px 0 color-mix(in srgb, var(--alpha-accent) 4%, transparent);
+		backdrop-filter: blur(14px) saturate(120%);
+	}
+
+	.composer-control {
+		border: 1px solid var(--border-subtle);
+		border-radius: 0.625rem;
+		background: color-mix(in srgb, var(--surface-sunken) 90%, transparent);
+		color: var(--vscode-foreground);
+		box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
+		transition-property: color, background-color, border-color, box-shadow, opacity, transform;
+		transition-duration: 150ms;
+	}
+
+	.composer-control:not(:disabled):hover,
+	.composer-control[data-state="open"] {
+		border-color: var(--border-accent);
+		background: var(--alpha-accent-soft);
+		box-shadow: 0 0 0 1px color-mix(in srgb, var(--alpha-accent) 8%, transparent);
+	}
+
+	.accent-chip {
+		border: 1px solid var(--border-accent);
+		background: var(--alpha-accent-soft);
+		color: color-mix(in srgb, var(--vscode-foreground) 84%, var(--alpha-accent) 16%);
+	}
+
+	.task-context-card {
+		position: relative;
+		background: linear-gradient(
+			135deg,
+			color-mix(in srgb, var(--surface-raised) 95%, var(--alpha-accent) 5%),
+			color-mix(in srgb, var(--surface-raised) 97.5%, var(--alpha-brand-teal) 2.5%)
+		);
+		border: 1px solid var(--border-subtle);
+		box-shadow: var(--shadow-accent);
+	}
+
+	.task-context-card::before {
+		content: "";
+		position: absolute;
+		inset: 8px auto 8px 0;
+		width: 3px;
+		border-radius: 0 999px 999px 0;
+		background: linear-gradient(180deg, var(--alpha-accent), var(--alpha-brand-teal));
+		opacity: 0.45;
+	}
+
+	.hero-panel {
+		background:
+			linear-gradient(140deg, var(--alpha-accent-soft), transparent 52%),
+			linear-gradient(320deg, var(--alpha-teal-soft), transparent 48%), var(--surface-raised);
+		border: 1px solid var(--border-subtle);
+		box-shadow: var(--shadow-raised);
+	}
+
+	.brand-title {
+		width: fit-content;
+		background: linear-gradient(100deg, var(--alpha-accent), var(--alpha-brand-blue) 54%, var(--alpha-brand-teal));
+		background-clip: text;
+		-webkit-background-clip: text;
+		color: transparent;
+		letter-spacing: -0.035em;
+		text-shadow: 0 10px 34px color-mix(in srgb, var(--alpha-accent) 11%, transparent);
+	}
+
+	.brand-mark {
+		filter: drop-shadow(0 12px 26px color-mix(in srgb, var(--alpha-accent) 11%, transparent));
+	}
+}
+
+@media (forced-colors: active) {
+	.app-shell,
+	.surface-raised,
+	.surface-overlay,
+	.task-context-card,
+	.hero-panel {
+		background: var(--vscode-editor-background);
+	}
 }
 
 /* Form Element Focus States */
@@ -258,6 +420,19 @@ html {
 body {
 	margin: 0;
 	line-height: 1.25;
+	background: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		scroll-behavior: auto !important;
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+	}
 }
 
 body.scrollable,

@@ -99,7 +99,7 @@ const TaskHeader = ({
 	}
 
 	return (
-		<div className="group pt-2 pb-0 px-3">
+		<div className="group pt-2 pb-2 px-3">
 			{isSubtask && (
 				<div className="mb-2" onClick={(e) => e.stopPropagation()}>
 					<Button
@@ -114,10 +114,9 @@ const TaskHeader = ({
 			)}
 			<div
 				className={cn(
-					"px-3 pt-2.5 pb-2 flex flex-col gap-1.5 relative z-1 cursor-pointer",
-					"bg-vscode-input-background hover:bg-vscode-input-background/90",
+					"task-context-card px-3 pt-3 pb-2.5 flex flex-col gap-1.5 relative z-1 cursor-pointer",
 					"text-vscode-foreground/80 hover:text-vscode-foreground",
-					"shadow-lg shadow-vscode-sideBar-background/50 rounded-xl",
+					"rounded-2xl transition-[border-color,box-shadow,transform] duration-150 hover:border-[var(--border-accent)] hover:shadow-[var(--shadow-raised)]",
 					hasTodos && "border-b-0",
 				)}
 				onClick={(e) => {

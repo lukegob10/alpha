@@ -91,7 +91,7 @@ export const MarketplaceItemCard: React.FC<MarketplaceItemCardProps> = ({ item, 
 
 	return (
 		<>
-			<div className="border border-vscode-panel-border rounded-xl cursor-default p-3 transition-colors bg-vscode-editor-background hover:bg-vscode-editor-foreground/5">
+			<div className="surface-raised cursor-default rounded-2xl p-4 transition-[border-color,background-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)] hover:shadow-[var(--shadow-accent)]">
 				<div className="flex gap-2 items-start justify-between">
 					<div className="flex gap-2 items-start">
 						<div>
@@ -159,7 +159,7 @@ export const MarketplaceItemCard: React.FC<MarketplaceItemCardProps> = ({ item, 
 					<div className="relative flex flex-wrap gap-1 my-2">
 						{/* Installation status badge on the left */}
 						{isInstalled && (
-							<span className="text-xs px-2 py-0.5 rounded-sm h-5 flex items-center bg-green-600/20 text-green-400 border border-green-600/30 shrink-0">
+							<span className="flex h-5 shrink-0 items-center rounded-full border border-[color-mix(in_srgb,var(--alpha-brand-teal)_40%,transparent)] bg-[var(--alpha-teal-soft)] px-2 py-0.5 text-xs text-[var(--alpha-brand-teal)]">
 								{t("marketplace:items.card.installed")}
 							</span>
 						)}

@@ -642,6 +642,11 @@ export interface WebviewMessage {
 	mode?: string
 	promptMode?: string | "enhance"
 	customPrompt?: PromptComponent
+	enhancementOptions?: {
+		apiConfigId: string
+		includeTaskHistory: boolean
+		supportPrompt: string
+	}
 	dataUrls?: string[]
 	/** Generic payload for webview messages that use `values` */
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -35,7 +35,6 @@ interface CommandExecutionProps {
 export const CommandExecution = ({ executionId, text, icon, title }: CommandExecutionProps) => {
 	const {
 		currentTaskId,
-		terminalShellIntegrationDisabled = false,
 		allowedCommands = [],
 		deniedCommands = [],
 		setAllowedCommands,
@@ -44,9 +43,10 @@ export const CommandExecution = ({ executionId, text, icon, title }: CommandExec
 
 	const { command, output: parsedOutput } = useMemo(() => parseCommandAndOutput(text), [text])
 
-	// If we aren't opening the VSCode terminal for this command then we default
-	// to expanding the command execution output.
-	const [isExpanded, setIsExpanded] = useState(terminalShellIntegrationDisabled)
+	// Keep completed command output compact. While a command is running, expand
+	// the output so the user can follow its progress, then collapse it again
+	// when the terminal reports that execution has finished.
+	const [isExpanded, setIsExpanded] = useState(false)
 	const [streamingOutput, setStreamingOutput] = useState("")
 	const [status, setStatus] = useState<CommandExecutionStatus | null>(null)
 
@@ -127,15 +127,18 @@ export const CommandExecution = ({ executionId, text, icon, title }: CommandExec
 					switch (data.status) {
 						case "started":
 							setStatus(data)
+							setIsExpanded(true)
 							break
 						case "output":
 							setStreamingOutput(data.output)
+							setIsExpanded(true)
 							break
 						case "fallback":
 							setIsExpanded(true)
 							break
 						default:
 							setStatus(data)
+							setIsExpanded(false)
 							break
 					}
 				}
@@ -201,7 +204,7 @@ export const CommandExecution = ({ executionId, text, icon, title }: CommandExec
 				</div>
 			</div>
 
-			<div className="bg-vscode-editor-background border border-vscode-border rounded-xs ml-6 mt-2">
+			<div className="ml-6 mt-2 overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-sunken)] shadow-sm">
 				<div className="p-2">
 					<CodeBlock source={command} language="shell" />
 					<OutputContainer isExpanded={isExpanded} output={output} />

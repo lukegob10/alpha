@@ -80,7 +80,7 @@ vi.mock("vscode", () => {
 })
 
 import * as vscode from "vscode"
-import { VsCodeLmHandler } from "../vscode-lm"
+import { VsCodeLmHandler, getVsCodeLmModels } from "../vscode-lm"
 import type { ApiHandlerOptions } from "../../../shared/api"
 import type { Anthropic } from "@anthropic-ai/sdk"
 
@@ -111,6 +111,16 @@ const mockCopilotGpt53CodexLanguageModelChat = {
 	vendor: "copilot",
 	family: "gpt-5.3-codex",
 	version: "2026-06-01",
+}
+
+const mockCopilotGpt56TerraLanguageModelChat = {
+	...mockLanguageModelChat,
+	id: "gpt-5.6-terra",
+	name: "GPT-5.6 Terra",
+	vendor: "copilot",
+	family: "gpt-5.6-terra",
+	version: "gpt-5.6-terra",
+	maxInputTokens: 921_793,
 }
 
 describe("VsCodeLmHandler", () => {
@@ -619,6 +629,41 @@ describe("VsCodeLmHandler", () => {
 			)
 		})
 
+		it("should pass maximum reasoning and extended context through Copilot model configuration", async () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				enableReasoningEffort: true,
+				reasoningEffort: "max",
+				vsCodeLmContextSize: 922_000,
+			})
+			handler["client"] = mockCopilotGpt56TerraLanguageModelChat as any
+
+			mockCopilotGpt56TerraLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Maximum reasoned response")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "Think fully" }])) {
+				// consume stream
+			}
+
+			expect(mockCopilotGpt56TerraLanguageModelChat.sendRequest).toHaveBeenCalledWith(
+				expect.any(Array),
+				expect.objectContaining({
+					modelOptions: {
+						reasoningEffort: "max",
+						contextSize: 922_000,
+					},
+					configuration: {
+						reasoningEffort: "max",
+						contextSize: 922_000,
+					},
+				}),
+				expect.anything(),
+			)
+		})
+
 		it("should pass selected high reasoning effort through request options for Copilot GPT-5.3 Codex", async () => {
 			handler = new VsCodeLmHandler({
 				...defaultOptions,
@@ -834,7 +879,7 @@ describe("VsCodeLmHandler", () => {
 
 			const model = handler.getModel()
 			expect(model.info.supportsReasoningEffort).toEqual(["none", "low", "medium", "high", "xhigh"])
-			expect(model.info.contextWindow).toBe(400_000)
+			expect(model.info.contextWindow).toBe(272_000)
 		})
 
 		it("should return Copilot GPT-5.3 Codex reasoning effort support from static model metadata", async () => {
@@ -851,10 +896,10 @@ describe("VsCodeLmHandler", () => {
 
 			const model = handler.getModel()
 			expect(model.info.supportsReasoningEffort).toEqual(["low", "medium", "high", "xhigh"])
-			expect(model.info.contextWindow).toBe(400_000)
+			expect(model.info.contextWindow).toBe(272_000)
 		})
 
-		it("should return reasoning effort support for Copilot Claude Opus 4.7", async () => {
+		it("should return the regular context window for Copilot Claude Opus 4.7 by default", async () => {
 			const mockModel = {
 				...mockLanguageModelChat,
 				id: "copilot-claude-opus-4.7",
@@ -867,8 +912,20 @@ describe("VsCodeLmHandler", () => {
 			handler["client"] = mockModel as any
 
 			const model = handler.getModel()
-			expect(model.info.supportsReasoningEffort).toEqual(["none", "low", "medium", "high"])
-			expect(model.info.contextWindow).toBe(1_000_000)
+			expect(model.info.supportsReasoningEffort).toEqual(["low", "medium", "high"])
+			expect(model.info.contextWindow).toBe(128_000)
+		})
+
+		it("should report the selected extended input window", () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				vsCodeLmContextSize: 922_000,
+			})
+			handler["client"] = mockCopilotGpt56TerraLanguageModelChat as any
+
+			const model = handler.getModel()
+			expect(model.info.contextWindow).toBe(921_793)
+			expect(model.info.supportsReasoningEffort).toEqual(["none", "low", "medium", "high", "xhigh", "max"])
 		})
 
 		it("should return fallback model info when no client exists", () => {
@@ -1007,5 +1064,42 @@ describe("VsCodeLmHandler", () => {
 			const promise = handler.completePrompt("Test prompt")
 			await expect(promise).rejects.toThrow("VSCode LM completion error: Completion failed")
 		})
+	})
+})
+
+describe("getVsCodeLmModels", () => {
+	it("returns every model exposed by VS Code as serializable metadata", async () => {
+		const retiredModel = {
+			...mockLanguageModelChat,
+			id: "claude-3.7-sonnet",
+			name: "Claude 3.7 Sonnet",
+		}
+		const currentModel = { ...mockCopilotGpt56TerraLanguageModelChat }
+		const selectChatModels = vscode.lm.selectChatModels as Mock
+		selectChatModels.mockReset()
+		selectChatModels.mockResolvedValue([retiredModel, currentModel])
+
+		const models = await getVsCodeLmModels()
+
+		expect(vscode.lm.selectChatModels).toHaveBeenCalledWith({})
+		expect(models).toEqual([
+			{
+				vendor: retiredModel.vendor,
+				family: retiredModel.family,
+				version: retiredModel.version,
+				id: retiredModel.id,
+				name: retiredModel.name,
+				maxInputTokens: retiredModel.maxInputTokens,
+			},
+			{
+				vendor: currentModel.vendor,
+				family: currentModel.family,
+				version: currentModel.version,
+				id: currentModel.id,
+				name: currentModel.name,
+				maxInputTokens: currentModel.maxInputTokens,
+			},
+		])
+		expect(models[0]).not.toHaveProperty("sendRequest")
 	})
 })

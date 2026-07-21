@@ -122,7 +122,7 @@ const GoalSeekView = ({ onDone, targetJobId }: GoalSeekViewProps) => {
 					<Button variant="ghost" className="px-1.5 -ml-2" onClick={onDone} aria-label="Back to chat">
 						<ArrowLeft />
 					</Button>
-					<Target className="size-4" />
+					<Target className="size-4 text-[var(--alpha-accent)]" />
 					<h3 className="text-vscode-foreground m-0">Goal Seek</h3>
 				</div>
 				<Button variant="secondary" onClick={resetForm}>
@@ -131,8 +131,8 @@ const GoalSeekView = ({ onDone, targetJobId }: GoalSeekViewProps) => {
 				</Button>
 			</TabHeader>
 			<TabContent className="p-0">
-				<div className="grid grid-cols-[minmax(240px,0.9fr)_minmax(360px,1.4fr)] min-h-full">
-					<div className="border-r border-vscode-panel-border p-3 overflow-auto">
+				<div className="grid min-h-full grid-cols-1 min-[760px]:grid-cols-[minmax(240px,0.9fr)_minmax(360px,1.4fr)]">
+					<div className="overflow-auto border-b border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--surface-overlay)_78%,transparent)] p-3 min-[760px]:border-r min-[760px]:border-b-0">
 						{goalSeekJobs.length === 0 ? (
 							<div className="text-vscode-descriptionForeground text-sm px-2 py-4">
 								No goal-seek jobs yet.
@@ -144,10 +144,10 @@ const GoalSeekView = ({ onDone, targetJobId }: GoalSeekViewProps) => {
 									return (
 										<button
 											key={job.id}
-											className={`text-left border rounded-sm p-3 bg-vscode-editor-background hover:bg-vscode-list-hoverBackground ${
+											className={`surface-raised text-left border rounded-xl p-3 transition-[border-color,background-color,transform] hover:-translate-y-px hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)] ${
 												job.id === selectedId
-													? "border-vscode-focusBorder"
-													: "border-vscode-panel-border"
+													? "border-[var(--border-accent)] bg-[var(--alpha-accent-soft)]"
+													: "border-[var(--border-subtle)]"
 											}`}
 											onClick={() => editJob(job)}>
 											<div className="flex items-center justify-between gap-2">
@@ -168,8 +168,8 @@ const GoalSeekView = ({ onDone, targetJobId }: GoalSeekViewProps) => {
 							</div>
 						)}
 					</div>
-					<div className="p-4 overflow-auto">
-						<div className="flex flex-col gap-3 max-w-4xl">
+					<div className="overflow-auto p-4">
+						<div className="surface-raised flex max-w-4xl flex-col gap-3 rounded-2xl p-4">
 							<label className="flex flex-col gap-1 text-sm">
 								Name
 								<Input value={name} onChange={(event) => setName(event.target.value)} />
@@ -344,7 +344,7 @@ const GoalSeekView = ({ onDone, targetJobId }: GoalSeekViewProps) => {
 											return (
 												<div
 													key={attempt.id}
-													className="border border-vscode-panel-border rounded-sm p-2">
+													className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-sunken)] p-3">
 													<div className="flex justify-between gap-2 text-sm">
 														<span>
 															#{attempt.iteration} {attempt.status}

@@ -8,9 +8,11 @@ import {
 	type ModelInfo,
 	openAiModelInfoSaneDefaults,
 	getVscodeLlmModelInfo,
+	getVscodeLlmExtendedContextSize,
 } from "@alpha-code/types"
 
 import { useAppTranslation } from "@src/i18n/TranslationContext"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@src/components/ui"
 import {
 	parseVsCodeLmModelSelector,
 	stringifyVsCodeLmModelSelector,
@@ -40,13 +42,8 @@ const REASONING_LEVEL_LABELS: Record<string, string> = {
 	medium: "Medium",
 	high: "High",
 	xhigh: "xHigh",
+	max: "Max",
 }
-const COPILOT_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["none", "low", "medium", "high"]
-const COPILOT_EXTRA_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["none", "low", "medium", "high", "xhigh"]
-const COPILOT_CODEX_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "medium", "high", "xhigh"]
-const COPILOT_REASONING_MODEL_PATTERNS = [/gpt[-\s]?5(?:\.4(?:[-\s]?(?:mini|nano))?|[-\s]?mini)\b/i]
-const COPILOT_EXTRA_REASONING_MODEL_PATTERNS = [/gpt[-\s]?5\.5\b/i]
-const COPILOT_CODEX_REASONING_MODEL_PATTERNS = [/gpt[-\s]?5\.3[-\s]?codex\b/i]
 
 function titleCaseIdentifier(value: string): string {
 	return value
@@ -91,76 +88,33 @@ function formatVsCodeLmModelLabel(model: VSCodeLmModel | undefined, fallbackId: 
 }
 
 function formatVsCodeLmModelDetail(model: VSCodeLmModel | undefined): string | undefined {
-	if (!model || getVscodeLlmModelInfo(model)) {
+	if (!model) {
 		return undefined
 	}
 
 	return [model.vendor, model.family, model.version, model.id].filter(Boolean).join(" / ") || undefined
 }
 
-function inferVsCodeLmReasoningEffortSupport(model: VSCodeLmModel): ModelInfo["supportsReasoningEffort"] | undefined {
-	const searchableText = [model.family, model.id, model.name, model.version].filter(Boolean).join(" ")
-	if (COPILOT_EXTRA_REASONING_MODEL_PATTERNS.some((pattern) => pattern.test(searchableText))) {
-		return COPILOT_EXTRA_REASONING_EFFORTS
-	}
-
-	if (COPILOT_CODEX_REASONING_MODEL_PATTERNS.some((pattern) => pattern.test(searchableText))) {
-		return COPILOT_CODEX_REASONING_EFFORTS
-	}
-
-	if (COPILOT_REASONING_MODEL_PATTERNS.some((pattern) => pattern.test(searchableText))) {
-		return COPILOT_REASONING_EFFORTS
-	}
-
-	return undefined
-}
-
-function buildVsCodeLmModelInfo(model: VSCodeLmModel): ModelInfo {
+function buildVsCodeLmModelInfo(model: VSCodeLmModel, configuredContextSize?: number): ModelInfo {
 	const staticInfo = getVscodeLlmModelInfo(model)
-	const supportsReasoningEffort = staticInfo?.supportsReasoningEffort ?? inferVsCodeLmReasoningEffortSupport(model)
+	const extendedContextSize = getVscodeLlmExtendedContextSize(model)
+	const contextWindow =
+		configuredContextSize === extendedContextSize && extendedContextSize
+			? Math.min(extendedContextSize, model.maxInputTokens ?? extendedContextSize)
+			: (staticInfo?.contextWindow ?? model.maxInputTokens ?? openAiModelInfoSaneDefaults.contextWindow)
 
 	return {
 		...openAiModelInfoSaneDefaults,
 		...staticInfo,
 		maxTokens: staticInfo?.maxTokens ?? 0,
-		contextWindow: model.maxInputTokens ?? staticInfo?.contextWindow ?? openAiModelInfoSaneDefaults.contextWindow,
+		contextWindow,
 		supportsImages: staticInfo?.supportsImages ?? false,
 		supportsPromptCache: staticInfo?.supportsPromptCache ?? false,
-		supportsReasoningEffort,
+		supportsReasoningEffort: staticInfo?.supportsReasoningEffort,
+		// The live VS Code list is authoritative even when static retirement metadata is stale.
+		deprecated: false,
 		description: [model.name, model.vendor, model.family, model.version, model.id].filter(Boolean).join(" - "),
 	}
-}
-
-function getVsCodeLmModelDedupeKey(model: VSCodeLmModel): string {
-	const staticInfo = getVscodeLlmModelInfo(model)
-	const canonicalModel = staticInfo?.family ?? model.family ?? model.id ?? model.name ?? ""
-	const reasoningLevel = inferReasoningLevel(model)?.toLowerCase() ?? ""
-
-	return [model.vendor ?? "", canonicalModel.toLowerCase(), reasoningLevel].join("/")
-}
-
-function dedupeVsCodeLmModels(models: VSCodeLmModel[], selectedSelector: LanguageModelChatSelector | undefined) {
-	const selectedKey = selectedSelector ? stringifyVsCodeLmModelSelector(selectedSelector) : undefined
-	const dedupedModels: VSCodeLmModel[] = []
-	const keyToIndex = new Map<string, number>()
-
-	for (const model of models) {
-		const dedupeKey = getVsCodeLmModelDedupeKey(model)
-		const modelKey = stringifyVsCodeLmModelSelector(model)
-		const existingIndex = keyToIndex.get(dedupeKey)
-
-		if (existingIndex === undefined) {
-			keyToIndex.set(dedupeKey, dedupedModels.length)
-			dedupedModels.push(model)
-			continue
-		}
-
-		if (modelKey === selectedKey) {
-			dedupedModels[existingIndex] = model
-		}
-	}
-
-	return dedupedModels
 }
 
 function selectorMatchesModel(selector: LanguageModelChatSelector, model: VSCodeLmModel): boolean {
@@ -210,14 +164,9 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 
 	useEvent("message", onMessage)
 
-	const visibleVsCodeLmModels = useMemo(
-		() => dedupeVsCodeLmModels(vsCodeLmModels, apiConfiguration.vsCodeLmModelSelector),
-		[apiConfiguration.vsCodeLmModelSelector, vsCodeLmModels],
-	)
-
 	// Convert VSCode LM models array to Record format for ModelPicker
 	const modelsRecord = useMemo((): Record<string, ModelInfo> => {
-		return visibleVsCodeLmModels.reduce(
+		return vsCodeLmModels.reduce(
 			(acc, model) => {
 				const modelId = stringifyVsCodeLmModelSelector(model)
 				acc[modelId] = buildVsCodeLmModelInfo(model)
@@ -225,11 +174,11 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 			},
 			{} as Record<string, ModelInfo>,
 		)
-	}, [visibleVsCodeLmModels])
+	}, [vsCodeLmModels])
 
 	const modelsById = useMemo(() => {
-		return new Map(visibleVsCodeLmModels.map((model) => [stringifyVsCodeLmModelSelector(model), model]))
-	}, [visibleVsCodeLmModels])
+		return new Map(vsCodeLmModels.map((model) => [stringifyVsCodeLmModelSelector(model), model]))
+	}, [vsCodeLmModels])
 
 	// Transform the full picker key back to the exact VS Code LM selector.
 	const valueTransform = useCallback(
@@ -246,23 +195,30 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 	}, [])
 
 	const selectedModelId = useMemo(
-		() => findMatchingModelId(apiConfiguration.vsCodeLmModelSelector, visibleVsCodeLmModels),
-		[apiConfiguration.vsCodeLmModelSelector, visibleVsCodeLmModels],
+		() => findMatchingModelId(apiConfiguration.vsCodeLmModelSelector, vsCodeLmModels),
+		[apiConfiguration.vsCodeLmModelSelector, vsCodeLmModels],
 	)
-	const selectedModelInfo = selectedModelId ? modelsRecord[selectedModelId] : undefined
+	const selectedModel = selectedModelId ? modelsById.get(selectedModelId) : undefined
+	const selectedModelInfo = selectedModel
+		? buildVsCodeLmModelInfo(selectedModel, apiConfiguration.vsCodeLmContextSize)
+		: undefined
+	const extendedContextSize = selectedModel ? getVscodeLlmExtendedContextSize(selectedModel) : undefined
+	const selectedContextSizeValue =
+		apiConfiguration.vsCodeLmContextSize === extendedContextSize && extendedContextSize
+			? extendedContextSize.toString()
+			: "default"
 
 	const onModelChange = useCallback(
 		(modelId: string) => {
 			const supportsReasoningEffort = modelsRecord[modelId]?.supportsReasoningEffort
 			const configuredReasoningEffort = apiConfiguration.reasoningEffort
+			const nextModel = modelsById.get(modelId)
+			const nextExtendedContextSize = nextModel ? getVscodeLlmExtendedContextSize(nextModel) : undefined
 
 			if (!supportsReasoningEffort) {
 				setApiConfigurationField("enableReasoningEffort", false)
 				setApiConfigurationField("reasoningEffort", undefined)
-				return
-			}
-
-			if (
+			} else if (
 				configuredReasoningEffort &&
 				configuredReasoningEffort !== "disable" &&
 				Array.isArray(supportsReasoningEffort) &&
@@ -270,13 +226,26 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 			) {
 				setApiConfigurationField("reasoningEffort", undefined)
 			}
+
+			if (
+				apiConfiguration.vsCodeLmContextSize &&
+				apiConfiguration.vsCodeLmContextSize !== nextExtendedContextSize
+			) {
+				setApiConfigurationField("vsCodeLmContextSize", undefined)
+			}
 		},
-		[apiConfiguration.reasoningEffort, modelsRecord, setApiConfigurationField],
+		[
+			apiConfiguration.reasoningEffort,
+			apiConfiguration.vsCodeLmContextSize,
+			modelsById,
+			modelsRecord,
+			setApiConfigurationField,
+		],
 	)
 
 	return (
 		<>
-			{visibleVsCodeLmModels.length > 0 ? (
+			{vsCodeLmModels.length > 0 ? (
 				<>
 					<ModelPicker
 						apiConfiguration={apiConfiguration}
@@ -291,8 +260,41 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 						labelTransform={(modelId) => formatVsCodeLmModelLabel(modelsById.get(modelId), modelId)}
 						secondaryLabelTransform={(modelId) => formatVsCodeLmModelDetail(modelsById.get(modelId))}
 						onModelChange={onModelChange}
+						selectedModelInfoOverride={selectedModelInfo}
 						hidePricing
 					/>
+					{extendedContextSize && (
+						<div>
+							<label className="block font-medium mb-1">
+								{t("settings:providers.vscodeLmContextSize.label")}
+							</label>
+							<Select
+								value={selectedContextSizeValue}
+								onValueChange={(value) =>
+									setApiConfigurationField(
+										"vsCodeLmContextSize",
+										value === "default" ? undefined : Number(value),
+									)
+								}>
+								<SelectTrigger className="w-full">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="default">
+										{t("settings:providers.vscodeLmContextSize.default")}
+									</SelectItem>
+									<SelectItem value={extendedContextSize.toString()}>
+										{t("settings:providers.vscodeLmContextSize.extended", {
+											contextSize: extendedContextSize.toLocaleString(),
+										})}
+									</SelectItem>
+								</SelectContent>
+							</Select>
+							<div className="text-sm text-vscode-descriptionForeground mt-1">
+								{t("settings:providers.vscodeLmContextSize.description")}
+							</div>
+						</div>
+					)}
 					<ThinkingBudget
 						key={`vscode-lm-${selectedModelId}`}
 						apiConfiguration={apiConfiguration}

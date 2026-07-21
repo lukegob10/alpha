@@ -64,11 +64,11 @@ export const QueuedMessages = ({
 								}
 							}}
 							onDragLeave={() => setDragOverIndex((current) => (current === index ? null : current))}
-							className={`bg-vscode-editor-background border rounded-xs p-1 overflow-hidden whitespace-pre-wrap flex-shrink-0 ${
-								isEditing ? "border-vscode-focusBorder opacity-80" : ""
-							} ${
-								dragOverIndex === index ? "border-vscode-focusBorder" : ""
-							}`}>
+							className={`flex-shrink-0 overflow-hidden whitespace-pre-wrap rounded-xl border bg-[var(--surface-sunken)] p-1 ${
+								isEditing
+									? "border-[var(--border-accent)] bg-[var(--alpha-accent-soft)] opacity-90"
+									: "border-[var(--border-subtle)]"
+							} ${dragOverIndex === index ? "border-[var(--alpha-accent)]" : ""}`}>
 							<div className="flex items-center justify-between gap-1">
 								<div
 									role="button"
@@ -98,7 +98,7 @@ export const QueuedMessages = ({
 								<div className="flex-grow px-2 py-1 wrap-anywhere">
 									<div
 										className={`px-1 py-0.5 -mx-1 -my-0.5 rounded transition-colors ${
-											isEditing ? "bg-vscode-list-activeSelectionBackground" : ""
+											isEditing ? "bg-[var(--alpha-accent-soft)]" : ""
 										}`}
 										title={isEditing ? t("queuedMessages.editing") : undefined}>
 										<Mention text={message.text} withShadow />

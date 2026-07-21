@@ -1737,7 +1737,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	return (
 		<div
 			data-testid="chat-view"
-			className={isHidden ? "hidden" : "fixed top-0 left-0 right-0 bottom-0 flex flex-col overflow-hidden"}>
+			className={isHidden ? "hidden" : "app-shell fixed inset-0 flex flex-col overflow-hidden"}>
 			{telemetrySetting === "unset" && <TelemetryBanner />}
 			{(showAnnouncement || showAnnouncementModal) && (
 				<Announcement
@@ -1794,13 +1794,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					)}
 				</>
 			) : (
-				<div className="flex flex-col h-full justify-center p-6 min-h-0 overflow-y-auto gap-4 relative">
-					<div className="flex flex-col items-start gap-2 justify-center h-full min-[400px]:px-6">
+				<div className="relative flex h-full min-h-0 flex-col justify-center gap-4 overflow-y-auto p-5 min-[400px]:p-7">
+					<div className="mx-auto flex h-full w-full max-w-[760px] flex-col items-start justify-center gap-3">
 						<VersionIndicator
 							onClick={() => setShowAnnouncementModal(true)}
 							className="absolute top-2 right-3 z-10"
 						/>
-						<div className="flex flex-col gap-4 w-full">
+						<div className="hero-panel flex w-full flex-col gap-5 rounded-3xl p-5 min-[400px]:p-7">
 							<AlphaHero />
 							{/* Show AlphaTips when authenticated or when user is new */}
 							{taskHistory.length < 6 && <AlphaTips />}

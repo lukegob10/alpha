@@ -108,8 +108,9 @@ const TaskItem = ({
 			key={item.id}
 			data-testid={`task-item-${item.id}`}
 			className={cn(
-				"cursor-pointer group relative overflow-hidden",
-				"text-vscode-foreground/80 hover:text-vscode-foreground transition-colors",
+				"surface-raised cursor-pointer group relative overflow-hidden",
+				"text-vscode-foreground/80 transition-[color,background-color,border-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground hover:shadow-[var(--shadow-accent)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--alpha-accent)]",
+				isActive && "border-[var(--border-accent)] bg-[var(--alpha-accent-soft)] text-vscode-foreground",
 				hasSubtasks ? "rounded-t-xl" : "rounded-xl",
 				className,
 			)}

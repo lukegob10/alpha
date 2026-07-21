@@ -85,8 +85,8 @@ describe("ToggleSwitch", () => {
 
 		const toggle = screen.getByRole("switch")
 		expect(toggle).toBeInTheDocument()
-		// Medium size should be 26px x 10px
-		expect(toggle).toHaveStyle({ width: "26px", height: "10px" })
+		// Medium size remains compact while providing a clear track and thumb.
+		expect(toggle).toHaveStyle({ width: "34px", height: "18px" })
 	})
 
 	it("defaults to small size", () => {
@@ -95,7 +95,7 @@ describe("ToggleSwitch", () => {
 
 		const toggle = screen.getByRole("switch")
 		expect(toggle).toBeInTheDocument()
-		// Small size should be 20px x 10px
-		expect(toggle).toHaveStyle({ width: "20px", height: "10px" })
+		// Small size remains legible at typical VS Code webview density.
+		expect(toggle).toHaveStyle({ width: "28px", height: "16px" })
 	})
 })

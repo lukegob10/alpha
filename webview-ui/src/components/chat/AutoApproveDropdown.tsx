@@ -205,12 +205,11 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 					data-testid="auto-approve-dropdown-trigger"
 					className={cn(
 						"inline-flex items-center gap-1.5 relative whitespace-nowrap px-1.5 py-1 text-xs",
-						"bg-transparent border border-[rgba(255,255,255,0.08)] rounded-md text-vscode-foreground",
+						"composer-control text-vscode-foreground",
 						"transition-all duration-150 focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder focus-visible:ring-inset",
 						"max-[300px]:shrink-0",
-						disabled
-							? "opacity-50 cursor-not-allowed"
-							: "opacity-90 hover:opacity-100 hover:bg-[rgba(255,255,255,0.03)] hover:border-[rgba(255,255,255,0.15)] cursor-pointer",
+						disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer opacity-90 hover:opacity-100",
+						effectiveAutoApprovalEnabled && "text-[var(--alpha-brand-teal)]",
 						triggerClassName,
 					)}>
 					{!effectiveAutoApprovalEnabled ? (

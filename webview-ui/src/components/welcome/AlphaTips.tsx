@@ -24,16 +24,16 @@ const AlphaTips = () => {
 	const { t } = useTranslation("chat")
 
 	return (
-		<div className="flex flex-col gap-2 mb-4 max-w-[500px] text-vscode-descriptionForeground">
+		<div className="flex max-w-[560px] flex-col gap-3 rounded-2xl border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--surface-sunken)_82%,transparent)] p-4 text-vscode-descriptionForeground">
 			<p className="my-0 pr-2">
 				<Trans i18nKey="chat:about" />
 			</p>
 			<div className="gap-4">
 				{tips.map((tip) => (
-					<div key={tip.titleKey} className="flex items-start gap-2 mt-2 mr-6 leading-relaxed">
-						{tip.icon}
+					<div key={tip.titleKey} className="mt-2 flex items-start gap-2.5 leading-relaxed">
+						<span className="mt-0.5 text-[var(--alpha-accent)]">{tip.icon}</span>
 						<span>
-							<VSCodeLink className="text-muted-foreground underline" href={tip.href}>
+							<VSCodeLink className="text-vscode-textLink-foreground no-underline" href={tip.href}>
 								{t(tip.titleKey)}
 							</VSCodeLink>
 							: {t(tip.descriptionKey)}
@@ -41,13 +41,13 @@ const AlphaTips = () => {
 					</div>
 				))}
 			</div>
-			<p className="my-0 pr-8">
+			<p className="my-0">
 				<Trans
 					i18nKey="chat:docs"
 					components={{
 						DocsLink: (
 							<VSCodeLink
-								className="text-muted-foreground underline"
+								className="text-vscode-textLink-foreground no-underline"
 								href={buildDocLink("", "welcome")}
 							/>
 						),

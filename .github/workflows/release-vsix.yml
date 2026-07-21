@@ -25,11 +25,6 @@ jobs:
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
 
-            - name: Create .env file
-              shell: pwsh
-              run: |
-                  "POSTHOG_API_KEY=${{ secrets.POSTHOG_API_KEY }}" | Out-File -FilePath .env -Encoding utf8
-
             - name: Build workspace types
               run: pnpm --filter @alpha-code/types build
 
@@ -56,27 +51,7 @@ jobs:
                   "vsix_name=$($vsix.Name)" >> $env:GITHUB_OUTPUT
 
             - name: Verify VSIX contents
-              shell: pwsh
-              run: |
-                  $vsix = "${{ steps.release.outputs.vsix_path }}"
-                  tar -tf $vsix | Out-File -FilePath vsix-contents.txt -Encoding utf8
-
-                  $requiredFiles = @(
-                    "extension/package.json",
-                    "extension/package.nls.json",
-                    "extension/dist/extension.js",
-                    "extension/webview-ui/audio/celebration.wav",
-                    "extension/webview-ui/build/assets/index.js",
-                    "extension/assets/codicons/codicon.ttf",
-                    "extension/assets/vscode-material-icons/icons/3d.svg",
-                    ".env"
-                  )
-
-                  foreach ($file in $requiredFiles) {
-                    if (-not (Select-String -Path vsix-contents.txt -Pattern ([regex]::Escape($file)) -Quiet)) {
-                      throw "VSIX is missing required file: $file"
-                    }
-                  }
+              run: node scripts/verify-vsix-contents.mjs "${{ steps.release.outputs.vsix_path }}"
 
             - name: Create GitHub release
               env:

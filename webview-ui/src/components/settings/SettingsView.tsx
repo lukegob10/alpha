@@ -88,10 +88,11 @@ import { useSearchIndexRegistry, SearchIndexProvider } from "./useSettingsSearch
 
 export const settingsTabsContainer = "flex min-h-0 flex-1 overflow-hidden [&.narrow_.tab-label]:hidden"
 export const settingsTabList =
-	"w-48 data-[compact=true]:w-12 flex-shrink-0 flex flex-col overflow-y-auto overflow-x-hidden border-r border-vscode-sideBar-background"
+	"w-48 data-[compact=true]:w-14 flex-shrink-0 flex flex-col gap-1 overflow-y-auto overflow-x-hidden border-r border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--surface-overlay)_88%,transparent)] p-2 backdrop-blur-sm"
 export const settingsTabTrigger =
-	"whitespace-nowrap overflow-hidden min-w-0 h-12 px-4 py-3 box-border flex items-center border-l-2 border-transparent text-vscode-foreground opacity-70 hover:bg-vscode-list-hoverBackground data-[compact=true]:w-12 data-[compact=true]:p-4"
-export const settingsTabTriggerActive = "opacity-100 border-vscode-focusBorder bg-vscode-list-activeSelectionBackground"
+	"whitespace-nowrap overflow-hidden min-w-0 h-9 px-3 box-border flex items-center gap-2 rounded-lg text-vscode-foreground opacity-70 transition-[color,background-color,opacity] hover:bg-vscode-list-hoverBackground hover:opacity-100 data-[compact=true]:w-10 data-[compact=true]:justify-center data-[compact=true]:px-0"
+export const settingsTabTriggerActive =
+	"border border-[var(--border-accent)] bg-[var(--alpha-accent-soft)] text-vscode-foreground shadow-sm opacity-100"
 
 export interface SettingsViewRef {
 	checkUnsaveChanges: (then: () => void) => void
@@ -199,6 +200,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		includeDiagnosticMessages,
 		maxDiagnosticMessages,
 		includeTaskHistoryInEnhance,
+		enhancementApiConfigId,
 		imageGenerationProvider,
 		openRouterImageApiKey,
 		githubToken,
@@ -429,6 +431,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					alwaysAllowFollowupQuestions: alwaysAllowFollowupQuestions ?? false,
 					followupAutoApproveTimeoutMs,
 					includeTaskHistoryInEnhance: includeTaskHistoryInEnhance ?? true,
+					enhancementApiConfigId: enhancementApiConfigId ?? "",
 					reasoningBlockCollapsed: reasoningBlockCollapsed ?? true,
 					enterBehavior: enterBehavior ?? "send",
 					includeCurrentTime: includeCurrentTime ?? true,
@@ -713,7 +716,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 									isSelected // Use manual isSelected for styling
 										? `${settingsTabTrigger} ${settingsTabTriggerActive}`
 										: settingsTabTrigger,
-									"cursor-pointer focus:ring-0", // Remove the focus ring styling
+									"cursor-pointer focus-visible:ring-1 focus-visible:ring-vscode-focusBorder",
 								)}
 								data-testid={`tab-${id}`}
 								data-compact={isCompactMode}>
@@ -909,9 +912,13 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 							<PromptsSettings
 								customSupportPrompts={customSupportPrompts || {}}
 								setCustomSupportPrompts={setCustomSupportPromptsField}
-								includeTaskHistoryInEnhance={includeTaskHistoryInEnhance}
+								includeTaskHistoryInEnhance={includeTaskHistoryInEnhance ?? true}
 								setIncludeTaskHistoryInEnhance={(value) =>
 									setCachedStateField("includeTaskHistoryInEnhance", value)
+								}
+								enhancementApiConfigId={enhancementApiConfigId}
+								setEnhancementApiConfigId={(value) =>
+									setCachedStateField("enhancementApiConfigId", value)
 								}
 							/>
 						)}

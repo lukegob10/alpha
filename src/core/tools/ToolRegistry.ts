@@ -23,7 +23,6 @@ import { generateImageTool } from "./GenerateImageTool"
 import { githubApiTool } from "./GitHubApiTool"
 import { listFilesTool } from "./ListFilesTool"
 import { newTaskTool } from "./NewTaskTool"
-import { delegateTaskTool } from "./DelegateTaskTool"
 import { readCommandOutputTool } from "./ReadCommandOutputTool"
 import { readFileTool } from "./ReadFileTool"
 import { runSlashCommandTool } from "./RunSlashCommandTool"
@@ -79,13 +78,7 @@ const PARALLEL_READ_TOOLS = new Set([
 	"read_command_output",
 ])
 
-const BARRIER_TOOLS = new Set([
-	"new_task",
-	"delegate_task",
-	"attempt_completion",
-	"switch_mode",
-	"ask_followup_question",
-])
+const BARRIER_TOOLS = new Set(["new_task", "attempt_completion", "switch_mode", "ask_followup_question"])
 
 const WORKSPACE_TOOLS = new Set([
 	"write_to_file",
@@ -111,7 +104,6 @@ const CHECKPOINT_TOOLS = new Set([
 const TASK_TOOLS = new Set([
 	"update_todo_list",
 	"new_task",
-	"delegate_task",
 	"attempt_completion",
 	"switch_mode",
 	"ask_followup_question",
@@ -131,7 +123,6 @@ const TOOL_NAMES = [
 	"github_api",
 	"list_files",
 	"new_task",
-	"delegate_task",
 	"read_command_output",
 	"read_file",
 	"run_slash_command",
@@ -307,7 +298,6 @@ export class ToolRegistry {
 		this.registerBuiltIn("github_api", githubApiTool, schemas)
 		this.registerBuiltIn("list_files", listFilesTool, schemas)
 		this.registerBuiltIn("new_task", newTaskTool, schemas)
-		this.registerBuiltIn("delegate_task", delegateTaskTool, schemas)
 		this.registerBuiltIn("read_command_output", readCommandOutputTool, schemas)
 		this.registerBuiltIn("read_file", readFileTool, schemas)
 		this.registerBuiltIn("run_slash_command", runSlashCommandTool, schemas)

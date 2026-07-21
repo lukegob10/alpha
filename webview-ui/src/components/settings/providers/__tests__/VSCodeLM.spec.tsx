@@ -6,6 +6,7 @@ import { VSCodeLM } from "../VSCodeLM"
 
 const modelPickerProps: any[] = []
 const thinkingBudgetProps: any[] = []
+const selectProps: any[] = []
 let messageHandler: ((event: MessageEvent) => void) | undefined
 
 vi.mock("../../ModelPicker", () => ({
@@ -20,6 +21,17 @@ vi.mock("../../ThinkingBudget", () => ({
 		thinkingBudgetProps.push(props)
 		return <div data-testid="thinking-budget">Thinking Budget</div>
 	},
+}))
+
+vi.mock("@src/components/ui", () => ({
+	Select: (props: any) => {
+		selectProps.push(props)
+		return <div data-testid="context-size-select">{props.children}</div>
+	},
+	SelectContent: ({ children }: any) => <div>{children}</div>,
+	SelectItem: ({ children, value }: any) => <div data-value={value}>{children}</div>,
+	SelectTrigger: ({ children }: any) => <div>{children}</div>,
+	SelectValue: () => null,
 }))
 
 vi.mock("react-use", () => ({
@@ -40,6 +52,7 @@ describe("VSCodeLM", () => {
 	beforeEach(() => {
 		modelPickerProps.length = 0
 		thinkingBudgetProps.length = 0
+		selectProps.length = 0
 		messageHandler = undefined
 		vi.clearAllMocks()
 	})
@@ -126,7 +139,7 @@ describe("VSCodeLM", () => {
 		expect(props.modelInfo).toEqual(
 			expect.objectContaining({
 				contextWindow: 128_000,
-				supportsReasoningEffort: ["none", "low", "medium", "high"],
+				supportsReasoningEffort: ["low", "medium", "high"],
 			}),
 		)
 	})
@@ -155,6 +168,37 @@ describe("VSCodeLM", () => {
 				supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh"],
 			}),
 		)
+	})
+
+	it("renders GPT-5.6 maximum reasoning and extended context controls", () => {
+		const selectedModel = {
+			vendor: "copilot",
+			family: "gpt-5.6-terra",
+			version: "gpt-5.6-terra",
+			id: "gpt-5.6-terra",
+			name: "GPT-5.6 Terra",
+			maxInputTokens: 921_793,
+		}
+
+		renderProvider({
+			apiProvider: "vscode-lm",
+			vsCodeLmModelSelector: selectedModel,
+		})
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
+		})
+
+		expect(thinkingBudgetProps.at(-1).modelInfo).toEqual(
+			expect.objectContaining({
+				supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
+			}),
+		)
+		expect(screen.getByTestId("context-size-select")).toBeInTheDocument()
+		expect(screen.getByText("settings:providers.vscodeLmContextSize.default")).toBeInTheDocument()
+		expect(screen.getByText("settings:providers.vscodeLmContextSize.extended")).toBeInTheDocument()
+
+		act(() => selectProps.at(-1).onValueChange("922000"))
+		expect(setApiConfigurationField).toHaveBeenCalledWith("vsCodeLmContextSize", 922_000)
 	})
 
 	it("renders Copilot GPT-5.3 Codex reasoning efforts including extra high", () => {
@@ -204,14 +248,15 @@ describe("VSCodeLM", () => {
 		const props = thinkingBudgetProps.at(-1)
 		expect(props.modelInfo).toEqual(
 			expect.objectContaining({
-				contextWindow: 1_000_000,
+				contextWindow: 128_000,
 				supportsImages: true,
-				supportsReasoningEffort: ["none", "low", "medium", "high"],
+				supportsReasoningEffort: ["low", "medium", "high"],
 			}),
 		)
+		expect(screen.getByTestId("context-size-select")).toBeInTheDocument()
 	})
 
-	it("deduplicates equivalent Copilot Claude model selectors", () => {
+	it("keeps every selector returned by the VS Code LM API", () => {
 		const models = [
 			{
 				vendor: "copilot",
@@ -235,12 +280,12 @@ describe("VSCodeLM", () => {
 		})
 
 		const props = modelPickerProps.at(-1)
-		expect(Object.keys(props.models)).toHaveLength(1)
+		expect(Object.keys(props.models)).toHaveLength(2)
 		expect(props.labelTransform(Object.keys(props.models)[0])).toBe("Claude Opus 4.7")
-		expect(props.secondaryLabelTransform(Object.keys(props.models)[0])).toBeUndefined()
+		expect(props.secondaryLabelTransform(Object.keys(props.models)[0])).toContain("copilot-claude-opus-4.7")
 	})
 
-	it("keeps the selected duplicate selector visible when it was already configured", () => {
+	it("keeps all equivalent selectors when one was already configured", () => {
 		const selectedModel = {
 			vendor: "copilot",
 			family: "claude-opus-4.7",
@@ -268,10 +313,13 @@ describe("VSCodeLM", () => {
 		})
 
 		const props = modelPickerProps.at(-1)
-		expect(Object.keys(props.models)).toEqual(["copilot/claude-opus-4.7/2026-06-02/copilot-claude-opus-4.7-alt"])
+		expect(Object.keys(props.models)).toEqual([
+			"copilot/claude-opus-4.7/2026-06-01/copilot-claude-opus-4.7",
+			"copilot/claude-opus-4.7/2026-06-02/copilot-claude-opus-4.7-alt",
+		])
 		expect(thinkingBudgetProps.at(-1).modelInfo).toEqual(
 			expect.objectContaining({
-				supportsReasoningEffort: ["none", "low", "medium", "high"],
+				supportsReasoningEffort: ["low", "medium", "high"],
 			}),
 		)
 	})
@@ -355,7 +403,7 @@ describe("VSCodeLM", () => {
 		const props = thinkingBudgetProps.at(-1)
 		expect(props.modelInfo).toEqual(
 			expect.objectContaining({
-				supportsReasoningEffort: ["none", "low", "medium", "high"],
+				supportsReasoningEffort: ["low", "medium", "high"],
 			}),
 		)
 		expect(setApiConfigurationField).not.toHaveBeenCalledWith("vsCodeLmModelSelector", expect.anything())

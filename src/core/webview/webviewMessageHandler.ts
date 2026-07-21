@@ -1604,22 +1604,31 @@ export const webviewMessageHandler = async (
 						enhancementApiConfigId,
 						includeTaskHistoryInEnhance,
 					} = state
+					const enhancementApiConfigIdOverride = message.enhancementOptions?.apiConfigId
+					const includeTaskHistoryOverride = message.enhancementOptions?.includeTaskHistory
+					const supportPromptOverride = message.enhancementOptions?.supportPrompt
+					const effectiveCustomSupportPrompts =
+						supportPromptOverride === undefined
+							? customSupportPrompts
+							: { ...customSupportPrompts, ENHANCE: supportPromptOverride }
+					const effectiveEnhancementApiConfigId = enhancementApiConfigIdOverride ?? enhancementApiConfigId
+					const effectiveIncludeTaskHistory = includeTaskHistoryOverride ?? includeTaskHistoryInEnhance
 
 					const currentCline = provider.getCurrentTask()
 
 					const result = await MessageEnhancer.enhanceMessage({
 						text: message.text,
 						apiConfiguration,
-						customSupportPrompts,
+						customSupportPrompts: effectiveCustomSupportPrompts,
 						listApiConfigMeta,
-						enhancementApiConfigId,
-						includeTaskHistoryInEnhance,
+						enhancementApiConfigId: effectiveEnhancementApiConfigId,
+						includeTaskHistoryInEnhance: effectiveIncludeTaskHistory,
 						currentClineMessages: currentCline?.clineMessages,
 						providerSettingsManager: provider.providerSettingsManager,
 					})
 
 					if (result.success && result.enhancedText) {
-						MessageEnhancer.captureTelemetry(currentCline?.taskId, includeTaskHistoryInEnhance)
+						MessageEnhancer.captureTelemetry(currentCline?.taskId, effectiveIncludeTaskHistory)
 						await provider.postMessageToWebview({ type: "enhancedPrompt", text: result.enhancedText })
 					} else {
 						throw new Error(result.error || "Unknown error")

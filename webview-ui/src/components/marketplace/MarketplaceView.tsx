@@ -99,26 +99,23 @@ export function MarketplaceView({ stateManager, onDone, targetTab }: Marketplace
 						</div>
 					</div>
 
-					<div className="w-full mt-2">
-						<div className="flex relative py-1">
-							<div className="absolute w-full h-[2px] -bottom-[2px] bg-vscode-input-border">
-								<div
-									className={cn(
-										"absolute w-1/2 h-[2px] bottom-0 bg-vscode-button-background transition-all duration-300 ease-in-out",
-										{
-											"left-0": state.activeTab === "mcp",
-											"left-1/2": state.activeTab === "mode",
-										},
-									)}
-								/>
-							</div>
+					<div className="mt-2 w-full">
+						<div className="surface-raised relative flex rounded-xl p-1">
 							<button
-								className="cursor-pointer flex items-center justify-center gap-2 flex-1 text-sm font-medium rounded-sm transition-colors duration-300 relative z-10 text-vscode-foreground"
+								className={cn(
+									"relative z-10 flex h-8 flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg text-sm font-medium text-vscode-foreground transition-colors duration-150 hover:bg-[var(--alpha-accent-soft)]",
+									state.activeTab === "mcp" &&
+										"border border-[var(--border-accent)] bg-[var(--alpha-accent-soft)] shadow-sm",
+								)}
 								onClick={() => manager.transition({ type: "SET_ACTIVE_TAB", payload: { tab: "mcp" } })}>
 								MCP
 							</button>
 							<button
-								className="cursor-pointer flex items-center justify-center gap-2 flex-1 text-sm font-medium rounded-sm transition-colors duration-300 relative z-10 text-vscode-foreground"
+								className={cn(
+									"relative z-10 flex h-8 flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg text-sm font-medium text-vscode-foreground transition-colors duration-150 hover:bg-[var(--alpha-accent-soft)]",
+									state.activeTab === "mode" &&
+										"border border-[var(--border-accent)] bg-[var(--alpha-accent-soft)] shadow-sm",
+								)}
 								onClick={() =>
 									manager.transition({ type: "SET_ACTIVE_TAB", payload: { tab: "mode" } })
 								}>

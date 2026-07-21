@@ -6,6 +6,9 @@ import { type Mode, FileRestrictionError, getModeBySlug, getGroupName } from "..
 import { EXPERIMENT_IDS } from "../../shared/experiments"
 import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS, TOOL_ALIASES } from "../../shared/tools"
 
+const nonExecutableNativeTools = new Set<string>(["delegate_task"])
+const executableNativeToolNames = validToolNames.filter((name) => !nonExecutableNativeTools.has(name))
+
 /**
  * Checks if a tool name is a valid, known tool.
  * Note: This does NOT check if the tool is allowed for a specific mode,
@@ -13,7 +16,7 @@ import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS, TOOL_ALIASES } from "../../shared/
  */
 export function isValidToolName(toolName: string, experiments?: Record<string, boolean>): toolName is ToolName {
 	// Check if it's a valid static tool
-	if ((validToolNames as readonly string[]).includes(toolName)) {
+	if ((executableNativeToolNames as readonly string[]).includes(toolName)) {
 		return true
 	}
 
@@ -42,7 +45,7 @@ export function validateToolUse(
 	// This catches completely invalid tool names like "edit_file" that don't exist
 	if (!isValidToolName(toolName, experiments)) {
 		throw new Error(
-			`Unknown tool "${toolName}". This tool does not exist. Please use one of the available tools: ${validToolNames.join(", ")}.`,
+			`Unknown tool "${toolName}". This tool does not exist. Please use one of the available tools: ${executableNativeToolNames.join(", ")}.`,
 		)
 	}
 

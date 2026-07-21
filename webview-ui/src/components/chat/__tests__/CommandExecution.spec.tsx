@@ -284,7 +284,7 @@ Suggested patterns: npm, npm install, npm run`
 		expect(screen.queryByTestId("command-pattern-selector")).not.toBeInTheDocument()
 	})
 
-	it("should expand output when terminal shell integration is disabled", () => {
+	it("should keep completed output collapsed by default", () => {
 		const disabledState = {
 			...mockExtensionState,
 			terminalShellIntegrationDisabled: true,
@@ -300,7 +300,7 @@ Output here`
 			</ExtensionStateContext.Provider>,
 		)
 
-		// Output should be visible when shell integration is disabled
+		// Completed command output is available for expansion, but starts collapsed.
 		const codeBlocks = screen.getAllByTestId("code-block")
 		expect(codeBlocks).toHaveLength(1) // Only command block
 
