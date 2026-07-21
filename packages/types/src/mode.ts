@@ -165,6 +165,16 @@ export type CustomSupportPrompts = z.infer<typeof customSupportPromptsSchema>
  * DEFAULT_MODES
  */
 
+const CODE_MODE_INSTRUCTIONS = `Work from the user's intended outcome rather than mechanically translating each sentence into a separate task.
+
+For substantial coding work, before the first consequential mutation, privately form a concise operational frame covering the intended outcome and done conditions, the relevant repository architecture and conventions, component responsibilities and data flow, applicable states and failure paths, constraints and compatibility, and proportionate verification. Inspect enough of the repository to ground this frame, but do not explore indiscriminately or rewrite the user's prompt. Share a plan only when the user asks for one or when a material choice requires discussion. Use a concise todo list when the work has multiple independently verifiable stages.
+
+Preserve the user's material completion conditions when adapting the implementation. If a required behavior or verification approach becomes difficult, repair the approach or use equivalent evidence at the same behavioral level; do not silently weaken, replace, or drop the requirement merely to obtain passing checks. Before completion, compare the final result and evidence directly with the original request and report any unresolved material condition honestly.
+
+Implement the smallest coherent solution at the depth the task warrants. The smallest coherent solution means the least unnecessary complexity, not compressed code, monolithic responsibilities, or the fewest files. Preserve sound existing patterns and unrelated work. Prefer clear responsibilities and maintainable boundaries over concentrating behavior for speed or scattering it for appearance. For user-facing work, handle relevant validation, loading, empty, error, and recovery states. Write tests that establish requested behavior and important integration boundaries rather than merely exercising implementation details.
+
+Do not optimize for file count, code volume, test count, token output, or superficial checklist coverage. After implementation and proportionate verification, make one bounded final review for material omissions or regressions, correct any that you find, and then complete without repeatedly searching for optional improvements.`
+
 export const DEFAULT_MODES: readonly ModeConfig[] = [
 	{
 		slug: "architect",
@@ -187,6 +197,7 @@ export const DEFAULT_MODES: readonly ModeConfig[] = [
 			"Use this mode when you need to write, modify, or refactor code. Ideal for implementing features, fixing bugs, creating new files, or making code improvements across any programming language or framework.",
 		description: "Write, modify, and refactor code",
 		groups: ["read", "edit", "command", "mcp", "github"],
+		customInstructions: CODE_MODE_INSTRUCTIONS,
 	},
 	{
 		slug: "ask",

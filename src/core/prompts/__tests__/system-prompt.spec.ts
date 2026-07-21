@@ -412,6 +412,65 @@ describe("SYSTEM_PROMPT", () => {
 		expect(prompt).not.toContain(modes[0].roleDefinition)
 	})
 
+	it("should include the adaptive engineering workflow in code mode only", async () => {
+		const codePrompt = await SYSTEM_PROMPT(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			"code",
+			undefined,
+			undefined,
+			undefined,
+			experiments,
+		)
+		const askPrompt = await SYSTEM_PROMPT(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			"ask",
+			undefined,
+			undefined,
+			undefined,
+			experiments,
+		)
+
+		expect(codePrompt).toContain("privately form a concise operational frame")
+		expect(codePrompt).toContain("use equivalent evidence at the same behavioral level")
+		expect(codePrompt).toContain("not compressed code, monolithic responsibilities, or the fewest files")
+		expect(codePrompt).toContain("one bounded final review")
+		expect(codePrompt).toContain("Do not optimize for file count")
+		expect(askPrompt).not.toContain("privately form a concise operational frame")
+		expect(askPrompt).not.toContain("use equivalent evidence at the same behavioral level")
+		expect(askPrompt).not.toContain("not compressed code, monolithic responsibilities, or the fewest files")
+		expect(askPrompt).not.toContain("Do not optimize for file count")
+	})
+
+	it("should let a code prompt override replace the default code workflow", async () => {
+		const prompt = await SYSTEM_PROMPT(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			"code",
+			{
+				code: {
+					customInstructions: "User-selected code workflow",
+				},
+			},
+			undefined,
+			undefined,
+			experiments,
+		)
+
+		expect(prompt).toContain("User-selected code workflow")
+		expect(prompt).not.toContain("privately form a concise operational frame")
+	})
+
 	it("should fallback to modeConfig roleDefinition when promptComponent has no roleDefinition", async () => {
 		const customModePrompts = {
 			[defaultModeSlug]: {

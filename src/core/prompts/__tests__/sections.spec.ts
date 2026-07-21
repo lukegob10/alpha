@@ -68,6 +68,23 @@ describe("getRulesSection", () => {
 		expect(result).toContain(cwd)
 	})
 
+	it("uses command evidence without requiring user confirmation", () => {
+		const result = getRulesSection(cwd)
+
+		expect(result).toContain("do not infer success if the result matters")
+		expect(result).toContain("bounded follow-up")
+		expect(result).not.toContain("assume the terminal executed the command successfully")
+		expect(result).not.toContain("wait for the user's response after each tool use")
+	})
+
+	it("uses side-effect-aware MCP batching", () => {
+		const result = getRulesSection(cwd)
+
+		expect(result).toContain("Batch independent read-only MCP operations")
+		expect(result).toContain("Serialize MCP operations with side effects or dependencies")
+		expect(result).not.toContain("MCP operations should be used one at a time")
+	})
+
 	it("includes vendor confidentiality section when isStealthModel is true", () => {
 		const settings = {
 			todoListEnabled: true,
@@ -159,30 +176,29 @@ describe("getRulesSection shell-aware command chaining", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("uses && for Unix shells in command chaining example", () => {
+	it("uses && for Unix shell command chaining", () => {
 		vi.spyOn(shellUtils, "getShell").mockReturnValue("/bin/bash")
 		const result = getRulesSection(cwd)
 
-		expect(result).toContain("cd (path to project) && (command")
-		expect(result).not.toContain("cd (path to project) ; (command")
-		expect(result).not.toContain("cd (path to project) & (command")
+		expect(result).toContain("commands must be chained, use `&&`")
+		expect(result).not.toContain("commands must be chained, use `;`")
 	})
 
-	it("uses ; for PowerShell in command chaining example", () => {
+	it("uses ; for PowerShell command chaining", () => {
 		vi.spyOn(shellUtils, "getShell").mockReturnValue(
 			"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
 		)
 		const result = getRulesSection(cwd)
 
-		expect(result).toContain("cd (path to project) ; (command")
+		expect(result).toContain("commands must be chained, use `;`")
 		expect(result).toContain("Note: Using `;` for PowerShell command chaining")
 	})
 
-	it("uses && for cmd.exe in command chaining example", () => {
+	it("uses && for cmd.exe command chaining", () => {
 		vi.spyOn(shellUtils, "getShell").mockReturnValue("C:\\Windows\\System32\\cmd.exe")
 		const result = getRulesSection(cwd)
 
-		expect(result).toContain("cd (path to project) && (command")
+		expect(result).toContain("commands must be chained, use `&&`")
 		expect(result).toContain("Note: Using `&&` for cmd.exe command chaining")
 	})
 

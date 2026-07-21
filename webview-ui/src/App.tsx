@@ -12,18 +12,22 @@ import { telemetryClient } from "./utils/TelemetryClient"
 import { initializeSourceMaps, exposeSourceMapsForDebugging } from "./utils/sourceMapInitializer"
 import { ExtensionStateContextProvider, useExtensionState } from "./context/ExtensionStateContext"
 import ChatView, { ChatViewRef } from "./components/chat/ChatView"
-import HistoryView from "./components/history/HistoryView"
-import SettingsView, { SettingsViewRef } from "./components/settings/SettingsView"
+import type { SettingsViewRef } from "./components/settings/SettingsView"
 import WelcomeView from "./components/welcome/WelcomeViewProvider"
-import { MarketplaceView } from "./components/marketplace/MarketplaceView"
 import { CheckpointRestoreDialog } from "./components/chat/CheckpointRestoreDialog"
 import { DeleteMessageDialog, EditMessageDialog } from "./components/chat/MessageModificationConfirmationDialog"
 import ErrorBoundary from "./components/ErrorBoundary"
-import ScheduledTasksView from "./components/scheduled-tasks/ScheduledTasksView"
-import GoalSeekView from "./components/goal-seek/GoalSeekView"
 import { useAddNonInteractiveClickListener } from "./components/ui/hooks/useNonInteractiveClick"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { STANDARD_TOOLTIP_DELAY } from "./components/ui/standard-tooltip"
+
+const HistoryView = React.lazy(() => import("./components/history/HistoryView"))
+const SettingsView = React.lazy(() => import("./components/settings/SettingsView"))
+const MarketplaceView = React.lazy(() =>
+	import("./components/marketplace/MarketplaceView").then(({ MarketplaceView }) => ({ default: MarketplaceView })),
+)
+const ScheduledTasksView = React.lazy(() => import("./components/scheduled-tasks/ScheduledTasksView"))
+const GoalSeekView = React.lazy(() => import("./components/goal-seek/GoalSeekView"))
 
 type Tab = "settings" | "history" | "chat" | "marketplace" | "scheduledTasks" | "goalSeek"
 
@@ -224,21 +228,23 @@ const App = () => {
 		<WelcomeView />
 	) : (
 		<>
-			{tab === "history" && <HistoryView onDone={() => switchTab("chat")} />}
-			{tab === "settings" && (
-				<SettingsView ref={settingsRef} onDone={() => setTab("chat")} targetSection={currentSection} />
-			)}
-			{tab === "marketplace" && (
-				<MarketplaceView
-					stateManager={marketplaceStateManager}
-					onDone={() => switchTab("chat")}
-					targetTab={currentMarketplaceTab as "mcp" | "mode" | undefined}
-				/>
-			)}
-			{tab === "scheduledTasks" && (
-				<ScheduledTasksView onDone={() => switchTab("chat")} targetTaskId={scheduledTaskTargetId} />
-			)}
-			{tab === "goalSeek" && <GoalSeekView onDone={() => switchTab("chat")} targetJobId={goalSeekTargetId} />}
+			<React.Suspense fallback={null}>
+				{tab === "history" && <HistoryView onDone={() => switchTab("chat")} />}
+				{tab === "settings" && (
+					<SettingsView ref={settingsRef} onDone={() => setTab("chat")} targetSection={currentSection} />
+				)}
+				{tab === "marketplace" && (
+					<MarketplaceView
+						stateManager={marketplaceStateManager}
+						onDone={() => switchTab("chat")}
+						targetTab={currentMarketplaceTab as "mcp" | "mode" | undefined}
+					/>
+				)}
+				{tab === "scheduledTasks" && (
+					<ScheduledTasksView onDone={() => switchTab("chat")} targetTaskId={scheduledTaskTargetId} />
+				)}
+				{tab === "goalSeek" && <GoalSeekView onDone={() => switchTab("chat")} targetJobId={goalSeekTargetId} />}
+			</React.Suspense>
 			<ChatView
 				ref={chatViewRef}
 				isHidden={tab !== "chat"}
