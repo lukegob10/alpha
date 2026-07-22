@@ -452,6 +452,17 @@ describe("ChatView scroll behavior regression coverage", () => {
 		expect(document.querySelector("[data-testid='chat-bottom-spacer']")).toHaveStyle({ height: "32px" })
 	})
 
+	it("bounds the transcript to the space above the composer", async () => {
+		await hydrate(2)
+
+		const scrollable = getScrollable()
+		const transcriptViewport = scrollable.parentElement
+
+		expect(transcriptViewport).toHaveClass("min-h-0", "flex-1", "overflow-hidden")
+		expect(scrollable).toHaveClass("h-full", "min-h-0", "w-full", "flex-1")
+		expect(transcriptViewport?.nextElementSibling).not.toContainElement(scrollable)
+	})
+
 	it("rehydration uses one bounded bottom fallback", async () => {
 		await hydrate(Number.POSITIVE_INFINITY)
 		await waitForCalls(1, 1_200)
