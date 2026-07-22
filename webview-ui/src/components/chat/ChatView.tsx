@@ -1865,11 +1865,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			{task && (
 				<>
-					<div className="relative flex min-h-0 grow" ref={scrollContainerRef}>
+					<div className="relative flex min-h-0 flex-1 overflow-hidden" ref={scrollContainerRef}>
 						<Virtuoso
 							ref={virtuosoRef}
 							key={task.ts}
-							className="scrollable mb-1 min-h-0 grow overscroll-contain"
+							className="scrollable mb-1 h-full min-h-0 w-full flex-1 overscroll-contain"
 							increaseViewportBy={{ top: 3_000, bottom: 1000 }}
 							data={groupedMessages}
 							computeItemKey={computeChatItemKey}
