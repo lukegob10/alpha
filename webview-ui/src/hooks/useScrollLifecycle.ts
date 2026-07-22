@@ -69,7 +69,6 @@ export interface UseScrollLifecycleReturn {
 	showScrollToBottom: boolean
 	handleRowHeightChange: (isTaller: boolean) => void
 	handleRenderedItemsChange: (items: Array<{ index: number }>) => void
-	handleTotalListHeightChange: (height: number) => void
 	handleScrollToBottomClick: () => void
 	enterUserBrowsingHistory: (source: ScrollFollowDisengageSource) => void
 	followOutputCallback: () => "auto" | false
@@ -103,6 +102,8 @@ export function useScrollLifecycle({
 
 	// --- Bottom detection ---
 	const isAtBottomRef = useRef(false)
+	const itemCountRef = useRef(itemCount)
+	itemCountRef.current = itemCount
 
 	// --- Hydration window ---
 	const isHydratingRef = useRef(false)
@@ -118,6 +119,7 @@ export function useScrollLifecycle({
 	const bottomScrollAnimationFrameRef = useRef<number | null>(null)
 	const reanchorAnimationFrameRef = useRef<number | null>(null)
 	const lastRenderedItemCountRef = useRef<number | null>(null)
+	const lastViewportHeightRef = useRef<number | null>(null)
 
 	// -----------------------------------------------------------------------
 	// Phase transitions
@@ -166,20 +168,23 @@ export function useScrollLifecycle({
 	// -----------------------------------------------------------------------
 
 	const scrollToBottomAuto = useCallback(() => {
-		if (itemCount === 0 || bottomScrollAnimationFrameRef.current !== null) {
+		if (itemCountRef.current === 0 || bottomScrollAnimationFrameRef.current !== null) {
 			return
 		}
 
 		bottomScrollAnimationFrameRef.current = requestAnimationFrame(() => {
 			bottomScrollAnimationFrameRef.current = null
+			const currentItemCount = itemCountRef.current
+			if (currentItemCount === 0) {
+				return
+			}
 			virtuosoRef.current?.scrollToIndex({
-				index: itemCount - 1,
+				index: currentItemCount - 1,
 				align: "end",
 				behavior: "auto",
-				offset: CHAT_BOTTOM_SPACER_PX,
 			})
 		})
-	}, [itemCount, virtuosoRef])
+	}, [virtuosoRef])
 
 	const clearHydrationWindow = useCallback(() => {
 		isHydratingRef.current = false
@@ -252,6 +257,7 @@ export function useScrollLifecycle({
 	useEffect(() => {
 		isAtBottomRef.current = false
 		lastRenderedItemCountRef.current = null
+		lastViewportHeightRef.current = null
 		clearHydrationWindow()
 		cancelBottomScrollFrame()
 		cancelReanchorFrame()
@@ -278,6 +284,36 @@ export function useScrollLifecycle({
 		taskTs,
 		transitionScrollPhase,
 	])
+
+	// Queue, composer, and action-row height changes resize the transcript without
+	// changing its data. Re-anchor once for the viewport change instead of feeding
+	// Virtuoso's own list measurements back into another scroll command.
+	useEffect(() => {
+		const scrollContainer = scrollContainerRef.current
+		if (!scrollContainer || !hasTask || isHidden) {
+			return
+		}
+
+		const resizeObserver = new ResizeObserver((entries) => {
+			const nextHeight = entries[0]?.contentRect.height
+			if (nextHeight === undefined || !Number.isFinite(nextHeight)) {
+				return
+			}
+
+			const previousHeight = lastViewportHeightRef.current
+			lastViewportHeightRef.current = nextHeight
+			if (previousHeight === null || Math.abs(previousHeight - nextHeight) < 1) {
+				return
+			}
+
+			if (scrollPhaseRef.current !== "USER_BROWSING_HISTORY") {
+				scrollToBottomAuto()
+			}
+		})
+
+		resizeObserver.observe(scrollContainer)
+		return () => resizeObserver.disconnect()
+	}, [hasTask, isHidden, scrollContainerRef, scrollToBottomAuto, taskTs])
 
 	// -----------------------------------------------------------------------
 	// Row height change handler
@@ -307,15 +343,6 @@ export function useScrollLifecycle({
 			const isFirstLastItemRender = lastRenderedItemCountRef.current !== itemCount
 			lastRenderedItemCountRef.current = itemCount
 			if (isFirstLastItemRender && scrollPhaseRef.current !== "USER_BROWSING_HISTORY") {
-				scrollToBottomAuto()
-			}
-		},
-		[itemCount, scrollToBottomAuto],
-	)
-
-	const handleTotalListHeightChange = useCallback(
-		(_height: number) => {
-			if (lastRenderedItemCountRef.current === itemCount && scrollPhaseRef.current !== "USER_BROWSING_HISTORY") {
 				scrollToBottomAuto()
 			}
 		},
@@ -517,7 +544,6 @@ export function useScrollLifecycle({
 		showScrollToBottom,
 		handleRowHeightChange,
 		handleRenderedItemsChange,
-		handleTotalListHeightChange,
 		handleScrollToBottomClick,
 		enterUserBrowsingHistory,
 		followOutputCallback,

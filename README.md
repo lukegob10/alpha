@@ -6,9 +6,9 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.0.4
+## Welcome to Alpha v2.0.5
 
-Alpha v2.0.4 keeps long-running chats anchored to the latest message and prevents recovery controls from shifting the transcript while you browse.
+Alpha v2.0.5 keeps long-running chats responsive and visibly anchored above the composer as messages and controls resize.
 
 <details>
   <summary>🌐 Available languages</summary>
