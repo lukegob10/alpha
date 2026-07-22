@@ -6,9 +6,9 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.0.3
+## Welcome to Alpha v2.0.4
 
-Alpha v2.0.3 makes long-running chats calmer and easier to follow with steadier streamed-response scrolling and more breathing room below the latest message.
+Alpha v2.0.4 keeps long-running chats anchored to the latest message and prevents recovery controls from shifting the transcript while you browse.
 
 <details>
   <summary>🌐 Available languages</summary>
@@ -32,7 +32,7 @@ Alpha v2.0.3 makes long-running chats calmer and easier to follow with steadier 
 - [简体中文](locales/zh-CN/README.md)
 - [繁體中文](locales/zh-TW/README.md)
 - ...
-  </details>
+    </details>
 
 ---
 

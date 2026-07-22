@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.4
+
+### Patch Changes
+
+- Fix virtualized long chats opening away from the newest message and preserve the transcript viewport when recovery controls appear.
+- Keep bottom-following stable while late Markdown, image, and row-height measurements settle without interrupting manual history browsing.
+
 ## 2.0.3
 
 ### Patch Changes

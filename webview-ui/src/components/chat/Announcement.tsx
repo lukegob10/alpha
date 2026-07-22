@@ -34,10 +34,10 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 					<DialogTitle>Welcome to Alpha v{Package.version}</DialogTitle>
 				</DialogHeader>
 				<div className="space-y-2 text-sm">
-					<p>Alpha v{Package.version} makes long-running chats calmer and easier to follow.</p>
+					<p>Alpha v{Package.version} keeps long-running chats steady and easy to follow.</p>
 					<ul className="list-disc space-y-1 pl-5">
-						<li>Steadier bottom-following while responses stream.</li>
-						<li>More breathing room beneath the latest message.</li>
+						<li>Long transcripts now open on the newest message.</li>
+						<li>Recovery controls no longer shift the chat viewport.</li>
 					</ul>
 				</div>
 			</DialogContent>

@@ -48,7 +48,7 @@ import { CheckpointWarning } from "./CheckpointWarning"
 import { QueuedMessages } from "./QueuedMessages"
 import { WorktreeSelector } from "./WorktreeSelector"
 import FileChangesPanel from "./FileChangesPanel"
-import { CHAT_BOTTOM_THRESHOLD_PX, useScrollLifecycle } from "@src/hooks/useScrollLifecycle"
+import { CHAT_BOTTOM_SPACER_PX, CHAT_BOTTOM_THRESHOLD_PX, useScrollLifecycle } from "@src/hooks/useScrollLifecycle"
 
 export interface ChatViewProps {
 	isHidden: boolean
@@ -73,8 +73,16 @@ const messageResponseAskTypes = new Set<ClineAsk>([
 const completedTaskResponseAskTypes = new Set<ClineAsk>(["completion_result", "resume_completed_task"])
 const approvalAskTypes = new Set<ClineAsk>(["tool", "command", "use_mcp_server"])
 
-const ChatListFooter = () => <div aria-hidden="true" className="h-8 shrink-0" data-testid="chat-bottom-spacer" />
+const ChatListFooter = () => (
+	<div
+		aria-hidden="true"
+		className="shrink-0"
+		data-testid="chat-bottom-spacer"
+		style={{ height: CHAT_BOTTOM_SPACER_PX }}
+	/>
+)
 const chatListComponents = { Footer: ChatListFooter }
+const computeChatItemKey = (_index: number, message: ClineMessage) => message.ts
 
 const isCompletedTaskResponseAsk = (ask: ClineAsk | undefined) => Boolean(ask && completedTaskResponseAskTypes.has(ask))
 
@@ -1461,6 +1469,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const {
 		showScrollToBottom,
 		handleRowHeightChange,
+		handleRenderedItemsChange,
+		handleTotalListHeightChange,
 		handleScrollToBottomClick,
 		enterUserBrowsingHistory,
 		followOutputCallback,
@@ -1472,9 +1482,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		virtuosoRef,
 		scrollContainerRef,
 		taskTs: task?.ts,
-		isStreaming,
 		isHidden,
 		hasTask: !!task,
+		itemCount: groupedMessages.length,
 	})
 
 	// Expanding a row indicates the user is browsing; disable sticky follow.
@@ -1771,7 +1781,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		vscode.postMessage({ type: "condenseTaskContextRequest", text: taskId })
 	}
 
-	const areButtonsVisible = showScrollToBottom || primaryButtonText || secondaryButtonText
+	const areActionButtonsVisible = primaryButtonText || secondaryButtonText
 
 	return (
 		<div
@@ -1855,105 +1865,114 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			{task && (
 				<>
-					<div className="grow flex" ref={scrollContainerRef}>
+					<div className="relative flex min-h-0 grow" ref={scrollContainerRef}>
 						<Virtuoso
 							ref={virtuosoRef}
 							key={task.ts}
-							className="scrollable grow overflow-y-scroll mb-1"
+							className="scrollable mb-1 min-h-0 grow overscroll-contain"
 							increaseViewportBy={{ top: 3_000, bottom: 1000 }}
 							data={groupedMessages}
+							computeItemKey={computeChatItemKey}
+							initialTopMostItemIndex={
+								groupedMessages.length > 0
+									? {
+											index: groupedMessages.length - 1,
+											align: "end",
+											offset: CHAT_BOTTOM_SPACER_PX,
+										}
+									: undefined
+							}
 							itemContent={itemContent}
 							followOutput={followOutputCallback}
 							atBottomStateChange={atBottomStateChangeCallback}
+							itemsRendered={handleRenderedItemsChange}
+							totalListHeightChanged={handleTotalListHeightChange}
 							atBottomThreshold={CHAT_BOTTOM_THRESHOLD_PX}
 							components={chatListComponents}
 						/>
-					</div>
-					<FileChangesPanel clineMessages={activeMessages} taskId={visibleCurrentTaskId} />
-					{areButtonsVisible && (
-						<div
-							className={`flex h-9 items-center mb-1 px-[15px] ${
-								showScrollToBottom ? "opacity-100" : enableButtons ? "opacity-100" : "opacity-50"
-							}`}>
-							{showScrollToBottom ? (
-								<>
-									<StandardTooltip content={t("chat:scrollToBottom")}>
+						{showScrollToBottom && (
+							<div
+								data-testid="chat-scroll-controls"
+								className="pointer-events-none absolute inset-x-0 bottom-2 z-10 flex h-9 items-center px-[15px]">
+								<StandardTooltip content={t("chat:scrollToBottom")}>
+									<Button
+										variant="secondary"
+										className={`${hasLatestCheckpoint ? "flex-1 mr-[6px]" : "flex-[2]"} pointer-events-auto`}
+										onClick={handleScrollToBottomAndResetCheckpointCursor}
+										aria-label={t("chat:scrollToBottom")}>
+										<span className="codicon codicon-chevron-down"></span>
+									</Button>
+								</StandardTooltip>
+								{hasLatestCheckpoint && (
+									<StandardTooltip content={t("chat:scrollToLatestCheckpoint")}>
 										<Button
 											variant="secondary"
-											className={hasLatestCheckpoint ? "flex-1 mr-[6px]" : "flex-[2]"}
-											onClick={handleScrollToBottomAndResetCheckpointCursor}>
-											<span className="codicon codicon-chevron-down"></span>
+											className="pointer-events-auto flex-1 ml-[6px]"
+											onClick={handleScrollToLatestCheckpoint}
+											aria-label={t("chat:scrollToLatestCheckpoint")}>
+											<span className="codicon codicon-history"></span>
 										</Button>
 									</StandardTooltip>
-									{hasLatestCheckpoint && (
-										<StandardTooltip content={t("chat:scrollToLatestCheckpoint")}>
-											<Button
-												variant="secondary"
-												className="flex-1 ml-[6px]"
-												onClick={handleScrollToLatestCheckpoint}
-												aria-label={t("chat:scrollToLatestCheckpoint")}>
-												<span className="codicon codicon-history"></span>
-											</Button>
-										</StandardTooltip>
-									)}
-								</>
-							) : (
-								<>
-									{primaryButtonText && (
-										<StandardTooltip
-											content={
-												primaryButtonText === t("chat:retry.title")
-													? t("chat:retry.tooltip")
-													: primaryButtonText === t("chat:save.title")
-														? t("chat:save.tooltip")
-														: primaryButtonText === t("chat:approve.title")
-															? t("chat:approve.tooltip")
-															: primaryButtonText === t("chat:runCommand.title")
-																? t("chat:runCommand.tooltip")
-																: primaryButtonText === t("chat:startNewTask.title")
-																	? t("chat:startNewTask.tooltip")
-																	: primaryButtonText === t("chat:resumeTask.title")
-																		? t("chat:resumeTask.tooltip")
-																		: primaryButtonText ===
-																			  t("chat:proceedAnyways.title")
-																			? t("chat:proceedAnyways.tooltip")
-																			: primaryButtonText ===
-																				  t("chat:proceedWhileRunning.title")
-																				? t("chat:proceedWhileRunning.tooltip")
-																				: undefined
-											}>
-											<Button
-												variant="primary"
-												disabled={!enableButtons}
-												className={secondaryButtonText ? "flex-1 mr-[6px]" : "flex-[2] mr-0"}
-												onClick={() => handlePrimaryButtonClick(inputValue, selectedImages)}>
-												{primaryButtonText}
-											</Button>
-										</StandardTooltip>
-									)}
-									{secondaryButtonText && (
-										<StandardTooltip
-											content={
-												secondaryButtonText === t("chat:startNewTask.title")
-													? t("chat:startNewTask.tooltip")
-													: secondaryButtonText === t("chat:reject.title")
-														? t("chat:reject.tooltip")
-														: secondaryButtonText === t("chat:terminate.title")
-															? t("chat:terminate.tooltip")
-															: secondaryButtonText === t("chat:killCommand.title")
-																? t("chat:killCommand.tooltip")
-																: undefined
-											}>
-											<Button
-												variant="secondary"
-												disabled={!enableButtons}
-												className="flex-1 ml-[6px]"
-												onClick={() => handleSecondaryButtonClick()}>
-												{secondaryButtonText}
-											</Button>
-										</StandardTooltip>
-									)}
-								</>
+								)}
+							</div>
+						)}
+					</div>
+					<FileChangesPanel clineMessages={activeMessages} taskId={visibleCurrentTaskId} />
+					{areActionButtonsVisible && (
+						<div
+							className={`flex h-9 items-center mb-1 px-[15px] ${enableButtons ? "opacity-100" : "opacity-50"}`}>
+							{primaryButtonText && (
+								<StandardTooltip
+									content={
+										primaryButtonText === t("chat:retry.title")
+											? t("chat:retry.tooltip")
+											: primaryButtonText === t("chat:save.title")
+												? t("chat:save.tooltip")
+												: primaryButtonText === t("chat:approve.title")
+													? t("chat:approve.tooltip")
+													: primaryButtonText === t("chat:runCommand.title")
+														? t("chat:runCommand.tooltip")
+														: primaryButtonText === t("chat:startNewTask.title")
+															? t("chat:startNewTask.tooltip")
+															: primaryButtonText === t("chat:resumeTask.title")
+																? t("chat:resumeTask.tooltip")
+																: primaryButtonText === t("chat:proceedAnyways.title")
+																	? t("chat:proceedAnyways.tooltip")
+																	: primaryButtonText ===
+																		  t("chat:proceedWhileRunning.title")
+																		? t("chat:proceedWhileRunning.tooltip")
+																		: undefined
+									}>
+									<Button
+										variant="primary"
+										disabled={!enableButtons}
+										className={secondaryButtonText ? "flex-1 mr-[6px]" : "flex-[2] mr-0"}
+										onClick={() => handlePrimaryButtonClick(inputValue, selectedImages)}>
+										{primaryButtonText}
+									</Button>
+								</StandardTooltip>
+							)}
+							{secondaryButtonText && (
+								<StandardTooltip
+									content={
+										secondaryButtonText === t("chat:startNewTask.title")
+											? t("chat:startNewTask.tooltip")
+											: secondaryButtonText === t("chat:reject.title")
+												? t("chat:reject.tooltip")
+												: secondaryButtonText === t("chat:terminate.title")
+													? t("chat:terminate.tooltip")
+													: secondaryButtonText === t("chat:killCommand.title")
+														? t("chat:killCommand.tooltip")
+														: undefined
+									}>
+									<Button
+										variant="secondary"
+										disabled={!enableButtons}
+										className="flex-1 ml-[6px]"
+										onClick={() => handleSecondaryButtonClick()}>
+										{secondaryButtonText}
+									</Button>
+								</StandardTooltip>
 							)}
 						</div>
 					)}

@@ -363,7 +363,7 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v2.0.3 makes long-running chats calmer and easier to follow.",
+			"welcome": "Alpha v2.0.4 keeps long-running chats steady and easy to follow.",
 			"gpt54": "Poe Provider: Added Poe as an AI provider so you can access Poe models directly in Alpha.",
 			"slashSkills": "xAI and MiniMax Improvements: Migrated the xAI provider to the Responses API, added Grok-4.20 defaults, and fixed MiniMax model listings and context window handling for a more reliable setup."
 		}

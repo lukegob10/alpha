@@ -4,7 +4,7 @@
  * Simplified chat scroll lifecycle with a short, time-boxed hydration window.
  *
  * - Task switch enters `HYDRATING_PINNED_TO_BOTTOM`
- * - We schedule one exact-bottom scroll after render and one bounded retry
+ * - Virtuoso owns the initial last-row anchor; the hook provides bounded fallbacks
  * - During hydration, transient Virtuoso `atBottomStateChange(false)` signals
  *   are ignored so follow mode does not flicker off
  * - User escape intent (wheel / keyboard / pointer-upward drag / row expansion)
@@ -21,6 +21,7 @@ const HYDRATION_RETRY_WINDOW_MS = 160
 // Leave enough tolerance for the chat controls and small virtualized-row
 // measurement corrections without treating deliberate history browsing as bottom-following.
 export const CHAT_BOTTOM_THRESHOLD_PX = 64
+export const CHAT_BOTTOM_SPACER_PX = 32
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,15 +59,17 @@ export interface UseScrollLifecycleOptions {
 	virtuosoRef: React.RefObject<VirtuosoHandle | null>
 	scrollContainerRef: React.RefObject<HTMLDivElement | null>
 	taskTs: number | undefined
-	isStreaming: boolean
 	isHidden: boolean
 	hasTask: boolean
+	itemCount: number
 }
 
 export interface UseScrollLifecycleReturn {
 	scrollPhase: ScrollPhase
 	showScrollToBottom: boolean
 	handleRowHeightChange: (isTaller: boolean) => void
+	handleRenderedItemsChange: (items: Array<{ index: number }>) => void
+	handleTotalListHeightChange: (height: number) => void
 	handleScrollToBottomClick: () => void
 	enterUserBrowsingHistory: (source: ScrollFollowDisengageSource) => void
 	followOutputCallback: () => "auto" | false
@@ -84,9 +87,9 @@ export function useScrollLifecycle({
 	virtuosoRef,
 	scrollContainerRef,
 	taskTs,
-	isStreaming,
 	isHidden,
 	hasTask,
+	itemCount,
 }: UseScrollLifecycleOptions): UseScrollLifecycleReturn {
 	// --- Mounted guard ---
 	const isMountedRef = useRef(true)
@@ -114,6 +117,7 @@ export function useScrollLifecycle({
 	// --- Scheduled scroll frames ---
 	const bottomScrollAnimationFrameRef = useRef<number | null>(null)
 	const reanchorAnimationFrameRef = useRef<number | null>(null)
+	const lastRenderedItemCountRef = useRef<number | null>(null)
 
 	// -----------------------------------------------------------------------
 	// Phase transitions
@@ -162,18 +166,20 @@ export function useScrollLifecycle({
 	// -----------------------------------------------------------------------
 
 	const scrollToBottomAuto = useCallback(() => {
-		if (bottomScrollAnimationFrameRef.current !== null) {
+		if (itemCount === 0 || bottomScrollAnimationFrameRef.current !== null) {
 			return
 		}
 
 		bottomScrollAnimationFrameRef.current = requestAnimationFrame(() => {
 			bottomScrollAnimationFrameRef.current = null
-			virtuosoRef.current?.scrollTo({
-				top: Number.MAX_SAFE_INTEGER,
+			virtuosoRef.current?.scrollToIndex({
+				index: itemCount - 1,
+				align: "end",
 				behavior: "auto",
+				offset: CHAT_BOTTOM_SPACER_PX,
 			})
 		})
-	}, [virtuosoRef])
+	}, [itemCount, virtuosoRef])
 
 	const clearHydrationWindow = useCallback(() => {
 		isHydratingRef.current = false
@@ -220,9 +226,7 @@ export function useScrollLifecycle({
 		hydrationTimeoutRef.current = window.setTimeout(() => {
 			finishHydrationWindow()
 		}, HYDRATION_WINDOW_MS)
-
-		scrollToBottomAuto()
-	}, [finishHydrationWindow, scrollToBottomAuto])
+	}, [finishHydrationWindow])
 
 	// -----------------------------------------------------------------------
 	// Lifecycle effects
@@ -247,6 +251,7 @@ export function useScrollLifecycle({
 	// Task switch: reset and begin a short hydration window
 	useEffect(() => {
 		isAtBottomRef.current = false
+		lastRenderedItemCountRef.current = null
 		clearHydrationWindow()
 		cancelBottomScrollFrame()
 		cancelReanchorFrame()
@@ -284,19 +289,37 @@ export function useScrollLifecycle({
 				return
 			}
 
-			if (
-				scrollPhaseRef.current === "USER_BROWSING_HISTORY" ||
-				scrollPhaseRef.current === "HYDRATING_PINNED_TO_BOTTOM"
-			) {
+			if (scrollPhaseRef.current !== "ANCHORED_FOLLOWING") {
 				return
 			}
 
-			const shouldForcePinForAnchoredStreaming = scrollPhaseRef.current === "ANCHORED_FOLLOWING" && isStreaming
-			if (isAtBottomRef.current || shouldForcePinForAnchoredStreaming) {
+			scrollToBottomAuto()
+		},
+		[scrollToBottomAuto],
+	)
+
+	const handleRenderedItemsChange = useCallback(
+		(items: Array<{ index: number }>) => {
+			if (itemCount === 0 || !items.some((item) => item.index === itemCount - 1)) {
+				return
+			}
+
+			const isFirstLastItemRender = lastRenderedItemCountRef.current !== itemCount
+			lastRenderedItemCountRef.current = itemCount
+			if (isFirstLastItemRender && scrollPhaseRef.current !== "USER_BROWSING_HISTORY") {
 				scrollToBottomAuto()
 			}
 		},
-		[isStreaming, scrollToBottomAuto],
+		[itemCount, scrollToBottomAuto],
+	)
+
+	const handleTotalListHeightChange = useCallback(
+		(_height: number) => {
+			if (lastRenderedItemCountRef.current === itemCount && scrollPhaseRef.current !== "USER_BROWSING_HISTORY") {
+				scrollToBottomAuto()
+			}
+		},
+		[itemCount, scrollToBottomAuto],
 	)
 
 	// -----------------------------------------------------------------------
@@ -493,6 +516,8 @@ export function useScrollLifecycle({
 		scrollPhase,
 		showScrollToBottom,
 		handleRowHeightChange,
+		handleRenderedItemsChange,
+		handleTotalListHeightChange,
 		handleScrollToBottomClick,
 		enterUserBrowsingHistory,
 		followOutputCallback,
