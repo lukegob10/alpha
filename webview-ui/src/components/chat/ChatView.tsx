@@ -1470,7 +1470,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		showScrollToBottom,
 		handleRowHeightChange,
 		handleRenderedItemsChange,
-		handleTotalListHeightChange,
 		handleScrollToBottomClick,
 		enterUserBrowsingHistory,
 		followOutputCallback,
@@ -1865,11 +1864,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			{task && (
 				<>
-					<div className="relative flex min-h-0 flex-1 overflow-hidden" ref={scrollContainerRef}>
+					<div className="relative min-h-0 flex-1 overflow-hidden" ref={scrollContainerRef}>
 						<Virtuoso
 							ref={virtuosoRef}
 							key={task.ts}
-							className="scrollable mb-1 h-full min-h-0 w-full flex-1 overscroll-contain"
+							className="scrollable h-full min-h-0 w-full overscroll-contain"
 							increaseViewportBy={{ top: 3_000, bottom: 1000 }}
 							data={groupedMessages}
 							computeItemKey={computeChatItemKey}
@@ -1878,7 +1877,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 									? {
 											index: groupedMessages.length - 1,
 											align: "end",
-											offset: CHAT_BOTTOM_SPACER_PX,
 										}
 									: undefined
 							}
@@ -1886,7 +1884,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							followOutput={followOutputCallback}
 							atBottomStateChange={atBottomStateChangeCallback}
 							itemsRendered={handleRenderedItemsChange}
-							totalListHeightChanged={handleTotalListHeightChange}
 							atBottomThreshold={CHAT_BOTTOM_THRESHOLD_PX}
 							components={chatListComponents}
 						/>

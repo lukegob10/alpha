@@ -41,7 +41,7 @@ interface MockVirtuosoProps {
 	totalListHeightChanged?: (height: number) => void
 	followOutput?: FollowOutput
 	className?: string
-	initialTopMostItemIndex?: number | { index: number; align: "end"; offset: number }
+	initialTopMostItemIndex?: number | { index: number; align: "end"; offset?: number }
 	atBottomThreshold?: number
 	components?: {
 		Footer?: React.ComponentType
@@ -60,6 +60,7 @@ interface VirtuosoHarnessState {
 	signalDelayMs: number
 	emitFalseOnDataChange: boolean
 	delayedGrowthMs: number | null
+	heightFeedbackRemaining: number
 	initialTopMostItemIndex: MockVirtuosoProps["initialTopMostItemIndex"]
 	followOutput: FollowOutput | undefined
 	emitAtBottom: (isAtBottom: boolean) => void
@@ -78,6 +79,7 @@ const harness = vi.hoisted<VirtuosoHarnessState>(() => ({
 	signalDelayMs: 20,
 	emitFalseOnDataChange: true,
 	delayedGrowthMs: null,
+	heightFeedbackRemaining: 0,
 	initialTopMostItemIndex: undefined,
 	followOutput: undefined,
 	emitAtBottom: () => {},
@@ -87,6 +89,24 @@ const harness = vi.hoisted<VirtuosoHarnessState>(() => ({
 	atBottomThreshold: undefined,
 	computedItemKeys: [],
 }))
+
+const resizeObserverHarness = {
+	emit: (_height: number) => {},
+}
+
+class ControllableResizeObserver {
+	constructor(callback: ResizeObserverCallback) {
+		resizeObserverHarness.emit = (height: number) => {
+			callback([{ contentRect: { height } } as ResizeObserverEntry], this as unknown as ResizeObserver)
+		}
+	}
+
+	observe() {}
+	unobserve() {}
+	disconnect() {}
+}
+
+globalThis.ResizeObserver = ControllableResizeObserver as unknown as typeof ResizeObserver
 
 function nullDefaultModule() {
 	return { default: () => null }
@@ -222,6 +242,14 @@ vi.mock("react-virtuoso", () => {
 				atBottomRef.current?.(reachedBottom)
 			}, harness.signalDelayMs)
 			timeoutIdsRef.current.push(timeoutId)
+
+			if (harness.heightFeedbackRemaining > 0) {
+				harness.heightFeedbackRemaining -= 1
+				const heightFeedbackId = window.setTimeout(() => {
+					totalListHeightChanged?.(1_000 + harness.scrollCalls)
+				}, 0)
+				timeoutIdsRef.current.push(heightFeedbackId)
+			}
 		}
 
 		useImperativeHandle(ref, () => ({
@@ -427,6 +455,7 @@ describe("ChatView scroll behavior regression coverage", () => {
 		harness.signalDelayMs = 20
 		harness.emitFalseOnDataChange = true
 		harness.delayedGrowthMs = null
+		harness.heightFeedbackRemaining = 0
 		harness.initialTopMostItemIndex = undefined
 		harness.followOutput = undefined
 		harness.emitAtBottom = () => {}
@@ -439,7 +468,7 @@ describe("ChatView scroll behavior regression coverage", () => {
 
 	it("existing-task entry starts at the final virtualized row", async () => {
 		await hydrate(2)
-		expect(harness.initialTopMostItemIndex).toEqual({ index: 1, align: "end", offset: 32 })
+		expect(harness.initialTopMostItemIndex).toEqual({ index: 1, align: "end" })
 	})
 
 	it("uses a practical near-bottom follow zone", async () => {
@@ -459,7 +488,8 @@ describe("ChatView scroll behavior regression coverage", () => {
 		const transcriptViewport = scrollable.parentElement
 
 		expect(transcriptViewport).toHaveClass("min-h-0", "flex-1", "overflow-hidden")
-		expect(scrollable).toHaveClass("h-full", "min-h-0", "w-full", "flex-1")
+		expect(scrollable).toHaveClass("h-full", "min-h-0", "w-full")
+		expect(scrollable).not.toHaveClass("mb-1", "flex-1")
 		expect(transcriptViewport?.nextElementSibling).not.toContainElement(scrollable)
 	})
 
@@ -469,7 +499,7 @@ describe("ChatView scroll behavior regression coverage", () => {
 		await waitForCallsSettled()
 		expect(harness.scrollCalls).toBe(1)
 		expect(harness.scrollToIndexArgs).toHaveLength(1)
-		expect(harness.scrollToIndexArgs).toEqual([{ index: 1, align: "end", behavior: "auto", offset: 32 }])
+		expect(harness.scrollToIndexArgs).toEqual([{ index: 1, align: "end", behavior: "auto" }])
 		expect(resolveFollowOutput(false)).toBe("auto")
 		expect(document.querySelector(".codicon-chevron-down")).toBeNull()
 	})
@@ -550,30 +580,45 @@ describe("ChatView scroll behavior regression coverage", () => {
 			index: 1,
 			align: "end",
 			behavior: "auto",
-			offset: 32,
 		})
 	})
 
-	it("corrects the measured bottom as the final virtualized item settles", async () => {
+	it("does not feed Virtuoso list measurements back into recursive scrolls", async () => {
 		await hydrate(Number.POSITIVE_INFINITY)
 		await waitForCalls(1)
 		await sleep(250)
 
 		const callsBeforeFinalItem = harness.scrollCalls
+		harness.heightFeedbackRemaining = 6
 		await act(async () => {
 			harness.emitItemsRendered([0, 1])
-			harness.emitTotalListHeightChanged(1_000)
-			await sleep(25)
+			await sleep(150)
 		})
 
 		expect(harness.scrollCalls).toBe(callsBeforeFinalItem + 1)
+	})
 
+	it("re-anchors once when the queue or composer resizes the transcript viewport", async () => {
+		await hydrate(1)
+		await waitForCalls(1)
+		await waitForCallsSettled()
+
+		const callsBeforeResize = harness.scrollCalls
 		await act(async () => {
-			harness.emitTotalListHeightChanged(1_100)
+			resizeObserverHarness.emit(500)
+			resizeObserverHarness.emit(320)
 			await sleep(25)
 		})
 
-		expect(harness.scrollCalls).toBe(callsBeforeFinalItem + 2)
+		expect(harness.scrollCalls).toBe(callsBeforeResize + 1)
+
+		await act(async () => {
+			fireEvent.keyDown(window, { key: "PageUp" })
+			resizeObserverHarness.emit(280)
+			await sleep(25)
+		})
+
+		expect(harness.scrollCalls).toBe(callsBeforeResize + 1)
 	})
 
 	it("task-header layout changes disengage sticky follow before resizing the viewport", async () => {

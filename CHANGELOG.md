@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.5
+
+### Patch Changes
+
+- Stop virtualized chat measurements from recursively scheduling bottom-scroll corrections and freezing the VS Code webview.
+- Keep the newest message above the composer when queued messages, action rows, or the composer resize the transcript viewport.
+
 ## 2.0.4
 
 ### Patch Changes
