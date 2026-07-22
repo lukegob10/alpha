@@ -4,16 +4,15 @@
  * Simplified chat scroll lifecycle with a short, time-boxed hydration window.
  *
  * - Task switch enters `HYDRATING_PINNED_TO_BOTTOM`
- * - We issue one immediate `scrollToIndex("LAST")` and one post-render retry
+ * - We schedule one exact-bottom scroll after render and one bounded retry
  * - During hydration, transient Virtuoso `atBottomStateChange(false)` signals
  *   are ignored so follow mode does not flicker off
  * - User escape intent (wheel / keyboard / pointer-upward drag / row expansion)
  *   moves to `USER_BROWSING_HISTORY` and prevents forced re-pinning
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import React, { useCallback, useEffect, useRef, useState } from "react"
 import { useEvent } from "react-use"
-import debounce from "debounce"
 import type { VirtuosoHandle } from "react-virtuoso"
 
 const HYDRATION_WINDOW_MS = 600
@@ -112,7 +111,8 @@ export function useScrollLifecycle({
 	const pointerScrollElementRef = useRef<HTMLElement | null>(null)
 	const pointerScrollLastTopRef = useRef<number | null>(null)
 
-	// --- Re-anchor frame ---
+	// --- Scheduled scroll frames ---
+	const bottomScrollAnimationFrameRef = useRef<number | null>(null)
 	const reanchorAnimationFrameRef = useRef<number | null>(null)
 
 	// -----------------------------------------------------------------------
@@ -150,25 +150,28 @@ export function useScrollLifecycle({
 		}
 	}, [])
 
+	const cancelBottomScrollFrame = useCallback(() => {
+		if (bottomScrollAnimationFrameRef.current !== null) {
+			cancelAnimationFrame(bottomScrollAnimationFrameRef.current)
+			bottomScrollAnimationFrameRef.current = null
+		}
+	}, [])
+
 	// -----------------------------------------------------------------------
 	// Scroll commands
 	// -----------------------------------------------------------------------
 
-	const scrollToBottomSmooth = useMemo(
-		() =>
-			debounce(
-				() => virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" }),
-				10,
-				{ immediate: true },
-			),
-		[virtuosoRef],
-	)
-
 	const scrollToBottomAuto = useCallback(() => {
-		virtuosoRef.current?.scrollToIndex({
-			index: "LAST",
-			align: "end",
-			behavior: "auto",
+		if (bottomScrollAnimationFrameRef.current !== null) {
+			return
+		}
+
+		bottomScrollAnimationFrameRef.current = requestAnimationFrame(() => {
+			bottomScrollAnimationFrameRef.current = null
+			virtuosoRef.current?.scrollTo({
+				top: Number.MAX_SAFE_INTEGER,
+				behavior: "auto",
+			})
 		})
 	}, [virtuosoRef])
 
@@ -231,10 +234,10 @@ export function useScrollLifecycle({
 		return () => {
 			isMountedRef.current = false
 			clearHydrationWindow()
+			cancelBottomScrollFrame()
 			cancelReanchorFrame()
-			scrollToBottomSmooth.clear()
 		}
-	}, [cancelReanchorFrame, clearHydrationWindow, scrollToBottomSmooth])
+	}, [cancelBottomScrollFrame, cancelReanchorFrame, clearHydrationWindow])
 
 	// Keep phase ref in sync with state
 	useEffect(() => {
@@ -245,6 +248,7 @@ export function useScrollLifecycle({
 	useEffect(() => {
 		isAtBottomRef.current = false
 		clearHydrationWindow()
+		cancelBottomScrollFrame()
 		cancelReanchorFrame()
 
 		if (taskTs) {
@@ -258,9 +262,17 @@ export function useScrollLifecycle({
 
 		return () => {
 			clearHydrationWindow()
+			cancelBottomScrollFrame()
 			cancelReanchorFrame()
 		}
-	}, [cancelReanchorFrame, clearHydrationWindow, startHydrationWindow, taskTs, transitionScrollPhase])
+	}, [
+		cancelBottomScrollFrame,
+		cancelReanchorFrame,
+		clearHydrationWindow,
+		startHydrationWindow,
+		taskTs,
+		transitionScrollPhase,
+	])
 
 	// -----------------------------------------------------------------------
 	// Row height change handler
@@ -268,6 +280,10 @@ export function useScrollLifecycle({
 
 	const handleRowHeightChange = useCallback(
 		(isTaller: boolean) => {
+			if (!isTaller) {
+				return
+			}
+
 			if (
 				scrollPhaseRef.current === "USER_BROWSING_HISTORY" ||
 				scrollPhaseRef.current === "HYDRATING_PINNED_TO_BOTTOM"
@@ -277,18 +293,10 @@ export function useScrollLifecycle({
 
 			const shouldForcePinForAnchoredStreaming = scrollPhaseRef.current === "ANCHORED_FOLLOWING" && isStreaming
 			if (isAtBottomRef.current || shouldForcePinForAnchoredStreaming) {
-				if (isStreaming) {
-					// Streaming rows can resize several times per second. Repeated smooth
-					// animations compete with Virtuoso's measurements and visibly bounce.
-					scrollToBottomAuto()
-				} else if (isTaller) {
-					scrollToBottomSmooth()
-				} else {
-					scrollToBottomAuto()
-				}
+				scrollToBottomAuto()
 			}
 		},
-		[isStreaming, scrollToBottomSmooth, scrollToBottomAuto],
+		[isStreaming, scrollToBottomAuto],
 	)
 
 	// -----------------------------------------------------------------------

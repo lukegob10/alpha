@@ -73,6 +73,9 @@ const messageResponseAskTypes = new Set<ClineAsk>([
 const completedTaskResponseAskTypes = new Set<ClineAsk>(["completion_result", "resume_completed_task"])
 const approvalAskTypes = new Set<ClineAsk>(["tool", "command", "use_mcp_server"])
 
+const ChatListFooter = () => <div aria-hidden="true" className="h-8 shrink-0" data-testid="chat-bottom-spacer" />
+const chatListComponents = { Footer: ChatListFooter }
+
 const isCompletedTaskResponseAsk = (ask: ClineAsk | undefined) => Boolean(ask && completedTaskResponseAskTypes.has(ask))
 
 const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewProps> = (
@@ -1863,6 +1866,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							followOutput={followOutputCallback}
 							atBottomStateChange={atBottomStateChangeCallback}
 							atBottomThreshold={CHAT_BOTTOM_THRESHOLD_PX}
+							components={chatListComponents}
 						/>
 					</div>
 					<FileChangesPanel clineMessages={activeMessages} taskId={visibleCurrentTaskId} />

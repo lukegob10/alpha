@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.3
+
+### Patch Changes
+
+- Stabilize long-chat bottom following by coalescing streamed row-growth corrections into a single exact-bottom scroll.
+- Add comfortable space beneath the latest response while preserving manual history browsing.
+
 ## 1.1.6
 
 ### Patch Changes

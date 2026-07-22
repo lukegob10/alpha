@@ -20,7 +20,7 @@ vi.mock("@/i18n/TranslationContext", () => {
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "2.0.2",
+		version: "2.0.3",
 		sha: "abc12345",
 	},
 }))
@@ -50,7 +50,7 @@ describe("About", () => {
 				<About {...defaultProps} />
 			</TranslationProvider>,
 		)
-		expect(screen.getByText(/Version: 2\.0\.2/)).toBeInTheDocument()
+		expect(screen.getByText(/Version: 2\.0\.3/)).toBeInTheDocument()
 	})
 
 	it("renders export, import, and reset buttons", () => {

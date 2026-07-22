@@ -33,10 +33,12 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 				<DialogHeader>
 					<DialogTitle>Welcome to Alpha v{Package.version}</DialogTitle>
 				</DialogHeader>
-				<div>
-					<p className="text-sm">
-						Alpha v1 is here. Welcome to the first release of the Alpha-branded extension.
-					</p>
+				<div className="space-y-2 text-sm">
+					<p>Alpha v{Package.version} makes long-running chats calmer and easier to follow.</p>
+					<ul className="list-disc space-y-1 pl-5">
+						<li>Steadier bottom-following while responses stream.</li>
+						<li>More breathing room beneath the latest message.</li>
+					</ul>
 				</div>
 			</DialogContent>
 		</Dialog>

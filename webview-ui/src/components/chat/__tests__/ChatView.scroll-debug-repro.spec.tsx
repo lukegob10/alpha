@@ -24,6 +24,7 @@ interface ExtensionStateMessage {
 }
 
 interface MockVirtuosoHandle {
+	scrollTo: (options: { top: number; behavior?: "auto" | "smooth" }) => void
 	scrollToIndex: (options: {
 		index: number | "LAST"
 		align?: "end" | "start" | "center"
@@ -39,6 +40,9 @@ interface MockVirtuosoProps {
 	className?: string
 	initialTopMostItemIndex?: number
 	atBottomThreshold?: number
+	components?: {
+		Footer?: React.ComponentType
+	}
 }
 
 interface VirtuosoHarnessState {
@@ -48,6 +52,7 @@ interface VirtuosoHarnessState {
 		align?: "end" | "start" | "center"
 		behavior?: "auto" | "smooth"
 	}>
+	scrollToArgs: Array<{ top: number; behavior?: "auto" | "smooth" }>
 	atBottomAfterCalls: number
 	signalDelayMs: number
 	emitFalseOnDataChange: boolean
@@ -62,6 +67,7 @@ interface VirtuosoHarnessState {
 const harness = vi.hoisted<VirtuosoHarnessState>(() => ({
 	scrollCalls: 0,
 	scrollToIndexArgs: [],
+	scrollToArgs: [],
 	atBottomAfterCalls: Number.POSITIVE_INFINITY,
 	signalDelayMs: 20,
 	emitFalseOnDataChange: true,
@@ -168,7 +174,16 @@ vi.mock("../ChatRow", () => ({
 
 vi.mock("react-virtuoso", () => {
 	const MockVirtuoso = React.forwardRef<MockVirtuosoHandle, MockVirtuosoProps>(function MockVirtuoso(
-		{ data, itemContent, atBottomStateChange, followOutput, className, initialTopMostItemIndex, atBottomThreshold },
+		{
+			data,
+			itemContent,
+			atBottomStateChange,
+			followOutput,
+			className,
+			initialTopMostItemIndex,
+			atBottomThreshold,
+			components,
+		},
 		ref,
 	) {
 		const atBottomRef = useRef(atBottomStateChange)
@@ -181,15 +196,23 @@ vi.mock("react-virtuoso", () => {
 			atBottomRef.current?.(isAtBottom)
 		}
 
+		const recordScroll = () => {
+			harness.scrollCalls += 1
+			const reachedBottom = harness.scrollCalls >= harness.atBottomAfterCalls
+			const timeoutId = window.setTimeout(() => {
+				atBottomRef.current?.(reachedBottom)
+			}, harness.signalDelayMs)
+			timeoutIdsRef.current.push(timeoutId)
+		}
+
 		useImperativeHandle(ref, () => ({
+			scrollTo: (options) => {
+				harness.scrollToArgs.push(options)
+				recordScroll()
+			},
 			scrollToIndex: (options) => {
-				harness.scrollCalls += 1
 				harness.scrollToIndexArgs.push(options)
-				const reachedBottom = harness.scrollCalls >= harness.atBottomAfterCalls
-				const timeoutId = window.setTimeout(() => {
-					atBottomRef.current?.(reachedBottom)
-				}, harness.signalDelayMs)
-				timeoutIdsRef.current.push(timeoutId)
+				recordScroll()
 			},
 		}))
 
@@ -218,6 +241,8 @@ vi.mock("react-virtuoso", () => {
 			[],
 		)
 
+		const Footer = components?.Footer
+
 		return (
 			<div data-testid="virtuoso-item-list" className={className} data-count={data.length}>
 				{data.map((item, index) => (
@@ -225,6 +250,7 @@ vi.mock("react-virtuoso", () => {
 						{itemContent(index, item)}
 					</div>
 				))}
+				{Footer && <Footer />}
 			</div>
 		)
 	})
@@ -377,6 +403,7 @@ describe("ChatView scroll behavior regression coverage", () => {
 	beforeEach(() => {
 		harness.scrollCalls = 0
 		harness.scrollToIndexArgs = []
+		harness.scrollToArgs = []
 		harness.atBottomAfterCalls = Number.POSITIVE_INFINITY
 		harness.signalDelayMs = 20
 		harness.emitFalseOnDataChange = true
@@ -396,6 +423,11 @@ describe("ChatView scroll behavior regression coverage", () => {
 	it("uses a practical near-bottom follow zone", async () => {
 		await hydrate(2)
 		expect(harness.atBottomThreshold).toBeGreaterThanOrEqual(48)
+	})
+
+	it("keeps breathing room below the final chat row", async () => {
+		await hydrate(2)
+		expect(document.querySelector("[data-testid='chat-bottom-spacer']")).toHaveClass("h-8")
 	})
 
 	it("rehydration uses bounded bottom pinning", async () => {
@@ -455,18 +487,25 @@ describe("ChatView scroll behavior regression coverage", () => {
 		expect(resolveFollowOutput(false)).toBe("auto")
 	})
 
-	it("uses non-animated correction for streaming row growth", async () => {
+	it("coalesces bursty streaming growth into one exact-bottom correction", async () => {
 		const messages = buildMessages(Date.now() - 3_000)
 		messages[messages.length - 1] = { ...messages[messages.length - 1], partial: true }
 		await hydrate(2, messages)
 		await waitForCalls(2)
 		await waitForCallsSettled()
 
+		const callsBeforeGrowth = harness.scrollCalls
+		const exactScrollsBeforeGrowth = harness.scrollToArgs.length
 		await act(async () => {
-			harness.emitLastRowHeightChange(true)
+			for (let index = 0; index < 8; index += 1) {
+				harness.emitLastRowHeightChange(true)
+			}
+			await sleep(25)
 		})
 
-		expect(harness.scrollToIndexArgs.at(-1)).toMatchObject({ behavior: "auto" })
+		expect(harness.scrollCalls).toBe(callsBeforeGrowth + 1)
+		expect(harness.scrollToArgs).toHaveLength(exactScrollsBeforeGrowth + 1)
+		expect(harness.scrollToArgs.at(-1)).toEqual({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" })
 	})
 
 	it("task-header layout changes disengage sticky follow before resizing the viewport", async () => {

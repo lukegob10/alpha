@@ -12,7 +12,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "1.0.3",
+		version: "2.0.3",
 	},
 }))
 
@@ -29,18 +29,20 @@ vi.mock("react-i18next", () => ({
 }))
 
 describe("Announcement", () => {
-	it("renders the v1.0.3 welcome announcement", () => {
+	it("renders the current release announcement", () => {
 		render(<Announcement hideAnnouncement={vi.fn()} />)
 
-		expect(screen.getByText("Welcome to Alpha v1.0.3")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v2.0.3")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v1 is here. Welcome to the first release of the Alpha-branded extension."),
+			screen.getByText("Alpha v2.0.3 makes long-running chats calmer and easier to follow."),
 		).toBeInTheDocument()
 	})
 
-	it("does not render release highlight bullets", () => {
+	it("renders the release highlights", () => {
 		render(<Announcement hideAnnouncement={vi.fn()} />)
 
-		expect(screen.queryAllByRole("listitem")).toHaveLength(0)
+		expect(screen.getAllByRole("listitem")).toHaveLength(2)
+		expect(screen.getByText("Steadier bottom-following while responses stream.")).toBeInTheDocument()
+		expect(screen.getByText("More breathing room beneath the latest message.")).toBeInTheDocument()
 	})
 })

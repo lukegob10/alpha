@@ -6,9 +6,9 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v1.0.3
+## Welcome to Alpha v2.0.3
 
-Alpha v1 is here. Welcome to the first release of the Alpha-branded extension.
+Alpha v2.0.3 makes long-running chats calmer and easier to follow with steadier streamed-response scrolling and more breathing room below the latest message.
 
 <details>
   <summary>🌐 Available languages</summary>
