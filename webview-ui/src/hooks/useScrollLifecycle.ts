@@ -4,8 +4,9 @@
  * Simplified chat scroll lifecycle with a short, time-boxed hydration window.
  *
  * - Task switch enters `HYDRATING_PINNED_TO_BOTTOM`
- * - Virtuoso owns appended-item, viewport-resize, and growing-row following;
- *   the hook provides bounded hydration and explicit-navigation fallbacks
+ * - Virtuoso owns appended-item and viewport-resize following; the hook provides
+ *   bounded hydration, exact-bottom correction for existing-row growth, and
+ *   explicit-navigation fallbacks
  * - During hydration, transient Virtuoso `atBottomStateChange(false)` signals
  *   are ignored so follow mode does not flicker off
  * - User escape intent (wheel / keyboard / pointer-upward drag / row expansion)
@@ -114,7 +115,6 @@ export function useScrollLifecycle({
 
 	// --- Scheduled scroll frames ---
 	const bottomScrollAnimationFrameRef = useRef<number | null>(null)
-	const bottomFollowAnimationFrameRef = useRef<number | null>(null)
 	const reanchorAnimationFrameRef = useRef<number | null>(null)
 
 	// -----------------------------------------------------------------------
@@ -159,13 +159,6 @@ export function useScrollLifecycle({
 		}
 	}, [])
 
-	const cancelBottomFollowFrame = useCallback(() => {
-		if (bottomFollowAnimationFrameRef.current !== null) {
-			cancelAnimationFrame(bottomFollowAnimationFrameRef.current)
-			bottomFollowAnimationFrameRef.current = null
-		}
-	}, [])
-
 	// -----------------------------------------------------------------------
 	// Scroll commands
 	// -----------------------------------------------------------------------
@@ -186,22 +179,6 @@ export function useScrollLifecycle({
 				align: "end",
 				behavior: "auto",
 			})
-		})
-	}, [virtuosoRef])
-
-	const followGrowingBottom = useCallback(() => {
-		if (bottomFollowAnimationFrameRef.current !== null) {
-			return
-		}
-
-		bottomFollowAnimationFrameRef.current = requestAnimationFrame(() => {
-			bottomFollowAnimationFrameRef.current = null
-			if (scrollPhaseRef.current === "ANCHORED_FOLLOWING") {
-				// Virtuoso tracks whether the viewport drifted because measured content
-				// grew. Let it correct that internal state instead of issuing a second,
-				// competing scrollToIndex command from the application.
-				virtuosoRef.current?.autoscrollToBottom()
-			}
 		})
 	}, [virtuosoRef])
 
@@ -262,11 +239,10 @@ export function useScrollLifecycle({
 		return () => {
 			isMountedRef.current = false
 			clearHydrationWindow()
-			cancelBottomFollowFrame()
 			cancelBottomScrollFrame()
 			cancelReanchorFrame()
 		}
-	}, [cancelBottomFollowFrame, cancelBottomScrollFrame, cancelReanchorFrame, clearHydrationWindow])
+	}, [cancelBottomScrollFrame, cancelReanchorFrame, clearHydrationWindow])
 
 	// Keep phase ref in sync with state
 	useEffect(() => {
@@ -277,7 +253,6 @@ export function useScrollLifecycle({
 	useEffect(() => {
 		isAtBottomRef.current = false
 		clearHydrationWindow()
-		cancelBottomFollowFrame()
 		cancelBottomScrollFrame()
 		cancelReanchorFrame()
 
@@ -292,12 +267,10 @@ export function useScrollLifecycle({
 
 		return () => {
 			clearHydrationWindow()
-			cancelBottomFollowFrame()
 			cancelBottomScrollFrame()
 			cancelReanchorFrame()
 		}
 	}, [
-		cancelBottomFollowFrame,
 		cancelBottomScrollFrame,
 		cancelReanchorFrame,
 		clearHydrationWindow,
@@ -320,9 +293,9 @@ export function useScrollLifecycle({
 				return
 			}
 
-			followGrowingBottom()
+			scrollToBottomAuto()
 		},
-		[followGrowingBottom],
+		[scrollToBottomAuto],
 	)
 
 	// -----------------------------------------------------------------------
@@ -379,7 +352,7 @@ export function useScrollLifecycle({
 				return
 			}
 
-			setShowScrollToBottom(currentPhase === "USER_BROWSING_HISTORY")
+			setShowScrollToBottom(true)
 		},
 		[enterAnchoredFollowing, enterUserBrowsingHistory],
 	)
