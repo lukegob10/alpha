@@ -1469,14 +1469,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const {
 		showScrollToBottom,
 		handleRowHeightChange,
-		handleRenderedItemsChange,
 		handleScrollToBottomClick,
 		enterUserBrowsingHistory,
 		followOutputCallback,
 		atBottomStateChangeCallback,
-		scrollToBottomAuto,
-		isAtBottomRef,
-		scrollPhaseRef,
 	} = useScrollLifecycle({
 		virtuosoRef,
 		scrollContainerRef,
@@ -1864,7 +1860,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			{task && (
 				<>
-					<div className="relative min-h-0 flex-1 overflow-hidden" ref={scrollContainerRef}>
+					<div className="relative mb-8 min-h-0 flex-1 overflow-hidden" ref={scrollContainerRef}>
 						<Virtuoso
 							ref={virtuosoRef}
 							key={task.ts}
@@ -1883,7 +1879,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							itemContent={itemContent}
 							followOutput={followOutputCallback}
 							atBottomStateChange={atBottomStateChangeCallback}
-							itemsRendered={handleRenderedItemsChange}
 							atBottomThreshold={CHAT_BOTTOM_THRESHOLD_PX}
 							components={chatListComponents}
 						/>
@@ -2037,11 +2032,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				onSend={() => handleSendMessage(inputValue, selectedImages)}
 				onSelectImages={selectImages}
 				shouldDisableImages={shouldDisableImages}
-				onHeightChange={() => {
-					if (isAtBottomRef.current && scrollPhaseRef.current !== "USER_BROWSING_HISTORY") {
-						scrollToBottomAuto()
-					}
-				}}
 				mode={mode}
 				setMode={setMode}
 				modeShortcutText={modeShortcutText}

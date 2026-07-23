@@ -363,7 +363,7 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v2.0.5 keeps long-running chats responsive and visibly anchored above the composer.",
+			"welcome": "Alpha v2.0.5 keeps long-running chats steady while streaming and adds clear separation between the transcript scrollbar and composer.",
 			"gpt54": "Poe Provider: Added Poe as an AI provider so you can access Poe models directly in Alpha.",
 			"slashSkills": "xAI and MiniMax Improvements: Migrated the xAI provider to the Responses API, added Grok-4.20 defaults, and fixed MiniMax model listings and context window handling for a more reliable setup."
 		}
