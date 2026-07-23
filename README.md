@@ -8,7 +8,7 @@
 
 ## Welcome to Alpha v2.0.5
 
-Alpha v2.0.5 keeps long-running chats responsive and visibly anchored above the composer as messages and controls resize.
+Alpha v2.0.5 keeps long-running chats steady while streaming and adds clear separation between the transcript scrollbar and composer.
 
 <details>
   <summary>🌐 Available languages</summary>

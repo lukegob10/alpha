@@ -35,7 +35,7 @@ describe("Announcement", () => {
 		expect(screen.getByText("Welcome to Alpha v2.0.5")).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Alpha v2.0.5 keeps long-running chats responsive and visibly anchored above the composer.",
+				"Alpha v2.0.5 keeps long-running chats steady while streaming and adds clear separation between the transcript scrollbar and composer.",
 			),
 		).toBeInTheDocument()
 	})
@@ -45,8 +45,10 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(2)
 		expect(
-			screen.getByText("Streaming content no longer triggers recursive bottom-scroll corrections."),
+			screen.getByText("Streaming growth and layout changes now share one stable bottom-follow path."),
 		).toBeInTheDocument()
-		expect(screen.getByText("Queue and composer resizing keeps the newest message visible.")).toBeInTheDocument()
+		expect(
+			screen.getByText("The transcript scrollbar now ends with breathing room above the composer."),
+		).toBeInTheDocument()
 	})
 })

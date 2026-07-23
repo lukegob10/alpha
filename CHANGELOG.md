@@ -4,8 +4,8 @@
 
 ### Patch Changes
 
-- Stop virtualized chat measurements from recursively scheduling bottom-scroll corrections and freezing the VS Code webview.
-- Keep the newest message above the composer when queued messages, action rows, or the composer resize the transcript viewport.
+- Make the virtualized list the single owner of appended-message and viewport-resize following, and route streamed row growth through its built-in bottom-follow path.
+- Add a 32px physical gap between the transcript scrollbar and composer while preserving the existing space below the newest message.
 
 ## 2.0.4
 

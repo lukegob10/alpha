@@ -4,7 +4,8 @@
  * Simplified chat scroll lifecycle with a short, time-boxed hydration window.
  *
  * - Task switch enters `HYDRATING_PINNED_TO_BOTTOM`
- * - Virtuoso owns the initial last-row anchor; the hook provides bounded fallbacks
+ * - Virtuoso owns appended-item, viewport-resize, and growing-row following;
+ *   the hook provides bounded hydration and explicit-navigation fallbacks
  * - During hydration, transient Virtuoso `atBottomStateChange(false)` signals
  *   are ignored so follow mode does not flicker off
  * - User escape intent (wheel / keyboard / pointer-upward drag / row expansion)
@@ -68,14 +69,10 @@ export interface UseScrollLifecycleReturn {
 	scrollPhase: ScrollPhase
 	showScrollToBottom: boolean
 	handleRowHeightChange: (isTaller: boolean) => void
-	handleRenderedItemsChange: (items: Array<{ index: number }>) => void
 	handleScrollToBottomClick: () => void
 	enterUserBrowsingHistory: (source: ScrollFollowDisengageSource) => void
 	followOutputCallback: () => "auto" | false
 	atBottomStateChangeCallback: (isAtBottom: boolean) => void
-	scrollToBottomAuto: () => void
-	isAtBottomRef: React.MutableRefObject<boolean>
-	scrollPhaseRef: React.MutableRefObject<ScrollPhase>
 }
 
 // ---------------------------------------------------------------------------
@@ -117,9 +114,8 @@ export function useScrollLifecycle({
 
 	// --- Scheduled scroll frames ---
 	const bottomScrollAnimationFrameRef = useRef<number | null>(null)
+	const bottomFollowAnimationFrameRef = useRef<number | null>(null)
 	const reanchorAnimationFrameRef = useRef<number | null>(null)
-	const lastRenderedItemCountRef = useRef<number | null>(null)
-	const lastViewportHeightRef = useRef<number | null>(null)
 
 	// -----------------------------------------------------------------------
 	// Phase transitions
@@ -163,6 +159,13 @@ export function useScrollLifecycle({
 		}
 	}, [])
 
+	const cancelBottomFollowFrame = useCallback(() => {
+		if (bottomFollowAnimationFrameRef.current !== null) {
+			cancelAnimationFrame(bottomFollowAnimationFrameRef.current)
+			bottomFollowAnimationFrameRef.current = null
+		}
+	}, [])
+
 	// -----------------------------------------------------------------------
 	// Scroll commands
 	// -----------------------------------------------------------------------
@@ -183,6 +186,22 @@ export function useScrollLifecycle({
 				align: "end",
 				behavior: "auto",
 			})
+		})
+	}, [virtuosoRef])
+
+	const followGrowingBottom = useCallback(() => {
+		if (bottomFollowAnimationFrameRef.current !== null) {
+			return
+		}
+
+		bottomFollowAnimationFrameRef.current = requestAnimationFrame(() => {
+			bottomFollowAnimationFrameRef.current = null
+			if (scrollPhaseRef.current === "ANCHORED_FOLLOWING") {
+				// Virtuoso tracks whether the viewport drifted because measured content
+				// grew. Let it correct that internal state instead of issuing a second,
+				// competing scrollToIndex command from the application.
+				virtuosoRef.current?.autoscrollToBottom()
+			}
 		})
 	}, [virtuosoRef])
 
@@ -243,10 +262,11 @@ export function useScrollLifecycle({
 		return () => {
 			isMountedRef.current = false
 			clearHydrationWindow()
+			cancelBottomFollowFrame()
 			cancelBottomScrollFrame()
 			cancelReanchorFrame()
 		}
-	}, [cancelBottomScrollFrame, cancelReanchorFrame, clearHydrationWindow])
+	}, [cancelBottomFollowFrame, cancelBottomScrollFrame, cancelReanchorFrame, clearHydrationWindow])
 
 	// Keep phase ref in sync with state
 	useEffect(() => {
@@ -256,9 +276,8 @@ export function useScrollLifecycle({
 	// Task switch: reset and begin a short hydration window
 	useEffect(() => {
 		isAtBottomRef.current = false
-		lastRenderedItemCountRef.current = null
-		lastViewportHeightRef.current = null
 		clearHydrationWindow()
+		cancelBottomFollowFrame()
 		cancelBottomScrollFrame()
 		cancelReanchorFrame()
 
@@ -273,10 +292,12 @@ export function useScrollLifecycle({
 
 		return () => {
 			clearHydrationWindow()
+			cancelBottomFollowFrame()
 			cancelBottomScrollFrame()
 			cancelReanchorFrame()
 		}
 	}, [
+		cancelBottomFollowFrame,
 		cancelBottomScrollFrame,
 		cancelReanchorFrame,
 		clearHydrationWindow,
@@ -284,36 +305,6 @@ export function useScrollLifecycle({
 		taskTs,
 		transitionScrollPhase,
 	])
-
-	// Queue, composer, and action-row height changes resize the transcript without
-	// changing its data. Re-anchor once for the viewport change instead of feeding
-	// Virtuoso's own list measurements back into another scroll command.
-	useEffect(() => {
-		const scrollContainer = scrollContainerRef.current
-		if (!scrollContainer || !hasTask || isHidden) {
-			return
-		}
-
-		const resizeObserver = new ResizeObserver((entries) => {
-			const nextHeight = entries[0]?.contentRect.height
-			if (nextHeight === undefined || !Number.isFinite(nextHeight)) {
-				return
-			}
-
-			const previousHeight = lastViewportHeightRef.current
-			lastViewportHeightRef.current = nextHeight
-			if (previousHeight === null || Math.abs(previousHeight - nextHeight) < 1) {
-				return
-			}
-
-			if (scrollPhaseRef.current !== "USER_BROWSING_HISTORY") {
-				scrollToBottomAuto()
-			}
-		})
-
-		resizeObserver.observe(scrollContainer)
-		return () => resizeObserver.disconnect()
-	}, [hasTask, isHidden, scrollContainerRef, scrollToBottomAuto, taskTs])
 
 	// -----------------------------------------------------------------------
 	// Row height change handler
@@ -329,24 +320,9 @@ export function useScrollLifecycle({
 				return
 			}
 
-			scrollToBottomAuto()
+			followGrowingBottom()
 		},
-		[scrollToBottomAuto],
-	)
-
-	const handleRenderedItemsChange = useCallback(
-		(items: Array<{ index: number }>) => {
-			if (itemCount === 0 || !items.some((item) => item.index === itemCount - 1)) {
-				return
-			}
-
-			const isFirstLastItemRender = lastRenderedItemCountRef.current !== itemCount
-			lastRenderedItemCountRef.current = itemCount
-			if (isFirstLastItemRender && scrollPhaseRef.current !== "USER_BROWSING_HISTORY") {
-				scrollToBottomAuto()
-			}
-		},
-		[itemCount, scrollToBottomAuto],
+		[followGrowingBottom],
 	)
 
 	// -----------------------------------------------------------------------
@@ -543,13 +519,9 @@ export function useScrollLifecycle({
 		scrollPhase,
 		showScrollToBottom,
 		handleRowHeightChange,
-		handleRenderedItemsChange,
 		handleScrollToBottomClick,
 		enterUserBrowsingHistory,
 		followOutputCallback,
 		atBottomStateChangeCallback,
-		scrollToBottomAuto,
-		isAtBottomRef,
-		scrollPhaseRef,
 	}
 }

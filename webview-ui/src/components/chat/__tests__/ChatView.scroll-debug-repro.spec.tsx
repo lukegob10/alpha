@@ -24,6 +24,7 @@ interface ExtensionStateMessage {
 }
 
 interface MockVirtuosoHandle {
+	autoscrollToBottom: () => void
 	scrollTo: (options: { top: number; behavior?: "auto" | "smooth" }) => void
 	scrollToIndex: (options: {
 		index: number | "LAST"
@@ -37,8 +38,6 @@ interface MockVirtuosoProps {
 	itemContent: (index: number, item: ClineMessage) => React.ReactNode
 	computeItemKey?: (index: number, item: ClineMessage) => React.Key
 	atBottomStateChange?: (isAtBottom: boolean) => void
-	itemsRendered?: (items: Array<{ index: number }>) => void
-	totalListHeightChanged?: (height: number) => void
 	followOutput?: FollowOutput
 	className?: string
 	initialTopMostItemIndex?: number | { index: number; align: "end"; offset?: number }
@@ -50,6 +49,7 @@ interface MockVirtuosoProps {
 
 interface VirtuosoHarnessState {
 	scrollCalls: number
+	autoscrollCalls: number
 	scrollToIndexArgs: Array<{
 		index: number | "LAST"
 		align?: "end" | "start" | "center"
@@ -60,53 +60,32 @@ interface VirtuosoHarnessState {
 	signalDelayMs: number
 	emitFalseOnDataChange: boolean
 	delayedGrowthMs: number | null
-	heightFeedbackRemaining: number
 	initialTopMostItemIndex: MockVirtuosoProps["initialTopMostItemIndex"]
 	followOutput: FollowOutput | undefined
 	emitAtBottom: (isAtBottom: boolean) => void
-	emitItemsRendered: (indices: number[]) => void
-	emitTotalListHeightChanged: (height: number) => void
 	emitLastRowHeightChange: (isTaller: boolean) => void
+	emitComposerHeightChange: (height: number) => void
 	atBottomThreshold: number | undefined
 	computedItemKeys: React.Key[]
 }
 
 const harness = vi.hoisted<VirtuosoHarnessState>(() => ({
 	scrollCalls: 0,
+	autoscrollCalls: 0,
 	scrollToIndexArgs: [],
 	scrollToArgs: [],
 	atBottomAfterCalls: Number.POSITIVE_INFINITY,
 	signalDelayMs: 20,
 	emitFalseOnDataChange: true,
 	delayedGrowthMs: null,
-	heightFeedbackRemaining: 0,
 	initialTopMostItemIndex: undefined,
 	followOutput: undefined,
 	emitAtBottom: () => {},
-	emitItemsRendered: () => {},
-	emitTotalListHeightChanged: () => {},
 	emitLastRowHeightChange: () => {},
+	emitComposerHeightChange: () => {},
 	atBottomThreshold: undefined,
 	computedItemKeys: [],
 }))
-
-const resizeObserverHarness = {
-	emit: (_height: number) => {},
-}
-
-class ControllableResizeObserver {
-	constructor(callback: ResizeObserverCallback) {
-		resizeObserverHarness.emit = (height: number) => {
-			callback([{ contentRect: { height } } as ResizeObserverEntry], this as unknown as ResizeObserver)
-		}
-	}
-
-	observe() {}
-	unobserve() {}
-	disconnect() {}
-}
-
-globalThis.ResizeObserver = ControllableResizeObserver as unknown as typeof ResizeObserver
 
 function nullDefaultModule() {
 	return { default: () => null }
@@ -163,10 +142,12 @@ vi.mock("../ChatTextArea", () => {
 			setInputValue?: (value: string) => void
 			onSend: () => void
 			sendingDisabled?: boolean
+			onHeightChange?: (height: number) => void
 		},
 		ref: React.ForwardedRef<{ focus: () => void }>,
 	) {
 		useImperativeHandle(ref, () => ({ focus: () => {} }))
+		harness.emitComposerHeightChange = props.onHeightChange ?? (() => {})
 
 		return (
 			<input
@@ -208,8 +189,6 @@ vi.mock("react-virtuoso", () => {
 			itemContent,
 			computeItemKey,
 			atBottomStateChange,
-			itemsRendered,
-			totalListHeightChanged,
 			followOutput,
 			className,
 			initialTopMostItemIndex,
@@ -228,12 +207,6 @@ vi.mock("react-virtuoso", () => {
 		harness.emitAtBottom = (isAtBottom: boolean) => {
 			atBottomRef.current?.(isAtBottom)
 		}
-		harness.emitItemsRendered = (indices: number[]) => {
-			itemsRendered?.(indices.map((index) => ({ index })))
-		}
-		harness.emitTotalListHeightChanged = (height: number) => {
-			totalListHeightChanged?.(height)
-		}
 
 		const recordScroll = () => {
 			harness.scrollCalls += 1
@@ -242,17 +215,12 @@ vi.mock("react-virtuoso", () => {
 				atBottomRef.current?.(reachedBottom)
 			}, harness.signalDelayMs)
 			timeoutIdsRef.current.push(timeoutId)
-
-			if (harness.heightFeedbackRemaining > 0) {
-				harness.heightFeedbackRemaining -= 1
-				const heightFeedbackId = window.setTimeout(() => {
-					totalListHeightChanged?.(1_000 + harness.scrollCalls)
-				}, 0)
-				timeoutIdsRef.current.push(heightFeedbackId)
-			}
 		}
 
 		useImperativeHandle(ref, () => ({
+			autoscrollToBottom: () => {
+				harness.autoscrollCalls += 1
+			},
 			scrollTo: (options) => {
 				harness.scrollToArgs.push(options)
 				recordScroll()
@@ -449,19 +417,18 @@ const getScrollToCheckpointButton = (): HTMLButtonElement => {
 describe("ChatView scroll behavior regression coverage", () => {
 	beforeEach(() => {
 		harness.scrollCalls = 0
+		harness.autoscrollCalls = 0
 		harness.scrollToIndexArgs = []
 		harness.scrollToArgs = []
 		harness.atBottomAfterCalls = Number.POSITIVE_INFINITY
 		harness.signalDelayMs = 20
 		harness.emitFalseOnDataChange = true
 		harness.delayedGrowthMs = null
-		harness.heightFeedbackRemaining = 0
 		harness.initialTopMostItemIndex = undefined
 		harness.followOutput = undefined
 		harness.emitAtBottom = () => {}
-		harness.emitItemsRendered = () => {}
-		harness.emitTotalListHeightChanged = () => {}
 		harness.emitLastRowHeightChange = () => {}
+		harness.emitComposerHeightChange = () => {}
 		harness.atBottomThreshold = undefined
 		harness.computedItemKeys = []
 	})
@@ -481,13 +448,13 @@ describe("ChatView scroll behavior regression coverage", () => {
 		expect(document.querySelector("[data-testid='chat-bottom-spacer']")).toHaveStyle({ height: "32px" })
 	})
 
-	it("bounds the transcript to the space above the composer", async () => {
+	it("bounds the transcript and leaves a physical gap above the composer", async () => {
 		await hydrate(2)
 
 		const scrollable = getScrollable()
 		const transcriptViewport = scrollable.parentElement
 
-		expect(transcriptViewport).toHaveClass("min-h-0", "flex-1", "overflow-hidden")
+		expect(transcriptViewport).toHaveClass("mb-8", "min-h-0", "flex-1", "overflow-hidden")
 		expect(scrollable).toHaveClass("h-full", "min-h-0", "w-full")
 		expect(scrollable).not.toHaveClass("mb-1", "flex-1")
 		expect(transcriptViewport?.nextElementSibling).not.toContainElement(scrollable)
@@ -559,14 +526,14 @@ describe("ChatView scroll behavior regression coverage", () => {
 		expect(resolveFollowOutput(false)).toBe("auto")
 	})
 
-	it("coalesces bursty anchored-row growth into one indexed correction", async () => {
+	it("coalesces bursty anchored-row growth into one Virtuoso bottom-follow request", async () => {
 		const messages = buildMessages(Date.now() - 3_000)
 		await hydrate(1, messages)
 		await waitForCalls(1)
 		await waitForCallsSettled()
 
-		const callsBeforeGrowth = harness.scrollCalls
-		const indexedScrollsBeforeGrowth = harness.scrollToIndexArgs.length
+		const imperativeCallsBeforeGrowth = harness.scrollCalls
+		const followCallsBeforeGrowth = harness.autoscrollCalls
 		await act(async () => {
 			for (let index = 0; index < 8; index += 1) {
 				harness.emitLastRowHeightChange(true)
@@ -574,51 +541,47 @@ describe("ChatView scroll behavior regression coverage", () => {
 			await sleep(25)
 		})
 
-		expect(harness.scrollCalls).toBe(callsBeforeGrowth + 1)
-		expect(harness.scrollToIndexArgs).toHaveLength(indexedScrollsBeforeGrowth + 1)
-		expect(harness.scrollToIndexArgs.at(-1)).toEqual({
-			index: 1,
-			align: "end",
-			behavior: "auto",
-		})
+		expect(harness.autoscrollCalls).toBe(followCallsBeforeGrowth + 1)
+		expect(harness.scrollCalls).toBe(imperativeCallsBeforeGrowth)
 	})
 
-	it("does not feed Virtuoso list measurements back into recursive scrolls", async () => {
-		await hydrate(Number.POSITIVE_INFINITY)
+	it("lets Virtuoso own appended-message following without a second imperative correction", async () => {
+		const messages = buildMessages(Date.now() - 3_000)
+		await hydrate(1, messages)
 		await waitForCalls(1)
-		await sleep(250)
+		await waitForCallsSettled()
 
-		const callsBeforeFinalItem = harness.scrollCalls
-		harness.heightFeedbackRemaining = 6
+		const callsBeforeAppend = harness.scrollCalls
 		await act(async () => {
-			harness.emitItemsRendered([0, 1])
-			await sleep(150)
+			postState([...messages, { type: "say", say: "text", ts: Date.now(), text: "row-3" }])
+			await sleep(50)
 		})
 
-		expect(harness.scrollCalls).toBe(callsBeforeFinalItem + 1)
+		expect(harness.scrollCalls).toBe(callsBeforeAppend)
+		expect(resolveFollowOutput(false)).toBe("auto")
 	})
 
-	it("re-anchors once when the queue or composer resizes the transcript viewport", async () => {
+	it("lets Virtuoso own composer viewport resizing without a competing imperative correction", async () => {
 		await hydrate(1)
 		await waitForCalls(1)
 		await waitForCallsSettled()
 
 		const callsBeforeResize = harness.scrollCalls
 		await act(async () => {
-			resizeObserverHarness.emit(500)
-			resizeObserverHarness.emit(320)
+			harness.emitComposerHeightChange(160)
 			await sleep(25)
 		})
 
-		expect(harness.scrollCalls).toBe(callsBeforeResize + 1)
+		expect(harness.scrollCalls).toBe(callsBeforeResize)
+		expect(resolveFollowOutput(false)).toBe("auto")
 
 		await act(async () => {
 			fireEvent.keyDown(window, { key: "PageUp" })
-			resizeObserverHarness.emit(280)
+			harness.emitComposerHeightChange(200)
 			await sleep(25)
 		})
 
-		expect(harness.scrollCalls).toBe(callsBeforeResize + 1)
+		expect(harness.scrollCalls).toBe(callsBeforeResize)
 	})
 
 	it("task-header layout changes disengage sticky follow before resizing the viewport", async () => {
@@ -723,12 +686,14 @@ describe("ChatView scroll behavior regression coverage", () => {
 		expect(getScrollToBottomButton()).toHaveAttribute("aria-label", "chat:scrollToBottom")
 
 		const callsWhileBrowsing = harness.scrollCalls
+		const followCallsWhileBrowsing = harness.autoscrollCalls
 		await act(async () => {
-			harness.emitItemsRendered([0, 1])
-			harness.emitTotalListHeightChanged(1_100)
+			harness.emitLastRowHeightChange(true)
+			harness.emitComposerHeightChange(200)
 			await sleep(25)
 		})
 		expect(harness.scrollCalls).toBe(callsWhileBrowsing)
+		expect(harness.autoscrollCalls).toBe(followCallsWhileBrowsing)
 	})
 
 	it("hydration completion cannot override user escape hatch", async () => {
