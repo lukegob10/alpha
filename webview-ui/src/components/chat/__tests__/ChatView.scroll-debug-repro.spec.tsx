@@ -509,7 +509,7 @@ describe("ChatView scroll behavior regression coverage", () => {
 		expect(document.querySelector(".codicon-chevron-down")).toBeNull()
 	})
 
-	it("does not recursively scroll when streaming briefly reports not-at-bottom", async () => {
+	it("exposes recovery without recursively scrolling when anchored follow loses physical bottom", async () => {
 		const messages = buildMessages(Date.now() - 3_000)
 		messages[messages.length - 1] = { ...messages[messages.length - 1], partial: true }
 		await hydrate(1, messages)
@@ -524,9 +524,10 @@ describe("ChatView scroll behavior regression coverage", () => {
 
 		expect(harness.scrollCalls).toBe(callsBeforeSignal)
 		expect(resolveFollowOutput(false)).toBe("auto")
+		expect(getScrollToBottomButton()).toHaveAttribute("aria-label", "chat:scrollToBottom")
 	})
 
-	it("coalesces bursty anchored-row growth into one Virtuoso bottom-follow request", async () => {
+	it("coalesces bursty anchored-row growth into one exact-bottom correction", async () => {
 		const messages = buildMessages(Date.now() - 3_000)
 		await hydrate(1, messages)
 		await waitForCalls(1)
@@ -541,8 +542,28 @@ describe("ChatView scroll behavior regression coverage", () => {
 			await sleep(25)
 		})
 
-		expect(harness.autoscrollCalls).toBe(followCallsBeforeGrowth + 1)
-		expect(harness.scrollCalls).toBe(imperativeCallsBeforeGrowth)
+		expect(harness.autoscrollCalls).toBe(followCallsBeforeGrowth)
+		expect(harness.scrollCalls).toBe(imperativeCallsBeforeGrowth + 1)
+		expect(harness.scrollToIndexArgs.at(-1)).toEqual({ index: 1, align: "end", behavior: "auto" })
+	})
+
+	it("re-pins streamed row growth after Virtuoso already reported physical detachment", async () => {
+		const messages = buildMessages(Date.now() - 3_000)
+		await hydrate(1, messages)
+		await waitForCalls(1)
+		await waitForCallsSettled()
+
+		const callsBeforeGrowth = harness.scrollCalls
+		const followCallsBeforeGrowth = harness.autoscrollCalls
+		await act(async () => {
+			harness.emitAtBottom(false)
+			harness.emitLastRowHeightChange(true)
+		})
+
+		await waitFor(() => expect(harness.scrollCalls).toBe(callsBeforeGrowth + 1), { timeout: 1_200 })
+		expect(harness.autoscrollCalls).toBe(followCallsBeforeGrowth)
+		expect(harness.scrollToIndexArgs.at(-1)).toEqual({ index: 1, align: "end", behavior: "auto" })
+		await waitFor(() => expect(document.querySelector(".codicon-chevron-down")).toBeNull(), { timeout: 1_200 })
 	})
 
 	it("lets Virtuoso own appended-message following without a second imperative correction", async () => {
