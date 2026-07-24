@@ -1,5 +1,4 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useSize } from "react-use"
 import { useTranslation, Trans } from "react-i18next"
 import deepEqual from "fast-deep-equal"
 import { VSCodeBadge } from "@vscode/webview-ui-toolkit/react"
@@ -152,33 +151,41 @@ interface ChatRowContentInnerProps extends ChatRowContentProps {
 
 const ChatRow = memo(
 	(props: ChatRowProps) => {
-		const { isLast, onHeightChange, message } = props
-		// Store the previous height to compare with the current height
-		// This allows us to detect changes without causing re-renders
+		const { isLast, onHeightChange } = props
+		const rowRef = useRef<HTMLDivElement>(null)
 		const prevHeightRef = useRef(0)
 
-		const [chatrow, { height }] = useSize(
-			<div className="px-[15px] py-[10px] pr-[6px]">
-				<ChatRowContentInner {...props} />
-			</div>,
-		)
-
 		useEffect(() => {
-			const isHeightValid = height !== 0 && height !== Infinity
-			// used for partials, command output, etc.
-			// NOTE: it's important we don't distinguish between partial or complete here since our scroll effects in chatview need to handle height change during partial -> complete
-			const isInitialRender = prevHeightRef.current === 0 // prevents scrolling when new element is added since we already scroll for that
-			// height starts off at Infinity
-			if (isLast && isHeightValid && height !== prevHeightRef.current) {
-				if (!isInitialRender) {
-					onHeightChange(height > prevHeightRef.current)
-				}
-				prevHeightRef.current = height
+			const row = rowRef.current
+			if (!isLast || !row) {
+				prevHeightRef.current = 0
+				return
 			}
-		}, [height, isLast, onHeightChange, message])
+
+			prevHeightRef.current = 0
+			const resizeObserver = new ResizeObserver((entries) => {
+				const height = entries[0]?.contentRect.height
+				if (height === undefined || !Number.isFinite(height) || height === prevHeightRef.current) {
+					return
+				}
+
+				const previousHeight = prevHeightRef.current
+				prevHeightRef.current = height
+				if (previousHeight > 0) {
+					onHeightChange(height > previousHeight)
+				}
+			})
+			resizeObserver.observe(row)
+
+			return () => resizeObserver.disconnect()
+		}, [isLast, onHeightChange])
 
 		// we cannot return null as virtuoso does not support it, so we use a separate visibleMessages array to filter out messages that should not be rendered
-		return chatrow
+		return (
+			<div ref={rowRef} className="px-[15px] py-[10px] pr-[6px]">
+				<ChatRowContentInner {...props} />
+			</div>
+		)
 	},
 	// memo does shallow comparison of props, so we need to do deep comparison of arrays/objects whose properties might change
 	deepEqual,

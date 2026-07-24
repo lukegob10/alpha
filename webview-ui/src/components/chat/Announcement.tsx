@@ -35,12 +35,12 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 				</DialogHeader>
 				<div className="space-y-2 text-sm">
 					<p>
-						Alpha v{Package.version} keeps completed conversations fully scrollable and bottom navigation
-						compact.
+						Alpha v{Package.version} eliminates end-of-chat scroll bouncing while preserving deliberate
+						history browsing.
 					</p>
 					<ul className="list-disc space-y-1 pl-5">
-						<li>Wheel input over the floating controls now continues scrolling the transcript.</li>
-						<li>Compact bottom controls no longer obscure completed-task output.</li>
+						<li>Bottom following now converges on the physical end of the transcript.</li>
+						<li>Late content measurements no longer override intentional upward scrolling.</li>
 					</ul>
 				</div>
 			</DialogContent>

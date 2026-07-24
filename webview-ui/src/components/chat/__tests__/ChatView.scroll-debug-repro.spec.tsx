@@ -445,14 +445,14 @@ describe("ChatView scroll behavior regression coverage", () => {
 		expect(harness.initialTopMostItemIndex).toEqual({ index: 1, align: "end" })
 	})
 
-	it("uses a practical near-bottom follow zone", async () => {
+	it("only resumes anchored following at the physical bottom", async () => {
 		await hydrate(2)
-		expect(harness.atBottomThreshold).toBeGreaterThanOrEqual(48)
+		expect(harness.atBottomThreshold).toBe(4)
 	})
 
-	it("keeps breathing room below the final chat row", async () => {
+	it("does not create a second virtualized endpoint below the final chat row", async () => {
 		await hydrate(2)
-		expect(document.querySelector("[data-testid='chat-bottom-spacer']")).toHaveStyle({ height: "32px" })
+		expect(document.querySelector("[data-testid='chat-bottom-spacer']")).toBeNull()
 	})
 
 	it("bounds the transcript and leaves a physical gap above the composer", async () => {
@@ -472,8 +472,8 @@ describe("ChatView scroll behavior regression coverage", () => {
 		await waitForCalls(1, 1_200)
 		await waitForCallsSettled()
 		expect(harness.scrollCalls).toBe(1)
-		expect(harness.scrollToIndexArgs).toHaveLength(1)
-		expect(harness.scrollToIndexArgs).toEqual([{ index: 1, align: "end", behavior: "auto" }])
+		expect(harness.scrollToIndexArgs).toHaveLength(0)
+		expect(harness.scrollToArgs).toEqual([{ top: Number.MAX_SAFE_INTEGER, behavior: "auto" }])
 		expect(resolveFollowOutput(false)).toBe("auto")
 		expect(document.querySelector(".codicon-chevron-down")).toBeNull()
 	})
@@ -516,7 +516,7 @@ describe("ChatView scroll behavior regression coverage", () => {
 		expect(document.querySelector(".codicon-chevron-down")).toBeNull()
 	})
 
-	it("exposes recovery without recursively scrolling when anchored follow loses physical bottom", async () => {
+	it("does not flicker recovery controls during transient anchored detachment", async () => {
 		const messages = buildMessages(Date.now() - 3_000)
 		messages[messages.length - 1] = { ...messages[messages.length - 1], partial: true }
 		await hydrate(1, messages)
@@ -531,7 +531,7 @@ describe("ChatView scroll behavior regression coverage", () => {
 
 		expect(harness.scrollCalls).toBe(callsBeforeSignal)
 		expect(resolveFollowOutput(false)).toBe("auto")
-		expect(getScrollToBottomButton()).toHaveAttribute("aria-label", "chat:scrollToBottom")
+		expect(document.querySelector(".codicon-chevron-down")).toBeNull()
 	})
 
 	it("coalesces bursty anchored-row growth into one exact-bottom correction", async () => {
@@ -551,7 +551,7 @@ describe("ChatView scroll behavior regression coverage", () => {
 
 		expect(harness.autoscrollCalls).toBe(followCallsBeforeGrowth)
 		expect(harness.scrollCalls).toBe(imperativeCallsBeforeGrowth + 1)
-		expect(harness.scrollToIndexArgs.at(-1)).toEqual({ index: 1, align: "end", behavior: "auto" })
+		expect(harness.scrollToArgs.at(-1)).toEqual({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" })
 	})
 
 	it("re-pins streamed row growth after Virtuoso already reported physical detachment", async () => {
@@ -569,7 +569,7 @@ describe("ChatView scroll behavior regression coverage", () => {
 
 		await waitFor(() => expect(harness.scrollCalls).toBe(callsBeforeGrowth + 1), { timeout: 1_200 })
 		expect(harness.autoscrollCalls).toBe(followCallsBeforeGrowth)
-		expect(harness.scrollToIndexArgs.at(-1)).toEqual({ index: 1, align: "end", behavior: "auto" })
+		expect(harness.scrollToArgs.at(-1)).toEqual({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" })
 		await waitFor(() => expect(document.querySelector(".codicon-chevron-down")).toBeNull(), { timeout: 1_200 })
 	})
 
@@ -722,6 +722,23 @@ describe("ChatView scroll behavior regression coverage", () => {
 		})
 		expect(harness.scrollCalls).toBe(callsWhileBrowsing)
 		expect(harness.autoscrollCalls).toBe(followCallsWhileBrowsing)
+	})
+
+	it("cancels a queued bottom correction when wheel-up browsing wins the frame", async () => {
+		await hydrate(1)
+		await waitForCalls(1)
+		await waitForCallsSettled()
+
+		const callsBeforeUserInput = harness.scrollCalls
+		const scrollable = getScrollable()
+		await act(async () => {
+			harness.emitLastRowHeightChange(true)
+			fireEvent.wheel(scrollable, { deltaY: -120 })
+			await sleep(25)
+		})
+
+		expect(resolveFollowOutput(false)).toBe(false)
+		expect(harness.scrollCalls).toBe(callsBeforeUserInput)
 	})
 
 	it("keeps wheel scrolling active over the floating bottom controls", async () => {

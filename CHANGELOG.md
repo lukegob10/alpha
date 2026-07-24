@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.7
+
+### Patch Changes
+
+- Eliminate end-of-chat scroll bouncing by converging bottom detection and correction on the physical scroller boundary.
+- Preserve deliberate history browsing during late row measurement and nested code-block scrolling.
+
 ## 2.0.6
 
 ### Patch Changes
