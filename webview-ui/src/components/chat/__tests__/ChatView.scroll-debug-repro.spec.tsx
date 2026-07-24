@@ -25,6 +25,7 @@ interface ExtensionStateMessage {
 
 interface MockVirtuosoHandle {
 	autoscrollToBottom: () => void
+	scrollBy: (options: { top: number; behavior?: "auto" | "smooth" }) => void
 	scrollTo: (options: { top: number; behavior?: "auto" | "smooth" }) => void
 	scrollToIndex: (options: {
 		index: number | "LAST"
@@ -50,6 +51,7 @@ interface MockVirtuosoProps {
 interface VirtuosoHarnessState {
 	scrollCalls: number
 	autoscrollCalls: number
+	scrollByArgs: Array<{ top: number; behavior?: "auto" | "smooth" }>
 	scrollToIndexArgs: Array<{
 		index: number | "LAST"
 		align?: "end" | "start" | "center"
@@ -72,6 +74,7 @@ interface VirtuosoHarnessState {
 const harness = vi.hoisted<VirtuosoHarnessState>(() => ({
 	scrollCalls: 0,
 	autoscrollCalls: 0,
+	scrollByArgs: [],
 	scrollToIndexArgs: [],
 	scrollToArgs: [],
 	atBottomAfterCalls: Number.POSITIVE_INFINITY,
@@ -220,6 +223,9 @@ vi.mock("react-virtuoso", () => {
 		useImperativeHandle(ref, () => ({
 			autoscrollToBottom: () => {
 				harness.autoscrollCalls += 1
+			},
+			scrollBy: (options) => {
+				harness.scrollByArgs.push(options)
 			},
 			scrollTo: (options) => {
 				harness.scrollToArgs.push(options)
@@ -418,6 +424,7 @@ describe("ChatView scroll behavior regression coverage", () => {
 	beforeEach(() => {
 		harness.scrollCalls = 0
 		harness.autoscrollCalls = 0
+		harness.scrollByArgs = []
 		harness.scrollToIndexArgs = []
 		harness.scrollToArgs = []
 		harness.atBottomAfterCalls = Number.POSITIVE_INFINITY
@@ -715,6 +722,26 @@ describe("ChatView scroll behavior regression coverage", () => {
 		})
 		expect(harness.scrollCalls).toBe(callsWhileBrowsing)
 		expect(harness.autoscrollCalls).toBe(followCallsWhileBrowsing)
+	})
+
+	it("keeps wheel scrolling active over the floating bottom controls", async () => {
+		await hydrate(1)
+		await waitForCalls(1)
+		await waitForCallsSettled()
+
+		await act(async () => {
+			fireEvent.keyDown(window, { key: "PageUp" })
+		})
+
+		const controls = document.querySelector("[data-testid='chat-scroll-controls']")
+		const scrollToBottomButton = getScrollToBottomButton()
+		expect(controls).toHaveClass("justify-center")
+		expect(scrollToBottomButton).toHaveClass("h-8", "w-8", "rounded-full")
+		expect(scrollToBottomButton).not.toHaveClass("flex-1", "flex-[2]")
+
+		fireEvent.wheel(scrollToBottomButton, { deltaY: 120 })
+
+		expect(harness.scrollByArgs).toEqual([{ top: 120, behavior: "auto" }])
 	})
 
 	it("hydration completion cannot override user escape hatch", async () => {

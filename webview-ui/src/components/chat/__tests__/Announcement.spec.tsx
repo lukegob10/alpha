@@ -12,7 +12,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "2.0.5",
+		version: "2.0.6",
 	},
 }))
 
@@ -32,10 +32,10 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		render(<Announcement hideAnnouncement={vi.fn()} />)
 
-		expect(screen.getByText("Welcome to Alpha v2.0.5")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v2.0.6")).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Alpha v2.0.5 keeps long-running chats steady while streaming and adds clear separation between the transcript scrollbar and composer.",
+				"Alpha v2.0.6 keeps completed conversations fully scrollable and bottom navigation compact.",
 			),
 		).toBeInTheDocument()
 	})
@@ -45,10 +45,8 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(2)
 		expect(
-			screen.getByText("Streaming growth and layout changes now share one stable bottom-follow path."),
+			screen.getByText("Wheel input over the floating controls now continues scrolling the transcript."),
 		).toBeInTheDocument()
-		expect(
-			screen.getByText("The transcript scrollbar now ends with breathing room above the composer."),
-		).toBeInTheDocument()
+		expect(screen.getByText("Compact bottom controls no longer obscure completed-task output.")).toBeInTheDocument()
 	})
 })

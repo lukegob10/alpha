@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.6
+
+### Patch Changes
+
+- Keep transcript wheel scrolling active when the pointer is over the floating bottom-navigation controls.
+- Replace the full-width bottom-navigation bar with compact controls that no longer obscure completed-task output.
+
 ## 2.0.5
 
 ### Patch Changes

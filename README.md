@@ -6,9 +6,9 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.0.5
+## Welcome to Alpha v2.0.6
 
-Alpha v2.0.5 keeps long-running chats steady while streaming and adds clear separation between the transcript scrollbar and composer.
+Alpha v2.0.6 keeps completed conversations fully scrollable and makes bottom navigation compact and unobtrusive.
 
 <details>
   <summary>🌐 Available languages</summary>
@@ -32,7 +32,7 @@ Alpha v2.0.5 keeps long-running chats steady while streaming and adds clear sepa
 - [简体中文](locales/zh-CN/README.md)
 - [繁體中文](locales/zh-TW/README.md)
 - ...
-    </details>
+      </details>
 
 ---
 
