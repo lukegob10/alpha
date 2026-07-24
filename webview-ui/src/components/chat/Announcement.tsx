@@ -35,12 +35,12 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 				</DialogHeader>
 				<div className="space-y-2 text-sm">
 					<p>
-						Alpha v{Package.version} keeps long-running chats steady while streaming and adds clear
-						separation between the transcript scrollbar and composer.
+						Alpha v{Package.version} keeps completed conversations fully scrollable and bottom navigation
+						compact.
 					</p>
 					<ul className="list-disc space-y-1 pl-5">
-						<li>Streaming growth and layout changes now share one stable bottom-follow path.</li>
-						<li>The transcript scrollbar now ends with breathing room above the composer.</li>
+						<li>Wheel input over the floating controls now continues scrolling the transcript.</li>
+						<li>Compact bottom controls no longer obscure completed-task output.</li>
 					</ul>
 				</div>
 			</DialogContent>

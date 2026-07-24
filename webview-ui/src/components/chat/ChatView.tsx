@@ -1482,6 +1482,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		itemCount: groupedMessages.length,
 	})
 
+	// The floating controls are siblings of Virtuoso's scroller, so wheel input
+	// over a button would otherwise stop at the overflow-hidden viewport wrapper.
+	const handleScrollControlsWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+		event.preventDefault()
+		virtuosoRef.current?.scrollBy({ top: event.deltaY, behavior: "auto" })
+	}, [])
+
 	// Expanding a row indicates the user is browsing; disable sticky follow.
 	// Placed after the hook call so enterUserBrowsingHistory is defined.
 	useEffect(() => {
@@ -1885,11 +1892,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						{showScrollToBottom && (
 							<div
 								data-testid="chat-scroll-controls"
-								className="pointer-events-none absolute inset-x-0 bottom-2 z-10 flex h-9 items-center px-[15px]">
+								className="pointer-events-none absolute inset-x-0 bottom-2 z-10 flex h-9 items-center justify-center gap-2 px-[15px]"
+								onWheel={handleScrollControlsWheel}>
 								<StandardTooltip content={t("chat:scrollToBottom")}>
 									<Button
 										variant="secondary"
-										className={`${hasLatestCheckpoint ? "flex-1 mr-[6px]" : "flex-[2]"} pointer-events-auto`}
+										size="icon"
+										className="pointer-events-auto rounded-full"
 										onClick={handleScrollToBottomAndResetCheckpointCursor}
 										aria-label={t("chat:scrollToBottom")}>
 										<span className="codicon codicon-chevron-down"></span>
@@ -1899,7 +1908,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 									<StandardTooltip content={t("chat:scrollToLatestCheckpoint")}>
 										<Button
 											variant="secondary"
-											className="pointer-events-auto flex-1 ml-[6px]"
+											size="icon"
+											className="pointer-events-auto rounded-full"
 											onClick={handleScrollToLatestCheckpoint}
 											aria-label={t("chat:scrollToLatestCheckpoint")}>
 											<span className="codicon codicon-history"></span>

@@ -168,7 +168,7 @@ export class ClineProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "july-2026-v2.0.3-chat-scroll-stability" // v2.0.3 chat scrolling update
+	public readonly latestAnnouncementId = "july-2026-v2.0.6-chat-bottom-controls" // v2.0.6 chat bottom controls
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
