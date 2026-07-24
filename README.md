@@ -6,9 +6,9 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.0.6
+## Welcome to Alpha v2.0.7
 
-Alpha v2.0.6 keeps completed conversations fully scrollable and makes bottom navigation compact and unobtrusive.
+Alpha v2.0.7 eliminates end-of-chat scroll bouncing while preserving deliberate history browsing.
 
 <details>
   <summary>🌐 Available languages</summary>
@@ -32,7 +32,7 @@ Alpha v2.0.6 keeps completed conversations fully scrollable and makes bottom nav
 - [简体中文](locales/zh-CN/README.md)
 - [繁體中文](locales/zh-TW/README.md)
 - ...
-      </details>
+  </details>
 
 ---
 

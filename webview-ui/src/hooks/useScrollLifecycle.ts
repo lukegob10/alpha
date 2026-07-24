@@ -20,10 +20,10 @@ import type { VirtuosoHandle } from "react-virtuoso"
 const HYDRATION_WINDOW_MS = 600
 const HYDRATION_RETRY_WINDOW_MS = 160
 
-// Leave enough tolerance for the chat controls and small virtualized-row
-// measurement corrections without treating deliberate history browsing as bottom-following.
-export const CHAT_BOTTOM_THRESHOLD_PX = 64
-export const CHAT_BOTTOM_SPACER_PX = 32
+// Keep bottom detection close to the physical end of the scroller. A wide
+// threshold turns ordinary near-bottom browsing into anchored following and
+// lets late row measurements pull the viewport away from the user's wheel.
+export const CHAT_BOTTOM_THRESHOLD_PX = 4
 
 // ---------------------------------------------------------------------------
 // Types
@@ -170,15 +170,17 @@ export function useScrollLifecycle({
 
 		bottomScrollAnimationFrameRef.current = requestAnimationFrame(() => {
 			bottomScrollAnimationFrameRef.current = null
+			if (scrollPhaseRef.current === "USER_BROWSING_HISTORY") {
+				return
+			}
 			const currentItemCount = itemCountRef.current
 			if (currentItemCount === 0) {
 				return
 			}
-			virtuosoRef.current?.scrollToIndex({
-				index: currentItemCount - 1,
-				align: "end",
-				behavior: "auto",
-			})
+			// Scroll the scroller itself to its physical maximum. Item alignment is
+			// not an exact-bottom operation when Virtuoso renders a footer or is
+			// still reconciling measured row sizes.
+			virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" })
 		})
 	}, [virtuosoRef])
 
@@ -352,7 +354,10 @@ export function useScrollLifecycle({
 				return
 			}
 
-			setShowScrollToBottom(true)
+			// A transient size increase can report false before the queued physical
+			// bottom correction lands. Only explicit browsing should expose the CTA;
+			// otherwise the overlay flickers on every late row measurement.
+			setShowScrollToBottom(currentPhase === "USER_BROWSING_HISTORY")
 		},
 		[enterAnchoredFollowing, enterUserBrowsingHistory],
 	)

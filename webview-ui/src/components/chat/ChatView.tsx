@@ -48,7 +48,7 @@ import { CheckpointWarning } from "./CheckpointWarning"
 import { QueuedMessages } from "./QueuedMessages"
 import { WorktreeSelector } from "./WorktreeSelector"
 import FileChangesPanel from "./FileChangesPanel"
-import { CHAT_BOTTOM_SPACER_PX, CHAT_BOTTOM_THRESHOLD_PX, useScrollLifecycle } from "@src/hooks/useScrollLifecycle"
+import { CHAT_BOTTOM_THRESHOLD_PX, useScrollLifecycle } from "@src/hooks/useScrollLifecycle"
 
 export interface ChatViewProps {
 	isHidden: boolean
@@ -73,15 +73,6 @@ const messageResponseAskTypes = new Set<ClineAsk>([
 const completedTaskResponseAskTypes = new Set<ClineAsk>(["completion_result", "resume_completed_task"])
 const approvalAskTypes = new Set<ClineAsk>(["tool", "command", "use_mcp_server"])
 
-const ChatListFooter = () => (
-	<div
-		aria-hidden="true"
-		className="shrink-0"
-		data-testid="chat-bottom-spacer"
-		style={{ height: CHAT_BOTTOM_SPACER_PX }}
-	/>
-)
-const chatListComponents = { Footer: ChatListFooter }
 const computeChatItemKey = (_index: number, message: ClineMessage) => message.ts
 
 const isCompletedTaskResponseAsk = (ask: ClineAsk | undefined) => Boolean(ask && completedTaskResponseAskTypes.has(ask))
@@ -1887,7 +1878,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							followOutput={followOutputCallback}
 							atBottomStateChange={atBottomStateChangeCallback}
 							atBottomThreshold={CHAT_BOTTOM_THRESHOLD_PX}
-							components={chatListComponents}
 						/>
 						{showScrollToBottom && (
 							<div
