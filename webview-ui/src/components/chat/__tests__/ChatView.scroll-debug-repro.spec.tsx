@@ -41,6 +41,7 @@ interface MockVirtuosoProps {
 	atBottomStateChange?: (isAtBottom: boolean) => void
 	followOutput?: FollowOutput
 	className?: string
+	initialItemCount?: number
 	initialTopMostItemIndex?: number | { index: number | "LAST"; align: "end"; offset?: number }
 	atBottomThreshold?: number
 	style?: React.CSSProperties
@@ -66,6 +67,7 @@ interface VirtuosoHarnessState {
 	signalDelayMs: number
 	emitFalseOnDataChange: boolean
 	delayedGrowthMs: number | null
+	initialItemCount: number | undefined
 	initialTopMostItemIndex: MockVirtuosoProps["initialTopMostItemIndex"]
 	followOutput: FollowOutput | undefined
 	emitAtBottom: (isAtBottom: boolean) => void
@@ -86,6 +88,7 @@ const harness = vi.hoisted<VirtuosoHarnessState>(() => ({
 	signalDelayMs: 20,
 	emitFalseOnDataChange: true,
 	delayedGrowthMs: null,
+	initialItemCount: undefined,
 	initialTopMostItemIndex: undefined,
 	followOutput: undefined,
 	emitAtBottom: () => {},
@@ -187,6 +190,7 @@ vi.mock("react-virtuoso", () => {
 			atBottomStateChange,
 			followOutput,
 			className,
+			initialItemCount,
 			initialTopMostItemIndex,
 			atBottomThreshold,
 			components,
@@ -201,6 +205,7 @@ vi.mock("react-virtuoso", () => {
 		const timeoutIdsRef = useRef<number[]>([])
 
 		harness.followOutput = followOutput
+		harness.initialItemCount = initialItemCount
 		harness.initialTopMostItemIndex = initialTopMostItemIndex
 		harness.atBottomThreshold = atBottomThreshold
 		harness.scrollerStyle = style
@@ -447,6 +452,7 @@ describe("ChatView scroll behavior regression coverage", () => {
 		harness.signalDelayMs = 20
 		harness.emitFalseOnDataChange = true
 		harness.delayedGrowthMs = null
+		harness.initialItemCount = undefined
 		harness.initialTopMostItemIndex = undefined
 		harness.followOutput = undefined
 		harness.emitAtBottom = () => {}
@@ -457,9 +463,10 @@ describe("ChatView scroll behavior regression coverage", () => {
 		harness.skipAnimationFrameInResizeObserver = undefined
 	})
 
-	it("existing-task entry starts at the final virtualized row", async () => {
+	it("premeasures the initial transcript before navigating to its final row", async () => {
 		await hydrate(2)
-		expect(harness.initialTopMostItemIndex).toEqual({ index: "LAST", align: "end" })
+		expect(harness.initialItemCount).toBe(2)
+		expect(harness.initialTopMostItemIndex).toBeUndefined()
 	})
 
 	it("only resumes anchored following at the physical bottom", async () => {
@@ -627,7 +634,7 @@ describe("ChatView scroll behavior regression coverage", () => {
 		expect(document.querySelector(".codicon-chevron-down")).toBeNull()
 	})
 
-	it("non-wheel upward intent disengages sticky follow", async () => {
+	it("native scrollbar movement disengages sticky follow without pointer events", async () => {
 		await hydrate(1)
 		await waitForCalls(1)
 		await waitForCallsSettled()
@@ -637,10 +644,8 @@ describe("ChatView scroll behavior regression coverage", () => {
 		setScrollGeometry(scrollable, { scrollHeight: 1_000, clientHeight: 400, scrollTop: 240 })
 
 		await act(async () => {
-			fireEvent.pointerDown(scrollable)
 			scrollable.scrollTop = 120
 			fireEvent.scroll(scrollable)
-			fireEvent.pointerUp(window)
 		})
 
 		expect(resolveFollowOutput(false)).toBe(false)
@@ -661,10 +666,8 @@ describe("ChatView scroll behavior regression coverage", () => {
 		scrollable.scrollTop = 240
 
 		await act(async () => {
-			fireEvent.pointerDown(nestedScrollable)
 			nestedScrollable.scrollTop = 120
 			fireEvent.scroll(nestedScrollable)
-			fireEvent.pointerUp(window)
 		})
 
 		expect(resolveFollowOutput(false)).toBe("auto")

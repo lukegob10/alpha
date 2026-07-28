@@ -1867,14 +1867,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							increaseViewportBy={{ top: 3_000, bottom: 1000 }}
 							data={groupedMessages}
 							computeItemKey={computeChatItemKey}
-							initialTopMostItemIndex={
-								groupedMessages.length > 0
-									? {
-											index: "LAST",
-											align: "end",
-										}
-									: undefined
-							}
+							// Measure the complete initial transcript once before virtualization.
+							// Otherwise mixed-height chat rows continuously revise scrollHeight,
+							// which makes the native scrollbar thumb jump under the pointer.
+							initialItemCount={groupedMessages.length}
 							itemContent={itemContent}
 							followOutput={followOutputCallback}
 							atBottomStateChange={atBottomStateChangeCallback}

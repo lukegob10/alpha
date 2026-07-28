@@ -14,11 +14,6 @@ import type { VirtuosoHandle } from "react-virtuoso"
 // reported immediately instead of accumulating into a visible jump.
 export const CHAT_BOTTOM_THRESHOLD_PX = 4
 
-// Re-engage follow mode a little before the exact endpoint. This is deliberately
-// separate from Virtuoso's measurement threshold: it makes reaching the bottom
-// easy without allowing near-bottom row growth to move a browsing viewport.
-export const CHAT_FOLLOW_RESUME_DISTANCE_PX = 48
-
 // Virtuoso's autoscrollToBottom API listens for size-increase events for 100 ms.
 // Coalescing calls to the same window avoids stacking multiple listeners during
 // token streaming while keeping the listener armed before ResizeObserver runs.
@@ -28,10 +23,10 @@ export type ScrollPhase = "ANCHORED_FOLLOWING" | "USER_BROWSING_HISTORY"
 
 export type ScrollFollowDisengageSource =
 	| "wheel"
+	| "scroll"
 	| "row-expansion"
 	| "task-header-toggle"
 	| "keyboard-navigation"
-	| "pointer-scroll"
 
 const isEditableKeyboardTarget = (target: EventTarget | null): boolean => {
 	if (!(target instanceof HTMLElement)) {
@@ -211,15 +206,20 @@ export function useScrollLifecycle({
 			scrollerLastTopRef.current = currentTop
 
 			const reachedExactBottom = remainingDistance <= CHAT_BOTTOM_THRESHOLD_PX
+			const movedAwayFromBottom = previousTop !== null && currentTop < previousTop
 			const movedTowardBottom = previousTop !== null && currentTop > previousTop
-			if (reachedExactBottom || (movedTowardBottom && remainingDistance <= CHAT_FOLLOW_RESUME_DISTANCE_PX)) {
+			const leftReportedBottom = isAtBottomRef.current && !reachedExactBottom
+			if (movedAwayFromBottom || leftReportedBottom) {
+				isAtBottomRef.current = false
+				enterUserBrowsingHistory("scroll")
+			} else if (reachedExactBottom && movedTowardBottom) {
 				isAtBottomRef.current = true
 				enterAnchoredFollowing()
 			} else if (scrollPhaseRef.current === "USER_BROWSING_HISTORY") {
 				setShowScrollToBottom(true)
 			}
 		},
-		[enterAnchoredFollowing],
+		[enterAnchoredFollowing, enterUserBrowsingHistory],
 	)
 
 	const handleWheel = useCallback(
@@ -245,67 +245,6 @@ export function useScrollLifecycle({
 		[enterUserBrowsingHistory, scrollContainerRef],
 	)
 	useEvent("wheel", handleWheel, window, { passive: true })
-
-	const pointerScrollActiveRef = useRef(false)
-	const pointerScrollElementRef = useRef<HTMLElement | null>(null)
-	const pointerScrollLastTopRef = useRef<number | null>(null)
-
-	const handlePointerDown = useCallback(
-		(event: Event) => {
-			const pointerTarget = (event as PointerEvent).target
-			if (!(pointerTarget instanceof HTMLElement) || !scrollContainerRef.current?.contains(pointerTarget)) {
-				pointerScrollActiveRef.current = false
-				pointerScrollElementRef.current = null
-				pointerScrollLastTopRef.current = null
-				return
-			}
-
-			const scroller = pointerTarget.closest(".scrollable") as HTMLElement | null
-			pointerScrollActiveRef.current = scroller !== null
-			pointerScrollElementRef.current = scroller
-			pointerScrollLastTopRef.current = scroller?.scrollTop ?? null
-			scrollerLastTopRef.current = scroller?.scrollTop ?? null
-		},
-		[scrollContainerRef],
-	)
-
-	const handlePointerEnd = useCallback(() => {
-		pointerScrollActiveRef.current = false
-		pointerScrollElementRef.current = null
-		pointerScrollLastTopRef.current = null
-	}, [])
-
-	const handlePointerActiveScroll = useCallback(
-		(event: Event) => {
-			if (!pointerScrollActiveRef.current) {
-				return
-			}
-			const scrollTarget = event.target
-			if (!(scrollTarget instanceof HTMLElement) || pointerScrollElementRef.current !== scrollTarget) {
-				return
-			}
-
-			const previousTop = pointerScrollLastTopRef.current
-			pointerScrollLastTopRef.current = scrollTarget.scrollTop
-			if (previousTop === null || previousTop === scrollTarget.scrollTop) {
-				return
-			}
-
-			const movedTowardBottom = scrollTarget.scrollTop > previousTop
-			if (movedTowardBottom && distanceFromBottom(scrollTarget) <= CHAT_FOLLOW_RESUME_DISTANCE_PX) {
-				isAtBottomRef.current = true
-				enterAnchoredFollowing()
-			} else {
-				enterUserBrowsingHistory("pointer-scroll")
-			}
-		},
-		[enterAnchoredFollowing, enterUserBrowsingHistory],
-	)
-
-	useEvent("pointerdown", handlePointerDown, window, { passive: true })
-	useEvent("pointerup", handlePointerEnd, window, { passive: true })
-	useEvent("pointercancel", handlePointerEnd, window, { passive: true })
-	useEvent("scroll", handlePointerActiveScroll, window, { passive: true, capture: true })
 
 	const handleScrollKeyDown = useCallback(
 		(event: Event) => {

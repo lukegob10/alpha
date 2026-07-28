@@ -2,11 +2,7 @@ import React from "react"
 import { act, fireEvent, renderHook } from "@/utils/test-utils"
 import type { VirtuosoHandle } from "react-virtuoso"
 
-import {
-	CHAT_FOLLOW_RESUME_DISTANCE_PX,
-	useScrollLifecycle,
-	type UseScrollLifecycleOptions,
-} from "../useScrollLifecycle"
+import { CHAT_BOTTOM_THRESHOLD_PX, useScrollLifecycle, type UseScrollLifecycleOptions } from "../useScrollLifecycle"
 
 const createHarness = (overrides: Partial<UseScrollLifecycleOptions> = {}) => {
 	const scrollToIndex = vi.fn()
@@ -127,7 +123,7 @@ describe("useScrollLifecycle", () => {
 		expect(result.current.scrollPhase).toBe("USER_BROWSING_HISTORY")
 	})
 
-	it("re-engages following inside the larger user resume zone", () => {
+	it("re-engages following only at the physical bottom", () => {
 		const { result, scroller } = createHarness()
 		fireEvent.keyDown(window, { key: "PageUp" })
 		expect(result.current.scrollPhase).toBe("USER_BROWSING_HISTORY")
@@ -139,7 +135,7 @@ describe("useScrollLifecycle", () => {
 		setScrollGeometry(scroller, {
 			scrollHeight: 1_000,
 			clientHeight: 400,
-			scrollTop: 600 - CHAT_FOLLOW_RESUME_DISTANCE_PX,
+			scrollTop: 600 - CHAT_BOTTOM_THRESHOLD_PX,
 		})
 		act(() =>
 			result.current.handleScrollerScroll({ currentTarget: scroller } as unknown as React.UIEvent<HTMLElement>),
@@ -149,7 +145,7 @@ describe("useScrollLifecycle", () => {
 		expect(result.current.showScrollToBottom).toBe(false)
 	})
 
-	it("does not recapture an upward scroll merely because it is inside the resume zone", () => {
+	it("does not recapture an upward scroll near the physical bottom", () => {
 		const { result, scroller } = createHarness()
 		setScrollGeometry(scroller, { scrollHeight: 1_000, clientHeight: 400, scrollTop: 600 })
 		act(() => result.current.atBottomStateChangeCallback(true))
@@ -164,14 +160,17 @@ describe("useScrollLifecycle", () => {
 		expect(result.current.showScrollToBottom).toBe(true)
 	})
 
-	it("treats pointer scrollbar movement in either direction as user ownership", () => {
+	it("detects upward native scrollbar movement without pointer events", () => {
 		const { result, scroller } = createHarness()
-		setScrollGeometry(scroller, { scrollHeight: 1_000, clientHeight: 400, scrollTop: 100 })
+		setScrollGeometry(scroller, { scrollHeight: 1_000, clientHeight: 400, scrollTop: 600 })
+		act(() =>
+			result.current.handleScrollerScroll({ currentTarget: scroller } as unknown as React.UIEvent<HTMLElement>),
+		)
 
-		fireEvent.pointerDown(scroller)
 		scroller.scrollTop = 200
-		fireEvent.scroll(scroller)
-		fireEvent.pointerUp(window)
+		act(() =>
+			result.current.handleScrollerScroll({ currentTarget: scroller } as unknown as React.UIEvent<HTMLElement>),
+		)
 
 		expect(result.current.scrollPhase).toBe("USER_BROWSING_HISTORY")
 	})
