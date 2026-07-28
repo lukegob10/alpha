@@ -6,9 +6,9 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.0.7
+## Welcome to Alpha v2.0.8
 
-Alpha v2.0.7 eliminates end-of-chat scroll bouncing while preserving deliberate history browsing.
+Alpha v2.0.8 rebuilds chat scrolling around a single controller for stable bottom following and deliberate history browsing.
 
 <details>
   <summary>🌐 Available languages</summary>
@@ -32,7 +32,7 @@ Alpha v2.0.7 eliminates end-of-chat scroll bouncing while preserving deliberate 
 - [简体中文](locales/zh-CN/README.md)
 - [繁體中文](locales/zh-TW/README.md)
 - ...
-  </details>
+      </details>
 
 ---
 

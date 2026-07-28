@@ -12,7 +12,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "2.0.7",
+		version: "2.0.8",
 	},
 }))
 
@@ -32,10 +32,10 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		render(<Announcement hideAnnouncement={vi.fn()} />)
 
-		expect(screen.getByText("Welcome to Alpha v2.0.7")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v2.0.8")).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Alpha v2.0.7 eliminates end-of-chat scroll bouncing while preserving deliberate history browsing.",
+				"Alpha v2.0.8 rebuilds chat scrolling around a single controller for stable bottom following and deliberate history browsing.",
 			),
 		).toBeInTheDocument()
 	})
@@ -45,10 +45,10 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(2)
 		expect(
-			screen.getByText("Bottom following now converges on the physical end of the transcript."),
+			screen.getByText("The composer now lives in a separate dock and cannot cover the transcript endpoint."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Late content measurements no longer override intentional upward scrolling."),
+			screen.getByText("The final 5% of the viewport magnetically captures and follows live output."),
 		).toBeInTheDocument()
 	})
 })

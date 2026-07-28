@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.8
+
+### Patch Changes
+
+- Rebuild chat scrolling around one automatic scroll owner and the native scroller's geometry.
+- Keep the composer in a separate dock, preserve deliberate history browsing, and magnetically capture the final 5% of the transcript viewport.
+
 ## 2.0.7
 
 ### Patch Changes

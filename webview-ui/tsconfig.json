@@ -25,5 +25,5 @@
 			"@alpha/*": ["../src/shared/*"]
 		}
 	},
-	"include": ["src", "../src/shared", "vitest.setup.ts"]
+	"include": ["src", "test-fixtures", "../src/shared", "vitest.setup.ts"]
 }

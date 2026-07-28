@@ -48,7 +48,7 @@ import { CheckpointWarning } from "./CheckpointWarning"
 import { QueuedMessages } from "./QueuedMessages"
 import { WorktreeSelector } from "./WorktreeSelector"
 import FileChangesPanel from "./FileChangesPanel"
-import { CHAT_BOTTOM_THRESHOLD_PX, useScrollLifecycle } from "@src/hooks/useScrollLifecycle"
+import { useChatScrollController } from "@src/hooks/useChatScrollController"
 
 export interface ChatViewProps {
 	isHidden: boolean
@@ -244,7 +244,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const virtuosoRef = useRef<VirtuosoHandle>(null)
 	const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({})
 	const prevExpandedRowsRef = useRef<Record<number, boolean>>()
-	const scrollContainerRef = useRef<HTMLDivElement>(null)
 	const lastTtsRef = useRef<string>("")
 	const [wasStreaming, setWasStreaming] = useState<boolean>(false)
 	const [checkpointWarning, setCheckpointWarning] = useState<
@@ -571,8 +570,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 	}, [activeMessages.length])
 
-	// Reset UI states when task changes. Scroll lifecycle is handled by
-	// useScrollLifecycle which has its own effect keyed on taskTs.
+	// Reset UI states when task changes. Transcript ownership is reset by the
+	// scroll controller using the same task timestamp.
 	useEffect(() => {
 		setExpandedRows({})
 		everVisibleMessagesTsRef.current.clear()
@@ -1455,24 +1454,22 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		checkpointJumpCursorRef.current = null
 	}, [task?.ts, checkpointIndices])
 
-	// Scroll lifecycle is managed by a dedicated hook to keep ChatView focused
-	// on message handling and UI orchestration.
+	// The transcript has one automatic scroll owner. Virtuoso only virtualizes
+	// and reports geometry; the controller owns follow/browse state and every
+	// bottom correction.
 	const {
 		showScrollToBottom,
 		handleScrollToBottomClick,
-		enterUserBrowsingHistory,
-		followOutputCallback,
-		atBottomStateChangeCallback,
+		releaseFollow,
+		setScrollerRef,
 		handleScrollerScroll,
+		handleScrollerIdleChange,
+		handleContentHeightChange,
 		handleContentLoad,
-	} = useScrollLifecycle({
+	} = useChatScrollController({
 		virtuosoRef,
-		scrollContainerRef,
 		taskTs: task?.ts,
-		isHidden,
-		hasTask: !!task,
 		itemCount: groupedMessages.length,
-		bottomContentRevision: groupedMessages.at(-1),
 	})
 
 	// The floating controls are siblings of Virtuoso's scroller, so wheel input
@@ -1483,7 +1480,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [])
 
 	// Expanding a row indicates the user is browsing; disable sticky follow.
-	// Placed after the hook call so enterUserBrowsingHistory is defined.
+	// Placed after the hook call so releaseFollow is defined.
 	useEffect(() => {
 		const prev = prevExpandedRowsRef.current
 		let wasAnyRowExpandedByUser = false
@@ -1498,11 +1495,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 
 		if (wasAnyRowExpandedByUser) {
-			enterUserBrowsingHistory("row-expansion")
+			releaseFollow("row-expansion")
 		}
 
 		prevExpandedRowsRef.current = expandedRows
-	}, [enterUserBrowsingHistory, expandedRows])
+	}, [expandedRows, releaseFollow])
 
 	const handleSetExpandedRow = useCallback(
 		(ts: number, expand?: boolean) => {
@@ -1607,8 +1604,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [handleScrollToBottomClick])
 
 	const handleTaskHeaderExpandedChange = useCallback(() => {
-		enterUserBrowsingHistory("task-header-toggle")
-	}, [enterUserBrowsingHistory])
+		releaseFollow("task-header-toggle")
+	}, [releaseFollow])
 
 	const handleScrollToLatestCheckpoint = useCallback(() => {
 		if (checkpointIndices.length === 0) {
@@ -1620,13 +1617,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		const nextCheckpointIndex = checkpointIndices[nextCursor]
 		checkpointJumpCursorRef.current = nextCursor
 
-		enterUserBrowsingHistory("keyboard-navigation")
+		releaseFollow("checkpoint-navigation")
 		virtuosoRef.current?.scrollToIndex({
 			index: nextCheckpointIndex,
 			align: "center",
 			behavior: "smooth",
 		})
-	}, [checkpointIndices, enterUserBrowsingHistory])
+	}, [checkpointIndices, releaseFollow])
 
 	const itemContent = useCallback(
 		(index: number, messageOrGroup: ClineMessage) => {
@@ -1710,8 +1707,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		switchToMode(allModes[previousModeIndex].slug)
 	}, [mode, customModes, switchToMode])
 
-	// Mode switching keyboard handler. Scroll-intent keyboard detection
-	// (PageUp, Home, ArrowUp) is handled by useScrollLifecycle.
+	// Mode switching keyboard handler. Transcript ownership is derived from the
+	// native scroller's geometry by useChatScrollController.
 	const handleKeyDown = useCallback(
 		(event: KeyboardEvent) => {
 			if ((event.metaKey || event.ctrlKey) && event.key === ".") {
@@ -1857,10 +1854,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			{!task && showWorktreesInHomeScreen && <WorktreeSelector />}
 
 			{task && (
-				<div
-					data-testid="chat-transcript-viewport"
-					className="relative mb-2 min-h-0 flex-1 overflow-hidden"
-					ref={scrollContainerRef}>
+				<div data-testid="chat-transcript-viewport" className="relative mb-2 min-h-0 flex-1 overflow-hidden">
 					<Virtuoso
 						ref={virtuosoRef}
 						key={task.ts}
@@ -1869,17 +1863,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						increaseViewportBy={{ top: 3_000, bottom: 1000 }}
 						data={groupedMessages}
 						computeItemKey={computeChatItemKey}
-						// Measure the complete initial transcript once before virtualization.
-						// Otherwise mixed-height chat rows continuously revise scrollHeight,
-						// which makes the native scrollbar thumb jump under the pointer.
-						initialItemCount={groupedMessages.length}
 						itemContent={itemContent}
-						followOutput={followOutputCallback}
-						atBottomStateChange={atBottomStateChangeCallback}
-						atBottomThreshold={CHAT_BOTTOM_THRESHOLD_PX}
+						scrollerRef={setScrollerRef}
 						onScroll={handleScrollerScroll}
+						isScrolling={handleScrollerIdleChange}
+						totalListHeightChanged={handleContentHeightChange}
 						onLoadCapture={handleContentLoad}
-						skipAnimationFrameInResizeObserver
 					/>
 					{showScrollToBottom && (
 						<div
@@ -1913,75 +1902,71 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				</div>
 			)}
 
-			{task && (
-				<>
-					<FileChangesPanel
-						clineMessages={activeMessages}
-						taskId={visibleCurrentTaskId}
-						className="shrink-0"
-					/>
-					{areActionButtonsVisible && (
-						<div
-							className={`flex h-9 shrink-0 items-center mb-1 px-[15px] ${enableButtons ? "opacity-100" : "opacity-50"}`}>
-							{primaryButtonText && (
-								<StandardTooltip
-									content={
-										primaryButtonText === t("chat:retry.title")
-											? t("chat:retry.tooltip")
-											: primaryButtonText === t("chat:save.title")
-												? t("chat:save.tooltip")
-												: primaryButtonText === t("chat:approve.title")
-													? t("chat:approve.tooltip")
-													: primaryButtonText === t("chat:runCommand.title")
-														? t("chat:runCommand.tooltip")
-														: primaryButtonText === t("chat:startNewTask.title")
-															? t("chat:startNewTask.tooltip")
-															: primaryButtonText === t("chat:resumeTask.title")
-																? t("chat:resumeTask.tooltip")
-																: primaryButtonText === t("chat:proceedAnyways.title")
-																	? t("chat:proceedAnyways.tooltip")
+			<div data-testid="chat-bottom-dock" className="relative z-20 flex shrink-0 flex-col">
+				{task && (
+					<>
+						<FileChangesPanel clineMessages={activeMessages} taskId={visibleCurrentTaskId} />
+						{areActionButtonsVisible && (
+							<div
+								className={`flex h-9 shrink-0 items-center mb-1 px-[15px] ${enableButtons ? "opacity-100" : "opacity-50"}`}>
+								{primaryButtonText && (
+									<StandardTooltip
+										content={
+											primaryButtonText === t("chat:retry.title")
+												? t("chat:retry.tooltip")
+												: primaryButtonText === t("chat:save.title")
+													? t("chat:save.tooltip")
+													: primaryButtonText === t("chat:approve.title")
+														? t("chat:approve.tooltip")
+														: primaryButtonText === t("chat:runCommand.title")
+															? t("chat:runCommand.tooltip")
+															: primaryButtonText === t("chat:startNewTask.title")
+																? t("chat:startNewTask.tooltip")
+																: primaryButtonText === t("chat:resumeTask.title")
+																	? t("chat:resumeTask.tooltip")
 																	: primaryButtonText ===
-																		  t("chat:proceedWhileRunning.title")
-																		? t("chat:proceedWhileRunning.tooltip")
-																		: undefined
-									}>
-									<Button
-										variant="primary"
-										disabled={!enableButtons}
-										className={secondaryButtonText ? "flex-1 mr-[6px]" : "flex-[2] mr-0"}
-										onClick={() => handlePrimaryButtonClick(inputValue, selectedImages)}>
-										{primaryButtonText}
-									</Button>
-								</StandardTooltip>
-							)}
-							{secondaryButtonText && (
-								<StandardTooltip
-									content={
-										secondaryButtonText === t("chat:startNewTask.title")
-											? t("chat:startNewTask.tooltip")
-											: secondaryButtonText === t("chat:reject.title")
-												? t("chat:reject.tooltip")
-												: secondaryButtonText === t("chat:terminate.title")
-													? t("chat:terminate.tooltip")
-													: secondaryButtonText === t("chat:killCommand.title")
-														? t("chat:killCommand.tooltip")
-														: undefined
-									}>
-									<Button
-										variant="secondary"
-										disabled={!enableButtons}
-										className="flex-1 ml-[6px]"
-										onClick={() => handleSecondaryButtonClick()}>
-										{secondaryButtonText}
-									</Button>
-								</StandardTooltip>
-							)}
-						</div>
-					)}
-				</>
-			)}
-
-			<div data-testid="chat-bottom-dock" className="relative z-20 shrink-0">
+																		  t("chat:proceedAnyways.title")
+																		? t("chat:proceedAnyways.tooltip")
+																		: primaryButtonText ===
+																			  t("chat:proceedWhileRunning.title")
+																			? t("chat:proceedWhileRunning.tooltip")
+																			: undefined
+										}>
+										<Button
+											variant="primary"
+											disabled={!enableButtons}
+											className={secondaryButtonText ? "flex-1 mr-[6px]" : "flex-[2] mr-0"}
+											onClick={() => handlePrimaryButtonClick(inputValue, selectedImages)}>
+											{primaryButtonText}
+										</Button>
+									</StandardTooltip>
+								)}
+								{secondaryButtonText && (
+									<StandardTooltip
+										content={
+											secondaryButtonText === t("chat:startNewTask.title")
+												? t("chat:startNewTask.tooltip")
+												: secondaryButtonText === t("chat:reject.title")
+													? t("chat:reject.tooltip")
+													: secondaryButtonText === t("chat:terminate.title")
+														? t("chat:terminate.tooltip")
+														: secondaryButtonText === t("chat:killCommand.title")
+															? t("chat:killCommand.tooltip")
+															: undefined
+										}>
+										<Button
+											variant="secondary"
+											disabled={!enableButtons}
+											className="flex-1 ml-[6px]"
+											onClick={() => handleSecondaryButtonClick()}>
+											{secondaryButtonText}
+										</Button>
+									</StandardTooltip>
+								)}
+							</div>
+						)}
+					</>
+				)}
 				<QueuedMessages
 					queue={visibleMessageQueue}
 					editingMessageId={editingQueuedMessage?.id}

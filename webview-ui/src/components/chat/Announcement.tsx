@@ -35,12 +35,12 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 				</DialogHeader>
 				<div className="space-y-2 text-sm">
 					<p>
-						Alpha v{Package.version} eliminates end-of-chat scroll bouncing while preserving deliberate
-						history browsing.
+						Alpha v{Package.version} rebuilds chat scrolling around a single controller for stable bottom
+						following and deliberate history browsing.
 					</p>
 					<ul className="list-disc space-y-1 pl-5">
-						<li>Bottom following now converges on the physical end of the transcript.</li>
-						<li>Late content measurements no longer override intentional upward scrolling.</li>
+						<li>The composer now lives in a separate dock and cannot cover the transcript endpoint.</li>
+						<li>The final 5% of the viewport magnetically captures and follows live output.</li>
 					</ul>
 				</div>
 			</DialogContent>
