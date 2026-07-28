@@ -1,5 +1,5 @@
 import type { ReactNode } from "react"
-import { act, render, screen } from "@/utils/test-utils"
+import { render, screen } from "@/utils/test-utils"
 import type { ClineMessage } from "@alpha-code/types"
 
 import ChatRow, { type ChatRowEnvironment } from "../ChatRow"
@@ -21,36 +21,7 @@ vi.mock("react-i18next", () => ({
 	initReactI18next: { type: "3rdParty", init: () => {} },
 }))
 
-const resizeObserverHarness = {
-	callback: (() => {}) as ResizeObserverCallback,
-	disconnect: vi.fn(),
-	observe: vi.fn(),
-}
-
-class TestResizeObserver {
-	constructor(callback: ResizeObserverCallback) {
-		resizeObserverHarness.callback = callback
-	}
-
-	observe = resizeObserverHarness.observe
-	disconnect = resizeObserverHarness.disconnect
-	unobserve = vi.fn()
-}
-
-const originalResizeObserver = globalThis.ResizeObserver
-
 describe("ChatRow render isolation", () => {
-	beforeEach(() => {
-		resizeObserverHarness.callback = () => {}
-		resizeObserverHarness.disconnect.mockClear()
-		resizeObserverHarness.observe.mockClear()
-		globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver
-	})
-
-	afterAll(() => {
-		globalThis.ResizeObserver = originalResizeObserver
-	})
-
 	it("renders a virtualized row from its stable environment without reading root transcript state", () => {
 		const message: ClineMessage = {
 			ts: 1,
@@ -76,17 +47,14 @@ describe("ChatRow render isolation", () => {
 				isLast={false}
 				isStreaming={false}
 				onToggleExpand={() => {}}
-				onHeightChange={() => {}}
 			/>,
 		)
 
 		expect(screen.getByText("completed response")).toBeInTheDocument()
 		expect(mockUseExtensionState).not.toHaveBeenCalled()
-		expect(resizeObserverHarness.observe).not.toHaveBeenCalled()
 	})
 
-	it("observes only the final row and reports actual growth after the initial measurement", () => {
-		const onHeightChange = vi.fn()
+	it("leaves final-row measurement to the virtualized list", () => {
 		const message: ClineMessage = {
 			ts: 2,
 			type: "say",
@@ -111,23 +79,10 @@ describe("ChatRow render isolation", () => {
 				isLast={true}
 				isStreaming={true}
 				onToggleExpand={() => {}}
-				onHeightChange={onHeightChange}
 			/>,
 		)
 
-		expect(resizeObserverHarness.observe).toHaveBeenCalledTimes(1)
-		act(() => {
-			resizeObserverHarness.callback(
-				[{ contentRect: { height: 100 } } as ResizeObserverEntry],
-				{} as ResizeObserver,
-			)
-			resizeObserverHarness.callback(
-				[{ contentRect: { height: 140 } } as ResizeObserverEntry],
-				{} as ResizeObserver,
-			)
-		})
-
-		expect(onHeightChange).toHaveBeenCalledTimes(1)
-		expect(onHeightChange).toHaveBeenCalledWith(true)
+		expect(screen.getByText("streaming response")).toBeInTheDocument()
+		expect(mockUseExtensionState).not.toHaveBeenCalled()
 	})
 })

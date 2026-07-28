@@ -1,46 +1,37 @@
 /**
- * useScrollLifecycle
+ * Chat scroll ownership.
  *
- * Simplified chat scroll lifecycle with a short, time-boxed hydration window.
- *
- * - Task switch enters `HYDRATING_PINNED_TO_BOTTOM`
- * - Virtuoso owns appended-item and viewport-resize following; the hook provides
- *   bounded hydration, exact-bottom correction for existing-row growth, and
- *   explicit-navigation fallbacks
- * - During hydration, transient Virtuoso `atBottomStateChange(false)` signals
- *   are ignored so follow mode does not flicker off
- * - User escape intent (wheel / keyboard / pointer-upward drag / row expansion)
- *   moves to `USER_BROWSING_HISTORY` and prevents forced re-pinning
+ * Virtuoso is the only code allowed to measure rows or follow content growth.
+ * The application owns only the user-facing mode switch between following the
+ * live output and browsing history, plus explicit navigation commands.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from "react"
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { useEvent } from "react-use"
 import type { VirtuosoHandle } from "react-virtuoso"
 
-const HYDRATION_WINDOW_MS = 600
-const HYDRATION_RETRY_WINDOW_MS = 160
-
-// Keep bottom detection close to the physical end of the scroller. A wide
-// threshold turns ordinary near-bottom browsing into anchored following and
-// lets late row measurements pull the viewport away from the user's wheel.
+// Keep Virtuoso's own bottom calculation exact so existing-row growth is
+// reported immediately instead of accumulating into a visible jump.
 export const CHAT_BOTTOM_THRESHOLD_PX = 4
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+// Re-engage follow mode a little before the exact endpoint. This is deliberately
+// separate from Virtuoso's measurement threshold: it makes reaching the bottom
+// easy without allowing near-bottom row growth to move a browsing viewport.
+export const CHAT_FOLLOW_RESUME_DISTANCE_PX = 48
 
-export type ScrollPhase = "HYDRATING_PINNED_TO_BOTTOM" | "ANCHORED_FOLLOWING" | "USER_BROWSING_HISTORY"
+// Virtuoso's autoscrollToBottom API listens for size-increase events for 100 ms.
+// Coalescing calls to the same window avoids stacking multiple listeners during
+// token streaming while keeping the listener armed before ResizeObserver runs.
+const AUTOSCROLL_ARM_WINDOW_MS = 100
+
+export type ScrollPhase = "ANCHORED_FOLLOWING" | "USER_BROWSING_HISTORY"
 
 export type ScrollFollowDisengageSource =
-	| "wheel-up"
+	| "wheel"
 	| "row-expansion"
 	| "task-header-toggle"
-	| "keyboard-nav-up"
-	| "pointer-scroll-up"
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+	| "keyboard-navigation"
+	| "pointer-scroll"
 
 const isEditableKeyboardTarget = (target: EventTarget | null): boolean => {
 	if (!(target instanceof HTMLElement)) {
@@ -53,9 +44,8 @@ const isEditableKeyboardTarget = (target: EventTarget | null): boolean => {
 	return tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT"
 }
 
-// ---------------------------------------------------------------------------
-// Hook interface
-// ---------------------------------------------------------------------------
+const distanceFromBottom = (element: HTMLElement): number =>
+	Math.max(0, element.scrollHeight - element.clientHeight - element.scrollTop)
 
 export interface UseScrollLifecycleOptions {
 	virtuosoRef: React.RefObject<VirtuosoHandle | null>
@@ -64,21 +54,20 @@ export interface UseScrollLifecycleOptions {
 	isHidden: boolean
 	hasTask: boolean
 	itemCount: number
+	/** Identity changes whenever the rendered final message content changes. */
+	bottomContentRevision: unknown
 }
 
 export interface UseScrollLifecycleReturn {
 	scrollPhase: ScrollPhase
 	showScrollToBottom: boolean
-	handleRowHeightChange: (isTaller: boolean) => void
 	handleScrollToBottomClick: () => void
 	enterUserBrowsingHistory: (source: ScrollFollowDisengageSource) => void
-	followOutputCallback: () => "auto" | false
+	followOutputCallback: (isAtBottom: boolean) => "auto" | false
 	atBottomStateChangeCallback: (isAtBottom: boolean) => void
+	handleScrollerScroll: (event: React.UIEvent<HTMLElement>) => void
+	handleContentLoad: () => void
 }
-
-// ---------------------------------------------------------------------------
-// Hook implementation
-// ---------------------------------------------------------------------------
 
 export function useScrollLifecycle({
 	virtuosoRef,
@@ -87,39 +76,18 @@ export function useScrollLifecycle({
 	isHidden,
 	hasTask,
 	itemCount,
+	bottomContentRevision,
 }: UseScrollLifecycleOptions): UseScrollLifecycleReturn {
-	// --- Mounted guard ---
-	const isMountedRef = useRef(true)
-
-	// --- Phase state ---
 	const [scrollPhase, setScrollPhase] = useState<ScrollPhase>("USER_BROWSING_HISTORY")
 	const scrollPhaseRef = useRef<ScrollPhase>("USER_BROWSING_HISTORY")
-
-	// --- Visibility state ---
 	const [showScrollToBottom, setShowScrollToBottom] = useState(false)
-
-	// --- Bottom detection ---
 	const isAtBottomRef = useRef(false)
 	const itemCountRef = useRef(itemCount)
+	const positionedTaskRef = useRef<number | undefined>(undefined)
+	const autoscrollArmTimeoutRef = useRef<number | null>(null)
+	const scrollerLastTopRef = useRef<number | null>(null)
+
 	itemCountRef.current = itemCount
-
-	// --- Hydration window ---
-	const isHydratingRef = useRef(false)
-	const hydrationTimeoutRef = useRef<number | null>(null)
-	const hydrationRetryUsedRef = useRef(false)
-
-	// --- Pointer scroll tracking ---
-	const pointerScrollActiveRef = useRef(false)
-	const pointerScrollElementRef = useRef<HTMLElement | null>(null)
-	const pointerScrollLastTopRef = useRef<number | null>(null)
-
-	// --- Scheduled scroll frames ---
-	const bottomScrollAnimationFrameRef = useRef<number | null>(null)
-	const reanchorAnimationFrameRef = useRef<number | null>(null)
-
-	// -----------------------------------------------------------------------
-	// Phase transitions
-	// -----------------------------------------------------------------------
 
 	const transitionScrollPhase = useCallback((nextPhase: ScrollPhase) => {
 		if (scrollPhaseRef.current === nextPhase) {
@@ -137,275 +105,166 @@ export function useScrollLifecycle({
 	const enterUserBrowsingHistory = useCallback(
 		(_source: ScrollFollowDisengageSource) => {
 			transitionScrollPhase("USER_BROWSING_HISTORY")
-			// Always show the scroll-to-bottom CTA when the user explicitly
-			// disengages. If they happen to still be at the physical bottom,
-			// the next Virtuoso atBottomStateChange(true) will hide it.
 			setShowScrollToBottom(true)
 		},
 		[transitionScrollPhase],
 	)
 
-	const cancelReanchorFrame = useCallback(() => {
-		if (reanchorAnimationFrameRef.current !== null) {
-			cancelAnimationFrame(reanchorAnimationFrameRef.current)
-			reanchorAnimationFrameRef.current = null
+	const clearAutoscrollArm = useCallback(() => {
+		if (autoscrollArmTimeoutRef.current !== null) {
+			window.clearTimeout(autoscrollArmTimeoutRef.current)
+			autoscrollArmTimeoutRef.current = null
 		}
 	}, [])
 
-	const cancelBottomScrollFrame = useCallback(() => {
-		if (bottomScrollAnimationFrameRef.current !== null) {
-			cancelAnimationFrame(bottomScrollAnimationFrameRef.current)
-			bottomScrollAnimationFrameRef.current = null
-		}
-	}, [])
-
-	// -----------------------------------------------------------------------
-	// Scroll commands
-	// -----------------------------------------------------------------------
-
-	const scrollToBottomAuto = useCallback(() => {
-		if (itemCountRef.current === 0 || bottomScrollAnimationFrameRef.current !== null) {
+	const armBottomFollowing = useCallback(() => {
+		if (
+			scrollPhaseRef.current !== "ANCHORED_FOLLOWING" ||
+			itemCountRef.current === 0 ||
+			autoscrollArmTimeoutRef.current !== null
+		) {
 			return
 		}
 
-		bottomScrollAnimationFrameRef.current = requestAnimationFrame(() => {
-			bottomScrollAnimationFrameRef.current = null
-			if (scrollPhaseRef.current === "USER_BROWSING_HISTORY") {
-				return
-			}
-			const currentItemCount = itemCountRef.current
-			if (currentItemCount === 0) {
-				return
-			}
-			// Scroll the scroller itself to its physical maximum. Item alignment is
-			// not an exact-bottom operation when Virtuoso renders a footer or is
-			// still reconciling measured row sizes.
-			virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" })
-		})
+		virtuosoRef.current?.autoscrollToBottom()
+		autoscrollArmTimeoutRef.current = window.setTimeout(() => {
+			autoscrollArmTimeoutRef.current = null
+		}, AUTOSCROLL_ARM_WINDOW_MS)
 	}, [virtuosoRef])
 
-	const clearHydrationWindow = useCallback(() => {
-		isHydratingRef.current = false
-		hydrationRetryUsedRef.current = false
-		if (hydrationTimeoutRef.current !== null) {
-			window.clearTimeout(hydrationTimeoutRef.current)
-			hydrationTimeoutRef.current = null
-		}
-	}, [])
+	useEffect(() => clearAutoscrollArm, [clearAutoscrollArm])
 
-	const finishHydrationWindow = useCallback(() => {
-		if (!isMountedRef.current || !isHydratingRef.current) {
+	// A task switch starts in follow mode. Keep this independent from item-count
+	// changes so incoming messages can never re-enable following while the user
+	// is browsing history.
+	useLayoutEffect(() => {
+		isAtBottomRef.current = false
+		clearAutoscrollArm()
+		positionedTaskRef.current = undefined
+		scrollerLastTopRef.current = null
+
+		if (!taskTs) {
+			transitionScrollPhase("USER_BROWSING_HISTORY")
+			setShowScrollToBottom(false)
 			return
 		}
 
-		if (scrollPhaseRef.current === "HYDRATING_PINNED_TO_BOTTOM") {
-			if (isAtBottomRef.current) {
-				enterAnchoredFollowing()
-			} else {
-				if (!hydrationRetryUsedRef.current) {
-					hydrationRetryUsedRef.current = true
-					scrollToBottomAuto()
-					hydrationTimeoutRef.current = window.setTimeout(() => {
-						finishHydrationWindow()
-					}, HYDRATION_RETRY_WINDOW_MS)
-					return
-				}
+		enterAnchoredFollowing()
+	}, [clearAutoscrollArm, enterAnchoredFollowing, taskTs, transitionScrollPhase])
 
-				// Retry budget exhausted. Keep anchored follow rather than
-				// downgrading to browsing mode due to non-user transient drift.
-				enterAnchoredFollowing()
-			}
+	// Task initialization is event-driven: as soon as the first rows exist, use
+	// one Virtuoso-coordinated navigation command. No retries or raw scrollTop
+	// writes are allowed to race later row measurements.
+	useLayoutEffect(() => {
+		if (!taskTs) {
+			return
 		}
-
-		clearHydrationWindow()
-	}, [clearHydrationWindow, enterAnchoredFollowing, scrollToBottomAuto])
-
-	const startHydrationWindow = useCallback(() => {
-		isHydratingRef.current = true
-		hydrationRetryUsedRef.current = false
-		if (hydrationTimeoutRef.current !== null) {
-			window.clearTimeout(hydrationTimeoutRef.current)
+		if (itemCount > 0 && positionedTaskRef.current !== taskTs) {
+			positionedTaskRef.current = taskTs
+			virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" })
 		}
-		hydrationTimeoutRef.current = window.setTimeout(() => {
-			finishHydrationWindow()
-		}, HYDRATION_WINDOW_MS)
-	}, [finishHydrationWindow])
+	}, [itemCount, taskTs, virtuosoRef])
 
-	// -----------------------------------------------------------------------
-	// Lifecycle effects
-	// -----------------------------------------------------------------------
+	// React layout effects run before ResizeObserver delivery. Arming Virtuoso
+	// here lets its own size-increase pipeline keep the final row pinned without
+	// a second observer or an application scroll command fighting it afterward.
+	useLayoutEffect(() => {
+		armBottomFollowing()
+	}, [armBottomFollowing, bottomContentRevision, itemCount])
 
-	// Mounted guard + global cleanup
-	useEffect(() => {
-		isMountedRef.current = true
-		return () => {
-			isMountedRef.current = false
-			clearHydrationWindow()
-			cancelBottomScrollFrame()
-			cancelReanchorFrame()
-		}
-	}, [cancelBottomScrollFrame, cancelReanchorFrame, clearHydrationWindow])
-
-	// Keep phase ref in sync with state
-	useEffect(() => {
-		scrollPhaseRef.current = scrollPhase
-	}, [scrollPhase])
-
-	// Task switch: reset and begin a short hydration window
-	useEffect(() => {
-		isAtBottomRef.current = false
-		clearHydrationWindow()
-		cancelBottomScrollFrame()
-		cancelReanchorFrame()
-
-		if (taskTs) {
-			transitionScrollPhase("HYDRATING_PINNED_TO_BOTTOM")
-			setShowScrollToBottom(false)
-			startHydrationWindow()
-		} else {
-			transitionScrollPhase("USER_BROWSING_HISTORY")
-			setShowScrollToBottom(false)
-		}
-
-		return () => {
-			clearHydrationWindow()
-			cancelBottomScrollFrame()
-			cancelReanchorFrame()
-		}
-	}, [
-		cancelBottomScrollFrame,
-		cancelReanchorFrame,
-		clearHydrationWindow,
-		startHydrationWindow,
-		taskTs,
-		transitionScrollPhase,
-	])
-
-	// -----------------------------------------------------------------------
-	// Row height change handler
-	// -----------------------------------------------------------------------
-
-	const handleRowHeightChange = useCallback(
-		(isTaller: boolean) => {
-			if (!isTaller) {
-				return
-			}
-
-			if (scrollPhaseRef.current !== "ANCHORED_FOLLOWING") {
-				return
-			}
-
-			scrollToBottomAuto()
-		},
-		[scrollToBottomAuto],
-	)
-
-	// -----------------------------------------------------------------------
-	// Scroll-to-bottom click handler
-	// -----------------------------------------------------------------------
+	const handleContentLoad = useCallback(() => {
+		// Image/iframe load events can change row height without changing the
+		// message object. Capture them before the subsequent size measurement.
+		armBottomFollowing()
+	}, [armBottomFollowing])
 
 	const handleScrollToBottomClick = useCallback(() => {
+		if (itemCountRef.current === 0) {
+			return
+		}
 		enterAnchoredFollowing()
-		scrollToBottomAuto()
-		cancelReanchorFrame()
-		reanchorAnimationFrameRef.current = requestAnimationFrame(() => {
-			reanchorAnimationFrameRef.current = null
-			if (scrollPhaseRef.current === "ANCHORED_FOLLOWING") {
-				scrollToBottomAuto()
-			}
-		})
-	}, [cancelReanchorFrame, enterAnchoredFollowing, scrollToBottomAuto])
+		virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" })
+	}, [enterAnchoredFollowing, virtuosoRef])
 
-	// -----------------------------------------------------------------------
-	// Virtuoso callback: followOutput
-	// -----------------------------------------------------------------------
-
-	const followOutputCallback = useCallback((): "auto" | false => {
-		return scrollPhase === "USER_BROWSING_HISTORY" ? false : "auto"
-	}, [scrollPhase])
-
-	// -----------------------------------------------------------------------
-	// Virtuoso callback: atBottomStateChange
-	// -----------------------------------------------------------------------
+	const followOutputCallback = useCallback((isAtBottom: boolean): "auto" | false => {
+		return isAtBottom || scrollPhaseRef.current === "ANCHORED_FOLLOWING" ? "auto" : false
+	}, [])
 
 	const atBottomStateChangeCallback = useCallback(
 		(isAtBottom: boolean) => {
 			isAtBottomRef.current = isAtBottom
-
-			const currentPhase = scrollPhaseRef.current
-
-			if (!isAtBottom && isHydratingRef.current && currentPhase !== "USER_BROWSING_HISTORY") {
-				setShowScrollToBottom(false)
-				return
-			}
-
 			if (isAtBottom) {
-				if (currentPhase === "USER_BROWSING_HISTORY" && isHydratingRef.current) {
-					setShowScrollToBottom(true)
-					return
-				}
-
 				enterAnchoredFollowing()
-				return
+			} else if (scrollPhaseRef.current === "USER_BROWSING_HISTORY") {
+				setShowScrollToBottom(true)
 			}
-
-			if (currentPhase === "ANCHORED_FOLLOWING" && !isAtBottom && pointerScrollActiveRef.current) {
-				enterUserBrowsingHistory("pointer-scroll-up")
-				return
-			}
-
-			// A transient size increase can report false before the queued physical
-			// bottom correction lands. Only explicit browsing should expose the CTA;
-			// otherwise the overlay flickers on every late row measurement.
-			setShowScrollToBottom(currentPhase === "USER_BROWSING_HISTORY")
 		},
-		[enterAnchoredFollowing, enterUserBrowsingHistory],
+		[enterAnchoredFollowing],
 	)
 
-	// -----------------------------------------------------------------------
-	// User intent: wheel
-	// -----------------------------------------------------------------------
+	const handleScrollerScroll = useCallback(
+		(event: React.UIEvent<HTMLElement>) => {
+			const scroller = event.currentTarget
+			const previousTop = scrollerLastTopRef.current
+			const currentTop = scroller.scrollTop
+			const remainingDistance = distanceFromBottom(scroller)
+			scrollerLastTopRef.current = currentTop
+
+			const reachedExactBottom = remainingDistance <= CHAT_BOTTOM_THRESHOLD_PX
+			const movedTowardBottom = previousTop !== null && currentTop > previousTop
+			if (reachedExactBottom || (movedTowardBottom && remainingDistance <= CHAT_FOLLOW_RESUME_DISTANCE_PX)) {
+				isAtBottomRef.current = true
+				enterAnchoredFollowing()
+			} else if (scrollPhaseRef.current === "USER_BROWSING_HISTORY") {
+				setShowScrollToBottom(true)
+			}
+		},
+		[enterAnchoredFollowing],
+	)
 
 	const handleWheel = useCallback(
 		(event: Event) => {
 			const wheelEvent = event as WheelEvent
-			if (wheelEvent.deltaY < 0 && scrollContainerRef.current?.contains(wheelEvent.target as Node)) {
-				enterUserBrowsingHistory("wheel-up")
+			if (!scrollContainerRef.current?.contains(wheelEvent.target as Node) || wheelEvent.deltaY === 0) {
+				return
+			}
+			const eventTarget = wheelEvent.target
+			if (eventTarget instanceof HTMLElement) {
+				const scroller = eventTarget.closest(".scrollable") as HTMLElement | null
+				if (scroller) {
+					scrollerLastTopRef.current = scroller.scrollTop
+				}
+			}
+
+			// Upward wheel input always takes ownership. Downward input also takes
+			// ownership if measurement drift has left the viewport away from bottom.
+			if (wheelEvent.deltaY < 0 || !isAtBottomRef.current) {
+				enterUserBrowsingHistory("wheel")
 			}
 		},
 		[enterUserBrowsingHistory, scrollContainerRef],
 	)
 	useEvent("wheel", handleWheel, window, { passive: true })
 
-	// -----------------------------------------------------------------------
-	// User intent: pointer drag
-	// -----------------------------------------------------------------------
+	const pointerScrollActiveRef = useRef(false)
+	const pointerScrollElementRef = useRef<HTMLElement | null>(null)
+	const pointerScrollLastTopRef = useRef<number | null>(null)
 
 	const handlePointerDown = useCallback(
 		(event: Event) => {
-			const pointerEvent = event as PointerEvent
-			const pointerTarget = pointerEvent.target
-			if (!(pointerTarget instanceof HTMLElement)) {
+			const pointerTarget = (event as PointerEvent).target
+			if (!(pointerTarget instanceof HTMLElement) || !scrollContainerRef.current?.contains(pointerTarget)) {
 				pointerScrollActiveRef.current = false
 				pointerScrollElementRef.current = null
 				pointerScrollLastTopRef.current = null
 				return
 			}
 
-			if (!scrollContainerRef.current?.contains(pointerTarget)) {
-				pointerScrollActiveRef.current = false
-				pointerScrollElementRef.current = null
-				pointerScrollLastTopRef.current = null
-				return
-			}
-
-			const scroller =
-				(pointerTarget.closest(".scrollable") as HTMLElement | null) ??
-				(pointerTarget.scrollHeight > pointerTarget.clientHeight ? pointerTarget : null)
-
+			const scroller = pointerTarget.closest(".scrollable") as HTMLElement | null
 			pointerScrollActiveRef.current = scroller !== null
 			pointerScrollElementRef.current = scroller
 			pointerScrollLastTopRef.current = scroller?.scrollTop ?? null
+			scrollerLastTopRef.current = scroller?.scrollTop ?? null
 		},
 		[scrollContainerRef],
 	)
@@ -421,29 +280,26 @@ export function useScrollLifecycle({
 			if (!pointerScrollActiveRef.current) {
 				return
 			}
-
 			const scrollTarget = event.target
-			if (!(scrollTarget instanceof HTMLElement)) {
-				return
-			}
-
-			if (!scrollContainerRef.current?.contains(scrollTarget)) {
-				return
-			}
-
-			if (pointerScrollElementRef.current !== scrollTarget) {
+			if (!(scrollTarget instanceof HTMLElement) || pointerScrollElementRef.current !== scrollTarget) {
 				return
 			}
 
 			const previousTop = pointerScrollLastTopRef.current
-			const currentTop = scrollTarget.scrollTop
-			pointerScrollLastTopRef.current = currentTop
+			pointerScrollLastTopRef.current = scrollTarget.scrollTop
+			if (previousTop === null || previousTop === scrollTarget.scrollTop) {
+				return
+			}
 
-			if (previousTop !== null && currentTop < previousTop) {
-				enterUserBrowsingHistory("pointer-scroll-up")
+			const movedTowardBottom = scrollTarget.scrollTop > previousTop
+			if (movedTowardBottom && distanceFromBottom(scrollTarget) <= CHAT_FOLLOW_RESUME_DISTANCE_PX) {
+				isAtBottomRef.current = true
+				enterAnchoredFollowing()
+			} else {
+				enterUserBrowsingHistory("pointer-scroll")
 			}
 		},
-		[enterUserBrowsingHistory, scrollContainerRef],
+		[enterAnchoredFollowing, enterUserBrowsingHistory],
 	)
 
 	useEvent("pointerdown", handlePointerDown, window, { passive: true })
@@ -451,27 +307,20 @@ export function useScrollLifecycle({
 	useEvent("pointercancel", handlePointerEnd, window, { passive: true })
 	useEvent("scroll", handlePointerActiveScroll, window, { passive: true, capture: true })
 
-	// -----------------------------------------------------------------------
-	// User intent: keyboard navigation
-	// -----------------------------------------------------------------------
-
 	const handleScrollKeyDown = useCallback(
 		(event: Event) => {
 			const keyEvent = event as KeyboardEvent
-
-			if (!hasTask || isHidden) {
+			if (!hasTask || isHidden || keyEvent.metaKey || keyEvent.ctrlKey || keyEvent.altKey) {
 				return
 			}
 
-			if (keyEvent.metaKey || keyEvent.ctrlKey || keyEvent.altKey) {
-				return
-			}
-
-			if (keyEvent.key !== "PageUp" && keyEvent.key !== "Home" && keyEvent.key !== "ArrowUp") {
-				return
-			}
-
-			if (isEditableKeyboardTarget(keyEvent.target)) {
+			const upwardKey = keyEvent.key === "PageUp" || keyEvent.key === "Home" || keyEvent.key === "ArrowUp"
+			const downwardKey =
+				keyEvent.key === "PageDown" ||
+				keyEvent.key === "End" ||
+				keyEvent.key === "ArrowDown" ||
+				keyEvent.key === " "
+			if ((!upwardKey && !downwardKey) || isEditableKeyboardTarget(keyEvent.target)) {
 				return
 			}
 
@@ -480,26 +329,30 @@ export function useScrollLifecycle({
 				activeElement instanceof HTMLElement && !!scrollContainerRef.current?.contains(activeElement)
 			const eventTargetInsideChat =
 				keyEvent.target instanceof Node && !!scrollContainerRef.current?.contains(keyEvent.target)
+			if (!(focusInsideChat || eventTargetInsideChat || activeElement === document.body)) {
+				return
+			}
+			const scroller = scrollContainerRef.current?.querySelector<HTMLElement>(".scrollable")
+			if (scroller) {
+				scrollerLastTopRef.current = scroller.scrollTop
+			}
 
-			if (focusInsideChat || eventTargetInsideChat || activeElement === document.body) {
-				enterUserBrowsingHistory("keyboard-nav-up")
+			if (upwardKey || !isAtBottomRef.current) {
+				enterUserBrowsingHistory("keyboard-navigation")
 			}
 		},
 		[enterUserBrowsingHistory, hasTask, isHidden, scrollContainerRef],
 	)
 	useEvent("keydown", handleScrollKeyDown, window)
 
-	// -----------------------------------------------------------------------
-	// Return public API
-	// -----------------------------------------------------------------------
-
 	return {
 		scrollPhase,
 		showScrollToBottom,
-		handleRowHeightChange,
 		handleScrollToBottomClick,
 		enterUserBrowsingHistory,
 		followOutputCallback,
 		atBottomStateChangeCallback,
+		handleScrollerScroll,
+		handleContentLoad,
 	}
 }

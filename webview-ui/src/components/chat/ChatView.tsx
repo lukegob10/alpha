@@ -1459,11 +1459,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// on message handling and UI orchestration.
 	const {
 		showScrollToBottom,
-		handleRowHeightChange,
 		handleScrollToBottomClick,
 		enterUserBrowsingHistory,
 		followOutputCallback,
 		atBottomStateChangeCallback,
+		handleScrollerScroll,
+		handleContentLoad,
 	} = useScrollLifecycle({
 		virtuosoRef,
 		scrollContainerRef,
@@ -1471,6 +1472,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		isHidden,
 		hasTask: !!task,
 		itemCount: groupedMessages.length,
+		bottomContentRevision: groupedMessages.at(-1),
 	})
 
 	// The floating controls are siblings of Virtuoso's scroller, so wheel input
@@ -1618,7 +1620,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		const nextCheckpointIndex = checkpointIndices[nextCursor]
 		checkpointJumpCursorRef.current = nextCursor
 
-		enterUserBrowsingHistory("keyboard-nav-up")
+		enterUserBrowsingHistory("keyboard-navigation")
 		virtuosoRef.current?.scrollToIndex({
 			index: nextCheckpointIndex,
 			align: "center",
@@ -1640,7 +1642,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					onToggleExpand={toggleRowExpansion} // This was already stabilized
 					lastModifiedMessage={isLast ? modifiedMessages.at(-1) : undefined}
 					isLast={isLast}
-					onHeightChange={handleRowHeightChange}
 					isStreaming={isStreaming}
 					onSuggestionClick={handleSuggestionClickInRow} // This was already stabilized
 					onBatchFileResponse={handleBatchFileResponse}
@@ -1677,7 +1678,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			toggleRowExpansion,
 			modifiedMessages,
 			groupedMessages.length,
-			handleRowHeightChange,
 			isStreaming,
 			handleSuggestionClickInRow,
 			handleBatchFileResponse,
@@ -1863,13 +1863,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							ref={virtuosoRef}
 							key={task.ts}
 							className="scrollable h-full min-h-0 w-full overscroll-contain"
+							style={{ overflowAnchor: "none" }}
 							increaseViewportBy={{ top: 3_000, bottom: 1000 }}
 							data={groupedMessages}
 							computeItemKey={computeChatItemKey}
 							initialTopMostItemIndex={
 								groupedMessages.length > 0
 									? {
-											index: groupedMessages.length - 1,
+											index: "LAST",
 											align: "end",
 										}
 									: undefined
@@ -1878,6 +1879,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							followOutput={followOutputCallback}
 							atBottomStateChange={atBottomStateChangeCallback}
 							atBottomThreshold={CHAT_BOTTOM_THRESHOLD_PX}
+							onScroll={handleScrollerScroll}
+							onLoadCapture={handleContentLoad}
+							skipAnimationFrameInResizeObserver
 						/>
 						{showScrollToBottom && (
 							<div

@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import React, { memo, useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslation, Trans } from "react-i18next"
 import deepEqual from "fast-deep-equal"
 import { VSCodeBadge } from "@vscode/webview-ui-toolkit/react"
@@ -131,7 +131,6 @@ interface ChatRowProps {
 	isLast: boolean
 	isStreaming: boolean
 	onToggleExpand: (ts: number) => void
-	onHeightChange: (isTaller: boolean) => void
 	onSuggestionClick?: (suggestion: SuggestionItem, event?: React.MouseEvent) => void
 	onBatchFileResponse?: (response: { [key: string]: boolean }) => void
 	onFollowUpUnmount?: () => void
@@ -143,7 +142,7 @@ interface ChatRowProps {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-interface ChatRowContentProps extends Omit<ChatRowProps, "onHeightChange" | "environment"> {}
+interface ChatRowContentProps extends Omit<ChatRowProps, "environment"> {}
 
 interface ChatRowContentInnerProps extends ChatRowContentProps {
 	environment: ChatRowEnvironment
@@ -151,38 +150,9 @@ interface ChatRowContentInnerProps extends ChatRowContentProps {
 
 const ChatRow = memo(
 	(props: ChatRowProps) => {
-		const { isLast, onHeightChange } = props
-		const rowRef = useRef<HTMLDivElement>(null)
-		const prevHeightRef = useRef(0)
-
-		useEffect(() => {
-			const row = rowRef.current
-			if (!isLast || !row) {
-				prevHeightRef.current = 0
-				return
-			}
-
-			prevHeightRef.current = 0
-			const resizeObserver = new ResizeObserver((entries) => {
-				const height = entries[0]?.contentRect.height
-				if (height === undefined || !Number.isFinite(height) || height === prevHeightRef.current) {
-					return
-				}
-
-				const previousHeight = prevHeightRef.current
-				prevHeightRef.current = height
-				if (previousHeight > 0) {
-					onHeightChange(height > previousHeight)
-				}
-			})
-			resizeObserver.observe(row)
-
-			return () => resizeObserver.disconnect()
-		}, [isLast, onHeightChange])
-
 		// we cannot return null as virtuoso does not support it, so we use a separate visibleMessages array to filter out messages that should not be rendered
 		return (
-			<div ref={rowRef} className="px-[15px] py-[10px] pr-[6px]">
+			<div className="px-[15px] py-[10px] pr-[6px]">
 				<ChatRowContentInner {...props} />
 			</div>
 		)
