@@ -1794,7 +1794,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				/>
 			)}
 			{task ? (
-				<>
+				<div data-testid="chat-header-dock" className="shrink-0">
 					<TaskHeader
 						task={task}
 						tokensIn={apiMetrics.totalTokensIn}
@@ -1835,7 +1835,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							<CheckpointWarning warning={checkpointWarning} />
 						</div>
 					)}
-				</>
+				</div>
 			) : (
 				<div className="relative flex h-full min-h-0 flex-col justify-center gap-4 overflow-y-auto p-5 min-[400px]:p-7">
 					<div className="mx-auto flex h-full w-full max-w-[760px] flex-col items-start justify-center gap-3">
@@ -1857,62 +1857,72 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			{!task && showWorktreesInHomeScreen && <WorktreeSelector />}
 
 			{task && (
-				<>
-					<div className="relative mb-8 min-h-0 flex-1 overflow-hidden" ref={scrollContainerRef}>
-						<Virtuoso
-							ref={virtuosoRef}
-							key={task.ts}
-							className="scrollable h-full min-h-0 w-full overscroll-contain"
-							style={{ overflowAnchor: "none" }}
-							increaseViewportBy={{ top: 3_000, bottom: 1000 }}
-							data={groupedMessages}
-							computeItemKey={computeChatItemKey}
-							// Measure the complete initial transcript once before virtualization.
-							// Otherwise mixed-height chat rows continuously revise scrollHeight,
-							// which makes the native scrollbar thumb jump under the pointer.
-							initialItemCount={groupedMessages.length}
-							itemContent={itemContent}
-							followOutput={followOutputCallback}
-							atBottomStateChange={atBottomStateChangeCallback}
-							atBottomThreshold={CHAT_BOTTOM_THRESHOLD_PX}
-							onScroll={handleScrollerScroll}
-							onLoadCapture={handleContentLoad}
-							skipAnimationFrameInResizeObserver
-						/>
-						{showScrollToBottom && (
-							<div
-								data-testid="chat-scroll-controls"
-								className="pointer-events-none absolute inset-x-0 bottom-2 z-10 flex h-9 items-center justify-center gap-2 px-[15px]"
-								onWheel={handleScrollControlsWheel}>
-								<StandardTooltip content={t("chat:scrollToBottom")}>
+				<div
+					data-testid="chat-transcript-viewport"
+					className="relative mb-2 min-h-0 flex-1 overflow-hidden"
+					ref={scrollContainerRef}>
+					<Virtuoso
+						ref={virtuosoRef}
+						key={task.ts}
+						className="scrollable h-full min-h-0 w-full overscroll-contain"
+						style={{ overflowAnchor: "none" }}
+						increaseViewportBy={{ top: 3_000, bottom: 1000 }}
+						data={groupedMessages}
+						computeItemKey={computeChatItemKey}
+						// Measure the complete initial transcript once before virtualization.
+						// Otherwise mixed-height chat rows continuously revise scrollHeight,
+						// which makes the native scrollbar thumb jump under the pointer.
+						initialItemCount={groupedMessages.length}
+						itemContent={itemContent}
+						followOutput={followOutputCallback}
+						atBottomStateChange={atBottomStateChangeCallback}
+						atBottomThreshold={CHAT_BOTTOM_THRESHOLD_PX}
+						onScroll={handleScrollerScroll}
+						onLoadCapture={handleContentLoad}
+						skipAnimationFrameInResizeObserver
+					/>
+					{showScrollToBottom && (
+						<div
+							data-testid="chat-scroll-controls"
+							className="pointer-events-none absolute inset-x-0 bottom-2 z-10 flex h-9 items-center justify-center gap-2 px-[15px]"
+							onWheel={handleScrollControlsWheel}>
+							<StandardTooltip content={t("chat:scrollToBottom")}>
+								<Button
+									variant="secondary"
+									size="icon"
+									className="pointer-events-auto rounded-full"
+									onClick={handleScrollToBottomAndResetCheckpointCursor}
+									aria-label={t("chat:scrollToBottom")}>
+									<span className="codicon codicon-chevron-down"></span>
+								</Button>
+							</StandardTooltip>
+							{hasLatestCheckpoint && (
+								<StandardTooltip content={t("chat:scrollToLatestCheckpoint")}>
 									<Button
 										variant="secondary"
 										size="icon"
 										className="pointer-events-auto rounded-full"
-										onClick={handleScrollToBottomAndResetCheckpointCursor}
-										aria-label={t("chat:scrollToBottom")}>
-										<span className="codicon codicon-chevron-down"></span>
+										onClick={handleScrollToLatestCheckpoint}
+										aria-label={t("chat:scrollToLatestCheckpoint")}>
+										<span className="codicon codicon-history"></span>
 									</Button>
 								</StandardTooltip>
-								{hasLatestCheckpoint && (
-									<StandardTooltip content={t("chat:scrollToLatestCheckpoint")}>
-										<Button
-											variant="secondary"
-											size="icon"
-											className="pointer-events-auto rounded-full"
-											onClick={handleScrollToLatestCheckpoint}
-											aria-label={t("chat:scrollToLatestCheckpoint")}>
-											<span className="codicon codicon-history"></span>
-										</Button>
-									</StandardTooltip>
-								)}
-							</div>
-						)}
-					</div>
-					<FileChangesPanel clineMessages={activeMessages} taskId={visibleCurrentTaskId} />
+							)}
+						</div>
+					)}
+				</div>
+			)}
+
+			{task && (
+				<>
+					<FileChangesPanel
+						clineMessages={activeMessages}
+						taskId={visibleCurrentTaskId}
+						className="shrink-0"
+					/>
 					{areActionButtonsVisible && (
 						<div
-							className={`flex h-9 items-center mb-1 px-[15px] ${enableButtons ? "opacity-100" : "opacity-50"}`}>
+							className={`flex h-9 shrink-0 items-center mb-1 px-[15px] ${enableButtons ? "opacity-100" : "opacity-50"}`}>
 							{primaryButtonText && (
 								<StandardTooltip
 									content={
@@ -1971,76 +1981,78 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				</>
 			)}
 
-			<QueuedMessages
-				queue={visibleMessageQueue}
-				editingMessageId={editingQueuedMessage?.id}
-				onRemove={(index) => {
-					if (visibleMessageQueue[index]) {
-						vscode.postMessage({
-							type: "removeQueuedMessage",
-							text: visibleMessageQueue[index].id,
-							...visibleTaskPayload,
-						})
-					}
-				}}
-				onSteer={(index) => {
-					if (visibleMessageQueue[index]) {
-						vscode.postMessage({
-							type: "steerQueuedMessage",
-							text: visibleMessageQueue[index].id,
-							...visibleTaskPayload,
-						})
-					}
-				}}
-				onEdit={(index) => {
-					if (visibleMessageQueue[index]) {
-						startQueuedMessageEdit(visibleMessageQueue[index])
-					}
-				}}
-				onReorder={(fromIndex, toIndex) => {
-					if (visibleMessageQueue[fromIndex]) {
-						vscode.postMessage({
-							type: "reorderQueuedMessage",
-							payload: {
-								id: visibleMessageQueue[fromIndex].id,
-								toIndex,
-							},
-							...visibleTaskPayload,
-						})
-					}
-				}}
-			/>
-			{showRetiredProviderWarning && (
-				<div className="px-[15px] py-1">
-					<WarningRow
-						title={t("chat:retiredProvider.title")}
-						message={t("chat:retiredProvider.message")}
-						actionText={t("chat:retiredProvider.openSettings")}
-						onAction={() => vscode.postMessage({ type: "switchTab", tab: "settings" })}
-					/>
-				</div>
-			)}
-			<ChatTextArea
-				ref={textAreaRef}
-				inputValue={inputValue}
-				setInputValue={setInputValue}
-				sendingDisabled={sendingDisabled || isProfileDisabled}
-				selectApiConfigDisabled={sendingDisabled && clineAsk !== "api_req_failed"}
-				placeholderText={placeholderText}
-				selectedImages={selectedImages}
-				setSelectedImages={setSelectedImages}
-				onSend={() => handleSendMessage(inputValue, selectedImages)}
-				onSelectImages={selectImages}
-				shouldDisableImages={shouldDisableImages}
-				mode={mode}
-				setMode={setMode}
-				modeShortcutText={modeShortcutText}
-				isEditMode={Boolean(editingQueuedMessage)}
-				onCancel={cancelQueuedMessageEdit}
-				isStreaming={isStreaming}
-				onStop={handleStopTask}
-				onEnqueueMessage={handleEnqueueCurrentMessage}
-			/>
+			<div data-testid="chat-bottom-dock" className="relative z-20 shrink-0">
+				<QueuedMessages
+					queue={visibleMessageQueue}
+					editingMessageId={editingQueuedMessage?.id}
+					onRemove={(index) => {
+						if (visibleMessageQueue[index]) {
+							vscode.postMessage({
+								type: "removeQueuedMessage",
+								text: visibleMessageQueue[index].id,
+								...visibleTaskPayload,
+							})
+						}
+					}}
+					onSteer={(index) => {
+						if (visibleMessageQueue[index]) {
+							vscode.postMessage({
+								type: "steerQueuedMessage",
+								text: visibleMessageQueue[index].id,
+								...visibleTaskPayload,
+							})
+						}
+					}}
+					onEdit={(index) => {
+						if (visibleMessageQueue[index]) {
+							startQueuedMessageEdit(visibleMessageQueue[index])
+						}
+					}}
+					onReorder={(fromIndex, toIndex) => {
+						if (visibleMessageQueue[fromIndex]) {
+							vscode.postMessage({
+								type: "reorderQueuedMessage",
+								payload: {
+									id: visibleMessageQueue[fromIndex].id,
+									toIndex,
+								},
+								...visibleTaskPayload,
+							})
+						}
+					}}
+				/>
+				{showRetiredProviderWarning && (
+					<div className="px-[15px] py-1">
+						<WarningRow
+							title={t("chat:retiredProvider.title")}
+							message={t("chat:retiredProvider.message")}
+							actionText={t("chat:retiredProvider.openSettings")}
+							onAction={() => vscode.postMessage({ type: "switchTab", tab: "settings" })}
+						/>
+					</div>
+				)}
+				<ChatTextArea
+					ref={textAreaRef}
+					inputValue={inputValue}
+					setInputValue={setInputValue}
+					sendingDisabled={sendingDisabled || isProfileDisabled}
+					selectApiConfigDisabled={sendingDisabled && clineAsk !== "api_req_failed"}
+					placeholderText={placeholderText}
+					selectedImages={selectedImages}
+					setSelectedImages={setSelectedImages}
+					onSend={() => handleSendMessage(inputValue, selectedImages)}
+					onSelectImages={selectImages}
+					shouldDisableImages={shouldDisableImages}
+					mode={mode}
+					setMode={setMode}
+					modeShortcutText={modeShortcutText}
+					isEditMode={Boolean(editingQueuedMessage)}
+					onCancel={cancelQueuedMessageEdit}
+					isStreaming={isStreaming}
+					onStop={handleStopTask}
+					onEnqueueMessage={handleEnqueueCurrentMessage}
+				/>
+			</div>
 
 			<div id="alpha-portal" />
 		</div>

@@ -14,6 +14,19 @@ import type { VirtuosoHandle } from "react-virtuoso"
 // reported immediately instead of accumulating into a visible jump.
 export const CHAT_BOTTOM_THRESHOLD_PX = 4
 
+// The magnetic entry zone is relative to the visible viewport, not the full
+// transcript. A document-relative percentage would grow to multiple screens in
+// a long conversation and unexpectedly steal users out of history browsing.
+export const CHAT_BOTTOM_MAGNET_VIEWPORT_RATIO = 0.05
+export const CHAT_BOTTOM_MAGNET_MIN_PX = 16
+
+// Once following, use a much wider release zone than the entry zone. This
+// hysteresis absorbs trackpad noise and viewport-height changes while still
+// allowing a deliberate scrollbar, wheel, or keyboard yank to take ownership.
+export const CHAT_BOTTOM_RELEASE_VIEWPORT_RATIO = 0.25
+export const CHAT_BOTTOM_RELEASE_MIN_PX = 96
+export const CHAT_BOTTOM_MAGNET_SETTLE_MS = 120
+
 // Virtuoso's autoscrollToBottom API listens for size-increase events for 100 ms.
 // Coalescing calls to the same window avoids stacking multiple listeners during
 // token streaming while keeping the listener armed before ResizeObserver runs.
@@ -21,12 +34,7 @@ const AUTOSCROLL_ARM_WINDOW_MS = 100
 
 export type ScrollPhase = "ANCHORED_FOLLOWING" | "USER_BROWSING_HISTORY"
 
-export type ScrollFollowDisengageSource =
-	| "wheel"
-	| "scroll"
-	| "row-expansion"
-	| "task-header-toggle"
-	| "keyboard-navigation"
+export type ScrollFollowDisengageSource = "scroll" | "row-expansion" | "task-header-toggle" | "keyboard-navigation"
 
 const isEditableKeyboardTarget = (target: EventTarget | null): boolean => {
 	if (!(target instanceof HTMLElement)) {
@@ -41,6 +49,12 @@ const isEditableKeyboardTarget = (target: EventTarget | null): boolean => {
 
 const distanceFromBottom = (element: HTMLElement): number =>
 	Math.max(0, element.scrollHeight - element.clientHeight - element.scrollTop)
+
+const magneticEntryDistance = (element: HTMLElement): number =>
+	Math.max(CHAT_BOTTOM_MAGNET_MIN_PX, element.clientHeight * CHAT_BOTTOM_MAGNET_VIEWPORT_RATIO)
+
+const magneticReleaseDistance = (element: HTMLElement): number =>
+	Math.max(CHAT_BOTTOM_RELEASE_MIN_PX, element.clientHeight * CHAT_BOTTOM_RELEASE_VIEWPORT_RATIO)
 
 export interface UseScrollLifecycleOptions {
 	virtuosoRef: React.RefObject<VirtuosoHandle | null>
@@ -76,10 +90,11 @@ export function useScrollLifecycle({
 	const [scrollPhase, setScrollPhase] = useState<ScrollPhase>("USER_BROWSING_HISTORY")
 	const scrollPhaseRef = useRef<ScrollPhase>("USER_BROWSING_HISTORY")
 	const [showScrollToBottom, setShowScrollToBottom] = useState(false)
-	const isAtBottomRef = useRef(false)
 	const itemCountRef = useRef(itemCount)
 	const positionedTaskRef = useRef<number | undefined>(undefined)
 	const autoscrollArmTimeoutRef = useRef<number | null>(null)
+	const magnetSnapTimeoutRef = useRef<number | null>(null)
+	const viewportResizeFrameRef = useRef<number | null>(null)
 	const scrollerLastTopRef = useRef<number | null>(null)
 
 	itemCountRef.current = itemCount
@@ -92,6 +107,20 @@ export function useScrollLifecycle({
 		setScrollPhase(nextPhase)
 	}, [])
 
+	const clearMagnetSnap = useCallback(() => {
+		if (magnetSnapTimeoutRef.current !== null) {
+			window.clearTimeout(magnetSnapTimeoutRef.current)
+			magnetSnapTimeoutRef.current = null
+		}
+	}, [])
+
+	const clearViewportResizeCorrection = useCallback(() => {
+		if (viewportResizeFrameRef.current !== null) {
+			window.cancelAnimationFrame(viewportResizeFrameRef.current)
+			viewportResizeFrameRef.current = null
+		}
+	}, [])
+
 	const enterAnchoredFollowing = useCallback(() => {
 		transitionScrollPhase("ANCHORED_FOLLOWING")
 		setShowScrollToBottom(false)
@@ -99,10 +128,12 @@ export function useScrollLifecycle({
 
 	const enterUserBrowsingHistory = useCallback(
 		(_source: ScrollFollowDisengageSource) => {
+			clearMagnetSnap()
+			clearViewportResizeCorrection()
 			transitionScrollPhase("USER_BROWSING_HISTORY")
 			setShowScrollToBottom(true)
 		},
-		[transitionScrollPhase],
+		[clearMagnetSnap, clearViewportResizeCorrection, transitionScrollPhase],
 	)
 
 	const clearAutoscrollArm = useCallback(() => {
@@ -111,6 +142,44 @@ export function useScrollLifecycle({
 			autoscrollArmTimeoutRef.current = null
 		}
 	}, [])
+
+	const positionLastItem = useCallback(() => {
+		virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" })
+	}, [virtuosoRef])
+
+	const scrollToPhysicalBottom = useCallback(() => {
+		// scrollToIndex aligns the final row, but margins in that row can still
+		// leave the native scroller several pixels above its real maximum. Use the
+		// Virtuoso handle's native-coordinate command when exact bottom matters.
+		virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" })
+	}, [virtuosoRef])
+
+	const scheduleMagnetSnap = useCallback(() => {
+		clearMagnetSnap()
+		magnetSnapTimeoutRef.current = window.setTimeout(() => {
+			magnetSnapTimeoutRef.current = null
+			if (scrollPhaseRef.current === "ANCHORED_FOLLOWING" && itemCountRef.current > 0) {
+				scrollToPhysicalBottom()
+			}
+		}, CHAT_BOTTOM_MAGNET_SETTLE_MS)
+	}, [clearMagnetSnap, scrollToPhysicalBottom])
+
+	const scheduleViewportResizeCorrection = useCallback(() => {
+		if (viewportResizeFrameRef.current !== null) {
+			return
+		}
+
+		viewportResizeFrameRef.current = window.requestAnimationFrame(() => {
+			viewportResizeFrameRef.current = null
+			if (
+				scrollPhaseRef.current === "ANCHORED_FOLLOWING" &&
+				positionedTaskRef.current === taskTs &&
+				itemCountRef.current > 0
+			) {
+				scrollToPhysicalBottom()
+			}
+		})
+	}, [scrollToPhysicalBottom, taskTs])
 
 	const armBottomFollowing = useCallback(() => {
 		if (
@@ -127,14 +196,22 @@ export function useScrollLifecycle({
 		}, AUTOSCROLL_ARM_WINDOW_MS)
 	}, [virtuosoRef])
 
-	useEffect(() => clearAutoscrollArm, [clearAutoscrollArm])
+	useEffect(
+		() => () => {
+			clearAutoscrollArm()
+			clearMagnetSnap()
+			clearViewportResizeCorrection()
+		},
+		[clearAutoscrollArm, clearMagnetSnap, clearViewportResizeCorrection],
+	)
 
 	// A task switch starts in follow mode. Keep this independent from item-count
 	// changes so incoming messages can never re-enable following while the user
 	// is browsing history.
 	useLayoutEffect(() => {
-		isAtBottomRef.current = false
 		clearAutoscrollArm()
+		clearMagnetSnap()
+		clearViewportResizeCorrection()
 		positionedTaskRef.current = undefined
 		scrollerLastTopRef.current = null
 
@@ -145,7 +222,14 @@ export function useScrollLifecycle({
 		}
 
 		enterAnchoredFollowing()
-	}, [clearAutoscrollArm, enterAnchoredFollowing, taskTs, transitionScrollPhase])
+	}, [
+		clearAutoscrollArm,
+		clearMagnetSnap,
+		clearViewportResizeCorrection,
+		enterAnchoredFollowing,
+		taskTs,
+		transitionScrollPhase,
+	])
 
 	// Task initialization is event-driven: as soon as the first rows exist, use
 	// one Virtuoso-coordinated navigation command. No retries or raw scrollTop
@@ -156,13 +240,38 @@ export function useScrollLifecycle({
 		}
 		if (itemCount > 0 && positionedTaskRef.current !== taskTs) {
 			positionedTaskRef.current = taskTs
-			virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" })
+			positionLastItem()
 		}
-	}, [itemCount, taskTs, virtuosoRef])
+	}, [itemCount, positionLastItem, taskTs])
+
+	// Bottom controls and the composer are outside the transcript, so changes to
+	// their height correctly resize this viewport. Virtuoso owns row measurement,
+	// but it does not consistently re-pin after a viewport-only resize. Correct
+	// that geometry once on the next frame only while follow mode owns scrolling.
+	useEffect(() => {
+		const viewport = scrollContainerRef.current
+		if (!viewport || typeof ResizeObserver === "undefined") {
+			return
+		}
+
+		let previousHeight = viewport.getBoundingClientRect().height
+		const observer = new ResizeObserver((entries) => {
+			const nextHeight = entries[0]?.contentRect.height ?? viewport.getBoundingClientRect().height
+			if (Math.abs(nextHeight - previousHeight) < 0.5) {
+				return
+			}
+
+			previousHeight = nextHeight
+			scheduleViewportResizeCorrection()
+		})
+		observer.observe(viewport)
+
+		return () => observer.disconnect()
+	}, [scrollContainerRef, scheduleViewportResizeCorrection])
 
 	// React layout effects run before ResizeObserver delivery. Arming Virtuoso
 	// here lets its own size-increase pipeline keep the final row pinned without
-	// a second observer or an application scroll command fighting it afterward.
+	// a second row observer or a competing content-growth correction afterward.
 	useLayoutEffect(() => {
 		armBottomFollowing()
 	}, [armBottomFollowing, bottomContentRevision, itemCount])
@@ -177,9 +286,10 @@ export function useScrollLifecycle({
 		if (itemCountRef.current === 0) {
 			return
 		}
+		clearMagnetSnap()
 		enterAnchoredFollowing()
-		virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" })
-	}, [enterAnchoredFollowing, virtuosoRef])
+		scrollToPhysicalBottom()
+	}, [clearMagnetSnap, enterAnchoredFollowing, scrollToPhysicalBottom])
 
 	const followOutputCallback = useCallback((isAtBottom: boolean): "auto" | false => {
 		return isAtBottom || scrollPhaseRef.current === "ANCHORED_FOLLOWING" ? "auto" : false
@@ -187,14 +297,14 @@ export function useScrollLifecycle({
 
 	const atBottomStateChangeCallback = useCallback(
 		(isAtBottom: boolean) => {
-			isAtBottomRef.current = isAtBottom
 			if (isAtBottom) {
+				clearMagnetSnap()
 				enterAnchoredFollowing()
 			} else if (scrollPhaseRef.current === "USER_BROWSING_HISTORY") {
 				setShowScrollToBottom(true)
 			}
 		},
-		[enterAnchoredFollowing],
+		[clearMagnetSnap, enterAnchoredFollowing],
 	)
 
 	const handleScrollerScroll = useCallback(
@@ -208,18 +318,37 @@ export function useScrollLifecycle({
 			const reachedExactBottom = remainingDistance <= CHAT_BOTTOM_THRESHOLD_PX
 			const movedAwayFromBottom = previousTop !== null && currentTop < previousTop
 			const movedTowardBottom = previousTop !== null && currentTop > previousTop
-			const leftReportedBottom = isAtBottomRef.current && !reachedExactBottom
-			if (movedAwayFromBottom || leftReportedBottom) {
-				isAtBottomRef.current = false
-				enterUserBrowsingHistory("scroll")
-			} else if (reachedExactBottom && movedTowardBottom) {
-				isAtBottomRef.current = true
+
+			// Viewport growth can reduce scrollTop while keeping the viewport at the
+			// physical bottom. Bottom distance must win over scroll direction or that
+			// ordinary layout clamp is misclassified as an upward user scroll.
+			if (reachedExactBottom) {
+				clearMagnetSnap()
 				enterAnchoredFollowing()
-			} else if (scrollPhaseRef.current === "USER_BROWSING_HISTORY") {
+				return
+			}
+
+			if (scrollPhaseRef.current === "USER_BROWSING_HISTORY") {
+				if (movedTowardBottom && remainingDistance <= magneticEntryDistance(scroller)) {
+					enterAnchoredFollowing()
+					scrollToPhysicalBottom()
+					return
+				}
 				setShowScrollToBottom(true)
+				return
+			}
+
+			if (movedAwayFromBottom) {
+				if (remainingDistance >= magneticReleaseDistance(scroller)) {
+					enterUserBrowsingHistory("scroll")
+				} else {
+					// Wait for the gesture to settle. Repeated wheel/key/drag events can
+					// cross the wider release boundary; a small nudge is pulled back once.
+					scheduleMagnetSnap()
+				}
 			}
 		},
-		[enterAnchoredFollowing, enterUserBrowsingHistory],
+		[clearMagnetSnap, enterAnchoredFollowing, enterUserBrowsingHistory, scheduleMagnetSnap, scrollToPhysicalBottom],
 	)
 
 	const handleWheel = useCallback(
@@ -235,14 +364,8 @@ export function useScrollLifecycle({
 					scrollerLastTopRef.current = scroller.scrollTop
 				}
 			}
-
-			// Upward wheel input always takes ownership. Downward input also takes
-			// ownership if measurement drift has left the viewport away from bottom.
-			if (wheelEvent.deltaY < 0 || !isAtBottomRef.current) {
-				enterUserBrowsingHistory("wheel")
-			}
 		},
-		[enterUserBrowsingHistory, scrollContainerRef],
+		[scrollContainerRef],
 	)
 	useEvent("wheel", handleWheel, window, { passive: true })
 
@@ -276,7 +399,9 @@ export function useScrollLifecycle({
 				scrollerLastTopRef.current = scroller.scrollTop
 			}
 
-			if (upwardKey || !isAtBottomRef.current) {
+			// PageUp/Home are explicit large navigation commands. Arrow-key and
+			// wheel nudges use the same distance hysteresis in handleScrollerScroll.
+			if (keyEvent.key === "PageUp" || keyEvent.key === "Home") {
 				enterUserBrowsingHistory("keyboard-navigation")
 			}
 		},

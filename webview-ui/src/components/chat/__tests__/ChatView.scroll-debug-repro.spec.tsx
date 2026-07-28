@@ -485,16 +485,20 @@ describe("ChatView scroll behavior regression coverage", () => {
 		expect(document.querySelector("[data-testid='chat-bottom-spacer']")).toBeNull()
 	})
 
-	it("bounds the transcript and leaves a physical gap above the composer", async () => {
+	it("isolates the bounded transcript from the non-shrinking bottom dock", async () => {
 		await hydrate(2)
 
 		const scrollable = getScrollable()
 		const transcriptViewport = scrollable.parentElement
+		const bottomDock = document.querySelector("[data-testid='chat-bottom-dock']")
 
-		expect(transcriptViewport).toHaveClass("mb-8", "min-h-0", "flex-1", "overflow-hidden")
+		expect(transcriptViewport).toHaveAttribute("data-testid", "chat-transcript-viewport")
+		expect(transcriptViewport).toHaveClass("mb-2", "min-h-0", "flex-1", "overflow-hidden")
 		expect(scrollable).toHaveClass("h-full", "min-h-0", "w-full")
 		expect(scrollable).not.toHaveClass("mb-1", "flex-1")
-		expect(transcriptViewport?.nextElementSibling).not.toContainElement(scrollable)
+		expect(bottomDock).toHaveClass("shrink-0")
+		expect(transcriptViewport?.nextElementSibling).toBe(bottomDock)
+		expect(bottomDock).not.toContainElement(scrollable)
 	})
 
 	it("task entry uses one Virtuoso-coordinated bottom position", async () => {
@@ -644,6 +648,7 @@ describe("ChatView scroll behavior regression coverage", () => {
 		setScrollGeometry(scrollable, { scrollHeight: 1_000, clientHeight: 400, scrollTop: 240 })
 
 		await act(async () => {
+			fireEvent.scroll(scrollable)
 			scrollable.scrollTop = 120
 			fireEvent.scroll(scrollable)
 		})
@@ -674,16 +679,19 @@ describe("ChatView scroll behavior regression coverage", () => {
 		expect(document.querySelector(".codicon-chevron-down")).toBeNull()
 	})
 
-	it("wheel-up intent disengages sticky follow", async () => {
+	it("a large upward wheel movement disengages sticky follow", async () => {
 		await hydrate(1)
 		await waitForCalls(1)
 		await waitForCallsSettled()
 		expect(resolveFollowOutput(false)).toBe("auto")
 
 		const scrollable = getScrollable()
+		setScrollGeometry(scrollable, { scrollHeight: 1_000, clientHeight: 400, scrollTop: 600 })
 
 		await act(async () => {
 			fireEvent.wheel(scrollable, { deltaY: -120 })
+			scrollable.scrollTop = 450
+			fireEvent.scroll(scrollable)
 		})
 
 		expect(resolveFollowOutput(false)).toBe(false)
