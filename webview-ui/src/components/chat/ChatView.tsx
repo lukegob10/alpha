@@ -1,6 +1,5 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react"
 import { useDeepCompareEffect, useEvent } from "react-use"
-import { Virtuoso, type VirtuosoHandle } from "react-virtuoso"
 import removeMd from "remove-markdown"
 import useSound from "use-sound"
 import { LRUCache } from "lru-cache"
@@ -73,7 +72,7 @@ const messageResponseAskTypes = new Set<ClineAsk>([
 const completedTaskResponseAskTypes = new Set<ClineAsk>(["completion_result", "resume_completed_task"])
 const approvalAskTypes = new Set<ClineAsk>(["tool", "command", "use_mcp_server"])
 
-const computeChatItemKey = (_index: number, message: ClineMessage) => message.ts
+const computeChatItemKey = (index: number, message: ClineMessage) => `${message.ts}:${index}`
 
 const isCompletedTaskResponseAsk = (ask: ClineAsk | undefined) => Boolean(ask && completedTaskResponseAskTypes.has(ask))
 
@@ -241,7 +240,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const [primaryButtonText, setPrimaryButtonText] = useState<string | undefined>(undefined)
 	const [secondaryButtonText, setSecondaryButtonText] = useState<string | undefined>(undefined)
 	const [_didClickCancel, setDidClickCancel] = useState(false)
-	const virtuosoRef = useRef<VirtuosoHandle>(null)
+	const transcriptScrollerRef = useRef<HTMLDivElement | null>(null)
 	const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({})
 	const prevExpandedRowsRef = useRef<Record<number, boolean>>()
 	const lastTtsRef = useRef<string>("")
@@ -1147,8 +1146,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 		})
 
-		// Remove the 500-message limit to prevent array index shifting
-		// Virtuoso is designed to efficiently handle large lists through virtualization
+		// Keep stable indices and keys across the complete transcript. ChatRow is
+		// memoized, so unchanged rows do not rerender when live output is appended.
 		const newVisibleMessages = modifiedMessages.filter((message) => {
 			// Filter out checkpoint_saved messages that should be suppressed
 			if (message.say === "checkpoint_saved") {
@@ -1454,29 +1453,38 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		checkpointJumpCursorRef.current = null
 	}, [task?.ts, checkpointIndices])
 
-	// The transcript has one automatic scroll owner. Virtuoso only virtualizes
-	// and reports geometry; the controller owns follow/browse state and every
-	// bottom correction.
+	// The transcript uses one native scroll container and one automatic scroll
+	// owner. Native DOM geometry keeps the scrollbar's range exact even when
+	// chat rows load images, expand, or stream content asynchronously.
 	const {
 		showScrollToBottom,
 		handleScrollToBottomClick,
 		releaseFollow,
 		setScrollerRef,
+		setContentRef,
 		handleScrollerScroll,
-		handleScrollerIdleChange,
-		handleContentHeightChange,
+		handleScrollerWheel,
+		handleScrollerPointerDown,
+		handleScrollerPointerUp,
 		handleContentLoad,
 	} = useChatScrollController({
-		virtuosoRef,
 		taskTs: task?.ts,
 		itemCount: groupedMessages.length,
 	})
 
-	// The floating controls are siblings of Virtuoso's scroller, so wheel input
+	const bindTranscriptScroller = useCallback(
+		(element: HTMLDivElement | null) => {
+			transcriptScrollerRef.current = element
+			setScrollerRef(element)
+		},
+		[setScrollerRef],
+	)
+
+	// The floating controls are siblings of the transcript scroller, so wheel input
 	// over a button would otherwise stop at the overflow-hidden viewport wrapper.
 	const handleScrollControlsWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
 		event.preventDefault()
-		virtuosoRef.current?.scrollBy({ top: event.deltaY, behavior: "auto" })
+		transcriptScrollerRef.current?.scrollBy({ top: event.deltaY, behavior: "auto" })
 	}, [])
 
 	// Expanding a row indicates the user is browsing; disable sticky follow.
@@ -1618,11 +1626,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		checkpointJumpCursorRef.current = nextCursor
 
 		releaseFollow("checkpoint-navigation")
-		virtuosoRef.current?.scrollToIndex({
-			index: nextCheckpointIndex,
-			align: "center",
-			behavior: "smooth",
-		})
+		const checkpoint = transcriptScrollerRef.current?.querySelector<HTMLElement>(
+			`[data-chat-message-index="${nextCheckpointIndex}"]`,
+		)
+		checkpoint?.scrollIntoView({ block: "center", behavior: "smooth" })
 	}, [checkpointIndices, releaseFollow])
 
 	const itemContent = useCallback(
@@ -1855,21 +1862,33 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			{task && (
 				<div data-testid="chat-transcript-viewport" className="relative mb-2 min-h-0 flex-1 overflow-hidden">
-					<Virtuoso
-						ref={virtuosoRef}
+					<div
+						ref={bindTranscriptScroller}
 						key={task.ts}
-						className="scrollable h-full min-h-0 w-full overscroll-contain"
-						style={{ overflowAnchor: "none" }}
-						increaseViewportBy={{ top: 3_000, bottom: 1000 }}
-						data={groupedMessages}
-						computeItemKey={computeChatItemKey}
-						itemContent={itemContent}
-						scrollerRef={setScrollerRef}
+						data-testid="chat-transcript-scroller"
+						tabIndex={0}
+						className="scrollable h-full min-h-0 w-full overflow-y-auto overscroll-contain"
+						style={{ overflowAnchor: "none", scrollbarGutter: "stable" }}
 						onScroll={handleScrollerScroll}
-						isScrolling={handleScrollerIdleChange}
-						totalListHeightChanged={handleContentHeightChange}
-						onLoadCapture={handleContentLoad}
-					/>
+						onWheel={handleScrollerWheel}
+						onPointerDown={handleScrollerPointerDown}
+						onPointerUp={handleScrollerPointerUp}
+						onPointerCancel={handleScrollerPointerUp}
+						onLoadCapture={handleContentLoad}>
+						<div
+							ref={setContentRef}
+							data-testid="chat-transcript-content"
+							data-count={groupedMessages.length}>
+							{groupedMessages.map((message, index) => (
+								<div
+									key={computeChatItemKey(index, message)}
+									data-chat-message-index={index}
+									data-testid={`chat-message-${index}`}>
+									{itemContent(index, message)}
+								</div>
+							))}
+						</div>
+					</div>
 					{showScrollToBottom && (
 						<div
 							data-testid="chat-scroll-controls"

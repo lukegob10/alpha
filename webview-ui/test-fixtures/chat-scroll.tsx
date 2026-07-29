@@ -1,21 +1,27 @@
 import React, { useCallback, useRef, useState } from "react"
 import { createRoot } from "react-dom/client"
-import { Virtuoso, type VirtuosoHandle } from "react-virtuoso"
 
 import { useChatScrollController } from "../src/hooks/useChatScrollController"
 
 const initialRows = Array.from({ length: 120 }, (_, index) => index)
 
 function ChatScrollFixture() {
-	const virtuosoRef = useRef<VirtuosoHandle>(null)
+	const scrollerRef = useRef<HTMLDivElement | null>(null)
 	const [rows, setRows] = useState(initialRows)
 	const [composerHeight, setComposerHeight] = useState(120)
 	const [distance, setDistance] = useState(0)
 	const controller = useChatScrollController({
-		virtuosoRef,
 		taskTs: 1,
 		itemCount: rows.length,
 	})
+	const setScrollerRef = controller.setScrollerRef
+	const bindScroller = useCallback(
+		(element: HTMLDivElement | null) => {
+			scrollerRef.current = element
+			setScrollerRef(element)
+		},
+		[setScrollerRef],
+	)
 
 	const handleScroll = useCallback(
 		(event: React.UIEvent<HTMLElement>) => {
@@ -42,27 +48,32 @@ function ChatScrollFixture() {
 			<section
 				data-testid="fixture-transcript"
 				style={{ flex: "1 1 0", minHeight: 0, overflow: "hidden", position: "relative" }}>
-				<Virtuoso
-					ref={virtuosoRef}
-					data={rows}
-					style={{ height: "100%", overflowAnchor: "none" }}
-					scrollerRef={controller.setScrollerRef}
+				<div
+					ref={bindScroller}
+					data-testid="fixture-scroller"
+					tabIndex={0}
+					style={{ height: "100%", overflowY: "auto", overflowAnchor: "none", scrollbarGutter: "stable" }}
 					onScroll={handleScroll}
-					isScrolling={controller.handleScrollerIdleChange}
-					totalListHeightChanged={controller.handleContentHeightChange}
-					itemContent={(index) => (
-						<article
-							data-testid="fixture-row"
-							style={{
-								boxSizing: "border-box",
-								minHeight: index % 7 === 0 ? 150 : 54,
-								borderBottom: "1px solid #374151",
-								padding: 12,
-							}}>
-							Message {index + 1}
-						</article>
-					)}
-				/>
+					onWheel={controller.handleScrollerWheel}
+					onPointerDown={controller.handleScrollerPointerDown}
+					onPointerUp={controller.handleScrollerPointerUp}
+					onPointerCancel={controller.handleScrollerPointerUp}>
+					<div ref={controller.setContentRef} data-testid="fixture-content">
+						{rows.map((row, index) => (
+							<article
+								key={row}
+								data-testid="fixture-row"
+								style={{
+									boxSizing: "border-box",
+									minHeight: index % 7 === 0 ? 150 : 54,
+									borderBottom: "1px solid #374151",
+									padding: 12,
+								}}>
+								Message {index + 1}
+							</article>
+						))}
+					</div>
+				</div>
 				{controller.showScrollToBottom && (
 					<button
 						data-testid="fixture-bottom-button"

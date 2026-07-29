@@ -6,9 +6,9 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.0.8
+## Welcome to Alpha v2.0.9
 
-Alpha v2.0.8 rebuilds chat scrolling around a single controller for stable bottom following and deliberate history browsing.
+Alpha v2.0.9 uses native transcript scrolling for exact scrollbar geometry, smooth navigation, and reliable live-output following.
 
 <details>
   <summary>🌐 Available languages</summary>
@@ -32,7 +32,7 @@ Alpha v2.0.8 rebuilds chat scrolling around a single controller for stable botto
 - [简体中文](locales/zh-CN/README.md)
 - [繁體中文](locales/zh-TW/README.md)
 - ...
-      </details>
+  </details>
 
 ---
 

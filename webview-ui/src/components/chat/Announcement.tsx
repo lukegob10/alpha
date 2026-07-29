@@ -35,12 +35,12 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 				</DialogHeader>
 				<div className="space-y-2 text-sm">
 					<p>
-						Alpha v{Package.version} rebuilds chat scrolling around a single controller for stable bottom
-						following and deliberate history browsing.
+						Alpha v{Package.version} uses native transcript scrolling for exact scrollbar geometry, smooth
+						navigation, and reliable live-output following.
 					</p>
 					<ul className="list-disc space-y-1 pl-5">
-						<li>The composer now lives in a separate dock and cannot cover the transcript endpoint.</li>
-						<li>The final 5% of the viewport magnetically captures and follows live output.</li>
+						<li>The scrollbar now reaches the true bottom without virtual-height corrections.</li>
+						<li>Live output follows smoothly and releases when you deliberately browse upward.</li>
 					</ul>
 				</div>
 			</DialogContent>

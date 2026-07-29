@@ -1,19 +1,21 @@
 /**
- * Single-owner controller for the chat transcript scroller.
+ * Native chat transcript scroll controller.
  *
- * Virtuoso virtualizes and measures rows. This controller alone decides when
- * the transcript follows live output and is the only automatic path allowed to
- * issue a bottom-positioning command.
+ * The transcript deliberately uses the browser's real scroll container instead
+ * of a virtualizer. Chat rows have highly variable, asynchronous heights; a
+ * virtualizer must estimate the total height and those corrections make the
+ * scrollbar thumb jump even when the view remains pinned to the bottom.
+ *
+ * This controller is the sole owner of automatic scrolling. It follows live
+ * output while attached, releases when the user deliberately scrolls upward,
+ * and reattaches when native scrolling reaches the real bottom.
  */
 
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
-import type { VirtuosoHandle } from "react-virtuoso"
 
 export const CHAT_BOTTOM_EPSILON_PX = 1
-export const CHAT_BOTTOM_MAGNET_VIEWPORT_RATIO = 0.05
-export const CHAT_BOTTOM_MAGNET_MIN_PX = 16
-export const CHAT_BOTTOM_RELEASE_VIEWPORT_RATIO = 0.25
-export const CHAT_BOTTOM_RELEASE_MIN_PX = 96
+export const CHAT_BOTTOM_ATTACH_DISTANCE_PX = 12
+export const CHAT_USER_RELEASE_DISTANCE_PX = 24
 
 const GEOMETRY_EPSILON_PX = 0.5
 
@@ -36,18 +38,11 @@ const readGeometry = (element: HTMLElement): ScrollGeometry => ({
 const distanceFromBottom = ({ scrollTop, clientHeight, scrollHeight }: ScrollGeometry): number =>
 	Math.max(0, scrollHeight - clientHeight - scrollTop)
 
-const magneticEntryDistance = ({ clientHeight }: ScrollGeometry): number =>
-	Math.max(CHAT_BOTTOM_MAGNET_MIN_PX, clientHeight * CHAT_BOTTOM_MAGNET_VIEWPORT_RATIO)
-
-const magneticReleaseDistance = ({ clientHeight }: ScrollGeometry): number =>
-	Math.max(CHAT_BOTTOM_RELEASE_MIN_PX, clientHeight * CHAT_BOTTOM_RELEASE_VIEWPORT_RATIO)
-
 const dimensionsChanged = (previous: ScrollGeometry, current: ScrollGeometry): boolean =>
 	Math.abs(previous.clientHeight - current.clientHeight) > GEOMETRY_EPSILON_PX ||
 	Math.abs(previous.scrollHeight - current.scrollHeight) > GEOMETRY_EPSILON_PX
 
 export interface UseChatScrollControllerOptions {
-	virtuosoRef: React.RefObject<VirtuosoHandle | null>
 	taskTs: number | undefined
 	itemCount: number
 }
@@ -57,15 +52,16 @@ export interface UseChatScrollControllerReturn {
 	showScrollToBottom: boolean
 	handleScrollToBottomClick: () => void
 	releaseFollow: (reason: ChatScrollReleaseReason) => void
-	setScrollerRef: (element: HTMLElement | Window | null) => void
+	setScrollerRef: (element: HTMLElement | null) => void
+	setContentRef: (element: HTMLElement | null) => void
 	handleScrollerScroll: (event: React.UIEvent<HTMLElement>) => void
-	handleScrollerIdleChange: (isScrolling: boolean) => void
-	handleContentHeightChange: (height: number) => void
+	handleScrollerWheel: (event: React.WheelEvent<HTMLElement>) => void
+	handleScrollerPointerDown: () => void
+	handleScrollerPointerUp: () => void
 	handleContentLoad: () => void
 }
 
 export function useChatScrollController({
-	virtuosoRef,
 	taskTs,
 	itemCount,
 }: UseChatScrollControllerOptions): UseChatScrollControllerReturn {
@@ -75,7 +71,9 @@ export function useChatScrollController({
 	const taskTsRef = useRef(taskTs)
 	const itemCountRef = useRef(itemCount)
 	const scrollerRef = useRef<HTMLElement | null>(null)
+	const contentRef = useRef<HTMLElement | null>(null)
 	const previousGeometryRef = useRef<ScrollGeometry | null>(null)
+	const pointerScrollingRef = useRef(false)
 	const resizeObserverRef = useRef<ResizeObserver | null>(null)
 	const bottomPinFrameRef = useRef<number | null>(null)
 
@@ -98,9 +96,8 @@ export function useChatScrollController({
 		setScrollMode(nextMode)
 	}, [])
 
-	// This is the controller's only automatic scroll write. Every trigger is
-	// coalesced through the same frame so row measurement, streaming, and layout
-	// resizing cannot race separate correction mechanisms.
+	// This is the controller's only automatic scroll write. It targets the
+	// browser's exact maximum instead of an estimated virtual-list position.
 	const scheduleBottomPin = useCallback(() => {
 		if (
 			scrollModeRef.current !== "FOLLOWING" ||
@@ -113,11 +110,52 @@ export function useChatScrollController({
 
 		bottomPinFrameRef.current = window.requestAnimationFrame(() => {
 			bottomPinFrameRef.current = null
-			if (scrollModeRef.current === "FOLLOWING" && taskTsRef.current !== undefined && itemCountRef.current > 0) {
-				virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" })
+			const scroller = scrollerRef.current
+			if (
+				!scroller ||
+				scrollModeRef.current !== "FOLLOWING" ||
+				taskTsRef.current === undefined ||
+				itemCountRef.current === 0
+			) {
+				return
+			}
+
+			const geometry = readGeometry(scroller)
+			const bottom = Math.max(0, geometry.scrollHeight - geometry.clientHeight)
+			if (Math.abs(geometry.scrollTop - bottom) > CHAT_BOTTOM_EPSILON_PX) {
+				scroller.scrollTop = bottom
+			}
+			previousGeometryRef.current = readGeometry(scroller)
+		})
+	}, [])
+
+	const reconnectResizeObserver = useCallback(() => {
+		resizeObserverRef.current?.disconnect()
+		resizeObserverRef.current = null
+
+		if (typeof ResizeObserver === "undefined") {
+			return
+		}
+
+		const scroller = scrollerRef.current
+		const content = contentRef.current
+		if (!scroller && !content) {
+			return
+		}
+
+		const observer = new ResizeObserver(() => {
+			if (scrollModeRef.current === "FOLLOWING") {
+				scheduleBottomPin()
 			}
 		})
-	}, [virtuosoRef])
+		if (scroller) {
+			observer.observe(scroller)
+		}
+		if (content) {
+			observer.observe(content)
+		}
+		resizeObserverRef.current = observer
+	}, [scheduleBottomPin])
 
 	const releaseFollow = useCallback(
 		(_reason: ChatScrollReleaseReason) => {
@@ -133,32 +171,22 @@ export function useChatScrollController({
 	}, [scheduleBottomPin, transitionTo])
 
 	const setScrollerRef = useCallback(
-		(element: HTMLElement | Window | null) => {
-			resizeObserverRef.current?.disconnect()
-			resizeObserverRef.current = null
-
-			if (!(element instanceof HTMLElement)) {
-				scrollerRef.current = null
-				previousGeometryRef.current = null
-				return
-			}
-
+		(element: HTMLElement | null) => {
 			scrollerRef.current = element
-			previousGeometryRef.current = readGeometry(element)
-
-			if (typeof ResizeObserver !== "undefined") {
-				const observer = new ResizeObserver(() => {
-					if (scrollModeRef.current === "FOLLOWING") {
-						scheduleBottomPin()
-					}
-				})
-				observer.observe(element)
-				resizeObserverRef.current = observer
-			}
-
+			previousGeometryRef.current = element ? readGeometry(element) : null
+			reconnectResizeObserver()
 			scheduleBottomPin()
 		},
-		[scheduleBottomPin],
+		[reconnectResizeObserver, scheduleBottomPin],
+	)
+
+	const setContentRef = useCallback(
+		(element: HTMLElement | null) => {
+			contentRef.current = element
+			reconnectResizeObserver()
+			scheduleBottomPin()
+		},
+		[reconnectResizeObserver, scheduleBottomPin],
 	)
 
 	useEffect(
@@ -169,11 +197,11 @@ export function useChatScrollController({
 		[cancelBottomPin],
 	)
 
-	// A new task starts attached to its live output. Message updates do not
-	// change this mode; only a task switch or explicit/user geometry transition
-	// does, so history browsing is never stolen by incoming output.
+	// A new task starts attached to its output. Appending to the same task never
+	// overrides an explicit browsing decision.
 	useLayoutEffect(() => {
 		cancelBottomPin()
+		pointerScrollingRef.current = false
 		previousGeometryRef.current = scrollerRef.current ? readGeometry(scrollerRef.current) : null
 
 		if (taskTs === undefined) {
@@ -185,7 +213,6 @@ export function useChatScrollController({
 		scheduleBottomPin()
 	}, [cancelBottomPin, scheduleBottomPin, taskTs, transitionTo])
 
-	// The first non-empty payload may arrive after the task shell mounts.
 	useLayoutEffect(() => {
 		if (itemCount > 0 && scrollModeRef.current === "FOLLOWING") {
 			scheduleBottomPin()
@@ -212,51 +239,46 @@ export function useChatScrollController({
 			const layoutChanged = dimensionsChanged(previous, current)
 
 			if (scrollModeRef.current === "BROWSING") {
-				const enteredMagnet =
-					!layoutChanged &&
-					(movedDown || remaining <= CHAT_BOTTOM_EPSILON_PX) &&
-					remaining <= magneticEntryDistance(current)
-
-				if (enteredMagnet) {
+				// Reaching the real native bottom always reattaches. Unlike the former
+				// virtualized implementation, a simultaneous row resize cannot veto it.
+				if (remaining <= CHAT_BOTTOM_ATTACH_DISTANCE_PX && (movedDown || remaining <= CHAT_BOTTOM_EPSILON_PX)) {
 					enterFollowMode()
 				}
 				return
 			}
 
-			if (movedUp && !layoutChanged && remaining >= magneticReleaseDistance(current)) {
+			if (
+				movedUp &&
+				!layoutChanged &&
+				(pointerScrollingRef.current || remaining >= CHAT_USER_RELEASE_DISTANCE_PX)
+			) {
 				releaseFollow("user-scroll")
 				return
 			}
 
-			// A changed viewport or list height is layout work, not user intent.
-			// Reconcile it immediately while follow mode owns the transcript.
-			if (layoutChanged) {
+			if (remaining > CHAT_BOTTOM_EPSILON_PX) {
 				scheduleBottomPin()
 			}
 		},
 		[enterFollowMode, releaseFollow, scheduleBottomPin],
 	)
 
-	const handleScrollerIdleChange = useCallback(
-		(isScrolling: boolean) => {
-			if (isScrolling || scrollModeRef.current !== "FOLLOWING") {
-				return
-			}
-
-			const scroller = scrollerRef.current
-			if (scroller && distanceFromBottom(readGeometry(scroller)) > CHAT_BOTTOM_EPSILON_PX) {
-				scheduleBottomPin()
+	const handleScrollerWheel = useCallback(
+		(event: React.WheelEvent<HTMLElement>) => {
+			if (event.deltaY < 0 && scrollModeRef.current === "FOLLOWING") {
+				releaseFollow("user-scroll")
 			}
 		},
-		[scheduleBottomPin],
+		[releaseFollow],
 	)
 
-	const handleContentHeightChange = useCallback(
-		(_height: number) => {
-			scheduleBottomPin()
-		},
-		[scheduleBottomPin],
-	)
+	const handleScrollerPointerDown = useCallback(() => {
+		pointerScrollingRef.current = true
+	}, [])
+
+	const handleScrollerPointerUp = useCallback(() => {
+		pointerScrollingRef.current = false
+	}, [])
 
 	const handleContentLoad = useCallback(() => {
 		scheduleBottomPin()
@@ -275,9 +297,11 @@ export function useChatScrollController({
 		handleScrollToBottomClick,
 		releaseFollow,
 		setScrollerRef,
+		setContentRef,
 		handleScrollerScroll,
-		handleScrollerIdleChange,
-		handleContentHeightChange,
+		handleScrollerWheel,
+		handleScrollerPointerDown,
+		handleScrollerPointerUp,
 		handleContentLoad,
 	}
 }

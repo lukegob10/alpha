@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.9
+
+### Patch Changes
+
+- Replace the virtualized chat transcript with native browser scrolling so the scrollbar uses exact document geometry.
+- Keep live output pinned to the true bottom while preserving smooth wheel, pointer, keyboard, and history-browsing behavior.
+
 ## 2.0.8
 
 ### Patch Changes

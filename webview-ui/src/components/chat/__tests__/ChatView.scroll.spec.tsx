@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useImperativeHandle } from "react"
+import React, { useImperativeHandle } from "react"
 import { act, fireEvent, render, waitFor } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
@@ -20,79 +20,6 @@ interface ExtensionStateMessage {
 		telemetrySetting: "enabled" | "disabled" | "unset"
 	}
 }
-
-interface MockVirtuosoHandle {
-	scrollBy: (options: { top: number; behavior?: "auto" | "smooth" }) => void
-	scrollTo: (options: { top: number; behavior?: "auto" | "smooth" }) => void
-	scrollToIndex: (options: {
-		index: number | "LAST"
-		align?: "end" | "start" | "center"
-		behavior?: "auto" | "smooth"
-	}) => void
-}
-
-interface MockVirtuosoProps {
-	data: ClineMessage[]
-	itemContent: (index: number, item: ClineMessage) => React.ReactNode
-	computeItemKey?: (index: number, item: ClineMessage) => React.Key
-	className?: string
-	style?: React.CSSProperties
-	onScroll?: React.UIEventHandler<HTMLElement>
-	onLoadCapture?: React.ReactEventHandler<HTMLElement>
-	scrollerRef?: (element: HTMLElement | Window | null) => void
-	isScrolling?: (isScrolling: boolean) => void
-	totalListHeightChanged?: (height: number) => void
-	followOutput?: unknown
-	atBottomStateChange?: unknown
-	atBottomThreshold?: unknown
-	initialItemCount?: unknown
-	skipAnimationFrameInResizeObserver?: unknown
-	components?: {
-		Footer?: React.ComponentType
-	}
-}
-
-interface VirtuosoHarnessState {
-	scrollCalls: number
-	scrollByArgs: Array<{ top: number; behavior?: "auto" | "smooth" }>
-	scrollToIndexArgs: Array<{
-		index: number | "LAST"
-		align?: "end" | "start" | "center"
-		behavior?: "auto" | "smooth"
-	}>
-	scrollToArgs: Array<{ top: number; behavior?: "auto" | "smooth" }>
-	emitScrollIdle: (isScrolling: boolean) => void
-	emitContentHeightChange: (height: number) => void
-	computedItemKeys: React.Key[]
-	scrollerStyle: React.CSSProperties | undefined
-	scrollerElement: HTMLElement | null
-	legacyAutomaticProps: {
-		followOutput: unknown
-		atBottomStateChange: unknown
-		atBottomThreshold: unknown
-		initialItemCount: unknown
-		skipAnimationFrameInResizeObserver: unknown
-	}
-}
-
-const harness = vi.hoisted<VirtuosoHarnessState>(() => ({
-	scrollCalls: 0,
-	scrollByArgs: [],
-	scrollToIndexArgs: [],
-	scrollToArgs: [],
-	emitScrollIdle: () => {},
-	emitContentHeightChange: () => {},
-	computedItemKeys: [],
-	scrollerStyle: undefined,
-	scrollerElement: null,
-	legacyAutomaticProps: {
-		followOutput: undefined,
-		atBottomStateChange: undefined,
-		atBottomThreshold: undefined,
-		initialItemCount: undefined,
-		skipAnimationFrameInResizeObserver: undefined,
-	},
-}))
 
 function nullDefaultModule() {
 	return { default: () => null }
@@ -174,87 +101,6 @@ vi.mock("../ChatRow", () => ({
 	default: ({ message }: { message: ClineMessage }) => <div data-testid="chat-row">{message.ts}</div>,
 }))
 
-vi.mock("react-virtuoso", () => {
-	const MockVirtuoso = React.forwardRef<MockVirtuosoHandle, MockVirtuosoProps>(function MockVirtuoso(props, ref) {
-		const {
-			data,
-			itemContent,
-			computeItemKey,
-			className,
-			components,
-			style,
-			onScroll,
-			onLoadCapture,
-			scrollerRef,
-			isScrolling,
-			totalListHeightChanged,
-		} = props
-
-		harness.scrollerStyle = style
-		harness.computedItemKeys = data.map((item, index) => computeItemKey?.(index, item) ?? index)
-		harness.emitScrollIdle = (scrolling: boolean) => isScrolling?.(scrolling)
-		harness.emitContentHeightChange = (height: number) => totalListHeightChanged?.(height)
-		harness.legacyAutomaticProps = {
-			followOutput: props.followOutput,
-			atBottomStateChange: props.atBottomStateChange,
-			atBottomThreshold: props.atBottomThreshold,
-			initialItemCount: props.initialItemCount,
-			skipAnimationFrameInResizeObserver: props.skipAnimationFrameInResizeObserver,
-		}
-
-		const setScrollerElement = useCallback(
-			(element: HTMLDivElement | null) => {
-				harness.scrollerElement = element
-				scrollerRef?.(element)
-			},
-			[scrollerRef],
-		)
-
-		useImperativeHandle(ref, () => ({
-			scrollBy: (options) => {
-				harness.scrollByArgs.push(options)
-			},
-			scrollTo: (options) => {
-				harness.scrollToArgs.push(options)
-				harness.scrollCalls += 1
-				const element = harness.scrollerElement
-				if (element && options.top === Number.MAX_SAFE_INTEGER) {
-					element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight)
-				}
-			},
-			scrollToIndex: (options) => {
-				harness.scrollToIndexArgs.push(options)
-				harness.scrollCalls += 1
-			},
-		}))
-
-		useEffect(() => {
-			totalListHeightChanged?.(data.length * 100)
-		}, [data.length, totalListHeightChanged])
-
-		const Footer = components?.Footer
-		return (
-			<div
-				ref={setScrollerElement}
-				data-testid="virtuoso-item-list"
-				className={className}
-				data-count={data.length}
-				style={style}
-				onScroll={onScroll}
-				onLoadCapture={onLoadCapture}>
-				{data.map((item, index) => (
-					<div key={item.ts} data-testid={`virtuoso-item-${index}`}>
-						{itemContent(index, item)}
-					</div>
-				))}
-				{Footer && <Footer />}
-			</div>
-		)
-	})
-
-	return { Virtuoso: MockVirtuoso }
-})
-
 const props: ChatViewProps = {
 	isHidden: false,
 	showAnnouncement: false,
@@ -302,20 +148,18 @@ const renderView = () =>
 
 const hydrate = async (clineMessages = buildMessages(Date.now() - 3_000)) => {
 	renderView()
-	await act(async () => {
-		postState(clineMessages)
-	})
+	await act(async () => postState(clineMessages))
 	await waitFor(() => {
-		const list = document.querySelector("[data-testid='virtuoso-item-list']")
-		expect(list).toBeTruthy()
-		expect(list?.getAttribute("data-count")).toBe(String(Math.max(0, clineMessages.length - 1)))
+		const content = document.querySelector("[data-testid='chat-transcript-content']")
+		expect(content).toBeTruthy()
+		expect(content?.getAttribute("data-count")).toBe(String(Math.max(0, clineMessages.length - 1)))
 	})
 }
 
 const getScrollable = (): HTMLElement => {
-	const element = document.querySelector(".scrollable")
+	const element = document.querySelector("[data-testid='chat-transcript-scroller']")
 	if (!(element instanceof HTMLElement)) {
-		throw new Error("Expected ChatView scrollable container")
+		throw new Error("Expected native chat transcript scroller")
 	}
 	return element
 }
@@ -336,6 +180,13 @@ const seedBottomGeometry = (element: HTMLElement) => {
 	fireEvent.scroll(element)
 }
 
+const beginBrowsing = async (element: HTMLElement) => {
+	fireEvent.wheel(element, { deltaY: -120 })
+	element.scrollTop = 450
+	fireEvent.scroll(element)
+	await waitFor(() => expect(getScrollToBottomButton()).toBeVisible())
+}
+
 const getScrollToBottomButton = (): HTMLButtonElement => {
 	const button = document.querySelector("button[aria-label='chat:scrollToBottom']")
 	if (!(button instanceof HTMLButtonElement)) {
@@ -344,40 +195,16 @@ const getScrollToBottomButton = (): HTMLButtonElement => {
 	return button
 }
 
-describe("ChatView single-owner scroll behavior", () => {
-	beforeEach(() => {
-		harness.scrollCalls = 0
-		harness.scrollByArgs = []
-		harness.scrollToIndexArgs = []
-		harness.scrollToArgs = []
-		harness.emitScrollIdle = () => {}
-		harness.emitContentHeightChange = () => {}
-		harness.computedItemKeys = []
-		harness.scrollerStyle = undefined
-		harness.scrollerElement = null
-		harness.legacyAutomaticProps = {
-			followOutput: undefined,
-			atBottomStateChange: undefined,
-			atBottomThreshold: undefined,
-			initialItemCount: undefined,
-			skipAnimationFrameInResizeObserver: undefined,
-		}
-	})
-
-	it("uses one exact-bottom command and no legacy automatic scroll mechanisms", async () => {
+describe("ChatView native scroll behavior", () => {
+	it("uses a real bounded scroller with exact non-virtualized content", async () => {
 		await hydrate()
-		await waitFor(() => expect(harness.scrollToArgs.length).toBeGreaterThanOrEqual(1))
+		const scroller = getScrollable()
+		const content = document.querySelector("[data-testid='chat-transcript-content']")
 
-		expect(harness.scrollToArgs.at(-1)).toEqual({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" })
-		expect(harness.scrollToIndexArgs).toHaveLength(0)
-		expect(harness.legacyAutomaticProps).toEqual({
-			followOutput: undefined,
-			atBottomStateChange: undefined,
-			atBottomThreshold: undefined,
-			initialItemCount: undefined,
-			skipAnimationFrameInResizeObserver: undefined,
-		})
-		expect(harness.scrollerStyle).toMatchObject({ overflowAnchor: "none" })
+		expect(scroller).toHaveStyle({ overflowAnchor: "none" })
+		expect(scroller).toHaveClass("overflow-y-auto", "overscroll-contain")
+		expect(content).toContainElement(document.querySelector("[data-testid='chat-message-0']"))
+		expect(document.querySelector("[data-testid='virtuoso-scroller']")).toBeNull()
 	})
 
 	it("keeps the input dock outside the bounded transcript scroller", async () => {
@@ -395,89 +222,66 @@ describe("ChatView single-owner scroll behavior", () => {
 		expect(dock).toContainElement(document.querySelector("[data-testid='chat-input']"))
 	})
 
-	it("coalesces rapid content-height revisions through the same bottom path", async () => {
+	it("restores the exact bottom after composer-driven viewport changes", async () => {
 		await hydrate()
-		await waitFor(() => expect(harness.scrollToArgs.length).toBeGreaterThanOrEqual(1))
-		const callsBeforeGrowth = harness.scrollToArgs.length
-
-		act(() => {
-			for (let index = 0; index < 10; index += 1) {
-				harness.emitContentHeightChange(400 + index)
-			}
-		})
-
-		await waitFor(() => expect(harness.scrollToArgs).toHaveLength(callsBeforeGrowth + 1))
-	})
-
-	it("treats composer-driven viewport changes as layout and restores the true bottom", async () => {
-		await hydrate()
-		await waitFor(() => expect(harness.scrollToArgs.length).toBeGreaterThanOrEqual(1))
 		const scrollable = getScrollable()
 		seedBottomGeometry(scrollable)
-		const callsBeforeResize = harness.scrollToArgs.length
 
-		setScrollGeometry(scrollable, { scrollHeight: 1_000, clientHeight: 250, scrollTop: 450 })
+		setScrollGeometry(scrollable, { scrollHeight: 1_000, clientHeight: 250, scrollTop: 600 })
 		fireEvent.scroll(scrollable)
 
-		await waitFor(() => expect(harness.scrollToArgs).toHaveLength(callsBeforeResize + 1))
+		await waitFor(() => expect(scrollable.scrollTop).toBe(750))
 		expect(scrollable.scrollHeight - scrollable.clientHeight - scrollable.scrollTop).toBe(0)
 		expect(document.querySelector("button[aria-label='chat:scrollToBottom']")).toBeNull()
 	})
 
 	it("does not let streamed output steal a deliberate history position", async () => {
 		await hydrate()
-		await waitFor(() => expect(harness.scrollToArgs.length).toBeGreaterThanOrEqual(1))
 		const scrollable = getScrollable()
 		seedBottomGeometry(scrollable)
-		scrollable.scrollTop = 450
-		fireEvent.scroll(scrollable)
-		const callsWhileBrowsing = harness.scrollToArgs.length
+		await beginBrowsing(scrollable)
 
-		expect(getScrollToBottomButton()).toBeVisible()
-		act(() => harness.emitContentHeightChange(1_400))
+		setScrollGeometry(scrollable, { scrollHeight: 1_400, clientHeight: 400, scrollTop: 450 })
+		fireEvent.load(scrollable)
 		await new Promise((resolve) => window.setTimeout(resolve, 30))
 
-		expect(harness.scrollToArgs).toHaveLength(callsWhileBrowsing)
+		expect(scrollable.scrollTop).toBe(450)
 		expect(getScrollToBottomButton()).toBeVisible()
 	})
 
-	it("magnetically captures downward scrolling in the final five percent", async () => {
+	it("reattaches when native scrolling reaches the true bottom during a row resize", async () => {
 		await hydrate()
-		await waitFor(() => expect(harness.scrollToArgs.length).toBeGreaterThanOrEqual(1))
 		const scrollable = getScrollable()
 		seedBottomGeometry(scrollable)
-		scrollable.scrollTop = 450
-		fireEvent.scroll(scrollable)
-		expect(getScrollToBottomButton()).toBeVisible()
+		await beginBrowsing(scrollable)
 
-		scrollable.scrollTop = 580
+		setScrollGeometry(scrollable, { scrollHeight: 1_100, clientHeight: 400, scrollTop: 700 })
 		fireEvent.scroll(scrollable)
 
 		await waitFor(() => expect(document.querySelector("button[aria-label='chat:scrollToBottom']")).toBeNull())
-		expect(harness.scrollToArgs.at(-1)).toEqual({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" })
+		expect(scrollable.scrollHeight - scrollable.clientHeight - scrollable.scrollTop).toBe(0)
 	})
 
-	it("re-anchors the explicit bottom action with one command", async () => {
+	it("re-anchors the explicit bottom action to the exact native maximum", async () => {
 		await hydrate()
-		await waitFor(() => expect(harness.scrollToArgs.length).toBeGreaterThanOrEqual(1))
 		const scrollable = getScrollable()
 		seedBottomGeometry(scrollable)
-		scrollable.scrollTop = 450
-		fireEvent.scroll(scrollable)
-		const callsBeforeClick = harness.scrollToArgs.length
+		await beginBrowsing(scrollable)
 
 		fireEvent.click(getScrollToBottomButton())
 
-		await waitFor(() => expect(harness.scrollToArgs).toHaveLength(callsBeforeClick + 1))
-		expect(harness.scrollToArgs.at(-1)).toEqual({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" })
+		await waitFor(() => expect(scrollable.scrollTop).toBe(600))
+		expect(document.querySelector("button[aria-label='chat:scrollToBottom']")).toBeNull()
 	})
 
-	it("preserves stable message keys and explicit checkpoint navigation", async () => {
+	it("uses stable message keys and native checkpoint navigation", async () => {
+		const scrollIntoView = vi.fn()
 		const messages = buildMessagesWithCheckpoint(Date.now() - 3_000)
 		await hydrate(messages)
-		await waitFor(() => expect(harness.scrollToArgs.length).toBeGreaterThanOrEqual(1))
+		const checkpoint = document.querySelector<HTMLElement>("[data-chat-message-index='1']")
+		expect(checkpoint).toBeTruthy()
+		Object.defineProperty(checkpoint!, "scrollIntoView", { configurable: true, value: scrollIntoView })
 
-		expect(harness.computedItemKeys).toEqual(messages.slice(1).map((message) => message.ts))
 		fireEvent.click(document.querySelector("[data-testid='task-header']") as HTMLElement)
 		const checkpointButton = await waitFor(() => {
 			const button = document.querySelector("button[aria-label='chat:scrollToLatestCheckpoint']")
@@ -486,18 +290,18 @@ describe("ChatView single-owner scroll behavior", () => {
 		})
 		fireEvent.click(checkpointButton)
 
-		expect(harness.scrollToIndexArgs.at(-1)).toMatchObject({ index: 1, align: "center", behavior: "smooth" })
+		expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior: "smooth" })
 	})
 
 	it("keeps wheel scrolling active over the floating controls", async () => {
 		await hydrate()
-		await waitFor(() => expect(harness.scrollToArgs.length).toBeGreaterThanOrEqual(1))
 		const scrollable = getScrollable()
+		const scrollBy = vi.fn()
+		Object.defineProperty(scrollable, "scrollBy", { configurable: true, value: scrollBy })
 		seedBottomGeometry(scrollable)
-		scrollable.scrollTop = 450
-		fireEvent.scroll(scrollable)
+		await beginBrowsing(scrollable)
 
 		fireEvent.wheel(getScrollToBottomButton(), { deltaY: 120 })
-		expect(harness.scrollByArgs).toEqual([{ top: 120, behavior: "auto" }])
+		expect(scrollBy).toHaveBeenCalledWith({ top: 120, behavior: "auto" })
 	})
 })
