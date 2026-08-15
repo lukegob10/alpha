@@ -78,6 +78,8 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			return
 		}
 
+		if (this.rejectCompletionWithUndeliveredSpawnedResult(task, pushToolResult)) return
+
 		try {
 			if (!result) {
 				task.consecutiveMistakeCount++
@@ -149,6 +151,10 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			const { response, text, images } = await task.ask("completion_result", "", false)
 
 			if (response === "yesButtonClicked") {
+				// A background child can finish while the completion prompt is open.
+				// Recheck immediately before the synchronous completion transition so
+				// its report cannot be stranded by that race.
+				if (this.rejectCompletionWithUndeliveredSpawnedResult(task, pushToolResult)) return
 				this.emitTaskCompleted(task)
 				return
 			}
@@ -161,6 +167,20 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 		} catch (error) {
 			await handleError("inspecting site", error as Error)
 		}
+	}
+
+	private rejectCompletionWithUndeliveredSpawnedResult(
+		task: Task,
+		pushToolResult: (result: string) => void,
+	): boolean {
+		if (task.taskKind === "subagent" || !task.hasUndeliveredSpawnedSubagentResults?.()) return false
+
+		const errorMsg =
+			"A background sub-agent finished during this task, but its report has not been reviewed yet. Continue the task once more; the report will be included in the next model request."
+		task.consecutiveMistakeCount++
+		task.recordToolError("attempt_completion")
+		pushToolResult(formatResponse.toolError(errorMsg))
+		return true
 	}
 
 	/**

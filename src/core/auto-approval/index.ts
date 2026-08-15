@@ -166,10 +166,20 @@ export async function checkAutoApproval({
 			return { decision: "approve" }
 		}
 
-		if (tool.tool === "delegateTask") {
-			const agents = Array.isArray((tool as ClineSayTool & { agents?: Array<{ role?: string }> }).agents)
-				? (tool as ClineSayTool & { agents: Array<{ role?: string }> }).agents
-				: []
+		const toolName: string = tool.tool
+		const subagentTool = tool as ClineSayTool & {
+			agent?: { role?: string }
+			agents?: Array<{ role?: string }>
+		}
+		if (toolName === "delegateTask" || toolName === "spawnAgent") {
+			const agents =
+				toolName === "spawnAgent"
+					? subagentTool.agent
+						? [subagentTool.agent]
+						: []
+					: Array.isArray(subagentTool.agents)
+						? subagentTool.agents
+						: []
 			const hasWorker = agents.some((agent) => agent.role === "worker")
 			return state.alwaysAllowSubagents === true &&
 				state.alwaysAllowReadOnly === true &&

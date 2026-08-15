@@ -96,6 +96,10 @@ export const toolParamNames = [
 	"sha",
 	"merge_method",
 	"tasks",
+	"objective",
+	"agent_kind",
+	"write_scope",
+	"expected_output",
 ] as const
 
 export type ToolParamName = (typeof toolParamNames)[number]
@@ -129,6 +133,19 @@ export type NativeToolArgs = {
 			  }
 		>
 	}
+	spawn_agent:
+		| {
+				objective: string
+				agent_kind: "explore" | "review"
+				write_scope: null
+				expected_output: string[] | null
+		  }
+		| {
+				objective: string
+				agent_kind: "worker"
+				write_scope: string[]
+				expected_output: string[] | null
+		  }
 	ask_followup_question: {
 		question: string
 		follow_up: Array<{ text: string; mode?: string }>
@@ -378,6 +395,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	switch_mode: "switch modes",
 	new_task: "create new task",
 	delegate_task: "delegate bounded tasks",
+	spawn_agent: "spawn a bounded agent",
 	codebase_search: "codebase search",
 	update_todo_list: "update todo list",
 	run_slash_command: "run slash command",
@@ -410,7 +428,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 		alwaysAvailable: true,
 	},
 	agents: {
-		tools: ["delegate_task"],
+		tools: ["delegate_task", "spawn_agent"],
 	},
 }
 

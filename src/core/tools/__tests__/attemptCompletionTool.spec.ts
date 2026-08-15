@@ -83,6 +83,7 @@ describe("attemptCompletionTool", () => {
 			toolUsage: {},
 			taskKind: "primary",
 			hasActiveCommandExecutions: vi.fn().mockReturnValue(false),
+			hasUndeliveredSpawnedSubagentResults: vi.fn().mockReturnValue(false),
 			taskId: "task_1",
 			apiConfiguration: { apiProvider: "test" } as any,
 			api: { getModel: vi.fn().mockReturnValue({ id: "test-model", info: {} }) } as any,
@@ -105,6 +106,40 @@ describe("attemptCompletionTool", () => {
 		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("command is still running"))
 		expect(mockTask.say).not.toHaveBeenCalledWith("completion_result", expect.anything(), undefined, false)
 		expect(mockTask.emit).not.toHaveBeenCalledWith(RooCodeEventName.TaskCompleted, expect.anything())
+	})
+
+	it("defers completion until a finished background report is delivered", async () => {
+		mockTask.hasUndeliveredSpawnedSubagentResults = vi.fn().mockReturnValue(true)
+		const callbacks: AttemptCompletionCallbacks = {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+		}
+
+		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
+
+		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("background sub-agent"))
+		expect(mockTask.say).not.toHaveBeenCalledWith("completion_result", expect.anything(), undefined, false)
+		expect(mockTask.markCompleted).not.toHaveBeenCalled()
+	})
+
+	it("rechecks for a background result that arrives while completion approval is open", async () => {
+		mockTask.hasUndeliveredSpawnedSubagentResults = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true)
+		const callbacks: AttemptCompletionCallbacks = {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+		}
+
+		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
+
+		expect(mockTask.ask).toHaveBeenCalledWith("completion_result", "", false)
+		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("background sub-agent"))
+		expect(mockTask.markCompleted).not.toHaveBeenCalled()
 	})
 
 	describe("todo list validation", () => {

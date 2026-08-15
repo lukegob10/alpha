@@ -12,6 +12,7 @@ import githubApi from "./github_api"
 import listFiles from "./list_files"
 import newTask from "./new_task"
 import { delegate_task as delegateTask } from "./delegate_task"
+import { spawn_agent as spawnAgent } from "./spawn_agent"
 import readCommandOutput from "./read_command_output"
 import { createReadFileTool, type ReadFileToolOptions } from "./read_file"
 import runSlashCommand from "./run_slash_command"
@@ -61,6 +62,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		listFiles,
 		newTask,
 		delegateTask,
+		spawnAgent,
 		readCommandOutput,
 		createReadFileTool(readFileOptions),
 		runSlashCommand,

@@ -115,10 +115,16 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 	const nativeTools = getNativeTools({
 		supportsImages,
 	})
+	// Asynchronous child creation is a primary-task capability. Managed child lanes
+	// always provide an authority allow-list, so omit the schema entirely there even
+	// for providers that require the otherwise-unfiltered historical tool catalog.
+	const taskNativeTools = allowedToolNames
+		? nativeTools.filter((tool) => getToolName(tool) !== "spawn_agent")
+		: nativeTools
 
 	// Filter native tools based on mode restrictions.
 	const filteredNativeTools = filterNativeToolsForMode(
-		nativeTools,
+		taskNativeTools,
 		mode,
 		customModes,
 		experiments,
@@ -156,7 +162,7 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 	// allowed names based on mode filtering
 	if (includeAllToolsWithRestrictions) {
 		// Combine ALL tools (unfiltered native + all MCP + custom)
-		const allTools = [...nativeTools, ...mcpTools, ...nativeCustomTools]
+		const allTools = [...taskNativeTools, ...mcpTools, ...nativeCustomTools]
 
 		// Extract names of tools that are allowed based on mode filtering.
 		// Resolve any alias names to canonical names to ensure consistency with allTools

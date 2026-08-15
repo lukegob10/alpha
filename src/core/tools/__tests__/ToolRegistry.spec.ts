@@ -24,6 +24,11 @@ describe("ToolRegistry", () => {
 		expect(registry.resolve("attempt_completion")?.capabilities.concurrency).toBe("barrier")
 		expect(registry.resolve("list_files")?.capabilities.concurrency).toBe("parallel")
 		expect(registry.resolve("execute_command")?.capabilities.concurrency).toBe("serial")
+		expect(registry.resolve("spawn_agent")?.capabilities).toMatchObject({
+			concurrency: "serial",
+			sideEffects: "task",
+			controlFlow: false,
+		})
 	})
 
 	it("resolves aliases to the canonical descriptor", () => {

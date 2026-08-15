@@ -107,9 +107,13 @@ describe("filterNativeToolsForMode - orchestrator delegation", () => {
 })
 
 describe("filterNativeToolsForMode - bounded sub-agents", () => {
-	const nativeTools: OpenAI.Chat.ChatCompletionTool[] = [makeTool("delegate_task"), makeTool("read_file")]
+	const nativeTools: OpenAI.Chat.ChatCompletionTool[] = [
+		makeTool("delegate_task"),
+		makeTool("spawn_agent"),
+		makeTool("read_file"),
+	]
 
-	it("exposes delegate_task in Code mode only", () => {
+	it("exposes bounded agent tools in Code mode", () => {
 		const codeNames = filterNativeToolsForMode(nativeTools, "code", undefined, undefined, undefined, {}).map(
 			(tool) => (tool as any).function.name,
 		)
@@ -118,7 +122,9 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 		)
 
 		expect(codeNames).toContain("delegate_task")
+		expect(codeNames).toContain("spawn_agent")
 		expect(askNames).not.toContain("delegate_task")
+		expect(askNames).not.toContain("spawn_agent")
 	})
 
 	it("respects the existing disabled-tool configuration", () => {
@@ -127,5 +133,32 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 		}).map((tool) => (tool as any).function.name)
 
 		expect(names).not.toContain("delegate_task")
+	})
+
+	it("can disable asynchronous spawning without disabling legacy delegation", () => {
+		const names = filterNativeToolsForMode(nativeTools, "code", undefined, undefined, undefined, {
+			disabledTools: ["spawn_agent"],
+		}).map((tool) => (tool as any).function.name)
+
+		expect(names).not.toContain("spawn_agent")
+		expect(names).toContain("delegate_task")
+	})
+
+	it("does not grant spawn_agent to a custom mode through the agents group", () => {
+		const customModes = [
+			{
+				slug: "research",
+				name: "Research",
+				roleDefinition: "Inspect a repository",
+				groups: ["read", "agents"],
+			},
+		] as any
+
+		const names = filterNativeToolsForMode(nativeTools, "research", customModes, undefined, undefined, {}).map(
+			(tool) => (tool as any).function.name,
+		)
+
+		expect(names).not.toContain("spawn_agent")
+		expect(names).toContain("delegate_task")
 	})
 })

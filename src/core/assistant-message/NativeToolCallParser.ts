@@ -121,6 +121,34 @@ export class NativeToolCallParser {
 		)
 	}
 
+	private static isBoundedNonEmptyStringArray(value: unknown, minItems: number, maxItems: number): value is string[] {
+		return (
+			Array.isArray(value) &&
+			value.length >= minItems &&
+			value.length <= maxItems &&
+			value.every((item) => typeof item === "string" && item.length >= 1)
+		)
+	}
+
+	private static isSpawnAgentArgs(value: unknown): value is NativeToolArgs["spawn_agent"] {
+		if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+
+		const args = value as Record<string, unknown>
+		const allowedKeys = new Set(["objective", "agent_kind", "write_scope", "expected_output"])
+		const keys = Object.keys(args)
+		if (keys.length !== allowedKeys.size || keys.some((key) => !allowedKeys.has(key))) return false
+		if (typeof args.objective !== "string" || args.objective.length < 1) return false
+		if (args.expected_output !== null && !this.isBoundedNonEmptyStringArray(args.expected_output, 0, 12)) {
+			return false
+		}
+
+		if (args.agent_kind === "worker") {
+			return this.isBoundedNonEmptyStringArray(args.write_scope, 1, 12)
+		}
+
+		return (args.agent_kind === "explore" || args.agent_kind === "review") && args.write_scope === null
+	}
+
 	/**
 	 * Recover a common model formatting error where multiple argument objects for the
 	 * same search_files call are emitted back-to-back instead of inside `queries`.
@@ -779,6 +807,12 @@ export class NativeToolCallParser {
 				}
 				break
 
+			case "spawn_agent":
+				if (this.isSpawnAgentArgs(partialArgs)) {
+					nativeArgs = partialArgs
+				}
+				break
+
 			case "delegate_task":
 				if (Array.isArray(partialArgs.tasks)) {
 					nativeArgs = { tasks: partialArgs.tasks }
@@ -1238,6 +1272,12 @@ export class NativeToolCallParser {
 							message: args.message,
 							todos: args.todos,
 						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "spawn_agent":
+					if (this.isSpawnAgentArgs(args)) {
+						nativeArgs = args as NativeArgsFor<TName>
 					}
 					break
 

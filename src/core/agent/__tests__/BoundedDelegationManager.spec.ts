@@ -30,6 +30,19 @@ const result = (taskId: string) => ({
 	usage: { durationMs: 1 },
 })
 describe("bounded delegation", () => {
+	it("notifies an observer only after capacity is acquired", async () => {
+		const order: string[] = []
+		const manager = new BoundedDelegationManager(async (item) => {
+			order.push(`runner:${item.id}`)
+			return result(item.id)
+		})
+
+		const run = manager.run(envelope("a"), undefined, () => order.push("started:a"))
+		expect(order).toEqual([])
+		await run
+		expect(order).toEqual(["started:a", "runner:a"])
+	})
+
 	it("limits concurrency and preserves requested result order", async () => {
 		let active = 0,
 			peak = 0

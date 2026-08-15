@@ -31,6 +31,7 @@ import { switchModeTool } from "../tools/SwitchModeTool"
 import { attemptCompletionTool, AttemptCompletionCallbacks } from "../tools/AttemptCompletionTool"
 import { newTaskTool } from "../tools/NewTaskTool"
 import { delegateTaskTool } from "../tools/DelegateTaskTool"
+import { spawnAgentTool } from "../tools/SpawnAgentTool"
 import { updateTodoListTool } from "../tools/UpdateTodoListTool"
 import { runSlashCommandTool } from "../tools/RunSlashCommandTool"
 import { skillTool } from "../tools/SkillTool"
@@ -901,6 +902,14 @@ export async function presentAssistantMessage(cline: Task) {
 					break
 				case "delegate_task":
 					await delegateTaskTool.handle(cline, block as ToolUse<"delegate_task">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+						toolCallId: block.id,
+					})
+					break
+				case "spawn_agent":
+					await spawnAgentTool.handle(cline, block as ToolUse<"spawn_agent">, {
 						askApproval,
 						handleError,
 						pushToolResult,

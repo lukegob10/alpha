@@ -4,6 +4,7 @@ import { managedSubagentWorktreeService } from "@alpha-code/core"
 import { RooCodeEventName, type SubagentGroupState } from "@alpha-code/types"
 
 import { ClineProvider } from "../ClineProvider"
+import { AsyncSubagentRunManager } from "../../agent/AsyncSubagentRunManager"
 import { BoundedDelegationManager } from "../../agent/BoundedDelegationManager"
 import { SubagentNicknameRegistry } from "../../agent/SubagentNicknameRegistry"
 
@@ -46,6 +47,7 @@ const makeProviderHarness = (
 		taskSessions: {
 			getAvailableTaskCapacity: () => availableCapacity,
 			getMaxLiveTasks: () => 3,
+			getTask: () => undefined,
 		},
 		taskHistoryStore: { getAll: () => [] },
 		subagentNicknameRegistry: new SubagentNicknameRegistry(),
@@ -54,6 +56,7 @@ const makeProviderHarness = (
 		reservedSubagentSlots: new Map(),
 		publishedSubagentResults: new Set(),
 		subagentDescriptors: new Map(),
+		asyncSubagentRunManager: { cancel: () => false },
 		getTaskWithId: vi.fn(async (taskId: string) => ({ historyItem: historyItems.get(taskId) })),
 		updateTaskHistory: vi.fn(async (item: any) => {
 			historyItems.set(item.id, item)
@@ -87,6 +90,26 @@ describe("ClineProvider bounded sub-agent preparation", () => {
 			]),
 		).rejects.toThrow("Available slots: 1")
 		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
+	})
+
+	it("does not count a registered child again as reserved capacity", async () => {
+		const provider = makeProviderHarness(2)
+		const parent = makeParent()
+		const first = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect the parser", agent_kind: "explore" },
+		])
+
+		;(provider as any).taskSessions.getAvailableTaskCapacity = () => 1
+		;(provider as any).taskSessions.getTask = (taskId: string) =>
+			taskId === first.envelopes[0].id ? { taskId } : undefined
+
+		await expect(
+			provider.prepareSubagentGroup(parent as any, [
+				{ objective: "Review the dispatcher", agent_kind: "review" },
+			]),
+		).resolves.toMatchObject({
+			group: { agents: [{ objective: "Review the dispatcher" }] },
+		})
 	})
 
 	it("validates unsupported authority before reporting capacity", async () => {
@@ -638,6 +661,67 @@ describe("ClineProvider bounded sub-agent preparation", () => {
 		expect(updates.at(-1)?.status).toBe("completed")
 	})
 
+	it("returns a spawn handle before completion and publishes lifecycle state in the background", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const updates: SubagentGroupState[] = []
+		parent.upsertSubagentGroup = vi.fn(async (group: SubagentGroupState) => {
+			updates.push(structuredClone(group))
+		})
+
+		let finish!: (result: any) => void
+		const runner = vi.fn(
+			async (_envelope: { id: string }) =>
+				await new Promise<any>((resolve) => {
+					finish = resolve
+				}),
+		)
+		const bounded = new BoundedDelegationManager(runner)
+		;(provider as any).boundedDelegationManager = bounded
+		;(provider as any).asyncSubagentRunManager = new AsyncSubagentRunManager(bounded)
+
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect the parser", agent_kind: "explore" },
+		])
+		const handle = await provider.launchPreparedSubagentGroup(parent as any, prepared, new AbortController().signal)
+
+		expect(handle).toMatchObject({
+			taskId: prepared.envelopes[0].id,
+			groupId: prepared.group.groupId,
+			parentTaskId: parent.taskId,
+			status: "pending",
+		})
+		expect(Object.isFrozen(handle)).toBe(true)
+		expect((provider as any).asyncSubagentRunManager.getResult(handle.taskId)).toBeUndefined()
+		await vi.waitFor(() => expect(runner).toHaveBeenCalledOnce())
+		await vi.waitFor(() =>
+			expect(updates.some((group) => group.status === "running" && group.agents[0].status === "running")).toBe(
+				true,
+			),
+		)
+
+		finish({
+			taskId: handle.taskId,
+			status: "completed",
+			summary: "Parser inspected",
+			evidence: [],
+			changedFiles: [],
+			verification: [],
+			remainingRisks: [],
+			usage: { durationMs: 10 },
+		})
+
+		await vi.waitFor(() => expect(updates.at(-1)?.status).toBe("completed"))
+		expect(updates.at(-1)?.executionMode).toBe("async")
+		expect(updates.at(-1)?.agents[0]).toMatchObject({
+			status: "completed",
+			summary: "Parser inspected",
+		})
+		expect((provider as any).__historyItems.get(parent.taskId).childIds).toEqual([handle.taskId])
+		expect((provider as any).preparedSubagentGroups.has(prepared.group.groupId)).toBe(false)
+		expect((provider as any).asyncSubagentRunManager.getSnapshot(handle.taskId)).toBeUndefined()
+	})
+
 	it("publishes each child terminal result once before the aggregate terminal update", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
@@ -676,6 +760,7 @@ describe("ClineProvider bounded sub-agent preparation", () => {
 		const result = await provider.runSubagentGroup(parent as any, prepared, new AbortController().signal)
 
 		expect(result.status).toBe("completed")
+		expect(updates.at(-1)?.executionMode).toBe("blocking")
 		expect(
 			updates.filter((update) => update.status === "running" && update.agents[0]?.status === "completed"),
 		).toHaveLength(1)

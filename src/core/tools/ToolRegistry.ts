@@ -30,6 +30,7 @@ import { runSlashCommandTool } from "./RunSlashCommandTool"
 import { searchFilesTool } from "./SearchFilesTool"
 import { searchReplaceTool } from "./SearchReplaceTool"
 import { skillTool } from "./SkillTool"
+import { spawnAgentTool } from "./SpawnAgentTool"
 import { switchModeTool } from "./SwitchModeTool"
 import { updateTodoListTool } from "./UpdateTodoListTool"
 import { useMcpToolTool } from "./UseMcpToolTool"
@@ -112,6 +113,7 @@ const TASK_TOOLS = new Set([
 	"update_todo_list",
 	"new_task",
 	"delegate_task",
+	"spawn_agent",
 	"attempt_completion",
 	"switch_mode",
 	"ask_followup_question",
@@ -125,6 +127,7 @@ const TOOL_NAMES = [
 	"attempt_completion",
 	"codebase_search",
 	"delegate_task",
+	"spawn_agent",
 	"edit",
 	"edit_file",
 	"execute_command",
@@ -301,6 +304,7 @@ export class ToolRegistry {
 		})
 		this.registerBuiltIn("codebase_search", codebaseSearchTool, schemas)
 		this.registerBuiltIn("delegate_task", delegateTaskTool, schemas)
+		this.registerBuiltIn("spawn_agent", spawnAgentTool, schemas)
 		this.registerBuiltIn("edit", editTool, schemas)
 		this.registerBuiltIn("edit_file", editFileTool, schemas)
 		this.registerBuiltIn("execute_command", executeCommandTool, schemas)

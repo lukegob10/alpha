@@ -52,6 +52,136 @@ describe("NativeToolCallParser", () => {
 			errorSpy.mockRestore()
 		})
 
+		describe("spawn_agent tool", () => {
+			it.each([
+				{
+					label: "explore",
+					payload: {
+						objective: "Map the parser lifecycle.",
+						agent_kind: "explore",
+						write_scope: null,
+						expected_output: null,
+					},
+				},
+				{
+					label: "review",
+					payload: {
+						objective: "Review the parser validation boundary.",
+						agent_kind: "review",
+						write_scope: null,
+						expected_output: ["risk summary"],
+					},
+				},
+				{
+					label: "worker",
+					payload: {
+						objective: "Add focused parser coverage.",
+						agent_kind: "worker",
+						write_scope: ["src/core/assistant-message"],
+						expected_output: [],
+					},
+				},
+			])("parses a valid $label payload", ({ label, payload }) => {
+				const result = NativeToolCallParser.parseToolCall({
+					id: `spawn-${label}`,
+					name: "spawn_agent",
+					arguments: JSON.stringify(payload),
+				})
+
+				expect(result?.type).toBe("tool_use")
+				if (result?.type === "tool_use") {
+					expect(result.nativeArgs).toEqual(payload)
+				}
+			})
+
+			it.each([
+				[
+					"unknown role",
+					{
+						objective: "Inspect the parser.",
+						agent_kind: "research",
+						write_scope: null,
+						expected_output: null,
+					},
+				],
+				[
+					"read-only role with write scope",
+					{
+						objective: "Inspect the parser.",
+						agent_kind: "review",
+						write_scope: ["src"],
+						expected_output: null,
+					},
+				],
+				[
+					"worker with null write scope",
+					{
+						objective: "Fix the parser.",
+						agent_kind: "worker",
+						write_scope: null,
+						expected_output: null,
+					},
+				],
+				[
+					"worker with empty write scope",
+					{
+						objective: "Fix the parser.",
+						agent_kind: "worker",
+						write_scope: [],
+						expected_output: null,
+					},
+				],
+				[
+					"non-array expected output",
+					{
+						objective: "Inspect the parser.",
+						agent_kind: "explore",
+						write_scope: null,
+						expected_output: "summary",
+					},
+				],
+				[
+					"empty expected output entry",
+					{
+						objective: "Inspect the parser.",
+						agent_kind: "explore",
+						write_scope: null,
+						expected_output: [""],
+					},
+				],
+				[
+					"too many expected outputs",
+					{
+						objective: "Inspect the parser.",
+						agent_kind: "explore",
+						write_scope: null,
+						expected_output: Array.from({ length: 13 }, (_, index) => `output-${index}`),
+					},
+				],
+				[
+					"additional property",
+					{
+						objective: "Inspect the parser.",
+						agent_kind: "explore",
+						write_scope: null,
+						expected_output: null,
+						mode: "code",
+					},
+				],
+			])("rejects %s", (_label, payload) => {
+				const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				const result = NativeToolCallParser.parseToolCall({
+					id: "invalid-spawn",
+					name: "spawn_agent",
+					arguments: JSON.stringify(payload),
+				})
+
+				expect(result).toBeNull()
+				expect(errorSpy).toHaveBeenCalled()
+				errorSpy.mockRestore()
+			})
+		})
+
 		describe("search_files tool", () => {
 			it("parses a bounded queries batch", () => {
 				const result = NativeToolCallParser.parseToolCall({
@@ -550,6 +680,35 @@ describe("NativeToolCallParser", () => {
 	})
 
 	describe("processStreamingChunk", () => {
+		describe("spawn_agent tool", () => {
+			it("emits strict partial nativeArgs and preserves them on finalize", () => {
+				const id = "spawn-streaming"
+				const payload = {
+					objective: "Review the streamed parser output.",
+					agent_kind: "review",
+					write_scope: null,
+					expected_output: ["native argument shape"],
+				}
+				const encoded = JSON.stringify(payload)
+				const splitAt = encoded.indexOf('"write_scope"')
+				NativeToolCallParser.startStreamingToolCall(id, "spawn_agent")
+
+				const incomplete = NativeToolCallParser.processStreamingChunk(id, encoded.slice(0, splitAt))
+				expect(incomplete?.nativeArgs).toBeUndefined()
+
+				const partial = NativeToolCallParser.processStreamingChunk(id, encoded.slice(splitAt))
+				expect(partial?.partial).toBe(true)
+				expect(partial?.nativeArgs).toEqual(payload)
+
+				const finalized = NativeToolCallParser.finalizeStreamingToolCall(id)
+				expect(finalized?.type).toBe("tool_use")
+				if (finalized?.type === "tool_use") {
+					expect(finalized.partial).toBe(false)
+					expect(finalized.nativeArgs).toEqual(payload)
+				}
+			})
+		})
+
 		describe("read_file tool", () => {
 			it("should emit a partial ToolUse with nativeArgs.path during streaming", () => {
 				const id = "toolu_streaming_123"

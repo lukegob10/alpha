@@ -237,6 +237,24 @@ describe("Task.ask queued message drain", () => {
 		expect(result.response).toBe("yesButtonClicked")
 	})
 
+	it("auto-approves on-screen asynchronous sub-agent asks when sub-agent auto-approval is enabled", async () => {
+		const task = await createAskOnlyTask()
+		;(task as any).providerRef = {
+			deref: () => ({
+				getState: vi.fn(async () => ({
+					autoApprovalEnabled: true,
+					alwaysAllowSubagents: true,
+					alwaysAllowReadOnly: true,
+				})),
+				isTaskOnScreen: vi.fn(() => true),
+			}),
+		}
+
+		const result = await task.ask("tool", JSON.stringify({ tool: "spawnAgent", agent: { role: "explore" } }), false)
+
+		expect(result.response).toBe("yesButtonClicked")
+	})
+
 	it("does not auto-approve protected off-screen tool asks", async () => {
 		const task = await createAskOnlyTask()
 		;(task as any).providerRef = {

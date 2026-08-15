@@ -70,6 +70,56 @@ describe("checkAutoApproval", () => {
 		).resolves.toEqual({ decision: "ask" })
 	})
 
+	it("applies the same auto-approval policy to asynchronous sub-agent spawns", async () => {
+		const readOnlyRequest = {
+			ask: "tool" as const,
+			text: JSON.stringify({ tool: "spawnAgent", agent: { role: "explore" } }),
+		}
+
+		await expect(
+			checkAutoApproval({
+				...readOnlyRequest,
+				state: { autoApprovalEnabled: true, alwaysAllowSubagents: true, alwaysAllowReadOnly: true },
+			}),
+		).resolves.toEqual({ decision: "approve" })
+
+		await expect(
+			checkAutoApproval({
+				...readOnlyRequest,
+				state: { autoApprovalEnabled: true, alwaysAllowSubagents: false, alwaysAllowReadOnly: true },
+			}),
+		).resolves.toEqual({ decision: "ask" })
+
+		const workerRequest = {
+			ask: "tool" as const,
+			text: JSON.stringify({ tool: "spawnAgent", agent: { role: "worker" } }),
+		}
+
+		await expect(
+			checkAutoApproval({
+				...workerRequest,
+				state: {
+					autoApprovalEnabled: true,
+					alwaysAllowSubagents: true,
+					alwaysAllowReadOnly: true,
+					alwaysAllowWrite: false,
+				},
+			}),
+		).resolves.toEqual({ decision: "ask" })
+
+		await expect(
+			checkAutoApproval({
+				...workerRequest,
+				state: {
+					autoApprovalEnabled: true,
+					alwaysAllowSubagents: true,
+					alwaysAllowReadOnly: true,
+					alwaysAllowWrite: true,
+				},
+			}),
+		).resolves.toEqual({ decision: "approve" })
+	})
+
 	it("does not use the legacy subtask permission for sub-agent delegation", async () => {
 		await expect(
 			checkAutoApproval({

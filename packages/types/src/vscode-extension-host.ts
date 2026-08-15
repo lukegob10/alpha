@@ -847,6 +847,7 @@ export interface ClineSayTool {
 		| "switchMode"
 		| "newTask"
 		| "delegateTask"
+		| "spawnAgent"
 		| "finishTask"
 		| "generateImage"
 		| "imageGenerated"

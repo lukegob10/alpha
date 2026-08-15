@@ -42,7 +42,9 @@ import {
 	type ExtensionMessage,
 	type ExtensionState,
 	type SubagentGroupState,
+	type SubagentLifecycleEvent,
 	type SubagentRunPhase,
+	type SubagentSpawnHandle,
 	type SubagentChangeSetState,
 	type SubagentVerification,
 	type MarketplaceInstalledMetadata,
@@ -103,6 +105,7 @@ import { ProviderSettingsManager } from "../config/ProviderSettingsManager"
 import { CustomModesManager } from "../config/CustomModesManager"
 import { Task } from "../task/Task"
 import { WorkspaceMutationGate } from "../task/WorkspaceMutationGate"
+import { AsyncSubagentRunManager } from "../agent/AsyncSubagentRunManager"
 import { BoundedDelegationManager, type InternalTaskResult } from "../agent/BoundedDelegationManager"
 import { buildInternalTaskEnvelope, type InternalTaskEnvelope } from "../agent/InternalTaskEnvelope"
 import { SubagentNicknameRegistry } from "../agent/SubagentNicknameRegistry"
@@ -188,6 +191,7 @@ export class ClineProvider
 		(envelope, signal) => this.runSubagentEnvelope(envelope, signal),
 		2,
 	)
+	private readonly asyncSubagentRunManager = new AsyncSubagentRunManager(this.boundedDelegationManager)
 	private codeIndexStatusSubscription?: vscode.Disposable
 	private codeIndexManager?: CodeIndexManager
 	private _workspaceTracker?: WorkspaceTracker // workSpaceTracker read-only for access outside this class
@@ -3439,7 +3443,20 @@ export class ClineProvider
 		const normalizedDrafts = normalizeSubagentTaskDrafts(drafts)
 		assertSubagentTaskAuthorities(normalizedDrafts)
 
-		const reservedCount = Array.from(this.reservedSubagentSlots.values()).reduce((sum, count) => sum + count, 0)
+		// A prepared child consumes capacity until TaskSessionRegistry knows about it.
+		// Once the child is registered, getAvailableTaskCapacity() already accounts
+		// for that live task, so continuing to count its reservation would charge the
+		// same child twice and prevent sequential spawn_agent calls from filling the
+		// configured child slots.
+		const reservedCount = Array.from(this.reservedSubagentSlots.entries()).reduce((sum, [groupId, count]) => {
+			const reservedGroup = this.preparedSubagentGroups.get(groupId)
+			if (!reservedGroup) return sum + count
+
+			const unregisteredChildren = reservedGroup.envelopes.filter(
+				(envelope) => !this.taskSessions.getTask(envelope.id),
+			).length
+			return sum + Math.min(count, unregisteredChildren)
+		}, 0)
 		const availableCapacity = Math.max(0, this.taskSessions.getAvailableTaskCapacity() - reservedCount)
 		if (normalizedDrafts.length > availableCapacity) {
 			throw new Error(
@@ -3595,6 +3612,146 @@ export class ClineProvider
 		this.releaseSubagentGroup(prepared.group.groupId)
 	}
 
+	public async launchPreparedSubagentGroup(
+		parent: Task,
+		prepared: PreparedSubagentGroup,
+		parentSignal: AbortSignal,
+	): Promise<SubagentSpawnHandle> {
+		if (this.preparedSubagentGroups.get(prepared.group.groupId) !== prepared) {
+			throw new Error("The prepared sub-agent spawn is no longer available")
+		}
+		if (prepared.group.parentTaskId !== parent.taskId) {
+			throw new Error("The prepared sub-agent spawn belongs to a different parent task")
+		}
+		if (prepared.envelopes.length !== 1 || prepared.group.agents.length !== 1) {
+			throw new Error("spawn_agent requires exactly one prepared child")
+		}
+
+		const envelope = prepared.envelopes[0]
+		const agent = prepared.group.agents[0]
+		const controller = new AbortController()
+		const cancelFromParent = () => controller.abort(parentSignal.reason)
+		if (parentSignal.aborted) cancelFromParent()
+		else parentSignal.addEventListener("abort", cancelFromParent, { once: true })
+		this.subagentGroupControllers.set(prepared.group.groupId, controller)
+
+		let lifecycleWrites = Promise.resolve()
+		const unsubscribe = this.asyncSubagentRunManager.subscribe((event) => {
+			if (event.groupId !== prepared.group.groupId || event.taskId !== envelope.id) return
+			lifecycleWrites = lifecycleWrites
+				.then(() => this.publishSpawnedSubagentLifecycle(parent, prepared, event))
+				.catch((error) => this.log(`Failed to publish sub-agent ${event.taskId} lifecycle: ${String(error)}`))
+		})
+
+		try {
+			await this.attachSubagentGroupToParentHistory(parent, prepared)
+			const handle = this.asyncSubagentRunManager.launch(
+				envelope,
+				{
+					groupId: prepared.group.groupId,
+					nickname: agent.nickname,
+					role: agent.role,
+					initialSnapshot: {
+						writeScope: agent.writeScope,
+						phase: agent.phase,
+						phaseStartedAt: agent.phaseStartedAt,
+						modelRoute: agent.modelRoute,
+					},
+				},
+				controller.signal,
+			)
+			// Lifecycle callbacks are queued from launch(), so set the mode before
+			// their first persistence write. Failed launches remain unmarked and are
+			// reported through the spawn_agent tool result instead.
+			prepared.group.executionMode = "async"
+			const completion = this.asyncSubagentRunManager.waitForResult(handle.taskId)
+			if (!completion) throw new Error(`Missing asynchronous result channel for ${handle.taskId}`)
+
+			void this.finalizeSpawnedSubagent(
+				parent,
+				prepared,
+				handle,
+				completion,
+				() => lifecycleWrites,
+				unsubscribe,
+				() => parentSignal.removeEventListener("abort", cancelFromParent),
+			).catch((error) => this.log(`Failed to finalize spawned sub-agent ${handle.taskId}: ${String(error)}`))
+			return handle
+		} catch (error) {
+			unsubscribe()
+			parentSignal.removeEventListener("abort", cancelFromParent)
+			if (!controller.signal.aborted) controller.abort(error)
+			this.asyncSubagentRunManager.cancel(envelope.id, error as Error)
+			this.subagentGroupControllers.delete(prepared.group.groupId)
+			throw error
+		}
+	}
+
+	private async publishSpawnedSubagentLifecycle(
+		parent: Task,
+		prepared: PreparedSubagentGroup,
+		event: SubagentLifecycleEvent,
+	): Promise<void> {
+		if (event.type === "completed") return
+		const agent = prepared.group.agents.find((item) => item.taskId === event.taskId)
+		if (!agent) return
+
+		agent.status = event.snapshot.status
+		agent.phase = event.snapshot.phase
+		agent.phaseStartedAt = event.snapshot.phaseStartedAt
+		agent.startedAt = event.snapshot.startedAt
+		agent.cancelRequestedAt = event.snapshot.cancelRequestedAt
+		agent.usage = structuredClone(event.snapshot.usage)
+		if (event.snapshot.status === "running") {
+			prepared.group.status = "running"
+			prepared.group.startedAt ??= event.snapshot.startedAt ?? event.occurredAt
+		} else if (event.snapshot.status === "cancelling") {
+			prepared.group.status = "cancelling"
+		}
+		await parent.upsertSubagentGroup(prepared.group)
+	}
+
+	private async finalizeSpawnedSubagent(
+		parent: Task,
+		prepared: PreparedSubagentGroup,
+		handle: SubagentSpawnHandle,
+		completion: Promise<InternalTaskResult>,
+		getLifecycleWrites: () => Promise<void>,
+		unsubscribe: () => void,
+		detachParentSignal: () => void,
+	): Promise<void> {
+		try {
+			const result = await completion
+			await getLifecycleWrites()
+			try {
+				await this.applySubagentResult(prepared, result)
+			} catch (error) {
+				this.log(`Failed to publish spawned sub-agent ${result.taskId} result: ${String(error)}`)
+			}
+
+			prepared.group.status =
+				result.status === "completed"
+					? "completed"
+					: result.status === "cancelled" || result.status === "denied"
+						? "cancelled"
+						: result.status === "timed_out"
+							? "timed_out"
+							: "failed"
+			prepared.group.completedAt = Date.now()
+			try {
+				await parent.upsertSubagentGroup(prepared.group)
+			} catch (error) {
+				this.log(`Failed to publish terminal sub-agent group ${prepared.group.groupId}: ${String(error)}`)
+			}
+		} finally {
+			await getLifecycleWrites()
+			unsubscribe()
+			detachParentSignal()
+			this.asyncSubagentRunManager.forget(handle.taskId)
+			this.releaseSubagentGroup(prepared.group.groupId)
+		}
+	}
+
 	public async cancelSubagentGroup(parentTaskId: string, groupId: string): Promise<void> {
 		const prepared = this.preparedSubagentGroups.get(groupId)
 		if (!prepared || prepared.group.parentTaskId !== parentTaskId) return
@@ -3683,7 +3840,10 @@ export class ClineProvider
 		agent.status = "cancelling"
 		agent.cancelRequestedAt = Date.now()
 		delete agent.pendingApproval
-		this.boundedDelegationManager.cancel(taskId, new Error("Sub-agent cancelled by user"))
+		const reason = new Error("Sub-agent cancelled by user")
+		if (!this.asyncSubagentRunManager.cancel(taskId, reason)) {
+			this.boundedDelegationManager.cancel(taskId, reason)
+		}
 		await this.subagentDescriptors.get(taskId)?.parent.upsertSubagentGroup(prepared.group)
 	}
 
@@ -3699,6 +3859,7 @@ export class ClineProvider
 		this.subagentGroupControllers.set(prepared.group.groupId, controller)
 
 		const startedAt = Date.now()
+		prepared.group.executionMode = "blocking"
 		prepared.group.status = "running"
 		prepared.group.startedAt = startedAt
 		for (const agent of prepared.group.agents) {

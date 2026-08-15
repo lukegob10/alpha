@@ -208,6 +208,19 @@ export const subagentRunStatusSchema = z.enum([
 	"interrupted",
 ])
 
+/** Nonterminal statuses that can be observed while a sub-agent remains active. */
+export const subagentActiveRunStatusSchema = z.enum(["pending", "running", "cancelling"])
+
+/** Terminal statuses emitted exactly once a sub-agent run has finished. */
+export const subagentTerminalRunStatusSchema = z.enum([
+	"completed",
+	"blocked",
+	"failed",
+	"cancelled",
+	"timed_out",
+	"interrupted",
+])
+
 /** Fine-grained, nonterminal progress for a managed sub-agent. */
 export const subagentRunPhaseSchema = z.enum([
 	"queued",
@@ -248,6 +261,8 @@ export const subagentRunStateSchema = z.object({
 	cancelRequestedAt: z.number().optional(),
 	startedAt: z.number().optional(),
 	completedAt: z.number().optional(),
+	/** When the terminal report was persisted into the parent model's conversation. */
+	resultDeliveredAt: z.number().optional(),
 	usage: z.object({
 		inputTokens: z.number().optional(),
 		outputTokens: z.number().optional(),
@@ -271,6 +286,8 @@ export const subagentGroupStateSchema = z.object({
 	groupId: z.string(),
 	parentTaskId: z.string(),
 	toolCallId: z.string().optional(),
+	/** Distinguishes blocking delegate_task groups from nonblocking spawn_agent groups. */
+	executionMode: z.enum(["blocking", "async"]).optional(),
 	status: subagentGroupStatusSchema,
 	createdAt: z.number(),
 	startedAt: z.number().optional(),
@@ -278,11 +295,84 @@ export const subagentGroupStateSchema = z.object({
 	agents: z.array(subagentRunStateSchema).min(1).max(2),
 })
 
+const subagentIdentifierSchema = z.string().min(1)
+const subagentTimestampSchema = z.number().int().nonnegative()
+
+/**
+ * Stable acknowledgement returned as soon as an asynchronous sub-agent has
+ * been accepted. The handle deliberately contains no completion result: the
+ * parent observes progress through lifecycle events while continuing its turn.
+ */
+export const subagentSpawnHandleSchema = z.object({
+	taskId: subagentIdentifierSchema,
+	groupId: subagentIdentifierSchema,
+	parentTaskId: subagentIdentifierSchema,
+	nickname: z.string().min(1),
+	role: subagentRoleSchema,
+	status: z.enum(["pending", "running"]),
+	createdAt: subagentTimestampSchema,
+})
+
+const subagentLifecycleEventBaseSchema = z.object({
+	taskId: subagentIdentifierSchema,
+	groupId: subagentIdentifierSchema,
+	parentTaskId: subagentIdentifierSchema,
+	occurredAt: subagentTimestampSchema,
+})
+
+const subagentStartedSnapshotSchema = subagentRunStateSchema.extend({
+	status: z.literal("running"),
+	startedAt: subagentTimestampSchema,
+})
+
+const subagentActiveSnapshotSchema = subagentRunStateSchema.extend({
+	status: subagentActiveRunStatusSchema,
+})
+
+const subagentCompletedSnapshotSchema = subagentRunStateSchema.extend({
+	status: subagentTerminalRunStatusSchema,
+	completedAt: subagentTimestampSchema,
+})
+
+/**
+ * Snapshot-based lifecycle notification for a nonblocking sub-agent run.
+ * Snapshots make every notification independently usable by persistence and UI
+ * consumers without requiring them to reconstruct state from deltas.
+ */
+export const subagentLifecycleEventSchema = z
+	.discriminatedUnion("type", [
+		subagentLifecycleEventBaseSchema.extend({
+			type: z.literal("started"),
+			snapshot: subagentStartedSnapshotSchema,
+		}),
+		subagentLifecycleEventBaseSchema.extend({
+			type: z.literal("status"),
+			snapshot: subagentActiveSnapshotSchema,
+		}),
+		subagentLifecycleEventBaseSchema.extend({
+			type: z.literal("completed"),
+			snapshot: subagentCompletedSnapshotSchema,
+		}),
+	])
+	.superRefine(({ taskId, snapshot }, context) => {
+		if (snapshot.taskId !== taskId) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["snapshot", "taskId"],
+				message: "Lifecycle event taskId must match snapshot.taskId",
+			})
+		}
+	})
+
 export type SubagentRunStatus = z.infer<typeof subagentRunStatusSchema>
+export type SubagentActiveRunStatus = z.infer<typeof subagentActiveRunStatusSchema>
+export type SubagentTerminalRunStatus = z.infer<typeof subagentTerminalRunStatusSchema>
 export type SubagentRunPhase = z.infer<typeof subagentRunPhaseSchema>
 export type SubagentRunState = z.infer<typeof subagentRunStateSchema>
 export type SubagentGroupStatus = z.infer<typeof subagentGroupStatusSchema>
 export type SubagentGroupState = z.infer<typeof subagentGroupStateSchema>
+export type SubagentSpawnHandle = z.infer<typeof subagentSpawnHandleSchema>
+export type SubagentLifecycleEvent = z.infer<typeof subagentLifecycleEventSchema>
 
 /**
  * ContextCondense

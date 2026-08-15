@@ -47,7 +47,11 @@ export class BoundedDelegationManager {
 	constructor(
 		private readonly runner: InternalTaskRunner,
 		private readonly maxConcurrency = 2,
-	) {}
+	) {
+		if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
+			throw new Error("Internal task concurrency must be a positive integer")
+		}
+	}
 
 	cancel(taskId: string, reason: string | Error = "Internal task cancelled by user"): boolean {
 		const controller = this.activeRuns.get(taskId)
@@ -62,7 +66,11 @@ export class BoundedDelegationManager {
 		return true
 	}
 
-	async run(envelope: InternalTaskEnvelope, parentSignal?: AbortSignal): Promise<InternalTaskResult> {
+	async run(
+		envelope: InternalTaskEnvelope,
+		parentSignal?: AbortSignal,
+		onStarted?: () => void,
+	): Promise<InternalTaskResult> {
 		if (envelope.budget.maxDepth > 1 || envelope.policy.delegate)
 			throw new Error("Child delegation exceeds maximum depth one")
 		if (this.activeRuns.has(envelope.id)) throw new Error(`Internal task is already running: ${envelope.id}`)
@@ -90,6 +98,10 @@ export class BoundedDelegationManager {
 		try {
 			await this.acquire(controller.signal)
 			acquired = true
+			if (controller.signal.aborted) throw controller.signal.reason
+			onStarted?.()
+			// A lifecycle observer may synchronously cancel the run in response to
+			// the started notification. Do not invoke the child runner in that case.
 			if (controller.signal.aborted) throw controller.signal.reason
 			timer = setTimeout(
 				() => controller.abort(new InternalTaskCancellationError("timed_out", "internal task timed out")),
