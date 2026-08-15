@@ -137,6 +137,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const visibleLiveTask = visibleCurrentTaskId ? liveTasksById?.[visibleCurrentTaskId] : undefined
 	const isVisibleTaskCompleted = visibleLiveTask?.lifecycle === TaskLifecycleState.Completed
 	const visibleCurrentTaskItem = isDraftView ? undefined : currentTaskItem
+	const isManagedSubagent = visibleCurrentTaskItem?.taskKind === "subagent"
 	const visibleCurrentTaskTodos = useMemo(
 		() => (isDraftView ? [] : currentTaskTodos),
 		[isDraftView, currentTaskTodos],
@@ -1815,6 +1816,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							)
 						}
 						parentTaskId={visibleCurrentTaskItem?.parentTaskId}
+						isManagedSubagent={isManagedSubagent}
 						costBreakdown={
 							visibleCurrentTaskItem?.id && aggregatedCostsMap.has(visibleCurrentTaskItem.id)
 								? getCostBreakdownIfNeeded(aggregatedCostsMap.get(visibleCurrentTaskItem.id)!, {
@@ -1910,7 +1912,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						)}
 					</div>
 					<FileChangesPanel clineMessages={activeMessages} taskId={visibleCurrentTaskId} />
-					{areActionButtonsVisible && (
+					{areActionButtonsVisible && !isManagedSubagent && (
 						<div
 							className={`flex h-9 items-center mb-1 px-[15px] ${enableButtons ? "opacity-100" : "opacity-50"}`}>
 							{primaryButtonText && (
@@ -1971,45 +1973,47 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				</>
 			)}
 
-			<QueuedMessages
-				queue={visibleMessageQueue}
-				editingMessageId={editingQueuedMessage?.id}
-				onRemove={(index) => {
-					if (visibleMessageQueue[index]) {
-						vscode.postMessage({
-							type: "removeQueuedMessage",
-							text: visibleMessageQueue[index].id,
-							...visibleTaskPayload,
-						})
-					}
-				}}
-				onSteer={(index) => {
-					if (visibleMessageQueue[index]) {
-						vscode.postMessage({
-							type: "steerQueuedMessage",
-							text: visibleMessageQueue[index].id,
-							...visibleTaskPayload,
-						})
-					}
-				}}
-				onEdit={(index) => {
-					if (visibleMessageQueue[index]) {
-						startQueuedMessageEdit(visibleMessageQueue[index])
-					}
-				}}
-				onReorder={(fromIndex, toIndex) => {
-					if (visibleMessageQueue[fromIndex]) {
-						vscode.postMessage({
-							type: "reorderQueuedMessage",
-							payload: {
-								id: visibleMessageQueue[fromIndex].id,
-								toIndex,
-							},
-							...visibleTaskPayload,
-						})
-					}
-				}}
-			/>
+			{!isManagedSubagent && (
+				<QueuedMessages
+					queue={visibleMessageQueue}
+					editingMessageId={editingQueuedMessage?.id}
+					onRemove={(index) => {
+						if (visibleMessageQueue[index]) {
+							vscode.postMessage({
+								type: "removeQueuedMessage",
+								text: visibleMessageQueue[index].id,
+								...visibleTaskPayload,
+							})
+						}
+					}}
+					onSteer={(index) => {
+						if (visibleMessageQueue[index]) {
+							vscode.postMessage({
+								type: "steerQueuedMessage",
+								text: visibleMessageQueue[index].id,
+								...visibleTaskPayload,
+							})
+						}
+					}}
+					onEdit={(index) => {
+						if (visibleMessageQueue[index]) {
+							startQueuedMessageEdit(visibleMessageQueue[index])
+						}
+					}}
+					onReorder={(fromIndex, toIndex) => {
+						if (visibleMessageQueue[fromIndex]) {
+							vscode.postMessage({
+								type: "reorderQueuedMessage",
+								payload: {
+									id: visibleMessageQueue[fromIndex].id,
+									toIndex,
+								},
+								...visibleTaskPayload,
+							})
+						}
+					}}
+				/>
+			)}
 			{showRetiredProviderWarning && (
 				<div className="px-[15px] py-1">
 					<WarningRow
@@ -2020,27 +2024,47 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					/>
 				</div>
 			)}
-			<ChatTextArea
-				ref={textAreaRef}
-				inputValue={inputValue}
-				setInputValue={setInputValue}
-				sendingDisabled={sendingDisabled || isProfileDisabled}
-				selectApiConfigDisabled={sendingDisabled && clineAsk !== "api_req_failed"}
-				placeholderText={placeholderText}
-				selectedImages={selectedImages}
-				setSelectedImages={setSelectedImages}
-				onSend={() => handleSendMessage(inputValue, selectedImages)}
-				onSelectImages={selectImages}
-				shouldDisableImages={shouldDisableImages}
-				mode={mode}
-				setMode={setMode}
-				modeShortcutText={modeShortcutText}
-				isEditMode={Boolean(editingQueuedMessage)}
-				onCancel={cancelQueuedMessageEdit}
-				isStreaming={isStreaming}
-				onStop={handleStopTask}
-				onEnqueueMessage={handleEnqueueCurrentMessage}
-			/>
+			{isManagedSubagent ? (
+				<div className="mx-[15px] mb-3 flex items-center justify-between gap-3 rounded-lg border border-vscode-panel-border bg-vscode-editor-background px-3 py-2">
+					<div>
+						<div className="text-sm font-medium">Transcript is read-only</div>
+						<div className="text-xs text-vscode-descriptionForeground">
+							This sub-agent is managed by its parent task.
+						</div>
+					</div>
+					<Button
+						variant="secondary"
+						size="sm"
+						onClick={() =>
+							visibleCurrentTaskItem?.parentTaskId &&
+							vscode.postMessage({ type: "showTaskWithId", text: visibleCurrentTaskItem.parentTaskId })
+						}>
+						Return to parent
+					</Button>
+				</div>
+			) : (
+				<ChatTextArea
+					ref={textAreaRef}
+					inputValue={inputValue}
+					setInputValue={setInputValue}
+					sendingDisabled={sendingDisabled || isProfileDisabled}
+					selectApiConfigDisabled={sendingDisabled && clineAsk !== "api_req_failed"}
+					placeholderText={placeholderText}
+					selectedImages={selectedImages}
+					setSelectedImages={setSelectedImages}
+					onSend={() => handleSendMessage(inputValue, selectedImages)}
+					onSelectImages={selectImages}
+					shouldDisableImages={shouldDisableImages}
+					mode={mode}
+					setMode={setMode}
+					modeShortcutText={modeShortcutText}
+					isEditMode={Boolean(editingQueuedMessage)}
+					onCancel={cancelQueuedMessageEdit}
+					isStreaming={isStreaming}
+					onStop={handleStopTask}
+					onEnqueueMessage={handleEnqueueCurrentMessage}
+				/>
+			)}
 
 			<div id="alpha-portal" />
 		</div>

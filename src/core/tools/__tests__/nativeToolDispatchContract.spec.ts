@@ -37,14 +37,14 @@ describe("native tool production dispatch contract", () => {
 		const dispatchNames = directlyDispatchedToolNames(productionDispatcherSource())
 		const registry = new ToolRegistry()
 
-		expect(exposedNames).not.toContain("delegate_task")
+		expect(exposedNames).toContain("delegate_task")
 		expect(exposedNames.filter((name) => !dispatchNames.has(name))).toEqual([])
 		expect(exposedNames.filter((name) => !registry.has(name))).toEqual([])
-		expect(registry.has("delegate_task")).toBe(false)
-		expect(directlyDispatchedToolNames(productionDispatcherSource())).not.toContain("delegate_task")
-		expect(isValidToolName("delegate_task")).toBe(false)
+		expect(registry.has("delegate_task")).toBe(true)
+		expect(directlyDispatchedToolNames(productionDispatcherSource())).toContain("delegate_task")
+		expect(isValidToolName("delegate_task")).toBe(true)
 		expect(ALWAYS_AVAILABLE_TOOLS).not.toContain("delegate_task")
-		expect(Object.values(TOOL_GROUPS).flatMap((group) => group.tools)).not.toContain("delegate_task")
+		expect(Object.values(TOOL_GROUPS).flatMap((group) => group.tools)).toContain("delegate_task")
 	})
 
 	it("retains explicit production boundaries for dynamic MCP and custom tools", () => {

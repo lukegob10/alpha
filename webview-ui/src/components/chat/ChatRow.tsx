@@ -74,6 +74,7 @@ import {
 import { cn } from "@/lib/utils"
 import { PathTooltip } from "../ui/PathTooltip"
 import { OpenMarkdownPreviewButton } from "./OpenMarkdownPreviewButton"
+import { SubagentGroupCard } from "./SubagentGroupCard"
 
 // Helper function to get previous todos before a specific message
 function getPreviousTodos(messages: ClineMessage[], currentMessageTs: number): any[] {
@@ -807,6 +808,40 @@ const ChatRowContentInner = ({
 					</>
 				)
 			case "searchFiles":
+				if (tool.batchSearches?.length) {
+					return (
+						<>
+							<div style={headerStyle}>
+								{toolIcon("search")}
+								<span style={{ fontWeight: "bold" }}>
+									{t(
+										message.type === "ask"
+											? "chat:directoryOperations.wantsToSearchMultiple"
+											: "chat:directoryOperations.didSearchMultiple",
+										{ count: tool.batchSearches.length },
+									)}
+								</span>
+							</div>
+							<div className="flex flex-col gap-2 pl-6">
+								{tool.batchSearches.map((search, index) => (
+									<div key={`${search.path}:${search.regex}:${index}`}>
+										<div className="mb-1 text-sm">
+											<code>{search.regex}</code>
+										</div>
+										<CodeAccordion
+											path={search.path + (search.filePattern ? `/(${search.filePattern})` : "")}
+											code={search.content}
+											language="shellsession"
+											isExpanded={isExpanded}
+											onToggleExpand={handleToggleExpand}
+										/>
+									</div>
+								))}
+							</div>
+						</>
+					)
+				}
+
 				return (
 					<>
 						<div style={headerStyle}>
@@ -943,6 +978,10 @@ const ChatRowContentInner = ({
 						</div>
 					</>
 				)
+			case "delegateTask":
+				// The persisted inline SubagentGroupCard is the single presentation surface.
+				// ChatView still renders the standard approval controls for this ask.
+				return null
 			case "finishTask":
 				return (
 					<>
@@ -1070,6 +1109,14 @@ const ChatRowContentInner = ({
 	switch (message.type) {
 		case "say":
 			switch (message.say) {
+				case "subagent_group":
+					return message.subagentGroup ? (
+						<SubagentGroupCard
+							group={message.subagentGroup}
+							parentTaskId={currentTaskId}
+							parentActive={currentTaskItem?.status === "active"}
+						/>
+					) : null
 				case "diff_error":
 					return (
 						<ErrorRow

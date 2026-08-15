@@ -105,3 +105,27 @@ describe("filterNativeToolsForMode - orchestrator delegation", () => {
 		expect(resultNames).toContain("switch_mode")
 	})
 })
+
+describe("filterNativeToolsForMode - bounded sub-agents", () => {
+	const nativeTools: OpenAI.Chat.ChatCompletionTool[] = [makeTool("delegate_task"), makeTool("read_file")]
+
+	it("exposes delegate_task in Code mode only", () => {
+		const codeNames = filterNativeToolsForMode(nativeTools, "code", undefined, undefined, undefined, {}).map(
+			(tool) => (tool as any).function.name,
+		)
+		const askNames = filterNativeToolsForMode(nativeTools, "ask", undefined, undefined, undefined, {}).map(
+			(tool) => (tool as any).function.name,
+		)
+
+		expect(codeNames).toContain("delegate_task")
+		expect(askNames).not.toContain("delegate_task")
+	})
+
+	it("respects the existing disabled-tool configuration", () => {
+		const names = filterNativeToolsForMode(nativeTools, "code", undefined, undefined, undefined, {
+			disabledTools: ["delegate_task"],
+		}).map((tool) => (tool as any).function.name)
+
+		expect(names).not.toContain("delegate_task")
+	})
+})

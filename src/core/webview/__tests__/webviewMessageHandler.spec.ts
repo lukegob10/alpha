@@ -957,6 +957,76 @@ describe("webviewMessageHandler - message dialog preferences", () => {
 	})
 })
 
+describe("webviewMessageHandler - sub-agent controls", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		;(mockClineProvider as any).steerSubagent = vi.fn().mockResolvedValue(undefined)
+		;(mockClineProvider as any).cancelSubagent = vi.fn().mockResolvedValue(undefined)
+		;(mockClineProvider as any).respondToSubagentApproval = vi.fn().mockResolvedValue(undefined)
+	})
+
+	it("routes steering and cancellation through explicit child identifiers", async () => {
+		await webviewMessageHandler(mockClineProvider, {
+			type: "steerSubagent",
+			taskId: "parent-1",
+			groupId: "group-1",
+			subagentTaskId: "child-1",
+			text: "Focus on the parser boundary.",
+		})
+		await webviewMessageHandler(mockClineProvider, {
+			type: "cancelSubagent",
+			taskId: "parent-1",
+			groupId: "group-1",
+			subagentTaskId: "child-2",
+		})
+
+		expect((mockClineProvider as any).steerSubagent).toHaveBeenCalledWith(
+			"parent-1",
+			"group-1",
+			"child-1",
+			"Focus on the parser boundary.",
+		)
+		expect((mockClineProvider as any).cancelSubagent).toHaveBeenCalledWith("parent-1", "group-1", "child-2")
+	})
+
+	it("ignores malformed or empty sub-agent control messages", async () => {
+		await webviewMessageHandler(mockClineProvider, {
+			type: "steerSubagent",
+			taskId: "parent-1",
+			groupId: "group-1",
+			subagentTaskId: "child-1",
+			text: "   ",
+		})
+		await webviewMessageHandler(mockClineProvider, {
+			type: "cancelSubagent",
+			taskId: "parent-1",
+			groupId: "group-1",
+		})
+
+		expect((mockClineProvider as any).steerSubagent).not.toHaveBeenCalled()
+		expect((mockClineProvider as any).cancelSubagent).not.toHaveBeenCalled()
+	})
+
+	it("routes approval responses without overloading the text field", async () => {
+		await webviewMessageHandler(mockClineProvider, {
+			type: "respondToSubagentApproval",
+			taskId: "parent-1",
+			groupId: "group-1",
+			subagentTaskId: "child-1",
+			approvalId: "approval-1",
+			approved: true,
+		})
+
+		expect((mockClineProvider as any).respondToSubagentApproval).toHaveBeenCalledWith(
+			"parent-1",
+			"group-1",
+			"child-1",
+			"approval-1",
+			true,
+		)
+	})
+})
+
 describe("webviewMessageHandler - mcpEnabled", () => {
 	let mockMcpHub: any
 

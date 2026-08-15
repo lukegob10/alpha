@@ -112,6 +112,7 @@ export const globalSettingsSchema = z.object({
 	alwaysAllowMcp: z.boolean().optional(),
 	alwaysAllowModeSwitch: z.boolean().optional(),
 	alwaysAllowSubtasks: z.boolean().optional(),
+	alwaysAllowSubagents: z.boolean().optional(),
 	alwaysAllowExecute: z.boolean().optional(),
 	alwaysAllowFollowupQuestions: z.boolean().optional(),
 	followupAutoApproveTimeoutMs: z.number().optional(),
@@ -125,6 +126,14 @@ export const globalSettingsSchema = z.object({
 	autoCondenseContext: z.boolean().optional(),
 	autoCondenseContextPercent: z.number().optional(),
 	maxConcurrentTasks: z.number().int().min(MIN_MAX_CONCURRENT_TASKS).max(MAX_MAX_CONCURRENT_TASKS).optional(),
+	subagentDefaultApiConfigId: z.string().optional(),
+	subagentApiConfigByRole: z
+		.object({
+			explore: z.string().optional(),
+			review: z.string().optional(),
+			worker: z.string().optional(),
+		})
+		.optional(),
 
 	/**
 	 * Whether to include current time in the environment details
@@ -344,6 +353,7 @@ export const EVALS_SETTINGS: RooCodeSettings = {
 	alwaysAllowMcp: true,
 	alwaysAllowModeSwitch: true,
 	alwaysAllowSubtasks: true,
+	alwaysAllowSubagents: true,
 	alwaysAllowExecute: true,
 	alwaysAllowFollowupQuestions: true,
 	followupAutoApproveTimeoutMs: 0,

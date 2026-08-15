@@ -11,6 +11,7 @@ describe("useAutoApprovalState", () => {
 				alwaysAllowMcp: false,
 				alwaysAllowModeSwitch: false,
 				alwaysAllowSubtasks: false,
+				alwaysAllowSubagents: false,
 				alwaysAllowFollowupQuestions: false,
 			}
 
@@ -27,6 +28,7 @@ describe("useAutoApprovalState", () => {
 				alwaysAllowMcp: undefined,
 				alwaysAllowModeSwitch: undefined,
 				alwaysAllowSubtasks: undefined,
+				alwaysAllowSubagents: undefined,
 				alwaysAllowFollowupQuestions: undefined,
 			}
 
@@ -43,6 +45,7 @@ describe("useAutoApprovalState", () => {
 				alwaysAllowMcp: false,
 				alwaysAllowModeSwitch: false,
 				alwaysAllowSubtasks: false,
+				alwaysAllowSubagents: false,
 				alwaysAllowFollowupQuestions: false,
 			}
 
@@ -59,6 +62,7 @@ describe("useAutoApprovalState", () => {
 				alwaysAllowMcp: false,
 				alwaysAllowModeSwitch: false,
 				alwaysAllowSubtasks: false,
+				alwaysAllowSubagents: false,
 				alwaysAllowFollowupQuestions: false,
 			}
 
@@ -75,6 +79,7 @@ describe("useAutoApprovalState", () => {
 				alwaysAllowMcp: true,
 				alwaysAllowModeSwitch: true,
 				alwaysAllowSubtasks: true,
+				alwaysAllowSubagents: true,
 				alwaysAllowFollowupQuestions: true,
 			}
 
@@ -117,6 +122,7 @@ describe("useAutoApprovalState", () => {
 				alwaysAllowMcp: false,
 				alwaysAllowModeSwitch: false,
 				alwaysAllowSubtasks: false,
+				alwaysAllowSubagents: false,
 				alwaysAllowFollowupQuestions: false,
 			}
 

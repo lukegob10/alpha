@@ -272,6 +272,58 @@ describe("SYSTEM_PROMPT", () => {
 		expect(prompt).toMatchFileSnapshot("./__snapshots__/system-prompt/with-undefined-mcp-hub.snap")
 	})
 
+	it.each(["explore", "review", "worker"] as const)(
+		"limits a %s sub-agent prompt to its actual authority",
+		async (subagentRole) => {
+			mockMcpHub = createMockMcpHub(true)
+			const getSkillsForMode = vi.fn(() => [
+				{ name: "forbidden-skill", description: "Must not be offered to a managed child" },
+			])
+
+			const prompt = await SYSTEM_PROMPT(
+				mockContext,
+				"/test/path",
+				false,
+				mockMcpHub,
+				undefined,
+				defaultModeSlug,
+				undefined,
+				undefined,
+				undefined,
+				experiments,
+				undefined,
+				undefined,
+				{
+					todoListEnabled: true,
+					useAgentRules: true,
+					newTaskRequireTodos: false,
+					subagentRole,
+				},
+				undefined,
+				undefined,
+				{ getSkillsForMode } as any,
+			)
+
+			expect(prompt).not.toContain("MCP servers")
+			expect(prompt).not.toContain("<available_skills>")
+			expect(prompt).not.toContain("MODES")
+			expect(prompt).not.toContain("ask_followup_question")
+			expect(prompt).not.toContain("delegate_task")
+			expect(prompt).not.toContain("new_task")
+			expect(getSkillsForMode).not.toHaveBeenCalled()
+			expect(prompt).toContain("attempt_completion")
+			expect(prompt).toContain("Current Workspace Directory: /test/path")
+
+			if (subagentRole === "worker") {
+				expect(prompt).toContain("approved write scope")
+				expect(prompt).toContain("execute_command")
+			} else {
+				expect(prompt).toContain("read-only child task")
+				expect(prompt).not.toContain("execute_command")
+			}
+		},
+	)
+
 	it("should include vscode language in custom instructions", async () => {
 		// Mock vscode.env.language
 		const vscode = vi.mocked(await import("vscode")) as any

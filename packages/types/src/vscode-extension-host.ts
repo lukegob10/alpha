@@ -278,6 +278,8 @@ export type ExtensionState = Pick<
 	| "dismissedUpsells"
 	| "autoApprovalEnabled"
 	| "maxConcurrentTasks"
+	| "subagentDefaultApiConfigId"
+	| "subagentApiConfigByRole"
 	| "alwaysAllowReadOnly"
 	| "alwaysAllowReadOnlyOutsideWorkspace"
 	| "alwaysAllowWrite"
@@ -286,6 +288,7 @@ export type ExtensionState = Pick<
 	| "alwaysAllowMcp"
 	| "alwaysAllowModeSwitch"
 	| "alwaysAllowSubtasks"
+	| "alwaysAllowSubagents"
 	| "alwaysAllowFollowupQuestions"
 	| "alwaysAllowExecute"
 	| "followupAutoApproveTimeoutMs"
@@ -476,6 +479,13 @@ export interface WebviewMessage {
 		| "openMention"
 		| "closeTask"
 		| "cancelTask"
+		| "cancelSubagentGroup"
+		| "cancelSubagent"
+		| "steerSubagent"
+		| "respondToSubagentApproval"
+		| "openSubagentChangeSet"
+		| "applySubagentChangeSet"
+		| "discardSubagentChangeSet"
 		| "cancelAutoApproval"
 		| "updateVSCodeSetting"
 		| "getVSCodeSetting"
@@ -613,6 +623,11 @@ export interface WebviewMessage {
 		| "cancelGoalSeekRun"
 	text?: string
 	taskId?: string
+	groupId?: string
+	subagentTaskId?: string
+	approvalId?: string
+	changeSetId?: string
+	approved?: boolean
 	scheduledTaskId?: string
 	scheduledTask?: CreateScheduledTaskPayload
 	scheduledTaskUpdate?: UpdateScheduledTaskPayload
@@ -831,6 +846,7 @@ export interface ClineSayTool {
 		| "searchFiles"
 		| "switchMode"
 		| "newTask"
+		| "delegateTask"
 		| "finishTask"
 		| "generateImage"
 		| "imageGenerated"
@@ -866,6 +882,13 @@ export interface ClineSayTool {
 		isOutsideWorkspace?: boolean
 		key: string
 		content?: string
+	}>
+	batchSearches?: Array<{
+		path: string
+		regex: string
+		filePattern?: string
+		isOutsideWorkspace?: boolean
+		content: string
 	}>
 	batchDiffs?: Array<{
 		path: string

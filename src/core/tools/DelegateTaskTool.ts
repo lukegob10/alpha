@@ -1,58 +1,86 @@
-import { BaseTool, type ToolCallbacks } from "./BaseTool"
+import {
+	normalizeSubagentTaskDrafts,
+	type PreparedSubagentGroup,
+	type SubagentTaskDraft,
+	type SubagentToolResult,
+} from "../agent/SubagentDelegation"
 import type { Task } from "../task/Task"
-import { isValidInternalTaskEnvelope, type InternalTaskEnvelope } from "../agent/InternalTaskEnvelope"
+
+import { BaseTool, type ToolCallbacks } from "./BaseTool"
+
+interface BoundedSubagentProvider {
+	prepareSubagentGroup(parent: Task, drafts: unknown, toolCallId?: string): Promise<PreparedSubagentGroup>
+	runSubagentGroup(
+		parent: Task,
+		prepared: PreparedSubagentGroup,
+		parentSignal: AbortSignal,
+	): Promise<SubagentToolResult>
+	cancelPreparedSubagentGroup(parent: Task, prepared: PreparedSubagentGroup, reason: string): Promise<void>
+}
+
 export class DelegateTaskTool extends BaseTool<"delegate_task"> {
 	readonly name = "delegate_task" as const
-	async execute(
-		params: { envelope?: Record<string, unknown>; tasks?: Record<string, unknown>[] },
-		task: Task,
-		callbacks: ToolCallbacks,
-	): Promise<void> {
-		const provider = task.providerRef.deref() as any
+
+	async execute(params: { tasks: unknown }, task: Task, callbacks: ToolCallbacks): Promise<void> {
+		const reject = (message: string) => {
+			task.recordToolError("delegate_task", message)
+			task.didToolFailInCurrentTurn = true
+			callbacks.pushToolResult(`Error: ${message}`)
+		}
+		const provider = task.providerRef.deref() as (BoundedSubagentProvider & object) | undefined
 		if (
-			typeof provider?.runInternalTaskEnvelope !== "function" ||
-			typeof provider?.buildInternalTaskEnvelopeForTask !== "function" ||
-			((params.tasks?.length ?? 0) > 1 && typeof provider?.runInternalTaskEnvelopes !== "function")
+			typeof provider?.prepareSubagentGroup !== "function" ||
+			typeof provider.runSubagentGroup !== "function" ||
+			typeof provider.cancelPreparedSubagentGroup !== "function"
 		) {
-			callbacks.pushToolResult("Error: bounded child runner is unavailable")
+			reject("bounded sub-agent runner is unavailable")
 			return
 		}
-		const drafts = params.tasks ?? (params.envelope ? [params.envelope] : [])
-		if (drafts.length < 1 || drafts.length > 2) {
-			callbacks.pushToolResult("Error: delegate_task requires one or two child-task drafts")
-			return
-		}
-		let envelopes: InternalTaskEnvelope[]
+
+		let drafts: SubagentTaskDraft[]
 		try {
-			envelopes = drafts.map((draft) => {
-				const supplied = draft as unknown as InternalTaskEnvelope
-				return supplied?.digest && isValidInternalTaskEnvelope(supplied)
-					? supplied
-					: provider.buildInternalTaskEnvelopeForTask(task, draft)
-			})
+			drafts = normalizeSubagentTaskDrafts(params.tasks)
 		} catch (error) {
-			callbacks.pushToolResult(`Error: ${error instanceof Error ? error.message : String(error)}`)
+			reject(error instanceof Error ? error.message : String(error))
 			return
 		}
-		if (
-			!(await callbacks.askApproval(
-				"tool",
-				JSON.stringify({ tool: "delegateTask", objectives: envelopes.map((item) => item.objective) }),
-			))
+
+		let prepared: PreparedSubagentGroup
+		try {
+			prepared = await provider.prepareSubagentGroup(task, drafts, callbacks.toolCallId)
+		} catch (error) {
+			reject(error instanceof Error ? error.message : String(error))
+			return
+		}
+
+		const approved = await callbacks.askApproval(
+			"tool",
+			JSON.stringify({
+				tool: "delegateTask",
+				groupId: prepared.group.groupId,
+				agents: prepared.group.agents.map(({ nickname, role, objective, writeScope }) => ({
+					nickname,
+					role,
+					objective,
+					writeScope,
+				})),
+			}),
 		)
+
+		if (!approved) {
+			await provider.cancelPreparedSubagentGroup(task, prepared, "The user denied this sub-agent group.")
 			return
+		}
+
 		try {
-			const results =
-				envelopes.length === 1
-					? [await provider.runInternalTaskEnvelope(envelopes[0], task.getTaskCancellationSignal())]
-					: await provider.runInternalTaskEnvelopes(envelopes, task.getTaskCancellationSignal())
-			for (const result of results)
-				if (result.requiresParentVerification) task.requireChildVerification(result.taskId)
-			callbacks.pushToolResult(JSON.stringify(envelopes.length === 1 ? results[0] : results))
+			const result = await provider.runSubagentGroup(task, prepared, task.getTaskCancellationSignal())
+			callbacks.pushToolResult(JSON.stringify(result))
 		} catch (error) {
-			await callbacks.handleError("delegating internal task", error as Error)
+			await callbacks.handleError("delegating sub-agents", error as Error)
 		}
 	}
+
 	override async handlePartial(): Promise<void> {}
 }
+
 export const delegateTaskTool = new DelegateTaskTool()

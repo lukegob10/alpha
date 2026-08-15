@@ -21,6 +21,11 @@ import { getGitStatus } from "../../utils/git"
 import { Task } from "../task/Task"
 import { formatReminderSection } from "./reminder"
 
+const isWithinPath = (root: string, candidate: string): boolean => {
+	const relative = path.relative(path.resolve(root), path.resolve(candidate))
+	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+}
+
 export async function getEnvironmentDetails(cline: Task, includeFileDetails: boolean = false) {
 	let details = ""
 
@@ -28,11 +33,37 @@ export async function getEnvironmentDetails(cline: Task, includeFileDetails: boo
 	const state = await clineProvider?.getState()
 	const { maxWorkspaceFiles = 200 } = state ?? {}
 
+	if (cline.taskKind === "subagent") {
+		const currentMode = await cline.getTaskMode()
+		const modelId = cline.api.getModel().id
+		return `<environment_details>
+# Current Workspace Directory
+.
+
+# Current Mode
+<slug>${currentMode}</slug>
+<model>${modelId}</model>
+
+# Sub-agent Context
+Workspace files are intentionally omitted. Use list_files or search_files to locate candidates, then read related files in batches.
+		</environment_details>`
+	}
+
+	const globalStoragePath = clineProvider?.context?.globalStorageUri.fsPath
+	const privateSubagentRoots = globalStoragePath
+		? [path.join(globalStoragePath, "subagent-worktrees"), path.join(globalStoragePath, "subagent-change-sets")]
+		: []
+	const isPrivateSubagentPath = (candidate: string): boolean => {
+		const absolute = path.isAbsolute(candidate) ? candidate : path.resolve(cline.cwd, candidate)
+		return privateSubagentRoots.some((root) => isWithinPath(root, absolute))
+	}
+
 	// It could be useful for cline to know if the user went from one or no
 	// file to another between messages, so we always include this context.
 	const visibleFilePaths = vscode.window.visibleTextEditors
 		?.map((editor) => editor.document?.uri?.fsPath)
-		.filter(Boolean)
+		.filter((candidate): candidate is string => Boolean(candidate))
+		.filter((candidate) => !isPrivateSubagentPath(candidate))
 		.map((absolutePath) => path.relative(cline.cwd, absolutePath))
 		.slice(0, maxWorkspaceFiles)
 
@@ -52,7 +83,8 @@ export async function getEnvironmentDetails(cline: Task, includeFileDetails: boo
 		.flatMap((group) => group.tabs)
 		.filter((tab) => tab.input instanceof vscode.TabInputText)
 		.map((tab) => (tab.input as vscode.TabInputText).uri.fsPath)
-		.filter(Boolean)
+		.filter((candidate): candidate is string => Boolean(candidate))
+		.filter((candidate) => !isPrivateSubagentPath(candidate))
 		.map((absolutePath) => path.relative(cline.cwd, absolutePath).toPosix())
 		.slice(0, maxTabs)
 
@@ -70,12 +102,12 @@ export async function getEnvironmentDetails(cline: Task, includeFileDetails: boo
 	const busyTerminals = [
 		...TerminalRegistry.getTerminals(true, cline.taskId),
 		...TerminalRegistry.getBackgroundTerminals(true),
-	]
+	].filter((terminal) => !isPrivateSubagentPath(terminal.getCurrentWorkingDirectory()))
 
 	const inactiveTerminals = [
 		...TerminalRegistry.getTerminals(false, cline.taskId),
 		...TerminalRegistry.getBackgroundTerminals(false),
-	]
+	].filter((terminal) => !isPrivateSubagentPath(terminal.getCurrentWorkingDirectory()))
 
 	if (busyTerminals.length > 0) {
 		if (cline.didEditFile) {
@@ -159,7 +191,9 @@ export async function getEnvironmentDetails(cline: Task, includeFileDetails: boo
 	// console.log(`[Task#getEnvironmentDetails] terminalDetails: ${terminalDetails}`)
 
 	// Add recently modified files section.
-	const recentlyModifiedFiles = cline.fileContextTracker.getAndClearRecentlyModifiedFiles()
+	const recentlyModifiedFiles = cline.fileContextTracker
+		.getAndClearRecentlyModifiedFiles()
+		.filter((candidate) => !isPrivateSubagentPath(candidate))
 
 	if (recentlyModifiedFiles.length > 0) {
 		details +=

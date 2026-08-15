@@ -11,6 +11,7 @@ type AutoApproveToggles = Pick<
 	| "alwaysAllowMcp"
 	| "alwaysAllowModeSwitch"
 	| "alwaysAllowSubtasks"
+	| "alwaysAllowSubagents"
 	| "alwaysAllowExecute"
 	| "alwaysAllowFollowupQuestions"
 >
@@ -60,6 +61,13 @@ export const autoApproveSettingsConfig: Record<AutoApproveSetting, AutoApproveCo
 		descriptionKey: "settings:autoApprove.subtasks.description",
 		icon: "list-tree",
 		testId: "always-allow-subtasks-toggle",
+	},
+	alwaysAllowSubagents: {
+		key: "alwaysAllowSubagents",
+		labelKey: "settings:autoApprove.subagents.label",
+		descriptionKey: "settings:autoApprove.subagents.description",
+		icon: "organization",
+		testId: "always-allow-subagents-toggle",
 	},
 	alwaysAllowExecute: {
 		key: "alwaysAllowExecute",

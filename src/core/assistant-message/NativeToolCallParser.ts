@@ -51,6 +51,10 @@ export type ToolCallStreamEvent = ApiStreamToolCallStartChunk | ApiStreamToolCal
  * provider-level raw chunks into start/delta/end events.
  */
 export class NativeToolCallParser {
+	private static isAttemptCompletionOutcome(value: unknown): value is "completed" | "blocked" | null | undefined {
+		return value === undefined || value === null || value === "completed" || value === "blocked"
+	}
+
 	private static readonly defaultScope = "__default__"
 
 	// Streaming state management for argument accumulation (keyed by scope + tool call id)
@@ -99,6 +103,85 @@ export class NativeToolCallParser {
 			}
 		}
 		return undefined
+	}
+
+	private static isSearchFilesQuery(value: unknown): value is {
+		path: string
+		regex: string
+		file_pattern?: string | null
+	} {
+		if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+		const query = value as Record<string, unknown>
+		return (
+			typeof query.path === "string" &&
+			query.path.length > 0 &&
+			typeof query.regex === "string" &&
+			query.regex.length > 0 &&
+			(query.file_pattern === undefined || query.file_pattern === null || typeof query.file_pattern === "string")
+		)
+	}
+
+	/**
+	 * Recover a common model formatting error where multiple argument objects for the
+	 * same search_files call are emitted back-to-back instead of inside `queries`.
+	 * This is intentionally scoped to search_files; arbitrary tools must not gain
+	 * implicit multi-operation semantics.
+	 */
+	private static parseConcatenatedSearchQueries(raw: string): Array<{
+		path: string
+		regex: string
+		file_pattern?: string | null
+	}> | null {
+		const queries: Array<{ path: string; regex: string; file_pattern?: string | null }> = []
+		let objectStart = -1
+		let depth = 0
+		let inString = false
+		let escaped = false
+
+		for (let index = 0; index < raw.length; index++) {
+			const char = raw[index]
+
+			if (objectStart === -1) {
+				if (/\s/.test(char)) continue
+				if (char !== "{") return null
+				objectStart = index
+				depth = 1
+				continue
+			}
+
+			if (inString) {
+				if (escaped) {
+					escaped = false
+				} else if (char === "\\") {
+					escaped = true
+				} else if (char === '"') {
+					inString = false
+				}
+				continue
+			}
+
+			if (char === '"') {
+				inString = true
+			} else if (char === "{") {
+				depth++
+			} else if (char === "}") {
+				depth--
+				if (depth < 0) return null
+				if (depth === 0) {
+					let parsed: unknown
+					try {
+						parsed = JSON.parse(raw.slice(objectStart, index + 1))
+					} catch {
+						return null
+					}
+					if (!this.isSearchFilesQuery(parsed)) return null
+					queries.push(parsed)
+					objectStart = -1
+				}
+			}
+		}
+
+		return objectStart === -1 && !inString && queries.length > 1 && queries.length <= 8 ? queries : null
 	}
 
 	/**
@@ -499,8 +582,13 @@ export class NativeToolCallParser {
 				break
 
 			case "attempt_completion":
-				if (partialArgs.result) {
-					nativeArgs = { result: partialArgs.result }
+				if (partialArgs.result && this.isAttemptCompletionOutcome(partialArgs.outcome)) {
+					nativeArgs = {
+						result: partialArgs.result,
+						...(partialArgs.outcome === "completed" || partialArgs.outcome === "blocked"
+							? { outcome: partialArgs.outcome }
+							: {}),
+					}
 				}
 				break
 
@@ -579,7 +667,11 @@ export class NativeToolCallParser {
 				break
 
 			case "search_files":
-				if (partialArgs.path !== undefined || partialArgs.regex !== undefined) {
+				if (Array.isArray(partialArgs.queries) && partialArgs.queries.length > 0) {
+					nativeArgs = {
+						queries: partialArgs.queries.filter((query: unknown) => this.isSearchFilesQuery(query)),
+					}
+				} else if (partialArgs.path !== undefined || partialArgs.regex !== undefined) {
 					nativeArgs = {
 						path: partialArgs.path,
 						regex: partialArgs.regex,
@@ -687,6 +779,12 @@ export class NativeToolCallParser {
 				}
 				break
 
+			case "delegate_task":
+				if (Array.isArray(partialArgs.tasks)) {
+					nativeArgs = { tasks: partialArgs.tasks }
+				}
+				break
+
 			default:
 				break
 		}
@@ -748,7 +846,15 @@ export class NativeToolCallParser {
 
 		try {
 			// Parse the arguments JSON string
-			const args = toolCall.arguments === "" ? {} : JSON.parse(toolCall.arguments)
+			let args: Record<string, any>
+			try {
+				args = toolCall.arguments === "" ? {} : JSON.parse(toolCall.arguments)
+			} catch (error) {
+				const recoveredQueries =
+					resolvedName === "search_files" ? this.parseConcatenatedSearchQueries(toolCall.arguments) : null
+				if (!recoveredQueries) throw error
+				args = { queries: recoveredQueries }
+			}
 
 			// Build stringified params for display/logging.
 			// Tool execution MUST use nativeArgs (typed) and does not support legacy fallbacks.
@@ -828,8 +934,13 @@ export class NativeToolCallParser {
 					break
 
 				case "attempt_completion":
-					if (args.result) {
-						nativeArgs = { result: args.result } as NativeArgsFor<TName>
+					if (args.result && this.isAttemptCompletionOutcome(args.outcome)) {
+						nativeArgs = {
+							result: args.result,
+							...(args.outcome === "completed" || args.outcome === "blocked"
+								? { outcome: args.outcome }
+								: {}),
+						} as NativeArgsFor<TName>
 					}
 					break
 
@@ -915,7 +1026,14 @@ export class NativeToolCallParser {
 					break
 
 				case "search_files":
-					if (args.path !== undefined && args.regex !== undefined) {
+					if (
+						Array.isArray(args.queries) &&
+						args.queries.length >= 1 &&
+						args.queries.length <= 8 &&
+						args.queries.every((query: unknown) => this.isSearchFilesQuery(query))
+					) {
+						nativeArgs = { queries: args.queries } as NativeArgsFor<TName>
+					} else if (this.isSearchFilesQuery(args)) {
 						nativeArgs = {
 							path: args.path,
 							regex: args.regex,
@@ -973,7 +1091,9 @@ export class NativeToolCallParser {
 
 				case "github_api": {
 					const baseParamsAreValid =
-						typeof args.action === "string" && typeof args.owner === "string" && typeof args.repo === "string"
+						typeof args.action === "string" &&
+						typeof args.owner === "string" &&
+						typeof args.repo === "string"
 
 					if (!baseParamsAreValid) {
 						break
@@ -1031,9 +1151,12 @@ export class NativeToolCallParser {
 										args.merge_method === null
 											? args.merge_method
 											: undefined,
-									title: typeof args.title === "string" || args.title === null ? args.title : undefined,
+									title:
+										typeof args.title === "string" || args.title === null ? args.title : undefined,
 									message:
-										typeof args.message === "string" || args.message === null ? args.message : undefined,
+										typeof args.message === "string" || args.message === null
+											? args.message
+											: undefined,
 								} as NativeArgsFor<TName>
 							}
 							break
@@ -1115,6 +1238,29 @@ export class NativeToolCallParser {
 							message: args.message,
 							todos: args.todos,
 						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "delegate_task":
+					if (
+						Array.isArray(args.tasks) &&
+						args.tasks.length >= 1 &&
+						args.tasks.length <= 2 &&
+						args.tasks.every(
+							(item: unknown) =>
+								typeof item === "object" &&
+								item !== null &&
+								typeof (item as { objective?: unknown }).objective === "string" &&
+								["explore", "review", "worker"].includes(
+									(item as { agent_kind?: string }).agent_kind ?? "",
+								) &&
+								((item as { agent_kind?: string }).agent_kind !== "worker" ||
+									(Array.isArray((item as { write_scope?: unknown }).write_scope) &&
+										(item as { write_scope: unknown[] }).write_scope.length >= 1 &&
+										(item as { write_scope: unknown[] }).write_scope.length <= 12)),
+						)
+					) {
+						nativeArgs = { tasks: args.tasks } as NativeArgsFor<TName>
 					}
 					break
 

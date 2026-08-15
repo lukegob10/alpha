@@ -66,6 +66,29 @@ export function getRulesSection(cwd: string, settings?: SystemPromptSettings): s
 	// Get shell-appropriate command chaining operator
 	const chainOp = getCommandChainOperator()
 	const chainNote = getCommandChainNote()
+	const subagentRole = settings?.subagentRole
+
+	if (subagentRole) {
+		const workerRules =
+			subagentRole === "worker"
+				? `
+- Edit only paths in the approved write scope. All other repository paths are read-only.
+- Before using execute_command, use the SYSTEM INFORMATION context to make the command compatible with the user's environment. Prefer the tool's working-directory parameter over shell directory changes. When dependent shell commands must be chained, use \`${chainOp}\` for the active shell.${chainNote ? ` ${chainNote}` : ""}
+- Commands are for targeted local implementation or verification only. Do not stage, commit, create branches, or change remotes.`
+				: "\n- This child is read-only. Inspect evidence without mutating files or running commands."
+
+		return `====
+
+RULES
+
+- The project base directory is: ${cwd.toPosix()}
+- File-tool paths must be relative to this directory. Do not escape the workspace.
+- Do not change directories to bypass workspace or tool restrictions.
+- Do not use the ~ character or $HOME to refer to the home directory.${workerRules}
+- Treat tool results as evidence. Do not infer success from missing or incomplete output.
+- Stay within the assigned objective and authority. Do not create tasks or delegate.
+- When finished, call attempt_completion once with a concise, self-contained result.${settings?.isStealthModel ? getVendorConfidentialitySection() : ""}`
+	}
 
 	return `====
 

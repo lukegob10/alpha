@@ -41,6 +41,7 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		setAlwaysAllowMcp,
 		setAlwaysAllowModeSwitch,
 		setAlwaysAllowSubtasks,
+		setAlwaysAllowSubagents,
 		setAlwaysAllowFollowupQuestions,
 		setAllowedCommands,
 	} = useExtensionState()
@@ -59,6 +60,7 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 			alwaysAllowMcp: true,
 			alwaysAllowModeSwitch: true,
 			alwaysAllowSubtasks: true,
+			alwaysAllowSubagents: true,
 			alwaysAllowFollowupQuestions: true,
 			allowedCommands: nextAllowedCommands,
 		}
@@ -74,6 +76,7 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		setAlwaysAllowMcp(true)
 		setAlwaysAllowModeSwitch(true)
 		setAlwaysAllowSubtasks(true)
+		setAlwaysAllowSubagents(true)
 		setAlwaysAllowFollowupQuestions(true)
 		setAllowedCommands(nextAllowedCommands)
 
@@ -92,6 +95,7 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		setAlwaysAllowReadOnly,
 		setAlwaysAllowReadOnlyOutsideWorkspace,
 		setAlwaysAllowSubtasks,
+		setAlwaysAllowSubagents,
 		setAlwaysAllowWrite,
 		setAlwaysAllowWriteOutsideWorkspace,
 		setAlwaysAllowWriteProtected,
@@ -121,6 +125,9 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 				case "alwaysAllowSubtasks":
 					setAlwaysAllowSubtasks(value)
 					break
+				case "alwaysAllowSubagents":
+					setAlwaysAllowSubagents(value)
+					break
 				case "alwaysAllowFollowupQuestions":
 					setAlwaysAllowFollowupQuestions(value)
 					break
@@ -140,6 +147,7 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 			setAlwaysAllowMcp,
 			setAlwaysAllowModeSwitch,
 			setAlwaysAllowSubtasks,
+			setAlwaysAllowSubagents,
 			setAlwaysAllowFollowupQuestions,
 			setAutoApprovalEnabled,
 		],

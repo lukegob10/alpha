@@ -745,6 +745,7 @@ describe("ClineProvider", () => {
 		expect(state).toHaveProperty("alwaysAllowReadOnly")
 		expect(state).toHaveProperty("alwaysAllowWrite")
 		expect(state).toHaveProperty("alwaysAllowExecute")
+		expect(state).toHaveProperty("alwaysAllowSubagents")
 		expect(state).toHaveProperty("taskHistory")
 		expect(state).toHaveProperty("soundEnabled")
 		expect(state).toHaveProperty("ttsEnabled")
@@ -808,6 +809,19 @@ describe("ClineProvider", () => {
 		expect(state.codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitSeconds).toBe(2.5)
 	})
 
+	test("getState exposes saved sub-agent routing selections", async () => {
+		await provider.contextProxy.setValue("subagentDefaultApiConfigId", "default-id")
+		await provider.contextProxy.setValue("subagentApiConfigByRole", { review: "review-id" })
+
+		const state = await provider.getState()
+		const webviewState = await provider.getStateToPostToWebview()
+
+		expect(state.subagentDefaultApiConfigId).toBe("default-id")
+		expect(state.subagentApiConfigByRole).toEqual({ review: "review-id" })
+		expect(webviewState.subagentDefaultApiConfigId).toBe("default-id")
+		expect(webviewState.subagentApiConfigByRole).toEqual({ review: "review-id" })
+	})
+
 	test("language is set to VSCode language", async () => {
 		// Mock VSCode language as Spanish
 		;(vscode.env as any).language = "pt-BR"
@@ -835,6 +849,22 @@ describe("ClineProvider", () => {
 		expect(updateGlobalStateSpy).toHaveBeenCalledWith("writeDelayMs", 2000)
 		expect(mockContext.globalState.update).toHaveBeenCalledWith("writeDelayMs", 2000)
 		expect(mockPostMessage).toHaveBeenCalled()
+	})
+
+	test("normalizes cleared sub-agent routing selections before persistence", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		await messageHandler({
+			type: "updateSettings",
+			updatedSettings: {
+				subagentDefaultApiConfigId: "",
+				subagentApiConfigByRole: { explore: "fast-id", review: "" },
+			},
+		})
+
+		expect(updateGlobalStateSpy).toHaveBeenCalledWith("subagentDefaultApiConfigId", undefined)
+		expect(updateGlobalStateSpy).toHaveBeenCalledWith("subagentApiConfigByRole", { explore: "fast-id" })
 	})
 
 	test("updates sound utility when sound setting changes", async () => {

@@ -337,6 +337,42 @@ describe("ClineProvider Task History Synchronization", () => {
 		return calls.filter((call) => call[0]?.type === type)
 	}
 
+	describe("getTaskWithAggregatedCosts", () => {
+		it("treats a not-yet-persisted child as zero cost instead of throwing", async () => {
+			const parent = createHistoryItem({
+				id: "parent-task",
+				task: "Parent task",
+				totalCost: 0.5,
+				childIds: ["starting-child"],
+			})
+			await provider.updateTaskHistory(parent, { broadcast: false })
+
+			const warningSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+			const getTaskSpy = vi.spyOn(provider, "getTaskWithId")
+
+			const result = await provider.getTaskWithAggregatedCosts(parent.id)
+
+			expect(result.aggregatedCosts).toEqual({
+				ownCost: 0.5,
+				childrenCost: 0,
+				totalCost: 0.5,
+				childBreakdown: {
+					"starting-child": {
+						ownCost: 0,
+						childrenCost: 0,
+						totalCost: 0,
+					},
+				},
+			})
+			// Only the requested root uses the throwing, full task loader. Descendants
+			// use the non-throwing history index while their records are being created.
+			expect(getTaskSpy).toHaveBeenCalledTimes(1)
+			expect(getTaskSpy).toHaveBeenCalledWith(parent.id)
+
+			warningSpy.mockRestore()
+		})
+	})
+
 	describe("updateTaskHistory", () => {
 		it("broadcasts task history update by default", async () => {
 			await provider.resolveWebviewView(mockWebviewView)

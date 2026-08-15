@@ -14,6 +14,7 @@ import { BaseTool, ToolCallbacks } from "./BaseTool"
 interface AttemptCompletionParams {
 	result: string
 	command?: string
+	outcome?: "completed" | "blocked"
 }
 
 export interface AttemptCompletionCallbacks extends ToolCallbacks {
@@ -37,7 +38,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 	readonly name = "attempt_completion" as const
 
 	async execute(params: AttemptCompletionParams, task: Task, callbacks: AttemptCompletionCallbacks): Promise<void> {
-		const { result } = params
+		const { result, outcome } = params
 		const { handleError, pushToolResult, askFinishSubTaskApproval } = callbacks
 
 		// Prevent attempt_completion if any tool failed in the current turn
@@ -68,6 +69,15 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			return
 		}
 
+		if (task.taskKind === "subagent" && task.subagentRole === "worker" && task.hasActiveCommandExecutions()) {
+			const errorMsg =
+				"Cannot complete an editing worker while a command is still running. Wait for its terminal result before reporting verification."
+			task.consecutiveMistakeCount++
+			task.recordToolError("attempt_completion")
+			pushToolResult(formatResponse.toolError(errorMsg))
+			return
+		}
+
 		try {
 			if (!result) {
 				task.consecutiveMistakeCount++
@@ -79,6 +89,13 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			task.consecutiveMistakeCount = 0
 
 			await task.say("completion_result", result, undefined, false)
+
+			if (task.taskKind === "subagent") {
+				task.subagentCompletionOutcome = outcome === "blocked" ? "blocked" : "completed"
+				pushToolResult("")
+				this.emitTaskCompleted(task)
+				return
+			}
 
 			// Check for subtask using parentTaskId (metadata-driven delegation)
 			if (task.parentTaskId) {

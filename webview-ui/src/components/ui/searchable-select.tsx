@@ -33,6 +33,7 @@ interface SearchableSelectProps {
 	disabled?: boolean
 	/** Maximum items to display when not searching. Defaults to 50 for performance. */
 	maxDisplayItems?: number
+	"aria-label"?: string
 	"data-testid"?: string
 }
 
@@ -46,6 +47,7 @@ export function SearchableSelect({
 	className,
 	disabled,
 	maxDisplayItems = 50,
+	"aria-label": ariaLabel,
 	"data-testid": dataTestId,
 }: SearchableSelectProps) {
 	const [open, setOpen] = React.useState(false)
@@ -136,6 +138,7 @@ export function SearchableSelect({
 				<Button
 					variant="outline"
 					role="combobox"
+					aria-label={ariaLabel}
 					aria-expanded={open}
 					disabled={disabled}
 					className={cn(

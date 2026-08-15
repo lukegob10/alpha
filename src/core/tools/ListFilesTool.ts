@@ -5,11 +5,10 @@ import { type ClineSayTool } from "@alpha-code/types"
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { listFiles } from "../../services/glob/list-files"
-import { getReadablePath } from "../../utils/path"
-import { isPathOutsideWorkspace } from "../../utils/pathUtils"
 import type { ToolUse } from "../../shared/tools"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 interface ListFilesParams {
 	path: string
@@ -35,7 +34,7 @@ export class ListFilesTool extends BaseTool<"list_files"> {
 			task.consecutiveMistakeCount = 0
 
 			const absolutePath = path.resolve(task.cwd, relDirPath)
-			const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
+			const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
 			const [files, didHitLimit] = await listFiles(absolutePath, recursive || false, 200)
 			const { showRooIgnoredFiles = false } = (await task.providerRef.deref()?.getState()) ?? {}
@@ -51,7 +50,7 @@ export class ListFilesTool extends BaseTool<"list_files"> {
 
 			const sharedMessageProps: ClineSayTool = {
 				tool: !recursive ? "listFilesTopLevel" : "listFilesRecursive",
-				path: getReadablePath(task.cwd, relDirPath),
+				path: getTaskReadablePath(task, relDirPath),
 				isOutsideWorkspace,
 			}
 
@@ -74,11 +73,11 @@ export class ListFilesTool extends BaseTool<"list_files"> {
 		const recursive = recursiveRaw?.toLowerCase() === "true"
 
 		const absolutePath = relDirPath ? path.resolve(task.cwd, relDirPath) : task.cwd
-		const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
+		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
 		const sharedMessageProps: ClineSayTool = {
 			tool: !recursive ? "listFilesTopLevel" : "listFilesRecursive",
-			path: getReadablePath(task.cwd, relDirPath ?? ""),
+			path: getTaskReadablePath(task, relDirPath ?? ""),
 			isOutsideWorkspace,
 		}
 

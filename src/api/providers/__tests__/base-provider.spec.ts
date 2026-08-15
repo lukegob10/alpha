@@ -140,7 +140,7 @@ describe("BaseProvider", () => {
 			expect(result.properties.level1.properties.level2.properties.level3.additionalProperties).toBe(false)
 		})
 
-		it("should convert nullable types to non-nullable", () => {
+		it("should preserve nullable types used to encode optional strict fields", () => {
 			const schema = {
 				type: "object",
 				properties: {
@@ -150,7 +150,38 @@ describe("BaseProvider", () => {
 
 			const result = provider.testConvertToolSchemaForOpenAI(schema)
 
-			expect(result.properties.name.type).toBe("string")
+			expect(result.properties.name.type).toEqual(["string", "null"])
+		})
+
+		it("should recursively normalize object branches inside array-item unions", () => {
+			const schema = {
+				type: "object",
+				properties: {
+					tasks: {
+						type: "array",
+						items: {
+							anyOf: [
+								{
+									type: "object",
+									properties: {
+										objective: { type: "string" },
+										expected_output: { type: "array", items: { type: "string" } },
+									},
+									required: ["objective"],
+								},
+							],
+						},
+					},
+				},
+				required: ["tasks"],
+			}
+
+			const result = provider.testConvertToolSchemaForOpenAI(schema)
+			const branch = result.properties.tasks.items.anyOf[0]
+
+			expect(branch.required).toEqual(["objective", "expected_output"])
+			expect(branch.properties.expected_output.type).toEqual(["array", "null"])
+			expect(branch.additionalProperties).toBe(false)
 		})
 
 		it("should return non-object schemas unchanged", () => {

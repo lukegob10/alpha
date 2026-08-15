@@ -7,6 +7,117 @@ describe("NativeToolCallParser", () => {
 	})
 
 	describe("parseToolCall", () => {
+		it("preserves a structured sub-agent completion outcome", () => {
+			const result = NativeToolCallParser.parseToolCall({
+				id: "subagent-completion",
+				name: "attempt_completion",
+				arguments: JSON.stringify({
+					result: "Write authority was unavailable.",
+					outcome: "blocked",
+				}),
+			})
+
+			expect(result?.type).toBe("tool_use")
+			if (result?.type === "tool_use") {
+				expect(result.nativeArgs).toEqual({
+					result: "Write authority was unavailable.",
+					outcome: "blocked",
+				})
+			}
+		})
+
+		it("accepts a null outcome from an OpenAI strict schema as omitted", () => {
+			const result = NativeToolCallParser.parseToolCall({
+				id: "primary-completion",
+				name: "attempt_completion",
+				arguments: JSON.stringify({ result: "Done.", outcome: null }),
+			})
+
+			expect(result?.type).toBe("tool_use")
+			if (result?.type === "tool_use") {
+				expect(result.nativeArgs).toEqual({ result: "Done." })
+			}
+		})
+
+		it("rejects an unknown completion outcome instead of treating it as success", () => {
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+			const result = NativeToolCallParser.parseToolCall({
+				id: "invalid-completion",
+				name: "attempt_completion",
+				arguments: JSON.stringify({ result: "Maybe done.", outcome: "partial" }),
+			})
+
+			expect(result).toBeNull()
+			expect(errorSpy).toHaveBeenCalled()
+			errorSpy.mockRestore()
+		})
+
+		describe("search_files tool", () => {
+			it("parses a bounded queries batch", () => {
+				const result = NativeToolCallParser.parseToolCall({
+					id: "search-batch",
+					name: "search_files",
+					arguments: JSON.stringify({
+						queries: [
+							{ path: "frontend/src", regex: "fetch|submit", file_pattern: "*.tsx" },
+							{ path: "backend/app", regex: "@router|def ", file_pattern: "*.py" },
+						],
+					}),
+				})
+
+				expect(result?.type).toBe("tool_use")
+				if (result?.type === "tool_use") {
+					expect(result.nativeArgs).toEqual({
+						queries: [
+							{ path: "frontend/src", regex: "fetch|submit", file_pattern: "*.tsx" },
+							{ path: "backend/app", regex: "@router|def ", file_pattern: "*.py" },
+						],
+					})
+				}
+			})
+
+			it("recovers concatenated query objects emitted for one tool call", () => {
+				const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				const result = NativeToolCallParser.parseToolCall({
+					id: "search-concatenated",
+					name: "search_files",
+					arguments:
+						'{"path":"frontend/src","regex":"fetch|submit","file_pattern":"*.tsx"}' +
+						'{"path":"backend/app","regex":"@router|def ","file_pattern":"*.py"}',
+				})
+
+				expect(result?.type).toBe("tool_use")
+				if (result?.type === "tool_use") {
+					expect(result.nativeArgs).toEqual({
+						queries: [
+							{ path: "frontend/src", regex: "fetch|submit", file_pattern: "*.tsx" },
+							{ path: "backend/app", regex: "@router|def ", file_pattern: "*.py" },
+						],
+					})
+				}
+				expect(errorSpy).not.toHaveBeenCalled()
+				errorSpy.mockRestore()
+			})
+
+			it("rejects batches beyond the bounded limit", () => {
+				const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				const result = NativeToolCallParser.parseToolCall({
+					id: "search-too-large",
+					name: "search_files",
+					arguments: JSON.stringify({
+						queries: Array.from({ length: 9 }, (_, index) => ({
+							path: `src/${index}`,
+							regex: "TODO",
+						})),
+					}),
+				})
+
+				expect(result).toBeNull()
+				expect(errorSpy).toHaveBeenCalled()
+				errorSpy.mockRestore()
+			})
+		})
+
 		describe("read_file tool", () => {
 			it("should parse minimal single-file read_file args", () => {
 				const toolCall = {

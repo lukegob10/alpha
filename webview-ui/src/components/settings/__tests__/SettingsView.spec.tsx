@@ -1,6 +1,6 @@
 // pnpm --filter @alpha-code/vscode-webview test src/components/settings/__tests__/SettingsView.spec.tsx
 
-import { render, screen, fireEvent, within } from "@/utils/test-utils"
+import { render, screen, fireEvent, within, waitFor, act } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
 import { vscode } from "@/utils/vscode"
@@ -55,6 +55,12 @@ vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 			data-testid={dataTestId}
 		/>
 	),
+	VSCodeDropdown: ({ children, value, onChange, id, "aria-label": ariaLabel }: any) => (
+		<select id={id} aria-label={ariaLabel} value={value} onChange={onChange}>
+			{children}
+		</select>
+	),
+	VSCodeOption: ({ children, value }: any) => <option value={value}>{children}</option>,
 	VSCodeLink: ({ children, href }: any) => <a href={href || "#"}>{children}</a>,
 	VSCodeRadio: ({ value, checked, onChange }: any) => (
 		<input type="radio" value={value} checked={checked} onChange={onChange} />
@@ -188,8 +194,19 @@ vi.mock("@/components/ui", () => ({
 	),
 	SelectTrigger: ({ children }: any) => <div data-testid="select-trigger">{children}</div>,
 	SelectValue: ({ placeholder }: any) => <div data-testid="select-value">{placeholder}</div>,
-	SearchableSelect: ({ value, onValueChange, options, placeholder }: any) => (
-		<select value={value} onChange={(e) => onValueChange(e.target.value)} data-testid="searchable-select">
+	SearchableSelect: ({
+		value,
+		onValueChange,
+		options,
+		placeholder,
+		"aria-label": ariaLabel,
+		"data-testid": testId,
+	}: any) => (
+		<select
+			value={value}
+			onChange={(e) => onValueChange(e.target.value)}
+			aria-label={ariaLabel}
+			data-testid={testId ?? "searchable-select"}>
 			{placeholder && <option value="">{placeholder}</option>}
 			{options?.map((opt: any) => (
 				<option key={opt.value} value={opt.value}>
@@ -320,6 +337,43 @@ const renderSettingsView = () => {
 
 	return { onDone, activateTab, getSettingsContent }
 }
+
+describe("SettingsView - Agents", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it("buffers stable profile IDs until Save", async () => {
+		const { activateTab } = renderSettingsView()
+		await act(async () => {
+			mockPostMessage({
+				settingsImportedAt: 1,
+				listApiConfigMeta: [
+					{ id: "fast-id", name: "Fast", apiProvider: "openrouter", modelId: "fast/model" },
+					{ id: "review-id", name: "Review", apiProvider: "anthropic", modelId: "review-model" },
+				],
+			})
+			await new Promise((resolve) => setTimeout(resolve, 0))
+		})
+		activateTab("agents")
+
+		const explorer = await screen.findByLabelText("settings:agents.roles.explore.label")
+		fireEvent.change(explorer, { target: { value: "fast-id" } })
+		await waitFor(() => expect(explorer).toHaveValue("fast-id"))
+
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+		fireEvent.click(screen.getByTestId("save-button"))
+
+		await waitFor(() =>
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "updateSettings",
+					updatedSettings: expect.objectContaining({
+						subagentApiConfigByRole: { explore: "fast-id", review: "", worker: "" },
+					}),
+				}),
+			),
+		)
+	})
+})
 
 describe("SettingsView - Sound Settings", () => {
 	beforeEach(() => {
@@ -718,7 +772,7 @@ describe("SettingsView - Duplicate Commands", () => {
 		)
 	})
 
-	it("saves auto-approval master and execute toggles together", () => {
+	it("saves auto-approval master, execute, and sub-agent toggles together", () => {
 		const { activateTab, getSettingsContent } = renderSettingsView()
 
 		activateTab("autoApprove")
@@ -735,6 +789,8 @@ describe("SettingsView - Duplicate Commands", () => {
 
 		const executeCheckbox = within(content).getByTestId("always-allow-execute-toggle")
 		fireEvent.click(executeCheckbox)
+		const subagentCheckbox = within(content).getByTestId("always-allow-subagents-toggle")
+		fireEvent.click(subagentCheckbox)
 
 		const input = within(content).getByTestId("command-input")
 		fireEvent.change(input, { target: { value: " * " } })
@@ -748,6 +804,7 @@ describe("SettingsView - Duplicate Commands", () => {
 				updatedSettings: expect.objectContaining({
 					autoApprovalEnabled: true,
 					alwaysAllowExecute: true,
+					alwaysAllowSubagents: true,
 					allowedCommands: ["*"],
 				}),
 			}),

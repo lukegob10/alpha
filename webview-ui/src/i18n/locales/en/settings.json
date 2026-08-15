@@ -27,6 +27,7 @@
 	},
 	"sections": {
 		"providers": "Providers",
+		"agents": "Agents",
 		"modes": "Modes",
 		"mcp": "MCP Servers",
 		"github": "GitHub",
@@ -43,6 +44,35 @@
 		"experimental": "Experimental",
 		"language": "Language",
 		"about": "About Alpha"
+	},
+	"agents": {
+		"description": "Choose which saved provider profiles Alpha uses for sub-agents. Role overrides take precedence over the default, then the parent task is inherited.",
+		"searchPlaceholder": "Search provider profiles...",
+		"noProfilesFound": "No matching provider profiles",
+		"unavailableProfile": "Unavailable profile ({{id}})",
+		"staleWarning": "This saved profile is unavailable. New sub-agents will use the parent profile until you choose another profile.",
+		"defaultProfile": {
+			"label": "Default sub-agent profile",
+			"inheritParent": "Inherit parent",
+			"description": "Used when a role does not have its own profile override."
+		},
+		"roles": {
+			"title": "Role overrides",
+			"description": "Optionally route each agent role through a different saved provider profile.",
+			"useDefault": "Use default",
+			"explore": {
+				"label": "Explorer profile",
+				"description": "Optional profile override for repository exploration agents."
+			},
+			"review": {
+				"label": "Reviewer profile",
+				"description": "Optional profile override for review agents."
+			},
+			"worker": {
+				"label": "Worker profile",
+				"description": "Optional profile override for isolated editing workers."
+			}
+		}
 	},
 	"github": {
 		"tokenLabel": "GitHub token",
@@ -327,6 +357,10 @@
 		"subtasks": {
 			"label": "Subtasks",
 			"description": "Allow creation and completion of subtasks without requiring approval"
+		},
+		"subagents": {
+			"label": "Sub-agents",
+			"description": "Allow Alpha to launch read-only sub-agent groups without requiring approval. Read access must also be auto-approved."
 		},
 		"followupQuestions": {
 			"label": "Question",

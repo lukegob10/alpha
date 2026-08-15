@@ -16,6 +16,7 @@ import { askFollowupQuestionTool } from "./AskFollowupQuestionTool"
 import { attemptCompletionTool, type AttemptCompletionCallbacks } from "./AttemptCompletionTool"
 import { BaseTool, type ToolCallbacks } from "./BaseTool"
 import { codebaseSearchTool } from "./CodebaseSearchTool"
+import { delegateTaskTool } from "./DelegateTaskTool"
 import { editFileTool } from "./EditFileTool"
 import { editTool } from "./EditTool"
 import { executeCommandTool } from "./ExecuteCommandTool"
@@ -78,7 +79,13 @@ const PARALLEL_READ_TOOLS = new Set([
 	"read_command_output",
 ])
 
-const BARRIER_TOOLS = new Set(["new_task", "attempt_completion", "switch_mode", "ask_followup_question"])
+const BARRIER_TOOLS = new Set([
+	"new_task",
+	"delegate_task",
+	"attempt_completion",
+	"switch_mode",
+	"ask_followup_question",
+])
 
 const WORKSPACE_TOOLS = new Set([
 	"write_to_file",
@@ -104,6 +111,7 @@ const CHECKPOINT_TOOLS = new Set([
 const TASK_TOOLS = new Set([
 	"update_todo_list",
 	"new_task",
+	"delegate_task",
 	"attempt_completion",
 	"switch_mode",
 	"ask_followup_question",
@@ -116,6 +124,7 @@ const TOOL_NAMES = [
 	"ask_followup_question",
 	"attempt_completion",
 	"codebase_search",
+	"delegate_task",
 	"edit",
 	"edit_file",
 	"execute_command",
@@ -291,6 +300,7 @@ export class ToolRegistry {
 			await attemptCompletionTool.handle(context.task, context.call as ToolUse<"attempt_completion">, callbacks)
 		})
 		this.registerBuiltIn("codebase_search", codebaseSearchTool, schemas)
+		this.registerBuiltIn("delegate_task", delegateTaskTool, schemas)
 		this.registerBuiltIn("edit", editTool, schemas)
 		this.registerBuiltIn("edit_file", editFileTool, schemas)
 		this.registerBuiltIn("execute_command", executeCommandTool, schemas)

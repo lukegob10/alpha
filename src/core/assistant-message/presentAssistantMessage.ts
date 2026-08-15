@@ -30,6 +30,7 @@ import { askFollowupQuestionTool } from "../tools/AskFollowupQuestionTool"
 import { switchModeTool } from "../tools/SwitchModeTool"
 import { attemptCompletionTool, AttemptCompletionCallbacks } from "../tools/AttemptCompletionTool"
 import { newTaskTool } from "../tools/NewTaskTool"
+import { delegateTaskTool } from "../tools/DelegateTaskTool"
 import { updateTodoListTool } from "../tools/UpdateTodoListTool"
 import { runSlashCommandTool } from "../tools/RunSlashCommandTool"
 import { skillTool } from "../tools/SkillTool"
@@ -108,6 +109,18 @@ export async function presentAssistantMessage(cline: Task) {
 			// These are converted to the same execution path as use_mcp_tool but preserve
 			// their original name in API history
 			const mcpBlock = block as McpToolUse
+			const taskToolDenialReason = cline.getTaskToolDenialReason?.(mcpBlock.name)
+			if (taskToolDenialReason) {
+				if (mcpBlock.id) {
+					cline.pushToolResultToUserContent({
+						type: "tool_result",
+						tool_use_id: sanitizeToolUseId(mcpBlock.id),
+						content: taskToolDenialReason,
+						is_error: true,
+					})
+				}
+				break
+			}
 
 			if (cline.didRejectTool) {
 				// For native protocol, we must send a tool_result for every tool_use to avoid API errors
@@ -574,15 +587,17 @@ export async function presentAssistantMessage(cline: Task) {
 				const toolBlocks = cline.assistantMessageContent.filter(
 					(contentBlock) => contentBlock.type === "tool_use" || contentBlock.type === "mcp_tool_use",
 				)
-				const hasMixedNewTaskBatch =
+				const hasMixedDelegationBatch =
 					toolBlocks.length > 1 &&
 					toolBlocks.some(
-						(contentBlock) => contentBlock.type === "tool_use" && contentBlock.name === "new_task",
+						(contentBlock) =>
+							contentBlock.type === "tool_use" &&
+							["new_task", "delegate_task"].includes(contentBlock.name),
 					)
 
-				if (hasMixedNewTaskBatch) {
+				if (hasMixedDelegationBatch) {
 					const isolationError = formatResponse.toolError(
-						"new_task must be called by itself in a message turn. No tools from this turn were executed. Retry by calling only new_task after any required setup is complete.",
+						"new_task and delegate_task are delegation boundaries and must be called alone. No tools from this turn were executed. Retry with only the intended delegation tool.",
 					)
 
 					for (const toolBlock of toolBlocks) {
@@ -632,6 +647,10 @@ export async function presentAssistantMessage(cline: Task) {
 				const includedTools = rawIncludedTools?.map((tool) => resolveToolAlias(tool))
 
 				try {
+					const taskToolDenialReason = cline.getTaskToolDenialReason?.(block.name, block.params)
+					if (taskToolDenialReason) {
+						throw new Error(taskToolDenialReason)
+					}
 					const toolRequirements =
 						disabledTools?.reduce(
 							(acc: Record<string, boolean>, tool: string) => {
@@ -828,6 +847,7 @@ export async function presentAssistantMessage(cline: Task) {
 							askApproval,
 							handleError,
 							pushToolResult,
+							toolCallId: block.id,
 						})
 					})
 					break
@@ -877,6 +897,14 @@ export async function presentAssistantMessage(cline: Task) {
 							pushToolResult,
 							toolCallId: block.id,
 						})
+					})
+					break
+				case "delegate_task":
+					await delegateTaskTool.handle(cline, block as ToolUse<"delegate_task">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+						toolCallId: block.id,
 					})
 					break
 				case "attempt_completion": {

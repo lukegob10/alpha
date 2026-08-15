@@ -3,8 +3,6 @@ import path from "path"
 
 import { type ClineSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
 
-import { getReadablePath } from "../../utils/path"
-import { isPathOutsideWorkspace } from "../../utils/pathUtils"
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
@@ -15,6 +13,7 @@ import { BaseTool, ToolCallbacks } from "./BaseTool"
 import type { ToolUse } from "../../shared/tools"
 import { parsePatch, ParseError, processAllHunks } from "./apply-patch"
 import type { ApplyPatchFileChange } from "./apply-patch"
+import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 interface ApplyPatchParams {
 	patch: string
@@ -160,7 +159,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		}
 
 		const newContent = change.newContent || ""
-		const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
+		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
 		// Initialize diff view for new file
 		task.diffViewProvider.editType = "create"
@@ -183,7 +182,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 		const sharedMessageProps: ClineSayTool = {
 			tool: "appliedDiff",
-			path: getReadablePath(task.cwd, relPath),
+			path: getTaskReadablePath(task, relPath),
 			diff: sanitizedDiff,
 			isOutsideWorkspace,
 		}
@@ -250,11 +249,11 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			return
 		}
 
-		const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
+		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
 		const sharedMessageProps: ClineSayTool = {
 			tool: "appliedDiff",
-			path: getReadablePath(task.cwd, relPath),
+			path: getTaskReadablePath(task, relPath),
 			diff: `File will be deleted: ${relPath}`,
 			isOutsideWorkspace,
 		}
@@ -310,7 +309,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 		const originalContent = change.originalContent || ""
 		const newContent = change.newContent || ""
-		const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
+		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
 		// Initialize diff view
 		task.diffViewProvider.editType = "modify"
@@ -339,7 +338,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 		const sharedMessageProps: ClineSayTool = {
 			tool: "appliedDiff",
-			path: getReadablePath(task.cwd, relPath),
+			path: getTaskReadablePath(task, relPath),
 			diff: sanitizedDiff,
 			originalContent,
 			isOutsideWorkspace,
@@ -396,7 +395,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			}
 
 			// Check if destination path is outside workspace
-			const isMoveOutsideWorkspace = isPathOutsideWorkspace(moveAbsolutePath)
+			const isMoveOutsideWorkspace = isTaskPathOutsideWorkspace(task, moveAbsolutePath)
 			if (isMoveOutsideWorkspace) {
 				task.consecutiveMistakeCount++
 				task.recordToolError("apply_patch")
@@ -456,7 +455,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		const fallbackDisplayPath = path.basename(task.cwd) || "workspace"
 		const resolvedRelPath = candidateRelPath ?? ""
 		const absolutePath = path.resolve(task.cwd, resolvedRelPath)
-		const displayPath = candidateRelPath ? getReadablePath(task.cwd, candidateRelPath) : fallbackDisplayPath
+		const displayPath = candidateRelPath ? getTaskReadablePath(task, candidateRelPath) : fallbackDisplayPath
 
 		let patchPreview: string | undefined
 		if (patch) {
@@ -469,7 +468,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			tool: "appliedDiff",
 			path: displayPath || path.basename(task.cwd) || "workspace",
 			diff: patchPreview || "Parsing patch...",
-			isOutsideWorkspace: isPathOutsideWorkspace(absolutePath),
+			isOutsideWorkspace: isTaskPathOutsideWorkspace(task, absolutePath),
 		}
 
 		await task.ask("tool", JSON.stringify(sharedMessageProps), block.partial).catch(() => {})

@@ -230,44 +230,6 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 		reasoningEffort: ReasoningEffortExtended | undefined,
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): any {
-		// Ensure all properties are in the required array for OpenAI's strict mode
-		// This recursively processes nested objects and array items
-		const ensureAllRequired = (schema: any): any => {
-			if (!schema || typeof schema !== "object" || schema.type !== "object") {
-				return schema
-			}
-
-			const result = { ...schema }
-
-			// OpenAI Responses API requires additionalProperties: false on all object schemas
-			// Only add if not already set to false (to avoid unnecessary mutations)
-			if (result.additionalProperties !== false) {
-				result.additionalProperties = false
-			}
-
-			if (result.properties) {
-				const allKeys = Object.keys(result.properties)
-				result.required = allKeys
-
-				// Recursively process nested objects
-				const newProps = { ...result.properties }
-				for (const key of allKeys) {
-					const prop = newProps[key]
-					if (prop.type === "object") {
-						newProps[key] = ensureAllRequired(prop)
-					} else if (prop.type === "array" && prop.items?.type === "object") {
-						newProps[key] = {
-							...prop,
-							items: ensureAllRequired(prop.items),
-						}
-					}
-				}
-				result.properties = newProps
-			}
-
-			return result
-		}
-
 		// Adds additionalProperties: false to all object schemas recursively
 		// without modifying required array. Used for MCP tools with strict: false
 		// to comply with OpenAI Responses API requirements.
@@ -387,7 +349,7 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 						description: tool.function.description,
 						parameters: isMcp
 							? ensureAdditionalPropertiesFalse(tool.function.parameters)
-							: ensureAllRequired(tool.function.parameters),
+							: this.convertToolSchemaForOpenAI(tool.function.parameters),
 						strict: !isMcp,
 					}
 				}),

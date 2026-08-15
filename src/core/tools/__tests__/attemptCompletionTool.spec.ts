@@ -81,10 +81,30 @@ describe("attemptCompletionTool", () => {
 			emit: vi.fn(),
 			getTokenUsage: vi.fn().mockReturnValue({}),
 			toolUsage: {},
+			taskKind: "primary",
+			hasActiveCommandExecutions: vi.fn().mockReturnValue(false),
 			taskId: "task_1",
 			apiConfiguration: { apiProvider: "test" } as any,
 			api: { getModel: vi.fn().mockReturnValue({ id: "test-model", info: {} }) } as any,
 		}
+	})
+
+	it("prevents an editing worker from completing while a command is active", async () => {
+		;(mockTask as any).taskKind = "subagent"
+		;(mockTask as any).subagentRole = "worker"
+		mockTask.hasActiveCommandExecutions = vi.fn().mockReturnValue(true)
+		const callbacks: AttemptCompletionCallbacks = {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+		}
+		await attemptCompletionTool.execute({ result: "Verification passed." }, mockTask as Task, callbacks)
+
+		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("command is still running"))
+		expect(mockTask.say).not.toHaveBeenCalledWith("completion_result", expect.anything(), undefined, false)
+		expect(mockTask.emit).not.toHaveBeenCalledWith(RooCodeEventName.TaskCompleted, expect.anything())
 	})
 
 	describe("todo list validation", () => {
@@ -485,6 +505,75 @@ describe("attemptCompletionTool", () => {
 		})
 
 		describe("completion lifecycle", () => {
+			it("completes a managed sub-agent without legacy parent reopen or user approval", async () => {
+				const block: AttemptCompletionToolUse = {
+					type: "tool_use",
+					name: "attempt_completion",
+					params: { result: "Read-only findings" },
+					nativeArgs: { result: "Read-only findings" },
+					partial: false,
+				}
+				;(mockTask as any).taskKind = "subagent"
+				;(mockTask as any).parentTaskId = "parent"
+				mockTask.providerRef = {
+					deref: () => ({ reopenParentFromDelegation: vi.fn(), getTaskWithId: vi.fn() }),
+				} as any
+
+				const callbacks: AttemptCompletionCallbacks = {
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+					toolDescription: mockToolDescription,
+				}
+				await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
+
+				expect(mockTask.ask).not.toHaveBeenCalled()
+				expect(mockAskFinishSubTaskApproval).not.toHaveBeenCalled()
+				expect(mockPushToolResult).toHaveBeenCalledWith("")
+				expect((mockTask as any).subagentCompletionOutcome).toBe("completed")
+				expect(mockTask.emit).toHaveBeenCalledWith(
+					RooCodeEventName.TaskCompleted,
+					"task_1",
+					expect.anything(),
+					expect.anything(),
+				)
+			})
+
+			it("records a blocked managed sub-agent outcome before completing its internal lifecycle", async () => {
+				const block: AttemptCompletionToolUse = {
+					type: "tool_use",
+					name: "attempt_completion",
+					params: {
+						result: "The assigned objective requires unavailable write authority.",
+						outcome: "blocked",
+					},
+					nativeArgs: {
+						result: "The assigned objective requires unavailable write authority.",
+						outcome: "blocked",
+					},
+					partial: false,
+				}
+				;(mockTask as any).taskKind = "subagent"
+
+				const callbacks: AttemptCompletionCallbacks = {
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+					toolDescription: mockToolDescription,
+				}
+				await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
+
+				expect((mockTask as any).subagentCompletionOutcome).toBe("blocked")
+				expect(mockTask.emit).toHaveBeenCalledWith(
+					RooCodeEventName.TaskCompleted,
+					"task_1",
+					expect.anything(),
+					expect.anything(),
+				)
+			})
+
 			it("emits TaskCompleted only when completion is accepted", async () => {
 				const block: AttemptCompletionToolUse = {
 					type: "tool_use",

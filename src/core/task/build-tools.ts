@@ -2,7 +2,7 @@ import path from "path"
 
 import type OpenAI from "openai"
 
-import type { ProviderSettings, ModeConfig, ModelInfo } from "@alpha-code/types"
+import type { ProviderSettings, ModeConfig, ModelInfo, ToolName } from "@alpha-code/types"
 import { customToolRegistry, formatNative } from "@alpha-code/core"
 
 import type { ClineProvider } from "../webview/ClineProvider"
@@ -31,6 +31,8 @@ interface BuildToolsOptions {
 	 * to pass all tool definitions while restricting callable tools.
 	 */
 	includeAllToolsWithRestrictions?: boolean
+	/** Optional task-lane authority cap applied after mode filtering. */
+	allowedToolNames?: readonly ToolName[]
 }
 
 interface BuildToolsResult {
@@ -90,6 +92,7 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 		disabledTools,
 		modelInfo,
 		includeAllToolsWithRestrictions,
+		allowedToolNames,
 	} = options
 
 	const mcpHub = provider.getMcpHub()
@@ -142,7 +145,12 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 	}
 
 	// Combine filtered tools (for backward compatibility and for allowedFunctionNames)
-	const filteredTools = [...filteredNativeTools, ...filteredMcpTools, ...nativeCustomTools]
+	const taskAllowedNames = allowedToolNames
+		? new Set(allowedToolNames.map((name) => resolveToolAlias(name)))
+		: undefined
+	const filteredTools = [...filteredNativeTools, ...filteredMcpTools, ...nativeCustomTools].filter(
+		(tool) => !taskAllowedNames || taskAllowedNames.has(resolveToolAlias(getToolName(tool)) as ToolName),
+	)
 
 	// If includeAllToolsWithRestrictions is true, return ALL tools but provide
 	// allowed names based on mode filtering

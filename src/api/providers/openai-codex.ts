@@ -220,38 +220,6 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 		reasoningEffort: ReasoningEffortExtended | undefined,
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): any {
-		const ensureAllRequired = (schema: any): any => {
-			if (!schema || typeof schema !== "object" || schema.type !== "object") {
-				return schema
-			}
-
-			const result = { ...schema }
-			if (result.additionalProperties !== false) {
-				result.additionalProperties = false
-			}
-
-			if (result.properties) {
-				const allKeys = Object.keys(result.properties)
-				result.required = allKeys
-
-				const newProps = { ...result.properties }
-				for (const key of allKeys) {
-					const prop = newProps[key]
-					if (prop.type === "object") {
-						newProps[key] = ensureAllRequired(prop)
-					} else if (prop.type === "array" && prop.items?.type === "object") {
-						newProps[key] = {
-							...prop,
-							items: ensureAllRequired(prop.items),
-						}
-					}
-				}
-				result.properties = newProps
-			}
-
-			return result
-		}
-
 		const ensureAdditionalPropertiesFalse = (schema: any): any => {
 			if (!schema || typeof schema !== "object" || schema.type !== "object") {
 				return schema
@@ -329,7 +297,7 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 						description: tool.function.description,
 						parameters: isMcp
 							? ensureAdditionalPropertiesFalse(tool.function.parameters)
-							: ensureAllRequired(tool.function.parameters),
+							: this.convertToolSchemaForOpenAI(tool.function.parameters),
 						strict: !isMcp,
 					}
 				}),

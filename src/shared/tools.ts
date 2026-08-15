@@ -40,6 +40,7 @@ export const toolParamNames = [
 	"uri",
 	"question",
 	"result",
+	"outcome",
 	"diff",
 	"mode_slug",
 	"reason",
@@ -81,6 +82,8 @@ export const toolParamNames = [
 	// read_file legacy format parameter (backward compatibility)
 	"files",
 	"line_ranges",
+	// search_files bounded batch parameter
+	"queries",
 	// github_api parameters
 	"owner",
 	"repo",
@@ -92,6 +95,7 @@ export const toolParamNames = [
 	"body",
 	"sha",
 	"merge_method",
+	"tasks",
 ] as const
 
 export type ToolParamName = (typeof toolParamNames)[number]
@@ -104,7 +108,7 @@ export type NativeToolArgs = {
 	access_mcp_resource: { server_name: string; uri: string }
 	read_file: import("@alpha-code/types").ReadFileToolParams
 	read_command_output: { artifact_id: string; search?: string; offset?: number; limit?: number }
-	attempt_completion: { result: string }
+	attempt_completion: { result: string; outcome?: "completed" | "blocked" }
 	execute_command: { command: string; cwd?: string; timeout?: number | null }
 	apply_diff: { path: string; diff: string }
 	edit: { file_path: string; old_string: string; new_string: string; replace_all?: boolean }
@@ -115,27 +119,15 @@ export type NativeToolArgs = {
 	list_files: { path: string; recursive?: boolean }
 	new_task: { mode: string; message: string; todos?: string }
 	delegate_task: {
-		tasks: Array<{
-			objective: string
-			agent_kind?: "general" | "explore" | "review"
-			expected_output?: string[]
-			allowed_paths?: string[]
-			context_refs?: string[]
-			skills?: string[]
-			model_route?: "fast" | "balanced" | "deep" | "user-configured"
-			provider?: string
-			model?: string
-			reasoning?: string
-			execute?: boolean
-			mutate?: boolean
-			network?: boolean
-			external_side_effects?: boolean
-			require_approval?: boolean
-			max_input_tokens?: number
-			max_output_tokens?: number
-			timeout_ms?: number
-			dependencies?: string[]
-		}>
+		tasks: Array<
+			| { objective: string; agent_kind: "explore" | "review"; expected_output?: string[] }
+			| {
+					objective: string
+					agent_kind: "worker"
+					write_scope: string[]
+					expected_output?: string[]
+			  }
+		>
 	}
 	ask_followup_question: {
 		question: string
@@ -145,7 +137,15 @@ export type NativeToolArgs = {
 	generate_image: GenerateImageParams
 	run_slash_command: { command: string; args?: string }
 	skill: { skill: string; args?: string }
-	search_files: { path: string; regex: string; file_pattern?: string | null }
+	search_files:
+		| { path: string; regex: string; file_pattern?: string | null }
+		| {
+				queries: Array<{
+					path: string
+					regex: string
+					file_pattern?: string | null
+				}>
+		  }
 	switch_mode: { mode_slug: string; reason: string }
 	update_todo_list: { todos: string }
 	use_mcp_tool: { server_name: string; tool_name: string; arguments?: Record<string, unknown> }
@@ -277,7 +277,7 @@ export interface CodebaseSearchToolUse extends ToolUse<"codebase_search"> {
 
 export interface SearchFilesToolUse extends ToolUse<"search_files"> {
 	name: "search_files"
-	params: Partial<Pick<Record<ToolParamName, string>, "path" | "regex" | "file_pattern">>
+	params: Partial<Pick<Record<ToolParamName, string>, "path" | "regex" | "file_pattern" | "queries">>
 }
 
 export interface ListFilesToolUse extends ToolUse<"list_files"> {
@@ -302,7 +302,7 @@ export interface AskFollowupQuestionToolUse extends ToolUse<"ask_followup_questi
 
 export interface AttemptCompletionToolUse extends ToolUse<"attempt_completion"> {
 	name: "attempt_completion"
-	params: Partial<Pick<Record<ToolParamName, string>, "result">>
+	params: Partial<Pick<Record<ToolParamName, string>, "result" | "outcome">>
 }
 
 export interface SwitchModeToolUse extends ToolUse<"switch_mode"> {
@@ -408,6 +408,9 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 	modes: {
 		tools: ["switch_mode", "new_task"],
 		alwaysAvailable: true,
+	},
+	agents: {
+		tools: ["delegate_task"],
 	},
 }
 

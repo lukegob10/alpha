@@ -1,5 +1,12 @@
 import { z } from "zod"
 
+import {
+	subagentChangeSetStateSchema,
+	subagentModelRouteStateSchema,
+	subagentRoleSchema,
+	subagentVerificationSchema,
+} from "./subagent.js"
+
 /**
  * ClineAsk
  */
@@ -170,6 +177,7 @@ export const clineSays = [
 	"user_edit_todos",
 	"too_many_tools_warning",
 	"tool",
+	"subagent_group",
 ] as const
 
 export const clineSaySchema = z.enum(clineSays)
@@ -186,6 +194,95 @@ export const toolProgressStatusSchema = z.object({
 })
 
 export type ToolProgressStatus = z.infer<typeof toolProgressStatusSchema>
+
+/** Persisted lifecycle state for a bounded sub-agent batch. */
+export const subagentRunStatusSchema = z.enum([
+	"pending",
+	"running",
+	"cancelling",
+	"completed",
+	"blocked",
+	"failed",
+	"cancelled",
+	"timed_out",
+	"interrupted",
+])
+
+/** Fine-grained, nonterminal progress for a managed sub-agent. */
+export const subagentRunPhaseSchema = z.enum([
+	"queued",
+	"starting",
+	"working",
+	"waiting",
+	"steering",
+	"reporting",
+	"finalizing",
+])
+
+export const subagentRunStateSchema = z.object({
+	taskId: z.string(),
+	nickname: z.string(),
+	role: subagentRoleSchema,
+	objective: z.string(),
+	writeScope: z.array(z.string()).min(1).max(12).optional(),
+	status: subagentRunStatusSchema,
+	phase: subagentRunPhaseSchema.optional(),
+	phaseStartedAt: z.number().optional(),
+	modelRoute: subagentModelRouteStateSchema.optional(),
+	summary: z.string().optional(),
+	error: z.string().optional(),
+	changedFiles: z.array(z.string()).optional(),
+	verification: z.array(subagentVerificationSchema).optional(),
+	changeSet: subagentChangeSetStateSchema.optional(),
+	pendingApproval: z
+		.object({
+			id: z.string(),
+			type: z.enum(["command", "protected_write"]),
+			operation: z.string(),
+			scope: z.string().optional(),
+			createdAt: z.number(),
+		})
+		.optional(),
+	steerCount: z.number().int().nonnegative().optional(),
+	lastSteeredAt: z.number().optional(),
+	cancelRequestedAt: z.number().optional(),
+	startedAt: z.number().optional(),
+	completedAt: z.number().optional(),
+	usage: z.object({
+		inputTokens: z.number().optional(),
+		outputTokens: z.number().optional(),
+		durationMs: z.number(),
+	}),
+})
+
+export const subagentGroupStatusSchema = z.enum([
+	"pending",
+	"running",
+	"cancelling",
+	"completed",
+	"partial",
+	"failed",
+	"cancelled",
+	"timed_out",
+	"interrupted",
+])
+
+export const subagentGroupStateSchema = z.object({
+	groupId: z.string(),
+	parentTaskId: z.string(),
+	toolCallId: z.string().optional(),
+	status: subagentGroupStatusSchema,
+	createdAt: z.number(),
+	startedAt: z.number().optional(),
+	completedAt: z.number().optional(),
+	agents: z.array(subagentRunStateSchema).min(1).max(2),
+})
+
+export type SubagentRunStatus = z.infer<typeof subagentRunStatusSchema>
+export type SubagentRunPhase = z.infer<typeof subagentRunPhaseSchema>
+export type SubagentRunState = z.infer<typeof subagentRunStateSchema>
+export type SubagentGroupStatus = z.infer<typeof subagentGroupStatusSchema>
+export type SubagentGroupState = z.infer<typeof subagentGroupStateSchema>
 
 /**
  * ContextCondense
@@ -258,6 +355,7 @@ export const clineMessageSchema = z.object({
 	conversationHistoryIndex: z.number().optional(),
 	checkpoint: z.record(z.string(), z.unknown()).optional(),
 	progressStatus: toolProgressStatusSchema.optional(),
+	subagentGroup: subagentGroupStateSchema.optional(),
 	/**
 	 * Data for successful context condensation.
 	 * Present when `say: "condense_context"` and `partial: false`.

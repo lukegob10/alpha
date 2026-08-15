@@ -766,6 +766,22 @@ export const webviewMessageHandler = async (
 					} else if (key === "maxConcurrentTasks") {
 						newValue = value ?? 3
 						provider.setMaxConcurrentTasks(newValue as number)
+					} else if (key === "subagentDefaultApiConfigId") {
+						newValue = typeof value === "string" && value.length > 0 ? value : undefined
+					} else if (key === "subagentApiConfigByRole") {
+						const roles = value as { explore?: unknown; review?: unknown; worker?: unknown } | undefined
+						const normalizedRoles = {
+							...(typeof roles?.explore === "string" && roles.explore.length > 0
+								? { explore: roles.explore }
+								: {}),
+							...(typeof roles?.review === "string" && roles.review.length > 0
+								? { review: roles.review }
+								: {}),
+							...(typeof roles?.worker === "string" && roles.worker.length > 0
+								? { worker: roles.worker }
+								: {}),
+						}
+						newValue = Object.keys(normalizedRoles).length > 0 ? normalizedRoles : undefined
 					} else if (key === "experiments") {
 						if (!value) {
 							continue
@@ -1267,6 +1283,61 @@ export const webviewMessageHandler = async (
 				break
 			}
 			await provider.cancelTask(message.taskId)
+			break
+		case "cancelSubagentGroup":
+			if (!message.taskId || !message.groupId) {
+				provider.log("[webviewMessageHandler] Ignoring cancelSubagentGroup: missing taskId or groupId")
+				break
+			}
+			await provider.cancelSubagentGroup(message.taskId, message.groupId)
+			break
+		case "cancelSubagent":
+			if (!message.taskId || !message.groupId || !message.subagentTaskId) {
+				provider.log("[webviewMessageHandler] Ignoring cancelSubagent: missing task, group, or sub-agent id")
+				break
+			}
+			await provider.cancelSubagent(message.taskId, message.groupId, message.subagentTaskId)
+			break
+		case "steerSubagent":
+			if (!message.taskId || !message.groupId || !message.subagentTaskId || !message.text?.trim()) {
+				provider.log(
+					"[webviewMessageHandler] Ignoring steerSubagent: missing task, group, sub-agent id, or text",
+				)
+				break
+			}
+			await provider.steerSubagent(message.taskId, message.groupId, message.subagentTaskId, message.text)
+			break
+		case "respondToSubagentApproval":
+			if (
+				!message.taskId ||
+				!message.groupId ||
+				!message.subagentTaskId ||
+				!message.approvalId ||
+				message.approved === undefined
+			)
+				break
+			await provider.respondToSubagentApproval(
+				message.taskId,
+				message.groupId,
+				message.subagentTaskId,
+				message.approvalId,
+				message.approved,
+			)
+			break
+		case "openSubagentChangeSet":
+			if (message.taskId && message.groupId && message.changeSetId) {
+				await provider.openSubagentChangeSet(message.taskId, message.groupId, message.changeSetId)
+			}
+			break
+		case "applySubagentChangeSet":
+			if (message.taskId && message.groupId && message.changeSetId) {
+				await provider.applySubagentChangeSet(message.taskId, message.groupId, message.changeSetId)
+			}
+			break
+		case "discardSubagentChangeSet":
+			if (message.taskId && message.groupId && message.changeSetId) {
+				await provider.discardSubagentChangeSet(message.taskId, message.groupId, message.changeSetId)
+			}
 			break
 		case "cancelAutoApproval":
 			// Cancel any pending auto-approval timeout for the current task
@@ -1870,10 +1941,10 @@ export const webviewMessageHandler = async (
 				}
 
 				const oldName = message.text
+				const profiles = await provider.providerSettingsManager.listConfig()
+				const deletedProfileId = profiles.find((profile) => profile.name === oldName)?.id
 
-				const newName = (await provider.providerSettingsManager.listConfig()).filter(
-					(c) => c.name !== oldName,
-				)[0]?.name
+				const newName = profiles.filter((c) => c.name !== oldName)[0]?.name
 
 				if (!newName) {
 					vscode.window.showErrorMessage(t("common:errors.delete_api_config"))
@@ -1882,6 +1953,7 @@ export const webviewMessageHandler = async (
 
 				try {
 					await provider.providerSettingsManager.deleteConfig(oldName)
+					if (deletedProfileId) await provider.clearSubagentProfileReferences(deletedProfileId)
 					await provider.activateProviderProfile({ name: newName })
 				} catch (error) {
 					provider.log(

@@ -9,4 +9,6 @@ export interface SystemPromptSettings {
 	newTaskRequireTodos: boolean
 	/** When true, model should hide vendor/company identity in responses */
 	isStealthModel?: boolean
+	/** Narrow child authority used to omit capabilities the child cannot call. */
+	subagentRole?: "explore" | "review" | "worker"
 }

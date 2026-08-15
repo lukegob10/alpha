@@ -19,11 +19,11 @@ describe("getSharedToolUseSection", () => {
 		expect(section).not.toContain("as many tools as are reasonably needed")
 	})
 
-	it("should call out new_task as a batching exception", () => {
+	it("should call out delegation tools as batching exceptions", () => {
 		const section = getSharedToolUseSection()
 
-		expect(section).toContain("new_task is a delegation boundary")
-		expect(section).toContain("must always be called alone")
+		expect(section).toContain("new_task and delegate_task are delegation boundaries")
+		expect(section).toContain("must each be called alone")
 	})
 
 	it("should NOT include single tool per message restriction", () => {

@@ -6,6 +6,7 @@ Near the end of implementation work, perform one bounded review of the stable re
 
 Parameters:
 - result: (required) The result of the task. Formulate this result in a way that is final and does not require further input from the user. Don't end your result with questions or offers for further assistance.
+- outcome: (sub-agents only) Use completed when the assigned objective was fulfilled, or blocked when authority, missing prerequisites, or another constraint prevented completion. Primary tasks may omit this field.
 
 Example: Completing after updating CSS
 { "result": "I've updated the CSS to use flexbox layout for better responsiveness" }`
@@ -24,6 +25,12 @@ export default {
 				result: {
 					type: "string",
 					description: RESULT_PARAMETER_DESCRIPTION,
+				},
+				outcome: {
+					type: "string",
+					enum: ["completed", "blocked"],
+					description:
+						"Parent-managed sub-agents report whether their assigned objective was completed or blocked. Other tasks may omit this field.",
 				},
 			},
 			required: ["result"],

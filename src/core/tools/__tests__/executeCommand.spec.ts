@@ -53,6 +53,8 @@ describe("executeCommand", () => {
 			},
 			say: vitest.fn().mockResolvedValue(undefined),
 			terminalProcess: undefined,
+			completeCommandExecution: vitest.fn(),
+			failCommandExecution: vitest.fn(),
 		}
 
 		// Create mock process that resolves immediately
@@ -336,6 +338,28 @@ describe("executeCommand", () => {
 			expect(result).toContain("within working directory '/test/project'")
 		})
 
+		it("records terminal exit evidence independently of model-facing output", async () => {
+			mockTerminal.runCommand.mockImplementation((_command: string, callbacks: RooTerminalCallbacks) => {
+				setTimeout(() => {
+					callbacks.onShellExecutionComplete({ exitCode: 0 }, mockProcess)
+					callbacks.onCompleted("output without an exit-code string", mockProcess)
+				}, 0)
+				return mockProcess
+			})
+
+			await executeCommandInTerminal(mockTask, {
+				executionId: "evidence-execution",
+				toolCallId: "evidence-call",
+				command: "pnpm test",
+				terminalShellIntegrationDisabled: false,
+			})
+
+			expect(mockTask.completeCommandExecution).toHaveBeenCalledWith("evidence-call", {
+				exitCode: 0,
+				signalName: undefined,
+			})
+		})
+
 		it("should handle completed command with non-zero exit code", async () => {
 			mockTerminal.getCurrentWorkingDirectory.mockReturnValue("/test/project")
 			mockTerminal.runCommand.mockImplementation((command: string, callbacks: RooTerminalCallbacks) => {
@@ -437,5 +461,31 @@ describe("executeCommand", () => {
 			// Verify the terminal's getCurrentWorkingDirectory was called
 			expect(mockTerminalInstance.getCurrentWorkingDirectory).toHaveBeenCalled()
 		})
+	})
+
+	it("does not fabricate user feedback for an offscreen command-output response", async () => {
+		let resolveProcess!: () => void
+		const backgroundProcess = new Promise<void>((resolve) => (resolveProcess = resolve)) as any
+		backgroundProcess.continue = vitest.fn()
+		mockTask.ask = vitest.fn().mockResolvedValue({ response: "messageResponse" })
+		mockTerminal.runCommand.mockImplementation((_command: string, callbacks: RooTerminalCallbacks) => {
+			setTimeout(async () => {
+				await callbacks.onLine("untracked output", backgroundProcess)
+				resolveProcess()
+			}, 0)
+			return backgroundProcess
+		})
+
+		const [rejected, result] = await executeCommandInTerminal(mockTask, {
+			executionId: "offscreen-output",
+			command: "git status --short",
+			terminalShellIntegrationDisabled: false,
+		})
+
+		expect(rejected).toBe(false)
+		expect(backgroundProcess.continue).toHaveBeenCalledOnce()
+		expect(result).not.toContain("<user_message>")
+		expect(result).not.toContain("undefined")
+		expect(mockTask.say).not.toHaveBeenCalledWith("user_feedback", expect.anything(), expect.anything())
 	})
 })

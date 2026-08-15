@@ -1,8 +1,11 @@
 // npx vitest core/environment/__tests__/getEnvironmentDetails.spec.ts
 
+import path from "path"
+
 import pWaitFor from "p-wait-for"
 import delay from "delay"
 import type { Mock } from "vitest"
+import * as vscode from "vscode"
 
 import { getEnvironmentDetails } from "../getEnvironmentDetails"
 import { getFullModeDetails } from "../../../shared/modes-extension"
@@ -21,6 +24,9 @@ import { getGitStatus } from "../../../utils/git"
 import { Task } from "../../task/Task"
 
 vi.mock("vscode", () => ({
+	TabInputText: class TabInputText {
+		constructor(readonly uri: { fsPath: string }) {}
+	},
 	window: {
 		tabGroups: { all: [], onDidChangeTabs: vi.fn() },
 		visibleTextEditors: [],
@@ -70,6 +76,8 @@ describe("getEnvironmentDetails", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
+		;(vscode.window.visibleTextEditors as unknown as unknown[]).splice(0)
+		;(vscode.window.tabGroups.all as unknown as unknown[]).splice(0)
 
 		mockState = {
 			terminalOutputLineLimit: 100,
@@ -179,6 +187,21 @@ describe("getEnvironmentDetails", () => {
 		)
 	})
 
+	it("should keep sub-agent environment context compact", async () => {
+		;(mockCline as { taskKind?: "primary" | "subagent" }).taskKind = "subagent"
+		mockCline.getTaskMode = vi.fn().mockResolvedValue("code")
+
+		const result = await getEnvironmentDetails(mockCline as Task, true)
+
+		expect(result).toContain("# Sub-agent Context")
+		expect(result).toContain("# Current Workspace Directory\n.")
+		expect(result).not.toContain(mockCwd)
+		expect(result).not.toContain("# Current Cost")
+		expect(result).not.toContain("# Current Time")
+		expect(listFiles).not.toHaveBeenCalled()
+		expect(getFullModeDetails).not.toHaveBeenCalled()
+	})
+
 	it("should not include file details when includeFileDetails is false", async () => {
 		await getEnvironmentDetails(mockCline as Task, false)
 		expect(listFiles).not.toHaveBeenCalled()
@@ -216,6 +239,59 @@ describe("getEnvironmentDetails", () => {
 		expect(result).toContain("# Recently Modified Files")
 		expect(result).toContain("modified1.ts")
 		expect(result).toContain("modified2.ts")
+	})
+
+	it("excludes extension-private sub-agent paths from every parent environment surface", async () => {
+		const storagePath = path.join(mockCwd, ".alpha-storage")
+		const privateWorktree = path.join(storagePath, "subagent-worktrees", "artifact-123", "docs", "secret.md")
+		const privateChangeSet = path.join(storagePath, "subagent-change-sets", "artifact-123", "0-after")
+		const publicFile = path.join(mockCwd, "src", "app.ts")
+		mockProvider.context = { globalStorageUri: { fsPath: storagePath } }
+		;(vscode.window.visibleTextEditors as unknown as Array<{ document: { uri: { fsPath: string } } }>).push(
+			{ document: { uri: { fsPath: publicFile } } },
+			{ document: { uri: { fsPath: privateWorktree } } },
+		)
+		;(vscode.window.tabGroups.all as unknown as Array<{ tabs: Array<{ input: unknown }> }>).push({
+			tabs: [
+				{ input: new (vscode.TabInputText as any)({ fsPath: publicFile }) },
+				{ input: new (vscode.TabInputText as any)({ fsPath: privateChangeSet }) },
+			],
+		})
+		;(mockCline.fileContextTracker!.getAndClearRecentlyModifiedFiles as Mock).mockReturnValue([
+			privateChangeSet,
+			"src/recent.ts",
+		])
+
+		const privateActiveTerminal = {
+			id: "private-active",
+			getCurrentWorkingDirectory: vi.fn().mockReturnValue(path.dirname(privateWorktree)),
+			getLastCommand: vi.fn().mockReturnValue("SECRET_COMMAND_SHOULD_NOT_APPEAR"),
+			getProcessesWithOutput: vi.fn().mockReturnValue([]),
+		} as MockTerminal
+		const privateInactiveTerminal = {
+			id: "private-inactive",
+			getCurrentWorkingDirectory: vi.fn().mockReturnValue(path.dirname(privateChangeSet)),
+			getLastCommand: vi.fn(),
+			getProcessesWithOutput: vi
+				.fn()
+				.mockReturnValue([
+					{ command: "SECRET_COMMAND_SHOULD_NOT_APPEAR", getUnretrievedOutput: vi.fn(() => "secret output") },
+				]),
+			cleanCompletedProcessQueue: vi.fn(),
+		} as MockTerminal
+		;(TerminalRegistry.getBackgroundTerminals as Mock).mockImplementation((active: boolean) =>
+			active ? [privateActiveTerminal] : [privateInactiveTerminal],
+		)
+
+		const result = await getEnvironmentDetails(mockCline as Task)
+
+		expect(result).toContain("src/app.ts")
+		expect(result).toContain("src/recent.ts")
+		expect(result).not.toContain("artifact-123")
+		expect(result).not.toContain("subagent-worktrees")
+		expect(result).not.toContain("subagent-change-sets")
+		expect(result).not.toContain("SECRET_COMMAND_SHOULD_NOT_APPEAR")
+		expect(privateInactiveTerminal.cleanCompletedProcessQueue).not.toHaveBeenCalled()
 	})
 
 	it("should include active terminal information", async () => {

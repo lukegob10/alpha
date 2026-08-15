@@ -4,6 +4,7 @@ import { RooCodeEventName } from "./events.js"
 import type { RooCodeSettings } from "./global-settings.js"
 import type { ClineMessage, QueuedMessage, TokenUsage } from "./message.js"
 import type { ProviderSettings } from "./provider-settings.js"
+import type { SubagentModelRouteState } from "./subagent.js"
 import type { ToolUsage, ToolName } from "./tool.js"
 import type { StaticAppProperties, GitProperties, TelemetryProperties } from "./telemetry.js"
 import type { TodoItem } from "./todo.js"
@@ -106,12 +107,36 @@ export interface CreateTaskOptions {
 	experiments?: Record<string, boolean>
 	initialTodos?: TodoItem[]
 	/** Initial status for the task's history item (e.g., "active" for child tasks) */
-	initialStatus?: "active" | "delegated" | "completed"
+	initialStatus?:
+		| "active"
+		| "delegated"
+		| "completed"
+		| "blocked"
+		| "failed"
+		| "cancelled"
+		| "timed_out"
+		| "interrupted"
 	/** Whether to start the task loop immediately (default: true).
 	 *  When false, the caller must invoke `task.start()` manually. */
 	startTask?: boolean
 	/** Keep other live top-level tasks running when this task is created. */
 	preserveExisting?: boolean
+	/** Internal task kind. Sub-agents are parent-managed task lanes. */
+	taskKind?: "primary" | "subagent"
+	subagentGroupId?: string
+	subagentNickname?: string
+	subagentRole?: import("./subagent.js").SubagentRole
+	subagentModelRoute?: SubagentModelRouteState
+	subagentWriteScope?: string[]
+	subagentChangeSet?: import("./subagent.js").SubagentChangeSetState
+	/** Scoped authority prepared and approved by the parent delegation. */
+	subagentAuthority?: import("./subagent.js").SubagentAuthorityGrant
+	/** Original logical workspace used for task-history grouping. */
+	historyWorkspacePath?: string
+	/** Private execution root used only to redact managed-worktree paths from model-visible output. */
+	subagentPrivateWorkspaceRoot?: string
+	/** Absolute time after which a sub-agent must stop researching and synthesize its result. */
+	subagentResearchDeadlineAt?: number
 }
 export enum TaskStatus {
 	Running = "running",
@@ -166,6 +191,7 @@ export interface TaskLike {
 	readonly taskId: string
 	readonly rootTaskId?: string
 	readonly parentTaskId?: string
+	readonly taskKind?: "primary" | "subagent"
 	readonly childTaskId?: string
 	readonly metadata: TaskMetadata
 	readonly taskStatus: TaskStatus

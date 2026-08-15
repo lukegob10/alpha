@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { subagentChangeSetStateSchema, subagentModelRouteStateSchema, subagentRoleSchema } from "./subagent.js"
+
 /**
  * HistoryItem
  */
@@ -20,12 +22,21 @@ export const historyItemSchema = z.object({
 	workspace: z.string().optional(),
 	mode: z.string().optional(),
 	apiConfigName: z.string().optional(), // Provider profile name for sticky profile feature
-	status: z.enum(["active", "completed", "delegated"]).optional(),
+	status: z
+		.enum(["active", "completed", "blocked", "delegated", "failed", "cancelled", "timed_out", "interrupted"])
+		.optional(),
 	delegatedToId: z.string().optional(), // Last child this parent delegated to
 	childIds: z.array(z.string()).optional(), // All children spawned by this task
 	awaitingChildId: z.string().optional(), // Child currently awaited (set when delegated)
 	completedByChildId: z.string().optional(), // Child that completed and resumed this parent
 	completionResultSummary: z.string().optional(), // Summary from completed child
+	taskKind: z.enum(["primary", "subagent"]).optional(),
+	subagentGroupId: z.string().optional(),
+	subagentNickname: z.string().optional(),
+	subagentRole: subagentRoleSchema.optional(),
+	subagentWriteScope: z.array(z.string()).optional(),
+	subagentChangeSet: subagentChangeSetStateSchema.optional(),
+	subagentModelRoute: subagentModelRouteStateSchema.optional(),
 })
 
 export type HistoryItem = z.infer<typeof historyItemSchema>

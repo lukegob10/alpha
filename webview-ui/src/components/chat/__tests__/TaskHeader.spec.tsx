@@ -4,7 +4,7 @@ import React from "react"
 import { render, screen, fireEvent } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
-import type { ProviderSettings } from "@alpha-code/types"
+import type { ProviderSettings, SubagentChangeSetState, SubagentModelRouteState } from "@alpha-code/types"
 
 import TaskHeader, { TaskHeaderProps } from "../TaskHeader"
 
@@ -38,7 +38,14 @@ vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 // Create a variable to hold the mock state
 let mockExtensionState: {
 	apiConfiguration: ProviderSettings
-	currentTaskItem: { id: string } | null
+	currentTaskItem: {
+		id: string
+		subagentNickname?: string
+		subagentRole?: "explore" | "review" | "worker"
+		subagentWriteScope?: string[]
+		subagentModelRoute?: SubagentModelRouteState
+		subagentChangeSet?: SubagentChangeSetState
+	} | null
 	clineMessages: any[]
 } = {
 	apiConfiguration: {
@@ -430,6 +437,57 @@ describe("TaskHeader", () => {
 			const backButton = screen.getByText("chat:task.backToParentTask").closest("button")
 			expect(backButton).toBeInTheDocument()
 			expect(backButton?.querySelector("svg.lucide-arrow-left")).toBeInTheDocument()
+		})
+
+		it("shows the immutable model route and parent fallback in a managed transcript", () => {
+			mockExtensionState.currentTaskItem = {
+				id: "child-1",
+				subagentNickname: "Maple",
+				subagentRole: "explore",
+				subagentModelRoute: {
+					source: "role",
+					resolution: "fallback",
+					profileId: "parent-id",
+					profileName: "Parent",
+					provider: "anthropic",
+					modelId: "parent-model",
+					requestedProfileId: "deleted-id",
+					fallbackReason: "missing",
+				},
+			}
+
+			renderTaskHeader({ parentTaskId: "parent-task-123", isManagedSubagent: true })
+
+			expect(screen.getByText("Maple · Explorer")).toBeInTheDocument()
+			expect(screen.getByRole("button", { name: "Return to parent" })).toBeInTheDocument()
+			expect(screen.getByText("Parent-managed read-only sub-agent")).toBeInTheDocument()
+			expect(screen.getByText("Parent · anthropic · parent-model")).toBeInTheDocument()
+			expect(screen.getByRole("status")).toHaveTextContent("Using parent profile because")
+			mockExtensionState.currentTaskItem = { id: "test-task-id" }
+		})
+
+		it("describes a captured worker proposal as a quarantined change set", () => {
+			mockExtensionState.currentTaskItem = {
+				id: "child-1",
+				subagentNickname: "Cinder",
+				subagentRole: "worker",
+				subagentWriteScope: ["docs/guide.md"],
+				subagentChangeSet: {
+					id: "change-set-1",
+					status: "pending_review",
+					changedFiles: ["docs/guide.md"],
+					createdAt: 1,
+					updatedAt: 2,
+				},
+			}
+
+			renderTaskHeader({ parentTaskId: "parent-task-123", isManagedSubagent: true })
+
+			expect(screen.getByText("Cinder · Worker")).toBeInTheDocument()
+			expect(screen.getByText("Parent-managed editing worker · quarantined change set")).toBeInTheDocument()
+			expect(screen.getByText("Write scope: docs/guide.md")).toBeInTheDocument()
+			expect(screen.queryByText(/editing worker · isolated worktree/)).not.toBeInTheDocument()
+			mockExtensionState.currentTaskItem = { id: "test-task-id" }
 		})
 	})
 

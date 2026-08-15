@@ -3,7 +3,8 @@ export const delegate_task = {
 	type: "function",
 	function: {
 		name: "delegate_task",
-		description: "Run one bounded internal task, or up to two independent tasks concurrently.",
+		description:
+			"Launch one or two independent Alpha sub-agents. Select roles by required authority: use worker for every objective that needs file changes; a worker may use commands for implementation or verification. Explore and review are strictly read-only and cannot edit or execute. Keep command-only work in the parent. Worker changes stay quarantined for explicit review and apply; after capture, the temporary worktree is removed and the change set remains as the reviewable proposal.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -11,32 +12,40 @@ export const delegate_task = {
 					type: "array",
 					minItems: 1,
 					maxItems: 2,
-					description: "Child-task drafts to execute in dependency order, concurrently when independent.",
+					description:
+						"Independent objectives to run concurrently. At most one may be a worker, and every editing objective must be that worker.",
 					items: {
 						type: "object",
-						description: "A child-task draft. The host validates it and derives authority from the parent.",
+						description:
+							"A child-task draft. The host validates the selected role and derives the narrowest allowed authority from the parent.",
 						properties: {
-							objective: { type: "string" },
-							agent_kind: { type: "string", enum: ["general", "explore", "review"] },
-							expected_output: { type: "array", items: { type: "string" } },
-							allowed_paths: { type: "array", items: { type: "string" } },
-							context_refs: { type: "array", items: { type: "string" } },
-							skills: { type: "array", items: { type: "string" } },
-							model_route: { type: "string", enum: ["fast", "balanced", "deep", "user-configured"] },
-							provider: { type: "string" },
-							model: { type: "string" },
-							reasoning: { type: "string" },
-							execute: { type: "boolean" },
-							mutate: { type: "boolean" },
-							network: { type: "boolean" },
-							external_side_effects: { type: "boolean" },
-							require_approval: { type: "boolean" },
-							max_input_tokens: { type: "number" },
-							max_output_tokens: { type: "number" },
-							timeout_ms: { type: "number" },
-							dependencies: { type: "array", items: { type: "string" } },
+							objective: { type: "string", minLength: 1 },
+							agent_kind: {
+								type: "string",
+								enum: ["explore", "review", "worker"],
+								description:
+									"Use worker for every objective that creates, modifies, renames, or deletes files. Use explore or review only for read-only inspection without commands.",
+							},
+							write_scope: {
+								anyOf: [
+									{
+										type: "array",
+										minItems: 1,
+										maxItems: 12,
+										items: { type: "string" },
+									},
+									{ type: "null" },
+								],
+								description:
+									"For worker, provide one to twelve workspace-relative files or directories covering every possible edit. For explore or review, use null or omit this field when the provider permits omission.",
+							},
+							expected_output: {
+								type: "array",
+								items: { type: "string" },
+								description: "Optional deliverables; omit or use null when not needed.",
+							},
 						},
-						required: ["objective"],
+						required: ["objective", "agent_kind"],
 						additionalProperties: false,
 					},
 				},

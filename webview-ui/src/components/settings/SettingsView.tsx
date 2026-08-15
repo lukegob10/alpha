@@ -30,6 +30,7 @@ import {
 	ArrowLeft,
 	GitCommitVertical,
 	GraduationCap,
+	Bot,
 } from "lucide-react"
 
 import {
@@ -79,6 +80,7 @@ import PromptsSettings from "./PromptsSettings"
 import { SlashCommandsSettings } from "./SlashCommandsSettings"
 import { SkillsSettings } from "./SkillsSettings"
 import { UISettings } from "./UISettings"
+import { AgentsSettings } from "./AgentsSettings"
 import { GitHubSettings } from "./GitHubSettings"
 import ModesView from "../modes/ModesView"
 import McpView from "../mcp/McpView"
@@ -100,6 +102,7 @@ export interface SettingsViewRef {
 
 export const sectionNames = [
 	"providers",
+	"agents",
 	"autoApprove",
 	"slashCommands",
 	"skills",
@@ -162,6 +165,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		alwaysAllowMcp,
 		alwaysAllowModeSwitch,
 		alwaysAllowSubtasks,
+		alwaysAllowSubagents,
 		alwaysAllowWrite,
 		alwaysAllowWriteOutsideWorkspace,
 		alwaysAllowWriteProtected,
@@ -208,6 +212,8 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		reasoningBlockCollapsed,
 		enterBehavior,
 		maxConcurrentTasks,
+		subagentDefaultApiConfigId,
+		subagentApiConfigByRole,
 		includeCurrentTime,
 		includeCurrentCost,
 		maxGitStatusFiles,
@@ -401,6 +407,12 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					autoCondenseContext,
 					autoCondenseContextPercent,
 					maxConcurrentTasks: Math.min(Math.max(1, maxConcurrentTasks ?? 3), 50),
+					subagentDefaultApiConfigId: subagentDefaultApiConfigId ?? "",
+					subagentApiConfigByRole: {
+						explore: subagentApiConfigByRole?.explore ?? "",
+						review: subagentApiConfigByRole?.review ?? "",
+						worker: subagentApiConfigByRole?.worker ?? "",
+					},
 					soundEnabled: soundEnabled ?? true,
 					soundVolume: soundVolume ?? 0.5,
 					ttsEnabled,
@@ -428,6 +440,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 						includeDiagnosticMessages !== undefined ? includeDiagnosticMessages : true,
 					maxDiagnosticMessages: maxDiagnosticMessages ?? 50,
 					alwaysAllowSubtasks,
+					alwaysAllowSubagents,
 					alwaysAllowFollowupQuestions: alwaysAllowFollowupQuestions ?? false,
 					followupAutoApproveTimeoutMs,
 					includeTaskHistoryInEnhance: includeTaskHistoryInEnhance ?? true,
@@ -531,6 +544,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	const sections: { id: SectionName; icon: LucideIcon }[] = useMemo(
 		() => [
 			{ id: "providers", icon: Plug },
+			{ id: "agents", icon: Bot },
 			{ id: "modes", icon: Users2 },
 			{ id: "skills", icon: GraduationCap },
 			{ id: "slashCommands", icon: SquareSlash },
@@ -800,6 +814,16 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 							</div>
 						)}
 
+						{/* Agents Section */}
+						{renderTab === "agents" && (
+							<AgentsSettings
+								profiles={cachedState.listApiConfigMeta ?? []}
+								defaultProfileId={subagentDefaultApiConfigId}
+								profileByRole={subagentApiConfigByRole}
+								setCachedStateField={setCachedStateField}
+							/>
+						)}
+
 						{/* Auto-Approve Section */}
 						{renderTab === "autoApprove" && (
 							<AutoApproveSettings
@@ -811,6 +835,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 								alwaysAllowMcp={alwaysAllowMcp}
 								alwaysAllowModeSwitch={alwaysAllowModeSwitch}
 								alwaysAllowSubtasks={alwaysAllowSubtasks}
+								alwaysAllowSubagents={alwaysAllowSubagents}
 								alwaysAllowExecute={alwaysAllowExecute}
 								alwaysAllowFollowupQuestions={alwaysAllowFollowupQuestions}
 								autoApprovalEnabled={autoApprovalEnabled}

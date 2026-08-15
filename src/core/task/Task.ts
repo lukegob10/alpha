@@ -1,4 +1,5 @@
 import * as path from "path"
+import * as fsSync from "fs"
 import * as vscode from "vscode"
 import os from "os"
 import crypto from "crypto"
@@ -34,6 +35,11 @@ import {
 	type ContextCondense,
 	type ContextTruncation,
 	type ClineMessage,
+	type SubagentGroupState,
+	type SubagentAuthorityGrant,
+	type SubagentChangeSetState,
+	type SubagentModelRouteState,
+	type SubagentRole,
 	type ClineSay,
 	type ClineAsk,
 	type ToolProgressStatus,
@@ -105,6 +111,7 @@ import { buildNativeToolsArrayWithRestrictions } from "./build-tools"
 
 // core modules
 import { ToolRepetitionDetector } from "../tools/ToolRepetitionDetector"
+import { redactTaskPrivatePaths } from "../tools/taskPathPresentation"
 import { restoreTodoListForTask } from "../tools/UpdateTodoListTool"
 import { FileContextTracker } from "../context-tracking/FileContextTracker"
 import { RooIgnoreController } from "../ignore/RooIgnoreController"
@@ -132,6 +139,7 @@ import {
 	checkpointRestore,
 	checkpointDiff,
 } from "../checkpoints"
+
 import { processUserContentMentions } from "../mentions/processUserContentMentions"
 import { getMessagesSinceLastSummary, summarizeConversation, getEffectiveApiHistory } from "../condense"
 import { MessageQueueService } from "../message-queue/MessageQueueService"
@@ -145,6 +153,23 @@ import {
 	type AgentResponseItem,
 	type AgentTurnHost,
 } from "../agent/AgentTurnEngine"
+
+export type CommandExecutionEvidenceStatus = "running" | "succeeded" | "failed" | "denied" | "cancelled" | "timed_out"
+
+export interface CommandExecutionEvidence {
+	toolCallId: string
+	executionId: string
+	status: CommandExecutionEvidenceStatus
+	exitCode?: number
+	signalName?: string
+	startedAt: number
+	completedAt?: number
+}
+
+interface ProviderRateLimitLane {
+	lastRequestTime?: number
+	queue: Promise<void>
+}
 
 const MAX_EXPONENTIAL_BACKOFF_SECONDS = 600 // 10 minutes
 const DEFAULT_USAGE_COLLECTION_TIMEOUT_MS = 5000 // 5 seconds
@@ -169,13 +194,21 @@ export interface TaskOptions extends CreateTaskOptions {
 	initialTodos?: TodoItem[]
 	workspacePath?: string
 	/** Initial status for the task's history item (e.g., "active" for child tasks) */
-	initialStatus?: "active" | "delegated" | "completed"
+	initialStatus?: NonNullable<HistoryItem["status"]>
 }
 
 export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	readonly taskId: string
 	readonly rootTaskId?: string
 	readonly parentTaskId?: string
+	readonly taskKind: "primary" | "subagent"
+	readonly subagentGroupId?: string
+	readonly subagentNickname?: string
+	readonly subagentRole?: SubagentRole
+	public subagentCompletionOutcome?: "completed" | "blocked"
+	readonly subagentModelRoute?: SubagentModelRouteState
+	readonly subagentWriteScope?: string[]
+	private subagentChangeSet?: SubagentChangeSetState
 	childTaskId?: string
 	pendingNewTaskToolCallId?: string
 
@@ -188,6 +221,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	readonly parentTask: Task | undefined = undefined
 	readonly taskNumber: number
 	readonly workspacePath: string
+	readonly historyWorkspacePath: string
+	readonly subagentPrivateWorkspaceRoot?: string
 
 	/**
 	 * The mode associated with this task. Persisted across sessions
@@ -281,7 +316,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	abort: boolean = false
 	currentRequestAbortController?: AbortController
 	private readonly taskCancellationController = new AbortController()
+	private readonly subagentAuthority?: SubagentAuthorityGrant
+	private readonly subagentResearchDeadlineAt?: number
 	private readonly childTasksRequiringVerification = new Set<string>()
+	private readonly commandExecutionEvidence = new Map<string, CommandExecutionEvidence>()
 	private pendingSteerMessage?: { text: string; images: string[] }
 	private isTaskLoopActive = false
 	private didComplete = false
@@ -301,15 +339,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	// API
 	apiConfiguration: ProviderSettings
 	api: ApiHandler
-	private static lastGlobalApiRequestTime?: number
+	private static providerRateLimitLanes = new Map<string, ProviderRateLimitLane>()
 	private autoApprovalHandler: AutoApprovalHandler
 
 	/**
-	 * Reset the global API request timestamp. This should only be used for testing.
+	 * Reset all provider-profile request-pacing lanes. This should only be used for testing.
 	 * @internal
 	 */
 	static resetGlobalApiRequestTime(): void {
-		Task.lastGlobalApiRequestTime = undefined
+		Task.providerRateLimitLanes.clear()
 	}
 
 	toolRepetitionDetector: ToolRepetitionDetector
@@ -326,6 +364,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	// LLM Messages & Chat Messages
 	apiConversationHistory: ApiMessage[] = []
 	clineMessages: ClineMessage[] = []
+	private clineMessagesSaveQueue: Promise<void> = Promise.resolve()
 
 	// Ask
 	private askResponse?: ClineAskResponse
@@ -397,7 +436,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			)
 			return false
 		}
-		this.userMessageContent.push(toolResult)
+		const content =
+			typeof toolResult.content === "string"
+				? redactTaskPrivatePaths(this, toolResult.content)
+				: toolResult.content?.map((block) =>
+						block.type === "text" ? { ...block, text: redactTaskPrivatePaths(this, block.text) } : block,
+					)
+		this.userMessageContent.push({ ...toolResult, content })
 		return true
 	}
 
@@ -529,7 +574,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private debouncedEmitTokenUsage: ReturnType<typeof debounce>
 
 	// Initial status for the task's history item (set at creation time to avoid race conditions)
-	private readonly initialStatus?: "active" | "delegated" | "completed"
+	private initialStatus?: NonNullable<HistoryItem["status"]>
 
 	// MessageManager for high-level message operations (lazy initialized)
 	private _messageManager?: MessageManager
@@ -555,6 +600,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		taskMode,
 		taskApiConfigName,
 		initialStatus,
+		taskKind,
+		subagentGroupId,
+		subagentNickname,
+		subagentRole,
+		subagentModelRoute,
+		subagentAuthority,
+		subagentWriteScope,
+		subagentChangeSet,
+		historyWorkspacePath,
+		subagentPrivateWorkspaceRoot,
+		subagentResearchDeadlineAt,
 	}: TaskOptions) {
 		super()
 
@@ -579,6 +635,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.taskId = historyItem ? historyItem.id : (taskId ?? uuidv7())
 		this.rootTaskId = historyItem ? historyItem.rootTaskId : rootTask?.taskId
 		this.parentTaskId = historyItem ? historyItem.parentTaskId : parentTask?.taskId
+		this.taskKind = historyItem?.taskKind ?? taskKind ?? "primary"
+		this.subagentGroupId = historyItem?.subagentGroupId ?? subagentGroupId
+		this.subagentNickname = historyItem?.subagentNickname ?? subagentNickname
+		this.subagentRole = historyItem?.subagentRole ?? subagentRole
+		this.subagentModelRoute = structuredClone(historyItem?.subagentModelRoute ?? subagentModelRoute)
+		this.subagentAuthority = subagentAuthority
+		this.subagentWriteScope =
+			historyItem?.subagentWriteScope ??
+			subagentWriteScope ??
+			(subagentAuthority?.role === "worker" ? subagentAuthority.writeScope : undefined)
+		this.subagentChangeSet = structuredClone(historyItem?.subagentChangeSet ?? subagentChangeSet)
+		this.subagentResearchDeadlineAt = subagentResearchDeadlineAt
 		this.childTaskId = undefined
 
 		this.metadata = {
@@ -587,9 +655,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		// Normal use-case is usually retry similar history task with new workspace.
-		this.workspacePath = parentTask
-			? parentTask.workspacePath
-			: (workspacePath ?? getWorkspacePath(path.join(os.homedir(), "Desktop")))
+		this.workspacePath =
+			workspacePath ?? parentTask?.workspacePath ?? getWorkspacePath(path.join(os.homedir(), "Desktop"))
+		this.historyWorkspacePath =
+			historyWorkspacePath ?? historyItem?.workspace ?? parentTask?.historyWorkspacePath ?? this.workspacePath
+		this.subagentPrivateWorkspaceRoot = subagentPrivateWorkspaceRoot
 
 		this.instanceId = crypto.randomUUID().slice(0, 8)
 		this.taskNumber = -1
@@ -1316,43 +1386,60 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private async saveClineMessages(): Promise<boolean> {
-		try {
-			await saveTaskMessages({
-				messages: structuredClone(this.clineMessages),
-				taskId: this.taskId,
-				globalStoragePath: this.globalStoragePath,
-			})
+		const save = this.clineMessagesSaveQueue.then(async () => {
+			try {
+				// Snapshot only after earlier writes finish. This prevents a slower, stale
+				// write from overwriting a newer terminal transcript during concurrent updates.
+				const messages = structuredClone(this.clineMessages)
+				await saveTaskMessages({
+					messages,
+					taskId: this.taskId,
+					globalStoragePath: this.globalStoragePath,
+				})
 
-			if (this._taskApiConfigName === undefined) {
-				await this.taskApiConfigReady
+				if (this._taskApiConfigName === undefined) {
+					await this.taskApiConfigReady
+				}
+
+				const { historyItem, tokenUsage } = await taskMetadata({
+					taskId: this.taskId,
+					rootTaskId: this.rootTaskId,
+					parentTaskId: this.parentTaskId,
+					taskNumber: this.taskNumber,
+					messages,
+					globalStoragePath: this.globalStoragePath,
+					workspace: this.historyWorkspacePath,
+					mode: this._taskMode || defaultModeSlug, // Use the task's own mode, not the current provider mode.
+					apiConfigName: this._taskApiConfigName, // Use the task's own provider profile, not the current provider profile.
+					initialStatus: this.initialStatus,
+					taskKind: this.taskKind,
+					subagentGroupId: this.subagentGroupId,
+					subagentNickname: this.subagentNickname,
+					subagentRole: this.subagentRole,
+					subagentModelRoute: this.subagentModelRoute,
+					subagentWriteScope: this.subagentWriteScope,
+					subagentChangeSet: this.subagentChangeSet,
+				})
+
+				// Emit token/tool usage updates using debounced function
+				// The debounce with maxWait ensures:
+				// - Immediate first emit (leading: true)
+				// - At most one emit per interval during rapid updates (maxWait)
+				// - Final state is emitted when updates stop (trailing: true)
+				this.debouncedEmitTokenUsage(tokenUsage, this.toolUsage)
+
+				await this.providerRef.deref()?.updateTaskHistory(historyItem)
+				return true
+			} catch (error) {
+				console.error("Failed to save Alpha messages:", error)
+				return false
 			}
+		})
 
-			const { historyItem, tokenUsage } = await taskMetadata({
-				taskId: this.taskId,
-				rootTaskId: this.rootTaskId,
-				parentTaskId: this.parentTaskId,
-				taskNumber: this.taskNumber,
-				messages: this.clineMessages,
-				globalStoragePath: this.globalStoragePath,
-				workspace: this.cwd,
-				mode: this._taskMode || defaultModeSlug, // Use the task's own mode, not the current provider mode.
-				apiConfigName: this._taskApiConfigName, // Use the task's own provider profile, not the current provider profile.
-				initialStatus: this.initialStatus,
-			})
-
-			// Emit token/tool usage updates using debounced function
-			// The debounce with maxWait ensures:
-			// - Immediate first emit (leading: true)
-			// - At most one emit per interval during rapid updates (maxWait)
-			// - Final state is emitted when updates stop (trailing: true)
-			this.debouncedEmitTokenUsage(tokenUsage, this.toolUsage)
-
-			await this.providerRef.deref()?.updateTaskHistory(historyItem)
-			return true
-		} catch (error) {
-			console.error("Failed to save Alpha messages:", error)
-			return false
-		}
+		// Keep the queue usable after a failed write. The caller still receives the
+		// boolean result for this specific operation.
+		this.clineMessagesSaveQueue = save.then(() => undefined)
+		return save
 	}
 
 	private findMessageByTimestamp(ts: number): ClineMessage | undefined {
@@ -1554,6 +1641,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (this.abort) {
 			throw new Error(`[RooCode#ask] task ${this.taskId}.${this.instanceId} aborted`)
 		}
+		if (text !== undefined) text = redactTaskPrivatePaths(this, text)
 
 		let askTs: number
 
@@ -1641,9 +1729,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const provider = this.providerRef.deref()
 		const state = provider ? await provider.getState() : undefined
 		const offscreenAutoResponse = this.getOffscreenAutoAskResponse(type, text, isProtected)
-		const approval = offscreenAutoResponse
-			? ({ decision: "ask" } as const)
-			: await checkAutoApproval({ state, ask: type, text, isProtected })
+		const approval = this.isParentAuthorizedSubagentAsk(type, text, isProtected)
+			? ({ decision: "approve" } as const)
+			: offscreenAutoResponse
+				? ({ decision: "ask" } as const)
+				: await checkAutoApproval({ state, ask: type, text, isProtected })
 
 		if (offscreenAutoResponse) {
 			this.handleWebviewAskResponse(
@@ -1674,6 +1764,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const shouldDrainQueuedMessageForAsk =
 			type === "completion_result" || type === "resume_task" || type === "resume_completed_task"
 		const isStatusMutable = !partial && isBlocking && !isMessageQueued && approval.decision === "ask"
+		if (
+			isStatusMutable &&
+			this.subagentRole === "worker" &&
+			(type === "command" || (type === "tool" && isProtected))
+		) {
+			await provider?.surfaceSubagentApproval(this, type === "command" ? "command" : "protected_write", text)
+		}
 
 		if (isStatusMutable) {
 			const statusMutationTimeout = 2_000
@@ -1754,6 +1851,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		const result = { response: this.askResponse!, text: this.askResponseText, images: this.askResponseImages }
+		if (this.subagentRole === "worker") await provider?.clearSubagentApproval(this.taskId)
 		if (this.activeAsk?.ts === askTs) {
 			this.activeAsk = undefined
 		}
@@ -1862,6 +1960,304 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.messageQueueService.clear()
 	}
 
+	public beginCommandExecution(toolCallId: string, executionId: string): void {
+		if (this.commandExecutionEvidence.has(toolCallId)) return
+		this.commandExecutionEvidence.set(toolCallId, {
+			toolCallId,
+			executionId,
+			status: "running",
+			startedAt: Date.now(),
+		})
+	}
+
+	public completeCommandExecution(toolCallId: string, details: { exitCode?: number; signalName?: string }): void {
+		const evidence = this.commandExecutionEvidence.get(toolCallId)
+		if (!evidence || evidence.status !== "running") return
+		evidence.status = details.exitCode === 0 && !details.signalName ? "succeeded" : "failed"
+		evidence.exitCode = details.exitCode
+		evidence.signalName = details.signalName
+		evidence.completedAt = Date.now()
+	}
+
+	public failCommandExecution(
+		toolCallId: string,
+		status: Exclude<CommandExecutionEvidenceStatus, "running" | "succeeded"> = "failed",
+	): void {
+		const evidence = this.commandExecutionEvidence.get(toolCallId)
+		if (!evidence || evidence.status !== "running") return
+		evidence.status = status
+		evidence.completedAt = Date.now()
+	}
+
+	public getCommandExecutionEvidence(): CommandExecutionEvidence[] {
+		return [...this.commandExecutionEvidence.values()].map((evidence) => ({ ...evidence }))
+	}
+
+	public hasActiveCommandExecutions(): boolean {
+		return [...this.commandExecutionEvidence.values()].some((evidence) => evidence.status === "running")
+	}
+
+	private failActiveCommandExecutions(status: "cancelled" | "failed"): void {
+		for (const evidence of this.commandExecutionEvidence.values()) {
+			if (evidence.status !== "running") continue
+			evidence.status = status
+			evidence.completedAt = Date.now()
+		}
+	}
+
+	private async stopActiveWorkerCommand(): Promise<void> {
+		const process = this.terminalProcess
+		if (this.taskKind !== "subagent" || this.subagentRole !== "worker" || !process) return
+
+		const settled = new Promise<void>((resolve) => {
+			const finish = () => {
+				process.removeListener("completed", finish)
+				process.removeListener("error", finish)
+				resolve()
+			}
+			process.once("completed", finish)
+			process.once("error", finish)
+		})
+		// Record the semantic reason before aborting. Some terminal adapters emit
+		// their exit callback synchronously from abort(), which must not replace a
+		// deliberate cancellation with a generic command failure.
+		this.failActiveCommandExecutions("cancelled")
+		process.abort()
+		await Promise.race([settled, delay(10_000)])
+	}
+
+	public async upsertSubagentGroup(group: SubagentGroupState): Promise<void> {
+		const existing = this.clineMessages.find(
+			(message) => message.say === "subagent_group" && message.subagentGroup?.groupId === group.groupId,
+		)
+
+		if (existing) {
+			existing.subagentGroup = structuredClone(group)
+			await this.saveClineMessages()
+			await this.updateClineMessage(existing)
+			return
+		}
+
+		await this.addToClineMessages({
+			ts: group.createdAt,
+			type: "say",
+			say: "subagent_group",
+			subagentGroup: structuredClone(group),
+		})
+	}
+
+	private async reconcileInterruptedSubagentGroups(): Promise<void> {
+		const liveTaskIds = new Set(this.providerRef.deref()?.getLiveTaskIds() ?? [])
+		let changed = false
+
+		for (const message of this.clineMessages) {
+			const group = message.subagentGroup
+			if (!group || !["pending", "running", "cancelling"].includes(group.status)) continue
+
+			const unfinishedAgents = group.agents.filter((agent) =>
+				["pending", "running", "cancelling"].includes(agent.status),
+			)
+			if (unfinishedAgents.some((agent) => liveTaskIds.has(agent.taskId))) continue
+
+			const completedAt = Date.now()
+			group.status = "interrupted"
+			group.completedAt = completedAt
+			for (const agent of unfinishedAgents) {
+				agent.status = "interrupted"
+				delete agent.phase
+				delete agent.phaseStartedAt
+				agent.completedAt = completedAt
+				agent.error =
+					"The extension reloaded before this sub-agent finished. Retry the delegation from the parent task."
+				agent.usage.durationMs = Math.max(0, completedAt - (agent.startedAt ?? group.createdAt))
+			}
+			changed = true
+		}
+
+		if (changed) await this.saveClineMessages()
+	}
+
+	public getTaskAllowedToolNames(): readonly ToolName[] | undefined {
+		if (this.taskKind !== "subagent") return undefined
+		return this.subagentRole === "worker"
+			? [
+					"read_file",
+					"search_files",
+					"list_files",
+					"codebase_search",
+					"write_to_file",
+					"apply_diff",
+					"edit",
+					"search_and_replace",
+					"search_replace",
+					"edit_file",
+					"apply_patch",
+					"execute_command",
+					"read_command_output",
+					"attempt_completion",
+				]
+			: ["read_file", "search_files", "list_files", "codebase_search", "attempt_completion"]
+	}
+
+	public isToolAllowedForTask(toolName: string): boolean {
+		return this.getTaskToolDenialReason(toolName) === undefined
+	}
+
+	public getTaskToolDenialReason(toolName: string, params?: Record<string, unknown>): string | undefined {
+		const allowed = this.getTaskAllowedToolNames()
+		if (allowed && !(allowed as readonly string[]).includes(toolName)) {
+			return `Tool "${toolName}" is not allowed for this parent-managed ${this.subagentRole === "worker" ? "editing worker" : "read-only sub-agent"}.`
+		}
+
+		if (this.subagentRole === "worker" && this.isWorkerEditTool(toolName) && params) {
+			const paths = this.getWorkerEditPaths(params)
+			if (paths.length === 0) return `Tool "${toolName}" did not provide a verifiable edit path.`
+			const outside = paths.find((candidate) => !this.isWorkerWritePathAllowed(candidate))
+			if (outside) return `Worker edit path is outside the approved write_scope: ${outside}`
+		}
+
+		if (
+			this.taskKind === "subagent" &&
+			toolName !== "attempt_completion" &&
+			this.subagentResearchDeadlineAt !== undefined &&
+			Date.now() >= this.subagentResearchDeadlineAt
+		) {
+			return "The sub-agent research window has ended. Stop using research tools and call attempt_completion now with the evidence already collected."
+		}
+
+		return undefined
+	}
+
+	private isWorkerEditTool(toolName: string): boolean {
+		return [
+			"write_to_file",
+			"apply_diff",
+			"edit",
+			"search_and_replace",
+			"search_replace",
+			"edit_file",
+			"apply_patch",
+		].includes(toolName)
+	}
+
+	private getWorkerEditPaths(params?: Record<string, unknown>): string[] {
+		if (!params) return []
+		const paths = [params.path, params.file_path].filter((value): value is string => typeof value === "string")
+		if (typeof params.patch === "string") {
+			for (const line of params.patch.split(/\r?\n/)) {
+				const match = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/.exec(line)
+				const move = /^\*\*\* Move to:\s*(.+)$/.exec(line)
+				if (match?.[1]) paths.push(match[1].trim())
+				if (move?.[1]) paths.push(move[1].trim())
+			}
+		}
+		return [...new Set(paths)]
+	}
+
+	private isWorkerWritePathAllowed(candidate: string): boolean {
+		if (!this.subagentWriteScope || path.isAbsolute(candidate)) return false
+		const resolved = path.resolve(this.cwd, candidate)
+		const relative = path.relative(this.cwd, resolved).split(path.sep).join("/")
+		if (!relative || relative.startsWith("../") || path.isAbsolute(relative)) return false
+		const fileScopes =
+			this.subagentAuthority?.role === "worker" ? (this.subagentAuthority.fileWriteScope ?? []) : []
+		const allowed = this.subagentWriteScope.some(
+			(scope) => relative === scope || (!fileScopes.includes(scope) && relative.startsWith(`${scope}/`)),
+		)
+		if (!allowed) return false
+
+		let existing = resolved
+		while (!fsSync.existsSync(existing)) {
+			const parent = path.dirname(existing)
+			if (parent === existing) return false
+			existing = parent
+		}
+		try {
+			const realWorkspace = fsSync.realpathSync(this.cwd)
+			const realExisting = fsSync.realpathSync(existing)
+			const realRelative = path.relative(realWorkspace, realExisting)
+			return realRelative === "" || (!realRelative.startsWith("..") && !path.isAbsolute(realRelative))
+		} catch {
+			return false
+		}
+	}
+
+	public setSubagentChangeSet(changeSet: SubagentChangeSetState): void {
+		this.subagentChangeSet = structuredClone(changeSet)
+	}
+
+	public isIdleForExternalMutation(): boolean {
+		return !this.isTaskLoopActive || this.didComplete || this.abort
+	}
+
+	public async finalizeSubagentHistory(
+		status: "completed" | "blocked" | "failed" | "cancelled" | "timed_out" | "interrupted",
+		summary: string,
+	): Promise<void> {
+		if (this.taskKind !== "subagent") return
+
+		const terminalSay = status === "completed" || status === "blocked" ? "completion_result" : "error"
+		const hasTerminalMessage = this.clineMessages.some(
+			(message) =>
+				message.type === "say" &&
+				message.say === terminalSay &&
+				message.partial !== true &&
+				Boolean(message.text?.trim()),
+		)
+		if (!hasTerminalMessage) {
+			const message: ClineMessage = {
+				ts: Date.now(),
+				type: "say",
+				say: terminalSay,
+				text: summary,
+				partial: false,
+			}
+			this.clineMessages.push(message)
+			this.emit(RooCodeEventName.Message, { action: "created", message })
+		}
+
+		this.initialStatus = status
+		await this.saveClineMessages()
+
+		const provider = this.providerRef.deref()
+		if (!provider) return
+
+		const { historyItem } = await provider.getTaskWithId(this.taskId)
+		await provider.updateTaskHistory({
+			...historyItem,
+			status,
+			completionResultSummary: summary,
+		})
+	}
+
+	private isParentAuthorizedSubagentAsk(type: ClineAsk, text?: string, isProtected?: boolean): boolean {
+		if (!this.subagentAuthority || type !== "tool") return false
+
+		try {
+			const payload = JSON.parse(text ?? "{}") as { tool?: string; path?: string }
+			if (
+				[
+					"readFile",
+					"listFiles",
+					"listFilesTopLevel",
+					"listFilesRecursive",
+					"searchFiles",
+					"codebaseSearch",
+				].includes(payload.tool ?? "")
+			)
+				return true
+			return (
+				this.subagentAuthority.role === "worker" &&
+				!isProtected &&
+				["editedExistingFile", "appliedDiff", "newFileCreated"].includes(payload.tool ?? "") &&
+				typeof payload.path === "string" &&
+				this.isWorkerWritePathAllowed(payload.path)
+			)
+		} catch {
+			return false
+		}
+	}
+
 	/**
 	 * Updates the API configuration and rebuilds the API handler.
 	 * There is no tool-protocol switching or tool parser swapping.
@@ -1911,6 +2307,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		} catch (error) {
 			console.error("[Task#submitUserMessage] Failed to submit user message:", error)
 		}
+	}
+
+	public canAcceptSteerMessage(): boolean {
+		return !this.abort && !this.didComplete && !this.activeAsk && !this.pendingSteerMessage
 	}
 
 	public async steerUserMessage(text: string, images?: string[]): Promise<void> {
@@ -1984,6 +2384,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				disabledTools: state?.disabledTools,
 				modelInfo,
 				includeAllToolsWithRestrictions: false,
+				allowedToolNames: this.getTaskAllowedToolNames(),
 			})
 			allTools = toolsResult.tools
 		}
@@ -2078,6 +2479,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (this.abort) {
 			throw new Error(`[RooCode#say] task ${this.taskId}.${this.instanceId} aborted`)
 		}
+		if (text !== undefined) text = redactTaskPrivatePaths(this, text)
 
 		if (partial !== undefined) {
 			const lastMessage = this.clineMessages.at(-1)
@@ -2262,22 +2664,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			await this.say("text", task, images)
 
-			// Check for too many MCP tools and warn the user
-			const { enabledToolCount, enabledServerCount } = await this.getEnabledMcpToolsCount()
-			if (enabledToolCount > MAX_MCP_TOOLS_THRESHOLD) {
-				await this.say(
-					"too_many_tools_warning",
-					JSON.stringify({
-						toolCount: enabledToolCount,
-						serverCount: enabledServerCount,
-						threshold: MAX_MCP_TOOLS_THRESHOLD,
-					}),
-					undefined,
-					undefined,
-					undefined,
-					undefined,
-					{ isNonInteractive: true },
-				)
+			// Internal sub-agents never receive MCP authority, so avoid initializing
+			// or counting foreground MCP servers for their isolated task startup.
+			if (this.taskKind !== "subagent") {
+				const { enabledToolCount, enabledServerCount } = await this.getEnabledMcpToolsCount()
+				if (enabledToolCount > MAX_MCP_TOOLS_THRESHOLD) {
+					await this.say(
+						"too_many_tools_warning",
+						JSON.stringify({
+							toolCount: enabledToolCount,
+							serverCount: enabledServerCount,
+							threshold: MAX_MCP_TOOLS_THRESHOLD,
+						}),
+						undefined,
+						undefined,
+						undefined,
+						undefined,
+						{ isNonInteractive: true },
+					)
+				}
 			}
 			this.isInitialized = true
 
@@ -2352,6 +2757,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			await this.overwriteClineMessages(modifiedClineMessages)
 			this.clineMessages = await this.getSavedClineMessages()
+			await this.reconcileInterruptedSubagentGroups()
 
 			// Now present the cline messages to the user and ask if they want to
 			// resume (NOTE: we ran into a bug before where the
@@ -2360,6 +2766,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// This is important in case the user deletes messages without resuming
 			// the task first.
 			this.apiConversationHistory = await this.getSavedApiConversationHistory()
+
+			if (this.taskKind === "subagent") {
+				this.isInitialized = true
+				this.markCompleted()
+				this.emit(RooCodeEventName.TaskCompleted, this.taskId, this.getTokenUsage(), this.toolUsage)
+				await this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
+				return
+			}
 
 			const lastClineMessage = this.clineMessages
 				.slice()
@@ -2573,6 +2987,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		this.abort = true
+		await this.stopActiveWorkerCommand()
 
 		// Reset consecutive error counters on abort (manual intervention)
 		this.consecutiveNoToolUseCount = 0
@@ -2874,12 +3289,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// This prevents the UI from showing an "API Request..." spinner while we are
 				// intentionally waiting due to the rate limit slider.
 				//
-				// NOTE: We also set Task.lastGlobalApiRequestTime here to reserve this slot
-				// before we build environment details (which can take time).
-				// This ensures subsequent requests (including subtasks) still honour the
-				// provider rate-limit window.
+				// Reserve this profile's request slot before building environment details.
+				// Parent tasks and sub-agents routed to the same profile share a serialized
+				// lane, while independently routed profiles do not block one another.
 				await this.maybeWaitForProviderRateLimit(currentItem.retryAttempt ?? 0)
-				Task.lastGlobalApiRequestTime = performance.now()
 
 				await this.say(
 					"api_req_started",
@@ -4047,9 +4460,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private async getSystemPrompt(): Promise<string> {
-		const { mcpEnabled } = (await this.providerRef.deref()?.getState()) ?? {}
+		const state = await this.providerRef.deref()?.getState()
+		const { mcpEnabled } = state ?? {}
+		const isSubagent = this.taskKind === "subagent"
 		let mcpHub: McpHub | undefined
-		if (mcpEnabled ?? true) {
+		if (!isSubagent && (mcpEnabled ?? true)) {
 			const provider = this.providerRef.deref()
 
 			if (!provider) {
@@ -4071,14 +4486,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		const rooIgnoreInstructions = this.rooIgnoreController?.getInstructions()
 
-		const state = await this.providerRef.deref()?.getState()
-
 		const { customModes, customModePrompts, customInstructions, experiments, language, enableSubfolderRules } =
 			state ?? {}
 		const mode = await this.getTaskMode()
 		const apiConfiguration = this.apiConfiguration
 
-		return await (async () => {
+		const systemPrompt = await (async () => {
 			const provider = this.providerRef.deref()
 
 			if (!provider) {
@@ -4109,12 +4522,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						.getConfiguration(Package.name)
 						.get<boolean>("newTaskRequireTodos", false),
 					isStealthModel: modelInfo?.isStealthModel,
+					subagentRole: isSubagent ? this.subagentRole : undefined,
 				},
 				undefined, // todoList
 				this.api.getModel().id,
-				provider.getSkillsManager(),
+				isSubagent ? undefined : provider.getSkillsManager(),
 			)
 		})()
+
+		return redactTaskPrivatePaths(this, systemPrompt)
 	}
 
 	private async getCurrentProfileId(state: any): Promise<string> {
@@ -4169,6 +4585,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				disabledTools: state?.disabledTools,
 				modelInfo,
 				includeAllToolsWithRestrictions: false,
+				allowedToolNames: this.getTaskAllowedToolNames(),
 			})
 			allTools = toolsResult.tools
 		}
@@ -4260,31 +4677,89 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * the `api_req_rate_limit_wait` say type (not an error).
 	 */
 	private async maybeWaitForProviderRateLimit(retryAttempt: number): Promise<void> {
-		const state = await this.providerRef.deref()?.getState()
-		const rateLimitSeconds =
-			state?.apiConfiguration?.rateLimitSeconds ?? this.apiConfiguration?.rateLimitSeconds ?? 0
+		// A task owns a frozen provider profile. Background sub-agents may be
+		// routed differently from the foreground profile exposed by getState().
+		const rateLimitSeconds = this.apiConfiguration?.rateLimitSeconds ?? 0
 
-		if (rateLimitSeconds <= 0 || !Task.lastGlobalApiRequestTime) {
+		if (rateLimitSeconds <= 0) {
 			return
 		}
 
-		const now = performance.now()
-		const timeSinceLastRequest = now - Task.lastGlobalApiRequestTime
-		const rateLimitDelay = Math.ceil(
-			Math.min(rateLimitSeconds, Math.max(0, rateLimitSeconds * 1000 - timeSinceLastRequest) / 1000),
-		)
-
-		// Only show the countdown UX on the first attempt. Retry flows have their own delay messaging.
-		if (rateLimitDelay > 0 && retryAttempt === 0) {
-			for (let i = rateLimitDelay; i > 0; i--) {
-				// Send structured JSON data for i18n-safe transport
-				const delayMessage = JSON.stringify({ seconds: i })
-				await this.say("api_req_rate_limit_wait", delayMessage, undefined, true)
-				await delay(1000)
-			}
-			// Finalize the partial message so the UI doesn't keep rendering an in-progress spinner.
-			await this.say("api_req_rate_limit_wait", undefined, undefined, false)
+		const laneKey = await this.getProviderRateLimitLaneKey()
+		const existingLane = Task.providerRateLimitLanes.get(laneKey)
+		const lane = existingLane ?? { queue: Promise.resolve() }
+		if (!existingLane) {
+			Task.providerRateLimitLanes.set(laneKey, lane)
 		}
+
+		// Append the complete wait-and-reserve operation synchronously after resolving
+		// the lane key. This removes the check/wait/set race between concurrent tasks.
+		const reservation = lane.queue.then(async () => {
+			const now = performance.now()
+			const timeSinceLastRequest = lane.lastRequestTime === undefined ? Infinity : now - lane.lastRequestTime
+			const remainingMs = Math.max(0, rateLimitSeconds * 1000 - timeSinceLastRequest)
+			const rateLimitDelay = Math.ceil(Math.min(rateLimitSeconds, remainingMs / 1000))
+
+			if (rateLimitDelay > 0) {
+				if (retryAttempt === 0) {
+					for (let i = rateLimitDelay; i > 0; i--) {
+						// Send structured JSON data for i18n-safe transport.
+						const delayMessage = JSON.stringify({ seconds: i })
+						await this.say("api_req_rate_limit_wait", delayMessage, undefined, true)
+						await delay(1000)
+					}
+					// Finalize the partial message so the UI doesn't keep rendering an in-progress spinner.
+					await this.say("api_req_rate_limit_wait", undefined, undefined, false)
+				} else {
+					// Retry flows announce their own backoff. Still enforce any remainder
+					// introduced by another request on this lane without a second countdown.
+					await delay(remainingMs)
+				}
+			}
+
+			lane.lastRequestTime = performance.now()
+		})
+
+		lane.queue = reservation.catch(() => undefined)
+		await reservation
+	}
+
+	private async getProviderRateLimitLaneKey(): Promise<string> {
+		const routedProfileId = this.subagentModelRoute?.profileId
+		if (routedProfileId) {
+			return `profile:${routedProfileId}`
+		}
+
+		await this.waitForApiConfigInitialization()
+		const state = await this.providerRef.deref()?.getState()
+		const profileName = this._taskApiConfigName ?? state?.currentApiConfigName
+		const profileId = state?.listApiConfigMeta?.find((profile: any) => profile.name === profileName)?.id
+		if (profileId) {
+			return `profile:${profileId}`
+		}
+
+		// Legacy/restored tasks may not have a resolvable stable ID. Keep their lane
+		// credential-free while separating distinct provider/profile/model routes.
+		return `configuration:${JSON.stringify([
+			this.apiConfiguration.apiProvider ?? "unknown",
+			profileName ?? "default",
+			getModelId(this.apiConfiguration) ?? "default",
+		])}`
+	}
+
+	private async getProviderRateLimitRemainingSeconds(): Promise<number> {
+		const rateLimitSeconds = this.apiConfiguration?.rateLimitSeconds ?? 0
+		if (rateLimitSeconds <= 0) {
+			return 0
+		}
+
+		const lane = Task.providerRateLimitLanes.get(await this.getProviderRateLimitLaneKey())
+		if (lane?.lastRequestTime === undefined) {
+			return 0
+		}
+
+		const elapsed = performance.now() - lane.lastRequestTime
+		return Math.ceil(Math.min(rateLimitSeconds, Math.max(0, rateLimitSeconds * 1000 - elapsed) / 1000))
 	}
 
 	public async *attemptApiRequest(
@@ -4309,16 +4784,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (!options.skipProviderRateLimit) {
 			await this.maybeWaitForProviderRateLimit(retryAttempt)
 		}
-
-		// Update last request time right before making the request so that subsequent
-		// requests — even from new subtasks — will honour the provider's rate-limit.
-		//
-		// NOTE: When recursivelyMakeClineRequests handles rate limiting, it sets the
-		// timestamp earlier to include the environment details build. We still set it
-		// here for direct callers (tests) and for the case where we didn't rate-limit
-		// in the caller.
-		Task.lastGlobalApiRequestTime = performance.now()
-
 		const systemPrompt = await this.getSystemPrompt()
 		const { contextTokens } = this.getTokenUsage()
 
@@ -4383,6 +4848,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						disabledTools: state?.disabledTools,
 						modelInfo,
 						includeAllToolsWithRestrictions: false,
+						allowedToolNames: this.getTaskAllowedToolNames(),
 					})
 					contextMgmtTools = toolsResult.tools
 				}
@@ -4549,6 +5015,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				disabledTools: state?.disabledTools,
 				modelInfo,
 				includeAllToolsWithRestrictions: supportsAllowedFunctionNames,
+				allowedToolNames: this.getTaskAllowedToolNames(),
 			})
 			allTools = toolsResult.tools
 			allowedFunctionNames = toolsResult.allowedFunctionNames
@@ -4708,13 +5175,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				MAX_EXPONENTIAL_BACKOFF_SECONDS,
 			)
 
-			// Respect provider rate limit window
-			let rateLimitDelay = 0
-			const rateLimit = (state?.apiConfiguration ?? this.apiConfiguration)?.rateLimitSeconds || 0
-			if (Task.lastGlobalApiRequestTime && rateLimit > 0) {
-				const elapsed = performance.now() - Task.lastGlobalApiRequestTime
-				rateLimitDelay = Math.ceil(Math.min(rateLimit, Math.max(0, rateLimit * 1000 - elapsed) / 1000))
-			}
+			// Respect this task's routed provider-profile lane.
+			const rateLimitDelay = await this.getProviderRateLimitRemainingSeconds()
 
 			// Prefer RetryInfo on 429 if present
 			if (error?.status === 429) {

@@ -3,8 +3,6 @@ import path from "path"
 
 import { type ClineSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
 
-import { getReadablePath } from "../../utils/path"
-import { isPathOutsideWorkspace } from "../../utils/pathUtils"
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
@@ -14,6 +12,7 @@ import { sanitizeUnifiedDiff, computeDiffStats } from "../diff/stats"
 import type { ToolUse } from "../../shared/tools"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 interface EditParams {
 	file_path: string
@@ -174,11 +173,11 @@ export class EditTool extends BaseTool<"edit"> {
 
 			const sanitizedDiff = sanitizeUnifiedDiff(diff)
 			const diffStats = computeDiffStats(sanitizedDiff) || undefined
-			const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
+			const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
 			const sharedMessageProps: ClineSayTool = {
 				tool: "appliedDiff",
-				path: getReadablePath(task.cwd, relPath),
+				path: getTaskReadablePath(task, relPath),
 				diff: sanitizedDiff,
 				isOutsideWorkspace,
 			}
@@ -253,11 +252,11 @@ export class EditTool extends BaseTool<"edit"> {
 
 		// relPath is guaranteed non-null after hasPathStabilized
 		const absolutePath = path.resolve(task.cwd, relPath!)
-		const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
+		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
 		const sharedMessageProps: ClineSayTool = {
 			tool: "appliedDiff",
-			path: getReadablePath(task.cwd, relPath!),
+			path: getTaskReadablePath(task, relPath!),
 			diff: block.params.old_string ? "1 edit operation" : undefined,
 			isOutsideWorkspace,
 		}

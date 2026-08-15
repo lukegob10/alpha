@@ -10,13 +10,12 @@ import {
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { fileExistsAtPath } from "../../utils/fs"
-import { getReadablePath } from "../../utils/path"
-import { isPathOutsideWorkspace } from "../../utils/pathUtils"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { OpenRouterHandler } from "../../api/providers/openrouter"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import type { ToolUse } from "../../shared/tools"
 import { t } from "../../i18n"
+import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 export class GenerateImageTool extends BaseTool<"generate_image"> {
 	readonly name = "generate_image" as const
@@ -68,10 +67,10 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 
 			const inputImageExists = await fileExistsAtPath(inputImageFullPath)
 			if (!inputImageExists) {
-				await task.say("error", `Input image not found: ${getReadablePath(task.cwd, inputImagePath)}`)
+				await task.say("error", `Input image not found: ${getTaskReadablePath(task, inputImagePath)}`)
 				task.didToolFailInCurrentTurn = true
 				pushToolResult(
-					formatResponse.toolError(`Input image not found: ${getReadablePath(task.cwd, inputImagePath)}`),
+					formatResponse.toolError(`Input image not found: ${getTaskReadablePath(task, inputImagePath)}`),
 				)
 				return
 			}
@@ -159,11 +158,11 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 		}
 
 		const fullPath = path.resolve(task.cwd, relPath)
-		const isOutsideWorkspace = isPathOutsideWorkspace(fullPath)
+		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, fullPath)
 
 		const sharedMessageProps = {
 			tool: "generateImage" as const,
-			path: getReadablePath(task.cwd, relPath),
+			path: getTaskReadablePath(task, relPath),
 			content: prompt,
 			isOutsideWorkspace,
 			isProtected: isWriteProtected,
@@ -175,7 +174,7 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 			const approvalMessage = JSON.stringify({
 				...sharedMessageProps,
 				content: prompt,
-				...(inputImagePath && { inputImage: getReadablePath(task.cwd, inputImagePath) }),
+				...(inputImagePath && { inputImage: getTaskReadablePath(task, inputImagePath) }),
 			})
 
 			const didApprove = await askApproval("tool", approvalMessage, undefined, isWriteProtected)
@@ -248,7 +247,7 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 			imageUri = imageUri.includes("?") ? `${imageUri}&t=${cacheBuster}` : `${imageUri}?t=${cacheBuster}`
 
 			await task.say("image", JSON.stringify({ imageUri, imagePath: fullImagePath }))
-			pushToolResult(formatResponse.toolResult(getReadablePath(task.cwd, finalPath)))
+			pushToolResult(formatResponse.toolResult(getTaskReadablePath(task, finalPath)))
 		} catch (error) {
 			await handleError("generating image", error as Error)
 		}

@@ -256,6 +256,8 @@
 		"wantsToViewMultipleDirectories": "Alpha wants to view multiple directories",
 		"wantsToSearch": "Alpha wants to search this directory for <code>{{regex}}</code>",
 		"didSearch": "Alpha searched this directory for <code>{{regex}}</code>",
+		"wantsToSearchMultiple": "Alpha wants to run {{count}} file searches",
+		"didSearchMultiple": "Alpha ran {{count}} file searches",
 		"wantsToSearchOutsideWorkspace": "Alpha wants to search this directory (outside workspace) for <code>{{regex}}</code>",
 		"didSearchOutsideWorkspace": "Alpha searched this directory (outside workspace) for <code>{{regex}}</code>"
 	},

@@ -3,7 +3,7 @@ import crypto from "crypto"
 
 import { digestValue } from "./StepContext"
 
-export type InternalAgentKind = "general" | "explore" | "review"
+export type InternalAgentKind = "general" | "explore" | "review" | "worker"
 export type ModelRouteId = "fast" | "balanced" | "deep" | "user-configured"
 
 export interface InternalTaskPolicy {
@@ -47,6 +47,7 @@ export const internalAgentDefinitions = Object.freeze({
 	general: { expectedOutput: ["summary", "evidence", "remaining risks"] },
 	explore: { expectedOutput: ["findings", "file references", "open questions"] },
 	review: { expectedOutput: ["findings by severity", "validation evidence", "remaining risks"] },
+	worker: { expectedOutput: ["summary", "changed files", "verification", "remaining risks"] },
 } satisfies Record<InternalAgentKind, { expectedOutput: string[] }>)
 
 export const modelRoutes = Object.freeze({

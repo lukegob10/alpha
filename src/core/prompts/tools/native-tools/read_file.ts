@@ -62,7 +62,7 @@ export function createReadFileTool(options: ReadFileToolOptions = {}): OpenAI.Ch
 
 	// Build description based on capabilities
 	const descriptionIntro =
-		"Read a file and return its contents with line numbers for diffing or discussion. IMPORTANT: This tool reads exactly one file per call. If you need multiple files, issue multiple parallel read_file calls."
+		"Read files and return their contents with line numbers for diffing or discussion. Use path for one file. When several independent files are already known, prefer one bounded files batch (up to 8 entries) to avoid extra model turns."
 
 	const modeDescription =
 		` Supports two modes: 'slice' (default) reads lines sequentially with offset/limit; 'indentation' extracts complete semantic code blocks around an anchor line based on indentation hierarchy.` +
@@ -109,6 +109,37 @@ export function createReadFileTool(options: ReadFileToolOptions = {}): OpenAI.Ch
 	}
 
 	const properties: Record<string, unknown> = {
+		files: {
+			type: "array",
+			description:
+				"Batch of 1 to 8 independent files. Use this instead of path when several files can be inspected together.",
+			minItems: 1,
+			maxItems: 8,
+			items: {
+				type: "object",
+				properties: {
+					path: {
+						type: "string",
+						description: "Path to the file, relative to the workspace",
+					},
+					line_ranges: {
+						type: "array",
+						description: "Optional 1-based inclusive line ranges to return.",
+						items: {
+							type: "object",
+							properties: {
+								start: { type: "integer" },
+								end: { type: "integer" },
+							},
+							required: ["start", "end"],
+							additionalProperties: false,
+						},
+					},
+				},
+				required: ["path"],
+				additionalProperties: false,
+			},
+		},
 		path: {
 			type: "string",
 			description: "Path to the file to read, relative to the workspace",
@@ -146,7 +177,7 @@ export function createReadFileTool(options: ReadFileToolOptions = {}): OpenAI.Ch
 			parameters: {
 				type: "object",
 				properties,
-				required: ["path"],
+				required: [],
 				additionalProperties: false,
 			},
 		},
