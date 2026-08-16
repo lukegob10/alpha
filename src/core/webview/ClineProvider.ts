@@ -160,6 +160,7 @@ interface PendingEditOperation {
 
 const SUBAGENT_RESEARCH_WINDOW_MS = 75_000
 const SUBAGENT_WORKER_TIMEOUT_MS = 15 * 60_000
+type TaskCancellationSource = "webview_stop" | "checkpoint_restore" | "unknown"
 
 export class ClineProvider
 	extends EventEmitter<TaskProviderEvents>
@@ -205,6 +206,7 @@ export class ClineProvider
 	private readonly asyncSubagentRunManager = new AsyncSubagentRunManager(this.boundedDelegationManager)
 	private readonly agentControlStore: AgentControlStore
 	private readonly agentControlStoreReady: Promise<void>
+	private readonly agentControlRootStatusWrites = new Map<string, Promise<void>>()
 	private codeIndexStatusSubscription?: vscode.Disposable
 	private codeIndexManager?: CodeIndexManager
 	private _workspaceTracker?: WorkspaceTracker // workSpaceTracker read-only for access outside this class
@@ -310,23 +312,25 @@ export class ClineProvider
 			// Create named listener functions so we can remove them later.
 			const onTaskStarted = () => {
 				this.markTaskLifecycle(instance.taskId, TaskLifecycleState.Running)
+				void this.updateAgentControlRootStatus(instance.taskId, "running")
 				this.emit(RooCodeEventName.TaskStarted, instance.taskId)
 			}
 			const onTaskCompleted = (taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage) => {
 				this.markTaskLifecycle(taskId, TaskLifecycleState.Completed)
+				void this.updateAgentControlRootStatus(taskId, "completed")
 				this.emit(RooCodeEventName.TaskCompleted, taskId, tokenUsage, toolUsage)
 			}
 			const onTaskAborted = () => {
-				this.markTaskLifecycle(
-					instance.taskId,
-					instance.abortReason === "streaming_failed" ? TaskLifecycleState.Failed : TaskLifecycleState.Closed,
-				)
+				const failed = instance.abortReason === "streaming_failed"
+				this.markTaskLifecycle(instance.taskId, failed ? TaskLifecycleState.Failed : TaskLifecycleState.Closed)
+				void this.updateAgentControlRootStatus(instance.taskId, failed ? "failed" : "interrupted")
 				this.emit(RooCodeEventName.TaskAborted, instance.taskId)
 			}
 			const onTaskFocused = () => this.emit(RooCodeEventName.TaskFocused, instance.taskId)
 			const onTaskUnfocused = () => this.emit(RooCodeEventName.TaskUnfocused, instance.taskId)
 			const onTaskActive = (taskId: string) => {
 				this.markTaskLifecycle(taskId, TaskLifecycleState.Running)
+				void this.updateAgentControlRootStatus(taskId, "running")
 				this.emit(RooCodeEventName.TaskActive, taskId)
 			}
 			const onTaskInteractive = (taskId: string) => {
@@ -335,6 +339,7 @@ export class ClineProvider
 			}
 			const onTaskResumable = (taskId: string) => {
 				this.markTaskLifecycle(taskId, TaskLifecycleState.Waiting, "resumable")
+				void this.updateAgentControlRootStatus(taskId, "interrupted")
 				this.emit(RooCodeEventName.TaskResumable, taskId)
 			}
 			const onTaskIdle = (taskId: string) => {
@@ -2973,6 +2978,65 @@ export class ClineProvider
 		void this.postStateToWebviewWithoutTaskHistory()
 	}
 
+	/** Keep a registered orchestration root aligned with its primary task session. */
+	private updateAgentControlRootStatus(
+		taskId: string,
+		status: "running" | "interrupted" | "completed" | "failed",
+	): Promise<void> {
+		const previous = this.agentControlRootStatusWrites.get(taskId) ?? Promise.resolve()
+		const write = previous.then(() => this.persistAgentControlRootStatus(taskId, status))
+		this.agentControlRootStatusWrites.set(taskId, write)
+		void write.finally(() => {
+			if (this.agentControlRootStatusWrites.get(taskId) === write) {
+				this.agentControlRootStatusWrites.delete(taskId)
+			}
+		})
+		return write
+	}
+
+	private async persistAgentControlRootStatus(
+		taskId: string,
+		status: "running" | "interrupted" | "completed" | "failed",
+	): Promise<void> {
+		try {
+			await this.agentControlStoreReady
+			let root = this.agentControlStore.getAgent(taskId, taskId)
+			if (!root || root.role !== "root" || root.status === status) return
+
+			if (status === "running") {
+				if (root.status !== "pending") {
+					if (
+						!(
+							root.status === "interrupted" ||
+							["completed", "blocked", "failed", "timed_out"].includes(root.status)
+						)
+					) {
+						return
+					}
+					root = await this.agentControlStore.updateAgentStatus(root.taskId, "pending", {}, root.rootTaskId)
+				}
+				await this.agentControlStore.updateAgentStatus(root.taskId, "running", {}, root.rootTaskId)
+				return
+			}
+
+			if (status === "interrupted") {
+				if (["pending", "running", "cancelling"].includes(root.status)) {
+					await this.agentControlStore.updateAgentStatus(root.taskId, status, {}, root.rootTaskId)
+				}
+				return
+			}
+
+			if (root.status === "interrupted") {
+				root = await this.agentControlStore.updateAgentStatus(root.taskId, "pending", {}, root.rootTaskId)
+			}
+			if (["pending", "running", "cancelling"].includes(root.status)) {
+				await this.agentControlStore.updateAgentStatus(root.taskId, status, {}, root.rootTaskId)
+			}
+		} catch (error) {
+			this.log(`Failed to persist orchestration root ${taskId} status ${status}: ${String(error)}`)
+		}
+	}
+
 	private getIdleTaskLifecycle(task: Task): TaskLifecycleState {
 		return task.taskAsk?.ask === "completion_result" || task.taskAsk?.ask === "resume_completed_task"
 			? TaskLifecycleState.Completed
@@ -3217,14 +3281,14 @@ export class ClineProvider
 		return task
 	}
 
-	public async cancelTask(taskId?: string): Promise<void> {
+	public async cancelTask(taskId?: string, source: TaskCancellationSource = "unknown"): Promise<void> {
 		const task = this.getLiveTask(taskId) ?? this.getCurrentTask()
 
 		if (!task) {
 			return
 		}
 
-		console.log(`[cancelTask] cancelling task ${task.taskId}.${task.instanceId}`)
+		this.log(`[cancelTask] source=${source} task=${task.taskId}.${task.instanceId}`)
 
 		let historyItem: HistoryItem | undefined
 		try {
@@ -4052,13 +4116,78 @@ export class ClineProvider
 			rootTaskId: root.rootTaskId,
 			includeDelivered: false,
 		})
+		const unreadEntries = this.filterAutoDeliveredAgentEvents(parent, mailbox.entries)
 		return {
 			rootTaskId: root.rootTaskId,
 			agents,
 			mailbox: {
-				unreadCount: mailbox.entries.length,
+				unreadCount: unreadEntries.length,
 				nextSequence: mailbox.nextSequence,
 			},
+		}
+	}
+
+	private filterAutoDeliveredAgentEvents(parent: Task, entries: AgentMailboxEntry[]): AgentMailboxEntry[] {
+		const deliveredTaskIds = new Set<string>()
+		for (const message of parent.clineMessages) {
+			const group = message.subagentGroup
+			if (group?.executionMode !== "async") continue
+			for (const agent of group.agents) {
+				if (agent.resultDeliveredAt !== undefined) deliveredTaskIds.add(agent.taskId)
+			}
+		}
+
+		return entries.filter((entry) => {
+			if (entry.kind !== "result") return true
+			const taskId = entry.payload?.taskId
+			return typeof taskId !== "string" || !deliveredTaskIds.has(taskId)
+		})
+	}
+
+	/**
+	 * Give wait_agent ownership of result events before returning them to the
+	 * model. Without this durable transcript update, Task can also inject the
+	 * same terminal report while it builds the next model-facing user message.
+	 */
+	private async markWaitDeliveredAgentResults(parent: Task, entries: AgentMailboxEntry[]): Promise<void> {
+		const resultClaims = entries.flatMap((entry) => {
+			if (entry.kind !== "result") return []
+			const taskId = entry.payload?.taskId
+			if (typeof taskId !== "string") return []
+			return [{ taskId, groupId: typeof entry.payload?.groupId === "string" ? entry.payload.groupId : undefined }]
+		})
+		if (resultClaims.length === 0) return
+
+		const deliveredAt = Date.now()
+		for (const message of parent.clineMessages) {
+			const group = message.subagentGroup
+			if (
+				!group ||
+				group.executionMode !== "async" ||
+				["pending", "running", "cancelling"].includes(group.status)
+			) {
+				continue
+			}
+
+			let changed = false
+			for (const agent of group.agents) {
+				const claimed = resultClaims.some(
+					(claim) =>
+						claim.taskId === agent.taskId &&
+						(claim.groupId === undefined || claim.groupId === group.groupId),
+				)
+				if (
+					!claimed ||
+					agent.resultDeliveredAt !== undefined ||
+					["pending", "running", "cancelling"].includes(agent.status)
+				) {
+					continue
+				}
+				agent.resultDeliveredAt = deliveredAt
+				changed = true
+			}
+
+			if (changed) await parent.upsertSubagentGroup(group)
 		}
 	}
 
@@ -4067,11 +4196,13 @@ export class ClineProvider
 		const boundedTimeoutMs = Math.max(10_000, Math.min(timeoutMs, 300_000))
 		const wait = parent.beginAgentWait()
 		const signal = wait.signal
-		const takeAvailable = async (): Promise<AgentMailboxEntry[]> => {
+		const takeAvailable = async (): Promise<{ events: AgentMailboxEntry[]; consumedCount: number }> => {
 			const mailbox = this.agentControlStore.readMailbox(root.taskId, {
 				rootTaskId: root.rootTaskId,
 				includeDelivered: false,
 			})
+			const events = this.filterAutoDeliveredAgentEvents(parent, mailbox.entries)
+			await this.markWaitDeliveredAgentResults(parent, events)
 			if (mailbox.entries.length > 0) {
 				await this.agentControlStore.markDelivered(
 					root.taskId,
@@ -4079,13 +4210,20 @@ export class ClineProvider
 					root.rootTaskId,
 				)
 			}
-			return mailbox.entries
+			return {
+				events,
+				consumedCount: mailbox.entries.length,
+			}
 		}
 
 		try {
 			const immediate = await takeAvailable()
-			if (immediate.length > 0) {
-				return { timedOut: false, events: immediate }
+			if (immediate.consumedCount > 0) {
+				return {
+					timedOut: false,
+					events: immediate.events,
+					...(immediate.events.length === 0 ? { alreadyDelivered: true } : {}),
+				}
 			}
 			if (signal.aborted) {
 				return { timedOut: false, cancelled: true, events: [] }
@@ -4114,11 +4252,15 @@ export class ClineProvider
 				const finish = async () => {
 					if (settled) return
 					try {
-						const events = await takeAvailable()
-						if (events.length === 0 || settled) return
+						const available = await takeAvailable()
+						if (available.consumedCount === 0 || settled) return
 						settled = true
 						cleanup()
-						resolve({ timedOut: false, events })
+						resolve({
+							timedOut: false,
+							events: available.events,
+							...(available.events.length === 0 ? { alreadyDelivered: true } : {}),
+						})
 					} catch (error) {
 						if (settled) return
 						settled = true

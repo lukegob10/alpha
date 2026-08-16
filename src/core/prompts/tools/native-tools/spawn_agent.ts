@@ -5,7 +5,7 @@ export const spawn_agent = {
 	function: {
 		name: "spawn_agent",
 		description:
-			"Start one bounded Alpha sub-agent in the background and return its handle immediately. Use this when the parent can continue useful, non-overlapping work while the child runs. Select authority by role: explore and review are strictly read-only; worker is required for file changes and must receive the complete, narrow write scope. Keep command-only work in the parent. Progress is published asynchronously, and the terminal report is automatically included in the parent's next model request after the child finishes. Do not poll for the result or claim that no retrieval mechanism exists; review and synthesize the injected report before completing when it is relevant.",
+			"Start one bounded Alpha sub-agent in the background and return its handle immediately. Use this when the parent can continue useful, non-overlapping work while the child runs. When more than one independent child is needed, emit all spawn_agent calls in the same response so they start without separate model turns. Select authority by role: explore and review are strictly read-only; worker is required for file changes and must receive the complete, narrow write scope. Keep command-only work in the parent. Progress is published asynchronously, and the terminal report is automatically included in the parent's next model request after the child finishes. Do not poll for the result or claim that no retrieval mechanism exists; review and synthesize the injected report before completing when it is relevant.",
 		strict: true,
 		parameters: {
 			type: "object",

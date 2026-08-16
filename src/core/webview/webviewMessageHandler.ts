@@ -1248,7 +1248,7 @@ export const webviewMessageHandler = async (
 					break
 				}
 
-				await provider.cancelTask(message.taskId)
+				await provider.cancelTask(message.taskId, "checkpoint_restore")
 				const task = getRequiredTaskForMessage(provider, message, "checkpointRestore")
 
 				try {
@@ -1282,7 +1282,7 @@ export const webviewMessageHandler = async (
 				provider.log("[webviewMessageHandler] Ignoring cancelTask: missing taskId")
 				break
 			}
-			await provider.cancelTask(message.taskId)
+			await provider.cancelTask(message.taskId, "webview_stop")
 			break
 		case "cancelSubagentGroup":
 			if (!message.taskId || !message.groupId) {

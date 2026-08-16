@@ -45,7 +45,7 @@ export async function getEnvironmentDetails(cline: Task, includeFileDetails: boo
 <model>${modelId}</model>
 
 # Sub-agent Context
-Workspace files are intentionally omitted. Use list_files or search_files to locate candidates, then read related files in batches.
+Workspace files are intentionally omitted. Paths explicitly named by the objective are already located: read them directly, and use a direct read error rather than list or search output to establish that one is absent. Use list_files or search_files only for unnamed or unresolved candidates, then read related files in batches.
 		</environment_details>`
 	}
 

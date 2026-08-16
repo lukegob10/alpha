@@ -35,9 +35,9 @@ describe("ToolRegistry", () => {
 			controlFlow: false,
 		})
 		expect(registry.resolve("wait_agent")?.capabilities).toMatchObject({
-			concurrency: "serial",
+			concurrency: "barrier",
 			sideEffects: "task",
-			controlFlow: false,
+			controlFlow: true,
 		})
 		for (const name of ["send_message", "followup_task", "interrupt_agent", "cancel_agent", "close_agent"]) {
 			expect(registry.resolve(name)?.capabilities).toMatchObject({

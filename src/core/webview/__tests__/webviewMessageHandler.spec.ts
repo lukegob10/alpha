@@ -80,6 +80,7 @@ const mockClineProvider = {
 	getTaskWithId: vi.fn(),
 	createTask: vi.fn(),
 	createTaskWithHistoryItem: vi.fn(),
+	cancelTask: vi.fn(),
 	getSkillsManager: vi.fn(),
 	cwd: "/mock/workspace",
 } as unknown as ClineProvider
@@ -1024,6 +1025,21 @@ describe("webviewMessageHandler - sub-agent controls", () => {
 			"approval-1",
 			true,
 		)
+	})
+})
+
+describe("webviewMessageHandler - task cancellation provenance", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("labels an explicit stop-button cancellation", async () => {
+		await webviewMessageHandler(mockClineProvider, {
+			type: "cancelTask",
+			taskId: "parent-1",
+		})
+
+		expect(mockClineProvider.cancelTask).toHaveBeenCalledWith("parent-1", "webview_stop")
 	})
 })
 

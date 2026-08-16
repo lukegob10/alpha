@@ -8,6 +8,7 @@ import { AsyncSubagentRunManager } from "../../agent/AsyncSubagentRunManager"
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import { BoundedDelegationManager } from "../../agent/BoundedDelegationManager"
 import { SubagentNicknameRegistry } from "../../agent/SubagentNicknameRegistry"
+import { Task } from "../../task/Task"
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -61,6 +62,7 @@ const makeProviderHarness = (
 		subagentDescriptors: new Map(),
 		agentControlStore,
 		agentControlStoreReady,
+		agentControlRootStatusWrites: new Map(),
 		asyncSubagentRunManager: { cancel: () => false, getSnapshot: () => undefined },
 		getTaskWithId: vi.fn(async (taskId: string) => ({ historyItem: historyItems.get(taskId) })),
 		updateTaskHistory: vi.fn(async (item: any) => {
@@ -866,6 +868,222 @@ describe("ClineProvider bounded sub-agent preparation", () => {
 
 		await expect(waiting).resolves.toEqual({ timedOut: false, cancelled: true, events: [] })
 		expect(dispose).toHaveBeenCalledOnce()
+	})
+
+	it("consumes mailbox results that were already injected into the parent model context", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const root = await (provider as any).ensureAgentControlRoot(parent)
+		const child = await (provider as any).agentControlStore.createAgent({
+			taskId: "child-delivered",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			groupId: "group-delivered",
+			nickname: "Delivered",
+			role: "explore",
+			objective: "Inspect delivery",
+			status: "completed",
+		})
+		parent.clineMessages = [
+			{
+				subagentGroup: {
+					groupId: "group-delivered",
+					parentTaskId: parent.taskId,
+					executionMode: "async",
+					status: "completed",
+					createdAt: 1,
+					completedAt: 2,
+					agents: [
+						{
+							taskId: child.taskId,
+							nickname: child.nickname,
+							role: child.role,
+							objective: child.objective,
+							status: "completed",
+							completedAt: 2,
+							resultDeliveredAt: 3,
+							usage: { durationMs: 1 },
+						},
+					],
+				},
+			},
+		] as any
+		await (provider as any).agentControlStore.appendEvent({
+			rootTaskId: root.rootTaskId,
+			sender: child.taskId,
+			recipient: root.taskId,
+			kind: "result",
+			name: "agent_completed",
+			payload: { taskId: child.taskId, status: "completed" },
+		})
+
+		const listed = (await provider.listAgents(parent as any)) as any
+		expect(listed.mailbox.unreadCount).toBe(0)
+
+		await expect(provider.waitForAgent(parent as any, 10_000)).resolves.toEqual({
+			timedOut: false,
+			events: [],
+			alreadyDelivered: true,
+		})
+		expect(
+			(provider as any).agentControlStore.readMailbox(root.taskId, {
+				rootTaskId: root.rootTaskId,
+				includeDelivered: false,
+			}).entries,
+		).toEqual([])
+	})
+
+	it("claims a wait_agent result before automatic result injection can duplicate it", async () => {
+		const provider = makeProviderHarness()
+		const parentState = makeParent()
+		delete (parentState as Partial<typeof parentState>).cwd
+		const parent = Object.assign(Object.create(Task.prototype), parentState, {
+			workspacePath: "F:/workspace",
+		}) as Task
+		const root = await (provider as any).ensureAgentControlRoot(parent)
+		const child = await (provider as any).agentControlStore.createAgent({
+			taskId: "child-wait-claimed",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			groupId: "group-wait-claimed",
+			nickname: "Claimed",
+			role: "review",
+			objective: "Review result ownership",
+			status: "completed",
+		})
+		parent.clineMessages = [
+			{
+				type: "say",
+				say: "subagent_group",
+				subagentGroup: {
+					groupId: "group-wait-claimed",
+					parentTaskId: parent.taskId,
+					executionMode: "async",
+					status: "completed",
+					createdAt: 1,
+					completedAt: 2,
+					agents: [
+						{
+							taskId: child.taskId,
+							nickname: child.nickname,
+							role: child.role,
+							objective: child.objective,
+							status: "completed",
+							completedAt: 2,
+							summary: "Ownership race inspected",
+							usage: { durationMs: 1 },
+						},
+					],
+				},
+			},
+		] as any
+		parent.upsertSubagentGroup = vi.fn(async (group: SubagentGroupState) => {
+			parent.clineMessages[0].subagentGroup = structuredClone(group)
+		})
+		await (provider as any).agentControlStore.appendEvent({
+			rootTaskId: root.rootTaskId,
+			sender: child.taskId,
+			recipient: root.taskId,
+			kind: "result",
+			name: "agent_completed",
+			payload: {
+				taskId: child.taskId,
+				groupId: "group-wait-claimed",
+				status: "completed",
+			},
+		})
+
+		expect(parent.hasUndeliveredSpawnedSubagentResults()).toBe(true)
+		const waited = (await provider.waitForAgent(parent, 10_000)) as any
+
+		expect(waited).toMatchObject({
+			timedOut: false,
+			events: [expect.objectContaining({ name: "agent_completed" })],
+		})
+		expect(parent.upsertSubagentGroup).toHaveBeenCalledOnce()
+		expect(parent.clineMessages[0].subagentGroup?.agents[0].resultDeliveredAt).toEqual(expect.any(Number))
+		expect(parent.hasUndeliveredSpawnedSubagentResults()).toBe(false)
+	})
+
+	it("does not claim an automatic result for non-result mailbox events", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const root = await (provider as any).ensureAgentControlRoot(parent)
+		const child = await (provider as any).agentControlStore.createAgent({
+			taskId: "child-message-only",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			groupId: "group-message-only",
+			nickname: "Messenger",
+			role: "explore",
+			objective: "Send a mailbox update",
+			status: "completed",
+		})
+		parent.clineMessages = [
+			{
+				subagentGroup: {
+					groupId: "group-message-only",
+					parentTaskId: parent.taskId,
+					executionMode: "async",
+					status: "completed",
+					createdAt: 1,
+					completedAt: 2,
+					agents: [
+						{
+							taskId: child.taskId,
+							nickname: child.nickname,
+							role: child.role,
+							objective: child.objective,
+							status: "completed",
+							completedAt: 2,
+							usage: { durationMs: 1 },
+						},
+					],
+				},
+			},
+		] as any
+		await (provider as any).agentControlStore.appendEvent({
+			rootTaskId: root.rootTaskId,
+			sender: child.taskId,
+			recipient: root.taskId,
+			kind: "message",
+			name: "child_message",
+			payload: { taskId: child.taskId, message: "Still not a result" },
+		})
+
+		await expect(provider.waitForAgent(parent as any, 10_000)).resolves.toMatchObject({
+			timedOut: false,
+			events: [expect.objectContaining({ kind: "message" })],
+		})
+		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
+		expect(parent.clineMessages[0].subagentGroup.agents[0].resultDeliveredAt).toBeUndefined()
+	})
+
+	it("persists root completion, interruption, and resumption transitions", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		await (provider as any).ensureAgentControlRoot(parent)
+
+		await (provider as any).updateAgentControlRootStatus(parent.taskId, "completed")
+		expect((provider as any).agentControlStore.getAgent(parent.taskId, parent.taskId)?.status).toBe("completed")
+
+		await (provider as any).updateAgentControlRootStatus(parent.taskId, "running")
+		expect((provider as any).agentControlStore.getAgent(parent.taskId, parent.taskId)?.status).toBe("running")
+
+		await (provider as any).updateAgentControlRootStatus(parent.taskId, "interrupted")
+		expect((provider as any).agentControlStore.getAgent(parent.taskId, parent.taskId)?.status).toBe("interrupted")
+	})
+
+	it("serializes overlapping root lifecycle transitions in publication order", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		await (provider as any).ensureAgentControlRoot(parent)
+
+		const completed = (provider as any).updateAgentControlRootStatus(parent.taskId, "completed")
+		const resumed = (provider as any).updateAgentControlRootStatus(parent.taskId, "running")
+		await Promise.all([completed, resumed])
+
+		expect((provider as any).agentControlStore.getAgent(parent.taskId, parent.taskId)?.status).toBe("running")
 	})
 
 	it("rehydrates an interrupted child for follow-up after a provider reload", async () => {

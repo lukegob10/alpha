@@ -16,14 +16,31 @@ describe("buildSubagentPrompt", () => {
 		const prompt = buildSubagentPrompt({ nickname: "Maple", role, objective, expectedOutput })
 
 		expect(prompt).toContain(`Objective: ${objective}`)
-		expect(prompt).toContain("at most three research turns")
-		expect(prompt).toContain("one read_file files batch")
+		expect(prompt).toContain("every path explicitly named")
+		expect(prompt).toContain("at most one locate or search turn")
+		expect(prompt).toContain("batches of at most eight")
 		expect(prompt).toContain("do not silently substitute a different scope")
-		expect(prompt).toContain("stop and synthesize immediately")
+		expect(prompt).toContain("a direct read establishes")
 		expect(prompt).toContain("unrelated hidden or support directories")
 		expect(prompt).toContain(`under ${SUBAGENT_REPORT_WORD_BUDGET} words`)
 		expect(prompt).toContain("do not repeat file contents or narrate the research process")
 		expect(prompt).not.toMatch(/backend|frontend/i)
+	})
+
+	it("requires every explicitly named path even when more than one read batch is needed", () => {
+		const paths = ["README.md", ...Array.from({ length: 8 }, (_, index) => `docs/evidence-${index + 1}.md`)]
+		const prompt = buildSubagentPrompt({
+			nickname: "Nova",
+			role: "review",
+			objective: `Review ${paths.join(", ")}`,
+			expectedOutput: ["Evidence for every named file"],
+		})
+
+		expect(prompt).toContain("Read those paths directly before discovery")
+		expect(prompt).toContain("more than eight paths")
+		expect(prompt).toContain("consecutive read_file batches of at most eight")
+		expect(prompt).toContain("every named path returns contents or a direct read error")
+		expect(prompt).toContain("never infer that an exact path is absent from listing or search output")
 	})
 
 	it("provides a useful deliverable when expected_output is omitted", () => {

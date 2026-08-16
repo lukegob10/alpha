@@ -51,6 +51,52 @@ import { codebaseSearchTool } from "../tools/CodebaseSearchTool"
 import { formatResponse } from "../prompts/responses"
 import { sanitizeToolUseId } from "../../utils/tool-id"
 
+const isolatedToolNames = new Set([
+	"new_task",
+	"delegate_task",
+	"attempt_completion",
+	"switch_mode",
+	"ask_followup_question",
+	// A mailbox wait can block for its full timeout. Keeping it isolated prevents
+	// later controls in the same response from being delayed behind stale state.
+	"wait_agent",
+])
+
+const batchableAgentToolNames = new Set([
+	"spawn_agent",
+	"list_agents",
+	"send_message",
+	"followup_task",
+	"interrupt_agent",
+	"cancel_agent",
+	"close_agent",
+])
+
+export function getToolBatchIsolationError(toolNames: readonly string[]): string | undefined {
+	if (toolNames.length <= 1) {
+		return undefined
+	}
+
+	const isolatedToolName = toolNames.find((toolName) => isolatedToolNames.has(toolName))
+	if (!isolatedToolName) {
+		return undefined
+	}
+
+	if (isolatedToolName === "new_task" || isolatedToolName === "delegate_task") {
+		return "new_task and delegate_task are delegation boundaries and must be called alone. No tools from this turn were executed. Retry with only the intended delegation tool."
+	}
+
+	if (isolatedToolName === "wait_agent") {
+		return "wait_agent is a blocking mailbox boundary and must be called alone. No tools from this turn were executed. Retry the wait only after any preceding lifecycle controls have completed."
+	}
+
+	return `${isolatedToolName} is a control-flow boundary and must be called alone. No tools from this turn were executed. Retry with only ${isolatedToolName}.`
+}
+
+export function isBatchableAgentToolSequence(toolNames: readonly string[]): boolean {
+	return toolNames.length > 1 && toolNames.every((toolName) => batchableAgentToolNames.has(toolName))
+}
+
 /**
  * Processes and presents assistant message content to the user interface.
  *
@@ -109,6 +155,33 @@ export async function presentAssistantMessage(cline: Task) {
 		)
 		cline.presentAssistantMessageLocked = false
 		return
+	}
+
+	if ((block.type === "tool_use" || block.type === "mcp_tool_use") && !block.partial) {
+		const toolBlocks = cline.assistantMessageContent.filter(
+			(contentBlock) => contentBlock.type === "tool_use" || contentBlock.type === "mcp_tool_use",
+		)
+		const isolationErrorMessage = getToolBatchIsolationError(toolBlocks.map((contentBlock) => contentBlock.name))
+
+		if (isolationErrorMessage) {
+			const isolationError = formatResponse.toolError(isolationErrorMessage)
+
+			for (const toolBlock of toolBlocks) {
+				if ("id" in toolBlock && toolBlock.id) {
+					cline.pushToolResultToUserContent({
+						type: "tool_result",
+						tool_use_id: sanitizeToolUseId(toolBlock.id),
+						content: isolationError,
+						is_error: true,
+					})
+				}
+			}
+
+			cline.currentStreamingContentIndex = cline.assistantMessageContent.length
+			cline.userMessageContentReady = true
+			cline.presentAssistantMessageLocked = false
+			return
+		}
 	}
 
 	switch (block.type) {
@@ -589,40 +662,6 @@ export async function presentAssistantMessage(cline: Task) {
 				}
 
 				await provider.runWorkspaceMutation(cline, label, run)
-			}
-
-			if (!block.partial) {
-				const toolBlocks = cline.assistantMessageContent.filter(
-					(contentBlock) => contentBlock.type === "tool_use" || contentBlock.type === "mcp_tool_use",
-				)
-				const hasMixedDelegationBatch =
-					toolBlocks.length > 1 &&
-					toolBlocks.some(
-						(contentBlock) =>
-							contentBlock.type === "tool_use" &&
-							["new_task", "delegate_task"].includes(contentBlock.name),
-					)
-
-				if (hasMixedDelegationBatch) {
-					const isolationError = formatResponse.toolError(
-						"new_task and delegate_task are delegation boundaries and must be called alone. No tools from this turn were executed. Retry with only the intended delegation tool.",
-					)
-
-					for (const toolBlock of toolBlocks) {
-						if ("id" in toolBlock && toolBlock.id) {
-							cline.pushToolResultToUserContent({
-								type: "tool_result",
-								tool_use_id: toolBlock.id,
-								content: isolationError,
-								is_error: true,
-							})
-						}
-					}
-
-					cline.currentStreamingContentIndex = cline.assistantMessageContent.length
-					cline.userMessageContentReady = true
-					break
-				}
 			}
 
 			if (!block.partial) {
@@ -1128,7 +1167,18 @@ export async function presentAssistantMessage(cline: Task) {
 		if (cline.currentStreamingContentIndex < cline.assistantMessageContent.length) {
 			// There are already more content blocks to stream, so we'll call
 			// this function ourselves.
-			presentAssistantMessage(cline)
+			const toolNames = cline.assistantMessageContent
+				.filter((contentBlock) => contentBlock.type === "tool_use" || contentBlock.type === "mcp_tool_use")
+				.map((contentBlock) => contentBlock.name)
+
+			if (isBatchableAgentToolSequence(toolNames)) {
+				// Keep the top-level presentation promise alive through the complete
+				// lifecycle batch. The controls still execute serially in provider order,
+				// so approvals, authority checks, and state transitions cannot race.
+				await presentAssistantMessage(cline)
+			} else {
+				presentAssistantMessage(cline)
+			}
 			return
 		} else {
 			// CRITICAL FIX: If we're out of bounds and the stream is complete, set userMessageContentReady

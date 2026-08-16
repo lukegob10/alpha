@@ -195,6 +195,9 @@ describe("getEnvironmentDetails", () => {
 
 		expect(result).toContain("# Sub-agent Context")
 		expect(result).toContain("# Current Workspace Directory\n.")
+		expect(result).toContain("Paths explicitly named by the objective are already located")
+		expect(result).toContain("read them directly")
+		expect(result).toContain("only for unnamed or unresolved candidates")
 		expect(result).not.toContain(mockCwd)
 		expect(result).not.toContain("# Current Cost")
 		expect(result).not.toContain("# Current Time")

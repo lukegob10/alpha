@@ -91,6 +91,7 @@ const PARALLEL_READ_TOOLS = new Set([
 const BARRIER_TOOLS = new Set([
 	"new_task",
 	"delegate_task",
+	"wait_agent",
 	"attempt_completion",
 	"switch_mode",
 	"ask_followup_question",
