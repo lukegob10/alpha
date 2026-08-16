@@ -32,6 +32,13 @@ import { attemptCompletionTool, AttemptCompletionCallbacks } from "../tools/Atte
 import { newTaskTool } from "../tools/NewTaskTool"
 import { delegateTaskTool } from "../tools/DelegateTaskTool"
 import { spawnAgentTool } from "../tools/SpawnAgentTool"
+import { listAgentsTool } from "../tools/ListAgentsTool"
+import { waitAgentTool } from "../tools/WaitAgentTool"
+import { sendMessageTool } from "../tools/SendMessageTool"
+import { followupTaskTool } from "../tools/FollowupTaskTool"
+import { interruptAgentTool } from "../tools/InterruptAgentTool"
+import { cancelAgentTool } from "../tools/CancelAgentTool"
+import { closeAgentTool } from "../tools/CloseAgentTool"
 import { updateTodoListTool } from "../tools/UpdateTodoListTool"
 import { runSlashCommandTool } from "../tools/RunSlashCommandTool"
 import { skillTool } from "../tools/SkillTool"
@@ -914,6 +921,55 @@ export async function presentAssistantMessage(cline: Task) {
 						handleError,
 						pushToolResult,
 						toolCallId: block.id,
+					})
+					break
+				case "list_agents":
+					await listAgentsTool.handle(cline, block as ToolUse<"list_agents">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "wait_agent":
+					await waitAgentTool.handle(cline, block as ToolUse<"wait_agent">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "send_message":
+					await sendMessageTool.handle(cline, block as ToolUse<"send_message">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "followup_task":
+					await followupTaskTool.handle(cline, block as ToolUse<"followup_task">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "interrupt_agent":
+					await interruptAgentTool.handle(cline, block as ToolUse<"interrupt_agent">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "cancel_agent":
+					await cancelAgentTool.handle(cline, block as ToolUse<"cancel_agent">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "close_agent":
+					await closeAgentTool.handle(cline, block as ToolUse<"close_agent">, {
+						askApproval,
+						handleError,
+						pushToolResult,
 					})
 					break
 				case "attempt_completion": {

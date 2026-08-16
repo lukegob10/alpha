@@ -321,6 +321,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	abort: boolean = false
 	currentRequestAbortController?: AbortController
 	private readonly taskCancellationController = new AbortController()
+	private agentWaitAbortController?: AbortController
 	private readonly subagentAuthority?: SubagentAuthorityGrant
 	private readonly subagentResearchDeadlineAt?: number
 	private readonly childTasksRequiringVerification = new Set<string>()
@@ -2167,7 +2168,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				delete agent.phaseStartedAt
 				agent.completedAt = completedAt
 				agent.error =
-					"The extension reloaded before this sub-agent finished. Retry the delegation from the parent task."
+					"The extension reloaded before this sub-agent finished. The parent can resume it with followup_task."
 				agent.usage.durationMs = Math.max(0, completedAt - (agent.startedAt ?? group.createdAt))
 			}
 			changed = true
@@ -2412,6 +2413,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return !this.abort && !this.didComplete && !this.activeAsk && !this.pendingSteerMessage
 	}
 
+	public canAcceptSubagentFollowup(): boolean {
+		return this.taskKind === "subagent" && this.didComplete && !this.isTaskLoopActive && !this.isStreaming
+	}
+
 	public async steerUserMessage(text: string, images?: string[]): Promise<void> {
 		text = (text ?? "").trim()
 		images = images ?? []
@@ -2429,6 +2434,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.cancelAutoApprovalTimeout()
 			this.pendingSteerMessage = { text, images }
 			this.emit(RooCodeEventName.TaskUserMessage, this.taskId)
+			this.agentWaitAbortController?.abort(new Error("Parent received a steering message"))
 			this.currentRequestAbortController?.abort()
 			return
 		}
@@ -2812,7 +2818,28 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
-	private async resumeTaskFromHistory() {
+	/** Resume a retained managed sub-agent with a new parent instruction. */
+	public async resumeSubagentFollowup(text: string): Promise<void> {
+		const instruction = text.trim()
+		if (this.taskKind !== "subagent") throw new Error("Only a managed sub-agent can accept a follow-up task")
+		if (!instruction) throw new Error("A follow-up instruction is required")
+		if (this.isTaskLoopActive || this.isStreaming) throw new Error("The sub-agent is still running")
+
+		this._started = true
+		this.didComplete = false
+		this.abort = false
+		this.abandoned = false
+		this.abortReason = undefined
+		this.didFinishAbortingStream = false
+		this.isWaitingForFirstChunk = false
+		this.pendingSteerMessage = undefined
+		this.skipPrevResponseIdOnce = true
+		this.emit(RooCodeEventName.TaskActive, this.taskId)
+
+		await this.resumeTaskFromHistory(instruction)
+	}
+
+	private async resumeTaskFromHistory(subagentFollowup?: string) {
 		try {
 			const modifiedClineMessages = await this.getSavedClineMessages()
 
@@ -2866,7 +2893,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// the task first.
 			this.apiConversationHistory = await this.getSavedApiConversationHistory()
 
-			if (this.taskKind === "subagent") {
+			if (this.taskKind === "subagent" && !subagentFollowup) {
 				this.isInitialized = true
 				this.markCompleted()
 				this.emit(RooCodeEventName.TaskCompleted, this.taskId, this.getTokenUsage(), this.toolUsage)
@@ -2879,24 +2906,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				.reverse()
 				.find((m) => !(m.ask === "resume_task" || m.ask === "resume_completed_task")) // Could be multiple resume tasks.
 
-			let askType: ClineAsk
-			if (lastClineMessage?.ask === "completion_result") {
-				askType = "resume_completed_task"
-			} else {
-				askType = "resume_task"
-			}
-
 			this.isInitialized = true
-
-			const { response, text, images } = await this.ask(askType) // Calls `postStateToWebview`.
 
 			let responseText: string | undefined
 			let responseImages: string[] | undefined
+			if (subagentFollowup) {
+				responseText = subagentFollowup
+				await this.say("user_feedback", subagentFollowup)
+			} else {
+				const askType: ClineAsk =
+					lastClineMessage?.ask === "completion_result" ? "resume_completed_task" : "resume_task"
+				const { response, text, images } = await this.ask(askType) // Calls `postStateToWebview`.
 
-			if (response === "messageResponse") {
-				await this.say("user_feedback", text, images)
-				responseText = text
-				responseImages = images
+				if (response === "messageResponse") {
+					await this.say("user_feedback", text, images)
+					responseText = text
+					responseImages = images
+				}
 			}
 
 			// Make sure that the api conversation history can be resumed by the API,
@@ -3059,6 +3085,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * This immediately aborts the underlying stream rather than waiting for the next chunk.
 	 */
 	public cancelCurrentRequest(): void {
+		this.agentWaitAbortController?.abort(new Error("Current task request was cancelled"))
 		if (this.currentRequestAbortController) {
 			console.log(`[Task#${this.taskId}.${this.instanceId}] Aborting current HTTP request`)
 			this.currentRequestAbortController.abort()
@@ -5529,6 +5556,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 */
 	public getTaskLifetimeCancellationSignal(): AbortSignal {
 		return this.taskCancellationController.signal
+	}
+
+	/**
+	 * Open one cancellable wait for agent mailbox activity. The lease survives the
+	 * provider response ending, but steering, request cancellation, and task
+	 * disposal all stop it promptly.
+	 */
+	public beginAgentWait(): { signal: AbortSignal; dispose: () => void } {
+		this.agentWaitAbortController?.abort(new Error("Agent wait was superseded"))
+		const controller = new AbortController()
+		this.agentWaitAbortController = controller
+		const taskSignal = this.taskCancellationController.signal
+		const cancelFromTask = () => controller.abort(taskSignal.reason)
+		if (taskSignal.aborted) cancelFromTask()
+		else taskSignal.addEventListener("abort", cancelFromTask, { once: true })
+
+		return {
+			signal: controller.signal,
+			dispose: () => {
+				taskSignal.removeEventListener("abort", cancelFromTask)
+				if (this.agentWaitAbortController === controller) {
+					this.agentWaitAbortController = undefined
+				}
+			},
+		}
 	}
 
 	public requireChildVerification(taskId: string): void {

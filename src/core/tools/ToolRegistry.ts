@@ -16,12 +16,17 @@ import { askFollowupQuestionTool } from "./AskFollowupQuestionTool"
 import { attemptCompletionTool, type AttemptCompletionCallbacks } from "./AttemptCompletionTool"
 import { BaseTool, type ToolCallbacks } from "./BaseTool"
 import { codebaseSearchTool } from "./CodebaseSearchTool"
+import { cancelAgentTool } from "./CancelAgentTool"
+import { closeAgentTool } from "./CloseAgentTool"
 import { delegateTaskTool } from "./DelegateTaskTool"
 import { editFileTool } from "./EditFileTool"
 import { editTool } from "./EditTool"
 import { executeCommandTool } from "./ExecuteCommandTool"
 import { generateImageTool } from "./GenerateImageTool"
 import { githubApiTool } from "./GitHubApiTool"
+import { followupTaskTool } from "./FollowupTaskTool"
+import { interruptAgentTool } from "./InterruptAgentTool"
+import { listAgentsTool } from "./ListAgentsTool"
 import { listFilesTool } from "./ListFilesTool"
 import { newTaskTool } from "./NewTaskTool"
 import { readCommandOutputTool } from "./ReadCommandOutputTool"
@@ -29,11 +34,13 @@ import { readFileTool } from "./ReadFileTool"
 import { runSlashCommandTool } from "./RunSlashCommandTool"
 import { searchFilesTool } from "./SearchFilesTool"
 import { searchReplaceTool } from "./SearchReplaceTool"
+import { sendMessageTool } from "./SendMessageTool"
 import { skillTool } from "./SkillTool"
 import { spawnAgentTool } from "./SpawnAgentTool"
 import { switchModeTool } from "./SwitchModeTool"
 import { updateTodoListTool } from "./UpdateTodoListTool"
 import { useMcpToolTool } from "./UseMcpToolTool"
+import { waitAgentTool } from "./WaitAgentTool"
 import { writeToFileTool } from "./WriteToFileTool"
 
 export type ToolConcurrency = "parallel" | "serial" | "barrier"
@@ -78,6 +85,7 @@ const PARALLEL_READ_TOOLS = new Set([
 	"search_files",
 	"codebase_search",
 	"read_command_output",
+	"list_agents",
 ])
 
 const BARRIER_TOOLS = new Set([
@@ -114,6 +122,12 @@ const TASK_TOOLS = new Set([
 	"new_task",
 	"delegate_task",
 	"spawn_agent",
+	"wait_agent",
+	"send_message",
+	"followup_task",
+	"interrupt_agent",
+	"cancel_agent",
+	"close_agent",
 	"attempt_completion",
 	"switch_mode",
 	"ask_followup_question",
@@ -128,6 +142,13 @@ const TOOL_NAMES = [
 	"codebase_search",
 	"delegate_task",
 	"spawn_agent",
+	"list_agents",
+	"wait_agent",
+	"send_message",
+	"followup_task",
+	"interrupt_agent",
+	"cancel_agent",
+	"close_agent",
 	"edit",
 	"edit_file",
 	"execute_command",
@@ -305,6 +326,13 @@ export class ToolRegistry {
 		this.registerBuiltIn("codebase_search", codebaseSearchTool, schemas)
 		this.registerBuiltIn("delegate_task", delegateTaskTool, schemas)
 		this.registerBuiltIn("spawn_agent", spawnAgentTool, schemas)
+		this.registerBuiltIn("list_agents", listAgentsTool, schemas)
+		this.registerBuiltIn("wait_agent", waitAgentTool, schemas)
+		this.registerBuiltIn("send_message", sendMessageTool, schemas)
+		this.registerBuiltIn("followup_task", followupTaskTool, schemas)
+		this.registerBuiltIn("interrupt_agent", interruptAgentTool, schemas)
+		this.registerBuiltIn("cancel_agent", cancelAgentTool, schemas)
+		this.registerBuiltIn("close_agent", closeAgentTool, schemas)
 		this.registerBuiltIn("edit", editTool, schemas)
 		this.registerBuiltIn("edit_file", editFileTool, schemas)
 		this.registerBuiltIn("execute_command", executeCommandTool, schemas)

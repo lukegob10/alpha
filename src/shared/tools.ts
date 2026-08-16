@@ -1,6 +1,19 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 
-import type { ClineAsk, ToolProgressStatus, ToolGroup, ToolName, GenerateImageParams } from "@alpha-code/types"
+import type {
+	ClineAsk,
+	ToolProgressStatus,
+	ToolGroup,
+	ToolName,
+	GenerateImageParams,
+	ListAgentsParams,
+	WaitAgentParams,
+	SendMessageParams,
+	FollowupTaskParams,
+	InterruptAgentParams,
+	CancelAgentParams,
+	CloseAgentParams,
+} from "@alpha-code/types"
 
 export type ToolResponse = string | Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam>
 
@@ -100,6 +113,9 @@ export const toolParamNames = [
 	"agent_kind",
 	"write_scope",
 	"expected_output",
+	"path_prefix",
+	"timeout_ms",
+	"target",
 ] as const
 
 export type ToolParamName = (typeof toolParamNames)[number]
@@ -146,6 +162,13 @@ export type NativeToolArgs = {
 				write_scope: string[]
 				expected_output: string[] | null
 		  }
+	list_agents: ListAgentsParams
+	wait_agent: WaitAgentParams
+	send_message: SendMessageParams
+	followup_task: FollowupTaskParams
+	interrupt_agent: InterruptAgentParams
+	cancel_agent: CancelAgentParams
+	close_agent: CloseAgentParams
 	ask_followup_question: {
 		question: string
 		follow_up: Array<{ text: string; mode?: string }>
@@ -396,6 +419,13 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	new_task: "create new task",
 	delegate_task: "delegate bounded tasks",
 	spawn_agent: "spawn a bounded agent",
+	list_agents: "list agents",
+	wait_agent: "wait for agent updates",
+	send_message: "message an agent",
+	followup_task: "follow up with an agent",
+	interrupt_agent: "interrupt an agent",
+	cancel_agent: "cancel an agent",
+	close_agent: "close an agent",
 	codebase_search: "codebase search",
 	update_todo_list: "update todo list",
 	run_slash_command: "run slash command",
@@ -428,7 +458,17 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 		alwaysAvailable: true,
 	},
 	agents: {
-		tools: ["delegate_task", "spawn_agent"],
+		tools: [
+			"delegate_task",
+			"spawn_agent",
+			"list_agents",
+			"wait_agent",
+			"send_message",
+			"followup_task",
+			"interrupt_agent",
+			"cancel_agent",
+			"close_agent",
+		],
 	},
 }
 

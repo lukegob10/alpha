@@ -13,6 +13,13 @@ import listFiles from "./list_files"
 import newTask from "./new_task"
 import { delegate_task as delegateTask } from "./delegate_task"
 import { spawn_agent as spawnAgent } from "./spawn_agent"
+import { list_agents as listAgents } from "./list_agents"
+import { wait_agent as waitAgent } from "./wait_agent"
+import { send_message as sendMessage } from "./send_message"
+import { followup_task as followupTask } from "./followup_task"
+import { interrupt_agent as interruptAgent } from "./interrupt_agent"
+import { cancel_agent as cancelAgent } from "./cancel_agent"
+import { close_agent as closeAgent } from "./close_agent"
 import readCommandOutput from "./read_command_output"
 import { createReadFileTool, type ReadFileToolOptions } from "./read_file"
 import runSlashCommand from "./run_slash_command"
@@ -63,6 +70,13 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		newTask,
 		delegateTask,
 		spawnAgent,
+		listAgents,
+		waitAgent,
+		sendMessage,
+		followupTask,
+		interruptAgent,
+		cancelAgent,
+		closeAgent,
 		readCommandOutput,
 		createReadFileTool(readFileOptions),
 		runSlashCommand,

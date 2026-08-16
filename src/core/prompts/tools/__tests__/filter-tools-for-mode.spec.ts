@@ -107,9 +107,19 @@ describe("filterNativeToolsForMode - orchestrator delegation", () => {
 })
 
 describe("filterNativeToolsForMode - bounded sub-agents", () => {
+	const lifecycleTools = [
+		"list_agents",
+		"wait_agent",
+		"send_message",
+		"followup_task",
+		"interrupt_agent",
+		"cancel_agent",
+		"close_agent",
+	]
 	const nativeTools: OpenAI.Chat.ChatCompletionTool[] = [
 		makeTool("delegate_task"),
 		makeTool("spawn_agent"),
+		...lifecycleTools.map(makeTool),
 		makeTool("read_file"),
 	]
 
@@ -123,8 +133,10 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 
 		expect(codeNames).toContain("delegate_task")
 		expect(codeNames).toContain("spawn_agent")
+		expect(codeNames).toEqual(expect.arrayContaining(lifecycleTools))
 		expect(askNames).not.toContain("delegate_task")
 		expect(askNames).not.toContain("spawn_agent")
+		expect(askNames.filter((name) => lifecycleTools.includes(name))).toEqual([])
 	})
 
 	it("respects the existing disabled-tool configuration", () => {
@@ -144,7 +156,7 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 		expect(names).toContain("delegate_task")
 	})
 
-	it("does not grant spawn_agent to a custom mode through the agents group", () => {
+	it("does not grant asynchronous lifecycle controls to a custom mode through the agents group", () => {
 		const customModes = [
 			{
 				slug: "research",
@@ -159,6 +171,7 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 		)
 
 		expect(names).not.toContain("spawn_agent")
+		expect(names.filter((name) => lifecycleTools.includes(name))).toEqual([])
 		expect(names).toContain("delegate_task")
 	})
 })

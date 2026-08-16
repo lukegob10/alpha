@@ -5,6 +5,7 @@ import { RooCodeEventName, type SubagentGroupState } from "@alpha-code/types"
 
 import { ClineProvider } from "../ClineProvider"
 import { AsyncSubagentRunManager } from "../../agent/AsyncSubagentRunManager"
+import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import { BoundedDelegationManager } from "../../agent/BoundedDelegationManager"
 import { SubagentNicknameRegistry } from "../../agent/SubagentNicknameRegistry"
 
@@ -18,6 +19,8 @@ const makeProviderHarness = (
 	} = {},
 	profiles: Array<Record<string, any>> = [],
 ) => {
+	const agentControlStore = new AgentControlStore(new InMemoryAgentControlPersistence())
+	const agentControlStoreReady = agentControlStore.initialize()
 	const historyItems = new Map([
 		[
 			"parent-1",
@@ -56,7 +59,9 @@ const makeProviderHarness = (
 		reservedSubagentSlots: new Map(),
 		publishedSubagentResults: new Set(),
 		subagentDescriptors: new Map(),
-		asyncSubagentRunManager: { cancel: () => false },
+		agentControlStore,
+		agentControlStoreReady,
+		asyncSubagentRunManager: { cancel: () => false, getSnapshot: () => undefined },
 		getTaskWithId: vi.fn(async (taskId: string) => ({ historyItem: historyItems.get(taskId) })),
 		updateTaskHistory: vi.fn(async (item: any) => {
 			historyItems.set(item.id, item)
@@ -71,10 +76,16 @@ const makeProviderHarness = (
 const makeParent = () => ({
 	taskId: "parent-1",
 	taskKind: "primary",
+	metadata: { task: "parent" },
+	clineMessages: [] as any[],
 	cwd: "F:/workspace",
+	historyWorkspacePath: "F:/workspace",
 	apiConfiguration: { apiProvider: "openai", apiModelId: "alpha-model" },
 	getTaskMode: vi.fn(async () => "code"),
 	getTaskApiConfigName: vi.fn(async () => "Parent"),
+	getTaskCancellationSignal: vi.fn(() => new AbortController().signal),
+	getTaskLifetimeCancellationSignal: vi.fn(() => new AbortController().signal),
+	beginAgentWait: vi.fn(() => ({ signal: new AbortController().signal, dispose: vi.fn() })),
 	upsertSubagentGroup: vi.fn(async () => undefined),
 })
 
@@ -718,8 +729,209 @@ describe("ClineProvider bounded sub-agent preparation", () => {
 			summary: "Parser inspected",
 		})
 		expect((provider as any).__historyItems.get(parent.taskId).childIds).toEqual([handle.taskId])
-		expect((provider as any).preparedSubagentGroups.has(prepared.group.groupId)).toBe(false)
-		expect((provider as any).asyncSubagentRunManager.getSnapshot(handle.taskId)).toBeUndefined()
+		expect((provider as any).preparedSubagentGroups.has(prepared.group.groupId)).toBe(true)
+		expect((provider as any).asyncSubagentRunManager.getSnapshot(handle.taskId)).toMatchObject({
+			status: "completed",
+		})
+		expect((provider as any).agentControlStore.getAgent(handle.taskId, parent.taskId)).toMatchObject({
+			path: handle.path,
+			status: "completed",
+		})
+	})
+
+	it("supports the complete nonblocking lifecycle for two concurrent agents", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const liveChildren = new Map<string, any>()
+		;(provider as any).taskSessions.getTask = (taskId: string) => liveChildren.get(taskId)
+
+		let invocation = 0
+		const runs = new Map<string, { resolve: (result: any) => void; reject: (error: unknown) => void }>()
+		const bounded = new BoundedDelegationManager(
+			async (envelope, signal) =>
+				await new Promise<any>((resolve, reject) => {
+					const key = `${envelope.id}:${++invocation}`
+					runs.set(key, { resolve, reject })
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+				}),
+			2,
+		)
+		;(provider as any).boundedDelegationManager = bounded
+		;(provider as any).asyncSubagentRunManager = new AsyncSubagentRunManager(bounded)
+
+		const first = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect lifecycle state", agent_kind: "explore" },
+		])
+		const firstHandle = await provider.launchPreparedSubagentGroup(
+			parent as any,
+			first,
+			new AbortController().signal,
+		)
+		const second = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Review cancellation", agent_kind: "review" },
+		])
+		const secondHandle = await provider.launchPreparedSubagentGroup(
+			parent as any,
+			second,
+			new AbortController().signal,
+		)
+
+		const steerUserMessage = vi.fn(async () => undefined)
+		liveChildren.set(firstHandle.taskId, {
+			canAcceptSteerMessage: () => true,
+			steerUserMessage,
+		})
+		liveChildren.set(secondHandle.taskId, {})
+		await vi.waitFor(() => expect(runs.size).toBe(2))
+
+		const localWork = { completed: true }
+		const listed = (await provider.listAgents(parent as any)) as any
+		expect(localWork.completed).toBe(true)
+		expect(listed.agents).toHaveLength(2)
+		expect(listed.agents.every((agent: any) => agent.path.startsWith("/root/"))).toBe(true)
+		expect(listed.mailbox.unreadCount).toBe(0)
+
+		await provider.sendMessageToAgent(parent as any, firstHandle.path, "Focus on the reload race")
+		expect(steerUserMessage).toHaveBeenCalledWith("Focus on the reload race")
+		await provider.cancelAgent(parent as any, secondHandle.taskId, "No longer needed")
+
+		const firstRun = [...runs.entries()].find(([key]) => key.startsWith(`${firstHandle.taskId}:`))![1]
+		firstRun.resolve({
+			taskId: firstHandle.taskId,
+			status: "completed",
+			summary: "Lifecycle state inspected",
+			evidence: [],
+			changedFiles: [],
+			verification: [],
+			remainingRisks: [],
+			usage: { durationMs: 1 },
+		})
+		await vi.waitFor(() =>
+			expect((provider as any).agentControlStore.getAgent(firstHandle.taskId, parent.taskId)?.status).toBe(
+				"completed",
+			),
+		)
+		await vi.waitFor(() =>
+			expect((provider as any).agentControlStore.getAgent(secondHandle.taskId, parent.taskId)?.status).toBe(
+				"cancelled",
+			),
+		)
+
+		const mailbox = (await provider.waitForAgent(parent as any, 10_000)) as any
+		expect(mailbox.timedOut).toBe(false)
+		expect(mailbox.events.some((event: any) => event.name === "agent_completed")).toBe(true)
+
+		const followup = (await provider.followupAgentTask(
+			parent as any,
+			firstHandle.path,
+			"Check one more edge case",
+		)) as any
+		expect(followup.taskId).toBe(firstHandle.taskId)
+		await vi.waitFor(() => expect(runs.size).toBe(3))
+		const followupRun = [...runs.entries()].find(
+			([key]) => key.startsWith(`${firstHandle.taskId}:`) && runs.get(key) !== firstRun,
+		)![1]
+		followupRun.resolve({
+			taskId: firstHandle.taskId,
+			status: "completed",
+			summary: "Follow-up complete",
+			evidence: [],
+			changedFiles: [],
+			verification: [],
+			remainingRisks: [],
+			usage: { durationMs: 1 },
+		})
+		await vi.waitFor(() =>
+			expect((provider as any).agentControlStore.getAgent(firstHandle.taskId, parent.taskId)?.status).toBe(
+				"completed",
+			),
+		)
+
+		liveChildren.clear()
+		await provider.closeAgent(parent as any, firstHandle.taskId)
+		await provider.closeAgent(parent as any, secondHandle.taskId)
+		const afterClose = (await provider.listAgents(parent as any)) as any
+		expect(afterClose.agents).toEqual([])
+	})
+
+	it("cancels a mailbox wait when the parent request is cancelled", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const request = new AbortController()
+		const dispose = vi.fn()
+		parent.beginAgentWait = vi.fn(() => ({ signal: request.signal, dispose }))
+
+		const waiting = provider.waitForAgent(parent as any, 10_000)
+		request.abort(new Error("parent request stopped"))
+
+		await expect(waiting).resolves.toEqual({ timedOut: false, cancelled: true, events: [] })
+		expect(dispose).toHaveBeenCalledOnce()
+	})
+
+	it("rehydrates an interrupted child for follow-up after a provider reload", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect recovery", agent_kind: "explore" },
+		])
+		const group = structuredClone(prepared.group)
+		group.executionMode = "async"
+		group.status = "interrupted"
+		group.agents[0].status = "interrupted"
+		parent.clineMessages = [{ subagentGroup: group }] as any
+
+		const root = await (provider as any).ensureAgentControlRoot(parent)
+		const retained = await (provider as any).agentControlStore.createAgent({
+			taskId: prepared.envelopes[0].id,
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			groupId: group.groupId,
+			nickname: group.agents[0].nickname,
+			role: group.agents[0].role,
+			objective: group.agents[0].objective,
+			status: "interrupted",
+		})
+		;(provider as any).preparedSubagentGroups.clear()
+		;(provider as any).subagentDescriptors.clear()
+		;(provider as any).reservedSubagentSlots.clear()
+		const startPreparedSubagentRun = vi.fn(
+			async (_parent: any, restored: any, _signal: AbortSignal, record: any) => ({
+				taskId: record.taskId,
+				runId: `${record.taskId}:reloaded`,
+				groupId: restored.group.groupId,
+				parentTaskId: parent.taskId,
+				path: record.path,
+				nickname: record.nickname,
+				role: record.role,
+				status: "pending",
+				createdAt: Date.now(),
+			}),
+		)
+		;(provider as any).startPreparedSubagentRun = startPreparedSubagentRun
+
+		const result = (await provider.followupAgentTask(
+			parent as any,
+			retained.path,
+			"Inspect the restored edge case",
+		)) as any
+
+		expect(result).toMatchObject({ taskId: retained.taskId, path: retained.path, followup: true })
+		expect(startPreparedSubagentRun).toHaveBeenCalledWith(
+			parent,
+			expect.objectContaining({
+				group: expect.objectContaining({
+					groupId: retained.groupId,
+					status: "pending",
+					agents: [expect.objectContaining({ taskId: retained.taskId, status: "pending" })],
+				}),
+			}),
+			expect.any(AbortSignal),
+			expect.objectContaining({ taskId: retained.taskId, status: "pending" }),
+			false,
+		)
+		expect((provider as any).subagentDescriptors.get(retained.taskId)?.pendingFollowup).toBe(
+			"Inspect the restored edge case",
+		)
 	})
 
 	it("publishes each child terminal result once before the aggregate terminal update", async () => {

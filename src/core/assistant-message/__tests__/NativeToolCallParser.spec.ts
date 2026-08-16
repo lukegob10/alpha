@@ -182,6 +182,70 @@ describe("NativeToolCallParser", () => {
 			})
 		})
 
+		describe("agent lifecycle tools", () => {
+			it.each([
+				["list_agents", { path_prefix: "/root/review" }],
+				["wait_agent", { timeout_ms: 45_000 }],
+				["send_message", { target: "/root/review", message: "Check the parser edge case." }],
+				["followup_task", { target: "child-123", message: "Verify the second pass." }],
+				["interrupt_agent", { target: "/root/review" }],
+				["cancel_agent", { target: "child-123", reason: "No longer needed." }],
+				["close_agent", { target: "/root/review" }],
+			] as const)("parses valid %s arguments", (name, payload) => {
+				const result = NativeToolCallParser.parseToolCall({
+					id: `lifecycle-${name}`,
+					name,
+					arguments: JSON.stringify(payload),
+				})
+
+				expect(result?.type).toBe("tool_use")
+				if (result?.type === "tool_use") expect(result.nativeArgs).toEqual(payload)
+			})
+
+			it("normalizes strict-schema null optionals", () => {
+				const list = NativeToolCallParser.parseToolCall({
+					id: "list-all",
+					name: "list_agents",
+					arguments: JSON.stringify({ path_prefix: null }),
+				})
+				const wait = NativeToolCallParser.parseToolCall({
+					id: "wait-default",
+					name: "wait_agent",
+					arguments: JSON.stringify({ timeout_ms: null }),
+				})
+				const cancel = NativeToolCallParser.parseToolCall({
+					id: "cancel-default",
+					name: "cancel_agent",
+					arguments: JSON.stringify({ target: "child-123", reason: null }),
+				})
+
+				expect((list as any)?.nativeArgs).toEqual({ path_prefix: undefined })
+				expect((wait as any)?.nativeArgs).toEqual({ timeout_ms: undefined })
+				expect((cancel as any)?.nativeArgs).toEqual({ target: "child-123", reason: undefined })
+			})
+
+			it.each([
+				["list_agents", { path_prefix: "/root/Review" }],
+				["wait_agent", { timeout_ms: 9_999 }],
+				["send_message", { target: "/root/review", message: "" }],
+				["followup_task", { target: "/root/review", message: "Next", extra: true }],
+				["interrupt_agent", { target: "/root/Review" }],
+				["cancel_agent", { target: "child-123", reason: "" }],
+				["close_agent", { target: "not a task id" }],
+			] as const)("rejects invalid %s arguments", (name, payload) => {
+				const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				const result = NativeToolCallParser.parseToolCall({
+					id: `invalid-${name}`,
+					name,
+					arguments: JSON.stringify(payload),
+				})
+
+				expect(result).toBeNull()
+				expect(errorSpy).toHaveBeenCalled()
+				errorSpy.mockRestore()
+			})
+		})
+
 		describe("search_files tool", () => {
 			it("parses a bounded queries batch", () => {
 				const result = NativeToolCallParser.parseToolCall({
@@ -706,6 +770,25 @@ describe("NativeToolCallParser", () => {
 					expect(finalized.partial).toBe(false)
 					expect(finalized.nativeArgs).toEqual(payload)
 				}
+			})
+		})
+
+		describe("agent lifecycle tools", () => {
+			it("preserves a streamed follow-up through finalization", () => {
+				const id = "followup-streaming"
+				const payload = { target: "/root/review", message: "Inspect the remaining race." }
+				const encoded = JSON.stringify(payload)
+				const splitAt = encoded.indexOf('"message"')
+				NativeToolCallParser.startStreamingToolCall(id, "followup_task")
+
+				const incomplete = NativeToolCallParser.processStreamingChunk(id, encoded.slice(0, splitAt))
+				expect(incomplete?.nativeArgs).toEqual({ target: "/root/review", message: undefined })
+
+				const partial = NativeToolCallParser.processStreamingChunk(id, encoded.slice(splitAt))
+				expect(partial?.nativeArgs).toEqual(payload)
+
+				const finalized = NativeToolCallParser.finalizeStreamingToolCall(id)
+				expect((finalized as any)?.nativeArgs).toEqual(payload)
 			})
 		})
 

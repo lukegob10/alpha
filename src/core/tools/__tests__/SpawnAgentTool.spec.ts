@@ -46,8 +46,10 @@ function prepared(objective = "Inspect src") {
 function handle() {
 	return {
 		taskId: "child-1",
+		runId: "child-1:1",
 		parentTaskId: "parent",
 		groupId: "group-1",
+		path: "/root/maple",
 		nickname: "Maple",
 		role: "explore" as const,
 		createdAt: 1,

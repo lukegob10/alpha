@@ -305,8 +305,10 @@ const subagentTimestampSchema = z.number().int().nonnegative()
  */
 export const subagentSpawnHandleSchema = z.object({
 	taskId: subagentIdentifierSchema,
+	runId: subagentIdentifierSchema,
 	groupId: subagentIdentifierSchema,
 	parentTaskId: subagentIdentifierSchema,
+	path: z.string().regex(/^\/root(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/),
 	nickname: z.string().min(1),
 	role: subagentRoleSchema,
 	status: z.enum(["pending", "running"]),
@@ -314,6 +316,9 @@ export const subagentSpawnHandleSchema = z.object({
 })
 
 const subagentLifecycleEventBaseSchema = z.object({
+	eventId: subagentIdentifierSchema,
+	sequence: z.number().int().positive(),
+	runId: subagentIdentifierSchema,
 	taskId: subagentIdentifierSchema,
 	groupId: subagentIdentifierSchema,
 	parentTaskId: subagentIdentifierSchema,

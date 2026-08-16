@@ -1,7 +1,14 @@
 import type { InternalTaskEnvelope } from "./InternalTaskEnvelope"
 import type { SubagentChangeSetState, SubagentVerification } from "@alpha-code/types"
 
-export type InternalTaskStatus = "completed" | "blocked" | "failed" | "denied" | "cancelled" | "timed_out"
+export type InternalTaskStatus =
+	| "completed"
+	| "blocked"
+	| "failed"
+	| "denied"
+	| "cancelled"
+	| "timed_out"
+	| "interrupted"
 export interface InternalTaskResult {
 	taskId: string
 	status: InternalTaskStatus
@@ -21,7 +28,7 @@ export type InternalTaskRunner = (
 	signal: AbortSignal,
 ) => Promise<Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">>
 
-export type InternalTaskCancellationKind = "parent_cancelled" | "user_cancelled" | "timed_out"
+export type InternalTaskCancellationKind = "parent_cancelled" | "user_cancelled" | "timed_out" | "interrupted"
 
 /** Typed abort reason shared with runners while retaining a useful Error message for logs and transcripts. */
 export class InternalTaskCancellationError extends Error {
@@ -54,14 +61,19 @@ export class BoundedDelegationManager {
 	}
 
 	cancel(taskId: string, reason: string | Error = "Internal task cancelled by user"): boolean {
+		return this.abortRun(taskId, "user_cancelled", reason)
+	}
+
+	interrupt(taskId: string, reason: string | Error = "Internal task interrupted by parent"): boolean {
+		return this.abortRun(taskId, "interrupted", reason)
+	}
+
+	private abortRun(taskId: string, kind: InternalTaskCancellationKind, reason: string | Error): boolean {
 		const controller = this.activeRuns.get(taskId)
 		if (!controller || controller.signal.aborted) return false
 
 		controller.abort(
-			new InternalTaskCancellationError(
-				"user_cancelled",
-				cancellationMessage(reason, "Internal task cancelled by user"),
-			),
+			new InternalTaskCancellationError(kind, cancellationMessage(reason, "Internal task cancelled by user")),
 		)
 		return true
 	}
@@ -182,9 +194,10 @@ export class BoundedDelegationManager {
 		this.pending.shift()?.()
 	}
 
-	private getCancellationStatus(signal: AbortSignal): "cancelled" | "timed_out" {
-		return signal.reason instanceof InternalTaskCancellationError && signal.reason.kind === "timed_out"
-			? "timed_out"
-			: "cancelled"
+	private getCancellationStatus(signal: AbortSignal): "cancelled" | "timed_out" | "interrupted" {
+		if (!(signal.reason instanceof InternalTaskCancellationError)) return "cancelled"
+		if (signal.reason.kind === "timed_out") return "timed_out"
+		if (signal.reason.kind === "interrupted") return "interrupted"
+		return "cancelled"
 	}
 }

@@ -38,6 +38,7 @@ const result = (taskId: string, status: InternalTaskResult["status"] = "complete
 
 const launchOptions = {
 	groupId: "group-1",
+	path: "/root/ada" as const,
 	nickname: "Ada",
 	role: "explore" as const,
 }
@@ -238,6 +239,55 @@ describe("AsyncSubagentRunManager", () => {
 			error: "runner exploded",
 		})
 		expect(manager.getEvents("child-1").at(-1)?.type).toBe("completed")
+	})
+
+	it("distinguishes an interrupt from cancellation and retains the agent", async () => {
+		const manager = new AsyncSubagentRunManager(
+			async (_item, signal) =>
+				await new Promise((_, reject) =>
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+				),
+		)
+		manager.launch(envelope("child-1"), launchOptions)
+		await vi.waitFor(() => expect(manager.getSnapshot("child-1")?.status).toBe("running"))
+
+		expect(manager.interrupt("child-1", "pause this turn")).toBe(true)
+		await expect(manager.waitForResult("child-1")).resolves.toMatchObject({
+			status: "interrupted",
+			summary: "pause this turn",
+		})
+		expect(manager.getSnapshot("child-1")?.status).toBe("interrupted")
+	})
+
+	it("relaunches a retained terminal agent under the same stable task ID", async () => {
+		let invocation = 0
+		const manager = new AsyncSubagentRunManager(async (item) => {
+			invocation++
+			return result(item.id, invocation === 1 ? "completed" : "blocked")
+		})
+		manager.launch(envelope("child-1"), launchOptions)
+		await expect(manager.waitForResult("child-1")).resolves.toMatchObject({ status: "completed" })
+
+		const handle = manager.relaunch(envelope("child-1"), launchOptions)
+		expect(handle.taskId).toBe("child-1")
+		await expect(manager.waitForResult("child-1")).resolves.toMatchObject({ status: "blocked" })
+		expect(invocation).toBe(2)
+		expect(manager.getEvents("child-1").filter((event) => event.type === "completed")).toHaveLength(2)
+	})
+
+	it("does not reuse run or lifecycle event identities after a manager reload", async () => {
+		const firstManager = new AsyncSubagentRunManager(async (item) => result(item.id))
+		const firstHandle = firstManager.launch(envelope("child-1"), launchOptions)
+		await firstManager.waitForResult("child-1")
+		const firstEventIds = new Set(firstManager.getEvents("child-1").map((event) => event.eventId))
+
+		const reloadedManager = new AsyncSubagentRunManager(async (item) => result(item.id))
+		const reloadedHandle = reloadedManager.launch(envelope("child-1"), launchOptions)
+		await reloadedManager.waitForResult("child-1")
+		const reloadedEventIds = reloadedManager.getEvents("child-1").map((event) => event.eventId)
+
+		expect(reloadedHandle.runId).not.toBe(firstHandle.runId)
+		expect(reloadedEventIds.every((eventId) => !firstEventIds.has(eventId))).toBe(true)
 	})
 
 	it("never reuses a stable task ID, including after its retained result is forgotten", async () => {

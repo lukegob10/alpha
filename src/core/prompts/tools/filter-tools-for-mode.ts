@@ -268,11 +268,22 @@ export function filterNativeToolsForMode(
 	)
 	allowedToolNames = customizedTools
 
-	// Phase-two asynchronous spawning is intentionally limited to the primary Code
+	// Asynchronous agent orchestration is intentionally limited to the primary Code
 	// workflow. Custom modes may opt into the broader agents group for legacy
-	// delegation, but do not acquire this new control-plane capability implicitly.
+	// delegation, but do not acquire the lifecycle control plane implicitly.
 	if (modeSlug !== "code") {
-		allowedToolNames.delete("spawn_agent")
+		for (const tool of [
+			"spawn_agent",
+			"list_agents",
+			"wait_agent",
+			"send_message",
+			"followup_task",
+			"interrupt_agent",
+			"cancel_agent",
+			"close_agent",
+		] as const) {
+			allowedToolNames.delete(tool)
+		}
 	}
 
 	// Conditionally exclude codebase_search if feature is disabled or not configured

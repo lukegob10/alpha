@@ -16,6 +16,16 @@ const names = (tools: Array<{ type: string; function?: { name: string } }>) =>
 	tools.flatMap((tool) => (tool.type === "function" && tool.function ? [tool.function.name] : []))
 
 describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => {
+	const orchestrationTools = [
+		"spawn_agent",
+		"list_agents",
+		"wait_agent",
+		"send_message",
+		"followup_task",
+		"interrupt_agent",
+		"cancel_agent",
+		"close_agent",
+	]
 	const provider = {
 		context: {},
 		getMcpHub: () => ({ getServers: () => [] }),
@@ -54,7 +64,9 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 			includeAllToolsWithRestrictions: true,
 		})
 
-		expect(names(result.tools as any)).not.toContain("spawn_agent")
-		expect(result.allowedFunctionNames).not.toContain("spawn_agent")
+		for (const tool of orchestrationTools) {
+			expect(names(result.tools as any)).not.toContain(tool)
+			expect(result.allowedFunctionNames).not.toContain(tool)
+		}
 	})
 })

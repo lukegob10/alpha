@@ -130,6 +130,30 @@ export class NativeToolCallParser {
 		)
 	}
 
+	private static hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[]): boolean {
+		const allowed = new Set(allowedKeys)
+		return Object.keys(value).every((key) => allowed.has(key))
+	}
+
+	private static isNonEmptyString(value: unknown): value is string {
+		return typeof value === "string" && value.trim().length > 0 && value.trim().length <= 2_000
+	}
+
+	private static isCanonicalAgentPath(value: unknown): value is string {
+		return typeof value === "string" && /^\/root(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/.test(value)
+	}
+
+	private static isAgentTarget(value: unknown): value is string {
+		return (
+			typeof value === "string" &&
+			/^(?:\/root(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*|[A-Za-z0-9][A-Za-z0-9._:-]*)$/.test(value)
+		)
+	}
+
+	private static isWaitTimeout(value: unknown): value is number {
+		return typeof value === "number" && Number.isInteger(value) && value >= 10_000 && value <= 300_000
+	}
+
 	private static isSpawnAgentArgs(value: unknown): value is NativeToolArgs["spawn_agent"] {
 		if (typeof value !== "object" || value === null || Array.isArray(value)) return false
 
@@ -813,6 +837,58 @@ export class NativeToolCallParser {
 				}
 				break
 
+			case "list_agents":
+				if (
+					this.hasOnlyKeys(partialArgs, ["path_prefix"]) &&
+					(partialArgs.path_prefix === undefined ||
+						partialArgs.path_prefix === null ||
+						this.isCanonicalAgentPath(partialArgs.path_prefix))
+				) {
+					nativeArgs = {
+						path_prefix: partialArgs.path_prefix === null ? undefined : partialArgs.path_prefix,
+					}
+				}
+				break
+
+			case "wait_agent":
+				if (
+					this.hasOnlyKeys(partialArgs, ["timeout_ms"]) &&
+					(partialArgs.timeout_ms === undefined ||
+						partialArgs.timeout_ms === null ||
+						this.isWaitTimeout(partialArgs.timeout_ms))
+				) {
+					nativeArgs = {
+						timeout_ms: partialArgs.timeout_ms === null ? undefined : partialArgs.timeout_ms,
+					}
+				}
+				break
+
+			case "send_message":
+			case "followup_task":
+				if (this.hasOnlyKeys(partialArgs, ["target", "message"])) {
+					nativeArgs = {
+						target: partialArgs.target,
+						message: partialArgs.message,
+					}
+				}
+				break
+
+			case "interrupt_agent":
+			case "close_agent":
+				if (this.hasOnlyKeys(partialArgs, ["target"])) {
+					nativeArgs = { target: partialArgs.target }
+				}
+				break
+
+			case "cancel_agent":
+				if (this.hasOnlyKeys(partialArgs, ["target", "reason"])) {
+					nativeArgs = {
+						target: partialArgs.target,
+						reason: partialArgs.reason === null ? undefined : partialArgs.reason,
+					}
+				}
+				break
+
 			case "delegate_task":
 				if (Array.isArray(partialArgs.tasks)) {
 					nativeArgs = { tasks: partialArgs.tasks }
@@ -1278,6 +1354,63 @@ export class NativeToolCallParser {
 				case "spawn_agent":
 					if (this.isSpawnAgentArgs(args)) {
 						nativeArgs = args as NativeArgsFor<TName>
+					}
+					break
+
+				case "list_agents":
+					if (
+						this.hasOnlyKeys(args, ["path_prefix"]) &&
+						(args.path_prefix === undefined ||
+							args.path_prefix === null ||
+							this.isCanonicalAgentPath(args.path_prefix))
+					) {
+						nativeArgs = {
+							path_prefix: args.path_prefix === null ? undefined : args.path_prefix,
+						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "wait_agent":
+					if (
+						this.hasOnlyKeys(args, ["timeout_ms"]) &&
+						(args.timeout_ms === undefined ||
+							args.timeout_ms === null ||
+							this.isWaitTimeout(args.timeout_ms))
+					) {
+						nativeArgs = {
+							timeout_ms: args.timeout_ms === null ? undefined : args.timeout_ms,
+						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "send_message":
+				case "followup_task":
+					if (
+						this.hasOnlyKeys(args, ["target", "message"]) &&
+						this.isAgentTarget(args.target) &&
+						this.isNonEmptyString(args.message)
+					) {
+						nativeArgs = { target: args.target, message: args.message } as NativeArgsFor<TName>
+					}
+					break
+
+				case "interrupt_agent":
+				case "close_agent":
+					if (this.hasOnlyKeys(args, ["target"]) && this.isAgentTarget(args.target)) {
+						nativeArgs = { target: args.target } as NativeArgsFor<TName>
+					}
+					break
+
+				case "cancel_agent":
+					if (
+						this.hasOnlyKeys(args, ["target", "reason"]) &&
+						this.isAgentTarget(args.target) &&
+						(args.reason === undefined || args.reason === null || this.isNonEmptyString(args.reason))
+					) {
+						nativeArgs = {
+							target: args.target,
+							reason: args.reason === null ? undefined : args.reason,
+						} as NativeArgsFor<TName>
 					}
 					break
 

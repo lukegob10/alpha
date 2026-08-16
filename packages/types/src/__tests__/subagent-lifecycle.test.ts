@@ -18,6 +18,9 @@ const makeRun = (overrides: Record<string, unknown> = {}) => ({
 })
 
 const makeEvent = (type: "started" | "status" | "completed", snapshot: Record<string, unknown>) => ({
+	eventId: `event-${type}`,
+	sequence: 1,
+	runId: "child-1:1",
 	type,
 	taskId: "child-1",
 	groupId: "group-1",
@@ -31,8 +34,10 @@ describe("asynchronous sub-agent contracts", () => {
 		expect(
 			subagentSpawnHandleSchema.safeParse({
 				taskId: "child-1",
+				runId: "child-1:1",
 				groupId: "group-1",
 				parentTaskId: "parent-1",
+				path: "/root/ada",
 				nickname: "Ada",
 				role: "explore",
 				status: "pending",
@@ -44,8 +49,10 @@ describe("asynchronous sub-agent contracts", () => {
 	it("rejects a completed run masquerading as a spawn handle", () => {
 		const result = subagentSpawnHandleSchema.safeParse({
 			taskId: "child-1",
+			runId: "child-1:1",
 			groupId: "group-1",
 			parentTaskId: "parent-1",
+			path: "/root/ada",
 			nickname: "Ada",
 			role: "explore",
 			status: "completed",

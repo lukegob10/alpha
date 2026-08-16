@@ -1,10 +1,18 @@
-import type { SubagentLifecycleEvent, SubagentRunState, SubagentSpawnHandle } from "@alpha-code/types"
+import { randomUUID } from "crypto"
+
+import type {
+	AgentCanonicalPath,
+	SubagentLifecycleEvent,
+	SubagentRunState,
+	SubagentSpawnHandle,
+} from "@alpha-code/types"
 
 import { BoundedDelegationManager, type InternalTaskResult, type InternalTaskRunner } from "./BoundedDelegationManager"
 import type { InternalTaskEnvelope } from "./InternalTaskEnvelope"
 
 export interface AsyncSubagentLaunchOptions {
 	groupId: string
+	path: AgentCanonicalPath
 	nickname: string
 	role: SubagentRunState["role"]
 	/** Optional presentation fields copied from an already-prepared group row. */
@@ -50,6 +58,7 @@ export class AsyncSubagentRunManager {
 	private readonly runs = new Map<string, AsyncSubagentRunRecord>()
 	private readonly knownTaskIds = new Set<string>()
 	private readonly events: SubagentLifecycleEvent[] = []
+	private nextEventSequence = 1
 	private readonly listeners = new Set<AsyncSubagentLifecycleListener>()
 
 	constructor(executor: BoundedDelegationManager | InternalTaskRunner, options: AsyncSubagentRunManagerOptions = {}) {
@@ -70,8 +79,12 @@ export class AsyncSubagentRunManager {
 		const createdAt = this.now()
 		const handle: SubagentSpawnHandle = Object.freeze({
 			taskId: envelope.id,
+			// A process-local generation counter resets after reload and can collide
+			// with lifecycle events already persisted for this stable task ID.
+			runId: `${envelope.id}:${randomUUID()}`,
 			groupId: options.groupId.trim(),
 			parentTaskId: envelope.parentTaskId,
+			path: options.path,
 			nickname: options.nickname.trim(),
 			role: options.role,
 			status: "pending",
@@ -147,6 +160,32 @@ export class AsyncSubagentRunManager {
 		return handle
 	}
 
+	/**
+	 * Start another turn for a retained terminal agent while preserving its
+	 * stable task ID and historical lifecycle events.
+	 */
+	relaunch(
+		envelope: InternalTaskEnvelope,
+		options: AsyncSubagentLaunchOptions,
+		parentSignal?: AbortSignal,
+	): SubagentSpawnHandle {
+		const previous = this.runs.get(envelope.id)
+		if (!previous || !isTerminalStatus(previous.state.status)) {
+			throw new Error(`Sub-agent task is not available for follow-up: ${envelope.id}`)
+		}
+
+		previous.detachParentSignal?.()
+		this.runs.delete(envelope.id)
+		this.knownTaskIds.delete(envelope.id)
+		try {
+			return this.launch(envelope, options, parentSignal)
+		} catch (error) {
+			this.runs.set(envelope.id, previous)
+			this.knownTaskIds.add(envelope.id)
+			throw error
+		}
+	}
+
 	cancel(taskId: string, reason: string | Error = "Internal task cancelled by user"): boolean {
 		const record = this.runs.get(taskId)
 		if (!record || isTerminalStatus(record.state.status) || record.state.status === "cancelling") return false
@@ -154,6 +193,15 @@ export class AsyncSubagentRunManager {
 		const cancelled = this.executor.cancel(taskId, reason)
 		if (cancelled) this.markCancelling(record)
 		return cancelled
+	}
+
+	interrupt(taskId: string, reason: string | Error = "Internal task interrupted by parent"): boolean {
+		const record = this.runs.get(taskId)
+		if (!record || isTerminalStatus(record.state.status) || record.state.status === "cancelling") return false
+
+		const interrupted = this.executor.interrupt(taskId, reason)
+		if (interrupted) this.markCancelling(record)
+		return interrupted
 	}
 
 	getSnapshot(taskId: string): SubagentRunState | undefined {
@@ -206,6 +254,7 @@ export class AsyncSubagentRunManager {
 			throw new Error(`Sub-agent task ID is already registered: ${envelope.id}`)
 		}
 		if (!options.groupId.trim()) throw new Error("Sub-agent group ID is required")
+		if (!options.path.startsWith("/root/")) throw new Error("Sub-agent canonical path is required")
 		if (!options.nickname.trim()) throw new Error("Sub-agent nickname is required")
 		if (envelope.budget.maxDepth > 1 || envelope.policy.delegate) {
 			throw new Error("Child delegation exceeds maximum depth one")
@@ -281,7 +330,11 @@ export class AsyncSubagentRunManager {
 	}
 
 	private publish(type: SubagentLifecycleEvent["type"], record: AsyncSubagentRunRecord): void {
+		const sequence = this.nextEventSequence++
 		const event = {
+			eventId: `${record.handle.runId}:${sequence}`,
+			sequence,
+			runId: record.handle.runId,
 			type,
 			taskId: record.handle.taskId,
 			groupId: record.handle.groupId,

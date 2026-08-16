@@ -1,4 +1,6 @@
 export * from "./api.js"
+export * from "./agent-control.js"
+export * from "./agent-tool-params.js"
 export * from "./cli.js"
 export * from "./codebase-index.js"
 export * from "./context-management.js"

@@ -115,11 +115,21 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 	const nativeTools = getNativeTools({
 		supportsImages,
 	})
-	// Asynchronous child creation is a primary-task capability. Managed child lanes
-	// always provide an authority allow-list, so omit the schema entirely there even
-	// for providers that require the otherwise-unfiltered historical tool catalog.
+	// Agent orchestration is a primary-task capability. Managed child lanes always
+	// provide an authority allow-list, so omit these schemas entirely even for
+	// providers that require the otherwise-unfiltered historical tool catalog.
+	const orchestrationTools = new Set([
+		"spawn_agent",
+		"list_agents",
+		"wait_agent",
+		"send_message",
+		"followup_task",
+		"interrupt_agent",
+		"cancel_agent",
+		"close_agent",
+	])
 	const taskNativeTools = allowedToolNames
-		? nativeTools.filter((tool) => getToolName(tool) !== "spawn_agent")
+		? nativeTools.filter((tool) => !orchestrationTools.has(getToolName(tool)))
 		: nativeTools
 
 	// Filter native tools based on mode restrictions.
