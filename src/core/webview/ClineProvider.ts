@@ -50,6 +50,10 @@ import {
 	type SubagentChangeSetActionCapability,
 	type SubagentChangeSetActionResult,
 	type SubagentContextManifest,
+	type SubagentManifestOrchestration,
+	type ResolvedSubagentOrchestrationSettings,
+	type SubagentEffectiveLimits,
+	type SubagentStopReason,
 	type SubagentVerification,
 	type AgentLifecycleStatus,
 	type AgentMailboxEntry,
@@ -63,10 +67,16 @@ import {
 	openRouterDefaultModelId,
 	DEFAULT_WRITE_DELAY_MS,
 	DEFAULT_MAX_CONCURRENT_TASKS,
+	DEFAULT_SUBAGENT_DELEGATION_POLICY,
 	DEFAULT_MODES,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	getModelId,
 	isRetiredProvider,
+	createSubagentEffectiveLimits,
+	finalizedSubagentContextManifestSchema,
+	finalizeSubagentDelegationPolicy,
+	resolveSubagentDelegationPolicy,
+	resolveSubagentOrchestrationSettings,
 } from "@alpha-code/types"
 import { aggregateTaskCostsRecursive, type AggregatedCosts } from "./aggregateTaskCosts"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -129,7 +139,12 @@ import {
 	type InternalTaskPolicy,
 } from "../agent/InternalTaskEnvelope"
 import { SubagentNicknameRegistry } from "../agent/SubagentNicknameRegistry"
-import { captureSubagentContext, isValidSubagentContextManifest } from "../agent/SubagentContextCapture"
+import {
+	captureSubagentContext,
+	finalizeSubagentContextManifestAuthorization,
+	isValidSubagentContextManifest,
+	upgradeLegacySubagentContextManifest,
+} from "../agent/SubagentContextCapture"
 import { resolveSubagentModelRoute, type ResolvedSubagentModelRoute } from "../agent/SubagentModelRouter"
 import {
 	assertSubagentTaskAuthorities,
@@ -171,7 +186,6 @@ interface PendingEditOperation {
 }
 
 const SUBAGENT_RESEARCH_WINDOW_MS = 75_000
-const SUBAGENT_WORKER_TIMEOUT_MS = 15 * 60_000
 type TaskCancellationSource = "webview_stop" | "checkpoint_restore" | "unknown"
 
 function quoteInheritedContext(text: string): string {
@@ -203,6 +217,7 @@ export class ClineProvider
 	private readonly preparedSubagentGroups = new Map<string, PreparedSubagentGroup>()
 	private readonly subagentGroupControllers = new Map<string, AbortController>()
 	private readonly reservedSubagentSlots = new Map<string, number>()
+	private readonly exhaustedSubagentRootBudgets = new Map<string, "root_token_budget" | "root_cost_budget">()
 	private readonly publishedSubagentResults = new Set<string>()
 	private readonly subagentDescriptors = new Map<
 		string,
@@ -228,7 +243,7 @@ export class ClineProvider
 	>()
 	private readonly boundedDelegationManager = new BoundedDelegationManager(
 		(envelope, signal) => this.runSubagentEnvelope(envelope, signal),
-		2,
+		(envelope) => envelope.budget.maxConcurrency,
 	)
 	private readonly asyncSubagentRunManager = new AsyncSubagentRunManager(this.boundedDelegationManager)
 	private readonly agentControlStore: AgentControlStore
@@ -1158,6 +1173,9 @@ export class ClineProvider
 			startTask: options?.startTask ?? true,
 			// Preserve the status from the history item to avoid overwriting it when the task saves messages
 			initialStatus: historyItem.status,
+			// Legacy history predates per-task policy freezing. Restore it with the
+			// conservative historical default, never whatever settings say today.
+			subagentDelegationPolicy: historyItem.subagentDelegationPolicy ?? DEFAULT_SUBAGENT_DELEGATION_POLICY,
 		})
 
 		if (isRehydratingCurrentTask) {
@@ -2355,6 +2373,14 @@ export class ClineProvider
 			alwaysAllowSubtasks,
 			alwaysAllowSubagents,
 			maxConcurrentTasks,
+			maxConcurrentSubagents,
+			subagentDelegationPolicy,
+			subagentMaxDepth,
+			subagentRoleTimeoutsMs,
+			subagentMaxInputTokens,
+			subagentMaxOutputTokens,
+			subagentRootTokenBudget,
+			subagentRootCostBudget,
 			subagentDefaultApiConfigId,
 			subagentApiConfigByRole,
 			allowedMaxRequests,
@@ -2450,6 +2476,16 @@ export class ClineProvider
 		const currentTaskApiConfiguration = currentTask?.apiConfiguration ?? apiConfiguration
 		const scheduledTaskState = this.scheduledTaskService?.getState()
 		const goalSeekState = this.goalSeekService?.getState()
+		const orchestrationSettings = resolveSubagentOrchestrationSettings({
+			maxConcurrentSubagents,
+			subagentDelegationPolicy,
+			subagentMaxDepth,
+			subagentRoleTimeoutsMs,
+			subagentMaxInputTokens,
+			subagentMaxOutputTokens,
+			subagentRootTokenBudget,
+			subagentRootCostBudget,
+		})
 
 		return {
 			version: this.context.extension?.packageJSON?.version ?? "",
@@ -2467,6 +2503,14 @@ export class ClineProvider
 			alwaysAllowSubtasks: alwaysAllowSubtasks ?? false,
 			alwaysAllowSubagents: alwaysAllowSubagents ?? false,
 			maxConcurrentTasks: maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS,
+			maxConcurrentSubagents: orchestrationSettings.maxConcurrentSubagents,
+			subagentDelegationPolicy: orchestrationSettings.delegationPolicy,
+			subagentMaxDepth: orchestrationSettings.maxDepth,
+			subagentRoleTimeoutsMs: orchestrationSettings.roleTimeoutsMs,
+			subagentMaxInputTokens: orchestrationSettings.maxInputTokens,
+			subagentMaxOutputTokens: orchestrationSettings.maxOutputTokens,
+			subagentRootTokenBudget: orchestrationSettings.rootTokenBudget,
+			subagentRootCostBudget: orchestrationSettings.rootCostBudget,
 			subagentDefaultApiConfigId,
 			subagentApiConfigByRole,
 			allowedMaxRequests,
@@ -2617,6 +2661,16 @@ export class ClineProvider
 
 		// Build the apiConfiguration object combining state values and secrets.
 		const providerSettings = this.contextProxy.getProviderSettings()
+		const orchestrationSettings = resolveSubagentOrchestrationSettings({
+			maxConcurrentSubagents: stateValues.maxConcurrentSubagents,
+			subagentDelegationPolicy: stateValues.subagentDelegationPolicy,
+			subagentMaxDepth: stateValues.subagentMaxDepth,
+			subagentRoleTimeoutsMs: stateValues.subagentRoleTimeoutsMs,
+			subagentMaxInputTokens: stateValues.subagentMaxInputTokens,
+			subagentMaxOutputTokens: stateValues.subagentMaxOutputTokens,
+			subagentRootTokenBudget: stateValues.subagentRootTokenBudget,
+			subagentRootCostBudget: stateValues.subagentRootCostBudget,
+		})
 
 		// Ensure apiProvider is set properly if not already in state
 		if (!providerSettings.apiProvider) {
@@ -2640,6 +2694,14 @@ export class ClineProvider
 			alwaysAllowSubtasks: stateValues.alwaysAllowSubtasks ?? false,
 			alwaysAllowSubagents: stateValues.alwaysAllowSubagents ?? false,
 			maxConcurrentTasks: this.getConfiguredMaxConcurrentTasks(),
+			maxConcurrentSubagents: orchestrationSettings.maxConcurrentSubagents,
+			subagentDelegationPolicy: orchestrationSettings.delegationPolicy,
+			subagentMaxDepth: orchestrationSettings.maxDepth,
+			subagentRoleTimeoutsMs: orchestrationSettings.roleTimeoutsMs,
+			subagentMaxInputTokens: orchestrationSettings.maxInputTokens,
+			subagentMaxOutputTokens: orchestrationSettings.maxOutputTokens,
+			subagentRootTokenBudget: orchestrationSettings.rootTokenBudget,
+			subagentRootCostBudget: orchestrationSettings.rootCostBudget,
 			subagentDefaultApiConfigId: stateValues.subagentDefaultApiConfigId,
 			subagentApiConfigByRole: stateValues.subagentApiConfigByRole,
 			alwaysAllowFollowupQuestions: stateValues.alwaysAllowFollowupQuestions ?? false,
@@ -3258,6 +3320,7 @@ export class ClineProvider
 			enableCheckpoints,
 			checkpointTimeout,
 			experiments,
+			subagentDelegationPolicy: currentSubagentDelegationPolicy,
 		} = await this.getState()
 		const apiConfiguration = options.apiConfiguration ?? currentApiConfiguration
 		const taskApiConfigName = options.taskApiConfigName ?? currentApiConfigName ?? "default"
@@ -3292,6 +3355,11 @@ export class ClineProvider
 			taskApiConfigName: _optionTaskApiConfigName,
 			...taskOptions
 		} = options
+		const frozenSubagentDelegationPolicy =
+			taskOptions.subagentDelegationPolicy ??
+			parentTask?.subagentContextManifest?.orchestration?.delegationPolicy.policy ??
+			parentTask?.subagentDelegationPolicy ??
+			currentSubagentDelegationPolicy
 		const task = new Task({
 			provider: this,
 			apiConfiguration,
@@ -3311,6 +3379,9 @@ export class ClineProvider
 			// its initial state update, so state.currentTaskId is available ASAP.
 			startTask: false,
 			...taskOptions,
+			// Freeze ordinary root tasks at creation so a later settings change or
+			// reload cannot silently change their delegation semantics.
+			subagentDelegationPolicy: frozenSubagentDelegationPolicy,
 		})
 
 		await this.addClineToStack(task, { focus: !background })
@@ -3334,6 +3405,12 @@ export class ClineProvider
 		}
 
 		this.log(`[cancelTask] source=${source} task=${task.taskId}.${task.instanceId}`)
+		await this.agentControlStoreReady
+		await this.cancelManagedTaskDescendants(
+			task.taskId,
+			task.rootTaskId ?? task.taskId,
+			`Managed descendants cancelled because task ${task.taskId} was cancelled`,
+		)
 
 		let historyItem: HistoryItem | undefined
 		try {
@@ -3600,6 +3677,7 @@ export class ClineProvider
 		}
 
 		const captured = parent.subagentContextManifest?.runtimePolicy
+		const readsFromPrivateWorkerWorkspace = parent.subagentRole === "worker"
 		return {
 			policy: captured
 				? {
@@ -3620,18 +3698,25 @@ export class ClineProvider
 						externalSideEffects: false,
 						requireApproval: true,
 					},
-			workspaceRoots: captured?.workspaceRoots ?? [parent.cwd],
-			allowedPaths: captured?.writeScope,
-			fileAllowedPaths: parent.getSubagentFileWriteScope(),
+			// A read-only descendant of a Worker must inspect the Worker's private
+			// managed checkout. This is not a write-authority widening, and nested
+			// Workers remain denied below, so no descendant can own artifacts rooted
+			// in a soon-to-be-removed parent checkout.
+			workspaceRoots: readsFromPrivateWorkerWorkspace ? [parent.cwd] : (captured?.workspaceRoots ?? [parent.cwd]),
+			allowedPaths: readsFromPrivateWorkerWorkspace ? undefined : captured?.writeScope,
+			fileAllowedPaths: readsFromPrivateWorkerWorkspace ? undefined : parent.getSubagentFileWriteScope(),
 		}
 	}
 
-	private getRequestedSubagentPolicy(role: "explore" | "review" | "worker"): InternalTaskPolicy {
+	private getRequestedSubagentPolicy(
+		role: "explore" | "review" | "worker",
+		allowDelegation = false,
+	): InternalTaskPolicy {
 		return {
 			read: true,
 			execute: role === "worker",
 			mutate: role === "worker",
-			delegate: false,
+			delegate: allowDelegation,
 			network: false,
 			externalSideEffects: false,
 			requireApproval: false,
@@ -3643,9 +3728,6 @@ export class ClineProvider
 		drafts: unknown,
 		toolCallId?: string,
 	): Promise<PreparedSubagentGroup> {
-		if (parent.taskKind === "subagent") {
-			throw new Error("A sub-agent cannot delegate another sub-agent")
-		}
 		const parentMode = await parent.getTaskMode()
 		if (parentMode !== "code") {
 			throw new Error("delegate_task is available only in Code mode")
@@ -3653,30 +3735,117 @@ export class ClineProvider
 		const normalizedDrafts = normalizeSubagentTaskDrafts(drafts)
 		assertSubagentTaskAuthorities(normalizedDrafts)
 		const parentAuthority = this.getParentDelegationAuthority(parent)
-		const requestedPolicies = normalizedDrafts.map((draft) => this.getRequestedSubagentPolicy(draft.agent_kind))
+		const settings = this.contextProxy.getValues()
+		const orchestrationSettings = this.getResolvedSubagentOrchestrationSettings()
+		const controlRoot = await this.ensureAgentControlRoot(parent)
+		const orchestrationBases = normalizedDrafts.map((draft) =>
+			this.getSubagentAncestryAndLimits(parent, draft.agent_kind, orchestrationSettings),
+		)
+		const provisionalDelegationPolicies = normalizedDrafts.map(() =>
+			resolveSubagentDelegationPolicy({
+				settingsPolicy: settings.subagentDelegationPolicy,
+				frozenTaskPolicy:
+					parent.subagentContextManifest?.orchestration?.delegationPolicy.policy ??
+					parent.subagentDelegationPolicy,
+				allowUserAuthoredWidening: parent.subagentDelegationExplicitlyEnabled === true,
+				taskExplicitlyEnabled: parent.subagentDelegationExplicitlyEnabled === true,
+			}),
+		)
+		const autoEligible =
+			settings.autoApprovalEnabled === true &&
+			settings.alwaysAllowSubagents === true &&
+			settings.alwaysAllowReadOnly === true &&
+			normalizedDrafts.every((draft) => draft.agent_kind !== "worker" || settings.alwaysAllowWrite === true)
+		const requiresExplicitApproval =
+			!autoEligible ||
+			provisionalDelegationPolicies.some((decision) => decision.authorization === "pending-approval")
+		const orchestrations: SubagentManifestOrchestration[] = orchestrationBases.map((base, index) => ({
+			...base,
+			delegationPolicy: provisionalDelegationPolicies[index],
+		}))
+		const requestedPolicies = normalizedDrafts.map((draft, index) =>
+			this.getRequestedSubagentPolicy(
+				draft.agent_kind,
+				orchestrations[index].ancestry.depth < orchestrations[index].ancestry.maxDepth,
+			),
+		)
 		const effectivePolicies = normalizedDrafts.map((draft, index) =>
 			resolveInternalTaskPolicy(parentAuthority.policy, requestedPolicies[index], draft.agent_kind),
 		)
+		const exhaustedRootBudget = this.getSubagentRootBudgetExhaustion(controlRoot.rootTaskId)
+		if (exhaustedRootBudget) {
+			throw new Error(`${exhaustedRootBudget}: this orchestration root has exhausted its frozen budget`)
+		}
+		const rootUsageAtPrepare = this.getSubagentRootUsage(controlRoot.rootTaskId)
+		const rootTokenBudget = orchestrations[0].limits.rootTokenBudget
+		const rootCostBudget = orchestrations[0].limits.rootCostBudget
+		if (rootTokenBudget !== null && rootUsageAtPrepare.tokens >= rootTokenBudget) {
+			this.exhaustedSubagentRootBudgets.set(controlRoot.rootTaskId, "root_token_budget")
+			throw new Error(
+				`root_token_budget: root usage ${rootUsageAtPrepare.tokens} has exhausted the frozen budget ${rootTokenBudget}`,
+			)
+		}
+		if (rootCostBudget !== null && rootUsageAtPrepare.cost >= rootCostBudget) {
+			this.exhaustedSubagentRootBudgets.set(controlRoot.rootTaskId, "root_cost_budget")
+			throw new Error(
+				`root_cost_budget: root usage ${rootUsageAtPrepare.cost} has exhausted the frozen budget ${rootCostBudget}`,
+			)
+		}
 
 		// A prepared child consumes capacity until TaskSessionRegistry knows about it.
 		// Once the child is registered, getAvailableTaskCapacity() already accounts
 		// for that live task, so continuing to count its reservation would charge the
 		// same child twice and prevent sequential spawn_agent calls from filling the
 		// configured child slots.
-		const reservedCount = Array.from(this.reservedSubagentSlots.entries()).reduce((sum, [groupId, count]) => {
+		let reservedCount = 0
+		let reservedForRoot = 0
+		for (const [groupId, count] of this.reservedSubagentSlots.entries()) {
 			const reservedGroup = this.preparedSubagentGroups.get(groupId)
-			if (!reservedGroup) return sum + count
+			if (!reservedGroup) {
+				reservedCount += count
+				continue
+			}
 
-			const unregisteredChildren = reservedGroup.envelopes.filter(
+			const unregisteredEnvelopes = reservedGroup.envelopes.filter(
 				(envelope) => !this.taskSessions.getTask(envelope.id),
-			).length
-			return sum + Math.min(count, unregisteredChildren)
-		}, 0)
-		const availableCapacity = Math.max(0, this.taskSessions.getAvailableTaskCapacity() - reservedCount)
+			)
+			const charged = Math.min(count, unregisteredEnvelopes.length)
+			reservedCount += charged
+			reservedForRoot += Math.min(
+				charged,
+				unregisteredEnvelopes.filter(
+					(envelope) =>
+						(envelope.rootTaskId ?? envelope.parentTaskId) === controlRoot.rootTaskId &&
+						!this.agentControlStore.getAgent(envelope.id, controlRoot.rootTaskId),
+				).length,
+			)
+		}
+		const frozenTotalCap = Math.min(...orchestrations.map(({ limits }) => limits.maxConcurrentTasks))
+		const effectiveTotalCap = Math.min(this.taskSessions.getMaxLiveTasks(), frozenTotalCap)
+		const availableCapacity = Math.max(
+			0,
+			Math.min(
+				this.taskSessions.getAvailableTaskCapacity(),
+				effectiveTotalCap - this.taskSessions.getLiveTaskCount(),
+			) - reservedCount,
+		)
 		if (normalizedDrafts.length > availableCapacity) {
 			throw new Error(
 				`Not enough task capacity for ${normalizedDrafts.length} sub-agent${normalizedDrafts.length === 1 ? "" : "s"}. ` +
-					`Available slots: ${availableCapacity}; configured maximum: ${this.taskSessions.getMaxLiveTasks()}.`,
+					`Available slots: ${availableCapacity}; effective total live-task maximum: ${effectiveTotalCap}.`,
+			)
+		}
+		const rootCap = Math.min(...orchestrations.map(({ limits }) => limits.maxConcurrentSubagents))
+		const activeForRoot = this.agentControlStore.listAgents({
+			rootTaskId: controlRoot.rootTaskId,
+			includeRoot: false,
+			statuses: ["pending", "running", "cancelling"],
+		}).length
+		const availableRootCapacity = Math.max(0, rootCap - activeForRoot - reservedForRoot)
+		if (normalizedDrafts.length > availableRootCapacity) {
+			throw new Error(
+				`Not enough root-wide child capacity for ${normalizedDrafts.length} sub-agent${normalizedDrafts.length === 1 ? "" : "s"}. ` +
+					`Available slots: ${availableRootCapacity}; effective root child maximum: ${rootCap}.`,
 			)
 		}
 		if (normalizedDrafts.filter((draft) => draft.agent_kind === "worker").length > 1) {
@@ -3690,7 +3859,6 @@ export class ClineProvider
 			),
 		)
 
-		const controlRoot = await this.ensureAgentControlRoot(parent)
 		const reservedNames = this.agentControlStore
 			.listAgents({ rootTaskId: controlRoot.rootTaskId, includeRoot: false })
 			.map((record) => record.nickname)
@@ -3706,7 +3874,6 @@ export class ClineProvider
 		const groupId = crypto.randomUUID()
 		const createdAt = Date.now()
 		const parentApiConfigName = await parent.getTaskApiConfigName()
-		const settings = this.contextProxy.getValues()
 		const { subagentDefaultApiConfigId, subagentApiConfigByRole } = settings
 		const routes = await Promise.all(
 			normalizedDrafts.map((draft) =>
@@ -3743,7 +3910,9 @@ export class ClineProvider
 		const capturedContexts = normalizedDrafts.map((draft, index) => {
 			const role = draft.agent_kind
 			const effectivePolicy = effectivePolicies[index]
-			const allowedTools = [...getSubagentAllowedToolNames(role, inheritedSkills.length > 0)]
+			const allowedTools = [
+				...getSubagentAllowedToolNames(role, inheritedSkills.length > 0, effectivePolicy.delegate),
+			]
 			return captureSubagentContext({
 				parentTaskId: parent.taskId,
 				capturedAt: createdAt,
@@ -3754,6 +3923,7 @@ export class ClineProvider
 				cwd: parent.cwd,
 				workspaceRoots: [parent.cwd],
 				modelRoute: routes[index].route,
+				orchestration: orchestrations[index],
 				runtimePolicy: {
 					role,
 					...effectivePolicy,
@@ -3768,9 +3938,12 @@ export class ClineProvider
 			const id = crypto.randomUUID()
 			const modelRoute = routes[index]
 			const capturedContext = capturedContexts[index]
+			const orchestration = orchestrations[index]
 			const envelope = buildInternalTaskEnvelope({
 				id,
 				parentTaskId: parent.taskId,
+				rootTaskId: orchestration.ancestry.rootTaskId,
+				depth: orchestration.ancestry.depth,
 				objective: draft.objective,
 				agentKind: draft.agent_kind,
 				expectedOutput: draft.expected_output,
@@ -3795,9 +3968,11 @@ export class ClineProvider
 					model: modelRoute.route.modelId,
 				},
 				budget: {
-					maxDepth: 0,
-					maxConcurrency: 1,
-					timeoutMs: draft.agent_kind === "worker" ? SUBAGENT_WORKER_TIMEOUT_MS : 120_000,
+					maxDepth: orchestration.ancestry.maxDepth,
+					maxConcurrency: orchestration.limits.maxConcurrentSubagents,
+					maxInputTokens: orchestration.limits.maxInputTokens,
+					maxOutputTokens: orchestration.limits.maxOutputTokens,
+					timeoutMs: orchestration.limits.timeoutMs,
 				},
 			})
 
@@ -3818,13 +3993,7 @@ export class ClineProvider
 					path,
 				})),
 				inheritedSkillMode: parentMode,
-				approvalProvenance:
-					settings.autoApprovalEnabled === true &&
-					settings.alwaysAllowSubagents === true &&
-					settings.alwaysAllowReadOnly === true &&
-					(draft.agent_kind !== "worker" || settings.alwaysAllowWrite === true)
-						? "auto"
-						: "group",
+				approvalProvenance: requiresExplicitApproval ? "group" : "auto",
 			})
 			return envelope
 		})
@@ -3851,7 +4020,7 @@ export class ClineProvider
 				usage: { durationMs: 0 },
 			})),
 		}
-		const prepared = { group, envelopes }
+		const prepared = { group, envelopes, requiresExplicitApproval }
 		this.preparedSubagentGroups.set(groupId, prepared)
 		this.reservedSubagentSlots.set(groupId, envelopes.length)
 		await parent.upsertSubagentGroup(group)
@@ -3881,6 +4050,66 @@ export class ClineProvider
 		this.releaseSubagentGroup(prepared.group.groupId)
 	}
 
+	/**
+	 * Commit trusted approval provenance only after the tool approval path has
+	 * returned successfully. Finalizing changes the manifest context reference,
+	 * so the immutable envelope is rebuilt atomically before any control record
+	 * or child runtime becomes observable.
+	 */
+	private finalizePreparedSubagentAuthorization(prepared: PreparedSubagentGroup): void {
+		for (let index = 0; index < prepared.envelopes.length; index++) {
+			const envelope = prepared.envelopes[index]
+			const descriptor = this.subagentDescriptors.get(envelope.id)
+			if (!descriptor?.contextManifest) {
+				throw new Error(`recovery_failed: sub-agent ${envelope.id} has no captured context manifest`)
+			}
+			if (finalizedSubagentContextManifestSchema.safeParse(descriptor.contextManifest).success) continue
+			if (descriptor.approvalProvenance !== "group") {
+				throw new Error(
+					`authority_denied: sub-agent ${envelope.id} has pending approval without group evidence`,
+				)
+			}
+
+			const contextManifest = finalizeSubagentContextManifestAuthorization(descriptor.contextManifest, {
+				authorization: "group-approval",
+				groupApproved: true,
+			})
+			if (!finalizedSubagentContextManifestSchema.safeParse(contextManifest).success) {
+				throw new Error(`authority_denied: sub-agent ${envelope.id} approval provenance did not finalize`)
+			}
+
+			const rebuilt = buildInternalTaskEnvelope({
+				id: envelope.id,
+				parentTaskId: envelope.parentTaskId,
+				rootTaskId: envelope.rootTaskId,
+				depth: envelope.depth,
+				objective: envelope.objective,
+				agentKind: envelope.agentKind,
+				expectedOutput: [...envelope.expectedOutput],
+				parentPolicy: envelope.policy,
+				requestedPolicy: envelope.policy,
+				workspaceRoots: [...envelope.scope.workspaceRoots],
+				parentWorkspaceRoots: [...envelope.scope.workspaceRoots],
+				allowedPaths: envelope.scope.allowedPaths ? [...envelope.scope.allowedPaths] : undefined,
+				parentAllowedPaths: envelope.scope.allowedPaths ? [...envelope.scope.allowedPaths] : undefined,
+				sharedWorkspace: envelope.scope.sharedWorkspace,
+				contextRefs: [...contextManifest.contextRefs],
+				skillIds: envelope.skills.map(({ id }) => id),
+				availableSkills: envelope.skills.map(({ id, digest }) => ({ id, digest, content: "" })),
+				modelRouteId: envelope.modelRoute.id,
+				modelOverride: {
+					provider: envelope.modelRoute.provider,
+					model: envelope.modelRoute.model,
+					reasoning: envelope.modelRoute.reasoning,
+				},
+				budget: { ...envelope.budget },
+				dependencies: [...envelope.dependencies],
+			})
+			descriptor.contextManifest = structuredClone(contextManifest)
+			prepared.envelopes[index] = rebuilt
+		}
+	}
+
 	public async launchPreparedSubagentGroup(
 		parent: Task,
 		prepared: PreparedSubagentGroup,
@@ -3895,6 +4124,7 @@ export class ClineProvider
 		if (prepared.envelopes.length !== 1 || prepared.group.agents.length !== 1) {
 			throw new Error("spawn_agent requires exactly one prepared child")
 		}
+		this.finalizePreparedSubagentAuthorization(prepared)
 
 		const envelope = prepared.envelopes[0]
 		const agent = prepared.group.agents[0]
@@ -3903,7 +4133,7 @@ export class ClineProvider
 		if (!controlRecord) {
 			controlRecord = await this.agentControlStore.createAgent({
 				taskId: envelope.id,
-				parentTaskId: root.taskId,
+				parentTaskId: parent.taskId,
 				rootTaskId: root.rootTaskId,
 				groupId: prepared.group.groupId,
 				nickname: agent.nickname,
@@ -3998,6 +4228,7 @@ export class ClineProvider
 								status: "failed",
 								error: message,
 								completedAt: failedAt,
+								stopReason: "failed",
 							},
 						},
 						controlRecord.rootTaskId,
@@ -4006,7 +4237,7 @@ export class ClineProvider
 						eventId: `agent-launch-failed:${controlRecord.rootTaskId}:${controlRecord.taskId}:${failedAt}`,
 						rootTaskId: controlRecord.rootTaskId,
 						sender: controlRecord.taskId,
-						recipient: parent.rootTaskId ?? parent.taskId,
+						recipient: parent.taskId,
 						kind: "result",
 						name: "agent_failed",
 						payload: {
@@ -4015,6 +4246,7 @@ export class ClineProvider
 							groupId: controlRecord.groupId,
 							status: "failed",
 							summary: message,
+							stopReason: "failed",
 						},
 						createdAt: failedAt,
 					})
@@ -4055,6 +4287,7 @@ export class ClineProvider
 			modelRouteId: agent.modelRoute?.profileId ?? agent.modelRoute?.modelId,
 			requiresParentVerification: agent.requiresParentVerification,
 			usage: { ...agent.usage },
+			stopReason: agent.stopReason,
 			...(contextManifest ? { contextManifest: structuredClone(contextManifest) } : {}),
 			metadata: {
 				...(agent.writeScope ? { writeScope: [...agent.writeScope] } : {}),
@@ -4078,6 +4311,8 @@ export class ClineProvider
 						changedFiles: event.snapshot.changedFiles ? [...event.snapshot.changedFiles] : undefined,
 						requiresParentVerification: event.snapshot.requiresParentVerification,
 						completedAt: event.snapshot.completedAt ?? event.occurredAt,
+						usage: { ...event.snapshot.usage },
+						stopReason: event.snapshot.stopReason,
 					}
 				: undefined
 		await this.agentControlStore.updateAgentStatus(
@@ -4099,7 +4334,7 @@ export class ClineProvider
 			eventId: `agent-lifecycle:${event.eventId}`,
 			rootTaskId: record.rootTaskId,
 			sender: record.taskId,
-			recipient: parent.rootTaskId ?? parent.taskId,
+			recipient: parent.taskId,
 			kind: "result",
 			name: `agent_${event.snapshot.status}`,
 			payload: {
@@ -4108,6 +4343,8 @@ export class ClineProvider
 				groupId: record.groupId,
 				status: event.snapshot.status,
 				summary: event.snapshot.summary ?? event.snapshot.error,
+				stopReason: event.snapshot.stopReason,
+				usage: event.snapshot.usage,
 			},
 			createdAt: event.occurredAt,
 		})
@@ -4196,7 +4433,36 @@ export class ClineProvider
 			const parent =
 				this.getLiveTask(parentTaskId) ??
 				[...this.subagentDescriptors.values()].find((descriptor) => descriptor.groupId === groupId)?.parent
-			controller.abort(new Error("Sub-agent group cancelled by user"))
+			for (const agent of prepared.group.agents) {
+				if (
+					!this.asyncSubagentRunManager.cancel(
+						agent.taskId,
+						"Sub-agent group cancelled by user",
+						"parent_cancelled",
+					)
+				) {
+					this.boundedDelegationManager.cancel(
+						agent.taskId,
+						"Sub-agent group cancelled by user",
+						"parent_cancelled",
+					)
+				}
+			}
+			controller.abort(new InternalTaskCancellationError("parent_cancelled", "Sub-agent group cancelled by user"))
+			await this.agentControlStoreReady
+			for (const agent of prepared.group.agents) {
+				const descriptor = this.subagentDescriptors.get(agent.taskId)
+				const rootTaskId = descriptor?.parent.rootTaskId ?? descriptor?.parent.taskId ?? parentTaskId
+				const record = this.agentControlStore.getAgent(agent.taskId, rootTaskId)
+				if (record) {
+					await this.cancelManagedAgentSubtree(
+						parentTaskId,
+						record,
+						"Sub-agent group cancelled by user",
+						"parent_cancelled",
+					)
+				}
+			}
 			if (parent) await parent.upsertSubagentGroup(prepared.group)
 			return
 		}
@@ -4268,10 +4534,17 @@ export class ClineProvider
 		agent.cancelRequestedAt = Date.now()
 		delete agent.pendingApproval
 		const reason = new Error("Sub-agent cancelled by user")
-		if (!this.asyncSubagentRunManager.cancel(taskId, reason)) {
-			this.boundedDelegationManager.cancel(taskId, reason)
+		if (!this.asyncSubagentRunManager.cancel(taskId, reason, "parent_cancelled")) {
+			this.boundedDelegationManager.cancel(taskId, reason, "parent_cancelled")
 		}
-		await this.subagentDescriptors.get(taskId)?.parent.upsertSubagentGroup(prepared.group)
+		await this.agentControlStoreReady
+		const descriptor = this.subagentDescriptors.get(taskId)
+		const rootTaskId = descriptor?.parent.rootTaskId ?? descriptor?.parent.taskId ?? parentTaskId
+		const record = this.agentControlStore.getAgent(taskId, rootTaskId)
+		if (record) {
+			await this.cancelManagedAgentSubtree(parentTaskId, record, reason.message, "parent_cancelled")
+		}
+		await descriptor?.parent.upsertSubagentGroup(prepared.group)
 	}
 
 	private async publishParentVerificationTransition(
@@ -4410,7 +4683,25 @@ export class ClineProvider
 	/** Authoritative production completion gate used by attempt_completion. */
 	public async getParentCompletionDecision(parent: Task): Promise<ParentCompletionDecision> {
 		await this.recordParentVerificationEvidence(parent)
-		return this.agentControlStore.getParentCompletionDecision(parent.taskId, parent.rootTaskId ?? parent.taskId)
+		const root = await this.ensureAgentControlRoot(parent)
+		const verificationDecision = this.agentControlStore.getParentCompletionDecision(parent.taskId, root.rootTaskId)
+		const activeDescendants = this.agentControlStore
+			.listDescendants(parent.taskId, root.rootTaskId)
+			.filter((record) =>
+				(["pending", "running", "cancelling"] as AgentLifecycleStatus[]).includes(record.status),
+			)
+		if (activeDescendants.length === 0) return verificationDecision
+		const paths = activeDescendants.map(({ path }) => path).join(", ")
+		return {
+			allowed: false,
+			blockingObligations: verificationDecision.blockingObligations,
+			message: [
+				verificationDecision.message,
+				`Cannot complete while ${activeDescendants.length} managed descendant${activeDescendants.length === 1 ? " is" : "s are"} still active: ${paths}. Wait for or cancel the descendant subtree, review its results, then retry attempt_completion.`,
+			]
+				.filter(Boolean)
+				.join(" "),
+		}
 	}
 
 	public async listAgents(parent: Task, pathPrefix?: string): Promise<unknown> {
@@ -4422,8 +4713,13 @@ export class ClineProvider
 		}
 		const agents = this.agentControlStore
 			.listAgents({ rootTaskId: root.rootTaskId, includeRoot: false })
+			.filter(
+				(record) =>
+					parent.taskId === root.rootTaskId ||
+					this.agentControlStore.isDescendant(parent.taskId, record.taskId, root.rootTaskId),
+			)
 			.filter((record) => !prefix || record.path === prefix || record.path.startsWith(`${prefix}/`))
-		const mailbox = this.agentControlStore.readMailbox(root.taskId, {
+		const mailbox = this.agentControlStore.readMailbox(parent.taskId, {
 			rootTaskId: root.rootTaskId,
 			includeDelivered: false,
 		})
@@ -4466,6 +4762,7 @@ export class ClineProvider
 	/** Keep model-facing status inspection compact; detailed results arrive through the mailbox. */
 	private toAgentListItem(record: AgentRecord) {
 		const parentVerification = this.agentControlStore.getWorkerVerificationSummary(record.taskId, record.rootTaskId)
+		const orchestration = record.snapshot?.contextManifest?.orchestration
 		return {
 			taskId: record.taskId,
 			path: record.path,
@@ -4486,6 +4783,14 @@ export class ClineProvider
 			phase: record.snapshot?.phase,
 			modelRouteId: record.snapshot?.modelRouteId,
 			usage: record.snapshot?.usage,
+			depth: orchestration?.ancestry.depth,
+			maxDepth: orchestration?.ancestry.maxDepth,
+			delegationPolicy: orchestration?.delegationPolicy.policy,
+			delegationPolicyProvenance: orchestration?.delegationPolicy
+				? structuredClone(orchestration.delegationPolicy)
+				: undefined,
+			effectiveLimits: orchestration?.limits ? structuredClone(orchestration.limits) : undefined,
+			stopReason: record.terminalResult?.stopReason ?? record.snapshot?.stopReason,
 			requiresParentVerification:
 				parentVerification?.blocking || parentVerification?.status === "required"
 					? true
@@ -4571,7 +4876,7 @@ export class ClineProvider
 		const root = await this.ensureAgentControlRoot(parent)
 		const boundedTimeoutMs = Math.max(10_000, Math.min(timeoutMs, 300_000))
 		const takeAvailable = async (): Promise<{ events: AgentMailboxEntry[]; consumedCount: number }> => {
-			const mailbox = this.agentControlStore.readMailbox(root.taskId, {
+			const mailbox = this.agentControlStore.readMailbox(parent.taskId, {
 				rootTaskId: root.rootTaskId,
 				includeDelivered: false,
 			})
@@ -4579,7 +4884,7 @@ export class ClineProvider
 			await this.markWaitDeliveredAgentResults(parent, events)
 			if (mailbox.entries.length > 0) {
 				await this.agentControlStore.markDelivered(
-					root.taskId,
+					parent.taskId,
 					mailbox.entries.at(-1)!.sequence,
 					root.rootTaskId,
 				)
@@ -4598,11 +4903,17 @@ export class ClineProvider
 				...(immediate.events.length === 0 ? { alreadyDelivered: true } : {}),
 			}
 		}
-		const activeAgents = this.agentControlStore.listAgents({
-			rootTaskId: root.rootTaskId,
-			includeRoot: false,
-			statuses: ["pending", "running", "cancelling"],
-		})
+		const activeAgents = this.agentControlStore
+			.listAgents({
+				rootTaskId: root.rootTaskId,
+				includeRoot: false,
+				statuses: ["pending", "running", "cancelling"],
+			})
+			.filter(
+				(record) =>
+					record.parentTaskId === parent.taskId ||
+					this.agentControlStore.isDescendant(parent.taskId, record.taskId, root.rootTaskId),
+			)
 		if (activeAgents.length === 0) {
 			return { timedOut: false, noActiveAgents: true, events: [] }
 		}
@@ -4654,7 +4965,7 @@ export class ClineProvider
 					}
 				}
 				unsubscribe = this.agentControlStore.subscribe((entry) => {
-					if (entry.rootTaskId === root.rootTaskId && entry.recipientTaskId === root.taskId) {
+					if (entry.rootTaskId === root.rootTaskId && entry.recipientTaskId === parent.taskId) {
 						void finish()
 					}
 				})
@@ -4686,7 +4997,7 @@ export class ClineProvider
 
 		const event = await this.agentControlStore.appendEvent({
 			rootTaskId: record.rootTaskId,
-			sender: parent.rootTaskId ?? parent.taskId,
+			sender: parent.taskId,
 			recipient: record.taskId,
 			kind: "message",
 			name: "parent_message",
@@ -4755,6 +5066,13 @@ export class ClineProvider
 		await this.markQueuedAgentMessageDelivered(record, pending)
 	}
 
+	public async requiresExplicitAgentFollowupApproval(parent: Task, target: string): Promise<boolean> {
+		const record = await this.requireControlledAgent(parent, target)
+		const manifest =
+			this.subagentDescriptors.get(record.taskId)?.contextManifest ?? record.snapshot?.contextManifest
+		return manifest?.orchestration?.delegationPolicy.policy !== "proactive"
+	}
+
 	public async followupAgentTask(parent: Task, target: string, message: string): Promise<unknown> {
 		const instruction = this.normalizeAgentInstruction(message, "Follow-up instruction")
 		const record = await this.requireControlledAgent(parent, target)
@@ -4778,6 +5096,7 @@ export class ClineProvider
 		const prepared = await this.restorePreparedSubagentForFollowup(parent, record, instruction)
 		const descriptor = this.subagentDescriptors.get(record.taskId)
 		if (!descriptor) throw new Error(`Agent ${record.path} is missing its retained runtime descriptor`)
+		this.assertRetainedAgentRelaunchCapacity(record, prepared, descriptor.contextManifest)
 		descriptor.pendingFollowup = instruction
 
 		const restartedAt = Date.now()
@@ -4799,6 +5118,7 @@ export class ClineProvider
 		delete agent.verification
 		delete agent.resultDeliveredAt
 		delete agent.pendingApproval
+		delete agent.stopReason
 		this.publishedSubagentResults.delete(`${prepared.group.groupId}:${record.taskId}`)
 
 		await this.agentControlStore.updateAgentStatus(
@@ -4809,7 +5129,7 @@ export class ClineProvider
 		)
 		await this.agentControlStore.appendEvent({
 			rootTaskId: record.rootTaskId,
-			sender: parent.rootTaskId ?? parent.taskId,
+			sender: parent.taskId,
 			recipient: record.taskId,
 			kind: "followup",
 			name: "followup_started",
@@ -4827,6 +5147,73 @@ export class ClineProvider
 			retainedSnapshot !== undefined,
 		)
 		return { ...handle, followup: true }
+	}
+
+	private assertRetainedAgentRelaunchCapacity(
+		record: AgentRecord,
+		prepared: PreparedSubagentGroup,
+		contextManifest: SubagentContextManifest | undefined,
+	): void {
+		const finalized = finalizedSubagentContextManifestSchema.safeParse(contextManifest)
+		if (!finalized.success) {
+			throw new Error(`recovery_failed: agent ${record.path} has no finalized orchestration manifest`)
+		}
+		const limits = finalized.data.orchestration.limits
+		let reservedTotal = 0
+		let reservedForRoot = 0
+		for (const [groupId, count] of this.reservedSubagentSlots) {
+			if (groupId === prepared.group.groupId) continue
+			const group = this.preparedSubagentGroups.get(groupId)
+			if (!group) {
+				reservedTotal += count
+				continue
+			}
+			const unregistered = group.envelopes.filter((envelope) => !this.taskSessions.getTask(envelope.id))
+			reservedTotal += Math.min(count, unregistered.length)
+			reservedForRoot += Math.min(
+				count,
+				unregistered.filter(
+					(envelope) =>
+						(envelope.rootTaskId ?? envelope.parentTaskId) === record.rootTaskId &&
+						!this.agentControlStore.getAgent(envelope.id, record.rootTaskId),
+				).length,
+			)
+		}
+		const effectiveTotalCap = Math.min(this.taskSessions.getMaxLiveTasks(), limits.maxConcurrentTasks)
+		const additionalLiveTask = this.taskSessions.getLiveTaskIds().includes(record.taskId) ? 0 : 1
+		if (this.taskSessions.getLiveTaskCount() + reservedTotal + additionalLiveTask > effectiveTotalCap) {
+			throw new Error(
+				`Not enough task capacity to resume ${record.path}; effective total live-task maximum: ${effectiveTotalCap}.`,
+			)
+		}
+		const activeForRoot = this.agentControlStore.listAgents({
+			rootTaskId: record.rootTaskId,
+			includeRoot: false,
+			statuses: ["pending", "running", "cancelling"],
+		}).length
+		if (activeForRoot + reservedForRoot + 1 > limits.maxConcurrentSubagents) {
+			throw new Error(
+				`Not enough root-wide child capacity to resume ${record.path}; effective root child maximum: ${limits.maxConcurrentSubagents}.`,
+			)
+		}
+		const history = this.taskHistoryStore.get(record.taskId)
+		if ((history?.tokensIn ?? 0) >= limits.maxInputTokens) {
+			throw new Error(`input_token_limit: agent ${record.path} exhausted its frozen input token limit`)
+		}
+		if ((history?.tokensOut ?? 0) >= limits.maxOutputTokens) {
+			throw new Error(`output_token_limit: agent ${record.path} exhausted its frozen output token limit`)
+		}
+		const exhaustion = this.getSubagentRootBudgetExhaustion(record.rootTaskId)
+		if (exhaustion) throw new Error(`${exhaustion}: this orchestration root has exhausted its frozen budget`)
+		const rootUsage = this.getSubagentRootUsage(record.rootTaskId)
+		if (limits.rootTokenBudget !== null && rootUsage.tokens >= limits.rootTokenBudget) {
+			this.exhaustedSubagentRootBudgets.set(record.rootTaskId, "root_token_budget")
+			throw new Error(`root_token_budget: this orchestration root has exhausted its frozen token budget`)
+		}
+		if (limits.rootCostBudget !== null && rootUsage.cost >= limits.rootCostBudget) {
+			this.exhaustedSubagentRootBudgets.set(record.rootTaskId, "root_cost_budget")
+			throw new Error(`root_cost_budget: this orchestration root has exhausted its frozen cost budget`)
+		}
 	}
 
 	public async interruptAgent(parent: Task, target: string): Promise<unknown> {
@@ -4847,11 +5234,96 @@ export class ClineProvider
 			throw new Error(`Agent ${record.path} cannot be cancelled while status is ${record.status}`)
 		}
 		const cancellationReason = reason?.trim() || `Agent ${record.path} cancelled by parent`
-		if (!this.asyncSubagentRunManager.cancel(record.taskId, cancellationReason)) {
+		const directStopReason: "parent_cancelled" | "ancestor_cancelled" =
+			record.parentTaskId === parent.taskId ? "parent_cancelled" : "ancestor_cancelled"
+		const cancellation = await this.cancelManagedAgentSubtree(
+			parent.taskId,
+			record,
+			cancellationReason,
+			directStopReason,
+		)
+		if (!cancellation.targetCancelled) {
 			throw new Error(`Agent ${record.path} no longer has an active turn to cancel`)
 		}
-		await this.publishAgentControlRequest(parent, record, "cancel_requested", { reason: cancellationReason })
-		return { taskId: record.taskId, path: record.path, status: "cancelling" }
+		return {
+			taskId: record.taskId,
+			path: record.path,
+			status: "cancelling",
+			descendantTaskIds: cancellation.descendantTaskIds,
+		}
+	}
+
+	private async cancelManagedAgentSubtree(
+		actorTaskId: string,
+		target: AgentRecord,
+		reason: string,
+		targetStopReason: "cancelled" | "parent_cancelled" | "ancestor_cancelled" = "parent_cancelled",
+	): Promise<{ targetCancelled: boolean; descendantTaskIds: string[] }> {
+		const descendants = this.agentControlStore
+			.listDescendants(target.taskId, target.rootTaskId)
+			.filter((record) =>
+				(["pending", "running", "cancelling"] as AgentLifecycleStatus[]).includes(record.status),
+			)
+		const ordered = [...descendants, target].sort(
+			(left, right) => right.path.split("/").length - left.path.split("/").length,
+		)
+		let targetCancelled = target.status === "cancelling"
+		for (const record of ordered) {
+			const stopReason =
+				record.taskId === target.taskId
+					? targetStopReason
+					: record.parentTaskId === target.taskId
+						? "parent_cancelled"
+						: "ancestor_cancelled"
+			const message =
+				record.taskId === target.taskId
+					? reason
+					: `Agent ${record.path} cancelled because ${target.path} was cancelled`
+			const didCancel =
+				record.status === "cancelling" ||
+				this.asyncSubagentRunManager.cancel(record.taskId, message, stopReason) ||
+				this.boundedDelegationManager.cancel(record.taskId, message, stopReason)
+			if (record.taskId === target.taskId) targetCancelled = didCancel
+			await this.agentControlStore.appendEvent({
+				rootTaskId: record.rootTaskId,
+				sender: actorTaskId,
+				recipient: record.taskId,
+				kind: "control",
+				name: "cancel_requested",
+				payload: { reason: message, stopReason },
+			})
+		}
+		return {
+			targetCancelled,
+			descendantTaskIds: descendants.map(({ taskId }) => taskId),
+		}
+	}
+
+	private async cancelManagedTaskDescendants(taskId: string, rootTaskId: string, reason: string): Promise<string[]> {
+		if (!this.agentControlStore.getAgent(taskId, rootTaskId)) return []
+		const descendants = this.agentControlStore
+			.listDescendants(taskId, rootTaskId)
+			.filter((record) =>
+				(["pending", "running", "cancelling"] as AgentLifecycleStatus[]).includes(record.status),
+			)
+			.sort((left, right) => right.path.split("/").length - left.path.split("/").length)
+		for (const record of descendants) {
+			const stopReason = record.parentTaskId === taskId ? "parent_cancelled" : "ancestor_cancelled"
+			if (record.status !== "cancelling") {
+				if (!this.asyncSubagentRunManager.cancel(record.taskId, reason, stopReason)) {
+					this.boundedDelegationManager.cancel(record.taskId, reason, stopReason)
+				}
+			}
+			await this.agentControlStore.appendEvent({
+				rootTaskId,
+				sender: taskId,
+				recipient: record.taskId,
+				kind: "control",
+				name: "cancel_requested",
+				payload: { reason, stopReason },
+			})
+		}
+		return descendants.map(({ taskId: descendantTaskId }) => descendantTaskId)
 	}
 
 	public async closeAgent(parent: Task, target: string): Promise<unknown> {
@@ -4862,8 +5334,8 @@ export class ClineProvider
 		try {
 			await this.agentControlStore.appendEvent({
 				rootTaskId: record.rootTaskId,
-				sender: parent.rootTaskId ?? parent.taskId,
-				recipient: parent.rootTaskId ?? parent.taskId,
+				sender: parent.taskId,
+				recipient: parent.taskId,
 				kind: "control",
 				name: "agent_closed",
 				payload: { taskId: record.taskId, path: record.path, status: record.status },
@@ -4906,7 +5378,210 @@ export class ClineProvider
 		if (!record || record.role === "root") {
 			throw new Error(`Unknown child agent target: ${target}`)
 		}
+		if (record.taskId === parent.taskId) {
+			throw new Error("An agent cannot target itself with a lifecycle control")
+		}
+		if (
+			parent.taskId !== root.rootTaskId &&
+			!this.agentControlStore.isDescendant(parent.taskId, record.taskId, root.rootTaskId)
+		) {
+			throw new Error(`Agent ${record.path} is outside the caller's managed subtree`)
+		}
 		return record
+	}
+
+	private getResolvedSubagentOrchestrationSettings(): ResolvedSubagentOrchestrationSettings {
+		const settings = this.contextProxy.getValues()
+		return resolveSubagentOrchestrationSettings({
+			maxConcurrentSubagents: settings.maxConcurrentSubagents,
+			subagentDelegationPolicy: settings.subagentDelegationPolicy,
+			subagentMaxDepth: settings.subagentMaxDepth,
+			subagentRoleTimeoutsMs: settings.subagentRoleTimeoutsMs,
+			subagentMaxInputTokens: settings.subagentMaxInputTokens,
+			subagentMaxOutputTokens: settings.subagentMaxOutputTokens,
+			subagentRootTokenBudget: settings.subagentRootTokenBudget,
+			subagentRootCostBudget: settings.subagentRootCostBudget,
+		})
+	}
+
+	private getSubagentRootBudgetExhaustion(rootTaskId: string): "root_token_budget" | "root_cost_budget" | undefined {
+		const retained = this.exhaustedSubagentRootBudgets.get(rootTaskId)
+		if (retained) return retained
+		const persisted = this.agentControlStore
+			.listAgents({ rootTaskId, includeRoot: false })
+			.map((record) => record.terminalResult?.stopReason ?? record.snapshot?.stopReason)
+			.find(
+				(reason): reason is "root_token_budget" | "root_cost_budget" =>
+					reason === "root_token_budget" || reason === "root_cost_budget",
+			)
+		if (persisted) this.exhaustedSubagentRootBudgets.set(rootTaskId, persisted)
+		return persisted
+	}
+
+	private getSubagentRootUsage(rootTaskId: string): { tokens: number; cost: number } {
+		let tokens = 0
+		let cost = 0
+		const seen = new Set<string>()
+		for (const record of this.agentControlStore.listAgents({ rootTaskId, includeRoot: false })) {
+			const history = this.taskHistoryStore.get(record.taskId)
+			const historyTokens = (history?.tokensIn ?? 0) + (history?.tokensOut ?? 0)
+			const historyCost = history?.totalCost ?? 0
+			const retainedUsage = record.terminalResult?.usage ?? record.snapshot?.usage
+			const retainedTokens = (retainedUsage?.inputTokens ?? 0) + (retainedUsage?.outputTokens ?? 0)
+			const retainedCost = retainedUsage?.cost ?? 0
+			const live = this.getLiveTask(record.taskId)
+			if (live) {
+				const usage =
+					typeof live.getTokenUsage === "function"
+						? live.getTokenUsage()
+						: {
+								totalTokensIn: 0,
+								totalTokensOut: 0,
+								totalCost: 0,
+								contextTokens: 0,
+							}
+				tokens += Math.max(usage.totalTokensIn + usage.totalTokensOut, retainedTokens, historyTokens)
+				cost += Math.max(usage.totalCost, retainedCost, historyCost)
+			} else {
+				tokens += Math.max(retainedTokens, historyTokens)
+				cost += Math.max(retainedCost, historyCost)
+			}
+			seen.add(record.taskId)
+		}
+		for (const taskId of this.taskSessions.getLiveTaskIds()) {
+			if (seen.has(taskId)) continue
+			const task = this.getLiveTask(taskId)
+			if (!task || task.taskKind !== "subagent" || (task.rootTaskId ?? task.taskId) !== rootTaskId) continue
+			const usage =
+				typeof task.getTokenUsage === "function"
+					? task.getTokenUsage()
+					: { totalTokensIn: 0, totalTokensOut: 0, totalCost: 0, contextTokens: 0 }
+			const history = this.taskHistoryStore.get(taskId)
+			tokens += Math.max(
+				usage.totalTokensIn + usage.totalTokensOut,
+				(history?.tokensIn ?? 0) + (history?.tokensOut ?? 0),
+			)
+			cost += Math.max(usage.totalCost, history?.totalCost ?? 0)
+		}
+		return { tokens, cost }
+	}
+
+	private exhaustSubagentRootBudget(
+		rootTaskId: string,
+		currentTaskId: string,
+		stopReason: "root_token_budget" | "root_cost_budget",
+		message: string,
+	): void {
+		this.exhaustedSubagentRootBudgets.set(rootTaskId, stopReason)
+		const cancelled = new Set<string>([currentTaskId])
+		for (const prepared of this.preparedSubagentGroups.values()) {
+			for (const envelope of prepared.envelopes) {
+				if ((envelope.rootTaskId ?? envelope.parentTaskId) !== rootTaskId || cancelled.has(envelope.id))
+					continue
+				cancelled.add(envelope.id)
+				if (!this.asyncSubagentRunManager.cancel(envelope.id, message, stopReason)) {
+					this.boundedDelegationManager.cancel(envelope.id, message, stopReason)
+				}
+			}
+		}
+		for (const record of this.agentControlStore.listAgents({
+			rootTaskId,
+			includeRoot: false,
+			statuses: ["pending", "running", "cancelling"],
+		})) {
+			if (!cancelled.has(record.taskId)) {
+				cancelled.add(record.taskId)
+				if (!this.asyncSubagentRunManager.cancel(record.taskId, message, stopReason)) {
+					this.boundedDelegationManager.cancel(record.taskId, message, stopReason)
+				}
+			}
+			void this.agentControlStore
+				.appendEvent({
+					rootTaskId,
+					sender: rootTaskId,
+					recipient: record.taskId,
+					kind: "control",
+					name: "root_budget_exhausted",
+					payload: { stopReason, message },
+				})
+				.catch((error) => this.log(`Failed to persist root budget cancellation: ${String(error)}`))
+		}
+	}
+
+	private getSubagentAncestryAndLimits(
+		parent: Task,
+		role: "explore" | "review" | "worker",
+		settings: ResolvedSubagentOrchestrationSettings,
+	): Pick<SubagentManifestOrchestration, "ancestry" | "limits"> {
+		const parentOrchestration = parent.subagentContextManifest?.orchestration
+		if (parent.taskKind === "subagent") {
+			// Legacy children intentionally retain the original depth-one semantics,
+			// independent of any settings changed after they were created.
+			const parentDepth = parentOrchestration?.ancestry.depth ?? 1
+			const maxDepth = parentOrchestration?.ancestry.maxDepth ?? 1
+			const depth = parentDepth + 1
+			if (depth > maxDepth) {
+				throw new Error(`depth_limit: maximum managed-agent depth ${maxDepth} has been reached`)
+			}
+			if (!parent.subagentContextManifest?.runtimePolicy.delegate) {
+				throw new Error("authority_denied: this managed agent was not granted delegation authority")
+			}
+			if (role === "worker") {
+				throw new Error(
+					"authority_denied: nested Worker creation is disabled until descendant change-set ownership can be preserved safely",
+				)
+			}
+			const legacySettings = resolveSubagentOrchestrationSettings()
+			const limits: SubagentEffectiveLimits = parentOrchestration?.limits
+				? {
+						...structuredClone(parentOrchestration.limits),
+						// A descendant may select a different role, but every role timeout
+						// comes from the root-frozen map rather than current settings.
+						timeoutMs: parentOrchestration.limits.roleTimeoutsMs[role],
+					}
+				: createSubagentEffectiveLimits(
+						legacySettings,
+						role,
+						Math.min(this.taskSessions.getMaxLiveTasks(), DEFAULT_MAX_CONCURRENT_TASKS),
+					)
+			return {
+				ancestry: {
+					rootTaskId: parentOrchestration?.ancestry.rootTaskId ?? parent.rootTaskId ?? parent.taskId,
+					parentTaskId: parent.taskId,
+					depth,
+					maxDepth,
+				},
+				limits,
+			}
+		}
+
+		const frozenRootOrchestration =
+			this.agentControlStore
+				.listAgents({ rootTaskId: parent.taskId, includeRoot: false })
+				.map((record) => record.snapshot?.contextManifest?.orchestration)
+				.find((orchestration) => orchestration?.ancestry.rootTaskId === parent.taskId) ??
+			this.taskHistoryStore
+				.getAll()
+				.map((item) => item.subagentContextManifest?.orchestration)
+				.find((orchestration) => orchestration?.ancestry.rootTaskId === parent.taskId) ??
+			[...this.subagentDescriptors.values()]
+				.map((descriptor) => descriptor.contextManifest?.orchestration)
+				.find((orchestration) => orchestration?.ancestry.rootTaskId === parent.taskId)
+		const rootLimits: SubagentEffectiveLimits = frozenRootOrchestration
+			? {
+					...structuredClone(frozenRootOrchestration.limits),
+					timeoutMs: frozenRootOrchestration.limits.roleTimeoutsMs[role],
+				}
+			: createSubagentEffectiveLimits(settings, role, this.taskSessions.getMaxLiveTasks())
+		return {
+			ancestry: {
+				rootTaskId: parent.taskId,
+				parentTaskId: parent.taskId,
+				depth: 1,
+				maxDepth: frozenRootOrchestration?.ancestry.maxDepth ?? settings.maxDepth,
+			},
+			limits: rootLimits,
+		}
 	}
 
 	private async restoreCapturedSubagentModelRoute(
@@ -5003,7 +5678,6 @@ export class ClineProvider
 			throw new Error(`Agent ${record.path} does not belong to a resumable asynchronous group`)
 		}
 
-		const settings = this.contextProxy.getValues()
 		const { historyItem: storedChildHistoryItem } = await this.getTaskWithId(record.taskId)
 		const childHistoryItem =
 			storedChildHistoryItem ??
@@ -5011,11 +5685,51 @@ export class ClineProvider
 				id: record.taskId,
 				apiConfigName: agent.modelRoute?.profileName,
 			} as HistoryItem)
-		const contextManifest = childHistoryItem.subagentContextManifest ?? record.snapshot?.contextManifest
-		if (contextManifest && !isValidSubagentContextManifest(contextManifest)) {
-			throw new Error(`Agent ${record.path} retained an invalid context manifest`)
+		const retainedContextManifest = childHistoryItem.subagentContextManifest ?? record.snapshot?.contextManifest
+		if (retainedContextManifest && !isValidSubagentContextManifest(retainedContextManifest)) {
+			throw new Error(`recovery_failed: agent ${record.path} retained an invalid context manifest`)
 		}
-		if (contextManifest && contextManifest.parentTaskId !== parent.taskId) {
+		let migratedContextManifest = retainedContextManifest
+		if (retainedContextManifest && !retainedContextManifest.orchestration) {
+			if (record.parentTaskId !== record.rootTaskId || parent.taskId !== record.rootTaskId) {
+				throw new Error(`recovery_failed: nested legacy agent ${record.path} has no trustworthy ancestry`)
+			}
+			const legacySettings = resolveSubagentOrchestrationSettings()
+			const legacyDecision = finalizeSubagentDelegationPolicy(resolveSubagentDelegationPolicy({}), {
+				authorization: "group-approval",
+				groupApproved: true,
+			})
+			migratedContextManifest = upgradeLegacySubagentContextManifest(retainedContextManifest, {
+				ancestry: {
+					rootTaskId: record.rootTaskId,
+					parentTaskId: record.parentTaskId,
+					depth: 1,
+					maxDepth: 1,
+				},
+				delegationPolicy: legacyDecision,
+				limits: createSubagentEffectiveLimits(legacySettings, agent.role, DEFAULT_MAX_CONCURRENT_TASKS),
+			})
+			if (storedChildHistoryItem) {
+				await this.taskHistoryStore.upsert({
+					...storedChildHistoryItem,
+					subagentContextManifest: structuredClone(migratedContextManifest),
+					subagentDelegationPolicy: DEFAULT_SUBAGENT_DELEGATION_POLICY,
+				})
+			}
+			await this.agentControlStore.updateAgentSnapshot(
+				record.taskId,
+				{ ...record.snapshot, contextManifest: structuredClone(migratedContextManifest) },
+				record.rootTaskId,
+			)
+		}
+		const finalizedManifest = finalizedSubagentContextManifestSchema.safeParse(migratedContextManifest)
+		if (!finalizedManifest.success) {
+			throw new Error(
+				`recovery_failed: agent ${record.path} has no finalized orchestration manifest and cannot be relaunched safely`,
+			)
+		}
+		const contextManifest = finalizedManifest.data
+		if (contextManifest.parentTaskId !== parent.taskId) {
 			throw new Error(`Agent ${record.path} retained context from a different parent task`)
 		}
 		const modelRoute = await this.restoreCapturedSubagentModelRoute(
@@ -5031,53 +5745,44 @@ export class ClineProvider
 			agent.role === "worker"
 				? await managedSubagentWorktreeService.validateScope(parent.cwd, agent.writeScope!)
 				: undefined
-		const capturedPolicy = contextManifest?.runtimePolicy
-		const workspaceRoots = contextManifest?.workspace.roots ?? [parent.cwd]
+		const capturedPolicy = contextManifest.runtimePolicy
+		const orchestration = contextManifest.orchestration
+		const workspaceRoots = contextManifest.workspace.roots
 		const envelope = buildInternalTaskEnvelope({
 			id: record.taskId,
 			parentTaskId: parent.taskId,
+			rootTaskId: orchestration.ancestry.rootTaskId,
+			depth: orchestration.ancestry.depth,
 			objective: record.objective,
 			agentKind: agent.role,
 			expectedOutput: [instruction],
-			parentPolicy: capturedPolicy
-				? {
-						read: capturedPolicy.read,
-						execute: capturedPolicy.execute,
-						mutate: capturedPolicy.mutate,
-						delegate: capturedPolicy.delegate,
-						network: capturedPolicy.network,
-						externalSideEffects: capturedPolicy.externalSideEffects,
-						requireApproval: capturedPolicy.requireApproval,
-					}
-				: this.getRequestedSubagentPolicy(agent.role),
-			requestedPolicy: capturedPolicy
-				? {
-						read: capturedPolicy.read,
-						execute: capturedPolicy.execute,
-						mutate: capturedPolicy.mutate,
-						delegate: capturedPolicy.delegate,
-						network: capturedPolicy.network,
-						externalSideEffects: capturedPolicy.externalSideEffects,
-						requireApproval: capturedPolicy.requireApproval,
-					}
-				: {
-						read: true,
-						execute: agent.role === "worker",
-						mutate: agent.role === "worker",
-						delegate: false,
-						network: false,
-						externalSideEffects: false,
-						requireApproval: false,
-					},
+			parentPolicy: {
+				read: capturedPolicy.read,
+				execute: capturedPolicy.execute,
+				mutate: capturedPolicy.mutate,
+				delegate: capturedPolicy.delegate,
+				network: capturedPolicy.network,
+				externalSideEffects: capturedPolicy.externalSideEffects,
+				requireApproval: capturedPolicy.requireApproval,
+			},
+			requestedPolicy: {
+				read: capturedPolicy.read,
+				execute: capturedPolicy.execute,
+				mutate: capturedPolicy.mutate,
+				delegate: capturedPolicy.delegate,
+				network: capturedPolicy.network,
+				externalSideEffects: capturedPolicy.externalSideEffects,
+				requireApproval: capturedPolicy.requireApproval,
+			},
 			workspaceRoots,
 			parentWorkspaceRoots: workspaceRoots,
 			allowedPaths: agent.role === "worker" ? agent.writeScope : undefined,
 			parentAllowedPaths: capturedPolicy?.writeScope,
 			parentFileAllowedPaths: validatedScope?.fileWriteScope,
 			sharedWorkspace: agent.role !== "worker",
-			contextRefs: contextManifest?.contextRefs,
-			skillIds: contextManifest?.skills.map((skill) => skill.name),
-			availableSkills: contextManifest?.skills.map((skill) => ({
+			contextRefs: contextManifest.contextRefs,
+			skillIds: contextManifest.skills.map((skill) => skill.name),
+			availableSkills: contextManifest.skills.map((skill) => ({
 				id: skill.name,
 				content: "",
 				digest: skill.digest,
@@ -5088,9 +5793,11 @@ export class ClineProvider
 				model: modelRoute.route.modelId,
 			},
 			budget: {
-				maxDepth: 0,
-				maxConcurrency: 1,
-				timeoutMs: agent.role === "worker" ? SUBAGENT_WORKER_TIMEOUT_MS : 120_000,
+				maxDepth: orchestration.ancestry.maxDepth,
+				maxConcurrency: orchestration.limits.maxConcurrentSubagents,
+				maxInputTokens: orchestration.limits.maxInputTokens,
+				maxOutputTokens: orchestration.limits.maxOutputTokens,
+				timeoutMs: orchestration.limits.timeoutMs,
 			},
 		})
 		const prepared = { group, envelopes: [envelope] }
@@ -5103,14 +5810,8 @@ export class ClineProvider
 			modelRoute,
 			writeScope: agent.writeScope ? [...agent.writeScope] : undefined,
 			validatedScope,
-			contextManifest: contextManifest ? structuredClone(contextManifest) : undefined,
-			approvalProvenance:
-				settings.autoApprovalEnabled === true &&
-				settings.alwaysAllowSubagents === true &&
-				settings.alwaysAllowReadOnly === true &&
-				(agent.role !== "worker" || settings.alwaysAllowWrite === true)
-					? "auto"
-					: "group",
+			contextManifest: structuredClone(contextManifest),
+			approvalProvenance: orchestration.delegationPolicy.authorization === "group-approval" ? "group" : "auto",
 		})
 		return prepared
 	}
@@ -5123,7 +5824,7 @@ export class ClineProvider
 	): Promise<void> {
 		await this.agentControlStore.appendEvent({
 			rootTaskId: record.rootTaskId,
-			sender: parent.rootTaskId ?? parent.taskId,
+			sender: parent.taskId,
 			recipient: record.taskId,
 			kind: "control",
 			name,
@@ -5136,6 +5837,7 @@ export class ClineProvider
 		prepared: PreparedSubagentGroup,
 		parentSignal: AbortSignal,
 	): Promise<SubagentToolResult> {
+		this.finalizePreparedSubagentAuthorization(prepared)
 		const controller = new AbortController()
 		const cancelFromParent = () => controller.abort(parentSignal.reason)
 		if (parentSignal.aborted) cancelFromParent()
@@ -5322,6 +6024,25 @@ export class ClineProvider
 	): Promise<Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">> {
 		const descriptor = this.subagentDescriptors.get(envelope.id)
 		if (!descriptor) throw new Error(`Missing sub-agent descriptor for ${envelope.id}`)
+		const finalizedManifest = finalizedSubagentContextManifestSchema.safeParse(descriptor.contextManifest)
+		if (!finalizedManifest.success) {
+			throw new Error(`recovery_failed: sub-agent ${envelope.id} has no finalized orchestration manifest`)
+		}
+		const { ancestry, limits } = finalizedManifest.data.orchestration
+		if (
+			finalizedManifest.data.parentTaskId !== envelope.parentTaskId ||
+			ancestry.parentTaskId !== envelope.parentTaskId ||
+			ancestry.rootTaskId !== envelope.rootTaskId ||
+			ancestry.depth !== envelope.depth ||
+			ancestry.maxDepth !== envelope.budget.maxDepth ||
+			limits.maxConcurrentSubagents !== envelope.budget.maxConcurrency ||
+			limits.maxInputTokens !== envelope.budget.maxInputTokens ||
+			limits.maxOutputTokens !== envelope.budget.maxOutputTokens ||
+			limits.timeoutMs !== envelope.budget.timeoutMs
+		) {
+			throw new Error(`recovery_failed: sub-agent ${envelope.id} envelope does not match its frozen manifest`)
+		}
+		descriptor.contextManifest = structuredClone(finalizedManifest.data)
 
 		const { parent, groupId, nickname, role, modelRoute } = descriptor
 		const startedAt =
@@ -5341,6 +6062,10 @@ export class ClineProvider
 			objective: envelope.objective,
 			expectedOutput: envelope.expectedOutput,
 			writeScope: descriptor.writeScope,
+			canDelegate: envelope.policy.delegate,
+			delegationPolicy: finalizedManifest.data.orchestration.delegationPolicy.policy,
+			depth: ancestry.depth,
+			maxDepth: ancestry.maxDepth,
 		})
 		const inheritedSkillCatalog = getSkillsCatalogSection(
 			descriptor.inheritedSkills ?? [],
@@ -5434,6 +6159,8 @@ export class ClineProvider
 					subagentNickname: nickname,
 					subagentRole: role,
 					subagentModelRoute: structuredClone(modelRoute.route),
+					subagentDelegationPolicy: finalizedManifest.data.orchestration.delegationPolicy.policy,
+					subagentDelegationExplicitlyEnabled: false,
 					...(descriptor.contextManifest
 						? { subagentContextManifest: structuredClone(descriptor.contextManifest) }
 						: {}),
@@ -5457,17 +6184,19 @@ export class ClineProvider
 		let result = await new Promise<Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">>(
 			(resolve) => {
 				let settled = false
-				const onMessage = ({ message }: { message: ClineMessage }) => {
-					const phase = this.getSubagentPhaseForMessage(message)
-					if (!phase) return
-					void this.updateSubagentPhase(groupId, child.taskId, phase).catch((error) =>
-						this.log(`Failed to update sub-agent ${child.taskId} phase: ${String(error)}`),
-					)
-				}
 				const finish = (
 					status: "completed" | "blocked" | "failed" | "cancelled" | "timed_out" | "interrupted",
 					tokenUsage = child.getTokenUsage(),
 					summaryOverride?: string,
+					stopReason: SubagentStopReason = status === "completed" || status === "blocked"
+						? "completed"
+						: status === "cancelled"
+							? "cancelled"
+							: status === "timed_out"
+								? "timeout"
+								: status === "interrupted"
+									? "interrupted"
+									: "failed",
 				) => {
 					if (settled) return
 					settled = true
@@ -5500,13 +6229,81 @@ export class ClineProvider
 						usage: {
 							inputTokens: tokenUsage.totalTokensIn,
 							outputTokens: tokenUsage.totalTokensOut,
+							cost: tokenUsage.totalCost,
 							durationMs: 0,
 						},
+						stopReason,
 					})
 				}
+				const stopForBudget = (
+					stopReason: "input_token_limit" | "output_token_limit" | "root_token_budget" | "root_cost_budget",
+					summary: string,
+					usage: TokenUsage,
+				) => {
+					if (stopReason === "root_token_budget" || stopReason === "root_cost_budget") {
+						this.exhaustSubagentRootBudget(ancestry.rootTaskId, child.taskId, stopReason, summary)
+					}
+					finish("cancelled", usage, summary, stopReason)
+					child.abortReason = "user_cancelled"
+					child.cancelCurrentRequest()
+					void child
+						.abortTask()
+						.catch((error) =>
+							this.log(`Failed to stop budget-exhausted sub-agent ${child.taskId}: ${String(error)}`),
+						)
+				}
+				const enforceBudgets = (): boolean => {
+					if (settled) return true
+					const usage = child.getTokenUsage()
+					if (usage.totalTokensIn > limits.maxInputTokens) {
+						stopForBudget(
+							"input_token_limit",
+							`Sub-agent input token limit exceeded (${usage.totalTokensIn}/${limits.maxInputTokens}).`,
+							usage,
+						)
+						return true
+					}
+					if (usage.totalTokensOut > limits.maxOutputTokens) {
+						stopForBudget(
+							"output_token_limit",
+							`Sub-agent output token limit exceeded (${usage.totalTokensOut}/${limits.maxOutputTokens}).`,
+							usage,
+						)
+						return true
+					}
+					const rootUsage = this.getSubagentRootUsage(ancestry.rootTaskId)
+					if (limits.rootTokenBudget !== null && rootUsage.tokens > limits.rootTokenBudget) {
+						stopForBudget(
+							"root_token_budget",
+							`Root sub-agent token budget exceeded (${rootUsage.tokens}/${limits.rootTokenBudget}).`,
+							usage,
+						)
+						return true
+					}
+					if (limits.rootCostBudget !== null && rootUsage.cost > limits.rootCostBudget) {
+						stopForBudget(
+							"root_cost_budget",
+							`Root sub-agent cost budget exceeded (${rootUsage.cost}/${limits.rootCostBudget}).`,
+							usage,
+						)
+						return true
+					}
+					return false
+				}
+				const onMessage = ({ message }: { message: ClineMessage }) => {
+					if (enforceBudgets()) return
+					const phase = this.getSubagentPhaseForMessage(message)
+					if (!phase) return
+					void this.updateSubagentPhase(groupId, child.taskId, phase).catch((error) =>
+						this.log(`Failed to update sub-agent ${child.taskId} phase: ${String(error)}`),
+					)
+				}
 
-				const onCompleted = (_taskId: string, tokenUsage: TokenUsage) =>
-					void finish(child.subagentCompletionOutcome === "blocked" ? "blocked" : "completed", tokenUsage)
+				const onCompleted = (_taskId: string, tokenUsage: TokenUsage) => {
+					if (!enforceBudgets()) {
+						finish(child.subagentCompletionOutcome === "blocked" ? "blocked" : "completed", tokenUsage)
+					}
+				}
 				const onAborted = () => {
 					if (signal.aborted) return
 					const reason = signal.reason instanceof Error ? signal.reason.message : String(signal.reason ?? "")
@@ -5514,18 +6311,24 @@ export class ClineProvider
 				}
 				const onCancelled = () => {
 					const reason = signal.reason instanceof Error ? signal.reason.message : String(signal.reason ?? "")
+					const cancellationKind =
+						signal.reason instanceof InternalTaskCancellationError ? signal.reason.kind : "user_cancelled"
 					const status =
-						signal.reason instanceof InternalTaskCancellationError && signal.reason.kind === "interrupted"
+						cancellationKind === "interrupted"
 							? "interrupted"
-							: reason.includes("timed out")
+							: cancellationKind === "timed_out" || reason.includes("timed out")
 								? "timed_out"
 								: "cancelled"
+					const stopReason: SubagentStopReason =
+						cancellationKind === "user_cancelled"
+							? "cancelled"
+							: cancellationKind === "timed_out"
+								? "timeout"
+								: cancellationKind
+					finish(status, child.getTokenUsage(), undefined, stopReason)
 					child.abortReason = "user_cancelled"
 					child.cancelCurrentRequest()
-					void child.abortTask().then(
-						() => finish(status),
-						() => finish(status),
-					)
+					void child.abortTask().catch(() => undefined)
 				}
 
 				child.once(RooCodeEventName.TaskCompleted, onCompleted)
@@ -5581,6 +6384,7 @@ export class ClineProvider
 				result = {
 					...result,
 					status: "failed",
+					stopReason: "failed",
 					summary: artifact.error ?? "Worker changed files outside its approved write scope.",
 					changedFiles: [],
 					verification,
@@ -5592,6 +6396,7 @@ export class ClineProvider
 				result = {
 					...result,
 					status: "failed",
+					stopReason: "failed",
 					summary: `${completionError}\n\nWorker report: ${result.summary}`,
 					changedFiles,
 					verification,
@@ -5615,6 +6420,7 @@ export class ClineProvider
 			await child.finalizeSubagentHistory(
 				result.status === "denied" ? "cancelled" : result.status,
 				result.summary,
+				result.stopReason,
 			)
 		} catch (error) {
 			this.log(`Failed to finalize sub-agent ${child.taskId} history: ${String(error)}`)
@@ -5656,10 +6462,14 @@ export class ClineProvider
 			if (!childHistory?.parentTaskId) continue
 			const changedFiles = this.getLogicalWorkerChangedFiles(artifact)
 			const changeSet = this.toSubagentChangeSetState(artifact, changedFiles)
+			const recoveryStopReason: SubagentStopReason = this.taskHistoryStore.get(childHistory.parentTaskId)
+				? "interrupted"
+				: "orphaned"
 			await this.taskHistoryStore.upsert({
 				...childHistory,
 				status: "interrupted",
 				subagentChangeSet: changeSet,
+				stopReason: recoveryStopReason,
 			})
 			try {
 				const messages = await readTaskMessages({
@@ -5672,6 +6482,7 @@ export class ClineProvider
 				const agent = groupMessage?.subagentGroup?.agents.find((item) => item.taskId === artifact.taskId)
 				if (!groupMessage?.subagentGroup || !agent) continue
 				agent.status = "interrupted"
+				agent.stopReason = recoveryStopReason
 				agent.error =
 					"The extension reloaded while this worker was active. Recoverable partial changes were quarantined."
 				agent.changedFiles = changedFiles
@@ -5694,11 +6505,16 @@ export class ClineProvider
 			.getAll()
 			.filter((item) => item.taskKind === "subagent" && item.parentTaskId)
 		const parentTaskIds = new Set(childHistoryItems.map((item) => item.parentTaskId!))
+		const recoveryStopReasons = new Map<string, SubagentStopReason>()
 		const completedAt = Date.now()
 
 		for (const child of childHistoryItems) {
 			if (child.status !== "active" || liveTaskIds.has(child.id)) continue
-			await this.taskHistoryStore.upsert({ ...child, status: "interrupted" })
+			const stopReason: SubagentStopReason = this.taskHistoryStore.get(child.parentTaskId!)
+				? "interrupted"
+				: "orphaned"
+			recoveryStopReasons.set(child.id, stopReason)
+			await this.taskHistoryStore.upsert({ ...child, status: "interrupted", stopReason })
 		}
 
 		for (const parentTaskId of parentTaskIds) {
@@ -5725,6 +6541,7 @@ export class ClineProvider
 					for (const agent of group.agents) {
 						if (!["pending", "running", "cancelling"].includes(agent.status)) continue
 						agent.status = "interrupted"
+						agent.stopReason = recoveryStopReasons.get(agent.taskId) ?? "interrupted"
 						delete agent.phase
 						delete agent.phaseStartedAt
 						delete agent.pendingApproval
@@ -6213,7 +7030,14 @@ export class ClineProvider
 		prepared: PreparedSubagentGroup | undefined,
 		result: Pick<
 			InternalTaskResult,
-			"taskId" | "status" | "summary" | "usage" | "changedFiles" | "displayVerification" | "changeSet"
+			| "taskId"
+			| "status"
+			| "summary"
+			| "usage"
+			| "changedFiles"
+			| "displayVerification"
+			| "changeSet"
+			| "stopReason"
 		> &
 			Partial<Pick<InternalTaskResult, "requiresParentVerification">>,
 	): Promise<void> {
@@ -6231,6 +7055,7 @@ export class ClineProvider
 		agent.error = hasTerminalReport ? undefined : result.summary
 		agent.completedAt = completedAt
 		agent.usage = result.usage
+		agent.stopReason = result.stopReason
 		delete agent.pendingApproval
 		agent.changedFiles = result.changedFiles
 		agent.verification = result.displayVerification

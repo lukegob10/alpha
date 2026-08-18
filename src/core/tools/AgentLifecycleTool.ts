@@ -27,6 +27,7 @@ export interface AgentLifecycleControlProvider {
 	waitForAgent(parent: Task, timeoutMs?: number): Promise<unknown>
 	sendMessageToAgent(parent: Task, target: string, message: string): Promise<unknown>
 	followupAgentTask(parent: Task, target: string, message: string): Promise<unknown>
+	requiresExplicitAgentFollowupApproval?(parent: Task, target: string): Promise<boolean>
 	interruptAgent(parent: Task, target: string): Promise<unknown>
 	cancelAgent(parent: Task, target: string, reason?: string): Promise<unknown>
 	closeAgent(parent: Task, target: string): Promise<unknown>

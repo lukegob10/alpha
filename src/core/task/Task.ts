@@ -40,8 +40,10 @@ import {
 	type SubagentChangeSetState,
 	type ExternalMutationCapability,
 	type SubagentContextManifest,
+	type SubagentDelegationPolicy,
 	type SubagentModelRouteState,
 	type SubagentRole,
+	type SubagentStopReason,
 	type ClineSay,
 	type ClineAsk,
 	type ToolProgressStatus,
@@ -224,7 +226,11 @@ export interface TaskOptions extends CreateTaskOptions {
 }
 
 /** Hard task-lane capability ceiling used both by capture manifests and runtime filtering. */
-export function getSubagentAllowedToolNames(role: SubagentRole, hasInheritedSkills = false): readonly ToolName[] {
+export function getSubagentAllowedToolNames(
+	role: SubagentRole,
+	hasInheritedSkills = false,
+	allowDelegation = false,
+): readonly ToolName[] {
 	const tools: ToolName[] =
 		role === "worker"
 			? [
@@ -245,6 +251,20 @@ export function getSubagentAllowedToolNames(role: SubagentRole, hasInheritedSkil
 				]
 			: ["read_file", "search_files", "list_files", "codebase_search", "attempt_completion"]
 	if (hasInheritedSkills) tools.splice(tools.length - 1, 0, "skill")
+	if (allowDelegation) {
+		tools.splice(
+			tools.length - 1,
+			0,
+			"spawn_agent",
+			"list_agents",
+			"wait_agent",
+			"send_message",
+			"followup_task",
+			"interrupt_agent",
+			"cancel_agent",
+			"close_agent",
+		)
+	}
 	return tools
 }
 
@@ -259,6 +279,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	public subagentCompletionOutcome?: "completed" | "blocked"
 	readonly subagentModelRoute?: SubagentModelRouteState
 	readonly subagentContextManifest?: SubagentContextManifest
+	readonly subagentDelegationPolicy?: SubagentDelegationPolicy
+	readonly subagentDelegationExplicitlyEnabled?: boolean
+	private subagentStopReason?: SubagentStopReason
 	readonly subagentWriteScope?: string[]
 	private subagentChangeSet?: SubagentChangeSetState
 	childTaskId?: string
@@ -703,6 +726,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		subagentRole,
 		subagentModelRoute,
 		subagentContextManifest,
+		subagentDelegationPolicy,
+		subagentDelegationExplicitlyEnabled,
 		subagentAuthority,
 		subagentWriteScope,
 		subagentChangeSet,
@@ -743,6 +768,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			throw new Error("Managed child context manifest failed integrity validation")
 		}
 		this.subagentContextManifest = structuredClone(contextManifest)
+		this.subagentDelegationPolicy = historyItem?.subagentDelegationPolicy ?? subagentDelegationPolicy
+		this.subagentDelegationExplicitlyEnabled =
+			historyItem?.subagentDelegationExplicitlyEnabled ?? subagentDelegationExplicitlyEnabled
+		this.subagentStopReason = historyItem?.stopReason
 		this.subagentAuthority = subagentAuthority
 		this.subagentWriteScope =
 			historyItem?.subagentWriteScope ??
@@ -1521,6 +1550,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					subagentRole: this.subagentRole,
 					subagentModelRoute: this.subagentModelRoute,
 					subagentContextManifest: this.subagentContextManifest,
+					subagentDelegationPolicy: this.subagentDelegationPolicy,
+					subagentDelegationExplicitlyEnabled: this.subagentDelegationExplicitlyEnabled,
+					stopReason: this.subagentStopReason,
 					subagentWriteScope: this.subagentWriteScope,
 					subagentChangeSet: this.subagentChangeSet,
 				})
@@ -2282,6 +2314,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			group.completedAt = completedAt
 			for (const agent of unfinishedAgents) {
 				agent.status = "interrupted"
+				agent.stopReason = "interrupted"
 				delete agent.phase
 				delete agent.phaseStartedAt
 				agent.completedAt = completedAt
@@ -2298,7 +2331,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	public getTaskAllowedToolNames(): readonly ToolName[] | undefined {
 		if (this.taskKind !== "subagent") return undefined
 		const role = this.subagentRole ?? "review"
-		const hardCeiling = getSubagentAllowedToolNames(role, Boolean(this.subagentContextManifest?.skills.length))
+		const hardCeiling = getSubagentAllowedToolNames(
+			role,
+			Boolean(this.subagentContextManifest?.skills.length),
+			this.subagentContextManifest?.runtimePolicy.delegate === true,
+		)
 		const capturedGrant = this.subagentContextManifest?.runtimePolicy.allowedTools
 		if (!capturedGrant) return hardCeiling
 		const granted = new Set(capturedGrant)
@@ -2510,6 +2547,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	public async finalizeSubagentHistory(
 		status: "completed" | "blocked" | "failed" | "cancelled" | "timed_out" | "interrupted",
 		summary: string,
+		stopReason?: SubagentStopReason,
 	): Promise<void> {
 		if (this.taskKind !== "subagent") return
 
@@ -2534,6 +2572,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		this.initialStatus = status
+		this.subagentStopReason = stopReason ?? this.defaultSubagentStopReason(status)
 		await this.saveClineMessages()
 
 		const provider = this.providerRef.deref()
@@ -2544,7 +2583,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			...historyItem,
 			status,
 			completionResultSummary: summary,
+			stopReason: this.subagentStopReason,
 		})
+	}
+
+	private defaultSubagentStopReason(
+		status: "completed" | "blocked" | "failed" | "cancelled" | "timed_out" | "interrupted",
+	): SubagentStopReason {
+		if (status === "completed" || status === "blocked") return "completed"
+		if (status === "cancelled") return "cancelled"
+		if (status === "timed_out") return "timeout"
+		if (status === "interrupted") return "interrupted"
+		return "failed"
 	}
 
 	private isParentAuthorizedSubagentAsk(type: ClineAsk, text?: string, isProtected?: boolean): boolean {
@@ -4893,6 +4943,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			state ?? {}
 		const mode = await this.getTaskMode()
 		const apiConfiguration = this.apiConfiguration
+		const subagentAncestry = this.subagentContextManifest?.orchestration?.ancestry
+		const subagentCanDelegate = Boolean(
+			isSubagent &&
+				this.subagentContextManifest?.runtimePolicy.delegate === true &&
+				subagentAncestry &&
+				subagentAncestry.depth < subagentAncestry.maxDepth &&
+				this.getTaskAllowedToolNames()?.includes("spawn_agent"),
+		)
 
 		const systemPrompt = await (async () => {
 			const provider = this.providerRef.deref()
@@ -4930,6 +4988,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						? Boolean(this.subagentContextManifest?.skills.length)
 						: undefined,
 					subagentUsesFrozenContext: isSubagent ? this.subagentContextManifest !== undefined : undefined,
+					subagentCanDelegate: isSubagent ? subagentCanDelegate : undefined,
+					subagentDelegationPolicy: isSubagent
+						? this.subagentContextManifest?.orchestration?.delegationPolicy.policy
+						: undefined,
 				},
 				undefined, // todoList
 				this.api.getModel().id,

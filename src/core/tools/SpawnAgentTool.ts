@@ -71,6 +71,8 @@ export class SpawnAgentTool extends BaseTool<"spawn_agent"> {
 					writeScope: prepared.group.agents[0].writeScope,
 				},
 			}),
+			undefined,
+			prepared.requiresExplicitApproval === true,
 		)
 
 		if (!approved) {

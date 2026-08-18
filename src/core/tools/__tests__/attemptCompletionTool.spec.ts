@@ -616,7 +616,11 @@ describe("attemptCompletionTool", () => {
 				;(mockTask as any).taskKind = "subagent"
 				;(mockTask as any).parentTaskId = "parent"
 				mockTask.providerRef = {
-					deref: () => ({ reopenParentFromDelegation: vi.fn(), getTaskWithId: vi.fn() }),
+					deref: () => ({
+						reopenParentFromDelegation: vi.fn(),
+						getTaskWithId: vi.fn(),
+						getParentCompletionDecision: mockGetParentCompletionDecision,
+					}),
 				} as any
 
 				const callbacks: AttemptCompletionCallbacks = {

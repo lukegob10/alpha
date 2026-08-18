@@ -1,6 +1,10 @@
 import { z } from "zod"
 
 import { subagentModelRouteStateSchema, subagentRoleSchema } from "./subagent.js"
+import {
+	finalizedSubagentManifestOrchestrationSchema,
+	subagentManifestOrchestrationSchema,
+} from "./subagent-orchestration.js"
 
 export const SUBAGENT_CONTEXT_MANIFEST_VERSION = 1 as const
 
@@ -138,6 +142,11 @@ export const subagentContextManifestSchema = z
 		skills: z.array(subagentContextSkillSchema),
 		modelRoute: subagentModelRouteStateSchema.strict(),
 		runtimePolicy: subagentContextRuntimePolicySchema,
+		/**
+		 * Frozen guardrails for new managed children. Optional only so retained
+		 * pre-guardrail manifests remain readable during conservative migration.
+		 */
+		orchestration: subagentManifestOrchestrationSchema.optional(),
 		manifestDigest: subagentContextDigestSchema,
 	})
 	.strict()
@@ -163,3 +172,17 @@ export const subagentContextManifestSchema = z
 		}
 	})
 export type SubagentContextManifest = z.infer<typeof subagentContextManifestSchema>
+
+/** Required orchestration form for every newly created managed-child record. */
+export const subagentOrchestratedContextManifestSchema = z.intersection(
+	subagentContextManifestSchema,
+	z.object({ orchestration: subagentManifestOrchestrationSchema }),
+)
+export type SubagentOrchestratedContextManifest = z.infer<typeof subagentOrchestratedContextManifestSchema>
+
+/** Finalized form required before a managed child may launch or relaunch after recovery. */
+export const finalizedSubagentContextManifestSchema = z.intersection(
+	subagentContextManifestSchema,
+	z.object({ orchestration: finalizedSubagentManifestOrchestrationSchema }),
+)
+export type FinalizedSubagentContextManifest = z.infer<typeof finalizedSubagentContextManifestSchema>

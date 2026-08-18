@@ -15,6 +15,15 @@ import { modeConfigSchema } from "./mode.js"
 import { customModePromptsSchema, customSupportPromptsSchema } from "./mode.js"
 import { toolNamesSchema } from "./tool.js"
 import { languagesSchema } from "./vscode.js"
+import {
+	maxConcurrentSubagentsSchema,
+	subagentDelegationPolicySchema,
+	subagentMaxDepthSchema,
+	subagentRoleTimeoutsMsSchema,
+	subagentRootCostBudgetSchema,
+	subagentRootTokenBudgetSchema,
+	subagentTokenLimitSchema,
+} from "./subagent-orchestration.js"
 
 /**
  * Default delay in milliseconds after writes to allow diagnostics to detect potential problems.
@@ -126,6 +135,22 @@ export const globalSettingsSchema = z.object({
 	autoCondenseContext: z.boolean().optional(),
 	autoCondenseContextPercent: z.number().optional(),
 	maxConcurrentTasks: z.number().int().min(MIN_MAX_CONCURRENT_TASKS).max(MAX_MAX_CONCURRENT_TASKS).optional(),
+	/** Root-wide live managed-child cap, independent from maxConcurrentTasks. */
+	maxConcurrentSubagents: maxConcurrentSubagentsSchema.optional(),
+	/** Whether the model may delegate proactively or only after an explicit user request. */
+	subagentDelegationPolicy: subagentDelegationPolicySchema.optional(),
+	/** Root-relative nesting ceiling. A direct child has depth 1. */
+	subagentMaxDepth: subagentMaxDepthSchema.optional(),
+	/** Per-role wall-clock timeouts in milliseconds; omitted roles retain their defaults. */
+	subagentRoleTimeoutsMs: subagentRoleTimeoutsMsSchema.optional(),
+	/** Per-child cumulative input-token ceiling. */
+	subagentMaxInputTokens: subagentTokenLimitSchema.optional(),
+	/** Per-child cumulative output-token ceiling. */
+	subagentMaxOutputTokens: subagentTokenLimitSchema.optional(),
+	/** Optional aggregate input-plus-output token budget for one root tree; null disables it. */
+	subagentRootTokenBudget: subagentRootTokenBudgetSchema.optional(),
+	/** Optional aggregate provider-reported cost budget for one root tree; null disables it. */
+	subagentRootCostBudget: subagentRootCostBudgetSchema.optional(),
 	subagentDefaultApiConfigId: z.string().optional(),
 	subagentApiConfigByRole: z
 		.object({

@@ -6,8 +6,10 @@ import type {
 	HistoryItem,
 	SubagentChangeSetState,
 	SubagentContextManifest,
+	SubagentDelegationPolicy,
 	SubagentModelRouteState,
 	SubagentRole,
+	SubagentStopReason,
 } from "@alpha-code/types"
 
 import { combineApiRequests } from "../../shared/combineApiRequests"
@@ -46,6 +48,9 @@ export type TaskMetadataOptions = {
 	subagentRole?: SubagentRole
 	subagentModelRoute?: SubagentModelRouteState
 	subagentContextManifest?: SubagentContextManifest
+	subagentDelegationPolicy?: SubagentDelegationPolicy
+	subagentDelegationExplicitlyEnabled?: boolean
+	stopReason?: SubagentStopReason
 	subagentWriteScope?: string[]
 	subagentChangeSet?: SubagentChangeSetState
 }
@@ -67,6 +72,9 @@ export async function taskMetadata({
 	subagentRole,
 	subagentModelRoute,
 	subagentContextManifest,
+	subagentDelegationPolicy,
+	subagentDelegationExplicitlyEnabled,
+	stopReason,
 	subagentWriteScope,
 	subagentChangeSet,
 }: TaskMetadataOptions) {
@@ -151,6 +159,9 @@ export async function taskMetadata({
 		...(subagentContextManifest && {
 			subagentContextManifest: structuredClone(subagentContextManifest),
 		}),
+		...(subagentDelegationPolicy && { subagentDelegationPolicy }),
+		...(subagentDelegationExplicitlyEnabled !== undefined && { subagentDelegationExplicitlyEnabled }),
+		...(stopReason && { stopReason }),
 		...(subagentWriteScope && { subagentWriteScope: [...subagentWriteScope] }),
 		...(subagentChangeSet && { subagentChangeSet: structuredClone(subagentChangeSet) }),
 	}

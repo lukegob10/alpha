@@ -7,6 +7,7 @@ import {
 	subagentRoleSchema,
 	subagentVerificationSchema,
 } from "./subagent.js"
+import { subagentStopReasonSchema, subagentUsageSchema } from "./subagent-orchestration.js"
 
 /**
  * ClineAsk
@@ -245,6 +246,7 @@ export const subagentRunStateSchema = z.object({
 	modelRoute: subagentModelRouteStateSchema.optional(),
 	summary: z.string().optional(),
 	error: z.string().optional(),
+	stopReason: subagentStopReasonSchema.optional(),
 	changedFiles: z.array(z.string()).optional(),
 	verification: z.array(subagentVerificationSchema).optional(),
 	changeSet: subagentChangeSetStateSchema.optional(),
@@ -266,14 +268,7 @@ export const subagentRunStateSchema = z.object({
 	completedAt: z.number().optional(),
 	/** When the terminal report was persisted into the parent model's conversation. */
 	resultDeliveredAt: z.number().optional(),
-	usage: z.object({
-		inputTokens: z.number().optional(),
-		outputTokens: z.number().optional(),
-		durationMs: z.number(),
-		rateLimitWaitCount: z.number().int().nonnegative().optional(),
-		rateLimitWaitMs: z.number().nonnegative().optional(),
-		rateLimitIntervalSeconds: z.number().nonnegative().optional(),
-	}),
+	usage: subagentUsageSchema,
 })
 
 export const subagentGroupStatusSchema = z.enum([

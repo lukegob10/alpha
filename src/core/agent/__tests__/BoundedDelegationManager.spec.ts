@@ -64,9 +64,25 @@ describe("bounded delegation", () => {
 		}))
 		expect((await manager.run(envelope("a"))).requiresParentVerification).toBe(true)
 	})
-	it("rejects children that can delegate", async () => {
+	it("allows explicitly bounded children to retain narrowed delegation authority", async () => {
 		const manager = new BoundedDelegationManager(async (item) => result(item.id))
-		await expect(manager.run({ ...envelope("a"), policy: { ...policy, delegate: true } })).rejects.toThrow("depth")
+		const nestedReady = buildInternalTaskEnvelope({
+			id: "a",
+			rootTaskId: "p",
+			parentTaskId: "p",
+			depth: 1,
+			objective: "a",
+			agentKind: "review",
+			parentPolicy: { ...policy, delegate: true },
+			requestedPolicy: { delegate: true },
+			workspaceRoots: ["F:/workspace"],
+			budget: { maxDepth: 2 },
+		})
+		await expect(manager.run(nestedReady)).resolves.toMatchObject({
+			taskId: "a",
+			status: "completed",
+			stopReason: "completed",
+		})
 	})
 
 	it("returns a timed-out structured result instead of corrupting the parent", async () => {
@@ -234,12 +250,12 @@ describe("bounded delegation", () => {
 		releaseFirst()
 		await first
 
-		expect((manager as any).active).toBe(0)
+		expect((manager as any).activeByRoot.size).toBe(0)
 		expect((manager as any).pending).toHaveLength(0)
 		expect((manager as any).activeRuns.size).toBe(0)
 
 		await expect(manager.run(envelope("b"))).resolves.toMatchObject({ taskId: "b", status: "completed" })
-		expect((manager as any).active).toBe(0)
+		expect((manager as any).activeByRoot.size).toBe(0)
 		expect((manager as any).activeRuns.size).toBe(0)
 	})
 })

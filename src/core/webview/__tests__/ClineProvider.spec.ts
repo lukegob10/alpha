@@ -822,6 +822,35 @@ describe("ClineProvider", () => {
 		expect(webviewState.subagentApiConfigByRole).toEqual({ review: "review-id" })
 	})
 
+	test("getState exposes normalized saved sub-agent orchestration guardrails", async () => {
+		await provider.contextProxy.setValues({
+			maxConcurrentSubagents: 5,
+			subagentDelegationPolicy: "proactive",
+			subagentMaxDepth: 3,
+			subagentRoleTimeoutsMs: { review: 240_000 },
+			subagentMaxInputTokens: 32_000,
+			subagentMaxOutputTokens: 8_000,
+			subagentRootTokenBudget: 200_000,
+			subagentRootCostBudget: 25,
+		})
+
+		const state = await provider.getState()
+		const webviewState = await provider.getStateToPostToWebview()
+		const expected = {
+			maxConcurrentSubagents: 5,
+			subagentDelegationPolicy: "proactive",
+			subagentMaxDepth: 3,
+			subagentRoleTimeoutsMs: { explore: 120_000, review: 240_000, worker: 900_000 },
+			subagentMaxInputTokens: 32_000,
+			subagentMaxOutputTokens: 8_000,
+			subagentRootTokenBudget: 200_000,
+			subagentRootCostBudget: 25,
+		}
+
+		expect(state).toMatchObject(expected)
+		expect(webviewState).toMatchObject(expected)
+	})
+
 	test("language is set to VSCode language", async () => {
 		// Mock VSCode language as Spanish
 		;(vscode.env as any).language = "pt-BR"
@@ -865,6 +894,28 @@ describe("ClineProvider", () => {
 
 		expect(updateGlobalStateSpy).toHaveBeenCalledWith("subagentDefaultApiConfigId", undefined)
 		expect(updateGlobalStateSpy).toHaveBeenCalledWith("subagentApiConfigByRole", { explore: "fast-id" })
+	})
+
+	test("persists every sub-agent orchestration setting, including disabled root budgets", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+		const updatedSettings = {
+			maxConcurrentSubagents: 4,
+			subagentDelegationPolicy: "explicit-only",
+			subagentMaxDepth: 2,
+			subagentRoleTimeoutsMs: { explore: 90_000, review: 180_000, worker: 600_000 },
+			subagentMaxInputTokens: 24_000,
+			subagentMaxOutputTokens: 6_000,
+			subagentRootTokenBudget: null,
+			subagentRootCostBudget: null,
+		}
+
+		await messageHandler({ type: "updateSettings", updatedSettings })
+
+		for (const [key, value] of Object.entries(updatedSettings)) {
+			expect(updateGlobalStateSpy).toHaveBeenCalledWith(key, value)
+			expect(mockContext.globalState.update).toHaveBeenCalledWith(key, value)
+		}
 	})
 
 	test("updates sound utility when sound setting changes", async () => {

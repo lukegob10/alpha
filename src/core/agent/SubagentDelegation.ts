@@ -193,6 +193,10 @@ interface SubagentPromptOptions {
 	objective: string
 	expectedOutput: string[]
 	writeScope?: string[]
+	canDelegate?: boolean
+	delegationPolicy?: "explicit-only" | "proactive"
+	depth?: number
+	maxDepth?: number
 }
 
 export const SUBAGENT_REPORT_WORD_BUDGET = 900
@@ -211,18 +215,31 @@ export function buildSubagentPrompt({
 	objective,
 	expectedOutput,
 	writeScope,
+	canDelegate = false,
+	delegationPolicy = "explicit-only",
+	depth,
+	maxDepth,
 }: SubagentPromptOptions): string {
 	const roleLabel = role === "explore" ? "Explorer" : role === "review" ? "Reviewer" : "Worker"
 	const deliverables = expectedOutput.length
 		? `Requested deliverables:\n${expectedOutput.map((item) => `- ${item}`).join("\n")}`
 		: "Requested deliverable: Return the findings needed to satisfy the objective."
+	const delegationGuidance = canDelegate
+		? [
+				`Managed delegation is available within this task's frozen ${delegationPolicy} policy and depth ${depth ?? "?"}/${maxDepth ?? "?"}.`,
+				delegationPolicy === "explicit-only"
+					? "Use spawn_agent only to carry out the explicit user-authorized delegation already represented in this task; do not invent additional proactive fan-out."
+					: "You may delegate a bounded, independent subtask when it materially advances the objective.",
+				"You may control only descendants in your own managed subtree. Observe results through the mailbox and return a self-contained report to your direct parent.",
+			].join(" ")
+		: "Do not create tasks or delegate."
 
 	if (role === "worker") {
 		return [
 			`You are ${nickname}, an Alpha editing Worker sub-agent managed by a parent task.`,
 			`Objective: ${objective}`,
 			`Authorized write scope:\n${(writeScope ?? []).map((item) => `- ${item}`).join("\n")}`,
-			"Work directly in your isolated Git worktree. You may read repository files broadly, but may edit only the authorized paths above. Do not modify .git, escape the workspace, access the network or MCP, ask the user questions, switch modes, create tasks, or delegate.",
+			`Work directly in your isolated Git worktree. You may read repository files broadly, but may edit only the authorized paths above. Do not modify .git, escape the workspace, access the network or MCP, ask the user questions, or switch modes. ${delegationGuidance}`,
 			"Make the smallest complete implementation. When the objective and write scope already specify the complete small change, begin with the edit instead of broad repository reconnaissance; inspect only sources needed for correctness or established conventions.",
 			"Use commands only for targeted local verification; command and protected-write approvals remain separately governed. Prefer one shell-compatible verification command that covers the requested checks. If a command itself is malformed, correct it once and report both outcomes. Do not run Git status or diff solely to enumerate changed files because the host captures and scope-checks the final delta.",
 			"Do not commit, stage, create branches, or change remotes.",
@@ -235,7 +252,7 @@ export function buildSubagentPrompt({
 	return [
 		`You are ${nickname}, an Alpha read-only ${roleLabel} sub-agent managed by a parent task.`,
 		`Objective: ${objective}`,
-		"Inspect the repository independently and report evidence. You may only read, list, search, and use codebase search. Do not edit files, run commands, access the network or MCP, ask the user questions, switch modes, or delegate.",
+		`Inspect the repository independently and report evidence. You may only read, list, search, use codebase search, and use any explicitly granted managed-agent lifecycle tools. Do not edit files, run commands, access the network or MCP, ask the user questions, or switch modes. ${delegationGuidance}`,
 		"Stay within the assigned evidence scope. If a requested location or source is missing, say so explicitly; do not silently substitute a different scope. Use nearby evidence only when clearly labeled as supplemental, and report blocked when the requested deliverable cannot be supported.",
 		"If the assigned objective requires an edit or command despite these limits, state that authority mismatch explicitly and finish with outcome blocked.",
 		"Treat every path explicitly named by the current objective as already located and required evidence. Read those paths directly before discovery; do not use list_files or search_files to confirm an exact path, and never infer that an exact path is absent from listing or search output, especially truncated output. If the objective names more than eight paths, use consecutive read_file batches of at most eight until every named path returns contents or a direct read error.",
@@ -251,6 +268,8 @@ export function buildSubagentPrompt({
 export interface PreparedSubagentGroup {
 	group: SubagentGroupState
 	envelopes: InternalTaskEnvelope[]
+	/** Explicit-only policy must bypass automatic tool approval before launch. */
+	requiresExplicitApproval?: boolean
 }
 
 export interface SubagentToolResult {

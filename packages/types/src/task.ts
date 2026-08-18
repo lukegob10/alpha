@@ -6,6 +6,7 @@ import type { ClineMessage, QueuedMessage, TokenUsage } from "./message.js"
 import type { ProviderSettings } from "./provider-settings.js"
 import type { SubagentModelRouteState } from "./subagent.js"
 import type { SubagentContextManifest } from "./subagent-context.js"
+import type { SubagentDelegationPolicy } from "./subagent-orchestration.js"
 import type { ToolUsage, ToolName } from "./tool.js"
 import type { StaticAppProperties, GitProperties, TelemetryProperties } from "./telemetry.js"
 import type { TodoItem } from "./todo.js"
@@ -124,6 +125,10 @@ export interface CreateTaskOptions {
 	preserveExisting?: boolean
 	/** Internal task kind. Sub-agents are parent-managed task lanes. */
 	taskKind?: "primary" | "subagent"
+	/** Frozen task-level policy. Descendants may narrow it but cannot widen it without a trusted user-authored override. */
+	subagentDelegationPolicy?: SubagentDelegationPolicy
+	/** Trusted user-authored opt-in; never populated from model tool arguments. */
+	subagentDelegationExplicitlyEnabled?: boolean
 	subagentGroupId?: string
 	subagentNickname?: string
 	subagentRole?: import("./subagent.js").SubagentRole
@@ -195,6 +200,8 @@ export interface TaskLike {
 	readonly rootTaskId?: string
 	readonly parentTaskId?: string
 	readonly taskKind?: "primary" | "subagent"
+	readonly subagentDelegationPolicy?: SubagentDelegationPolicy
+	readonly subagentDelegationExplicitlyEnabled?: boolean
 	readonly childTaskId?: string
 	readonly metadata: TaskMetadata
 	readonly taskStatus: TaskStatus

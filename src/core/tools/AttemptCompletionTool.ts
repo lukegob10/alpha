@@ -176,7 +176,6 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 		task: Task,
 		pushToolResult: (result: string) => void,
 	): Promise<boolean> {
-		if (task.taskKind === "subagent") return false
 		const provider = task.providerRef?.deref() as DelegationProvider | undefined
 
 		let decision: { allowed: boolean; message?: string }
@@ -211,7 +210,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 		task: Task,
 		pushToolResult: (result: string) => void,
 	): boolean {
-		if (task.taskKind === "subagent" || !task.hasUndeliveredSpawnedSubagentResults?.()) return false
+		if (!task.hasUndeliveredSpawnedSubagentResults?.()) return false
 
 		const errorMsg =
 			"A background sub-agent finished during this task, but its report has not been reviewed yet. Continue the task once more; the report will be included in the next model request."

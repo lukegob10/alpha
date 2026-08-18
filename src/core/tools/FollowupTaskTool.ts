@@ -8,6 +8,7 @@ import {
 	requireAgentTarget,
 	requireNonEmptyMessage,
 	runAgentLifecycleOperation,
+	type AgentLifecycleControlProvider,
 } from "./AgentLifecycleTool"
 
 export class FollowupTaskTool extends BaseTool<"followup_task"> {
@@ -22,6 +23,27 @@ export class FollowupTaskTool extends BaseTool<"followup_task"> {
 		} catch (error) {
 			recordLifecycleToolError(this.name, task, callbacks, error)
 			return
+		}
+
+		const provider = task.providerRef.deref() as Partial<AgentLifecycleControlProvider> | undefined
+		if (provider?.requiresExplicitAgentFollowupApproval) {
+			try {
+				const requiresApproval = await provider.requiresExplicitAgentFollowupApproval(task, target)
+				if (requiresApproval) {
+					// This approval is also the trusted evidence used to migrate a valid
+					// pre-orchestration manifest before relaunch.
+					const approved = await callbacks.askApproval(
+						"tool",
+						JSON.stringify({ tool: "followupTask", target, message }),
+						undefined,
+						true,
+					)
+					if (!approved) return
+				}
+			} catch (error) {
+				recordLifecycleToolError(this.name, task, callbacks, error)
+				return
+			}
 		}
 
 		await runAgentLifecycleOperation(this.name, "followupAgentTask", task, callbacks, (provider) =>

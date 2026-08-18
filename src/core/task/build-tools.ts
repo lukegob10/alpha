@@ -115,9 +115,9 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 	const nativeTools = getNativeTools({
 		supportsImages,
 	})
-	// Agent orchestration is a primary-task capability. Managed child lanes always
-	// provide an authority allow-list, so omit these schemas entirely even for
-	// providers that require the otherwise-unfiltered historical tool catalog.
+	// Managed child lanes provide a frozen authority allow-list. Retain only the
+	// orchestration schemas explicitly granted there; legacy/max-depth children
+	// name none of them and therefore keep the original fail-closed catalog.
 	const orchestrationTools = new Set([
 		"spawn_agent",
 		"list_agents",
@@ -128,8 +128,14 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 		"cancel_agent",
 		"close_agent",
 	])
-	const taskNativeTools = allowedToolNames
-		? nativeTools.filter((tool) => !orchestrationTools.has(getToolName(tool)))
+	const explicitlyAllowedTools = allowedToolNames
+		? new Set(allowedToolNames.map((name) => resolveToolAlias(name)))
+		: undefined
+	const taskNativeTools = explicitlyAllowedTools
+		? nativeTools.filter((tool) => {
+				const name = getToolName(tool)
+				return !orchestrationTools.has(name) || explicitlyAllowedTools.has(name)
+			})
 		: nativeTools
 
 	// Filter native tools based on mode restrictions.

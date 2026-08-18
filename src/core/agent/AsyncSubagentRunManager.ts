@@ -5,6 +5,7 @@ import type {
 	SubagentLifecycleEvent,
 	SubagentRunState,
 	SubagentSpawnHandle,
+	SubagentStopReason,
 } from "@alpha-code/types"
 
 import { BoundedDelegationManager, type InternalTaskResult, type InternalTaskRunner } from "./BoundedDelegationManager"
@@ -186,11 +187,18 @@ export class AsyncSubagentRunManager {
 		}
 	}
 
-	cancel(taskId: string, reason: string | Error = "Internal task cancelled by user"): boolean {
+	cancel(
+		taskId: string,
+		reason: string | Error = "Internal task cancelled by user",
+		stopReason: Exclude<
+			SubagentStopReason,
+			"completed" | "failed" | "timeout" | "authority_denied" | "depth_limit" | "orphaned" | "recovery_failed"
+		> = "cancelled",
+	): boolean {
 		const record = this.runs.get(taskId)
 		if (!record || isTerminalStatus(record.state.status) || record.state.status === "cancelling") return false
 
-		const cancelled = this.executor.cancel(taskId, reason)
+		const cancelled = this.executor.cancel(taskId, reason, stopReason)
 		if (cancelled) this.markCancelling(record)
 		return cancelled
 	}
@@ -256,9 +264,6 @@ export class AsyncSubagentRunManager {
 		if (!options.groupId.trim()) throw new Error("Sub-agent group ID is required")
 		if (!options.path.startsWith("/root/")) throw new Error("Sub-agent canonical path is required")
 		if (!options.nickname.trim()) throw new Error("Sub-agent nickname is required")
-		if (envelope.budget.maxDepth > 1 || envelope.policy.delegate) {
-			throw new Error("Child delegation exceeds maximum depth one")
-		}
 		if (envelope.agentKind && envelope.agentKind !== options.role) {
 			throw new Error(`Sub-agent role ${options.role} does not match envelope agent kind ${envelope.agentKind}`)
 		}
@@ -306,6 +311,7 @@ export class AsyncSubagentRunManager {
 			requiresParentVerification: result.requiresParentVerification,
 			completedAt,
 			usage: { ...result.usage },
+			stopReason: result.stopReason,
 		}
 		delete record.state.phase
 		delete record.state.phaseStartedAt
@@ -327,6 +333,7 @@ export class AsyncSubagentRunManager {
 			usage: { durationMs: 0 },
 			modelRouteId: envelope.modelRoute.id,
 			requiresParentVerification: false,
+			stopReason: "failed",
 		}
 	}
 

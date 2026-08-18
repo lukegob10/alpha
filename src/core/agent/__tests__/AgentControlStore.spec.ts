@@ -13,7 +13,7 @@ const clock = (initial = 1_000) => {
 const setup = async (persistence = new InMemoryAgentControlPersistence()) => {
 	const store = new AgentControlStore(persistence, clock())
 	await store.initialize()
-	await store.ensureRoot({ taskId: "root-1", objective: "Coordinate work", status: "interrupted" })
+	await store.ensureRoot({ taskId: "root-1", objective: "Coordinate work", status: "running" })
 	return { store, persistence }
 }
 
@@ -263,7 +263,7 @@ describe("AgentControlStore", () => {
 		expect(store.listChildren("root-1").map((agent) => agent.taskId)).toEqual(["review-1", "worker-1"])
 		expect(store.listAgents({ rootTaskId: "root-1", includeRoot: false })).toHaveLength(2)
 
-		await store.ensureRoot({ taskId: "root-2", status: "interrupted" })
+		await store.ensureRoot({ taskId: "root-2", status: "running" })
 		await store.createAgent({
 			taskId: "review-other-root",
 			parentTaskId: "root-2",

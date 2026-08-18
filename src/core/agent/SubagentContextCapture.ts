@@ -4,11 +4,15 @@ import {
 	SUBAGENT_CONTEXT_MANIFEST_VERSION,
 	subagentContextManifestSchema,
 	subagentForkTurnsSchema,
+	subagentManifestOrchestrationSchema,
 	subagentModelRouteStateSchema,
+	finalizeSubagentDelegationPolicy,
 	type SubagentContextManifest,
 	type SubagentContextRuntimePolicy,
 	type SubagentForkTurns,
 	type SubagentModelRouteState,
+	type SubagentManifestOrchestration,
+	type FinalizeSubagentDelegationPolicyAuthorization,
 } from "@alpha-code/types"
 
 import type { ApiMessage } from "../task-persistence/apiMessages"
@@ -93,6 +97,8 @@ export interface CaptureSubagentContextInput {
 	modelRoute: SubagentModelRouteState
 	/** The already narrowed authority that will actually be applied to the child. */
 	runtimePolicy: RuntimePolicyInput
+	/** Frozen ancestry, delegation policy, and resource ceilings applied to this child. */
+	orchestration?: SubagentManifestOrchestration
 }
 
 export interface InheritedTurnMessage {
@@ -431,6 +437,7 @@ function expectedContextRefs(manifest: Omit<SubagentContextManifest, "contextRef
 		`workspace:${digestValue(manifest.workspace)}`,
 		`model-route:${digestValue(manifest.modelRoute)}`,
 		`runtime-policy:${manifest.runtimePolicy.digest}`,
+		...(manifest.orchestration ? [`orchestration:${digestValue(manifest.orchestration)}`] : []),
 	])
 }
 
@@ -485,6 +492,9 @@ export function captureSubagentContext(input: CaptureSubagentContextInput): Capt
 		skills,
 		modelRoute: sanitizeModelRoute(input.modelRoute),
 		runtimePolicy,
+		...(input.orchestration
+			? { orchestration: subagentManifestOrchestrationSchema.parse(input.orchestration) }
+			: {}),
 	}
 	const contextRefs = expectedContextRefs(base)
 	const withoutDigest = { ...base, contextRefs }
@@ -522,6 +532,55 @@ export function isValidSubagentContextManifest(value: unknown): value is Subagen
 
 	const { contextRefs: _contextRefs, ...withoutContextRefsOrDigest } = withoutDigest
 	return JSON.stringify(manifest.contextRefs) === JSON.stringify(expectedContextRefs(withoutContextRefsOrDigest))
+}
+
+/** Finalize trusted approval provenance and rebuild every manifest integrity reference before launch. */
+export function finalizeSubagentContextManifestAuthorization(
+	value: SubagentContextManifest,
+	authorization: FinalizeSubagentDelegationPolicyAuthorization,
+): SubagentContextManifest {
+	if (!isValidSubagentContextManifest(value) || !value.orchestration) {
+		throw new Error("Cannot finalize a missing or invalid sub-agent orchestration manifest")
+	}
+
+	const orchestration = subagentManifestOrchestrationSchema.parse({
+		...value.orchestration,
+		delegationPolicy: finalizeSubagentDelegationPolicy(value.orchestration.delegationPolicy, authorization),
+	})
+	const { manifestDigest: _manifestDigest, contextRefs: _contextRefs, ...base } = value
+	const withoutContextRefsOrDigest = { ...base, orchestration }
+	const contextRefs = expectedContextRefs(withoutContextRefsOrDigest)
+	const withoutDigest = { ...withoutContextRefsOrDigest, contextRefs }
+	return subagentContextManifestSchema.parse({
+		...withoutDigest,
+		manifestDigest: digestValue(withoutDigest),
+	})
+}
+
+/**
+ * Attach conservative orchestration metadata to a valid pre-orchestration v1
+ * manifest. Callers supply fully finalized legacy defaults; existing
+ * orchestration records are never rewritten by this migration path.
+ */
+export function upgradeLegacySubagentContextManifest(
+	value: SubagentContextManifest,
+	orchestration: SubagentManifestOrchestration,
+): SubagentContextManifest {
+	if (!isValidSubagentContextManifest(value)) {
+		throw new Error("Cannot upgrade an invalid legacy sub-agent context manifest")
+	}
+	if (value.orchestration) {
+		throw new Error("Cannot replace orchestration metadata on an existing sub-agent context manifest")
+	}
+	const parsedOrchestration = subagentManifestOrchestrationSchema.parse(orchestration)
+	const { manifestDigest: _manifestDigest, contextRefs: _contextRefs, ...base } = value
+	const withoutContextRefsOrDigest = { ...base, orchestration: parsedOrchestration }
+	const contextRefs = expectedContextRefs(withoutContextRefsOrDigest)
+	const withoutDigest = { ...withoutContextRefsOrDigest, contextRefs }
+	return subagentContextManifestSchema.parse({
+		...withoutDigest,
+		manifestDigest: digestValue(withoutDigest),
+	})
 }
 
 /** Canonical, allowlisted serialization. Unknown credential-bearing fields are never emitted. */

@@ -1,6 +1,8 @@
 export function getSharedToolUseSection(
 	subagentRole?: "explore" | "review" | "worker",
 	subagentHasInheritedSkills = false,
+	subagentCanDelegate = false,
+	subagentDelegationPolicy?: "explicit-only" | "proactive",
 ): string {
 	if (subagentRole) {
 		const baseAuthority =
@@ -10,16 +12,28 @@ export function getSharedToolUseSection(
 		const authority = subagentHasInheritedSkills
 			? `${baseAuthority}, plus loading skills listed in the frozen inherited catalog`
 			: baseAuthority
+		const delegationAuthority = subagentCanDelegate
+			? `, plus spawn_agent and the managed-agent lifecycle controls for your retained descendant subtree`
+			: ""
+		const delegationGuidance = subagentCanDelegate
+			? `
+
+spawn_agent is nonblocking. Batch independent spawn_agent calls when root-wide capacity allows. The lifecycle controls list_agents, send_message, followup_task, interrupt_agent, cancel_agent, and close_agent may be combined only when every descendant target is already known. wait_agent is blocking and must be called alone for one bounded mailbox wait, never in a polling loop. Do not control ancestors, siblings, or foreign branches.${
+					subagentDelegationPolicy === "proactive"
+						? ""
+						: " A launch requires persisted task opt-in or trusted group approval."
+				}`
+			: ""
 
 		return `====
 
 TOOL USE
 
-You have only ${authority}. Use the provider-native tool-calling mechanism. Do not include XML markup or examples.
+You have only ${authority}${delegationAuthority}. Use the provider-native tool-calling mechanism. Do not include XML markup or examples.
 
 Batch independent reads and searches when their results do not affect one another. Serialize dependent actions, approvals, and${
 			subagentRole === "worker" ? " workspace mutations" : " final synthesis"
-		}, and inspect returned evidence before deciding the next action. Do not call capabilities outside this bounded child authority.`
+		}, and inspect returned evidence before deciding the next action. Do not call capabilities outside this bounded child authority.${delegationGuidance}`
 	}
 
 	return `====

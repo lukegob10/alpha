@@ -19,6 +19,10 @@ export interface InternalTaskPolicy {
 export interface InternalTaskEnvelope {
 	id: string
 	parentTaskId: string
+	/** Stable orchestration root used for root-wide concurrency and budget accounting. */
+	rootTaskId?: string
+	/** Absolute managed-agent depth. Root tasks are depth zero. */
+	depth?: number
 	objective: string
 	agentKind?: InternalAgentKind
 	expectedOutput: string[]
@@ -59,6 +63,8 @@ export const modelRoutes = Object.freeze({
 
 export interface BuildInternalTaskEnvelopeInput {
 	parentTaskId: string
+	rootTaskId?: string
+	depth?: number
 	objective: string
 	agentKind?: string
 	expectedOutput?: string[]
@@ -98,7 +104,7 @@ const ROLE_POLICY_CEILINGS: Record<InternalAgentKind, Pick<InternalTaskPolicy, (
 		read: true,
 		execute: false,
 		mutate: false,
-		delegate: false,
+		delegate: true,
 		network: false,
 		externalSideEffects: false,
 	},
@@ -106,7 +112,7 @@ const ROLE_POLICY_CEILINGS: Record<InternalAgentKind, Pick<InternalTaskPolicy, (
 		read: true,
 		execute: false,
 		mutate: false,
-		delegate: false,
+		delegate: true,
 		network: false,
 		externalSideEffects: false,
 	},
@@ -114,7 +120,7 @@ const ROLE_POLICY_CEILINGS: Record<InternalAgentKind, Pick<InternalTaskPolicy, (
 		read: true,
 		execute: true,
 		mutate: true,
-		delegate: false,
+		delegate: true,
 		network: false,
 		externalSideEffects: false,
 	},
@@ -189,6 +195,20 @@ export function resolveInternalTaskPolicy(
 
 export function buildInternalTaskEnvelope(input: BuildInternalTaskEnvelopeInput): InternalTaskEnvelope {
 	if (!input.objective.trim()) throw new Error("Internal task objective is required")
+	if ((input.rootTaskId === undefined) !== (input.depth === undefined)) {
+		throw new Error("Internal task orchestration ancestry requires both rootTaskId and depth")
+	}
+	if (input.depth !== undefined && (!Number.isInteger(input.depth) || input.depth < 1)) {
+		throw new Error("Internal task depth must be a positive integer")
+	}
+	if (input.rootTaskId !== undefined && input.depth !== undefined) {
+		if (input.depth === 1 && input.rootTaskId !== input.parentTaskId) {
+			throw new Error("Depth-one internal tasks must be parented directly by their orchestration root")
+		}
+		if (input.depth > 1 && input.rootTaskId === input.parentTaskId) {
+			throw new Error("Nested internal tasks must name a parent below their orchestration root")
+		}
+	}
 	if (input.agentKind && !(input.agentKind in internalAgentDefinitions))
 		throw new Error(`Unknown agent kind: ${input.agentKind}`)
 	const agentKind = (input.agentKind ?? "general") as InternalAgentKind
@@ -218,10 +238,15 @@ export function buildInternalTaskEnvelope(input: BuildInternalTaskEnvelopeInput)
 	const budget = { ...defaults, ...input.budget }
 	if (Object.values(budget).some((value) => !Number.isFinite(value) || value < 0))
 		throw new Error("Invalid internal task budget")
+	if (input.depth !== undefined && input.depth > budget.maxDepth) {
+		throw new Error(`Internal task depth ${input.depth} exceeds maximum depth ${budget.maxDepth}`)
+	}
 	const route = { ...modelRoutes[routeId], ...input.modelOverride, id: routeId }
 	const withoutDigest = {
 		id: input.id ?? crypto.randomUUID(),
 		parentTaskId: input.parentTaskId,
+		...(input.rootTaskId ? { rootTaskId: input.rootTaskId } : {}),
+		...(input.depth !== undefined ? { depth: input.depth } : {}),
 		objective: input.objective.trim(),
 		agentKind,
 		expectedOutput:

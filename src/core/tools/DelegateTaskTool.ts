@@ -65,6 +65,8 @@ export class DelegateTaskTool extends BaseTool<"delegate_task"> {
 					writeScope,
 				})),
 			}),
+			undefined,
+			prepared.requiresExplicitApproval === true,
 		)
 
 		if (!approved) {

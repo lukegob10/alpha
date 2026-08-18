@@ -292,7 +292,16 @@ export class AgentControlStore {
 				const parent = record.parentTaskId
 					? draft.agents.find((candidate) => candidate.taskId === record.parentTaskId)
 					: undefined
-				if (!parent) {
+				const stopReason = record.parentTaskId && !parent ? "orphaned" : "interrupted"
+				record.snapshot = { ...record.snapshot, stopReason }
+				const recoveryRecipient =
+					parent ??
+					(record.parentTaskId
+						? draft.agents.find(
+								(candidate) => candidate.taskId === record.rootTaskId && candidate.role === "root",
+							)
+						: undefined)
+				if (!recoveryRecipient) {
 					continue
 				}
 				const eventId = `agent-recovery:${record.rootTaskId}:${record.taskId}:${previousStatus}:${previousUpdatedAt}`
@@ -303,11 +312,15 @@ export class AgentControlStore {
 						rootTaskId: record.rootTaskId,
 						senderTaskId: record.taskId,
 						senderPath: record.path,
-						recipientTaskId: parent.taskId,
-						recipientPath: parent.path,
+						recipientTaskId: recoveryRecipient.taskId,
+						recipientPath: recoveryRecipient.path,
 						kind: "lifecycle",
 						name: "recovered_interrupted",
-						payload: { previousStatus },
+						payload: {
+							previousStatus,
+							stopReason,
+							...(parent ? {} : { orphaned: true, missingParentTaskId: record.parentTaskId }),
+						},
 						createdAt: recoveredAt,
 					}
 					draft.mailbox.push(entry)
@@ -380,6 +393,9 @@ export class AgentControlStore {
 			}
 			if (input.rootTaskId && input.rootTaskId !== parent.rootTaskId) {
 				throw new Error(`Root task ${input.rootTaskId} does not match parent root ${parent.rootTaskId}`)
+			}
+			if (!ACTIVE_STATUSES.has(parent.status)) {
+				throw new Error(`Parent agent ${parent.path} cannot create a child while status is ${parent.status}`)
 			}
 
 			const timestamp = this.now()
@@ -503,6 +519,53 @@ export class AgentControlStore {
 			throw new Error(`Unknown parent agent target: ${parent}`)
 		}
 		return this.listAgents({ rootTaskId: parentRecord.rootTaskId, parentTaskId: parentRecord.taskId })
+	}
+
+	/** Return the complete retained subtree below an open agent in stable parent-before-child order. */
+	listDescendants(parent: string, rootTaskId?: string): AgentRecord[] {
+		const parentRecord = this.getAgent(parent, rootTaskId)
+		if (!parentRecord) {
+			throw new Error(`Unknown parent agent target: ${parent}`)
+		}
+
+		const records = this.listAgents({ rootTaskId: parentRecord.rootTaskId })
+		const byParent = new Map<string, AgentRecord[]>()
+		for (const record of records) {
+			if (!record.parentTaskId) continue
+			const children = byParent.get(record.parentTaskId) ?? []
+			children.push(record)
+			byParent.set(record.parentTaskId, children)
+		}
+		for (const children of byParent.values()) {
+			children.sort((left, right) => left.path.localeCompare(right.path))
+		}
+
+		const descendants: AgentRecord[] = []
+		const visit = (taskId: string) => {
+			for (const child of byParent.get(taskId) ?? []) {
+				descendants.push(child)
+				visit(child.taskId)
+			}
+		}
+		visit(parentRecord.taskId)
+		return descendants.map(clone)
+	}
+
+	isDescendant(parent: string, candidate: string, rootTaskId?: string): boolean {
+		const parentRecord = this.getAgent(parent, rootTaskId)
+		const candidateRecord = this.getAgent(candidate, parentRecord?.rootTaskId ?? rootTaskId)
+		if (!parentRecord || !candidateRecord || parentRecord.rootTaskId !== candidateRecord.rootTaskId) return false
+
+		let cursor: AgentRecord | undefined = candidateRecord
+		const visited = new Set<string>()
+		while (cursor.parentTaskId) {
+			if (cursor.parentTaskId === parentRecord.taskId) return true
+			if (visited.has(cursor.parentTaskId)) return false
+			visited.add(cursor.parentTaskId)
+			cursor = this.getAgent(cursor.parentTaskId, parentRecord.rootTaskId)
+			if (!cursor) return false
+		}
+		return false
 	}
 
 	getVerificationObligations(
@@ -689,6 +752,7 @@ export class AgentControlStore {
 				rootTaskId: record.rootTaskId,
 				status: record.status as ClosedAgentTombstone["status"],
 				closedAt: this.now(),
+				stopReason: record.terminalResult?.stopReason ?? record.snapshot?.stopReason,
 			}
 			draft.agents = draft.agents.filter((candidate) => candidate.taskId !== record.taskId)
 			draft.tombstones.push(tombstone)

@@ -11,6 +11,7 @@ vi.mock("../../../../services/code-index/manager", () => ({
 }))
 
 import { buildNativeToolsArrayWithRestrictions } from "../../../task/build-tools"
+import { Task } from "../../../task/Task"
 
 const names = (tools: Array<{ type: string; function?: { name: string } }>) =>
 	tools.flatMap((tool) => (tool.type === "function" && tool.function ? [tool.function.name] : []))
@@ -30,6 +31,20 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		context: {},
 		getMcpHub: () => ({ getServers: () => [] }),
 	} as any
+	const managedChildAllowedTools = (delegate: boolean) =>
+		Task.prototype.getTaskAllowedToolNames.call({
+			taskKind: "subagent",
+			subagentRole: "review",
+			subagentContextManifest: {
+				skills: [],
+				runtimePolicy: {
+					delegate,
+					allowedTools: delegate
+						? ["read_file", ...orchestrationTools, "attempt_completion"]
+						: ["read_file", "attempt_completion"],
+				},
+			},
+		} as unknown as Task)
 
 	it("exposes spawn_agent to a primary Code task", async () => {
 		const result = await buildNativeToolsArrayWithRestrictions({
@@ -62,7 +77,10 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		expect(JSON.stringify(delegateTool?.function?.parameters)).not.toContain("fork_turns")
 	})
 
-	it("omits spawn_agent entirely from a managed child tool catalog", async () => {
+	it("exposes orchestration tools when a managed child's frozen runtime policy grants delegation", async () => {
+		const allowedToolNames = managedChildAllowedTools(true)
+		expect(allowedToolNames).toEqual(expect.arrayContaining(orchestrationTools))
+
 		const result = await buildNativeToolsArrayWithRestrictions({
 			provider,
 			cwd: "F:/workspace",
@@ -70,7 +88,28 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 			customModes: undefined,
 			experiments: {},
 			apiConfiguration: undefined,
-			allowedToolNames: ["read_file", "attempt_completion"],
+			allowedToolNames,
+			includeAllToolsWithRestrictions: true,
+		})
+
+		for (const tool of orchestrationTools) {
+			expect(names(result.tools as any)).toContain(tool)
+			expect(result.allowedFunctionNames).toContain(tool)
+		}
+	})
+
+	it("omits orchestration tools from a legacy managed child without delegation authority", async () => {
+		const allowedToolNames = managedChildAllowedTools(false)
+		expect(allowedToolNames).not.toContain("spawn_agent")
+
+		const result = await buildNativeToolsArrayWithRestrictions({
+			provider,
+			cwd: "F:/workspace",
+			mode: "code",
+			customModes: undefined,
+			experiments: {},
+			apiConfiguration: undefined,
+			allowedToolNames,
 			includeAllToolsWithRestrictions: true,
 		})
 

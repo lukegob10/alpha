@@ -86,11 +86,22 @@ async function generatePrompt(
 
 ${markdownFormattingSection()}
 
-${getSharedToolUseSection(subagentRole, settings?.subagentHasInheritedSkills)}${toolsCatalog}
+${getSharedToolUseSection(
+	subagentRole,
+	settings?.subagentHasInheritedSkills,
+	settings?.subagentCanDelegate,
+	settings?.subagentDelegationPolicy,
+)}${toolsCatalog}
 
 	${getToolUseGuidelinesSection(subagentRole)}
 
-${getCapabilitiesSection(cwd, shouldIncludeMcp ? mcpHub : undefined, subagentRole)}
+${getCapabilitiesSection(
+	cwd,
+	shouldIncludeMcp ? mcpHub : undefined,
+	subagentRole,
+	settings?.subagentCanDelegate,
+	settings?.subagentDelegationPolicy,
+)}
 
 ${modesSection}
 ${skillsSection ? `\n${skillsSection}` : ""}

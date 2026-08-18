@@ -2,6 +2,7 @@ import { z } from "zod"
 
 import { subagentContextManifestSchema } from "./subagent-context.js"
 import { parentVerificationObligationSchema } from "./subagent.js"
+import { subagentStopReasonSchema, subagentUsageSchema } from "./subagent-orchestration.js"
 
 /** Durable lifecycle states shared by the agent registry and its consumers. */
 export const agentLifecycleStatusSchema = z.enum([
@@ -35,6 +36,7 @@ export type AgentCanonicalPath = z.infer<typeof agentCanonicalPathSchema>
 export const agentRuntimeSnapshotSchema = z.object({
 	phase: z.string().optional(),
 	summary: z.string().optional(),
+	stopReason: subagentStopReasonSchema.optional(),
 	modelRouteId: z.string().optional(),
 	requiresParentVerification: z.boolean().optional(),
 	contextManifest: subagentContextManifestSchema.optional(),
@@ -48,8 +50,10 @@ export const agentTerminalResultMetadataSchema = z.object({
 	status: terminalAgentLifecycleStatusSchema,
 	summary: z.string().optional(),
 	error: z.string().optional(),
+	stopReason: subagentStopReasonSchema.optional(),
 	changedFiles: z.array(z.string()).optional(),
 	requiresParentVerification: z.boolean().optional(),
+	usage: subagentUsageSchema.optional(),
 	completedAt: z.number(),
 	metadata: z.record(z.string(), z.unknown()).optional(),
 })
@@ -82,6 +86,7 @@ export const closedAgentTombstoneSchema = z.object({
 	parentTaskId: z.string().min(1).optional(),
 	rootTaskId: z.string().min(1),
 	status: z.union([terminalAgentLifecycleStatusSchema, z.literal("interrupted")]),
+	stopReason: subagentStopReasonSchema.optional(),
 	closedAt: z.number(),
 })
 export type ClosedAgentTombstone = z.infer<typeof closedAgentTombstoneSchema>
