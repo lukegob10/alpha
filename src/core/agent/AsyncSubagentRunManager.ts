@@ -303,6 +303,7 @@ export class AsyncSubagentRunManager {
 			changedFiles: [...result.changedFiles],
 			verification: result.displayVerification ? structuredClone(result.displayVerification) : undefined,
 			changeSet: result.changeSet ? structuredClone(result.changeSet) : undefined,
+			requiresParentVerification: result.requiresParentVerification,
 			completedAt,
 			usage: { ...result.usage },
 		}

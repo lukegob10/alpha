@@ -26,6 +26,9 @@ describe("getSharedToolUseSection", () => {
 		expect(section).toContain("must each be called alone")
 		expect(section).toContain("put all of their spawn_agent calls in the same response")
 		expect(section).toContain("wait_agent is blocking and must be called alone")
+		expect(section).toContain("execute sequentially in provider order")
+		expect(section).toContain("spawn_agent followed by send_message")
+		expect(section).toContain("stable task_name")
 	})
 
 	it("should NOT include single tool per message restriction", () => {

@@ -22,6 +22,7 @@ import type { ModelRecord, RouterModels } from "./model.js"
 import type { OpenAiCodexRateLimitInfo } from "./providers/openai-codex-rate-limits.js"
 import type { SkillMetadata } from "./skills.js"
 import type { WorktreeIncludeStatus } from "./worktree.js"
+import type { SubagentChangeSetActionCapability, SubagentChangeSetActionResult } from "./subagent.js"
 import type {
 	CreateScheduledTaskPayload,
 	ScheduledTask,
@@ -117,8 +118,12 @@ export interface ExtensionMessage {
 		| "fileContent"
 		| "scheduledTasksUpdated"
 		| "goalSeekUpdated"
+		| "subagentChangeSetActionCapability"
+		| "subagentChangeSetActionResult"
 	text?: string
 	taskId?: string
+	subagentChangeSetActionCapability?: SubagentChangeSetActionCapability
+	subagentChangeSetActionResult?: SubagentChangeSetActionResult
 	/** For fileContent: { path, content, error? } */
 	fileContent?: { path: string; content: string | null; error?: string }
 	scheduledTasks?: ScheduledTask[]
@@ -484,6 +489,7 @@ export interface WebviewMessage {
 		| "steerSubagent"
 		| "respondToSubagentApproval"
 		| "openSubagentChangeSet"
+		| "requestSubagentChangeSetActionCapability"
 		| "applySubagentChangeSet"
 		| "discardSubagentChangeSet"
 		| "cancelAutoApproval"
@@ -848,6 +854,7 @@ export interface ClineSayTool {
 		| "newTask"
 		| "delegateTask"
 		| "spawnAgent"
+		| "agentLifecycle"
 		| "finishTask"
 		| "generateImage"
 		| "imageGenerated"
@@ -918,6 +925,16 @@ export interface ClineSayTool {
 	description?: string
 	// Properties for skill tool
 	skill?: string
+	// Properties for non-interactive managed-agent lifecycle status rows
+	agentAction?: "list_agents" | "wait_agent"
+	lifecycleStatus?: "running" | "completed" | "error"
+	agentCount?: number
+	mailboxUnreadCount?: number
+	eventCount?: number
+	timedOut?: boolean
+	alreadyDelivered?: boolean
+	cancelled?: boolean
+	noActiveAgents?: boolean
 }
 
 export interface ClineAskUseMcpServer {

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useState } from "react"
 import {
 	Ban,
 	CheckCircle2,
@@ -16,7 +16,15 @@ import {
 	Trash2,
 } from "lucide-react"
 
-import type { SubagentGroupState, SubagentRunState } from "@alpha-code/types"
+import type {
+	ExtensionMessage,
+	ParentVerificationStatus,
+	SubagentChangeSetAction,
+	SubagentChangeSetActionCapability,
+	SubagentChangeSetActionResult,
+	SubagentGroupState,
+	SubagentRunState,
+} from "@alpha-code/types"
 
 import { cn } from "@src/lib/utils"
 import { vscode } from "@src/utils/vscode"
@@ -35,6 +43,34 @@ import {
 
 const activeStatuses = new Set(["pending", "running", "cancelling"])
 const MAX_STEERING_MESSAGE_LENGTH = 2_000
+let changeSetRequestSequence = 0
+const capabilityRefreshMessageTypes = new Set<ExtensionMessage["type"]>([
+	"state",
+	"messageUpdated",
+	"taskHistoryItemUpdated",
+	"interactionRequired",
+])
+const parentVerificationCopy: Record<
+	Extract<ParentVerificationStatus, "required" | "pending" | "failed" | "satisfied">,
+	{ label: string; nextAction: string }
+> = {
+	required: {
+		label: "Review required",
+		nextAction: "Review the Worker diff, then apply or discard it.",
+	},
+	pending: {
+		label: "Verification pending",
+		nextAction: "Run a parent verification command that names at least one applied file.",
+	},
+	failed: {
+		label: "Verification failed",
+		nextAction: "Fix the issue, then rerun a parent verification command that names an applied file.",
+	},
+	satisfied: {
+		label: "Verified",
+		nextAction: "Parent verification passed; completion is unblocked.",
+	},
+}
 const phaseLabels: Record<NonNullable<SubagentRunState["phase"]>, string> = {
 	queued: "Queued",
 	starting: "Starting",
@@ -91,17 +127,116 @@ const statusIcon = (agent: SubagentRunState) => {
 export interface SubagentGroupCardProps {
 	group: SubagentGroupState
 	parentTaskId?: string
-	parentActive?: boolean
 }
 
-export const SubagentGroupCard = memo(({ group, parentTaskId, parentActive = false }: SubagentGroupCardProps) => {
+export const SubagentGroupCard = memo(({ group, parentTaskId }: SubagentGroupCardProps) => {
 	const isActive = activeStatuses.has(group.status)
 	const [expanded, setExpanded] = useState(() => isActive)
 	const [now, setNow] = useState(Date.now())
 	const [steeringAgent, setSteeringAgent] = useState<SubagentRunState>()
 	const [steeringText, setSteeringText] = useState("")
 	const [cancelRequestedTaskIds, setCancelRequestedTaskIds] = useState<Set<string>>(() => new Set())
+	const [changeSetCapabilities, setChangeSetCapabilities] = useState<
+		Record<string, SubagentChangeSetActionCapability>
+	>({})
+	const [pendingChangeSetActions, setPendingChangeSetActions] = useState<
+		Record<string, { action: SubagentChangeSetAction; requestId: string }>
+	>({})
+	const [changeSetActionResults, setChangeSetActionResults] = useState<Record<string, SubagentChangeSetActionResult>>(
+		{},
+	)
+	const [changeSetConfirmation, setChangeSetConfirmation] = useState<{
+		action: SubagentChangeSetAction
+		changeSetId: string
+	}>()
 	const resolvedParentTaskId = parentTaskId ?? group.parentTaskId
+	const actionableChangeSetIds = group.agents
+		.flatMap((agent) =>
+			agent.changeSet && ["pending_review", "conflicted"].includes(agent.changeSet.status)
+				? [agent.changeSet.id]
+				: [],
+		)
+		.sort()
+	const actionableChangeSetKey = actionableChangeSetIds.join("|")
+
+	const requestChangeSetCapability = useCallback(
+		(changeSetId: string) => {
+			if (!resolvedParentTaskId) return
+			vscode.postMessage({
+				type: "requestSubagentChangeSetActionCapability",
+				taskId: resolvedParentTaskId,
+				groupId: group.groupId,
+				changeSetId,
+				requestId: `capability:${changeSetId}:${++changeSetRequestSequence}`,
+			})
+		},
+		[group.groupId, resolvedParentTaskId],
+	)
+
+	useEffect(() => {
+		if (!resolvedParentTaskId || actionableChangeSetIds.length === 0) return
+
+		const requestAll = () => actionableChangeSetIds.forEach(requestChangeSetCapability)
+		requestAll()
+		let refreshTimer: number | undefined
+		const handleMessage = (event: MessageEvent) => {
+			const message = event.data as ExtensionMessage
+			if (message.type === "subagentChangeSetActionCapability") {
+				const capability = message.subagentChangeSetActionCapability
+				if (
+					capability?.taskId === resolvedParentTaskId &&
+					capability.groupId === group.groupId &&
+					actionableChangeSetIds.includes(capability.changeSetId)
+				) {
+					setChangeSetCapabilities((current) => ({
+						...current,
+						[capability.changeSetId]: capability,
+					}))
+				}
+				return
+			}
+
+			if (message.type === "subagentChangeSetActionResult") {
+				const result = message.subagentChangeSetActionResult
+				if (
+					result?.taskId !== resolvedParentTaskId ||
+					result.groupId !== group.groupId ||
+					!actionableChangeSetIds.includes(result.changeSetId)
+				) {
+					return
+				}
+				setPendingChangeSetActions((current) => {
+					const pending = current[result.changeSetId]
+					if (message.requestId && pending && pending.requestId !== message.requestId) return current
+					const next = { ...current }
+					delete next[result.changeSetId]
+					return next
+				})
+				setChangeSetActionResults((current) => ({ ...current, [result.changeSetId]: result }))
+				if (result.capability) {
+					setChangeSetCapabilities((current) => ({
+						...current,
+						[result.changeSetId]: result.capability!,
+					}))
+				}
+				return
+			}
+
+			if (capabilityRefreshMessageTypes.has(message.type)) {
+				if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
+				refreshTimer = window.setTimeout(requestAll, 75)
+			}
+		}
+
+		window.addEventListener("message", handleMessage)
+		return () => {
+			window.removeEventListener("message", handleMessage)
+			if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
+		}
+		// The joined key intentionally tracks the actionable IDs without making the
+		// effect depend on a new array instance on every render.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [actionableChangeSetKey, group.groupId, requestChangeSetCapability, resolvedParentTaskId])
 
 	useEffect(() => {
 		if (!isActive) return
@@ -114,10 +249,39 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, parentActive = fal
 		() => formatElapsed((group.completedAt ?? now) - (group.startedAt ?? group.createdAt)),
 		[group.completedAt, group.createdAt, group.startedAt, now],
 	)
-	const postChangeSetAction = (
-		type: "openSubagentChangeSet" | "applySubagentChangeSet" | "discardSubagentChangeSet",
-		id: string,
-	) => vscode.postMessage({ type, taskId: resolvedParentTaskId, groupId: group.groupId, changeSetId: id })
+	const openChangeSet = (id: string) =>
+		vscode.postMessage({
+			type: "openSubagentChangeSet",
+			taskId: resolvedParentTaskId,
+			groupId: group.groupId,
+			changeSetId: id,
+		})
+	const submitChangeSetAction = (action: SubagentChangeSetAction, changeSetId: string) => {
+		const capability = changeSetCapabilities[changeSetId]
+		if (!resolvedParentTaskId || !capability?.allowed || pendingChangeSetActions[changeSetId]) return
+		setChangeSetConfirmation({ action, changeSetId })
+	}
+	const confirmChangeSetAction = () => {
+		if (!resolvedParentTaskId || !changeSetConfirmation) return
+		const { action, changeSetId } = changeSetConfirmation
+		if (pendingChangeSetActions[changeSetId]) return
+
+		const requestId = `${action}:${changeSetId}:${++changeSetRequestSequence}`
+		setPendingChangeSetActions((current) => ({ ...current, [changeSetId]: { action, requestId } }))
+		setChangeSetActionResults((current) => {
+			const next = { ...current }
+			delete next[changeSetId]
+			return next
+		})
+		vscode.postMessage({
+			type: action === "apply" ? "applySubagentChangeSet" : "discardSubagentChangeSet",
+			taskId: resolvedParentTaskId,
+			groupId: group.groupId,
+			changeSetId,
+			requestId,
+		})
+		setChangeSetConfirmation(undefined)
+	}
 	const closeSteeringDialog = () => {
 		setSteeringAgent(undefined)
 		setSteeringText("")
@@ -135,6 +299,10 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, parentActive = fal
 		})
 		closeSteeringDialog()
 	}
+	const changeSetConfirmationAgent = changeSetConfirmation
+		? group.agents.find((agent) => agent.changeSet?.id === changeSetConfirmation.changeSetId)
+		: undefined
+	const isApplyConfirmation = changeSetConfirmation?.action === "apply"
 	const cancelAgent = (agent: SubagentRunState) => {
 		if (!activeStatuses.has(agent.status) || cancelRequestedTaskIds.has(agent.taskId)) return
 
@@ -199,8 +367,27 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, parentActive = fal
 							const cancelRequested =
 								agent.status === "cancelling" || cancelRequestedTaskIds.has(agent.taskId)
 							const preview = agent.summary ?? agent.error
+							const pacingWait = agent.usage.rateLimitWaitCount
+								? `${agent.usage.rateLimitWaitCount} pacing wait${agent.usage.rateLimitWaitCount === 1 ? "" : "s"} · ${formatElapsed(agent.usage.rateLimitWaitMs ?? 0)}`
+								: undefined
 							const canMutateChangeSet =
 								agent.changeSet && ["pending_review", "conflicted"].includes(agent.changeSet.status)
+							const changeSetCapability = agent.changeSet
+								? changeSetCapabilities[agent.changeSet.id]
+								: undefined
+							const pendingChangeSetAction = agent.changeSet
+								? pendingChangeSetActions[agent.changeSet.id]
+								: undefined
+							const changeSetActionResult = agent.changeSet
+								? changeSetActionResults[agent.changeSet.id]
+								: undefined
+							const verificationCopy =
+								agent.parentVerification &&
+								["required", "pending", "failed", "satisfied"].includes(agent.parentVerification.status)
+									? parentVerificationCopy[
+											agent.parentVerification.status as keyof typeof parentVerificationCopy
+										]
+									: undefined
 							return (
 								<div
 									key={agent.taskId}
@@ -310,6 +497,11 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, parentActive = fal
 													{agent.changedFiles.length === 1 ? "" : "s"}
 												</div>
 											)}
+											{pacingWait && (
+												<div className="mt-1 text-xs text-vscode-descriptionForeground">
+													Configured request pacing: {pacingWait}
+												</div>
+											)}
 											{agent.verification?.map((item) => (
 												<div
 													key={item.label}
@@ -318,6 +510,31 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, parentActive = fal
 													{item.detail ? ` · ${item.detail}` : ""}
 												</div>
 											))}
+											{verificationCopy && agent.parentVerification && (
+												<div
+													className={cn(
+														"mt-2 rounded-lg border border-vscode-panel-border p-2 text-xs",
+														agent.parentVerification.status === "failed" &&
+															"border-vscode-testing-iconFailed/50",
+													)}
+													role="status">
+													<div className="flex items-center gap-1 font-medium text-vscode-foreground">
+														{agent.parentVerification.status === "satisfied" ? (
+															<CheckCircle2 className="size-3.5 text-vscode-testing-iconPassed" />
+														) : agent.parentVerification.status === "failed" ? (
+															<CircleAlert className="size-3.5 text-vscode-testing-iconFailed" />
+														) : agent.parentVerification.status === "pending" ? (
+															<Clock3 className="size-3.5 text-vscode-editorWarning-foreground" />
+														) : (
+															<FileDiff className="size-3.5 text-vscode-editorWarning-foreground" />
+														)}
+														{verificationCopy.label}
+													</div>
+													<div className="mt-1 text-vscode-descriptionForeground">
+														{verificationCopy.nextAction}
+													</div>
+												</div>
+											)}
 											{agent.changeSet?.partial && (
 												<div className="mt-1 text-xs text-vscode-editorWarning-foreground">
 													Partial changes were captured and remain reviewable.
@@ -337,12 +554,7 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, parentActive = fal
 													<div className="mt-2 flex flex-wrap items-center gap-2">
 														<button
 															type="button"
-															onClick={() =>
-																postChangeSetAction(
-																	"openSubagentChangeSet",
-																	agent.changeSet!.id,
-																)
-															}
+															onClick={() => openChangeSet(agent.changeSet!.id)}
 															className="inline-flex items-center gap-1 text-xs text-vscode-textLink-foreground hover:underline">
 															<FileDiff className="size-3" /> Open diff
 														</button>
@@ -350,44 +562,79 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, parentActive = fal
 															<>
 																<button
 																	type="button"
-																	disabled={parentActive}
+																	disabled={
+																		!changeSetCapability?.allowed ||
+																		Boolean(pendingChangeSetAction)
+																	}
 																	title={
-																		parentActive
-																			? "Wait for the parent task to become idle"
-																			: undefined
+																		changeSetCapability?.allowed
+																			? undefined
+																			: changeSetCapability?.reason
 																	}
 																	onClick={() =>
-																		window.confirm(
-																			"Apply these worker changes to the parent working tree without staging or committing?",
-																		) &&
-																		postChangeSetAction(
-																			"applySubagentChangeSet",
+																		submitChangeSetAction(
+																			"apply",
 																			agent.changeSet!.id,
 																		)
 																	}
 																	className="rounded border border-vscode-button-border px-2 py-1 text-xs disabled:opacity-50">
-																	{agent.changeSet!.status === "conflicted"
-																		? "Retry apply"
-																		: "Apply changes"}
+																	{pendingChangeSetAction?.action === "apply"
+																		? "Applying…"
+																		: agent.changeSet!.status === "conflicted"
+																			? "Retry apply"
+																			: "Apply changes"}
 																</button>
 																<button
 																	type="button"
+																	disabled={
+																		!changeSetCapability?.allowed ||
+																		Boolean(pendingChangeSetAction)
+																	}
+																	title={
+																		changeSetCapability?.allowed
+																			? undefined
+																			: changeSetCapability?.reason
+																	}
 																	onClick={() =>
-																		window.confirm(
-																			"Discard this quarantined worker proposal?",
-																		) &&
-																		postChangeSetAction(
-																			"discardSubagentChangeSet",
+																		submitChangeSetAction(
+																			"discard",
 																			agent.changeSet!.id,
 																		)
 																	}
 																	className="inline-flex items-center gap-1 text-xs text-vscode-errorForeground">
-																	<Trash2 className="size-3" /> Discard
+																	{pendingChangeSetAction?.action === "discard" ? (
+																		<LoaderCircle className="size-3 animate-spin" />
+																	) : (
+																		<Trash2 className="size-3" />
+																	)}
+																	{pendingChangeSetAction?.action === "discard"
+																		? "Discarding…"
+																		: "Discard"}
 																</button>
 															</>
 														)}
 													</div>
 												)}
+											{canMutateChangeSet && !changeSetCapability?.allowed && (
+												<div
+													className="mt-1 text-xs text-vscode-descriptionForeground"
+													role="status">
+													{changeSetCapability?.reason ??
+														"Checking whether the parent is paused…"}
+												</div>
+											)}
+											{changeSetActionResult && (
+												<div
+													className={cn(
+														"mt-1 text-xs",
+														changeSetActionResult.success
+															? "text-vscode-descriptionForeground"
+															: "text-vscode-errorForeground",
+													)}
+													role={changeSetActionResult.success ? "status" : "alert"}>
+													{changeSetActionResult.message}
+												</div>
+											)}
 											{activeStatuses.has(agent.status) && (
 												<div className="mt-2 flex flex-wrap items-center gap-2">
 													{agent.status === "running" && (
@@ -446,6 +693,35 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, parentActive = fal
 					</div>
 				)}
 			</section>
+
+			<Dialog
+				open={Boolean(changeSetConfirmation)}
+				onOpenChange={(open) => {
+					if (!open) setChangeSetConfirmation(undefined)
+				}}>
+				<DialogContent className="max-w-md gap-4 p-5">
+					<DialogHeader>
+						<DialogTitle>
+							{isApplyConfirmation ? "Apply Worker changes?" : "Discard Worker changes?"}
+						</DialogTitle>
+						<DialogDescription>
+							{isApplyConfirmation
+								? `Apply ${changeSetConfirmationAgent?.nickname ?? "this Worker"}'s reviewed changes to the parent working tree. This will not stage or commit anything.`
+								: `Permanently discard ${changeSetConfirmationAgent?.nickname ?? "this Worker"}'s quarantined proposal without changing the parent working tree.`}
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<DialogClose asChild>
+							<Button type="button" variant="secondary">
+								Cancel
+							</Button>
+						</DialogClose>
+						<Button type="button" variant="primary" onClick={confirmChangeSetAction}>
+							{isApplyConfirmation ? "Confirm apply" : "Confirm discard"}
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 
 			<Dialog
 				open={Boolean(steeringAgent)}

@@ -28,6 +28,11 @@ const isWithinPath = (root: string, candidate: string): boolean => {
 
 export async function getEnvironmentDetails(cline: Task, includeFileDetails: boolean = false) {
 	let details = ""
+	const pacing = cline.getRequestPacingMetrics?.()
+	const pacingDetails =
+		pacing && pacing.configuredIntervalSeconds > 0
+			? `\n\n# Configured Request Pacing\nProvider-profile interval: ${pacing.configuredIntervalSeconds}s (shared by the parent and sub-agents using this profile). Before this request, this task had waited ${pacing.waitCount} time${pacing.waitCount === 1 ? "" : "s"} for ${Math.round(pacing.totalWaitMs / 100) / 10}s total. A request_pacing_update block, when present, contains the authoritative total after the current request's wait. These are configured pacing waits, not provider errors; include them accurately in performance summaries.`
+			: ""
 
 	const clineProvider = cline.providerRef.deref()
 	const state = await clineProvider?.getState()
@@ -46,6 +51,7 @@ export async function getEnvironmentDetails(cline: Task, includeFileDetails: boo
 
 # Sub-agent Context
 Workspace files are intentionally omitted. Paths explicitly named by the objective are already located: read them directly, and use a direct read error rather than list or search output to establish that one is absent. Use list_files or search_files only for unnamed or unresolved candidates, then read related files in batches.
+		${pacingDetails}
 		</environment_details>`
 	}
 
@@ -206,6 +212,8 @@ Workspace files are intentionally omitted. Paths explicitly named by the objecti
 	if (terminalDetails) {
 		details += terminalDetails
 	}
+
+	details += pacingDetails
 
 	// Get settings for time and cost display
 	const { includeCurrentTime = true, includeCurrentCost = true, maxGitStatusFiles = 0 } = state ?? {}

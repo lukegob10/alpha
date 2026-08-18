@@ -155,7 +155,7 @@ describe("DelegateTaskTool", () => {
 
 		expect(provider.prepareSubagentGroup).toHaveBeenCalledWith(
 			task,
-			[{ objective: "Inspect src", agent_kind: "explore" }],
+			[{ objective: "Inspect src", agent_kind: "explore", fork_turns: "none" }],
 			undefined,
 		)
 	})

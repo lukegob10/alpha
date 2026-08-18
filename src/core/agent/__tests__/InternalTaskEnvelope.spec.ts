@@ -1,3 +1,5 @@
+import path from "path"
+
 import {
 	buildInternalTaskEnvelope,
 	isValidInternalTaskEnvelope,
@@ -40,7 +42,14 @@ describe("internal task envelopes", () => {
 			requestedPolicy: { mutate: false },
 			objective: "Run bounded checks",
 		})
-		expect(diagnostic.policy).toMatchObject({ read: true, execute: true, mutate: false })
+		expect(diagnostic.policy).toMatchObject({
+			read: true,
+			execute: false,
+			mutate: false,
+			delegate: false,
+			network: false,
+			externalSideEffects: false,
+		})
 		expect(implementation.policy).toMatchObject({ mutate: true, externalSideEffects: false })
 		expect(verification.policy).toMatchObject({ execute: true, mutate: false })
 		expect(buildInternalTaskEnvelope({ ...base, requestedPolicy: {}, modelRouteId: "fast" }).policy).toEqual(
@@ -75,6 +84,60 @@ describe("internal task envelopes", () => {
 				requestedPolicy: { mutate: true },
 			}),
 		).toThrow("widen")
+	})
+
+	it.each(["explore", "review"] as const)("never grants execute, mutate, or delegation authority to %s", (role) => {
+		const envelope = buildInternalTaskEnvelope({
+			...base,
+			agentKind: role,
+			requestedPolicy: { read: true, execute: false, mutate: false, delegate: false },
+		})
+		expect(envelope.policy).toMatchObject({ read: true, execute: false, mutate: false, delegate: false })
+		expect(() =>
+			buildInternalTaskEnvelope({
+				...base,
+				parentPolicy: { ...full, delegate: true },
+				agentKind: role,
+				requestedPolicy: { execute: true },
+			}),
+		).toThrow(`${role} role`)
+	})
+
+	it("intersects Worker authority with parent roots and exact write scope", () => {
+		const worker = buildInternalTaskEnvelope({
+			...base,
+			agentKind: "worker",
+			requestedPolicy: { read: true, execute: true, mutate: true, delegate: false },
+			parentWorkspaceRoots: ["F:/workspace"],
+			parentAllowedPaths: ["src", "package.json"],
+			parentFileAllowedPaths: ["package.json"],
+			allowedPaths: ["src/task", "package.json"],
+		})
+		expect(worker.policy).toMatchObject({ execute: true, mutate: true, delegate: false })
+		expect(worker.scope.allowedPaths).toEqual(
+			[path.resolve("F:/workspace/package.json"), path.resolve("F:/workspace/src/task")].sort(),
+		)
+
+		expect(() =>
+			buildInternalTaskEnvelope({
+				...base,
+				agentKind: "worker",
+				requestedPolicy: { execute: true, mutate: true },
+				parentWorkspaceRoots: ["F:/workspace"],
+				parentAllowedPaths: ["package.json"],
+				parentFileAllowedPaths: ["package.json"],
+				allowedPaths: ["package.json/generated"],
+			}),
+		).toThrow("write scope")
+		expect(() =>
+			buildInternalTaskEnvelope({
+				...base,
+				agentKind: "worker",
+				requestedPolicy: { execute: true, mutate: true },
+				workspaceRoots: ["F:/outside"],
+				parentWorkspaceRoots: ["F:/workspace"],
+			}),
+		).toThrow("workspace root")
 	})
 
 	it("detects envelope tampering", () => {

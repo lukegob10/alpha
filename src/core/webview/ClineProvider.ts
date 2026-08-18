@@ -3,6 +3,7 @@ import * as path from "path"
 import fs from "fs/promises"
 import EventEmitter from "events"
 import crypto from "crypto"
+import { isDeepStrictEqual } from "util"
 
 import { Anthropic } from "@anthropic-ai/sdk"
 import delay from "delay"
@@ -46,6 +47,9 @@ import {
 	type SubagentRunPhase,
 	type SubagentSpawnHandle,
 	type SubagentChangeSetState,
+	type SubagentChangeSetActionCapability,
+	type SubagentChangeSetActionResult,
+	type SubagentContextManifest,
 	type SubagentVerification,
 	type AgentLifecycleStatus,
 	type AgentMailboxEntry,
@@ -108,17 +112,24 @@ import { forceFullModelDetailsLoad, hasLoadedFullDetails } from "../../api/provi
 import { ContextProxy } from "../config/ContextProxy"
 import { ProviderSettingsManager } from "../config/ProviderSettingsManager"
 import { CustomModesManager } from "../config/CustomModesManager"
-import { Task } from "../task/Task"
+import { Task, getSubagentAllowedToolNames } from "../task/Task"
 import { WorkspaceMutationGate } from "../task/WorkspaceMutationGate"
 import { AsyncSubagentRunManager } from "../agent/AsyncSubagentRunManager"
 import { AgentControlStore } from "../agent/AgentControlStore"
+import type { ParentCompletionDecision } from "../agent/ParentVerification"
 import {
 	BoundedDelegationManager,
 	InternalTaskCancellationError,
 	type InternalTaskResult,
 } from "../agent/BoundedDelegationManager"
-import { buildInternalTaskEnvelope, type InternalTaskEnvelope } from "../agent/InternalTaskEnvelope"
+import {
+	buildInternalTaskEnvelope,
+	resolveInternalTaskPolicy,
+	type InternalTaskEnvelope,
+	type InternalTaskPolicy,
+} from "../agent/InternalTaskEnvelope"
 import { SubagentNicknameRegistry } from "../agent/SubagentNicknameRegistry"
+import { captureSubagentContext, isValidSubagentContextManifest } from "../agent/SubagentContextCapture"
 import { resolveSubagentModelRoute, type ResolvedSubagentModelRoute } from "../agent/SubagentModelRouter"
 import {
 	assertSubagentTaskAuthorities,
@@ -138,6 +149,7 @@ import { getUri } from "./getUri"
 import { REQUESTY_BASE_URL } from "../../shared/utils/requesty"
 import { validateAndFixToolResultIds } from "../task/validateToolResultIds"
 import { normalizeMaxLiveTasks, TaskSessionRegistry } from "./TaskSessionRegistry"
+import { getSkillsCatalogSection, type SkillCatalogEntry } from "../prompts/sections"
 
 /**
  * https://github.com/microsoft/vscode-webview-ui-toolkit-samples/blob/main/default/weather-webview/src/providers/WeatherViewProvider.ts
@@ -161,6 +173,14 @@ interface PendingEditOperation {
 const SUBAGENT_RESEARCH_WINDOW_MS = 75_000
 const SUBAGENT_WORKER_TIMEOUT_MS = 15 * 60_000
 type TaskCancellationSource = "webview_stop" | "checkpoint_restore" | "unknown"
+
+function quoteInheritedContext(text: string): string {
+	return text
+		.replace(/\r\n?/g, "\n")
+		.split("\n")
+		.map((line) => `> ${line}`)
+		.join("\n")
+}
 
 export class ClineProvider
 	extends EventEmitter<TaskProviderEvents>
@@ -196,7 +216,14 @@ export class ClineProvider
 			validatedScope?: ValidatedWorkerScope
 			managedWorktree?: PreparedManagedWorktree
 			approvalProvenance: "group" | "auto"
+			contextManifest?: SubagentContextManifest
+			/** Body-bearing snapshots live only until the first child prompt is persisted. */
+			inheritedTurnContext?: string
+			inheritedInstructions?: string
+			inheritedSkills?: SkillCatalogEntry[]
+			inheritedSkillMode?: string
 			pendingFollowup?: string
+			pendingSteerMessage?: { message: string; sequence: number }
 		}
 	>()
 	private readonly boundedDelegationManager = new BoundedDelegationManager(
@@ -316,9 +343,7 @@ export class ClineProvider
 				this.emit(RooCodeEventName.TaskStarted, instance.taskId)
 			}
 			const onTaskCompleted = (taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage) => {
-				this.markTaskLifecycle(taskId, TaskLifecycleState.Completed)
-				void this.updateAgentControlRootStatus(taskId, "completed")
-				this.emit(RooCodeEventName.TaskCompleted, taskId, tokenUsage, toolUsage)
+				void this.completeTaskLifecycle(taskId, tokenUsage, toolUsage)
 			}
 			const onTaskAborted = () => {
 				const failed = instance.abortReason === "streaming_failed"
@@ -343,9 +368,7 @@ export class ClineProvider
 				this.emit(RooCodeEventName.TaskResumable, taskId)
 			}
 			const onTaskIdle = (taskId: string) => {
-				const lifecycle = this.getIdleTaskLifecycle(instance)
-				this.markTaskLifecycle(taskId, lifecycle, lifecycle === TaskLifecycleState.Waiting ? "idle" : undefined)
-				this.emit(RooCodeEventName.TaskIdle, taskId)
+				void this.completeIdleTaskLifecycle(instance, taskId)
 			}
 			const onTaskPaused = (taskId: string) => this.emit(RooCodeEventName.TaskPaused, taskId)
 			const onTaskUnpaused = (taskId: string) => this.emit(RooCodeEventName.TaskUnpaused, taskId)
@@ -967,6 +990,7 @@ export class ClineProvider
 				| "subagentPrivateWorkspaceRoot"
 				| "subagentAuthority"
 				| "subagentResearchDeadlineAt"
+				| "apiConfiguration"
 			>
 		},
 	) {
@@ -1086,7 +1110,32 @@ export class ClineProvider
 			checkpointTimeout,
 			experiments,
 		} = await this.getState()
-		const apiConfiguration = restoredApiConfiguration ?? currentApiConfiguration
+		const apiConfiguration =
+			options?.subagentRuntime?.apiConfiguration ?? restoredApiConfiguration ?? currentApiConfiguration
+
+		let rehydrationStackIndex = -1
+		let rehydratedOldTask: Task | undefined
+		if (isRehydratingCurrentTask) {
+			rehydrationStackIndex = this.clineStack.findIndex((cline) => cline.taskId === historyItem.id)
+			rehydratedOldTask = rehydrationStackIndex >= 0 ? this.clineStack[rehydrationStackIndex] : existingTask!
+
+			// Finish the old instance's queued transcript writes before the replacement
+			// starts reading history. Starting both instances concurrently lets the new
+			// resume path observe an empty/stale file and overwrite the visible transcript.
+			try {
+				await rehydratedOldTask.abortTask(true)
+			} catch (e) {
+				this.log(
+					`[createTaskWithHistoryItem] abortTask() failed for old task ${rehydratedOldTask.taskId}.${rehydratedOldTask.instanceId}: ${e.message}`,
+				)
+			}
+
+			const cleanupFunctions = this.taskEventListeners.get(rehydratedOldTask)
+			if (cleanupFunctions) {
+				cleanupFunctions.forEach((cleanup) => cleanup())
+				this.taskEventListeners.delete(rehydratedOldTask)
+			}
+		}
 
 		const task = new Task({
 			provider: this,
@@ -1113,30 +1162,9 @@ export class ClineProvider
 
 		if (isRehydratingCurrentTask) {
 			// Replace the current task in-place to avoid UI flicker
-			const stackIndex = this.clineStack.findIndex((cline) => cline.taskId === historyItem.id)
-
-			// Properly dispose of the old task to ensure garbage collection
-			const oldTask = stackIndex >= 0 ? this.clineStack[stackIndex] : existingTask!
-
-			// Abort the old task to stop running processes and mark as abandoned
-			try {
-				await oldTask.abortTask(true)
-			} catch (e) {
-				this.log(
-					`[createTaskWithHistoryItem] abortTask() failed for old task ${oldTask.taskId}.${oldTask.instanceId}: ${e.message}`,
-				)
-			}
-
-			// Remove event listeners from the old task
-			const cleanupFunctions = this.taskEventListeners.get(oldTask)
-			if (cleanupFunctions) {
-				cleanupFunctions.forEach((cleanup) => cleanup())
-				this.taskEventListeners.delete(oldTask)
-			}
-
 			// Replace the task in the stack
-			if (stackIndex >= 0) {
-				this.clineStack[stackIndex] = task
+			if (rehydrationStackIndex >= 0) {
+				this.clineStack[rehydrationStackIndex] = task
 			} else {
 				this.clineStack.push(task)
 			}
@@ -2978,6 +3006,13 @@ export class ClineProvider
 		void this.postStateToWebviewWithoutTaskHistory()
 	}
 
+	/** Publish primary completion only after its orchestration root is durably terminal. */
+	private async completeTaskLifecycle(taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage): Promise<void> {
+		await this.updateAgentControlRootStatus(taskId, "completed")
+		this.markTaskLifecycle(taskId, TaskLifecycleState.Completed)
+		this.emit(RooCodeEventName.TaskCompleted, taskId, tokenUsage, toolUsage)
+	}
+
 	/** Keep a registered orchestration root aligned with its primary task session. */
 	private updateAgentControlRootStatus(
 		taskId: string,
@@ -3041,6 +3076,16 @@ export class ClineProvider
 		return task.taskAsk?.ask === "completion_result" || task.taskAsk?.ask === "resume_completed_task"
 			? TaskLifecycleState.Completed
 			: TaskLifecycleState.Waiting
+	}
+
+	/** Align the durable orchestration root before publishing a completion-result idle state. */
+	private async completeIdleTaskLifecycle(task: Task, taskId: string): Promise<void> {
+		const lifecycle = this.getIdleTaskLifecycle(task)
+		if (lifecycle === TaskLifecycleState.Completed) {
+			await this.updateAgentControlRootStatus(taskId, "completed")
+		}
+		this.markTaskLifecycle(taskId, lifecycle, lifecycle === TaskLifecycleState.Waiting ? "idle" : undefined)
+		this.emit(RooCodeEventName.TaskIdle, taskId)
 	}
 
 	public getCurrentTask(): Task | undefined {
@@ -3319,8 +3364,9 @@ export class ClineProvider
 		// This ensures the stream fails quickly rather than waiting for network timeout
 		task.cancelCurrentRequest()
 
-		// Begin abort (non-blocking)
-		task.abortTask()
+		// Begin abort without delaying request cancellation, but retain the promise:
+		// rehydration must not start until the final transcript save has completed.
+		const abortPromise = task.abortTask()
 
 		// Immediately mark the original instance as abandoned to prevent any residual activity
 		task.abandoned = true
@@ -3339,6 +3385,11 @@ export class ClineProvider
 			},
 		).catch(() => {
 			console.error("Failed to abort task")
+		})
+		await abortPromise.catch((error) => {
+			this.log(
+				`[cancelTask] abortTask() failed for ${task.taskId}.${task.instanceId}: ${error instanceof Error ? error.message : String(error)}`,
+			)
 		})
 
 		// Defensive safeguard: if current instance already changed, skip rehydrate
@@ -3527,6 +3578,66 @@ export class ClineProvider
 		return this.workspaceMutationGate.run(task.taskId, label, run, () => task.abort)
 	}
 
+	private getParentDelegationAuthority(parent: Task): {
+		policy: InternalTaskPolicy
+		workspaceRoots: string[]
+		allowedPaths?: string[]
+		fileAllowedPaths?: string[]
+	} {
+		if (parent.taskKind !== "subagent") {
+			return {
+				policy: {
+					read: true,
+					execute: true,
+					mutate: true,
+					delegate: true,
+					network: true,
+					externalSideEffects: true,
+					requireApproval: false,
+				},
+				workspaceRoots: [parent.cwd],
+			}
+		}
+
+		const captured = parent.subagentContextManifest?.runtimePolicy
+		return {
+			policy: captured
+				? {
+						read: captured.read,
+						execute: captured.execute,
+						mutate: captured.mutate,
+						delegate: captured.delegate,
+						network: captured.network,
+						externalSideEffects: captured.externalSideEffects,
+						requireApproval: captured.requireApproval,
+					}
+				: {
+						read: false,
+						execute: false,
+						mutate: false,
+						delegate: false,
+						network: false,
+						externalSideEffects: false,
+						requireApproval: true,
+					},
+			workspaceRoots: captured?.workspaceRoots ?? [parent.cwd],
+			allowedPaths: captured?.writeScope,
+			fileAllowedPaths: parent.getSubagentFileWriteScope(),
+		}
+	}
+
+	private getRequestedSubagentPolicy(role: "explore" | "review" | "worker"): InternalTaskPolicy {
+		return {
+			read: true,
+			execute: role === "worker",
+			mutate: role === "worker",
+			delegate: false,
+			network: false,
+			externalSideEffects: false,
+			requireApproval: false,
+		}
+	}
+
 	public async prepareSubagentGroup(
 		parent: Task,
 		drafts: unknown,
@@ -3535,11 +3646,17 @@ export class ClineProvider
 		if (parent.taskKind === "subagent") {
 			throw new Error("A sub-agent cannot delegate another sub-agent")
 		}
-		if ((await parent.getTaskMode()) !== "code") {
+		const parentMode = await parent.getTaskMode()
+		if (parentMode !== "code") {
 			throw new Error("delegate_task is available only in Code mode")
 		}
 		const normalizedDrafts = normalizeSubagentTaskDrafts(drafts)
 		assertSubagentTaskAuthorities(normalizedDrafts)
+		const parentAuthority = this.getParentDelegationAuthority(parent)
+		const requestedPolicies = normalizedDrafts.map((draft) => this.getRequestedSubagentPolicy(draft.agent_kind))
+		const effectivePolicies = normalizedDrafts.map((draft, index) =>
+			resolveInternalTaskPolicy(parentAuthority.policy, requestedPolicies[index], draft.agent_kind),
+		)
 
 		// A prepared child consumes capacity until TaskSessionRegistry knows about it.
 		// Once the child is registered, getAvailableTaskCapacity() already accounts
@@ -3573,12 +3690,19 @@ export class ClineProvider
 			),
 		)
 
-		const reservedNames = this.taskHistoryStore
-			.getAll()
-			.map((item) => item.subagentNickname)
-			.filter((name): name is string => Boolean(name))
-		for (const descriptor of this.subagentDescriptors.values()) reservedNames.push(descriptor.nickname)
-		const nicknames = this.subagentNicknameRegistry.assign(normalizedDrafts.length, reservedNames)
+		const controlRoot = await this.ensureAgentControlRoot(parent)
+		const reservedNames = this.agentControlStore
+			.listAgents({ rootTaskId: controlRoot.rootTaskId, includeRoot: false })
+			.map((record) => record.nickname)
+		for (const descriptor of this.subagentDescriptors.values()) {
+			const descriptorRootTaskId = descriptor.parent.rootTaskId ?? descriptor.parent.taskId
+			if (descriptorRootTaskId === controlRoot.rootTaskId) reservedNames.push(descriptor.nickname)
+		}
+		const nicknames = this.subagentNicknameRegistry.assign(
+			normalizedDrafts.length,
+			reservedNames,
+			normalizedDrafts.map((draft) => draft.task_name),
+		)
 		const groupId = crypto.randomUUID()
 		const createdAt = Date.now()
 		const parentApiConfigName = await parent.getTaskApiConfigName()
@@ -3596,37 +3720,75 @@ export class ClineProvider
 				}),
 			),
 		)
+		const inheritedInstructions = await parent.captureEffectiveInheritedInstructions()
+		const skillMetadata = this.skillsManager?.getSkillsForMode(parentMode) ?? []
+		const inheritedSkills = (
+			await Promise.all(
+				skillMetadata.map(async (skill) => {
+					const content = await this.skillsManager?.getSkillContent(skill.name, parentMode)
+					return content
+						? {
+								name: skill.name,
+								description: skill.description,
+								path: skill.path,
+								content: content.instructions,
+							}
+						: undefined
+				}),
+			)
+		).filter(
+			(skill): skill is { name: string; description: string; path: string; content: string } =>
+				skill !== undefined,
+		)
+		const capturedContexts = normalizedDrafts.map((draft, index) => {
+			const role = draft.agent_kind
+			const effectivePolicy = effectivePolicies[index]
+			const allowedTools = [...getSubagentAllowedToolNames(role, inheritedSkills.length > 0)]
+			return captureSubagentContext({
+				parentTaskId: parent.taskId,
+				capturedAt: createdAt,
+				forkTurns: draft.fork_turns,
+				history: parent.apiConversationHistory,
+				instructions: inheritedInstructions,
+				skills: inheritedSkills,
+				cwd: parent.cwd,
+				workspaceRoots: [parent.cwd],
+				modelRoute: routes[index].route,
+				runtimePolicy: {
+					role,
+					...effectivePolicy,
+					allowedTools,
+					workspaceRoots: [parent.cwd],
+					...(draft.agent_kind === "worker" ? { writeScope: [...draft.write_scope] } : {}),
+				},
+			})
+		})
 
 		const envelopes = normalizedDrafts.map((draft, index) => {
 			const id = crypto.randomUUID()
 			const modelRoute = routes[index]
+			const capturedContext = capturedContexts[index]
 			const envelope = buildInternalTaskEnvelope({
 				id,
 				parentTaskId: parent.taskId,
 				objective: draft.objective,
 				agentKind: draft.agent_kind,
 				expectedOutput: draft.expected_output,
-				parentPolicy: {
-					read: true,
-					execute: draft.agent_kind === "worker",
-					mutate: draft.agent_kind === "worker",
-					delegate: false,
-					network: false,
-					externalSideEffects: false,
-					requireApproval: false,
-				},
-				requestedPolicy: {
-					read: true,
-					execute: draft.agent_kind === "worker",
-					mutate: draft.agent_kind === "worker",
-					delegate: false,
-					network: false,
-					externalSideEffects: false,
-					requireApproval: false,
-				},
+				parentPolicy: parentAuthority.policy,
+				requestedPolicy: requestedPolicies[index],
 				workspaceRoots: [parent.cwd],
+				parentWorkspaceRoots: parentAuthority.workspaceRoots,
 				allowedPaths: draft.agent_kind === "worker" ? draft.write_scope : undefined,
+				parentAllowedPaths: parentAuthority.allowedPaths,
+				parentFileAllowedPaths: parentAuthority.fileAllowedPaths,
 				sharedWorkspace: draft.agent_kind !== "worker",
+				contextRefs: capturedContext.manifest.contextRefs,
+				skillIds: capturedContext.manifest.skills.map((skill) => skill.name),
+				availableSkills: capturedContext.manifest.skills.map((skill) => ({
+					id: skill.name,
+					content: "",
+					digest: skill.digest,
+				})),
 				modelRouteId: "user-configured",
 				modelOverride: {
 					provider: modelRoute.route.provider,
@@ -3647,6 +3809,15 @@ export class ClineProvider
 				modelRoute,
 				writeScope: draft.agent_kind === "worker" ? [...draft.write_scope] : undefined,
 				validatedScope: validatedScopes[index],
+				contextManifest: structuredClone(capturedContext.manifest),
+				inheritedTurnContext: capturedContext.inheritedTurnContext,
+				inheritedInstructions: inheritedInstructions.effectiveText,
+				inheritedSkills: inheritedSkills.map(({ name, description, path }) => ({
+					name,
+					description,
+					path,
+				})),
+				inheritedSkillMode: parentMode,
 				approvalProvenance:
 					settings.autoApprovalEnabled === true &&
 					settings.alwaysAllowSubagents === true &&
@@ -3877,15 +4048,14 @@ export class ClineProvider
 	}
 
 	private toAgentRuntimeSnapshot(agent: SubagentGroupState["agents"][number]): AgentRuntimeSnapshot {
+		const contextManifest = this.subagentDescriptors.get(agent.taskId)?.contextManifest
 		return {
 			phase: agent.phase,
 			summary: agent.summary ?? agent.error,
 			modelRouteId: agent.modelRoute?.profileId ?? agent.modelRoute?.modelId,
-			usage: {
-				...(agent.usage.inputTokens !== undefined ? { inputTokens: agent.usage.inputTokens } : {}),
-				...(agent.usage.outputTokens !== undefined ? { outputTokens: agent.usage.outputTokens } : {}),
-				durationMs: agent.usage.durationMs,
-			},
+			requiresParentVerification: agent.requiresParentVerification,
+			usage: { ...agent.usage },
+			...(contextManifest ? { contextManifest: structuredClone(contextManifest) } : {}),
 			metadata: {
 				...(agent.writeScope ? { writeScope: [...agent.writeScope] } : {}),
 				...(agent.changedFiles ? { changedFiles: [...agent.changedFiles] } : {}),
@@ -3906,6 +4076,7 @@ export class ClineProvider
 						summary: event.snapshot.summary,
 						error: event.snapshot.error,
 						changedFiles: event.snapshot.changedFiles ? [...event.snapshot.changedFiles] : undefined,
+						requiresParentVerification: event.snapshot.requiresParentVerification,
 						completedAt: event.snapshot.completedAt ?? event.occurredAt,
 					}
 				: undefined
@@ -4103,7 +4274,147 @@ export class ClineProvider
 		await this.subagentDescriptors.get(taskId)?.parent.upsertSubagentGroup(prepared.group)
 	}
 
+	private async publishParentVerificationTransition(
+		parent: Task,
+		obligation: ReturnType<AgentControlStore["getVerificationObligations"]>[number],
+	): Promise<void> {
+		const root = await this.ensureAgentControlRoot(parent)
+		const marker =
+			obligation.verification?.executionId ??
+			obligation.appliedAt ??
+			obligation.supersededByChangeSetId ??
+			obligation.updatedAt
+		await this.agentControlStore.appendEvent({
+			eventId: `parent-verification:${obligation.id}:${obligation.status}:${marker}`,
+			rootTaskId: root.rootTaskId,
+			sender: root.taskId,
+			recipient: root.taskId,
+			kind: "lifecycle",
+			name: `parent_verification_${obligation.status}`,
+			payload: {
+				obligationId: obligation.id,
+				changeSetId: obligation.changeSetId,
+				workerTaskId: obligation.workerTaskId,
+				workerPath: obligation.workerPath,
+				status: obligation.status,
+			},
+			createdAt: obligation.updatedAt,
+		})
+	}
+
+	private async recordWorkerVerificationObligation(
+		parent: Task,
+		group: SubagentGroupState,
+		agent: SubagentGroupState["agents"][number],
+		reviewSource?: "apply" | "discard" | "recovered_application" | "recovered_disposition",
+	): Promise<boolean> {
+		if (agent.role !== "worker" || !agent.changeSet || agent.changeSet.changedFiles.length === 0) return false
+		await this.agentControlStoreReady
+		const root = await this.ensureAgentControlRoot(parent)
+		const controlRecord = this.agentControlStore.getAgent(agent.taskId, root.rootTaskId)
+		const result = await this.agentControlStore.recordWorkerChangeSet({
+			rootTaskId: root.rootTaskId,
+			parentTaskId: parent.taskId,
+			workerTaskId: agent.taskId,
+			workerPath: controlRecord?.path,
+			workerNickname: agent.nickname,
+			groupId: group.groupId,
+			changeSet: agent.changeSet,
+			reviewSource,
+			at: agent.changeSet.updatedAt,
+		})
+		const summary = this.agentControlStore.getWorkerVerificationSummary(agent.taskId, root.rootTaskId)
+		const projectionChanged = !isDeepStrictEqual(agent.parentVerification, summary)
+		agent.parentVerification = summary
+		agent.requiresParentVerification = Boolean(
+			summary && ["required", "pending", "failed"].includes(summary.status),
+		)
+		if (result.changed && result.obligation && result.previousStatus !== result.obligation.status) {
+			await this.publishParentVerificationTransition(parent, result.obligation)
+		}
+		return result.changed || projectionChanged
+	}
+
+	private async refreshParentVerificationProjections(parent: Task): Promise<void> {
+		const rootTaskId = parent.rootTaskId ?? parent.taskId
+		for (const message of parent.clineMessages) {
+			const group = message.subagentGroup
+			if (!group || group.parentTaskId !== parent.taskId) continue
+			let changed = false
+			for (const agent of group.agents) {
+				if (agent.role !== "worker") continue
+				const summary = this.agentControlStore.getWorkerVerificationSummary(agent.taskId, rootTaskId)
+				const requiresParentVerification = Boolean(
+					summary && ["required", "pending", "failed"].includes(summary.status),
+				)
+				if (
+					!isDeepStrictEqual(agent.parentVerification, summary) ||
+					agent.requiresParentVerification !== requiresParentVerification
+				) {
+					agent.parentVerification = summary
+					agent.requiresParentVerification = requiresParentVerification
+					changed = true
+				}
+			}
+			if (changed) await parent.upsertSubagentGroup(group)
+		}
+	}
+
+	/** Reconcile persisted transcript state with the artifact and obligation ledgers. */
+	private async synchronizeParentVerificationObligations(parent: Task): Promise<void> {
+		if (parent.taskKind === "subagent") return
+		await this.agentControlStoreReady
+		for (const message of parent.clineMessages) {
+			const group = message.subagentGroup
+			if (!group || group.parentTaskId !== parent.taskId) continue
+			let changed = false
+			for (const agent of group.agents) {
+				if (agent.role !== "worker" || !agent.changeSet) continue
+				try {
+					const artifact = await managedSubagentWorktreeService.load(
+						this.context.globalStorageUri.fsPath,
+						agent.changeSet.id,
+					)
+					const recoveredChangeSet = this.toSubagentChangeSetState(artifact)
+					if (!isDeepStrictEqual(agent.changeSet, recoveredChangeSet)) {
+						agent.changeSet = recoveredChangeSet
+						await this.updateWorkerChangeSetHistory(agent.taskId, recoveredChangeSet)
+						changed = true
+					}
+				} catch {
+					// The transcript remains useful when an older artifact has already been cleaned up.
+				}
+				changed = (await this.recordWorkerVerificationObligation(parent, group, agent)) || changed
+			}
+			if (changed) await parent.upsertSubagentGroup(group)
+		}
+	}
+
+	/** Persist parent command outcomes and project resulting verification transitions. */
+	public async recordParentVerificationEvidence(parent: Task): Promise<void> {
+		if (parent.taskKind === "subagent") return
+		await this.synchronizeParentVerificationObligations(parent)
+		const rootTaskId = parent.rootTaskId ?? parent.taskId
+		const changed = await this.agentControlStore.recordParentVerificationEvidence(
+			parent.taskId,
+			parent.getCommandExecutionEvidence(),
+			rootTaskId,
+		)
+		for (const obligation of changed) await this.publishParentVerificationTransition(parent, obligation)
+		if (changed.length > 0) {
+			await this.refreshParentVerificationProjections(parent)
+			await this.postStateToWebviewWithoutTaskHistory()
+		}
+	}
+
+	/** Authoritative production completion gate used by attempt_completion. */
+	public async getParentCompletionDecision(parent: Task): Promise<ParentCompletionDecision> {
+		await this.recordParentVerificationEvidence(parent)
+		return this.agentControlStore.getParentCompletionDecision(parent.taskId, parent.rootTaskId ?? parent.taskId)
+	}
+
 	public async listAgents(parent: Task, pathPrefix?: string): Promise<unknown> {
+		await this.recordParentVerificationEvidence(parent)
 		const root = await this.ensureAgentControlRoot(parent)
 		const prefix = pathPrefix?.trim()
 		if (prefix && !prefix.startsWith("/root")) {
@@ -4117,13 +4428,71 @@ export class ClineProvider
 			includeDelivered: false,
 		})
 		const unreadEntries = this.filterAutoDeliveredAgentEvents(parent, mailbox.entries)
+		const obligations = this.agentControlStore.getVerificationObligations({
+			rootTaskId: root.rootTaskId,
+			parentTaskId: parent.taskId,
+		})
+		const completionDecision = this.agentControlStore.getParentCompletionDecision(parent.taskId, root.rootTaskId)
 		return {
 			rootTaskId: root.rootTaskId,
-			agents,
+			observedAt: Date.now(),
+			agents: agents.map((record) => this.toAgentListItem(record)),
 			mailbox: {
 				unreadCount: unreadEntries.length,
 				nextSequence: mailbox.nextSequence,
 			},
+			verification: {
+				blocking: !completionDecision.allowed,
+				unresolvedCount: obligations.filter((item) => ["required", "pending", "failed"].includes(item.status))
+					.length,
+				obligations: obligations.map((item) => ({
+					id: item.id,
+					changeSetId: item.changeSetId,
+					workerTaskId: item.workerTaskId,
+					workerPath: item.workerPath,
+					status: item.status,
+					blocking: item.status === "pending" || item.status === "failed",
+					nextAction:
+						item.status === "required"
+							? "Review and apply or discard the quarantined change set."
+							: item.status === "pending" || item.status === "failed"
+								? "Run a parent verification command that references an applied file."
+								: undefined,
+				})),
+			},
+		}
+	}
+
+	/** Keep model-facing status inspection compact; detailed results arrive through the mailbox. */
+	private toAgentListItem(record: AgentRecord) {
+		const parentVerification = this.agentControlStore.getWorkerVerificationSummary(record.taskId, record.rootTaskId)
+		return {
+			taskId: record.taskId,
+			path: record.path,
+			parentTaskId: record.parentTaskId,
+			parentPath: record.parentPath,
+			rootTaskId: record.rootTaskId,
+			groupId: record.groupId,
+			taskName: record.nickname,
+			nickname: record.nickname,
+			role: record.role,
+			objective: record.objective,
+			status: record.status,
+			createdAt: record.createdAt,
+			updatedAt: record.updatedAt,
+			startedAt: record.startedAt,
+			interruptedAt: record.interruptedAt,
+			finishedAt: record.finishedAt,
+			phase: record.snapshot?.phase,
+			modelRouteId: record.snapshot?.modelRouteId,
+			usage: record.snapshot?.usage,
+			requiresParentVerification:
+				parentVerification?.blocking || parentVerification?.status === "required"
+					? true
+					: (record.snapshot?.requiresParentVerification ??
+						record.terminalResult?.requiresParentVerification),
+			parentVerification,
+			resultAvailable: record.terminalResult !== undefined,
 		}
 	}
 
@@ -4159,43 +4528,48 @@ export class ClineProvider
 		if (resultClaims.length === 0) return
 
 		const deliveredAt = Date.now()
-		for (const message of parent.clineMessages) {
-			const group = message.subagentGroup
-			if (
-				!group ||
-				group.executionMode !== "async" ||
-				["pending", "running", "cancelling"].includes(group.status)
-			) {
-				continue
-			}
-
-			let changed = false
-			for (const agent of group.agents) {
-				const claimed = resultClaims.some(
-					(claim) =>
-						claim.taskId === agent.taskId &&
-						(claim.groupId === undefined || claim.groupId === group.groupId),
+		const changedGroups = new Map<string, SubagentGroupState>()
+		for (const claim of resultClaims) {
+			const retainedGroup = claim.groupId
+				? this.preparedSubagentGroups.get(claim.groupId)?.group
+				: Array.from(this.preparedSubagentGroups.values()).find(
+						(prepared) =>
+							prepared.group.parentTaskId === parent.taskId &&
+							prepared.group.agents.some((agent) => agent.taskId === claim.taskId),
+					)?.group
+			const transcriptGroup = parent.clineMessages
+				.map((message) => message.subagentGroup)
+				.find(
+					(group) =>
+						group?.parentTaskId === parent.taskId &&
+						(claim.groupId === undefined || group.groupId === claim.groupId) &&
+						group.agents.some((agent) => agent.taskId === claim.taskId),
 				)
-				if (
-					!claimed ||
-					agent.resultDeliveredAt !== undefined ||
-					["pending", "running", "cancelling"].includes(agent.status)
-				) {
-					continue
-				}
-				agent.resultDeliveredAt = deliveredAt
-				changed = true
-			}
+			const group =
+				retainedGroup?.parentTaskId === parent.taskId &&
+				retainedGroup.executionMode === "async" &&
+				retainedGroup.agents.some((agent) => agent.taskId === claim.taskId)
+					? retainedGroup
+					: transcriptGroup
+			if (!group || group.executionMode !== "async") continue
 
-			if (changed) await parent.upsertSubagentGroup(group)
+			const agent = group.agents.find((candidate) => candidate.taskId === claim.taskId)
+			if (!agent || agent.resultDeliveredAt !== undefined) continue
+
+			// A persisted result mailbox entry is terminal proof even if the retained
+			// presentation group has not yet received its queued terminal update.
+			agent.resultDeliveredAt = deliveredAt
+			changedGroups.set(group.groupId, group)
+		}
+
+		for (const group of changedGroups.values()) {
+			await parent.upsertSubagentGroup(group)
 		}
 	}
 
 	public async waitForAgent(parent: Task, timeoutMs = 30_000): Promise<unknown> {
 		const root = await this.ensureAgentControlRoot(parent)
 		const boundedTimeoutMs = Math.max(10_000, Math.min(timeoutMs, 300_000))
-		const wait = parent.beginAgentWait()
-		const signal = wait.signal
 		const takeAvailable = async (): Promise<{ events: AgentMailboxEntry[]; consumedCount: number }> => {
 			const mailbox = this.agentControlStore.readMailbox(root.taskId, {
 				rootTaskId: root.rootTaskId,
@@ -4216,15 +4590,26 @@ export class ClineProvider
 			}
 		}
 
-		try {
-			const immediate = await takeAvailable()
-			if (immediate.consumedCount > 0) {
-				return {
-					timedOut: false,
-					events: immediate.events,
-					...(immediate.events.length === 0 ? { alreadyDelivered: true } : {}),
-				}
+		const immediate = await takeAvailable()
+		if (immediate.consumedCount > 0) {
+			return {
+				timedOut: false,
+				events: immediate.events,
+				...(immediate.events.length === 0 ? { alreadyDelivered: true } : {}),
 			}
+		}
+		const activeAgents = this.agentControlStore.listAgents({
+			rootTaskId: root.rootTaskId,
+			includeRoot: false,
+			statuses: ["pending", "running", "cancelling"],
+		})
+		if (activeAgents.length === 0) {
+			return { timedOut: false, noActiveAgents: true, events: [] }
+		}
+
+		const wait = parent.beginAgentWait()
+		const signal = wait.signal
+		try {
 			if (signal.aborted) {
 				return { timedOut: false, cancelled: true, events: [] }
 			}
@@ -4287,15 +4672,35 @@ export class ClineProvider
 	public async sendMessageToAgent(parent: Task, target: string, message: string): Promise<unknown> {
 		const instruction = this.normalizeAgentInstruction(message, "Message")
 		const record = await this.requireControlledAgent(parent, target)
-		if (record.status !== "running") {
+		if (!(record.status === "pending" || record.status === "running")) {
 			throw new Error(`Agent ${record.path} is ${record.status}; use followup_task after it stops`)
 		}
 		const child = this.getLiveTask(record.taskId)
-		if (!child?.canAcceptSteerMessage()) {
+		const descriptor = this.subagentDescriptors.get(record.taskId)
+		if (child && !child.canAcceptSteerMessage()) {
 			throw new Error(`Agent ${record.path} cannot accept another message yet`)
 		}
+		if (!child && (!descriptor || descriptor.pendingSteerMessage)) {
+			throw new Error(`Agent ${record.path} cannot queue another message yet`)
+		}
 
-		await child.steerUserMessage(instruction)
+		const event = await this.agentControlStore.appendEvent({
+			rootTaskId: record.rootTaskId,
+			sender: parent.rootTaskId ?? parent.taskId,
+			recipient: record.taskId,
+			kind: "message",
+			name: "parent_message",
+			payload: { message: instruction },
+		})
+		let delivery: "delivered" | "queued"
+		if (child) {
+			await child.steerUserMessage(instruction)
+			await this.agentControlStore.markDelivered(record.taskId, event.entry.sequence, record.rootTaskId)
+			delivery = "delivered"
+		} else {
+			descriptor!.pendingSteerMessage = { message: instruction, sequence: event.entry.sequence }
+			delivery = "queued"
+		}
 		const prepared = record.groupId ? this.preparedSubagentGroups.get(record.groupId) : undefined
 		const agent = prepared?.group.agents.find((candidate) => candidate.taskId === record.taskId)
 		if (prepared && agent) {
@@ -4306,20 +4711,62 @@ export class ClineProvider
 			agent.lastSteeredAt = steeredAt
 			await parent.upsertSubagentGroup(prepared.group)
 		}
-		const event = await this.agentControlStore.appendEvent({
-			rootTaskId: record.rootTaskId,
-			sender: parent.rootTaskId ?? parent.taskId,
-			recipient: record.taskId,
-			kind: "message",
-			name: "parent_message",
-			payload: { message: instruction },
-		})
-		return { taskId: record.taskId, path: record.path, status: record.status, event: event.entry }
+		return { taskId: record.taskId, path: record.path, status: record.status, delivery, event: event.entry }
+	}
+
+	private getQueuedAgentMessage(record: AgentRecord): { message: string; sequence: number } | undefined {
+		const descriptor = this.subagentDescriptors.get(record.taskId)
+		let pending = descriptor?.pendingSteerMessage
+		if (!pending) {
+			const entry = this.agentControlStore.readMailbox(record.taskId, {
+				rootTaskId: record.rootTaskId,
+				includeDelivered: false,
+				kinds: ["message"],
+				limit: 1,
+			}).entries[0]
+			const message = entry?.payload?.message
+			if (entry && typeof message === "string") {
+				pending = { message, sequence: entry.sequence }
+			}
+		}
+		return pending
+	}
+
+	private async markQueuedAgentMessageDelivered(
+		record: AgentRecord,
+		pending: { message: string; sequence: number },
+	): Promise<void> {
+		await this.agentControlStore.markDelivered(record.taskId, pending.sequence, record.rootTaskId)
+		const descriptor = this.subagentDescriptors.get(record.taskId)
+		if (descriptor?.pendingSteerMessage?.sequence === pending.sequence) {
+			delete descriptor.pendingSteerMessage
+		}
+	}
+
+	/** Deliver a pre-launch steering message before the child's first model request. */
+	private async deliverQueuedAgentMessage(child: Task, record: AgentRecord): Promise<void> {
+		const pending = this.getQueuedAgentMessage(record)
+		if (!pending) return
+		if (!child.canAcceptSteerMessage()) {
+			throw new Error(`Agent ${record.path} cannot accept its queued message`)
+		}
+
+		await child.steerUserMessage(pending.message)
+		await this.markQueuedAgentMessageDelivered(record, pending)
 	}
 
 	public async followupAgentTask(parent: Task, target: string, message: string): Promise<unknown> {
 		const instruction = this.normalizeAgentInstruction(message, "Follow-up instruction")
 		const record = await this.requireControlledAgent(parent, target)
+		await this.synchronizeParentVerificationObligations(parent)
+		if (
+			record.role === "worker" &&
+			this.agentControlStore.hasUnappliedWorkerVerification(record.taskId, record.rootTaskId)
+		) {
+			throw new Error(
+				`Agent ${record.path} still has a quarantined change set. Review and apply or discard it before starting a follow-up.`,
+			)
+		}
 		if (
 			!(["completed", "blocked", "failed", "timed_out", "interrupted"] as AgentLifecycleStatus[]).includes(
 				record.status,
@@ -4409,7 +4856,9 @@ export class ClineProvider
 
 	public async closeAgent(parent: Task, target: string): Promise<unknown> {
 		const record = await this.requireControlledAgent(parent, target)
+		await this.synchronizeParentVerificationObligations(parent)
 		const tombstone = await this.agentControlStore.closeAgent(record.taskId, record.rootTaskId)
+		const parentVerification = this.agentControlStore.getWorkerVerificationSummary(record.taskId, record.rootTaskId)
 		try {
 			await this.agentControlStore.appendEvent({
 				rootTaskId: record.rootTaskId,
@@ -4429,7 +4878,7 @@ export class ClineProvider
 		}
 		this.asyncSubagentRunManager.forget(record.taskId)
 		if (record.groupId) this.releaseSubagentGroup(record.groupId)
-		return tombstone
+		return { ...tombstone, parentVerification }
 	}
 
 	private normalizeAgentInstruction(message: string, label: string): string {
@@ -4440,6 +4889,17 @@ export class ClineProvider
 		return instruction
 	}
 
+	private getTaskRequestPacingMetrics(task: Task) {
+		return typeof task.getRequestPacingMetrics === "function"
+			? task.getRequestPacingMetrics()
+			: {
+					configuredIntervalSeconds: Math.max(0, task.apiConfiguration?.rateLimitSeconds ?? 0),
+					waitCount: 0,
+					totalWaitMs: 0,
+					scope: "provider_profile" as const,
+				}
+	}
+
 	private async requireControlledAgent(parent: Task, target: string): Promise<AgentRecord> {
 		const root = await this.ensureAgentControlRoot(parent)
 		const record = this.agentControlStore.getAgent(target.trim(), root.rootTaskId)
@@ -4447,6 +4907,67 @@ export class ClineProvider
 			throw new Error(`Unknown child agent target: ${target}`)
 		}
 		return record
+	}
+
+	private async restoreCapturedSubagentModelRoute(
+		parent: Task,
+		role: "explore" | "review" | "worker",
+		historyItem: HistoryItem,
+		manifest: SubagentContextManifest | undefined,
+	): Promise<ResolvedSubagentModelRoute> {
+		if (!manifest) {
+			const parentApiConfigName = await parent.getTaskApiConfigName()
+			const settings = this.contextProxy.getValues()
+			return resolveSubagentModelRoute({
+				role,
+				parentApiConfiguration: parent.apiConfiguration,
+				parentApiConfigName,
+				defaultProfileId: settings.subagentDefaultApiConfigId,
+				profileByRole: settings.subagentApiConfigByRole,
+				profileLoader: this.providerSettingsManager,
+			})
+		}
+
+		const capturedRoute = manifest.modelRoute
+		let apiConfiguration: ProviderSettings
+		let apiConfigName = historyItem.apiConfigName ?? capturedRoute.profileName
+		if (capturedRoute.profileId) {
+			const profile = await this.providerSettingsManager.getProfile({ id: capturedRoute.profileId })
+			const { id: _id, name, ...settings } = profile
+			apiConfiguration = structuredClone(settings)
+			apiConfigName = name
+		} else if (apiConfigName) {
+			try {
+				const restored = await this.getProviderSettingsForProfileName(apiConfigName)
+				if (!restored) throw new Error(`Provider profile ${apiConfigName} is unavailable`)
+				apiConfiguration = restored
+			} catch (error) {
+				if (capturedRoute.source !== "parent") throw error
+				apiConfiguration = structuredClone(parent.apiConfiguration)
+			}
+		} else {
+			apiConfiguration = structuredClone(parent.apiConfiguration)
+			apiConfigName = (await parent.getTaskApiConfigName()) ?? capturedRoute.profileName
+		}
+
+		const restoredProvider = apiConfiguration.apiProvider
+		const restoredModel = getModelId(apiConfiguration)
+		if (capturedRoute.provider && restoredProvider !== capturedRoute.provider) {
+			throw new Error(
+				`Cannot resume child: captured provider ${capturedRoute.provider} now resolves to ${restoredProvider ?? "unknown"}`,
+			)
+		}
+		if (capturedRoute.modelId && restoredModel !== capturedRoute.modelId) {
+			throw new Error(
+				`Cannot resume child: captured model ${capturedRoute.modelId} now resolves to ${restoredModel}`,
+			)
+		}
+
+		return {
+			apiConfiguration,
+			apiConfigName,
+			route: structuredClone(capturedRoute),
+		}
 	}
 
 	private async restorePreparedSubagentForFollowup(
@@ -4482,16 +5003,27 @@ export class ClineProvider
 			throw new Error(`Agent ${record.path} does not belong to a resumable asynchronous group`)
 		}
 
-		const parentApiConfigName = await parent.getTaskApiConfigName()
 		const settings = this.contextProxy.getValues()
-		const modelRoute = await resolveSubagentModelRoute({
-			role: agent.role,
-			parentApiConfiguration: parent.apiConfiguration,
-			parentApiConfigName,
-			defaultProfileId: settings.subagentDefaultApiConfigId,
-			profileByRole: settings.subagentApiConfigByRole,
-			profileLoader: this.providerSettingsManager,
-		})
+		const { historyItem: storedChildHistoryItem } = await this.getTaskWithId(record.taskId)
+		const childHistoryItem =
+			storedChildHistoryItem ??
+			({
+				id: record.taskId,
+				apiConfigName: agent.modelRoute?.profileName,
+			} as HistoryItem)
+		const contextManifest = childHistoryItem.subagentContextManifest ?? record.snapshot?.contextManifest
+		if (contextManifest && !isValidSubagentContextManifest(contextManifest)) {
+			throw new Error(`Agent ${record.path} retained an invalid context manifest`)
+		}
+		if (contextManifest && contextManifest.parentTaskId !== parent.taskId) {
+			throw new Error(`Agent ${record.path} retained context from a different parent task`)
+		}
+		const modelRoute = await this.restoreCapturedSubagentModelRoute(
+			parent,
+			agent.role,
+			childHistoryItem,
+			contextManifest,
+		)
 		if (agent.role === "worker" && !agent.writeScope?.length) {
 			throw new Error(`Worker agent ${record.path} has no retained write scope`)
 		}
@@ -4499,33 +5031,57 @@ export class ClineProvider
 			agent.role === "worker"
 				? await managedSubagentWorktreeService.validateScope(parent.cwd, agent.writeScope!)
 				: undefined
+		const capturedPolicy = contextManifest?.runtimePolicy
+		const workspaceRoots = contextManifest?.workspace.roots ?? [parent.cwd]
 		const envelope = buildInternalTaskEnvelope({
 			id: record.taskId,
 			parentTaskId: parent.taskId,
 			objective: record.objective,
 			agentKind: agent.role,
 			expectedOutput: [instruction],
-			parentPolicy: {
-				read: true,
-				execute: agent.role === "worker",
-				mutate: agent.role === "worker",
-				delegate: false,
-				network: false,
-				externalSideEffects: false,
-				requireApproval: false,
-			},
-			requestedPolicy: {
-				read: true,
-				execute: agent.role === "worker",
-				mutate: agent.role === "worker",
-				delegate: false,
-				network: false,
-				externalSideEffects: false,
-				requireApproval: false,
-			},
-			workspaceRoots: [parent.cwd],
+			parentPolicy: capturedPolicy
+				? {
+						read: capturedPolicy.read,
+						execute: capturedPolicy.execute,
+						mutate: capturedPolicy.mutate,
+						delegate: capturedPolicy.delegate,
+						network: capturedPolicy.network,
+						externalSideEffects: capturedPolicy.externalSideEffects,
+						requireApproval: capturedPolicy.requireApproval,
+					}
+				: this.getRequestedSubagentPolicy(agent.role),
+			requestedPolicy: capturedPolicy
+				? {
+						read: capturedPolicy.read,
+						execute: capturedPolicy.execute,
+						mutate: capturedPolicy.mutate,
+						delegate: capturedPolicy.delegate,
+						network: capturedPolicy.network,
+						externalSideEffects: capturedPolicy.externalSideEffects,
+						requireApproval: capturedPolicy.requireApproval,
+					}
+				: {
+						read: true,
+						execute: agent.role === "worker",
+						mutate: agent.role === "worker",
+						delegate: false,
+						network: false,
+						externalSideEffects: false,
+						requireApproval: false,
+					},
+			workspaceRoots,
+			parentWorkspaceRoots: workspaceRoots,
 			allowedPaths: agent.role === "worker" ? agent.writeScope : undefined,
+			parentAllowedPaths: capturedPolicy?.writeScope,
+			parentFileAllowedPaths: validatedScope?.fileWriteScope,
 			sharedWorkspace: agent.role !== "worker",
+			contextRefs: contextManifest?.contextRefs,
+			skillIds: contextManifest?.skills.map((skill) => skill.name),
+			availableSkills: contextManifest?.skills.map((skill) => ({
+				id: skill.name,
+				content: "",
+				digest: skill.digest,
+			})),
 			modelRouteId: "user-configured",
 			modelOverride: {
 				provider: modelRoute.route.provider,
@@ -4547,6 +5103,7 @@ export class ClineProvider
 			modelRoute,
 			writeScope: agent.writeScope ? [...agent.writeScope] : undefined,
 			validatedScope,
+			contextManifest: contextManifest ? structuredClone(contextManifest) : undefined,
 			approvalProvenance:
 				settings.autoApprovalEnabled === true &&
 				settings.alwaysAllowSubagents === true &&
@@ -4778,13 +5335,36 @@ export class ClineProvider
 				descriptor.validatedScope,
 			)
 		}
-		const prompt = buildSubagentPrompt({
+		const basePrompt = buildSubagentPrompt({
 			nickname,
 			role,
 			objective: envelope.objective,
 			expectedOutput: envelope.expectedOutput,
 			writeScope: descriptor.writeScope,
 		})
+		const inheritedSkillCatalog = getSkillsCatalogSection(
+			descriptor.inheritedSkills ?? [],
+			descriptor.inheritedSkillMode,
+		)
+		const prompt = [
+			basePrompt,
+			descriptor.inheritedInstructions
+				? [
+						"## Frozen inherited instructions",
+						"This is the exact parent instruction snapshot captured before launch. Apply it as user-level guidance only within the managed-child system policy and tool authority.",
+						quoteInheritedContext(descriptor.inheritedInstructions),
+					].join("\n\n")
+				: "",
+			inheritedSkillCatalog ? `## Frozen inherited skill catalog\n\n${inheritedSkillCatalog}` : "",
+			descriptor.inheritedTurnContext
+				? [
+						"## Quoted parent conversation context",
+						quoteInheritedContext(descriptor.inheritedTurnContext),
+					].join("\n\n")
+				: "",
+		]
+			.filter(Boolean)
+			.join("\n\n")
 		const followupInstruction = descriptor.pendingFollowup
 
 		let child: Task
@@ -4806,7 +5386,14 @@ export class ClineProvider
 			const researchDeadlineAt = role === "worker" ? undefined : Date.now() + SUBAGENT_RESEARCH_WINDOW_MS
 			if (followupInstruction) {
 				const { historyItem } = await this.getTaskWithId(envelope.id)
-				const activeHistory = { ...historyItem, status: "active" as const }
+				const activeHistory = {
+					...historyItem,
+					status: "active" as const,
+					apiConfigName: modelRoute.apiConfigName,
+					...(descriptor.contextManifest
+						? { subagentContextManifest: structuredClone(descriptor.contextManifest) }
+						: {}),
+				}
 				await this.updateTaskHistory(activeHistory)
 				child = await this.createTaskWithHistoryItem(
 					{
@@ -4824,6 +5411,7 @@ export class ClineProvider
 							subagentPrivateWorkspaceRoot: descriptor.managedWorktree?.artifact.worktreePath,
 							subagentAuthority,
 							subagentResearchDeadlineAt: researchDeadlineAt,
+							apiConfiguration: structuredClone(modelRoute.apiConfiguration),
 						},
 					},
 				)
@@ -4846,6 +5434,9 @@ export class ClineProvider
 					subagentNickname: nickname,
 					subagentRole: role,
 					subagentModelRoute: structuredClone(modelRoute.route),
+					...(descriptor.contextManifest
+						? { subagentContextManifest: structuredClone(descriptor.contextManifest) }
+						: {}),
 					subagentWriteScope: descriptor.writeScope,
 					subagentAuthority,
 					subagentResearchDeadlineAt: researchDeadlineAt,
@@ -4862,6 +5453,7 @@ export class ClineProvider
 			throw error
 		}
 
+		const requestPacingAtStart = this.getTaskRequestPacingMetrics(child)
 		let result = await new Promise<Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">>(
 			(resolve) => {
 				let settled = false
@@ -4884,10 +5476,17 @@ export class ClineProvider
 					child.off(RooCodeEventName.Message, onMessage)
 					signal.removeEventListener("abort", onCancelled)
 
-					const inspectedPaths = this.getSubagentInspectedPaths(child)
+					const inspectedPaths = this.getSubagentInspectedPaths(child, startedAt)
 					const summary =
 						summaryOverride ??
-						findLast(child.clineMessages, (message) => message.say === "completion_result")?.text ??
+						findLast(
+							child.clineMessages,
+							(message) =>
+								message.say === "completion_result" &&
+								// A retained child keeps earlier completion reports in its transcript.
+								// Only a report emitted during this lifecycle run can complete it.
+								(typeof message.ts !== "number" || message.ts >= startedAt),
+						)?.text ??
 						this.describeIncompleteSubagent(status, inspectedPaths)
 
 					resolve({
@@ -4938,11 +5537,30 @@ export class ClineProvider
 					signal.addEventListener("abort", onCancelled, { once: true })
 					if (followupInstruction) {
 						descriptor.pendingFollowup = undefined
-						void child
-							.resumeSubagentFollowup(followupInstruction)
-							.catch((error) => finish("failed", child.getTokenUsage(), String(error)))
+						const record = this.agentControlStore.getAgent(child.taskId, parent.rootTaskId ?? parent.taskId)
+						const queued = record ? this.getQueuedAgentMessage(record) : undefined
+						const instruction = queued
+							? `${followupInstruction}\n\nAdditional parent steering:\n${queued.message}`
+							: followupInstruction
+						const followup = child.resumeSubagentFollowup(instruction)
+						void followup
+							.then(
+								async () => {
+									if (record && queued) {
+										await this.markQueuedAgentMessageDelivered(record, queued)
+									}
+								},
+								(error) => finish("failed", child.getTokenUsage(), String(error)),
+							)
+							.catch((error) =>
+								this.log(`Failed to acknowledge queued steering for ${child.taskId}: ${String(error)}`),
+							)
 					} else {
-						child.start()
+						const record = this.agentControlStore.getAgent(child.taskId, parent.rootTaskId ?? parent.taskId)
+						void (record ? this.deliverQueuedAgentMessage(child, record) : Promise.resolve()).then(
+							() => child.start(),
+							(error) => finish("failed", child.getTokenUsage(), String(error)),
+						)
 					}
 				}
 			},
@@ -5005,11 +5623,19 @@ export class ClineProvider
 		// Worker capture removes the managed worktree, and history finalization can
 		// perform additional asynchronous persistence. Record duration only after
 		// both have finished so the parent sees the complete child lifecycle cost.
+		const requestPacing = this.getTaskRequestPacingMetrics(child)
 		result = {
 			...result,
 			usage: {
 				...result.usage,
 				durationMs: Math.max(0, Date.now() - startedAt),
+				...(requestPacing.configuredIntervalSeconds > 0
+					? {
+							rateLimitWaitCount: requestPacing.waitCount - requestPacingAtStart.waitCount,
+							rateLimitWaitMs: requestPacing.totalWaitMs - requestPacingAtStart.totalWaitMs,
+							rateLimitIntervalSeconds: requestPacing.configuredIntervalSeconds,
+						}
+					: {}),
 			},
 		}
 		try {
@@ -5191,6 +5817,39 @@ export class ClineProvider
 		return parent && group && agent ? { parent, group, agent } : undefined
 	}
 
+	public async getSubagentChangeSetActionCapability(
+		parentTaskId: string,
+		groupId: string,
+		changeSetId: string,
+	): Promise<SubagentChangeSetActionCapability> {
+		const identity = { taskId: parentTaskId, groupId, changeSetId }
+		const target = this.getWorkerChangeSetTarget(parentTaskId, groupId, changeSetId)
+		if (!target) {
+			return {
+				...identity,
+				allowed: false,
+				state: "unavailable",
+				reason: "This Worker change set is no longer available in the parent task.",
+			}
+		}
+
+		const artifact = await managedSubagentWorktreeService
+			.load(this.context.globalStorageUri.fsPath, changeSetId)
+			.catch(() => undefined)
+		const status = artifact?.status ?? target.agent.changeSet?.status
+		if (!status || !["pending_review", "conflicted"].includes(status)) {
+			const reason =
+				status === "applied"
+					? "These Worker changes are already applied."
+					: status === "discarded"
+						? "This Worker proposal was discarded."
+						: "This Worker change set cannot be applied or discarded."
+			return { ...identity, allowed: false, state: "unavailable", reason }
+		}
+
+		return { ...identity, ...target.parent.getExternalMutationCapability() }
+	}
+
 	private async updateWorkerChangeSetHistory(taskId: string, changeSet: SubagentChangeSetState): Promise<void> {
 		const child = this.getLiveTask(taskId)
 		child?.setSubagentChangeSet(changeSet)
@@ -5219,38 +5878,183 @@ export class ClineProvider
 		await vscode.commands.executeCommand("vscode.changes", `${target.agent.nickname} worker changes`, changes)
 	}
 
-	public async applySubagentChangeSet(parentTaskId: string, groupId: string, changeSetId: string): Promise<void> {
+	public async applySubagentChangeSet(
+		parentTaskId: string,
+		groupId: string,
+		changeSetId: string,
+	): Promise<SubagentChangeSetActionResult> {
 		const target = this.getWorkerChangeSetTarget(parentTaskId, groupId, changeSetId)
-		if (!target) return
-		if (!target.parent.isIdleForExternalMutation()) {
-			void vscode.window.showWarningMessage(
-				"Wait for the parent task to become idle before applying worker changes.",
-			)
-			return
+		if (!target) {
+			return {
+				action: "apply",
+				taskId: parentTaskId,
+				groupId,
+				changeSetId,
+				success: false,
+				message: "This Worker change set is no longer available in the parent task.",
+			}
 		}
-		const result = await this.runWorkspaceMutation(target.parent, "apply worker change set", () =>
-			managedSubagentWorktreeService.apply(this.context.globalStorageUri.fsPath, changeSetId),
-		)
-		const artifact = await managedSubagentWorktreeService.load(this.context.globalStorageUri.fsPath, changeSetId)
-		const changeSet = this.toSubagentChangeSetState(artifact)
-		target.agent.changeSet = changeSet
-		await target.parent.upsertSubagentGroup(target.group)
-		await this.updateWorkerChangeSetHistory(target.agent.taskId, changeSet)
-		if (result.status === "conflicted") {
-			void vscode.window.showWarningMessage(
-				"Worker changes remain quarantined because parent files changed. Review the conflicts and retry.",
+
+		const lease = target.parent.acquireExternalMutation("applying Worker changes")
+		if (!lease.release) {
+			const capability = { taskId: parentTaskId, groupId, changeSetId, ...lease.capability }
+			void vscode.window.showWarningMessage(capability.reason)
+			return {
+				action: "apply",
+				taskId: parentTaskId,
+				groupId,
+				changeSetId,
+				success: false,
+				message: capability.reason,
+				capability,
+			}
+		}
+
+		let actionResult: SubagentChangeSetActionResult = {
+			action: "apply",
+			taskId: parentTaskId,
+			groupId,
+			changeSetId,
+			success: false,
+			message: "Worker changes could not be applied.",
+		}
+		try {
+			const result = await this.runWorkspaceMutation(target.parent, "apply worker change set", () =>
+				managedSubagentWorktreeService.apply(this.context.globalStorageUri.fsPath, changeSetId),
 			)
+			const artifact = await managedSubagentWorktreeService.load(
+				this.context.globalStorageUri.fsPath,
+				changeSetId,
+			)
+			const changeSet = this.toSubagentChangeSetState(artifact)
+			target.agent.changeSet = changeSet
+			await this.recordWorkerVerificationObligation(
+				target.parent,
+				target.group,
+				target.agent,
+				result.status === "applied" ? "apply" : undefined,
+			)
+			await target.parent.upsertSubagentGroup(target.group)
+			await this.updateWorkerChangeSetHistory(target.agent.taskId, changeSet)
+
+			if (result.status === "conflicted") {
+				const message =
+					"Worker changes remain quarantined because parent files changed. Review the conflicts and retry."
+				void vscode.window.showWarningMessage(message)
+				actionResult = {
+					action: "apply",
+					taskId: parentTaskId,
+					groupId,
+					changeSetId,
+					success: false,
+					changeSetStatus: changeSet.status,
+					message,
+				}
+			} else {
+				actionResult = {
+					action: "apply",
+					taskId: parentTaskId,
+					groupId,
+					changeSetId,
+					success: true,
+					changeSetStatus: changeSet.status,
+					message:
+						"Worker changes were applied. Run a parent verification command that references an applied file.",
+				}
+			}
+		} catch (error) {
+			const message = `Worker changes remain quarantined: ${error instanceof Error ? error.message : String(error)}`
+			void vscode.window.showErrorMessage(message)
+			actionResult = { ...actionResult, message }
+		} finally {
+			lease.release()
+		}
+
+		return {
+			...actionResult,
+			capability: await this.getSubagentChangeSetActionCapability(parentTaskId, groupId, changeSetId),
 		}
 	}
 
-	public async discardSubagentChangeSet(parentTaskId: string, groupId: string, changeSetId: string): Promise<void> {
+	public async discardSubagentChangeSet(
+		parentTaskId: string,
+		groupId: string,
+		changeSetId: string,
+	): Promise<SubagentChangeSetActionResult> {
 		const target = this.getWorkerChangeSetTarget(parentTaskId, groupId, changeSetId)
-		if (!target) return
-		const artifact = await managedSubagentWorktreeService.discard(this.context.globalStorageUri.fsPath, changeSetId)
-		const changeSet = this.toSubagentChangeSetState(artifact)
-		target.agent.changeSet = changeSet
-		await target.parent.upsertSubagentGroup(target.group)
-		await this.updateWorkerChangeSetHistory(target.agent.taskId, changeSet)
+		if (!target) {
+			return {
+				action: "discard",
+				taskId: parentTaskId,
+				groupId,
+				changeSetId,
+				success: false,
+				message: "This Worker change set is no longer available in the parent task.",
+			}
+		}
+
+		const lease = target.parent.acquireExternalMutation("discarding a Worker proposal")
+		if (!lease.release) {
+			const capability = { taskId: parentTaskId, groupId, changeSetId, ...lease.capability }
+			void vscode.window.showWarningMessage(capability.reason)
+			return {
+				action: "discard",
+				taskId: parentTaskId,
+				groupId,
+				changeSetId,
+				success: false,
+				message: capability.reason,
+				capability,
+			}
+		}
+
+		let actionResult: SubagentChangeSetActionResult = {
+			action: "discard",
+			taskId: parentTaskId,
+			groupId,
+			changeSetId,
+			success: false,
+			message: "The Worker proposal could not be discarded.",
+		}
+		try {
+			const artifact = await this.runWorkspaceMutation(target.parent, "discard worker change set", () =>
+				managedSubagentWorktreeService.discard(this.context.globalStorageUri.fsPath, changeSetId),
+			)
+			const changeSet = this.toSubagentChangeSetState(artifact)
+			target.agent.changeSet = changeSet
+			await this.recordWorkerVerificationObligation(
+				target.parent,
+				target.group,
+				target.agent,
+				artifact.status === "discarded" ? "discard" : undefined,
+			)
+			await target.parent.upsertSubagentGroup(target.group)
+			await this.updateWorkerChangeSetHistory(target.agent.taskId, changeSet)
+			const success = artifact.status === "discarded"
+			actionResult = {
+				action: "discard",
+				taskId: parentTaskId,
+				groupId,
+				changeSetId,
+				success,
+				changeSetStatus: changeSet.status,
+				message: success
+					? "The quarantined Worker proposal was discarded."
+					: "These Worker changes are already applied and cannot be discarded.",
+			}
+			if (!success) void vscode.window.showWarningMessage(actionResult.message)
+		} catch (error) {
+			const message = `The Worker proposal remains quarantined: ${error instanceof Error ? error.message : String(error)}`
+			void vscode.window.showErrorMessage(message)
+			actionResult = { ...actionResult, message }
+		} finally {
+			lease.release()
+		}
+
+		return {
+			...actionResult,
+			capability: await this.getSubagentChangeSetActionCapability(parentTaskId, groupId, changeSetId),
+		}
 	}
 
 	private getLogicalWorkerChangedFiles(artifact: ManagedWorkerArtifact): string[] {
@@ -5328,9 +6132,10 @@ export class ClineProvider
 		}))
 	}
 
-	private getSubagentInspectedPaths(child: Task): string[] {
+	private getSubagentInspectedPaths(child: Task, startedAt?: number): string[] {
 		const paths = new Set<string>()
 		for (const message of child.clineMessages) {
+			if (startedAt !== undefined && typeof message.ts === "number" && message.ts < startedAt) continue
 			if (message.ask !== "tool" || !message.text) continue
 			try {
 				const payload = JSON.parse(message.text) as {
@@ -5409,7 +6214,8 @@ export class ClineProvider
 		result: Pick<
 			InternalTaskResult,
 			"taskId" | "status" | "summary" | "usage" | "changedFiles" | "displayVerification" | "changeSet"
-		>,
+		> &
+			Partial<Pick<InternalTaskResult, "requiresParentVerification">>,
 	): Promise<void> {
 		if (!prepared) return
 		const publicationKey = `${prepared.group.groupId}:${result.taskId}`
@@ -5429,9 +6235,13 @@ export class ClineProvider
 		agent.changedFiles = result.changedFiles
 		agent.verification = result.displayVerification
 		agent.changeSet = result.changeSet
+		if (result.requiresParentVerification !== undefined) {
+			agent.requiresParentVerification = result.requiresParentVerification
+		}
 		const parent =
 			this.getLiveTask(prepared.group.parentTaskId) ?? this.subagentDescriptors.get(result.taskId)?.parent
 		if (parent) {
+			await this.recordWorkerVerificationObligation(parent, prepared.group, agent)
 			await parent.upsertSubagentGroup(prepared.group)
 			this.publishedSubagentResults.add(publicationKey)
 		}

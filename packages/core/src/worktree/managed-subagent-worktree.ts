@@ -108,7 +108,14 @@ export class ManagedSubagentWorktreeService {
 		artifact.updatedAt = Date.now()
 		const dir = this.artifactDir(storagePath, artifact.id)
 		await fs.mkdir(dir, { recursive: true })
-		await fs.writeFile(this.metadataPath(storagePath, artifact.id), JSON.stringify(artifact, null, 2), "utf8")
+		const metadataPath = this.metadataPath(storagePath, artifact.id)
+		const temporaryPath = `${metadataPath}.${process.pid}.${crypto.randomUUID()}.tmp`
+		try {
+			await fs.writeFile(temporaryPath, JSON.stringify(artifact, null, 2), "utf8")
+			await fs.rename(temporaryPath, metadataPath)
+		} finally {
+			await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
+		}
 	}
 
 	async load(storagePath: string, artifactId: string): Promise<ManagedWorkerArtifact> {
@@ -468,14 +475,41 @@ export class ManagedSubagentWorktreeService {
 		}
 	}
 
+	private async matchesAppliedState(artifact: ManagedWorkerArtifact, compareFileMode: boolean): Promise<boolean> {
+		for (const change of artifact.changes) {
+			const afterCurrent = await this.currentPathState(artifact.gitRoot, change.path)
+			if (afterCurrent.hash !== change.afterHash || (compareFileMode && afterCurrent.mode !== change.afterMode)) {
+				return false
+			}
+			if (
+				change.previousPath &&
+				change.previousPath !== change.path &&
+				(await this.currentPathState(artifact.gitRoot, change.previousPath)).hash
+			) {
+				return false
+			}
+		}
+		return true
+	}
+
 	async apply(storagePath: string, artifactId: string): Promise<ApplyManagedWorktreeResult> {
 		const artifact = await this.load(storagePath, artifactId)
+		if (artifact.status === "applied") return { status: "applied" }
 		if (!["pending_review", "conflicted"].includes(artifact.status) || !artifact.patchFile) {
 			throw new Error("This worker change set is not available to apply")
 		}
 		const compareFileMode =
 			(await this.git(artifact.gitRoot, ["config", "--bool", "core.filemode"]).catch(() => "false")).trim() ===
 			"true"
+		// A prior process may have landed the patch and exited before metadata was
+		// durably replaced. Recognize the exact after-state before conflict checks.
+		if (await this.matchesAppliedState(artifact, compareFileMode)) {
+			artifact.status = "applied"
+			delete artifact.conflictPaths
+			delete artifact.error
+			await this.persist(storagePath, artifact)
+			return { status: "applied" }
+		}
 		const conflicts: string[] = []
 		for (const change of artifact.changes) {
 			const beforePath = change.previousPath ?? change.path
@@ -512,21 +546,12 @@ export class ManagedSubagentWorktreeService {
 			return { status: "conflicted" }
 		}
 		await this.git(artifact.gitRoot, ["apply", "--binary", "--whitespace=nowarn", patchPath])
-		for (const change of artifact.changes) {
-			const afterCurrent = await this.currentPathState(artifact.gitRoot, change.path)
-			if (afterCurrent.hash !== change.afterHash || (compareFileMode && afterCurrent.mode !== change.afterMode)) {
-				throw new Error(`Applied worker change failed hash verification: ${change.path}`)
-			}
-			if (
-				change.previousPath &&
-				change.previousPath !== change.path &&
-				(await this.currentPathState(artifact.gitRoot, change.previousPath)).hash
-			) {
-				throw new Error(`Applied worker rename left the source path behind: ${change.previousPath}`)
-			}
+		if (!(await this.matchesAppliedState(artifact, compareFileMode))) {
+			throw new Error("Applied worker change failed exact after-state verification")
 		}
 		artifact.status = "applied"
 		delete artifact.conflictPaths
+		delete artifact.error
 		await this.persist(storagePath, artifact)
 		return { status: "applied" }
 	}

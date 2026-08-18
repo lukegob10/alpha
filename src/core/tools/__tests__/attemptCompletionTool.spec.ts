@@ -50,6 +50,7 @@ describe("attemptCompletionTool", () => {
 	let mockToolDescription: ReturnType<typeof vi.fn>
 	let mockAskFinishSubTaskApproval: ReturnType<typeof vi.fn>
 	let mockGetConfiguration: ReturnType<typeof vi.fn>
+	let mockGetParentCompletionDecision: ReturnType<typeof vi.fn>
 
 	beforeEach(() => {
 		mockCaptureTaskCompleted.mockReset()
@@ -66,6 +67,7 @@ describe("attemptCompletionTool", () => {
 				return defaultValue
 			}),
 		}))
+		mockGetParentCompletionDecision = vi.fn().mockResolvedValue({ allowed: true })
 
 		// Setup vscode mock
 		vi.mocked(vscode.workspace.getConfiguration).mockImplementation(mockGetConfiguration)
@@ -84,6 +86,9 @@ describe("attemptCompletionTool", () => {
 			taskKind: "primary",
 			hasActiveCommandExecutions: vi.fn().mockReturnValue(false),
 			hasUndeliveredSpawnedSubagentResults: vi.fn().mockReturnValue(false),
+			providerRef: {
+				deref: () => ({ getParentCompletionDecision: mockGetParentCompletionDecision }),
+			} as any,
 			taskId: "task_1",
 			apiConfiguration: { apiProvider: "test" } as any,
 			api: { getModel: vi.fn().mockReturnValue({ id: "test-model", info: {} }) } as any,
@@ -139,6 +144,66 @@ describe("attemptCompletionTool", () => {
 
 		expect(mockTask.ask).toHaveBeenCalledWith("completion_result", "", false)
 		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("background sub-agent"))
+		expect(mockTask.markCompleted).not.toHaveBeenCalled()
+	})
+
+	it.each(["pending", "failed"])(
+		"rejects attempt_completion at the production boundary while verification is %s",
+		async (status) => {
+			mockGetParentCompletionDecision.mockResolvedValue({
+				allowed: false,
+				message: `Worker verification is ${status}.`,
+			})
+			const callbacks: AttemptCompletionCallbacks = {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+				toolDescription: mockToolDescription,
+			}
+
+			await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
+
+			expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining(status))
+			expect(mockTask.say).not.toHaveBeenCalledWith("completion_result", expect.anything(), undefined, false)
+			expect(mockTask.ask).not.toHaveBeenCalled()
+			expect(mockTask.markCompleted).not.toHaveBeenCalled()
+		},
+	)
+
+	it("rechecks verification immediately before the terminal transition", async () => {
+		mockGetParentCompletionDecision
+			.mockResolvedValueOnce({ allowed: true })
+			.mockResolvedValueOnce({ allowed: false, message: "A Worker verification obligation became pending." })
+		const callbacks: AttemptCompletionCallbacks = {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+		}
+
+		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
+
+		expect(mockTask.say).toHaveBeenCalledWith("completion_result", "Task complete.", undefined, false)
+		expect(mockTask.ask).toHaveBeenCalledWith("completion_result", "", false)
+		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("became pending"))
+		expect(mockTask.markCompleted).not.toHaveBeenCalled()
+	})
+
+	it("fails closed when the durable completion decision cannot be loaded", async () => {
+		mockGetParentCompletionDecision.mockRejectedValue(new Error("ledger unavailable"))
+		const callbacks: AttemptCompletionCallbacks = {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+		}
+
+		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
+
+		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("ledger unavailable"))
 		expect(mockTask.markCompleted).not.toHaveBeenCalled()
 	})
 

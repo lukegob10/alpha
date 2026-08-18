@@ -134,6 +134,31 @@ describe("asynchronous sub-agent contracts", () => {
 		expect(group.agents[0]?.resultDeliveredAt).toBe(35)
 	})
 
+	it("persists compact configured pacing metrics with a run", () => {
+		const group = subagentGroupStateSchema.parse({
+			groupId: "group-1",
+			parentTaskId: "parent-1",
+			status: "completed",
+			createdAt: 10,
+			completedAt: 30,
+			agents: [
+				makeRun({
+					status: "completed",
+					phase: undefined,
+					completedAt: 30,
+					usage: {
+						durationMs: 20_000,
+						rateLimitWaitCount: 2,
+						rateLimitWaitMs: 20_000,
+						rateLimitIntervalSeconds: 10,
+					},
+				}),
+			],
+		})
+
+		expect(group.agents[0]?.usage.rateLimitWaitCount).toBe(2)
+	})
+
 	it("publishes spawn_agent as a tool name without removing delegate_task", () => {
 		expect(toolNamesSchema.safeParse("spawn_agent").success).toBe(true)
 		expect(toolNamesSchema.safeParse("delegate_task").success).toBe(true)

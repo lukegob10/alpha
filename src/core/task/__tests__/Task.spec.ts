@@ -992,6 +992,61 @@ describe("Alpha", () => {
 				Task.resetGlobalApiRequestTime()
 			})
 
+			it("persists local tool results before an interruptible provider-rate-limit wait", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "persist a lifecycle result",
+					startTask: false,
+				})
+				const saveApiConversationHistory = vi.spyOn(task as any, "saveApiConversationHistory")
+				task.apiConversationHistory = [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "call-list", name: "list_agents", input: {} }],
+						ts: 1,
+					},
+				] as any
+
+				let announceWaitStarted!: () => void
+				const waitStarted = new Promise<void>((resolve) => {
+					announceWaitStarted = resolve
+				})
+				let rejectWait!: (error: Error) => void
+				const blockedWait = new Promise<void>((_resolve, reject) => {
+					rejectWait = reject
+				})
+				vi.spyOn(task as any, "maybeWaitForProviderRateLimit").mockImplementation(async () => {
+					announceWaitStarted()
+					await blockedWait
+				})
+
+				const request = task.recursivelyMakeClineRequests(
+					[
+						{
+							type: "tool_result",
+							tool_use_id: "call-list",
+							content: '{"agents":[]}',
+						},
+					],
+					false,
+				)
+				await waitStarted
+				expect(saveApiConversationHistory).toHaveBeenCalledOnce()
+				const persistedBeforeInterruption = task.apiConversationHistory.some(
+					(message) =>
+						message.role === "user" &&
+						Array.isArray(message.content) &&
+						message.content.some(
+							(block) => block.type === "tool_result" && block.tool_use_id === "call-list",
+						),
+				)
+
+				rejectWait(new Error("rate-limit wait interrupted"))
+				await expect(request).rejects.toThrow("rate-limit wait interrupted")
+				expect(persistedBeforeInterruption).toBe(true)
+			})
+
 			it("uses the task-owned profile when the foreground profile has a rate limit", async () => {
 				mockProvider.getState.mockResolvedValue({
 					apiConfiguration: mockApiConfig,
@@ -1071,6 +1126,71 @@ describe("Alpha", () => {
 
 				expect(mockDelay).toHaveBeenCalledTimes(mockApiConfig.rateLimitSeconds)
 				expect(mockDelay).toHaveBeenCalledWith(1000)
+			})
+
+			it("records task-local waits without misclassifying the configured shared lane as an error", async () => {
+				const route = {
+					source: "role" as const,
+					resolution: "selected" as const,
+					profileId: "shared-profile-id",
+					profileName: "Shared profile",
+					provider: "anthropic",
+					modelId: "claude-test",
+				}
+				const first = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "first routed task",
+					startTask: false,
+					subagentModelRoute: route,
+				})
+				const second = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "second routed task",
+					startTask: false,
+					subagentModelRoute: route,
+				})
+
+				await (first as any).maybeWaitForProviderRateLimit(0)
+				await (second as any).maybeWaitForProviderRateLimit(0)
+
+				expect(first.getRequestPacingMetrics()).toEqual({
+					configuredIntervalSeconds: 5,
+					waitCount: 0,
+					totalWaitMs: 0,
+					scope: "provider_profile",
+				})
+				expect(second.getRequestPacingMetrics()).toEqual({
+					configuredIntervalSeconds: 5,
+					waitCount: 1,
+					totalWaitMs: 5_000,
+					scope: "provider_profile",
+				})
+			})
+
+			it("adds the completed current wait to the latest model-facing user request", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "report pacing",
+					startTask: false,
+				})
+				task.apiConversationHistory = [
+					{
+						role: "user",
+						content: [{ type: "text", text: "<environment_details>old totals</environment_details>" }],
+					},
+				] as any
+				;(task as any).requestPacingWaitCount = 2
+				;(task as any).requestPacingWaitMs = 20_000
+
+				await (task as any).appendRequestPacingUpdateToLatestUserMessage()
+
+				const content = task.apiConversationHistory[0].content as Array<{ type: string; text: string }>
+				expect(content.at(-1)?.text).toContain('wait_count="2"')
+				expect(content.at(-1)?.text).toContain('total_wait_ms="20000"')
+				expect(content.at(-1)?.text).toContain('classification="configured_pacing_not_provider_error"')
 			})
 
 			it("does not serialize simultaneous requests routed to different stable profiles", async () => {
@@ -1736,6 +1856,25 @@ describe("Alpha", () => {
 	})
 
 	describe("steerUserMessage", () => {
+		it("queues steering for a managed child before its first request", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+				taskKind: "subagent",
+			})
+			const submitSpy = vi.spyOn(task, "submitUserMessage")
+
+			await task.steerUserMessage("focus on the cancellation race")
+
+			expect(submitSpy).not.toHaveBeenCalled()
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "focus on the cancellation race",
+				images: [],
+			})
+		})
+
 		it("responds like a user message when the task is waiting on an ask", async () => {
 			const task = new Task({
 				provider: mockProvider,

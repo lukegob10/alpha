@@ -648,7 +648,7 @@
 		},
 		"rateLimitSeconds": {
 			"label": "Rate limit",
-			"description": "Minimum time between API requests."
+			"description": "Minimum time between API requests using this provider profile, shared across parent and sub-agents."
 		},
 		"consecutiveMistakeLimit": {
 			"label": "Error & Repetition Limit",

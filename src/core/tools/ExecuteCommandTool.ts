@@ -65,7 +65,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			const canonicalCommand = unescapeHtmlEntities(command)
 			const executionId = task.lastMessageTs?.toString() ?? Date.now().toString()
 			commandEvidenceId = callbacks.toolCallId ?? `${executionId}:legacy:${randomUUID()}`
-			task.beginCommandExecution?.(commandEvidenceId, executionId)
+			task.beginCommandExecution?.(commandEvidenceId, executionId, canonicalCommand)
 
 			if (isGitHubCliCommand(canonicalCommand)) {
 				task.failCommandExecution?.(commandEvidenceId)

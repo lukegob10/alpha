@@ -3,6 +3,7 @@ import {
 	buildSubagentPrompt,
 	getReadOnlyAuthorityMismatch,
 	getWorkerCompletionError,
+	normalizeSubagentForkTurns,
 	normalizeSubagentTaskDrafts,
 	SUBAGENT_REPORT_WORD_BUDGET,
 	WORKER_NO_CHANGES_ERROR,
@@ -93,7 +94,56 @@ describe("normalizeSubagentTaskDrafts", () => {
 					expected_output: null,
 				},
 			]),
-		).toEqual([{ objective: "inspect docs", agent_kind: "explore" }])
+		).toEqual([{ fork_turns: "none", objective: "inspect docs", agent_kind: "explore" }])
+	})
+
+	it("defaults missing legacy fork_turns to none and preserves explicit modes", () => {
+		expect(normalizeSubagentForkTurns()).toBe("none")
+		expect(normalizeSubagentForkTurns("all")).toBe("all")
+		expect(normalizeSubagentForkTurns("3")).toBe("3")
+	})
+
+	it.each(["0", "01", "-1", "1.0", "9007199254740992", 1, null])("rejects invalid fork_turns %j", (value) => {
+		expect(() => normalizeSubagentForkTurns(value)).toThrow("fork_turns")
+	})
+
+	it("preserves a stable model-facing task name", () => {
+		expect(
+			normalizeSubagentTaskDrafts([
+				{
+					task_name: "backend_review",
+					objective: "inspect backend lifecycle code",
+					agent_kind: "review",
+					write_scope: null,
+					expected_output: null,
+				},
+			]),
+		).toEqual([
+			{
+				task_name: "backend_review",
+				fork_turns: "none",
+				objective: "inspect backend lifecycle code",
+				agent_kind: "review",
+			},
+		])
+	})
+
+	it.each([
+		"BackendReview",
+		"backend-review",
+		"1backend",
+		"backend review",
+		"backend_review_name_that_is_far_too_long",
+	])("rejects invalid stable task name %j", (taskName) => {
+		expect(() =>
+			normalizeSubagentTaskDrafts([
+				{
+					task_name: taskName,
+					objective: "inspect backend lifecycle code",
+					agent_kind: "review",
+				},
+			]),
+		).toThrow("task_name")
 	})
 
 	it("preserves a worker scope and nullable optional deliverables", () => {
@@ -108,6 +158,7 @@ describe("normalizeSubagentTaskDrafts", () => {
 			]),
 		).toEqual([
 			{
+				fork_turns: "none",
 				objective: "create a fixture",
 				agent_kind: "worker",
 				write_scope: ["docs/fixture.md"],
@@ -126,8 +177,9 @@ describe("normalizeSubagentTaskDrafts", () => {
 				},
 			]),
 		).toEqual([
-			{ objective: "inspect docs", agent_kind: "explore" },
+			{ fork_turns: "none", objective: "inspect docs", agent_kind: "explore" },
 			{
+				fork_turns: "none",
 				objective: "update docs",
 				agent_kind: "worker",
 				write_scope: ["docs/README.md"],
@@ -161,6 +213,7 @@ describe("read-only authority preflight", () => {
 		try {
 			assertSubagentTaskAuthorities([
 				{
+					fork_turns: "none",
 					objective: "Create docs/subagent-worker-smoke-test.md",
 					agent_kind: "explore",
 				},
@@ -178,6 +231,7 @@ describe("read-only authority preflight", () => {
 		expect(() =>
 			assertSubagentTaskAuthorities([
 				{
+					fork_turns: "none",
 					objective: "Create docs/subagent-worker-smoke-test.md",
 					agent_kind: "worker",
 					write_scope: ["docs/subagent-worker-smoke-test.md"],

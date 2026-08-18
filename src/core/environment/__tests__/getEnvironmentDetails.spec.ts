@@ -171,6 +171,22 @@ describe("getEnvironmentDetails", () => {
 		expect(getApiMetrics).toHaveBeenCalledWith(mockCline.clineMessages)
 	})
 
+	it("reports configured request pacing as performance data rather than an API error", async () => {
+		mockCline.getRequestPacingMetrics = vi.fn().mockReturnValue({
+			configuredIntervalSeconds: 10,
+			waitCount: 3,
+			totalWaitMs: 30_000,
+			scope: "provider_profile",
+		})
+
+		const result = await getEnvironmentDetails(mockCline as Task)
+
+		expect(result).toContain("# Configured Request Pacing")
+		expect(result).toContain("Provider-profile interval: 10s")
+		expect(result).toContain("had waited 3 times for 30s total")
+		expect(result).toContain("configured pacing waits, not provider errors")
+	})
+
 	it("should include file details when includeFileDetails is true", async () => {
 		const result = await getEnvironmentDetails(mockCline as Task, true)
 		expect(result).toContain("# Current Workspace Directory")
@@ -203,6 +219,22 @@ describe("getEnvironmentDetails", () => {
 		expect(result).not.toContain("# Current Time")
 		expect(listFiles).not.toHaveBeenCalled()
 		expect(getFullModeDetails).not.toHaveBeenCalled()
+	})
+
+	it("includes task-local pacing observations in compact sub-agent context", async () => {
+		;(mockCline as { taskKind?: "primary" | "subagent" }).taskKind = "subagent"
+		mockCline.getTaskMode = vi.fn().mockResolvedValue("code")
+		mockCline.getRequestPacingMetrics = vi.fn().mockReturnValue({
+			configuredIntervalSeconds: 10,
+			waitCount: 2,
+			totalWaitMs: 20_000,
+			scope: "provider_profile",
+		})
+
+		const result = await getEnvironmentDetails(mockCline as Task)
+
+		expect(result).toContain("# Configured Request Pacing")
+		expect(result).toContain("had waited 2 times for 20s total")
 	})
 
 	it("should not include file details when includeFileDetails is false", async () => {

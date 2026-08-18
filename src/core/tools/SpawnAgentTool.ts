@@ -84,7 +84,7 @@ export class SpawnAgentTool extends BaseTool<"spawn_agent"> {
 				prepared,
 				task.getTaskLifetimeCancellationSignal(),
 			)
-			callbacks.pushToolResult(JSON.stringify(handle))
+			callbacks.pushToolResult(JSON.stringify({ ...handle, taskName: draft.task_name ?? handle.nickname }))
 		} catch (error) {
 			try {
 				await provider.cancelPreparedSubagentGroup(task, prepared, "The sub-agent failed to launch.")

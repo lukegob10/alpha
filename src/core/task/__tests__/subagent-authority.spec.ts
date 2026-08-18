@@ -5,6 +5,7 @@ import { Task } from "../Task"
 describe("sub-agent task authority", () => {
 	it("records ordered credential-free terminal evidence and preserves the first terminal outcome", () => {
 		const child = Object.assign(Object.create(Task.prototype), {
+			taskKind: "subagent",
 			commandExecutionEvidence: new Map(),
 		}) as Task
 

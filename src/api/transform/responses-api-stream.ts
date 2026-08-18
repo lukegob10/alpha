@@ -1,5 +1,11 @@
 import type { ApiStream, ApiStreamUsageChunk } from "./stream"
 
+type PendingToolCallIdentity = {
+	callId: string
+	name?: string
+	outputIndex: number
+}
+
 /**
  * Processes Responses API stream events and yields ApiStreamChunks.
  *
@@ -11,8 +17,8 @@ import type { ApiStream, ApiStreamUsageChunk } from "./stream"
  * - Tool/function calls (response.output_item.done with function_call type)
  * - Usage data (response.completed)
  *
- * Provider-specific concerns (WebSocket mode, SSE fallback, duplicate detection,
- * pending tool tracking) are intentionally left to individual providers.
+ * Provider-specific concerns such as WebSocket mode and SSE fallback are intentionally
+ * left to individual providers.
  *
  * @param stream - AsyncIterable of Responses API stream events
  * @param normalizeUsage - Provider-specific function to normalize usage data into ApiStreamUsageChunk
@@ -21,6 +27,11 @@ export async function* processResponsesApiStream(
 	stream: AsyncIterable<any>,
 	normalizeUsage: (usage: any) => ApiStreamUsageChunk | undefined,
 ): ApiStream {
+	const pendingToolCallsByItemId = new Map<string, PendingToolCallIdentity>()
+	const pendingToolCallsByOutputIndex = new Map<number, PendingToolCallIdentity>()
+	const streamedToolCallIds = new Set<string>()
+	let lastPendingToolCall: PendingToolCallIdentity | undefined
+
 	for await (const event of stream) {
 		// Text content deltas
 		if (event?.type === "response.output_text.delta" || event?.type === "response.text.delta") {
@@ -43,12 +54,33 @@ export async function* processResponsesApiStream(
 			continue
 		}
 
-		// Output item events — handle completed function calls and fallback text
-		if (event?.type === "response.output_item.done") {
+		// Output item events establish the item_id/output_index -> call_id/name mapping.
+		if (event?.type === "response.output_item.added" || event?.type === "response.output_item.done") {
 			const item = event?.item
 			if (item?.type === "function_call" || item?.type === "tool_call") {
 				const callId = item.call_id || item.tool_call_id || item.id
 				const name = item.name || item.function?.name
+				const outputIndex =
+					typeof event.output_index === "number"
+						? event.output_index
+						: typeof event.index === "number"
+							? event.index
+							: undefined
+				if (typeof callId === "string" && callId.length > 0) {
+					const identity: PendingToolCallIdentity = {
+						callId,
+						name: typeof name === "string" ? name : undefined,
+						outputIndex: outputIndex ?? 0,
+					}
+					const itemId = item.id || event.item_id
+					if (typeof itemId === "string" && itemId.length > 0) {
+						pendingToolCallsByItemId.set(itemId, identity)
+					}
+					if (outputIndex !== undefined) {
+						pendingToolCallsByOutputIndex.set(outputIndex, identity)
+					}
+					lastPendingToolCall = identity
+				}
 				const argsRaw = item.arguments || item.function?.arguments || item.input
 				const args =
 					typeof argsRaw === "string"
@@ -57,7 +89,14 @@ export async function* processResponsesApiStream(
 							? JSON.stringify(argsRaw)
 							: ""
 
-				if (typeof callId === "string" && callId.length > 0 && typeof name === "string" && name.length > 0) {
+				if (
+					event.type === "response.output_item.done" &&
+					typeof callId === "string" &&
+					callId.length > 0 &&
+					typeof name === "string" &&
+					name.length > 0 &&
+					!streamedToolCallIds.has(callId)
+				) {
 					yield {
 						type: "tool_call",
 						id: callId,
@@ -74,12 +113,32 @@ export async function* processResponsesApiStream(
 			event?.type === "response.function_call_arguments.delta" ||
 			event?.type === "response.tool_call_arguments.delta"
 		) {
-			const callId = event.call_id || event.tool_call_id || event.id || event.item_id
-			const name = event.name || event.function_name
-			if (typeof callId === "string" && callId.length > 0) {
+			const outputIndex =
+				typeof event.output_index === "number"
+					? event.output_index
+					: typeof event.index === "number"
+						? event.index
+						: undefined
+			const correlated =
+				(typeof event.item_id === "string" ? pendingToolCallsByItemId.get(event.item_id) : undefined) ??
+				(outputIndex !== undefined ? pendingToolCallsByOutputIndex.get(outputIndex) : undefined)
+			const hasCorrelationFields =
+				(typeof event.item_id === "string" && event.item_id.length > 0) || outputIndex !== undefined
+			const callId =
+				event.call_id ||
+				event.tool_call_id ||
+				correlated?.callId ||
+				(!hasCorrelationFields ? event.id || lastPendingToolCall?.callId : undefined)
+			const name =
+				event.name ||
+				event.function_name ||
+				correlated?.name ||
+				(!hasCorrelationFields ? lastPendingToolCall?.name : undefined)
+			if (typeof callId === "string" && callId.length > 0 && typeof name === "string" && name.length > 0) {
+				streamedToolCallIds.add(callId)
 				yield {
 					type: "tool_call_partial",
-					index: event.index ?? 0,
+					index: outputIndex ?? correlated?.outputIndex ?? 0,
 					id: callId,
 					name,
 					arguments: typeof event.delta === "string" ? event.delta : "",

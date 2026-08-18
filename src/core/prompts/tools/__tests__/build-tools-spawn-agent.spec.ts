@@ -44,12 +44,22 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 
 		expect(names(result.tools as any)).toContain("spawn_agent")
 		expect(result.allowedFunctionNames).toContain("spawn_agent")
-		const spawnTool = (result.tools as Array<{ function?: { name: string; description?: string } }>).find(
-			(tool) => tool.function?.name === "spawn_agent",
-		)
+		const nativeTools = result.tools as Array<{
+			function?: {
+				name: string
+				description?: string
+				parameters?: { required?: string[]; properties?: Record<string, unknown> }
+			}
+		}>
+		const spawnTool = nativeTools.find((tool) => tool.function?.name === "spawn_agent")
 		expect(spawnTool?.function?.description).toContain(
 			"terminal report is automatically included in the parent's next model request",
 		)
+		expect(spawnTool?.function?.parameters?.required).toEqual(expect.arrayContaining(["task_name", "fork_turns"]))
+		expect(spawnTool?.function?.parameters?.properties).toHaveProperty("fork_turns")
+
+		const delegateTool = nativeTools.find((tool) => tool.function?.name === "delegate_task")
+		expect(JSON.stringify(delegateTool?.function?.parameters)).not.toContain("fork_turns")
 	})
 
 	it("omits spawn_agent entirely from a managed child tool catalog", async () => {

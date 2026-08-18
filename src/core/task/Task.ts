@@ -38,6 +38,8 @@ import {
 	type SubagentGroupState,
 	type SubagentAuthorityGrant,
 	type SubagentChangeSetState,
+	type ExternalMutationCapability,
+	type SubagentContextManifest,
 	type SubagentModelRouteState,
 	type SubagentRole,
 	type ClineSay,
@@ -80,9 +82,10 @@ import { findLastIndex } from "../../shared/array"
 import { combineApiRequests } from "../../shared/combineApiRequests"
 import { combineCommandSequences } from "../../shared/combineCommandSequences"
 import { t } from "../../i18n"
+import { formatLanguage } from "../../shared/language"
 import { getApiMetrics, hasTokenUsageChanged, hasToolUsageChanged } from "../../shared/getApiMetrics"
 import { ClineAskResponse } from "../../shared/WebviewMessage"
-import { defaultModeSlug, getModeBySlug } from "../../shared/modes"
+import { defaultModeSlug, getModeBySlug, getModeSelection } from "../../shared/modes"
 import { DiffStrategy, type ToolUse, type ToolParamName, toolParamNames } from "../../shared/tools"
 import { getModelMaxOutputTokens } from "../../shared/api"
 
@@ -106,7 +109,8 @@ import { getTaskDirectoryPath } from "../../utils/storage"
 
 // prompts
 import { formatResponse } from "../prompts/responses"
-import { SYSTEM_PROMPT } from "../prompts/system"
+import { SYSTEM_PROMPT, getPromptComponent } from "../prompts/system"
+import { addCustomInstructions, loadApplicableAgentInstructionSources } from "../prompts/sections"
 import { buildNativeToolsArrayWithRestrictions } from "./build-tools"
 
 // core modules
@@ -153,6 +157,7 @@ import {
 	type AgentResponseItem,
 	type AgentTurnHost,
 } from "../agent/AgentTurnEngine"
+import { isValidSubagentContextManifest } from "../agent/SubagentContextCapture"
 
 export type CommandExecutionEvidenceStatus = "running" | "succeeded" | "failed" | "denied" | "cancelled" | "timed_out"
 
@@ -164,11 +169,27 @@ export interface CommandExecutionEvidence {
 	signalName?: string
 	startedAt: number
 	completedAt?: number
+	/** Task-memory only. Durable verification stores matched paths, never command text. */
+	command?: string
 }
+
+const SAFE_EXTERNAL_MUTATION_ASKS = new Set<ClineAsk>([
+	"followup",
+	"completion_result",
+	"resume_task",
+	"resume_completed_task",
+])
 
 interface ProviderRateLimitLane {
 	lastRequestTime?: number
 	queue: Promise<void>
+}
+
+export interface RequestPacingMetrics {
+	configuredIntervalSeconds: number
+	waitCount: number
+	totalWaitMs: number
+	scope: "provider_profile"
 }
 
 const MAX_EXPONENTIAL_BACKOFF_SECONDS = 600 // 10 minutes
@@ -202,6 +223,31 @@ export interface TaskOptions extends CreateTaskOptions {
 	initialStatus?: NonNullable<HistoryItem["status"]>
 }
 
+/** Hard task-lane capability ceiling used both by capture manifests and runtime filtering. */
+export function getSubagentAllowedToolNames(role: SubagentRole, hasInheritedSkills = false): readonly ToolName[] {
+	const tools: ToolName[] =
+		role === "worker"
+			? [
+					"read_file",
+					"search_files",
+					"list_files",
+					"codebase_search",
+					"write_to_file",
+					"apply_diff",
+					"edit",
+					"search_and_replace",
+					"search_replace",
+					"edit_file",
+					"apply_patch",
+					"execute_command",
+					"read_command_output",
+					"attempt_completion",
+				]
+			: ["read_file", "search_files", "list_files", "codebase_search", "attempt_completion"]
+	if (hasInheritedSkills) tools.splice(tools.length - 1, 0, "skill")
+	return tools
+}
+
 export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	readonly taskId: string
 	readonly rootTaskId?: string
@@ -212,6 +258,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	readonly subagentRole?: SubagentRole
 	public subagentCompletionOutcome?: "completed" | "blocked"
 	readonly subagentModelRoute?: SubagentModelRouteState
+	readonly subagentContextManifest?: SubagentContextManifest
 	readonly subagentWriteScope?: string[]
 	private subagentChangeSet?: SubagentChangeSetState
 	childTaskId?: string
@@ -327,6 +374,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private readonly childTasksRequiringVerification = new Set<string>()
 	private readonly commandExecutionEvidence = new Map<string, CommandExecutionEvidence>()
 	private pendingSteerMessage?: { text: string; images: string[] }
+	private externalMutationLease?: { label: string; token: symbol }
+	private deferredAskResponse?: { askResponse: ClineAskResponse; text?: string; images?: string[] }
 	private isTaskLoopActive = false
 	private didComplete = false
 	skipPrevResponseIdOnce: boolean = false
@@ -346,6 +395,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	apiConfiguration: ProviderSettings
 	api: ApiHandler
 	private static providerRateLimitLanes = new Map<string, ProviderRateLimitLane>()
+	private requestPacingWaitCount = 0
+	private requestPacingWaitMs = 0
 	private autoApprovalHandler: AutoApprovalHandler
 
 	/**
@@ -354,6 +405,46 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 */
 	static resetGlobalApiRequestTime(): void {
 		Task.providerRateLimitLanes.clear()
+	}
+
+	/** Task-local observations for the configured provider-profile pacing lane. */
+	public getRequestPacingMetrics(): RequestPacingMetrics {
+		return {
+			configuredIntervalSeconds: Math.max(0, this.apiConfiguration?.rateLimitSeconds ?? 0),
+			waitCount: this.requestPacingWaitCount,
+			totalWaitMs: Math.round(this.requestPacingWaitMs),
+			scope: "provider_profile",
+		}
+	}
+
+	/** Add the just-completed pacing wait to the model-facing request already persisted for this turn. */
+	private async appendRequestPacingUpdateToLatestUserMessage(): Promise<void> {
+		const metrics = this.getRequestPacingMetrics()
+		let latestUserMessage: ApiMessage | undefined
+		for (let index = this.apiConversationHistory.length - 1; index >= 0; index--) {
+			if (this.apiConversationHistory[index].role === "user") {
+				latestUserMessage = this.apiConversationHistory[index]
+				break
+			}
+		}
+		if (!latestUserMessage) return
+
+		const update = {
+			type: "text" as const,
+			text: `<request_pacing_update wait_count="${metrics.waitCount}" total_wait_ms="${metrics.totalWaitMs}" interval_seconds="${metrics.configuredIntervalSeconds}" scope="provider_profile_shared" classification="configured_pacing_not_provider_error" />`,
+		}
+		const currentContent = Array.isArray(latestUserMessage.content)
+			? latestUserMessage.content.filter(
+					(block) =>
+						!(
+							block.type === "text" &&
+							typeof block.text === "string" &&
+							block.text.startsWith("<request_pacing_update ")
+						),
+				)
+			: [{ type: "text" as const, text: latestUserMessage.content }]
+		latestUserMessage.content = [...currentContent, update]
+		await this.saveApiConversationHistory()
 	}
 
 	toolRepetitionDetector: ToolRepetitionDetector
@@ -611,6 +702,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		subagentNickname,
 		subagentRole,
 		subagentModelRoute,
+		subagentContextManifest,
 		subagentAuthority,
 		subagentWriteScope,
 		subagentChangeSet,
@@ -646,6 +738,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.subagentNickname = historyItem?.subagentNickname ?? subagentNickname
 		this.subagentRole = historyItem?.subagentRole ?? subagentRole
 		this.subagentModelRoute = structuredClone(historyItem?.subagentModelRoute ?? subagentModelRoute)
+		const contextManifest = historyItem?.subagentContextManifest ?? subagentContextManifest
+		if (contextManifest && !isValidSubagentContextManifest(contextManifest)) {
+			throw new Error("Managed child context manifest failed integrity validation")
+		}
+		this.subagentContextManifest = structuredClone(contextManifest)
 		this.subagentAuthority = subagentAuthority
 		this.subagentWriteScope =
 			historyItem?.subagentWriteScope ??
@@ -1423,6 +1520,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					subagentNickname: this.subagentNickname,
 					subagentRole: this.subagentRole,
 					subagentModelRoute: this.subagentModelRoute,
+					subagentContextManifest: this.subagentContextManifest,
 					subagentWriteScope: this.subagentWriteScope,
 					subagentChangeSet: this.subagentChangeSet,
 				})
@@ -1881,6 +1979,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	handleWebviewAskResponse(askResponse: ClineAskResponse, text?: string, images?: string[]) {
+		// An Apply/Discard lease wins the single-threaded race with a user reply.
+		// Resume the ask only after the artifact, ledger, and transcript projection settle.
+		if (this.externalMutationLease) {
+			this.deferredAskResponse = { askResponse, text, images }
+			return
+		}
+
 		// Clear any pending auto-approval timeout when user responds
 		this.cancelAutoApprovalTimeout()
 
@@ -1962,17 +2067,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.idleAsk = undefined
 		this.resumableAsk = undefined
 		this.interactiveAsk = undefined
+		this.deferredAskResponse = undefined
 		this.userMessageContentReady = true
 		this.messageQueueService.clear()
 	}
 
-	public beginCommandExecution(toolCallId: string, executionId: string): void {
+	public beginCommandExecution(toolCallId: string, executionId: string, command?: string): void {
 		if (this.commandExecutionEvidence.has(toolCallId)) return
 		this.commandExecutionEvidence.set(toolCallId, {
 			toolCallId,
 			executionId,
 			status: "running",
 			startedAt: Date.now(),
+			command,
 		})
 	}
 
@@ -1983,6 +2090,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		evidence.exitCode = details.exitCode
 		evidence.signalName = details.signalName
 		evidence.completedAt = Date.now()
+		this.publishParentVerificationEvidence()
 	}
 
 	public failCommandExecution(
@@ -1993,6 +2101,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (!evidence || evidence.status !== "running") return
 		evidence.status = status
 		evidence.completedAt = Date.now()
+		this.publishParentVerificationEvidence()
+	}
+
+	private publishParentVerificationEvidence(): void {
+		if (this.taskKind === "subagent") return
+		void this.providerRef
+			.deref()
+			?.recordParentVerificationEvidence(this)
+			.catch((error) => console.error(`[Task] Failed to persist parent verification evidence: ${String(error)}`))
 	}
 
 	public getCommandExecutionEvidence(): CommandExecutionEvidence[] {
@@ -2084,6 +2201,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					error: agent.error,
 					changedFiles: agent.changedFiles,
 					verification: agent.verification,
+					usage: agent.usage,
 				}
 				const report = redactTaskPrivatePaths(this, JSON.stringify(payload, undefined, 2))
 
@@ -2179,24 +2297,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public getTaskAllowedToolNames(): readonly ToolName[] | undefined {
 		if (this.taskKind !== "subagent") return undefined
-		return this.subagentRole === "worker"
-			? [
-					"read_file",
-					"search_files",
-					"list_files",
-					"codebase_search",
-					"write_to_file",
-					"apply_diff",
-					"edit",
-					"search_and_replace",
-					"search_replace",
-					"edit_file",
-					"apply_patch",
-					"execute_command",
-					"read_command_output",
-					"attempt_completion",
-				]
-			: ["read_file", "search_files", "list_files", "codebase_search", "attempt_completion"]
+		const role = this.subagentRole ?? "review"
+		const hardCeiling = getSubagentAllowedToolNames(role, Boolean(this.subagentContextManifest?.skills.length))
+		const capturedGrant = this.subagentContextManifest?.runtimePolicy.allowedTools
+		if (!capturedGrant) return hardCeiling
+		const granted = new Set(capturedGrant)
+		return hardCeiling.filter((tool) => granted.has(tool))
+	}
+
+	public getInheritedSubagentSkill(name: string) {
+		return this.subagentContextManifest?.skills.find((skill) => skill.name === name)
+	}
+
+	public getInheritedSubagentSkillNames(): string[] {
+		return this.subagentContextManifest?.skills.map((skill) => skill.name) ?? []
+	}
+
+	/** Exact-file entries retained from managed Worker scope validation. */
+	public getSubagentFileWriteScope(): string[] {
+		return this.subagentAuthority?.role === "worker" ? [...(this.subagentAuthority.fileWriteScope ?? [])] : []
 	}
 
 	public isToolAllowedForTask(toolName: string): boolean {
@@ -2286,8 +2405,106 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.subagentChangeSet = structuredClone(changeSet)
 	}
 
+	public getExternalMutationCapability(): ExternalMutationCapability {
+		if (this.abort) {
+			return { allowed: false, state: "unavailable", reason: "The parent task is stopping." }
+		}
+		if (this.didComplete) {
+			return { allowed: false, state: "unavailable", reason: "The parent task has already completed." }
+		}
+		if (this.externalMutationLease) {
+			return {
+				allowed: false,
+				state: "busy",
+				reason: `The parent is already ${this.externalMutationLease.label}.`,
+			}
+		}
+		if (this.isWaitingForFirstChunk) {
+			return {
+				allowed: false,
+				state: "busy",
+				reason: "Wait for the parent response to finish.",
+			}
+		}
+		if (this.hasActiveCommandExecutions()) {
+			return {
+				allowed: false,
+				state: "busy",
+				reason: "Wait for the parent command to finish.",
+			}
+		}
+		if (!this.messageQueueService.isEmpty() || this.pendingSteerMessage) {
+			return {
+				allowed: false,
+				state: "busy",
+				reason: "The parent has queued work to process first.",
+			}
+		}
+		// Reloading a task abandons its task loop and cannot reconstruct the in-memory
+		// ask promise. Once every concrete runtime blocker above is clear, that inactive
+		// state is a safe suspension barrier for reviewing a durable change set.
+		if (!this.isTaskLoopActive) {
+			return {
+				allowed: true,
+				state: "available",
+				reason: "The parent is inactive and safe for review.",
+			}
+		}
+		if (!this.activeAsk || !SAFE_EXTERNAL_MUTATION_ASKS.has(this.activeAsk.type)) {
+			return {
+				allowed: false,
+				state: "busy",
+				reason: "Wait until the parent pauses for your input.",
+			}
+		}
+		if (this.askResponse !== undefined) {
+			return {
+				allowed: false,
+				state: "busy",
+				reason: "The parent is resuming from your latest response.",
+			}
+		}
+		// A presented, unresolved safe ask is the suspension barrier. The task loop can
+		// retain streaming/render flags while it waits for that tool result, so those
+		// flags must not make Apply permanently unavailable. A resumed ask is rejected
+		// above via askResponse, before the next model turn can race this mutation.
+
+		return {
+			allowed: true,
+			state: "available",
+			reason: "The parent is paused for your review.",
+		}
+	}
+
+	public acquireExternalMutation(label: string): {
+		capability: ExternalMutationCapability
+		release?: () => void
+	} {
+		const capability = this.getExternalMutationCapability()
+		if (!capability.allowed) return { capability }
+
+		const token = Symbol(label)
+		this.externalMutationLease = { label, token }
+		let released = false
+		return {
+			capability,
+			release: () => {
+				if (released) return
+				released = true
+				if (this.externalMutationLease?.token !== token) return
+				this.externalMutationLease = undefined
+				const deferred = this.deferredAskResponse
+				this.deferredAskResponse = undefined
+				if (deferred) {
+					this.handleWebviewAskResponse(deferred.askResponse, deferred.text, deferred.images)
+				}
+			},
+		}
+	}
+
+	/** @deprecated Use getExternalMutationCapability so callers retain the rejection reason. */
 	public isIdleForExternalMutation(): boolean {
-		return !this.isTaskLoopActive || this.didComplete || this.abort
+		return this.getExternalMutationCapability().allowed
 	}
 
 	public async finalizeSubagentHistory(
@@ -2334,7 +2551,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (!this.subagentAuthority || type !== "tool") return false
 
 		try {
-			const payload = JSON.parse(text ?? "{}") as { tool?: string; path?: string }
+			const payload = JSON.parse(text ?? "{}") as { tool?: string; path?: string; skill?: string }
+			if (payload.tool === "skill" && typeof payload.skill === "string") {
+				return Boolean(this.getInheritedSubagentSkill(payload.skill))
+			}
 			if (
 				[
 					"readFile",
@@ -2427,6 +2647,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		if (this.activeAsk) {
 			this.handleWebviewAskResponse("messageResponse", text, images)
+			return
+		}
+
+		// A just-launched managed child can be steered before its asynchronous
+		// startup has finished. Queue that message so the first model request sees
+		// it instead of racing submitUserMessage against history initialization.
+		if (this.taskKind === "subagent" && !this.isInitialized) {
+			this.pendingSteerMessage = { text, images }
+			this.emit(RooCodeEventName.TaskUserMessage, this.taskId)
 			return
 		}
 
@@ -3398,33 +3627,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					await this.handleConsecutiveMistakeLimit(currentUserContent)
 				}
 
-				// Getting verbose details is an expensive operation, it uses ripgrep to
-				// top-down build file structure of project which for large projects can
-				// take a few seconds. For the best UX we show a placeholder api_req_started
-				// message with a loading spinner as this happens.
-
 				// Determine API protocol based on provider and model
 				const modelId = getModelId(this.apiConfiguration)
 				const apiProvider = this.apiConfiguration.apiProvider
 				const apiProtocol = getApiProtocol(
 					apiProvider && !isRetiredProvider(apiProvider) ? apiProvider : undefined,
 					modelId,
-				)
-
-				// Respect user-configured provider rate limiting BEFORE we emit api_req_started.
-				// This prevents the UI from showing an "API Request..." spinner while we are
-				// intentionally waiting due to the rate limit slider.
-				//
-				// Reserve this profile's request slot before building environment details.
-				// Parent tasks and sub-agents routed to the same profile share a serialized
-				// lane, while independently routed profiles do not block one another.
-				await this.maybeWaitForProviderRateLimit(currentItem.retryAttempt ?? 0)
-
-				await this.say(
-					"api_req_started",
-					JSON.stringify({
-						apiProtocol,
-					}),
 				)
 
 				const provider = this.providerRef.deref()
@@ -3499,10 +3707,33 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					TelemetryService.instance.captureConversationMessage(this.taskId, "user")
 				}
 
-				// Since we sent off a placeholder api_req_started message to update the
-				// webview while waiting to actually start the API request (to load
-				// potential details for example), we need to update the text of that
-				// message.
+				// Persist locally produced tool and child results before entering the
+				// interruptible provider throttle. The same profile lane still serializes
+				// parent and child requests, but stopping during the wait can no longer
+				// discard a result that already completed locally.
+				if (this.abort) {
+					throw new Error(
+						`[RooCode#recursivelyMakeRooRequests] task ${this.taskId}.${this.instanceId} aborted`,
+					)
+				}
+				const pacingWaitCountBefore = this.requestPacingWaitCount
+				await this.maybeWaitForProviderRateLimit(currentItem.retryAttempt ?? 0)
+				if (this.requestPacingWaitCount > pacingWaitCountBefore) {
+					await this.appendRequestPacingUpdateToLatestUserMessage()
+				}
+				if (this.abort) {
+					throw new Error(
+						`[RooCode#recursivelyMakeRooRequests] task ${this.taskId}.${this.instanceId} aborted`,
+					)
+				}
+
+				await this.say(
+					"api_req_started",
+					JSON.stringify({
+						apiProtocol,
+					}),
+				)
+
 				const lastApiReqIndex = findLastIndex(this.clineMessages, (m) => m.say === "api_req_started")
 
 				this.clineMessages[lastApiReqIndex].text = JSON.stringify({
@@ -4586,6 +4817,51 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	/** Capture the exact mutable instruction layer once before a managed child launches. */
+	public async captureEffectiveInheritedInstructions(): Promise<{
+		effectiveText: string
+		sources: Array<{ kind: string; ref: string; text: string }>
+	}> {
+		const provider = this.providerRef.deref()
+		if (!provider) throw new Error("Provider not available")
+		const state = await provider.getState()
+		const mode = await this.getTaskMode()
+		const promptComponent = getPromptComponent(state?.customModePrompts, mode)
+		const { baseInstructions } = getModeSelection(mode, promptComponent, state?.customModes)
+		const useAgentRules = vscode.workspace.getConfiguration(Package.name).get<boolean>("useAgentRules") ?? true
+		const settings = {
+			todoListEnabled: this.apiConfiguration?.todoListEnabled ?? true,
+			useAgentRules,
+			enableSubfolderRules: state?.enableSubfolderRules ?? false,
+			newTaskRequireTodos: vscode.workspace
+				.getConfiguration(Package.name)
+				.get<boolean>("newTaskRequireTodos", false),
+			isStealthModel: this.api.getModel().info?.isStealthModel,
+		}
+		const effectiveText = await addCustomInstructions(
+			baseInstructions,
+			state?.customInstructions || "",
+			this.cwd,
+			mode,
+			{
+				language: state?.language ?? formatLanguage(vscode.env.language),
+				rooIgnoreInstructions: this.rooIgnoreController?.getInstructions(),
+				settings,
+			},
+		)
+		const sources: Array<{ kind: string; ref: string; text: string }> = [
+			{
+				kind: "aggregate",
+				ref: `task:${this.taskId}:effective-instructions:${mode}`,
+				text: effectiveText,
+			},
+		]
+		if (useAgentRules) {
+			sources.push(...(await loadApplicableAgentInstructionSources(this.cwd, settings.enableSubfolderRules)))
+		}
+		return { effectiveText, sources }
+	}
+
 	private async getSystemPrompt(): Promise<string> {
 		const state = await this.providerRef.deref()?.getState()
 		const { mcpEnabled } = state ?? {}
@@ -4650,6 +4926,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						.get<boolean>("newTaskRequireTodos", false),
 					isStealthModel: modelInfo?.isStealthModel,
 					subagentRole: isSubagent ? this.subagentRole : undefined,
+					subagentHasInheritedSkills: isSubagent
+						? Boolean(this.subagentContextManifest?.skills.length)
+						: undefined,
+					subagentUsesFrozenContext: isSubagent ? this.subagentContextManifest !== undefined : undefined,
 				},
 				undefined, // todoList
 				this.api.getModel().id,
@@ -4828,6 +5108,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const rateLimitDelay = Math.ceil(Math.min(rateLimitSeconds, remainingMs / 1000))
 
 			if (rateLimitDelay > 0) {
+				const plannedWaitMs = retryAttempt === 0 ? rateLimitDelay * 1000 : remainingMs
 				if (retryAttempt === 0) {
 					for (let i = rateLimitDelay; i > 0; i--) {
 						// Send structured JSON data for i18n-safe transport.
@@ -4842,6 +5123,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// introduced by another request on this lane without a second countdown.
 					await delay(remainingMs)
 				}
+				this.requestPacingWaitCount++
+				this.requestPacingWaitMs += plannedWaitMs
 			}
 
 			lane.lastRequestTime = performance.now()

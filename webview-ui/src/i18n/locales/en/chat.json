@@ -171,7 +171,7 @@
 		"streaming": "API Request...",
 		"cancelled": "API Request Cancelled",
 		"streamingFailed": "API Streaming Failed",
-		"rateLimitWait": "Rate limiting",
+		"rateLimitWait": "Configured request pacing",
 		"errorTitle": "Provider Error {{code}}",
 		"errorMessage": {
 			"400": "The provider couldn't process the request as made. Stop the task and try a different approach.",
@@ -185,6 +185,31 @@
 			"connection": "Connection error. Make sure you have a working internet connection.",
 			"unknown": "Unknown API error. Please contact Alpha support.",
 			"claudeCodeNotAuthenticated": "You need to sign in to use Claude Code. Go to Settings and click \"Sign in to Claude Code\" to authenticate."
+		}
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "Inspect agents",
+			"wait_agent": "Wait for agent updates",
+			"unknown": "Agent action"
+		},
+		"failed": "{{action}} failed: {{error}}",
+		"list": {
+			"running": "Inspecting agents...",
+			"completed": "Inspected {{count}} agent",
+			"completed_other": "Inspected {{count}} agents",
+			"mailbox": "{{count}} mailbox update",
+			"mailbox_other": "{{count}} mailbox updates"
+		},
+		"wait": {
+			"running": "Waiting for agent updates...",
+			"noActiveAgents": "No active agents to wait for",
+			"cancelled": "Agent wait cancelled",
+			"timedOut": "No agent updates before timeout",
+			"alreadyDelivered": "No new updates; results already delivered",
+			"received": "Received {{count}} agent update",
+			"received_other": "Received {{count}} agent updates",
+			"completed": "Agent wait completed"
 		}
 	},
 	"checkpoint": {

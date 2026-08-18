@@ -1,6 +1,6 @@
 import { parseJSON } from "partial-json"
 
-import { type ToolName, toolNames, type FileEntry } from "@alpha-code/types"
+import { isSubagentForkTurns, type ToolName, toolNames, type FileEntry } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 
 import {
@@ -158,9 +158,18 @@ export class NativeToolCallParser {
 		if (typeof value !== "object" || value === null || Array.isArray(value)) return false
 
 		const args = value as Record<string, unknown>
-		const allowedKeys = new Set(["objective", "agent_kind", "write_scope", "expected_output"])
+		const allowedKeys = new Set([
+			"task_name",
+			"fork_turns",
+			"objective",
+			"agent_kind",
+			"write_scope",
+			"expected_output",
+		])
 		const keys = Object.keys(args)
 		if (keys.length !== allowedKeys.size || keys.some((key) => !allowedKeys.has(key))) return false
+		if (typeof args.task_name !== "string" || !/^[a-z][a-z0-9_]{0,31}$/.test(args.task_name)) return false
+		if (!isSubagentForkTurns(args.fork_turns)) return false
 		if (typeof args.objective !== "string" || args.objective.length < 1) return false
 		if (args.expected_output !== null && !this.isBoundedNonEmptyStringArray(args.expected_output, 0, 12)) {
 			return false

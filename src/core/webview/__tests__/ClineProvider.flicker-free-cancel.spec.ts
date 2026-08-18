@@ -222,6 +222,68 @@ describe("ClineProvider flicker-free cancel", () => {
 		expect(mockTask2.emit).toHaveBeenCalledWith("taskFocused")
 	})
 
+	it("persists the old task before constructing its in-place replacement", async () => {
+		const order: string[] = []
+		const preservedMessage = { ts: 1, type: "say", say: "text", text: "Preserve this transcript" }
+		let persistedMessages: unknown[] = []
+		mockTask1.clineMessages = [preservedMessage]
+		mockTask1.abortTask = vi.fn(async () => {
+			order.push("abort-started")
+			await Promise.resolve()
+			persistedMessages = structuredClone(mockTask1.clineMessages)
+			order.push("transcript-persisted")
+		})
+		vi.mocked(Task).mockImplementation(() => {
+			order.push("replacement-constructed")
+			return { ...mockTask2, clineMessages: structuredClone(persistedMessages) } as any
+		})
+		;(provider as any).clineStack = [mockTask1]
+
+		await provider.createTaskWithHistoryItem({
+			id: "task-1",
+			number: 1,
+			task: "test task",
+			ts: Date.now(),
+			tokensIn: 100,
+			tokensOut: 200,
+			totalCost: 0.001,
+			workspace: "/test/workspace",
+		})
+
+		expect(order).toEqual(["abort-started", "transcript-persisted", "replacement-constructed"])
+		expect((provider as any).clineStack[0].clineMessages).toEqual([preservedMessage])
+	})
+
+	it("waits for cancellation persistence before starting rehydration", async () => {
+		let resolveAbort!: () => void
+		let abortFinished = false
+		mockTask1.isStreaming = false
+		mockTask1.cancelCurrentRequest = vi.fn()
+		mockTask1.abortTask = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					resolveAbort = () => {
+						abortFinished = true
+						resolve()
+					}
+				}),
+		)
+		;(provider as any).clineStack = [mockTask1]
+		;(provider as any).getLiveTask = vi.fn(() => mockTask1)
+		const rehydrate = vi.spyOn(provider, "createTaskWithHistoryItem").mockImplementation(async () => {
+			expect(abortFinished).toBe(true)
+			return mockTask2 as any
+		})
+
+		const cancellation = provider.cancelTask("task-1", "webview_stop")
+		await vi.waitFor(() => expect(mockTask1.abortTask).toHaveBeenCalledOnce())
+		expect(rehydrate).not.toHaveBeenCalled()
+		resolveAbort()
+		await cancellation
+
+		expect(rehydrate).toHaveBeenCalledOnce()
+	})
+
 	it("should remove task from stack when creating different task", async () => {
 		// Setup: Add a task to the stack first
 		;(provider as any).clineStack = [mockTask1]

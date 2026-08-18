@@ -86,7 +86,7 @@ async function generatePrompt(
 
 ${markdownFormattingSection()}
 
-${getSharedToolUseSection(subagentRole)}${toolsCatalog}
+${getSharedToolUseSection(subagentRole, settings?.subagentHasInheritedSkills)}${toolsCatalog}
 
 	${getToolUseGuidelinesSection(subagentRole)}
 
@@ -100,11 +100,15 @@ ${getSystemInfoSection(cwd)}
 
 ${subagentRole ? "" : getObjectiveSection()}
 
-${await addCustomInstructions(subagentRole ? "" : baseInstructions, globalCustomInstructions || "", cwd, mode, {
-	language: language ?? formatLanguage(vscode.env.language),
-	rooIgnoreInstructions,
-	settings,
-})}`
+${
+	subagentRole && settings?.subagentUsesFrozenContext
+		? ""
+		: await addCustomInstructions(subagentRole ? "" : baseInstructions, globalCustomInstructions || "", cwd, mode, {
+				language: language ?? formatLanguage(vscode.env.language),
+				rooIgnoreInstructions,
+				settings,
+			})
+}`
 
 	return basePrompt
 }

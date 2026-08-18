@@ -57,6 +57,8 @@ describe("NativeToolCallParser", () => {
 				{
 					label: "explore",
 					payload: {
+						task_name: "parser_explore",
+						fork_turns: "none",
 						objective: "Map the parser lifecycle.",
 						agent_kind: "explore",
 						write_scope: null,
@@ -66,6 +68,8 @@ describe("NativeToolCallParser", () => {
 				{
 					label: "review",
 					payload: {
+						task_name: "backend_review",
+						fork_turns: "all",
 						objective: "Review the parser validation boundary.",
 						agent_kind: "review",
 						write_scope: null,
@@ -75,6 +79,8 @@ describe("NativeToolCallParser", () => {
 				{
 					label: "worker",
 					payload: {
+						task_name: "parser_worker",
+						fork_turns: "2",
 						objective: "Add focused parser coverage.",
 						agent_kind: "worker",
 						write_scope: ["src/core/assistant-message"],
@@ -95,6 +101,50 @@ describe("NativeToolCallParser", () => {
 			})
 
 			it.each([
+				[
+					"missing stable task name",
+					{
+						task_name: undefined,
+						fork_turns: "none",
+						objective: "Inspect the parser.",
+						agent_kind: "review",
+						write_scope: null,
+						expected_output: null,
+					},
+				],
+				[
+					"missing fork turns",
+					{
+						task_name: "parser_review",
+						fork_turns: undefined,
+						objective: "Inspect the parser.",
+						agent_kind: "review",
+						write_scope: null,
+						expected_output: null,
+					},
+				],
+				[
+					"noncanonical fork turns",
+					{
+						task_name: "parser_review",
+						fork_turns: "01",
+						objective: "Inspect the parser.",
+						agent_kind: "review",
+						write_scope: null,
+						expected_output: null,
+					},
+				],
+				[
+					"unsafe fork turns",
+					{
+						task_name: "parser_review",
+						fork_turns: "9007199254740992",
+						objective: "Inspect the parser.",
+						agent_kind: "review",
+						write_scope: null,
+						expected_output: null,
+					},
+				],
 				[
 					"unknown role",
 					{
@@ -159,6 +209,16 @@ describe("NativeToolCallParser", () => {
 					},
 				],
 				[
+					"invalid stable task name",
+					{
+						task_name: "backend-review",
+						objective: "Inspect the parser.",
+						agent_kind: "review",
+						write_scope: null,
+						expected_output: null,
+					},
+				],
+				[
 					"additional property",
 					{
 						objective: "Inspect the parser.",
@@ -173,7 +233,7 @@ describe("NativeToolCallParser", () => {
 				const result = NativeToolCallParser.parseToolCall({
 					id: "invalid-spawn",
 					name: "spawn_agent",
-					arguments: JSON.stringify(payload),
+					arguments: JSON.stringify({ task_name: "parser_review", fork_turns: "none", ...payload }),
 				})
 
 				expect(result).toBeNull()
@@ -748,6 +808,8 @@ describe("NativeToolCallParser", () => {
 			it("emits strict partial nativeArgs and preserves them on finalize", () => {
 				const id = "spawn-streaming"
 				const payload = {
+					task_name: "streamed_review",
+					fork_turns: "all",
 					objective: "Review the streamed parser output.",
 					agent_kind: "review",
 					write_scope: null,

@@ -1,5 +1,5 @@
 import type { InternalTaskEnvelope } from "./InternalTaskEnvelope"
-import type { SubagentChangeSetState, SubagentVerification } from "@alpha-code/types"
+import type { SubagentChangeSetState, SubagentRunState, SubagentVerification } from "@alpha-code/types"
 
 export type InternalTaskStatus =
 	| "completed"
@@ -19,7 +19,7 @@ export interface InternalTaskResult {
 	displayVerification?: SubagentVerification[]
 	changeSet?: SubagentChangeSetState
 	remainingRisks: string[]
-	usage: { inputTokens?: number; outputTokens?: number; durationMs: number }
+	usage: SubagentRunState["usage"]
 	modelRouteId: string
 	requiresParentVerification: boolean
 }

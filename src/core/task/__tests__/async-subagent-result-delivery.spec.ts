@@ -68,12 +68,19 @@ describe("Task asynchronous sub-agent result delivery", () => {
 			summary: "Legacy blocking result.",
 		})
 		const { task, saveClineMessages } = makeTask([asyncGroup, blockingGroup, legacyGroup])
+		asyncGroup.agents[0].usage = {
+			durationMs: 21_000,
+			rateLimitWaitCount: 2,
+			rateLimitWaitMs: 20_000,
+			rateLimitIntervalSeconds: 10,
+		}
 
 		const pending = (task as any).getPendingSpawnedSubagentResults()
 
 		expect(pending).toHaveLength(1)
 		expect(pending[0].taskId).toBe("async-group-child")
 		expect(pending[0].block.text).toContain("Parser inspection complete.")
+		expect(pending[0].block.text).toContain('"rateLimitWaitCount": 2')
 		expect(pending[0].block.text).not.toContain("Already returned by delegate_task.")
 		expect(task.hasUndeliveredSpawnedSubagentResults()).toBe(true)
 

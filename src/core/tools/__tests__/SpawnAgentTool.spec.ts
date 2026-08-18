@@ -63,10 +63,12 @@ describe("SpawnAgentTool", () => {
 		expect(definition).toMatchObject({ name: "spawn_agent", strict: true })
 		expect(definition.parameters).toMatchObject({
 			type: "object",
-			required: ["objective", "agent_kind", "write_scope", "expected_output"],
+			required: ["task_name", "fork_turns", "objective", "agent_kind", "write_scope", "expected_output"],
 			additionalProperties: false,
 		})
 		expect(definition.parameters.properties).toMatchObject({
+			task_name: { pattern: "^[a-z][a-z0-9_]{0,31}$" },
+			fork_turns: { pattern: "^(?:none|all|[1-9][0-9]*)$" },
 			agent_kind: { enum: ["explore", "review", "worker"] },
 			write_scope: { anyOf: [{ minItems: 1, maxItems: 12 }, { type: "null" }] },
 			expected_output: { anyOf: [{ type: "array" }, { type: "null" }] },
@@ -93,6 +95,8 @@ describe("SpawnAgentTool", () => {
 
 		await spawnAgentTool.execute(
 			{
+				task_name: "backend_review",
+				fork_turns: "all",
 				objective: "Inspect src",
 				agent_kind: "explore",
 				write_scope: null,
@@ -104,14 +108,21 @@ describe("SpawnAgentTool", () => {
 
 		expect(provider.prepareSubagentGroup).toHaveBeenCalledWith(
 			task,
-			[{ objective: "Inspect src", agent_kind: "explore" }],
+			[
+				{
+					task_name: "backend_review",
+					fork_turns: "all",
+					objective: "Inspect src",
+					agent_kind: "explore",
+				},
+			],
 			"call-1",
 		)
 		expect(askApproval).toHaveBeenCalledAfter(provider.prepareSubagentGroup)
 		expect(provider.launchPreparedSubagentGroup).toHaveBeenCalledAfter(askApproval)
 		expect(provider.launchPreparedSubagentGroup).toHaveBeenCalledWith(task, batch, lifetimeSignal)
 		expect(provider.launchPreparedSubagentGroup).not.toHaveBeenCalledWith(task, batch, requestSignal)
-		expect(pushToolResult).toHaveBeenCalledWith(JSON.stringify(handle()))
+		expect(pushToolResult).toHaveBeenCalledWith(JSON.stringify({ ...handle(), taskName: "backend_review" }))
 	})
 
 	it("rejects an invalid draft before preparation or approval", async () => {
@@ -130,6 +141,8 @@ describe("SpawnAgentTool", () => {
 
 		await spawnAgentTool.execute(
 			{
+				task_name: "invalid_worker",
+				fork_turns: "none",
 				objective: "Edit src",
 				agent_kind: "worker",
 				write_scope: null,
@@ -155,7 +168,14 @@ describe("SpawnAgentTool", () => {
 		const task = { providerRef: { deref: () => provider } } as any
 
 		await spawnAgentTool.execute(
-			{ objective: "Inspect src", agent_kind: "explore", write_scope: null, expected_output: null },
+			{
+				task_name: "denied_explorer",
+				fork_turns: "none",
+				objective: "Inspect src",
+				agent_kind: "explore",
+				write_scope: null,
+				expected_output: null,
+			},
 			task,
 			{ askApproval: vi.fn(async () => false), pushToolResult: vi.fn(), handleError: vi.fn() } as any,
 		)
@@ -185,7 +205,14 @@ describe("SpawnAgentTool", () => {
 		const handleError = vi.fn()
 
 		await spawnAgentTool.execute(
-			{ objective: "Inspect src", agent_kind: "explore", write_scope: null, expected_output: null },
+			{
+				task_name: "failing_explorer",
+				fork_turns: "none",
+				objective: "Inspect src",
+				agent_kind: "explore",
+				write_scope: null,
+				expected_output: null,
+			},
 			task,
 			{ askApproval: vi.fn(async () => true), pushToolResult: vi.fn(), handleError } as any,
 		)

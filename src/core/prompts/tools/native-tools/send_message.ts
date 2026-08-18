@@ -7,7 +7,7 @@ export const send_message = {
 	function: {
 		name: "send_message",
 		description:
-			"Deliver a message to a running child agent without starting a separate follow-up turn. Address the child by task ID or canonical path.",
+			"Deliver or queue a message for a pending or running child agent without starting a separate follow-up turn. Address the child by stable task_name, task ID, or canonical path. For deterministic immediate steering, this may follow spawn_agent for the same task_name in one response.",
 		strict: true,
 		parameters: {
 			type: "object",

@@ -16,10 +16,20 @@ import {
 	type AgentRuntimeSnapshot,
 	type AgentTerminalResultMetadata,
 	type ClosedAgentTombstone,
+	type ParentVerificationObligation,
+	type ParentVerificationReview,
+	type ParentVerificationSummary,
+	type SubagentChangeSetState,
 } from "@alpha-code/types"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { safeWriteJson } from "../../utils/safeWriteJson"
+import {
+	decideParentCompletion,
+	parentVerificationObligationId,
+	summarizeParentVerification,
+	type ParentCompletionDecision,
+} from "./ParentVerification"
 
 const ACTIVE_STATUSES = new Set<AgentLifecycleStatus>(["pending", "running", "cancelling"])
 const TERMINAL_STATUSES = new Set<AgentLifecycleStatus>(["completed", "blocked", "failed", "cancelled", "timed_out"])
@@ -54,6 +64,7 @@ const initialState = (now: number): AgentControlState => ({
 	tombstones: [],
 	mailbox: [],
 	mailboxCursors: {},
+	verificationObligations: [],
 })
 
 const clone = <T>(value: T): T => structuredClone(value)
@@ -128,6 +139,36 @@ export interface UpdateAgentStatusInput {
 	snapshot?: AgentRuntimeSnapshot
 	terminalResult?: AgentTerminalResultMetadata
 	at?: number
+}
+
+export interface RecordWorkerChangeSetInput {
+	rootTaskId: string
+	parentTaskId: string
+	workerTaskId: string
+	workerPath?: string
+	workerNickname: string
+	groupId: string
+	changeSet: SubagentChangeSetState
+	reviewSource?: ParentVerificationReview["source"]
+	at?: number
+}
+
+export interface ParentCommandVerificationEvidence {
+	toolCallId: string
+	executionId: string
+	status: "running" | "succeeded" | "failed" | "denied" | "cancelled" | "timed_out"
+	exitCode?: number
+	signalName?: string
+	startedAt: number
+	completedAt?: number
+	/** Ephemeral command text used only to associate evidence with changed paths. */
+	command?: string
+}
+
+export interface RecordWorkerChangeSetResult {
+	obligation?: ParentVerificationObligation
+	changed: boolean
+	previousStatus?: ParentVerificationObligation["status"]
 }
 
 export interface AppendAgentMailboxEventInput {
@@ -464,6 +505,172 @@ export class AgentControlStore {
 		return this.listAgents({ rootTaskId: parentRecord.rootTaskId, parentTaskId: parentRecord.taskId })
 	}
 
+	getVerificationObligations(
+		options: {
+			rootTaskId?: string
+			parentTaskId?: string
+			workerTaskId?: string
+		} = {},
+	): ParentVerificationObligation[] {
+		this.assertInitialized()
+		return this.state.verificationObligations
+			.filter((item) => !options.rootTaskId || item.rootTaskId === options.rootTaskId)
+			.filter((item) => !options.parentTaskId || item.parentTaskId === options.parentTaskId)
+			.filter((item) => !options.workerTaskId || item.workerTaskId === options.workerTaskId)
+			.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+			.map(clone)
+	}
+
+	getWorkerVerificationSummary(workerTaskId: string, rootTaskId?: string): ParentVerificationSummary | undefined {
+		return summarizeParentVerification(this.getVerificationObligations({ rootTaskId, workerTaskId }))
+	}
+
+	getParentCompletionDecision(parentTaskId: string, rootTaskId?: string): ParentCompletionDecision {
+		return decideParentCompletion(this.getVerificationObligations({ rootTaskId, parentTaskId }))
+	}
+
+	hasUnappliedWorkerVerification(workerTaskId: string, rootTaskId?: string): boolean {
+		return this.getVerificationObligations({ rootTaskId, workerTaskId }).some(
+			(obligation) => obligation.status === "required",
+		)
+	}
+
+	/**
+	 * Reconcile one persisted Worker change-set state into the durable obligation
+	 * ledger. Replays are no-ops, and stale quarantined projections can never
+	 * regress an already-applied obligation.
+	 */
+	async recordWorkerChangeSet(input: RecordWorkerChangeSetInput): Promise<RecordWorkerChangeSetResult> {
+		this.assertInitialized()
+		const changedFiles = [...new Set(input.changeSet.changedFiles)].sort()
+		if (changedFiles.length === 0) return { changed: false }
+
+		const obligationId = parentVerificationObligationId(input.changeSet.id)
+		const before = this.state.verificationObligations.find((item) => item.id === obligationId)
+		const wouldChange = !before || this.changeSetWouldAdvance(before, input)
+		if (!wouldChange) return { obligation: clone(before), changed: false, previousStatus: before.status }
+
+		return this.transact((draft) => {
+			const timestamp = input.at ?? this.now()
+			let obligation = draft.verificationObligations.find((item) => item.id === obligationId)
+			const previousStatus = obligation?.status
+			if (obligation) {
+				this.assertVerificationIdentity(obligation, input)
+			} else {
+				for (const previous of draft.verificationObligations) {
+					if (
+						previous.workerTaskId === input.workerTaskId &&
+						previous.status === "required" &&
+						previous.changeSetId !== input.changeSet.id
+					) {
+						previous.status = "superseded"
+						previous.supersededByChangeSetId = input.changeSet.id
+						previous.reason = "A newer Worker proposal replaced this unapplied change set."
+						previous.updatedAt = timestamp
+					}
+				}
+
+				obligation = {
+					id: obligationId,
+					rootTaskId: input.rootTaskId,
+					parentTaskId: input.parentTaskId,
+					workerTaskId: input.workerTaskId,
+					workerPath: input.workerPath,
+					workerNickname: input.workerNickname,
+					groupId: input.groupId,
+					changeSetId: input.changeSet.id,
+					changedFiles,
+					status: "required",
+					createdAt: input.changeSet.createdAt,
+					updatedAt: timestamp,
+				}
+				draft.verificationObligations.push(obligation)
+			}
+
+			obligation.workerPath = input.workerPath ?? obligation.workerPath
+			obligation.workerNickname = input.workerNickname
+			obligation.changedFiles = changedFiles
+			this.applyChangeSetTransition(obligation, input, timestamp)
+			return { obligation: clone(obligation), changed: true, previousStatus }
+		})
+	}
+
+	/** Persist terminal parent command evidence against every applied obligation it can cover. */
+	async recordParentVerificationEvidence(
+		parentTaskId: string,
+		evidence: readonly ParentCommandVerificationEvidence[],
+		rootTaskId?: string,
+	): Promise<ParentVerificationObligation[]> {
+		this.assertInitialized()
+		const terminalEvidence = evidence
+			.filter(
+				(item): item is ParentCommandVerificationEvidence & { completedAt: number } =>
+					item.status !== "running" && item.completedAt !== undefined,
+			)
+			.sort(
+				(left, right) =>
+					left.completedAt - right.completedAt || left.toolCallId.localeCompare(right.toolCallId),
+			)
+		if (terminalEvidence.length === 0) return []
+
+		const candidates = this.state.verificationObligations.filter(
+			(item) =>
+				item.parentTaskId === parentTaskId &&
+				(!rootTaskId || item.rootTaskId === rootTaskId) &&
+				(item.status === "pending" || item.status === "failed") &&
+				item.appliedAt !== undefined,
+		)
+		const wouldChange = candidates.some((item) => {
+			const selected = this.selectVerificationEvidence(item, terminalEvidence)
+			if (!selected) return false
+			const status = selected.evidence.status === "succeeded" ? "passed" : "failed"
+			return (
+				item.verification?.executionId !== selected.evidence.executionId || item.verification.status !== status
+			)
+		})
+		if (!wouldChange) return []
+
+		return this.transact((draft) => {
+			const changed: ParentVerificationObligation[] = []
+			for (const obligation of draft.verificationObligations) {
+				if (
+					obligation.parentTaskId !== parentTaskId ||
+					(rootTaskId && obligation.rootTaskId !== rootTaskId) ||
+					(obligation.status !== "pending" && obligation.status !== "failed")
+				)
+					continue
+
+				const selected = this.selectVerificationEvidence(obligation, terminalEvidence)
+				if (!selected) continue
+				const status = selected.evidence.status === "succeeded" ? "passed" : "failed"
+				if (
+					obligation.verification?.executionId === selected.evidence.executionId &&
+					obligation.verification.status === status
+				)
+					continue
+
+				obligation.verification = {
+					status,
+					toolCallId: selected.evidence.toolCallId,
+					executionId: selected.evidence.executionId,
+					startedAt: selected.evidence.startedAt,
+					completedAt: selected.evidence.completedAt,
+					exitCode: selected.evidence.exitCode,
+					signalName: selected.evidence.signalName,
+					matchedFiles: selected.matchedFiles,
+				}
+				obligation.status = status === "passed" ? "satisfied" : "failed"
+				obligation.reason =
+					status === "passed"
+						? "A parent verification command completed successfully after application."
+						: "The latest parent verification command did not complete successfully."
+				obligation.updatedAt = selected.evidence.completedAt
+				changed.push(clone(obligation))
+			}
+			return changed
+		})
+	}
+
 	/** Terminal and interrupted records remain queryable until this explicit close. */
 	async closeAgent(target: string, rootTaskId?: string): Promise<ClosedAgentTombstone> {
 		return this.transact((draft) => {
@@ -487,6 +694,116 @@ export class AgentControlStore {
 			draft.tombstones.push(tombstone)
 			return clone(tombstone)
 		})
+	}
+
+	private changeSetWouldAdvance(
+		obligation: ParentVerificationObligation,
+		input: RecordWorkerChangeSetInput,
+	): boolean {
+		this.assertVerificationIdentity(obligation, input)
+		if (input.workerPath && input.workerPath !== obligation.workerPath) return true
+		if (input.workerNickname !== obligation.workerNickname) return true
+		if (!isDeepStrictEqual([...new Set(input.changeSet.changedFiles)].sort(), obligation.changedFiles)) return true
+		if (input.changeSet.status === "applied") {
+			return obligation.status === "required"
+		}
+		if (["discarded", "scope_violation", "unavailable"].includes(input.changeSet.status)) {
+			return obligation.status === "required"
+		}
+		return false
+	}
+
+	private applyChangeSetTransition(
+		obligation: ParentVerificationObligation,
+		input: RecordWorkerChangeSetInput,
+		timestamp: number,
+	): void {
+		if (input.changeSet.status === "applied") {
+			if (["satisfied", "pending", "failed"].includes(obligation.status)) return
+			obligation.status = "pending"
+			obligation.review = {
+				decision: "approved",
+				source: input.reviewSource === "apply" ? "apply" : "recovered_application",
+				recordedAt: timestamp,
+			}
+			obligation.appliedAt = timestamp
+			obligation.updatedAt = timestamp
+			obligation.reason = "Worker changes were reviewed and applied; parent verification is pending."
+			delete obligation.verification
+			delete obligation.supersededByChangeSetId
+			return
+		}
+
+		if (["discarded", "scope_violation", "unavailable"].includes(input.changeSet.status)) {
+			if (["satisfied", "pending", "failed"].includes(obligation.status)) return
+			obligation.status = "not_applicable"
+			obligation.review = {
+				decision: "rejected",
+				source: input.reviewSource === "discard" ? "discard" : "recovered_disposition",
+				recordedAt: timestamp,
+			}
+			obligation.updatedAt = timestamp
+			obligation.reason =
+				input.changeSet.status === "discarded"
+					? "The quarantined Worker proposal was explicitly discarded."
+					: (input.changeSet.error ?? "The Worker proposal was not eligible for application.")
+			delete obligation.appliedAt
+			delete obligation.verification
+			delete obligation.supersededByChangeSetId
+			return
+		}
+
+		if (obligation.status === "required") {
+			obligation.updatedAt = Math.max(obligation.updatedAt, timestamp)
+			obligation.reason =
+				input.changeSet.status === "conflicted"
+					? "Worker changes remain quarantined because application conflicted."
+					: "Worker changes remain quarantined until explicit review and application."
+		}
+	}
+
+	private selectVerificationEvidence(
+		obligation: ParentVerificationObligation,
+		evidence: readonly (ParentCommandVerificationEvidence & { completedAt: number })[],
+	):
+		| {
+				evidence: ParentCommandVerificationEvidence & { completedAt: number }
+				matchedFiles: string[]
+		  }
+		| undefined {
+		if (obligation.appliedAt === undefined) return undefined
+		const relevant = evidence.flatMap((item) => {
+			if (item.startedAt < obligation.appliedAt!) return []
+			const matchedFiles = this.getReferencedChangedFiles(item.command, obligation.changedFiles)
+			return matchedFiles.length > 0 ? [{ evidence: item, matchedFiles }] : []
+		})
+		if (relevant.length === 0) return undefined
+		return relevant.find((item) => item.evidence.status === "succeeded") ?? relevant.at(-1)
+	}
+
+	private getReferencedChangedFiles(command: string | undefined, changedFiles: readonly string[]): string[] {
+		if (!command?.trim()) return []
+		const normalizedCommand = command.replace(/\\/g, "/")
+		return changedFiles.filter((changedFile) => {
+			const normalizedFile = changedFile.replace(/\\/g, "/").replace(/^\.\//, "")
+			const escapedFile = normalizedFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+			return new RegExp(`(^|[\\s\"'=:(,])(?:\\./)?${escapedFile}(?=$|[\\s\"';),])`, "i").test(normalizedCommand)
+		})
+	}
+
+	private assertVerificationIdentity(
+		obligation: ParentVerificationObligation,
+		input: RecordWorkerChangeSetInput,
+	): void {
+		if (
+			obligation.changeSetId !== input.changeSet.id ||
+			obligation.rootTaskId !== input.rootTaskId ||
+			obligation.parentTaskId !== input.parentTaskId ||
+			obligation.workerTaskId !== input.workerTaskId ||
+			obligation.groupId !== input.groupId
+		) {
+			throw new Error(`Verification obligation ${obligation.id} was reused with different identity`)
+		}
 	}
 
 	async appendEvent(input: AppendAgentMailboxEventInput): Promise<AppendAgentMailboxEventResult> {
@@ -681,7 +998,16 @@ export class AgentControlStore {
 			}
 			return byId
 		}
-		return this.resolvePath(draft.agents, target, rootTaskId)
+		const byPath = this.resolvePath(draft.agents, target, rootTaskId)
+		if (byPath || target.startsWith("/")) return byPath
+
+		const matches = draft.agents.filter(
+			(record) => record.nickname === target && (!rootTaskId || record.rootTaskId === rootTaskId),
+		)
+		if (matches.length > 1) {
+			throw new Error(`Agent task_name ${target} is ambiguous; provide a task ID or canonical path`)
+		}
+		return matches[0]
 	}
 
 	private resolveTombstone(

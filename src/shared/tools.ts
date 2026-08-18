@@ -13,6 +13,7 @@ import type {
 	InterruptAgentParams,
 	CancelAgentParams,
 	CloseAgentParams,
+	SubagentForkTurns,
 } from "@alpha-code/types"
 
 export type ToolResponse = string | Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam>
@@ -109,6 +110,8 @@ export const toolParamNames = [
 	"sha",
 	"merge_method",
 	"tasks",
+	"task_name",
+	"fork_turns",
 	"objective",
 	"agent_kind",
 	"write_scope",
@@ -151,12 +154,16 @@ export type NativeToolArgs = {
 	}
 	spawn_agent:
 		| {
+				task_name: string
+				fork_turns: SubagentForkTurns
 				objective: string
 				agent_kind: "explore" | "review"
 				write_scope: null
 				expected_output: string[] | null
 		  }
 		| {
+				task_name: string
+				fork_turns: SubagentForkTurns
 				objective: string
 				agent_kind: "worker"
 				write_scope: string[]

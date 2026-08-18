@@ -20,16 +20,18 @@ const lifecycleNames = [
 function harness() {
 	const provider = {
 		listAgents: vi.fn(async () => ({ agents: [] })),
-		waitForAgent: vi.fn(async () => ({ timedOut: true, events: [] })),
+		waitForAgent: vi.fn(async (): Promise<unknown> => ({ timedOut: true, events: [] })),
 		sendMessageToAgent: vi.fn(async () => ({ status: "running" })),
 		followupAgentTask: vi.fn(async () => ({ status: "pending" })),
 		interruptAgent: vi.fn(async () => ({ status: "cancelling" })),
 		cancelAgent: vi.fn(async () => ({ status: "cancelling" })),
 		closeAgent: vi.fn(async () => ({ status: "completed" })),
 	}
+	const say = vi.fn(async (..._args: unknown[]) => undefined)
 	const task = {
 		providerRef: { deref: () => provider },
 		recordToolError: vi.fn(),
+		say,
 		didToolFailInCurrentTurn: false,
 	} as any
 	const askApproval = vi.fn()
@@ -37,6 +39,7 @@ function harness() {
 	return {
 		provider,
 		task,
+		say,
 		askApproval: askApproval,
 		pushToolResult,
 		callbacks: {
@@ -62,7 +65,7 @@ describe("agent lifecycle tools", () => {
 	})
 
 	it("dispatches every operation without asking for approval", async () => {
-		const { provider, task, callbacks, pushToolResult, askApproval } = harness()
+		const { provider, task, say, callbacks, pushToolResult, askApproval } = harness()
 
 		await listAgentsTool.execute({ path_prefix: "/root/review" }, task, callbacks)
 		await waitAgentTool.execute({}, task, callbacks)
@@ -81,6 +84,105 @@ describe("agent lifecycle tools", () => {
 		expect(provider.closeAgent).toHaveBeenCalledWith(task, "child-1")
 		expect(pushToolResult).toHaveBeenCalledTimes(7)
 		expect(askApproval).not.toHaveBeenCalled()
+		expect(say).toHaveBeenCalledTimes(4)
+
+		const presentations = say.mock.calls.map((call) => ({
+			payload: JSON.parse(call[1] as string),
+			partial: call[3],
+		}))
+		expect(presentations).toEqual([
+			{
+				payload: expect.objectContaining({
+					tool: "agentLifecycle",
+					agentAction: "list_agents",
+					lifecycleStatus: "running",
+				}),
+				partial: true,
+			},
+			{
+				payload: expect.objectContaining({
+					tool: "agentLifecycle",
+					agentAction: "list_agents",
+					lifecycleStatus: "completed",
+					agentCount: 0,
+				}),
+				partial: false,
+			},
+			{
+				payload: expect.objectContaining({
+					tool: "agentLifecycle",
+					agentAction: "wait_agent",
+					lifecycleStatus: "running",
+				}),
+				partial: true,
+			},
+			{
+				payload: expect.objectContaining({
+					tool: "agentLifecycle",
+					agentAction: "wait_agent",
+					lifecycleStatus: "completed",
+					timedOut: true,
+					eventCount: 0,
+				}),
+				partial: false,
+			},
+		])
+	})
+
+	it("shows the wait state before the blocking provider operation resolves", async () => {
+		const { provider, task, say, callbacks } = harness()
+		let resolveWait!: (value: unknown) => void
+		provider.waitForAgent.mockImplementationOnce(() => new Promise((resolve) => (resolveWait = resolve)))
+
+		const execution = waitAgentTool.execute({ timeout_ms: 120_000 }, task, callbacks)
+		await vi.waitFor(() => expect(provider.waitForAgent).toHaveBeenCalledTimes(1))
+		expect(say).toHaveBeenCalledTimes(1)
+		expect(JSON.parse(say.mock.calls[0][1] as string)).toMatchObject({
+			tool: "agentLifecycle",
+			agentAction: "wait_agent",
+			lifecycleStatus: "running",
+		})
+
+		resolveWait({ timedOut: false, events: [], alreadyDelivered: true })
+		await execution
+		expect(JSON.parse(say.mock.calls[1][1] as string)).toMatchObject({
+			lifecycleStatus: "completed",
+			alreadyDelivered: true,
+		})
+	})
+
+	it("surfaces an empty agent tree as an immediate completed wait", async () => {
+		const { provider, task, say, callbacks, pushToolResult } = harness()
+		provider.waitForAgent.mockResolvedValueOnce({ timedOut: false, noActiveAgents: true, events: [] })
+
+		await waitAgentTool.execute({ timeout_ms: 120_000 }, task, callbacks)
+
+		expect(pushToolResult).toHaveBeenCalledWith(
+			JSON.stringify({ timedOut: false, noActiveAgents: true, events: [] }),
+		)
+		expect(JSON.parse(say.mock.calls[1][1] as string)).toMatchObject({
+			agentAction: "wait_agent",
+			lifecycleStatus: "completed",
+			noActiveAgents: true,
+			eventCount: 0,
+		})
+	})
+
+	it("replaces the in-progress row with an observable provider error", async () => {
+		const { provider, task, say, callbacks, pushToolResult } = harness()
+		provider.listAgents.mockRejectedValueOnce(new Error("Registry unavailable"))
+
+		await listAgentsTool.execute({}, task, callbacks)
+
+		expect(say).toHaveBeenCalledTimes(2)
+		expect(JSON.parse(say.mock.calls[1][1] as string)).toMatchObject({
+			tool: "agentLifecycle",
+			agentAction: "list_agents",
+			lifecycleStatus: "error",
+			content: "Registry unavailable",
+		})
+		expect(pushToolResult).toHaveBeenCalledWith(JSON.stringify({ error: "Registry unavailable" }))
+		expect(task.didToolFailInCurrentTurn).toBe(true)
 	})
 
 	it("rejects invalid inputs before calling the provider", async () => {

@@ -70,6 +70,9 @@ import {
 	Split,
 	ArrowRight,
 	Check,
+	CircleAlert,
+	Clock3,
+	LoaderCircle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { PathTooltip } from "../ui/PathTooltip"
@@ -1111,11 +1114,7 @@ const ChatRowContentInner = ({
 			switch (message.say) {
 				case "subagent_group":
 					return message.subagentGroup ? (
-						<SubagentGroupCard
-							group={message.subagentGroup}
-							parentTaskId={currentTaskId}
-							parentActive={currentTaskItem?.status === "active"}
-						/>
+						<SubagentGroupCard group={message.subagentGroup} parentTaskId={currentTaskId} />
 					) : null
 				case "diff_error":
 					return (
@@ -1628,6 +1627,70 @@ const ChatRowContentInner = ({
 											style={{ color: "var(--vscode-descriptionForeground)" }}>
 											({infoText})
 										</span>
+									)}
+								</div>
+							)
+						}
+						case "agentLifecycle": {
+							const status = sayTool.lifecycleStatus
+							const action = sayTool.agentAction
+							let label: string
+							let detail: string | undefined
+
+							if (status === "error") {
+								label = t("chat:agentLifecycle.failed", {
+									action: t(`chat:agentLifecycle.actions.${action ?? "unknown"}`),
+									error: sayTool.content || t("chat:error"),
+								})
+							} else if (action === "list_agents") {
+								label =
+									status === "running"
+										? t("chat:agentLifecycle.list.running")
+										: t("chat:agentLifecycle.list.completed", { count: sayTool.agentCount ?? 0 })
+								if (status === "completed" && (sayTool.mailboxUnreadCount ?? 0) > 0) {
+									detail = t("chat:agentLifecycle.list.mailbox", {
+										count: sayTool.mailboxUnreadCount,
+									})
+								}
+							} else if (status === "running") {
+								label = t("chat:agentLifecycle.wait.running")
+							} else if (sayTool.noActiveAgents) {
+								label = t("chat:agentLifecycle.wait.noActiveAgents")
+							} else if (sayTool.cancelled) {
+								label = t("chat:agentLifecycle.wait.cancelled")
+							} else if (sayTool.timedOut) {
+								label = t("chat:agentLifecycle.wait.timedOut")
+							} else if (sayTool.alreadyDelivered) {
+								label = t("chat:agentLifecycle.wait.alreadyDelivered")
+							} else if ((sayTool.eventCount ?? 0) > 0) {
+								label = t("chat:agentLifecycle.wait.received", { count: sayTool.eventCount })
+							} else {
+								label = t("chat:agentLifecycle.wait.completed")
+							}
+
+							const lifecycleIcon =
+								status === "running" ? (
+									<LoaderCircle
+										className="size-4 shrink-0 animate-spin"
+										aria-label="Agent action in progress"
+									/>
+								) : status === "error" ? (
+									<CircleAlert
+										className="size-4 shrink-0 text-vscode-errorForeground"
+										aria-label="Agent action failed"
+									/>
+								) : action === "list_agents" ? (
+									<ListTree className="size-4 shrink-0" aria-label="Agent list inspected" />
+								) : (
+									<Clock3 className="size-4 shrink-0" aria-label="Agent wait completed" />
+								)
+
+							return (
+								<div data-testid="agent-lifecycle-status" style={headerStyle}>
+									{lifecycleIcon}
+									<span style={{ fontWeight: "bold" }}>{label}</span>
+									{detail && (
+										<span className="text-xs text-vscode-descriptionForeground">· {detail}</span>
 									)}
 								</div>
 							)

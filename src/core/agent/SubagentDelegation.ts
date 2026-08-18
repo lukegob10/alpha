@@ -1,12 +1,33 @@
-import type { SubagentGroupState } from "@alpha-code/types"
+import { subagentForkTurnsSchema, type SubagentForkTurns, type SubagentGroupState } from "@alpha-code/types"
 
 import type { InternalTaskEnvelope } from "./InternalTaskEnvelope"
 
 export type SubagentTaskDraft =
-	| { objective: string; agent_kind: "explore" | "review"; expected_output?: string[] }
-	| { objective: string; agent_kind: "worker"; write_scope: string[]; expected_output?: string[] }
+	| {
+			task_name?: string
+			fork_turns: SubagentForkTurns
+			objective: string
+			agent_kind: "explore" | "review"
+			expected_output?: string[]
+	  }
+	| {
+			task_name?: string
+			fork_turns: SubagentForkTurns
+			objective: string
+			agent_kind: "worker"
+			write_scope: string[]
+			expected_output?: string[]
+	  }
 
-const DELEGATED_TASK_FIELDS = new Set(["objective", "agent_kind", "write_scope", "expected_output"])
+const DELEGATED_TASK_FIELDS = new Set([
+	"task_name",
+	"fork_turns",
+	"objective",
+	"agent_kind",
+	"write_scope",
+	"expected_output",
+])
+const SUBAGENT_TASK_NAME_PATTERN = /^[a-z][a-z0-9_]{0,31}$/
 const OBJECTIVE_CLAUSE_BOUNDARY = /[\r\n.!?;]+|\b(?:and\s+then|then|after\s+that|afterwards)\b/gi
 const MUTATION_VERBS = new Set([
 	"add",
@@ -38,6 +59,17 @@ const COMMAND_TARGET =
 	/^\s+(?:(?:a|an|the)\s+)?(?:(?:existing|full|integration|local|relevant|targeted|unit)\s+)*(?:build|checks?|commands?|formatter|formatting|lint|linter|npm|pnpm|scripts?|test suite|tests?|type-?check|verification|vitest|yarn)\b/i
 
 type ReadOnlyAuthorityMismatch = "command execution" | "repository changes"
+
+/** Missing values are accepted only for legacy/internal callers and inherit no parent turns. */
+export function normalizeSubagentForkTurns(value: unknown = undefined): SubagentForkTurns {
+	if (value === undefined) return "none"
+
+	const parsed = subagentForkTurnsSchema.safeParse(value)
+	if (!parsed.success) {
+		throw new Error("fork_turns must be 'none', 'all', or a canonical positive safe-integer string")
+	}
+	return parsed.data
+}
 
 /**
  * Detect only explicit imperative authority mismatches. This intentionally avoids
@@ -99,6 +131,16 @@ export const normalizeSubagentTaskDrafts = (input: unknown): SubagentTaskDraft[]
 
 		const objective = typeof draft.objective === "string" ? draft.objective.trim() : ""
 		if (!objective) throw new Error(`Sub-agent task ${index + 1} requires an objective`)
+		const forkTurns = normalizeSubagentForkTurns(draft.fork_turns)
+		let taskName: string | undefined
+		if (draft.task_name !== undefined) {
+			taskName = typeof draft.task_name === "string" ? draft.task_name.trim() : ""
+			if (!SUBAGENT_TASK_NAME_PATTERN.test(taskName)) {
+				throw new Error(
+					`Sub-agent task ${index + 1} has invalid task_name; use 1-32 lowercase letters, digits, or underscores, starting with a letter`,
+				)
+			}
+		}
 		if (!(["explore", "review", "worker"] as const).includes(draft.agent_kind as any)) {
 			throw new Error(`Sub-agent task ${index + 1} requires agent_kind explore, review, or worker`)
 		}
@@ -123,6 +165,8 @@ export const normalizeSubagentTaskDrafts = (input: unknown): SubagentTaskDraft[]
 				throw new Error(`Worker task ${index + 1} has an invalid write_scope entry`)
 			}
 			return {
+				...(taskName ? { task_name: taskName } : {}),
+				fork_turns: forkTurns,
 				objective,
 				agent_kind: "worker" as const,
 				write_scope: writeScope,
@@ -134,6 +178,8 @@ export const normalizeSubagentTaskDrafts = (input: unknown): SubagentTaskDraft[]
 		// union branch. The role is the authority boundary, so discard worker-only scope
 		// instead of failing a safe read-only delegation or accidentally granting writes.
 		return {
+			...(taskName ? { task_name: taskName } : {}),
+			fork_turns: forkTurns,
 			objective,
 			agent_kind: draft.agent_kind,
 			...(expectedOutput ? { expected_output: expectedOutput } : {}),
@@ -220,6 +266,6 @@ export interface SubagentToolResult {
 		changedFiles?: string[]
 		verification?: import("@alpha-code/types").SubagentVerification[]
 		changeSet?: import("@alpha-code/types").SubagentChangeSetState
-		usage: { inputTokens?: number; outputTokens?: number; durationMs: number }
+		usage: import("@alpha-code/types").SubagentRunState["usage"]
 	}>
 }

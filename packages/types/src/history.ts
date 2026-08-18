@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { subagentChangeSetStateSchema, subagentModelRouteStateSchema, subagentRoleSchema } from "./subagent.js"
+import { subagentContextManifestSchema } from "./subagent-context.js"
 
 /**
  * HistoryItem
@@ -37,6 +38,7 @@ export const historyItemSchema = z.object({
 	subagentWriteScope: z.array(z.string()).optional(),
 	subagentChangeSet: subagentChangeSetStateSchema.optional(),
 	subagentModelRoute: subagentModelRouteStateSchema.optional(),
+	subagentContextManifest: subagentContextManifestSchema.optional(),
 })
 
 export type HistoryItem = z.infer<typeof historyItemSchema>

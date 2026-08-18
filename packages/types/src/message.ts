@@ -3,6 +3,7 @@ import { z } from "zod"
 import {
 	subagentChangeSetStateSchema,
 	subagentModelRouteStateSchema,
+	parentVerificationSummarySchema,
 	subagentRoleSchema,
 	subagentVerificationSchema,
 } from "./subagent.js"
@@ -247,6 +248,8 @@ export const subagentRunStateSchema = z.object({
 	changedFiles: z.array(z.string()).optional(),
 	verification: z.array(subagentVerificationSchema).optional(),
 	changeSet: subagentChangeSetStateSchema.optional(),
+	requiresParentVerification: z.boolean().optional(),
+	parentVerification: parentVerificationSummarySchema.optional(),
 	pendingApproval: z
 		.object({
 			id: z.string(),
@@ -267,6 +270,9 @@ export const subagentRunStateSchema = z.object({
 		inputTokens: z.number().optional(),
 		outputTokens: z.number().optional(),
 		durationMs: z.number(),
+		rateLimitWaitCount: z.number().int().nonnegative().optional(),
+		rateLimitWaitMs: z.number().nonnegative().optional(),
+		rateLimitIntervalSeconds: z.number().nonnegative().optional(),
 	}),
 })
 

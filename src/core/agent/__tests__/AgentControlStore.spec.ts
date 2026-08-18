@@ -18,6 +18,197 @@ const setup = async (persistence = new InMemoryAgentControlPersistence()) => {
 }
 
 describe("AgentControlStore", () => {
+	const workerChangeSet = (
+		id: string,
+		status: "pending_review" | "conflicted" | "applied" | "discarded" | "scope_violation" | "unavailable",
+		changedFiles = ["src/example.ts"],
+		updatedAt = 2_000,
+	) => ({ id, status, changedFiles, createdAt: 1_500, updatedAt })
+
+	const recordWorker = (
+		store: AgentControlStore,
+		changeSet: ReturnType<typeof workerChangeSet>,
+		override: Partial<Parameters<AgentControlStore["recordWorkerChangeSet"]>[0]> = {},
+	) =>
+		store.recordWorkerChangeSet({
+			rootTaskId: "root-1",
+			parentTaskId: "root-1",
+			workerTaskId: "worker-1",
+			workerPath: "/root/worker",
+			workerNickname: "Worker",
+			groupId: "group-1",
+			changeSet,
+			at: changeSet.updatedAt,
+			...override,
+		})
+
+	it("enforces the durable review and verification completion state machine idempotently", async () => {
+		const persistence = new InMemoryAgentControlPersistence()
+		const { store } = await setup(persistence)
+		await store.createAgent({
+			taskId: "worker-1",
+			parentTaskId: "root-1",
+			nickname: "Worker",
+			role: "worker",
+			objective: "Implement",
+			status: "completed",
+		})
+
+		const quarantined = await recordWorker(store, workerChangeSet("change-1", "pending_review"))
+		expect(quarantined).toMatchObject({ changed: true, obligation: { status: "required" } })
+		expect(store.getParentCompletionDecision("root-1")).toMatchObject({ allowed: true })
+		expect(await recordWorker(store, workerChangeSet("change-1", "pending_review"))).toMatchObject({
+			changed: false,
+		})
+
+		const applied = await recordWorker(store, workerChangeSet("change-1", "applied", undefined, 2_100), {
+			reviewSource: "apply",
+		})
+		expect(applied).toMatchObject({
+			changed: true,
+			previousStatus: "required",
+			obligation: { status: "pending", review: { decision: "approved", source: "apply" } },
+		})
+		expect(store.getParentCompletionDecision("root-1")).toMatchObject({
+			allowed: false,
+			message: expect.stringContaining("change-1"),
+		})
+
+		await store.closeAgent("worker-1")
+		expect(store.getParentCompletionDecision("root-1").allowed).toBe(false)
+		expect(
+			await store.recordParentVerificationEvidence("root-1", [
+				{
+					toolCallId: "too-early",
+					executionId: "execution-early",
+					status: "succeeded",
+					command: "node scripts/verify.js src/example.ts",
+					startedAt: 2_099,
+					completedAt: 2_101,
+				},
+			]),
+		).toEqual([])
+		expect(
+			await store.recordParentVerificationEvidence("root-1", [
+				{
+					toolCallId: "unrelated",
+					executionId: "execution-unrelated",
+					status: "succeeded",
+					command: "pnpm test unrelated.spec.ts",
+					startedAt: 2_101,
+					completedAt: 2_102,
+					exitCode: 0,
+				},
+			]),
+		).toEqual([])
+
+		const failed = await store.recordParentVerificationEvidence("root-1", [
+			{
+				toolCallId: "verify-failed",
+				executionId: "execution-failed",
+				status: "failed",
+				command: "node scripts/verify.js src/example.ts",
+				startedAt: 2_101,
+				completedAt: 2_102,
+				exitCode: 1,
+			},
+		])
+		expect(failed).toMatchObject([{ status: "failed", verification: { status: "failed" } }])
+		expect(store.getParentCompletionDecision("root-1").message).toContain("latest parent command failed")
+		expect(
+			await store.recordParentVerificationEvidence("root-1", [
+				{
+					toolCallId: "verify-failed",
+					executionId: "execution-failed",
+					status: "failed",
+					command: "node scripts/verify.js src/example.ts",
+					startedAt: 2_101,
+					completedAt: 2_102,
+					exitCode: 1,
+				},
+			]),
+		).toEqual([])
+
+		const satisfied = await store.recordParentVerificationEvidence("root-1", [
+			{
+				toolCallId: "verify-passed",
+				executionId: "execution-passed",
+				status: "succeeded",
+				command: "node scripts/verify.js src/example.ts",
+				startedAt: 2_103,
+				completedAt: 2_104,
+				exitCode: 0,
+			},
+		])
+		expect(satisfied).toMatchObject([
+			{ status: "satisfied", verification: { status: "passed", matchedFiles: ["src/example.ts"] } },
+		])
+		expect(store.getParentCompletionDecision("root-1")).toEqual({
+			allowed: true,
+			blockingObligations: [],
+		})
+
+		const reloaded = new AgentControlStore(persistence, clock(20_000))
+		await reloaded.initialize()
+		expect(reloaded.getVerificationObligations({ parentTaskId: "root-1" })).toEqual(
+			store.getVerificationObligations({ parentTaskId: "root-1" }),
+		)
+		expect(reloaded.getWorkerVerificationSummary("worker-1")).toMatchObject({
+			status: "satisfied",
+			blocking: false,
+		})
+	})
+
+	it("aggregates multiple Workers without blocking on no-change, discarded, or superseded proposals", async () => {
+		const { store } = await setup()
+		expect(await recordWorker(store, workerChangeSet("no-change", "unavailable", []))).toEqual({
+			changed: false,
+		})
+
+		await recordWorker(store, workerChangeSet("old-proposal", "pending_review"))
+		await recordWorker(store, workerChangeSet("replacement", "pending_review", ["src/replacement.ts"], 2_100))
+		expect(store.getVerificationObligations({ workerTaskId: "worker-1" })).toMatchObject([
+			{ changeSetId: "old-proposal", status: "superseded", supersededByChangeSetId: "replacement" },
+			{ changeSetId: "replacement", status: "required" },
+		])
+		await recordWorker(store, workerChangeSet("replacement", "discarded", ["src/replacement.ts"], 2_200), {
+			reviewSource: "discard",
+		})
+
+		await recordWorker(store, workerChangeSet("applied-1", "applied", ["src/one.ts"], 3_000), {
+			workerTaskId: "worker-2",
+			workerNickname: "Worker Two",
+			groupId: "group-2",
+			reviewSource: "apply",
+		})
+		await recordWorker(store, workerChangeSet("applied-2", "applied", ["src/two.ts"], 3_100), {
+			workerTaskId: "worker-3",
+			workerNickname: "Worker Three",
+			groupId: "group-3",
+			reviewSource: "apply",
+		})
+		expect(store.getParentCompletionDecision("root-1").blockingObligations).toHaveLength(2)
+
+		await store.recordParentVerificationEvidence("root-1", [
+			{
+				toolCallId: "aggregate-verification",
+				executionId: "aggregate-execution",
+				status: "succeeded",
+				command: "pnpm test src/one.ts src/two.ts",
+				startedAt: 3_200,
+				completedAt: 3_300,
+				exitCode: 0,
+			},
+		])
+		expect(store.getParentCompletionDecision("root-1").allowed).toBe(true)
+		expect(store.getVerificationObligations({ parentTaskId: "root-1" }).map((item) => item.status)).toEqual([
+			"satisfied",
+			"satisfied",
+			"superseded",
+			"not_applicable",
+		])
+	})
+
 	it("allocates canonical stable paths and never reuses a closed path", async () => {
 		const { store } = await setup()
 		const first = await store.createAgent({

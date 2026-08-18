@@ -350,7 +350,11 @@ describe("executeCommandTool", () => {
 				toolCallId: "worker-verification-1",
 			})
 
-			expect(mockCline.beginCommandExecution).toHaveBeenCalledWith("worker-verification-1", expect.any(String))
+			expect(mockCline.beginCommandExecution).toHaveBeenCalledWith(
+				"worker-verification-1",
+				expect.any(String),
+				"pnpm test",
+			)
 			expect(executeCommandModule.resolveAgentTimeoutMs(30, true)).toBe(0)
 		})
 

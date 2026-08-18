@@ -91,6 +91,8 @@ describe("spawn_agent native streaming pipeline", () => {
 		const taskId = "parent-task"
 		const toolCallId = "call_spawn_agent"
 		const nativeArgs = {
+			task_name: "lifecycle_inspector",
+			fork_turns: "all" as const,
 			objective: "Inspect the sub-agent lifecycle without modifying files.",
 			agent_kind: "explore" as const,
 			write_scope: null,
@@ -193,6 +195,8 @@ describe("spawn_agent native streaming pipeline", () => {
 			{
 				id: "call_spawn_explorer",
 				args: {
+					task_name: "backend_explorer",
+					fork_turns: "none" as const,
 					objective: "Inspect the backend.",
 					agent_kind: "explore" as const,
 					write_scope: null,
@@ -202,6 +206,8 @@ describe("spawn_agent native streaming pipeline", () => {
 			{
 				id: "call_spawn_reviewer",
 				args: {
+					task_name: "frontend_reviewer",
+					fork_turns: "2" as const,
 					objective: "Review the frontend.",
 					agent_kind: "review" as const,
 					write_scope: null,
@@ -282,6 +288,39 @@ describe("spawn_agent native streaming pipeline", () => {
 			"call_cancel",
 		])
 		expect(task.userMessageContentReady).toBe(true)
+	})
+
+	it("executes spawn then immediate named steering in provider order", async () => {
+		const task = createPresentationTask("named-steering-parent")
+		task.assistantMessageContent = [
+			createToolUse("call_spawn", "spawn_agent", {
+				task_name: "backend_review",
+				fork_turns: "none",
+				objective: "Review the backend lifecycle.",
+				agent_kind: "review",
+				write_scope: null,
+				expected_output: ["findings"],
+			}),
+			createToolUse("call_send", "send_message", {
+				target: "backend_review",
+				message: "Prioritize cancellation ordering.",
+			}),
+		]
+		let spawned = false
+		spawnAgentHandle.mockImplementation(async (_task, _block, callbacks) => {
+			spawned = true
+			callbacks.pushToolResult('{"task_name":"backend_review","status":"pending"}')
+		})
+		sendMessageHandle.mockImplementation(async (_task, _block, callbacks) => {
+			expect(spawned).toBe(true)
+			callbacks.pushToolResult('{"delivery":"queued"}')
+		})
+
+		await presentAssistantMessage(task as never)
+
+		expect(spawnAgentHandle).toHaveBeenCalledOnce()
+		expect(sendMessageHandle).toHaveBeenCalledOnce()
+		expect(task.userMessageContent.map((result) => result.tool_use_id)).toEqual(["call_spawn", "call_send"])
 	})
 
 	it("rejects a wait_agent batch before any lifecycle control executes", async () => {

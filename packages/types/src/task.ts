@@ -5,6 +5,7 @@ import type { RooCodeSettings } from "./global-settings.js"
 import type { ClineMessage, QueuedMessage, TokenUsage } from "./message.js"
 import type { ProviderSettings } from "./provider-settings.js"
 import type { SubagentModelRouteState } from "./subagent.js"
+import type { SubagentContextManifest } from "./subagent-context.js"
 import type { ToolUsage, ToolName } from "./tool.js"
 import type { StaticAppProperties, GitProperties, TelemetryProperties } from "./telemetry.js"
 import type { TodoItem } from "./todo.js"
@@ -127,6 +128,8 @@ export interface CreateTaskOptions {
 	subagentNickname?: string
 	subagentRole?: import("./subagent.js").SubagentRole
 	subagentModelRoute?: SubagentModelRouteState
+	/** Credential-free audit metadata for the context inherited by this managed child. */
+	subagentContextManifest?: SubagentContextManifest
 	subagentWriteScope?: string[]
 	subagentChangeSet?: import("./subagent.js").SubagentChangeSetState
 	/** Scoped authority prepared and approved by the parent delegation. */

@@ -5,6 +5,7 @@ import type {
 	ClineMessage,
 	HistoryItem,
 	SubagentChangeSetState,
+	SubagentContextManifest,
 	SubagentModelRouteState,
 	SubagentRole,
 } from "@alpha-code/types"
@@ -44,6 +45,7 @@ export type TaskMetadataOptions = {
 	subagentNickname?: string
 	subagentRole?: SubagentRole
 	subagentModelRoute?: SubagentModelRouteState
+	subagentContextManifest?: SubagentContextManifest
 	subagentWriteScope?: string[]
 	subagentChangeSet?: SubagentChangeSetState
 }
@@ -64,6 +66,7 @@ export async function taskMetadata({
 	subagentNickname,
 	subagentRole,
 	subagentModelRoute,
+	subagentContextManifest,
 	subagentWriteScope,
 	subagentChangeSet,
 }: TaskMetadataOptions) {
@@ -145,6 +148,9 @@ export async function taskMetadata({
 		...(subagentNickname && { subagentNickname }),
 		...(subagentRole && { subagentRole }),
 		...(subagentModelRoute && { subagentModelRoute: structuredClone(subagentModelRoute) }),
+		...(subagentContextManifest && {
+			subagentContextManifest: structuredClone(subagentContextManifest),
+		}),
 		...(subagentWriteScope && { subagentWriteScope: [...subagentWriteScope] }),
 		...(subagentChangeSet && { subagentChangeSet: structuredClone(subagentChangeSet) }),
 	}

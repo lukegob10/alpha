@@ -80,11 +80,33 @@ describe("ManagedSubagentWorktreeService", () => {
 			)
 
 			expect(await service.apply(storage, artifact.id)).toEqual({ status: "applied" })
+			expect(await service.apply(storage, artifact.id)).toEqual({ status: "applied" })
 			expect((await fs.readFile(path.join(repo, "src/value.txt"), "utf8")).replace(/\r\n/g, "\n")).toBe(
 				"worker\n",
 			)
 			expect(await fs.readFile(path.join(repo, "src/new.bin"))).toEqual(Buffer.from([0, 1, 2, 255]))
 			expect(await git(["diff", "--cached", "--binary"])).toBe(indexBefore)
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
+
+	it(
+		"recovers an exact patch that landed before applied metadata was persisted",
+		async () => {
+			const validated = await service.validateScope(repo, ["src/value.txt"])
+			const prepared = await service.create(storage, "worker-recovery", validated)
+			await fs.writeFile(path.join(prepared.workspacePath, "src/value.txt"), "worker recovery\n")
+			const artifact = await service.capture(storage, prepared.artifact.id)
+			const patchPath = path.join(storage, "subagent-change-sets", artifact.id, artifact.patchFile!)
+
+			await git(["apply", "--binary", "--whitespace=nowarn", patchPath])
+			expect((await service.load(storage, artifact.id)).status).toBe("pending_review")
+
+			expect(await service.apply(storage, artifact.id)).toEqual({ status: "applied" })
+			expect((await service.load(storage, artifact.id)).status).toBe("applied")
+			expect((await fs.readFile(path.join(repo, "src/value.txt"), "utf8")).replace(/\r\n/g, "\n")).toBe(
+				"worker recovery\n",
+			)
 		},
 		WORKTREE_TEST_TIMEOUT_MS,
 	)

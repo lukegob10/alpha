@@ -1,5 +1,8 @@
 import { z } from "zod"
 
+import { subagentContextManifestSchema } from "./subagent-context.js"
+import { parentVerificationObligationSchema } from "./subagent.js"
+
 /** Durable lifecycle states shared by the agent registry and its consumers. */
 export const agentLifecycleStatusSchema = z.enum([
 	"pending",
@@ -34,6 +37,7 @@ export const agentRuntimeSnapshotSchema = z.object({
 	summary: z.string().optional(),
 	modelRouteId: z.string().optional(),
 	requiresParentVerification: z.boolean().optional(),
+	contextManifest: subagentContextManifestSchema.optional(),
 	usage: z.record(z.string(), z.number()).optional(),
 	metadata: z.record(z.string(), z.unknown()).optional(),
 })
@@ -120,5 +124,6 @@ export const agentControlStateSchema = z.object({
 	tombstones: z.array(closedAgentTombstoneSchema),
 	mailbox: z.array(agentMailboxEntrySchema),
 	mailboxCursors: z.record(z.string(), agentMailboxCursorSchema),
+	verificationObligations: z.array(parentVerificationObligationSchema).default([]),
 })
 export type AgentControlState = z.infer<typeof agentControlStateSchema>

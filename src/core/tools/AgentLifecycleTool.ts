@@ -1,4 +1,4 @@
-import type { ToolName } from "@alpha-code/types"
+import type { ClineSayTool, ToolName } from "@alpha-code/types"
 
 import type { Task } from "../task/Task"
 
@@ -16,6 +16,10 @@ export type AgentLifecycleToolName =
 	| "interrupt_agent"
 	| "cancel_agent"
 	| "close_agent"
+
+type VisibleAgentLifecycleToolName = Extract<AgentLifecycleToolName, "list_agents" | "wait_agent">
+
+const visibleAgentLifecycleTools = new Set<AgentLifecycleToolName>(["list_agents", "wait_agent"])
 
 /** Minimal host surface required by the model-facing lifecycle tools. */
 export interface AgentLifecycleControlProvider {
@@ -90,6 +94,63 @@ export function recordLifecycleToolError(
 	callbacks.pushToolResult(JSON.stringify({ error: message }))
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function optionalBoolean(record: Record<string, unknown>, key: string): boolean | undefined {
+	return typeof record[key] === "boolean" ? record[key] : undefined
+}
+
+function lifecyclePresentation(
+	name: VisibleAgentLifecycleToolName,
+	status: NonNullable<ClineSayTool["lifecycleStatus"]>,
+	result?: unknown,
+	error?: unknown,
+): ClineSayTool {
+	const record = isRecord(result) ? result : {}
+	const mailbox = isRecord(record.mailbox) ? record.mailbox : {}
+	const message = error instanceof Error ? error.message : error === undefined ? undefined : String(error)
+
+	return {
+		tool: "agentLifecycle",
+		agentAction: name,
+		lifecycleStatus: status,
+		...(message ? { content: message } : {}),
+		...(name === "list_agents"
+			? {
+					agentCount: Array.isArray(record.agents) ? record.agents.length : 0,
+					mailboxUnreadCount:
+						typeof mailbox.unreadCount === "number" && Number.isFinite(mailbox.unreadCount)
+							? Math.max(0, Math.trunc(mailbox.unreadCount))
+							: 0,
+				}
+			: {
+					eventCount: Array.isArray(record.events) ? record.events.length : 0,
+					timedOut: optionalBoolean(record, "timedOut"),
+					alreadyDelivered: optionalBoolean(record, "alreadyDelivered"),
+					cancelled: optionalBoolean(record, "cancelled"),
+					noActiveAgents: optionalBoolean(record, "noActiveAgents"),
+				}),
+	}
+}
+
+async function publishLifecyclePresentation(
+	name: AgentLifecycleToolName,
+	task: Task,
+	status: NonNullable<ClineSayTool["lifecycleStatus"]>,
+	partial: boolean,
+	result?: unknown,
+	error?: unknown,
+): Promise<void> {
+	if (!visibleAgentLifecycleTools.has(name)) return
+	const payload = lifecyclePresentation(name as VisibleAgentLifecycleToolName, status, result, error)
+	// Presentation must never change lifecycle-tool execution or its model-facing result.
+	await task
+		.say("tool", JSON.stringify(payload), undefined, partial, undefined, undefined, { isNonInteractive: true })
+		.catch(() => undefined)
+}
+
 export async function runAgentLifecycleOperation(
 	name: AgentLifecycleToolName,
 	method: keyof AgentLifecycleControlProvider,
@@ -99,15 +160,13 @@ export async function runAgentLifecycleOperation(
 ): Promise<void> {
 	const provider = task.providerRef.deref() as (Partial<AgentLifecycleControlProvider> & object) | undefined
 	if (typeof provider?.[method] !== "function") {
-		recordLifecycleToolError(
-			name,
-			task,
-			callbacks,
-			new Error(`agent lifecycle capability ${method} is unavailable`),
-		)
+		const error = new Error(`agent lifecycle capability ${method} is unavailable`)
+		await publishLifecyclePresentation(name, task, "error", false, undefined, error)
+		recordLifecycleToolError(name, task, callbacks, error)
 		return
 	}
 
+	await publishLifecyclePresentation(name, task, "running", true)
 	try {
 		const result = await operation(provider as AgentLifecycleControlProvider)
 		const serialized = JSON.stringify(result)
@@ -115,7 +174,9 @@ export async function runAgentLifecycleOperation(
 			throw new Error(`agent lifecycle capability ${method} returned no JSON result`)
 		}
 		callbacks.pushToolResult(serialized)
+		await publishLifecyclePresentation(name, task, "completed", false, result)
 	} catch (error) {
+		await publishLifecyclePresentation(name, task, "error", false, undefined, error)
 		recordLifecycleToolError(name, task, callbacks, error)
 	}
 }

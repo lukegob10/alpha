@@ -65,7 +65,13 @@ export interface BuildInternalTaskEnvelopeInput {
 	parentPolicy: InternalTaskPolicy
 	requestedPolicy: Partial<InternalTaskPolicy>
 	workspaceRoots: string[]
+	/** Parent scope ceiling. Omitted only for legacy root callers whose requested roots are already authoritative. */
+	parentWorkspaceRoots?: string[]
 	allowedPaths?: string[]
+	/** Optional narrower parent write scope used by nested-ready authority checks. */
+	parentAllowedPaths?: string[]
+	/** Entries in parentAllowedPaths that name exact files rather than directories. */
+	parentFileAllowedPaths?: string[]
 	sharedWorkspace?: boolean
 	contextRefs?: string[]
 	skillIds?: string[]
@@ -79,28 +85,104 @@ export interface BuildInternalTaskEnvelopeInput {
 
 const AUTHORITY_KEYS = ["read", "execute", "mutate", "delegate", "network", "externalSideEffects"] as const
 
-function validateScope(roots: string[], allowedPaths: string[] | undefined): void {
+const ROLE_POLICY_CEILINGS: Record<InternalAgentKind, Pick<InternalTaskPolicy, (typeof AUTHORITY_KEYS)[number]>> = {
+	general: {
+		read: true,
+		execute: true,
+		mutate: true,
+		delegate: true,
+		network: true,
+		externalSideEffects: true,
+	},
+	explore: {
+		read: true,
+		execute: false,
+		mutate: false,
+		delegate: false,
+		network: false,
+		externalSideEffects: false,
+	},
+	review: {
+		read: true,
+		execute: false,
+		mutate: false,
+		delegate: false,
+		network: false,
+		externalSideEffects: false,
+	},
+	worker: {
+		read: true,
+		execute: true,
+		mutate: true,
+		delegate: false,
+		network: false,
+		externalSideEffects: false,
+	},
+}
+
+const isWithin = (root: string, candidate: string): boolean => {
+	const relative = path.relative(path.resolve(root), path.resolve(candidate))
+	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+}
+
+function validateScope(
+	roots: string[],
+	allowedPaths: string[] | undefined,
+	parentRoots: string[],
+	parentAllowedPaths?: string[],
+	parentFileAllowedPaths?: string[],
+): void {
 	if (roots.length === 0) throw new Error("Internal task scope requires at least one workspace root")
+	if (parentRoots.length === 0) throw new Error("Parent task scope requires at least one workspace root")
+	for (const root of roots) {
+		if (!parentRoots.some((parentRoot) => isWithin(parentRoot, root))) {
+			throw new Error(`Internal task workspace root widens parent scope: ${root}`)
+		}
+	}
+	const resolvedParentAllowed = parentAllowedPaths?.map((candidate) =>
+		path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(parentRoots[0], candidate),
+	)
+	const resolvedParentFiles = new Set(
+		(parentFileAllowedPaths ?? []).map((candidate) =>
+			path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(parentRoots[0], candidate),
+		),
+	)
 	for (const candidate of allowedPaths ?? []) {
 		const resolved = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(roots[0], candidate)
-		if (
-			!roots.some((root) => {
-				const relative = path.relative(path.resolve(root), resolved)
-				return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
-			})
-		)
+		if (!roots.some((root) => isWithin(root, resolved)))
 			throw new Error(`Internal task path is outside parent scope: ${candidate}`)
+		if (
+			resolvedParentAllowed &&
+			!resolvedParentAllowed.some((parentPath) =>
+				resolvedParentFiles.has(parentPath) ? resolved === parentPath : isWithin(parentPath, resolved),
+			)
+		) {
+			throw new Error(`Internal task path widens parent write scope: ${candidate}`)
+		}
 	}
 }
 
-function resolvePolicy(parent: InternalTaskPolicy, requested: Partial<InternalTaskPolicy>): InternalTaskPolicy {
+export function resolveInternalTaskPolicy(
+	parent: InternalTaskPolicy,
+	requested: Partial<InternalTaskPolicy>,
+	agentKind: InternalAgentKind,
+): InternalTaskPolicy {
+	const roleCeiling = ROLE_POLICY_CEILINGS[agentKind]
 	for (const key of AUTHORITY_KEYS) {
 		if (requested[key] === true && !parent[key])
 			throw new Error(`Internal task cannot widen parent authority: ${key}`)
+		if (requested[key] === true && !roleCeiling[key])
+			throw new Error(`${agentKind} role cannot receive authority: ${key}`)
 	}
+	const requestedPolicy = { ...parent, ...requested }
 	return {
-		...parent,
-		...requested,
+		read: parent.read && requestedPolicy.read && roleCeiling.read,
+		execute: parent.execute && requestedPolicy.execute && roleCeiling.execute,
+		mutate: parent.mutate && requestedPolicy.mutate && roleCeiling.mutate,
+		delegate: parent.delegate && requestedPolicy.delegate && roleCeiling.delegate,
+		network: parent.network && requestedPolicy.network && roleCeiling.network,
+		externalSideEffects:
+			parent.externalSideEffects && requestedPolicy.externalSideEffects && roleCeiling.externalSideEffects,
 		requireApproval: parent.requireApproval || requested.requireApproval === true,
 	}
 }
@@ -109,10 +191,16 @@ export function buildInternalTaskEnvelope(input: BuildInternalTaskEnvelopeInput)
 	if (!input.objective.trim()) throw new Error("Internal task objective is required")
 	if (input.agentKind && !(input.agentKind in internalAgentDefinitions))
 		throw new Error(`Unknown agent kind: ${input.agentKind}`)
-	const agentKind = input.agentKind as InternalAgentKind | undefined
+	const agentKind = (input.agentKind ?? "general") as InternalAgentKind
 	const routeId = (input.modelRouteId ?? "balanced") as ModelRouteId
 	if (!(routeId in modelRoutes)) throw new Error(`Unknown model route: ${input.modelRouteId}`)
-	validateScope(input.workspaceRoots, input.allowedPaths)
+	validateScope(
+		input.workspaceRoots,
+		input.allowedPaths,
+		input.parentWorkspaceRoots ?? input.workspaceRoots,
+		input.parentAllowedPaths,
+		input.parentFileAllowedPaths,
+	)
 
 	const available = new Map((input.availableSkills ?? []).map((skill) => [skill.id, skill]))
 	const skills = (input.skillIds ?? []).map((id) => {
@@ -138,7 +226,7 @@ export function buildInternalTaskEnvelope(input: BuildInternalTaskEnvelopeInput)
 		agentKind,
 		expectedOutput:
 			input.expectedOutput ??
-			(agentKind ? [...internalAgentDefinitions[agentKind].expectedOutput] : ["summary", "evidence"]),
+			(input.agentKind ? [...internalAgentDefinitions[agentKind].expectedOutput] : ["summary", "evidence"]),
 		scope: {
 			workspaceRoots: [...new Set(input.workspaceRoots.map((root) => path.resolve(root)))].sort(),
 			allowedPaths: input.allowedPaths
@@ -149,7 +237,7 @@ export function buildInternalTaskEnvelope(input: BuildInternalTaskEnvelopeInput)
 			sharedWorkspace: input.sharedWorkspace ?? true,
 			contextRefs: [...new Set(input.contextRefs ?? [])].sort(),
 		},
-		policy: resolvePolicy(input.parentPolicy, input.requestedPolicy),
+		policy: resolveInternalTaskPolicy(input.parentPolicy, input.requestedPolicy, agentKind),
 		skills,
 		modelRoute: route,
 		budget,

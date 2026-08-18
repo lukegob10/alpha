@@ -11,4 +11,8 @@ export interface SystemPromptSettings {
 	isStealthModel?: boolean
 	/** Narrow child authority used to omit capabilities the child cannot call. */
 	subagentRole?: "explore" | "review" | "worker"
+	/** Whether the managed child received a frozen, mode-filtered skill catalog. */
+	subagentHasInheritedSkills?: boolean
+	/** New managed children persist their mutable instruction snapshot in the initial prompt. */
+	subagentUsesFrozenContext?: boolean
 }

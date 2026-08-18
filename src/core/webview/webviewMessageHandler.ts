@@ -1329,14 +1329,46 @@ export const webviewMessageHandler = async (
 				await provider.openSubagentChangeSet(message.taskId, message.groupId, message.changeSetId)
 			}
 			break
+		case "requestSubagentChangeSetActionCapability":
+			if (message.taskId && message.groupId && message.changeSetId) {
+				const capability = await provider.getSubagentChangeSetActionCapability(
+					message.taskId,
+					message.groupId,
+					message.changeSetId,
+				)
+				await provider.postMessageToWebview({
+					type: "subagentChangeSetActionCapability",
+					requestId: message.requestId,
+					subagentChangeSetActionCapability: capability,
+				})
+			}
+			break
 		case "applySubagentChangeSet":
 			if (message.taskId && message.groupId && message.changeSetId) {
-				await provider.applySubagentChangeSet(message.taskId, message.groupId, message.changeSetId)
+				const result = await provider.applySubagentChangeSet(
+					message.taskId,
+					message.groupId,
+					message.changeSetId,
+				)
+				await provider.postMessageToWebview({
+					type: "subagentChangeSetActionResult",
+					requestId: message.requestId,
+					subagentChangeSetActionResult: result,
+				})
 			}
 			break
 		case "discardSubagentChangeSet":
 			if (message.taskId && message.groupId && message.changeSetId) {
-				await provider.discardSubagentChangeSet(message.taskId, message.groupId, message.changeSetId)
+				const result = await provider.discardSubagentChangeSet(
+					message.taskId,
+					message.groupId,
+					message.changeSetId,
+				)
+				await provider.postMessageToWebview({
+					type: "subagentChangeSetActionResult",
+					requestId: message.requestId,
+					subagentChangeSetActionResult: result,
+				})
 			}
 			break
 		case "cancelAutoApproval":

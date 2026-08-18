@@ -27,6 +27,7 @@ export interface AttemptCompletionCallbacks extends ToolCallbacks {
  */
 interface DelegationProvider {
 	getTaskWithId(id: string): Promise<{ historyItem: HistoryItem }>
+	getParentCompletionDecision?(task: Task): Promise<{ allowed: boolean; message?: string }>
 	reopenParentFromDelegation(params: {
 		parentTaskId: string
 		childTaskId: string
@@ -87,6 +88,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				pushToolResult(await task.sayAndCreateMissingParamError("attempt_completion", "result"))
 				return
 			}
+			if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) return
 
 			task.consecutiveMistakeCount = 0
 
@@ -155,6 +157,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				// Recheck immediately before the synchronous completion transition so
 				// its report cannot be stranded by that race.
 				if (this.rejectCompletionWithUndeliveredSpawnedResult(task, pushToolResult)) return
+				if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) return
 				this.emitTaskCompleted(task)
 				return
 			}
@@ -167,6 +170,41 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 		} catch (error) {
 			await handleError("inspecting site", error as Error)
 		}
+	}
+
+	private async rejectCompletionWithPendingParentVerification(
+		task: Task,
+		pushToolResult: (result: string) => void,
+	): Promise<boolean> {
+		if (task.taskKind === "subagent") return false
+		const provider = task.providerRef?.deref() as DelegationProvider | undefined
+
+		let decision: { allowed: boolean; message?: string }
+		if (!provider?.getParentCompletionDecision) {
+			decision = {
+				allowed: false,
+				message:
+					"Cannot verify Worker completion obligations because the durable completion decision is unavailable.",
+			}
+		} else {
+			try {
+				decision = await provider.getParentCompletionDecision(task)
+			} catch (error) {
+				decision = {
+					allowed: false,
+					message: `Cannot verify Worker completion obligations right now: ${error instanceof Error ? error.message : String(error)}`,
+				}
+			}
+		}
+		if (decision.allowed) return false
+
+		const errorMsg =
+			decision.message ??
+			"Cannot complete while applied Worker changes still require parent review and verification."
+		task.consecutiveMistakeCount++
+		task.recordToolError("attempt_completion")
+		pushToolResult(formatResponse.toolError(errorMsg))
+		return true
 	}
 
 	private rejectCompletionWithUndeliveredSpawnedResult(
