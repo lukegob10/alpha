@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
 	Ban,
 	CheckCircle2,
@@ -149,6 +149,7 @@ export const SubagentGroupCard = memo(({ group, parentTaskId }: SubagentGroupCar
 		action: SubagentChangeSetAction
 		changeSetId: string
 	}>()
+	const changeSetActionTriggerRef = useRef<HTMLButtonElement | null>(null)
 	const resolvedParentTaskId = parentTaskId ?? group.parentTaskId
 	const actionableChangeSetIds = group.agents
 		.flatMap((agent) =>
@@ -571,12 +572,14 @@ export const SubagentGroupCard = memo(({ group, parentTaskId }: SubagentGroupCar
 																			? undefined
 																			: changeSetCapability?.reason
 																	}
-																	onClick={() =>
+																	onClick={(event) => {
+																		changeSetActionTriggerRef.current =
+																			event.currentTarget
 																		submitChangeSetAction(
 																			"apply",
 																			agent.changeSet!.id,
 																		)
-																	}
+																	}}
 																	className="rounded border border-vscode-button-border px-2 py-1 text-xs disabled:opacity-50">
 																	{pendingChangeSetAction?.action === "apply"
 																		? "Applying…"
@@ -595,12 +598,14 @@ export const SubagentGroupCard = memo(({ group, parentTaskId }: SubagentGroupCar
 																			? undefined
 																			: changeSetCapability?.reason
 																	}
-																	onClick={() =>
+																	onClick={(event) => {
+																		changeSetActionTriggerRef.current =
+																			event.currentTarget
 																		submitChangeSetAction(
 																			"discard",
 																			agent.changeSet!.id,
 																		)
-																	}
+																	}}
 																	className="inline-flex items-center gap-1 text-xs text-vscode-errorForeground">
 																	{pendingChangeSetAction?.action === "discard" ? (
 																		<LoaderCircle className="size-3 animate-spin" />
@@ -699,7 +704,12 @@ export const SubagentGroupCard = memo(({ group, parentTaskId }: SubagentGroupCar
 				onOpenChange={(open) => {
 					if (!open) setChangeSetConfirmation(undefined)
 				}}>
-				<DialogContent className="max-w-md gap-4 p-5">
+				<DialogContent
+					className="max-w-md gap-4 p-5"
+					onCloseAutoFocus={(event) => {
+						event.preventDefault()
+						changeSetActionTriggerRef.current?.focus()
+					}}>
 					<DialogHeader>
 						<DialogTitle>
 							{isApplyConfirmation ? "Apply Worker changes?" : "Discard Worker changes?"}

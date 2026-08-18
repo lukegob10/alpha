@@ -39,6 +39,8 @@ import { StandardTooltip, Button } from "@src/components/ui"
 import TelemetryBanner from "../common/TelemetryBanner"
 import VersionIndicator from "../common/VersionIndicator"
 import HistoryPreview from "../history/HistoryPreview"
+import { ManagedAgentTree } from "../agents/ManagedAgentTree"
+import { buildCurrentManagedAgentActivity } from "../agents/currentManagedAgentActivity"
 import Announcement from "./Announcement"
 import ChatRow, { type ChatRowEnvironment } from "./ChatRow"
 import WarningRow from "./WarningRow"
@@ -58,6 +60,12 @@ export interface ChatViewProps {
 
 export interface ChatViewRef {
 	acceptInput: () => void
+}
+
+interface ManagedAgentRuntimeSettings {
+	maxConcurrentSubagents?: number
+	subagentRootTokenBudget?: number | null
+	subagentRootCostBudget?: number | null
 }
 
 export const MAX_IMAGES_PER_MESSAGE = 20 // This is the Anthropic limit.
@@ -88,6 +96,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const { t } = useAppTranslation()
 	const modeShortcutText = `${isMac ? "⌘" : "Ctrl"} + . ${t("chat:forNextMode")}, ${isMac ? "⌘" : "Ctrl"} + Shift + . ${t("chat:forPreviousMode")}`
 
+	const extensionState = useExtensionState()
 	const {
 		clineMessages: messages,
 		currentTaskId,
@@ -110,7 +119,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		alwaysAllowMcp,
 		currentCheckpoint,
 		reasoningBlockCollapsed,
-	} = useExtensionState()
+	} = extensionState
+	const { maxConcurrentSubagents, subagentRootTokenBudget, subagentRootCostBudget } =
+		extensionState as typeof extensionState & ManagedAgentRuntimeSettings
 
 	// Show a WarningRow when the user sends a message with a retired provider.
 	const [showRetiredProviderWarning, setShowRetiredProviderWarning] = useState(false)
@@ -138,6 +149,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const isVisibleTaskCompleted = visibleLiveTask?.lifecycle === TaskLifecycleState.Completed
 	const visibleCurrentTaskItem = isDraftView ? undefined : currentTaskItem
 	const isManagedSubagent = visibleCurrentTaskItem?.taskKind === "subagent"
+	const managedAgentGroups = useMemo(
+		() => activeMessages.flatMap((message) => (message.subagentGroup ? [message.subagentGroup] : [])),
+		[activeMessages],
+	)
+	const managedAgentActivity = useMemo(() => buildCurrentManagedAgentActivity(activeMessages), [activeMessages])
+	const showManagedAgentTree = !isManagedSubagent && Boolean(visibleCurrentTaskId) && managedAgentGroups.length > 0
 	const visibleCurrentTaskTodos = useMemo(
 		() => (isDraftView ? [] : currentTaskTodos),
 		[isDraftView, currentTaskTodos],
@@ -1831,6 +1848,31 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						todos={latestTodos}
 						onExpandedChange={handleTaskHeaderExpandedChange}
 					/>
+
+					{showManagedAgentTree && visibleCurrentTaskId && (
+						<div className="max-h-[min(55vh,36rem)] overflow-y-auto px-3 pb-2">
+							<ManagedAgentTree
+								rootTaskId={visibleCurrentTaskId}
+								rootLabel={visibleCurrentTaskItem?.task || "Root task"}
+								rootStartedAt={task.ts}
+								groups={managedAgentGroups}
+								liveTasksById={liveTasksById}
+								capacityLimit={maxConcurrentSubagents}
+								tokenBudget={subagentRootTokenBudget}
+								costBudget={subagentRootCostBudget}
+								activity={managedAgentActivity}
+								onCancelAgent={({ parentTaskId, groupId, subagentTaskId }) =>
+									vscode.postMessage({
+										type: "cancelSubagent",
+										taskId: parentTaskId,
+										groupId,
+										subagentTaskId,
+									})
+								}
+								onShowTask={(taskId) => vscode.postMessage({ type: "showTaskWithId", text: taskId })}
+							/>
+						</div>
+					)}
 
 					{checkpointWarning && (
 						<div className="px-3">

@@ -825,6 +825,91 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 	})
 })
 
+describe("ChatView - Managed agent monitor", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.mocked(vscode.postMessage).mockClear()
+	})
+
+	it("mounts the live hierarchy and routes descendant stop through the existing action", async () => {
+		const { getByRole } = renderChatView()
+		const now = Date.now()
+
+		mockPostMessage({
+			currentTaskId: "root-1",
+			currentView: { type: "task", taskId: "root-1" },
+			currentTaskItem: {
+				id: "root-1",
+				number: 1,
+				ts: now - 5_000,
+				task: "Coordinate the UI milestone",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				workspace: "/test/workspace",
+			},
+			maxConcurrentSubagents: 2,
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: now - 5_000,
+					text: "Coordinate the UI milestone",
+				},
+				{
+					type: "say",
+					say: "subagent_group",
+					ts: now - 4_000,
+					subagentGroup: {
+						groupId: "group-1",
+						parentTaskId: "root-1",
+						status: "running",
+						createdAt: now - 4_000,
+						agents: [
+							{
+								taskId: "child-1",
+								nickname: "Maple",
+								role: "worker",
+								objective: "Implement the monitor",
+								status: "running",
+								phase: "working",
+								startedAt: now - 3_000,
+								usage: { durationMs: 3_000 },
+							},
+						],
+					},
+				} as ClineMessage,
+			],
+			liveTasksById: {
+				"root-1": {
+					id: "root-1",
+					status: "running",
+					lifecycle: "running",
+					isActive: true,
+					isStreaming: true,
+					isWaitingForInput: false,
+					lastUpdatedAt: now,
+					queueCount: 0,
+					tokensIn: 100,
+					tokensOut: 50,
+					totalCost: 0.01,
+				},
+			},
+		})
+
+		await waitFor(() => expect(getByRole("heading", { name: "Managed agents" })).toBeInTheDocument())
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(getByRole("button", { name: "Stop Maple" }))
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "cancelSubagent",
+			taskId: "root-1",
+			groupId: "group-1",
+			subagentTaskId: "child-1",
+		})
+	})
+})
+
 describe("ChatView - Message Queueing Tests", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
