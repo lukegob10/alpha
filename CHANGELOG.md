@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.0
+
+### Minor Changes
+
+- Add managed subagent lifecycle control, nested delegation, follow-up delivery, recovery, and monitoring UX.
+
 ## 2.0.7
 
 ### Patch Changes
