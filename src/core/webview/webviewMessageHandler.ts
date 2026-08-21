@@ -1620,13 +1620,7 @@ export const webviewMessageHandler = async (
 				const existingPrompts = getGlobalState("customModePrompts") ?? {}
 				const updatedPrompts = { ...existingPrompts, [message.promptMode]: message.customPrompt }
 				await updateGlobalState("customModePrompts", updatedPrompts)
-				const currentState = await provider.getStateToPostToWebview()
-				const stateWithPrompts = {
-					...currentState,
-					customModePrompts: updatedPrompts,
-					hasOpenedModeSelector: currentState.hasOpenedModeSelector ?? false,
-				}
-				provider.postMessageToWebview({ type: "state", state: stateWithPrompts })
+				await provider.postStateToWebview()
 
 				if (TelemetryService.hasInstance()) {
 					// Determine which setting was changed by comparing objects

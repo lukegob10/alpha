@@ -1871,7 +1871,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		)
 	})
 
-	it("sends completion feedback to the current completed task", async () => {
+	it("starts a new task when the composer is submitted from a completed task", async () => {
 		const { getByTestId } = renderChatView()
 
 		mockPostMessage({
@@ -1917,22 +1917,163 @@ describe("ChatView - Message Queueing Tests", () => {
 		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 
 		await act(async () => {
-			fireEvent.change(input, { target: { value: "continue with this" } })
+			fireEvent.change(input, { target: { value: "start separate work" } })
 			fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
 		})
 
 		expect(vscode.postMessage).toHaveBeenCalledWith({
-			type: "askResponse",
-			askResponse: "messageResponse",
-			text: "continue with this",
+			type: "newTask",
+			text: "start separate work",
 			images: [],
-			taskId: "task-1",
 		})
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(
 			expect.objectContaining({
-				type: "newTask",
+				type: "askResponse",
 			}),
 		)
+	})
+
+	it("continues a completed task only through the explicit Continue action", async () => {
+		const { getByTestId, getByRole } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			liveTasksById: {
+				"task-1": {
+					id: "task-1",
+					status: "running",
+					lifecycle: "completed",
+					isActive: true,
+					isStreaming: false,
+					isWaitingForInput: false,
+					lastUpdatedAt: Date.now(),
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: Date.now() - 2000,
+					text: "Initial task",
+				},
+				{
+					type: "ask",
+					ask: "completion_result",
+					ts: Date.now(),
+					text: "Task completed",
+					partial: false,
+				},
+			],
+		})
+
+		const input = await waitFor(() => getByTestId("chat-textarea").querySelector("input"))
+		fireEvent.change(input!, { target: { value: "one more change" } })
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.click(getByRole("button", { name: "chat:resumeTask.title" }))
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "askResponse",
+			askResponse: "messageResponse",
+			text: "one more change",
+			images: [],
+			taskId: "task-1",
+		})
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "newTask" }))
+	})
+
+	it("submits an existing draft when Start New Task is clicked", async () => {
+		const { getByTestId, getByRole, queryByTestId, queryByText } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			clineMessages: [
+				{ type: "say", say: "task", ts: 100, text: "Initial task" },
+				{
+					type: "ask",
+					ask: "resume_completed_task",
+					ts: 101,
+					text: "Task completed",
+					partial: false,
+				},
+			],
+		})
+
+		const input = await waitFor(() => getByTestId("chat-textarea").querySelector("input"))
+		fireEvent.change(input!, { target: { value: "new task from button" } })
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.click(getByRole("button", { name: "chat:startNewTask.title" }))
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "newTask",
+			text: "new task from button",
+			images: [],
+		})
+		expect(vscode.postMessage).not.toHaveBeenCalledWith({ type: "startBlankTask" })
+		expect(queryByTestId("roo-tips")).toBeInTheDocument()
+
+		mockPostMessage({
+			currentTaskId: "task-2",
+			currentView: { type: "task", taskId: "task-2" },
+			clineMessages: [{ type: "say", say: "task", ts: 200, text: "new task from button" }],
+		})
+
+		await waitFor(() => {
+			expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
+			expect(queryByText("new task from button")).toBeInTheDocument()
+		})
+	})
+
+	it("keeps an empty new-task draft usable while stale completed-task state is in flight", async () => {
+		const { getByTestId, getByRole, queryByTestId } = renderChatView()
+		const completedState = {
+			currentTaskId: "task-1",
+			currentView: { type: "task" as const, taskId: "task-1" },
+			clineMessages: [
+				{ type: "say" as const, say: "task", ts: 100, text: "Initial task" },
+				{
+					type: "ask" as const,
+					ask: "completion_result",
+					ts: 101,
+					text: "Task completed",
+					partial: false,
+				},
+			],
+		}
+
+		mockPostMessage(completedState)
+		await waitFor(() => getByRole("button", { name: "chat:startNewTask.title" }))
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.click(getByRole("button", { name: "chat:startNewTask.title" }))
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "startBlankTask" })
+		await waitFor(() => {
+			expect(queryByTestId("roo-tips")).toBeInTheDocument()
+			expect(getByTestId("chat-textarea").querySelector("input")!.getAttribute("data-sending-disabled")).toBe(
+				"false",
+			)
+		})
+
+		mockPostMessage(completedState)
+		await waitFor(() => expect(queryByTestId("roo-tips")).toBeInTheDocument())
+
+		const input = getByTestId("chat-textarea").querySelector("input")!
+		fireEvent.change(input, { target: { value: "new task after transition" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "newTask",
+			text: "new task after transition",
+			images: [],
+		})
 	})
 
 	it("queues input instead of re-answering an already answered follow-up", async () => {

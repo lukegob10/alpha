@@ -64,13 +64,7 @@ export interface ChatViewRef {
 export const MAX_IMAGES_PER_MESSAGE = 20 // This is the Anthropic limit.
 
 const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0
-const messageResponseAskTypes = new Set<ClineAsk>([
-	"followup",
-	"completion_result",
-	"resume_task",
-	"resume_completed_task",
-	"mistake_limit_reached",
-])
+const messageResponseAskTypes = new Set<ClineAsk>(["followup", "resume_task", "mistake_limit_reached"])
 const completedTaskResponseAskTypes = new Set<ClineAsk>(["completion_result", "resume_completed_task"])
 const approvalAskTypes = new Set<ClineAsk>(["tool", "command", "use_mcp_server"])
 
@@ -181,7 +175,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			return
 		}
 
-		const providerSelectedTask = currentView?.type === "task" && currentTaskId && hasSeenProviderDraftRef.current
+		const providerSelectedTask =
+			currentView?.type === "task" &&
+			currentTaskId &&
+			(hasSeenProviderDraftRef.current || currentTaskId !== blankTaskSourceIdRef.current)
 		const legacySelectedDifferentTask =
 			!currentView && currentTaskId && currentTaskId !== blankTaskSourceIdRef.current
 
@@ -486,7 +483,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							setSecondaryButtonText(t("chat:reject.title"))
 							break
 						case "completion_result":
-							// Extension waiting for feedback, but we can just present a new task button.
+							// Starting a new task is the default terminal action. Continuing the completed
+							// task remains available as an explicit, draft-bearing secondary action.
 							// Only play celebration sound if there are no queued messages.
 							if (!isPartial && visibleMessageQueue.length === 0) {
 								playSound("celebration")
@@ -495,7 +493,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							setClineAsk("completion_result")
 							setEnableButtons(!isPartial)
 							setPrimaryButtonText(t("chat:startNewTask.title"))
-							setSecondaryButtonText(undefined)
+							setSecondaryButtonText(t("chat:resumeTask.title"))
 							break
 						case "resume_task":
 							setSendingDisabled(false)
@@ -524,7 +522,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							setClineAsk("resume_completed_task")
 							setEnableButtons(true)
 							setPrimaryButtonText(t("chat:startNewTask.title"))
-							setSecondaryButtonText(undefined)
+							setSecondaryButtonText(t("chat:resumeTask.title"))
 							setDidClickCancel(false)
 							break
 					}
@@ -708,9 +706,27 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setIsBlankTaskView(true)
 		handleChatReset()
 		setSendingDisabled(false)
+		setPrimaryButtonText(undefined)
+		setSecondaryButtonText(undefined)
 
 		setTimeout(() => textAreaRef.current?.focus(), 0)
 	}, [currentTaskId, currentView?.type, handleChatReset])
+
+	const startNewTask = useCallback(
+		(text?: string, images: string[] = []) => {
+			const trimmedInput = text?.trim() ?? ""
+			enterBlankTaskView()
+
+			if (trimmedInput || images.length > 0) {
+				isBlankTaskPendingRef.current = false
+				vscode.postMessage({ type: "newTask", text: trimmedInput, images })
+				return
+			}
+
+			vscode.postMessage({ type: "startBlankTask" })
+		},
+		[enterBlankTaskView],
+	)
 
 	/**
 	 * Handles sending messages to the extension
@@ -748,14 +764,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 
 			const lastMessage = messagesRef.current.at(-1)
-			const isAwaitingCompletedTaskResponse =
+			const isCompletedTaskInput =
 				isCompletedTaskResponseAsk(clineAskRef.current) ||
 				(lastMessage?.type === "ask" && isCompletedTaskResponseAsk(lastMessage.ask))
 
-			if (isVisibleTaskCompleted && !isAwaitingCompletedTaskResponse) {
-				isBlankTaskPendingRef.current = false
-				vscode.postMessage({ type: "newTask", text, images })
-				handleChatReset()
+			if (isVisibleTaskCompleted || isCompletedTaskInput) {
+				startNewTask(text, images)
 				return
 			}
 
@@ -813,6 +827,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			editingQueuedMessage,
 			isVisibleTaskCompleted,
 			isLastFollowUpAnswered,
+			startNewTask,
 		], // messagesRef and clineAskRef are stable
 	)
 
@@ -830,11 +845,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		},
 		[inputValue, selectedImages],
 	)
-
-	const startNewTask = useCallback(() => {
-		enterBlankTaskView()
-		vscode.postMessage({ type: "startBlankTask" })
-	}, [enterBlankTaskView])
 
 	// Handle stop button click from textarea
 	const handleStopTask = useCallback(() => {
@@ -891,6 +901,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			userRespondedRef.current = true
 
 			const trimmedInput = text?.trim()
+			if (isCompletedTaskResponseAsk(clineAsk)) {
+				startNewTask(trimmedInput, images)
+				return
+			}
 
 			switch (clineAsk) {
 				case "api_req_failed":
@@ -933,7 +947,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							(msg) => msg.ask === "completion_result" || msg.say === "completion_result",
 						)
 					if (isCompletedSubtaskForClick) {
-						startNewTask()
+						startNewTask(trimmedInput, images)
+						return
 					} else {
 						// Only send text/images if they exist
 						if (trimmedInput || (images && images.length > 0)) {
@@ -956,11 +971,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						}
 					}
 					break
-				case "completion_result":
-				case "resume_completed_task":
-					// Waiting for feedback, but we can just present a new task button
-					startNewTask()
-					break
 				case "command_output":
 					vscode.postMessage({
 						type: "terminalOperation",
@@ -979,44 +989,64 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[clineAsk, visibleTaskPayload, startNewTask, visibleCurrentTaskItem?.parentTaskId],
 	)
 
-	const handleSecondaryButtonClick = useCallback(() => {
-		// Mark that user has responded
-		userRespondedRef.current = true
+	const handleSecondaryButtonClick = useCallback(
+		(text?: string, images: string[] = []) => {
+			// Mark that user has responded
+			userRespondedRef.current = true
 
-		if (isStreaming) {
-			vscode.postMessage({ type: "cancelTask", ...visibleTaskPayload })
-			setDidClickCancel(true)
-			return
-		}
+			if (isStreaming) {
+				vscode.postMessage({ type: "cancelTask", ...visibleTaskPayload })
+				setDidClickCancel(true)
+				return
+			}
 
-		switch (clineAsk) {
-			case "api_req_failed":
-			case "mistake_limit_reached":
-			case "resume_task":
-				startNewTask()
-				break
-			case "command":
-			case "tool":
-			case "use_mcp_server":
-				// Responds to the API with a "This operation failed" and lets it try again.
+			if (isCompletedTaskResponseAsk(clineAsk)) {
+				const trimmedInput = text?.trim()
+				if (!trimmedInput && images.length === 0) {
+					return
+				}
+
 				vscode.postMessage({
 					type: "askResponse",
-					askResponse: "noButtonClicked",
+					askResponse: "messageResponse",
+					text: trimmedInput,
+					images,
 					...visibleTaskPayload,
 				})
-				break
-			case "command_output":
-				vscode.postMessage({
-					type: "terminalOperation",
-					terminalOperation: "abort",
-					...visibleTaskPayload,
-				})
-				break
-		}
-		setSendingDisabled(true)
-		setClineAsk(undefined)
-		setEnableButtons(false)
-	}, [clineAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel])
+				handleChatReset()
+				return
+			}
+
+			switch (clineAsk) {
+				case "api_req_failed":
+				case "mistake_limit_reached":
+				case "resume_task":
+					startNewTask()
+					return
+				case "command":
+				case "tool":
+				case "use_mcp_server":
+					// Responds to the API with a "This operation failed" and lets it try again.
+					vscode.postMessage({
+						type: "askResponse",
+						askResponse: "noButtonClicked",
+						...visibleTaskPayload,
+					})
+					break
+				case "command_output":
+					vscode.postMessage({
+						type: "terminalOperation",
+						terminalOperation: "abort",
+						...visibleTaskPayload,
+					})
+					break
+			}
+			setSendingDisabled(true)
+			setClineAsk(undefined)
+			setEnableButtons(false)
+		},
+		[clineAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel, handleChatReset],
+	)
 
 	const { info: model } = useSelectedModel(apiConfiguration)
 	const chatRowEnvironment = useMemo<ChatRowEnvironment>(
@@ -1792,6 +1822,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}
 
 	const areActionButtonsVisible = primaryButtonText || secondaryButtonText
+	const hasComposerInput = Boolean(inputValue.trim() || selectedImages.length > 0)
+	const secondaryButtonDisabled = !enableButtons || (isCompletedTaskResponseAsk(clineAsk) && !hasComposerInput)
 
 	return (
 		<div
@@ -1979,19 +2011,21 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 									content={
 										secondaryButtonText === t("chat:startNewTask.title")
 											? t("chat:startNewTask.tooltip")
-											: secondaryButtonText === t("chat:reject.title")
-												? t("chat:reject.tooltip")
-												: secondaryButtonText === t("chat:terminate.title")
-													? t("chat:terminate.tooltip")
-													: secondaryButtonText === t("chat:killCommand.title")
-														? t("chat:killCommand.tooltip")
-														: undefined
+											: secondaryButtonText === t("chat:resumeTask.title")
+												? t("chat:resumeTask.tooltip")
+												: secondaryButtonText === t("chat:reject.title")
+													? t("chat:reject.tooltip")
+													: secondaryButtonText === t("chat:terminate.title")
+														? t("chat:terminate.tooltip")
+														: secondaryButtonText === t("chat:killCommand.title")
+															? t("chat:killCommand.tooltip")
+															: undefined
 									}>
 									<Button
 										variant="secondary"
-										disabled={!enableButtons}
+										disabled={secondaryButtonDisabled}
 										className="flex-1 ml-[6px]"
-										onClick={() => handleSecondaryButtonClick()}>
+										onClick={() => handleSecondaryButtonClick(inputValue, selectedImages)}>
 										{secondaryButtonText}
 									</Button>
 								</StandardTooltip>

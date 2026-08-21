@@ -318,13 +318,14 @@ export class ClineProvider
 	private taskHistoryStoreInitialized = false
 	private globalStateWriteThroughTimer: ReturnType<typeof setTimeout> | null = null
 	private globalStateWriteThroughQueue: Promise<void> = Promise.resolve()
+	private webviewMessageQueue: Promise<void> = Promise.resolve()
 	private static readonly GLOBAL_STATE_WRITE_THROUGH_DEBOUNCE_MS = 5000 // 5 seconds
 	private pendingOperations: Map<string, PendingEditOperation> = new Map()
 	private static readonly PENDING_OPERATION_TIMEOUT_MS = 30000 // 30 seconds
 
 	/**
-	 * Monotonically increasing sequence number for clineMessages state pushes.
-	 * Used by the frontend to reject stale state that arrives out-of-order.
+	 * Monotonically increasing sequence number for task-view state pushes.
+	 * Used by the frontend to reject stale snapshots that arrive out-of-order.
 	 */
 	private clineMessagesSeq = 0
 
@@ -1550,8 +1551,17 @@ export class ClineProvider
 	 * @param webview A reference to the extension webview
 	 */
 	private setWebviewMessageListener(webview: vscode.Webview) {
-		const onReceiveMessage = async (message: WebviewMessage) =>
-			webviewMessageHandler(this, message, this.marketplaceManager)
+		const onReceiveMessage = (message: WebviewMessage) => {
+			const processing = this.webviewMessageQueue.then(() =>
+				webviewMessageHandler(this, message, this.marketplaceManager),
+			)
+			this.webviewMessageQueue = processing.catch((error) => {
+				this.log(
+					`[webviewMessageHandler] ${message.type} failed: ${error instanceof Error ? error.message : String(error)}`,
+				)
+			})
+			return this.webviewMessageQueue
+		}
 
 		const messageDisposable = webview.onDidReceiveMessage(onReceiveMessage)
 		this.webviewDisposables.push(messageDisposable)
@@ -2318,10 +2328,10 @@ export class ClineProvider
 	}
 
 	async postStateToWebview() {
+		const sequence = ++this.clineMessagesSeq
 		const state = await this.getStateToPostToWebview()
-		this.clineMessagesSeq++
-		state.clineMessagesSeq = this.clineMessagesSeq
-		this.postMessageToWebview({ type: "state", state })
+		state.clineMessagesSeq = sequence
+		await this.postMessageToWebview({ type: "state", state })
 	}
 
 	/**
@@ -2333,11 +2343,11 @@ export class ClineProvider
 	 *   `taskHistoryUpdated` / `taskHistoryItemUpdated`.
 	 */
 	async postStateToWebviewWithoutTaskHistory(): Promise<void> {
+		const sequence = ++this.clineMessagesSeq
 		const state = await this.getStateToPostToWebview()
-		this.clineMessagesSeq++
-		state.clineMessagesSeq = this.clineMessagesSeq
+		state.clineMessagesSeq = sequence
 		const { taskHistory: _omit, ...rest } = state
-		this.postMessageToWebview({ type: "state", state: rest })
+		await this.postMessageToWebview({ type: "state", state: rest })
 	}
 
 	/**
@@ -2349,9 +2359,11 @@ export class ClineProvider
 	 *   overwrites newer messages the task has streamed in the meantime.
 	 */
 	async postStateToWebviewWithoutClineMessages(): Promise<void> {
+		const sequence = ++this.clineMessagesSeq
 		const state = await this.getStateToPostToWebview()
+		state.clineMessagesSeq = sequence
 		const { clineMessages: _omitMessages, taskHistory: _omitHistory, ...rest } = state
-		this.postMessageToWebview({ type: "state", state: rest })
+		await this.postMessageToWebview({ type: "state", state: rest })
 	}
 
 	/**
@@ -3498,14 +3510,14 @@ export class ClineProvider
 
 	public async startBlankTask(): Promise<void> {
 		const previous = this.getActiveTask()
+		this.taskSessions.clearFocus()
+		this.currentView = { type: "newTaskDraft" }
+		previous?.emit(RooCodeEventName.TaskUnfocused)
 		await this.postMessageToWebview({
 			type: "action",
 			action: "chatButtonClicked",
 			values: { force: true },
 		})
-		this.taskSessions.clearFocus()
-		this.currentView = { type: "newTaskDraft" }
-		previous?.emit(RooCodeEventName.TaskUnfocused)
 		await this.postStateToWebview()
 		await this.postMessageToWebview({ type: "invoke", invoke: "newChat" })
 	}

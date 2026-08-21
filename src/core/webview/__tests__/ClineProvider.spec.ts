@@ -576,6 +576,75 @@ describe("ClineProvider", () => {
 		expect(mockPostMessage).not.toHaveBeenCalled()
 	})
 
+	test("assigns state sequence numbers by invocation order and awaits delivery", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		mockPostMessage.mockClear()
+
+		let resolveFirstState!: (state: ExtensionState) => void
+		const firstState = new Promise<ExtensionState>((resolve) => {
+			resolveFirstState = resolve
+		})
+		const secondState = { clineMessages: [], taskHistory: [] } as unknown as ExtensionState
+		const firstSnapshot = { clineMessages: [], taskHistory: [] } as unknown as ExtensionState
+		vi.spyOn(provider, "getStateToPostToWebview").mockReturnValueOnce(firstState).mockResolvedValueOnce(secondState)
+
+		let releaseSecondDelivery!: () => void
+		const secondDelivery = new Promise<void>((resolve) => {
+			releaseSecondDelivery = resolve
+		})
+		mockPostMessage.mockImplementationOnce(() => secondDelivery)
+
+		const firstPost = provider.postStateToWebview()
+		const secondPost = provider.postStateToWebview()
+		let secondSettled = false
+		void secondPost.then(() => {
+			secondSettled = true
+		})
+
+		await vi.waitFor(() => expect(mockPostMessage).toHaveBeenCalledTimes(1))
+		expect(mockPostMessage.mock.calls[0][0].state.clineMessagesSeq).toBe(2)
+		expect(secondSettled).toBe(false)
+
+		releaseSecondDelivery()
+		await secondPost
+		resolveFirstState(firstSnapshot)
+		await firstPost
+
+		expect(mockPostMessage.mock.calls[1][0].state.clineMessagesSeq).toBe(1)
+	})
+
+	test("processes webview messages in arrival order", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		let releaseBlankTransition!: () => void
+		const blankTransition = new Promise<void>((resolve) => {
+			releaseBlankTransition = resolve
+		})
+		const startBlankTask = vi.spyOn(provider, "startBlankTask").mockReturnValue(blankTransition)
+		const createTask = vi.spyOn(provider, "createTask").mockResolvedValue({} as Task)
+
+		const firstMessage = messageHandler({ type: "startBlankTask" })
+		await vi.waitFor(() => expect(startBlankTask).toHaveBeenCalledOnce())
+		const secondMessage = messageHandler({ type: "newTask", text: "next task", images: [] })
+		await new Promise<void>((resolve) => setImmediate(resolve))
+
+		expect(createTask).not.toHaveBeenCalled()
+
+		releaseBlankTransition()
+		await Promise.all([firstMessage, secondMessage])
+		expect(createTask).toHaveBeenCalledWith(
+			"next task",
+			[],
+			undefined,
+			{
+				taskId: undefined,
+				preserveExisting: true,
+			},
+			undefined,
+		)
+	})
+
 	test("dispose is idempotent — second call is a no-op", async () => {
 		await provider.resolveWebviewView(mockWebviewView)
 
