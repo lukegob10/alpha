@@ -125,4 +125,28 @@ describe("resolveSubagentModelRoute", () => {
 		profiles[2].name = "Explorer Renamed"
 		profiles[2].apiModelId = "explore-model"
 	})
+
+	it("inherits an executable FakeAI provider through a clone-safe registry stub", async () => {
+		const createMessage = vi.fn()
+		const executableFakeAi = {
+			id: "scripted-runtime",
+			createMessage,
+			getModel: vi.fn(),
+			countTokens: vi.fn(),
+			completePrompt: vi.fn(),
+		}
+		const result = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration: { apiProvider: "fake-ai", fakeAi: executableFakeAi },
+			parentApiConfigName: "Scripted parent",
+			profileLoader: loader,
+		})
+
+		expect(result.apiConfiguration).toMatchObject({
+			apiProvider: "fake-ai",
+			fakeAi: { id: "scripted-runtime" },
+		})
+		expect((result.apiConfiguration.fakeAi as Record<string, unknown>).createMessage).toBeUndefined()
+		expect(executableFakeAi.createMessage).toBe(createMessage)
+	})
 })

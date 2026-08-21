@@ -104,10 +104,12 @@ export const subagentContextRuntimePolicySchema = z
 		allowedTools: z.array(z.string().min(1)).min(1),
 		workspaceRoots: z.array(z.string().min(1)).min(1),
 		writeScope: z.array(z.string().min(1)).min(1).max(12).optional(),
+		/** Entries in writeScope that grant one exact file rather than a directory subtree. */
+		fileWriteScope: z.array(z.string().min(1)).max(12).optional(),
 		digest: subagentContextDigestSchema,
 	})
 	.strict()
-	.superRefine(({ role, execute, mutate, writeScope }, context) => {
+	.superRefine(({ role, execute, mutate, writeScope, fileWriteScope }, context) => {
 		if ((role === "explore" || role === "review") && (execute || mutate)) {
 			context.addIssue({
 				code: z.ZodIssueCode.custom,
@@ -121,6 +123,23 @@ export const subagentContextRuntimePolicySchema = z
 				message: "worker context policy requires writeScope",
 				path: ["writeScope"],
 			})
+		}
+		if (role !== "worker" && fileWriteScope !== undefined) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				message: "only worker context policy may retain exact-file write scope",
+				path: ["fileWriteScope"],
+			})
+		}
+		for (const exactFile of fileWriteScope ?? []) {
+			if (!writeScope?.includes(exactFile)) {
+				context.addIssue({
+					code: z.ZodIssueCode.custom,
+					message: "exact-file write scope must be included in writeScope",
+					path: ["fileWriteScope"],
+				})
+				break
+			}
 		}
 	})
 export type SubagentContextRuntimePolicy = z.infer<typeof subagentContextRuntimePolicySchema>

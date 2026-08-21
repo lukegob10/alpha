@@ -16,6 +16,7 @@ import { spawn_agent as spawnAgent } from "./spawn_agent"
 import { list_agents as listAgents } from "./list_agents"
 import { wait_agent as waitAgent } from "./wait_agent"
 import { send_message as sendMessage } from "./send_message"
+import { report_progress as reportProgress } from "./report_progress"
 import { followup_task as followupTask } from "./followup_task"
 import { interrupt_agent as interruptAgent } from "./interrupt_agent"
 import { cancel_agent as cancelAgent } from "./cancel_agent"
@@ -73,6 +74,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		listAgents,
 		waitAgent,
 		sendMessage,
+		reportProgress,
 		followupTask,
 		interruptAgent,
 		cancelAgent,

@@ -1,7 +1,27 @@
+import {
+	DEFAULT_MAX_CONCURRENT_SUBAGENTS,
+	DEFAULT_SUBAGENT_DELEGATION_POLICY,
+	DEFAULT_SUBAGENT_MAX_DEPTH,
+	DEFAULT_SUBAGENT_MAX_INPUT_TOKENS,
+	DEFAULT_SUBAGENT_MAX_OUTPUT_TOKENS,
+	DEFAULT_SUBAGENT_ROLE_TIMEOUTS_MS,
+	MAX_MAX_CONCURRENT_SUBAGENTS,
+	MAX_SUBAGENT_MAX_DEPTH,
+	MAX_SUBAGENT_ROLE_TIMEOUT_MS,
+	MAX_SUBAGENT_TOKEN_LIMIT,
+	MIN_MAX_CONCURRENT_SUBAGENTS,
+	MIN_SUBAGENT_MAX_DEPTH,
+	MIN_SUBAGENT_ROLE_TIMEOUT_MS,
+	MIN_SUBAGENT_TOKEN_LIMIT,
+	subagentRootCostBudgetSchema,
+	subagentRootTokenBudgetSchema,
+	type SubagentDelegationPolicy,
+	type SubagentRole,
+} from "@alpha-code/types"
+
 import type { ExtensionStateContextType } from "@/context/ExtensionStateContext"
 
-export type SubagentDelegationPolicy = "explicit-only" | "proactive"
-export type ManagedAgentRole = "explore" | "review" | "worker"
+export type ManagedAgentRole = SubagentRole
 
 /** Stable extension-host settings contract, isolated locally until shared types expose it. */
 export interface ManagedAgentSettings {
@@ -23,26 +43,21 @@ export type SetSettingsCachedStateField = <K extends keyof SettingsCachedState>(
 ) => void
 
 export const MANAGED_AGENT_SETTING_LIMITS = {
-	maxConcurrentSubagents: { min: 1, max: 16 },
-	timeoutMs: { min: 10_000, max: 3_600_000 },
-	inputTokens: { min: 1, max: 10_000_000 },
-	outputTokens: { min: 1, max: 10_000_000 },
-	rootTokens: { min: 1, max: 50_000_000 },
-	rootCost: { min: 0.01, max: 100_000 },
-	maxDepth: { min: 1, max: 5 },
+	maxConcurrentSubagents: { min: MIN_MAX_CONCURRENT_SUBAGENTS, max: MAX_MAX_CONCURRENT_SUBAGENTS },
+	timeoutMs: { min: MIN_SUBAGENT_ROLE_TIMEOUT_MS, max: MAX_SUBAGENT_ROLE_TIMEOUT_MS },
+	inputTokens: { min: MIN_SUBAGENT_TOKEN_LIMIT, max: MAX_SUBAGENT_TOKEN_LIMIT },
+	outputTokens: { min: MIN_SUBAGENT_TOKEN_LIMIT, max: MAX_SUBAGENT_TOKEN_LIMIT },
+	rootTokens: { min: MIN_SUBAGENT_TOKEN_LIMIT, max: MAX_SUBAGENT_TOKEN_LIMIT },
+	maxDepth: { min: MIN_SUBAGENT_MAX_DEPTH, max: MAX_SUBAGENT_MAX_DEPTH },
 } as const
 
 export const DEFAULT_MANAGED_AGENT_SETTINGS: ManagedAgentSettings = {
-	maxConcurrentSubagents: 2,
-	subagentDelegationPolicy: "explicit-only",
-	subagentMaxDepth: 1,
-	subagentRoleTimeoutsMs: {
-		explore: 120_000,
-		review: 120_000,
-		worker: 900_000,
-	},
-	subagentMaxInputTokens: 16_000,
-	subagentMaxOutputTokens: 4_000,
+	maxConcurrentSubagents: DEFAULT_MAX_CONCURRENT_SUBAGENTS,
+	subagentDelegationPolicy: DEFAULT_SUBAGENT_DELEGATION_POLICY,
+	subagentMaxDepth: DEFAULT_SUBAGENT_MAX_DEPTH,
+	subagentRoleTimeoutsMs: { ...DEFAULT_SUBAGENT_ROLE_TIMEOUTS_MS },
+	subagentMaxInputTokens: DEFAULT_SUBAGENT_MAX_INPUT_TOKENS,
+	subagentMaxOutputTokens: DEFAULT_SUBAGENT_MAX_OUTPUT_TOKENS,
 	subagentRootTokenBudget: null,
 	subagentRootCostBudget: null,
 }
@@ -62,18 +77,18 @@ export function clampManagedAgentNumber(
 	return Math.min(Math.max(Math.trunc(parsed), limits.min), limits.max)
 }
 
-function nullablePositiveNumber(value: unknown, limits: { min: number; max: number }, integer: boolean): number | null {
-	if (value === undefined || value === null || value === "") {
-		return null
-	}
-
+function nullableRootCost(value: unknown): number | null {
+	if (value === undefined || value === null || value === "") return null
 	const parsed = typeof value === "number" ? value : Number(value)
-	if (!Number.isFinite(parsed)) {
-		return null
-	}
+	const result = subagentRootCostBudgetSchema.safeParse(parsed)
+	return result.success ? result.data : null
+}
 
-	const bounded = Math.min(Math.max(parsed, limits.min), limits.max)
-	return integer ? Math.trunc(bounded) : bounded
+function nullableRootTokens(value: unknown): number | null {
+	if (value === undefined || value === null || value === "") return null
+	const parsed = typeof value === "number" ? value : Number(value)
+	const result = subagentRootTokenBudgetSchema.safeParse(parsed)
+	return result.success ? result.data : null
 }
 
 /** Reads runtime-provided fields when available and otherwise applies contract defaults. */
@@ -123,16 +138,8 @@ export function withManagedAgentSettingsDefaults(state: ExtensionStateContextTyp
 			DEFAULT_MANAGED_AGENT_SETTINGS.subagentMaxOutputTokens,
 			MANAGED_AGENT_SETTING_LIMITS.outputTokens,
 		),
-		subagentRootTokenBudget: nullablePositiveNumber(
-			source.subagentRootTokenBudget,
-			MANAGED_AGENT_SETTING_LIMITS.rootTokens,
-			true,
-		),
-		subagentRootCostBudget: nullablePositiveNumber(
-			source.subagentRootCostBudget,
-			MANAGED_AGENT_SETTING_LIMITS.rootCost,
-			false,
-		),
+		subagentRootTokenBudget: nullableRootTokens(source.subagentRootTokenBudget),
+		subagentRootCostBudget: nullableRootCost(source.subagentRootCostBudget),
 	}
 }
 

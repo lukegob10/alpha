@@ -218,21 +218,19 @@ export interface ResolveSubagentDelegationPolicyOptions {
 	settingsPolicy?: unknown
 	frozenTaskPolicy?: unknown
 	requestedChildPolicy?: unknown
-	/** Only a trusted provider path handling a user-authored task override may set this. */
-	allowUserAuthoredWidening?: boolean
 	/** Trusted persisted task opt-in. Model tool arguments must never populate this. */
 	taskExplicitlyEnabled?: boolean
 }
 
 /**
  * Resolve a per-spawn policy. Descendants may always narrow proactive to
- * explicit-only; widening requires a trusted user-authored task override.
+ * explicit-only; no per-task or descendant override may widen explicit-only
+ * to proactive.
  */
 export function resolveSubagentDelegationPolicy({
 	settingsPolicy,
 	frozenTaskPolicy,
 	requestedChildPolicy,
-	allowUserAuthoredWidening = false,
 	taskExplicitlyEnabled = false,
 }: ResolveSubagentDelegationPolicyOptions): SubagentEffectiveDelegationPolicy {
 	const parsedSettings = subagentDelegationPolicySchema.safeParse(settingsPolicy)
@@ -252,10 +250,8 @@ export function resolveSubagentDelegationPolicy({
 
 	if (parsedRequested.success && parsedRequested.data !== policy) {
 		const narrows = policy === "proactive" && parsedRequested.data === "explicit-only"
-		if (!narrows && !allowUserAuthoredWidening) {
-			throw new Error(
-				"A child task cannot widen explicit-only delegation policy without a user-authored override",
-			)
+		if (!narrows) {
+			throw new Error("A task cannot widen explicit-only delegation policy to proactive")
 		}
 		policy = parsedRequested.data
 		source = "task"
@@ -333,6 +329,21 @@ export const subagentEffectiveLimitsSchema = z
 	.strict()
 export type SubagentEffectiveLimits = z.infer<typeof subagentEffectiveLimitsSchema>
 
+/** Root-wide ceilings shown before a role-specific child timeout is selected. */
+export const subagentRootEffectiveLimitsSchema = subagentEffectiveLimitsSchema.omit({ timeoutMs: true })
+export type SubagentRootEffectiveLimits = z.infer<typeof subagentRootEffectiveLimitsSchema>
+
+/** Compact list_agents view of the settings that the root is using for new descendants. */
+export const subagentRootOrchestrationSummarySchema = z
+	.object({
+		source: z.enum(["configured", "frozen"]),
+		delegationPolicy: subagentDelegationPolicySchema,
+		maxDepth: subagentMaxDepthSchema,
+		limits: subagentRootEffectiveLimitsSchema,
+	})
+	.strict()
+export type SubagentRootOrchestrationSummary = z.infer<typeof subagentRootOrchestrationSummarySchema>
+
 export const subagentManifestOrchestrationSchema = z
 	.object({
 		ancestry: subagentAncestrySchema,
@@ -385,6 +396,7 @@ export type SubagentUsage = z.infer<typeof subagentUsageSchema>
 export const subagentStopReasonSchema = z.enum([
 	"completed",
 	"cancelled",
+	"never_launched",
 	"parent_cancelled",
 	"ancestor_cancelled",
 	"interrupted",

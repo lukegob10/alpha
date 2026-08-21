@@ -40,7 +40,6 @@ import TelemetryBanner from "../common/TelemetryBanner"
 import VersionIndicator from "../common/VersionIndicator"
 import HistoryPreview from "../history/HistoryPreview"
 import { ManagedAgentTree } from "../agents/ManagedAgentTree"
-import { buildCurrentManagedAgentActivity } from "../agents/currentManagedAgentActivity"
 import Announcement from "./Announcement"
 import ChatRow, { type ChatRowEnvironment } from "./ChatRow"
 import WarningRow from "./WarningRow"
@@ -60,12 +59,6 @@ export interface ChatViewProps {
 
 export interface ChatViewRef {
 	acceptInput: () => void
-}
-
-interface ManagedAgentRuntimeSettings {
-	maxConcurrentSubagents?: number
-	subagentRootTokenBudget?: number | null
-	subagentRootCostBudget?: number | null
 }
 
 export const MAX_IMAGES_PER_MESSAGE = 20 // This is the Anthropic limit.
@@ -114,15 +107,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		soundVolume,
 		messageQueue = [],
 		liveTasksById,
+		managedAgentTree,
 		showWorktreesInHomeScreen,
 		mcpServers,
 		alwaysAllowMcp,
 		currentCheckpoint,
 		reasoningBlockCollapsed,
 	} = extensionState
-	const { maxConcurrentSubagents, subagentRootTokenBudget, subagentRootCostBudget } =
-		extensionState as typeof extensionState & ManagedAgentRuntimeSettings
-
 	// Show a WarningRow when the user sends a message with a retired provider.
 	const [showRetiredProviderWarning, setShowRetiredProviderWarning] = useState(false)
 
@@ -153,8 +144,16 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		() => activeMessages.flatMap((message) => (message.subagentGroup ? [message.subagentGroup] : [])),
 		[activeMessages],
 	)
-	const managedAgentActivity = useMemo(() => buildCurrentManagedAgentActivity(activeMessages), [activeMessages])
-	const showManagedAgentTree = !isManagedSubagent && Boolean(visibleCurrentTaskId) && managedAgentGroups.length > 0
+	const managedAgentTreeProjection =
+		managedAgentTree !== undefined &&
+		managedAgentTree.rootTaskId === visibleCurrentTaskId &&
+		managedAgentTree.nodes.length > 1
+			? managedAgentTree
+			: undefined
+	const showManagedAgentTree =
+		!isManagedSubagent &&
+		Boolean(visibleCurrentTaskId) &&
+		(Boolean(managedAgentTreeProjection) || managedAgentGroups.length > 0)
 	const visibleCurrentTaskTodos = useMemo(
 		() => (isDraftView ? [] : currentTaskTodos),
 		[isDraftView, currentTaskTodos],
@@ -1850,25 +1849,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					/>
 
 					{showManagedAgentTree && visibleCurrentTaskId && (
-						<div className="max-h-[min(55vh,36rem)] overflow-y-auto px-3 pb-2">
+						<div className="px-3 pb-1">
 							<ManagedAgentTree
 								rootTaskId={visibleCurrentTaskId}
-								rootLabel={visibleCurrentTaskItem?.task || "Root task"}
-								rootStartedAt={task.ts}
 								groups={managedAgentGroups}
+								projection={managedAgentTreeProjection}
 								liveTasksById={liveTasksById}
-								capacityLimit={maxConcurrentSubagents}
-								tokenBudget={subagentRootTokenBudget}
-								costBudget={subagentRootCostBudget}
-								activity={managedAgentActivity}
-								onCancelAgent={({ parentTaskId, groupId, subagentTaskId }) =>
-									vscode.postMessage({
-										type: "cancelSubagent",
-										taskId: parentTaskId,
-										groupId,
-										subagentTaskId,
-									})
-								}
 								onShowTask={(taskId) => vscode.postMessage({ type: "showTaskWithId", text: taskId })}
 							/>
 						</div>
@@ -2066,25 +2052,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					/>
 				</div>
 			)}
-			{isManagedSubagent ? (
-				<div className="mx-[15px] mb-3 flex items-center justify-between gap-3 rounded-lg border border-vscode-panel-border bg-vscode-editor-background px-3 py-2">
-					<div>
-						<div className="text-sm font-medium">Transcript is read-only</div>
-						<div className="text-xs text-vscode-descriptionForeground">
-							This sub-agent is managed by its parent task.
-						</div>
-					</div>
-					<Button
-						variant="secondary"
-						size="sm"
-						onClick={() =>
-							visibleCurrentTaskItem?.parentTaskId &&
-							vscode.postMessage({ type: "showTaskWithId", text: visibleCurrentTaskItem.parentTaskId })
-						}>
-						Return to parent
-					</Button>
-				</div>
-			) : (
+			{!isManagedSubagent && (
 				<ChatTextArea
 					ref={textAreaRef}
 					inputValue={inputValue}

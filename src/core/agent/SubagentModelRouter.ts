@@ -30,11 +30,30 @@ export interface ResolvedSubagentModelRoute {
 	route: SubagentModelRouteState
 }
 
-const snapshotSettings = (settings: ProviderSettings): ProviderSettings => structuredClone(settings)
+/**
+ * Capture a provider route without carrying process-local executable objects
+ * into durable or cross-task state. FakeAI is intentionally registered by ID
+ * in the extension host; descendants rehydrate that registered implementation
+ * from the clone-safe ID stub.
+ */
+export const snapshotProviderSettings = (settings: ProviderSettings): ProviderSettings => {
+	if (settings.apiProvider !== "fake-ai") return structuredClone(settings)
+
+	const fakeAi = settings.fakeAi
+	const fakeAiId =
+		fakeAi && typeof fakeAi === "object" && typeof (fakeAi as { id?: unknown }).id === "string"
+			? (fakeAi as { id: string }).id
+			: undefined
+
+	return structuredClone({
+		...settings,
+		fakeAi: fakeAiId ? { id: fakeAiId } : fakeAi,
+	})
+}
 
 const settingsFromProfile = (profile: StoredProviderProfile): ProviderSettings => {
 	const { id: _id, name: _name, ...settings } = profile
-	return snapshotSettings(settings)
+	return snapshotProviderSettings(settings)
 }
 
 async function resolveParentRoute(
@@ -42,7 +61,7 @@ async function resolveParentRoute(
 	source: SubagentModelRouteState["source"],
 	fallback?: Pick<SubagentModelRouteState, "requestedProfileId" | "fallbackReason">,
 ): Promise<ResolvedSubagentModelRoute> {
-	const apiConfiguration = snapshotSettings(options.parentApiConfiguration)
+	const apiConfiguration = snapshotProviderSettings(options.parentApiConfiguration)
 	const apiConfigName = options.parentApiConfigName?.trim() || "Parent profile"
 	let profileId: string | undefined
 

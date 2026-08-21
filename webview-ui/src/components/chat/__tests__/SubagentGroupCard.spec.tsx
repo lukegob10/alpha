@@ -1,6 +1,7 @@
 import type { SubagentGroupState, SubagentRunState } from "@alpha-code/types"
+import userEvent from "@testing-library/user-event"
 
-import { act, fireEvent, render, screen } from "@/utils/test-utils"
+import { act, fireEvent, render, screen, waitFor } from "@/utils/test-utils"
 
 import { SubagentGroupCard } from "../SubagentGroupCard"
 
@@ -65,8 +66,12 @@ const sendChangeSetCapability = (
 	allowed: boolean,
 	reason: string,
 	state: "available" | "busy" | "unavailable" = allowed ? "available" : "busy",
-) =>
-	act(() => {
+	actionOverrides: Partial<
+		Record<"apply" | "discard", { allowed: boolean; state: "available" | "busy" | "unavailable"; reason: string }>
+	> = {},
+) => {
+	const baseCapability = { allowed, state, reason }
+	return act(() => {
 		window.dispatchEvent(
 			new MessageEvent("message", {
 				data: {
@@ -78,24 +83,56 @@ const sendChangeSetCapability = (
 						allowed,
 						state,
 						reason,
+						actions: {
+							apply: baseCapability,
+							discard: baseCapability,
+							...actionOverrides,
+						},
 					},
 				},
 			}),
 		)
 	})
+}
+
+const openActions = async (user: ReturnType<typeof userEvent.setup>, nickname: string) => {
+	await user.click(screen.getByRole("button", { name: `Actions for ${nickname}` }))
+}
 
 describe("SubagentGroupCard", () => {
 	beforeEach(() => postMessage.mockReset())
 
-	it("renders active agents expanded with aggregate progress and cancellation", () => {
+	it("renders active agents as compact task rows without verbose trace detail", () => {
 		render(<SubagentGroupCard group={makeGroup()} parentTaskId="parent-1" />)
 
-		expect(screen.getByRole("region", { name: "2 sub-agents" })).toBeInTheDocument()
-		expect(screen.getByText("0/2 finished", { exact: false })).toBeInTheDocument()
-		expect(screen.getByText("Maple · Explorer")).toBeInTheDocument()
-		expect(screen.getByText("Nova · Reviewer")).toBeInTheDocument()
+		expect(screen.getByRole("region", { name: "2 sub-agent tasks" })).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: /Open Maple · Working/i })).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: /Open Nova · Starting/i })).toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: /expand|collapse sub-agent/i })).not.toBeInTheDocument()
+		expect(screen.queryByText("Map the parser lifecycle")).not.toBeInTheDocument()
+		expect(screen.queryByText(/tokens|pacing|write scope|isolated worktree/i)).not.toBeInTheDocument()
+	})
 
-		fireEvent.click(screen.getByRole("button", { name: "Cancel sub-agent group" }))
+	it("opens running, queued, and terminal agents with the exact task id", async () => {
+		const user = userEvent.setup()
+		const completed = makeGroup({
+			status: "completed",
+			agents: [{ ...makeGroup().agents[0], status: "completed", completedAt: 2_000 }, makeGroup().agents[1]],
+		})
+		render(<SubagentGroupCard group={completed} parentTaskId="parent-1" />)
+
+		await user.click(screen.getByRole("button", { name: /Open Maple/i }))
+		await user.click(screen.getByRole("button", { name: /Open Nova/i }))
+		expect(postMessage).toHaveBeenCalledWith({ type: "showTaskWithId", text: "child-1" })
+		expect(postMessage).toHaveBeenCalledWith({ type: "showTaskWithId", text: "child-2" })
+	})
+
+	it("keeps group cancellation in a compact overflow menu", async () => {
+		const user = userEvent.setup()
+		render(<SubagentGroupCard group={makeGroup()} parentTaskId="parent-1" />)
+
+		await openActions(user, "Maple")
+		await user.click(screen.getByRole("menuitem", { name: "Stop all" }))
 		expect(postMessage).toHaveBeenCalledWith({
 			type: "cancelSubagentGroup",
 			taskId: "parent-1",
@@ -103,49 +140,31 @@ describe("SubagentGroupCard", () => {
 		})
 	})
 
-	it("preserves a manual collapse choice across live state updates", () => {
-		const { rerender } = render(<SubagentGroupCard group={makeGroup()} />)
-		fireEvent.click(screen.getByRole("button", { name: "Collapse sub-agent group" }))
-		expect(screen.queryByText("Maple · Explorer")).not.toBeInTheDocument()
-
-		const updated = makeGroup({
-			agents: makeGroup().agents.map((agent, index) =>
-				index === 0 ? { ...agent, status: "completed", summary: "Parser mapped" } : agent,
-			),
-		})
-		rerender(<SubagentGroupCard group={updated} />)
-
-		expect(screen.getByRole("button", { name: "Expand sub-agent group" })).toBeInTheDocument()
-		expect(screen.queryByText("Maple · Explorer")).not.toBeInTheDocument()
-	})
-
-	it("sends a bounded, trimmed steering instruction to the selected running agent", () => {
+	it("sends a bounded, trimmed steering instruction from the agent menu", async () => {
+		const user = userEvent.setup()
 		render(<SubagentGroupCard group={makeGroup()} parentTaskId="parent-1" />)
+		await openActions(user, "Maple")
+		await user.click(screen.getByRole("menuitem", { name: "Steer" }))
 
-		fireEvent.click(screen.getByRole("button", { name: "Steer Maple" }))
-
-		expect(screen.getByRole("dialog", { name: "Steer Maple" })).toBeInTheDocument()
-		const instruction = screen.getByRole("textbox", { name: "Steering instruction for Maple" })
-		expect(instruction).toHaveAttribute("maxlength", "2000")
-		expect(screen.getByRole("button", { name: "Send steering" })).toBeDisabled()
-
-		fireEvent.change(instruction, { target: { value: "   Focus on parser cancellation boundaries.   " } })
-		fireEvent.click(screen.getByRole("button", { name: "Send steering" }))
+		const textarea = screen.getByRole("textbox", { name: "Steering instruction for Maple" })
+		fireEvent.change(textarea, { target: { value: `  ${"x".repeat(2_050)}  ` } })
+		await user.click(screen.getByRole("button", { name: "Send steering" }))
 
 		expect(postMessage).toHaveBeenCalledWith({
 			type: "steerSubagent",
 			taskId: "parent-1",
 			groupId: "group-1",
 			subagentTaskId: "child-1",
-			text: "Focus on parser cancellation boundaries.",
+			text: "x".repeat(2_000),
 		})
-		expect(screen.queryByRole("dialog", { name: "Steer Maple" })).not.toBeInTheDocument()
 	})
 
-	it("cancels one active agent without cancelling its sibling", () => {
-		render(<SubagentGroupCard group={makeGroup()} parentTaskId="parent-1" />)
-
-		fireEvent.click(screen.getByRole("button", { name: "Cancel Maple" }))
+	it("cancels one active agent without cancelling its sibling", async () => {
+		const user = userEvent.setup()
+		const runningAgent = makeGroup().agents[0]
+		const { rerender } = render(<SubagentGroupCard group={makeGroup()} parentTaskId="parent-1" />)
+		await openActions(user, "Maple")
+		await user.click(screen.getByRole("menuitem", { name: "Stop" }))
 
 		expect(postMessage).toHaveBeenCalledWith({
 			type: "cancelSubagent",
@@ -153,277 +172,225 @@ describe("SubagentGroupCard", () => {
 			groupId: "group-1",
 			subagentTaskId: "child-1",
 		})
-		expect(screen.getByRole("button", { name: "Cancelling Maple" })).toBeDisabled()
-		expect(screen.getByRole("button", { name: "Cancel Nova" })).toBeEnabled()
-	})
+		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ subagentTaskId: "child-2" }))
 
-	it("only offers steering once an agent is running", () => {
-		render(<SubagentGroupCard group={makeGroup()} />)
-
-		expect(screen.getByRole("button", { name: "Steer Maple" })).toBeInTheDocument()
-		expect(screen.queryByRole("button", { name: "Steer Nova" })).not.toBeInTheDocument()
-		expect(screen.getByRole("button", { name: "Cancel Nova" })).toBeInTheDocument()
-	})
-
-	it("reopens completed groups collapsed and exposes completed transcripts", () => {
-		const group = makeGroup({
-			status: "completed",
-			completedAt: 5_000,
-			agents: makeGroup().agents.map((agent) => ({
-				...agent,
-				status: "completed",
-				summary: `${agent.nickname} findings`,
-				completedAt: 5_000,
-				usage: { durationMs: 3_900 },
-			})),
-		})
-		render(<SubagentGroupCard group={group} />)
-
-		expect(screen.queryByText("Maple · Explorer")).not.toBeInTheDocument()
-		fireEvent.click(screen.getByRole("button", { name: "Expand sub-agent group" }))
-		fireEvent.click(screen.getByRole("button", { name: "Open transcript for Maple" }))
-
-		expect(postMessage).toHaveBeenCalledWith({ type: "showTaskWithId", text: "child-1" })
-	})
-
-	it("shows configured pacing waits in terminal agent performance", () => {
-		const group = makeGroup({
-			status: "completed",
-			completedAt: 25_000,
-			agents: [
-				{
-					...makeGroup().agents[0],
+		rerender(
+			<SubagentGroupCard
+				group={makeGroup({
 					status: "completed",
-					completedAt: 25_000,
-					usage: {
-						durationMs: 24_000,
-						rateLimitWaitCount: 2,
-						rateLimitWaitMs: 20_000,
-						rateLimitIntervalSeconds: 10,
-					},
-				},
-			],
-		})
-		render(<SubagentGroupCard group={group} />)
-		fireEvent.click(screen.getByRole("button", { name: "Expand sub-agent group" }))
-
-		expect(screen.getByText("Configured request pacing: 2 pacing waits · 20s")).toBeInTheDocument()
-	})
-
-	it("shows terminal failure reasons and an interrupted retry path", () => {
-		const group = makeGroup({
-			status: "interrupted",
-			completedAt: 5_000,
-			agents: [
-				{
-					...makeGroup().agents[0],
-					status: "interrupted",
-					error: "Extension reloaded",
-					completedAt: 5_000,
-				},
-			],
-		})
-		render(<SubagentGroupCard group={group} />)
-		fireEvent.click(screen.getByRole("button", { name: "Expand sub-agent group" }))
-
-		expect(screen.getByText("Extension reloaded")).toBeInTheDocument()
-		expect(screen.getByText(/run this delegation again/i)).toBeInTheDocument()
-	})
-
-	it("shows a blocked agent as an expected terminal outcome", () => {
-		const group = makeGroup({
-			status: "failed",
-			completedAt: 5_000,
-			agents: [
-				{
-					...makeGroup().agents[0],
-					status: "blocked",
-					summary: "The requested artifact is not present in the repository.",
-					completedAt: 5_000,
-				},
-			],
-		})
-		render(<SubagentGroupCard group={group} />)
-		fireEvent.click(screen.getByRole("button", { name: "Expand sub-agent group" }))
-
-		expect(screen.getByLabelText("blocked")).toBeInTheDocument()
-		expect(screen.getByText("The requested artifact is not present in the repository.")).toBeInTheDocument()
-	})
-
-	it("shows the prepared profile and an explicit parent fallback warning", () => {
-		const group = makeGroup({
-			agents: [
-				{
-					...makeGroup().agents[0],
-					modelRoute: {
-						source: "role",
-						resolution: "fallback",
-						profileId: "parent-id",
-						profileName: "Parent",
-						provider: "anthropic",
-						modelId: "parent-model",
-						requestedProfileId: "deleted-id",
-						fallbackReason: "missing",
-					},
-				},
-			],
-		})
-
-		render(<SubagentGroupCard group={group} />)
-
-		expect(screen.getByText(/Using parent profile/)).toHaveTextContent(
-			"Using parent profile · Parent · anthropic · parent-model",
+					agents: [{ ...runningAgent, status: "cancelled", completedAt: 2_000 }],
+				})}
+				parentTaskId="parent-1"
+			/>,
 		)
+		rerender(<SubagentGroupCard group={makeGroup({ agents: [runningAgent] })} parentTaskId="parent-1" />)
+		await openActions(user, "Maple")
+		expect(screen.getByRole("menuitem", { name: "Stop" })).not.toHaveAttribute("data-disabled")
+	})
+
+	it("only offers steering once an agent is running", async () => {
+		const user = userEvent.setup()
+		render(<SubagentGroupCard group={makeGroup()} parentTaskId="parent-1" />)
+		await openActions(user, "Nova")
+		expect(screen.queryByRole("menuitem", { name: "Steer" })).not.toBeInTheDocument()
 	})
 
 	it.each([
-		["starting" as const, "Starting"],
-		["working" as const, "Working"],
-		["waiting" as const, "Configured request delay"],
-		["steering" as const, "Applying steering"],
-		["reporting" as const, "Preparing report"],
-		["finalizing" as const, "Finalizing"],
-	])("renders the %s lifecycle phase without changing terminal status", (phase, label) => {
-		const group = makeGroup({
-			agents: [
-				{
-					...makeGroup().agents[0],
-					status: "running",
-					phase,
-					phaseStartedAt: 1_200,
-				},
-			],
-		})
-		render(<SubagentGroupCard group={group} />)
-
-		expect(screen.getByText(label)).toBeInTheDocument()
-		expect(screen.getByLabelText(label)).toBeInTheDocument()
+		["failed", "Failed"],
+		["blocked", "Blocked"],
+		["interrupted", "Interrupted"],
+		["timed_out", "Timed out"],
+		["cancelled", "Cancelled"],
+	] as const)("keeps %s status visible and accessible", (status, label) => {
+		render(
+			<SubagentGroupCard
+				group={makeGroup({
+					status: status === "blocked" ? "failed" : status,
+					agents: [{ ...makeGroup().agents[0], status }],
+				})}
+				parentTaskId="parent-1"
+			/>,
+		)
+		expect(screen.getByRole("button", { name: new RegExp(`Open Maple · ${label}`, "i") })).toHaveTextContent(label)
 	})
 
-	it("renders a host-confirmed cancelling state and disables repeated cancellation", () => {
-		const group = makeGroup({
-			agents: [
-				{
-					...makeGroup().agents[0],
-					status: "cancelling",
-					phase: "working",
-				},
-			],
-		})
+	it("shows a truthful unavailable state for a prepared child that never launched", async () => {
+		const user = userEvent.setup()
+		const error =
+			"The prepared sub-agent was never launched before the extension reloaded. Start a new spawn request to retry."
+		render(
+			<SubagentGroupCard
+				group={makeGroup({
+					status: "cancelled",
+					agents: [
+						{
+							...makeGroup().agents[1],
+							nickname: "approval_child",
+							status: "cancelled",
+							stopReason: "never_launched",
+							error,
+							completedAt: 2_000,
+						},
+					],
+				})}
+				parentTaskId="parent-1"
+			/>,
+		)
 
-		render(<SubagentGroupCard group={group} />)
+		const task = screen.getByRole("button", { name: /approval_child task unavailable · Cancelled/i })
+		expect(task).toBeDisabled()
+		expect(screen.getByText(error)).toBeVisible()
+		expect(screen.queryByRole("button", { name: "Actions for approval_child" })).not.toBeInTheDocument()
 
-		expect(screen.getByLabelText("cancelling")).toBeInTheDocument()
-		expect(screen.getByRole("button", { name: "Cancelling Maple" })).toBeDisabled()
-		expect(screen.queryByRole("button", { name: "Steer Maple" })).not.toBeInTheDocument()
+		await user.click(task)
+		expect(postMessage).not.toHaveBeenCalledWith({ type: "showTaskWithId", text: "child-2" })
 	})
 
-	it("renders worker scope, routes approvals, and exposes quarantined change actions", () => {
-		const group = makeGroup({
-			status: "completed",
-			completedAt: 5_000,
-			agents: [
-				{
-					taskId: "worker-1",
-					nickname: "Maple",
-					role: "worker",
-					objective: "Edit the parser",
-					writeScope: ["src/parser"],
-					status: "completed",
-					changedFiles: ["src/parser/index.ts"],
-					verification: [{ label: "Targeted tests", status: "passed" }],
-					changeSet: {
-						id: "change-1",
-						status: "pending_review",
-						changedFiles: ["src/parser/index.ts"],
-						createdAt: 4_000,
-						updatedAt: 5_000,
-					},
-					usage: { durationMs: 3_900 },
-				},
-			],
-		})
-		render(<SubagentGroupCard group={group} parentTaskId="parent-1" />)
-		fireEvent.click(screen.getByRole("button", { name: "Expand sub-agent group" }))
-		sendChangeSetCapability(true, "The parent is paused for your review.")
+	it("shows review attention while keeping Worker internals out of the trace", () => {
+		render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" />)
 
-		expect(screen.getByText("Maple · Worker")).toBeInTheDocument()
-		expect(screen.getByText("Write scope: src/parser")).toBeInTheDocument()
-		fireEvent.click(screen.getByRole("button", { name: /open diff/i }))
-		fireEvent.click(screen.getByRole("button", { name: /apply changes/i }))
-		expect(screen.getByRole("dialog", { name: "Apply Worker changes?" })).toBeInTheDocument()
-		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "applySubagentChangeSet" }))
-		fireEvent.click(screen.getByRole("button", { name: "Confirm apply" }))
+		expect(screen.getByRole("button", { name: /Open Maple · Completed · Review/i })).toHaveTextContent("Review")
+		expect(screen.queryByText("src/parser/index.ts")).not.toBeInTheDocument()
+		expect(screen.queryByText("src/parser")).not.toBeInTheDocument()
+		expect(postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "requestSubagentChangeSetActionCapability",
+				taskId: "parent-1",
+				groupId: "group-1",
+				changeSetId: "change-1",
+			}),
+		)
+	})
 
+	it("routes diff review and confirms Apply from the overflow menu", async () => {
+		const user = userEvent.setup()
+		render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" />)
+		sendChangeSetCapability(true, "Ready")
+		await openActions(user, "Maple")
+
+		await user.click(screen.getByRole("menuitem", { name: "Open diff" }))
 		expect(postMessage).toHaveBeenCalledWith({
 			type: "openSubagentChangeSet",
 			taskId: "parent-1",
 			groupId: "group-1",
 			changeSetId: "change-1",
 		})
+
+		await openActions(user, "Maple")
+		await user.click(screen.getByRole("menuitem", { name: "Apply changes" }))
+		expect(screen.getByRole("dialog", { name: "Apply Worker changes?" })).toBeInTheDocument()
+		await user.click(screen.getByRole("button", { name: "Confirm apply" }))
 		expect(postMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "applySubagentChangeSet",
 				taskId: "parent-1",
 				groupId: "group-1",
 				changeSetId: "change-1",
-				requestId: expect.any(String),
+				requestId: expect.stringMatching(/^apply:change-1:/),
 			}),
 		)
 	})
 
-	it("uses the provider capability to disable Apply during active parent work", () => {
+	it("provider capability disables mutation actions during active parent work", async () => {
+		const user = userEvent.setup()
 		render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" />)
-		fireEvent.click(screen.getByRole("button", { name: "Expand sub-agent group" }))
-		sendChangeSetCapability(false, "Wait for the parent command to finish.")
+		sendChangeSetCapability(false, "Pause the parent first")
+		await openActions(user, "Maple")
 
-		expect(screen.getByRole("button", { name: "Apply changes" })).toBeDisabled()
-		expect(screen.getByRole("button", { name: /discard/i })).toBeDisabled()
-		expect(screen.getByText("Wait for the parent command to finish.")).toBeInTheDocument()
+		expect(screen.getByRole("menuitem", { name: "Apply changes" })).toHaveAttribute("data-disabled")
+		expect(screen.getByRole("menuitem", { name: "Discard" })).toHaveAttribute("data-disabled")
+		expect(screen.getByText("Pause the parent first")).toBeInTheDocument()
 	})
 
-	it("shows pending state and prevents duplicate Apply submissions", () => {
+	it("keeps Discard available when a terminal parent can no longer Apply", async () => {
+		const user = userEvent.setup()
 		render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" />)
-		fireEvent.click(screen.getByRole("button", { name: "Expand sub-agent group" }))
-		sendChangeSetCapability(true, "The parent is paused for your review.")
+		sendChangeSetCapability(false, "The parent task has already completed.", "unavailable", {
+			discard: {
+				allowed: true,
+				state: "available",
+				reason: "The completed parent can still discard this quarantined proposal.",
+			},
+		})
+		await openActions(user, "Maple")
 
-		const apply = screen.getByRole("button", { name: "Apply changes" })
-		fireEvent.click(apply)
-		const confirm = screen.getByRole("button", { name: "Confirm apply" })
-		fireEvent.click(confirm)
-		fireEvent.click(confirm)
+		expect(screen.getByRole("menuitem", { name: "Apply changes" })).toHaveAttribute("data-disabled")
+		expect(screen.getByRole("menuitem", { name: "Discard" })).not.toHaveAttribute("data-disabled")
+		expect(screen.getByText("Apply unavailable: The parent task has already completed.")).toBeInTheDocument()
 
-		expect(screen.getByRole("button", { name: "Applying…" })).toBeDisabled()
-		expect(
-			postMessage.mock.calls.filter(
-				([message]) => (message as { type?: string }).type === "applySubagentChangeSet",
-			),
-		).toHaveLength(1)
+		await user.click(screen.getByRole("menuitem", { name: "Discard" }))
+		expect(screen.getByRole("dialog", { name: "Discard Worker changes?" })).toBeInTheDocument()
+		await user.click(screen.getByRole("button", { name: "Confirm discard" }))
+		expect(postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "discardSubagentChangeSet",
+				taskId: "parent-1",
+				groupId: "group-1",
+				changeSetId: "change-1",
+				requestId: expect.stringMatching(/^discard:change-1:/),
+			}),
+		)
 	})
 
-	it("surfaces a provider Apply error inline", () => {
+	it("revalidates provider capability before confirming an external mutation", async () => {
+		const user = userEvent.setup()
 		render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" />)
-		fireEvent.click(screen.getByRole("button", { name: "Expand sub-agent group" }))
-		sendChangeSetCapability(true, "The parent is paused for your review.")
-		fireEvent.click(screen.getByRole("button", { name: "Apply changes" }))
-		fireEvent.click(screen.getByRole("button", { name: "Confirm apply" }))
-		const request = postMessage.mock.calls
+		sendChangeSetCapability(true, "Ready")
+		await openActions(user, "Maple")
+		await user.click(screen.getByRole("menuitem", { name: "Apply changes" }))
+
+		sendChangeSetCapability(false, "The parent resumed work")
+
+		expect(screen.getByRole("button", { name: "Confirm apply" })).toBeDisabled()
+		expect(screen.getByRole("status")).toHaveTextContent("The parent resumed work")
+		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "applySubagentChangeSet" }))
+	})
+
+	it("prevents duplicate Apply while a provider request is pending and surfaces failure", async () => {
+		const user = userEvent.setup()
+		render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" />)
+		sendChangeSetCapability(true, "Ready")
+		await openActions(user, "Maple")
+		await user.click(screen.getByRole("menuitem", { name: "Apply changes" }))
+		await user.click(screen.getByRole("button", { name: "Confirm apply" }))
+
+		const applyRequest = postMessage.mock.calls
 			.map(([message]) => message as { type?: string; requestId?: string })
-			.find((message) => message.type === "applySubagentChangeSet")!
+			.find((message) => message.type === "applySubagentChangeSet")
+		expect(applyRequest?.requestId).toBeDefined()
 
 		act(() => {
 			window.dispatchEvent(
 				new MessageEvent("message", {
 					data: {
 						type: "subagentChangeSetActionResult",
-						requestId: request.requestId,
+						requestId: "stale-request",
 						subagentChangeSetActionResult: {
 							action: "apply",
 							taskId: "parent-1",
 							groupId: "group-1",
 							changeSetId: "change-1",
 							success: false,
-							changeSetStatus: "conflicted",
+							message: "Stale result must be ignored.",
+						},
+					},
+				}),
+			)
+		})
+		expect(screen.queryByText("Stale result must be ignored.")).not.toBeInTheDocument()
+
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "subagentChangeSetActionResult",
+						requestId: applyRequest!.requestId,
+						subagentChangeSetActionResult: {
+							action: "apply",
+							taskId: "parent-1",
+							groupId: "group-1",
+							changeSetId: "change-1",
+							success: false,
 							message: "Parent files changed; review the conflict.",
 						},
 					},
@@ -432,73 +399,53 @@ describe("SubagentGroupCard", () => {
 		})
 
 		expect(screen.getByRole("alert")).toHaveTextContent("Parent files changed")
-		expect(screen.getByRole("button", { name: "Apply changes" })).toBeEnabled()
+		expect(
+			postMessage.mock.calls.filter(
+				([message]) => (message as { type?: string }).type === "applySubagentChangeSet",
+			),
+		).toHaveLength(1)
 	})
 
-	it("cancels Discard confirmation without submitting it", () => {
+	it("cancels Discard confirmation without submitting it", async () => {
+		const user = userEvent.setup()
 		render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" />)
-		fireEvent.click(screen.getByRole("button", { name: "Expand sub-agent group" }))
-		sendChangeSetCapability(true, "The parent is paused for your review.")
+		sendChangeSetCapability(true, "Ready")
+		await openActions(user, "Maple")
+		await user.click(screen.getByRole("menuitem", { name: "Discard" }))
+		await user.click(screen.getByRole("button", { name: "Cancel" }))
 
-		fireEvent.click(screen.getByRole("button", { name: "Discard" }))
-		expect(screen.getByRole("dialog", { name: "Discard Worker changes?" })).toBeInTheDocument()
-		fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
-
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog", { name: "Discard Worker changes?" })).not.toBeInTheDocument(),
+		)
 		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "discardSubagentChangeSet" }))
 	})
 
-	it.each([
-		["required" as const, "Review required", "Review the Worker diff"],
-		["pending" as const, "Verification pending", "names at least one applied file"],
-		["failed" as const, "Verification failed", "Fix the issue"],
-		["satisfied" as const, "Verified", "completion is unblocked"],
-	])("renders actionable parent verification state %s", (status, label, nextAction) => {
-		const applied = status === "required" ? "pending_review" : "applied"
-		const group = makeWorkerGroup({
-			changeSet: {
-				id: "change-1",
-				status: applied,
-				changedFiles: ["src/parser/index.ts"],
-				createdAt: 4_000,
-				updatedAt: 5_000,
-			},
-			parentVerification: {
-				status,
-				blocking: status === "pending" || status === "failed",
-				obligationCount: 1,
-				unresolvedCount: status === "satisfied" ? 0 : 1,
-				changeSetId: "change-1",
-				updatedAt: 5_000,
-				message: label,
-			},
-		})
-		render(<SubagentGroupCard group={group} parentTaskId="parent-1" />)
-		fireEvent.click(screen.getByRole("button", { name: "Expand sub-agent group" }))
-
-		expect(screen.getByText(label)).toBeInTheDocument()
-		expect(screen.getByText(new RegExp(nextAction, "i"))).toBeInTheDocument()
-	})
-
-	it("surfaces worker command approval with accessible approve and deny controls", () => {
+	it("keeps command approval behind an explicit compact attention flow", async () => {
+		const user = userEvent.setup()
 		const group = makeGroup({
 			agents: [
 				{
 					...makeGroup().agents[0],
-					role: "worker",
-					writeScope: ["src"],
 					pendingApproval: {
 						id: "approval-1",
 						type: "command",
-						operation: "pnpm test parser",
+						operation: "pnpm test --filter core",
+						scope: "workspace",
 						createdAt: 2_000,
 					},
 				},
 			],
 		})
 		render(<SubagentGroupCard group={group} parentTaskId="parent-1" />)
-		fireEvent.click(screen.getByRole("button", { name: "Approve Maple request: pnpm test parser" }))
-		expect(screen.getByRole("button", { name: "Deny Maple request: pnpm test parser" })).toBeInTheDocument()
 
+		expect(screen.getByRole("button", { name: /Open Maple · Working · Approval/i })).toHaveTextContent("Approval")
+		expect(screen.queryByText("pnpm test --filter core")).not.toBeInTheDocument()
+		await openActions(user, "Maple")
+		await user.click(screen.getByRole("menuitem", { name: "Review request" }))
+		expect(screen.getByRole("dialog", { name: "Review Maple's request" })).toHaveTextContent(
+			"pnpm test --filter core",
+		)
+		await user.click(screen.getByRole("button", { name: "Approve" }))
 		expect(postMessage).toHaveBeenCalledWith({
 			type: "respondToSubagentApproval",
 			taskId: "parent-1",
@@ -507,5 +454,58 @@ describe("SubagentGroupCard", () => {
 			approvalId: "approval-1",
 			approved: true,
 		})
+	})
+
+	it("closes an approval dialog when a newer snapshot resolves the request", async () => {
+		const user = userEvent.setup()
+		const pendingAgent = {
+			...makeGroup().agents[0],
+			pendingApproval: {
+				id: "approval-1",
+				type: "command" as const,
+				operation: "pnpm test",
+				createdAt: 2_000,
+			},
+		}
+		const { rerender } = render(
+			<SubagentGroupCard group={makeGroup({ agents: [pendingAgent] })} parentTaskId="parent-1" />,
+		)
+		await openActions(user, "Maple")
+		await user.click(screen.getByRole("menuitem", { name: "Review request" }))
+
+		rerender(
+			<SubagentGroupCard
+				group={makeGroup({ agents: [{ ...pendingAgent, pendingApproval: undefined }] })}
+				parentTaskId="parent-1"
+			/>,
+		)
+
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog", { name: "Review Maple's request" })).not.toBeInTheDocument(),
+		)
+		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "respondToSubagentApproval" }))
+	})
+
+	it("closes steering when the selected agent is no longer running", async () => {
+		const user = userEvent.setup()
+		const runningAgent = makeGroup().agents[0]
+		const { rerender } = render(
+			<SubagentGroupCard group={makeGroup({ agents: [runningAgent] })} parentTaskId="parent-1" />,
+		)
+		await openActions(user, "Maple")
+		await user.click(screen.getByRole("menuitem", { name: "Steer" }))
+
+		rerender(
+			<SubagentGroupCard
+				group={makeGroup({
+					status: "completed",
+					agents: [{ ...runningAgent, status: "completed", completedAt: 3_000 }],
+				})}
+				parentTaskId="parent-1"
+			/>,
+		)
+
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Steer Maple" })).not.toBeInTheDocument())
+		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "steerSubagent" }))
 	})
 })

@@ -31,8 +31,7 @@ interface ExecuteCommandParams {
 	timeout?: number | null
 }
 
-export function resolveAgentTimeoutMs(timeoutSeconds: number | null | undefined, isManagedWorker = false): number {
-	if (isManagedWorker) return 0
+export function resolveAgentTimeoutMs(timeoutSeconds: number | null | undefined): number {
 	const requestedAgentTimeout = typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds * 1000 : 0
 
 	// In CLI runtime, stdin harnesses expect command lifetime to be governed
@@ -120,10 +119,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			const commandExecutionTimeout = isCommandAllowlisted ? 0 : commandExecutionTimeoutSeconds * 1000
 
 			// Convert agent-specified timeout from seconds to milliseconds
-			const agentTimeout = resolveAgentTimeoutMs(
-				timeoutSeconds,
-				task.taskKind === "subagent" && task.subagentRole === "worker",
-			)
+			const agentTimeout = resolveAgentTimeoutMs(timeoutSeconds)
 
 			const options: ExecuteCommandOptions = {
 				executionId,
@@ -209,6 +205,12 @@ export async function executeCommandInTerminal(
 	let workingDir: string
 
 	const isManagedWorker = task.taskKind === "subagent" && task.subagentRole === "worker"
+	const cancellationResult = (): [boolean, ToolResponse] => {
+		if (toolCallId) task.failCommandExecution?.(toolCallId, "cancelled")
+		return [false, "Command was not started because the task was cancelled."]
+	}
+	const taskWasCancelled = () => task.abort || task.getTaskLifetimeCancellationSignal().aborted
+	if (taskWasCancelled()) return cancellationResult()
 	if (isManagedWorker && customCwd && path.isAbsolute(customCwd)) {
 		if (toolCallId) task.failCommandExecution?.(toolCallId)
 		return [false, "Editing workers may use only workspace-relative command directories."]
@@ -245,7 +247,9 @@ export async function executeCommandInTerminal(
 	let shellIntegrationError: string | undefined
 	let hasAskedForCommandOutput = false
 
-	const terminalProvider = terminalShellIntegrationDisabled ? "execa" : "vscode"
+	// Managed workers run unattended and must use the terminal provider whose
+	// process tree can be deterministically terminated by task cancellation.
+	const terminalProvider = isManagedWorker || terminalShellIntegrationDisabled ? "execa" : "vscode"
 	const provider = await task.providerRef.deref()
 
 	// Get global storage path for persisted output artifacts
@@ -418,7 +422,9 @@ export async function executeCommandInTerminal(
 		}
 	}
 
+	if (taskWasCancelled()) return cancellationResult()
 	const terminal = await TerminalRegistry.getOrCreateTerminal(workingDir, task.taskId, terminalProvider)
+	if (taskWasCancelled()) return cancellationResult()
 
 	if (terminal instanceof Terminal) {
 		terminal.terminal.show(true)
@@ -433,13 +439,13 @@ export async function executeCommandInTerminal(
 	task.terminalProcess = process
 
 	// Dual-timeout logic:
-	// - Agent timeout: transitions the command to background (continues running)
-	// - User timeout: aborts the command (kills it)
-	// Both timers run independently — the user timeout remains active as a safety net
-	// even after the agent timeout moves the command to the background.
+	// - Agent timeout: transitions the command to background (continues running).
+	// - User timeout: remains a hard process-lifetime ceiling and aborts the
+	//   registry-owned process even if the agent timeout returned first.
 	let agentTimeoutId: NodeJS.Timeout | undefined
 	let userTimeoutId: NodeJS.Timeout | undefined
 	let isUserTimedOut = false
+	let userTimeoutCleanupError: unknown
 
 	try {
 		const racers: Promise<void>[] = [process]
@@ -465,8 +471,27 @@ export async function executeCommandInTerminal(
 					userTimeoutId = setTimeout(() => {
 						isUserTimedOut = true
 						if (toolCallId) task.failCommandExecution?.(toolCallId, "timed_out")
-						task.terminalProcess?.abort()
-						reject(new Error(`Command execution timed out after ${commandExecutionTimeout}ms`))
+						const status: CommandExecutionStatus = { executionId, status: "timeout" }
+						provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
+						if (runInBackground) {
+							task.didToolFailInCurrentTurn = true
+							void task
+								.say(
+									"error",
+									t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }),
+								)
+								.catch((error) =>
+									console.error("Failed to report a background command timeout:", error),
+								)
+						}
+						void Promise.resolve(process.abort()).then(
+							() => reject(new Error(`Command execution timed out after ${commandExecutionTimeout}ms`)),
+							(error) => {
+								userTimeoutCleanupError = error
+								console.error("Failed to terminate a timed-out command:", error)
+								reject(error)
+							},
+						)
 					}, commandExecutionTimeout)
 				}),
 			)
@@ -475,9 +500,12 @@ export async function executeCommandInTerminal(
 		await Promise.race(racers)
 	} catch (error) {
 		if (isUserTimedOut) {
-			if (toolCallId) task.failCommandExecution?.(toolCallId, "timed_out")
-			const status: CommandExecutionStatus = { executionId, status: "timeout" }
-			provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
+			if (userTimeoutCleanupError) {
+				throw new Error(
+					`Command exceeded its timeout and process cleanup failed: ${userTimeoutCleanupError instanceof Error ? userTimeoutCleanupError.message : String(userTimeoutCleanupError)}`,
+					{ cause: userTimeoutCleanupError },
+				)
+			}
 			await task.say("error", t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }))
 			task.didToolFailInCurrentTurn = true
 			task.terminalProcess = undefined
@@ -490,7 +518,19 @@ export async function executeCommandInTerminal(
 		throw error
 	} finally {
 		clearTimeout(agentTimeoutId)
-		clearTimeout(userTimeoutId)
+		const keepUserTimeoutForBackground =
+			commandExecutionTimeout > 0 && runInBackground && !completed && !exitDetails && process.isSettled !== true
+		if (keepUserTimeoutForBackground) {
+			const clearBackgroundUserTimeout = () => {
+				clearTimeout(userTimeoutId)
+				process.removeListener("completed", clearBackgroundUserTimeout)
+				process.removeListener("error", clearBackgroundUserTimeout)
+			}
+			process.once("completed", clearBackgroundUserTimeout)
+			process.once("error", clearBackgroundUserTimeout)
+		} else {
+			clearTimeout(userTimeoutId)
+		}
 		clearTimeout(pendingCommandOutputEmitTimer)
 		task.terminalProcess = undefined
 	}
@@ -513,6 +553,8 @@ export async function executeCommandInTerminal(
 		await onCompletedPromise
 	}
 
+	const displayOutput = result || latestCompressedOutput || ""
+
 	if (message) {
 		const { text, images } = message
 		await task.say("user_feedback", text, images)
@@ -524,7 +566,7 @@ export async function executeCommandInTerminal(
 					task,
 					[
 						`Command is still running in terminal from '${terminal.getCurrentWorkingDirectory().toPosix()}'.`,
-						result.length > 0 ? `Here's the output so far:\n${result}\n` : "\n",
+						displayOutput.length > 0 ? `Here's the output so far:\n${displayOutput}\n` : "\n",
 						`<user_message>\n${text}\n</user_message>`,
 					].join("\n"),
 				),
@@ -582,7 +624,7 @@ export async function executeCommandInTerminal(
 				task,
 				[
 					`Command is still running in terminal ${workingDir ? ` from '${isManagedWorker ? "." : workingDir.toPosix()}'` : ""}.`,
-					result.length > 0 ? `Here's the output so far:\n${result}\n` : "\n",
+					displayOutput.length > 0 ? `Here's the output so far:\n${displayOutput}\n` : "\n",
 					"You will be updated on the terminal status and new output in the future.",
 				].join("\n"),
 			),

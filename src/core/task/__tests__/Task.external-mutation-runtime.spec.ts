@@ -55,6 +55,56 @@ describe("Task external mutation runtime state", () => {
 		})
 	})
 
+	it("pauses between a nested Worker result and the next provider request until review settles", async () => {
+		const provider = { postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined) }
+		const group = {
+			groupId: "nested-group",
+			createdAt: Date.now(),
+			agents: [{ changeSet: { id: "nested-change", status: "pending_review" } }],
+		}
+		const task = makePausedTask({
+			activeAsk: undefined,
+			providerRef: { deref: () => provider },
+			clineMessages: [
+				{
+					type: "say",
+					say: "subagent_group",
+					subagentGroup: structuredClone(group),
+				},
+			],
+			isAwaitingSubagentReview: false,
+			subagentReviewBarrier: undefined,
+			saveClineMessages: vi.fn(async () => true),
+			updateClineMessage: vi.fn(async () => undefined),
+		})
+
+		const waiting = (task as any).waitForPendingSubagentChangeSetReviews() as Promise<void>
+		expect(task.getExternalMutationCapability()).toEqual({
+			allowed: true,
+			state: "available",
+			reason: "The parent is paused for nested Worker review.",
+		})
+
+		const lease = task.acquireExternalMutation("applying Worker changes")
+		expect(lease.release).toBeTypeOf("function")
+		const reviewedGroup = structuredClone(group)
+		reviewedGroup.agents[0].changeSet.status = "applied"
+		await task.upsertSubagentGroup(reviewedGroup as any)
+
+		let resumed = false
+		void waiting.then(() => {
+			resumed = true
+		})
+		await Promise.resolve()
+		expect(resumed).toBe(false)
+
+		lease.release!()
+		await waiting
+		expect(resumed).toBe(true)
+		expect((task as any).isAwaitingSubagentReview).toBe(false)
+		expect(provider.postStateToWebviewWithoutTaskHistory).toHaveBeenCalledOnce()
+	})
+
 	it.each([
 		[
 			"a command",

@@ -91,6 +91,90 @@ describe("AgentControlStore nested trees", () => {
 		expect(store.readMailbox(grandchild.taskId, { rootTaskId: root.taskId }).entries).toEqual([])
 	})
 
+	it("layers Worker verification ownership at each immediate parent", async () => {
+		const { store, root } = await createNestedTree()
+		const outerWorker = await store.createAgent({
+			taskId: "outer-worker",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Outer Worker",
+			role: "worker",
+			objective: "Own the outer private checkout",
+			status: "running",
+		})
+		const nestedWorker = await store.createAgent({
+			taskId: "nested-worker",
+			parentTaskId: outerWorker.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Nested Worker",
+			role: "worker",
+			objective: "Implement inside the owning Worker checkout",
+			status: "completed",
+		})
+		await store.recordWorkerChangeSet({
+			rootTaskId: root.rootTaskId,
+			parentTaskId: outerWorker.taskId,
+			workerTaskId: nestedWorker.taskId,
+			workerPath: nestedWorker.path,
+			workerNickname: nestedWorker.nickname,
+			groupId: "nested-worker-group",
+			changeSet: {
+				id: "nested-change",
+				status: "applied",
+				changedFiles: ["src/nested.ts"],
+				createdAt: 2_000,
+				updatedAt: 2_100,
+			},
+			reviewSource: "apply",
+			at: 2_100,
+		})
+
+		expect(store.getVerificationObligations({ parentTaskId: outerWorker.taskId })).toMatchObject([
+			{ parentTaskId: outerWorker.taskId, workerTaskId: nestedWorker.taskId, status: "pending" },
+		])
+		expect(store.getParentCompletionDecision(outerWorker.taskId, root.rootTaskId).allowed).toBe(false)
+		expect(store.getParentCompletionDecision(root.taskId, root.rootTaskId).allowed).toBe(true)
+
+		await store.recordParentVerificationEvidence(
+			outerWorker.taskId,
+			[
+				{
+					toolCallId: "verify-nested",
+					executionId: "verify-nested-execution",
+					status: "succeeded",
+					command: "pnpm test src/nested.ts",
+					startedAt: 2_101,
+					completedAt: 2_102,
+					exitCode: 0,
+				},
+			],
+			root.rootTaskId,
+		)
+		expect(store.getParentCompletionDecision(outerWorker.taskId, root.rootTaskId).allowed).toBe(true)
+
+		await store.recordWorkerChangeSet({
+			rootTaskId: root.rootTaskId,
+			parentTaskId: root.taskId,
+			workerTaskId: outerWorker.taskId,
+			workerPath: outerWorker.path,
+			workerNickname: outerWorker.nickname,
+			groupId: "outer-worker-group",
+			changeSet: {
+				id: "outer-change",
+				status: "applied",
+				changedFiles: ["src/nested.ts"],
+				createdAt: 2_200,
+				updatedAt: 2_300,
+			},
+			reviewSource: "apply",
+			at: 2_300,
+		})
+		expect(store.getParentCompletionDecision(root.taskId, root.rootTaskId).allowed).toBe(false)
+		expect(store.getVerificationObligations({ parentTaskId: root.taskId })).toMatchObject([
+			{ parentTaskId: root.taskId, workerTaskId: outerWorker.taskId, status: "pending" },
+		])
+	})
+
 	it("rejects mailbox senders from a different root tree", async () => {
 		const { store, root, grandchild } = await createNestedTree()
 		await store.ensureRoot({ taskId: "root-2", objective: "Another tree", status: "running" })
@@ -133,34 +217,44 @@ describe("AgentControlStore nested trees", () => {
 			status: "interrupted",
 			snapshot: { stopReason: "interrupted" },
 		})
-		expect(
-			reloaded.readMailbox(root.taskId, { rootTaskId: root.taskId }).entries.map((entry) => ({
-				senderTaskId: entry.senderTaskId,
-				recipientTaskId: entry.recipientTaskId,
-				name: entry.name,
-				payload: entry.payload,
-			})),
-		).toEqual([
+		expect(reloaded.readMailbox(root.taskId, { rootTaskId: root.taskId }).entries).toMatchObject([
 			{
 				senderTaskId: child.taskId,
 				recipientTaskId: root.taskId,
+				kind: "lifecycle",
 				name: "recovered_interrupted",
 				payload: { previousStatus: "running", stopReason: "interrupted" },
 			},
+			{
+				senderTaskId: child.taskId,
+				recipientTaskId: root.taskId,
+				kind: "result",
+				name: "agent_interrupted",
+				payload: {
+					taskId: child.taskId,
+					status: "interrupted",
+					stopReason: "interrupted",
+				},
+			},
 		])
-		expect(
-			reloaded.readMailbox(child.taskId, { rootTaskId: root.taskId }).entries.map((entry) => ({
-				senderTaskId: entry.senderTaskId,
-				recipientTaskId: entry.recipientTaskId,
-				name: entry.name,
-				payload: entry.payload,
-			})),
-		).toEqual([
+		expect(reloaded.readMailbox(child.taskId, { rootTaskId: root.taskId }).entries).toMatchObject([
 			{
 				senderTaskId: grandchild.taskId,
 				recipientTaskId: child.taskId,
+				kind: "lifecycle",
 				name: "recovered_interrupted",
 				payload: { previousStatus: "running", stopReason: "interrupted" },
+			},
+			{
+				senderTaskId: grandchild.taskId,
+				recipientTaskId: child.taskId,
+				kind: "result",
+				name: "agent_interrupted",
+				payload: {
+					taskId: grandchild.taskId,
+					status: "interrupted",
+					stopReason: "interrupted",
+				},
 			},
 		])
 
@@ -169,6 +263,9 @@ describe("AgentControlStore nested trees", () => {
 		expect(
 			reloadedAgain.getSnapshot().mailbox.filter((entry) => entry.name === "recovered_interrupted"),
 		).toHaveLength(2)
+		expect(reloadedAgain.getSnapshot().mailbox.filter((entry) => entry.name === "agent_interrupted")).toHaveLength(
+			2,
+		)
 	})
 
 	it("routes an orphaned descendant recovery notice to the surviving root", async () => {
@@ -186,10 +283,11 @@ describe("AgentControlStore nested trees", () => {
 			status: "interrupted",
 			snapshot: { stopReason: "orphaned" },
 		})
-		expect(reloaded.readMailbox(root.taskId, { rootTaskId: root.taskId }).entries).toEqual([
+		expect(reloaded.readMailbox(root.taskId, { rootTaskId: root.taskId }).entries).toMatchObject([
 			expect.objectContaining({
 				senderTaskId: grandchild.taskId,
 				recipientTaskId: root.taskId,
+				kind: "lifecycle",
 				name: "recovered_interrupted",
 				payload: {
 					previousStatus: "running",
@@ -197,6 +295,17 @@ describe("AgentControlStore nested trees", () => {
 					orphaned: true,
 					missingParentTaskId: child.taskId,
 				},
+			}),
+			expect.objectContaining({
+				senderTaskId: grandchild.taskId,
+				recipientTaskId: root.taskId,
+				kind: "result",
+				name: "agent_interrupted",
+				payload: expect.objectContaining({
+					taskId: grandchild.taskId,
+					status: "interrupted",
+					stopReason: "orphaned",
+				}),
 			}),
 		])
 	})

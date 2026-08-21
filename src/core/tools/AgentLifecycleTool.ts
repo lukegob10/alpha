@@ -12,6 +12,7 @@ export type AgentLifecycleToolName =
 	| "list_agents"
 	| "wait_agent"
 	| "send_message"
+	| "report_progress"
 	| "followup_task"
 	| "interrupt_agent"
 	| "cancel_agent"
@@ -26,6 +27,7 @@ export interface AgentLifecycleControlProvider {
 	listAgents(parent: Task, pathPrefix?: string): Promise<unknown>
 	waitForAgent(parent: Task, timeoutMs?: number): Promise<unknown>
 	sendMessageToAgent(parent: Task, target: string, message: string): Promise<unknown>
+	reportAgentProgress(child: Task, message: string): Promise<unknown>
 	followupAgentTask(parent: Task, target: string, message: string): Promise<unknown>
 	requiresExplicitAgentFollowupApproval?(parent: Task, target: string): Promise<boolean>
 	interruptAgent(parent: Task, target: string): Promise<unknown>

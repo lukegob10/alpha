@@ -58,7 +58,9 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		})
 
 		expect(names(result.tools as any)).toContain("spawn_agent")
+		expect(names(result.tools as any)).not.toContain("report_progress")
 		expect(result.allowedFunctionNames).toContain("spawn_agent")
+		expect(result.allowedFunctionNames).not.toContain("report_progress")
 		const nativeTools = result.tools as Array<{
 			function?: {
 				name: string
@@ -101,6 +103,7 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 	it("omits orchestration tools from a legacy managed child without delegation authority", async () => {
 		const allowedToolNames = managedChildAllowedTools(false)
 		expect(allowedToolNames).not.toContain("spawn_agent")
+		expect(allowedToolNames).toContain("report_progress")
 
 		const result = await buildNativeToolsArrayWithRestrictions({
 			provider,
@@ -117,5 +120,7 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 			expect(names(result.tools as any)).not.toContain(tool)
 			expect(result.allowedFunctionNames).not.toContain(tool)
 		}
+		expect(names(result.tools as any)).toContain("report_progress")
+		expect(result.allowedFunctionNames).toContain("report_progress")
 	})
 })

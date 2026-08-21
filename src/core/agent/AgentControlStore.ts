@@ -201,6 +201,25 @@ export interface AgentMailboxRead {
 	nextSequence: number
 }
 
+export type AgentMailboxClaimChannel = "wait" | "automatic"
+type AgentMailboxClaimDisposition = "acknowledge" | "release"
+
+export interface ClaimAgentMailboxOptions {
+	rootTaskId?: string
+	afterSequence?: number
+	limit?: number
+	kinds?: AgentMailboxKind[]
+	payloadTaskIds?: string[]
+	channel: AgentMailboxClaimChannel
+	claimId?: string
+}
+
+export interface AgentMailboxClaim {
+	claimId: string
+	channel: AgentMailboxClaimChannel
+	entries: AgentMailboxEntry[]
+}
+
 export interface ListAgentsOptions {
 	rootTaskId?: string
 	parentTaskId?: string
@@ -232,6 +251,13 @@ interface MutableAddress {
 	rootTaskId: string
 }
 
+interface PendingMailboxClaimSettlement {
+	claimId: string
+	recipientTaskId: string
+	rootTaskId: string
+	disposition: AgentMailboxClaimDisposition
+}
+
 /**
  * Durable source of truth for agent identity, tree state, and parent/child mailboxes.
  *
@@ -244,6 +270,7 @@ export class AgentControlStore {
 	private initialized = false
 	private writeLock: Promise<void> = Promise.resolve()
 	private readonly listeners = new Set<AgentMailboxListener>()
+	private readonly pendingMailboxClaimSettlements = new Map<string, PendingMailboxClaimSettlement>()
 
 	constructor(
 		private readonly persistence: AgentControlPersistence,
@@ -276,7 +303,15 @@ export class AgentControlStore {
 
 			const recoveredEvents: AgentMailboxEntry[] = []
 			let recoveredRecordCount = 0
+			let recoveredClaimCount = 0
 			const recoveredAt = this.now()
+			for (const entry of draft.mailbox) {
+				if (!entry.claimId || entry.acknowledgedAt !== undefined) continue
+				delete entry.claimId
+				delete entry.claimedAt
+				delete entry.claimChannel
+				recoveredClaimCount++
+			}
 			for (const record of draft.agents) {
 				if (!ACTIVE_STATUSES.has(record.status)) {
 					continue
@@ -326,9 +361,44 @@ export class AgentControlStore {
 					draft.mailbox.push(entry)
 					recoveredEvents.push(entry)
 				}
+
+				// A recovered interruption is also the terminal outcome of the
+				// abandoned run. Publish the same result shape as the normal child
+				// completion path so automatic report delivery can claim it and the
+				// parent completion guard cannot wait forever on a lifecycle-only
+				// event.
+				const resultEventId = `agent-recovery-result:${record.rootTaskId}:${record.taskId}:${previousStatus}:${previousUpdatedAt}`
+				if (!draft.mailbox.some((entry) => entry.eventId === resultEventId)) {
+					const entry: AgentMailboxEntry = {
+						eventId: resultEventId,
+						sequence: draft.nextSequence++,
+						rootTaskId: record.rootTaskId,
+						senderTaskId: record.taskId,
+						senderPath: record.path,
+						recipientTaskId: recoveryRecipient.taskId,
+						recipientPath: recoveryRecipient.path,
+						kind: "result",
+						name: "agent_interrupted",
+						payload: {
+							taskId: record.taskId,
+							path: record.path,
+							...(record.groupId ? { groupId: record.groupId } : {}),
+							status: "interrupted",
+							summary:
+								stopReason === "orphaned"
+									? "The sub-agent was orphaned because its parent was unavailable during recovery."
+									: "The extension reloaded before this sub-agent finished.",
+							stopReason,
+							previousStatus,
+						},
+						createdAt: recoveredAt,
+					}
+					draft.mailbox.push(entry)
+					recoveredEvents.push(entry)
+				}
 			}
 
-			if (recoveredRecordCount > 0) {
+			if (recoveredRecordCount > 0 || recoveredClaimCount > 0) {
 				draft.updatedAt = recoveredAt
 				await this.persistence.write(draft)
 			}
@@ -346,6 +416,46 @@ export class AgentControlStore {
 	getSnapshot(): AgentControlState {
 		this.assertInitialized()
 		return clone(this.state)
+	}
+
+	/**
+	 * Permanently remove one managed-agent tree after its owning root task is
+	 * explicitly deleted. No time-based pruning is used because retained mailbox
+	 * and verification records remain audit evidence while task history exists.
+	 */
+	async purgeRoot(rootTaskId: string): Promise<boolean> {
+		this.assertInitialized()
+		if (!rootTaskId.trim()) throw new Error("A root task ID is required")
+		const cursorKeyPrefix = `${rootTaskId}:`
+
+		return this.withWriteLock(async () => {
+			const hasRetainedState =
+				this.state.agents.some((record) => record.rootTaskId === rootTaskId) ||
+				this.state.tombstones.some((record) => record.rootTaskId === rootTaskId) ||
+				this.state.mailbox.some((entry) => entry.rootTaskId === rootTaskId) ||
+				Object.keys(this.state.mailboxCursors).some((key) => key.startsWith(cursorKeyPrefix)) ||
+				this.state.verificationObligations.some((obligation) => obligation.rootTaskId === rootTaskId)
+			if (!hasRetainedState) return false
+
+			const draft = clone(this.state)
+			draft.agents = draft.agents.filter((record) => record.rootTaskId !== rootTaskId)
+			draft.tombstones = draft.tombstones.filter((record) => record.rootTaskId !== rootTaskId)
+			draft.mailbox = draft.mailbox.filter((entry) => entry.rootTaskId !== rootTaskId)
+			draft.mailboxCursors = Object.fromEntries(
+				Object.entries(draft.mailboxCursors).filter(([key]) => !key.startsWith(cursorKeyPrefix)),
+			)
+			draft.verificationObligations = draft.verificationObligations.filter(
+				(obligation) => obligation.rootTaskId !== rootTaskId,
+			)
+			draft.updatedAt = this.now()
+			agentControlStateSchema.parse(draft)
+			await this.persistence.write(draft)
+			this.state = draft
+			for (const [claimId, settlement] of this.pendingMailboxClaimSettlements) {
+				if (settlement.rootTaskId === rootTaskId) this.pendingMailboxClaimSettlements.delete(claimId)
+			}
+			return true
+		})
 	}
 
 	/** Register the primary parent even when it is not managed as a subagent run. */
@@ -448,6 +558,10 @@ export class AgentControlStore {
 			record.updatedAt = timestamp
 			if (input.snapshot) {
 				record.snapshot = clone(input.snapshot)
+			}
+			if (ACTIVE_STATUSES.has(status) && record.snapshot) {
+				delete record.snapshot.stopReason
+				if (Object.keys(record.snapshot).length === 0) delete record.snapshot
 			}
 			if (status === "running") {
 				record.startedAt ??= timestamp
@@ -910,7 +1024,11 @@ export class AgentControlStore {
 		const entries = this.state.mailbox
 			.filter((entry) => entry.rootTaskId === address.rootTaskId && entry.recipientTaskId === address.taskId)
 			.filter((entry) => entry.sequence > afterSequence)
-			.filter((entry) => options.includeDelivered !== false || entry.deliveredAt === undefined)
+			.filter(
+				(entry) =>
+					options.includeDelivered !== false ||
+					(entry.deliveredAt === undefined && entry.claimId === undefined),
+			)
 			.filter((entry) => !kinds || kinds.has(entry.kind))
 			.sort((left, right) => left.sequence - right.sequence)
 			.slice(0, limit)
@@ -920,6 +1038,238 @@ export class AgentControlStore {
 			cursor: clone(cursor),
 			nextSequence: entries.at(-1)?.sequence ?? afterSequence,
 		}
+	}
+
+	/**
+	 * Claim unread mailbox entries transactionally. A claim is durable ownership:
+	 * other wait or automatic-delivery consumers cannot select the same entries.
+	 */
+	async claimMailbox(recipient: string, options: ClaimAgentMailboxOptions): Promise<AgentMailboxClaim> {
+		const claimId = options.claimId?.trim() || randomUUID()
+		const claimedAt = this.now()
+		return this.transact((draft) => {
+			const address = this.requireAddress(draft, recipient, options.rootTaskId)
+			const existing = draft.mailbox.filter((entry) => entry.claimId === claimId)
+			if (existing.length > 0) {
+				if (
+					existing.some(
+						(entry) =>
+							entry.rootTaskId !== address.rootTaskId ||
+							entry.recipientTaskId !== address.taskId ||
+							entry.claimChannel !== options.channel,
+					)
+				) {
+					throw new Error(`Mailbox claim ID ${claimId} was reused with different ownership`)
+				}
+				return {
+					claimId,
+					channel: options.channel,
+					entries: existing.filter((entry) => entry.acknowledgedAt === undefined).map(clone),
+				}
+			}
+
+			const afterSequence = options.afterSequence ?? 0
+			if (!Number.isInteger(afterSequence) || afterSequence < 0) {
+				throw new Error("Mailbox sequence must be a non-negative integer")
+			}
+			const limit = Math.max(1, Math.min(options.limit ?? 100, 1_000))
+			const kinds = options.kinds ? new Set(options.kinds) : undefined
+			const payloadTaskIds = options.payloadTaskIds ? new Set(options.payloadTaskIds) : undefined
+			const entries = draft.mailbox
+				.filter((entry) => entry.rootTaskId === address.rootTaskId && entry.recipientTaskId === address.taskId)
+				.filter((entry) => entry.sequence > afterSequence)
+				.filter((entry) => entry.acknowledgedAt === undefined && entry.claimId === undefined)
+				.filter((entry) => !kinds || kinds.has(entry.kind))
+				.filter(
+					(entry) =>
+						!payloadTaskIds ||
+						(typeof entry.payload?.taskId === "string" && payloadTaskIds.has(entry.payload.taskId)),
+				)
+				.sort((left, right) => left.sequence - right.sequence)
+				.slice(0, limit)
+			for (const entry of entries) {
+				entry.claimId = claimId
+				entry.claimedAt = claimedAt
+				entry.claimChannel = options.channel
+			}
+
+			return { claimId, channel: options.channel, entries: entries.map(clone) }
+		})
+	}
+
+	/** Commit a claim after its entries have been handed to the owning consumer. */
+	async acknowledgeMailboxClaim(
+		recipient: string,
+		claimId: string,
+		rootTaskId?: string,
+		acknowledgedAt = this.now(),
+	): Promise<AgentMailboxCursor> {
+		return this.transact((draft) => {
+			const address = this.requireAddress(draft, recipient, rootTaskId)
+			const claimedEntries = draft.mailbox.filter((entry) => entry.claimId === claimId)
+			if (claimedEntries.length === 0) throw new Error(`Unknown mailbox claim: ${claimId}`)
+			if (
+				claimedEntries.some(
+					(entry) => entry.rootTaskId !== address.rootTaskId || entry.recipientTaskId !== address.taskId,
+				)
+			) {
+				throw new Error(`Mailbox claim ${claimId} belongs to a different recipient`)
+			}
+			for (const entry of claimedEntries) {
+				entry.deliveredAt ??= acknowledgedAt
+				entry.acknowledgedAt ??= acknowledgedAt
+			}
+
+			const recipientEntries = draft.mailbox
+				.filter((entry) => entry.rootTaskId === address.rootTaskId && entry.recipientTaskId === address.taskId)
+				.sort((left, right) => left.sequence - right.sequence)
+			let lastDeliveredSequence = 0
+			let lastAcknowledgedSequence = 0
+			for (const entry of recipientEntries) {
+				if (entry.deliveredAt === undefined) break
+				lastDeliveredSequence = entry.sequence
+			}
+			for (const entry of recipientEntries) {
+				if (entry.acknowledgedAt === undefined) break
+				lastAcknowledgedSequence = entry.sequence
+			}
+			const cursor: AgentMailboxCursor = {
+				...this.cursorFor(draft, address),
+				lastDeliveredSequence,
+				lastAcknowledgedSequence,
+				updatedAt: acknowledgedAt,
+			}
+			draft.mailboxCursors[this.cursorKey(address)] = cursor
+			return clone(cursor)
+		})
+	}
+
+	/** Release an unfinished claim so another consumer may retry it. */
+	async releaseMailboxClaim(recipient: string, claimId: string, rootTaskId?: string): Promise<number> {
+		return this.transact((draft) => {
+			const address = this.requireAddress(draft, recipient, rootTaskId)
+			const claimedEntries = draft.mailbox.filter((entry) => entry.claimId === claimId)
+			if (
+				claimedEntries.some(
+					(entry) => entry.rootTaskId !== address.rootTaskId || entry.recipientTaskId !== address.taskId,
+				)
+			) {
+				throw new Error(`Mailbox claim ${claimId} belongs to a different recipient`)
+			}
+			let released = 0
+			for (const entry of claimedEntries) {
+				if (entry.acknowledgedAt !== undefined) continue
+				delete entry.claimId
+				delete entry.claimedAt
+				delete entry.claimChannel
+				released++
+			}
+			return released
+		})
+	}
+
+	/**
+	 * Remember an automatic-delivery settlement until its durable write succeeds.
+	 * The store outlives individual Task instances, so a same-host task replacement
+	 * can finish an ACK or release without changing its exact-once disposition.
+	 */
+	async settleMailboxClaim(
+		recipient: string,
+		claimId: string,
+		disposition: AgentMailboxClaimDisposition,
+		rootTaskId?: string,
+	): Promise<void> {
+		this.assertInitialized()
+		const normalizedClaimId = claimId.trim()
+		if (!normalizedClaimId) throw new Error("A mailbox claim ID is required")
+		const address = this.requireAddress(this.state, recipient, rootTaskId)
+		const settlement: PendingMailboxClaimSettlement = {
+			claimId: normalizedClaimId,
+			recipientTaskId: address.taskId,
+			rootTaskId: address.rootTaskId,
+			disposition,
+		}
+		const pending = this.pendingMailboxClaimSettlements.get(normalizedClaimId)
+		if (
+			pending &&
+			(pending.recipientTaskId !== settlement.recipientTaskId ||
+				pending.rootTaskId !== settlement.rootTaskId ||
+				pending.disposition !== settlement.disposition)
+		) {
+			throw new Error(`Mailbox claim ${normalizedClaimId} already has a different pending settlement`)
+		}
+		this.pendingMailboxClaimSettlements.set(normalizedClaimId, settlement)
+
+		if (disposition === "acknowledge") {
+			await this.acknowledgeMailboxClaim(address.taskId, normalizedClaimId, address.rootTaskId)
+		} else {
+			await this.releaseMailboxClaim(address.taskId, normalizedClaimId, address.rootTaskId)
+		}
+		if (this.pendingMailboxClaimSettlements.get(normalizedClaimId) === settlement) {
+			this.pendingMailboxClaimSettlements.delete(normalizedClaimId)
+		}
+	}
+
+	/** Retry same-host claim settlements retained across Task replacement. */
+	async retryPendingMailboxClaimSettlements(recipient: string, rootTaskId?: string): Promise<number> {
+		const pending = [...this.pendingMailboxClaimSettlements.values()].filter(
+			(settlement) =>
+				settlement.recipientTaskId === recipient &&
+				(rootTaskId === undefined || settlement.rootTaskId === rootTaskId),
+		)
+		if (pending.length === 0) return 0
+		this.assertInitialized()
+		for (const settlement of pending) {
+			await this.settleMailboxClaim(
+				settlement.recipientTaskId,
+				settlement.claimId,
+				settlement.disposition,
+				settlement.rootTaskId,
+			)
+		}
+		return pending.length
+	}
+
+	getUnacknowledgedMailboxEntries(
+		recipient: string,
+		options: Pick<ReadAgentMailboxOptions, "rootTaskId" | "kinds"> = {},
+	): AgentMailboxEntry[] {
+		this.assertInitialized()
+		const address = this.requireAddress(this.state, recipient, options.rootTaskId)
+		const kinds = options.kinds ? new Set(options.kinds) : undefined
+		return this.state.mailbox
+			.filter(
+				(entry) =>
+					entry.rootTaskId === address.rootTaskId &&
+					entry.recipientTaskId === address.taskId &&
+					entry.acknowledgedAt === undefined &&
+					(!kinds || kinds.has(entry.kind)),
+			)
+			.sort((left, right) => left.sequence - right.sequence)
+			.map(clone)
+	}
+
+	/** Read only the bounded metadata window needed by the managed-tree UI. */
+	getRecentRootMailboxEntries(
+		rootTaskId: string,
+		limit: number,
+	): { entries: AgentMailboxEntry[]; totalCount: number } {
+		this.assertInitialized()
+		if (!rootTaskId.trim()) throw new Error("A root task ID is required")
+		if (!Number.isInteger(limit) || limit < 0 || limit > 1_000) {
+			throw new Error("Mailbox activity limit must be an integer between 0 and 1,000")
+		}
+
+		let totalCount = 0
+		const entries: AgentMailboxEntry[] = []
+		for (let index = this.state.mailbox.length - 1; index >= 0; index--) {
+			const entry = this.state.mailbox[index]
+			if (entry.rootTaskId !== rootTaskId) continue
+			totalCount++
+			if (entries.length < limit) entries.push(clone(entry))
+		}
+		entries.sort((left, right) => right.sequence - left.sequence)
+		return { entries, totalCount }
 	}
 
 	getMailboxCursor(recipient: string, rootTaskId?: string): AgentMailboxCursor {

@@ -69,14 +69,15 @@ export interface ExternalMutationCapability {
 	reason: string
 }
 
+export type SubagentChangeSetAction = "apply" | "discard"
+
 /** Webview-facing capability for one quarantined Worker change set. */
 export interface SubagentChangeSetActionCapability extends ExternalMutationCapability {
 	taskId: string
 	groupId: string
 	changeSetId: string
+	actions: Record<SubagentChangeSetAction, ExternalMutationCapability>
 }
-
-export type SubagentChangeSetAction = "apply" | "discard"
 
 /** Explicit provider result returned for Apply/Discard requests. */
 export interface SubagentChangeSetActionResult {

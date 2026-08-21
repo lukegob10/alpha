@@ -84,7 +84,14 @@ export class BoundedDelegationManager {
 		reason: string | Error = "Internal task cancelled by user",
 		stopReason: Exclude<
 			SubagentStopReason,
-			"completed" | "failed" | "timeout" | "authority_denied" | "depth_limit" | "orphaned" | "recovery_failed"
+			| "completed"
+			| "failed"
+			| "timeout"
+			| "authority_denied"
+			| "depth_limit"
+			| "orphaned"
+			| "recovery_failed"
+			| "never_launched"
 		> = "cancelled",
 	): boolean {
 		const kind: InternalTaskCancellationKind = stopReason === "cancelled" ? "user_cancelled" : stopReason

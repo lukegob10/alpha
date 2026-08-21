@@ -2,7 +2,7 @@
 
 ## Status
 
-Top-level parallel task sessions and the bounded depth-one managed-sub-agent runtime are implemented and live-certified. This includes the lifecycle control plane, durable tree/mailbox recovery, explicit context inheritance, authority narrowing, isolated Worker change sets, parent verification, and completion gating.
+Top-level parallel task sessions and the original depth-one managed-sub-agent runtime are implemented and live-certified. Configurable orchestration guardrails, nested managed agents, layered nested-Worker ownership, and the durable live-agent tree bridge are now also implemented at the deterministic test boundary. The remaining release boundary is combined certification in a real VS Code extension host with native provider calls, process crash/reload, filesystem recovery, and host/webview convergence.
 
 The extension now supports the core "parallel agent" workflow:
 
@@ -15,13 +15,14 @@ The extension now supports the core "parallel agent" workflow:
 7. Completed tasks release their live-task slot back to the pool.
 8. Recent Tasks and Task History can reopen completed, waiting, running, and background tasks without stopping other sessions.
 
-The managed-child implementation now includes nonblocking `spawn_agent`, durable canonical paths and mailboxes, `list_agents`, `wait_agent`, `send_message`, `followup_task`, `interrupt_agent`, `cancel_agent`, and `close_agent`. `fork_turns: none | all | N` captures a frozen, credential-free record of inherited conversation turns, instructions, skills, workspace, model route, and runtime authority. Explorer and Reviewer roles remain read-only; Workers use isolated scoped worktrees and quarantined change sets. Applying a Worker change creates a durable, blocking parent-verification obligation that must be satisfied by relevant parent-owned command evidence before completion. Children remain depth-one and share the configured live-task budget. Configurable child-specific orchestration guardrails are next; nested agents, a dedicated live tree panel, and combined release certification remain future work.
+The managed-child implementation now includes nonblocking `spawn_agent`, durable canonical paths and mailboxes, `list_agents`, `wait_agent`, downward `send_message`, immediate-parent `report_progress`, `followup_task`, `interrupt_agent`, `cancel_agent`, and `close_agent`. `report_progress` is available to every managed child without granting delegation or arbitrary routing authority; it appends a bounded durable mailbox event only for the frozen immediate parent. `fork_turns: none | all | N` captures a frozen, credential-free record of inherited conversation turns, instructions, skills, workspace, model route, runtime authority, ancestry, and effective limits. Explorer and Reviewer roles remain read-only. Workers use isolated scoped worktrees and quarantined change sets; an authorized Worker may layer a narrower nested Worker through its own private checkout, with verification owned first by the immediate Worker parent and later by the root for the outer change set. Root-wide capacity and budget contracts apply across descendants. The webview consumes a bounded, report-body-free projection of the durable registry for hierarchy, lifecycle, usage, capacity, budgets, activity, attention, and controls while transcript cards remain summaries.
 
 ## Goal
 
 Allow a user to start a task, leave it running in the background, and start or inspect other tasks without stopping the first task. Allow a primary Code task to spawn bounded managed children, continue local work, inspect and steer those children, and receive their results without blocking the entire parent turn.
 
-This document is both the implementation note for completed concurrency/lifecycle foundations and the planning note for the remaining orchestration work.
+This document is both the implementation note for completed concurrency/lifecycle foundations and the planning note
+for remaining real-host certification, compatibility retirement, and top-level task hardening.
 
 ## Current Architecture Summary
 
@@ -40,6 +41,7 @@ The extension now separates task runtime from chat selection.
     - last activity
     - queue count
     - token and cost totals
+- `managedAgentTree` is the bounded, credential- and report-body-free projection of the selected orchestration root's durable registry. It carries nested identity, frozen policy/limits, lifecycle, stop reason, usage, capacity, budgets, attention, and recent mailbox activity.
 - `clineStack` still exists for compatibility with existing delegation and legacy task flows, but it is no longer the concurrency source of truth.
 - Completed tasks remain reopenable through Recent Tasks and Task History, but they do not consume the live task pool.
 
@@ -82,28 +84,29 @@ The implemented managed-child flow provides:
 2. Every child receives a stable `task_name`, task ID, and canonical path; lifecycle controls accept any of those targets.
 3. Parent-side lifecycle controls execute sequentially in provider order when batched, so spawn-plus-immediate-steer is deterministic.
 4. The durable agent registry retains parent/child state, terminal results, and mailbox events across reloads.
-5. Terminal results are injected once into the parent conversation; `wait_agent` remains an explicit bounded mailbox wait rather than a polling primitive.
-6. Read-only roles remain read-only, while Workers use isolated worktrees, scoped writes, and parent verification.
-7. User-configured provider-profile request pacing remains shared across parent and children and is reported as configured wait telemetry, not as an API failure.
-8. Worker changes remain quarantined until explicit review. After Apply, parent completion is rejected until a relevant parent-owned verification command satisfies the durable obligation.
+5. Terminal results are injected once into the parent conversation; `wait_agent` remains an explicit bounded mailbox wait rather than a polling primitive. A root with no active descendants returns immediately, while a registered managed child may wait for immediate-parent control even when it has no descendants.
+6. A child can publish a bounded durable progress event only to its frozen immediate parent; `wait_agent` owns that event once.
+7. Read-only roles remain read-only, while Workers use isolated worktrees, scoped writes, and parent verification.
+8. User-configured provider-profile request pacing remains shared across parent and children and is reported as configured wait telemetry, not as an API failure.
+9. Worker changes remain quarantined until explicit review. After Apply, parent completion is rejected until a relevant parent-owned verification command satisfies the durable obligation.
 
 ## Recommendation
 
-Continue in dependency order. Milestones 1-3 are implemented; Milestone 4 is the next implementation boundary.
+Continue in dependency order. Milestones 1-3 are shipped foundations. Milestones 4-6 are implemented at the deterministic test boundary. Milestone 7's combined deterministic gate is complete; real-host acceptance is the next release boundary.
 
 1. Multi-session top-level tasks. Completed.
 2. Background-task monitoring foundation. Mostly completed; the remaining work is top-level UX and workspace-safety hardening.
 3. Bounded depth-one managed agents. Completed and live-certified, including context inheritance and Worker completion enforcement.
-4. Configurable orchestration guardrails. Next.
-5. Nested agents with root-wide budgets and descendant lifecycle semantics. Future.
-6. Dedicated live-agent tree and remaining monitoring UX. Future.
-7. Combined certification and `delegate_task` compatibility retirement. Future.
+4. Configurable orchestration guardrails. Implemented at the deterministic boundary.
+5. Nested agents with root-wide budgets and descendant lifecycle semantics. Implemented at the deterministic boundary.
+6. Dedicated live-agent tree and remaining monitoring UX. Durable managed-agent tree bridge implemented at the deterministic boundary; top-level session UX hardening remains separate.
+7. Combined certification and `delegate_task` compatibility retirement. Deterministic gate complete; live acceptance next.
 
-Do not begin nesting until configurable limits, durable effective-policy records, and root-wide budget semantics are stable. Do not retire `delegate_task` until the replacement path passes combined provider, recovery, race, performance, and real VS Code certification.
+The dependency gate for nesting is satisfied: effective limits and policy are frozen per child, and root-wide capacity/budget semantics are enforced across descendants. Do not retire `delegate_task` until the replacement path passes combined provider, recovery, race, performance, native-host, and real VS Code certification.
 
 ## Proposed Architecture
 
-The Phase 1 architecture, depth-one lifecycle control plane, explicit context inheritance, authority enforcement, and Worker completion gate are implemented. Sections describing child-specific configuration, nesting, the dedicated agent tree, and final compatibility retirement remain proposed.
+The Phase 1 architecture, lifecycle control plane, explicit context inheritance, configurable child guardrails, nested authority enforcement, layered Worker completion gates, and durable agent-tree bridge are implemented. Final real-host certification and compatibility retirement remain proposed.
 
 ### Core model
 
@@ -177,11 +180,14 @@ The existing `clineMessagesSeq` guard protects against stale snapshots for one s
 
 Without this, a background task state push can overwrite the foreground chat.
 
-### Settings
+### Proposed top-level swarm settings
 
 Top-level task concurrency currently uses a conservative provider-enforced cap of `3` live non-terminal tasks.
 
-Before enabling swarm mode broadly, add user settings for concurrency:
+The shipped managed-agent settings are `maxConcurrentSubagents`, `subagentMaxDepth`,
+`subagentDelegationPolicy`, role-specific timeouts, per-child input/output limits, and optional root token/cost budgets.
+The names below belong only to the older, unimplemented top-level swarm proposal and are not current configuration
+contracts:
 
 - `maxConcurrentTasks`: maximum total live tasks that can run at once.
 - `maxConcurrentSwarmTasks`: maximum child tasks one Orchestrator swarm may run at once.
@@ -234,34 +240,24 @@ This likely requires a new tool or schema rather than overloading current `new_t
 - `delegate_tasks`
 - `orchestrate_tasks`
 
-### Swarm monitor UX
+### Managed-agent task UX
 
-Swarm monitoring is a requirement for Phase 2, not a later polish item. Running multiple paid agents without visibility is too risky.
+Running agents must stay visible without turning the parent into a monitoring dashboard. A sub-agent is another task
+that happens to run concurrently, so navigation should match normal task navigation.
 
-The user should be able to see:
+The parent view should show one slim Agents strip:
 
-- The parent Orchestrator task.
-- Every child task in the current swarm group.
-- Which children are queued, running, waiting for input, completed, failed, or cancelled.
-- A running spinner or clock-style activity indicator for active children.
-- Current spend per child and aggregate spend for the swarm.
-- Token/request counts per child where available.
-- Last activity time and elapsed runtime.
-- Current tool/action, such as reading files, editing, running a command, waiting for approval, or calling the model.
-- Loop/stall indicators, such as repeated tool calls, no message progress for a threshold, repeated errors, or high spend with no completed todo movement.
+- one clickable status/name chip per descendant, including nested descendants;
+- concise Approval, Review, Verify, or Fix attention only when action is needed;
+- no repeated root, objectives, mailbox feed, elapsed-time grid, capacity cards, or token/cost dashboard;
+- exact task navigation for active and terminal agents without pausing siblings.
 
-The task history view should make running tasks visible without requiring the user to open the swarm monitor. A running child task should look alive in history, not like a static completed item. Clicking it should focus that child task and show its normal chat transcript and controls.
+The transcript should use the same compact task-row idea. Contextual actions such as Review request, Steer, Stop,
+Open diff, Apply, and Discard belong in an overflow menu or the opened child task. Full lifecycle detail, scope,
+usage, and stop reason are available after opening the child rather than duplicated in the parent.
 
-The parent Orchestrator view should include a compact swarm panel:
-
-- Child task list with status icons.
-- Per-child cost and elapsed time.
-- Aggregate cost and active/queued/completed counts.
-- Buttons to inspect, cancel, or pause individual children.
-- Button to cancel the entire swarm.
-- Clear signal when children are blocked on user approval.
-
-This monitor should use the same live task registry as normal background tasks. It should not invent a second execution model for swarm-only tasks.
+Task history should make running tasks look active. The compact strip, transcript rows, and history must use the same
+durable task registry rather than inventing a swarm-only execution or display model.
 
 ## Main Pitfalls
 
@@ -350,7 +346,8 @@ Parallel agents can burn tokens quickly and can fail silently if the UI only sho
 
 Impact: high.
 
-Mitigation: enforce concurrency and optional cost limits in the provider, emit per-child runtime metadata, show aggregate swarm spend, and surface stalled or waiting children in both history and the swarm monitor.
+Mitigation: enforce concurrency and optional cost limits in the provider, account for child spend in durable usage
+metadata, expose details in the opened child, and surface actionable stalled or waiting states in compact task rows.
 
 ## Implementation Plan
 
@@ -410,54 +407,80 @@ Non-blocking observation:
 
 - After terminal children leave the retained live projection, `list_agents` can return an empty `agents` array while still reporting the durable verification summary correctly. Track this with the dedicated tree/observability milestone; it does not weaken Apply or completion enforcement.
 
-### Milestone 4: configurable orchestration guardrails - next
+### Milestone 4: configurable orchestration guardrails - implemented at deterministic boundary
 
-Already available:
+Completed:
 
-1. A user-configurable total live-task limit with a conservative default.
-2. Default and per-role saved provider profiles.
-3. Global sub-agent enablement and auto-approval policy.
-4. A shared capacity pool across top-level tasks, `spawn_agent`, and `delegate_task`.
+1. Added a child/root-specific concurrency limit distinct from the total live-task limit, with atomic admission and one root-wide descendant pool.
+2. Added explicit-only versus proactive delegation policy. A descendant or per-task policy may narrow proactive to explicit-only but may never widen explicit-only.
+3. Replaced hard-coded role timeouts with validated Explorer, Reviewer, and Worker settings.
+4. Added input/output token ceilings and optional root token/cost budgets with stable stop reasons and deterministic cancellation.
+5. Persisted ancestry, effective limits, delegation policy/provenance, role-timeout map, and selected timeout in each child manifest. Reload uses the frozen record instead of current settings.
+6. Added Settings controls through the local `cachedState` buffer and exposed the normalized values through the extension/webview contract.
+7. Added deterministic schema, settings, persistence, reload, capacity-race, timeout, budget, and terminal-cause coverage.
 
-Implement next:
+Deterministic exit gate:
 
-1. Add a child-specific/root-specific concurrency limit distinct from the total live-task limit.
-2. Define explicit-request-only versus proactive delegation policy and where it may be overridden per task.
-3. Replace hard-coded role timeouts with validated configurable limits.
-4. Add output/token limits and optional root cost budgets with deterministic cancellation and terminal reporting.
-5. Persist the effective limits and delegation policy applied to every child so reload and audit do not depend on current settings.
-6. Surface queued/capacity-limited children and the effective stop reason without encouraging polling.
-7. Add schema, settings, persistence, reload, cancellation, and live VS Code acceptance coverage.
+- Passed. A parent can run with an independently configured child cap, model route, delegation policy, timeout, input/output ceilings, and optional root budgets. Reload preserves effective configuration, and limit exhaustion yields a stable terminal result and stop reason.
 
-Exit gate:
+Remaining release evidence:
 
-- A parent can run with an independently configured child cap, model route, delegation policy, timeout, output/token ceiling, and optional cost ceiling. Reload preserves the effective configuration, limit exhaustion produces one deterministic terminal result, and no path can exceed the root-wide limits.
+- Exercise the same contracts through real native-provider streams and host wall-clock/billable usage in Milestone 7.
 
-### Milestone 5: nested managed agents - future
+### Milestone 5: nested managed agents - implemented at deterministic boundary
 
-1. Allow explicitly authorized children to spawn descendants while preserving authority narrowing and frozen context inheritance.
-2. Enforce root-wide concurrency, token, cost, timeout, and depth budgets across every descendant.
-3. Extend canonical paths, lifecycle controls, mailbox routing, visibility, and result ownership to the full tree.
-4. Define descendant cancellation, parent interruption, close, crash recovery, cycle prevention, and orphan cleanup.
-5. Prove nested Worker scope isolation and parent/root verification ownership.
+Completed:
 
-### Milestone 6: dedicated live-agent tree and monitoring UX - future
+1. Authorized children may spawn descendants within frozen depth and narrowed authority; read-only parents cannot widen into mutating Workers.
+2. Root-wide concurrency, token, cost, and depth ceilings cover the descendant tree; each descendant uses a role timeout from the root-frozen timeout map.
+3. Canonical paths, lifecycle controls, durable mailbox claims, waits, terminal results, and recovery retain immediate-parent ownership instead of flattening to root.
+4. Descendant cancellation is deepest-first with stable direct-parent/ancestor causes; close remains bottom-up; nested recovery and orphan routing preserve the tree.
+5. A managed Worker may create a narrower nested Worker. The nested checkout is based on the owning Worker's live private checkout, exact-file scope rules remain frozen, and Apply lands into that parent checkout rather than root.
+6. The immediate Worker parent owns and must satisfy the nested change-set verification obligation. The root separately owns and verifies the outer Worker change set.
 
-1. Add a compact live tree with follow-up, interrupt, cancel, close, and inspection controls.
-2. Show per-agent and aggregate usage, cost, elapsed runtime, current activity, queue state, and waiting-for-approval attention.
-3. Keep transcript group cards as durable summaries while the tree consumes the agent registry/mailbox as its source of truth.
-4. Integrate Worker change-set review and verification state without duplicating provider authority decisions.
-5. Resolve the empty post-terminal `list_agents` projection and remaining top-level live-task header/attention affordances.
+Deterministic exit gate:
 
-### Milestone 7: combined certification and compatibility retirement - future
+- Passed for in-process/store/provider/worktree boundaries, including capacity races, immediate-parent mailbox routing, nested recovery, layered Worker Apply, and parent/root verification ownership.
 
-1. Crash/restart recovery at every lifecycle and Worker verification boundary.
-2. Strict-schema and multi-provider coverage for parallel calls and lifecycle tools.
-3. Cancellation, duplicate-event, Apply/Discard, mailbox, follow-up, and descendant race stress.
-4. Parent-plus-child latency, token, cost, and request-pacing benchmarks with regression thresholds.
-5. Telemetry for effective configuration, stop reason, stalled work, and discarded or failed change sets without persisting secrets.
-6. Real VS Code end-to-end certification of configuration, nesting, tree controls, recovery, and completion enforcement.
-7. Deprecate and retire `delegate_task` only after production callers and acceptance tests use the managed lifecycle path.
+Remaining release evidence:
+
+- Hard-kill/restart the extension host with real managed child processes at nested spawn, mailbox claim, Worker Apply, and verification boundaries in Milestone 7.
+
+### Milestone 6: compact managed-agent task UX - implemented at deterministic boundary
+
+Completed:
+
+1. Added an accessible one-line Agents strip that omits the root and renders each descendant, including nested descendants, as a clickable status/name task chip.
+2. Keeps the parent surface intentionally small: only status and actionable Approval/Review/Verify/Fix attention are in view; clicking opens the full child task.
+3. Replaced verbose transcript summaries with compact task rows and moved Review request, Steer, Stop, Open diff, Apply, and Discard into contextual overflow menus.
+4. The extension-to-webview projection is bounded and omits raw manifests, mailbox payloads, credentials, and unbounded report bodies.
+5. Reloaded durable nested state renders without transcript groups; loading, empty, navigation, attention, and large-tree states are covered deterministically.
+
+Remaining product/release work:
+
+1. Prove host/webview convergence, exact child navigation, sibling continuity, and overflow-action timing in a real VS Code window after extension-host reload.
+2. Continue the separate top-level live-session header/attention and same-workspace safety hardening from Milestone 2.
+
+### Milestone 7: combined certification and compatibility retirement - live acceptance next
+
+Completed:
+
+1. The latest recorded source-stable strict matrix passes all 26 deterministic rows: 10 tracks, 929 tests, zero
+   skips, zero failures, and no baseline-debt waiver. The matrix treats 903 as a regression floor; a fresh run is
+   required after source changes.
+2. The canonical root workflow bundles once before package tests, avoiding competing Windows writes to `src/dist`.
+   Lint, types, the broader package suite, and strict certification remain separate commands with separate evidence.
+3. The eight irreducibly real-host/provider/storage cases are explicit `PENDING-INTEGRATION` rows with a single
+   operator playbook in `docs/certification/managed-agent-live-acceptance.md`.
+
+Remaining:
+
+1. Hard-kill/restart the real VS Code extension host at every nested lifecycle, mailbox-claim, Worker Apply, and verification boundary.
+2. Exercise strict native schemas, parallel tool-call streams, provider aborts, terminal ownership, and lifecycle tools through the real native-host/provider boundary.
+3. Stress cancellation, duplicate events, Apply/Discard, mailbox claims, follow-up, descendant races, multi-process storage writers, and orphan cleanup.
+4. Establish parent-plus-child latency, token, cost, and request-pacing benchmarks with regression thresholds and secret-safe telemetry for effective configuration and stop reasons.
+5. Complete real VS Code end-to-end certification of configuration, nesting, compact task navigation/actions, crash/reload recovery, and both Worker completion gates.
+6. Deprecate and retire `delegate_task` only after production callers and acceptance tests use the managed lifecycle path and the live certification is green.
 
 ## Difficulty Estimate
 
@@ -465,7 +488,7 @@ Milestone 1 was medium-large and is now implemented. The hard part was not creat
 
 Milestone 2 is partially complete for top-level sessions. The remaining work is mostly UX hardening and deeper operational safeguards.
 
-Milestone 3 was large and is now complete at depth one. Milestone 4 should remain bounded to configuration and enforcement contracts; nesting and the dedicated tree must not expand its scope.
+Milestone 3 was large and is complete at the original depth-one/live-certified boundary. Milestones 4-6 are implemented at deterministic boundaries; the remaining difficulty is integration risk rather than missing local architecture. Milestone 7 is large because it must prove process ownership, native-provider behavior, real filesystem recovery, and host/webview convergence under crash and race conditions before compatibility removal.
 
 ## Suggested Non-Goals For First Pass
 
@@ -475,7 +498,8 @@ Milestone 3 was large and is now complete at depth one. Milestone 4 should remai
 - Do not make background tasks auto-approve actions invisibly. If user input is needed, mark the task as waiting.
 - Do not restore checkpoints while another task is live in the same workspace.
 - Do not allow unbounded swarm fan-out. Every parallel path needs a provider-enforced maximum before it ships.
-- Do not hide child spend inside the parent. Swarm cost must be visible per child and in aggregate.
+- Do not lose child spend accounting. Detailed per-child usage should remain available in the opened task without
+  forcing an aggregate dashboard into the parent.
 
 ## Resolved Decisions
 
@@ -484,22 +508,24 @@ Milestone 3 was large and is now complete at depth one. Milestone 4 should remai
 3. Children inherit the parent provider profile by default, with configurable default and per-role saved-profile overrides.
 4. Child context inheritance is explicit and frozen through `fork_turns` plus a durable manifest.
 5. Applied Worker changes create a durable blocking obligation and require relevant parent-owned verification before completion.
+6. Delegation defaults to explicit-only. Per-task/descendant policy may narrow proactive behavior but may not widen explicit-only policy.
+7. Child concurrency defaults to `2`; nesting depth defaults to `1`; role timeouts default to 120 seconds for Explorer/Reviewer and 900 seconds for Worker. Optional root token/cost budgets are hard deterministic stops when configured.
+8. Only a managed Worker can grant a nested Worker, whose write scope must be equal to or narrower than the owning Worker's frozen directory/exact-file scope.
+9. Nested Worker verification is layered: the immediate Worker parent verifies the nested Apply, then root verifies the outer Worker proposal.
+10. The compact managed-agent task strip consumes a bounded durable projection; raw manifests, mailbox payloads, and report bodies do not cross the webview bridge.
 
 ## Open Questions
 
 1. Should concurrent write-capable top-level tasks share the same workspace, or should they default to isolated worktrees?
 2. Should there be a visible "Close and New Task" action next to the non-destructive New Task action?
-3. Which modes may delegate proactively, and which require an explicit user request or per-task opt-in?
-4. What should the default child-specific concurrency cap be within the total live-task cap?
-5. Should root cost limits be hard stops, warnings, or both?
-6. What default timeout and output/token ceilings should apply to Explorer, Reviewer, and Worker roles?
-7. What maximum nesting depth should ship first?
-8. What stall/loop heuristics are reliable enough to show as warnings without creating noise?
+3. What stall/loop heuristics are reliable enough to show as warnings without creating noise?
+4. What compatibility window and telemetry threshold should govern final `delegate_task` retirement?
+5. Which real native-provider/VS Code host matrix is sufficient to promote the deterministic implementation to release-certified status?
 
 ## Bottom Line
 
-Top-level parallel task sessions and bounded depth-one managed agents are complete and should now be treated as product behavior, not experiments.
+Top-level parallel task sessions and the original bounded managed-agent foundation are complete product behavior, not experiments.
 
-The shipped foundation includes explicit task selection, asynchronous child execution, durable lifecycle control, frozen context inheritance, model routing, authority narrowing, isolated Worker changes, and a live-certified parent completion gate.
+The combined implementation now includes explicit task selection, asynchronous child execution, configurable frozen guardrails, nested durable lifecycle control, root-wide budgets, narrowed authority, layered Worker isolation/verification, and a bounded durable compact-task bridge. The newer configuration, nesting, and task-surface layers have deterministic coverage but are not yet real-host certified.
 
-The next implementation milestone is configurable orchestration guardrails. Freeze and persist the effective child limits and delegation policy before adding nesting or building a dedicated tree UI. After configuration, nesting and monitoring can reuse the same registry, mailbox, authority, verification, and budget contracts. Final combined certification comes last, followed by `delegate_task` retirement.
+The next milestone is live acceptance: real VS Code native-host/provider execution, hard crash/reload at lifecycle and mailbox boundaries, real worktree Apply/recovery, multi-process storage writes, and host/webview convergence. The deterministic combined tree is green. Only after the remaining live evidence is green should compatibility retirement begin, with `delegate_task` removed last.

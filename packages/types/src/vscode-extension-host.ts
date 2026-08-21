@@ -8,6 +8,7 @@ import type { TelemetrySetting } from "./telemetry.js"
 import type { Experiments } from "./experiment.js"
 import type { ClineMessage, QueuedMessage } from "./message.js"
 import type { CurrentTaskView, LiveTaskMetadata } from "./task.js"
+import type { ManagedAgentTreeProjection } from "./managed-agent-tree.js"
 import {
 	type MarketplaceItem,
 	type MarketplaceInstalledMetadata,
@@ -357,6 +358,7 @@ export type ExtensionState = Pick<
 	activeTaskId?: string
 	liveTaskIds?: string[]
 	liveTasksById?: Record<string, LiveTaskMetadata>
+	managedAgentTree?: ManagedAgentTreeProjection
 	apiConfiguration: ProviderSettings
 	uriScheme?: string
 	shouldShowAnnouncement: boolean

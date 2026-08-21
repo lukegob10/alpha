@@ -35,6 +35,7 @@ import { runSlashCommandTool } from "./RunSlashCommandTool"
 import { searchFilesTool } from "./SearchFilesTool"
 import { searchReplaceTool } from "./SearchReplaceTool"
 import { sendMessageTool } from "./SendMessageTool"
+import { reportProgressTool } from "./ReportProgressTool"
 import { skillTool } from "./SkillTool"
 import { spawnAgentTool } from "./SpawnAgentTool"
 import { switchModeTool } from "./SwitchModeTool"
@@ -125,6 +126,7 @@ const TASK_TOOLS = new Set([
 	"spawn_agent",
 	"wait_agent",
 	"send_message",
+	"report_progress",
 	"followup_task",
 	"interrupt_agent",
 	"cancel_agent",
@@ -146,6 +148,7 @@ const TOOL_NAMES = [
 	"list_agents",
 	"wait_agent",
 	"send_message",
+	"report_progress",
 	"followup_task",
 	"interrupt_agent",
 	"cancel_agent",
@@ -220,7 +223,7 @@ export function getToolCapabilities(name: string): ToolCapabilities {
 		controlFlow: BARRIER_TOOLS.has(name) || name === "run_slash_command" || name === "skill",
 		// Individual tool handlers own the exact approval prompt. This flag is
 		// metadata for scheduling and future policy decisions, not a second prompt.
-		requiresApproval: true,
+		requiresApproval: name !== "report_progress",
 	}
 }
 
@@ -330,6 +333,7 @@ export class ToolRegistry {
 		this.registerBuiltIn("list_agents", listAgentsTool, schemas)
 		this.registerBuiltIn("wait_agent", waitAgentTool, schemas)
 		this.registerBuiltIn("send_message", sendMessageTool, schemas)
+		this.registerBuiltIn("report_progress", reportProgressTool, schemas)
 		this.registerBuiltIn("followup_task", followupTaskTool, schemas)
 		this.registerBuiltIn("interrupt_agent", interruptAgentTool, schemas)
 		this.registerBuiltIn("cancel_agent", cancelAgentTool, schemas)

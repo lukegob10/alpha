@@ -46,6 +46,12 @@ describe("ToolRegistry", () => {
 				controlFlow: false,
 			})
 		}
+		expect(registry.resolve("report_progress")?.capabilities).toMatchObject({
+			concurrency: "serial",
+			sideEffects: "task",
+			controlFlow: false,
+			requiresApproval: false,
+		})
 	})
 
 	it("resolves aliases to the canonical descriptor", () => {

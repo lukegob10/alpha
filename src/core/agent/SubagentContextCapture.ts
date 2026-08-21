@@ -32,6 +32,7 @@ const TOOL_MARKUP_NAMES = [
 	"list_agents",
 	"read_file",
 	"send_message",
+	"report_progress",
 	"spawn_agent",
 	"tool_call",
 	"tool_use",
@@ -418,6 +419,7 @@ function buildRuntimePolicy(input: RuntimePolicyInput): SubagentContextRuntimePo
 		allowedTools: uniqueSorted(input.allowedTools),
 		workspaceRoots: uniqueSorted(input.workspaceRoots.map((root) => path.resolve(root))),
 		...(input.writeScope ? { writeScope: uniqueSorted(input.writeScope) } : {}),
+		...(input.fileWriteScope ? { fileWriteScope: uniqueSorted(input.fileWriteScope) } : {}),
 	}
 	const digest = digestValue(withoutDigest)
 	if (input.digest !== undefined && input.digest !== digest) {

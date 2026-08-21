@@ -95,6 +95,11 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			await task.say("completion_result", result, undefined, false)
 
 			if (task.taskKind === "subagent") {
+				// task.say persists the completion report and may yield long enough for a
+				// nested child to finish. Recheck at the final transition boundary so the
+				// immediate parent's terminal result cannot be stranded.
+				if (this.rejectCompletionWithUndeliveredSpawnedResult(task, pushToolResult)) return
+				if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) return
 				task.subagentCompletionOutcome = outcome === "blocked" ? "blocked" : "completed"
 				pushToolResult("")
 				this.emitTaskCompleted(task)

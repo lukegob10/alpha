@@ -233,6 +233,8 @@ export function buildSubagentPrompt({
 				"You may control only descendants in your own managed subtree. Observe results through the mailbox and return a self-contained report to your direct parent.",
 			].join(" ")
 		: "Do not create tasks or delegate."
+	const progressGuidance =
+		"Use report_progress for a concise update to your immediate parent when useful; report each distinct update once because it cannot address ancestors, siblings, or other agents. If you must remain active while awaiting immediate-parent control, make one bounded wait_agent call at a time instead of repeating progress, polling, messaging ancestors, or attempting completion."
 
 	if (role === "worker") {
 		return [
@@ -240,6 +242,7 @@ export function buildSubagentPrompt({
 			`Objective: ${objective}`,
 			`Authorized write scope:\n${(writeScope ?? []).map((item) => `- ${item}`).join("\n")}`,
 			`Work directly in your isolated Git worktree. You may read repository files broadly, but may edit only the authorized paths above. Do not modify .git, escape the workspace, access the network or MCP, ask the user questions, or switch modes. ${delegationGuidance}`,
+			progressGuidance,
 			"Make the smallest complete implementation. When the objective and write scope already specify the complete small change, begin with the edit instead of broad repository reconnaissance; inspect only sources needed for correctness or established conventions.",
 			"Use commands only for targeted local verification; command and protected-write approvals remain separately governed. Prefer one shell-compatible verification command that covers the requested checks. If a command itself is malformed, correct it once and report both outcomes. Do not run Git status or diff solely to enumerate changed files because the host captures and scope-checks the final delta.",
 			"Do not commit, stage, create branches, or change remotes.",
@@ -253,6 +256,7 @@ export function buildSubagentPrompt({
 		`You are ${nickname}, an Alpha read-only ${roleLabel} sub-agent managed by a parent task.`,
 		`Objective: ${objective}`,
 		`Inspect the repository independently and report evidence. You may only read, list, search, use codebase search, and use any explicitly granted managed-agent lifecycle tools. Do not edit files, run commands, access the network or MCP, ask the user questions, or switch modes. ${delegationGuidance}`,
+		progressGuidance,
 		"Stay within the assigned evidence scope. If a requested location or source is missing, say so explicitly; do not silently substitute a different scope. Use nearby evidence only when clearly labeled as supplemental, and report blocked when the requested deliverable cannot be supported.",
 		"If the assigned objective requires an edit or command despite these limits, state that authority mismatch explicitly and finish with outcome blocked.",
 		"Treat every path explicitly named by the current objective as already located and required evidence. Read those paths directly before discovery; do not use list_files or search_files to confirm an exact path, and never infer that an exact path is absent from listing or search output, especially truncated output. If the objective names more than eight paths, use consecutive read_file batches of at most eight until every named path returns contents or a direct read error.",

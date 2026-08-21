@@ -142,4 +142,22 @@ describe("AgentsSettings", () => {
 
 		expect(setCachedStateField).toHaveBeenCalledWith("subagentRootCostBudget", null)
 	})
+
+	it("uses the shared root token ceiling and accepts every finite positive root cost", () => {
+		const setCachedStateField = vi.fn()
+		render(
+			<AgentsSettings
+				profiles={profiles}
+				managedAgentSettings={DEFAULT_MANAGED_AGENT_SETTINGS}
+				setCachedStateField={setCachedStateField}
+			/>,
+		)
+
+		expect(screen.getByTestId("subagent-root-token-budget-input")).toHaveAttribute("max", "10000000")
+		fireEvent.change(screen.getByTestId("subagent-root-cost-budget-input"), {
+			target: { value: "250000" },
+		})
+
+		expect(setCachedStateField).toHaveBeenCalledWith("subagentRootCostBudget", 250_000)
+	})
 })

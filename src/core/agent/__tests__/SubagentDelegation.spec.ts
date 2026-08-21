@@ -25,6 +25,11 @@ describe("buildSubagentPrompt", () => {
 		expect(prompt).toContain("unrelated hidden or support directories")
 		expect(prompt).toContain(`under ${SUBAGENT_REPORT_WORD_BUDGET} words`)
 		expect(prompt).toContain("do not repeat file contents or narrate the research process")
+		expect(prompt).toContain("Use report_progress")
+		expect(prompt).toContain("immediate parent")
+		expect(prompt).toContain("report each distinct update once")
+		expect(prompt).toContain("one bounded wait_agent call at a time")
+		expect(prompt).toContain("cannot address ancestors, siblings, or other agents")
 		expect(prompt).not.toMatch(/backend|frontend/i)
 	})
 
@@ -73,6 +78,10 @@ describe("buildSubagentPrompt", () => {
 		expect(prompt).toContain("Do not run Git status or diff solely to enumerate changed files")
 		expect(prompt).toContain("Prefer one shell-compatible verification command")
 		expect(prompt).toContain("at least one authorized change exists")
+		expect(prompt).toContain("Use report_progress")
+		expect(prompt).toContain("immediate parent")
+		expect(prompt).toContain("report each distinct update once")
+		expect(prompt).toContain("one bounded wait_agent call at a time")
 		expect(prompt).not.toMatch(/specific prompt|single action/i)
 	})
 

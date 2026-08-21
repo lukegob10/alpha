@@ -273,6 +273,23 @@ describe("ManagedSubagentWorktreeService", () => {
 	)
 
 	it(
+		"auto-discards an empty capture instead of creating a pending review",
+		async () => {
+			const validated = await service.validateScope(repo, ["src/value.txt"])
+			const prepared = await service.create(storage, "worker-no-change", validated)
+
+			const artifact = await service.capture(storage, prepared.artifact.id)
+
+			expect(artifact).toMatchObject({ status: "discarded", changes: [] })
+			expect(artifact.patchFile).toBeUndefined()
+			await expect(
+				fs.access(path.join(storage, "subagent-change-sets", artifact.id, "changes.patch")),
+			).rejects.toThrow()
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
+
+	it(
 		"recovers partial changes from an orphaned active worktree after reload",
 		async () => {
 			const validated = await service.validateScope(repo, ["src"])
@@ -295,6 +312,114 @@ describe("ManagedSubagentWorktreeService", () => {
 				expect.arrayContaining([expect.objectContaining({ status: "M", path: "src/value.txt" })]),
 			)
 			await expect(fs.access(prepared.workspacePath)).rejects.toThrow()
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
+
+	it(
+		"layers a nested Worker worktree through its owning parent before the root checkout",
+		async () => {
+			const parentScope = await service.validateScope(repo, ["src"])
+			const parentWorker = await service.create(storage, "parent-worker", parentScope)
+			await fs.writeFile(path.join(parentWorker.workspacePath, "src/value.txt"), "parent in progress\n")
+
+			const nestedScope = await service.validateScope(parentWorker.workspacePath, ["src/nested.txt"])
+			const nestedWorker = await service.create(storage, "nested-worker", nestedScope)
+			expect(
+				(await fs.readFile(path.join(nestedWorker.workspacePath, "src/value.txt"), "utf8")).replace(
+					/\r\n/g,
+					"\n",
+				),
+			).toBe("parent in progress\n")
+			await fs.writeFile(path.join(nestedWorker.workspacePath, "src/nested.txt"), "nested change\n")
+
+			const nestedArtifact = await service.capture(storage, nestedWorker.artifact.id)
+			expect(nestedArtifact.status).toBe("pending_review")
+			await expect(fs.readFile(path.join(repo, "src/nested.txt"), "utf8")).rejects.toThrow()
+			await expect(fs.readFile(path.join(parentWorker.workspacePath, "src/nested.txt"), "utf8")).rejects.toThrow()
+
+			expect(await service.apply(storage, nestedArtifact.id)).toEqual({ status: "applied" })
+			expect(
+				(await fs.readFile(path.join(parentWorker.workspacePath, "src/nested.txt"), "utf8")).replace(
+					/\r\n/g,
+					"\n",
+				),
+			).toBe("nested change\n")
+			await expect(fs.readFile(path.join(repo, "src/nested.txt"), "utf8")).rejects.toThrow()
+
+			const parentArtifact = await service.capture(storage, parentWorker.artifact.id)
+			expect(parentArtifact.changes.map((change) => change.path).sort()).toEqual([
+				"src/nested.txt",
+				"src/value.txt",
+			])
+			expect(await service.apply(storage, parentArtifact.id)).toEqual({ status: "applied" })
+			expect((await fs.readFile(path.join(repo, "src/nested.txt"), "utf8")).replace(/\r\n/g, "\n")).toBe(
+				"nested change\n",
+			)
+			expect((await fs.readFile(path.join(repo, "src/value.txt"), "utf8")).replace(/\r\n/g, "\n")).toBe(
+				"parent in progress\n",
+			)
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
+
+	it(
+		"quarantines a nested Worker even if cancellation already removed its owning parent worktree",
+		async () => {
+			const parentScope = await service.validateScope(repo, ["src"])
+			const parentWorker = await service.create(storage, "cancelled-parent-worker", parentScope)
+			await fs.writeFile(path.join(parentWorker.workspacePath, "src/value.txt"), "parent partial\n")
+
+			const nestedScope = await service.validateScope(parentWorker.workspacePath, ["src/nested.txt"])
+			const nestedWorker = await service.create(storage, "cancelled-nested-worker", nestedScope)
+			await fs.writeFile(path.join(nestedWorker.workspacePath, "src/nested.txt"), "nested partial\n")
+
+			// Reproduce the old cancellation race: the owning Worker captured and
+			// removed its layer before its nested Worker finished quarantine capture.
+			await service.capture(storage, parentWorker.artifact.id, true)
+			await expect(fs.access(parentWorker.workspacePath)).rejects.toThrow()
+
+			const nestedArtifact = await service.capture(storage, nestedWorker.artifact.id, true)
+			expect(nestedArtifact).toMatchObject({ status: "pending_review", partial: true })
+			expect(nestedArtifact.worktreePath, nestedArtifact.error).toBeUndefined()
+			expect(nestedArtifact.changes).toEqual(
+				expect.arrayContaining([expect.objectContaining({ status: "A", path: "src/nested.txt" })]),
+			)
+			await expect(fs.access(nestedWorker.workspacePath)).rejects.toThrow()
+			expect(await git(["worktree", "list", "--porcelain"])).not.toContain(nestedWorker.artifact.id)
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
+
+	it(
+		"recovers a nested Worker whose legacy metadata lost its still-existing worktree path",
+		async () => {
+			const parentScope = await service.validateScope(repo, ["src"])
+			const parentWorker = await service.create(storage, "legacy-parent-worker", parentScope)
+			const nestedScope = await service.validateScope(parentWorker.workspacePath, ["src/nested.txt"])
+			const nestedWorker = await service.create(storage, "legacy-nested-worker", nestedScope)
+			await fs.writeFile(path.join(nestedWorker.workspacePath, "src/nested.txt"), "legacy nested partial\n")
+
+			await service.capture(storage, parentWorker.artifact.id, true)
+			const metadataPath = path.join(storage, "subagent-change-sets", nestedWorker.artifact.id, "metadata.json")
+			const legacyMetadata = JSON.parse(await fs.readFile(metadataPath, "utf8"))
+			delete legacyMetadata.worktreePath
+			await fs.writeFile(metadataPath, JSON.stringify(legacyMetadata, null, 2), "utf8")
+
+			const recovered = await new ManagedSubagentWorktreeService().recoverOrphans(storage)
+
+			expect(recovered).toHaveLength(1)
+			expect(recovered[0]).toMatchObject({
+				id: nestedWorker.artifact.id,
+				status: "pending_review",
+				partial: true,
+			})
+			expect(recovered[0]!.changes).toEqual(
+				expect.arrayContaining([expect.objectContaining({ status: "A", path: "src/nested.txt" })]),
+			)
+			expect(recovered[0]!.worktreePath, recovered[0]!.error).toBeUndefined()
+			await expect(fs.access(nestedWorker.workspacePath)).rejects.toThrow()
+			expect(await git(["worktree", "list", "--porcelain"])).not.toContain(nestedWorker.artifact.id)
 		},
 		WORKTREE_TEST_TIMEOUT_MS,
 	)

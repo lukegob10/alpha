@@ -11,6 +11,10 @@ export interface SendMessageParams {
 	message: string
 }
 
+export interface ReportProgressParams {
+	message: string
+}
+
 export interface FollowupTaskParams {
 	target: string
 	message: string

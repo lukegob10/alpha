@@ -1,5 +1,8 @@
 import { EventEmitter } from "events"
 
+import type { SubagentGroupState } from "@alpha-code/types"
+
+import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 import { Task } from "../Task"
 
 describe("sub-agent task authority", () => {
@@ -34,6 +37,7 @@ describe("sub-agent task authority", () => {
 	it("preserves cancellation when abort emits a synchronous command completion", async () => {
 		const terminalProcess = Object.assign(new EventEmitter(), { abort: vi.fn() })
 		const child = Object.assign(Object.create(Task.prototype), {
+			taskId: "worker-current",
 			taskKind: "subagent",
 			subagentRole: "worker",
 			terminalProcess,
@@ -52,11 +56,97 @@ describe("sub-agent task authority", () => {
 		])
 	})
 
-	it("narrows child tools to reads, search, and completion", () => {
+	it("stops a backgrounded command still owned by a managed Worker", async () => {
+		const backgroundProcess = Object.assign(new EventEmitter(), { abort: vi.fn() })
+		backgroundProcess.abort.mockImplementation(() => backgroundProcess.emit("completed"))
+		const getTerminals = vi
+			.spyOn(TerminalRegistry, "getTerminals")
+			.mockReturnValue([{ taskId: "worker-1", busy: true, process: backgroundProcess } as any])
+		const child = Object.assign(Object.create(Task.prototype), {
+			taskId: "worker-1",
+			taskKind: "subagent",
+			subagentRole: "worker",
+			commandExecutionEvidence: new Map(),
+		}) as Task
+		child.beginCommandExecution("call-1", "execution-1")
+
+		try {
+			await (child as any).stopActiveWorkerCommand()
+		} finally {
+			getTerminals.mockRestore()
+		}
+
+		expect(backgroundProcess.abort).toHaveBeenCalledOnce()
+		expect(child.getCommandExecutionEvidence()).toEqual([
+			expect.objectContaining({ toolCallId: "call-1", status: "cancelled" }),
+		])
+	})
+
+	it("cancels command evidence even when process launch has not become visible", async () => {
+		const getTerminals = vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([])
+		const child = Object.assign(Object.create(Task.prototype), {
+			taskId: "worker-starting",
+			taskKind: "subagent",
+			subagentRole: "worker",
+			commandExecutionEvidence: new Map(),
+		}) as Task
+		child.beginCommandExecution("call-starting", "execution-starting")
+
+		try {
+			await (child as any).stopActiveWorkerCommand()
+		} finally {
+			getTerminals.mockRestore()
+		}
+
+		expect(child.getCommandExecutionEvidence()).toEqual([
+			expect.objectContaining({ toolCallId: "call-starting", status: "cancelled" }),
+		])
+	})
+
+	it("waits for both process termination and terminal settlement", async () => {
+		let resolveAbort!: () => void
+		const terminalProcess = Object.assign(new EventEmitter(), {
+			abort: vi.fn(
+				async () =>
+					await new Promise<void>((resolve) => {
+						resolveAbort = resolve
+					}),
+			),
+		})
+		const child = Object.assign(Object.create(Task.prototype), {
+			taskId: "worker-await-cleanup",
+			taskKind: "subagent",
+			subagentRole: "worker",
+			terminalProcess,
+			commandExecutionEvidence: new Map(),
+		}) as Task
+
+		let settled = false
+		const stopping = (child as any).stopActiveWorkerCommand().then(() => {
+			settled = true
+		})
+		await vi.waitFor(() => expect(terminalProcess.abort).toHaveBeenCalledOnce())
+		terminalProcess.emit("completed")
+		await Promise.resolve()
+		expect(settled).toBe(false)
+		resolveAbort()
+		await stopping
+		expect(settled).toBe(true)
+	})
+
+	it("narrows child tools to reads, upward progress, and completion", () => {
 		const child = Object.assign(Object.create(Task.prototype), { taskKind: "subagent" }) as Task
 		const allowed = child.getTaskAllowedToolNames()
 
-		expect(allowed).toEqual(["read_file", "search_files", "list_files", "codebase_search", "attempt_completion"])
+		expect(allowed).toEqual([
+			"read_file",
+			"search_files",
+			"list_files",
+			"codebase_search",
+			"report_progress",
+			"attempt_completion",
+		])
+		expect(child.isToolAllowedForTask("report_progress")).toBe(true)
 		expect(child.isToolAllowedForTask("read_file")).toBe(true)
 		expect(child.isToolAllowedForTask("apply_patch")).toBe(false)
 		expect(child.isToolAllowedForTask("execute_command")).toBe(false)
@@ -195,7 +285,7 @@ describe("sub-agent task authority", () => {
 
 	it("reconciles only nonterminal children after a reload", async () => {
 		const saveClineMessages = vi.fn(async () => true)
-		const group = {
+		const group: SubagentGroupState = {
 			groupId: "group-1",
 			parentTaskId: "parent-1",
 			status: "running",
@@ -235,6 +325,44 @@ describe("sub-agent task authority", () => {
 		expect(group.agents[0].status).toBe("completed")
 		expect(group.agents[1]).toMatchObject({ status: "interrupted" })
 		expect(group.agents[1]).not.toHaveProperty("phase")
+		expect(saveClineMessages).toHaveBeenCalledOnce()
+	})
+
+	it("marks a prepared but never launched group as cancelled after reload", async () => {
+		const saveClineMessages = vi.fn(async () => true)
+		const group: SubagentGroupState = {
+			groupId: "group-awaiting-launch",
+			parentTaskId: "parent-1",
+			status: "pending",
+			createdAt: 1,
+			agents: [
+				{
+					taskId: "never-launched",
+					nickname: "Nova",
+					role: "worker",
+					objective: "Wait for launch approval",
+					status: "pending",
+					phase: "queued",
+					phaseStartedAt: 1,
+					usage: { durationMs: 0 },
+				},
+			],
+		}
+		const parent = Object.assign(Object.create(Task.prototype), {
+			clineMessages: [{ ts: 1, type: "say", say: "subagent_group", subagentGroup: group }],
+			saveClineMessages,
+			providerRef: { deref: () => ({ getLiveTaskIds: () => [] }) },
+		}) as Task
+
+		await (parent as any).reconcileInterruptedSubagentGroups()
+
+		expect(group.status).toBe("cancelled")
+		expect(group.agents[0]).toMatchObject({
+			status: "cancelled",
+			stopReason: "never_launched",
+			error: expect.stringContaining("never launched"),
+		})
+		expect(group.agents[0].error).not.toContain("resume")
 		expect(saveClineMessages).toHaveBeenCalledOnce()
 	})
 })

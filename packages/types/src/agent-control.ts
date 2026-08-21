@@ -107,6 +107,9 @@ export const agentMailboxEntrySchema = z.object({
 	name: z.string().min(1),
 	payload: z.record(z.string(), z.unknown()).optional(),
 	createdAt: z.number(),
+	claimId: z.string().min(1).optional(),
+	claimedAt: z.number().optional(),
+	claimChannel: z.enum(["wait", "automatic"]).optional(),
 	deliveredAt: z.number().optional(),
 	acknowledgedAt: z.number().optional(),
 })

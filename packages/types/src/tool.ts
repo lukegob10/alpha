@@ -45,6 +45,7 @@ export const toolNames = [
 	"list_agents",
 	"wait_agent",
 	"send_message",
+	"report_progress",
 	"followup_task",
 	"interrupt_agent",
 	"cancel_agent",

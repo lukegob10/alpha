@@ -807,7 +807,7 @@ export const webviewMessageHandler = async (
 
 		case "terminalOperation":
 			if (message.terminalOperation) {
-				getRequiredTaskForMessage(provider, message, "terminalOperation")?.handleTerminalOperation(
+				await getRequiredTaskForMessage(provider, message, "terminalOperation")?.handleTerminalOperation(
 					message.terminalOperation,
 				)
 			}
@@ -838,9 +838,26 @@ export const webviewMessageHandler = async (
 				provider.exportTaskWithId(currentTaskId)
 			}
 			break
-		case "showTaskWithId":
-			provider.showTaskWithId(message.text!)
+		case "showTaskWithId": {
+			const taskId = message.text?.trim()
+			if (!taskId) {
+				await vscode.window.showWarningMessage("This task is not available yet. Wait a moment and try again.")
+				break
+			}
+			try {
+				await provider.showTaskWithId(taskId)
+			} catch (error) {
+				provider.log(
+					`[webviewMessageHandler] Could not show task ${taskId.slice(0, 128)}: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				)
+				await vscode.window.showWarningMessage(
+					"This task is not available yet. If it is still launching, wait a moment and try again.",
+				)
+			}
 			break
+		}
 		case "condenseTaskContextRequest":
 			provider.condenseTaskContext(message.text!)
 			break

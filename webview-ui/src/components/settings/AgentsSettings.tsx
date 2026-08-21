@@ -1,6 +1,6 @@
 import { AlertTriangle, Bot, Coins, Compass, Gauge, GitBranch, Hammer, ShieldCheck, Timer } from "lucide-react"
 
-import type { ProviderSettingsEntry } from "@alpha-code/types"
+import { subagentRootCostBudgetSchema, type ProviderSettingsEntry } from "@alpha-code/types"
 
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { SearchableSelect, type SearchableSelectOption } from "@/components/ui"
@@ -40,8 +40,8 @@ interface NumberSettingProps {
 	description: string
 	value: number | undefined
 	min: number
-	max: number
-	step?: number
+	max?: number
+	step?: number | "any"
 	optional?: boolean
 	onChange: (rawValue: string) => void
 }
@@ -419,22 +419,17 @@ export function AgentsSettings({
 										label="Root cost budget (USD)"
 										description="Optional aggregate cost ceiling. Leave blank for no cost limit."
 										value={managedAgentSettings.subagentRootCostBudget ?? undefined}
-										{...MANAGED_AGENT_SETTING_LIMITS.rootCost}
-										step={0.01}
+										min={Number.MIN_VALUE}
+										step="any"
 										optional
 										onChange={(value) => {
 											if (value === "") {
 												setCachedStateField("subagentRootCostBudget", null)
 												return
 											}
-											const parsed = Number(value)
-											if (Number.isFinite(parsed)) {
-												const { min, max } = MANAGED_AGENT_SETTING_LIMITS.rootCost
-												setCachedStateField(
-													"subagentRootCostBudget",
-													Math.min(Math.max(parsed, min), max),
-												)
-											}
+											const parsed = subagentRootCostBudgetSchema.safeParse(Number(value))
+											if (parsed.success)
+												setCachedStateField("subagentRootCostBudget", parsed.data)
 										}}
 									/>
 								</SearchableSetting>

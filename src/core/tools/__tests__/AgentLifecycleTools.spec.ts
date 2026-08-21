@@ -4,6 +4,7 @@ import { closeAgentTool } from "../CloseAgentTool"
 import { followupTaskTool } from "../FollowupTaskTool"
 import { interruptAgentTool } from "../InterruptAgentTool"
 import { listAgentsTool } from "../ListAgentsTool"
+import { reportProgressTool } from "../ReportProgressTool"
 import { sendMessageTool } from "../SendMessageTool"
 import { waitAgentTool } from "../WaitAgentTool"
 
@@ -11,6 +12,7 @@ const lifecycleNames = [
 	"list_agents",
 	"wait_agent",
 	"send_message",
+	"report_progress",
 	"followup_task",
 	"interrupt_agent",
 	"cancel_agent",
@@ -22,6 +24,7 @@ function harness() {
 		listAgents: vi.fn(async () => ({ agents: [] })),
 		waitForAgent: vi.fn(async (): Promise<unknown> => ({ timedOut: true, events: [] })),
 		sendMessageToAgent: vi.fn(async () => ({ status: "running" })),
+		reportAgentProgress: vi.fn(async () => ({ delivery: "queued" })),
 		followupAgentTask: vi.fn(async () => ({ status: "pending" })),
 		interruptAgent: vi.fn(async () => ({ status: "cancelling" })),
 		cancelAgent: vi.fn(async () => ({ status: "cancelling" })),
@@ -62,6 +65,10 @@ describe("agent lifecycle tools", () => {
 			expect(definition.strict).toBe(true)
 			expect(definition.parameters).toMatchObject({ type: "object", additionalProperties: false })
 		}
+		expect(definitions.find((definition) => definition.name === "report_progress")?.parameters).toMatchObject({
+			required: ["message"],
+			properties: { message: { type: "string", minLength: 1, maxLength: 2_000 } },
+		})
 	})
 
 	it("dispatches every operation without asking for approval", async () => {
@@ -70,6 +77,7 @@ describe("agent lifecycle tools", () => {
 		await listAgentsTool.execute({ path_prefix: "/root/review" }, task, callbacks)
 		await waitAgentTool.execute({}, task, callbacks)
 		await sendMessageTool.execute({ target: "/root/review", message: "Check this." }, task, callbacks)
+		await reportProgressTool.execute({ message: "Halfway through." }, task, callbacks)
 		await followupTaskTool.execute({ target: "child-1", message: "Continue." }, task, callbacks)
 		await interruptAgentTool.execute({ target: "child-1" }, task, callbacks)
 		await cancelAgentTool.execute({ target: "child-1", reason: "Stop." }, task, callbacks)
@@ -78,11 +86,12 @@ describe("agent lifecycle tools", () => {
 		expect(provider.listAgents).toHaveBeenCalledWith(task, "/root/review")
 		expect(provider.waitForAgent).toHaveBeenCalledWith(task, 30_000)
 		expect(provider.sendMessageToAgent).toHaveBeenCalledWith(task, "/root/review", "Check this.")
+		expect(provider.reportAgentProgress).toHaveBeenCalledWith(task, "Halfway through.")
 		expect(provider.followupAgentTask).toHaveBeenCalledWith(task, "child-1", "Continue.")
 		expect(provider.interruptAgent).toHaveBeenCalledWith(task, "child-1")
 		expect(provider.cancelAgent).toHaveBeenCalledWith(task, "child-1", "Stop.")
 		expect(provider.closeAgent).toHaveBeenCalledWith(task, "child-1")
-		expect(pushToolResult).toHaveBeenCalledTimes(7)
+		expect(pushToolResult).toHaveBeenCalledTimes(8)
 		expect(askApproval).not.toHaveBeenCalled()
 		expect(say).toHaveBeenCalledTimes(4)
 
@@ -189,12 +198,15 @@ describe("agent lifecycle tools", () => {
 		const { provider, task, callbacks, pushToolResult } = harness()
 
 		await sendMessageTool.execute({ target: "/root/Review", message: "Check this." }, task, callbacks)
+		await reportProgressTool.execute({ message: "x".repeat(2_001) }, task, callbacks)
 		await waitAgentTool.execute({ timeout_ms: 9_999 }, task, callbacks)
 
 		expect(provider.sendMessageToAgent).not.toHaveBeenCalled()
+		expect(provider.reportAgentProgress).not.toHaveBeenCalled()
 		expect(provider.waitForAgent).not.toHaveBeenCalled()
-		expect(task.recordToolError).toHaveBeenCalledTimes(2)
+		expect(task.recordToolError).toHaveBeenCalledTimes(3)
 		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("canonical agent path"))
+		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("2,000 characters"))
 		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("timeout_ms"))
 		expect(task.didToolFailInCurrentTurn).toBe(true)
 	})

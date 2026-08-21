@@ -116,13 +116,14 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 		supportsImages,
 	})
 	// Managed child lanes provide a frozen authority allow-list. Retain only the
-	// orchestration schemas explicitly granted there; legacy/max-depth children
-	// name none of them and therefore keep the original fail-closed catalog.
+	// orchestration schemas explicitly granted there; report_progress is the one
+	// host-safe upward capability added to legacy managed-child grants by Task.
 	const orchestrationTools = new Set([
 		"spawn_agent",
 		"list_agents",
 		"wait_agent",
 		"send_message",
+		"report_progress",
 		"followup_task",
 		"interrupt_agent",
 		"cancel_agent",
@@ -131,12 +132,13 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 	const explicitlyAllowedTools = allowedToolNames
 		? new Set(allowedToolNames.map((name) => resolveToolAlias(name)))
 		: undefined
-	const taskNativeTools = explicitlyAllowedTools
-		? nativeTools.filter((tool) => {
-				const name = getToolName(tool)
-				return !orchestrationTools.has(name) || explicitlyAllowedTools.has(name)
-			})
-		: nativeTools
+	const taskNativeTools = nativeTools.filter((tool) => {
+		const name = getToolName(tool)
+		// Upward progress reporting is meaningful only for a managed child whose
+		// frozen task allow-list explicitly grants it. Keep it out of root catalogs.
+		if (name === "report_progress") return explicitlyAllowedTools?.has(name) === true
+		return !explicitlyAllowedTools || !orchestrationTools.has(name) || explicitlyAllowedTools.has(name)
+	})
 
 	// Filter native tools based on mode restrictions.
 	const filteredNativeTools = filterNativeToolsForMode(

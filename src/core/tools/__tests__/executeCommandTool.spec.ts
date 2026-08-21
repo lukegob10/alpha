@@ -59,6 +59,8 @@ describe("executeCommandTool", () => {
 
 		// Create mock implementations with eslint directives to handle the type issues
 		mockCline = {
+			abort: false,
+			getTaskLifetimeCancellationSignal: vitest.fn(() => new AbortController().signal),
 			ask: vitest.fn().mockResolvedValue(undefined),
 			say: vitest.fn().mockResolvedValue(undefined),
 			sayAndCreateMissingParamError: vitest.fn().mockResolvedValue("Missing parameter error"),
@@ -338,7 +340,7 @@ describe("executeCommandTool", () => {
 			expect(executeCommandModule.resolveAgentTimeoutMs(30)).toBe(30_000)
 		})
 
-		it("keeps worker commands in the foreground and wires structured evidence by tool call id", async () => {
+		it("honors an explicit Worker background timeout and wires structured evidence by tool call id", async () => {
 			mockCline.taskKind = "subagent"
 			mockCline.subagentRole = "worker"
 			mockToolUse.nativeArgs = { command: "pnpm test", timeout: 30 }
@@ -355,7 +357,7 @@ describe("executeCommandTool", () => {
 				expect.any(String),
 				"pnpm test",
 			)
-			expect(executeCommandModule.resolveAgentTimeoutMs(30, true)).toBe(0)
+			expect(executeCommandModule.resolveAgentTimeoutMs(30)).toBe(30_000)
 		})
 
 		it("assigns unique evidence ids to legacy command calls from the same message", async () => {

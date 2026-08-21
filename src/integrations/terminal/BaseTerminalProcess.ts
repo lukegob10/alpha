@@ -6,12 +6,19 @@ export abstract class BaseTerminalProcess extends EventEmitter<RooTerminalProces
 	public command: string = ""
 
 	public isHot: boolean = false
+	public isSettled: boolean = false
 	protected hotTimer: NodeJS.Timeout | null = null
 
 	protected isListening: boolean = true
 	protected lastEmitTime_ms: number = 0
 	protected fullOutput: string = ""
 	protected lastRetrievedIndex: number = 0
+
+	protected constructor() {
+		super()
+		this.once("completed", () => (this.isSettled = true))
+		this.once("error", () => (this.isSettled = true))
+	}
 
 	static interpretExitCode(exitCode: number | undefined): ExitCodeDetails {
 		if (exitCode === undefined) {
@@ -120,9 +127,9 @@ export abstract class BaseTerminalProcess extends EventEmitter<RooTerminalProces
 	abstract continue(): void
 
 	/**
-	 * Aborts the process via a SIGINT.
+	 * Aborts the process using the provider's supported termination mechanism.
 	 */
-	abstract abort(): void
+	abstract abort(): void | Promise<void>
 
 	/**
 	 * Checks if this process has unretrieved output.

@@ -187,6 +187,7 @@ describe("Single-open-task invariant", () => {
 			getLiveTask: vi.fn((taskId: string) => (taskId === "background-1" ? { taskId } : undefined)),
 			removeClineFromStack,
 			taskHistoryStore: { delete: deleteFromHistory },
+			purgeDeletedAgentControlRoots: vi.fn().mockResolvedValue(undefined),
 			postStateToWebview,
 		} as unknown as ClineProvider
 
@@ -213,6 +214,9 @@ describe("Single-open-task invariant", () => {
 			providerSettingsManager: {
 				getModeConfigId: vi.fn().mockResolvedValue(undefined),
 				listConfig: vi.fn().mockResolvedValue([]),
+			},
+			agentControlStore: {
+				retryPendingMailboxClaimSettlements: vi.fn().mockResolvedValue(undefined),
 			},
 			getState: vi.fn().mockResolvedValue({
 				apiConfiguration: { apiProvider: "anthropic", consecutiveMistakeLimit: 0 },
@@ -272,9 +276,13 @@ describe("Single-open-task invariant", () => {
 
 		const output = { appendLine: vi.fn() } as any
 		const api = new API(output, provider, undefined, false)
+		const configuration = {
+			apiProvider: "fake-ai" as const,
+			fakeAi: { id: "runtime-provider", createMessage: vi.fn() },
+		}
 
 		const taskId = await api.startNewTask({
-			configuration: {},
+			configuration,
 			text: "hello",
 			images: undefined,
 			newTab: false,
@@ -282,6 +290,27 @@ describe("Single-open-task invariant", () => {
 
 		expect(taskId).toBe("ipc-1")
 		expect(removeClineFromStack).toHaveBeenCalledTimes(1)
-		expect(createTask).toHaveBeenCalled()
+		expect(createTask).toHaveBeenCalledWith(
+			"hello",
+			undefined,
+			undefined,
+			expect.objectContaining({ apiConfiguration: configuration }),
+			configuration,
+		)
+	})
+
+	it("keeps runtime task capacity synchronized with programmatic settings writes", async () => {
+		const setValues = vi.fn().mockResolvedValue(undefined)
+		const setMaxLiveTasks = vi.fn()
+		const provider = {
+			contextProxy: { setValues },
+			taskSessions: { setMaxLiveTasks },
+			setMaxConcurrentTasks: ClineProvider.prototype.setMaxConcurrentTasks,
+		}
+
+		await (ClineProvider.prototype as any).setValues.call(provider, { maxConcurrentTasks: 6 })
+
+		expect(setValues).toHaveBeenCalledWith({ maxConcurrentTasks: 6 })
+		expect(setMaxLiveTasks).toHaveBeenCalledWith(6)
 	})
 })

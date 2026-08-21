@@ -81,6 +81,7 @@ const mockClineProvider = {
 	createTask: vi.fn(),
 	createTaskWithHistoryItem: vi.fn(),
 	cancelTask: vi.fn(),
+	showTaskWithId: vi.fn(),
 	getSkillsManager: vi.fn(),
 	cwd: "/mock/workspace",
 } as unknown as ClineProvider
@@ -89,6 +90,7 @@ import { t } from "../../../i18n"
 
 vi.mock("vscode", () => {
 	const showInformationMessage = vi.fn()
+	const showWarningMessage = vi.fn()
 	const showErrorMessage = vi.fn()
 	const openTextDocument = vi.fn().mockResolvedValue({})
 	const showTextDocument = vi.fn().mockResolvedValue(undefined)
@@ -96,6 +98,7 @@ vi.mock("vscode", () => {
 	return {
 		window: {
 			showInformationMessage,
+			showWarningMessage,
 			showErrorMessage,
 			showTextDocument,
 		},
@@ -169,6 +172,49 @@ import { resolveImageMentions } from "../../mentions/resolveImageMentions"
 
 beforeEach(() => {
 	vi.mocked(mockClineProvider.canAcceptTaskInput).mockReturnValue(true)
+})
+
+describe("webviewMessageHandler - showTaskWithId", () => {
+	it("awaits a not-yet-available managed task and reports the failure without rejecting", async () => {
+		const showTaskWithId = vi.mocked(mockClineProvider.showTaskWithId)
+		showTaskWithId.mockRejectedValueOnce(new Error("Task not found"))
+
+		await expect(
+			webviewMessageHandler(mockClineProvider, { type: "showTaskWithId", text: "prepared-child" }),
+		).resolves.toBeUndefined()
+
+		expect(showTaskWithId).toHaveBeenCalledWith("prepared-child")
+		expect(mockClineProvider.log).toHaveBeenCalledWith(expect.stringContaining("Task not found"))
+		expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+			"This task is not available yet. If it is still launching, wait a moment and try again.",
+		)
+	})
+})
+
+describe("webviewMessageHandler - terminalOperation", () => {
+	it("awaits asynchronous process-tree termination", async () => {
+		let finishAbort!: () => void
+		const handleTerminalOperation = vi.fn(() => new Promise<void>((resolve) => (finishAbort = resolve)))
+		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue({
+			taskId: "worker-task",
+			handleTerminalOperation,
+		} as any)
+
+		let handled = false
+		const handling = webviewMessageHandler(mockClineProvider, {
+			type: "terminalOperation",
+			taskId: "worker-task",
+			terminalOperation: "abort",
+		}).then(() => {
+			handled = true
+		})
+		await vi.waitFor(() => expect(handleTerminalOperation).toHaveBeenCalledWith("abort"))
+		expect(handled).toBe(false)
+
+		finishAbort()
+		await handling
+		expect(handled).toBe(true)
+	})
 })
 
 describe("webviewMessageHandler - requestLmStudioModels", () => {

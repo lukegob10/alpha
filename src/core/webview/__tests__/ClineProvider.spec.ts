@@ -34,7 +34,13 @@ vi.mock("p-wait-for", () => ({
 vi.mock("fs/promises", () => ({
 	mkdir: vi.fn().mockResolvedValue(undefined),
 	writeFile: vi.fn().mockResolvedValue(undefined),
-	readFile: vi.fn().mockResolvedValue(""),
+	readFile: vi
+		.fn()
+		.mockImplementation((filePath: string) =>
+			filePath.endsWith("agent_control.json")
+				? Promise.reject(Object.assign(new Error("not found"), { code: "ENOENT" }))
+				: Promise.resolve(""),
+		),
 	unlink: vi.fn().mockResolvedValue(undefined),
 	rmdir: vi.fn().mockResolvedValue(undefined),
 }))
@@ -583,6 +589,32 @@ describe("ClineProvider", () => {
 		expect(disposeCalls).toHaveLength(1)
 	})
 
+	test("dispose awaits the final compatibility write and absorbs its failure", async () => {
+		await (provider as any).taskHistoryStoreReady
+		let rejectWrite!: (error: Error) => void
+		const updateGlobalState = vi.spyOn(provider as any, "updateGlobalState").mockImplementation((key: unknown) =>
+			key === "taskHistory"
+				? new Promise<void>((_resolve, reject) => {
+						rejectWrite = reject
+					})
+				: Promise.resolve(),
+		)
+
+		let disposed = false
+		const disposing = provider.dispose().then(() => {
+			disposed = true
+		})
+		await vi.waitFor(() => expect(updateGlobalState).toHaveBeenCalledWith("taskHistory", expect.any(Array)))
+		expect(disposed).toBe(false)
+
+		rejectWrite(new Error("globalState unavailable"))
+		await expect(disposing).resolves.toBeUndefined()
+		expect(disposed).toBe(true)
+		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
+			expect.stringContaining("[flushGlobalStateWriteThrough] Failed: globalState unavailable"),
+		)
+	})
+
 	test("handles webviewDidLaunch message", async () => {
 		await provider.resolveWebviewView(mockWebviewView)
 
@@ -617,6 +649,24 @@ describe("ClineProvider", () => {
 
 		// check if the stack size was decreased
 		expect(stackSizeBeforeAbort - stackSizeAfterAbort).toBe(1)
+	})
+
+	test("keeps a managed Worker registered when process cleanup cannot be confirmed", async () => {
+		const mockCline = new Task(defaultTaskOptions)
+		Object.assign(mockCline, {
+			instanceId: "worker-instance",
+			taskKind: "subagent",
+			subagentRole: "worker",
+		})
+		vi.mocked(mockCline.abortTask).mockRejectedValueOnce(new Error("process tree still alive"))
+
+		await provider.addClineToStack(mockCline)
+		vi.mocked(mockCline.emit).mockClear()
+
+		await expect(provider.removeClineFromStack()).rejects.toThrow("process tree still alive")
+		expect(provider.getTaskStackSize()).toBe(1)
+		expect(provider.getLiveTask(mockCline.taskId)).toBe(mockCline)
+		expect(mockCline.emit).not.toHaveBeenCalled()
 	})
 
 	describe("clearTask message handler", () => {
@@ -851,6 +901,45 @@ describe("ClineProvider", () => {
 		expect(webviewState).toMatchObject(expected)
 	})
 
+	test("posts the selected root's durable managed-agent projection to the webview", async () => {
+		const rootTask = new Task(defaultTaskOptions)
+		Object.defineProperty(rootTask, "taskId", { value: "bridge-root", writable: true })
+		await provider.addClineToStack(rootTask)
+		const projection = {
+			version: 1 as const,
+			rootTaskId: "bridge-root",
+			observedAt: 10,
+			nodes: [
+				{
+					taskId: "bridge-root",
+					rootTaskId: "bridge-root",
+					path: "/root" as const,
+					nickname: "Bridge root",
+					role: "root" as const,
+					objective: "Project durable agents",
+					status: "running" as const,
+					createdAt: 1,
+					updatedAt: 10,
+					depth: 0,
+					usage: { durationMs: 9 },
+				},
+			],
+			activity: [],
+			capacity: { active: 0, queued: 0, terminal: 0, limit: 2 },
+			budgets: { tokenLimit: null, costLimit: null },
+			omittedNodeCount: 0,
+			omittedActivityCount: 0,
+		}
+		const buildProjection = vi
+			.spyOn(provider as any, "buildManagedAgentTreeProjection")
+			.mockResolvedValue(projection)
+
+		const webviewState = await provider.getStateToPostToWebview()
+
+		expect(buildProjection).toHaveBeenCalledWith(rootTask, expect.objectContaining({ maxConcurrentSubagents: 2 }))
+		expect(webviewState.managedAgentTree).toBe(projection)
+	})
+
 	test("language is set to VSCode language", async () => {
 		// Mock VSCode language as Spanish
 		;(vscode.env as any).language = "pt-BR"
@@ -916,6 +1005,46 @@ describe("ClineProvider", () => {
 			expect(updateGlobalStateSpy).toHaveBeenCalledWith(key, value)
 			expect(mockContext.globalState.update).toHaveBeenCalledWith(key, value)
 		}
+	})
+
+	test("allows a root task policy override to narrow but never widen", async () => {
+		const getState = vi.spyOn(provider, "getState")
+		vi.spyOn(provider, "removeClineFromStack").mockResolvedValue(undefined)
+		vi.spyOn(provider, "addClineToStack").mockResolvedValue(undefined)
+		vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
+
+		getState.mockResolvedValue({
+			apiConfiguration: { apiProvider: "openrouter" },
+			currentApiConfigName: "current-config",
+			enableCheckpoints: false,
+			checkpointTimeout: 30,
+			experiments: {},
+			subagentDelegationPolicy: "proactive",
+		} as any)
+		await provider.createTask("narrow policy", undefined, undefined, {
+			startTask: false,
+			subagentDelegationPolicy: "explicit-only",
+		})
+
+		expect(vi.mocked(Task)).toHaveBeenLastCalledWith(
+			expect.objectContaining({ subagentDelegationPolicy: "explicit-only" }),
+		)
+
+		getState.mockResolvedValue({
+			apiConfiguration: { apiProvider: "openrouter" },
+			currentApiConfigName: "current-config",
+			enableCheckpoints: false,
+			checkpointTimeout: 30,
+			experiments: {},
+			subagentDelegationPolicy: "explicit-only",
+		} as any)
+		await expect(
+			provider.createTask("widen policy", undefined, undefined, {
+				startTask: false,
+				subagentDelegationPolicy: "proactive",
+				subagentDelegationExplicitlyEnabled: true,
+			}),
+		).rejects.toThrow("cannot widen")
 	})
 
 	test("updates sound utility when sound setting changes", async () => {
@@ -1841,6 +1970,31 @@ describe("ClineProvider", () => {
 
 			// Verify no mode validation occurred (mode update not called)
 			expect(mockContext.globalState.update).not.toHaveBeenCalledWith("mode", expect.any(String))
+		})
+
+		test("settles retained automatic-result claims before constructing a replacement Task", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			let finishSettlement!: (count: number) => void
+			const retrySettlement = vi
+				.spyOn((provider as any).agentControlStore, "retryPendingMailboxClaimSettlements")
+				.mockImplementationOnce(() => new Promise<number>((resolve) => (finishSettlement = resolve)))
+			vi.mocked(Task).mockClear()
+
+			const restoring = provider.createTaskWithHistoryItem({
+				id: "replacement-task",
+				ts: Date.now(),
+				task: "Restore safely",
+				number: 1,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			})
+			await vi.waitFor(() => expect(retrySettlement).toHaveBeenCalledWith("replacement-task"))
+			expect(Task).not.toHaveBeenCalled()
+
+			finishSettlement(1)
+			await restoring
+			expect(Task).toHaveBeenCalledOnce()
 		})
 
 		test("continues with task restoration even if mode config loading fails", async () => {

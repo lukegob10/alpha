@@ -16,6 +16,7 @@ import {
 	subagentContextManifestSchema,
 	subagentOrchestratedContextManifestSchema,
 	subagentManifestOrchestrationSchema,
+	subagentRootOrchestrationSummarySchema,
 	subagentStopReasonSchema,
 } from "../index.js"
 
@@ -87,6 +88,24 @@ const legacyManifest = {
 }
 
 describe("sub-agent orchestration contracts", () => {
+	it("validates a role-neutral configured or frozen root summary", () => {
+		const { timeoutMs: _roleSpecificTimeout, ...rootLimits } = orchestration.limits
+		const summary = subagentRootOrchestrationSummarySchema.parse({
+			source: "frozen",
+			delegationPolicy: "explicit-only",
+			maxDepth: 3,
+			limits: rootLimits,
+		})
+
+		expect(summary.limits).not.toHaveProperty("timeoutMs")
+		expect(
+			subagentRootOrchestrationSummarySchema.safeParse({
+				...summary,
+				limits: orchestration.limits,
+			}).success,
+		).toBe(false)
+	})
+
 	it("resolves conservative defaults for missing or invalid persisted settings", () => {
 		expect(resolveSubagentOrchestrationSettings()).toEqual({
 			maxConcurrentSubagents: DEFAULT_MAX_CONCURRENT_SUBAGENTS,
@@ -232,7 +251,7 @@ describe("sub-agent orchestration contracts", () => {
 		).toThrow("persisted task opt-in")
 	})
 
-	it("prevents descendant policy widening without a trusted user-authored override", () => {
+	it("allows a per-task policy to narrow but never widen", () => {
 		expect(() =>
 			resolveSubagentDelegationPolicy({
 				frozenTaskPolicy: "explicit-only",
@@ -242,15 +261,15 @@ describe("sub-agent orchestration contracts", () => {
 		).toThrow("cannot widen")
 		expect(
 			resolveSubagentDelegationPolicy({
-				frozenTaskPolicy: "explicit-only",
-				requestedChildPolicy: "proactive",
-				allowUserAuthoredWidening: true,
+				frozenTaskPolicy: "proactive",
+				requestedChildPolicy: "explicit-only",
+				taskExplicitlyEnabled: true,
 			}),
 		).toEqual({
-			policy: "proactive",
+			policy: "explicit-only",
 			source: "task",
-			authorization: "proactive-policy",
-			explicitUserRequest: false,
+			authorization: "task-opt-in",
+			explicitUserRequest: true,
 		})
 	})
 
@@ -308,6 +327,7 @@ describe("sub-agent orchestration contracts", () => {
 	it.each([
 		"completed",
 		"cancelled",
+		"never_launched",
 		"parent_cancelled",
 		"ancestor_cancelled",
 		"interrupted",

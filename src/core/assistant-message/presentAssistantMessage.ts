@@ -35,6 +35,7 @@ import { spawnAgentTool } from "../tools/SpawnAgentTool"
 import { listAgentsTool } from "../tools/ListAgentsTool"
 import { waitAgentTool } from "../tools/WaitAgentTool"
 import { sendMessageTool } from "../tools/SendMessageTool"
+import { reportProgressTool } from "../tools/ReportProgressTool"
 import { followupTaskTool } from "../tools/FollowupTaskTool"
 import { interruptAgentTool } from "../tools/InterruptAgentTool"
 import { cancelAgentTool } from "../tools/CancelAgentTool"
@@ -66,6 +67,7 @@ const batchableAgentToolNames = new Set([
 	"spawn_agent",
 	"list_agents",
 	"send_message",
+	"report_progress",
 	"followup_task",
 	"interrupt_agent",
 	"cancel_agent",
@@ -978,6 +980,13 @@ export async function presentAssistantMessage(cline: Task) {
 					break
 				case "send_message":
 					await sendMessageTool.handle(cline, block as ToolUse<"send_message">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "report_progress":
+					await reportProgressTool.handle(cline, block as ToolUse<"report_progress">, {
 						askApproval,
 						handleError,
 						pushToolResult,

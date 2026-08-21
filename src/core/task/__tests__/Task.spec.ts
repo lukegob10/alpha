@@ -2,6 +2,7 @@
 
 import * as os from "os"
 import * as path from "path"
+import { EventEmitter } from "events"
 
 import * as vscode from "vscode"
 import { Anthropic } from "@anthropic-ai/sdk"
@@ -12,6 +13,7 @@ import { TelemetryService } from "@alpha-code/telemetry"
 import { Task } from "../Task"
 import { ClineProvider } from "../../webview/ClineProvider"
 import { ApiStreamChunk } from "../../../api/transform/stream"
+import { maybeRemoveImageBlocks } from "../../../api/transform/image-cleaning"
 import { ContextProxy } from "../../config/ContextProxy"
 import { processUserContentMentions } from "../../mentions/processUserContentMentions"
 import { MultiSearchReplaceDiffStrategy } from "../../diff/strategies/multi-search-replace"
@@ -389,6 +391,37 @@ describe("Alpha", () => {
 			expect(cline.consecutiveMistakeLimit).toBe(5)
 		})
 
+		it("retains the original root identity across a nested task chain", () => {
+			const root = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "root task",
+				startTask: false,
+			})
+			const child = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "child task",
+				rootTask: root,
+				parentTask: root,
+				startTask: false,
+			})
+			const grandchild = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "grandchild task",
+				rootTask: child.rootTask ?? child,
+				parentTask: child,
+				startTask: false,
+			})
+
+			expect(child.rootTask).toBe(root)
+			expect(child.rootTaskId).toBe(root.taskId)
+			expect(grandchild.rootTask).toBe(root)
+			expect(grandchild.rootTaskId).toBe(root.taskId)
+			expect(grandchild.parentTaskId).toBe(child.taskId)
+		})
+
 		it("should require either task or historyItem", () => {
 			expect(() => {
 				new Task({ provider: mockProvider, apiConfiguration: mockApiConfig })
@@ -398,43 +431,13 @@ describe("Alpha", () => {
 
 	describe("getEnvironmentDetails", () => {
 		describe("API conversation handling", () => {
-			it.skip("should clean conversation history before sending to API", async () => {
-				// Alpha.create will now use our mocked getEnvironmentDetails
-				const [cline, task] = Task.create({
+			it("should clean conversation history before sending to API", () => {
+				const cline = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
 					task: "test task",
+					startTask: false,
 				})
-
-				cline.abandoned = true
-				await task
-
-				// Set up mock stream.
-				const mockStreamForClean = (async function* () {
-					yield { type: "text", text: "test response" }
-				})()
-
-				// Set up spy.
-				const cleanMessageSpy = vi.fn().mockReturnValue(mockStreamForClean)
-				vi.spyOn(cline.api, "createMessage").mockImplementation(cleanMessageSpy)
-
-				// Add test message to conversation history.
-				cline.apiConversationHistory = [
-					{
-						role: "user" as const,
-						content: [{ type: "text" as const, text: "test message" }],
-						ts: Date.now(),
-					},
-				]
-
-				// Mock abort state
-				Object.defineProperty(cline, "abort", {
-					get: () => false,
-					set: () => {},
-					configurable: true,
-				})
-
-				// Add a message with extra properties to the conversation history
 				const messageWithExtra = {
 					role: "user" as const,
 					content: [{ type: "text" as const, text: "test message" }],
@@ -442,32 +445,18 @@ describe("Alpha", () => {
 					extraProp: "should be removed",
 				}
 
-				cline.apiConversationHistory = [messageWithExtra]
+				const history = (cline as any).buildCleanConversationHistory([messageWithExtra])
 
-				// Trigger an API request
-				await cline.recursivelyMakeClineRequests([{ type: "text", text: "test request" }], false)
-
-				// Get the conversation history from the first API call
-				expect(cleanMessageSpy.mock.calls.length).toBeGreaterThan(0)
-				const history = cleanMessageSpy.mock.calls[0]?.[1]
-				expect(history).toBeDefined()
-				expect(history.length).toBeGreaterThan(0)
-
-				// Find our test message
-				const cleanedMessage = history.find((msg: { content?: Array<{ text: string }> }) =>
-					msg.content?.some((content) => content.text === "test message"),
-				)
-				expect(cleanedMessage).toBeDefined()
-				expect(cleanedMessage).toEqual({
-					role: "user",
-					content: [{ type: "text", text: "test message" }],
-				})
-
-				// Verify extra properties were removed
-				expect(Object.keys(cleanedMessage!)).toEqual(["role", "content"])
+				expect(history).toEqual([
+					{
+						role: "user",
+						content: [{ type: "text", text: "test message" }],
+					},
+				])
+				expect(Object.keys(history[0])).toEqual(["role", "content"])
 			})
 
-			it.skip("should handle image blocks based on model capabilities", async () => {
+			it("should handle image blocks based on model capabilities", () => {
 				// Create two configurations - one with image support, one without
 				const configWithImages = {
 					...mockApiConfig,
@@ -509,10 +498,11 @@ describe("Alpha", () => {
 				]
 
 				// Test with model that supports images
-				const [clineWithImages, taskWithImages] = Task.create({
+				const clineWithImages = new Task({
 					provider: mockProvider,
 					apiConfiguration: configWithImages,
 					task: "test task",
+					startTask: false,
 				})
 
 				// Mock the model info to indicate image support
@@ -528,13 +518,12 @@ describe("Alpha", () => {
 					} as ModelInfo,
 				})
 
-				clineWithImages.apiConversationHistory = conversationHistory
-
 				// Test with model that doesn't support images
-				const [clineWithoutImages, taskWithoutImages] = Task.create({
+				const clineWithoutImages = new Task({
 					provider: mockProvider,
 					apiConfiguration: configWithoutImages,
 					task: "test task",
+					startTask: false,
 				})
 
 				// Mock the model info to indicate no image support
@@ -550,87 +539,22 @@ describe("Alpha", () => {
 					} as ModelInfo,
 				})
 
-				clineWithoutImages.apiConversationHistory = conversationHistory
+				const preserved = maybeRemoveImageBlocks(conversationHistory as any, clineWithImages.api)
+				const converted = maybeRemoveImageBlocks(conversationHistory as any, clineWithoutImages.api)
 
-				// Mock abort state for both instances
-				Object.defineProperty(clineWithImages, "abort", {
-					get: () => false,
-					set: () => {},
-					configurable: true,
-				})
-
-				Object.defineProperty(clineWithoutImages, "abort", {
-					get: () => false,
-					set: () => {},
-					configurable: true,
-				})
-
-				// Set up mock streams
-				const mockStreamWithImages = (async function* () {
-					yield { type: "text", text: "test response" }
-				})()
-
-				const mockStreamWithoutImages = (async function* () {
-					yield { type: "text", text: "test response" }
-				})()
-
-				// Set up spies
-				const imagesSpy = vi.fn().mockReturnValue(mockStreamWithImages)
-				const noImagesSpy = vi.fn().mockReturnValue(mockStreamWithoutImages)
-
-				vi.spyOn(clineWithImages.api, "createMessage").mockImplementation(imagesSpy)
-				vi.spyOn(clineWithoutImages.api, "createMessage").mockImplementation(noImagesSpy)
-
-				// Set up conversation history with images
-				clineWithImages.apiConversationHistory = [
-					{
-						role: "user",
-						content: [
-							{ type: "text", text: "Here is an image" },
-							{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: "base64data" } },
-						],
-					},
-				]
-
-				clineWithImages.abandoned = true
-				await taskWithImages.catch(() => {})
-
-				clineWithoutImages.abandoned = true
-				await taskWithoutImages.catch(() => {})
-
-				// Trigger API requests
-				await clineWithImages.recursivelyMakeClineRequests([{ type: "text", text: "test request" }])
-				await clineWithoutImages.recursivelyMakeClineRequests([{ type: "text", text: "test request" }])
-
-				// Get the calls
-				const imagesCalls = imagesSpy.mock.calls
-				const noImagesCalls = noImagesSpy.mock.calls
-
-				// Verify model with image support preserves image blocks
-				expect(imagesCalls.length).toBeGreaterThan(0)
-				if (imagesCalls[0]?.[1]?.[0]?.content) {
-					expect(imagesCalls[0][1][0].content).toHaveLength(2)
-					expect(imagesCalls[0][1][0].content[0]).toEqual({ type: "text", text: "Here is an image" })
-					expect(imagesCalls[0][1][0].content[1]).toHaveProperty("type", "image")
-				}
-
-				// Verify model without image support converts image blocks to text
-				expect(noImagesCalls.length).toBeGreaterThan(0)
-				if (noImagesCalls[0]?.[1]?.[0]?.content) {
-					expect(noImagesCalls[0][1][0].content).toHaveLength(2)
-					expect(noImagesCalls[0][1][0].content[0]).toEqual({ type: "text", text: "Here is an image" })
-					expect(noImagesCalls[0][1][0].content[1]).toEqual({
-						type: "text",
-						text: "[Referenced image in conversation]",
-					})
-				}
+				expect(preserved[0]?.content).toEqual(conversationHistory[0]?.content)
+				expect(converted[0]?.content).toEqual([
+					{ type: "text", text: "Here is an image" },
+					{ type: "text", text: "[Referenced image in conversation]" },
+				])
 			})
 
-			it.skip("should handle API retry with countdown", async () => {
-				const [cline, task] = Task.create({
+			it("should handle API retry with countdown", async () => {
+				const cline = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
 					task: "test task",
+					startTask: false,
 				})
 
 				// Mock delay to track countdown timing
@@ -638,7 +562,7 @@ describe("Alpha", () => {
 				vi.spyOn(await import("delay"), "default").mockImplementation(mockDelay)
 
 				// Mock say to track messages
-				const saySpy = vi.spyOn(cline, "say")
+				const saySpy = vi.spyOn(cline, "say").mockResolvedValue(undefined)
 
 				// Create a stream that fails on first chunk
 				const mockError = new Error("API Error")
@@ -691,7 +615,10 @@ describe("Alpha", () => {
 				})
 
 				// Set up mock state
-				mockProvider.getState = vi.fn().mockResolvedValue({})
+				mockProvider.getState = vi.fn().mockResolvedValue({
+					autoApprovalEnabled: true,
+					requestDelaySeconds: 3,
+				})
 
 				// Mock previous API request message
 				cline.clineMessages = [
@@ -719,18 +646,13 @@ describe("Alpha", () => {
 				for (let i = baseDelay; i > 0; i--) {
 					expect(saySpy).toHaveBeenCalledWith(
 						"api_req_retry_delayed",
-						expect.stringContaining(`Retrying in ${i} seconds`),
+						expect.stringContaining(`<retry_timer>${i}</retry_timer>`),
 						undefined,
 						true,
 					)
 				}
 
-				expect(saySpy).toHaveBeenCalledWith(
-					"api_req_retry_delayed",
-					expect.stringContaining("Retrying now"),
-					undefined,
-					false,
-				)
+				expect(saySpy).toHaveBeenCalledWith("api_req_retry_delayed", "API Error\n", undefined, false)
 
 				// Calculate expected delay calls for countdown
 				const totalExpectedDelays = baseDelay // One delay per second for countdown
@@ -738,20 +660,16 @@ describe("Alpha", () => {
 				expect(mockDelay).toHaveBeenCalledWith(1000)
 
 				// Verify error message content
-				const errorMessage = saySpy.mock.calls.find((call) => call[1]?.includes(mockError.message))?.[1]
-				expect(errorMessage).toBe(
-					`${mockError.message}\n\nRetry attempt 1\nRetrying in ${baseDelay} seconds...`,
-				)
-
-				await cline.abortTask(true)
-				await task.catch(() => {})
+				const errorMessage = saySpy.mock.calls.find((call) => call[1]?.includes("<retry_timer>"))?.[1]
+				expect(errorMessage).toBe(`${mockError.message}\n<retry_timer>${baseDelay}</retry_timer>`)
 			})
 
-			it.skip("should not apply retry delay twice", async () => {
-				const [cline, task] = Task.create({
+			it("should not apply retry delay twice", async () => {
+				const cline = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
 					task: "test task",
+					startTask: false,
 				})
 
 				// Mock delay to track countdown timing
@@ -759,7 +677,7 @@ describe("Alpha", () => {
 				vi.spyOn(await import("delay"), "default").mockImplementation(mockDelay)
 
 				// Mock say to track messages
-				const saySpy = vi.spyOn(cline, "say")
+				const saySpy = vi.spyOn(cline, "say").mockResolvedValue(undefined)
 
 				// Create a stream that fails on first chunk
 				const mockError = new Error("API Error")
@@ -812,7 +730,10 @@ describe("Alpha", () => {
 				})
 
 				// Set up mock state
-				mockProvider.getState = vi.fn().mockResolvedValue({})
+				mockProvider.getState = vi.fn().mockResolvedValue({
+					autoApprovalEnabled: true,
+					requestDelaySeconds: 3,
+				})
 
 				// Mock previous API request message
 				cline.clineMessages = [
@@ -841,7 +762,7 @@ describe("Alpha", () => {
 
 				// Verify countdown messages were only shown once
 				const retryMessages = saySpy.mock.calls.filter(
-					(call) => call[0] === "api_req_retry_delayed" && call[1]?.includes("Retrying in"),
+					(call) => call[0] === "api_req_retry_delayed" && call[1]?.includes("<retry_timer>"),
 				)
 				expect(retryMessages).toHaveLength(baseDelay)
 
@@ -849,22 +770,14 @@ describe("Alpha", () => {
 				for (let i = baseDelay; i > 0; i--) {
 					expect(saySpy).toHaveBeenCalledWith(
 						"api_req_retry_delayed",
-						expect.stringContaining(`Retrying in ${i} seconds`),
+						expect.stringContaining(`<retry_timer>${i}</retry_timer>`),
 						undefined,
 						true,
 					)
 				}
 
 				// Verify final retry message
-				expect(saySpy).toHaveBeenCalledWith(
-					"api_req_retry_delayed",
-					expect.stringContaining("Retrying now"),
-					undefined,
-					false,
-				)
-
-				await cline.abortTask(true)
-				await task.catch(() => {})
+				expect(saySpy).toHaveBeenCalledWith("api_req_retry_delayed", "API Error\n", undefined, false)
 			})
 
 			describe("processUserContentMentions", () => {
@@ -980,6 +893,9 @@ describe("Alpha", () => {
 					postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
 					postMessageToWebview: vi.fn().mockResolvedValue(undefined),
 					updateTaskHistory: vi.fn().mockResolvedValue(undefined),
+					claimAutomaticSubagentResults: vi.fn().mockResolvedValue({ claimId: "claim-default", taskIds: [] }),
+					acknowledgeAutomaticSubagentResults: vi.fn().mockResolvedValue(undefined),
+					releaseAutomaticSubagentResults: vi.fn().mockResolvedValue(undefined),
 				}
 
 				// Get the mocked delay function
@@ -999,7 +915,9 @@ describe("Alpha", () => {
 					task: "persist a lifecycle result",
 					startTask: false,
 				})
-				const saveApiConversationHistory = vi.spyOn(task as any, "saveApiConversationHistory")
+				const saveApiConversationHistory = vi
+					.spyOn(task as any, "saveApiConversationHistory")
+					.mockResolvedValue(true)
 				task.apiConversationHistory = [
 					{
 						role: "assistant",
@@ -1021,6 +939,18 @@ describe("Alpha", () => {
 					await blockedWait
 				})
 
+				const onPersisted = vi.fn(() => {
+					expect(
+						task.apiConversationHistory.some(
+							(message) =>
+								message.role === "user" &&
+								Array.isArray(message.content) &&
+								message.content.some(
+									(block) => block.type === "tool_result" && block.tool_use_id === "call-list",
+								),
+						),
+					).toBe(true)
+				})
 				const request = task.recursivelyMakeClineRequests(
 					[
 						{
@@ -1030,9 +960,11 @@ describe("Alpha", () => {
 						},
 					],
 					false,
+					onPersisted,
 				)
 				await waitStarted
 				expect(saveApiConversationHistory).toHaveBeenCalledOnce()
+				expect(onPersisted).toHaveBeenCalledOnce()
 				const persistedBeforeInterruption = task.apiConversationHistory.some(
 					(message) =>
 						message.role === "user" &&
@@ -1045,6 +977,129 @@ describe("Alpha", () => {
 				rejectWait(new Error("rate-limit wait interrupted"))
 				await expect(request).rejects.toThrow("rate-limit wait interrupted")
 				expect(persistedBeforeInterruption).toBe(true)
+			})
+
+			it("does not acknowledge steering when API-history persistence and retries fail", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "retain an unacknowledged steering message",
+					startTask: false,
+				})
+				task.apiConversationHistory = [
+					{
+						role: "assistant",
+						content: [{ type: "text", text: "ready" }],
+						ts: 1,
+					},
+				] as any
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(false)
+				const retry = vi.spyOn(task, "retrySaveApiConversationHistory").mockResolvedValue(false)
+				const onPersisted = vi.fn()
+
+				await expect(
+					task.recursivelyMakeClineRequests(
+						[{ type: "text", text: "<user_message>steer me</user_message>" }],
+						false,
+						onPersisted,
+					),
+				).rejects.toThrow("Failed to persist the user turn")
+
+				expect(retry).toHaveBeenCalledOnce()
+				expect(onPersisted).not.toHaveBeenCalled()
+			})
+
+			it("retries an automatic-result acknowledgement that could not be persisted in the prior turn", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "recover an owned result claim",
+					startTask: false,
+				})
+				task.apiConversationHistory = [
+					{ role: "assistant", content: [{ type: "text", text: "ready" }], ts: 1 },
+				] as any
+				task.clineMessages = [
+					{
+						type: "say",
+						say: "subagent_group",
+						subagentGroup: {
+							groupId: "group-result-recovery",
+							parentTaskId: task.taskId,
+							executionMode: "async",
+							status: "completed",
+							createdAt: 1,
+							completedAt: 2,
+							agents: [
+								{
+									taskId: "child-result-recovery",
+									nickname: "Reviewer",
+									role: "review",
+									objective: "Review",
+									status: "completed",
+									completedAt: 2,
+									summary: "Reviewed",
+									usage: { durationMs: 1 },
+								},
+							],
+						},
+					},
+				] as any
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(true)
+				mockProvider.claimAutomaticSubagentResults.mockResolvedValue({
+					claimId: "claim-result-recovery",
+					taskIds: ["child-result-recovery"],
+				})
+				mockProvider.acknowledgeAutomaticSubagentResults.mockRejectedValue(
+					new Error("agent-control write unavailable"),
+				)
+
+				await expect(task.recursivelyMakeClineRequests([{ type: "text", text: "continue" }])).rejects.toThrow(
+					"automatic-result mailbox claim",
+				)
+				expect(mockProvider.acknowledgeAutomaticSubagentResults).toHaveBeenCalledTimes(2)
+				expect((task as any).pendingAutomaticResultClaimSettlement).toEqual({
+					claimId: "claim-result-recovery",
+					disposition: "acknowledge",
+				})
+
+				mockProvider.acknowledgeAutomaticSubagentResults.mockResolvedValue(undefined)
+				vi.spyOn(task as any, "maybeWaitForProviderRateLimit").mockRejectedValueOnce(
+					new Error("stop after claim recovery"),
+				)
+				await expect(task.recursivelyMakeClineRequests([{ type: "text", text: "resume" }])).rejects.toThrow(
+					"stop after claim recovery",
+				)
+
+				expect(mockProvider.acknowledgeAutomaticSubagentResults).toHaveBeenCalledTimes(3)
+				expect(mockProvider.claimAutomaticSubagentResults).toHaveBeenCalledOnce()
+				expect((task as any).pendingAutomaticResultClaimSettlement).toBeUndefined()
+			})
+
+			it("retains a failed automatic-result release for bounded in-process recovery", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "recover a released result claim",
+					startTask: false,
+				})
+				;(task as any).retainAutomaticResultClaimSettlement("claim-release-recovery", "release")
+				mockProvider.releaseAutomaticSubagentResults
+					.mockRejectedValueOnce(new Error("agent-control write unavailable"))
+					.mockResolvedValueOnce(undefined)
+
+				await expect((task as any).retryPendingAutomaticResultClaimSettlement(mockProvider)).rejects.toThrow(
+					"agent-control write unavailable",
+				)
+				expect((task as any).pendingAutomaticResultClaimSettlement).toEqual({
+					claimId: "claim-release-recovery",
+					disposition: "release",
+				})
+				await expect(
+					(task as any).retryPendingAutomaticResultClaimSettlement(mockProvider),
+				).resolves.toBeUndefined()
+				expect((task as any).pendingAutomaticResultClaimSettlement).toBeUndefined()
 			})
 
 			it("uses the task-owned profile when the foreground profile has a rate limit", async () => {
@@ -1873,6 +1928,67 @@ describe("Alpha", () => {
 				text: "focus on the cancellation race",
 				images: [],
 			})
+			expect(task.canAcceptSteerMessage()).toBe(false)
+
+			// Moving the message into a turn stack must not reopen the steering slot
+			// before that stack item is durably written to API history.
+			;(task as any).pendingSteerMessage = undefined
+			expect(task.canAcceptSteerMessage()).toBe(false)
+		})
+
+		it("retains a durable steering receipt when an initialized managed child is idle", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+				taskKind: "subagent",
+			})
+			task.isInitialized = true
+			const submitSpy = vi.spyOn(task, "submitUserMessage")
+			const onPersisted = vi.fn()
+
+			expect((task as any).didComplete).toBe(false)
+			expect(task.canAcceptSteerMessage()).toBe(false)
+			await expect(task.steerUserMessage("recover this message", [], onPersisted)).rejects.toThrow(
+				"became inactive before steering could be durably persisted",
+			)
+
+			expect(submitSpy).not.toHaveBeenCalled()
+			expect(onPersisted).not.toHaveBeenCalled()
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "recover this message",
+				images: [],
+				onPersisted,
+			})
+			expect((task as any).steerMessageAwaitingPersistence).toBe(true)
+		})
+
+		it("retains a durable steering receipt when an ask appears after the provider precheck", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+				taskKind: "subagent",
+			})
+			const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
+			const onPersisted = vi.fn()
+			;(task as any).activeAsk = { type: "tool", ts: Date.now() }
+
+			expect(task.canAcceptSteerMessage()).toBe(false)
+			await expect(task.steerUserMessage("retain across the ask race", [], onPersisted)).rejects.toThrow(
+				"waiting for input before steering could be durably persisted",
+			)
+
+			expect(handleResponseSpy).not.toHaveBeenCalled()
+			expect(onPersisted).not.toHaveBeenCalled()
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "retain across the ask race",
+				images: [],
+				onPersisted,
+			})
+			expect((task as any).steerMessageAwaitingPersistence).toBe(true)
 		})
 
 		it("responds like a user message when the task is waiting on an ask", async () => {
@@ -1994,6 +2110,120 @@ describe("Alpha", () => {
 	})
 
 	describe("abortTask", () => {
+		it("waits for both the Worker process abort and terminal settlement", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			let finishAbort!: () => void
+			const terminalProcess = Object.assign(new EventEmitter(), {
+				isSettled: false,
+				abort: vi.fn(
+					() =>
+						new Promise<void>((resolve) => {
+							finishAbort = resolve
+						}),
+				),
+			})
+			Object.assign(task, { taskKind: "subagent", subagentRole: "worker", terminalProcess })
+			vi.spyOn(task, "dispose").mockImplementation(() => {})
+			vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(undefined)
+
+			let settled = false
+			const abort = task.abortTask().finally(() => (settled = true))
+			await vi.waitFor(() => expect(terminalProcess.abort).toHaveBeenCalledOnce())
+
+			finishAbort()
+			await Promise.resolve()
+			expect(settled).toBe(false)
+
+			terminalProcess.isSettled = true
+			terminalProcess.emit("completed")
+			await abort
+			expect(settled).toBe(true)
+		})
+
+		it("does not wait for a Worker terminal event that already settled", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			const terminalProcess = Object.assign(new EventEmitter(), {
+				isSettled: true,
+				abort: vi.fn(async () => undefined),
+			})
+			Object.assign(task, { taskKind: "subagent", subagentRole: "worker", terminalProcess })
+			vi.spyOn(task, "dispose").mockImplementation(() => {})
+			vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(undefined)
+
+			await expect(task.abortTask()).resolves.toBeUndefined()
+			expect(terminalProcess.abort).not.toHaveBeenCalled()
+		})
+
+		it("coalesces concurrent aborts into one lifecycle transition", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			const emitSpy = vi.spyOn(task, "emit")
+			const disposeSpy = vi.spyOn(task, "dispose").mockImplementation(() => {})
+			let finishSave!: () => void
+			const saveSpy = vi.spyOn(task as any, "saveClineMessages").mockImplementation(
+				async () =>
+					await new Promise<void>((resolve) => {
+						finishSave = resolve
+					}),
+			)
+
+			const first = task.abortTask()
+			const second = task.abortTask(true)
+			expect(second).toBe(first)
+			await vi.waitFor(() => expect(saveSpy).toHaveBeenCalledOnce())
+			finishSave()
+			await Promise.all([first, second])
+
+			expect(task.abandoned).toBe(true)
+			expect(disposeSpy).toHaveBeenCalledOnce()
+			const abortEmits = (emitSpy.mock.calls as unknown[][]).filter(([event]) => event === "taskAborted")
+			expect(abortEmits).toHaveLength(1)
+		})
+
+		it("disposes and persists before surfacing a retryable managed-process cleanup failure", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			let abortAttempt = 0
+			const terminalProcess = Object.assign(new EventEmitter(), {
+				abort: vi.fn(async () => {
+					abortAttempt++
+					if (abortAttempt === 1) throw new Error("tree cleanup failed")
+					terminalProcess.emit("completed")
+				}),
+			})
+			Object.assign(task, { taskKind: "subagent", subagentRole: "worker", terminalProcess })
+			const disposeSpy = vi.spyOn(task, "dispose").mockImplementation(() => {})
+			const saveSpy = vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(undefined)
+
+			await expect(task.abortTask()).rejects.toThrow("tree cleanup failed")
+
+			expect(disposeSpy).toHaveBeenCalledOnce()
+			expect(saveSpy).toHaveBeenCalledOnce()
+
+			await expect(task.abortTask()).resolves.toBeUndefined()
+			expect(terminalProcess.abort).toHaveBeenCalledTimes(2)
+			expect(disposeSpy).toHaveBeenCalledTimes(2)
+			expect(saveSpy).toHaveBeenCalledTimes(2)
+		})
+
 		it("should set abort flag and emit TaskAborted event", async () => {
 			const task = new Task({
 				provider: mockProvider,

@@ -83,6 +83,23 @@ describe("TaskGroupItem", () => {
 
 			expect(screen.getByTestId("task-group-my-parent-id")).toBeInTheDocument()
 		})
+
+		it("uses one card surface for the group instead of nesting a second task card", () => {
+			const group = createMockGroup()
+
+			render(
+				<TaskGroupItem
+					group={group}
+					variant="compact"
+					onToggleExpand={vi.fn()}
+					onToggleSubtaskExpand={vi.fn()}
+				/>,
+			)
+
+			expect(screen.getByTestId("task-group-parent-1")).toHaveClass("surface-raised")
+			expect(screen.getByTestId("task-item-parent-1")).toHaveAttribute("data-contained", "true")
+			expect(screen.getByTestId("task-item-parent-1")).not.toHaveClass("surface-raised")
+		})
 	})
 
 	describe("subtask count display", () => {
@@ -184,7 +201,7 @@ describe("TaskGroupItem", () => {
 			expect(screen.getByText("Subtask content 2")).toBeInTheDocument()
 		})
 
-		it("hides subtasks when collapsed", () => {
+		it("keeps collapsed subtasks out of the interaction tree", () => {
 			const group = createMockGroup({
 				isExpanded: false,
 				subtasks: [createMockSubtaskNode({ id: "child-1", task: "Subtask content" })],
@@ -194,10 +211,25 @@ describe("TaskGroupItem", () => {
 				<TaskGroupItem group={group} variant="full" onToggleExpand={vi.fn()} onToggleSubtaskExpand={vi.fn()} />,
 			)
 
-			// The subtask-list element is present but collapsed via CSS (max-h-0)
-			const subtaskList = screen.queryByTestId("subtask-list")
+			const subtaskList = screen.getByTestId("subtask-list")
 			expect(subtaskList).toBeInTheDocument()
-			expect(subtaskList).toHaveClass("max-h-0")
+			expect(subtaskList).toHaveAttribute("hidden")
+			expect(screen.queryByRole("button", { name: "Open task: Subtask content" })).not.toBeInTheDocument()
+		})
+
+		it("connects the disclosure control to the subtask region", () => {
+			const group = createMockGroup({
+				parent: createMockDisplayHistoryItem({ id: "parent-42" }),
+				subtasks: [createMockSubtaskNode({ id: "child-1", task: "Child 1" })],
+			})
+
+			render(
+				<TaskGroupItem group={group} variant="full" onToggleExpand={vi.fn()} onToggleSubtaskExpand={vi.fn()} />,
+			)
+
+			const disclosure = screen.getByTestId("subtask-collapsible-row")
+			expect(disclosure).toHaveAttribute("aria-controls", "task-group-parent-42-subtasks")
+			expect(disclosure).toHaveAttribute("aria-expanded", "false")
 		})
 
 		it("renders nested subtask when a node has children and is expanded", () => {

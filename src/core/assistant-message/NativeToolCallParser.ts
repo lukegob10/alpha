@@ -882,6 +882,12 @@ export class NativeToolCallParser {
 				}
 				break
 
+			case "report_progress":
+				if (this.hasOnlyKeys(partialArgs, ["message"])) {
+					nativeArgs = { message: partialArgs.message }
+				}
+				break
+
 			case "interrupt_agent":
 			case "close_agent":
 				if (this.hasOnlyKeys(partialArgs, ["target"])) {
@@ -1400,6 +1406,12 @@ export class NativeToolCallParser {
 						this.isNonEmptyString(args.message)
 					) {
 						nativeArgs = { target: args.target, message: args.message } as NativeArgsFor<TName>
+					}
+					break
+
+				case "report_progress":
+					if (this.hasOnlyKeys(args, ["message"]) && this.isNonEmptyString(args.message)) {
+						nativeArgs = { message: args.message } as NativeArgsFor<TName>
 					}
 					break
 

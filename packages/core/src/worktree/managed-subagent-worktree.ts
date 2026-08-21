@@ -124,6 +124,39 @@ export class ManagedSubagentWorktreeService {
 		) as ManagedWorkerArtifact
 	}
 
+	private async resolveArtifactGitCwd(artifact: ManagedWorkerArtifact): Promise<string> {
+		for (const candidate of [artifact.gitRoot, artifact.worktreePath]) {
+			if (!candidate) continue
+			try {
+				await fs.access(candidate)
+				await this.git(candidate, ["rev-parse", "--git-dir"])
+				return candidate
+			} catch {
+				// A nested Worker records its owning Worker worktree as gitRoot. If
+				// cancellation removed that parent layer first, its own linked worktree
+				// still has access to the shared object database and can capture safely.
+			}
+		}
+		throw new Error(`Managed Worker ${artifact.taskId} has no reachable Git worktree for change capture`)
+	}
+
+	private async resolveWorktreeAdmin(artifact: ManagedWorkerArtifact): Promise<{ cwd: string; prefix: string[] }> {
+		try {
+			await fs.access(artifact.gitRoot)
+			await this.git(artifact.gitRoot, ["rev-parse", "--git-dir"])
+			return { cwd: artifact.gitRoot, prefix: [] }
+		} catch {
+			if (!artifact.worktreePath) throw new Error(`Managed Worker ${artifact.taskId} has no worktree to clean`)
+			const commonDirValue = (
+				await this.git(artifact.worktreePath, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
+			).trim()
+			const commonDir = path.isAbsolute(commonDirValue)
+				? commonDirValue
+				: path.resolve(artifact.worktreePath, commonDirValue)
+			return { cwd: path.dirname(commonDir), prefix: [`--git-dir=${commonDir}`] }
+		}
+	}
+
 	async validateScope(workspacePath: string, requestedScope: string[]): Promise<ValidatedWorkerScope> {
 		if (!Array.isArray(requestedScope) || requestedScope.length < 1 || requestedScope.length > 12) {
 			throw new Error("Worker write_scope requires 1 to 12 workspace-relative files or directories")
@@ -321,13 +354,14 @@ export class ManagedSubagentWorktreeService {
 		const indexPath = path.join(this.artifactDir(storagePath, artifact.id), "result.index")
 		const indexEnv = { GIT_INDEX_FILE: indexPath, GIT_WORK_TREE: artifact.worktreePath }
 		try {
+			const gitCwd = await this.resolveArtifactGitCwd(artifact)
 			await fs.rm(indexPath, { force: true })
-			await this.git(artifact.gitRoot, ["read-tree", artifact.baselineCommit], indexEnv)
-			await this.git(artifact.gitRoot, ["add", "-A"], indexEnv)
-			const tree = (await this.git(artifact.gitRoot, ["write-tree"], indexEnv)).trim()
+			await this.git(gitCwd, ["read-tree", artifact.baselineCommit], indexEnv)
+			await this.git(gitCwd, ["add", "-A"], indexEnv)
+			const tree = (await this.git(gitCwd, ["write-tree"], indexEnv)).trim()
 			artifact.resultCommit = (
 				await this.git(
-					artifact.gitRoot,
+					gitCwd,
 					["commit-tree", tree, "-p", artifact.baselineCommit, "-m", "Alpha worker result"],
 					{
 						...indexEnv,
@@ -339,7 +373,7 @@ export class ManagedSubagentWorktreeService {
 				)
 			).trim()
 			const parsed = this.parseNameStatus(
-				await this.git(artifact.gitRoot, [
+				await this.git(gitCwd, [
 					"diff",
 					"--name-status",
 					"-z",
@@ -366,11 +400,11 @@ export class ManagedSubagentWorktreeService {
 			for (let index = 0; index < parsed.length; index++) {
 				const change = parsed[index]!
 				const beforePath = change.previousPath ?? change.path
-				const before = await this.treeEntry(artifact.gitRoot, artifact.baselineCommit, beforePath)
-				const after = await this.treeEntry(artifact.gitRoot, artifact.resultCommit, change.path)
+				const before = await this.treeEntry(gitCwd, artifact.baselineCommit, beforePath)
+				const after = await this.treeEntry(gitCwd, artifact.resultCommit, change.path)
 				const binary = Boolean(
 					(
-						await this.git(artifact.gitRoot, [
+						await this.git(gitCwd, [
 							"diff",
 							"--numstat",
 							artifact.baselineCommit,
@@ -389,7 +423,7 @@ export class ManagedSubagentWorktreeService {
 					afterMode: after.mode,
 					beforeFile: before.hash
 						? await this.writeCommitFile(
-								artifact.gitRoot,
+								gitCwd,
 								storagePath,
 								artifact.id,
 								artifact.baselineCommit,
@@ -399,7 +433,7 @@ export class ManagedSubagentWorktreeService {
 						: undefined,
 					afterFile: after.hash
 						? await this.writeCommitFile(
-								artifact.gitRoot,
+								gitCwd,
 								storagePath,
 								artifact.id,
 								artifact.resultCommit,
@@ -410,10 +444,18 @@ export class ManagedSubagentWorktreeService {
 					binary,
 				})
 			}
+			if (artifact.changes.length === 0) {
+				artifact.status = "discarded"
+				artifact.partial = partial
+				delete artifact.patchFile
+				delete artifact.error
+				await this.persist(storagePath, artifact)
+				return artifact
+			}
 			const patchName = "changes.patch"
 			await fs.writeFile(
 				path.join(this.artifactDir(storagePath, artifact.id), patchName),
-				await this.gitBuffer(artifact.gitRoot, [
+				await this.gitBuffer(gitCwd, [
 					"diff",
 					"--binary",
 					"--full-index",
@@ -430,17 +472,40 @@ export class ManagedSubagentWorktreeService {
 			return artifact
 		} finally {
 			await fs.rm(indexPath, { force: true }).catch(() => undefined)
-			await this.cleanupWorktree(artifact).catch(() => undefined)
-			delete artifact.worktreePath
+			try {
+				await this.cleanupWorktreeWithRetry(artifact)
+				delete artifact.worktreePath
+			} catch (error) {
+				artifact.error = `Captured changes, but managed worktree cleanup must be retried: ${
+					error instanceof Error ? error.message : String(error)
+				}`
+			}
 			await this.persist(storagePath, artifact)
 		}
 	}
 
 	private async cleanupWorktree(artifact: ManagedWorkerArtifact): Promise<void> {
 		if (!artifact.worktreePath) return
-		await this.git(artifact.gitRoot, ["worktree", "unlock", artifact.worktreePath]).catch(() => undefined)
-		await this.git(artifact.gitRoot, ["worktree", "remove", "--force", artifact.worktreePath])
-		await this.git(artifact.gitRoot, ["worktree", "prune"])
+		const admin = await this.resolveWorktreeAdmin(artifact)
+		await this.git(admin.cwd, [...admin.prefix, "worktree", "unlock", artifact.worktreePath]).catch(() => undefined)
+		await this.git(admin.cwd, [...admin.prefix, "worktree", "remove", "--force", artifact.worktreePath])
+		await this.git(admin.cwd, [...admin.prefix, "worktree", "prune"])
+	}
+
+	private async cleanupWorktreeWithRetry(artifact: ManagedWorkerArtifact): Promise<void> {
+		let lastError: unknown
+		for (let attempt = 0; attempt < 3; attempt++) {
+			try {
+				await this.cleanupWorktree(artifact)
+				return
+			} catch (error) {
+				lastError = error
+				if (attempt < 2) {
+					await new Promise<void>((resolve) => setTimeout(resolve, 50 * (attempt + 1)))
+				}
+			}
+		}
+		throw lastError
 	}
 
 	private async currentBlobHash(gitRoot: string, filePath: string): Promise<string | undefined> {
@@ -583,6 +648,7 @@ export class ManagedSubagentWorktreeService {
 
 	async recoverOrphans(storagePath: string): Promise<ManagedWorkerArtifact[]> {
 		const root = path.join(storagePath, "subagent-change-sets")
+		const worktreeRoot = path.join(storagePath, "subagent-worktrees")
 		let entries: string[] = []
 		try {
 			entries = await fs.readdir(root)
@@ -593,14 +659,25 @@ export class ManagedSubagentWorktreeService {
 		for (const id of entries) {
 			try {
 				const artifact = await this.load(storagePath, id)
-				if (artifact.status === "active" && artifact.worktreePath) {
-					let exists = true
+				const conventionalWorktreePath = path.join(worktreeRoot, artifact.id)
+				let recoverableWorktreePath: string | undefined
+				for (const candidate of [artifact.worktreePath, conventionalWorktreePath]) {
+					if (!candidate || recoverableWorktreePath) continue
 					try {
-						await fs.access(artifact.worktreePath)
+						await fs.access(candidate)
+						recoverableWorktreePath = candidate
 					} catch {
-						exists = false
+						// Try the conventional path. Older cancellation code could remove
+						// worktreePath from metadata even when Git cleanup failed.
 					}
-					if (exists) {
+				}
+
+				if (artifact.status === "active") {
+					if (recoverableWorktreePath) {
+						if (artifact.worktreePath !== recoverableWorktreePath) {
+							artifact.worktreePath = recoverableWorktreePath
+							await this.persist(storagePath, artifact)
+						}
 						recovered.push(await this.capture(storagePath, id, true))
 					} else {
 						artifact.status = "discarded"
@@ -610,6 +687,18 @@ export class ManagedSubagentWorktreeService {
 						await this.persist(storagePath, artifact)
 						recovered.push(artifact)
 					}
+				} else if (recoverableWorktreePath) {
+					// Capture can finish before a transient Windows/Git lock allows the
+					// linked worktree to be removed. Legacy metadata can also omit the
+					// still-existing path. Retry only cleanup; the quarantined commit and
+					// patch are already authoritative.
+					artifact.worktreePath = recoverableWorktreePath
+					await this.cleanupWorktreeWithRetry(artifact)
+					delete artifact.worktreePath
+					if (artifact.error?.startsWith("Captured changes, but managed worktree cleanup")) {
+						delete artifact.error
+					}
+					await this.persist(storagePath, artifact)
 				}
 			} catch {
 				// Leave unknown artifacts untouched; they may belong to a newer Alpha version.
@@ -620,7 +709,7 @@ export class ManagedSubagentWorktreeService {
 
 	async deleteArtifact(storagePath: string, artifactId: string): Promise<void> {
 		const artifact = await this.load(storagePath, artifactId).catch(() => undefined)
-		if (artifact?.worktreePath) await this.cleanupWorktree(artifact).catch(() => undefined)
+		if (artifact?.worktreePath) await this.cleanupWorktreeWithRetry(artifact).catch(() => undefined)
 		await fs.rm(this.artifactDir(storagePath, artifactId), { recursive: true, force: true })
 	}
 }

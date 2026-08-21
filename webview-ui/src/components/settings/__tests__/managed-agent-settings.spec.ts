@@ -34,9 +34,18 @@ describe("managed-agent settings adapter", () => {
 		expect(state.subagentRoleTimeoutsMs).toEqual({ explore: 10_000, review: 90_900, worker: 900_000 })
 		expect(state.subagentMaxInputTokens).toBe(1)
 		expect(state.subagentMaxOutputTokens).toBe(12)
-		expect(state.subagentRootTokenBudget).toBe(50_000_000)
-		expect(state.subagentRootCostBudget).toBe(0.01)
+		expect(state.subagentRootTokenBudget).toBeNull()
+		expect(state.subagentRootCostBudget).toBeNull()
 		expect(state.subagentMaxDepth).toBe(5)
+	})
+
+	it("preserves every finite positive root cost accepted by the shared contract", () => {
+		const state = withManagedAgentSettingsDefaults({
+			...extensionState,
+			subagentRootCostBudget: 250_000,
+		} as ExtensionStateContextType)
+
+		expect(state.subagentRootCostBudget).toBe(250_000)
 	})
 
 	it("serializes an empty optional cost ceiling as null so Save can clear it", () => {

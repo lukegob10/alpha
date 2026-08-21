@@ -60,10 +60,8 @@ describe("SubtaskRow", () => {
 
 			render(<SubtaskRow node={node} depth={2} onToggleExpand={vi.fn()} />)
 
-			const row = screen.getByTestId("subtask-row-leaf-1")
-			// The clickable row inside should have paddingLeft = depth * 16 = 32px
-			const clickableRow = row.querySelector("[role='button']")
-			expect(clickableRow).toHaveStyle({ paddingLeft: "32px" })
+			const row = screen.getByTestId("subtask-item-row-leaf-1")
+			expect(row).toHaveStyle({ paddingLeft: "28px" })
 		})
 
 		it("does not render collapsible row for leaf node", () => {
@@ -161,32 +159,30 @@ describe("SubtaskRow", () => {
 			expect(screen.getByText("Child 2")).toBeInTheDocument()
 		})
 
-		it("uses max-h-0 for collapsed node with children", () => {
+		it("keeps collapsed descendants out of the interaction tree", () => {
 			const node = createMockNode(
 				{ id: "parent-1", task: "Parent" },
 				[createMockNode({ id: "child-1", task: "Child 1" })],
 				false, // collapsed
 			)
 
-			const { container } = render(<SubtaskRow node={node} depth={1} onToggleExpand={vi.fn()} />)
+			render(<SubtaskRow node={node} depth={1} onToggleExpand={vi.fn()} />)
 
-			// The children wrapper div should have max-h-0 when collapsed
-			const childrenWrapper = container.querySelector(".max-h-0")
-			expect(childrenWrapper).toBeInTheDocument()
+			expect(screen.getByTestId("nested-subtask-list")).toHaveAttribute("hidden")
+			expect(screen.queryByRole("button", { name: "Open task: Child 1" })).not.toBeInTheDocument()
 		})
 
-		it("does not use max-h-0 when node is expanded", () => {
+		it("exposes descendants when the node is expanded", () => {
 			const node = createMockNode(
 				{ id: "parent-1", task: "Parent" },
 				[createMockNode({ id: "child-1", task: "Child 1" })],
 				true, // expanded
 			)
 
-			const { container } = render(<SubtaskRow node={node} depth={1} onToggleExpand={vi.fn()} />)
+			render(<SubtaskRow node={node} depth={1} onToggleExpand={vi.fn()} />)
 
-			// The children wrapper should NOT have max-h-0 when expanded
-			const collapsedWrapper = container.querySelector(".max-h-0")
-			expect(collapsedWrapper).not.toBeInTheDocument()
+			expect(screen.getByTestId("nested-subtask-list")).not.toHaveAttribute("hidden")
+			expect(screen.getByRole("button", { name: "Open task: Child 1" })).toBeInTheDocument()
 		})
 
 		it("renders deeply nested recursive structure when all levels expanded", () => {

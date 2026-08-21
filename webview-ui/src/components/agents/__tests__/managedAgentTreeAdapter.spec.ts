@@ -1,4 +1,9 @@
-import type { LiveTaskMetadata, SubagentGroupState, SubagentRunState } from "@alpha-code/types"
+import type {
+	LiveTaskMetadata,
+	ManagedAgentTreeProjection,
+	SubagentGroupState,
+	SubagentRunState,
+} from "@alpha-code/types"
 
 import { buildManagedAgentTreeModel } from "../managedAgentTreeAdapter"
 
@@ -41,8 +46,71 @@ const makeLiveTask = (id: string, overrides: Partial<LiveTaskMetadata> = {}): Li
 	...overrides,
 })
 
+const makeProjection = (): ManagedAgentTreeProjection => ({
+	version: 1,
+	rootTaskId: "root-1",
+	observedAt: NOW,
+	reloadedAt: NOW - 500,
+	nodes: [
+		{
+			taskId: "root-1",
+			rootTaskId: "root-1",
+			path: "/root",
+			nickname: "Release root",
+			role: "root",
+			objective: "Coordinate the release",
+			status: "running",
+			createdAt: NOW - 120_000,
+			updatedAt: NOW - 1_000,
+			depth: 0,
+			usage: { durationMs: 119_000 },
+		},
+		{
+			taskId: "parent-1",
+			rootTaskId: "root-1",
+			parentTaskId: "root-1",
+			groupId: "group-parent",
+			path: "/root/cinder",
+			nickname: "Cinder",
+			role: "worker",
+			objective: "Implement the bridge",
+			status: "running",
+			phase: "working",
+			createdAt: NOW - 70_000,
+			updatedAt: NOW - 2_000,
+			startedAt: NOW - 65_000,
+			depth: 1,
+			usage: { durationMs: 63_000, inputTokens: 300, outputTokens: 150, cost: 0.3 },
+		},
+		{
+			taskId: "child-2",
+			rootTaskId: "root-1",
+			parentTaskId: "parent-1",
+			groupId: "group-child",
+			path: "/root/cinder/iris",
+			nickname: "Iris",
+			role: "review",
+			objective: "Review the bridge",
+			status: "timed_out",
+			createdAt: NOW - 60_000,
+			updatedAt: NOW - 5_000,
+			startedAt: NOW - 58_000,
+			finishedAt: NOW - 5_000,
+			depth: 2,
+			stopReason: "output_token_limit",
+			usage: { durationMs: 53_000, inputTokens: 200, outputTokens: 80, cost: 0.2 },
+			attention: { kind: "input", label: "Waiting for user input" },
+		},
+	],
+	activity: [],
+	capacity: { active: 1, queued: 0, terminal: 1, limit: 4 },
+	budgets: { tokenLimit: 2_000, costLimit: 2 },
+	omittedNodeCount: 0,
+	omittedActivityCount: 0,
+})
+
 describe("buildManagedAgentTreeModel", () => {
-	it("reconstructs a root-parent-child hierarchy and preserves current group snapshots", () => {
+	it("reconstructs nested fallback paths from the latest group snapshots", () => {
 		const original = makeGroup({
 			groupId: "group-parent",
 			parentTaskId: "root-1",
@@ -71,22 +139,13 @@ describe("buildManagedAgentTreeModel", () => {
 		const model = buildManagedAgentTreeModel({
 			rootTaskId: "root-1",
 			groups: [original, refreshed, nested],
-			pathsByTaskId: { "parent-1": "/root/parent-worker", "child-2": "/root/parent-worker/nested-review" },
 		})
 
-		expect(model.nodes).toHaveLength(3)
-		expect(model.nodes[0]).toMatchObject({
-			taskId: "root-1",
-			role: "root",
-			depth: 0,
-			path: "/root",
-			state: "unknown",
-		})
+		expect(model.nodes).toHaveLength(2)
 		expect(model.nodes.find((node) => node.taskId === "parent-1")).toMatchObject({
 			parentTaskId: "root-1",
 			depth: 1,
 			status: "completed",
-			state: "terminal",
 			path: "/root/parent-worker",
 		})
 		expect(model.nodes.find((node) => node.taskId === "child-2")).toMatchObject({
@@ -96,91 +155,64 @@ describe("buildManagedAgentTreeModel", () => {
 		})
 	})
 
-	it("maps durable depth, policy, limits, and known or unknown terminal stop reasons safely", () => {
-		const group = makeGroup({
-			groupId: "group-terminal",
-			parentTaskId: "root-1",
-			status: "failed",
-			agents: [makeAgent({ status: "failed", completedAt: NOW - 1_000 })],
+	it("prefers the authoritative durable projection and omits its root", () => {
+		const model = buildManagedAgentTreeModel({
+			rootTaskId: "root-1",
+			projection: makeProjection(),
+			groups: [makeGroup({ groupId: "stale-group", parentTaskId: "root-1" })],
 		})
 
-		const known = buildManagedAgentTreeModel({
-			rootTaskId: "root-1",
-			groups: [group],
-			runtimeByTaskId: {
-				"child-1": {
-					path: "/root/maple",
-					depth: 3,
-					maxDepth: 4,
-					stopReason: "root_cost_budget",
-					contextManifest: {
-						orchestration: {
-							ancestry: ["root-1", "parent-1"],
-							delegationPolicy: "explicit_only",
-							limits: { timeoutMs: 90_000, outputTokenLimit: 2_000 },
-						},
-					},
-				},
-			},
+		expect(model.nodes.map((node) => node.taskId)).toEqual(["parent-1", "child-2"])
+		expect(model.nodes[1]).toEqual({
+			taskId: "child-2",
+			parentTaskId: "parent-1",
+			path: "/root/cinder/iris",
+			nickname: "Iris",
+			role: "review",
+			status: "timed_out",
+			depth: 2,
+			attention: "Waiting for user input",
 		})
-		expect(known.nodes[1]).toMatchObject({
-			depth: 3,
-			maxDepth: 4,
-			delegationPolicy: "explicit_only",
-			effectiveLimits: { timeoutMs: 90_000, outputTokenLimit: 2_000 },
-			stopReason: "Root cost budget reached",
-		})
-
-		const unknown = buildManagedAgentTreeModel({
-			rootTaskId: "root-1",
-			groups: [group],
-			runtimeByTaskId: { "child-1": { stopReason: { unexpected: true } } },
-		})
-		expect(unknown.nodes[1].stopReason).toBe("Runtime stopped this agent; details were not recognized")
+		expect(model.omittedNodeCount).toBe(0)
 	})
 
-	it("aggregates live token and cost usage while keeping absent limits explicitly unknown", () => {
+	it("surfaces fallback live-task input attention without copying dashboard metadata", () => {
 		const model = buildManagedAgentTreeModel({
 			rootTaskId: "root-1",
 			groups: [makeGroup({ groupId: "group-1", parentTaskId: "root-1" })],
 			liveTasksById: {
-				"root-1": makeLiveTask("root-1", { tokensIn: 200, tokensOut: 100, totalCost: 0.2 }),
-				"child-1": makeLiveTask("child-1", { tokensIn: 300, tokensOut: 150, totalCost: 0.3 }),
+				"child-1": makeLiveTask("child-1", {
+					isWaitingForInput: true,
+					waitingReason: "Choose a recovery action",
+				}),
 			},
-			activity: [],
 		})
 
-		expect(model.usage).toEqual({
-			inputTokens: 300,
-			outputTokens: 150,
-			totalTokens: 450,
-			totalCost: 0.3,
-			tokensReported: true,
-			costReported: true,
+		expect(model.nodes[0]).toMatchObject({
+			taskId: "child-1",
+			attention: "Choose a recovery action",
 		})
-		expect(model.capacity).toMatchObject({ active: 1, queued: 0, terminal: 0, limit: undefined })
-		expect(model.budgets).toEqual({ tokenLimit: undefined, costLimit: undefined })
-		expect(model.activityReported).toBe(true)
+		expect(model).toEqual({ nodes: model.nodes, omittedNodeCount: 0 })
 	})
 
-	it("attaches orphaned or cyclic snapshots to the root with collision-safe fallback paths", () => {
+	it("attaches orphaned or cyclic snapshots to collision-safe root paths", () => {
 		const model = buildManagedAgentTreeModel({
 			rootTaskId: "root-1",
 			groups: [
 				makeGroup({
 					groupId: "group-a",
-					parentTaskId: "missing-parent",
+					parentTaskId: "child-b",
 					agents: [makeAgent({ taskId: "child-a", nickname: "Review API" })],
 				}),
 				makeGroup({
 					groupId: "group-b",
-					parentTaskId: "missing-parent",
+					parentTaskId: "child-a",
 					agents: [makeAgent({ taskId: "child-b", nickname: "Review API" })],
 				}),
 			],
 		})
 
-		expect(model.nodes[1]).toMatchObject({ parentTaskId: "root-1", path: "/root/review-api" })
-		expect(model.nodes[2]).toMatchObject({ parentTaskId: "root-1", path: "/root/review-api-2" })
+		expect(model.nodes[0]).toMatchObject({ parentTaskId: "root-1", path: "/root/review-api" })
+		expect(model.nodes[1]).toMatchObject({ parentTaskId: "root-1", path: "/root/review-api-2" })
 	})
 })

@@ -9,6 +9,7 @@ import type {
 	ListAgentsParams,
 	WaitAgentParams,
 	SendMessageParams,
+	ReportProgressParams,
 	FollowupTaskParams,
 	InterruptAgentParams,
 	CancelAgentParams,
@@ -172,6 +173,7 @@ export type NativeToolArgs = {
 	list_agents: ListAgentsParams
 	wait_agent: WaitAgentParams
 	send_message: SendMessageParams
+	report_progress: ReportProgressParams
 	followup_task: FollowupTaskParams
 	interrupt_agent: InterruptAgentParams
 	cancel_agent: CancelAgentParams
@@ -429,6 +431,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	list_agents: "list agents",
 	wait_agent: "wait for agent updates",
 	send_message: "message an agent",
+	report_progress: "report progress to the parent agent",
 	followup_task: "follow up with an agent",
 	interrupt_agent: "interrupt an agent",
 	cancel_agent: "cancel an agent",
@@ -471,6 +474,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 			"list_agents",
 			"wait_agent",
 			"send_message",
+			"report_progress",
 			"followup_task",
 			"interrupt_agent",
 			"cancel_agent",

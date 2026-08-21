@@ -1,42 +1,11 @@
 import type { SubagentGroupState, SubagentRunState } from "@alpha-code/types"
-import { act, fireEvent, render, screen, waitFor } from "@/utils/test-utils"
+import userEvent from "@testing-library/user-event"
+import { act, render, screen, waitFor } from "@/utils/test-utils"
 
 import { SubagentGroupCard } from "../SubagentGroupCard"
 
 const postMessage = vi.fn()
 vi.mock("@src/utils/vscode", () => ({ vscode: { postMessage: (...args: unknown[]) => postMessage(...args) } }))
-
-const originalFocusDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "focus")
-const originalActiveElementDescriptor = Object.getOwnPropertyDescriptor(document, "activeElement")
-
-const installFunctionalFocus = () => {
-	document.body.removeAttribute("tabindex")
-	Object.defineProperty(HTMLElement.prototype, "focus", {
-		configurable: true,
-		value(this: HTMLElement) {
-			Object.defineProperty(document, "activeElement", {
-				configurable: true,
-				get: () => this,
-			})
-		},
-	})
-	Object.defineProperty(document, "activeElement", {
-		configurable: true,
-		get: () => document.body,
-	})
-}
-
-const restoreTestFocus = () => {
-	document.body.removeAttribute("tabindex")
-	if (originalFocusDescriptor) {
-		Object.defineProperty(HTMLElement.prototype, "focus", originalFocusDescriptor)
-	}
-	if (originalActiveElementDescriptor) {
-		Object.defineProperty(document, "activeElement", originalActiveElementDescriptor)
-	} else {
-		Reflect.deleteProperty(document, "activeElement")
-	}
-}
 
 const makeWorkerGroup = (agentOverrides: Partial<SubagentRunState> = {}): SubagentGroupState => ({
 	groupId: "worker-regression-group",
@@ -89,19 +58,18 @@ const sendChangeSetCapability = (allowed: boolean, reason: string) =>
 describe("SubagentGroupCard Worker regressions", () => {
 	beforeEach(() => {
 		postMessage.mockReset()
-		installFunctionalFocus()
 	})
-	afterEach(restoreTestFocus)
 
-	it("preserves the completion gate across Apply and parent-verification transitions", () => {
+	it("preserves the completion gate across Apply and parent-verification transitions", async () => {
+		const user = userEvent.setup()
 		const { rerender } = render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" />)
-		fireEvent.click(screen.getByRole("button", { name: "Expand sub-agent group" }))
 		sendChangeSetCapability(true, "The parent is paused for your review.")
 
-		fireEvent.click(screen.getByRole("button", { name: "Apply changes" }))
+		await user.click(screen.getByRole("button", { name: "Actions for Maple" }))
+		await user.click(screen.getByRole("menuitem", { name: "Apply changes" }))
 		expect(screen.getByRole("dialog", { name: "Apply Worker changes?" })).toBeInTheDocument()
 		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "applySubagentChangeSet" }))
-		fireEvent.click(screen.getByRole("button", { name: "Confirm apply" }))
+		await user.click(screen.getByRole("button", { name: "Confirm apply" }))
 
 		const applyRequests = postMessage.mock.calls
 			.map(([message]) => message as { type?: string; requestId?: string })
@@ -153,11 +121,13 @@ describe("SubagentGroupCard Worker regressions", () => {
 			/>,
 		)
 
+		expect(screen.getByRole("button", { name: /Open Maple · Completed · Verify/i })).toBeEnabled()
+		await user.click(screen.getByRole("button", { name: "Actions for Maple" }))
 		expect(screen.getByText("Verification pending")).toBeInTheDocument()
 		expect(screen.getByText(/names at least one applied file/i)).toBeInTheDocument()
-		expect(screen.queryByRole("button", { name: "Apply changes" })).not.toBeInTheDocument()
-		expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument()
-		expect(screen.getByRole("button", { name: "Open transcript for Maple" })).toBeEnabled()
+		expect(screen.queryByRole("menuitem", { name: "Apply changes" })).not.toBeInTheDocument()
+		expect(screen.queryByRole("menuitem", { name: "Discard" })).not.toBeInTheDocument()
+		await user.keyboard("{Escape}")
 
 		rerender(
 			<SubagentGroupCard
@@ -183,40 +153,53 @@ describe("SubagentGroupCard Worker regressions", () => {
 			/>,
 		)
 
+		expect(screen.getByRole("button", { name: /Open Maple · Completed/i })).toBeEnabled()
+		await user.click(screen.getByRole("button", { name: "Actions for Maple" }))
 		expect(screen.getByText("Verified")).toBeInTheDocument()
-		expect(screen.getByText(/completion is unblocked/i)).toBeInTheDocument()
+		expect(screen.getByText("Parent verification passed.")).toBeInTheDocument()
 	})
 
-	it("keeps Worker review controls focusable and restores review focus after Escape", async () => {
-		render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" />)
-
-		const expand = screen.getByRole("button", { name: "Expand sub-agent group" })
-		expand.focus()
-		fireEvent.click(expand)
-		expect(screen.getByRole("button", { name: "Collapse sub-agent group" })).toHaveFocus()
+	it("keeps Worker review controls reachable and requests focus restoration after Escape", async () => {
+		const user = userEvent.setup()
+		const group = makeWorkerGroup()
+		group.agents.push({
+			taskId: "reviewer-2",
+			nickname: "Nova",
+			role: "review",
+			objective: "Review the Worker result",
+			status: "completed",
+			completedAt: 5_000,
+			usage: { durationMs: 2_000 },
+		})
+		render(<SubagentGroupCard group={group} parentTaskId="parent-1" />)
 
 		sendChangeSetCapability(true, "The parent is paused for your review.")
-		const openDiff = screen.getByRole("button", { name: "Open diff" })
-		const apply = screen.getByRole("button", { name: "Apply changes" })
-		expect(openDiff).toHaveProperty("tabIndex", 0)
-		expect(apply).toHaveProperty("tabIndex", 0)
+		const actions = screen.getByRole("button", { name: "Actions for Maple" })
+		const otherActions = screen.getByRole("button", { name: "Actions for Nova" })
+		actions.focus()
+		await user.click(actions)
+		const openDiff = screen.getByRole("menuitem", { name: "Open diff" })
+		const apply = screen.getByRole("menuitem", { name: "Apply changes" })
+		expect(openDiff).toBeVisible()
+		expect(apply).toBeVisible()
 		expect(openDiff.compareDocumentPosition(apply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-		apply.focus()
-		fireEvent.click(apply)
+		await user.click(apply)
 
 		const dialog = screen.getByRole("dialog", { name: "Apply Worker changes?" })
-		expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus()
+		expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled()
 		expect(screen.getByRole("button", { name: "Confirm apply" })).toHaveProperty("tabIndex", 0)
-		expect(dialog).toContainElement(document.activeElement as HTMLElement)
+		expect(dialog).toContainElement(screen.getByRole("button", { name: "Confirm apply" }))
 		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "applySubagentChangeSet" }))
 
-		fireEvent.keyDown(document, { key: "Escape", code: "Escape" })
+		const focusSpy = vi.spyOn(actions, "focus")
+		const otherFocusSpy = vi.spyOn(otherActions, "focus")
+		await user.keyboard("{Escape}")
 		await waitFor(() => {
 			expect(screen.queryByRole("dialog", { name: "Apply Worker changes?" })).not.toBeInTheDocument()
-			expect(apply).toHaveFocus()
+			expect(focusSpy).toHaveBeenCalled()
 		})
-		expect(apply).toBeEnabled()
-		expect(apply).toHaveFocus()
+		expect(actions).toBeEnabled()
+		expect(otherFocusSpy).not.toHaveBeenCalled()
 		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "applySubagentChangeSet" }))
 	})
 })

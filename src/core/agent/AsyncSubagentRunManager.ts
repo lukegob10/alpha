@@ -192,7 +192,14 @@ export class AsyncSubagentRunManager {
 		reason: string | Error = "Internal task cancelled by user",
 		stopReason: Exclude<
 			SubagentStopReason,
-			"completed" | "failed" | "timeout" | "authority_denied" | "depth_limit" | "orphaned" | "recovery_failed"
+			| "completed"
+			| "failed"
+			| "timeout"
+			| "authority_denied"
+			| "depth_limit"
+			| "orphaned"
+			| "recovery_failed"
+			| "never_launched"
 		> = "cancelled",
 	): boolean {
 		const record = this.runs.get(taskId)

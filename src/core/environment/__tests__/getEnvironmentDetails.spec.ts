@@ -187,6 +187,20 @@ describe("getEnvironmentDetails", () => {
 		expect(result).toContain("configured pacing waits, not provider errors")
 	})
 
+	it("omits configured request pacing when the provider-profile interval is zero", async () => {
+		mockCline.getRequestPacingMetrics = vi.fn().mockReturnValue({
+			configuredIntervalSeconds: 0,
+			waitCount: 0,
+			totalWaitMs: 0,
+			scope: "provider_profile",
+		})
+
+		const result = await getEnvironmentDetails(mockCline as Task)
+
+		expect(result).not.toContain("# Configured Request Pacing")
+		expect(result).not.toContain("Provider-profile interval:")
+	})
+
 	it("should include file details when includeFileDetails is true", async () => {
 		const result = await getEnvironmentDetails(mockCline as Task, true)
 		expect(result).toContain("# Current Workspace Directory")

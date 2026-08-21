@@ -80,13 +80,33 @@ describe("managed-agent store certification", () => {
 		expect(reloaded.getAgent("coordinator-1")?.status).toBe("interrupted")
 		expect(reloaded.getAgent("worker-1")?.status).toBe("interrupted")
 		expect(reloaded.readMailbox("root-1").entries).toMatchObject([
-			{ name: "recovered_interrupted", senderTaskId: "coordinator-1", recipientTaskId: "root-1" },
+			{
+				kind: "lifecycle",
+				name: "recovered_interrupted",
+				senderTaskId: "coordinator-1",
+				recipientTaskId: "root-1",
+			},
+			{
+				kind: "result",
+				name: "agent_interrupted",
+				senderTaskId: "coordinator-1",
+				recipientTaskId: "root-1",
+				payload: { taskId: "coordinator-1", status: "interrupted" },
+			},
 		])
 		expect(reloaded.readMailbox("coordinator-1").entries).toMatchObject([
 			{
+				kind: "lifecycle",
 				name: "recovered_interrupted",
 				senderTaskId: "worker-1",
 				recipientTaskId: "coordinator-1",
+			},
+			{
+				kind: "result",
+				name: "agent_interrupted",
+				senderTaskId: "worker-1",
+				recipientTaskId: "coordinator-1",
+				payload: { taskId: "worker-1", status: "interrupted" },
 			},
 		])
 
@@ -95,6 +115,7 @@ describe("managed-agent store certification", () => {
 		expect(reloadedAgain.getSnapshot().mailbox.filter(({ name }) => name === "recovered_interrupted")).toHaveLength(
 			2,
 		)
+		expect(reloadedAgain.getSnapshot().mailbox.filter(({ name }) => name === "agent_interrupted")).toHaveLength(2)
 	})
 
 	it("requires bottom-up close and never reuses a retained nested path", async () => {

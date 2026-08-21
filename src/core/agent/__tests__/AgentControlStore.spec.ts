@@ -365,6 +365,21 @@ describe("AgentControlStore", () => {
 		).rejects.toThrow(/closed agent target/)
 	})
 
+	it("clears a stale terminal stop reason when an interrupted agent resumes", async () => {
+		const { store } = await setup()
+		await store.updateAgentStatus("root-1", "interrupted", {
+			snapshot: { summary: "Interrupted root", stopReason: "interrupted" },
+		})
+
+		const pending = await store.updateAgentStatus("root-1", "pending")
+		expect(pending.snapshot).toEqual({ summary: "Interrupted root" })
+		expect(pending.interruptedAt).toBeUndefined()
+
+		const running = await store.updateAgentStatus("root-1", "running")
+		expect(running.snapshot).toEqual({ summary: "Interrupted root" })
+		expect(running.snapshot?.stopReason).toBeUndefined()
+	})
+
 	it("recovers active records once while preserving completed records", async () => {
 		const persistence = new InMemoryAgentControlPersistence()
 		const first = new AgentControlStore(persistence, clock(10_000))
@@ -373,6 +388,7 @@ describe("AgentControlStore", () => {
 		await first.createAgent({
 			taskId: "running-child",
 			parentTaskId: "root-1",
+			groupId: "running-group",
 			nickname: "Running",
 			role: "explore",
 			objective: "Run",
@@ -399,12 +415,28 @@ describe("AgentControlStore", () => {
 			recipientTaskId: "root-1",
 			payload: { previousStatus: "running" },
 		})
+		const recoveredResults = reloaded.getSnapshot().mailbox.filter((entry) => entry.name === "agent_interrupted")
+		expect(recoveredResults).toHaveLength(1)
+		expect(recoveredResults[0]).toMatchObject({
+			senderTaskId: "running-child",
+			recipientTaskId: "root-1",
+			kind: "result",
+			payload: {
+				taskId: "running-child",
+				groupId: "running-group",
+				status: "interrupted",
+				stopReason: "interrupted",
+			},
+		})
 
 		const reloadedAgain = new AgentControlStore(persistence, clock(30_000))
 		await reloadedAgain.initialize()
 		expect(
 			reloadedAgain.getSnapshot().mailbox.filter((entry) => entry.name === "recovered_interrupted"),
 		).toHaveLength(1)
+		expect(reloadedAgain.getSnapshot().mailbox.filter((entry) => entry.name === "agent_interrupted")).toHaveLength(
+			1,
+		)
 	})
 
 	it("tracks per-recipient delivery and acknowledgement cursors durably", async () => {
@@ -448,6 +480,171 @@ describe("AgentControlStore", () => {
 		const all = reloaded.readMailbox("review-1", { afterSequence: 0 }).entries
 		expect(all[0]).toMatchObject({ eventId: "mail-1", deliveredAt: 5_000 })
 		expect(all[1]).toMatchObject({ eventId: "mail-2", deliveredAt: 6_000, acknowledgedAt: 6_000 })
+	})
+
+	it("grants exactly one durable owner to concurrent mailbox consumers", async () => {
+		const { store } = await setup()
+		await store.createAgent({
+			taskId: "review-1",
+			parentTaskId: "root-1",
+			nickname: "Review",
+			role: "review",
+			objective: "Review",
+			status: "completed",
+		})
+		await store.appendEvent({
+			eventId: "result-1",
+			sender: "review-1",
+			recipient: "root-1",
+			kind: "result",
+			name: "agent_completed",
+			payload: { taskId: "review-1" },
+		})
+
+		const [waitClaim, automaticClaim] = await Promise.all([
+			store.claimMailbox("root-1", { channel: "wait", kinds: ["result"] }),
+			store.claimMailbox("root-1", {
+				channel: "automatic",
+				kinds: ["result"],
+				payloadTaskIds: ["review-1"],
+			}),
+		])
+
+		expect(waitClaim.entries.map(({ eventId }) => eventId)).toEqual(["result-1"])
+		expect(automaticClaim.entries).toEqual([])
+		expect(store.readMailbox("root-1", { includeDelivered: false }).entries).toEqual([])
+		expect(store.getUnacknowledgedMailboxEntries("root-1", { kinds: ["result"] })).toHaveLength(1)
+
+		await store.acknowledgeMailboxClaim("root-1", waitClaim.claimId)
+		await store.acknowledgeMailboxClaim("root-1", waitClaim.claimId)
+		expect(store.getUnacknowledgedMailboxEntries("root-1", { kinds: ["result"] })).toEqual([])
+	})
+
+	it("releases unfinished durable mailbox claims during recovery", async () => {
+		const persistence = new InMemoryAgentControlPersistence()
+		const { store } = await setup(persistence)
+		await store.createAgent({
+			taskId: "review-1",
+			parentTaskId: "root-1",
+			nickname: "Review",
+			role: "review",
+			objective: "Review",
+			status: "completed",
+		})
+		await store.appendEvent({
+			eventId: "result-retry",
+			sender: "review-1",
+			recipient: "root-1",
+			kind: "result",
+			name: "agent_completed",
+			payload: { taskId: "review-1" },
+		})
+		const abandoned = await store.claimMailbox("root-1", { channel: "automatic", kinds: ["result"] })
+		expect(abandoned.entries).toHaveLength(1)
+
+		const reloaded = new AgentControlStore(persistence, clock(20_000))
+		await reloaded.initialize()
+		const retried = await reloaded.claimMailbox("root-1", { channel: "wait", kinds: ["result"] })
+		expect(retried.entries.map(({ eventId }) => eventId)).toEqual(["result-retry"])
+	})
+
+	it("retains a failed claim settlement across same-host consumer replacement", async () => {
+		const { store } = await setup()
+		await store.appendEvent({
+			eventId: "same-host-result",
+			recipient: "root-1",
+			kind: "result",
+			name: "agent_completed",
+		})
+		const claim = await store.claimMailbox("root-1", { channel: "automatic", kinds: ["result"] })
+		const acknowledge = vi
+			.spyOn(store, "acknowledgeMailboxClaim")
+			.mockRejectedValueOnce(new Error("temporary persistence failure"))
+
+		await expect(store.settleMailboxClaim("root-1", claim.claimId, "acknowledge")).rejects.toThrow(
+			"temporary persistence failure",
+		)
+		await expect(store.settleMailboxClaim("root-1", claim.claimId, "release")).rejects.toThrow(
+			"different pending settlement",
+		)
+
+		await expect(store.retryPendingMailboxClaimSettlements("root-1")).resolves.toBe(1)
+		expect(acknowledge).toHaveBeenCalledTimes(2)
+		expect(store.getUnacknowledgedMailboxEntries("root-1", { kinds: ["result"] })).toEqual([])
+	})
+
+	it("reads a bounded recent activity window without cloning the full mailbox", async () => {
+		const { store } = await setup()
+		await store.ensureRoot({ taskId: "root-2", status: "running" })
+		for (const eventId of ["activity-1", "activity-2", "activity-3"]) {
+			await store.appendEvent({
+				eventId,
+				recipient: "root-1",
+				kind: "lifecycle",
+				name: eventId,
+				payload: { report: "private payload" },
+			})
+		}
+		await store.appendEvent({
+			eventId: "other-root",
+			recipient: "root-2",
+			kind: "lifecycle",
+			name: "other_root",
+		})
+
+		const recent = store.getRecentRootMailboxEntries("root-1", 2)
+		expect(recent.totalCount).toBe(3)
+		expect(recent.entries.map(({ eventId }) => eventId)).toEqual(["activity-3", "activity-2"])
+		recent.entries[0].name = "mutated clone"
+		expect(store.getRecentRootMailboxEntries("root-1", 1).entries[0].name).toBe("activity-3")
+	})
+
+	it("purges a deleted root tree while preserving unrelated durable evidence", async () => {
+		const persistence = new InMemoryAgentControlPersistence()
+		const { store } = await setup(persistence)
+		await store.ensureRoot({ taskId: "root-10", status: "running" })
+		await store.createAgent({
+			taskId: "worker-1",
+			parentTaskId: "root-1",
+			nickname: "Worker",
+			role: "worker",
+			objective: "Implement",
+			status: "completed",
+		})
+		await recordWorker(store, workerChangeSet("retained-change", "pending_review"))
+		const event = await store.appendEvent({
+			eventId: "retained-result",
+			sender: "worker-1",
+			recipient: "root-1",
+			kind: "result",
+			name: "agent_completed",
+		})
+		await store.acknowledge("root-1", event.entry.sequence)
+		await store.closeAgent("worker-1")
+		await store.appendEvent({
+			eventId: "other-root-event",
+			recipient: "root-10",
+			kind: "lifecycle",
+			name: "still_retained",
+		})
+		await store.acknowledge("root-10", store.getSnapshot().nextSequence - 1)
+
+		await expect(store.purgeRoot("root-1")).resolves.toBe(true)
+		await expect(store.purgeRoot("root-1")).resolves.toBe(false)
+		const snapshot = store.getSnapshot()
+		expect(snapshot.agents.filter(({ rootTaskId }) => rootTaskId === "root-1")).toEqual([])
+		expect(snapshot.tombstones.filter(({ rootTaskId }) => rootTaskId === "root-1")).toEqual([])
+		expect(snapshot.mailbox.filter(({ rootTaskId }) => rootTaskId === "root-1")).toEqual([])
+		expect(Object.keys(snapshot.mailboxCursors).filter((key) => key.startsWith("root-1:"))).toEqual([])
+		expect(snapshot.verificationObligations.filter(({ rootTaskId }) => rootTaskId === "root-1")).toEqual([])
+		expect(snapshot.agents).toEqual([expect.objectContaining({ taskId: "root-10" })])
+		expect(snapshot.mailbox).toEqual([expect.objectContaining({ eventId: "other-root-event" })])
+		expect(Object.keys(snapshot.mailboxCursors)).toContain("root-10:root-10")
+
+		const reloaded = new AgentControlStore(persistence, clock(20_000))
+		await reloaded.initialize()
+		expect(reloaded.getAgent("root-1")).toBeUndefined()
+		expect(reloaded.getAgent("root-10")).toEqual(expect.objectContaining({ taskId: "root-10" }))
 	})
 
 	it("persists one atomic versioned snapshot under global storage", async () => {
