@@ -2,7 +2,7 @@ import path from "path"
 
 import type OpenAI from "openai"
 
-import type { ProviderSettings, ModeConfig, ModelInfo } from "@alpha-code/types"
+import type { ProviderSettings, ModeConfig, ModelInfo, ToolName } from "@alpha-code/types"
 import { customToolRegistry, formatNative } from "@alpha-code/core"
 
 import type { ClineProvider } from "../webview/ClineProvider"
@@ -31,6 +31,8 @@ interface BuildToolsOptions {
 	 * to pass all tool definitions while restricting callable tools.
 	 */
 	includeAllToolsWithRestrictions?: boolean
+	/** Optional task-lane authority cap applied after mode filtering. */
+	allowedToolNames?: readonly ToolName[]
 }
 
 interface BuildToolsResult {
@@ -90,6 +92,7 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 		disabledTools,
 		modelInfo,
 		includeAllToolsWithRestrictions,
+		allowedToolNames,
 	} = options
 
 	const mcpHub = provider.getMcpHub()
@@ -112,10 +115,34 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 	const nativeTools = getNativeTools({
 		supportsImages,
 	})
+	// Managed child lanes provide a frozen authority allow-list. Retain only the
+	// orchestration schemas explicitly granted there; report_progress is the one
+	// host-safe upward capability added to legacy managed-child grants by Task.
+	const orchestrationTools = new Set([
+		"spawn_agent",
+		"list_agents",
+		"wait_agent",
+		"send_message",
+		"report_progress",
+		"followup_task",
+		"interrupt_agent",
+		"cancel_agent",
+		"close_agent",
+	])
+	const explicitlyAllowedTools = allowedToolNames
+		? new Set(allowedToolNames.map((name) => resolveToolAlias(name)))
+		: undefined
+	const taskNativeTools = nativeTools.filter((tool) => {
+		const name = getToolName(tool)
+		// Upward progress reporting is meaningful only for a managed child whose
+		// frozen task allow-list explicitly grants it. Keep it out of root catalogs.
+		if (name === "report_progress") return explicitlyAllowedTools?.has(name) === true
+		return !explicitlyAllowedTools || !orchestrationTools.has(name) || explicitlyAllowedTools.has(name)
+	})
 
 	// Filter native tools based on mode restrictions.
 	const filteredNativeTools = filterNativeToolsForMode(
-		nativeTools,
+		taskNativeTools,
 		mode,
 		customModes,
 		experiments,
@@ -142,13 +169,18 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 	}
 
 	// Combine filtered tools (for backward compatibility and for allowedFunctionNames)
-	const filteredTools = [...filteredNativeTools, ...filteredMcpTools, ...nativeCustomTools]
+	const taskAllowedNames = allowedToolNames
+		? new Set(allowedToolNames.map((name) => resolveToolAlias(name)))
+		: undefined
+	const filteredTools = [...filteredNativeTools, ...filteredMcpTools, ...nativeCustomTools].filter(
+		(tool) => !taskAllowedNames || taskAllowedNames.has(resolveToolAlias(getToolName(tool)) as ToolName),
+	)
 
 	// If includeAllToolsWithRestrictions is true, return ALL tools but provide
 	// allowed names based on mode filtering
 	if (includeAllToolsWithRestrictions) {
 		// Combine ALL tools (unfiltered native + all MCP + custom)
-		const allTools = [...nativeTools, ...mcpTools, ...nativeCustomTools]
+		const allTools = [...taskNativeTools, ...mcpTools, ...nativeCustomTools]
 
 		// Extract names of tools that are allowed based on mode filtering.
 		// Resolve any alias names to canonical names to ensure consistency with allTools

@@ -24,6 +24,34 @@ describe("ToolRegistry", () => {
 		expect(registry.resolve("attempt_completion")?.capabilities.concurrency).toBe("barrier")
 		expect(registry.resolve("list_files")?.capabilities.concurrency).toBe("parallel")
 		expect(registry.resolve("execute_command")?.capabilities.concurrency).toBe("serial")
+		expect(registry.resolve("spawn_agent")?.capabilities).toMatchObject({
+			concurrency: "serial",
+			sideEffects: "task",
+			controlFlow: false,
+		})
+		expect(registry.resolve("list_agents")?.capabilities).toMatchObject({
+			concurrency: "parallel",
+			sideEffects: "none",
+			controlFlow: false,
+		})
+		expect(registry.resolve("wait_agent")?.capabilities).toMatchObject({
+			concurrency: "barrier",
+			sideEffects: "task",
+			controlFlow: true,
+		})
+		for (const name of ["send_message", "followup_task", "interrupt_agent", "cancel_agent", "close_agent"]) {
+			expect(registry.resolve(name)?.capabilities).toMatchObject({
+				concurrency: "serial",
+				sideEffects: "task",
+				controlFlow: false,
+			})
+		}
+		expect(registry.resolve("report_progress")?.capabilities).toMatchObject({
+			concurrency: "serial",
+			sideEffects: "task",
+			controlFlow: false,
+			requiresApproval: false,
+		})
 	})
 
 	it("resolves aliases to the canonical descriptor", () => {

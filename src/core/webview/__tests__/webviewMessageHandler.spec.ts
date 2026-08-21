@@ -80,6 +80,8 @@ const mockClineProvider = {
 	getTaskWithId: vi.fn(),
 	createTask: vi.fn(),
 	createTaskWithHistoryItem: vi.fn(),
+	cancelTask: vi.fn(),
+	showTaskWithId: vi.fn(),
 	getSkillsManager: vi.fn(),
 	cwd: "/mock/workspace",
 } as unknown as ClineProvider
@@ -88,6 +90,7 @@ import { t } from "../../../i18n"
 
 vi.mock("vscode", () => {
 	const showInformationMessage = vi.fn()
+	const showWarningMessage = vi.fn()
 	const showErrorMessage = vi.fn()
 	const openTextDocument = vi.fn().mockResolvedValue({})
 	const showTextDocument = vi.fn().mockResolvedValue(undefined)
@@ -95,6 +98,7 @@ vi.mock("vscode", () => {
 	return {
 		window: {
 			showInformationMessage,
+			showWarningMessage,
 			showErrorMessage,
 			showTextDocument,
 		},
@@ -168,6 +172,49 @@ import { resolveImageMentions } from "../../mentions/resolveImageMentions"
 
 beforeEach(() => {
 	vi.mocked(mockClineProvider.canAcceptTaskInput).mockReturnValue(true)
+})
+
+describe("webviewMessageHandler - showTaskWithId", () => {
+	it("awaits a not-yet-available managed task and reports the failure without rejecting", async () => {
+		const showTaskWithId = vi.mocked(mockClineProvider.showTaskWithId)
+		showTaskWithId.mockRejectedValueOnce(new Error("Task not found"))
+
+		await expect(
+			webviewMessageHandler(mockClineProvider, { type: "showTaskWithId", text: "prepared-child" }),
+		).resolves.toBeUndefined()
+
+		expect(showTaskWithId).toHaveBeenCalledWith("prepared-child")
+		expect(mockClineProvider.log).toHaveBeenCalledWith(expect.stringContaining("Task not found"))
+		expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+			"This task is not available yet. If it is still launching, wait a moment and try again.",
+		)
+	})
+})
+
+describe("webviewMessageHandler - terminalOperation", () => {
+	it("awaits asynchronous process-tree termination", async () => {
+		let finishAbort!: () => void
+		const handleTerminalOperation = vi.fn(() => new Promise<void>((resolve) => (finishAbort = resolve)))
+		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue({
+			taskId: "worker-task",
+			handleTerminalOperation,
+		} as any)
+
+		let handled = false
+		const handling = webviewMessageHandler(mockClineProvider, {
+			type: "terminalOperation",
+			taskId: "worker-task",
+			terminalOperation: "abort",
+		}).then(() => {
+			handled = true
+		})
+		await vi.waitFor(() => expect(handleTerminalOperation).toHaveBeenCalledWith("abort"))
+		expect(handled).toBe(false)
+
+		finishAbort()
+		await handling
+		expect(handled).toBe(true)
+	})
 })
 
 describe("webviewMessageHandler - requestLmStudioModels", () => {
@@ -954,6 +1001,91 @@ describe("webviewMessageHandler - message dialog preferences", () => {
 				images: undefined,
 			})
 		})
+	})
+})
+
+describe("webviewMessageHandler - sub-agent controls", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		;(mockClineProvider as any).steerSubagent = vi.fn().mockResolvedValue(undefined)
+		;(mockClineProvider as any).cancelSubagent = vi.fn().mockResolvedValue(undefined)
+		;(mockClineProvider as any).respondToSubagentApproval = vi.fn().mockResolvedValue(undefined)
+	})
+
+	it("routes steering and cancellation through explicit child identifiers", async () => {
+		await webviewMessageHandler(mockClineProvider, {
+			type: "steerSubagent",
+			taskId: "parent-1",
+			groupId: "group-1",
+			subagentTaskId: "child-1",
+			text: "Focus on the parser boundary.",
+		})
+		await webviewMessageHandler(mockClineProvider, {
+			type: "cancelSubagent",
+			taskId: "parent-1",
+			groupId: "group-1",
+			subagentTaskId: "child-2",
+		})
+
+		expect((mockClineProvider as any).steerSubagent).toHaveBeenCalledWith(
+			"parent-1",
+			"group-1",
+			"child-1",
+			"Focus on the parser boundary.",
+		)
+		expect((mockClineProvider as any).cancelSubagent).toHaveBeenCalledWith("parent-1", "group-1", "child-2")
+	})
+
+	it("ignores malformed or empty sub-agent control messages", async () => {
+		await webviewMessageHandler(mockClineProvider, {
+			type: "steerSubagent",
+			taskId: "parent-1",
+			groupId: "group-1",
+			subagentTaskId: "child-1",
+			text: "   ",
+		})
+		await webviewMessageHandler(mockClineProvider, {
+			type: "cancelSubagent",
+			taskId: "parent-1",
+			groupId: "group-1",
+		})
+
+		expect((mockClineProvider as any).steerSubagent).not.toHaveBeenCalled()
+		expect((mockClineProvider as any).cancelSubagent).not.toHaveBeenCalled()
+	})
+
+	it("routes approval responses without overloading the text field", async () => {
+		await webviewMessageHandler(mockClineProvider, {
+			type: "respondToSubagentApproval",
+			taskId: "parent-1",
+			groupId: "group-1",
+			subagentTaskId: "child-1",
+			approvalId: "approval-1",
+			approved: true,
+		})
+
+		expect((mockClineProvider as any).respondToSubagentApproval).toHaveBeenCalledWith(
+			"parent-1",
+			"group-1",
+			"child-1",
+			"approval-1",
+			true,
+		)
+	})
+})
+
+describe("webviewMessageHandler - task cancellation provenance", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("labels an explicit stop-button cancellation", async () => {
+		await webviewMessageHandler(mockClineProvider, {
+			type: "cancelTask",
+			taskId: "parent-1",
+		})
+
+		expect(mockClineProvider.cancelTask).toHaveBeenCalledWith("parent-1", "webview_stop")
 	})
 })
 

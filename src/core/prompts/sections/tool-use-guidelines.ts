@@ -1,4 +1,14 @@
-export function getToolUseGuidelinesSection(): string {
+export function getToolUseGuidelinesSection(subagentRole?: "explore" | "review" | "worker"): string {
+	if (subagentRole) {
+		return `# Tool Use Guidelines
+
+1. Work only on the assigned bounded objective.
+2. Choose the narrowest available repository tool that supplies the required evidence or authorized change.
+3. Group independent read-only operations; serialize dependent operations and worker mutations.
+4. Treat returned results as the source of truth. Never assume success from missing or incomplete output.
+5. If the objective cannot be completed with this child authority or available workspace evidence, report the constraint through attempt_completion instead of inventing information.`
+	}
+
 	return `# Tool Use Guidelines
 
 1. Assess what information you already have and what information you need to proceed with the task.

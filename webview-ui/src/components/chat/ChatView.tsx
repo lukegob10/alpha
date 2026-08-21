@@ -39,6 +39,7 @@ import { StandardTooltip, Button } from "@src/components/ui"
 import TelemetryBanner from "../common/TelemetryBanner"
 import VersionIndicator from "../common/VersionIndicator"
 import HistoryPreview from "../history/HistoryPreview"
+import { ManagedAgentTree } from "../agents/ManagedAgentTree"
 import Announcement from "./Announcement"
 import ChatRow, { type ChatRowEnvironment } from "./ChatRow"
 import WarningRow from "./WarningRow"
@@ -88,6 +89,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const { t } = useAppTranslation()
 	const modeShortcutText = `${isMac ? "⌘" : "Ctrl"} + . ${t("chat:forNextMode")}, ${isMac ? "⌘" : "Ctrl"} + Shift + . ${t("chat:forPreviousMode")}`
 
+	const extensionState = useExtensionState()
 	const {
 		clineMessages: messages,
 		currentTaskId,
@@ -105,13 +107,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		soundVolume,
 		messageQueue = [],
 		liveTasksById,
+		managedAgentTree,
 		showWorktreesInHomeScreen,
 		mcpServers,
 		alwaysAllowMcp,
 		currentCheckpoint,
 		reasoningBlockCollapsed,
-	} = useExtensionState()
-
+	} = extensionState
 	// Show a WarningRow when the user sends a message with a retired provider.
 	const [showRetiredProviderWarning, setShowRetiredProviderWarning] = useState(false)
 
@@ -137,6 +139,21 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const visibleLiveTask = visibleCurrentTaskId ? liveTasksById?.[visibleCurrentTaskId] : undefined
 	const isVisibleTaskCompleted = visibleLiveTask?.lifecycle === TaskLifecycleState.Completed
 	const visibleCurrentTaskItem = isDraftView ? undefined : currentTaskItem
+	const isManagedSubagent = visibleCurrentTaskItem?.taskKind === "subagent"
+	const managedAgentGroups = useMemo(
+		() => activeMessages.flatMap((message) => (message.subagentGroup ? [message.subagentGroup] : [])),
+		[activeMessages],
+	)
+	const managedAgentTreeProjection =
+		managedAgentTree !== undefined &&
+		managedAgentTree.rootTaskId === visibleCurrentTaskId &&
+		managedAgentTree.nodes.length > 1
+			? managedAgentTree
+			: undefined
+	const showManagedAgentTree =
+		!isManagedSubagent &&
+		Boolean(visibleCurrentTaskId) &&
+		(Boolean(managedAgentTreeProjection) || managedAgentGroups.length > 0)
 	const visibleCurrentTaskTodos = useMemo(
 		() => (isDraftView ? [] : currentTaskTodos),
 		[isDraftView, currentTaskTodos],
@@ -164,7 +181,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			return
 		}
 
-		const providerSelectedTask = currentView?.type === "task" && currentTaskId && hasSeenProviderDraftRef.current
+		const providerSelectedTask =
+			currentView?.type === "task" &&
+			currentTaskId &&
+			(hasSeenProviderDraftRef.current || currentTaskId !== blankTaskSourceIdRef.current)
 		const legacySelectedDifferentTask =
 			!currentView && currentTaskId && currentTaskId !== blankTaskSourceIdRef.current
 
@@ -469,7 +489,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							setSecondaryButtonText(t("chat:reject.title"))
 							break
 						case "completion_result":
-							// Extension waiting for feedback, but we can just present a new task button.
+							// The button starts a separate task. Composer submission remains a follow-up
+							// in this task so the current thread and its context are preserved.
 							// Only play celebration sound if there are no queued messages.
 							if (!isPartial && visibleMessageQueue.length === 0) {
 								playSound("celebration")
@@ -691,9 +712,27 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setIsBlankTaskView(true)
 		handleChatReset()
 		setSendingDisabled(false)
+		setPrimaryButtonText(undefined)
+		setSecondaryButtonText(undefined)
 
 		setTimeout(() => textAreaRef.current?.focus(), 0)
 	}, [currentTaskId, currentView?.type, handleChatReset])
+
+	const startNewTask = useCallback(
+		(text?: string, images: string[] = []) => {
+			const trimmedInput = text?.trim() ?? ""
+			enterBlankTaskView()
+
+			if (trimmedInput || images.length > 0) {
+				isBlankTaskPendingRef.current = false
+				vscode.postMessage({ type: "newTask", text: trimmedInput, images })
+				return
+			}
+
+			vscode.postMessage({ type: "startBlankTask" })
+		},
+		[enterBlankTaskView],
+	)
 
 	/**
 	 * Handles sending messages to the extension
@@ -736,9 +775,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				(lastMessage?.type === "ask" && isCompletedTaskResponseAsk(lastMessage.ask))
 
 			if (isVisibleTaskCompleted && !isAwaitingCompletedTaskResponse) {
-				isBlankTaskPendingRef.current = false
-				vscode.postMessage({ type: "newTask", text, images })
-				handleChatReset()
+				startNewTask(text, images)
 				return
 			}
 
@@ -796,6 +833,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			editingQueuedMessage,
 			isVisibleTaskCompleted,
 			isLastFollowUpAnswered,
+			startNewTask,
 		], // messagesRef and clineAskRef are stable
 	)
 
@@ -813,11 +851,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		},
 		[inputValue, selectedImages],
 	)
-
-	const startNewTask = useCallback(() => {
-		enterBlankTaskView()
-		vscode.postMessage({ type: "startBlankTask" })
-	}, [enterBlankTaskView])
 
 	// Handle stop button click from textarea
 	const handleStopTask = useCallback(() => {
@@ -874,6 +907,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			userRespondedRef.current = true
 
 			const trimmedInput = text?.trim()
+			if (isCompletedTaskResponseAsk(clineAsk)) {
+				startNewTask(trimmedInput, images)
+				return
+			}
 
 			switch (clineAsk) {
 				case "api_req_failed":
@@ -916,7 +953,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							(msg) => msg.ask === "completion_result" || msg.say === "completion_result",
 						)
 					if (isCompletedSubtaskForClick) {
-						startNewTask()
+						startNewTask(trimmedInput, images)
+						return
 					} else {
 						// Only send text/images if they exist
 						if (trimmedInput || (images && images.length > 0)) {
@@ -938,11 +976,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							})
 						}
 					}
-					break
-				case "completion_result":
-				case "resume_completed_task":
-					// Waiting for feedback, but we can just present a new task button
-					startNewTask()
 					break
 				case "command_output":
 					vscode.postMessage({
@@ -977,7 +1010,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			case "mistake_limit_reached":
 			case "resume_task":
 				startNewTask()
-				break
+				return
 			case "command":
 			case "tool":
 			case "use_mcp_server":
@@ -1815,6 +1848,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							)
 						}
 						parentTaskId={visibleCurrentTaskItem?.parentTaskId}
+						isManagedSubagent={isManagedSubagent}
 						costBreakdown={
 							visibleCurrentTaskItem?.id && aggregatedCostsMap.has(visibleCurrentTaskItem.id)
 								? getCostBreakdownIfNeeded(aggregatedCostsMap.get(visibleCurrentTaskItem.id)!, {
@@ -1829,6 +1863,18 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						todos={latestTodos}
 						onExpandedChange={handleTaskHeaderExpandedChange}
 					/>
+
+					{showManagedAgentTree && visibleCurrentTaskId && (
+						<div className="px-3 pb-1">
+							<ManagedAgentTree
+								rootTaskId={visibleCurrentTaskId}
+								groups={managedAgentGroups}
+								projection={managedAgentTreeProjection}
+								liveTasksById={liveTasksById}
+								onShowTask={(taskId) => vscode.postMessage({ type: "showTaskWithId", text: taskId })}
+							/>
+						</div>
+					)}
 
 					{checkpointWarning && (
 						<div className="px-3">
@@ -1910,7 +1956,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						)}
 					</div>
 					<FileChangesPanel clineMessages={activeMessages} taskId={visibleCurrentTaskId} />
-					{areActionButtonsVisible && (
+					{areActionButtonsVisible && !isManagedSubagent && (
 						<div
 							className={`flex h-9 items-center mb-1 px-[15px] ${enableButtons ? "opacity-100" : "opacity-50"}`}>
 							{primaryButtonText && (
@@ -1971,45 +2017,47 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				</>
 			)}
 
-			<QueuedMessages
-				queue={visibleMessageQueue}
-				editingMessageId={editingQueuedMessage?.id}
-				onRemove={(index) => {
-					if (visibleMessageQueue[index]) {
-						vscode.postMessage({
-							type: "removeQueuedMessage",
-							text: visibleMessageQueue[index].id,
-							...visibleTaskPayload,
-						})
-					}
-				}}
-				onSteer={(index) => {
-					if (visibleMessageQueue[index]) {
-						vscode.postMessage({
-							type: "steerQueuedMessage",
-							text: visibleMessageQueue[index].id,
-							...visibleTaskPayload,
-						})
-					}
-				}}
-				onEdit={(index) => {
-					if (visibleMessageQueue[index]) {
-						startQueuedMessageEdit(visibleMessageQueue[index])
-					}
-				}}
-				onReorder={(fromIndex, toIndex) => {
-					if (visibleMessageQueue[fromIndex]) {
-						vscode.postMessage({
-							type: "reorderQueuedMessage",
-							payload: {
-								id: visibleMessageQueue[fromIndex].id,
-								toIndex,
-							},
-							...visibleTaskPayload,
-						})
-					}
-				}}
-			/>
+			{!isManagedSubagent && (
+				<QueuedMessages
+					queue={visibleMessageQueue}
+					editingMessageId={editingQueuedMessage?.id}
+					onRemove={(index) => {
+						if (visibleMessageQueue[index]) {
+							vscode.postMessage({
+								type: "removeQueuedMessage",
+								text: visibleMessageQueue[index].id,
+								...visibleTaskPayload,
+							})
+						}
+					}}
+					onSteer={(index) => {
+						if (visibleMessageQueue[index]) {
+							vscode.postMessage({
+								type: "steerQueuedMessage",
+								text: visibleMessageQueue[index].id,
+								...visibleTaskPayload,
+							})
+						}
+					}}
+					onEdit={(index) => {
+						if (visibleMessageQueue[index]) {
+							startQueuedMessageEdit(visibleMessageQueue[index])
+						}
+					}}
+					onReorder={(fromIndex, toIndex) => {
+						if (visibleMessageQueue[fromIndex]) {
+							vscode.postMessage({
+								type: "reorderQueuedMessage",
+								payload: {
+									id: visibleMessageQueue[fromIndex].id,
+									toIndex,
+								},
+								...visibleTaskPayload,
+							})
+						}
+					}}
+				/>
+			)}
 			{showRetiredProviderWarning && (
 				<div className="px-[15px] py-1">
 					<WarningRow
@@ -2020,27 +2068,29 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					/>
 				</div>
 			)}
-			<ChatTextArea
-				ref={textAreaRef}
-				inputValue={inputValue}
-				setInputValue={setInputValue}
-				sendingDisabled={sendingDisabled || isProfileDisabled}
-				selectApiConfigDisabled={sendingDisabled && clineAsk !== "api_req_failed"}
-				placeholderText={placeholderText}
-				selectedImages={selectedImages}
-				setSelectedImages={setSelectedImages}
-				onSend={() => handleSendMessage(inputValue, selectedImages)}
-				onSelectImages={selectImages}
-				shouldDisableImages={shouldDisableImages}
-				mode={mode}
-				setMode={setMode}
-				modeShortcutText={modeShortcutText}
-				isEditMode={Boolean(editingQueuedMessage)}
-				onCancel={cancelQueuedMessageEdit}
-				isStreaming={isStreaming}
-				onStop={handleStopTask}
-				onEnqueueMessage={handleEnqueueCurrentMessage}
-			/>
+			{!isManagedSubagent && (
+				<ChatTextArea
+					ref={textAreaRef}
+					inputValue={inputValue}
+					setInputValue={setInputValue}
+					sendingDisabled={sendingDisabled || isProfileDisabled}
+					selectApiConfigDisabled={sendingDisabled && clineAsk !== "api_req_failed"}
+					placeholderText={placeholderText}
+					selectedImages={selectedImages}
+					setSelectedImages={setSelectedImages}
+					onSend={() => handleSendMessage(inputValue, selectedImages)}
+					onSelectImages={selectImages}
+					shouldDisableImages={shouldDisableImages}
+					mode={mode}
+					setMode={setMode}
+					modeShortcutText={modeShortcutText}
+					isEditMode={Boolean(editingQueuedMessage)}
+					onCancel={cancelQueuedMessageEdit}
+					isStreaming={isStreaming}
+					onStop={handleStopTask}
+					onEnqueueMessage={handleEnqueueCurrentMessage}
+				/>
+			)}
 
 			<div id="alpha-portal" />
 		</div>

@@ -1,0 +1,863 @@
+{
+	"schemaVersion": 1,
+	"suiteId": "managed-agent-milestone",
+	"description": "Combined certification for configurable orchestration, nested managed agents, the live agent tree, Worker verification, and Settings buffering.",
+	"minimumTestCount": 903,
+	"expectedDeterministicRowCount": 26,
+	"expectedIntegrationPendingCount": 8,
+	"prerequisites": [
+		{
+			"id": "live-playbook-preflight",
+			"label": "Validate and execute the documented live Run A PowerShell commands",
+			"args": ["certify:managed-agents:live-preflight"]
+		},
+		{
+			"id": "types-build",
+			"label": "Build public workspace types used by extension and webview tests",
+			"args": ["--filter", "@alpha-code/types", "build"]
+		}
+	],
+	"tracks": [
+		{
+			"id": "types-contracts",
+			"label": "Managed-agent schemas and context contracts",
+			"packageDir": "packages/types",
+			"minimumTestCount": 79,
+			"include": [
+				"^src/__tests__/(?:agent-control|global-settings|message|provider-settings|subagent|vscode-extension-host).*\\.(?:spec|test)\\.ts$"
+			]
+		},
+		{
+			"id": "worker-worktree",
+			"label": "Worker isolation, Apply, and orphan recovery",
+			"packageDir": "packages/core",
+			"minimumTestCount": 11,
+			"include": ["^src/worktree/__tests__/managed-subagent-worktree\\.spec\\.ts$"]
+		},
+		{
+			"id": "runtime-invariants",
+			"label": "Agent runtime policy, registry, capacity, and recovery",
+			"packageDir": "src",
+			"minimumTestCount": 189,
+			"include": ["^core/agent/__tests__/.*\\.(?:spec|test)\\.ts$"]
+		},
+		{
+			"id": "lifecycle-routing",
+			"label": "Spawn, lifecycle, mailbox, result, and cancellation routing",
+			"packageDir": "src",
+			"minimumTestCount": 195,
+			"include": [
+				"^core/task/__tests__/(?:Task\\.spec|Task\\.subagent-context\\.spec|async-subagent-result-delivery\\.spec|subagent-(?:authority|followup)\\.spec)\\.ts$",
+				"^core/task/__tests__/.*(?:agent|descendant|nested).*\\.spec\\.ts$",
+				"^core/prompts/tools/__tests__/build-tools-spawn-agent\\.spec\\.ts$",
+				"^core/tools/__tests__/(?:AgentLifecycleTools|SpawnAgentTool|ToolRegistry|nativeToolDispatchContract)\\.spec\\.ts$",
+				"^core/webview/__tests__/(?:ClineProvider\\.(?:flicker-free-cancel|.*(?:agent|delegat|nested|tree).*)|TaskSessionRegistry)\\.spec\\.ts$",
+				"^__tests__/(?:delegation-events|nested-delegation-resume|provider-delegation)\\.spec\\.ts$"
+			]
+		},
+		{
+			"id": "terminal-process-cleanup",
+			"label": "Awaited terminal and real OS process-tree cleanup",
+			"packageDir": "src",
+			"minimumTestCount": 27,
+			"include": ["^integrations/terminal/__tests__/ExecaTerminalProcess(?:\\.integration)?\\.spec\\.ts$"]
+		},
+		{
+			"id": "task-history-compatibility",
+			"label": "Bounded global-state task-history compatibility mirror",
+			"packageDir": "src",
+			"minimumTestCount": 20,
+			"include": [
+				"^core/task-persistence/__tests__/compactTaskHistoryForGlobalState\\.spec\\.ts$",
+				"^core/webview/__tests__/ClineProvider\\.taskHistory\\.spec\\.ts$"
+			]
+		},
+		{
+			"id": "worker-completion-gate",
+			"label": "Worker Apply verification and parent completion gate",
+			"packageDir": "src",
+			"minimumTestCount": 68,
+			"include": [
+				"^core/task/__tests__/Task\\.external-mutation(?:-runtime)?\\.spec\\.ts$",
+				"^core/task/__tests__/WorkspaceMutationGate\\.spec\\.ts$",
+				"^core/tools/__tests__/(?:attemptCompletionTool|executeCommandTool)\\.spec\\.ts$",
+				"^core/webview/__tests__/(?:ClineProvider\\.change-set-actions|webviewMessageHandler\\.edit)\\.spec\\.ts$"
+			]
+		},
+		{
+			"id": "provider-protocol",
+			"label": "Strict native provider and lifecycle protocol",
+			"packageDir": "src",
+			"minimumTestCount": 118,
+			"include": [
+				"^api/providers/__tests__/(?:openai-codex-native-tool-calls|openai-native-tools)\\.spec\\.ts$",
+				"^api/transform/__tests__/responses-api-stream\\.spec\\.ts$",
+				"^core/assistant-message/__tests__/(?:NativeToolCallParser|spawn-agent-native-pipeline)\\.spec\\.ts$"
+			]
+		},
+		{
+			"id": "live-tree-ui",
+			"label": "Compact agent task surfaces, transcript controls, and history regressions",
+			"packageDir": "webview-ui",
+			"minimumTestCount": 164,
+			"include": [
+				"^src/components/(?:agents?|chat|history)/.*(?:agent|groupedtasks|livetree|live-tree|subagent|taskheader|taskitem).*\\.spec\\.tsx?$",
+				"^src/components/chat/__tests__/ChatView\\.spec\\.tsx$",
+				"^src/context/__tests__/ExtensionStateContext\\.spec\\.tsx$"
+			]
+		},
+		{
+			"id": "settings-buffering",
+			"label": "Settings buffered-edit and managed-agent configuration regressions",
+			"packageDir": "webview-ui",
+			"minimumTestCount": 32,
+			"include": ["^src/components/settings/__tests__/(?:AgentsSettings|SettingsView.*)\\.spec\\.tsx$"]
+		}
+	],
+	"rows": [
+		{
+			"id": "CFG-CONTRACT-001",
+			"requirement": "ExtensionState/updateSettings expose the exact bounded orchestration fields and defaults agreed with the backend.",
+			"classification": "merge-dependent",
+			"trackIds": ["types-contracts", "settings-buffering"],
+			"probes": [
+				{
+					"label": "concurrency/depth/policy schema tests",
+					"match": "all",
+					"patterns": ["maxConcurrentSubagents", "subagentDelegationPolicy", "subagentMaxDepth"]
+				},
+				{
+					"label": "role timeout schema tests",
+					"patterns": ["subagentRoleTimeoutsMs"]
+				},
+				{
+					"label": "token/output/root budget schema tests",
+					"match": "all",
+					"patterns": [
+						"subagentMaxInputTokens",
+						"subagentMaxOutputTokens",
+						"subagentRootTokenBudget",
+						"subagentRootCostBudget"
+					]
+				}
+			],
+			"sourceProbes": [
+				{
+					"label": "all exact persisted setting names",
+					"path": "packages/types/src/global-settings.ts",
+					"match": "all",
+					"patterns": [
+						"maxConcurrentSubagents",
+						"subagentDelegationPolicy",
+						"subagentMaxDepth",
+						"subagentRoleTimeoutsMs",
+						"subagentMaxInputTokens",
+						"subagentMaxOutputTokens",
+						"subagentRootTokenBudget",
+						"subagentRootCostBudget"
+					]
+				},
+				{
+					"label": "ExtensionState exposes exact fields",
+					"path": "packages/types/src/vscode-extension-host.ts",
+					"match": "all",
+					"patterns": [
+						"maxConcurrentSubagents",
+						"subagentDelegationPolicy",
+						"subagentMaxDepth",
+						"subagentRoleTimeoutsMs",
+						"subagentMaxInputTokens",
+						"subagentMaxOutputTokens",
+						"subagentRootTokenBudget",
+						"subagentRootCostBudget"
+					]
+				}
+			]
+		},
+		{
+			"id": "CFG-FROZEN-001",
+			"requirement": "Every child freezes contextManifest.orchestration ancestry, delegationPolicy, and limits; legacy omissions recover with frozen legacy defaults.",
+			"classification": "merge-dependent",
+			"trackIds": ["types-contracts", "runtime-invariants", "lifecycle-routing"],
+			"probes": [
+				{
+					"label": "frozen ancestry and effective limits contract",
+					"patterns": ["freezes ancestry and effective limits while retaining legacy manifests"]
+				},
+				{
+					"label": "legacy omission recovery with frozen defaults",
+					"patterns": ["recovers a legacy orchestration omission with frozen legacy defaults"]
+				},
+				{
+					"label": "frozen delegation policy and role timeout reload",
+					"patterns": [
+						"rehydrates a child with its frozen delegation policy and role timeout despite changed settings"
+					]
+				}
+			],
+			"sourceProbes": [
+				{
+					"label": "manifest retains the orchestration contract",
+					"path": "packages/types/src/subagent-context.ts",
+					"patterns": ["orchestration: subagentManifestOrchestrationSchema\\.optional\\(\\)"]
+				},
+				{
+					"label": "orchestration schema binds ancestry policy and limits",
+					"path": "packages/types/src/subagent-orchestration.ts",
+					"match": "all",
+					"patterns": [
+						"ancestry: subagentAncestrySchema",
+						"delegationPolicy: subagentEffectiveDelegationPolicySchema",
+						"limits: subagentEffectiveLimitsSchema"
+					]
+				}
+			]
+		},
+		{
+			"id": "PROJECTION-CONTRACT-001",
+			"requirement": "Live/list projections expose depth, maxDepth, delegationPolicy, effectiveLimits, and terminal stopReason.",
+			"classification": "merge-dependent",
+			"trackIds": ["types-contracts", "runtime-invariants", "lifecycle-routing", "live-tree-ui"],
+			"probes": [
+				{
+					"label": "bounded public projection schema",
+					"patterns": ["parses a bounded nested registry projection without raw manifests or report bodies"]
+				},
+				{
+					"label": "provider projects durable nested fields and stop reason",
+					"patterns": ["projects the durable nested registry into a bounded reload-safe webview contract"]
+				},
+				{
+					"label": "compact task strip consumes projected hierarchy and terminal state",
+					"patterns": [
+						"opens active and nested tasks with the exact task id",
+						"keeps status readable without relying on dot color"
+					]
+				}
+			],
+			"sourceProbes": [
+				{
+					"label": "live/list projection fields",
+					"path": "packages/types/src/managed-agent-tree.ts",
+					"match": "all",
+					"patterns": [
+						"depth: z\\.number",
+						"maxDepth: z\\.number",
+						"delegationPolicy: subagentDelegationPolicySchema",
+						"effectiveLimits: subagentEffectiveLimitsSchema",
+						"stopReason: subagentStopReasonSchema"
+					]
+				}
+			]
+		},
+		{
+			"id": "CFG-POLICY-001",
+			"requirement": "Explicit-request versus proactive delegation policy is enforced and reload-stable.",
+			"classification": "merge-dependent",
+			"trackIds": ["types-contracts", "runtime-invariants", "lifecycle-routing", "settings-buffering"],
+			"probes": [
+				{
+					"label": "explicit/proactive policy behavior",
+					"patterns": [
+						"subagentDelegationPolicy.{0,120}(?:explicit-only|proactive)",
+						"(?:explicit(?:-request)?|explicit-only|proactive).{0,100}delegat",
+						"delegat.{0,100}(?:explicit(?:-request)?|proactive)"
+					]
+				},
+				{
+					"label": "per-task policy can narrow but not widen",
+					"patterns": [
+						"(?:explicit-only|proactive).{0,120}(?:narrow|widen|override)",
+						"(?:narrow|widen|override).{0,120}(?:explicit-only|proactive)"
+					]
+				},
+				{
+					"label": "effective policy persistence or reload",
+					"patterns": [
+						"(?:persist|reload|rehydrat).{0,100}(?:effective )?delegation policy",
+						"delegation policy.{0,100}(?:persist|reload|rehydrat)"
+					]
+				}
+			]
+		},
+		{
+			"id": "CFG-TIMEOUT-001",
+			"requirement": "Validated role-specific timeouts survive reload and produce one deterministic terminal result.",
+			"classification": "merge-dependent",
+			"trackIds": ["types-contracts", "runtime-invariants", "lifecycle-routing", "settings-buffering"],
+			"probes": [
+				{
+					"label": "role-specific timeout configuration",
+					"patterns": [
+						"subagentRoleTimeoutsMs",
+						"(?:role|explore|review|worker).{0,100}timeout",
+						"timeout.{0,100}(?:role|explore|review|worker)"
+					]
+				},
+				{
+					"label": "timeout persistence/reload",
+					"patterns": [
+						"(?:persist|reload|rehydrat).{0,100}timeout",
+						"timeout.{0,100}(?:persist|reload|rehydrat)"
+					]
+				},
+				{
+					"label": "exactly-once timeout terminal outcome",
+					"patterns": ["timed_out.{0,100}(?:once|terminal|result)", "timeout.{0,100}exactly.once"]
+				}
+			]
+		},
+		{
+			"id": "CFG-BUDGET-001",
+			"requirement": "Output, token, and cost limits stop the root tree deterministically and report the effective stop reason.",
+			"classification": "merge-dependent",
+			"trackIds": ["types-contracts", "runtime-invariants", "lifecycle-routing", "settings-buffering"],
+			"probes": [
+				{
+					"label": "output/token limit enforcement",
+					"patterns": [
+						"(?:subagentMaxInputTokens|subagentMaxOutputTokens).{0,120}(?:stop|cancel|terminal|stopReason)",
+						"(?:output|token).{0,100}(?:limit|budget|ceiling).{0,100}(?:stop|cancel|terminal)"
+					]
+				},
+				{
+					"label": "root cost limit enforcement",
+					"patterns": [
+						"subagentRootCostBudget.{0,120}(?:stop|cancel|terminal|stopReason)",
+						"cost.{0,100}(?:limit|budget|ceiling).{0,100}(?:stop|cancel|terminal)",
+						"(?:limit|budget|ceiling).{0,100}cost.{0,100}(?:stop|cancel|terminal)"
+					]
+				},
+				{
+					"label": "durable effective stop reason",
+					"patterns": [
+						"stopReason.{0,120}(?:input_token_limit|output_token_limit|root_token_budget|root_cost_budget)",
+						"(?:effective )?stop reason.{0,100}(?:persist|reload|terminal)"
+					]
+				}
+			]
+		},
+		{
+			"id": "NEST-DEPTH-001",
+			"requirement": "Authorized children may spawn descendants only within configured depth and narrowed authority.",
+			"classification": "merge-dependent",
+			"trackIds": ["types-contracts", "runtime-invariants", "lifecycle-routing", "worker-worktree"],
+			"probes": [
+				{
+					"label": "authorized read-only nesting and frozen depth",
+					"patterns": [
+						"allows read-only descendants within frozen depth while denying depth, delegation, and Worker widening"
+					]
+				},
+				{
+					"label": "authorized Worker nesting with exact scope narrowing",
+					"patterns": [
+						"allows a Worker to layer one nested Worker only within its frozen directory and exact-file scope"
+					]
+				},
+				{
+					"label": "layered Worker checkout ownership",
+					"patterns": ["layers a nested Worker worktree through its owning parent before the root checkout"]
+				}
+			]
+		},
+		{
+			"id": "NEST-CAPACITY-001",
+			"requirement": "One root-wide capacity pool bounds every descendant and releases slots on terminal transitions.",
+			"classification": "merge-dependent",
+			"trackIds": ["runtime-invariants", "lifecycle-routing"],
+			"probes": [
+				{
+					"label": "root-wide descendant capacity",
+					"patterns": ["counts descendants against one root cap without serializing another root"]
+				},
+				{
+					"label": "terminal and queued slot release",
+					"patterns": ["cleans capacity, queued waiters, and run registrations exactly once"]
+				},
+				{
+					"label": "atomic concurrent admission",
+					"patterns": ["atomically reserves a root slot before asynchronous preparation yields"]
+				}
+			]
+		},
+		{
+			"id": "NEST-CANCEL-001",
+			"requirement": "Cancel, interrupt, and close have deterministic descendant/subtree semantics.",
+			"classification": "merge-dependent",
+			"trackIds": ["runtime-invariants", "lifecycle-routing"],
+			"probes": [
+				{
+					"label": "recursive descendant cancellation ordering",
+					"patterns": [
+						"cancels descendants deepest-first and distinguishes direct-child from deeper target causes"
+					]
+				},
+				{
+					"label": "immediate cancellation admission race",
+					"patterns": [
+						"registers children before publishing running state so immediate cancellation is not lost"
+					]
+				},
+				{
+					"label": "bottom-up retained close semantics",
+					"patterns": ["requires bottom-up close and never reuses a retained nested path"]
+				}
+			]
+		},
+		{
+			"id": "ROUTING-MAILBOX-001",
+			"requirement": "Mailbox events and terminal results route once to the owning parent with durable cursors.",
+			"classification": "baseline",
+			"trackIds": ["runtime-invariants", "lifecycle-routing"],
+			"probes": [
+				{
+					"label": "durable per-recipient cursors",
+					"patterns": ["tracks per-recipient delivery and acknowledgement cursors durably"]
+				},
+				{
+					"label": "wait versus automatic injection claim",
+					"patterns": ["claims a wait_agent result before automatic result injection can duplicate it"]
+				},
+				{
+					"label": "managed-child parent-control wait",
+					"patterns": [
+						"keeps a registered managed child waiting for immediate-parent control without active descendants"
+					]
+				}
+			]
+		},
+		{
+			"id": "ROUTING-NESTED-001",
+			"requirement": "Descendant results, messages, waits, and controls use the immediate owning parent and atomic result claims.",
+			"classification": "merge-dependent",
+			"trackIds": ["runtime-invariants", "lifecycle-routing"],
+			"probes": [
+				{
+					"label": "immediate-parent descendant result routing",
+					"patterns": [
+						"allocates stable nested identity and routes a grandchild result only to its immediate parent mailbox"
+					]
+				},
+				{
+					"label": "authorized descendant-only controls",
+					"patterns": [
+						"cancels descendants deepest-first and distinguishes direct-child from deeper target causes"
+					]
+				},
+				{
+					"label": "concurrent mailbox claim is exactly once",
+					"patterns": ["grants exactly one durable owner to concurrent mailbox consumers"]
+				}
+			]
+		},
+		{
+			"id": "ROUTING-STEERING-RECEIPT-001",
+			"requirement": "Live parent steering is acknowledged only after durable child persistence, and delivered-but-unacknowledged steering is recovered on retained follow-up.",
+			"classification": "merge-dependent",
+			"trackIds": ["lifecycle-routing"],
+			"probes": [
+				{
+					"label": "durable live steering acknowledgement",
+					"patterns": ["acknowledges live steering only after the child reports durable persistence"]
+				},
+				{
+					"label": "delivered but unacknowledged follow-up recovery",
+					"match": "all",
+					"patterns": [
+						"uses the current report when a retained follow-up completes successfully",
+						"PING_BEFORE_INTERRUPT",
+						"Additional parent steering"
+					]
+				}
+			]
+		},
+		{
+			"id": "ROUTING-PROGRESS-001",
+			"requirement": "report_progress is a bounded, auto-approved sub-agent-only capability that durably routes once to the immediate parent without result-claim interference.",
+			"classification": "merge-dependent",
+			"trackIds": ["lifecycle-routing", "provider-protocol"],
+			"probes": [
+				{
+					"label": "immediate-parent progress routing and exact claim",
+					"patterns": [
+						"routes nested agent progress only to the immediate parent and lets wait_agent claim it once"
+					]
+				},
+				{
+					"label": "root and missing-parent rejection",
+					"patterns": ["rejects report_progress from roots and when the frozen immediate parent is missing"]
+				},
+				{
+					"label": "root and managed-child tool catalog boundary",
+					"match": "all",
+					"patterns": [
+						"exposes spawn_agent to a primary Code task",
+						"omits orchestration tools from a legacy managed child without delegation authority"
+					]
+				},
+				{
+					"label": "strict bounded provider and registry contract",
+					"match": "all",
+					"patterns": ["report_progress", "2,000 characters", "requiresApproval: false"]
+				}
+			]
+		},
+		{
+			"id": "RECOVERY-BASE-001",
+			"requirement": "Registry reload and Worker orphan recovery are idempotent on the depth-one baseline.",
+			"classification": "baseline",
+			"trackIds": ["runtime-invariants", "worker-worktree", "worker-completion-gate"],
+			"probes": [
+				{
+					"label": "registry active-record recovery",
+					"patterns": ["recovers active records once while preserving completed records"]
+				},
+				{
+					"label": "orphaned Worker recovery",
+					"patterns": ["recovers partial changes from an orphaned active worktree after reload"]
+				},
+				{
+					"label": "Apply decision reload",
+					"patterns": ["advances required to pending, survives reload, and verifies once"]
+				}
+			]
+		},
+		{
+			"id": "RECOVERY-NESTED-001",
+			"requirement": "Reload reconstructs nested ownership, budgets, mailbox routing, and orphan cleanup without flattening.",
+			"classification": "merge-dependent",
+			"trackIds": ["runtime-invariants", "lifecycle-routing", "worker-worktree"],
+			"probes": [
+				{
+					"label": "nested tree reload",
+					"patterns": ["recovers nested active records to their immediate parents exactly once"]
+				},
+				{
+					"label": "nested orphan cleanup",
+					"patterns": ["routes an orphaned descendant recovery notice to the surviving root"]
+				}
+			]
+		},
+		{
+			"id": "CONTEXT-INHERIT-001",
+			"requirement": "fork_turns inheritance is frozen, credential-free, digest-checked, and authority-narrowed.",
+			"classification": "baseline",
+			"trackIds": ["types-contracts", "runtime-invariants", "lifecycle-routing"],
+			"probes": [
+				{
+					"label": "requested turns and frozen inputs",
+					"patterns": [
+						"captures and applies only the requested parent turns with frozen instructions and skills"
+					]
+				},
+				{
+					"label": "credential-free durable manifest",
+					"patterns": ["stores only compact refs and digests and serializes no captured secrets"]
+				},
+				{
+					"label": "tamper rejection",
+					"patterns": ["rejects a tampered retained context manifest instead of recapturing on follow-up"]
+				}
+			]
+		},
+		{
+			"id": "NEST-COMPLETION-001",
+			"requirement": "A managed parent cannot complete with active descendants or unowned descendant terminal results.",
+			"classification": "merge-dependent",
+			"trackIds": ["runtime-invariants", "lifecycle-routing", "worker-completion-gate"],
+			"probes": [
+				{
+					"label": "active descendant completion block",
+					"patterns": [
+						"(?:parent|subagent).{0,120}(?:cannot|blocks?).{0,100}complet.{0,120}active descendant"
+					]
+				},
+				{
+					"label": "unowned terminal result completion block",
+					"patterns": ["complet.{0,120}(?:unowned|undelivered).{0,100}descendant.{0,100}result"]
+				}
+			]
+		},
+		{
+			"id": "WORKER-GATE-001",
+			"requirement": "Worker Apply is quarantined, reload-safe, parent-verified, and blocks completion until satisfied.",
+			"classification": "baseline",
+			"trackIds": ["runtime-invariants", "worker-worktree", "worker-completion-gate", "live-tree-ui"],
+			"probes": [
+				{
+					"label": "durable Apply transition and verification",
+					"patterns": ["advances required to pending, survives reload, and verifies once"]
+				},
+				{
+					"label": "pre-terminal completion recheck",
+					"patterns": ["rechecks verification immediately before the terminal transition"]
+				},
+				{
+					"label": "fail-closed completion decision",
+					"patterns": ["fails closed when the durable completion decision cannot be loaded"]
+				}
+			]
+		},
+		{
+			"id": "PROTOCOL-STRICT-001",
+			"requirement": "Managed-agent lifecycle calls survive strict native-provider parsing and parallel tool-call streams.",
+			"classification": "baseline",
+			"trackIds": ["provider-protocol", "lifecycle-routing"],
+			"probes": [
+				{
+					"label": "strict lifecycle schema",
+					"patterns": ["publish strict native schemas"]
+				},
+				{
+					"label": "spawn native pipeline",
+					"patterns": ["spawn_agent"]
+				}
+			]
+		},
+		{
+			"id": "WORKER-NESTED-001",
+			"requirement": "A descendant Worker has an explicit verification owner and the same double completion gate as a root-owned Worker.",
+			"classification": "merge-dependent",
+			"trackIds": ["runtime-invariants", "lifecycle-routing", "worker-completion-gate", "worker-worktree"],
+			"probes": [
+				{
+					"label": "nested Worker verification owner",
+					"patterns": ["makes the immediate Worker the durable verification owner for a nested Worker"]
+				},
+				{
+					"label": "layered parent and root verification ownership",
+					"patterns": ["layers Worker verification ownership at each immediate parent"]
+				},
+				{
+					"label": "same pre-terminal verification recheck",
+					"patterns": ["rechecks verification immediately before the terminal transition"]
+				}
+			]
+		},
+		{
+			"id": "UI-LIVE-TREE-001",
+			"requirement": "Compact agent task surfaces render nested status and exact navigation while preserving actionable controls, attention, and reload recovery without dashboard noise.",
+			"classification": "merge-dependent",
+			"trackIds": ["live-tree-ui"],
+			"probes": [
+				{
+					"label": "minimal parent and transcript surfaces",
+					"match": "all",
+					"patterns": [
+						"renders one compact, horizontally scrollable task strip without repeating the root or dashboard detail",
+						"renders active agents as compact task rows without verbose trace detail"
+					]
+				},
+				{
+					"label": "exact descendant navigation",
+					"match": "all",
+					"patterns": [
+						"opens active and nested tasks with the exact task id",
+						"mounts a compact live task strip and opens the selected descendant"
+					]
+				},
+				{
+					"label": "compact attention and overflow actions",
+					"match": "all",
+					"patterns": [
+						"surfaces only compact actionable attention from group state",
+						"keeps group cancellation in a compact overflow menu",
+						"keeps command approval behind an explicit compact attention flow"
+					]
+				},
+				{
+					"label": "reload-safe bounded task state",
+					"match": "all",
+					"patterns": [
+						"renders durable nested registry state after reload without transcript groups",
+						"bounds very large trees without expanding vertically",
+						"keeps loading and error state to one compact line"
+					]
+				}
+			]
+		},
+		{
+			"id": "UI-SETTINGS-BUFFER-001",
+			"requirement": "Managed-agent settings bind to cachedState and unrelated live updates cannot erase unsaved edits.",
+			"classification": "baseline",
+			"trackIds": ["settings-buffering"],
+			"probes": [
+				{
+					"label": "Save-buffered profile IDs",
+					"patterns": ["buffers stable profile IDs until Save"]
+				},
+				{
+					"label": "cached-state callback",
+					"patterns": ["writes selections only through the cached-state callback"]
+				}
+			],
+			"sourceProbes": [
+				{
+					"label": "local cachedState source",
+					"path": "webview-ui/src/components/settings/SettingsView.tsx",
+					"patterns": ["const \\[cachedState, setCachedState\\] = useState"]
+				}
+			],
+			"sourceBlockers": [
+				{
+					"label": "truthy import timestamp rehydrates on every extensionState update",
+					"path": "webview-ui/src/components/settings/SettingsView.tsx",
+					"patterns": [
+						"Bust the cache when settings are imported[\\s\\S]{0,200}if \\(settingsImportedAt\\)[\\s\\S]{0,400}\\[settingsImportedAt,\\s*extensionState\\]"
+					]
+				}
+			]
+		},
+		{
+			"id": "UI-SETTINGS-DEBT-001",
+			"requirement": "Settings change-detection regressions contain no skipped or placeholder assertions.",
+			"classification": "known-debt",
+			"trackIds": ["settings-buffering"],
+			"probes": [
+				{
+					"label": "settings change-detection suite",
+					"patterns": ["SettingsView - (?:Unsaved Changes Detection|Change Detection Fix)"]
+				}
+			],
+			"testBlockers": [
+				{
+					"label": "skipped settings certification case",
+					"patterns": ["(?:it|test|describe)\\.skip\\("]
+				},
+				{
+					"label": "placeholder assertion",
+					"patterns": ["expect\\(true\\)\\.toBe\\(true\\)"]
+				}
+			]
+		},
+		{
+			"id": "RUNTIME-LEGACY-DEBT-001",
+			"requirement": "Selected legacy Task coverage contains no silently skipped cases.",
+			"classification": "known-debt",
+			"trackIds": ["lifecycle-routing"],
+			"probes": [
+				{
+					"label": "Task lifecycle suite",
+					"patterns": ["describe\\(\"Alpha\""]
+				}
+			],
+			"testBlockers": [
+				{
+					"label": "skipped legacy Task case",
+					"patterns": ["(?:it|test|describe)\\.skip\\("]
+				}
+			]
+		},
+		{
+			"id": "PROCESS-TREE-CLEANUP-001",
+			"requirement": "Terminal abort is awaited, bounded, idempotent, and removes a real local shell/parent/child process tree.",
+			"classification": "merge-dependent",
+			"trackIds": ["lifecycle-routing", "terminal-process-cleanup"],
+			"probes": [
+				{
+					"label": "Task awaits abort and terminal settlement",
+					"patterns": ["waits for both the Worker process abort and terminal settlement"]
+				},
+				{
+					"label": "Task coalesces concurrent aborts",
+					"patterns": ["coalesces concurrent aborts into one lifecycle transition"]
+				},
+				{
+					"label": "provider fails closed on unproven cleanup",
+					"patterns": ["fails closed when cancellation cannot prove child cleanup"]
+				},
+				{
+					"label": "awaited and shared abort contract",
+					"patterns": ["returns one shared promise for repeated aborts"]
+				},
+				{
+					"label": "bounded termination discovery",
+					"match": "all",
+					"patterns": [
+						"bounds POSIX process-tree discovery",
+						"bounds the optional POSIX PID refinement before abort discovery"
+					]
+				},
+				{
+					"label": "real OS process-tree removal",
+					"patterns": ["removes the real shell, fixture parent, and sleeper child"]
+				}
+			]
+		},
+		{
+			"id": "PERSISTENCE-COMPACT-GLOBAL-STATE-001",
+			"requirement": "The downgrade-compatible global-state history mirror is byte-bounded, root-only, newest-first, and cannot mutate authoritative history.",
+			"classification": "merge-dependent",
+			"trackIds": ["task-history-compatibility"],
+			"probes": [
+				{
+					"label": "bounded root-only compatibility mirror",
+					"patterns": ["keeps a bounded root-only downgrade mirror without managed-child payloads"]
+				},
+				{
+					"label": "newest roots remain within byte budget",
+					"patterns": ["keeps the newest roots that fit and never exceeds the byte budget"]
+				},
+				{
+					"label": "authoritative history is immutable",
+					"patterns": ["does not mutate authoritative history while truncating compatibility text"]
+				},
+				{
+					"label": "provider writes only the compact compatibility mirror",
+					"patterns": ["writes only a bounded root-only downgrade mirror to globalState"]
+				}
+			]
+		}
+	],
+	"integrationPending": [
+		{
+			"id": "INT-POLICY-PROVENANCE-001",
+			"requirement": "Real conversation: explicit-only delegation accepts genuine user authorization and rejects model-inferred/protocol-shaped authorization across reload.",
+			"reason": "Requires the real conversation/provider boundary to distinguish direct human provenance from generated or replayed records.",
+			"evidenceCommand": null
+		},
+		{
+			"id": "INT-NESTED-RELOAD-001",
+			"requirement": "Real VS Code host: nested spawn, root-wide capacity, descendant cancellation, crash/reload, immediate-parent mailbox routing, and orphan cleanup.",
+			"reason": "Requires extension-host restart and real managed child processes; unit mocks cannot establish process ownership or crash recovery.",
+			"evidenceCommand": null
+		},
+		{
+			"id": "INT-BUDGET-STOP-001",
+			"requirement": "Real provider: role timeout and root output/token/cost exhaustion stop all descendants once with accurate usage and cost.",
+			"reason": "Requires billable provider usage/stream termination and wall-clock enforcement that deterministic offline tests must not simulate as proof.",
+			"evidenceCommand": null
+		},
+		{
+			"id": "INT-WORKER-GATE-001",
+			"requirement": "Real VS Code host: Worker Apply transitions required -> pending, completion is rejected, parent command satisfies verification, then completion succeeds across reload.",
+			"reason": "Requires the real extension host, terminal ownership, filesystem worktree, UI Apply action, reload, and completion transition.",
+			"evidenceCommand": null
+		},
+		{
+			"id": "INT-LIVE-TREE-001",
+			"requirement": "Real webview: compact nested task rows update status and attention, open the exact child without disturbing siblings, retain overflow actions, and preserve Settings unsaved edits across background refreshes.",
+			"reason": "Requires the live webview/extension message loop and user-visible timing; jsdom does not prove host/webview convergence.",
+			"evidenceCommand": null
+		},
+		{
+			"id": "INT-PROCESS-CANCEL-001",
+			"requirement": "Real extension-host termination cancels non-cooperative descendant HTTP streams and process trees without leaking capacity.",
+			"reason": "Requires OS process ownership and provider abort behavior beyond the in-memory runner seams.",
+			"evidenceCommand": null
+		},
+		{
+			"id": "INT-STORAGE-WRITERS-001",
+			"requirement": "Multiple real extension hosts/windows cannot corrupt shared agent-control state or double-claim mailbox results.",
+			"reason": "Requires multi-process writers against the real global-storage filesystem; the in-process store singleton cannot prove this.",
+			"evidenceCommand": null
+		},
+		{
+			"id": "INT-GLOBAL-STATE-SIZE-001",
+			"requirement": "Real extension-host global state remains below its configured compatibility budget during managed-agent churn and reload.",
+			"reason": "The deterministic compaction tests prove helper behavior only; real VS Code storage serialization and multi-window reload require dedicated host instrumentation.",
+			"evidenceCommand": null
+		}
+	]
+}

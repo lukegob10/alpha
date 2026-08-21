@@ -32,19 +32,24 @@ import { sanitizeOpenAiCallId } from "../../utils/tool-id"
 
 export type OpenAiNativeModel = ReturnType<OpenAiNativeHandler["getModel"]>
 
+type PendingToolCallIdentity = {
+	callId: string
+	name?: string
+	outputIndex: number
+}
+
 export class OpenAiNativeHandler extends BaseProvider implements SingleCompletionHandler {
 	protected options: ApiHandlerOptions
 	private client: OpenAI
 	private readonly providerName = "OpenAI Native"
 	// Session ID for request tracking (persists for the lifetime of the handler)
 	private readonly sessionId: string
-	/**
-	 * Some Responses streams emit tool-call argument deltas without stable call id/name.
-	 * Track the last observed tool identity from output_item events so we can still
-	 * emit `tool_call_partial` chunks (tool-call-only streams).
-	 */
+	/** Last observed identity is retained only for legacy streams without correlation fields. */
 	private pendingToolCallId: string | undefined
 	private pendingToolCallName: string | undefined
+	/** Responses deltas identify calls by item_id/output_index, not call_id/name. */
+	private pendingToolCallsByItemId = new Map<string, PendingToolCallIdentity>()
+	private pendingToolCallsByOutputIndex = new Map<number, PendingToolCallIdentity>()
 	// Tracks whether this response already emitted text to avoid duplicate done-event rendering.
 	private sawTextOutputInCurrentResponse = false
 	// Tracks whether text arrived through delta events so content_part events can be treated as fallback-only.
@@ -105,6 +110,60 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 				"User-Agent": userAgent,
 			},
 		})
+	}
+
+	private getToolCallOutputIndex(event: any): number | undefined {
+		if (typeof event?.output_index === "number") return event.output_index
+		if (typeof event?.index === "number") return event.index
+		return undefined
+	}
+
+	private rememberToolCallIdentity(event: any, item: any): void {
+		const callId = item?.call_id || item?.tool_call_id || item?.id
+		if (typeof callId !== "string" || callId.length === 0) return
+
+		const name = item?.name || item?.function?.name || item?.function_name
+		const outputIndex = this.getToolCallOutputIndex(event)
+		const identity: PendingToolCallIdentity = {
+			callId,
+			name: typeof name === "string" ? name : undefined,
+			outputIndex: outputIndex ?? 0,
+		}
+		const itemId = item?.id || event?.item_id
+		if (typeof itemId === "string" && itemId.length > 0) {
+			this.pendingToolCallsByItemId.set(itemId, identity)
+		}
+		if (outputIndex !== undefined) {
+			this.pendingToolCallsByOutputIndex.set(outputIndex, identity)
+		}
+		this.pendingToolCallId = callId
+		this.pendingToolCallName = identity.name
+	}
+
+	private resolveToolCallIdentity(event: any): PendingToolCallIdentity | undefined {
+		const outputIndex = this.getToolCallOutputIndex(event)
+		const itemId = event?.item_id
+		const hasCorrelationFields = (typeof itemId === "string" && itemId.length > 0) || outputIndex !== undefined
+		const correlated =
+			(typeof itemId === "string" ? this.pendingToolCallsByItemId.get(itemId) : undefined) ??
+			(outputIndex !== undefined ? this.pendingToolCallsByOutputIndex.get(outputIndex) : undefined)
+		const callId =
+			event?.call_id ||
+			event?.tool_call_id ||
+			correlated?.callId ||
+			(!hasCorrelationFields ? event?.id || this.pendingToolCallId : undefined)
+		const name =
+			event?.name ||
+			event?.function_name ||
+			correlated?.name ||
+			(!hasCorrelationFields ? this.pendingToolCallName : undefined)
+
+		if (typeof callId !== "string" || callId.length === 0) return undefined
+		return {
+			callId,
+			name: typeof name === "string" ? name : undefined,
+			outputIndex: outputIndex ?? correlated?.outputIndex ?? 0,
+		}
 	}
 
 	private normalizeUsage(usage: any, model: OpenAiNativeModel): ApiStreamUsageChunk | undefined {
@@ -195,6 +254,8 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 		// Reset pending tool identity for this request
 		this.pendingToolCallId = undefined
 		this.pendingToolCallName = undefined
+		this.pendingToolCallsByItemId.clear()
+		this.pendingToolCallsByOutputIndex.clear()
 		this.sawTextOutputInCurrentResponse = false
 		this.sawTextDeltaInCurrentResponse = false
 		this.streamedToolCallIds.clear()
@@ -230,44 +291,6 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 		reasoningEffort: ReasoningEffortExtended | undefined,
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): any {
-		// Ensure all properties are in the required array for OpenAI's strict mode
-		// This recursively processes nested objects and array items
-		const ensureAllRequired = (schema: any): any => {
-			if (!schema || typeof schema !== "object" || schema.type !== "object") {
-				return schema
-			}
-
-			const result = { ...schema }
-
-			// OpenAI Responses API requires additionalProperties: false on all object schemas
-			// Only add if not already set to false (to avoid unnecessary mutations)
-			if (result.additionalProperties !== false) {
-				result.additionalProperties = false
-			}
-
-			if (result.properties) {
-				const allKeys = Object.keys(result.properties)
-				result.required = allKeys
-
-				// Recursively process nested objects
-				const newProps = { ...result.properties }
-				for (const key of allKeys) {
-					const prop = newProps[key]
-					if (prop.type === "object") {
-						newProps[key] = ensureAllRequired(prop)
-					} else if (prop.type === "array" && prop.items?.type === "object") {
-						newProps[key] = {
-							...prop,
-							items: ensureAllRequired(prop.items),
-						}
-					}
-				}
-				result.properties = newProps
-			}
-
-			return result
-		}
-
 		// Adds additionalProperties: false to all object schemas recursively
 		// without modifying required array. Used for MCP tools with strict: false
 		// to comply with OpenAI Responses API requirements.
@@ -387,7 +410,7 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 						description: tool.function.description,
 						parameters: isMcp
 							? ensureAdditionalPropertiesFalse(tool.function.parameters)
-							: ensureAllRequired(tool.function.parameters),
+							: this.convertToolSchemaForOpenAI(tool.function.parameters),
 						strict: !isMcp,
 					}
 				}),
@@ -1226,19 +1249,24 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 			event?.type === "response.tool_call_arguments.delta" ||
 			event?.type === "response.function_call_arguments.delta"
 		) {
-			// Some streams omit stable identity on delta events; fall back to the
-			// most recently observed tool identity from output_item events.
-			const callId = event.call_id || event.tool_call_id || event.id || this.pendingToolCallId || undefined
-			const name = event.name || event.function_name || this.pendingToolCallName || undefined
+			const identity = this.resolveToolCallIdentity(event)
+			const callId = identity?.callId
+			const name = identity?.name
 			const args = event.delta || event.arguments
 
 			// Avoid emitting incomplete tool_call_partial chunks; the downstream
 			// NativeToolCallParser needs a name to start a call.
-			if (typeof name === "string" && name.length > 0 && typeof callId === "string" && callId.length > 0) {
+			if (
+				identity &&
+				typeof name === "string" &&
+				name.length > 0 &&
+				typeof callId === "string" &&
+				callId.length > 0
+			) {
 				this.streamedToolCallIds.add(callId)
 				yield {
 					type: "tool_call_partial",
-					index: event.index ?? 0,
+					index: identity.outputIndex,
 					id: callId,
 					name,
 					arguments: args,
@@ -1262,12 +1290,7 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 			if (item) {
 				// Capture tool identity so subsequent argument deltas can be attributed.
 				if (item.type === "function_call" || item.type === "tool_call") {
-					const callId = item.call_id || item.tool_call_id || item.id
-					const name = item.name || item.function?.name || item.function_name
-					if (typeof callId === "string" && callId.length > 0) {
-						this.pendingToolCallId = callId
-						this.pendingToolCallName = typeof name === "string" ? name : undefined
-					}
+					this.rememberToolCallIdentity(event, item)
 				}
 
 				// For "added" events, yield text/reasoning content (streaming path).

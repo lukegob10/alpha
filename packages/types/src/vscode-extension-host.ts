@@ -8,6 +8,7 @@ import type { TelemetrySetting } from "./telemetry.js"
 import type { Experiments } from "./experiment.js"
 import type { ClineMessage, QueuedMessage } from "./message.js"
 import type { CurrentTaskView, LiveTaskMetadata } from "./task.js"
+import type { ManagedAgentTreeProjection } from "./managed-agent-tree.js"
 import {
 	type MarketplaceItem,
 	type MarketplaceInstalledMetadata,
@@ -22,6 +23,7 @@ import type { ModelRecord, RouterModels } from "./model.js"
 import type { OpenAiCodexRateLimitInfo } from "./providers/openai-codex-rate-limits.js"
 import type { SkillMetadata } from "./skills.js"
 import type { WorktreeIncludeStatus } from "./worktree.js"
+import type { SubagentChangeSetActionCapability, SubagentChangeSetActionResult } from "./subagent.js"
 import type {
 	CreateScheduledTaskPayload,
 	ScheduledTask,
@@ -117,8 +119,12 @@ export interface ExtensionMessage {
 		| "fileContent"
 		| "scheduledTasksUpdated"
 		| "goalSeekUpdated"
+		| "subagentChangeSetActionCapability"
+		| "subagentChangeSetActionResult"
 	text?: string
 	taskId?: string
+	subagentChangeSetActionCapability?: SubagentChangeSetActionCapability
+	subagentChangeSetActionResult?: SubagentChangeSetActionResult
 	/** For fileContent: { path, content, error? } */
 	fileContent?: { path: string; content: string | null; error?: string }
 	scheduledTasks?: ScheduledTask[]
@@ -278,6 +284,16 @@ export type ExtensionState = Pick<
 	| "dismissedUpsells"
 	| "autoApprovalEnabled"
 	| "maxConcurrentTasks"
+	| "maxConcurrentSubagents"
+	| "subagentDelegationPolicy"
+	| "subagentMaxDepth"
+	| "subagentRoleTimeoutsMs"
+	| "subagentMaxInputTokens"
+	| "subagentMaxOutputTokens"
+	| "subagentRootTokenBudget"
+	| "subagentRootCostBudget"
+	| "subagentDefaultApiConfigId"
+	| "subagentApiConfigByRole"
 	| "alwaysAllowReadOnly"
 	| "alwaysAllowReadOnlyOutsideWorkspace"
 	| "alwaysAllowWrite"
@@ -286,6 +302,7 @@ export type ExtensionState = Pick<
 	| "alwaysAllowMcp"
 	| "alwaysAllowModeSwitch"
 	| "alwaysAllowSubtasks"
+	| "alwaysAllowSubagents"
 	| "alwaysAllowFollowupQuestions"
 	| "alwaysAllowExecute"
 	| "followupAutoApproveTimeoutMs"
@@ -341,6 +358,7 @@ export type ExtensionState = Pick<
 	activeTaskId?: string
 	liveTaskIds?: string[]
 	liveTasksById?: Record<string, LiveTaskMetadata>
+	managedAgentTree?: ManagedAgentTreeProjection
 	apiConfiguration: ProviderSettings
 	uriScheme?: string
 	shouldShowAnnouncement: boolean
@@ -399,10 +417,10 @@ export type ExtensionState = Pick<
 	debug?: boolean
 
 	/**
-	 * Monotonically increasing sequence number for clineMessages state pushes.
-	 * When present, the frontend should only apply clineMessages from a state push
-	 * if its seq is greater than the last applied seq. This prevents stale state
-	 * (captured during async getStateToPostToWebview) from overwriting newer messages.
+	 * Monotonically increasing sequence number for task-view state pushes.
+	 * When present, the frontend should only apply task identity, lifecycle projection,
+	 * queue, and messages from a push whose sequence is newer than the last applied one.
+	 * The legacy field name is retained for wire compatibility.
 	 */
 	clineMessagesSeq?: number
 }
@@ -476,6 +494,14 @@ export interface WebviewMessage {
 		| "openMention"
 		| "closeTask"
 		| "cancelTask"
+		| "cancelSubagentGroup"
+		| "cancelSubagent"
+		| "steerSubagent"
+		| "respondToSubagentApproval"
+		| "openSubagentChangeSet"
+		| "requestSubagentChangeSetActionCapability"
+		| "applySubagentChangeSet"
+		| "discardSubagentChangeSet"
 		| "cancelAutoApproval"
 		| "updateVSCodeSetting"
 		| "getVSCodeSetting"
@@ -613,6 +639,11 @@ export interface WebviewMessage {
 		| "cancelGoalSeekRun"
 	text?: string
 	taskId?: string
+	groupId?: string
+	subagentTaskId?: string
+	approvalId?: string
+	changeSetId?: string
+	approved?: boolean
 	scheduledTaskId?: string
 	scheduledTask?: CreateScheduledTaskPayload
 	scheduledTaskUpdate?: UpdateScheduledTaskPayload
@@ -831,6 +862,9 @@ export interface ClineSayTool {
 		| "searchFiles"
 		| "switchMode"
 		| "newTask"
+		| "delegateTask"
+		| "spawnAgent"
+		| "agentLifecycle"
 		| "finishTask"
 		| "generateImage"
 		| "imageGenerated"
@@ -867,6 +901,13 @@ export interface ClineSayTool {
 		key: string
 		content?: string
 	}>
+	batchSearches?: Array<{
+		path: string
+		regex: string
+		filePattern?: string
+		isOutsideWorkspace?: boolean
+		content: string
+	}>
 	batchDiffs?: Array<{
 		path: string
 		changeCount: number
@@ -894,6 +935,16 @@ export interface ClineSayTool {
 	description?: string
 	// Properties for skill tool
 	skill?: string
+	// Properties for non-interactive managed-agent lifecycle status rows
+	agentAction?: "list_agents" | "wait_agent"
+	lifecycleStatus?: "running" | "completed" | "error"
+	agentCount?: number
+	mailboxUnreadCount?: number
+	eventCount?: number
+	timedOut?: boolean
+	alreadyDelivered?: boolean
+	cancelled?: boolean
+	noActiveAgents?: boolean
 }
 
 export interface ClineAskUseMcpServer {

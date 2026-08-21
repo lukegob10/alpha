@@ -30,6 +30,16 @@ import { askFollowupQuestionTool } from "../tools/AskFollowupQuestionTool"
 import { switchModeTool } from "../tools/SwitchModeTool"
 import { attemptCompletionTool, AttemptCompletionCallbacks } from "../tools/AttemptCompletionTool"
 import { newTaskTool } from "../tools/NewTaskTool"
+import { delegateTaskTool } from "../tools/DelegateTaskTool"
+import { spawnAgentTool } from "../tools/SpawnAgentTool"
+import { listAgentsTool } from "../tools/ListAgentsTool"
+import { waitAgentTool } from "../tools/WaitAgentTool"
+import { sendMessageTool } from "../tools/SendMessageTool"
+import { reportProgressTool } from "../tools/ReportProgressTool"
+import { followupTaskTool } from "../tools/FollowupTaskTool"
+import { interruptAgentTool } from "../tools/InterruptAgentTool"
+import { cancelAgentTool } from "../tools/CancelAgentTool"
+import { closeAgentTool } from "../tools/CloseAgentTool"
 import { updateTodoListTool } from "../tools/UpdateTodoListTool"
 import { runSlashCommandTool } from "../tools/RunSlashCommandTool"
 import { skillTool } from "../tools/SkillTool"
@@ -41,6 +51,53 @@ import { codebaseSearchTool } from "../tools/CodebaseSearchTool"
 
 import { formatResponse } from "../prompts/responses"
 import { sanitizeToolUseId } from "../../utils/tool-id"
+
+const isolatedToolNames = new Set([
+	"new_task",
+	"delegate_task",
+	"attempt_completion",
+	"switch_mode",
+	"ask_followup_question",
+	// A mailbox wait can block for its full timeout. Keeping it isolated prevents
+	// later controls in the same response from being delayed behind stale state.
+	"wait_agent",
+])
+
+const batchableAgentToolNames = new Set([
+	"spawn_agent",
+	"list_agents",
+	"send_message",
+	"report_progress",
+	"followup_task",
+	"interrupt_agent",
+	"cancel_agent",
+	"close_agent",
+])
+
+export function getToolBatchIsolationError(toolNames: readonly string[]): string | undefined {
+	if (toolNames.length <= 1) {
+		return undefined
+	}
+
+	const isolatedToolName = toolNames.find((toolName) => isolatedToolNames.has(toolName))
+	if (!isolatedToolName) {
+		return undefined
+	}
+
+	if (isolatedToolName === "new_task" || isolatedToolName === "delegate_task") {
+		return "new_task and delegate_task are delegation boundaries and must be called alone. No tools from this turn were executed. Retry with only the intended delegation tool."
+	}
+
+	if (isolatedToolName === "wait_agent") {
+		return "wait_agent is a blocking mailbox boundary and must be called alone. No tools from this turn were executed. Retry the wait only after any preceding lifecycle controls have completed."
+	}
+
+	return `${isolatedToolName} is a control-flow boundary and must be called alone. No tools from this turn were executed. Retry with only ${isolatedToolName}.`
+}
+
+export function isBatchableAgentToolSequence(toolNames: readonly string[]): boolean {
+	return toolNames.length > 1 && toolNames.every((toolName) => batchableAgentToolNames.has(toolName))
+}
 
 /**
  * Processes and presents assistant message content to the user interface.
@@ -102,12 +159,51 @@ export async function presentAssistantMessage(cline: Task) {
 		return
 	}
 
+	if ((block.type === "tool_use" || block.type === "mcp_tool_use") && !block.partial) {
+		const toolBlocks = cline.assistantMessageContent.filter(
+			(contentBlock) => contentBlock.type === "tool_use" || contentBlock.type === "mcp_tool_use",
+		)
+		const isolationErrorMessage = getToolBatchIsolationError(toolBlocks.map((contentBlock) => contentBlock.name))
+
+		if (isolationErrorMessage) {
+			const isolationError = formatResponse.toolError(isolationErrorMessage)
+
+			for (const toolBlock of toolBlocks) {
+				if ("id" in toolBlock && toolBlock.id) {
+					cline.pushToolResultToUserContent({
+						type: "tool_result",
+						tool_use_id: sanitizeToolUseId(toolBlock.id),
+						content: isolationError,
+						is_error: true,
+					})
+				}
+			}
+
+			cline.currentStreamingContentIndex = cline.assistantMessageContent.length
+			cline.userMessageContentReady = true
+			cline.presentAssistantMessageLocked = false
+			return
+		}
+	}
+
 	switch (block.type) {
 		case "mcp_tool_use": {
 			// Handle native MCP tool calls (from mcp_serverName_toolName dynamic tools)
 			// These are converted to the same execution path as use_mcp_tool but preserve
 			// their original name in API history
 			const mcpBlock = block as McpToolUse
+			const taskToolDenialReason = cline.getTaskToolDenialReason?.(mcpBlock.name)
+			if (taskToolDenialReason) {
+				if (mcpBlock.id) {
+					cline.pushToolResultToUserContent({
+						type: "tool_result",
+						tool_use_id: sanitizeToolUseId(mcpBlock.id),
+						content: taskToolDenialReason,
+						is_error: true,
+					})
+				}
+				break
+			}
 
 			if (cline.didRejectTool) {
 				// For native protocol, we must send a tool_result for every tool_use to avoid API errors
@@ -571,38 +667,6 @@ export async function presentAssistantMessage(cline: Task) {
 			}
 
 			if (!block.partial) {
-				const toolBlocks = cline.assistantMessageContent.filter(
-					(contentBlock) => contentBlock.type === "tool_use" || contentBlock.type === "mcp_tool_use",
-				)
-				const hasMixedNewTaskBatch =
-					toolBlocks.length > 1 &&
-					toolBlocks.some(
-						(contentBlock) => contentBlock.type === "tool_use" && contentBlock.name === "new_task",
-					)
-
-				if (hasMixedNewTaskBatch) {
-					const isolationError = formatResponse.toolError(
-						"new_task must be called by itself in a message turn. No tools from this turn were executed. Retry by calling only new_task after any required setup is complete.",
-					)
-
-					for (const toolBlock of toolBlocks) {
-						if ("id" in toolBlock && toolBlock.id) {
-							cline.pushToolResultToUserContent({
-								type: "tool_result",
-								tool_use_id: toolBlock.id,
-								content: isolationError,
-								is_error: true,
-							})
-						}
-					}
-
-					cline.currentStreamingContentIndex = cline.assistantMessageContent.length
-					cline.userMessageContentReady = true
-					break
-				}
-			}
-
-			if (!block.partial) {
 				// Check if this is a custom tool - if so, record as "custom_tool" (like MCP tools)
 				const isCustomTool = stateExperiments?.customTools && customToolRegistry.has(block.name)
 				const recordName = isCustomTool ? "custom_tool" : block.name
@@ -632,6 +696,10 @@ export async function presentAssistantMessage(cline: Task) {
 				const includedTools = rawIncludedTools?.map((tool) => resolveToolAlias(tool))
 
 				try {
+					const taskToolDenialReason = cline.getTaskToolDenialReason?.(block.name, block.params)
+					if (taskToolDenialReason) {
+						throw new Error(taskToolDenialReason)
+					}
 					const toolRequirements =
 						disabledTools?.reduce(
 							(acc: Record<string, boolean>, tool: string) => {
@@ -828,6 +896,7 @@ export async function presentAssistantMessage(cline: Task) {
 							askApproval,
 							handleError,
 							pushToolResult,
+							toolCallId: block.id,
 						})
 					})
 					break
@@ -877,6 +946,78 @@ export async function presentAssistantMessage(cline: Task) {
 							pushToolResult,
 							toolCallId: block.id,
 						})
+					})
+					break
+				case "delegate_task":
+					await delegateTaskTool.handle(cline, block as ToolUse<"delegate_task">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+						toolCallId: block.id,
+					})
+					break
+				case "spawn_agent":
+					await spawnAgentTool.handle(cline, block as ToolUse<"spawn_agent">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+						toolCallId: block.id,
+					})
+					break
+				case "list_agents":
+					await listAgentsTool.handle(cline, block as ToolUse<"list_agents">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "wait_agent":
+					await waitAgentTool.handle(cline, block as ToolUse<"wait_agent">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "send_message":
+					await sendMessageTool.handle(cline, block as ToolUse<"send_message">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "report_progress":
+					await reportProgressTool.handle(cline, block as ToolUse<"report_progress">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "followup_task":
+					await followupTaskTool.handle(cline, block as ToolUse<"followup_task">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "interrupt_agent":
+					await interruptAgentTool.handle(cline, block as ToolUse<"interrupt_agent">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "cancel_agent":
+					await cancelAgentTool.handle(cline, block as ToolUse<"cancel_agent">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "close_agent":
+					await closeAgentTool.handle(cline, block as ToolUse<"close_agent">, {
+						askApproval,
+						handleError,
+						pushToolResult,
 					})
 					break
 				case "attempt_completion": {
@@ -1035,7 +1176,18 @@ export async function presentAssistantMessage(cline: Task) {
 		if (cline.currentStreamingContentIndex < cline.assistantMessageContent.length) {
 			// There are already more content blocks to stream, so we'll call
 			// this function ourselves.
-			presentAssistantMessage(cline)
+			const toolNames = cline.assistantMessageContent
+				.filter((contentBlock) => contentBlock.type === "tool_use" || contentBlock.type === "mcp_tool_use")
+				.map((contentBlock) => contentBlock.name)
+
+			if (isBatchableAgentToolSequence(toolNames)) {
+				// Keep the top-level presentation promise alive through the complete
+				// lifecycle batch. The controls still execute serially in provider order,
+				// so approvals, authority checks, and state transitions cannot race.
+				await presentAssistantMessage(cline)
+			} else {
+				presentAssistantMessage(cline)
+			}
 			return
 		} else {
 			// CRITICAL FIX: If we're out of bounds and the stream is complete, set userMessageContentReady

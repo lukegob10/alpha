@@ -1,6 +1,31 @@
 import { McpHub } from "../../../services/mcp/McpHub"
 
-export function getCapabilitiesSection(cwd: string, mcpHub?: McpHub): string {
+export function getCapabilitiesSection(
+	cwd: string,
+	mcpHub?: McpHub,
+	subagentRole?: "explore" | "review" | "worker",
+	subagentCanDelegate = false,
+	subagentDelegationPolicy?: "explicit-only" | "proactive",
+): string {
+	if (subagentRole) {
+		const roleCapabilities =
+			subagentRole === "worker"
+				? "You may inspect repository evidence, edit only paths in the approved write scope, and run targeted local verification commands subject to the child approval policy."
+				: "You may inspect repository evidence using read, list, and search operations. This is a read-only child task."
+		const delegationCapability = subagentCanDelegate
+			? `
+- You may launch bounded managed descendants and control only your retained descendant subtree. The frozen ${subagentDelegationPolicy ?? "effective"} delegation policy and ancestry/capacity/budget limits govern every launch.`
+			: ""
+
+		return `====
+
+CAPABILITIES
+
+- ${roleCapabilities}${delegationCapability}
+- The current workspace directory is '${cwd}'. A recursive workspace file list may be supplied in environment_details. Stay within this workspace and the objective's evidence scope.
+- Complete the bounded objective from available repository evidence, then report through attempt_completion.`
+	}
+
 	return `====
 
 CAPABILITIES

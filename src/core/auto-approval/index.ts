@@ -20,6 +20,7 @@ export type AutoApprovalState =
 	| "alwaysAllowMcp"
 	| "alwaysAllowModeSwitch"
 	| "alwaysAllowSubtasks"
+	| "alwaysAllowSubagents"
 	| "alwaysAllowExecute"
 	| "alwaysAllowFollowupQuestions"
 
@@ -163,6 +164,28 @@ export async function checkAutoApproval({
 
 		if (["newTask", "finishTask"].includes(tool?.tool)) {
 			return { decision: "approve" }
+		}
+
+		const toolName: string = tool.tool
+		const subagentTool = tool as ClineSayTool & {
+			agent?: { role?: string }
+			agents?: Array<{ role?: string }>
+		}
+		if (toolName === "delegateTask" || toolName === "spawnAgent") {
+			const agents =
+				toolName === "spawnAgent"
+					? subagentTool.agent
+						? [subagentTool.agent]
+						: []
+					: Array.isArray(subagentTool.agents)
+						? subagentTool.agents
+						: []
+			const hasWorker = agents.some((agent) => agent.role === "worker")
+			return state.alwaysAllowSubagents === true &&
+				state.alwaysAllowReadOnly === true &&
+				(!hasWorker || state.alwaysAllowWrite === true)
+				? { decision: "approve" }
+				: { decision: "ask" }
 		}
 
 		const isOutsideWorkspace = !!tool.isOutsideWorkspace

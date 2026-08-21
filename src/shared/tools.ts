@@ -1,6 +1,21 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 
-import type { ClineAsk, ToolProgressStatus, ToolGroup, ToolName, GenerateImageParams } from "@alpha-code/types"
+import type {
+	ClineAsk,
+	ToolProgressStatus,
+	ToolGroup,
+	ToolName,
+	GenerateImageParams,
+	ListAgentsParams,
+	WaitAgentParams,
+	SendMessageParams,
+	ReportProgressParams,
+	FollowupTaskParams,
+	InterruptAgentParams,
+	CancelAgentParams,
+	CloseAgentParams,
+	SubagentForkTurns,
+} from "@alpha-code/types"
 
 export type ToolResponse = string | Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam>
 
@@ -40,6 +55,7 @@ export const toolParamNames = [
 	"uri",
 	"question",
 	"result",
+	"outcome",
 	"diff",
 	"mode_slug",
 	"reason",
@@ -81,6 +97,8 @@ export const toolParamNames = [
 	// read_file legacy format parameter (backward compatibility)
 	"files",
 	"line_ranges",
+	// search_files bounded batch parameter
+	"queries",
 	// github_api parameters
 	"owner",
 	"repo",
@@ -92,6 +110,16 @@ export const toolParamNames = [
 	"body",
 	"sha",
 	"merge_method",
+	"tasks",
+	"task_name",
+	"fork_turns",
+	"objective",
+	"agent_kind",
+	"write_scope",
+	"expected_output",
+	"path_prefix",
+	"timeout_ms",
+	"target",
 ] as const
 
 export type ToolParamName = (typeof toolParamNames)[number]
@@ -104,7 +132,7 @@ export type NativeToolArgs = {
 	access_mcp_resource: { server_name: string; uri: string }
 	read_file: import("@alpha-code/types").ReadFileToolParams
 	read_command_output: { artifact_id: string; search?: string; offset?: number; limit?: number }
-	attempt_completion: { result: string }
+	attempt_completion: { result: string; outcome?: "completed" | "blocked" }
 	execute_command: { command: string; cwd?: string; timeout?: number | null }
 	apply_diff: { path: string; diff: string }
 	edit: { file_path: string; old_string: string; new_string: string; replace_all?: boolean }
@@ -115,28 +143,41 @@ export type NativeToolArgs = {
 	list_files: { path: string; recursive?: boolean }
 	new_task: { mode: string; message: string; todos?: string }
 	delegate_task: {
-		tasks: Array<{
-			objective: string
-			agent_kind?: "general" | "explore" | "review"
-			expected_output?: string[]
-			allowed_paths?: string[]
-			context_refs?: string[]
-			skills?: string[]
-			model_route?: "fast" | "balanced" | "deep" | "user-configured"
-			provider?: string
-			model?: string
-			reasoning?: string
-			execute?: boolean
-			mutate?: boolean
-			network?: boolean
-			external_side_effects?: boolean
-			require_approval?: boolean
-			max_input_tokens?: number
-			max_output_tokens?: number
-			timeout_ms?: number
-			dependencies?: string[]
-		}>
+		tasks: Array<
+			| { objective: string; agent_kind: "explore" | "review"; expected_output?: string[] }
+			| {
+					objective: string
+					agent_kind: "worker"
+					write_scope: string[]
+					expected_output?: string[]
+			  }
+		>
 	}
+	spawn_agent:
+		| {
+				task_name: string
+				fork_turns: SubagentForkTurns
+				objective: string
+				agent_kind: "explore" | "review"
+				write_scope: null
+				expected_output: string[] | null
+		  }
+		| {
+				task_name: string
+				fork_turns: SubagentForkTurns
+				objective: string
+				agent_kind: "worker"
+				write_scope: string[]
+				expected_output: string[] | null
+		  }
+	list_agents: ListAgentsParams
+	wait_agent: WaitAgentParams
+	send_message: SendMessageParams
+	report_progress: ReportProgressParams
+	followup_task: FollowupTaskParams
+	interrupt_agent: InterruptAgentParams
+	cancel_agent: CancelAgentParams
+	close_agent: CloseAgentParams
 	ask_followup_question: {
 		question: string
 		follow_up: Array<{ text: string; mode?: string }>
@@ -145,7 +186,15 @@ export type NativeToolArgs = {
 	generate_image: GenerateImageParams
 	run_slash_command: { command: string; args?: string }
 	skill: { skill: string; args?: string }
-	search_files: { path: string; regex: string; file_pattern?: string | null }
+	search_files:
+		| { path: string; regex: string; file_pattern?: string | null }
+		| {
+				queries: Array<{
+					path: string
+					regex: string
+					file_pattern?: string | null
+				}>
+		  }
 	switch_mode: { mode_slug: string; reason: string }
 	update_todo_list: { todos: string }
 	use_mcp_tool: { server_name: string; tool_name: string; arguments?: Record<string, unknown> }
@@ -277,7 +326,7 @@ export interface CodebaseSearchToolUse extends ToolUse<"codebase_search"> {
 
 export interface SearchFilesToolUse extends ToolUse<"search_files"> {
 	name: "search_files"
-	params: Partial<Pick<Record<ToolParamName, string>, "path" | "regex" | "file_pattern">>
+	params: Partial<Pick<Record<ToolParamName, string>, "path" | "regex" | "file_pattern" | "queries">>
 }
 
 export interface ListFilesToolUse extends ToolUse<"list_files"> {
@@ -302,7 +351,7 @@ export interface AskFollowupQuestionToolUse extends ToolUse<"ask_followup_questi
 
 export interface AttemptCompletionToolUse extends ToolUse<"attempt_completion"> {
 	name: "attempt_completion"
-	params: Partial<Pick<Record<ToolParamName, string>, "result">>
+	params: Partial<Pick<Record<ToolParamName, string>, "result" | "outcome">>
 }
 
 export interface SwitchModeToolUse extends ToolUse<"switch_mode"> {
@@ -378,6 +427,15 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	switch_mode: "switch modes",
 	new_task: "create new task",
 	delegate_task: "delegate bounded tasks",
+	spawn_agent: "spawn a bounded agent",
+	list_agents: "list agents",
+	wait_agent: "wait for agent updates",
+	send_message: "message an agent",
+	report_progress: "report progress to the parent agent",
+	followup_task: "follow up with an agent",
+	interrupt_agent: "interrupt an agent",
+	cancel_agent: "cancel an agent",
+	close_agent: "close an agent",
 	codebase_search: "codebase search",
 	update_todo_list: "update todo list",
 	run_slash_command: "run slash command",
@@ -408,6 +466,20 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 	modes: {
 		tools: ["switch_mode", "new_task"],
 		alwaysAvailable: true,
+	},
+	agents: {
+		tools: [
+			"delegate_task",
+			"spawn_agent",
+			"list_agents",
+			"wait_agent",
+			"send_message",
+			"report_progress",
+			"followup_task",
+			"interrupt_agent",
+			"cancel_agent",
+			"close_agent",
+		],
 	},
 }
 

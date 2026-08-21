@@ -132,6 +132,23 @@ describe("TaskItem", () => {
 		expect(taskItem).toHaveClass("hover:text-vscode-foreground")
 	})
 
+	it("lets a containing task group own the shared card surface", () => {
+		render(
+			<TaskItem
+				item={mockTask}
+				variant="compact"
+				contained
+				isSelected={false}
+				onToggleSelection={vi.fn()}
+				isSelectionMode={false}
+			/>,
+		)
+
+		const taskItem = screen.getByTestId("task-item-1")
+		expect(taskItem).toHaveAttribute("data-contained", "true")
+		expect(taskItem).not.toHaveClass("surface-raised")
+	})
+
 	it("opens the task when the row is clicked", () => {
 		render(
 			<TaskItem

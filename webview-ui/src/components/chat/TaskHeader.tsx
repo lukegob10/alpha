@@ -1,6 +1,14 @@
 import { memo, useRef, useState, useMemo } from "react"
 import { useTranslation } from "react-i18next"
-import { ChevronUp, ChevronDown, HardDriveDownload, HardDriveUpload, FoldVertical, ArrowLeft } from "lucide-react"
+import {
+	ChevronUp,
+	ChevronDown,
+	HardDriveDownload,
+	HardDriveUpload,
+	FoldVertical,
+	ArrowLeft,
+	CircleAlert,
+} from "lucide-react"
 import prettyBytes from "pretty-bytes"
 
 import type { ClineMessage } from "@alpha-code/types"
@@ -32,6 +40,7 @@ export interface TaskHeaderProps {
 	aggregatedCost?: number
 	hasSubtasks?: boolean
 	parentTaskId?: string
+	isManagedSubagent?: boolean
 	costBreakdown?: string
 	contextTokens: number
 	buttonsDisabled: boolean
@@ -50,6 +59,7 @@ const TaskHeader = ({
 	aggregatedCost,
 	hasSubtasks,
 	parentTaskId,
+	isManagedSubagent,
 	costBreakdown,
 	contextTokens,
 	buttonsDisabled,
@@ -61,6 +71,37 @@ const TaskHeader = ({
 	const { apiConfiguration, currentTaskItem } = useExtensionState()
 	const { id: modelId, info: model } = useSelectedModel(apiConfiguration)
 	const [isTaskExpanded, setIsTaskExpanded] = useState(false)
+	const subagentModelRoute = isManagedSubagent ? currentTaskItem?.subagentModelRoute : undefined
+	const isWorkerSubagent = isManagedSubagent && currentTaskItem?.subagentRole === "worker"
+	const subagentRoleLabel =
+		currentTaskItem?.subagentRole === "explore"
+			? "Explorer"
+			: currentTaskItem?.subagentRole === "review"
+				? "Reviewer"
+				: currentTaskItem?.subagentRole === "worker"
+					? "Worker"
+					: "Sub-agent"
+	const subagentIdentityLabel = currentTaskItem?.subagentNickname
+		? `${currentTaskItem.subagentNickname} · ${subagentRoleLabel}`
+		: subagentRoleLabel
+	const workerLifecycleLabel = currentTaskItem?.subagentChangeSet
+		? currentTaskItem.subagentChangeSet.status === "pending_review" ||
+			currentTaskItem.subagentChangeSet.status === "conflicted"
+			? "quarantined change set"
+			: currentTaskItem.subagentChangeSet.status === "applied"
+				? "applied change set"
+				: currentTaskItem.subagentChangeSet.status === "discarded"
+					? "discarded change set"
+					: "captured worker result"
+		: "isolated worktree"
+	const subagentModelLabel = subagentModelRoute
+		? [
+				subagentModelRoute.profileName,
+				[subagentModelRoute.provider, subagentModelRoute.modelId].filter(Boolean).join(" · "),
+			]
+				.filter(Boolean)
+				.join(" · ")
+		: undefined
 
 	const textContainerRef = useRef<HTMLDivElement>(null)
 	const textRef = useRef<HTMLDivElement>(null)
@@ -115,8 +156,32 @@ const TaskHeader = ({
 						onClick={handleBackToParent}
 						className="flex items-center gap-1.5 text-xs text-vscode-descriptionForeground hover:text-vscode-foreground">
 						<ArrowLeft className="size-3" />
-						{t("chat:task.backToParentTask")}
+						{isManagedSubagent ? "Return to parent" : t("chat:task.backToParentTask")}
 					</Button>
+					{isManagedSubagent && (
+						<div className="mt-1 space-y-1 px-2 text-xs text-vscode-descriptionForeground">
+							<div className="font-medium text-vscode-foreground">{subagentIdentityLabel}</div>
+							<div>
+								{isWorkerSubagent
+									? `Parent-managed editing worker · ${workerLifecycleLabel}`
+									: "Parent-managed read-only sub-agent"}
+							</div>
+							{isWorkerSubagent && currentTaskItem?.subagentWriteScope && (
+								<div>Write scope: {currentTaskItem.subagentWriteScope.join(", ")}</div>
+							)}
+							{subagentModelLabel && <div>{subagentModelLabel}</div>}
+							{subagentModelRoute?.resolution === "fallback" && (
+								<div
+									className="flex items-start gap-1 text-vscode-editorWarning-foreground"
+									role="status">
+									<CircleAlert className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
+									<span>
+										Using parent profile because the configured sub-agent profile is unavailable.
+									</span>
+								</div>
+							)}
+						</div>
+					)}
 				</div>
 			)}
 			<div

@@ -18,8 +18,6 @@ import { isLegacyReadFileParams, type ClineSayTool } from "@alpha-code/types"
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
-import { isPathOutsideWorkspace } from "../../utils/pathUtils"
-import { getReadablePath } from "../../utils/path"
 import { extractTextFromFile, addLineNumbers, getSupportedBinaryFormats } from "../../integrations/misc/extract-text"
 import { readWithIndentation, readWithSlice } from "../../integrations/misc/indentation-reader"
 import { DEFAULT_LINE_LIMIT } from "../prompts/tools/native-tools/read_file"
@@ -34,6 +32,7 @@ import {
 	ImageMemoryTracker,
 } from "./helpers/imageHelpers"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { getTaskDisplayPath, getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -436,13 +435,19 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 			const batchFiles = filesToApprove.map((fileResult) => {
 				const relPath = fileResult.path
 				const fullPath = path.resolve(task.cwd, relPath)
-				const isOutsideWorkspace = isPathOutsideWorkspace(fullPath)
-				const readablePath = getReadablePath(task.cwd, relPath)
+				const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, fullPath)
+				const readablePath = getTaskReadablePath(task, relPath)
 
 				const lineSnippet = this.getLineSnippet(fileResult.entry!)
 				const key = `${readablePath}${lineSnippet ? ` (${lineSnippet})` : ""}`
 
-				return { path: readablePath, lineSnippet, isOutsideWorkspace, key, content: fullPath }
+				return {
+					path: readablePath,
+					lineSnippet,
+					isOutsideWorkspace,
+					key,
+					content: getTaskDisplayPath(task, fullPath),
+				}
 			})
 
 			const completeMessage = JSON.stringify({ tool: "readFile", batchFiles } satisfies ClineSayTool)
@@ -501,16 +506,16 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 			const fileResult = filesToApprove[0]
 			const relPath = fileResult.path
 			const fullPath = path.resolve(task.cwd, relPath)
-			const isOutsideWorkspace = isPathOutsideWorkspace(fullPath)
+			const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, fullPath)
 			const lineSnippet = this.getLineSnippet(fileResult.entry!)
 
 			const startLine = this.getStartLine(fileResult.entry!)
 
 			const completeMessage = JSON.stringify({
 				tool: "readFile",
-				path: getReadablePath(task.cwd, relPath),
+				path: getTaskReadablePath(task, relPath),
 				isOutsideWorkspace,
-				content: fullPath,
+				content: getTaskDisplayPath(task, fullPath),
 				reason: lineSnippet,
 				startLine,
 			} satisfies ClineSayTool)
@@ -650,8 +655,8 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		const fullPath = filePath ? path.resolve(task.cwd, filePath) : ""
 		const sharedMessageProps: ClineSayTool = {
 			tool: "readFile",
-			path: getReadablePath(task.cwd, filePath),
-			isOutsideWorkspace: filePath ? isPathOutsideWorkspace(fullPath) : false,
+			path: getTaskReadablePath(task, filePath),
+			isOutsideWorkspace: filePath ? isTaskPathOutsideWorkspace(task, fullPath) : false,
 		}
 		const partialMessage = JSON.stringify({
 			...sharedMessageProps,
@@ -660,16 +665,10 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		await task.ask("tool", partialMessage, block.partial).catch(() => {})
 	}
 
-	/**
-	 * Execute legacy multi-file format for backward compatibility.
-	 * This handles the old format: { files: [{ path: string, lineRanges?: [...] }] }
-	 */
+	/** Execute the bounded multi-file format. */
 	private async executeLegacy(fileEntries: FileEntry[], task: Task, callbacks: ToolCallbacks): Promise<void> {
 		const { pushToolResult } = callbacks
 		const modelInfo = task.api.getModel().info
-
-		// Temporary indicator for testing legacy format detection
-		console.warn("[read_file] Legacy format detected - using backward compatibility path")
 
 		if (!fileEntries || fileEntries.length === 0) {
 			task.consecutiveMistakeCount++
@@ -698,7 +697,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 			}
 
 			// Request approval for single file
-			const isOutsideWorkspace = isPathOutsideWorkspace(fullPath)
+			const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, fullPath)
 			let lineSnippet = ""
 			if (entry.lineRanges && entry.lineRanges.length > 0) {
 				const ranges = entry.lineRanges.map((range: LineRange) => `(lines ${range.start}-${range.end})`)
@@ -707,9 +706,9 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 
 			const completeMessage = JSON.stringify({
 				tool: "readFile",
-				path: getReadablePath(task.cwd, relPath),
+				path: getTaskReadablePath(task, relPath),
 				isOutsideWorkspace,
-				content: fullPath,
+				content: getTaskDisplayPath(task, fullPath),
 				reason: lineSnippet || undefined,
 			} satisfies ClineSayTool)
 

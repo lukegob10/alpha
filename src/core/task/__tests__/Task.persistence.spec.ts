@@ -414,6 +414,53 @@ describe("Task persistence", () => {
 			// But the content should be the same
 			expect(callArgs.messages).toEqual(task.clineMessages)
 		})
+
+		it("serializes concurrent writes so a terminal transcript cannot be overwritten by a stale save", async () => {
+			let releaseFirst!: () => void
+			const firstWrite = new Promise<void>((resolve) => (releaseFirst = resolve))
+			let activeWrites = 0
+			let peakWrites = 0
+
+			mockSaveTaskMessages
+				.mockImplementationOnce(async () => {
+					activeWrites++
+					peakWrites = Math.max(peakWrites, activeWrites)
+					await firstWrite
+					activeWrites--
+				})
+				.mockImplementationOnce(async () => {
+					activeWrites++
+					peakWrites = Math.max(peakWrites, activeWrites)
+					activeWrites--
+				})
+
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			task.clineMessages.push({ type: "say", say: "text", text: "working", ts: 1 })
+
+			const staleSave = (task as Record<string, any>).saveClineMessages()
+			await vi.waitFor(() => expect(mockSaveTaskMessages).toHaveBeenCalledTimes(1))
+
+			task.clineMessages.push({
+				type: "say",
+				say: "completion_result",
+				text: "terminal report",
+				ts: 2,
+			})
+			const terminalSave = (task as Record<string, any>).saveClineMessages()
+			expect(mockSaveTaskMessages).toHaveBeenCalledTimes(1)
+
+			releaseFirst()
+			await Promise.all([staleSave, terminalSave])
+
+			expect(peakWrites).toBe(1)
+			expect(mockSaveTaskMessages).toHaveBeenCalledTimes(2)
+			expect(mockSaveTaskMessages.mock.calls[1][0].messages).toEqual(task.clineMessages)
+		})
 	})
 
 	// ── flushPendingToolResultsToHistory — save failure/success ───────────

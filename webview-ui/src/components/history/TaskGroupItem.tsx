@@ -1,5 +1,6 @@
 import { memo } from "react"
 import { cn } from "@/lib/utils"
+import { useAppTranslation } from "@/i18n/TranslationContext"
 import type { TaskGroup } from "./types"
 import { countAllSubtasks } from "./types"
 import TaskItem from "./TaskItem"
@@ -45,15 +46,19 @@ const TaskGroupItem = ({
 	onToggleSubtaskExpand,
 	className,
 }: TaskGroupItemProps) => {
+	const { t } = useAppTranslation()
 	const { parent, subtasks, isExpanded } = group
 	const hasSubtasks = subtasks.length > 0
 	const totalSubtaskCount = hasSubtasks ? countAllSubtasks(subtasks) : 0
+	const subtaskListId = `task-group-${parent.id}-subtasks`
 
 	return (
 		<div
 			data-testid={`task-group-${parent.id}`}
+			data-state={hasSubtasks && isExpanded ? "expanded" : "collapsed"}
 			className={cn(
-				"overflow-hidden rounded-2xl border border-transparent bg-[color-mix(in_srgb,var(--surface-raised)_72%,transparent)]",
+				"surface-raised overflow-hidden rounded-2xl transition-[border-color,box-shadow] duration-150 hover:border-[var(--border-accent)] hover:shadow-[var(--shadow-accent)]",
+				hasSubtasks && isExpanded && "border-[var(--border-accent)] shadow-[var(--shadow-accent)]",
 				className,
 			)}>
 			{/* Parent task */}
@@ -66,21 +71,28 @@ const TaskGroupItem = ({
 				onToggleSelection={onToggleSelection}
 				onDelete={onDelete}
 				hasSubtasks={hasSubtasks}
+				contained
 			/>
 
 			{/* Subtask collapsible row — shows total recursive count */}
 			{hasSubtasks && (
-				<SubtaskCollapsibleRow count={totalSubtaskCount} isExpanded={isExpanded} onToggle={onToggleExpand} />
+				<SubtaskCollapsibleRow
+					count={totalSubtaskCount}
+					isExpanded={isExpanded}
+					onToggle={onToggleExpand}
+					controlsId={subtaskListId}
+				/>
 			)}
 
 			{/* Expanded subtask tree */}
 			{hasSubtasks && (
 				<div
+					id={subtaskListId}
 					data-testid="subtask-list"
-					className={cn(
-						"overflow-clip transition-all duration-500",
-						isExpanded ? "max-h-[2000px] pb-2" : "max-h-0",
-					)}>
+					role="group"
+					aria-label={t("history:subtasks", { count: totalSubtaskCount })}
+					hidden={!isExpanded}
+					className="overflow-hidden border-t border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--surface-sunken)_88%,transparent)] py-1.5">
 					{subtasks.map((node) => (
 						<SubtaskRow key={node.item.id} node={node} depth={1} onToggleExpand={onToggleSubtaskExpand} />
 					))}

@@ -321,8 +321,11 @@ export function useScrollLifecycle({
 	// -----------------------------------------------------------------------
 
 	const followOutputCallback = useCallback((): "auto" | false => {
-		return scrollPhase === "USER_BROWSING_HISTORY" ? false : "auto"
-	}, [scrollPhase])
+		// User intent updates the phase ref synchronously, before React commits the
+		// corresponding state render. Virtuoso can ask whether it should follow in
+		// that gap, so reading state here could briefly re-pin escaped history.
+		return scrollPhaseRef.current === "USER_BROWSING_HISTORY" ? false : "auto"
+	}, [])
 
 	// -----------------------------------------------------------------------
 	// Virtuoso callback: atBottomStateChange

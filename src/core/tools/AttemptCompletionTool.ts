@@ -14,6 +14,7 @@ import { BaseTool, ToolCallbacks } from "./BaseTool"
 interface AttemptCompletionParams {
 	result: string
 	command?: string
+	outcome?: "completed" | "blocked"
 }
 
 export interface AttemptCompletionCallbacks extends ToolCallbacks {
@@ -26,6 +27,7 @@ export interface AttemptCompletionCallbacks extends ToolCallbacks {
  */
 interface DelegationProvider {
 	getTaskWithId(id: string): Promise<{ historyItem: HistoryItem }>
+	getParentCompletionDecision?(task: Task): Promise<{ allowed: boolean; message?: string }>
 	reopenParentFromDelegation(params: {
 		parentTaskId: string
 		childTaskId: string
@@ -37,7 +39,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 	readonly name = "attempt_completion" as const
 
 	async execute(params: AttemptCompletionParams, task: Task, callbacks: AttemptCompletionCallbacks): Promise<void> {
-		const { result } = params
+		const { result, outcome } = params
 		const { handleError, pushToolResult, askFinishSubTaskApproval } = callbacks
 
 		// Prevent attempt_completion if any tool failed in the current turn
@@ -68,6 +70,17 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			return
 		}
 
+		if (task.taskKind === "subagent" && task.subagentRole === "worker" && task.hasActiveCommandExecutions()) {
+			const errorMsg =
+				"Cannot complete an editing worker while a command is still running. Wait for its terminal result before reporting verification."
+			task.consecutiveMistakeCount++
+			task.recordToolError("attempt_completion")
+			pushToolResult(formatResponse.toolError(errorMsg))
+			return
+		}
+
+		if (this.rejectCompletionWithUndeliveredSpawnedResult(task, pushToolResult)) return
+
 		try {
 			if (!result) {
 				task.consecutiveMistakeCount++
@@ -75,10 +88,23 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				pushToolResult(await task.sayAndCreateMissingParamError("attempt_completion", "result"))
 				return
 			}
+			if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) return
 
 			task.consecutiveMistakeCount = 0
 
 			await task.say("completion_result", result, undefined, false)
+
+			if (task.taskKind === "subagent") {
+				// task.say persists the completion report and may yield long enough for a
+				// nested child to finish. Recheck at the final transition boundary so the
+				// immediate parent's terminal result cannot be stranded.
+				if (this.rejectCompletionWithUndeliveredSpawnedResult(task, pushToolResult)) return
+				if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) return
+				task.subagentCompletionOutcome = outcome === "blocked" ? "blocked" : "completed"
+				pushToolResult("")
+				this.emitTaskCompleted(task)
+				return
+			}
 
 			// Check for subtask using parentTaskId (metadata-driven delegation)
 			if (task.parentTaskId) {
@@ -132,6 +158,11 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			const { response, text, images } = await task.ask("completion_result", "", false)
 
 			if (response === "yesButtonClicked") {
+				// A background child can finish while the completion prompt is open.
+				// Recheck immediately before the synchronous completion transition so
+				// its report cannot be stranded by that race.
+				if (this.rejectCompletionWithUndeliveredSpawnedResult(task, pushToolResult)) return
+				if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) return
 				this.emitTaskCompleted(task)
 				return
 			}
@@ -144,6 +175,54 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 		} catch (error) {
 			await handleError("inspecting site", error as Error)
 		}
+	}
+
+	private async rejectCompletionWithPendingParentVerification(
+		task: Task,
+		pushToolResult: (result: string) => void,
+	): Promise<boolean> {
+		const provider = task.providerRef?.deref() as DelegationProvider | undefined
+
+		let decision: { allowed: boolean; message?: string }
+		if (!provider?.getParentCompletionDecision) {
+			decision = {
+				allowed: false,
+				message:
+					"Cannot verify Worker completion obligations because the durable completion decision is unavailable.",
+			}
+		} else {
+			try {
+				decision = await provider.getParentCompletionDecision(task)
+			} catch (error) {
+				decision = {
+					allowed: false,
+					message: `Cannot verify Worker completion obligations right now: ${error instanceof Error ? error.message : String(error)}`,
+				}
+			}
+		}
+		if (decision.allowed) return false
+
+		const errorMsg =
+			decision.message ??
+			"Cannot complete while applied Worker changes still require parent review and verification."
+		task.consecutiveMistakeCount++
+		task.recordToolError("attempt_completion")
+		pushToolResult(formatResponse.toolError(errorMsg))
+		return true
+	}
+
+	private rejectCompletionWithUndeliveredSpawnedResult(
+		task: Task,
+		pushToolResult: (result: string) => void,
+	): boolean {
+		if (!task.hasUndeliveredSpawnedSubagentResults?.()) return false
+
+		const errorMsg =
+			"A background sub-agent finished during this task, but its report has not been reviewed yet. Continue the task once more; the report will be included in the next model request."
+		task.consecutiveMistakeCount++
+		task.recordToolError("attempt_completion")
+		pushToolResult(formatResponse.toolError(errorMsg))
+		return true
 	}
 
 	/**

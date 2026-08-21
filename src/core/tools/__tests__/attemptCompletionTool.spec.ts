@@ -50,6 +50,7 @@ describe("attemptCompletionTool", () => {
 	let mockToolDescription: ReturnType<typeof vi.fn>
 	let mockAskFinishSubTaskApproval: ReturnType<typeof vi.fn>
 	let mockGetConfiguration: ReturnType<typeof vi.fn>
+	let mockGetParentCompletionDecision: ReturnType<typeof vi.fn>
 
 	beforeEach(() => {
 		mockCaptureTaskCompleted.mockReset()
@@ -66,6 +67,7 @@ describe("attemptCompletionTool", () => {
 				return defaultValue
 			}),
 		}))
+		mockGetParentCompletionDecision = vi.fn().mockResolvedValue({ allowed: true })
 
 		// Setup vscode mock
 		vi.mocked(vscode.workspace.getConfiguration).mockImplementation(mockGetConfiguration)
@@ -81,10 +83,128 @@ describe("attemptCompletionTool", () => {
 			emit: vi.fn(),
 			getTokenUsage: vi.fn().mockReturnValue({}),
 			toolUsage: {},
+			taskKind: "primary",
+			hasActiveCommandExecutions: vi.fn().mockReturnValue(false),
+			hasUndeliveredSpawnedSubagentResults: vi.fn().mockReturnValue(false),
+			providerRef: {
+				deref: () => ({ getParentCompletionDecision: mockGetParentCompletionDecision }),
+			} as any,
 			taskId: "task_1",
 			apiConfiguration: { apiProvider: "test" } as any,
 			api: { getModel: vi.fn().mockReturnValue({ id: "test-model", info: {} }) } as any,
 		}
+	})
+
+	it("prevents an editing worker from completing while a command is active", async () => {
+		;(mockTask as any).taskKind = "subagent"
+		;(mockTask as any).subagentRole = "worker"
+		mockTask.hasActiveCommandExecutions = vi.fn().mockReturnValue(true)
+		const callbacks: AttemptCompletionCallbacks = {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+		}
+		await attemptCompletionTool.execute({ result: "Verification passed." }, mockTask as Task, callbacks)
+
+		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("command is still running"))
+		expect(mockTask.say).not.toHaveBeenCalledWith("completion_result", expect.anything(), undefined, false)
+		expect(mockTask.emit).not.toHaveBeenCalledWith(RooCodeEventName.TaskCompleted, expect.anything())
+	})
+
+	it("defers completion until a finished background report is delivered", async () => {
+		mockTask.hasUndeliveredSpawnedSubagentResults = vi.fn().mockReturnValue(true)
+		const callbacks: AttemptCompletionCallbacks = {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+		}
+
+		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
+
+		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("background sub-agent"))
+		expect(mockTask.say).not.toHaveBeenCalledWith("completion_result", expect.anything(), undefined, false)
+		expect(mockTask.markCompleted).not.toHaveBeenCalled()
+	})
+
+	it("rechecks for a background result that arrives while completion approval is open", async () => {
+		mockTask.hasUndeliveredSpawnedSubagentResults = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true)
+		const callbacks: AttemptCompletionCallbacks = {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+		}
+
+		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
+
+		expect(mockTask.ask).toHaveBeenCalledWith("completion_result", "", false)
+		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("background sub-agent"))
+		expect(mockTask.markCompleted).not.toHaveBeenCalled()
+	})
+
+	it.each(["pending", "failed"])(
+		"rejects attempt_completion at the production boundary while verification is %s",
+		async (status) => {
+			mockGetParentCompletionDecision.mockResolvedValue({
+				allowed: false,
+				message: `Worker verification is ${status}.`,
+			})
+			const callbacks: AttemptCompletionCallbacks = {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+				toolDescription: mockToolDescription,
+			}
+
+			await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
+
+			expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining(status))
+			expect(mockTask.say).not.toHaveBeenCalledWith("completion_result", expect.anything(), undefined, false)
+			expect(mockTask.ask).not.toHaveBeenCalled()
+			expect(mockTask.markCompleted).not.toHaveBeenCalled()
+		},
+	)
+
+	it("rechecks verification immediately before the terminal transition", async () => {
+		mockGetParentCompletionDecision
+			.mockResolvedValueOnce({ allowed: true })
+			.mockResolvedValueOnce({ allowed: false, message: "A Worker verification obligation became pending." })
+		const callbacks: AttemptCompletionCallbacks = {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+		}
+
+		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
+
+		expect(mockTask.say).toHaveBeenCalledWith("completion_result", "Task complete.", undefined, false)
+		expect(mockTask.ask).toHaveBeenCalledWith("completion_result", "", false)
+		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("became pending"))
+		expect(mockTask.markCompleted).not.toHaveBeenCalled()
+	})
+
+	it("fails closed when the durable completion decision cannot be loaded", async () => {
+		mockGetParentCompletionDecision.mockRejectedValue(new Error("ledger unavailable"))
+		const callbacks: AttemptCompletionCallbacks = {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+		}
+
+		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
+
+		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("ledger unavailable"))
+		expect(mockTask.markCompleted).not.toHaveBeenCalled()
 	})
 
 	describe("todo list validation", () => {
@@ -485,6 +605,79 @@ describe("attemptCompletionTool", () => {
 		})
 
 		describe("completion lifecycle", () => {
+			it("completes a managed sub-agent without legacy parent reopen or user approval", async () => {
+				const block: AttemptCompletionToolUse = {
+					type: "tool_use",
+					name: "attempt_completion",
+					params: { result: "Read-only findings" },
+					nativeArgs: { result: "Read-only findings" },
+					partial: false,
+				}
+				;(mockTask as any).taskKind = "subagent"
+				;(mockTask as any).parentTaskId = "parent"
+				mockTask.providerRef = {
+					deref: () => ({
+						reopenParentFromDelegation: vi.fn(),
+						getTaskWithId: vi.fn(),
+						getParentCompletionDecision: mockGetParentCompletionDecision,
+					}),
+				} as any
+
+				const callbacks: AttemptCompletionCallbacks = {
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+					toolDescription: mockToolDescription,
+				}
+				await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
+
+				expect(mockTask.ask).not.toHaveBeenCalled()
+				expect(mockAskFinishSubTaskApproval).not.toHaveBeenCalled()
+				expect(mockPushToolResult).toHaveBeenCalledWith("")
+				expect((mockTask as any).subagentCompletionOutcome).toBe("completed")
+				expect(mockTask.emit).toHaveBeenCalledWith(
+					RooCodeEventName.TaskCompleted,
+					"task_1",
+					expect.anything(),
+					expect.anything(),
+				)
+			})
+
+			it("records a blocked managed sub-agent outcome before completing its internal lifecycle", async () => {
+				const block: AttemptCompletionToolUse = {
+					type: "tool_use",
+					name: "attempt_completion",
+					params: {
+						result: "The assigned objective requires unavailable write authority.",
+						outcome: "blocked",
+					},
+					nativeArgs: {
+						result: "The assigned objective requires unavailable write authority.",
+						outcome: "blocked",
+					},
+					partial: false,
+				}
+				;(mockTask as any).taskKind = "subagent"
+
+				const callbacks: AttemptCompletionCallbacks = {
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+					toolDescription: mockToolDescription,
+				}
+				await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
+
+				expect((mockTask as any).subagentCompletionOutcome).toBe("blocked")
+				expect(mockTask.emit).toHaveBeenCalledWith(
+					RooCodeEventName.TaskCompleted,
+					"task_1",
+					expect.anything(),
+					expect.anything(),
+				)
+			})
+
 			it("emits TaskCompleted only when completion is accepted", async () => {
 				const block: AttemptCompletionToolUse = {
 					type: "tool_use",

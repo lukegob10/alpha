@@ -3,6 +3,7 @@
 //
 import * as path from "path"
 import * as fs from "fs/promises"
+import { EventEmitter } from "events"
 
 import { ExecuteCommandOptions } from "../ExecuteCommandTool"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
@@ -10,8 +11,13 @@ import { Terminal } from "../../../integrations/terminal/Terminal"
 import { ExecaTerminal } from "../../../integrations/terminal/ExecaTerminal"
 import type { RooTerminalCallbacks } from "../../../integrations/terminal/types"
 
-// Mock fs to control directory existence checks
-vitest.mock("fs/promises")
+const fsMocks = vitest.hoisted(() => ({ access: vitest.fn(), realpath: vitest.fn() }))
+
+// Mock fs to control directory and managed-worktree checks.
+vitest.mock("fs/promises", () => ({
+	default: fsMocks,
+	...fsMocks,
+}))
 
 // Mock TerminalRegistry to control terminal creation
 vitest.mock("../../../integrations/terminal/TerminalRegistry")
@@ -29,12 +35,15 @@ describe("executeCommand", () => {
 	let mockTerminal: any
 	let mockProcess: any
 	let mockProvider: any
+	let taskLifetimeController: AbortController
 
 	beforeEach(() => {
 		vitest.clearAllMocks()
+		taskLifetimeController = new AbortController()
 
 		// Mock fs.access to simulate directory existence
 		;(fs.access as any).mockResolvedValue(undefined)
+		;(fs.realpath as any).mockImplementation(async (value: string) => value)
 
 		// Create mock provider
 		mockProvider = {
@@ -53,6 +62,11 @@ describe("executeCommand", () => {
 			},
 			say: vitest.fn().mockResolvedValue(undefined),
 			terminalProcess: undefined,
+			abort: false,
+			getTaskLifetimeCancellationSignal: vitest.fn(() => taskLifetimeController.signal),
+			supersedePendingAsk: vitest.fn(),
+			completeCommandExecution: vitest.fn(),
+			failCommandExecution: vitest.fn(),
 		}
 
 		// Create mock process that resolves immediately
@@ -308,6 +322,160 @@ describe("executeCommand", () => {
 			// Verify
 			expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledWith(mockTask.cwd, mockTask.taskId, "execa")
 		})
+
+		it("forces managed workers to execa when shell integration is enabled", async () => {
+			mockTask.taskKind = "subagent"
+			mockTask.subagentRole = "worker"
+			mockTerminal.runCommand.mockImplementation((_command: string, callbacks: RooTerminalCallbacks) => {
+				setTimeout(() => {
+					callbacks.onCompleted("Command output", mockProcess)
+					callbacks.onShellExecutionComplete({ exitCode: 0 }, mockProcess)
+				}, 0)
+				return mockProcess
+			})
+
+			await executeCommandInTerminal(mockTask, {
+				executionId: "managed-worker",
+				command: "pnpm test",
+				terminalShellIntegrationDisabled: false,
+			})
+
+			expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledWith(mockTask.cwd, mockTask.taskId, "execa")
+		})
+	})
+
+	describe("Task cancellation", () => {
+		it("does not acquire a terminal after task cancellation", async () => {
+			taskLifetimeController.abort(new Error("cancelled"))
+
+			const result = await executeCommandInTerminal(mockTask, {
+				executionId: "cancelled-before-terminal",
+				toolCallId: "cancelled-call",
+				command: "long-running-command",
+			})
+
+			expect(result).toEqual([false, "Command was not started because the task was cancelled."])
+			expect(mockTask.failCommandExecution).toHaveBeenCalledWith("cancelled-call", "cancelled")
+			expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+		})
+
+		it("does not launch when cancellation wins terminal acquisition", async () => {
+			let resolveTerminal!: (terminal: typeof mockTerminal) => void
+			;(TerminalRegistry.getOrCreateTerminal as any).mockImplementation(
+				() => new Promise((resolve) => (resolveTerminal = resolve)),
+			)
+
+			const execution = executeCommandInTerminal(mockTask, {
+				executionId: "cancelled-during-terminal",
+				toolCallId: "cancelled-call",
+				command: "long-running-command",
+			})
+			await vitest.waitFor(() => expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledOnce())
+			mockTask.abort = true
+			resolveTerminal(mockTerminal)
+
+			await expect(execution).resolves.toEqual([false, "Command was not started because the task was cancelled."])
+			expect(mockTerminal.runCommand).not.toHaveBeenCalled()
+			expect(mockTask.failCommandExecution).toHaveBeenCalledWith("cancelled-call", "cancelled")
+		})
+	})
+
+	describe("Managed Worker background commands", () => {
+		it("returns after an explicit agent timeout while the Execa process remains registry-owned", async () => {
+			vitest.useFakeTimers()
+			vitest.mocked(Terminal.compressTerminalOutput).mockImplementation((output) => output)
+			mockTask.taskKind = "subagent"
+			mockTask.subagentRole = "worker"
+			let resolveProcess!: () => void
+			const backgroundProcess = new Promise<void>((resolve) => (resolveProcess = resolve)) as any
+			backgroundProcess.continue = vitest.fn()
+			mockTerminal.provider = "execa"
+			mockTerminal.busy = true
+			mockTerminal.taskId = mockTask.taskId
+			mockTerminal.process = backgroundProcess
+			mockTerminal.runCommand.mockImplementation((_command: string, callbacks: RooTerminalCallbacks) => {
+				void callbacks.onLine("PID_READY=12345\n", backgroundProcess)
+				return backgroundProcess
+			})
+
+			try {
+				const execution = executeCommandInTerminal(mockTask, {
+					executionId: "managed-worker-background",
+					command: "long-running-command",
+					terminalShellIntegrationDisabled: false,
+					agentTimeout: 1_000,
+				})
+
+				await vitest.advanceTimersByTimeAsync(1_000)
+				// executeCommand schedules its final UI-ordering delay after the
+				// agent-timeout continuation resumes.
+				await vitest.advanceTimersByTimeAsync(100)
+				const [rejected, result] = await execution
+
+				expect(rejected).toBe(false)
+				expect(result).toContain("Command is still running")
+				expect(result).toContain("PID_READY=12345")
+				expect(backgroundProcess.continue).toHaveBeenCalledOnce()
+				expect(mockTask.supersedePendingAsk).toHaveBeenCalledOnce()
+				expect(mockTask.terminalProcess).toBeUndefined()
+				expect(mockTerminal).toMatchObject({
+					busy: true,
+					taskId: mockTask.taskId,
+					process: backgroundProcess,
+				})
+			} finally {
+				resolveProcess()
+				vitest.useRealTimers()
+			}
+		})
+
+		it("keeps the user command timeout as a hard ceiling after backgrounding", async () => {
+			vitest.useFakeTimers()
+			mockTask.taskKind = "subagent"
+			mockTask.subagentRole = "worker"
+			const emitter = new EventEmitter()
+			let resolveProcess!: () => void
+			const promise = new Promise<void>((resolve) => (resolveProcess = resolve))
+			const backgroundProcess = Object.assign(emitter, {
+				isSettled: false,
+				then: promise.then.bind(promise),
+				catch: promise.catch.bind(promise),
+				finally: promise.finally.bind(promise),
+				continue: vitest.fn(),
+				abort: vitest.fn(async () => {
+					backgroundProcess.isSettled = true
+					resolveProcess()
+					backgroundProcess.emit("completed")
+				}),
+			})
+			mockTerminal.provider = "execa"
+			mockTerminal.busy = true
+			mockTerminal.taskId = mockTask.taskId
+			mockTerminal.process = backgroundProcess
+			mockTerminal.runCommand.mockReturnValue(backgroundProcess)
+
+			try {
+				const execution = executeCommandInTerminal(mockTask, {
+					executionId: "managed-worker-hard-timeout",
+					toolCallId: "hard-timeout-call",
+					command: "long-running-command",
+					terminalShellIntegrationDisabled: false,
+					agentTimeout: 1_000,
+					commandExecutionTimeout: 2_000,
+				})
+
+				await vitest.advanceTimersByTimeAsync(1_100)
+				await execution
+				expect(backgroundProcess.abort).not.toHaveBeenCalled()
+
+				await vitest.advanceTimersByTimeAsync(900)
+				expect(backgroundProcess.abort).toHaveBeenCalledOnce()
+				expect(mockTask.failCommandExecution).toHaveBeenCalledWith("hard-timeout-call", "timed_out")
+			} finally {
+				if (!backgroundProcess.isSettled) await backgroundProcess.abort()
+				vitest.useRealTimers()
+			}
+		})
 	})
 
 	describe("Command Execution States", () => {
@@ -334,6 +502,28 @@ describe("executeCommand", () => {
 			expect(rejected).toBe(false)
 			expect(result).toContain("Exit code: 0")
 			expect(result).toContain("within working directory '/test/project'")
+		})
+
+		it("records terminal exit evidence independently of model-facing output", async () => {
+			mockTerminal.runCommand.mockImplementation((_command: string, callbacks: RooTerminalCallbacks) => {
+				setTimeout(() => {
+					callbacks.onShellExecutionComplete({ exitCode: 0 }, mockProcess)
+					callbacks.onCompleted("output without an exit-code string", mockProcess)
+				}, 0)
+				return mockProcess
+			})
+
+			await executeCommandInTerminal(mockTask, {
+				executionId: "evidence-execution",
+				toolCallId: "evidence-call",
+				command: "pnpm test",
+				terminalShellIntegrationDisabled: false,
+			})
+
+			expect(mockTask.completeCommandExecution).toHaveBeenCalledWith("evidence-call", {
+				exitCode: 0,
+				signalName: undefined,
+			})
 		})
 
 		it("should handle completed command with non-zero exit code", async () => {
@@ -437,5 +627,31 @@ describe("executeCommand", () => {
 			// Verify the terminal's getCurrentWorkingDirectory was called
 			expect(mockTerminalInstance.getCurrentWorkingDirectory).toHaveBeenCalled()
 		})
+	})
+
+	it("does not fabricate user feedback for an offscreen command-output response", async () => {
+		let resolveProcess!: () => void
+		const backgroundProcess = new Promise<void>((resolve) => (resolveProcess = resolve)) as any
+		backgroundProcess.continue = vitest.fn()
+		mockTask.ask = vitest.fn().mockResolvedValue({ response: "messageResponse" })
+		mockTerminal.runCommand.mockImplementation((_command: string, callbacks: RooTerminalCallbacks) => {
+			setTimeout(async () => {
+				await callbacks.onLine("untracked output", backgroundProcess)
+				resolveProcess()
+			}, 0)
+			return backgroundProcess
+		})
+
+		const [rejected, result] = await executeCommandInTerminal(mockTask, {
+			executionId: "offscreen-output",
+			command: "git status --short",
+			terminalShellIntegrationDisabled: false,
+		})
+
+		expect(rejected).toBe(false)
+		expect(backgroundProcess.continue).toHaveBeenCalledOnce()
+		expect(result).not.toContain("<user_message>")
+		expect(result).not.toContain("undefined")
+		expect(mockTask.say).not.toHaveBeenCalledWith("user_feedback", expect.anything(), expect.anything())
 	})
 })

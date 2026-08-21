@@ -2,6 +2,12 @@ import type { SkillsManager } from "../../../services/skills/SkillsManager"
 
 type SkillsManagerLike = Pick<SkillsManager, "getSkillsForMode">
 
+export interface SkillCatalogEntry {
+	name: string
+	description: string
+	path: string
+}
+
 function escapeXml(value: string): string {
 	return value
 		.replace(/&/g, "&amp;")
@@ -27,6 +33,12 @@ export async function getSkillsSection(
 
 	// Get skills filtered by current mode (with override resolution)
 	const skills = skillsManager.getSkillsForMode(currentMode)
+	return getSkillsCatalogSection(skills, currentMode)
+}
+
+/** Format an already captured, mode-filtered skill catalog without consulting mutable manager state. */
+export function getSkillsCatalogSection(skills: readonly SkillCatalogEntry[], currentMode: string | undefined): string {
+	if (!currentMode) return ""
 	if (skills.length === 0) return ""
 
 	const skillsXml = skills

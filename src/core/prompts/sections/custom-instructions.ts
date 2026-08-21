@@ -418,6 +418,35 @@ async function loadAllAgentRulesFiles(cwd: string, enableSubfolderRules: boolean
 	return agentRules.join("\n\n")
 }
 
+/**
+ * Return the concrete agent-instruction files that contribute to the effective
+ * task instructions. The context-inheritance manifest stores only these refs
+ * and content digests; instruction bodies remain in the child prompt/history.
+ */
+export async function loadApplicableAgentInstructionSources(
+	cwd: string,
+	enableSubfolderRules: boolean = false,
+): Promise<Array<{ kind: "agents"; ref: string; text: string }>> {
+	const directories = enableSubfolderRules ? await getAgentsDirectoriesForCwd(cwd) : [cwd]
+	const sources: Array<{ kind: "agents"; ref: string; text: string }> = []
+
+	for (const directory of directories) {
+		for (const filename of ["AGENTS.md", "AGENT.md"]) {
+			const ref = path.join(directory, filename)
+			const text = await readAgentRulesFile(ref)
+			if (!text) continue
+			sources.push({ kind: "agents", ref, text })
+			break
+		}
+
+		const localRef = path.join(directory, "AGENTS.local.md")
+		const localText = await readAgentRulesFile(localRef)
+		if (localText) sources.push({ kind: "agents", ref: localRef, text: localText })
+	}
+
+	return sources
+}
+
 export async function addCustomInstructions(
 	modeCustomInstructions: string,
 	globalCustomInstructions: string,

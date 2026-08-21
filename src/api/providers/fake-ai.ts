@@ -40,21 +40,40 @@ interface FakeAI {
  */
 let fakeAiMap: Map<string, FakeAI> = new Map()
 
+const isFakeAIImplementation = (value: unknown): value is FakeAI => {
+	if (!value || typeof value !== "object") return false
+	const candidate = value as Partial<FakeAI>
+	return (
+		typeof candidate.id === "string" &&
+		typeof candidate.createMessage === "function" &&
+		typeof candidate.getModel === "function" &&
+		typeof candidate.countTokens === "function" &&
+		typeof candidate.completePrompt === "function"
+	)
+}
+
 export class FakeAIHandler implements ApiHandler, SingleCompletionHandler {
 	private ai: FakeAI
 
 	constructor(options: ApiHandlerOptions) {
-		const optionsFakeAi = options.fakeAi as FakeAI | undefined
-		if (!optionsFakeAi) {
+		const optionsFakeAi = options.fakeAi as Partial<FakeAI> | undefined
+		const id = optionsFakeAi?.id
+		if (typeof id !== "string" || id.length === 0) {
 			throw new Error("Fake AI is not set")
 		}
 
-		const id = optionsFakeAi.id
-		let cachedFakeAi = fakeAiMap.get(id)
-		if (cachedFakeAi === undefined) {
-			cachedFakeAi = optionsFakeAi
-			cachedFakeAi.removeFromCache = () => fakeAiMap.delete(id)
-			fakeAiMap.set(id, cachedFakeAi)
+		if (isFakeAIImplementation(optionsFakeAi)) {
+			optionsFakeAi.removeFromCache = () => {
+				if (fakeAiMap.get(id) === optionsFakeAi) fakeAiMap.delete(id)
+			}
+			fakeAiMap.set(id, optionsFakeAi)
+			this.ai = optionsFakeAi
+			return
+		}
+
+		const cachedFakeAi = fakeAiMap.get(id)
+		if (!cachedFakeAi) {
+			throw new Error(`Fake AI implementation ${id} is not registered in this extension host`)
 		}
 		this.ai = cachedFakeAi
 	}

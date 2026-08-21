@@ -31,9 +31,11 @@ export interface RooTerminalCallbacks {
 export interface RooTerminalProcess extends EventEmitter<RooTerminalProcessEvents> {
 	command: string
 	isHot: boolean
+	/** True only after the process emitted its terminal completed/error event. */
+	isSettled?: boolean
 	run: (command: string) => Promise<void>
 	continue: () => void
-	abort: () => void
+	abort: () => void | Promise<void>
 	hasUnretrievedOutput: () => boolean
 	getUnretrievedOutput: () => string
 	trimRetrievedOutput: () => void

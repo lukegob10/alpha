@@ -1,5 +1,6 @@
 import fs from "fs/promises"
 import * as path from "path"
+import { randomUUID } from "crypto"
 import * as vscode from "vscode"
 
 import delay from "delay"
@@ -20,6 +21,7 @@ import { Package } from "../../shared/package"
 import { t } from "../../i18n"
 import { getTaskDirectoryPath } from "../../utils/storage"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { redactTaskPrivatePaths } from "./taskPathPresentation"
 
 class ShellIntegrationError extends Error {}
 
@@ -49,6 +51,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 	async execute(params: ExecuteCommandParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
 		const { command, cwd: customCwd, timeout: timeoutSeconds } = params
 		const { handleError, pushToolResult, askApproval } = callbacks
+		let commandEvidenceId: string | undefined
 
 		try {
 			if (!command) {
@@ -59,8 +62,12 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			}
 
 			const canonicalCommand = unescapeHtmlEntities(command)
+			const executionId = task.lastMessageTs?.toString() ?? Date.now().toString()
+			commandEvidenceId = callbacks.toolCallId ?? `${executionId}:legacy:${randomUUID()}`
+			task.beginCommandExecution?.(commandEvidenceId, executionId, canonicalCommand)
 
 			if (isGitHubCliCommand(canonicalCommand)) {
+				task.failCommandExecution?.(commandEvidenceId)
 				task.recordToolError("execute_command")
 				pushToolResult(
 					formatResponse.toolError(
@@ -73,6 +80,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			const ignoredFileAttemptedToAccess = task.rooIgnoreController?.validateCommand(canonicalCommand)
 
 			if (ignoredFileAttemptedToAccess) {
+				task.failCommandExecution?.(commandEvidenceId, "denied")
 				await task.say("rooignore_error", ignoredFileAttemptedToAccess)
 				pushToolResult(formatResponse.rooIgnoreError(ignoredFileAttemptedToAccess))
 				return
@@ -83,10 +91,10 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			const didApprove = await askApproval("command", canonicalCommand)
 
 			if (!didApprove) {
+				task.failCommandExecution?.(commandEvidenceId, "denied")
 				return
 			}
 
-			const executionId = task.lastMessageTs?.toString() ?? Date.now().toString()
 			const provider = await task.providerRef.deref()
 			const providerState = await provider?.getState()
 
@@ -115,6 +123,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 
 			const options: ExecuteCommandOptions = {
 				executionId,
+				toolCallId: commandEvidenceId,
 				command: canonicalCommand,
 				customCwd,
 				terminalShellIntegrationDisabled,
@@ -150,12 +159,14 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 
 					pushToolResult(result)
 				} else {
+					task.failCommandExecution?.(commandEvidenceId)
 					pushToolResult(`Command failed to execute in terminal due to a shell integration error.`)
 				}
 			}
 
 			return
 		} catch (error) {
+			if (commandEvidenceId) task.failCommandExecution?.(commandEvidenceId)
 			await handleError("executing command", error as Error)
 			return
 		}
@@ -169,6 +180,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 
 export type ExecuteCommandOptions = {
 	executionId: string
+	toolCallId?: string
 	command: string
 	customCwd?: string
 	terminalShellIntegrationDisabled?: boolean
@@ -180,6 +192,7 @@ export async function executeCommandInTerminal(
 	task: Task,
 	{
 		executionId,
+		toolCallId,
 		command,
 		customCwd,
 		terminalShellIntegrationDisabled = true,
@@ -191,6 +204,17 @@ export async function executeCommandInTerminal(
 	const commandExecutionTimeoutSeconds = commandExecutionTimeout / 1000
 	let workingDir: string
 
+	const isManagedWorker = task.taskKind === "subagent" && task.subagentRole === "worker"
+	const cancellationResult = (): [boolean, ToolResponse] => {
+		if (toolCallId) task.failCommandExecution?.(toolCallId, "cancelled")
+		return [false, "Command was not started because the task was cancelled."]
+	}
+	const taskWasCancelled = () => task.abort || task.getTaskLifetimeCancellationSignal().aborted
+	if (taskWasCancelled()) return cancellationResult()
+	if (isManagedWorker && customCwd && path.isAbsolute(customCwd)) {
+		if (toolCallId) task.failCommandExecution?.(toolCallId)
+		return [false, "Editing workers may use only workspace-relative command directories."]
+	}
 	if (!customCwd) {
 		workingDir = task.cwd
 	} else if (path.isAbsolute(customCwd)) {
@@ -201,8 +225,17 @@ export async function executeCommandInTerminal(
 
 	try {
 		await fs.access(workingDir)
+		if (isManagedWorker) {
+			const [realWorkspace, realWorkingDir] = await Promise.all([fs.realpath(task.cwd), fs.realpath(workingDir)])
+			const relative = path.relative(realWorkspace, realWorkingDir)
+			if (relative.startsWith("..") || path.isAbsolute(relative)) {
+				if (toolCallId) task.failCommandExecution?.(toolCallId)
+				return [false, "Editing worker command directory is outside its isolated workspace."]
+			}
+		}
 	} catch (error) {
-		return [false, `Working directory '${workingDir}' does not exist.`]
+		if (toolCallId) task.failCommandExecution?.(toolCallId)
+		return [false, `Working directory '${isManagedWorker ? customCwd || "." : workingDir}' does not exist.`]
 	}
 
 	let message: { text?: string; images?: string[] } | undefined
@@ -214,7 +247,9 @@ export async function executeCommandInTerminal(
 	let shellIntegrationError: string | undefined
 	let hasAskedForCommandOutput = false
 
-	const terminalProvider = terminalShellIntegrationDisabled ? "execa" : "vscode"
+	// Managed workers run unattended and must use the terminal provider whose
+	// process tree can be deterministically terminated by task cancellation.
+	const terminalProvider = isManagedWorker || terminalShellIntegrationDisabled ? "execa" : "vscode"
 	const provider = await task.providerRef.deref()
 
 	// Get global storage path for persisted output artifacts
@@ -330,7 +365,7 @@ export async function executeCommandInTerminal(
 				runInBackground = true
 
 				if (response === "messageResponse") {
-					message = { text, images }
+					if (text || images?.length) message = { text, images }
 					process.continue()
 				}
 			} catch (_error) {
@@ -371,6 +406,12 @@ export async function executeCommandInTerminal(
 			const status: CommandExecutionStatus = { executionId, status: "exited", exitCode: details.exitCode }
 			provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
 			exitDetails = details
+			if (toolCallId) {
+				task.completeCommandExecution?.(toolCallId, {
+					exitCode: details.exitCode,
+					signalName: details.signalName,
+				})
+			}
 		},
 	}
 
@@ -381,7 +422,9 @@ export async function executeCommandInTerminal(
 		}
 	}
 
+	if (taskWasCancelled()) return cancellationResult()
 	const terminal = await TerminalRegistry.getOrCreateTerminal(workingDir, task.taskId, terminalProvider)
+	if (taskWasCancelled()) return cancellationResult()
 
 	if (terminal instanceof Terminal) {
 		terminal.terminal.show(true)
@@ -396,13 +439,13 @@ export async function executeCommandInTerminal(
 	task.terminalProcess = process
 
 	// Dual-timeout logic:
-	// - Agent timeout: transitions the command to background (continues running)
-	// - User timeout: aborts the command (kills it)
-	// Both timers run independently — the user timeout remains active as a safety net
-	// even after the agent timeout moves the command to the background.
+	// - Agent timeout: transitions the command to background (continues running).
+	// - User timeout: remains a hard process-lifetime ceiling and aborts the
+	//   registry-owned process even if the agent timeout returned first.
 	let agentTimeoutId: NodeJS.Timeout | undefined
 	let userTimeoutId: NodeJS.Timeout | undefined
 	let isUserTimedOut = false
+	let userTimeoutCleanupError: unknown
 
 	try {
 		const racers: Promise<void>[] = [process]
@@ -427,8 +470,28 @@ export async function executeCommandInTerminal(
 				new Promise<void>((_, reject) => {
 					userTimeoutId = setTimeout(() => {
 						isUserTimedOut = true
-						task.terminalProcess?.abort()
-						reject(new Error(`Command execution timed out after ${commandExecutionTimeout}ms`))
+						if (toolCallId) task.failCommandExecution?.(toolCallId, "timed_out")
+						const status: CommandExecutionStatus = { executionId, status: "timeout" }
+						provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
+						if (runInBackground) {
+							task.didToolFailInCurrentTurn = true
+							void task
+								.say(
+									"error",
+									t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }),
+								)
+								.catch((error) =>
+									console.error("Failed to report a background command timeout:", error),
+								)
+						}
+						void Promise.resolve(process.abort()).then(
+							() => reject(new Error(`Command execution timed out after ${commandExecutionTimeout}ms`)),
+							(error) => {
+								userTimeoutCleanupError = error
+								console.error("Failed to terminate a timed-out command:", error)
+								reject(error)
+							},
+						)
 					}, commandExecutionTimeout)
 				}),
 			)
@@ -437,8 +500,12 @@ export async function executeCommandInTerminal(
 		await Promise.race(racers)
 	} catch (error) {
 		if (isUserTimedOut) {
-			const status: CommandExecutionStatus = { executionId, status: "timeout" }
-			provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
+			if (userTimeoutCleanupError) {
+				throw new Error(
+					`Command exceeded its timeout and process cleanup failed: ${userTimeoutCleanupError instanceof Error ? userTimeoutCleanupError.message : String(userTimeoutCleanupError)}`,
+					{ cause: userTimeoutCleanupError },
+				)
+			}
 			await task.say("error", t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }))
 			task.didToolFailInCurrentTurn = true
 			task.terminalProcess = undefined
@@ -451,7 +518,19 @@ export async function executeCommandInTerminal(
 		throw error
 	} finally {
 		clearTimeout(agentTimeoutId)
-		clearTimeout(userTimeoutId)
+		const keepUserTimeoutForBackground =
+			commandExecutionTimeout > 0 && runInBackground && !completed && !exitDetails && process.isSettled !== true
+		if (keepUserTimeoutForBackground) {
+			const clearBackgroundUserTimeout = () => {
+				clearTimeout(userTimeoutId)
+				process.removeListener("completed", clearBackgroundUserTimeout)
+				process.removeListener("error", clearBackgroundUserTimeout)
+			}
+			process.once("completed", clearBackgroundUserTimeout)
+			process.once("error", clearBackgroundUserTimeout)
+		} else {
+			clearTimeout(userTimeoutId)
+		}
 		clearTimeout(pendingCommandOutputEmitTimer)
 		task.terminalProcess = undefined
 	}
@@ -474,6 +553,8 @@ export async function executeCommandInTerminal(
 		await onCompletedPromise
 	}
 
+	const displayOutput = result || latestCompressedOutput || ""
+
 	if (message) {
 		const { text, images } = message
 		await task.say("user_feedback", text, images)
@@ -481,20 +562,27 @@ export async function executeCommandInTerminal(
 		return [
 			true,
 			formatResponse.toolResult(
-				[
-					`Command is still running in terminal from '${terminal.getCurrentWorkingDirectory().toPosix()}'.`,
-					result.length > 0 ? `Here's the output so far:\n${result}\n` : "\n",
-					`<user_message>\n${text}\n</user_message>`,
-				].join("\n"),
+				redactTaskPrivatePaths(
+					task,
+					[
+						`Command is still running in terminal from '${terminal.getCurrentWorkingDirectory().toPosix()}'.`,
+						displayOutput.length > 0 ? `Here's the output so far:\n${displayOutput}\n` : "\n",
+						`<user_message>\n${text}\n</user_message>`,
+					].join("\n"),
+				),
 				images,
 			),
 		]
 	} else if (completed || exitDetails) {
 		const currentWorkingDir = terminal.getCurrentWorkingDirectory().toPosix()
+		const displayWorkingDir = isManagedWorker ? "." : currentWorkingDir
 
 		// Use persisted output format when output was truncated and spilled to disk
 		if (persistedResult?.truncated) {
-			return [false, formatPersistedOutput(persistedResult, exitDetails, currentWorkingDir)]
+			return [
+				false,
+				redactTaskPrivatePaths(task, formatPersistedOutput(persistedResult, exitDetails, displayWorkingDir)),
+			]
 		}
 
 		// Use inline format for small outputs (original behavior with exit status)
@@ -524,16 +612,22 @@ export async function executeCommandInTerminal(
 
 		return [
 			false,
-			`Command executed in terminal within working directory '${currentWorkingDir}'. ${exitStatus}\nOutput:\n${result}`,
+			redactTaskPrivatePaths(
+				task,
+				`Command executed in terminal within working directory '${displayWorkingDir}'. ${exitStatus}\nOutput:\n${result}`,
+			),
 		]
 	} else {
 		return [
 			false,
-			[
-				`Command is still running in terminal ${workingDir ? ` from '${workingDir.toPosix()}'` : ""}.`,
-				result.length > 0 ? `Here's the output so far:\n${result}\n` : "\n",
-				"You will be updated on the terminal status and new output in the future.",
-			].join("\n"),
+			redactTaskPrivatePaths(
+				task,
+				[
+					`Command is still running in terminal ${workingDir ? ` from '${isManagedWorker ? "." : workingDir.toPosix()}'` : ""}.`,
+					displayOutput.length > 0 ? `Here's the output so far:\n${displayOutput}\n` : "\n",
+					"You will be updated on the terminal status and new output in the future.",
+				].join("\n"),
+			),
 		]
 	}
 }

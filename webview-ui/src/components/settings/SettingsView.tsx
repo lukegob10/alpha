@@ -30,6 +30,7 @@ import {
 	ArrowLeft,
 	GitCommitVertical,
 	GraduationCap,
+	Bot,
 } from "lucide-react"
 
 import {
@@ -43,7 +44,7 @@ import {
 import { vscode } from "@src/utils/vscode"
 import { cn } from "@src/lib/utils"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
-import { ExtensionStateContextType, useExtensionState } from "@src/context/ExtensionStateContext"
+import { useExtensionState } from "@src/context/ExtensionStateContext"
 import {
 	AlertDialog,
 	AlertDialogContent,
@@ -62,7 +63,7 @@ import {
 } from "@src/components/ui"
 
 import { Tab, TabContent, TabHeader, TabList, TabTrigger } from "../common/Tab"
-import { SetCachedStateField, SetExperimentEnabled } from "./types"
+import { SetExperimentEnabled } from "./types"
 import { SectionHeader } from "./SectionHeader"
 import ApiConfigManager from "./ApiConfigManager"
 import ApiOptions from "./ApiOptions"
@@ -79,12 +80,18 @@ import PromptsSettings from "./PromptsSettings"
 import { SlashCommandsSettings } from "./SlashCommandsSettings"
 import { SkillsSettings } from "./SkillsSettings"
 import { UISettings } from "./UISettings"
+import { AgentsSettings } from "./AgentsSettings"
 import { GitHubSettings } from "./GitHubSettings"
 import ModesView from "../modes/ModesView"
 import McpView from "../mcp/McpView"
 import { WorktreesView } from "../worktrees/WorktreesView"
 import { SettingsSearch } from "./SettingsSearch"
 import { useSearchIndexRegistry, SearchIndexProvider } from "./useSettingsSearch"
+import {
+	toManagedAgentSettingsSavePayload,
+	type SettingsCachedState,
+	withManagedAgentSettingsDefaults,
+} from "./managed-agent-settings"
 
 export const settingsTabsContainer = "flex min-h-0 flex-1 overflow-hidden [&.narrow_.tab-label]:hidden"
 export const settingsTabList =
@@ -100,6 +107,7 @@ export interface SettingsViewRef {
 
 export const sectionNames = [
 	"providers",
+	"agents",
 	"autoApprove",
 	"slashCommands",
 	"skills",
@@ -129,7 +137,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	const { t } = useAppTranslation()
 
 	const extensionState = useExtensionState()
-	const { currentApiConfigName, listApiConfigMeta, uriScheme, settingsImportedAt } = extensionState
+	const { currentApiConfigName, listApiConfigMeta, uriScheme, settingsImportedAt, didHydrateState } = extensionState
 
 	const [isDiscardDialogShow, setDiscardDialogShow] = useState(false)
 	const [isChangeDetected, setChangeDetected] = useState(false)
@@ -146,9 +154,15 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	const contentRef = useRef<HTMLDivElement | null>(null)
 
 	const prevApiConfigName = useRef(currentApiConfigName)
+	const prevSettingsImportedAt = useRef(settingsImportedAt)
+	const initializedFromHydration = useRef(didHydrateState)
+	const latestExtensionState = useRef(extensionState)
+	latestExtensionState.current = extensionState
 	const confirmDialogHandler = useRef<() => void>()
 
-	const [cachedState, setCachedState] = useState(() => extensionState)
+	const [cachedState, setCachedState] = useState<SettingsCachedState>(() =>
+		withManagedAgentSettingsDefaults(extensionState),
+	)
 
 	const {
 		alwaysAllowReadOnly,
@@ -162,6 +176,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		alwaysAllowMcp,
 		alwaysAllowModeSwitch,
 		alwaysAllowSubtasks,
+		alwaysAllowSubagents,
 		alwaysAllowWrite,
 		alwaysAllowWriteOutsideWorkspace,
 		alwaysAllowWriteProtected,
@@ -208,12 +223,36 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		reasoningBlockCollapsed,
 		enterBehavior,
 		maxConcurrentTasks,
+		subagentDefaultApiConfigId,
+		subagentApiConfigByRole,
+		maxConcurrentSubagents,
+		subagentDelegationPolicy,
+		subagentMaxDepth,
+		subagentRoleTimeoutsMs,
+		subagentMaxInputTokens,
+		subagentMaxOutputTokens,
+		subagentRootTokenBudget,
+		subagentRootCostBudget,
 		includeCurrentTime,
 		includeCurrentCost,
 		maxGitStatusFiles,
 	} = cachedState
 
 	const apiConfiguration = useMemo(() => cachedState.apiConfiguration ?? {}, [cachedState.apiConfiguration])
+
+	// Hydrate the edit buffer exactly once. Subsequent live state pushes must not
+	// overwrite unsaved fields in cachedState.
+	useEffect(() => {
+		if (!didHydrateState || initializedFromHydration.current) {
+			return
+		}
+
+		setCachedState(withManagedAgentSettingsDefaults(latestExtensionState.current))
+		prevApiConfigName.current = latestExtensionState.current.currentApiConfigName
+		prevSettingsImportedAt.current = latestExtensionState.current.settingsImportedAt
+		initializedFromHydration.current = true
+		setChangeDetected(false)
+	}, [didHydrateState])
 
 	useEffect(() => {
 		// Update only when currentApiConfigName is changed.
@@ -222,29 +261,35 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			return
 		}
 
-		setCachedState((prevCachedState) => ({ ...prevCachedState, ...extensionState }))
+		setCachedState(withManagedAgentSettingsDefaults(latestExtensionState.current))
 		prevApiConfigName.current = currentApiConfigName
 		setChangeDetected(false)
-	}, [currentApiConfigName, extensionState])
+	}, [currentApiConfigName])
 
 	// Bust the cache when settings are imported.
 	useEffect(() => {
-		if (settingsImportedAt) {
-			setCachedState((prevCachedState) => ({ ...prevCachedState, ...extensionState }))
-			setChangeDetected(false)
+		if (!settingsImportedAt || prevSettingsImportedAt.current === settingsImportedAt) {
+			return
 		}
-	}, [settingsImportedAt, extensionState])
 
-	const setCachedStateField: SetCachedStateField<keyof ExtensionStateContextType> = useCallback((field, value) => {
-		setCachedState((prevState) => {
-			if (prevState[field] === value) {
-				return prevState
-			}
+		prevSettingsImportedAt.current = settingsImportedAt
+		setCachedState(withManagedAgentSettingsDefaults(latestExtensionState.current))
+		setChangeDetected(false)
+	}, [settingsImportedAt])
 
-			setChangeDetected(true)
-			return { ...prevState, [field]: value }
-		})
-	}, [])
+	const setCachedStateField = useCallback(
+		<K extends keyof SettingsCachedState>(field: K, value: SettingsCachedState[K]) => {
+			setCachedState((prevState) => {
+				if (prevState[field] === value) {
+					return prevState
+				}
+
+				setChangeDetected(true)
+				return { ...prevState, [field]: value }
+			})
+		},
+		[],
+	)
 
 	const setApiConfigurationField = useCallback(
 		<K extends keyof ProviderSettings>(field: K, value: ProviderSettings[K], isUserAction: boolean = true) => {
@@ -401,6 +446,13 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					autoCondenseContext,
 					autoCondenseContextPercent,
 					maxConcurrentTasks: Math.min(Math.max(1, maxConcurrentTasks ?? 3), 50),
+					subagentDefaultApiConfigId: subagentDefaultApiConfigId ?? "",
+					subagentApiConfigByRole: {
+						explore: subagentApiConfigByRole?.explore ?? "",
+						review: subagentApiConfigByRole?.review ?? "",
+						worker: subagentApiConfigByRole?.worker ?? "",
+					},
+					...toManagedAgentSettingsSavePayload(cachedState),
 					soundEnabled: soundEnabled ?? true,
 					soundVolume: soundVolume ?? 0.5,
 					ttsEnabled,
@@ -428,6 +480,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 						includeDiagnosticMessages !== undefined ? includeDiagnosticMessages : true,
 					maxDiagnosticMessages: maxDiagnosticMessages ?? 50,
 					alwaysAllowSubtasks,
+					alwaysAllowSubagents,
 					alwaysAllowFollowupQuestions: alwaysAllowFollowupQuestions ?? false,
 					followupAutoApproveTimeoutMs,
 					includeTaskHistoryInEnhance: includeTaskHistoryInEnhance ?? true,
@@ -475,7 +528,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		(confirm: boolean) => {
 			if (confirm) {
 				// Discard changes: Reset state and flag
-				setCachedState(extensionState) // Revert to original state
+				setCachedState(withManagedAgentSettingsDefaults(extensionState)) // Revert to original state
 				setChangeDetected(false) // Reset change flag
 				confirmDialogHandler.current?.() // Execute the pending action (e.g., tab switch)
 			}
@@ -531,6 +584,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	const sections: { id: SectionName; icon: LucideIcon }[] = useMemo(
 		() => [
 			{ id: "providers", icon: Plug },
+			{ id: "agents", icon: Bot },
 			{ id: "modes", icon: Users2 },
 			{ id: "skills", icon: GraduationCap },
 			{ id: "slashCommands", icon: SquareSlash },
@@ -800,6 +854,26 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 							</div>
 						)}
 
+						{/* Agents Section */}
+						{renderTab === "agents" && (
+							<AgentsSettings
+								profiles={cachedState.listApiConfigMeta ?? []}
+								defaultProfileId={subagentDefaultApiConfigId}
+								profileByRole={subagentApiConfigByRole}
+								managedAgentSettings={{
+									maxConcurrentSubagents,
+									subagentDelegationPolicy,
+									subagentMaxDepth,
+									subagentRoleTimeoutsMs,
+									subagentMaxInputTokens,
+									subagentMaxOutputTokens,
+									subagentRootTokenBudget,
+									subagentRootCostBudget,
+								}}
+								setCachedStateField={setCachedStateField}
+							/>
+						)}
+
 						{/* Auto-Approve Section */}
 						{renderTab === "autoApprove" && (
 							<AutoApproveSettings
@@ -811,6 +885,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 								alwaysAllowMcp={alwaysAllowMcp}
 								alwaysAllowModeSwitch={alwaysAllowModeSwitch}
 								alwaysAllowSubtasks={alwaysAllowSubtasks}
+								alwaysAllowSubagents={alwaysAllowSubagents}
 								alwaysAllowExecute={alwaysAllowExecute}
 								alwaysAllowFollowupQuestions={alwaysAllowFollowupQuestions}
 								autoApprovalEnabled={autoApprovalEnabled}

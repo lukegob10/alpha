@@ -61,6 +61,7 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setAlwaysAllowMcp: (value: boolean) => void
 	setAlwaysAllowModeSwitch: (value: boolean) => void
 	setAlwaysAllowSubtasks: (value: boolean) => void
+	setAlwaysAllowSubagents: (value: boolean) => void
 	setShowRooIgnoredFiles: (value: boolean) => void
 	setEnableSubfolderRules: (value: boolean) => void
 	setShowAnnouncement: (value: boolean) => void
@@ -153,18 +154,24 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 	const experiments = { ...prevExperiments, ...(newExperiments ?? {}) }
 	const rest = { ...prevRest, ...newRest }
 
-	// Protect clineMessages from stale state pushes using sequence numbering.
-	// Multiple async event sources (state updates and task streaming) can trigger
-	// concurrent state pushes. If a stale push arrives after a newer one, its clineMessages
-	// would overwrite the newer messages. The sequence number prevents this by only applying
-	// clineMessages when the incoming seq is strictly greater than the last applied seq.
+	// Task-view fields form one snapshot. Applying only part of a stale snapshot can pair a
+	// completed task's id/view with a newer draft or transcript, so reject the entire task-view
+	// portion whenever its sequence is not strictly newer. Unrelated settings in the push still apply.
 	if (
 		newState.clineMessagesSeq !== undefined &&
 		prevState.clineMessagesSeq !== undefined &&
-		newState.clineMessagesSeq <= prevState.clineMessagesSeq &&
-		newState.clineMessages !== undefined
+		newState.clineMessagesSeq <= prevState.clineMessagesSeq
 	) {
 		rest.clineMessages = prevState.clineMessages
+		rest.currentTaskId = prevState.currentTaskId
+		rest.currentTaskItem = prevState.currentTaskItem
+		rest.currentTaskTodos = prevState.currentTaskTodos
+		rest.currentView = prevState.currentView
+		rest.activeTaskId = prevState.activeTaskId
+		rest.liveTaskIds = prevState.liveTaskIds
+		rest.liveTasksById = prevState.liveTasksById
+		rest.managedAgentTree = prevState.managedAgentTree
+		rest.messageQueue = prevState.messageQueue
 		rest.clineMessagesSeq = prevState.clineMessagesSeq
 	}
 
@@ -587,6 +594,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		setAlwaysAllowMcp: (value) => setState((prevState) => ({ ...prevState, alwaysAllowMcp: value })),
 		setAlwaysAllowModeSwitch: (value) => setState((prevState) => ({ ...prevState, alwaysAllowModeSwitch: value })),
 		setAlwaysAllowSubtasks: (value) => setState((prevState) => ({ ...prevState, alwaysAllowSubtasks: value })),
+		setAlwaysAllowSubagents: (value) => setState((prevState) => ({ ...prevState, alwaysAllowSubagents: value })),
 		setAlwaysAllowFollowupQuestions,
 		setFollowupAutoApproveTimeoutMs: (value) =>
 			setState((prevState) => ({ ...prevState, followupAutoApproveTimeoutMs: value })),

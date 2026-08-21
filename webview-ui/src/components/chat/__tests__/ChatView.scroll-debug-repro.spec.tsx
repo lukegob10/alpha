@@ -627,15 +627,12 @@ describe("ChatView scroll behavior regression coverage", () => {
 
 	it("user escape hatch during hydration prevents repinning", async () => {
 		await hydrate(Number.POSITIVE_INFINITY)
-		await waitForCalls(1, 1_200)
 
 		await act(async () => {
 			fireEvent.keyDown(window, { key: "PageUp" })
-		})
-
-		expect(resolveFollowOutput(false)).toBe(false)
-
-		await act(async () => {
+			// Virtuoso may ask whether to follow before React commits the phase
+			// update. The synchronous phase ref must already honor user intent.
+			expect(resolveFollowOutput(false)).toBe(false)
 			harness.emitAtBottom(true)
 		})
 

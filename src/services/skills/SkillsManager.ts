@@ -303,6 +303,23 @@ export class SkillsManager {
 		}
 	}
 
+	/** Resolve a previously captured skill by its exact path, independent of mutable mode overrides. */
+	async getSkillContentByPath(name: string, capturedPath: string): Promise<SkillContent | null> {
+		const normalize = (candidate: string) => {
+			const resolved = path.resolve(candidate)
+			return process.platform === "win32" ? resolved.toLowerCase() : resolved
+		}
+		const expectedPath = normalize(capturedPath)
+		const skill = Array.from(this.skills.values()).find(
+			(candidate) => candidate.name === name && normalize(candidate.path) === expectedPath,
+		)
+		if (!skill) return null
+
+		const fileContent = await fs.readFile(skill.path, "utf-8")
+		const { content: body } = matter(fileContent)
+		return { ...skill, instructions: body.trim() }
+	}
+
 	/**
 	 * Get all skills metadata (for UI display)
 	 * Returns skills from all sources without content

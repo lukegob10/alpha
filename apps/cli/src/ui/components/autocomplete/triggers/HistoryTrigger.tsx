@@ -21,7 +21,7 @@ export interface HistoryResult extends AutocompleteItem {
 	/** Mode the task was run in */
 	mode?: string
 	/** Task status */
-	status?: "active" | "completed" | "delegated"
+	status?: "active" | "completed" | "blocked" | "delegated" | "failed" | "cancelled" | "timed_out" | "interrupted"
 }
 
 /**
@@ -178,7 +178,7 @@ export function toHistoryResult(item: {
 	totalCost?: number
 	workspace?: string
 	mode?: string
-	status?: "active" | "completed" | "delegated"
+	status?: "active" | "completed" | "blocked" | "delegated" | "failed" | "cancelled" | "timed_out" | "interrupted"
 }): HistoryResult {
 	return {
 		key: item.id, // Use task ID as the unique key

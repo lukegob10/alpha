@@ -4,7 +4,6 @@ import fs from "fs/promises"
 import { type ClineSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
-import { getReadablePath } from "../../utils/path"
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { fileExistsAtPath } from "../../utils/fs"
@@ -15,6 +14,7 @@ import { computeDiffStats, sanitizeUnifiedDiff } from "../diff/stats"
 import type { ToolUse } from "../../shared/tools"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { getTaskReadablePath } from "./taskPathPresentation"
 
 interface ApplyDiffParams {
 	path: string
@@ -140,7 +140,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 
 			const sharedMessageProps: ClineSayTool = {
 				tool: "appliedDiff",
-				path: getReadablePath(task.cwd, relPath),
+				path: getTaskReadablePath(task, relPath),
 				diff: diffContent,
 			}
 
@@ -280,7 +280,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 
 		const sharedMessageProps: ClineSayTool = {
 			tool: "appliedDiff",
-			path: getReadablePath(task.cwd, relPath),
+			path: getTaskReadablePath(task, relPath),
 			diff: diffContent,
 		}
 

@@ -132,7 +132,8 @@ describe("GeminiHandler", () => {
 				model: GEMINI_MODEL_NAME,
 				contents: [{ role: "user", parts: [{ text: "Test prompt" }] }],
 				config: {
-					httpOptions: undefined,
+					httpOptions: { timeout: 600_000 },
+					abortSignal: expect.any(AbortSignal),
 					temperature: 1,
 				},
 			})

@@ -268,6 +268,25 @@ export function filterNativeToolsForMode(
 	)
 	allowedToolNames = customizedTools
 
+	// Asynchronous agent orchestration is intentionally limited to the primary Code
+	// workflow. Custom modes may opt into the broader agents group for legacy
+	// delegation, but do not acquire the lifecycle control plane implicitly.
+	if (modeSlug !== "code") {
+		for (const tool of [
+			"spawn_agent",
+			"list_agents",
+			"wait_agent",
+			"send_message",
+			"report_progress",
+			"followup_task",
+			"interrupt_agent",
+			"cancel_agent",
+			"close_agent",
+		] as const) {
+			allowedToolNames.delete(tool)
+		}
+	}
+
 	// Conditionally exclude codebase_search if feature is disabled or not configured
 	if (
 		!codeIndexManager ||

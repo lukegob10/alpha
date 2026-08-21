@@ -1,11 +1,11 @@
 import { memo } from "react"
-import { ArrowRight } from "lucide-react"
+import { ArrowRight, ChevronRight, CornerDownRight } from "lucide-react"
 import { vscode } from "@/utils/vscode"
 import { cn } from "@/lib/utils"
+import { useAppTranslation } from "@/i18n/TranslationContext"
 import type { SubtaskTreeNode } from "./types"
 import { countAllSubtasks } from "./types"
 import { StandardTooltip } from "../ui"
-import SubtaskCollapsibleRow from "./SubtaskCollapsibleRow"
 
 interface SubtaskRowProps {
 	/** The subtask tree node to display */
@@ -24,8 +24,12 @@ interface SubtaskRowProps {
  * a collapsible section that can be expanded to reveal nested subtasks.
  */
 const SubtaskRow = ({ node, depth, onToggleExpand, className }: SubtaskRowProps) => {
+	const { t } = useAppTranslation()
 	const { item, children, isExpanded } = node
 	const hasChildren = children.length > 0
+	const descendantCount = hasChildren ? countAllSubtasks(children) : 0
+	const childListId = `subtask-${item.id}-children`
+	const rowIndent = 12 + Math.max(0, depth - 1) * 16
 
 	const handleClick = () => {
 		vscode.postMessage({ type: "showTaskWithId", text: item.id })
@@ -33,46 +37,58 @@ const SubtaskRow = ({ node, depth, onToggleExpand, className }: SubtaskRowProps)
 
 	return (
 		<div data-testid={`subtask-row-${item.id}`} className={className}>
-			{/* Task row with depth indentation */}
 			<div
+				data-testid={`subtask-item-row-${item.id}`}
 				className={cn(
-					"group flex items-center justify-between gap-2 pr-4 py-1 cursor-pointer",
-					"text-vscode-foreground/60 hover:text-vscode-foreground transition-colors",
+					"group flex min-h-9 items-center gap-1.5 pr-2 transition-colors",
+					"text-vscode-foreground/70 hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground",
 				)}
-				style={{ paddingLeft: `${depth * 16}px` }}
-				onClick={handleClick}
-				role="button"
-				tabIndex={0}
-				onKeyDown={(e) => {
-					if (e.key === "Enter" || e.key === " ") {
-						e.preventDefault()
-						handleClick()
-					}
-				}}>
-				<StandardTooltip content={item.task} delay={600}>
-					<span className="text-sm line-clamp-1">{item.task}</span>
-				</StandardTooltip>
-				<ArrowRight className="size-3 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-			</div>
+				style={{ paddingLeft: `${rowIndent}px` }}>
+				<CornerDownRight
+					className="size-3.5 shrink-0 text-[var(--alpha-accent)] opacity-45"
+					aria-hidden="true"
+				/>
+				<button
+					type="button"
+					className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md py-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--alpha-accent)]"
+					onClick={handleClick}
+					aria-label={`Open task: ${item.task}`}>
+					<StandardTooltip content={item.task} delay={600}>
+						<span className="min-w-0 flex-1 truncate text-sm">{item.task}</span>
+					</StandardTooltip>
+					<ArrowRight className="size-3 shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100" />
+				</button>
 
-			{/* Nested subtask collapsible section */}
-			{hasChildren && (
-				<div style={{ paddingLeft: `${depth * 16}px` }}>
-					<SubtaskCollapsibleRow
-						count={countAllSubtasks(children)}
-						isExpanded={isExpanded}
-						onToggle={() => onToggleExpand(item.id)}
-					/>
-				</div>
-			)}
+				{hasChildren && (
+					<button
+						type="button"
+						data-testid="subtask-collapsible-row"
+						className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md px-2 py-1 text-[11px] text-vscode-descriptionForeground transition-colors hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--alpha-accent)]"
+						onClick={() => onToggleExpand(item.id)}
+						aria-expanded={isExpanded}
+						aria-controls={childListId}
+						aria-label={isExpanded ? t("history:collapseSubtasks") : t("history:expandSubtasks")}>
+						<ChevronRight
+							className={cn("size-3 transition-transform duration-150", isExpanded && "rotate-90")}
+						/>
+						<span>{t("history:subtasks", { count: descendantCount })}</span>
+					</button>
+				)}
+			</div>
 
 			{/* Expanded nested subtasks */}
 			{hasChildren && (
 				<div
-					className={cn(
-						"overflow-clip transition-all duration-300",
-						isExpanded ? "max-h-[2000px]" : "max-h-0",
-					)}>
+					id={childListId}
+					data-testid="nested-subtask-list"
+					role="group"
+					hidden={!isExpanded}
+					className="relative">
+					<span
+						className="pointer-events-none absolute top-0 bottom-1 w-px bg-[var(--border-subtle)]"
+						style={{ left: `${rowIndent + 6}px` }}
+						aria-hidden="true"
+					/>
 					{children.map((child) => (
 						<SubtaskRow
 							key={child.item.id}

@@ -1,6 +1,6 @@
 // pnpm --filter @alpha-code/vscode-webview test src/components/settings/__tests__/SettingsView.spec.tsx
 
-import { render, screen, fireEvent, within } from "@/utils/test-utils"
+import { render, screen, fireEvent, within, waitFor, act } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
 import { vscode } from "@/utils/vscode"
@@ -55,6 +55,12 @@ vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 			data-testid={dataTestId}
 		/>
 	),
+	VSCodeDropdown: ({ children, value, onChange, id, "aria-label": ariaLabel }: any) => (
+		<select id={id} aria-label={ariaLabel} value={value} onChange={onChange}>
+			{children}
+		</select>
+	),
+	VSCodeOption: ({ children, value }: any) => <option value={value}>{children}</option>,
 	VSCodeLink: ({ children, href }: any) => <a href={href || "#"}>{children}</a>,
 	VSCodeRadio: ({ value, checked, onChange }: any) => (
 		<input type="radio" value={value} checked={checked} onChange={onChange} />
@@ -188,8 +194,19 @@ vi.mock("@/components/ui", () => ({
 	),
 	SelectTrigger: ({ children }: any) => <div data-testid="select-trigger">{children}</div>,
 	SelectValue: ({ placeholder }: any) => <div data-testid="select-value">{placeholder}</div>,
-	SearchableSelect: ({ value, onValueChange, options, placeholder }: any) => (
-		<select value={value} onChange={(e) => onValueChange(e.target.value)} data-testid="searchable-select">
+	SearchableSelect: ({
+		value,
+		onValueChange,
+		options,
+		placeholder,
+		"aria-label": ariaLabel,
+		"data-testid": testId,
+	}: any) => (
+		<select
+			value={value}
+			onChange={(e) => onValueChange(e.target.value)}
+			aria-label={ariaLabel}
+			data-testid={testId ?? "searchable-select"}>
 			{placeholder && <option value="">{placeholder}</option>}
 			{options?.map((opt: any) => (
 				<option key={opt.value} value={opt.value}>
@@ -320,6 +337,150 @@ const renderSettingsView = () => {
 
 	return { onDone, activateTab, getSettingsContent }
 }
+
+describe("SettingsView - Agents", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it("buffers stable profile IDs until Save", async () => {
+		const { activateTab } = renderSettingsView()
+		await act(async () => {
+			mockPostMessage({
+				settingsImportedAt: 1,
+				listApiConfigMeta: [
+					{ id: "fast-id", name: "Fast", apiProvider: "openrouter", modelId: "fast/model" },
+					{ id: "review-id", name: "Review", apiProvider: "anthropic", modelId: "review-model" },
+				],
+			})
+			await new Promise((resolve) => setTimeout(resolve, 0))
+		})
+		activateTab("agents")
+
+		const explorer = await screen.findByLabelText("settings:agents.roles.explore.label")
+		fireEvent.change(explorer, { target: { value: "fast-id" } })
+		await waitFor(() => expect(explorer).toHaveValue("fast-id"))
+
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+		fireEvent.click(screen.getByTestId("save-button"))
+
+		await waitFor(() =>
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "updateSettings",
+					updatedSettings: expect.objectContaining({
+						subagentApiConfigByRole: { explore: "fast-id", review: "", worker: "" },
+					}),
+				}),
+			),
+		)
+	})
+
+	it("keeps managed-agent edits buffered across unrelated live-state refreshes until Save", async () => {
+		const { activateTab, getSettingsContent } = renderSettingsView()
+		await act(async () => {
+			mockPostMessage({
+				settingsImportedAt: 2,
+				maxConcurrentSubagents: 2,
+				subagentDelegationPolicy: "explicit-only",
+				subagentMaxDepth: 1,
+				subagentRoleTimeoutsMs: { explore: 120_000, review: 180_000, worker: 900_000 },
+				subagentMaxInputTokens: 16_000,
+				subagentMaxOutputTokens: 4_000,
+				subagentRootTokenBudget: 128_000,
+				subagentRootCostBudget: 8,
+			})
+			await new Promise((resolve) => setTimeout(resolve, 0))
+		})
+		activateTab("agents")
+
+		const content = getSettingsContent()
+		fireEvent.change(within(content).getByTestId("max-concurrent-subagents-input"), {
+			target: { value: "4" },
+		})
+		fireEvent.change(within(content).getByLabelText("Delegation policy"), {
+			target: { value: "proactive" },
+		})
+		fireEvent.change(within(content).getByTestId("subagent-explore-timeout-input"), {
+			target: { value: "420" },
+		})
+		fireEvent.change(within(content).getByTestId("subagent-review-timeout-input"), {
+			target: { value: "480" },
+		})
+		fireEvent.change(within(content).getByTestId("subagent-worker-timeout-input"), {
+			target: { value: "900" },
+		})
+		fireEvent.change(within(content).getByTestId("subagent-max-input-tokens-input"), {
+			target: { value: "24000" },
+		})
+		fireEvent.change(within(content).getByTestId("subagent-max-output-tokens-input"), {
+			target: { value: "8000" },
+		})
+		fireEvent.change(within(content).getByTestId("subagent-root-token-budget-input"), {
+			target: { value: "320000" },
+		})
+		fireEvent.change(within(content).getByTestId("subagent-root-cost-budget-input"), {
+			target: { value: "15.75" },
+		})
+		fireEvent.change(within(content).getByTestId("subagent-max-depth-input"), {
+			target: { value: "3" },
+		})
+
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+
+		await act(async () => {
+			mockPostMessage({ liveTaskIds: ["root-1"], liveTasksById: { "root-1": { lifecycle: "running" } } })
+			await new Promise((resolve) => setTimeout(resolve, 0))
+		})
+
+		expect(within(content).getByTestId("max-concurrent-subagents-input")).toHaveValue(4)
+		expect(within(content).getByLabelText("Delegation policy")).toHaveValue("proactive")
+
+		fireEvent.click(screen.getByTestId("save-button"))
+
+		await waitFor(() =>
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "updateSettings",
+					updatedSettings: expect.objectContaining({
+						maxConcurrentSubagents: 4,
+						subagentDelegationPolicy: "proactive",
+						subagentMaxDepth: 3,
+						subagentRoleTimeoutsMs: { explore: 420_000, review: 480_000, worker: 900_000 },
+						subagentMaxInputTokens: 24_000,
+						subagentMaxOutputTokens: 8_000,
+						subagentRootTokenBudget: 320_000,
+						subagentRootCostBudget: 15.75,
+					}),
+				}),
+			),
+		)
+
+		const updateMessage = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.map(([message]) => message)
+			.find((message) => message.type === "updateSettings")
+		const updatedSettings = updateMessage?.updatedSettings as Record<string, unknown>
+		const managedSettings = Object.fromEntries(
+			Object.entries(updatedSettings).filter(
+				([key]) =>
+					key === "maxConcurrentSubagents" ||
+					(key.startsWith("subagent") &&
+						key !== "subagentDefaultApiConfigId" &&
+						key !== "subagentApiConfigByRole"),
+			),
+		)
+
+		expect(managedSettings).toEqual({
+			maxConcurrentSubagents: 4,
+			subagentDelegationPolicy: "proactive",
+			subagentMaxDepth: 3,
+			subagentRoleTimeoutsMs: { explore: 420_000, review: 480_000, worker: 900_000 },
+			subagentMaxInputTokens: 24_000,
+			subagentMaxOutputTokens: 8_000,
+			subagentRootTokenBudget: 320_000,
+			subagentRootCostBudget: 15.75,
+		})
+	})
+})
 
 describe("SettingsView - Sound Settings", () => {
 	beforeEach(() => {
@@ -718,7 +879,7 @@ describe("SettingsView - Duplicate Commands", () => {
 		)
 	})
 
-	it("saves auto-approval master and execute toggles together", () => {
+	it("saves auto-approval master, execute, and sub-agent toggles together", () => {
 		const { activateTab, getSettingsContent } = renderSettingsView()
 
 		activateTab("autoApprove")
@@ -735,6 +896,8 @@ describe("SettingsView - Duplicate Commands", () => {
 
 		const executeCheckbox = within(content).getByTestId("always-allow-execute-toggle")
 		fireEvent.click(executeCheckbox)
+		const subagentCheckbox = within(content).getByTestId("always-allow-subagents-toggle")
+		fireEvent.click(subagentCheckbox)
 
 		const input = within(content).getByTestId("command-input")
 		fireEvent.change(input, { target: { value: " * " } })
@@ -748,6 +911,7 @@ describe("SettingsView - Duplicate Commands", () => {
 				updatedSettings: expect.objectContaining({
 					autoApprovalEnabled: true,
 					alwaysAllowExecute: true,
+					alwaysAllowSubagents: true,
 					allowedCommands: ["*"],
 				}),
 			}),

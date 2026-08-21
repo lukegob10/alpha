@@ -75,6 +75,9 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 				maxImageFileSize: 5,
 				maxTotalImageSize: 20,
 			}),
+			getSubagentChangeSetActionCapability: vi.fn(),
+			applySubagentChangeSet: vi.fn(),
+			discardSubagentChangeSet: vi.fn(),
 		} as unknown as ClineProvider
 	})
 
@@ -393,5 +396,33 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 
 		// API history should be truncated from first message at/after edited timestamp (fallback)
 		expect(mockCurrentTask.overwriteApiConversationHistory).toHaveBeenCalledWith([])
+	})
+
+	it("routes Apply from the webview to the provider and returns the explicit result", async () => {
+		const result = {
+			action: "apply" as const,
+			taskId: "parent-1",
+			groupId: "group-1",
+			changeSetId: "change-1",
+			success: true,
+			changeSetStatus: "applied" as const,
+			message: "Worker changes were applied.",
+		}
+		vi.mocked(mockClineProvider.applySubagentChangeSet).mockResolvedValue(result)
+
+		await webviewMessageHandler(mockClineProvider, {
+			type: "applySubagentChangeSet",
+			taskId: "parent-1",
+			groupId: "group-1",
+			changeSetId: "change-1",
+			requestId: "request-1",
+		})
+
+		expect(mockClineProvider.applySubagentChangeSet).toHaveBeenCalledWith("parent-1", "group-1", "change-1")
+		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "subagentChangeSetActionResult",
+			requestId: "request-1",
+			subagentChangeSetActionResult: result,
+		})
 	})
 })

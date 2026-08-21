@@ -8,13 +8,21 @@ type FunctionTool = OpenAI.Chat.ChatCompletionTool & { type: "function" }
 const getFunctionDef = (tool: OpenAI.Chat.ChatCompletionTool) => (tool as FunctionTool).function
 
 describe("createReadFileTool", () => {
-	describe("single-file-per-call documentation", () => {
-		it("should indicate single-file-per-call and suggest parallel tool calls", () => {
+	describe("bounded batch documentation", () => {
+		it("should recommend a bounded files batch for known independent files", () => {
 			const tool = createReadFileTool()
 			const description = getFunctionDef(tool).description
 
-			expect(description).toContain("exactly one file per call")
-			expect(description).toContain("multiple parallel read_file calls")
+			expect(description).toContain("bounded files batch")
+			expect(description).toContain("up to 8 entries")
+		})
+
+		it("should expose both single-file and bounded batch inputs", () => {
+			const schema = getFunctionDef(createReadFileTool()).parameters as any
+
+			expect(schema.properties).toHaveProperty("path")
+			expect(schema.properties.files.maxItems).toBe(8)
+			expect(schema.required).toEqual([])
 		})
 	})
 
@@ -112,11 +120,13 @@ describe("createReadFileTool", () => {
 			expect(getFunctionDef(tool).strict).toBe(true)
 		})
 
-		it("should require path parameter", () => {
+		it("should accept either path or files", () => {
 			const tool = createReadFileTool()
 			const schema = getFunctionDef(tool).parameters as any
 
-			expect(schema.required).toContain("path")
+			expect(schema.required).toEqual([])
+			expect(schema.properties).toHaveProperty("path")
+			expect(schema.properties).toHaveProperty("files")
 		})
 	})
 })

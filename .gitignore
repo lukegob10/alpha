@@ -35,6 +35,8 @@ docs/_site/
 # Logging
 logs
 *.log
+/artifacts/certification/*.json
+/artifacts/certification/*.json.tmp-*
 
 # Vite development
 .vite-port

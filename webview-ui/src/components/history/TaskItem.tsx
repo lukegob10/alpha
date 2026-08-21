@@ -50,6 +50,8 @@ interface TaskItemProps {
 	variant: "compact" | "full"
 	showWorkspace?: boolean
 	hasSubtasks?: boolean
+	/** Render inside a TaskGroupItem-owned surface instead of creating a second card surface. */
+	contained?: boolean
 	isSelectionMode?: boolean
 	isSelected?: boolean
 	onToggleSelection?: (taskId: string, isSelected: boolean) => void
@@ -62,6 +64,7 @@ const TaskItem = ({
 	variant,
 	showWorkspace = false,
 	hasSubtasks = false,
+	contained = false,
 	isSelectionMode = false,
 	isSelected = false,
 	onToggleSelection,
@@ -107,9 +110,12 @@ const TaskItem = ({
 		<div
 			key={item.id}
 			data-testid={`task-item-${item.id}`}
+			data-contained={contained ? "true" : "false"}
 			className={cn(
-				"surface-raised cursor-pointer group relative overflow-hidden",
-				"text-vscode-foreground/80 transition-[color,background-color,border-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground hover:shadow-[var(--shadow-accent)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--alpha-accent)]",
+				"cursor-pointer group relative overflow-hidden text-vscode-foreground/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--alpha-accent)]",
+				contained
+					? "bg-transparent transition-[color,background-color] duration-150 hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground"
+					: "surface-raised transition-[color,background-color,border-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground hover:shadow-[var(--shadow-accent)]",
 				isActive && "border-[var(--border-accent)] bg-[var(--alpha-accent-soft)] text-vscode-foreground",
 				hasSubtasks ? "rounded-t-xl" : "rounded-xl",
 				className,
@@ -118,8 +124,9 @@ const TaskItem = ({
 			onKeyDown={handleKeyDown}
 			role="button"
 			tabIndex={0}
+			aria-current={isActive ? "page" : undefined}
 			aria-label={`Open task: ${item.task}`}>
-			<div className={(!isCompact && isSelectionMode ? "pl-3 pb-3" : "pl-4") + " flex gap-3 px-3 pt-3 pb-1"}>
+			<div className={cn("flex gap-3 px-4 py-3.5", !isCompact && isSelectionMode && "pb-3 pl-3")}>
 				{/* Selection checkbox - only in full variant */}
 				{!isCompact && isSelectionMode && (
 					<div
@@ -140,7 +147,7 @@ const TaskItem = ({
 						{item.highlight ? (
 							<div
 								className={cn(
-									"flex-1 min-w-0 overflow-hidden whitespace-pre-wrap font-light text-ellipsis line-clamp-3",
+									"flex-1 min-w-0 overflow-hidden whitespace-pre-wrap font-normal leading-5 text-ellipsis line-clamp-3",
 									{
 										"text-base": !isCompact,
 									},
@@ -152,7 +159,7 @@ const TaskItem = ({
 						) : (
 							<div
 								className={cn(
-									"flex-1 min-w-0 overflow-hidden whitespace-pre-wrap font-light text-ellipsis line-clamp-3",
+									"flex-1 min-w-0 overflow-hidden whitespace-pre-wrap font-normal leading-5 text-ellipsis line-clamp-3",
 									{
 										"text-base": !isCompact,
 									},
@@ -178,7 +185,7 @@ const TaskItem = ({
 							</StandardTooltip>
 						)}
 						{/* Arrow icon that appears on hover */}
-						<ArrowRight className="size-4 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+						<ArrowRight className="size-4 shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100" />
 					</div>
 
 					{showWorkspace && item.workspace && (

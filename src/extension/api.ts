@@ -201,6 +201,11 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 
 		const options: CreateTaskOptions = {
 			consecutiveMistakeLimit: Number.MAX_SAFE_INTEGER,
+			// Keep the caller-supplied runtime configuration authoritative for this
+			// task. Persisting settings intentionally strips executable values such as
+			// FakeAI callbacks, so reading the configuration back from global state
+			// cannot faithfully reconstruct an in-process provider implementation.
+			apiConfiguration: configuration,
 		}
 
 		const task = await provider.createTask(text, images, undefined, options, configuration)
@@ -472,7 +477,7 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 	}
 
 	public async setConfiguration(values: RooCodeSettings) {
-		await this.sidebarProvider.contextProxy.setValues(values)
+		await this.sidebarProvider.setValues(values)
 		await this.sidebarProvider.providerSettingsManager.saveConfig(values.currentApiConfigName || "default", values)
 		await this.sidebarProvider.postStateToWebview()
 	}

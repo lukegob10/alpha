@@ -13,6 +13,17 @@ const functionNames = () =>
 		.filter((tool) => tool.type === "function")
 		.map((tool) => tool.function.name)
 
+const lifecycleToolNames = [
+	"list_agents",
+	"wait_agent",
+	"send_message",
+	"report_progress",
+	"followup_task",
+	"interrupt_agent",
+	"cancel_agent",
+	"close_agent",
+] as const
+
 function productionDispatcherSource(): string {
 	return fs.readFileSync(
 		fileURLToPath(new URL("../../assistant-message/presentAssistantMessage.ts", import.meta.url)),
@@ -37,14 +48,30 @@ describe("native tool production dispatch contract", () => {
 		const dispatchNames = directlyDispatchedToolNames(productionDispatcherSource())
 		const registry = new ToolRegistry()
 
-		expect(exposedNames).not.toContain("delegate_task")
+		expect(exposedNames).toContain("delegate_task")
+		expect(exposedNames).toContain("spawn_agent")
+		expect(exposedNames).toEqual(expect.arrayContaining([...lifecycleToolNames]))
 		expect(exposedNames.filter((name) => !dispatchNames.has(name))).toEqual([])
 		expect(exposedNames.filter((name) => !registry.has(name))).toEqual([])
-		expect(registry.has("delegate_task")).toBe(false)
-		expect(directlyDispatchedToolNames(productionDispatcherSource())).not.toContain("delegate_task")
-		expect(isValidToolName("delegate_task")).toBe(false)
+		expect(registry.has("delegate_task")).toBe(true)
+		expect(registry.has("spawn_agent")).toBe(true)
+		for (const name of lifecycleToolNames) expect(registry.has(name)).toBe(true)
+		expect(directlyDispatchedToolNames(productionDispatcherSource())).toContain("delegate_task")
+		expect(directlyDispatchedToolNames(productionDispatcherSource())).toContain("spawn_agent")
+		for (const name of lifecycleToolNames) {
+			expect(directlyDispatchedToolNames(productionDispatcherSource())).toContain(name)
+		}
+		expect(isValidToolName("delegate_task")).toBe(true)
+		expect(isValidToolName("spawn_agent")).toBe(true)
+		for (const name of lifecycleToolNames) expect(isValidToolName(name)).toBe(true)
 		expect(ALWAYS_AVAILABLE_TOOLS).not.toContain("delegate_task")
-		expect(Object.values(TOOL_GROUPS).flatMap((group) => group.tools)).not.toContain("delegate_task")
+		expect(ALWAYS_AVAILABLE_TOOLS).not.toContain("spawn_agent")
+		for (const name of lifecycleToolNames) expect(ALWAYS_AVAILABLE_TOOLS).not.toContain(name)
+		expect(Object.values(TOOL_GROUPS).flatMap((group) => group.tools)).toContain("delegate_task")
+		expect(Object.values(TOOL_GROUPS).flatMap((group) => group.tools)).toContain("spawn_agent")
+		for (const name of lifecycleToolNames) {
+			expect(Object.values(TOOL_GROUPS).flatMap((group) => group.tools)).toContain(name)
+		}
 	})
 
 	it("retains explicit production boundaries for dynamic MCP and custom tools", () => {

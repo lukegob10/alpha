@@ -340,7 +340,7 @@ describe("mergeExtensionState", () => {
 		})
 	})
 
-	describe("clineMessagesSeq protection", () => {
+	describe("task state sequence protection", () => {
 		const baseState: ExtensionState = {
 			version: "",
 			mcpEnabled: false,
@@ -390,6 +390,40 @@ describe("mergeExtensionState", () => {
 
 			// Should keep the newer messages
 			expect(result.clineMessages).toBe(newerMessages)
+			expect(result.clineMessagesSeq).toBe(5)
+		})
+
+		it("does not reopen a completed task when its stale view snapshot arrives after a new-task draft", () => {
+			const draftMessages: ClineMessage[] = []
+			const prevState: ExtensionState = {
+				...baseState,
+				clineMessages: draftMessages,
+				clineMessagesSeq: 5,
+				currentTaskId: undefined,
+				currentView: { type: "newTaskDraft" },
+				currentTaskItem: undefined,
+			}
+
+			const result = mergeExtensionState(prevState, {
+				clineMessages: [makeMessage(1, "completed task")],
+				clineMessagesSeq: 4,
+				currentTaskId: "completed-task",
+				currentView: { type: "task", taskId: "completed-task" },
+				currentTaskItem: {
+					id: "completed-task",
+					number: 1,
+					ts: 1,
+					task: "completed task",
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			})
+
+			expect(result.currentView).toEqual({ type: "newTaskDraft" })
+			expect(result.currentTaskId).toBeUndefined()
+			expect(result.currentTaskItem).toBeUndefined()
+			expect(result.clineMessages).toBe(draftMessages)
 			expect(result.clineMessagesSeq).toBe(5)
 		})
 

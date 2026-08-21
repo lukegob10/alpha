@@ -7,6 +7,8 @@
 		"format": "prettier --write src",
 		"test:ci": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm test:run",
 		"test:run": "rimraf out && tsc -p tsconfig.json && npx dotenvx run -f .env.local -- node ./out/runTest.js",
+		"test:managed-agents": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm test:managed-agents:run",
+		"test:managed-agents:run": "rimraf out && tsc -p tsconfig.json && node ./out/runTest.js --provider scripted --file managed-agents.acceptance.test",
 		"clean": "rimraf out .turbo"
 	},
 	"devDependencies": {

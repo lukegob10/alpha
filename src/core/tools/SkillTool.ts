@@ -1,7 +1,11 @@
+import path from "path"
+
 import { Task } from "../task/Task"
+import { digestValue } from "../agent/StepContext"
 import { formatResponse } from "../prompts/responses"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import type { ToolUse } from "../../shared/tools"
+import type { SkillContent } from "../../shared/skills"
 import {
 	buildSkillApprovalMessage,
 	buildSkillResult,
@@ -43,12 +47,33 @@ export class SkillTool extends BaseTool<"skill"> {
 				return
 			}
 
-			// Get current mode for skill resolution
-			const state = await provider?.getState()
-			const currentMode = state?.mode ?? "code"
+			// Resolve against the task's sticky mode, not mutable foreground UI state.
+			const currentMode =
+				typeof task.getTaskMode === "function"
+					? await task.getTaskMode()
+					: ((await provider?.getState())?.mode ?? "code")
+			const inheritedSkill = task.taskKind === "subagent" ? task.getInheritedSubagentSkill(skillName) : undefined
 
-			// Fetch skill content
-			const skillContent = await resolveSkillContentForMode(skillsManager, skillName, currentMode)
+			if (task.taskKind === "subagent" && !inheritedSkill) {
+				const availableSkills = task.getInheritedSubagentSkillNames()
+				task.recordToolError("skill")
+				task.didToolFailInCurrentTurn = true
+				pushToolResult(
+					formatResponse.toolError(
+						`Skill '${skillName}' was not included in this child task's frozen catalog. Available skills: ${availableSkills.join(", ") || "(none)"}`,
+					),
+				)
+				return
+			}
+
+			// A child resolves the exact captured path, so a same-name mode override
+			// cannot replace the inherited skill after launch.
+			const exactSkillLookup = skillsManager as typeof skillsManager & {
+				getSkillContentByPath?: (name: string, capturedPath: string) => Promise<SkillContent | null>
+			}
+			const skillContent = inheritedSkill
+				? await exactSkillLookup.getSkillContentByPath?.(skillName, inheritedSkill.path)
+				: await resolveSkillContentForMode(skillsManager, skillName, currentMode)
 
 			if (!skillContent) {
 				// Get available skills for error message
@@ -63,6 +88,33 @@ export class SkillTool extends BaseTool<"skill"> {
 					),
 				)
 				return
+			}
+
+			if (inheritedSkill) {
+				const normalizePath = (candidate: string) => {
+					const resolved = path.resolve(candidate)
+					return process.platform === "win32" ? resolved.toLowerCase() : resolved
+				}
+				if (normalizePath(skillContent.path) !== normalizePath(inheritedSkill.path)) {
+					task.recordToolError("skill")
+					task.didToolFailInCurrentTurn = true
+					pushToolResult(
+						formatResponse.toolError(
+							`Skill '${skillName}' no longer resolves to the path captured for this child task.`,
+						),
+					)
+					return
+				}
+				if (digestValue(skillContent.instructions) !== inheritedSkill.digest) {
+					task.recordToolError("skill")
+					task.didToolFailInCurrentTurn = true
+					pushToolResult(
+						formatResponse.toolError(
+							`Skill '${skillName}' changed after this child task captured its context. Start a new child to use the updated skill.`,
+						),
+					)
+					return
+				}
 			}
 
 			// Build approval message

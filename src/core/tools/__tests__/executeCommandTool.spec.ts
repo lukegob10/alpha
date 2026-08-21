@@ -59,6 +59,8 @@ describe("executeCommandTool", () => {
 
 		// Create mock implementations with eslint directives to handle the type issues
 		mockCline = {
+			abort: false,
+			getTaskLifetimeCancellationSignal: vitest.fn(() => new AbortController().signal),
 			ask: vitest.fn().mockResolvedValue(undefined),
 			say: vitest.fn().mockResolvedValue(undefined),
 			sayAndCreateMissingParamError: vitest.fn().mockResolvedValue("Missing parameter error"),
@@ -81,6 +83,9 @@ describe("executeCommandTool", () => {
 			},
 			lastMessageTs: Date.now(),
 			cwd: "/test/workspace",
+			beginCommandExecution: vitest.fn(),
+			completeCommandExecution: vitest.fn(),
+			failCommandExecution: vitest.fn(),
 		}
 
 		mockAskApproval = vitest.fn().mockResolvedValue(true)
@@ -333,6 +338,47 @@ describe("executeCommandTool", () => {
 		it("should honor model timeout outside CLI runtime", () => {
 			delete process.env.ROO_CLI_RUNTIME
 			expect(executeCommandModule.resolveAgentTimeoutMs(30)).toBe(30_000)
+		})
+
+		it("honors an explicit Worker background timeout and wires structured evidence by tool call id", async () => {
+			mockCline.taskKind = "subagent"
+			mockCline.subagentRole = "worker"
+			mockToolUse.nativeArgs = { command: "pnpm test", timeout: 30 }
+
+			await executeCommandTool.handle(mockCline as Task, mockToolUse, {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				toolCallId: "worker-verification-1",
+			})
+
+			expect(mockCline.beginCommandExecution).toHaveBeenCalledWith(
+				"worker-verification-1",
+				expect.any(String),
+				"pnpm test",
+			)
+			expect(executeCommandModule.resolveAgentTimeoutMs(30)).toBe(30_000)
+		})
+
+		it("assigns unique evidence ids to legacy command calls from the same message", async () => {
+			mockToolUse.nativeArgs = { command: "pnpm test" }
+
+			const callbacks = {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+			}
+
+			await executeCommandTool.handle(mockCline as Task, mockToolUse, callbacks)
+			await executeCommandTool.handle(mockCline as Task, mockToolUse, callbacks)
+
+			const evidenceIds = mockCline.beginCommandExecution.mock.calls.map(([evidenceId]: [string]) => evidenceId)
+			expect(evidenceIds).toHaveLength(2)
+			expect(evidenceIds[0]).not.toBe(evidenceIds[1])
+			expect(evidenceIds).toEqual([
+				expect.stringMatching(new RegExp(`^${mockCline.lastMessageTs}:legacy:`)),
+				expect.stringMatching(new RegExp(`^${mockCline.lastMessageTs}:legacy:`)),
+			])
 		})
 	})
 })

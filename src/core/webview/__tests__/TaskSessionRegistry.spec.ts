@@ -60,6 +60,7 @@ describe("TaskSessionRegistry", () => {
 		expect(registry.canCreateTask()).toBe(true)
 		registry.register(createTask("task-a"))
 		expect(registry.canCreateTask()).toBe(false)
+		expect(registry.getAvailableTaskCapacity()).toBe(0)
 	})
 
 	it("updates the live task cap at runtime", () => {

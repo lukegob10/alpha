@@ -384,6 +384,12 @@
 	.brand-mark {
 		filter: drop-shadow(0 12px 26px color-mix(in srgb, var(--alpha-accent) 11%, transparent));
 	}
+
+	.vscode-light .brand-mark,
+	.vscode-high-contrast-light .brand-mark {
+		filter: brightness(0) saturate(100%) opacity(0.72)
+			drop-shadow(0 8px 18px color-mix(in srgb, var(--alpha-accent) 12%, transparent));
+	}
 }
 
 @media (forced-colors: active) {

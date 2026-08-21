@@ -4,6 +4,7 @@ import type { ModelInfo } from "@alpha-code/types"
 
 import type { ApiHandler, ApiHandlerCreateMessageMetadata } from "../index"
 import { ApiStream } from "../transform/stream"
+import { toOpenAiStrictToolSchema } from "../transform/openai-strict-tool-schema"
 import { countTokens } from "../../utils/countTokens"
 import { isMcpTool } from "../../utils/mcp-name"
 
@@ -52,57 +53,12 @@ export abstract class BaseProvider implements ApiHandler {
 	}
 
 	/**
-	 * Converts tool schemas to be compatible with OpenAI's strict mode by:
-	 * - Ensuring all properties are in the required array (strict mode requirement)
-	 * - Converting nullable types (["type", "null"]) to non-nullable ("type")
-	 * - Adding additionalProperties: false to all object schemas (required by OpenAI Responses API)
-	 * - Recursively processing nested objects and arrays
-	 *
-	 * This matches the behavior of ensureAllRequired in openai-native.ts
+	 * Converts tool schemas to OpenAI's strict subset, including union branches,
+	 * nested arrays/objects, and nullable encoding for originally optional fields.
+	 * Keep this as the single strict-schema path for OpenAI-compatible providers.
 	 */
 	protected convertToolSchemaForOpenAI(schema: any): any {
-		if (!schema || typeof schema !== "object" || schema.type !== "object") {
-			return schema
-		}
-
-		const result = { ...schema }
-
-		// OpenAI Responses API requires additionalProperties: false on all object schemas
-		// Only add if not already set to false (to avoid unnecessary mutations)
-		if (result.additionalProperties !== false) {
-			result.additionalProperties = false
-		}
-
-		if (result.properties) {
-			const allKeys = Object.keys(result.properties)
-			// OpenAI strict mode requires ALL properties to be in required array
-			result.required = allKeys
-
-			// Recursively process nested objects and convert nullable types
-			const newProps = { ...result.properties }
-			for (const key of allKeys) {
-				const prop = newProps[key]
-
-				// Handle nullable types by removing null
-				if (prop && Array.isArray(prop.type) && prop.type.includes("null")) {
-					const nonNullTypes = prop.type.filter((t: string) => t !== "null")
-					prop.type = nonNullTypes.length === 1 ? nonNullTypes[0] : nonNullTypes
-				}
-
-				// Recursively process nested objects
-				if (prop && prop.type === "object") {
-					newProps[key] = this.convertToolSchemaForOpenAI(prop)
-				} else if (prop && prop.type === "array" && prop.items?.type === "object") {
-					newProps[key] = {
-						...prop,
-						items: this.convertToolSchemaForOpenAI(prop.items),
-					}
-				}
-			}
-			result.properties = newProps
-		}
-
-		return result
+		return toOpenAiStrictToolSchema(schema)
 	}
 
 	/**

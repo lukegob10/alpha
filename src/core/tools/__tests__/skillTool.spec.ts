@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import { skillTool } from "../SkillTool"
 import { Task } from "../../task/Task"
 import { formatResponse } from "../../prompts/responses"
+import { digestValue } from "../../agent/StepContext"
 import type { ToolUse } from "../../../shared/tools"
 
 describe("skillTool", () => {
@@ -14,6 +15,7 @@ describe("skillTool", () => {
 
 		mockSkillsManager = {
 			getSkillContent: vi.fn(),
+			getSkillContentByPath: vi.fn(),
 			getSkillsForMode: vi.fn().mockReturnValue([]),
 		}
 
@@ -340,6 +342,132 @@ Source: project
 --- Skill Instructions ---
 
 Follow these project-specific instructions...`,
+		)
+	})
+
+	it("loads an unchanged skill from a managed child's frozen catalog", async () => {
+		const instructions = "Inspect the repository without changing files."
+		const inherited = {
+			name: "review-repository",
+			path: "F:/workspace/.alpha/skills/review-repository/SKILL.md",
+			digest: digestValue(instructions),
+		}
+		Object.assign(mockTask, {
+			taskKind: "subagent",
+			getTaskMode: vi.fn(async () => "code"),
+			getInheritedSubagentSkill: vi.fn((name: string) => (name === inherited.name ? inherited : undefined)),
+			getInheritedSubagentSkillNames: vi.fn(() => [inherited.name]),
+		})
+		mockSkillsManager.getSkillContentByPath.mockResolvedValue({
+			...inherited,
+			description: "Review repository evidence",
+			source: "project",
+			instructions,
+		})
+
+		await skillTool.handle(
+			mockTask as Task,
+			{
+				type: "tool_use",
+				name: "skill",
+				params: {},
+				partial: false,
+				nativeArgs: { skill: inherited.name },
+			},
+			mockCallbacks,
+		)
+
+		expect(mockCallbacks.askApproval).toHaveBeenCalledOnce()
+		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining(instructions))
+	})
+
+	it.each([
+		["path", "F:/workspace/.alpha/skills/replaced/SKILL.md", "instructions"],
+		["digest", "F:/workspace/.alpha/skills/review-repository/SKILL.md", "changed instructions"],
+	] as const)("rejects inherited skill %s drift", async (_kind, resolvedPath, resolvedInstructions) => {
+		const capturedInstructions = "original instructions"
+		const inherited = {
+			name: "review-repository",
+			path: "F:/workspace/.alpha/skills/review-repository/SKILL.md",
+			digest: digestValue(capturedInstructions),
+		}
+		Object.assign(mockTask, {
+			taskKind: "subagent",
+			getTaskMode: vi.fn(async () => "code"),
+			getInheritedSubagentSkill: vi.fn(() => inherited),
+			getInheritedSubagentSkillNames: vi.fn(() => [inherited.name]),
+		})
+		mockSkillsManager.getSkillContentByPath.mockResolvedValue({
+			name: inherited.name,
+			path: resolvedPath,
+			description: "Review repository evidence",
+			source: "project",
+			instructions: resolvedInstructions,
+		})
+
+		await skillTool.handle(
+			mockTask as Task,
+			{
+				type: "tool_use",
+				name: "skill",
+				params: {},
+				partial: false,
+				nativeArgs: { skill: inherited.name },
+			},
+			mockCallbacks,
+		)
+
+		expect(mockCallbacks.askApproval).not.toHaveBeenCalled()
+		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(
+			expect.stringMatching(/no longer resolves|changed after this child task captured/),
+		)
+	})
+
+	it("loads the exact captured mode-specific skill instead of a same-name code override", async () => {
+		const capturedInstructions = "Architect-specific review workflow"
+		const inherited = {
+			name: "design-review",
+			path: "F:/workspace/.alpha/skills-architect/design-review/SKILL.md",
+			digest: digestValue(capturedInstructions),
+		}
+		Object.assign(mockTask, {
+			taskKind: "subagent",
+			getTaskMode: vi.fn(async () => "code"),
+			getInheritedSubagentSkill: vi.fn(() => inherited),
+			getInheritedSubagentSkillNames: vi.fn(() => [inherited.name]),
+		})
+		mockSkillsManager.getSkillContent.mockResolvedValue({
+			name: inherited.name,
+			path: "F:/workspace/.alpha/skills-code/design-review/SKILL.md",
+			description: "Code override",
+			source: "project",
+			instructions: "Wrong code-mode instructions",
+		})
+		mockSkillsManager.getSkillContentByPath.mockResolvedValue({
+			name: inherited.name,
+			path: inherited.path,
+			description: "Architect review",
+			source: "project",
+			instructions: capturedInstructions,
+		})
+
+		await skillTool.handle(
+			mockTask as Task,
+			{
+				type: "tool_use",
+				name: "skill",
+				params: {},
+				partial: false,
+				nativeArgs: { skill: inherited.name },
+			},
+			mockCallbacks,
+		)
+
+		expect(mockSkillsManager.getSkillContentByPath).toHaveBeenCalledWith(inherited.name, inherited.path)
+		expect(mockSkillsManager.getSkillContent).not.toHaveBeenCalled()
+		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining(capturedInstructions))
+		expect(mockCallbacks.pushToolResult).not.toHaveBeenCalledWith(
+			expect.stringContaining("Wrong code-mode instructions"),
 		)
 	})
 })

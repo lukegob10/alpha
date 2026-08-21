@@ -105,7 +105,7 @@ export type AgentTurnEvent =
 			type: "internal_task_completed"
 			envelopeId: string
 			childTaskId: string
-			status: "completed" | "failed" | "denied" | "cancelled" | "timed_out"
+			status: "completed" | "blocked" | "failed" | "denied" | "cancelled" | "timed_out"
 			inputTokens?: number
 			outputTokens?: number
 	  }

@@ -1,4 +1,5 @@
 import { getSharedToolUseSection } from "../tool-use"
+import { getRulesSection } from "../rules"
 
 describe("getSharedToolUseSection", () => {
 	it("should include native tool-calling instructions", () => {
@@ -19,11 +20,54 @@ describe("getSharedToolUseSection", () => {
 		expect(section).not.toContain("as many tools as are reasonably needed")
 	})
 
-	it("should call out new_task as a batching exception", () => {
+	it("should call out delegation tools as batching exceptions", () => {
 		const section = getSharedToolUseSection()
 
-		expect(section).toContain("new_task is a delegation boundary")
-		expect(section).toContain("must always be called alone")
+		expect(section).toContain("new_task and delegate_task are blocking delegation boundaries")
+		expect(section).toContain("must each be called alone")
+		expect(section).toContain("put all of their spawn_agent calls in the same response")
+		expect(section).toContain("wait_agent is blocking and must be called alone")
+		expect(section).toContain("execute sequentially in provider order")
+		expect(section).toContain("spawn_agent followed by send_message")
+		expect(section).toContain("stable task_name")
+	})
+
+	it("permits only bounded descendant control when frozen child authority allows delegation", () => {
+		const rules = getRulesSection("F:/workspace", {
+			todoListEnabled: true,
+			useAgentRules: true,
+			newTaskRequireTodos: false,
+			subagentRole: "review",
+			subagentCanDelegate: true,
+			subagentDelegationPolicy: "proactive",
+		})
+		const toolUse = getSharedToolUseSection("review", false, true, "proactive")
+
+		expect(rules).not.toContain("Do not create tasks or delegate")
+		expect(rules).toContain("create only managed descendants with spawn_agent")
+		expect(rules).toContain("frozen depth, root-wide capacity, timeout, token, and cost limits")
+		expect(toolUse).toContain("managed-agent lifecycle controls for your retained descendant subtree")
+		expect(toolUse).toContain("Do not control ancestors, siblings, or foreign branches")
+	})
+
+	it("retains the delegation prohibition for explicit false and legacy child prompt settings", () => {
+		const baseSettings = {
+			todoListEnabled: true,
+			useAgentRules: true,
+			newTaskRequireTodos: false,
+			subagentRole: "review" as const,
+		}
+		const explicitFalse = getRulesSection("F:/workspace", {
+			...baseSettings,
+			subagentCanDelegate: false,
+		})
+		const legacy = getRulesSection("F:/workspace", baseSettings)
+		const toolUse = getSharedToolUseSection("review")
+
+		expect(explicitFalse).toContain("Do not create tasks or delegate")
+		expect(legacy).toContain("Do not create tasks or delegate")
+		expect(toolUse).not.toContain("spawn_agent")
+		expect(toolUse).not.toContain("descendant subtree")
 	})
 
 	it("should NOT include single tool per message restriction", () => {

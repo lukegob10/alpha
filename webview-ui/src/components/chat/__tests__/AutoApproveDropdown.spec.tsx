@@ -16,6 +16,7 @@ const mockSetters = {
 	setAlwaysAllowMcp: vi.fn(),
 	setAlwaysAllowModeSwitch: vi.fn(),
 	setAlwaysAllowSubtasks: vi.fn(),
+	setAlwaysAllowSubagents: vi.fn(),
 	setAlwaysAllowFollowupQuestions: vi.fn(),
 	setAllowedCommands: vi.fn(),
 }
@@ -66,6 +67,7 @@ describe("AutoApproveDropdown", () => {
 			alwaysAllowMcp: false,
 			alwaysAllowModeSwitch: false,
 			alwaysAllowSubtasks: false,
+			alwaysAllowSubagents: false,
 			alwaysAllowFollowupQuestions: false,
 		}
 	})
@@ -88,6 +90,7 @@ describe("AutoApproveDropdown", () => {
 				alwaysAllowMcp: true,
 				alwaysAllowModeSwitch: true,
 				alwaysAllowSubtasks: true,
+				alwaysAllowSubagents: true,
 				alwaysAllowFollowupQuestions: true,
 				allowedCommands: ["git", "*"],
 			}),
@@ -95,6 +98,7 @@ describe("AutoApproveDropdown", () => {
 		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "autoApprovalEnabled", bool: true })
 		expect(mockSetters.setAllowedCommands).toHaveBeenCalledWith(["git", "*"])
 		expect(mockSetters.setAlwaysAllowWriteProtected).toHaveBeenCalledWith(true)
+		expect(mockSetters.setAlwaysAllowSubagents).toHaveBeenCalledWith(true)
 	})
 
 	it("select all includes nested permissions and wildcard commands", () => {
@@ -116,5 +120,20 @@ describe("AutoApproveDropdown", () => {
 			}),
 		})
 		expect(vscode.postMessage).not.toHaveBeenCalledWith({ type: "autoApprovalEnabled", bool: true })
+	})
+
+	it("updates the dedicated sub-agent permission from the compact menu", () => {
+		mockState.autoApprovalEnabled = true
+
+		render(<AutoApproveDropdown />)
+
+		fireEvent.click(screen.getByTestId("auto-approve-dropdown-trigger"))
+		fireEvent.click(screen.getByTestId("auto-approve-alwaysAllowSubagents"))
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "updateSettings",
+			updatedSettings: { alwaysAllowSubagents: true },
+		})
+		expect(mockSetters.setAlwaysAllowSubagents).toHaveBeenCalledWith(true)
 	})
 })

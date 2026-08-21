@@ -105,3 +105,73 @@ describe("filterNativeToolsForMode - orchestrator delegation", () => {
 		expect(resultNames).toContain("switch_mode")
 	})
 })
+
+describe("filterNativeToolsForMode - bounded sub-agents", () => {
+	const lifecycleTools = [
+		"list_agents",
+		"wait_agent",
+		"send_message",
+		"followup_task",
+		"interrupt_agent",
+		"cancel_agent",
+		"close_agent",
+	]
+	const nativeTools: OpenAI.Chat.ChatCompletionTool[] = [
+		makeTool("delegate_task"),
+		makeTool("spawn_agent"),
+		...lifecycleTools.map(makeTool),
+		makeTool("read_file"),
+	]
+
+	it("exposes bounded agent tools in Code mode", () => {
+		const codeNames = filterNativeToolsForMode(nativeTools, "code", undefined, undefined, undefined, {}).map(
+			(tool) => (tool as any).function.name,
+		)
+		const askNames = filterNativeToolsForMode(nativeTools, "ask", undefined, undefined, undefined, {}).map(
+			(tool) => (tool as any).function.name,
+		)
+
+		expect(codeNames).toContain("delegate_task")
+		expect(codeNames).toContain("spawn_agent")
+		expect(codeNames).toEqual(expect.arrayContaining(lifecycleTools))
+		expect(askNames).not.toContain("delegate_task")
+		expect(askNames).not.toContain("spawn_agent")
+		expect(askNames.filter((name) => lifecycleTools.includes(name))).toEqual([])
+	})
+
+	it("respects the existing disabled-tool configuration", () => {
+		const names = filterNativeToolsForMode(nativeTools, "code", undefined, undefined, undefined, {
+			disabledTools: ["delegate_task"],
+		}).map((tool) => (tool as any).function.name)
+
+		expect(names).not.toContain("delegate_task")
+	})
+
+	it("can disable asynchronous spawning without disabling legacy delegation", () => {
+		const names = filterNativeToolsForMode(nativeTools, "code", undefined, undefined, undefined, {
+			disabledTools: ["spawn_agent"],
+		}).map((tool) => (tool as any).function.name)
+
+		expect(names).not.toContain("spawn_agent")
+		expect(names).toContain("delegate_task")
+	})
+
+	it("does not grant asynchronous lifecycle controls to a custom mode through the agents group", () => {
+		const customModes = [
+			{
+				slug: "research",
+				name: "Research",
+				roleDefinition: "Inspect a repository",
+				groups: ["read", "agents"],
+			},
+		] as any
+
+		const names = filterNativeToolsForMode(nativeTools, "research", customModes, undefined, undefined, {}).map(
+			(tool) => (tool as any).function.name,
+		)
+
+		expect(names).not.toContain("spawn_agent")
+		expect(names.filter((name) => lifecycleTools.includes(name))).toEqual([])
+		expect(names).toContain("delegate_task")
+	})
+})

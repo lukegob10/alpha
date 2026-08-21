@@ -63,6 +63,7 @@ async function generatePrompt(
 	// Get the full mode config to ensure we have the role definition (used for groups, etc.)
 	const modeConfig = getModeBySlug(mode, customModeConfigs) || modes.find((m) => m.slug === mode) || modes[0]
 	const { roleDefinition, baseInstructions } = getModeSelection(mode, promptComponent, customModeConfigs)
+	const subagentRole = settings?.subagentRole
 
 	// Check if MCP functionality should be included
 	const hasMcpGroup = modeConfig.groups.some((groupEntry) => getGroupName(groupEntry) === "mcp")
@@ -74,10 +75,9 @@ async function generatePrompt(
 	// Tool calling is native-only.
 	const effectiveProtocol = "native"
 
-	const [modesSection, skillsSection] = await Promise.all([
-		getModesSection(context),
-		getSkillsSection(skillsManager, mode as string),
-	])
+	const [modesSection, skillsSection] = subagentRole
+		? ["", ""]
+		: await Promise.all([getModesSection(context), getSkillsSection(skillsManager, mode as string)])
 
 	// Tools catalog is not included in the system prompt.
 	const toolsCatalog = ""
@@ -86,11 +86,22 @@ async function generatePrompt(
 
 ${markdownFormattingSection()}
 
-${getSharedToolUseSection()}${toolsCatalog}
+${getSharedToolUseSection(
+	subagentRole,
+	settings?.subagentHasInheritedSkills,
+	settings?.subagentCanDelegate,
+	settings?.subagentDelegationPolicy,
+)}${toolsCatalog}
 
-	${getToolUseGuidelinesSection()}
+	${getToolUseGuidelinesSection(subagentRole)}
 
-${getCapabilitiesSection(cwd, shouldIncludeMcp ? mcpHub : undefined)}
+${getCapabilitiesSection(
+	cwd,
+	shouldIncludeMcp ? mcpHub : undefined,
+	subagentRole,
+	settings?.subagentCanDelegate,
+	settings?.subagentDelegationPolicy,
+)}
 
 ${modesSection}
 ${skillsSection ? `\n${skillsSection}` : ""}
@@ -98,13 +109,17 @@ ${getRulesSection(cwd, settings)}
 
 ${getSystemInfoSection(cwd)}
 
-${getObjectiveSection()}
+${subagentRole ? "" : getObjectiveSection()}
 
-${await addCustomInstructions(baseInstructions, globalCustomInstructions || "", cwd, mode, {
-	language: language ?? formatLanguage(vscode.env.language),
-	rooIgnoreInstructions,
-	settings,
-})}`
+${
+	subagentRole && settings?.subagentUsesFrozenContext
+		? ""
+		: await addCustomInstructions(subagentRole ? "" : baseInstructions, globalCustomInstructions || "", cwd, mode, {
+				language: language ?? formatLanguage(vscode.env.language),
+				rooIgnoreInstructions,
+				settings,
+			})
+}`
 
 	return basePrompt
 }

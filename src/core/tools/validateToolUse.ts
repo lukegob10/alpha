@@ -6,8 +6,7 @@ import { type Mode, FileRestrictionError, getModeBySlug, getGroupName } from "..
 import { EXPERIMENT_IDS } from "../../shared/experiments"
 import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS, TOOL_ALIASES } from "../../shared/tools"
 
-const nonExecutableNativeTools = new Set<string>(["delegate_task"])
-const executableNativeToolNames = validToolNames.filter((name) => !nonExecutableNativeTools.has(name))
+const executableNativeToolNames = validToolNames
 
 /**
  * Checks if a tool name is a valid, known tool.

@@ -16,7 +16,13 @@ vi.mock("p-wait-for", () => ({
 vi.mock("fs/promises", () => ({
 	mkdir: vi.fn().mockResolvedValue(undefined),
 	writeFile: vi.fn().mockResolvedValue(undefined),
-	readFile: vi.fn().mockResolvedValue(""),
+	readFile: vi
+		.fn()
+		.mockImplementation((filePath: string) =>
+			filePath.endsWith("agent_control.json")
+				? Promise.reject(Object.assign(new Error("not found"), { code: "ENOENT" }))
+				: Promise.resolve(""),
+		),
 	readdir: vi.fn().mockResolvedValue([]),
 	unlink: vi.fn().mockResolvedValue(undefined),
 	rmdir: vi.fn().mockResolvedValue(undefined),
@@ -337,7 +343,81 @@ describe("ClineProvider Task History Synchronization", () => {
 		return calls.filter((call) => call[0]?.type === type)
 	}
 
+	it("does not post a pre-migration state while task-history recovery is still running", async () => {
+		let finishRecovery!: () => void
+		;(provider as any).taskHistoryStoreReady = new Promise<void>((resolve) => (finishRecovery = resolve))
+		const getState = vi.spyOn(provider, "getState")
+
+		const pendingState = provider.getStateToPostToWebview()
+		await Promise.resolve()
+		expect(getState).not.toHaveBeenCalled()
+
+		finishRecovery()
+		await expect(pendingState).resolves.toBeDefined()
+		expect(getState).toHaveBeenCalledOnce()
+	})
+
+	describe("getTaskWithAggregatedCosts", () => {
+		it("treats a not-yet-persisted child as zero cost instead of throwing", async () => {
+			const parent = createHistoryItem({
+				id: "parent-task",
+				task: "Parent task",
+				totalCost: 0.5,
+				childIds: ["starting-child"],
+			})
+			await provider.updateTaskHistory(parent, { broadcast: false })
+
+			const warningSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+			const getTaskSpy = vi.spyOn(provider, "getTaskWithId")
+
+			const result = await provider.getTaskWithAggregatedCosts(parent.id)
+
+			expect(result.aggregatedCosts).toEqual({
+				ownCost: 0.5,
+				childrenCost: 0,
+				totalCost: 0.5,
+				childBreakdown: {
+					"starting-child": {
+						ownCost: 0,
+						childrenCost: 0,
+						totalCost: 0,
+					},
+				},
+			})
+			// Only the requested root uses the throwing, full task loader. Descendants
+			// use the non-throwing history index while their records are being created.
+			expect(getTaskSpy).toHaveBeenCalledTimes(1)
+			expect(getTaskSpy).toHaveBeenCalledWith(parent.id)
+
+			warningSpy.mockRestore()
+		})
+	})
+
 	describe("updateTaskHistory", () => {
+		it("writes only a bounded root-only downgrade mirror to globalState", async () => {
+			const root = createHistoryItem({
+				id: "mirror-root",
+				task: "Root task",
+				childIds: ["mirror-child"],
+			})
+			const child = createHistoryItem({
+				id: "mirror-child",
+				rootTaskId: root.id,
+				parentTaskId: root.id,
+				taskKind: "subagent",
+				task: "child payload ".repeat(20_000),
+			})
+
+			await provider.updateTaskHistory(root, { broadcast: false })
+			await provider.updateTaskHistory(child, { broadcast: false })
+			await (provider as any).flushGlobalStateWriteThrough()
+
+			await vi.waitFor(() => expect(taskHistoryState.some((item) => item.id === root.id)).toBe(true))
+			expect(taskHistoryState.map((item) => item.id)).toEqual([root.id])
+			expect(taskHistoryState[0]).not.toHaveProperty("childIds")
+			expect(Buffer.byteLength(JSON.stringify(taskHistoryState), "utf8")).toBeLessThanOrEqual(192 * 1024)
+		})
+
 		it("broadcasts task history update by default", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
 			provider.isViewLaunched = true
@@ -680,6 +760,31 @@ describe("ClineProvider Task History Synchronization", () => {
 			expect(ids).toContain("keep-me")
 			expect(ids).toContain("new-item")
 			expect(ids).not.toContain("remove-me")
+		})
+
+		it("purges retained managed-agent data when its root history item is explicitly deleted", async () => {
+			const root = createHistoryItem({ id: "deleted-agent-root", task: "Delete this managed tree" })
+			await provider.updateTaskHistory(root, { broadcast: false })
+			const purgeRoot = vi.spyOn((provider as any).agentControlStore, "purgeRoot").mockResolvedValueOnce(true)
+
+			await provider.deleteTaskFromState(root.id)
+
+			expect(purgeRoot).toHaveBeenCalledOnce()
+			expect(purgeRoot).toHaveBeenCalledWith(root.id)
+			expect(provider.taskHistoryStore.get(root.id)).toBeUndefined()
+		})
+
+		it("retains managed-agent evidence when authoritative history deletion fails", async () => {
+			const root = createHistoryItem({ id: "failed-history-delete", task: "Keep audit evidence" })
+			await provider.updateTaskHistory(root, { broadcast: false })
+			const purgeRoot = vi.spyOn((provider as any).agentControlStore, "purgeRoot")
+			const deleteFailure = new Error("history storage unavailable")
+			vi.spyOn(provider.taskHistoryStore, "delete").mockRejectedValueOnce(deleteFailure)
+
+			await expect(provider.deleteTaskFromState(root.id)).rejects.toBe(deleteFailure)
+
+			expect(purgeRoot).not.toHaveBeenCalled()
+			expect(provider.taskHistoryStore.get(root.id)).toEqual(expect.objectContaining({ id: root.id }))
 		})
 
 		it("does not block subsequent writes when a previous store write errors", async () => {

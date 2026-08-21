@@ -188,6 +188,74 @@ describe("processResponsesApiStream", () => {
 				},
 			])
 		})
+
+		it("should preserve call_id while correlating parallel deltas by item_id and output_index", async () => {
+			const stream = mockStream([
+				{
+					type: "response.output_item.added",
+					output_index: 0,
+					item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "first" },
+				},
+				{
+					type: "response.output_item.added",
+					output_index: 1,
+					item: { type: "function_call", id: "fc_2", call_id: "call_2", name: "second" },
+				},
+				{
+					type: "response.function_call_arguments.delta",
+					item_id: "fc_1",
+					output_index: 0,
+					delta: '{"first":true}',
+				},
+				{
+					type: "response.function_call_arguments.delta",
+					item_id: "fc_2",
+					output_index: 1,
+					delta: '{"second":true}',
+				},
+				{
+					type: "response.output_item.done",
+					output_index: 0,
+					item: {
+						type: "function_call",
+						id: "fc_1",
+						call_id: "call_1",
+						name: "first",
+						arguments: '{"first":true}',
+					},
+				},
+				{
+					type: "response.output_item.done",
+					output_index: 1,
+					item: {
+						type: "function_call",
+						id: "fc_2",
+						call_id: "call_2",
+						name: "second",
+						arguments: '{"second":true}',
+					},
+				},
+			])
+
+			const chunks = await collectChunks(processResponsesApiStream(stream, noopUsage))
+
+			expect(chunks).toEqual([
+				{
+					type: "tool_call_partial",
+					index: 0,
+					id: "call_1",
+					name: "first",
+					arguments: '{"first":true}',
+				},
+				{
+					type: "tool_call_partial",
+					index: 1,
+					id: "call_2",
+					name: "second",
+					arguments: '{"second":true}',
+				},
+			])
+		})
 	})
 
 	describe("completion and usage", () => {

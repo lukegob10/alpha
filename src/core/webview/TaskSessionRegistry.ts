@@ -97,6 +97,10 @@ export class TaskSessionRegistry {
 		return this.getLiveTaskCount() < this.maxLiveTasks
 	}
 
+	getAvailableTaskCapacity(): number {
+		return Math.max(0, this.maxLiveTasks - this.getLiveTaskCount())
+	}
+
 	register(task: Task, options: { focus?: boolean } = {}): void {
 		this.sessions.set(task.taskId, {
 			task,

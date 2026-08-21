@@ -1,7 +1,16 @@
 import NodeCache from "node-cache"
 import getFolderSize from "get-folder-size"
 
-import type { ClineMessage, HistoryItem } from "@alpha-code/types"
+import type {
+	ClineMessage,
+	HistoryItem,
+	SubagentChangeSetState,
+	SubagentContextManifest,
+	SubagentDelegationPolicy,
+	SubagentModelRouteState,
+	SubagentRole,
+	SubagentStopReason,
+} from "@alpha-code/types"
 
 import { combineApiRequests } from "../../shared/combineApiRequests"
 import { combineCommandSequences } from "../../shared/combineCommandSequences"
@@ -24,7 +33,26 @@ export type TaskMetadataOptions = {
 	/** Provider profile name for the task (sticky profile feature) */
 	apiConfigName?: string
 	/** Initial status for the task (e.g., "active" for child tasks) */
-	initialStatus?: "active" | "delegated" | "completed"
+	initialStatus?:
+		| "active"
+		| "delegated"
+		| "completed"
+		| "blocked"
+		| "failed"
+		| "cancelled"
+		| "timed_out"
+		| "interrupted"
+	taskKind?: "primary" | "subagent"
+	subagentGroupId?: string
+	subagentNickname?: string
+	subagentRole?: SubagentRole
+	subagentModelRoute?: SubagentModelRouteState
+	subagentContextManifest?: SubagentContextManifest
+	subagentDelegationPolicy?: SubagentDelegationPolicy
+	subagentDelegationExplicitlyEnabled?: boolean
+	stopReason?: SubagentStopReason
+	subagentWriteScope?: string[]
+	subagentChangeSet?: SubagentChangeSetState
 }
 
 export async function taskMetadata({
@@ -38,6 +66,17 @@ export async function taskMetadata({
 	mode,
 	apiConfigName,
 	initialStatus,
+	taskKind,
+	subagentGroupId,
+	subagentNickname,
+	subagentRole,
+	subagentModelRoute,
+	subagentContextManifest,
+	subagentDelegationPolicy,
+	subagentDelegationExplicitlyEnabled,
+	stopReason,
+	subagentWriteScope,
+	subagentChangeSet,
 }: TaskMetadataOptions) {
 	const taskDir = await getTaskDirectoryPath(globalStoragePath, id)
 
@@ -112,6 +151,19 @@ export async function taskMetadata({
 		mode,
 		...(typeof apiConfigName === "string" && apiConfigName.length > 0 ? { apiConfigName } : {}),
 		...(initialStatus && { status: initialStatus }),
+		...(taskKind && { taskKind }),
+		...(subagentGroupId && { subagentGroupId }),
+		...(subagentNickname && { subagentNickname }),
+		...(subagentRole && { subagentRole }),
+		...(subagentModelRoute && { subagentModelRoute: structuredClone(subagentModelRoute) }),
+		...(subagentContextManifest && {
+			subagentContextManifest: structuredClone(subagentContextManifest),
+		}),
+		...(subagentDelegationPolicy && { subagentDelegationPolicy }),
+		...(subagentDelegationExplicitlyEnabled !== undefined && { subagentDelegationExplicitlyEnabled }),
+		...(stopReason && { stopReason }),
+		...(subagentWriteScope && { subagentWriteScope: [...subagentWriteScope] }),
+		...(subagentChangeSet && { subagentChangeSet: structuredClone(subagentChangeSet) }),
 	}
 
 	return { historyItem, tokenUsage }

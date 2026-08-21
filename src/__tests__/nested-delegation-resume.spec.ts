@@ -153,6 +153,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 			getTaskWithId,
 			emit: emitSpy,
 			getCurrentTask: vi.fn(() => (currentActiveId ? ({ taskId: currentActiveId } as any) : undefined)),
+			getParentCompletionDecision: vi.fn(async () => ({ allowed: true })),
 			removeClineFromStack,
 			createTaskWithHistoryItem,
 			updateTaskHistory,

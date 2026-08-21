@@ -1,7 +1,7 @@
 // pnpm --filter @alpha-code/vscode-webview test src/components/chat/__tests__/ChatView.spec.tsx
 
 import React from "react"
-import { render, waitFor, act, fireEvent } from "@/utils/test-utils"
+import { render, waitFor, act, fireEvent, within } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
@@ -825,6 +825,258 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 	})
 })
 
+describe("ChatView - Managed agent monitor", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.mocked(vscode.postMessage).mockClear()
+	})
+
+	it("mounts a compact live task strip and opens the selected descendant", async () => {
+		const { getByRole, queryByRole, queryByText } = renderChatView()
+		const now = Date.now()
+
+		mockPostMessage({
+			currentTaskId: "root-1",
+			currentView: { type: "task", taskId: "root-1" },
+			currentTaskItem: {
+				id: "root-1",
+				number: 1,
+				ts: now - 5_000,
+				task: "Coordinate the UI milestone",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				workspace: "/test/workspace",
+			},
+			maxConcurrentSubagents: 2,
+			managedAgentTree: {
+				version: 1,
+				rootTaskId: "root-1",
+				observedAt: now,
+				nodes: [
+					{
+						taskId: "root-1",
+						rootTaskId: "root-1",
+						path: "/root",
+						nickname: "Coordinate the UI milestone",
+						role: "root",
+						objective: "Coordinate the UI milestone",
+						status: "running",
+						createdAt: now - 5_000,
+						updatedAt: now,
+						depth: 0,
+						usage: { durationMs: 5_000 },
+					},
+					{
+						taskId: "child-1",
+						rootTaskId: "root-1",
+						parentTaskId: "root-1",
+						groupId: "group-1",
+						path: "/root/maple",
+						nickname: "Maple",
+						role: "worker",
+						objective: "Implement the monitor",
+						status: "running",
+						createdAt: now - 4_000,
+						updatedAt: now,
+						startedAt: now - 3_000,
+						depth: 1,
+						usage: { durationMs: 3_000 },
+					},
+				],
+				activity: [],
+				capacity: { active: 1, queued: 0, terminal: 0, limit: 2 },
+				budgets: { tokenLimit: null, costLimit: null },
+				omittedNodeCount: 0,
+				omittedActivityCount: 0,
+			},
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: now - 5_000,
+					text: "Coordinate the UI milestone",
+				},
+				{
+					type: "say",
+					say: "subagent_group",
+					ts: now - 4_000,
+					subagentGroup: {
+						groupId: "group-1",
+						parentTaskId: "root-1",
+						status: "running",
+						createdAt: now - 4_000,
+						agents: [
+							{
+								taskId: "child-1",
+								nickname: "Maple",
+								role: "worker",
+								objective: "Implement the monitor",
+								status: "running",
+								phase: "working",
+								startedAt: now - 3_000,
+								usage: { durationMs: 3_000 },
+							},
+						],
+					},
+				} as ClineMessage,
+			],
+			liveTasksById: {
+				"root-1": {
+					id: "root-1",
+					status: "running",
+					lifecycle: "running",
+					isActive: true,
+					isStreaming: true,
+					isWaitingForInput: false,
+					lastUpdatedAt: now,
+					queueCount: 0,
+					tokensIn: 100,
+					tokensOut: 50,
+					totalCost: 0.01,
+				},
+			},
+		})
+
+		const taskStrip = await waitFor(() => getByRole("region", { name: "Sub-agent tasks" }))
+		expect(queryByRole("heading", { name: "Managed agents" })).not.toBeInTheDocument()
+		expect(queryByText("Mailbox & activity")).not.toBeInTheDocument()
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(within(taskStrip).getByRole("button", { name: /Open Maple · Working/i }))
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "showTaskWithId",
+			text: "child-1",
+		})
+	})
+
+	it("renders durable nested registry state after reload without transcript groups", async () => {
+		const { getByRole, queryByText } = renderChatView()
+		const now = Date.now()
+
+		mockPostMessage({
+			currentTaskId: "root-1",
+			currentView: { type: "task", taskId: "root-1" },
+			currentTaskItem: {
+				id: "root-1",
+				number: 1,
+				ts: now - 10_000,
+				task: "Coordinate durable agents",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				workspace: "/test/workspace",
+			},
+			clineMessages: [],
+			managedAgentTree: {
+				version: 1,
+				rootTaskId: "root-1",
+				observedAt: now,
+				reloadedAt: now - 1_000,
+				nodes: [
+					{
+						taskId: "root-1",
+						rootTaskId: "root-1",
+						path: "/root",
+						nickname: "Coordinate durable agents",
+						role: "root",
+						objective: "Coordinate durable agents",
+						status: "running",
+						createdAt: now - 10_000,
+						updatedAt: now,
+						depth: 0,
+						usage: { durationMs: 10_000 },
+					},
+					{
+						taskId: "parent-1",
+						rootTaskId: "root-1",
+						parentTaskId: "root-1",
+						groupId: "group-parent",
+						path: "/root/cinder",
+						nickname: "Cinder",
+						role: "worker",
+						objective: "Implement the bridge",
+						status: "running",
+						createdAt: now - 8_000,
+						updatedAt: now,
+						depth: 1,
+						usage: { durationMs: 8_000, inputTokens: 100, outputTokens: 50, cost: 0.3 },
+					},
+					{
+						taskId: "child-2",
+						rootTaskId: "root-1",
+						parentTaskId: "parent-1",
+						groupId: "group-child",
+						path: "/root/cinder/iris",
+						nickname: "Iris",
+						role: "review",
+						objective: "Review the bridge",
+						status: "completed",
+						createdAt: now - 7_000,
+						updatedAt: now - 500,
+						finishedAt: now - 500,
+						depth: 2,
+						stopReason: "completed",
+						usage: { durationMs: 6_500, inputTokens: 80, outputTokens: 20, cost: 0.2 },
+					},
+				],
+				activity: [],
+				capacity: { active: 1, queued: 0, terminal: 1, limit: 3 },
+				budgets: { tokenLimit: 1_000, costLimit: 2 },
+				omittedNodeCount: 0,
+				omittedActivityCount: 0,
+			},
+		})
+
+		const taskStrip = await waitFor(() => getByRole("region", { name: "Sub-agent tasks" }))
+		expect(within(taskStrip).getByRole("button", { name: /Open Cinder · Working/i })).toBeInTheDocument()
+		const nestedTask = within(taskStrip).getByRole("button", { name: /Open Iris · Completed/i })
+		expect(queryByText("1 of 3 active")).not.toBeInTheDocument()
+		expect(queryByText("$0.50")).not.toBeInTheDocument()
+		expect(queryByText("Restored after reload")).not.toBeInTheDocument()
+
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(nestedTask)
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "showTaskWithId", text: "child-2" })
+	})
+
+	it("shows one parent return control in an opened managed child", async () => {
+		const { getAllByRole, queryByText, queryByRole } = renderChatView()
+		const now = Date.now()
+
+		mockPostMessage({
+			currentTaskId: "child-1",
+			currentView: { type: "task", taskId: "child-1" },
+			currentTaskItem: {
+				id: "child-1",
+				number: 2,
+				ts: now - 2_000,
+				task: "Inspect the compact task UX",
+				taskKind: "subagent",
+				parentTaskId: "root-1",
+				subagentRole: "review",
+				subagentNickname: "Maple",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				workspace: "/test/workspace",
+			},
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: now - 2_000,
+					text: "Inspect the compact task UX",
+				},
+			],
+		})
+
+		await waitFor(() => expect(getAllByRole("button", { name: "Return to parent" })).toHaveLength(1))
+		expect(queryByText("Transcript is read-only")).not.toBeInTheDocument()
+		expect(queryByRole("textbox")).not.toBeInTheDocument()
+	})
+})
+
 describe("ChatView - Message Queueing Tests", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
@@ -1619,68 +1871,161 @@ describe("ChatView - Message Queueing Tests", () => {
 		)
 	})
 
-	it("sends completion feedback to the current completed task", async () => {
-		const { getByTestId } = renderChatView()
+	it.each(["completion_result", "resume_completed_task"] as const)(
+		"continues the same task when the composer is submitted at %s",
+		async (completionAsk) => {
+			const { getByTestId } = renderChatView()
+
+			mockPostMessage({
+				currentTaskId: "task-1",
+				currentView: { type: "task", taskId: "task-1" },
+				liveTasksById: {
+					"task-1": {
+						id: "task-1",
+						status: "running",
+						lifecycle: "completed",
+						isActive: true,
+						isStreaming: false,
+						isWaitingForInput: false,
+						lastUpdatedAt: Date.now(),
+						queueCount: 0,
+						tokensIn: 0,
+						tokensOut: 0,
+						totalCost: 0,
+					},
+				},
+				clineMessages: [
+					{
+						type: "say",
+						say: "task",
+						ts: Date.now() - 2000,
+						text: "Initial task",
+					},
+					{
+						type: "ask",
+						ask: completionAsk,
+						ts: Date.now(),
+						text: "Task completed",
+						partial: false,
+					},
+				],
+			})
+
+			await waitFor(() => {
+				expect(getByTestId("chat-textarea")).toBeInTheDocument()
+			})
+
+			vi.mocked(vscode.postMessage).mockClear()
+			const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+
+			await act(async () => {
+				fireEvent.change(input, { target: { value: "follow up in this thread" } })
+				fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+			})
+
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "askResponse",
+				askResponse: "messageResponse",
+				text: "follow up in this thread",
+				images: [],
+				taskId: "task-1",
+			})
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "newTask",
+				}),
+			)
+		},
+	)
+
+	it("submits an existing draft when Start New Task is clicked", async () => {
+		const { getByTestId, getByRole, queryByTestId, queryByText } = renderChatView()
 
 		mockPostMessage({
 			currentTaskId: "task-1",
 			currentView: { type: "task", taskId: "task-1" },
-			liveTasksById: {
-				"task-1": {
-					id: "task-1",
-					status: "running",
-					lifecycle: "completed",
-					isActive: true,
-					isStreaming: false,
-					isWaitingForInput: false,
-					lastUpdatedAt: Date.now(),
-					queueCount: 0,
-					tokensIn: 0,
-					tokensOut: 0,
-					totalCost: 0,
-				},
-			},
 			clineMessages: [
-				{
-					type: "say",
-					say: "task",
-					ts: Date.now() - 2000,
-					text: "Initial task",
-				},
+				{ type: "say", say: "task", ts: 100, text: "Initial task" },
 				{
 					type: "ask",
-					ask: "completion_result",
-					ts: Date.now(),
+					ask: "resume_completed_task",
+					ts: 101,
 					text: "Task completed",
 					partial: false,
 				},
 			],
 		})
 
-		await waitFor(() => {
-			expect(getByTestId("chat-textarea")).toBeInTheDocument()
-		})
-
+		const input = await waitFor(() => getByTestId("chat-textarea").querySelector("input"))
+		fireEvent.change(input!, { target: { value: "new task from button" } })
 		vi.mocked(vscode.postMessage).mockClear()
-		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 
-		await act(async () => {
-			fireEvent.change(input, { target: { value: "continue with this" } })
-			fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
-		})
+		fireEvent.click(getByRole("button", { name: "chat:startNewTask.title" }))
 
 		expect(vscode.postMessage).toHaveBeenCalledWith({
-			type: "askResponse",
-			askResponse: "messageResponse",
-			text: "continue with this",
+			type: "newTask",
+			text: "new task from button",
 			images: [],
-			taskId: "task-1",
 		})
-		expect(vscode.postMessage).not.toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "newTask",
-			}),
-		)
+		expect(vscode.postMessage).not.toHaveBeenCalledWith({ type: "startBlankTask" })
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "askResponse" }))
+		expect(queryByTestId("roo-tips")).toBeInTheDocument()
+
+		mockPostMessage({
+			currentTaskId: "task-2",
+			currentView: { type: "task", taskId: "task-2" },
+			clineMessages: [{ type: "say", say: "task", ts: 200, text: "new task from button" }],
+		})
+
+		await waitFor(() => {
+			expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
+			expect(queryByText("new task from button")).toBeInTheDocument()
+		})
+	})
+
+	it("keeps an empty new-task draft usable while stale completed-task state is in flight", async () => {
+		const { getByTestId, getByRole, queryByTestId } = renderChatView()
+		const completedState = {
+			currentTaskId: "task-1",
+			currentView: { type: "task" as const, taskId: "task-1" },
+			clineMessages: [
+				{ type: "say" as const, say: "task", ts: 100, text: "Initial task" },
+				{
+					type: "ask" as const,
+					ask: "completion_result",
+					ts: 101,
+					text: "Task completed",
+					partial: false,
+				},
+			],
+		}
+
+		mockPostMessage(completedState)
+		await waitFor(() => getByRole("button", { name: "chat:startNewTask.title" }))
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.click(getByRole("button", { name: "chat:startNewTask.title" }))
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "startBlankTask" })
+		await waitFor(() => {
+			expect(queryByTestId("roo-tips")).toBeInTheDocument()
+			expect(getByTestId("chat-textarea").querySelector("input")!.getAttribute("data-sending-disabled")).toBe(
+				"false",
+			)
+		})
+
+		mockPostMessage(completedState)
+		await waitFor(() => expect(queryByTestId("roo-tips")).toBeInTheDocument())
+
+		const input = getByTestId("chat-textarea").querySelector("input")!
+		fireEvent.change(input, { target: { value: "new task after transition" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "newTask",
+			text: "new task after transition",
+			images: [],
+		})
 	})
 
 	it("queues input instead of re-answering an already answered follow-up", async () => {
