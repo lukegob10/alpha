@@ -1,10 +1,12 @@
 import { z } from "zod"
 
+import { browserToolNames } from "./browser.js"
+
 /**
  * ToolGroup
  */
 
-export const toolGroups = ["read", "edit", "command", "mcp", "github", "modes", "agents"] as const
+export const toolGroups = ["read", "edit", "command", "mcp", "github", "modes", "agents", "browser"] as const
 
 export const toolGroupsSchema = z.enum(toolGroups)
 
@@ -13,7 +15,7 @@ export const toolGroupsSchema = z.enum(toolGroups)
  * Used by schema preprocessing to silently strip these before validation,
  * preventing errors for users with older configs.
  */
-export const deprecatedToolGroups: readonly string[] = ["browser"]
+export const deprecatedToolGroups: readonly string[] = []
 
 export type ToolGroup = z.infer<typeof toolGroupsSchema>
 
@@ -56,6 +58,7 @@ export const toolNames = [
 	"skill",
 	"generate_image",
 	"github_api",
+	...browserToolNames,
 	"custom_tool",
 ] as const
 

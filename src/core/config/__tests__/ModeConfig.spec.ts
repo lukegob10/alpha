@@ -249,35 +249,35 @@ describe("CustomModeSchema", () => {
 		})
 	})
 
-	describe("deprecated tool group migration", () => {
-		it("should strip deprecated 'browser' string group from mode config", () => {
+	describe("browser tool group", () => {
+		it("should retain a browser string group in mode config", () => {
 			const result = modeConfigSchema.parse({
 				slug: "test-mode",
 				name: "Test Mode",
 				roleDefinition: "Test role",
 				groups: ["read", "browser", "edit"],
 			})
-			expect(result.groups).toEqual(["read", "edit"])
+			expect(result.groups).toEqual(["read", "browser", "edit"])
 		})
 
-		it("should strip deprecated 'browser' tuple group from mode config", () => {
+		it("should retain a browser tuple group in mode config", () => {
 			const result = modeConfigSchema.parse({
 				slug: "test-mode",
 				name: "Test Mode",
 				roleDefinition: "Test role",
 				groups: ["read", ["browser", { fileRegex: ".*", description: "test" }], "edit"],
 			})
-			expect(result.groups).toEqual(["read", "edit"])
+			expect(result.groups).toEqual(["read", ["browser", { fileRegex: ".*", description: "test" }], "edit"])
 		})
 
-		it("should handle mode config where all groups are deprecated", () => {
+		it("should allow a browser-only mode config", () => {
 			const result = modeConfigSchema.parse({
 				slug: "test-mode",
 				name: "Test Mode",
 				roleDefinition: "Test role",
 				groups: ["browser"],
 			})
-			expect(result.groups).toEqual([])
+			expect(result.groups).toEqual(["browser"])
 		})
 
 		it("should still reject other invalid group names", () => {

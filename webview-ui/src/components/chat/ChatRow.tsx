@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import React, { memo, useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslation, Trans } from "react-i18next"
 import deepEqual from "fast-deep-equal"
 import { VSCodeBadge } from "@vscode/webview-ui-toolkit/react"
@@ -73,6 +73,7 @@ import {
 	CircleAlert,
 	Clock3,
 	LoaderCircle,
+	Globe2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { PathTooltip } from "../ui/PathTooltip"
@@ -135,7 +136,6 @@ interface ChatRowProps {
 	isLast: boolean
 	isStreaming: boolean
 	onToggleExpand: (ts: number) => void
-	onHeightChange: (isTaller: boolean) => void
 	onSuggestionClick?: (suggestion: SuggestionItem, event?: React.MouseEvent) => void
 	onBatchFileResponse?: (response: { [key: string]: boolean }) => void
 	onFollowUpUnmount?: () => void
@@ -147,7 +147,7 @@ interface ChatRowProps {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-interface ChatRowContentProps extends Omit<ChatRowProps, "onHeightChange" | "environment"> {}
+interface ChatRowContentProps extends Omit<ChatRowProps, "environment"> {}
 
 interface ChatRowContentInnerProps extends ChatRowContentProps {
 	environment: ChatRowEnvironment
@@ -155,38 +155,9 @@ interface ChatRowContentInnerProps extends ChatRowContentProps {
 
 const ChatRow = memo(
 	(props: ChatRowProps) => {
-		const { isLast, onHeightChange } = props
-		const rowRef = useRef<HTMLDivElement>(null)
-		const prevHeightRef = useRef(0)
-
-		useEffect(() => {
-			const row = rowRef.current
-			if (!isLast || !row) {
-				prevHeightRef.current = 0
-				return
-			}
-
-			prevHeightRef.current = 0
-			const resizeObserver = new ResizeObserver((entries) => {
-				const height = entries[0]?.contentRect.height
-				if (height === undefined || !Number.isFinite(height) || height === prevHeightRef.current) {
-					return
-				}
-
-				const previousHeight = prevHeightRef.current
-				prevHeightRef.current = height
-				if (previousHeight > 0) {
-					onHeightChange(height > previousHeight)
-				}
-			})
-			resizeObserver.observe(row)
-
-			return () => resizeObserver.disconnect()
-		}, [isLast, onHeightChange])
-
-		// we cannot return null as virtuoso does not support it, so we use a separate visibleMessages array to filter out messages that should not be rendered
+		// ChatView filters non-rendered messages before constructing this row.
 		return (
-			<div ref={rowRef} className="px-[15px] py-[10px] pr-[6px]">
+			<div className="px-[15px] py-[10px] pr-[6px]">
 				<ChatRowContentInner {...props} />
 			</div>
 		)
@@ -1516,6 +1487,53 @@ const ChatRowContentInner = ({
 					if (!sayTool) return null
 
 					switch (sayTool.tool) {
+						case "browserAction": {
+							const labels: Record<NonNullable<ClineSayTool["action"]>, string> = {
+								open_browser_page: "Open browser page",
+								list_browser_pages: "List browser pages",
+								read_page: "Read browser page",
+								screenshot_page: "Capture browser page",
+								navigate_page: "Navigate browser page",
+								click_element: "Click browser element",
+								type_in_page: "Type in browser page",
+								hover_element: "Hover over browser element",
+								drag_element: "Drag browser element",
+								handle_dialog: "Handle browser dialog",
+								run_playwright_code: "Run browser automation",
+							}
+							const status = sayTool.status ?? "completed"
+							const label = sayTool.action ? labels[sayTool.action] : "Use integrated browser"
+							const detail = sayTool.url ?? sayTool.element ?? sayTool.pageId
+							const browserIcon =
+								status === "running" ? (
+									<LoaderCircle
+										className="size-4 shrink-0 animate-spin"
+										aria-label="Browser action in progress"
+									/>
+								) : status === "error" ? (
+									<CircleAlert
+										className="size-4 shrink-0 text-vscode-errorForeground"
+										aria-label="Browser action failed"
+									/>
+								) : (
+									<Globe2 className="size-4 shrink-0" aria-label="Integrated browser action" />
+								)
+
+							return (
+								<div data-testid="browser-action-status" style={headerStyle}>
+									{browserIcon}
+									<span style={{ fontWeight: "bold" }}>
+										{label}
+										{status === "cancelled" ? " cancelled" : status === "error" ? " failed" : ""}
+									</span>
+									{detail && (
+										<span className="truncate text-xs text-vscode-descriptionForeground">
+											· {detail}
+										</span>
+									)}
+								</div>
+							)
+						}
 						case "runSlashCommand": {
 							const slashCommandInfo = sayTool
 							return (

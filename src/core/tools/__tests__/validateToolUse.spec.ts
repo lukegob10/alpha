@@ -35,6 +35,7 @@ describe("mode-validator", () => {
 				architectTools.forEach((tool) => {
 					expect(isToolAllowedForMode(tool, architectMode, [])).toBe(true)
 				})
+				expect(isToolAllowedForMode("read_page", architectMode, [])).toBe(false)
 			})
 		})
 
@@ -45,6 +46,7 @@ describe("mode-validator", () => {
 				askTools.forEach((tool) => {
 					expect(isToolAllowedForMode(tool, askMode, [])).toBe(true)
 				})
+				expect(isToolAllowedForMode("read_page", askMode, [])).toBe(false)
 			})
 		})
 
@@ -63,6 +65,21 @@ describe("mode-validator", () => {
 				expect(isToolAllowedForMode("write_to_file", "custom-mode", customModes)).toBe(true)
 				// Should not allow tools from other groups
 				expect(isToolAllowedForMode("execute_command", "custom-mode", customModes)).toBe(false)
+			})
+
+			it("allows browser tools only when a custom mode opts into the browser group", () => {
+				const customModes: ModeConfig[] = [
+					{
+						slug: "browser-mode",
+						name: "Browser Mode",
+						roleDefinition: "Inspect a running web application",
+						groups: ["read", "browser"],
+					},
+				]
+
+				expect(isToolAllowedForMode("read_page", "browser-mode", customModes)).toBe(true)
+				expect(isToolAllowedForMode("run_playwright_code", "browser-mode", customModes)).toBe(true)
+				expect(isToolAllowedForMode("read_page", "custom-mode", customModes)).toBe(false)
 			})
 
 			it("allows custom mode to override built-in mode", () => {

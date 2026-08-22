@@ -1281,6 +1281,29 @@ If complete, use attempt_completion.
 		expect(finalizedSubagentContextManifestSchema.safeParse(optedInManifest).success).toBe(true)
 	})
 
+	it("applies a live explicit-only setting as a narrowing cap to an open proactive task", async () => {
+		const provider = makeProviderHarness(2, {
+			autoApprovalEnabled: true,
+			alwaysAllowSubagents: true,
+			alwaysAllowReadOnly: true,
+			subagentDelegationPolicy: "explicit-only",
+		})
+		const parent = { ...makeParent(), subagentDelegationPolicy: "proactive" as const }
+
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect without proactive authority", agent_kind: "review" },
+		])
+		const manifest = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id).contextManifest
+
+		expect(prepared.requiresExplicitApproval).toBe(true)
+		expect(manifest.orchestration.delegationPolicy).toMatchObject({
+			policy: "explicit-only",
+			authorization: "pending-approval",
+			explicitUserRequest: false,
+		})
+		expect(finalizedSubagentContextManifestSchema.safeParse(manifest).success).toBe(false)
+	})
+
 	it("allows read-only descendants within frozen depth while denying depth, delegation, and Worker widening", async () => {
 		const provider = makeProviderHarness(2, {
 			maxConcurrentSubagents: 3,

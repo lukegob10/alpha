@@ -1,6 +1,13 @@
 import { parseJSON } from "partial-json"
 
-import { isSubagentForkTurns, type ToolName, toolNames, type FileEntry } from "@alpha-code/types"
+import {
+	browserToolNames,
+	isSubagentForkTurns,
+	type BrowserToolName,
+	type ToolName,
+	toolNames,
+	type FileEntry,
+} from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 
 import {
@@ -56,6 +63,15 @@ export class NativeToolCallParser {
 	}
 
 	private static readonly defaultScope = "__default__"
+	private static readonly vscodeBrowserToolNameSet = new Set<string>(browserToolNames)
+
+	private static isVSCodeBrowserToolName(name: string): name is BrowserToolName {
+		return this.vscodeBrowserToolNameSet.has(name)
+	}
+
+	private static isArgumentObject(value: unknown): value is Record<string, unknown> {
+		return typeof value === "object" && value !== null && !Array.isArray(value)
+	}
 
 	// Streaming state management for argument accumulation (keyed by scope + tool call id)
 	// Note: name is string to accommodate dynamic MCP tools (mcp--serverName--toolName)
@@ -583,7 +599,11 @@ export class NativeToolCallParser {
 		}
 
 		// Build partial nativeArgs based on what we have so far
-		let nativeArgs: any = undefined
+		// Browser tools are a transparent bridge to tools registered by VS Code. Keep
+		// the streamed object intact so status rendering sees the same arguments that
+		// will be passed to vscode.lm.invokeTool; VS Code remains the validation owner.
+		let nativeArgs: any =
+			this.isVSCodeBrowserToolName(name) && this.isArgumentObject(partialArgs) ? partialArgs : undefined
 
 		// Track if legacy format was used (for telemetry)
 		let usedLegacyFormat = false
@@ -1001,7 +1021,14 @@ export class NativeToolCallParser {
 			// Build typed nativeArgs for tool execution.
 			// Each case validates the minimum required parameters and constructs a properly typed
 			// nativeArgs object. If validation fails, we treat the tool call as invalid and fail fast.
-			let nativeArgs: NativeArgsFor<TName> | undefined = undefined
+			// VS Code owns the browser-tool schemas and validates them again when the
+			// extension calls vscode.lm.invokeTool. The native parser must preserve the
+			// provider payload instead of dropping it merely because these tools are
+			// implemented outside Alpha's per-tool validation switch.
+			let nativeArgs: NativeArgsFor<TName> | undefined =
+				this.isVSCodeBrowserToolName(resolvedName) && this.isArgumentObject(args)
+					? (args as NativeArgsFor<TName>)
+					: undefined
 
 			// Track if legacy format was used (for telemetry)
 			let usedLegacyFormat = false

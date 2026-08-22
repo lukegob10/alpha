@@ -1,5 +1,6 @@
 export * from "./api.js"
 export * from "./agent-control.js"
+export * from "./browser.js"
 export * from "./managed-agent-tree.js"
 export * from "./agent-tool-params.js"
 export * from "./cli.js"

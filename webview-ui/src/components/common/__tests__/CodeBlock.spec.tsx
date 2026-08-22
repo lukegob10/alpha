@@ -94,11 +94,6 @@ describe("CodeBlock", () => {
 	const originalGetComputedStyle = window.getComputedStyle
 
 	beforeEach(() => {
-		// Mock scroll container
-		const scrollContainer = document.createElement("div")
-		scrollContainer.setAttribute("data-virtuoso-scroller", "true")
-		document.body.appendChild(scrollContainer)
-
 		// Mock IntersectionObserver
 		window.IntersectionObserver = mockIntersectionObserver
 
@@ -111,11 +106,36 @@ describe("CodeBlock", () => {
 
 	afterEach(() => {
 		vi.clearAllMocks()
-		const scrollContainer = document.querySelector('[data-virtuoso-scroller="true"]')
-		if (scrollContainer) {
-			document.body.removeChild(scrollContainer)
-		}
 		window.getComputedStyle = originalGetComputedStyle
+	})
+
+	it("subscribes to its owning native transcript scroller", async () => {
+		const unrelatedScroller = document.createElement("div")
+		unrelatedScroller.setAttribute("data-chat-transcript-scroller", "true")
+		const unrelatedAddEventListener = vi.spyOn(unrelatedScroller, "addEventListener")
+		document.body.appendChild(unrelatedScroller)
+
+		const owningScroller = document.createElement("div")
+		owningScroller.setAttribute("data-chat-transcript-scroller", "true")
+		const mountNode = document.createElement("div")
+		owningScroller.appendChild(mountNode)
+		document.body.appendChild(owningScroller)
+
+		const addEventListener = vi.spyOn(owningScroller, "addEventListener")
+		const removeEventListener = vi.spyOn(owningScroller, "removeEventListener")
+		const { unmount } = render(<CodeBlock source="const x = 1" language="typescript" />, {
+			container: mountNode,
+		})
+
+		const scrollRegistration = addEventListener.mock.calls.find(([type]) => type === "scroll")
+		expect(scrollRegistration).toBeDefined()
+		expect(unrelatedAddEventListener).not.toHaveBeenCalledWith("scroll", expect.any(Function))
+
+		unmount()
+		expect(removeEventListener).toHaveBeenCalledWith("scroll", scrollRegistration?.[1])
+
+		owningScroller.remove()
+		unrelatedScroller.remove()
 	})
 
 	it("renders basic syntax highlighting", async () => {

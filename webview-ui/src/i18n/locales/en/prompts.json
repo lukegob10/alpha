@@ -27,7 +27,8 @@
 			"edit": "Edit Files",
 			"command": "Run Commands",
 			"mcp": "Use MCP",
-			"github": "Use GitHub"
+			"github": "Use GitHub",
+			"browser": "Use Integrated Browser"
 		},
 		"noTools": "None"
 	},

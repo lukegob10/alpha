@@ -24,6 +24,7 @@ import type { OpenAiCodexRateLimitInfo } from "./providers/openai-codex-rate-lim
 import type { SkillMetadata } from "./skills.js"
 import type { WorktreeIncludeStatus } from "./worktree.js"
 import type { SubagentChangeSetActionCapability, SubagentChangeSetActionResult } from "./subagent.js"
+import type { BrowserToolName } from "./browser.js"
 import type {
 	CreateScheduledTaskPayload,
 	ScheduledTask,
@@ -871,6 +872,7 @@ export interface ClineSayTool {
 		| "runSlashCommand"
 		| "updateTodoList"
 		| "skill"
+		| "browserAction"
 	path?: string
 	// For readCommandOutput
 	readStart?: number
@@ -935,6 +937,13 @@ export interface ClineSayTool {
 	description?: string
 	// Properties for skill tool
 	skill?: string
+	// Properties for VS Code integrated-browser tools
+	action?: BrowserToolName
+	status?: "running" | "completed" | "error" | "cancelled"
+	pageId?: string
+	url?: string
+	element?: string
+	code?: string
 	// Properties for non-interactive managed-agent lifecycle status rows
 	agentAction?: "list_agents" | "wait_agent"
 	lifecycleStatus?: "running" | "completed" | "error"

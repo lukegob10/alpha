@@ -1,4 +1,40 @@
+import { browserToolNames, type BrowserToolArgs, type BrowserToolName } from "@alpha-code/types"
+
 import { NativeToolCallParser } from "../NativeToolCallParser"
+
+const browserPayloads = {
+	open_browser_page: {
+		url: "https://www.usgs.gov/programs/national-geospatial-program/topographic-maps",
+		forceNew: true,
+	},
+	list_browser_pages: {},
+	read_page: { pageId: "page-1" },
+	screenshot_page: {
+		pageId: "page-1",
+		ref: "ref-1",
+		element: "Map preview",
+		scrollIntoViewIfNeeded: true,
+	},
+	navigate_page: { pageId: "page-1", type: "url", url: "https://example.com" },
+	click_element: { pageId: "page-1", ref: "ref-2", element: "Submit button", button: "left" },
+	type_in_page: {
+		pageId: "page-1",
+		ref: "ref-3",
+		element: "Search input",
+		text: "topographic maps",
+		submit: true,
+	},
+	hover_element: { pageId: "page-1", ref: "ref-4", element: "Map layer" },
+	drag_element: {
+		pageId: "page-1",
+		fromRef: "ref-5",
+		fromElement: "Map pin",
+		toRef: "ref-6",
+		toElement: "Destination",
+	},
+	handle_dialog: { pageId: "page-1", acceptModal: true, promptText: "continue" },
+	run_playwright_code: { pageId: "page-1", code: "return await page.title()", timeoutMs: 5_000 },
+} satisfies { [K in BrowserToolName]: BrowserToolArgs[K] }
 
 describe("NativeToolCallParser", () => {
 	beforeEach(() => {
@@ -7,6 +43,22 @@ describe("NativeToolCallParser", () => {
 	})
 
 	describe("parseToolCall", () => {
+		describe("VS Code integrated-browser tools", () => {
+			it.each([...browserToolNames])("preserves a valid %s payload as native arguments", (name) => {
+				const payload = browserPayloads[name]
+				const result = NativeToolCallParser.parseToolCall({
+					id: `browser-${name}`,
+					name,
+					arguments: JSON.stringify(payload),
+				})
+
+				expect(result?.type).toBe("tool_use")
+				if (result?.type === "tool_use") {
+					expect(result.nativeArgs).toEqual(payload)
+				}
+			})
+		})
+
 		it("preserves a structured sub-agent completion outcome", () => {
 			const result = NativeToolCallParser.parseToolCall({
 				id: "subagent-completion",
@@ -721,6 +773,38 @@ describe("NativeToolCallParser", () => {
 	})
 
 	describe("scoped streaming state", () => {
+		it("preserves the raw streamed browser call that previously failed in the live trace", () => {
+			const taskId = "browser-trace-task"
+			const id = "call-open-browser"
+			const payload = browserPayloads.open_browser_page
+			let finalToolUse: ReturnType<typeof NativeToolCallParser.finalizeStreamingToolCall> = null
+
+			const events = [
+				...NativeToolCallParser.processRawChunk(
+					{ index: 0, id, name: "open_browser_page", arguments: JSON.stringify(payload) },
+					taskId,
+				),
+				...NativeToolCallParser.finalizeRawChunks(taskId),
+			]
+
+			for (const event of events) {
+				if (event.type === "tool_call_start") {
+					NativeToolCallParser.startStreamingToolCall(event.id, event.name, taskId)
+				} else if (event.type === "tool_call_delta") {
+					const partial = NativeToolCallParser.processStreamingChunk(event.id, event.delta, taskId)
+					expect(partial?.nativeArgs).toEqual(payload)
+				} else if (event.type === "tool_call_end") {
+					finalToolUse = NativeToolCallParser.finalizeStreamingToolCall(event.id, taskId)
+				}
+			}
+
+			expect(finalToolUse).toMatchObject({
+				type: "tool_use",
+				name: "open_browser_page",
+				nativeArgs: payload,
+			})
+		})
+
 		it("attaches index-only argument deltas to a tool call started with an id", () => {
 			const taskId = "orchestrator-task"
 			let finalToolUse: ReturnType<typeof NativeToolCallParser.finalizeStreamingToolCall> = null

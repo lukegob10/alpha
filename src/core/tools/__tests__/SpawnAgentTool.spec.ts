@@ -77,7 +77,7 @@ describe("SpawnAgentTool", () => {
 	})
 
 	it("prepares and approves before returning a nonblocking spawn handle", async () => {
-		const batch = prepared()
+		const batch = { ...prepared(), requiresExplicitApproval: true }
 		const requestSignal = new AbortController().signal
 		const lifetimeSignal = new AbortController().signal
 		const provider = {
@@ -119,6 +119,12 @@ describe("SpawnAgentTool", () => {
 			"call-1",
 		)
 		expect(askApproval).toHaveBeenCalledAfter(provider.prepareSubagentGroup)
+		expect(askApproval).toHaveBeenCalledWith(
+			"tool",
+			expect.stringContaining('"tool":"spawnAgent"'),
+			undefined,
+			true,
+		)
 		expect(provider.launchPreparedSubagentGroup).toHaveBeenCalledAfter(askApproval)
 		expect(provider.launchPreparedSubagentGroup).toHaveBeenCalledWith(task, batch, lifetimeSignal)
 		expect(provider.launchPreparedSubagentGroup).not.toHaveBeenCalledWith(task, batch, requestSignal)

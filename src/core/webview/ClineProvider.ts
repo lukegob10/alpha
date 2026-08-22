@@ -4124,6 +4124,10 @@ export class ClineProvider
 				frozenTaskPolicy:
 					parent.subagentContextManifest?.orchestration?.delegationPolicy.policy ??
 					parent.subagentDelegationPolicy,
+				// Settings may immediately narrow an already-open proactive task.
+				// They may never widen a task frozen as explicit-only.
+				requestedChildPolicy:
+					settings.subagentDelegationPolicy === "explicit-only" ? "explicit-only" : undefined,
 				taskExplicitlyEnabled: parent.subagentDelegationExplicitlyEnabled === true,
 			}),
 		)

@@ -203,27 +203,6 @@ vi.mock("../ChatTextArea", () => {
 	}
 })
 
-// Mock react-virtuoso
-vi.mock("react-virtuoso", () => ({
-	Virtuoso: function MockVirtuoso({
-		data,
-		itemContent,
-	}: {
-		data: ClineMessage[]
-		itemContent: (index: number, item: ClineMessage) => React.ReactNode
-	}) {
-		return (
-			<div data-testid="virtuoso-item-list">
-				{data.map((item, index) => (
-					<div key={item.ts} data-testid={`virtuoso-item-${index}`}>
-						{itemContent(index, item)}
-					</div>
-				))}
-			</div>
-		)
-	},
-}))
-
 // Mock window.postMessage to trigger state hydration
 const mockPostMessage = (state: Partial<ExtensionState>) => {
 	window.postMessage(

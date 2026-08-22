@@ -52,6 +52,15 @@ describe("ToolRegistry", () => {
 			controlFlow: false,
 			requiresApproval: false,
 		})
+		expect(registry.resolve("open_browser_page")?.capabilities).toMatchObject({
+			concurrency: "serial",
+			sideEffects: "external",
+			controlFlow: false,
+		})
+		expect(registry.resolve("run_playwright_code")?.schema).toMatchObject({
+			type: "function",
+			function: { name: "run_playwright_code" },
+		})
 	})
 
 	it("resolves aliases to the canonical descriptor", () => {

@@ -21,6 +21,8 @@ export const WINDOW_SHADE_SETTINGS = {
 // Tolerance in pixels for determining when a container is considered "at the bottom"
 export const SCROLL_SNAP_TOLERANCE = 20
 
+const CHAT_TRANSCRIPT_SCROLLER_SELECTOR = '[data-chat-transcript-scroller="true"]'
+
 /*
 overflowX: auto + inner div with padding results in an issue where the top/left/bottom padding renders but the right padding inside does not count as overflow as the width of the element is not exceeded. Once the inner div is outside the boundaries of the parent it counts as overflow.
 https://stackoverflow.com/questions/60778406/why-is-padding-right-clipped-with-overflowscroll/77292459#77292459
@@ -345,7 +347,7 @@ const CodeBlock = memo(
 			}
 
 			const rectCodeBlock = codeBlock.getBoundingClientRect()
-			const scrollContainer = document.querySelector('[data-virtuoso-scroller="true"]')
+			const scrollContainer = codeBlock.closest<HTMLElement>(CHAT_TRANSCRIPT_SCROLLER_SELECTOR)
 
 			if (!scrollContainer) {
 				return
@@ -413,7 +415,7 @@ const CodeBlock = memo(
 			const handleScroll = () => updateCodeBlockButtonPosition()
 			const handleResize = () => updateCodeBlockButtonPosition()
 
-			const scrollContainer = document.querySelector('[data-virtuoso-scroller="true"]')
+			const scrollContainer = codeBlockRef.current?.closest<HTMLElement>(CHAT_TRANSCRIPT_SCROLLER_SELECTOR)
 			if (scrollContainer) {
 				scrollContainer.addEventListener("scroll", handleScroll)
 				window.addEventListener("resize", handleResize)
@@ -449,8 +451,8 @@ const CodeBlock = memo(
 						wasScrolledUpRef.current = false
 					}
 
-					// Outer container scrolling is handled by Virtuoso's followOutput
-					// and ChatView's handleRowHeightChange — no direct DOM manipulation needed.
+					// ChatView's transcript observer preserves the outer bottom anchor while following,
+					// so this component only owns its inner code-scroll position.
 
 					// Reset the flag
 					shouldScrollAfterHighlightRef.current = false

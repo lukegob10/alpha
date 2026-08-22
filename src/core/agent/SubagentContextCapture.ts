@@ -45,8 +45,7 @@ const REQUEST_PACING_UPDATE_RECORD_PATTERN = /^<request_pacing_update((?:\s+[a-z
 const REQUEST_PACING_UPDATE_ATTRIBUTE_PATTERN = /\s+([a-z_][a-z0-9_]*)="([^"]*)"/g
 const NON_NEGATIVE_INTEGER_PATTERN = /^(?:0|[1-9][0-9]*)$/
 const NON_NEGATIVE_NUMBER_PATTERN = /^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/
-const NO_TOOLS_USED_RECORD_PREFIX =
-	"[ERROR] You did not use a tool in your previous response! Please retry with a tool use."
+const NO_TOOLS_USED_RECORD_PREFIX = "[ERROR] You did not use a tool in your previous response"
 const AUTOMATED_MESSAGE_RECORD_SUFFIX = "(This is an automated message, so do not respond to it conversationally.)"
 const SPAWNED_SUBAGENT_RESULT_OPEN = "<spawned_subagent_result>"
 const SPAWNED_SUBAGENT_RESULT_CLOSE = "</spawned_subagent_result>"
@@ -185,7 +184,7 @@ function normalizeEvidenceText(text: string): string {
 
 function isNoToolsUsedRecord(text: string): boolean {
 	return (
-		text.startsWith(`${NO_TOOLS_USED_RECORD_PREFIX}\n`) &&
+		text.startsWith(NO_TOOLS_USED_RECORD_PREFIX) &&
 		text.includes("\n# Next Steps\n") &&
 		text.endsWith(AUTOMATED_MESSAGE_RECORD_SUFFIX)
 	)

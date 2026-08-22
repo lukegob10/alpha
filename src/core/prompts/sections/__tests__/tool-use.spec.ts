@@ -12,6 +12,9 @@ describe("getSharedToolUseSection", () => {
 	it("should align batching with action dependencies", () => {
 		const section = getSharedToolUseSection()
 
+		expect(section).toContain("Status narration is not execution")
+		expect(section).toContain("call an actual mutation tool")
+		expect(section).toContain("Never claim that an edit was applied unless a mutation tool returned success")
 		expect(section).toContain("Batch independent reads, searches, and diagnostics")
 		expect(section).toContain(
 			"Serialize dependent actions, workspace mutations, approvals, and control-flow operations",
@@ -30,6 +33,15 @@ describe("getSharedToolUseSection", () => {
 		expect(section).toContain("execute sequentially in provider order")
 		expect(section).toContain("spawn_agent followed by send_message")
 		expect(section).toContain("stable task_name")
+	})
+
+	it("keeps root work local under explicit-only delegation unless the user requested it", () => {
+		const explicitOnly = getSharedToolUseSection(undefined, false, false, "explicit-only")
+		const proactive = getSharedToolUseSection(undefined, false, false, "proactive")
+
+		expect(explicitOnly).toContain("frozen delegation policy is explicit-only")
+		expect(explicitOnly).toContain("Your own judgment that delegation would be useful is not authorization")
+		expect(proactive).toContain("frozen delegation policy is proactive")
 	})
 
 	it("permits only bounded descendant control when frozen child authority allows delegation", () => {

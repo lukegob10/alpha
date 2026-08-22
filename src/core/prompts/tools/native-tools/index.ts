@@ -9,6 +9,7 @@ import editTool from "./edit"
 import executeCommand from "./execute_command"
 import generateImage from "./generate_image"
 import githubApi from "./github_api"
+import { browserTools } from "./browser"
 import listFiles from "./list_files"
 import newTask from "./new_task"
 import { delegate_task as delegateTask } from "./delegate_task"
@@ -42,6 +43,8 @@ export type { ReadFileToolOptions } from "./read_file"
 export interface NativeToolsOptions {
 	/** Whether the model supports image processing (default: false) */
 	supportsImages?: boolean
+	/** Browser tools currently registered by VS Code. Omit to include the full catalog (primarily for tests). */
+	availableBrowserToolNames?: readonly string[]
 }
 
 /**
@@ -51,11 +54,19 @@ export interface NativeToolsOptions {
  * @returns Array of native tool definitions
  */
 export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.ChatCompletionTool[] {
-	const { supportsImages = false } = options
+	const { supportsImages = false, availableBrowserToolNames } = options
 
 	const readFileOptions: ReadFileToolOptions = {
 		supportsImages,
 	}
+	const availableBrowserTools = browserTools.filter((tool) => {
+		const name = tool.function.name
+		if (availableBrowserToolNames && !availableBrowserToolNames.includes(name)) return false
+		// The runtime registry builds from the full static catalog when availability
+		// is omitted. Production model requests pass the live VS Code catalog and can
+		// then omit image-returning tools for text-only models.
+		return !availableBrowserToolNames || supportsImages || name !== "screenshot_page"
+	})
 
 	return [
 		accessMcpResource,
@@ -67,6 +78,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		executeCommand,
 		generateImage,
 		githubApi,
+		...availableBrowserTools,
 		listFiles,
 		newTask,
 		delegateTask,

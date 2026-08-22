@@ -67,7 +67,7 @@ describe("DelegateTaskTool", () => {
 	})
 
 	it("prepares before approval and returns one structured group result", async () => {
-		const batch = prepared()
+		const batch = { ...prepared(), requiresExplicitApproval: true }
 		const provider = {
 			prepareSubagentGroup: vi.fn(async () => batch),
 			runSubagentGroup: vi.fn(async () => ({
@@ -93,6 +93,12 @@ describe("DelegateTaskTool", () => {
 
 		expect(provider.prepareSubagentGroup).toHaveBeenCalledWith(task, expect.any(Array), "call-1")
 		expect(askApproval).toHaveBeenCalledAfter(provider.prepareSubagentGroup)
+		expect(askApproval).toHaveBeenCalledWith(
+			"tool",
+			expect.stringContaining('"tool":"delegateTask"'),
+			undefined,
+			true,
+		)
 		expect(provider.runSubagentGroup).toHaveBeenCalledWith(task, batch, expect.any(AbortSignal))
 		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining('"groupId":"group-1"'))
 	})

@@ -70,6 +70,7 @@ import {
 	ConsecutiveMistakeError,
 	MAX_MCP_TOOLS_THRESHOLD,
 	countEnabledMcpTools,
+	resolveSubagentDelegationPolicy,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
@@ -199,6 +200,7 @@ const MAX_EXPONENTIAL_BACKOFF_SECONDS = 600 // 10 minutes
 const DEFAULT_USAGE_COLLECTION_TIMEOUT_MS = 5000 // 5 seconds
 const FORCED_CONTEXT_REDUCTION_PERCENT = 75 // Keep 75% of context (remove 25%) on context window errors
 const MAX_CONTEXT_WINDOW_RETRIES = 3 // Maximum retries for context window errors
+const MAX_AUTOMATIC_MISTAKE_RECOVERIES = 1
 
 interface PendingSpawnedSubagentResult {
 	taskId: string
@@ -516,6 +518,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	consecutiveMistakeCountForEditFile: Map<string, number> = new Map()
 	consecutiveNoToolUseCount: number = 0
 	consecutiveNoAssistantMessagesCount: number = 0
+	private automaticMistakeRecoveryCount: number = 0
 	toolUsage: ToolUsage = {}
 
 	// Checkpoints
@@ -1692,6 +1695,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private getAutomaticMistakeLimitGuidance(): string {
 		const details = [
 			"Automatic recovery from repeated invalid or unproductive model turns. Continue without waiting for user input.",
+			`Recovery attempt: ${this.automaticMistakeRecoveryCount}/${MAX_AUTOMATIC_MISTAKE_RECOVERIES}.`,
 			`Task lane: mode=${this._taskMode || defaultModeSlug}, providerProfile=${this._taskApiConfigName ?? "unknown"}.`,
 			`Consecutive mistake count before recovery: ${this.consecutiveMistakeCount}/${this.consecutiveMistakeLimit}.`,
 		]
@@ -1708,6 +1712,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		details.push(
 			"Use exactly one concrete next action now: call one valid tool with complete arguments if work remains, call attempt_completion if finished, or call ask_followup_question only when a specific missing input blocks progress.",
+			"If the requested work includes workspace changes and inspection is sufficient, call an edit or other mutation tool now. More reads, searches, todo updates, or status narration do not apply the change.",
 			"If delegating, call new_task by itself in its own assistant turn. Do not batch new_task with any other tool.",
 		)
 
@@ -1746,7 +1751,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			),
 		)
 
-		if (await this.shouldAutoRecoverFromMistakeLimit()) {
+		if (
+			this.automaticMistakeRecoveryCount < MAX_AUTOMATIC_MISTAKE_RECOVERIES &&
+			(await this.shouldAutoRecoverFromMistakeLimit())
+		) {
+			this.automaticMistakeRecoveryCount++
 			const text = this.getAutomaticMistakeLimitGuidance()
 			currentUserContent.push({ type: "text", text: formatResponse.tooManyMistakes(text) })
 			await this.say("user_feedback", text)
@@ -1754,7 +1763,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			return
 		}
 
-		const { response, text, images } = await this.ask("mistake_limit_reached", this.getMistakeLimitGuidance())
+		const { response, text, images } = await this.ask(
+			"mistake_limit_reached",
+			this.getMistakeLimitGuidance(),
+			undefined,
+			undefined,
+			true,
+		)
 
 		if (response === "messageResponse") {
 			currentUserContent.push(
@@ -1768,6 +1783,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		this.consecutiveMistakeCount = 0
+		this.automaticMistakeRecoveryCount = 0
 	}
 
 	private getOffscreenMistakeLimitGuidance(): string {
@@ -1841,8 +1857,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.askResponseImages = undefined
 
 					// Bug for the history books:
-					// In the webview we use the ts as the chatrow key for the
-					// virtuoso list. Since we would update this ts right at the
+					// In the webview we use the ts as the ChatRow key in the
+					// transcript. Since we would update this ts right at the
 					// end of streaming, it would cause the view to flicker. The
 					// key prop has to be stable otherwise react has trouble
 					// reconciling items between renders, causing unmounting and
@@ -3611,6 +3627,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Reset consecutive error counters on abort (manual intervention)
 		this.consecutiveNoToolUseCount = 0
 		this.consecutiveNoAssistantMessagesCount = 0
+		this.automaticMistakeRecoveryCount = 0
 
 		// Force final token usage update before abort event
 		this.emitFinalTokenUsageUpdate()
@@ -4191,7 +4208,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						const lastMessage = this.clineMessages.at(-1)
 
 						if (lastMessage && lastMessage.partial) {
-							// lastMessage.ts = Date.now() DO NOT update ts since it is used as a key for virtuoso list
+							// lastMessage.ts = Date.now() DO NOT update ts since it is used as a ChatRow key
 							lastMessage.partial = false
 							// instead of streaming partialMessage events, we do a save and post like normal to persist to disk
 						}
@@ -5270,6 +5287,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const mode = await this.getTaskMode()
 		const apiConfiguration = this.apiConfiguration
 		const subagentAncestry = this.subagentContextManifest?.orchestration?.ancestry
+		const effectiveSubagentDelegationPolicy = resolveSubagentDelegationPolicy({
+			settingsPolicy: state?.subagentDelegationPolicy,
+			frozenTaskPolicy:
+				this.subagentContextManifest?.orchestration?.delegationPolicy.policy ?? this.subagentDelegationPolicy,
+			// A live explicit-only setting is a security narrowing for an
+			// already-open proactive task. A later proactive setting never widens
+			// a task that was frozen as explicit-only.
+			requestedChildPolicy: state?.subagentDelegationPolicy === "explicit-only" ? "explicit-only" : undefined,
+			taskExplicitlyEnabled: this.subagentDelegationExplicitlyEnabled === true,
+		}).policy
 		const subagentCanDelegate = Boolean(
 			isSubagent &&
 				this.subagentContextManifest?.runtimePolicy.delegate === true &&
@@ -5315,9 +5342,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						: undefined,
 					subagentUsesFrozenContext: isSubagent ? this.subagentContextManifest !== undefined : undefined,
 					subagentCanDelegate: isSubagent ? subagentCanDelegate : undefined,
-					subagentDelegationPolicy: isSubagent
-						? this.subagentContextManifest?.orchestration?.delegationPolicy.policy
-						: undefined,
+					subagentDelegationPolicy: effectiveSubagentDelegationPolicy,
 				},
 				undefined, // todoList
 				this.api.getModel().id,

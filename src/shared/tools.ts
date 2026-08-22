@@ -15,6 +15,7 @@ import type {
 	CancelAgentParams,
 	CloseAgentParams,
 	SubagentForkTurns,
+	BrowserToolArgs,
 } from "@alpha-code/types"
 
 export type ToolResponse = string | Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam>
@@ -47,6 +48,30 @@ export const toolParamNames = [
 	"recursive",
 	"action",
 	"url",
+	// VS Code integrated-browser parameters
+	"forceNew",
+	"pageId",
+	"ref",
+	"selector",
+	"element",
+	"scrollIntoViewIfNeeded",
+	"type",
+	"dblClick",
+	"button",
+	"submit",
+	"key",
+	"fromRef",
+	"fromSelector",
+	"fromElement",
+	"toRef",
+	"toSelector",
+	"toElement",
+	"acceptModal",
+	"promptText",
+	"selectFiles",
+	"code",
+	"deferredResultId",
+	"timeoutMs",
 	"coordinate",
 	"text",
 	"server_name",
@@ -128,7 +153,7 @@ export type ToolParamName = (typeof toolParamNames)[number]
  * Type map defining the native (typed) argument structure for each tool.
  * Tools not listed here will fall back to `any` for backward compatibility.
  */
-export type NativeToolArgs = {
+export type NativeToolArgs = BrowserToolArgs & {
 	access_mcp_resource: { server_name: string; uri: string }
 	read_file: import("@alpha-code/types").ReadFileToolParams
 	read_command_output: { artifact_id: string; search?: string; offset?: number; limit?: number }
@@ -442,6 +467,17 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	skill: "load skill",
 	generate_image: "generate images",
 	github_api: "use GitHub API",
+	open_browser_page: "open an integrated browser page",
+	list_browser_pages: "list shared integrated browser pages",
+	read_page: "read an integrated browser page",
+	screenshot_page: "capture an integrated browser page",
+	navigate_page: "navigate an integrated browser page",
+	click_element: "click an integrated browser element",
+	type_in_page: "type in an integrated browser page",
+	hover_element: "hover over an integrated browser element",
+	drag_element: "drag an integrated browser element",
+	handle_dialog: "handle an integrated browser dialog",
+	run_playwright_code: "run Playwright against an integrated browser page",
 	custom_tool: "use custom tools",
 } as const
 
@@ -479,6 +515,21 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 			"interrupt_agent",
 			"cancel_agent",
 			"close_agent",
+		],
+	},
+	browser: {
+		tools: [
+			"open_browser_page",
+			"list_browser_pages",
+			"read_page",
+			"screenshot_page",
+			"navigate_page",
+			"click_element",
+			"type_in_page",
+			"hover_element",
+			"drag_element",
+			"handle_dialog",
+			"run_playwright_code",
 		],
 	},
 }

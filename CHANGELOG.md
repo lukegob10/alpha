@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.1
+
+### Patch Changes
+
+- Add model-controlled access to VS Code's integrated browser, including browser-only automatic approval for opening pages.
+- Allow explicit chat requests to compact the current task context without starting a separate model turn.
+- Bound unproductive recovery loops, enforce explicit-only delegation at execution time, and preserve same-task continuation.
+- Replace virtualized chat scrolling with exact native scroll geometry to prevent long-conversation bottom bounce.
+
 ## 2.1.0
 
 ### Minor Changes

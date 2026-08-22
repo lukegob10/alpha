@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
 import { vscode } from "@src/utils/vscode"
 
-import ChatView, { ChatViewProps } from "../ChatView"
+import ChatView, { ChatViewProps, isContextCondensationRequest } from "../ChatView"
 
 // Define minimal types needed for testing
 interface ClineMessage {
@@ -54,28 +54,6 @@ vi.mock("../ChatRow", () => ({
 
 vi.mock("../AutoApproveMenu", () => ({
 	default: () => null,
-}))
-
-// Mock react-virtuoso to render items directly without virtualization
-// This allows tests to verify items rendered in the chat list
-vi.mock("react-virtuoso", () => ({
-	Virtuoso: function MockVirtuoso({
-		data,
-		itemContent,
-	}: {
-		data: ClineMessage[]
-		itemContent: (index: number, item: ClineMessage) => React.ReactNode
-	}) {
-		return (
-			<div data-testid="virtuoso-item-list">
-				{data.map((item, index) => (
-					<div key={item.ts} data-testid={`virtuoso-item-${index}`}>
-						{itemContent(index, item)}
-					</div>
-				))}
-			</div>
-		)
-	},
 }))
 
 // Mock VersionIndicator - returns null by default to prevent rendering in tests
@@ -332,6 +310,61 @@ const renderChatView = (props: Partial<ChatViewProps> = {}) => {
 		</ExtensionStateContextProvider>,
 	)
 }
+
+describe("ChatView - Context Condensation Requests", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it.each(["compact the context", "Please condense this conversation.", "can you compact the thread?"])(
+		"recognizes explicit condensation request: %s",
+		(text) => {
+			expect(isContextCondensationRequest(text)).toBe(true)
+		},
+	)
+
+	it.each(["compact the context and continue", "how much context is left?", "please compact my code"])(
+		"does not intercept ordinary messages: %s",
+		(text) => {
+			expect(isContextCondensationRequest(text)).toBe(false)
+		},
+	)
+
+	it("routes an explicit request to context condensation for the visible task", async () => {
+		const { getByTestId } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-to-compact",
+			currentView: { type: "task", taskId: "task-to-compact" },
+			currentTaskItem: {
+				id: "task-to-compact",
+				number: 1,
+				ts: 100,
+				task: "Long-running task",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				workspace: "/test/workspace",
+			},
+			clineMessages: [{ type: "say", say: "task", ts: 100, text: "Long-running task" }],
+		})
+
+		const input = await waitFor(() => getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.change(input, { target: { value: "compact the context" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+		await waitFor(() => {
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "condenseTaskContextRequest",
+				text: "task-to-compact",
+			})
+		})
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: expect.stringMatching(/^(?:newTask|queueMessage|askResponse)$/) }),
+		)
+		expect(input).toHaveValue("")
+	})
+})
 
 describe("ChatView - Sound Playing Tests", () => {
 	beforeEach(() => vi.clearAllMocks())
@@ -2252,8 +2285,7 @@ describe("ChatView - Context Condensing Indicator Tests", () => {
 			await new Promise((resolve) => setTimeout(resolve, 0))
 		})
 
-		// Check that groupedMessages now includes a condensing message
-		// With Virtuoso mocked, items render directly and we can find the ChatRow with partial condense_context message
+		// Check that groupedMessages now includes a condensing message.
 		await waitFor(
 			() => {
 				const rows = container.querySelectorAll('[data-testid="chat-row"]')

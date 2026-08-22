@@ -1,6 +1,7 @@
 import type OpenAI from "openai"
 
 import { customToolRegistry, formatNative } from "@alpha-code/core"
+import { browserToolNames } from "@alpha-code/types"
 
 import type { ToolUse } from "../../shared/tools"
 import { TOOL_ALIASES } from "../../shared/tools"
@@ -43,6 +44,19 @@ import { updateTodoListTool } from "./UpdateTodoListTool"
 import { useMcpToolTool } from "./UseMcpToolTool"
 import { waitAgentTool } from "./WaitAgentTool"
 import { writeToFileTool } from "./WriteToFileTool"
+import {
+	clickElementTool,
+	dragElementTool,
+	handleDialogTool,
+	hoverElementTool,
+	listBrowserPagesTool,
+	navigatePageTool,
+	openBrowserPageTool,
+	readPageTool,
+	runPlaywrightCodeTool,
+	screenshotPageTool,
+	typeInPageTool,
+} from "./VSCodeBrowserTool"
 
 export type ToolConcurrency = "parallel" | "serial" | "barrier"
 export type ToolSideEffects = "none" | "workspace" | "task" | "external"
@@ -136,6 +150,8 @@ const TASK_TOOLS = new Set([
 	"ask_followup_question",
 ])
 
+const BROWSER_TOOLS = new Set<string>(browserToolNames)
+
 const TOOL_NAMES = [
 	"access_mcp_resource",
 	"apply_diff",
@@ -158,6 +174,7 @@ const TOOL_NAMES = [
 	"execute_command",
 	"generate_image",
 	"github_api",
+	...browserToolNames,
 	"list_files",
 	"new_task",
 	"read_command_output",
@@ -213,7 +230,11 @@ export function getToolCapabilities(name: string): ToolCapabilities {
 		? "workspace"
 		: TASK_TOOLS.has(name)
 			? "task"
-			: name === "github_api" || name === "use_mcp_tool" || name.startsWith("mcp") || name === "custom_tool"
+			: name === "github_api" ||
+				  name === "use_mcp_tool" ||
+				  name.startsWith("mcp") ||
+				  name === "custom_tool" ||
+				  BROWSER_TOOLS.has(name)
 				? "external"
 				: "none"
 
@@ -343,6 +364,17 @@ export class ToolRegistry {
 		this.registerBuiltIn("execute_command", executeCommandTool, schemas)
 		this.registerBuiltIn("generate_image", generateImageTool, schemas)
 		this.registerBuiltIn("github_api", githubApiTool, schemas)
+		this.registerBuiltIn("open_browser_page", openBrowserPageTool, schemas)
+		this.registerBuiltIn("list_browser_pages", listBrowserPagesTool, schemas)
+		this.registerBuiltIn("read_page", readPageTool, schemas)
+		this.registerBuiltIn("screenshot_page", screenshotPageTool, schemas)
+		this.registerBuiltIn("navigate_page", navigatePageTool, schemas)
+		this.registerBuiltIn("click_element", clickElementTool, schemas)
+		this.registerBuiltIn("type_in_page", typeInPageTool, schemas)
+		this.registerBuiltIn("hover_element", hoverElementTool, schemas)
+		this.registerBuiltIn("drag_element", dragElementTool, schemas)
+		this.registerBuiltIn("handle_dialog", handleDialogTool, schemas)
+		this.registerBuiltIn("run_playwright_code", runPlaywrightCodeTool, schemas)
 		this.registerBuiltIn("list_files", listFilesTool, schemas)
 		this.registerBuiltIn("new_task", newTaskTool, schemas)
 		this.registerBuiltIn("read_command_output", readCommandOutputTool, schemas)

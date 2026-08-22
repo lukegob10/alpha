@@ -1,7 +1,7 @@
 import { serializeError } from "serialize-error"
 import { Anthropic } from "@anthropic-ai/sdk"
 
-import type { ToolName, ClineAsk, ToolProgressStatus } from "@alpha-code/types"
+import type { ToolName, ClineAsk, ToolProgressStatus, BrowserToolName } from "@alpha-code/types"
 import { ConsecutiveMistakeError, TelemetryEventName } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 import { customToolRegistry } from "@alpha-code/core"
@@ -48,6 +48,7 @@ import { githubApiTool } from "../tools/GitHubApiTool"
 import { applyDiffTool as applyDiffToolClass } from "../tools/ApplyDiffTool"
 import { isValidToolName, validateToolUse } from "../tools/validateToolUse"
 import { codebaseSearchTool } from "../tools/CodebaseSearchTool"
+import { getVSCodeBrowserTool } from "../tools/VSCodeBrowserTool"
 
 import { formatResponse } from "../prompts/responses"
 import { sanitizeToolUseId } from "../../utils/tool-id"
@@ -1064,6 +1065,24 @@ export async function presentAssistantMessage(cline: Task) {
 						askApproval,
 						handleError,
 						pushToolResult,
+					})
+					break
+				case "open_browser_page":
+				case "list_browser_pages":
+				case "read_page":
+				case "screenshot_page":
+				case "navigate_page":
+				case "click_element":
+				case "type_in_page":
+				case "hover_element":
+				case "drag_element":
+				case "handle_dialog":
+				case "run_playwright_code":
+					await getVSCodeBrowserTool(block.name).handle(cline, block as ToolUse<BrowserToolName>, {
+						askApproval,
+						handleError,
+						pushToolResult,
+						signal: cline.getTaskCancellationSignal(),
 					})
 					break
 				default: {

@@ -36,11 +36,24 @@ Batch independent reads and searches when their results do not affect one anothe
 		}, and inspect returned evidence before deciding the next action. Do not call capabilities outside this bounded child authority.${delegationGuidance}`
 	}
 
+	const rootDelegationGuidance =
+		subagentDelegationPolicy === "explicit-only"
+			? `
+
+The frozen delegation policy is explicit-only. Do not call spawn_agent or delegate_task unless the user's current request or persisted task authorization explicitly asks for delegation. Your own judgment that delegation would be useful is not authorization; keep the work in this task when delegation was not requested.`
+			: subagentDelegationPolicy === "proactive"
+				? `
+
+The frozen delegation policy is proactive. Delegate only when it materially advances the user's request within the configured limits and approvals.`
+				: ""
+
 	return `====
 
 TOOL USE
 
 You have access to tools governed by the current execution and approval policy. Use the provider-native tool-calling mechanism. Do not include XML markup or examples. Use tools when they materially advance inspection, implementation, or verification; a response that can be completed from established context does not require a token tool call.
 
-Batch independent reads, searches, and diagnostics when their results do not affect one another. Serialize dependent actions, workspace mutations, approvals, and control-flow operations, and inspect their results before deciding the next action. Do not maximize the number of calls in a batch. new_task and delegate_task are blocking delegation boundaries and must each be called alone, never batched with another tool. spawn_agent is nonblocking; when launching multiple independent agents, put all of their spawn_agent calls in the same response so they start without extra model turns. The nonblocking agent lifecycle controls spawn_agent, list_agents, send_message, followup_task, interrupt_agent, cancel_agent, and close_agent may share a response when every target and action is already known; they execute sequentially in provider order. Use a stable task_name as the target for immediate steering, including spawn_agent followed by send_message in one response. Do not batch a control whose arguments depend on output you have not seen. wait_agent is blocking and must be called alone; use it only for one bounded mailbox wait after useful local work or when collecting results, never in a polling loop.`
+Status narration is not execution. When the user requested workspace changes and inspection is sufficient, call an actual mutation tool instead of repeating a plan or substituting more reads, searches, todo updates, or progress text. Never claim that an edit was applied unless a mutation tool returned success.
+
+Batch independent reads, searches, and diagnostics when their results do not affect one another. Serialize dependent actions, workspace mutations, approvals, and control-flow operations, and inspect their results before deciding the next action. Do not maximize the number of calls in a batch. new_task and delegate_task are blocking delegation boundaries and must each be called alone, never batched with another tool. spawn_agent is nonblocking; when launching multiple independent agents, put all of their spawn_agent calls in the same response so they start without extra model turns. The nonblocking agent lifecycle controls spawn_agent, list_agents, send_message, followup_task, interrupt_agent, cancel_agent, and close_agent may share a response when every target and action is already known; they execute sequentially in provider order. Use a stable task_name as the target for immediate steering, including spawn_agent followed by send_message in one response. Do not batch a control whose arguments depend on output you have not seen. wait_agent is blocking and must be called alone; use it only for one bounded mailbox wait after useful local work or when collecting results, never in a polling loop.${rootDelegationGuidance}`
 }

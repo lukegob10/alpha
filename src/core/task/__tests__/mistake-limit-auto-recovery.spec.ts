@@ -26,6 +26,7 @@ describe("Task mistake-limit recovery", () => {
 		;(task as any).consecutiveMistakeLimit = 3
 		;(task as any).consecutiveNoToolUseCount = 2
 		;(task as any).consecutiveNoAssistantMessagesCount = 0
+		;(task as any).automaticMistakeRecoveryCount = 0
 		;(task as any).providerRef = { deref: () => provider }
 		;(task as any).say = vi.fn(async () => {})
 		;(task as any).ask = vi.fn()
@@ -45,11 +46,16 @@ describe("Task mistake-limit recovery", () => {
 		expect((task as any).ask).not.toHaveBeenCalled()
 		expect((task as any).say).toHaveBeenCalledWith("user_feedback", expect.stringContaining("Automatic recovery"))
 		expect((task as any).consecutiveMistakeCount).toBe(0)
+		expect((task as any).automaticMistakeRecoveryCount).toBe(1)
 		expect(userContent).toHaveLength(1)
 
 		const guidance = JSON.parse(userContent[0].text)
 		expect(guidance.status).toBe("guidance")
 		expect(guidance.feedback).toContain("Continue without waiting for user input")
+		expect(guidance.feedback).toContain("Recovery attempt: 1/1")
+		expect(guidance.feedback).toContain(
+			"More reads, searches, todo updates, or status narration do not apply the change",
+		)
 		expect(guidance.feedback).toContain("new_task by itself")
 	})
 
@@ -71,6 +77,9 @@ describe("Task mistake-limit recovery", () => {
 		expect((task as any).ask).toHaveBeenCalledWith(
 			"mistake_limit_reached",
 			expect.stringContaining("Task lane: mode=code, providerProfile=5.4 nano"),
+			undefined,
+			undefined,
+			true,
 		)
 		expect((task as any).consecutiveMistakeCount).toBe(0)
 
@@ -90,6 +99,37 @@ describe("Task mistake-limit recovery", () => {
 
 		expect(provider.getState).not.toHaveBeenCalled()
 		expect((task as any).ask).not.toHaveBeenCalled()
+		expect((task as any).automaticMistakeRecoveryCount).toBe(1)
 		expect(userContent).toHaveLength(1)
+	})
+
+	it("keeps the one-recovery budget exhausted until protected human guidance arrives", async () => {
+		const provider = {
+			isTaskOnScreen: vi.fn(() => false),
+			getState: vi.fn(async () => ({ autoApprovalEnabled: true })),
+		}
+		const task = createTask(provider)
+		;(task as any).automaticMistakeRecoveryCount = 1
+		;(task as any).ask = vi.fn(async () => ({
+			response: "messageResponse",
+			text: "human recovery guidance",
+			images: undefined,
+		}))
+		const userContent: any[] = []
+
+		await (task as any).handleConsecutiveMistakeLimit(userContent)
+
+		expect(provider.isTaskOnScreen).not.toHaveBeenCalled()
+		expect(provider.getState).not.toHaveBeenCalled()
+		expect((task as any).ask).toHaveBeenCalledWith(
+			"mistake_limit_reached",
+			expect.stringContaining("Recent provider responses without tool use: 2"),
+			undefined,
+			undefined,
+			true,
+		)
+		expect((task as any).automaticMistakeRecoveryCount).toBe(0)
+		expect(userContent).toHaveLength(1)
+		expect(JSON.parse(userContent[0].text).feedback).toBe("human recovery guidance")
 	})
 })

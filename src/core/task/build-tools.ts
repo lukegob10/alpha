@@ -7,6 +7,7 @@ import { customToolRegistry, formatNative } from "@alpha-code/core"
 
 import type { ClineProvider } from "../webview/ClineProvider"
 import { getRooDirectoriesForCwd } from "../../services/roo-config/index.js"
+import { getAvailableVSCodeBrowserToolNames } from "../../services/browser/VSCodeBrowserTools"
 
 import { getNativeTools, getMcpServerTools } from "../prompts/tools/native-tools"
 import {
@@ -114,6 +115,7 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 	// Build native tools with dynamic read_file tool based on settings.
 	const nativeTools = getNativeTools({
 		supportsImages,
+		availableBrowserToolNames: getAvailableVSCodeBrowserToolNames(),
 	})
 	// Managed child lanes provide a frozen authority allow-list. Retain only the
 	// orchestration schemas explicitly granted there; report_progress is the one

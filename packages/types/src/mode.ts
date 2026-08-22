@@ -44,7 +44,7 @@ export type GroupEntry = z.infer<typeof groupEntrySchema>
 
 /**
  * Checks if a group entry references a deprecated tool group.
- * Handles both string entries ("browser") and tuple entries (["browser", { ... }]).
+ * Handles both string entries and tuple entries.
  */
 function isDeprecatedGroupEntry(entry: unknown): boolean {
 	if (typeof entry === "string") {
@@ -80,7 +80,7 @@ const rawGroupEntryArraySchema = z.array(groupEntrySchema).refine(
 
 /**
  * Schema for mode group entries. Preprocesses the input to strip deprecated
- * tool groups (e.g., "browser") before validation, ensuring backward compatibility
+ * legacy tool groups before validation, ensuring backward compatibility
  * with older user configs.
  *
  * The type assertion to `z.ZodType<GroupEntry[], z.ZodTypeDef, GroupEntry[]>` is
@@ -198,7 +198,7 @@ export const DEFAULT_MODES: readonly ModeConfig[] = [
 		whenToUse:
 			"Use this mode when you need to write, modify, or refactor code. Ideal for implementing features, fixing bugs, creating new files, or making code improvements across any programming language or framework.",
 		description: "Write, modify, and refactor code",
-		groups: ["read", "edit", "command", "mcp", "github", "agents"],
+		groups: ["read", "edit", "command", "mcp", "github", "agents", "browser"],
 		customInstructions: CODE_MODE_INSTRUCTIONS,
 	},
 	{
@@ -221,7 +221,7 @@ export const DEFAULT_MODES: readonly ModeConfig[] = [
 		whenToUse:
 			"Use this mode when you're troubleshooting issues, investigating errors, or diagnosing problems. Specialized in systematic debugging, adding logging, analyzing stack traces, and identifying root causes before applying fixes.",
 		description: "Diagnose and fix software issues",
-		groups: ["read", "edit", "command", "mcp", "github"],
+		groups: ["read", "edit", "command", "mcp", "github", "browser"],
 		customInstructions:
 			"Reflect on 5-7 different possible sources of the problem, distill those down to 1-2 most likely sources, and then add logs to validate your assumptions. Explicitly ask the user to confirm the diagnosis before fixing the problem.",
 	},

@@ -1,6 +1,5 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react"
 import { useDeepCompareEffect, useEvent } from "react-use"
-import { Virtuoso, type VirtuosoHandle } from "react-virtuoso"
 import removeMd from "remove-markdown"
 import useSound from "use-sound"
 import { LRUCache } from "lru-cache"
@@ -49,7 +48,7 @@ import { CheckpointWarning } from "./CheckpointWarning"
 import { QueuedMessages } from "./QueuedMessages"
 import { WorktreeSelector } from "./WorktreeSelector"
 import FileChangesPanel from "./FileChangesPanel"
-import { CHAT_BOTTOM_THRESHOLD_PX, useScrollLifecycle } from "@src/hooks/useScrollLifecycle"
+import { useChatScrollController } from "@src/hooks/useChatScrollController"
 
 export interface ChatViewProps {
 	isHidden: boolean
@@ -74,9 +73,18 @@ const messageResponseAskTypes = new Set<ClineAsk>([
 const completedTaskResponseAskTypes = new Set<ClineAsk>(["completion_result", "resume_completed_task"])
 const approvalAskTypes = new Set<ClineAsk>(["tool", "command", "use_mcp_server"])
 
-const computeChatItemKey = (_index: number, message: ClineMessage) => message.ts
+const computeChatItemKey = (index: number, message: ClineMessage) => `${message.ts}:${index}`
 
 const isCompletedTaskResponseAsk = (ask: ClineAsk | undefined) => Boolean(ask && completedTaskResponseAskTypes.has(ask))
+
+/**
+ * Recognizes an explicit user request to run context condensation without
+ * treating ordinary requests that merely mention context as commands.
+ */
+export const isContextCondensationRequest = (text: string): boolean =>
+	/^(?:(?:please|can you|could you|would you)\s+)?(?:compact|condense)\s+(?:(?:the|this)\s+)?(?:context|conversation|chat|thread)\s*[.!?]*$/i.test(
+		text.trim(),
+	)
 
 const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewProps> = (
 	{ isHidden, showAnnouncement, hideAnnouncement },
@@ -261,10 +269,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const [primaryButtonText, setPrimaryButtonText] = useState<string | undefined>(undefined)
 	const [secondaryButtonText, setSecondaryButtonText] = useState<string | undefined>(undefined)
 	const [_didClickCancel, setDidClickCancel] = useState(false)
-	const virtuosoRef = useRef<VirtuosoHandle>(null)
+	const transcriptScrollerRef = useRef<HTMLDivElement | null>(null)
 	const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({})
 	const prevExpandedRowsRef = useRef<Record<number, boolean>>()
-	const scrollContainerRef = useRef<HTMLDivElement>(null)
 	const lastTtsRef = useRef<string>("")
 	const [wasStreaming, setWasStreaming] = useState<boolean>(false)
 	const [checkpointWarning, setCheckpointWarning] = useState<
@@ -592,8 +599,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 	}, [activeMessages.length])
 
-	// Reset UI states when task changes. Scroll lifecycle is handled by
-	// useScrollLifecycle which has its own effect keyed on taskTs.
+	// Reset UI states when task changes. The scroll controller has its own
+	// task-keyed layout effect.
 	useEffect(() => {
 		setExpandedRows({})
 		everVisibleMessagesTsRef.current.clear()
@@ -734,6 +741,18 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[enterBlankTaskView],
 	)
 
+	const handleCondenseContext = useCallback(
+		(taskId: string) => {
+			if (isCondensing || sendingDisabled) {
+				return
+			}
+			setIsCondensing(true)
+			setSendingDisabled(true)
+			vscode.postMessage({ type: "condenseTaskContextRequest", text: taskId })
+		},
+		[isCondensing, sendingDisabled],
+	)
+
 	/**
 	 * Handles sending messages to the extension
 	 * @param text - The message text to send
@@ -744,6 +763,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			text = text.trim()
 
 			if (!text && images.length === 0) {
+				return
+			}
+
+			// Allow users to trigger the same operation as the context-condense
+			// button by explicitly asking for it in the chat input.
+			if (visibleCurrentTaskId && images.length === 0 && isContextCondensationRequest(text)) {
+				handleCondenseContext(visibleCurrentTaskId)
+				setInputValue("")
+				setSelectedImages([])
 				return
 			}
 
@@ -834,6 +862,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			isVisibleTaskCompleted,
 			isLastFollowUpAnswered,
 			startNewTask,
+			handleCondenseContext,
+			visibleCurrentTaskId,
 		], // messagesRef and clineAskRef are stable
 	)
 
@@ -1181,8 +1211,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 		})
 
-		// Remove the 500-message limit to prevent array index shifting
-		// Virtuoso is designed to efficiently handle large lists through virtualization
+		// Keep every message mounted so native scroll geometry remains exact and
+		// message indices stay stable for checkpoint navigation.
 		const newVisibleMessages = modifiedMessages.filter((message) => {
 			// Filter out checkpoint_saved messages that should be suppressed
 			if (message.say === "checkpoint_saved") {
@@ -1488,33 +1518,42 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		checkpointJumpCursorRef.current = null
 	}, [task?.ts, checkpointIndices])
 
-	// Scroll lifecycle is managed by a dedicated hook to keep ChatView focused
-	// on message handling and UI orchestration.
+	// Native DOM geometry keeps the scrollbar range exact while chat rows stream,
+	// expand, or load asynchronous content. This controller is the sole owner of
+	// automatic bottom pinning.
 	const {
 		showScrollToBottom,
-		handleRowHeightChange,
 		handleScrollToBottomClick,
-		enterUserBrowsingHistory,
-		followOutputCallback,
-		atBottomStateChangeCallback,
-	} = useScrollLifecycle({
-		virtuosoRef,
-		scrollContainerRef,
+		releaseFollow,
+		setScrollerRef,
+		setContentRef,
+		handleScrollerScroll,
+		handleScrollerWheel,
+		handleScrollerPointerDown,
+		handleScrollerPointerUp,
+		handleContentLoad,
+	} = useChatScrollController({
 		taskTs: task?.ts,
-		isHidden,
-		hasTask: !!task,
 		itemCount: groupedMessages.length,
 	})
 
-	// The floating controls are siblings of Virtuoso's scroller, so wheel input
+	const bindTranscriptScroller = useCallback(
+		(element: HTMLDivElement | null) => {
+			transcriptScrollerRef.current = element
+			setScrollerRef(element)
+		},
+		[setScrollerRef],
+	)
+
+	// The floating controls are siblings of the transcript scroller, so wheel input
 	// over a button would otherwise stop at the overflow-hidden viewport wrapper.
 	const handleScrollControlsWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
 		event.preventDefault()
-		virtuosoRef.current?.scrollBy({ top: event.deltaY, behavior: "auto" })
+		transcriptScrollerRef.current?.scrollBy({ top: event.deltaY, behavior: "auto" })
 	}, [])
 
 	// Expanding a row indicates the user is browsing; disable sticky follow.
-	// Placed after the hook call so enterUserBrowsingHistory is defined.
+	// Placed after the hook call so releaseFollow is defined.
 	useEffect(() => {
 		const prev = prevExpandedRowsRef.current
 		let wasAnyRowExpandedByUser = false
@@ -1529,11 +1568,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 
 		if (wasAnyRowExpandedByUser) {
-			enterUserBrowsingHistory("row-expansion")
+			releaseFollow("row-expansion")
 		}
 
 		prevExpandedRowsRef.current = expandedRows
-	}, [enterUserBrowsingHistory, expandedRows])
+	}, [expandedRows, releaseFollow])
 
 	const handleSetExpandedRow = useCallback(
 		(ts: number, expand?: boolean) => {
@@ -1638,8 +1677,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [handleScrollToBottomClick])
 
 	const handleTaskHeaderExpandedChange = useCallback(() => {
-		enterUserBrowsingHistory("task-header-toggle")
-	}, [enterUserBrowsingHistory])
+		releaseFollow("task-header-toggle")
+	}, [releaseFollow])
 
 	const handleScrollToLatestCheckpoint = useCallback(() => {
 		if (checkpointIndices.length === 0) {
@@ -1651,13 +1690,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		const nextCheckpointIndex = checkpointIndices[nextCursor]
 		checkpointJumpCursorRef.current = nextCursor
 
-		enterUserBrowsingHistory("keyboard-nav-up")
-		virtuosoRef.current?.scrollToIndex({
-			index: nextCheckpointIndex,
-			align: "center",
-			behavior: "smooth",
-		})
-	}, [checkpointIndices, enterUserBrowsingHistory])
+		releaseFollow("checkpoint-navigation")
+		const checkpoint = transcriptScrollerRef.current?.querySelector<HTMLElement>(
+			`[data-chat-message-index="${nextCheckpointIndex}"]`,
+		)
+		checkpoint?.scrollIntoView({ block: "center", behavior: "smooth" })
+	}, [checkpointIndices, releaseFollow])
 
 	const itemContent = useCallback(
 		(index: number, messageOrGroup: ClineMessage) => {
@@ -1673,7 +1711,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					onToggleExpand={toggleRowExpansion} // This was already stabilized
 					lastModifiedMessage={isLast ? modifiedMessages.at(-1) : undefined}
 					isLast={isLast}
-					onHeightChange={handleRowHeightChange}
 					isStreaming={isStreaming}
 					onSuggestionClick={handleSuggestionClickInRow} // This was already stabilized
 					onBatchFileResponse={handleBatchFileResponse}
@@ -1710,7 +1747,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			toggleRowExpansion,
 			modifiedMessages,
 			groupedMessages.length,
-			handleRowHeightChange,
 			isStreaming,
 			handleSuggestionClickInRow,
 			handleBatchFileResponse,
@@ -1744,7 +1780,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [mode, customModes, switchToMode])
 
 	// Mode switching keyboard handler. Scroll-intent keyboard detection
-	// (PageUp, Home, ArrowUp) is handled by useScrollLifecycle.
+	// Native keyboard scrolling is handled by the focusable transcript scroller.
 	const handleKeyDown = useCallback(
 		(event: KeyboardEvent) => {
 			if ((event.metaKey || event.ctrlKey) && event.key === ".") {
@@ -1797,15 +1833,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 		},
 	}))
-
-	const handleCondenseContext = (taskId: string) => {
-		if (isCondensing || sendingDisabled) {
-			return
-		}
-		setIsCondensing(true)
-		setSendingDisabled(true)
-		vscode.postMessage({ type: "condenseTaskContextRequest", text: taskId })
-	}
 
 	const areActionButtonsVisible = primaryButtonText || secondaryButtonText
 
@@ -1903,194 +1930,208 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			{!task && showWorktreesInHomeScreen && <WorktreeSelector />}
 
 			{task && (
-				<>
-					<div className="relative mb-8 min-h-0 flex-1 overflow-hidden" ref={scrollContainerRef}>
-						<Virtuoso
-							ref={virtuosoRef}
-							key={task.ts}
-							className="scrollable h-full min-h-0 w-full overscroll-contain"
-							increaseViewportBy={{ top: 3_000, bottom: 1000 }}
-							data={groupedMessages}
-							computeItemKey={computeChatItemKey}
-							initialTopMostItemIndex={
-								groupedMessages.length > 0
-									? {
-											index: groupedMessages.length - 1,
-											align: "end",
-										}
-									: undefined
-							}
-							itemContent={itemContent}
-							followOutput={followOutputCallback}
-							atBottomStateChange={atBottomStateChangeCallback}
-							atBottomThreshold={CHAT_BOTTOM_THRESHOLD_PX}
-						/>
-						{showScrollToBottom && (
-							<div
-								data-testid="chat-scroll-controls"
-								className="pointer-events-none absolute inset-x-0 bottom-2 z-10 flex h-9 items-center justify-center gap-2 px-[15px]"
-								onWheel={handleScrollControlsWheel}>
-								<StandardTooltip content={t("chat:scrollToBottom")}>
+				<div data-testid="chat-transcript-viewport" className="relative mb-2 min-h-0 flex-1 overflow-hidden">
+					<div
+						ref={bindTranscriptScroller}
+						key={task.ts}
+						data-testid="chat-transcript-scroller"
+						data-chat-transcript-scroller="true"
+						tabIndex={0}
+						className="scrollable h-full min-h-0 w-full overflow-y-auto overscroll-contain"
+						style={{ overflowAnchor: "none", scrollbarGutter: "stable" }}
+						onScroll={handleScrollerScroll}
+						onWheel={handleScrollerWheel}
+						onPointerDown={handleScrollerPointerDown}
+						onPointerUp={handleScrollerPointerUp}
+						onPointerCancel={handleScrollerPointerUp}
+						onLoadCapture={handleContentLoad}>
+						<div
+							ref={setContentRef}
+							data-testid="chat-transcript-content"
+							data-count={groupedMessages.length}>
+							{groupedMessages.map((message, index) => (
+								<div
+									key={computeChatItemKey(index, message)}
+									data-chat-message-index={index}
+									data-testid={`chat-message-${index}`}>
+									{itemContent(index, message)}
+								</div>
+							))}
+						</div>
+					</div>
+					{showScrollToBottom && (
+						<div
+							data-testid="chat-scroll-controls"
+							className="pointer-events-none absolute inset-x-0 bottom-2 z-10 flex h-9 items-center justify-center gap-2 px-[15px]"
+							onWheel={handleScrollControlsWheel}>
+							<StandardTooltip content={t("chat:scrollToBottom")}>
+								<Button
+									variant="secondary"
+									size="icon"
+									className="pointer-events-auto rounded-full"
+									onClick={handleScrollToBottomAndResetCheckpointCursor}
+									aria-label={t("chat:scrollToBottom")}>
+									<span className="codicon codicon-chevron-down"></span>
+								</Button>
+							</StandardTooltip>
+							{hasLatestCheckpoint && (
+								<StandardTooltip content={t("chat:scrollToLatestCheckpoint")}>
 									<Button
 										variant="secondary"
 										size="icon"
 										className="pointer-events-auto rounded-full"
-										onClick={handleScrollToBottomAndResetCheckpointCursor}
-										aria-label={t("chat:scrollToBottom")}>
-										<span className="codicon codicon-chevron-down"></span>
-									</Button>
-								</StandardTooltip>
-								{hasLatestCheckpoint && (
-									<StandardTooltip content={t("chat:scrollToLatestCheckpoint")}>
-										<Button
-											variant="secondary"
-											size="icon"
-											className="pointer-events-auto rounded-full"
-											onClick={handleScrollToLatestCheckpoint}
-											aria-label={t("chat:scrollToLatestCheckpoint")}>
-											<span className="codicon codicon-history"></span>
-										</Button>
-									</StandardTooltip>
-								)}
-							</div>
-						)}
-					</div>
-					<FileChangesPanel clineMessages={activeMessages} taskId={visibleCurrentTaskId} />
-					{areActionButtonsVisible && !isManagedSubagent && (
-						<div
-							className={`flex h-9 items-center mb-1 px-[15px] ${enableButtons ? "opacity-100" : "opacity-50"}`}>
-							{primaryButtonText && (
-								<StandardTooltip
-									content={
-										primaryButtonText === t("chat:retry.title")
-											? t("chat:retry.tooltip")
-											: primaryButtonText === t("chat:save.title")
-												? t("chat:save.tooltip")
-												: primaryButtonText === t("chat:approve.title")
-													? t("chat:approve.tooltip")
-													: primaryButtonText === t("chat:runCommand.title")
-														? t("chat:runCommand.tooltip")
-														: primaryButtonText === t("chat:startNewTask.title")
-															? t("chat:startNewTask.tooltip")
-															: primaryButtonText === t("chat:resumeTask.title")
-																? t("chat:resumeTask.tooltip")
-																: primaryButtonText === t("chat:proceedAnyways.title")
-																	? t("chat:proceedAnyways.tooltip")
-																	: primaryButtonText ===
-																		  t("chat:proceedWhileRunning.title")
-																		? t("chat:proceedWhileRunning.tooltip")
-																		: undefined
-									}>
-									<Button
-										variant="primary"
-										disabled={!enableButtons}
-										className={secondaryButtonText ? "flex-1 mr-[6px]" : "flex-[2] mr-0"}
-										onClick={() => handlePrimaryButtonClick(inputValue, selectedImages)}>
-										{primaryButtonText}
-									</Button>
-								</StandardTooltip>
-							)}
-							{secondaryButtonText && (
-								<StandardTooltip
-									content={
-										secondaryButtonText === t("chat:startNewTask.title")
-											? t("chat:startNewTask.tooltip")
-											: secondaryButtonText === t("chat:reject.title")
-												? t("chat:reject.tooltip")
-												: secondaryButtonText === t("chat:terminate.title")
-													? t("chat:terminate.tooltip")
-													: secondaryButtonText === t("chat:killCommand.title")
-														? t("chat:killCommand.tooltip")
-														: undefined
-									}>
-									<Button
-										variant="secondary"
-										disabled={!enableButtons}
-										className="flex-1 ml-[6px]"
-										onClick={() => handleSecondaryButtonClick()}>
-										{secondaryButtonText}
+										onClick={handleScrollToLatestCheckpoint}
+										aria-label={t("chat:scrollToLatestCheckpoint")}>
+										<span className="codicon codicon-history"></span>
 									</Button>
 								</StandardTooltip>
 							)}
 						</div>
 					)}
-				</>
-			)}
-
-			{!isManagedSubagent && (
-				<QueuedMessages
-					queue={visibleMessageQueue}
-					editingMessageId={editingQueuedMessage?.id}
-					onRemove={(index) => {
-						if (visibleMessageQueue[index]) {
-							vscode.postMessage({
-								type: "removeQueuedMessage",
-								text: visibleMessageQueue[index].id,
-								...visibleTaskPayload,
-							})
-						}
-					}}
-					onSteer={(index) => {
-						if (visibleMessageQueue[index]) {
-							vscode.postMessage({
-								type: "steerQueuedMessage",
-								text: visibleMessageQueue[index].id,
-								...visibleTaskPayload,
-							})
-						}
-					}}
-					onEdit={(index) => {
-						if (visibleMessageQueue[index]) {
-							startQueuedMessageEdit(visibleMessageQueue[index])
-						}
-					}}
-					onReorder={(fromIndex, toIndex) => {
-						if (visibleMessageQueue[fromIndex]) {
-							vscode.postMessage({
-								type: "reorderQueuedMessage",
-								payload: {
-									id: visibleMessageQueue[fromIndex].id,
-									toIndex,
-								},
-								...visibleTaskPayload,
-							})
-						}
-					}}
-				/>
-			)}
-			{showRetiredProviderWarning && (
-				<div className="px-[15px] py-1">
-					<WarningRow
-						title={t("chat:retiredProvider.title")}
-						message={t("chat:retiredProvider.message")}
-						actionText={t("chat:retiredProvider.openSettings")}
-						onAction={() => vscode.postMessage({ type: "switchTab", tab: "settings" })}
-					/>
 				</div>
 			)}
-			{!isManagedSubagent && (
-				<ChatTextArea
-					ref={textAreaRef}
-					inputValue={inputValue}
-					setInputValue={setInputValue}
-					sendingDisabled={sendingDisabled || isProfileDisabled}
-					selectApiConfigDisabled={sendingDisabled && clineAsk !== "api_req_failed"}
-					placeholderText={placeholderText}
-					selectedImages={selectedImages}
-					setSelectedImages={setSelectedImages}
-					onSend={() => handleSendMessage(inputValue, selectedImages)}
-					onSelectImages={selectImages}
-					shouldDisableImages={shouldDisableImages}
-					mode={mode}
-					setMode={setMode}
-					modeShortcutText={modeShortcutText}
-					isEditMode={Boolean(editingQueuedMessage)}
-					onCancel={cancelQueuedMessageEdit}
-					isStreaming={isStreaming}
-					onStop={handleStopTask}
-					onEnqueueMessage={handleEnqueueCurrentMessage}
-				/>
-			)}
+
+			<div data-testid="chat-bottom-dock" className="relative z-20 flex shrink-0 flex-col">
+				{task && (
+					<>
+						<FileChangesPanel clineMessages={activeMessages} taskId={visibleCurrentTaskId} />
+						{areActionButtonsVisible && !isManagedSubagent && (
+							<div
+								className={`mb-1 flex h-9 shrink-0 items-center px-[15px] ${enableButtons ? "opacity-100" : "opacity-50"}`}>
+								{primaryButtonText && (
+									<StandardTooltip
+										content={
+											primaryButtonText === t("chat:retry.title")
+												? t("chat:retry.tooltip")
+												: primaryButtonText === t("chat:save.title")
+													? t("chat:save.tooltip")
+													: primaryButtonText === t("chat:approve.title")
+														? t("chat:approve.tooltip")
+														: primaryButtonText === t("chat:runCommand.title")
+															? t("chat:runCommand.tooltip")
+															: primaryButtonText === t("chat:startNewTask.title")
+																? t("chat:startNewTask.tooltip")
+																: primaryButtonText === t("chat:resumeTask.title")
+																	? t("chat:resumeTask.tooltip")
+																	: primaryButtonText ===
+																		  t("chat:proceedAnyways.title")
+																		? t("chat:proceedAnyways.tooltip")
+																		: primaryButtonText ===
+																			  t("chat:proceedWhileRunning.title")
+																			? t("chat:proceedWhileRunning.tooltip")
+																			: undefined
+										}>
+										<Button
+											variant="primary"
+											disabled={!enableButtons}
+											className={secondaryButtonText ? "flex-1 mr-[6px]" : "flex-[2] mr-0"}
+											onClick={() => handlePrimaryButtonClick(inputValue, selectedImages)}>
+											{primaryButtonText}
+										</Button>
+									</StandardTooltip>
+								)}
+								{secondaryButtonText && (
+									<StandardTooltip
+										content={
+											secondaryButtonText === t("chat:startNewTask.title")
+												? t("chat:startNewTask.tooltip")
+												: secondaryButtonText === t("chat:reject.title")
+													? t("chat:reject.tooltip")
+													: secondaryButtonText === t("chat:terminate.title")
+														? t("chat:terminate.tooltip")
+														: secondaryButtonText === t("chat:killCommand.title")
+															? t("chat:killCommand.tooltip")
+															: undefined
+										}>
+										<Button
+											variant="secondary"
+											disabled={!enableButtons}
+											className="flex-1 ml-[6px]"
+											onClick={() => handleSecondaryButtonClick()}>
+											{secondaryButtonText}
+										</Button>
+									</StandardTooltip>
+								)}
+							</div>
+						)}
+					</>
+				)}
+
+				{!isManagedSubagent && (
+					<QueuedMessages
+						queue={visibleMessageQueue}
+						editingMessageId={editingQueuedMessage?.id}
+						onRemove={(index) => {
+							if (visibleMessageQueue[index]) {
+								vscode.postMessage({
+									type: "removeQueuedMessage",
+									text: visibleMessageQueue[index].id,
+									...visibleTaskPayload,
+								})
+							}
+						}}
+						onSteer={(index) => {
+							if (visibleMessageQueue[index]) {
+								vscode.postMessage({
+									type: "steerQueuedMessage",
+									text: visibleMessageQueue[index].id,
+									...visibleTaskPayload,
+								})
+							}
+						}}
+						onEdit={(index) => {
+							if (visibleMessageQueue[index]) {
+								startQueuedMessageEdit(visibleMessageQueue[index])
+							}
+						}}
+						onReorder={(fromIndex, toIndex) => {
+							if (visibleMessageQueue[fromIndex]) {
+								vscode.postMessage({
+									type: "reorderQueuedMessage",
+									payload: {
+										id: visibleMessageQueue[fromIndex].id,
+										toIndex,
+									},
+									...visibleTaskPayload,
+								})
+							}
+						}}
+					/>
+				)}
+				{showRetiredProviderWarning && (
+					<div className="px-[15px] py-1">
+						<WarningRow
+							title={t("chat:retiredProvider.title")}
+							message={t("chat:retiredProvider.message")}
+							actionText={t("chat:retiredProvider.openSettings")}
+							onAction={() => vscode.postMessage({ type: "switchTab", tab: "settings" })}
+						/>
+					</div>
+				)}
+				{!isManagedSubagent && (
+					<ChatTextArea
+						ref={textAreaRef}
+						inputValue={inputValue}
+						setInputValue={setInputValue}
+						sendingDisabled={sendingDisabled || isProfileDisabled}
+						selectApiConfigDisabled={sendingDisabled && clineAsk !== "api_req_failed"}
+						placeholderText={placeholderText}
+						selectedImages={selectedImages}
+						setSelectedImages={setSelectedImages}
+						onSend={() => handleSendMessage(inputValue, selectedImages)}
+						onSelectImages={selectImages}
+						shouldDisableImages={shouldDisableImages}
+						mode={mode}
+						setMode={setMode}
+						modeShortcutText={modeShortcutText}
+						isEditMode={Boolean(editingQueuedMessage)}
+						onCancel={cancelQueuedMessageEdit}
+						isStreaming={isStreaming}
+						onStop={handleStopTask}
+						onEnqueueMessage={handleEnqueueCurrentMessage}
+					/>
+				)}
+			</div>
 
 			<div id="alpha-portal" />
 		</div>

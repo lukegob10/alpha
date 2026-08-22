@@ -324,6 +324,32 @@ describe("SYSTEM_PROMPT", () => {
 		},
 	)
 
+	it("carries the explicit-only delegation policy into the root prompt", async () => {
+		const prompt = await SYSTEM_PROMPT(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			defaultModeSlug,
+			undefined,
+			undefined,
+			undefined,
+			experiments,
+			undefined,
+			undefined,
+			{
+				todoListEnabled: true,
+				useAgentRules: true,
+				newTaskRequireTodos: false,
+				subagentDelegationPolicy: "explicit-only",
+			},
+		)
+
+		expect(prompt).toContain("frozen delegation policy is explicit-only")
+		expect(prompt).toContain("Your own judgment that delegation would be useful is not authorization")
+	})
+
 	it("should include vscode language in custom instructions", async () => {
 		// Mock vscode.env.language
 		const vscode = vi.mocked(await import("vscode")) as any
