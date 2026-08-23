@@ -17,6 +17,7 @@ import { maybeRemoveImageBlocks } from "../../../api/transform/image-cleaning"
 import { ContextProxy } from "../../config/ContextProxy"
 import { processUserContentMentions } from "../../mentions/processUserContentMentions"
 import { MultiSearchReplaceDiffStrategy } from "../../diff/strategies/multi-search-replace"
+import { formatResponse } from "../../prompts/responses"
 
 // Mock delay before any imports that might use it
 vi.mock("delay", () => ({
@@ -2443,6 +2444,155 @@ describe("Alpha", () => {
 				// Verify cancelCurrentRequest was called
 				expect(cancelSpy).toHaveBeenCalled()
 			})
+		})
+	})
+
+	describe("v2.0.9 root task loop", () => {
+		const createTask = () =>
+			new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "root loop regression",
+				startTask: false,
+				enableCheckpoints: false,
+			})
+
+		it.each([
+			["successful", false],
+			["failed", true],
+		] as const)("forwards a %s tool result into the next turn", async (_label, isError) => {
+			const task = createTask()
+			const initialContent: Anthropic.Messages.ContentBlockParam[] = [{ type: "text", text: "start" }]
+			const toolResult: Anthropic.ToolResultBlockParam = {
+				type: "tool_result",
+				tool_use_id: "read-1",
+				content: isError ? "read failed" : "file contents",
+				...(isError ? { is_error: true } : {}),
+			}
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockImplementationOnce(async () => {
+					task.userMessageContent = [toolResult]
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop(initialContent)
+
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[0]?.slice(0, 2)).toEqual([initialContent, true])
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([[toolResult], false])
+		})
+
+		it("uses the no-tools recovery prompt for an empty nonterminal turn", async () => {
+			const task = createTask()
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockResolvedValueOnce(false)
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+				[{ type: "text", text: formatResponse.noToolsUsed() }],
+				false,
+			])
+		})
+
+		it("stops at the completion boundary without starting another request", async () => {
+			const task = createTask()
+			const requestStep = vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+				task.userMessageContent = [{ type: "text", text: "stale continuation" }]
+				task.markCompleted()
+				return false
+			})
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "finish" }])
+
+			expect(requestStep).toHaveBeenCalledOnce()
+		})
+
+		it("resumes a delegated parent from its persisted new_task child result", async () => {
+			const task = createTask()
+			const childResult: Anthropic.ToolResultBlockParam = {
+				type: "tool_result",
+				tool_use_id: "new-task-1",
+				content: "Child task completed: inspected the parser",
+			}
+			task.apiConversationHistory = [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "tool_use",
+							id: "new-task-1",
+							name: "new_task",
+							input: { mode: "code", message: "Inspect the parser" },
+						},
+					],
+				},
+				{ role: "user", content: [childResult] },
+			] as any
+			Object.assign(task, {
+				abort: true,
+				abandoned: true,
+				isStreaming: true,
+				isWaitingForFirstChunk: true,
+			})
+			const ask = vi.spyOn(task, "ask")
+			const saveHistory = vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			const continueLoop = vi.spyOn(task as any, "initiateTaskLoop").mockResolvedValue(undefined)
+
+			await task.resumeAfterDelegation()
+
+			expect(ask).not.toHaveBeenCalled()
+			expect(task.apiConversationHistory).toHaveLength(2)
+			expect(task.apiConversationHistory[1]?.content).toEqual([childResult, { type: "text", text: "" }])
+			expect(saveHistory).toHaveBeenCalledOnce()
+			expect(continueLoop).toHaveBeenCalledWith([])
+			expect(task.skipPrevResponseIdOnce).toBe(true)
+			expect(task.abort).toBe(false)
+			expect(task.abandoned).toBe(false)
+		})
+
+		it("repairs an interrupted tool call when a root task resumes after reload", async () => {
+			const task = createTask()
+			const savedClineMessages = [{ ts: 1, type: "say", say: "text", text: "historical task" }]
+			const savedApiHistory = [
+				{ role: "user", content: [{ type: "text", text: "inspect" }], ts: 1 },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "read-after-reload", name: "read_file", input: {} }],
+					ts: 2,
+				},
+			]
+			vi.spyOn(task as any, "getSavedClineMessages").mockResolvedValue(savedClineMessages)
+			vi.spyOn(task as any, "overwriteClineMessages").mockResolvedValue(true)
+			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "getSavedApiConversationHistory").mockResolvedValue(savedApiHistory)
+			vi.spyOn(task as any, "overwriteApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task, "say").mockResolvedValue(undefined)
+			vi.spyOn(task, "ask").mockResolvedValue({
+				response: "messageResponse",
+				text: "continue after reload",
+				images: [],
+			} as any)
+			const continueLoop = vi.spyOn(task as any, "initiateTaskLoop").mockResolvedValue(undefined)
+
+			await (task as any).resumeTaskFromHistory()
+
+			expect(continueLoop).toHaveBeenCalledWith(
+				[
+					{
+						type: "tool_result",
+						tool_use_id: "read-after-reload",
+						content: "Task was interrupted before this tool call could be completed.",
+					},
+					{ type: "text", text: "<user_message>\ncontinue after reload\n</user_message>" },
+				],
+				undefined,
+			)
 		})
 	})
 

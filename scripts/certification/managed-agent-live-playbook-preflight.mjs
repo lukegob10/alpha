@@ -82,7 +82,9 @@ const runCVerifyAllCommand =
 
 try {
 	const prepareWorkspace = parseArguments(process.argv.slice(2))
-	const playbook = readFileSync(playbookPath, "utf8")
+	// Validate one canonical representation so multiline contracts behave the
+	// same in LF checkouts and Windows checkouts rewritten to CRLF by Git.
+	const playbook = readFileSync(playbookPath, "utf8").replace(/\r\n?/g, "\n")
 	const runASection = extractSection(playbook, "## Run A —", "## Run B —")
 	const runCSection = extractSection(playbook, "## Run C —", "## Run D —")
 	const promptA = extractPrompt(playbook, "Prompt A")

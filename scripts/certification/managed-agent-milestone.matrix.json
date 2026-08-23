@@ -52,7 +52,7 @@
 				"^core/prompts/tools/__tests__/build-tools-spawn-agent\\.spec\\.ts$",
 				"^core/tools/__tests__/(?:AgentLifecycleTools|SpawnAgentTool|ToolRegistry|nativeToolDispatchContract)\\.spec\\.ts$",
 				"^core/webview/__tests__/(?:ClineProvider\\.(?:flicker-free-cancel|.*(?:agent|delegat|nested|tree).*)|TaskSessionRegistry)\\.spec\\.ts$",
-				"^__tests__/(?:delegation-events|nested-delegation-resume|provider-delegation)\\.spec\\.ts$"
+				"^__tests__/(?:delegation-events|history-resume-delegation|nested-delegation-resume|provider-delegation)\\.spec\\.ts$"
 			]
 		},
 		{
@@ -492,7 +492,7 @@
 					"label": "root and managed-child tool catalog boundary",
 					"match": "all",
 					"patterns": [
-						"exposes spawn_agent to a primary Code task",
+						"keeps an idle primary Code task limited to delegation entry points",
 						"omits orchestration tools from a legacy managed child without delegation authority"
 					]
 				},

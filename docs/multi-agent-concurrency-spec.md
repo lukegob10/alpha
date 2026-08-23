@@ -465,7 +465,7 @@ Remaining product/release work:
 
 Completed:
 
-1. The latest recorded source-stable strict matrix passes all 26 deterministic rows: 10 tracks, 929 tests, zero
+1. The latest recorded source-stable strict matrix passes all 26 deterministic rows: 10 tracks, 974 tests, zero
    skips, zero failures, and no baseline-debt waiver. The matrix treats 903 as a regression floor; a fresh run is
    required after source changes.
 2. The canonical root workflow bundles once before package tests, avoiding competing Windows writes to `src/dist`.

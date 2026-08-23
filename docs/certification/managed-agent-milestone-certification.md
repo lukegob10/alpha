@@ -2,11 +2,11 @@
 
 ## Recorded deterministic verdict
 
-The latest source-stable strict run recorded on 2026-08-20 for the combined configurable-orchestration,
+The latest source-stable strict run recorded on 2026-08-23 for the combined configurable-orchestration,
 nested-agent, Worker-verification, and live-tree implementation passed its deterministic release gate.
 
 - Deterministic matrix: **26 PASS, 0 FAIL, 0 pending merge, 0 baseline-debt exceptions**.
-- Focused execution: **10 tracks, 929 tests passed, 0 failed, 0 skipped, 0 todo**.
+- Focused execution: **10 tracks, 974 tests passed, 0 failed, 0 skipped, 0 todo**.
 - External boundary: **8 PENDING-INTEGRATION** cases that require a real VS Code host, native provider traffic,
   deliberate reload/process interruption, or multiple extension-host writers.
 
@@ -34,6 +34,8 @@ retained follow-up payload exact, requires cancellation immediately after the se
 non-evidentiary. On Windows, it also executes Run A's documented setup command in a temporary workspace, runs a
 bounded short form of the documented sleeper command, and verifies the documented PID-check command before any live
 handoff.
+The self-check runs that same preflight in a bounded child process and requires its platform-specific PASS receipt, so
+it cannot report success while the certification prerequisite is broken.
 
 ## Canonical commands
 
@@ -120,17 +122,17 @@ cancellation, orphan/recovery failure, cancellation, failure, and completion.
 | ------------------------------------- | ------: |
 | Managed-agent type/schema contracts   |      81 |
 | Worker worktree isolation/recovery    |      13 |
-| Runtime/store invariants              |     193 |
-| Lifecycle and mailbox routing         |     200 |
+| Runtime/store invariants              |     194 |
+| Lifecycle and mailbox routing         |     220 |
 | Awaited terminal/process-tree cleanup |      29 |
 | Global-state history compatibility    |      23 |
 | Worker completion gate                |      70 |
-| Native provider protocol              |     118 |
-| Compact task and transcript UI        |     170 |
+| Native provider protocol              |     130 |
+| Compact task and transcript UI        |     182 |
 | Settings buffering                    |      32 |
-| **Total**                             | **929** |
+| **Total**                             | **974** |
 
-The 929-test artifact attests only to the focused deterministic tracks above. Lint, typecheck, and the broader package
+The 974-test artifact attests only to the focused deterministic tracks above. Lint, typecheck, and the broader package
 suite are separate canonical commands and must retain their own run logs; their result is not inferred from this
 artifact. No skip or todo inside a strict managed-agent track is accepted.
 

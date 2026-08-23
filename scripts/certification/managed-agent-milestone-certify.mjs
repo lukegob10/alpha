@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url"
 const scriptPath = fileURLToPath(import.meta.url)
 const repositoryRoot = path.resolve(path.dirname(scriptPath), "..", "..")
 const matrixPath = path.join(path.dirname(scriptPath), "managed-agent-milestone.matrix.json")
+const livePreflightPath = path.join(path.dirname(scriptPath), "managed-agent-live-playbook-preflight.mjs")
 const defaultEvidencePath = "artifacts/certification/managed-agent-milestone-evidence.json"
 const options = parseArguments(process.argv.slice(2))
 const { strict, listOnly, help, selfCheck } = options
@@ -137,6 +138,7 @@ function parseArguments(args) {
 function runSelfCheck() {
 	const checkedMatrix = loadMatrix()
 	prepareTracks(checkedMatrix.tracks)
+	const livePreflightMode = runLivePlaybookPreflightSelfCheck()
 	const accepted = ["artifacts/certification/managed-agent-milestone-evidence.json"]
 	const rejected = [
 		".git/config",
@@ -188,8 +190,35 @@ function runSelfCheck() {
 	}
 
 	console.log(
-		`PASS certification-self-check (tracks=${checkedMatrix.tracks.length}; deterministicRows=${checkedMatrix.rows.length}; integrationRows=${checkedMatrix.integrationPending.length}; documentation=aligned; evidencePaths accepted=${accepted.length} rejected=${rejected.length}; strictDebt=2)`,
+		`PASS certification-self-check (tracks=${checkedMatrix.tracks.length}; deterministicRows=${checkedMatrix.rows.length}; integrationRows=${checkedMatrix.integrationPending.length}; documentation=aligned; livePreflight=${livePreflightMode}; evidencePaths accepted=${accepted.length} rejected=${rejected.length}; strictDebt=2)`,
 	)
+}
+
+function runLivePlaybookPreflightSelfCheck() {
+	const executionMode = process.platform === "win32" ? "windows" : "static-only"
+	const expectedReceipt = `PASS managed-agent-live-playbook-preflight (platform=${process.platform} commandExecution=${executionMode})`
+	const result = spawnSync(process.execPath, [livePreflightPath], {
+		cwd: repositoryRoot,
+		env: deterministicEnvironment(),
+		encoding: "utf8",
+		shell: false,
+		windowsHide: true,
+		timeout: 90_000,
+		maxBuffer: 1024 * 1024,
+	})
+
+	if (result.error) {
+		fail(`Live playbook preflight self-check could not run: ${result.error.message}`)
+	}
+	if (result.status !== 0) {
+		const detail = (result.stderr || result.stdout || `exit ${result.status}`).trim()
+		fail(`Live playbook preflight self-check failed: ${detail}`)
+	}
+	if (!result.stdout.split(/\r?\n/).includes(expectedReceipt)) {
+		fail(`Live playbook preflight self-check did not emit its ${executionMode} PASS receipt`)
+	}
+
+	return executionMode
 }
 
 function loadMatrix() {
