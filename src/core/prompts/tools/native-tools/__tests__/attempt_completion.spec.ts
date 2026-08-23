@@ -1,7 +1,7 @@
-import attemptCompletion from "../attempt_completion"
+import attemptCompletion, { createAttemptCompletionTool } from "../attempt_completion"
 
 describe("attempt_completion native tool", () => {
-	it("uses harness evidence and one bounded final review", () => {
+	it("keeps the primary completion contract focused on the user result", () => {
 		expect(attemptCompletion.type).toBe("function")
 		if (attemptCompletion.type !== "function") return
 
@@ -11,12 +11,23 @@ describe("attempt_completion native tool", () => {
 		expect(description).toContain("one bounded review")
 		expect(description).toContain("Optional polish is not a completion blocker")
 		expect(description).toContain("separate user confirmation of each intermediate tool is not required")
-		expect(description).toContain("outcome")
+		expect(description).toContain("latest tool result establishes the explicit requested outcome")
+		expect(description).toContain("call this tool next")
+		expect(description).toContain("Do not explore, configure, or improve adjacent state")
+		expect(description).not.toContain("- outcome:")
 		expect(description).not.toContain("CANNOT be used until")
 		expect(description).not.toContain("code corruption and system failure")
-		expect(attemptCompletion.function.parameters.properties.outcome).toMatchObject({
+		expect(attemptCompletion.function.parameters.properties).not.toHaveProperty("outcome")
+		expect(attemptCompletion.function.parameters.required).toEqual(["result"])
+	})
+
+	it("retains managed-child outcome reporting only in the sub-agent contract", () => {
+		const subagentCompletion = createAttemptCompletionTool("subagent")
+
+		expect(subagentCompletion.function.description).toContain("outcome")
+		expect(subagentCompletion.function.parameters.properties.outcome).toMatchObject({
 			enum: ["completed", "blocked"],
 		})
-		expect(attemptCompletion.function.parameters.required).toEqual(["result"])
+		expect(subagentCompletion.function.parameters.required).toEqual(["result"])
 	})
 })

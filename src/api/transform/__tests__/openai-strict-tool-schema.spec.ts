@@ -1,5 +1,5 @@
 import { delegate_task } from "../../../core/prompts/tools/native-tools/delegate_task"
-import attemptCompletion from "../../../core/prompts/tools/native-tools/attempt_completion"
+import { createAttemptCompletionTool } from "../../../core/prompts/tools/native-tools/attempt_completion"
 import { toOpenAiStrictToolSchema } from "../openai-strict-tool-schema"
 
 describe("toOpenAiStrictToolSchema", () => {
@@ -67,7 +67,8 @@ describe("toOpenAiStrictToolSchema", () => {
 	})
 
 	it("makes the optional attempt_completion outcome nullable for strict providers", () => {
-		const strict = toOpenAiStrictToolSchema(attemptCompletion.function.parameters) as any
+		const subagentCompletion = createAttemptCompletionTool("subagent")
+		const strict = toOpenAiStrictToolSchema(subagentCompletion.function.parameters) as any
 
 		expect(strict.required).toEqual(["result", "outcome"])
 		expect(strict.properties.outcome).toMatchObject({

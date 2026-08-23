@@ -34,6 +34,10 @@ interface BuildToolsOptions {
 	includeAllToolsWithRestrictions?: boolean
 	/** Optional task-lane authority cap applied after mode filtering. */
 	allowedToolNames?: readonly ToolName[]
+	/** Selects role-specific schemas for primary and managed-child tasks. */
+	taskKind?: "primary" | "subagent"
+	/** Primary tasks expose lifecycle controls only after they have managed-agent activity. */
+	enableAgentLifecycleTools?: boolean
 }
 
 interface BuildToolsResult {
@@ -57,6 +61,18 @@ interface BuildToolsResult {
 function getToolName(tool: OpenAI.Chat.ChatCompletionTool): string {
 	return (tool as OpenAI.Chat.ChatCompletionFunctionTool).function.name
 }
+
+const AGENT_LIFECYCLE_TOOLS = new Set([
+	"list_agents",
+	"wait_agent",
+	"send_message",
+	"followup_task",
+	"interrupt_agent",
+	"cancel_agent",
+	"close_agent",
+])
+
+const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", "report_progress", ...AGENT_LIFECYCLE_TOOLS])
 
 /**
  * Builds the complete tools array for native protocol requests.
@@ -94,6 +110,8 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 		modelInfo,
 		includeAllToolsWithRestrictions,
 		allowedToolNames,
+		taskKind = "primary",
+		enableAgentLifecycleTools = false,
 	} = options
 
 	const mcpHub = provider.getMcpHub()
@@ -116,30 +134,25 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 	const nativeTools = getNativeTools({
 		supportsImages,
 		availableBrowserToolNames: getAvailableVSCodeBrowserToolNames(),
+		taskKind,
 	})
 	// Managed child lanes provide a frozen authority allow-list. Retain only the
 	// orchestration schemas explicitly granted there; report_progress is the one
 	// host-safe upward capability added to legacy managed-child grants by Task.
-	const orchestrationTools = new Set([
-		"spawn_agent",
-		"list_agents",
-		"wait_agent",
-		"send_message",
-		"report_progress",
-		"followup_task",
-		"interrupt_agent",
-		"cancel_agent",
-		"close_agent",
-	])
 	const explicitlyAllowedTools = allowedToolNames
 		? new Set(allowedToolNames.map((name) => resolveToolAlias(name)))
 		: undefined
 	const taskNativeTools = nativeTools.filter((tool) => {
 		const name = getToolName(tool)
-		// Upward progress reporting is meaningful only for a managed child whose
-		// frozen task allow-list explicitly grants it. Keep it out of root catalogs.
-		if (name === "report_progress") return explicitlyAllowedTools?.has(name) === true
-		return !explicitlyAllowedTools || !orchestrationTools.has(name) || explicitlyAllowedTools.has(name)
+		if (explicitlyAllowedTools) {
+			return !CHILD_SCOPED_AGENT_TOOLS.has(name) || explicitlyAllowedTools.has(name)
+		}
+		// Upward progress reporting is meaningful only for a managed child. Lifecycle
+		// controls require an existing retained descendant, so keep both categories
+		// out of an idle primary task's model-visible catalog.
+		if (name === "report_progress") return false
+		if (AGENT_LIFECYCLE_TOOLS.has(name)) return enableAgentLifecycleTools
+		return true
 	})
 
 	// Filter native tools based on mode restrictions.

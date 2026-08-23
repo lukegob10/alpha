@@ -3,7 +3,7 @@ import accessMcpResource from "./access_mcp_resource"
 import { apply_diff } from "./apply_diff"
 import applyPatch from "./apply_patch"
 import askFollowupQuestion from "./ask_followup_question"
-import attemptCompletion from "./attempt_completion"
+import { createAttemptCompletionTool } from "./attempt_completion"
 import codebaseSearch from "./codebase_search"
 import editTool from "./edit"
 import executeCommand from "./execute_command"
@@ -45,6 +45,8 @@ export interface NativeToolsOptions {
 	supportsImages?: boolean
 	/** Browser tools currently registered by VS Code. Omit to include the full catalog (primarily for tests). */
 	availableBrowserToolNames?: readonly string[]
+	/** Selects role-specific tool contracts without exposing managed-child fields to primary tasks. */
+	taskKind?: "primary" | "subagent"
 }
 
 /**
@@ -54,7 +56,7 @@ export interface NativeToolsOptions {
  * @returns Array of native tool definitions
  */
 export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.ChatCompletionTool[] {
-	const { supportsImages = false, availableBrowserToolNames } = options
+	const { supportsImages = false, availableBrowserToolNames, taskKind = "primary" } = options
 
 	const readFileOptions: ReadFileToolOptions = {
 		supportsImages,
@@ -73,7 +75,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		apply_diff,
 		applyPatch,
 		askFollowupQuestion,
-		attemptCompletion,
+		createAttemptCompletionTool(taskKind),
 		codebaseSearch,
 		executeCommand,
 		generateImage,

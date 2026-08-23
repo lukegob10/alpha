@@ -46,7 +46,7 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 			},
 		} as unknown as Task)
 
-	it("exposes spawn_agent to a primary Code task", async () => {
+	it("keeps an idle primary Code task limited to delegation entry points", async () => {
 		const result = await buildNativeToolsArrayWithRestrictions({
 			provider,
 			cwd: "F:/workspace",
@@ -55,12 +55,18 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 			experiments: {},
 			apiConfiguration: undefined,
 			includeAllToolsWithRestrictions: true,
+			taskKind: "primary",
 		})
 
 		expect(names(result.tools as any)).toContain("spawn_agent")
+		expect(names(result.tools as any)).toContain("delegate_task")
 		expect(names(result.tools as any)).not.toContain("report_progress")
 		expect(result.allowedFunctionNames).toContain("spawn_agent")
 		expect(result.allowedFunctionNames).not.toContain("report_progress")
+		for (const tool of orchestrationTools.filter((name) => name !== "spawn_agent")) {
+			expect(names(result.tools as any)).not.toContain(tool)
+			expect(result.allowedFunctionNames).not.toContain(tool)
+		}
 		const nativeTools = result.tools as Array<{
 			function?: {
 				name: string
@@ -77,6 +83,30 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 
 		const delegateTool = nativeTools.find((tool) => tool.function?.name === "delegate_task")
 		expect(JSON.stringify(delegateTool?.function?.parameters)).not.toContain("fork_turns")
+
+		const completionTool = nativeTools.find((tool) => tool.function?.name === "attempt_completion")
+		expect(completionTool?.function?.parameters?.properties).not.toHaveProperty("outcome")
+		expect(completionTool?.function?.description).not.toContain("sub-agents only")
+	})
+
+	it("exposes lifecycle controls only after a primary task has managed-agent activity", async () => {
+		const result = await buildNativeToolsArrayWithRestrictions({
+			provider,
+			cwd: "F:/workspace",
+			mode: "code",
+			customModes: undefined,
+			experiments: {},
+			apiConfiguration: undefined,
+			includeAllToolsWithRestrictions: true,
+			taskKind: "primary",
+			enableAgentLifecycleTools: true,
+		})
+
+		for (const tool of orchestrationTools) {
+			expect(names(result.tools as any)).toContain(tool)
+			expect(result.allowedFunctionNames).toContain(tool)
+		}
+		expect(names(result.tools as any)).not.toContain("report_progress")
 	})
 
 	it("exposes orchestration tools when a managed child's frozen runtime policy grants delegation", async () => {
@@ -92,12 +122,16 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 			apiConfiguration: undefined,
 			allowedToolNames,
 			includeAllToolsWithRestrictions: true,
+			taskKind: "subagent",
 		})
 
 		for (const tool of orchestrationTools) {
 			expect(names(result.tools as any)).toContain(tool)
 			expect(result.allowedFunctionNames).toContain(tool)
 		}
+		const completionTool = (result.tools as any[]).find((tool) => tool.function?.name === "attempt_completion")
+		expect(completionTool?.function?.parameters?.properties).toHaveProperty("outcome")
+		expect(completionTool?.function?.description).toContain("assigned objective")
 	})
 
 	it("omits orchestration tools from a legacy managed child without delegation authority", async () => {
@@ -114,6 +148,7 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 			apiConfiguration: undefined,
 			allowedToolNames,
 			includeAllToolsWithRestrictions: true,
+			taskKind: "subagent",
 		})
 
 		for (const tool of orchestrationTools) {

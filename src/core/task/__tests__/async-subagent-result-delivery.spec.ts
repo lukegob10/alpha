@@ -52,6 +52,23 @@ const makeTask = (groups: SubagentGroupState[]) => {
 }
 
 describe("Task asynchronous sub-agent result delivery", () => {
+	it("exposes lifecycle controls only after a primary task has retained child activity", () => {
+		const idle = makeTask([]).task
+		const active = makeTask([
+			makeGroup({
+				groupId: "managed-group",
+				executionMode: "async",
+				summary: "Managed result.",
+			}),
+		]).task
+
+		expect((idle as any).shouldExposeAgentLifecycleTools()).toBe(false)
+		expect((active as any).shouldExposeAgentLifecycleTools()).toBe(true)
+
+		Object.assign(active, { taskKind: "subagent" })
+		expect((active as any).shouldExposeAgentLifecycleTools()).toBe(false)
+	})
+
 	it("delivers only async terminal reports and persists exactly-once state", async () => {
 		const asyncGroup = makeGroup({
 			groupId: "async-group",

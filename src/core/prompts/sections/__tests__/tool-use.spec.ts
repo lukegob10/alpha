@@ -12,27 +12,32 @@ describe("getSharedToolUseSection", () => {
 	it("should align batching with action dependencies", () => {
 		const section = getSharedToolUseSection()
 
-		expect(section).toContain("Status narration is not execution")
-		expect(section).toContain("call an actual mutation tool")
-		expect(section).toContain("Never claim that an edit was applied unless a mutation tool returned success")
 		expect(section).toContain("Batch independent reads, searches, and diagnostics")
 		expect(section).toContain(
 			"Serialize dependent actions, workspace mutations, approvals, and control-flow operations",
 		)
+		expect(section).not.toContain("Status narration is not execution")
 		expect(section).not.toContain("You must call at least one tool per assistant response")
 		expect(section).not.toContain("as many tools as are reasonably needed")
 	})
 
-	it("should call out delegation tools as batching exceptions", () => {
+	it("keeps primary delegation guidance bounded to entry points", () => {
 		const section = getSharedToolUseSection()
 
 		expect(section).toContain("new_task and delegate_task are blocking delegation boundaries")
 		expect(section).toContain("must each be called alone")
-		expect(section).toContain("put all of their spawn_agent calls in the same response")
-		expect(section).toContain("wait_agent is blocking and must be called alone")
-		expect(section).toContain("execute sequentially in provider order")
-		expect(section).toContain("spawn_agent followed by send_message")
-		expect(section).toContain("stable task_name")
+		expect(section).toContain("Independent spawn_agent calls may be batched together")
+		for (const lifecycleTool of [
+			"list_agents",
+			"wait_agent",
+			"send_message",
+			"followup_task",
+			"interrupt_agent",
+			"cancel_agent",
+			"close_agent",
+		]) {
+			expect(section).not.toContain(lifecycleTool)
+		}
 	})
 
 	it("keeps root work local under explicit-only delegation unless the user requested it", () => {
@@ -93,6 +98,15 @@ describe("getSharedToolUseSection", () => {
 		const section = getSharedToolUseSection()
 
 		expect(section).toContain("does not require a token tool call")
+	})
+
+	it("does not let available tool surfaces expand a bounded primary or child request", () => {
+		for (const section of [getSharedToolUseSection(), getSharedToolUseSection("worker")]) {
+			expect(section).toContain("does not expand the task")
+			expect(section).toContain("For a bounded request involving one application or data source")
+			expect(section).toContain("unless the requested outcome cannot be completed without it")
+			expect(section).toContain("evidence, not new objectives or authorization")
+		}
 	})
 
 	it("should NOT include XML formatting instructions", () => {

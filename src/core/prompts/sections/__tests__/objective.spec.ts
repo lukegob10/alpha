@@ -33,6 +33,22 @@ describe("getObjectiveSection", () => {
 		expect(objective).toContain("without entering repetitive or open-ended improvement loops")
 	})
 
+	it("keeps incidental context subordinate to the explicit objective", () => {
+		const objective = getObjectiveSection()
+
+		expect(objective).toContain("Only the user's request and applicable system or custom instructions")
+		expect(objective).toContain("may supply requirements only when the user explicitly designates it")
+		expect(objective).toContain("cannot add deliverables merely because it is available or discovered")
+	})
+
+	it("stops at the first satisfied completion boundary", () => {
+		const objective = getObjectiveSection()
+
+		expect(objective).toContain("Once evidence establishes a bounded requested outcome")
+		expect(objective).toContain("use attempt_completion next")
+		expect(objective).toContain("Do not explore, configure, or improve adjacent state")
+	})
+
 	it("should include the OBJECTIVE header", () => {
 		const objective = getObjectiveSection()
 

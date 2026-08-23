@@ -2433,6 +2433,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return hardCeiling.filter((tool) => tool === "report_progress" || granted.has(tool))
 	}
 
+	private shouldExposeAgentLifecycleTools(): boolean {
+		return (
+			this.taskKind === "primary" &&
+			this.clineMessages.some((message) => (message.subagentGroup?.agents.length ?? 0) > 0)
+		)
+	}
+
 	public getInheritedSubagentSkill(name: string) {
 		return this.subagentContextManifest?.skills.find((skill) => skill.name === name)
 	}
@@ -2978,6 +2985,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				modelInfo,
 				includeAllToolsWithRestrictions: false,
 				allowedToolNames: this.getTaskAllowedToolNames(),
+				taskKind: this.taskKind,
+				enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
 			})
 			allTools = toolsResult.tools
 		}
@@ -5406,6 +5415,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				modelInfo,
 				includeAllToolsWithRestrictions: false,
 				allowedToolNames: this.getTaskAllowedToolNames(),
+				taskKind: this.taskKind,
+				enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
 			})
 			allTools = toolsResult.tools
 		}
@@ -5672,6 +5683,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						modelInfo,
 						includeAllToolsWithRestrictions: false,
 						allowedToolNames: this.getTaskAllowedToolNames(),
+						taskKind: this.taskKind,
+						enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
 					})
 					contextMgmtTools = toolsResult.tools
 				}
@@ -5839,6 +5852,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				modelInfo,
 				includeAllToolsWithRestrictions: supportsAllowedFunctionNames,
 				allowedToolNames: this.getTaskAllowedToolNames(),
+				taskKind: this.taskKind,
+				enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
 			})
 			allTools = toolsResult.tools
 			allowedFunctionNames = toolsResult.allowedFunctionNames
