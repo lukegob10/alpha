@@ -4,7 +4,7 @@ export const delegate_task = {
 	function: {
 		name: "delegate_task",
 		description:
-			"Launch one or two independent Alpha sub-agents and wait for their structured results. Each child must explicitly select parent conversation inheritance with fork_turns. Select roles by required authority: use worker for every objective that needs file changes; a worker may use commands for implementation or verification. Explore and review are strictly read-only and cannot edit or execute. Keep command-only work in the parent. Worker changes stay quarantined for explicit review and apply; after capture, the temporary worktree is removed and the change set remains as the reviewable proposal.",
+			"Run one or two independent bounded Alpha sub-agents as one blocking delegation group. The caller waits for one structured group result; any Worker changes are included as a quarantined proposal for explicit review and apply. Set fork_turns for each child. Use worker for file changes and explore or review only for read-only inspection; keep command-only work in the parent.",
 		parameters: {
 			type: "object",
 			properties: {

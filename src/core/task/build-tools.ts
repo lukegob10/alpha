@@ -36,7 +36,7 @@ interface BuildToolsOptions {
 	allowedToolNames?: readonly ToolName[]
 	/** Selects role-specific schemas for primary and managed-child tasks. */
 	taskKind?: "primary" | "subagent"
-	/** Primary tasks expose lifecycle controls only after they have managed-agent activity. */
+	/** Stable primary-task lifecycle catalog; managed children remain allow-list constrained. */
 	enableAgentLifecycleTools?: boolean
 }
 
@@ -111,7 +111,7 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 		includeAllToolsWithRestrictions,
 		allowedToolNames,
 		taskKind = "primary",
-		enableAgentLifecycleTools = false,
+		enableAgentLifecycleTools = taskKind === "primary",
 	} = options
 
 	const mcpHub = provider.getMcpHub()
@@ -147,9 +147,9 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 		if (explicitlyAllowedTools) {
 			return !CHILD_SCOPED_AGENT_TOOLS.has(name) || explicitlyAllowedTools.has(name)
 		}
-		// Upward progress reporting is meaningful only for a managed child. Lifecycle
-		// controls require an existing retained descendant, so keep both categories
-		// out of an idle primary task's model-visible catalog.
+		// Upward progress reporting is meaningful only for a managed child. Keep a
+		// stable primary lifecycle catalog so transcript compaction or reload cannot
+		// hide controls for descendants and mailbox state retained by the host.
 		if (name === "report_progress") return false
 		if (AGENT_LIFECYCLE_TOOLS.has(name)) return enableAgentLifecycleTools
 		return true

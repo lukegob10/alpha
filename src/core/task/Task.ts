@@ -2509,10 +2509,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private shouldExposeAgentLifecycleTools(): boolean {
-		return (
-			this.taskKind === "primary" &&
-			this.clineMessages.some((message) => (message.subagentGroup?.agents.length ?? 0) > 0)
-		)
+		return this.taskKind === "primary"
 	}
 
 	public getInheritedSubagentSkill(name: string) {

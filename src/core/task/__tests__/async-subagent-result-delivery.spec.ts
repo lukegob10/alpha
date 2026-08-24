@@ -1,5 +1,6 @@
 import type { SubagentGroupState } from "@alpha-code/types"
 
+import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import { Task } from "../Task"
 
 const makeGroup = ({
@@ -52,7 +53,7 @@ const makeTask = (groups: SubagentGroupState[]) => {
 }
 
 describe("Task asynchronous sub-agent result delivery", () => {
-	it("exposes lifecycle controls only after a primary task has retained child activity", () => {
+	it("keeps primary lifecycle exposure stable across idle, activity, and transcript reload", () => {
 		const idle = makeTask([]).task
 		const active = makeTask([
 			makeGroup({
@@ -62,11 +63,39 @@ describe("Task asynchronous sub-agent result delivery", () => {
 			}),
 		]).task
 
-		expect((idle as any).shouldExposeAgentLifecycleTools()).toBe(false)
+		expect((idle as any).shouldExposeAgentLifecycleTools()).toBe(true)
+		expect((active as any).shouldExposeAgentLifecycleTools()).toBe(true)
+
+		active.clineMessages = []
 		expect((active as any).shouldExposeAgentLifecycleTools()).toBe(true)
 
 		Object.assign(active, { taskKind: "subagent" })
 		expect((active as any).shouldExposeAgentLifecycleTools()).toBe(false)
+	})
+
+	it("keeps durable descendants and mailbox results reachable after transcript compaction and reload", async () => {
+		const persistence = new InMemoryAgentControlPersistence()
+		const first = new AgentControlStore(persistence, () => 1_000)
+		await first.initialize()
+		await first.ensureRoot({ taskId: "parent-1", status: "running" })
+		await first.createAgent({
+			taskId: "durable-child",
+			parentTaskId: "parent-1",
+			nickname: "Durable child",
+			role: "explore",
+			objective: "Retain lifecycle state across reload",
+			status: "running",
+		})
+
+		const reloaded = new AgentControlStore(persistence, () => 2_000)
+		await reloaded.initialize()
+		const compactedTask = makeTask([]).task
+
+		expect(reloaded.getAgent("durable-child", "parent-1")?.status).toBe("interrupted")
+		expect(reloaded.readMailbox("parent-1", { rootTaskId: "parent-1" }).entries).toEqual(
+			expect.arrayContaining([expect.objectContaining({ senderTaskId: "durable-child" })]),
+		)
+		expect((compactedTask as any).shouldExposeAgentLifecycleTools()).toBe(true)
 	})
 
 	it("keeps terminal reports in lifecycle state without exposing synthetic user content", () => {

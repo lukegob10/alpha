@@ -504,8 +504,8 @@
 					"label": "root and managed-child tool catalog boundary",
 					"match": "all",
 					"patterns": [
-						"keeps an idle primary Code task limited to delegation entry points",
-						"omits orchestration tools from a legacy managed child without delegation authority"
+						"keeps a stable primary Code lifecycle catalog before managed-agent activity",
+						"does not let the stable primary default override a managed child's frozen authority"
 					]
 				},
 				{
