@@ -35,12 +35,18 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 				</DialogHeader>
 				<div className="space-y-2 text-sm">
 					<p>
-						Alpha v{Package.version} eliminates end-of-chat scroll bouncing while preserving deliberate
-						history browsing.
+						Alpha v{Package.version} keeps the primary agent focused while managed subagents run bounded
+						work in parallel and return durable results.
 					</p>
 					<ul className="list-disc space-y-1 pl-5">
-						<li>Bottom following now converges on the physical end of the transcript.</li>
-						<li>Late content measurements no longer override intentional upward scrolling.</li>
+						<li>Blocking handoffs and background delegation now have clear lifecycle contracts.</li>
+						<li>Child agents receive frozen instructions plus bounded, sanitized parent context.</li>
+						<li>
+							Background completions return once through wait_agent and remain recoverable after reloads.
+						</li>
+						<li>
+							Integrated browser control and explicit context compaction round out the agent workflow.
+						</li>
 					</ul>
 				</div>
 			</DialogContent>

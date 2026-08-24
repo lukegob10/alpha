@@ -447,6 +447,19 @@ describe("ClineProvider", () => {
 		expect(ClineProvider.getVisibleInstance()).toBe(provider)
 	})
 
+	test("shows the v2.1.1 announcement once per installation", async () => {
+		const announcementId = "august-2026-v2.1.1-agent-loop-convergence"
+
+		expect(provider.latestAnnouncementId).toBe(announcementId)
+
+		await provider.contextProxy.setValue("telemetrySetting", "enabled")
+		await provider.contextProxy.setValue("lastShownAnnouncementId", "july-2026-v2.0.7-chat-scroll-lifecycle")
+		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(true)
+
+		await provider.contextProxy.setValue("lastShownAnnouncementId", announcementId)
+		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(false)
+	})
+
 	test("resolveWebviewView sets up webview correctly", async () => {
 		await provider.resolveWebviewView(mockWebviewView)
 

@@ -352,7 +352,7 @@ export class ClineProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "july-2026-v2.0.7-chat-scroll-lifecycle" // v2.0.7 chat scroll lifecycle
+	public readonly latestAnnouncementId = "august-2026-v2.1.1-agent-loop-convergence" // v2.1.1 agent loop convergence
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

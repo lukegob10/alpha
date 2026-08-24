@@ -8,6 +8,10 @@
 - Allow explicit chat requests to compact the current task context without starting a separate model turn.
 - Bound unproductive recovery loops, enforce explicit-only delegation at execution time, and preserve same-task continuation.
 - Replace virtualized chat scrolling with exact native scroll geometry to prevent long-conversation bottom bounce.
+- Preserve the proven primary-agent loop while managed child work runs asynchronously.
+- Freeze child instructions in the system layer and pass only bounded, sanitized parent context.
+- Return managed child completions exactly once through native `wait_agent` tool results, including after reloads.
+- Clarify blocking handoffs, background delegation, and reload-safe lifecycle controls.
 
 ## 2.1.0
 

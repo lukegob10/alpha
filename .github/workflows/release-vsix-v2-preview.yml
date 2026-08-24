@@ -66,14 +66,22 @@ jobs:
                   $notes = @"
                   Preview VSIX build from main-v2. This is not published to the VS Code Marketplace.
 
+                  Alpha v$version keeps the primary agent focused while managed subagents run bounded work in parallel
+                  and return durable results.
+
+                  Highlights:
+                  - Clear contracts for blocking handoffs and background delegation
+                  - Frozen child instructions with bounded, sanitized parent context
+                  - Exactly-once background completion delivery through ``wait_agent``, including after reloads
+                  - Integrated browser control and explicit task-context compaction
+
                   Commit: ${{ github.sha }}
 
                   Test this build in an isolated VS Code profile or extension directory. Installing it over the stable
                   extension replaces that installation because both channels intentionally share the production extension ID.
+                  If another v$version preview is already installed, use --force to replace the same-version build.
 
-                  ````bash
-                  code --install-extension ${{ steps.release.outputs.vsix_name }}
-                  ````
+                  Install command: code --install-extension ${{ steps.release.outputs.vsix_name }} --force
                   "@
 
                   if (gh release view "$tag" 2>$null) {

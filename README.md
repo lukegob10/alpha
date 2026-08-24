@@ -6,9 +6,14 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.0.7
+## Welcome to Alpha v2.1.1 Preview
 
-Alpha v2.0.7 eliminates end-of-chat scroll bouncing while preserving deliberate history browsing.
+Alpha v2.1.1 keeps the primary agent focused while managed subagents run bounded work in parallel and return durable results.
+
+- Clear contracts for blocking handoffs and background delegation
+- Frozen child instructions with bounded, sanitized parent context
+- Exactly-once background completion delivery through `wait_agent`, including after reloads
+- Integrated browser control and explicit task-context compaction
 
 <details>
   <summary>🌐 Available languages</summary>
@@ -32,7 +37,8 @@ Alpha v2.0.7 eliminates end-of-chat scroll bouncing while preserving deliberate 
 - [简体中文](locales/zh-CN/README.md)
 - [繁體中文](locales/zh-TW/README.md)
 - ...
-  </details>
+
+</details>
 
 ---
 

@@ -12,7 +12,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "2.0.7",
+		version: "2.1.1",
 	},
 }))
 
@@ -32,10 +32,10 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		render(<Announcement hideAnnouncement={vi.fn()} />)
 
-		expect(screen.getByText("Welcome to Alpha v2.0.7")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v2.1.1")).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Alpha v2.0.7 eliminates end-of-chat scroll bouncing while preserving deliberate history browsing.",
+				"Alpha v2.1.1 keeps the primary agent focused while managed subagents run bounded work in parallel and return durable results.",
 			),
 		).toBeInTheDocument()
 	})
@@ -43,12 +43,22 @@ describe("Announcement", () => {
 	it("renders the release highlights", () => {
 		render(<Announcement hideAnnouncement={vi.fn()} />)
 
-		expect(screen.getAllByRole("listitem")).toHaveLength(2)
+		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText("Bottom following now converges on the physical end of the transcript."),
+			screen.getByText("Blocking handoffs and background delegation now have clear lifecycle contracts."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Late content measurements no longer override intentional upward scrolling."),
+			screen.getByText("Child agents receive frozen instructions plus bounded, sanitized parent context."),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText(
+				"Background completions return once through wait_agent and remain recoverable after reloads.",
+			),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText(
+				"Integrated browser control and explicit context compaction round out the agent workflow.",
+			),
 		).toBeInTheDocument()
 	})
 })
