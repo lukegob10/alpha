@@ -1,6 +1,11 @@
 export { type ApiMessage, readApiMessages, saveApiMessages } from "./apiMessages"
 export { readTaskMessages, saveTaskMessages } from "./taskMessages"
 export { taskMetadata } from "./taskMetadata"
+export {
+	assertFrozenSubagentInstructions,
+	readSubagentInstructionSnapshot,
+	saveSubagentInstructionSnapshot,
+} from "./subagentInstructionSnapshot"
 export { TaskHistoryStore } from "./TaskHistoryStore"
 export {
 	compactTaskHistoryForGlobalState,

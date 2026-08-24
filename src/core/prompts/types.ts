@@ -13,8 +13,10 @@ export interface SystemPromptSettings {
 	subagentRole?: "explore" | "review" | "worker"
 	/** Whether the managed child received a frozen, mode-filtered skill catalog. */
 	subagentHasInheritedSkills?: boolean
-	/** New managed children persist their mutable instruction snapshot in the initial prompt. */
+	/** Whether this managed child uses a frozen parent context package. */
 	subagentUsesFrozenContext?: boolean
+	/** Exact frozen parent instruction body, loaded from private task storage and never from current live settings. */
+	subagentFrozenInstructions?: string
 	/** Whether the child's frozen manifest grants bounded managed-descendant delegation. */
 	subagentCanDelegate?: boolean
 	/** Frozen effective policy governing any managed-descendant launch. */

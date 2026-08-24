@@ -53,13 +53,18 @@ describe("DelegateTaskTool", () => {
 
 		const task = parameters.properties.tasks.items
 		expect(task).toMatchObject({
-			required: ["objective", "agent_kind"],
+			required: ["objective", "fork_turns", "agent_kind"],
 			additionalProperties: false,
 			properties: {
+				fork_turns: {
+					maxLength: 16,
+					pattern: "^(?:none|all|[1-9][0-9]*)$",
+				},
 				agent_kind: { enum: ["explore", "review", "worker"] },
 				write_scope: {
-					anyOf: [{ minItems: 1, maxItems: 12 }, { type: "null" }],
+					anyOf: [{ minItems: 1, maxItems: 12, items: { type: "string", minLength: 1 } }, { type: "null" }],
 				},
+				expected_output: { maxItems: 12, items: { type: "string", minLength: 1 } },
 			},
 		})
 		expect(task.properties).not.toHaveProperty("mutate")
@@ -84,12 +89,16 @@ describe("DelegateTaskTool", () => {
 		const askApproval = vi.fn(async () => true)
 		const pushToolResult = vi.fn()
 
-		await delegateTaskTool.execute({ tasks: [{ objective: "Inspect src", agent_kind: "explore" }] }, task, {
-			askApproval,
-			pushToolResult,
-			handleError: vi.fn(),
-			toolCallId: "call-1",
-		} as any)
+		await delegateTaskTool.execute(
+			{ tasks: [{ objective: "Inspect src", fork_turns: "none", agent_kind: "explore" }] },
+			task,
+			{
+				askApproval,
+				pushToolResult,
+				handleError: vi.fn(),
+				toolCallId: "call-1",
+			} as any,
+		)
 
 		expect(provider.prepareSubagentGroup).toHaveBeenCalledWith(task, expect.any(Array), "call-1")
 		expect(askApproval).toHaveBeenCalledAfter(provider.prepareSubagentGroup)
@@ -120,11 +129,15 @@ describe("DelegateTaskTool", () => {
 			didToolFailInCurrentTurn: false,
 		} as any
 
-		await delegateTaskTool.execute({ tasks: [{ objective: "Inspect src", agent_kind: "explore" }] }, task, {
-			askApproval,
-			pushToolResult,
-			handleError: vi.fn(),
-		} as any)
+		await delegateTaskTool.execute(
+			{ tasks: [{ objective: "Inspect src", fork_turns: "none", agent_kind: "explore" }] },
+			task,
+			{
+				askApproval,
+				pushToolResult,
+				handleError: vi.fn(),
+			} as any,
+		)
 
 		expect(askApproval).not.toHaveBeenCalled()
 		expect(pushToolResult).toHaveBeenCalledWith("Error: Not enough task capacity")
@@ -149,6 +162,7 @@ describe("DelegateTaskTool", () => {
 				tasks: [
 					{
 						objective: "Inspect src",
+						fork_turns: "all",
 						agent_kind: "explore",
 						write_scope: ["docs"],
 						expected_output: null,
@@ -161,7 +175,7 @@ describe("DelegateTaskTool", () => {
 
 		expect(provider.prepareSubagentGroup).toHaveBeenCalledWith(
 			task,
-			[{ objective: "Inspect src", agent_kind: "explore", fork_turns: "none" }],
+			[{ objective: "Inspect src", agent_kind: "explore", fork_turns: "all" }],
 			undefined,
 		)
 	})
@@ -175,11 +189,15 @@ describe("DelegateTaskTool", () => {
 		}
 		const task = { providerRef: { deref: () => provider } } as any
 
-		await delegateTaskTool.execute({ tasks: [{ objective: "Inspect src", agent_kind: "explore" }] }, task, {
-			askApproval: vi.fn(async () => false),
-			pushToolResult: vi.fn(),
-			handleError: vi.fn(),
-		} as any)
+		await delegateTaskTool.execute(
+			{ tasks: [{ objective: "Inspect src", fork_turns: "none", agent_kind: "explore" }] },
+			task,
+			{
+				askApproval: vi.fn(async () => false),
+				pushToolResult: vi.fn(),
+				handleError: vi.fn(),
+			} as any,
+		)
 
 		expect(provider.runSubagentGroup).not.toHaveBeenCalled()
 		expect(provider.cancelPreparedSubagentGroup).toHaveBeenCalledWith(
@@ -204,8 +222,8 @@ describe("DelegateTaskTool", () => {
 		await delegateTaskTool.execute(
 			{
 				tasks: [
-					{ objective: "first", agent_kind: "explore" },
-					{ objective: "second", agent_kind: "review" },
+					{ objective: "first", fork_turns: "none", agent_kind: "explore" },
+					{ objective: "second", fork_turns: "2", agent_kind: "review" },
 				],
 			},
 			task,
@@ -214,7 +232,9 @@ describe("DelegateTaskTool", () => {
 
 		const preparedDrafts = (provider.prepareSubagentGroup as any).mock.calls[0][1] as Array<{
 			objective: string
+			fork_turns: string
 		}>
 		expect(preparedDrafts.map((draft) => draft.objective)).toEqual(["first", "second"])
+		expect(preparedDrafts.map((draft) => draft.fork_turns)).toEqual(["none", "2"])
 	})
 })

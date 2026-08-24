@@ -603,6 +603,36 @@ describe("addCustomInstructions", () => {
 		expect(readFileMock).toHaveBeenCalledWith(expect.stringContaining("AGENTS.md"), "utf-8")
 	})
 
+	it("formats an already captured AGENTS snapshot without rereading it", async () => {
+		statMock.mockRejectedValue({ code: "ENOENT" })
+		lstatMock.mockRejectedValue({ code: "ENOENT" })
+		readFileMock.mockRejectedValue({ code: "ENOENT" })
+
+		const result = await addCustomInstructions("", "", "/fake/path", "test-mode", {
+			settings: {
+				todoListEnabled: true,
+				useAgentRules: true,
+				newTaskRequireTodos: false,
+			},
+			agentInstructionSources: [
+				{ kind: "agents", ref: "/fake/path/AGENTS.md", text: "Captured once at delegation" },
+				{
+					kind: "agents",
+					ref: "/fake/path/packages/api/AGENTS.local.md",
+					text: "Captured subfolder override",
+				},
+			],
+		})
+
+		expect(result).toContain("# Agent Rules Standard (AGENTS.md):\nCaptured once at delegation")
+		const nestedLocation = process.platform === "win32" ? "packages\\api" : "packages/api"
+		expect(result).toContain(
+			`# Agent Rules Local (AGENTS.local.md) from ${nestedLocation}:\nCaptured subfolder override`,
+		)
+		expect(lstatMock.mock.calls.filter(([filePath]) => filePath.toString().includes("AGENT")).length).toBe(0)
+		expect(readFileMock.mock.calls.filter(([filePath]) => filePath.toString().includes("AGENT")).length).toBe(0)
+	})
+
 	it("should not load AGENTS.md when settings.useAgentRules is false", async () => {
 		// Simulate no .alpha/rules-test-mode directory
 		statMock.mockRejectedValueOnce({ code: "ENOENT" })

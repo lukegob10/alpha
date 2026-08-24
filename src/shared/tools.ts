@@ -169,12 +169,19 @@ export type NativeToolArgs = BrowserToolArgs & {
 	new_task: { mode: string; message: string; todos?: string }
 	delegate_task: {
 		tasks: Array<
-			| { objective: string; agent_kind: "explore" | "review"; expected_output?: string[] }
 			| {
 					objective: string
+					fork_turns: SubagentForkTurns
+					agent_kind: "explore" | "review"
+					write_scope?: string[] | null
+					expected_output?: string[] | null
+			  }
+			| {
+					objective: string
+					fork_turns: SubagentForkTurns
 					agent_kind: "worker"
 					write_scope: string[]
-					expected_output?: string[]
+					expected_output?: string[] | null
 			  }
 		>
 	}

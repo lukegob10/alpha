@@ -293,7 +293,7 @@ describe("ClineProvider bounded sub-agent preparation", () => {
 		expect(parent.upsertSubagentGroup).toHaveBeenCalledWith(prepared.group)
 	})
 
-	it("captures and applies only the requested parent turns with frozen instructions and skills", async () => {
+	it("captures and applies only the requested parent turns with frozen instructions and skills while keeping the child objective concise", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
 		parent.apiConversationHistory = [
@@ -394,6 +394,7 @@ If complete, use attempt_completion.
 					taskId: options.taskId,
 					clineMessages: [{ type: "say", say: "completion_result", text: "Context inspected" }],
 					getTokenUsage: () => ({ totalTokensIn: 10, totalTokensOut: 5 }),
+					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
 					cancelCurrentRequest: vi.fn(),
 					abortTask: vi.fn(async () => undefined),
@@ -447,15 +448,57 @@ If complete, use attempt_completion.
 				delegationPolicy: { authorization: "group-approval", explicitUserRequest: true },
 			},
 		})
-		expect(childPrompt).toContain("Follow the frozen repository instructions.")
-		expect(childPrompt).toContain("review-repository")
-		expect(childPrompt).toContain("LATEST_PARENT_TURN")
-		expect(childPrompt).toContain("LATEST_PARENT_REPLY")
-		expect(childPrompt).not.toContain("OLD_PARENT_TURN")
-		expect(childPrompt).not.toContain("OLD_PARENT_REPLY")
-		expect(childPrompt).not.toContain("request_pacing_update")
-		expect(childPrompt).not.toContain("spawned_subagent_result")
-		expect(childPrompt).not.toContain("You did not use a tool in your previous response")
+		expect(childPrompt).toContain("Objective: Review the selected context")
+		expect(childPrompt).not.toContain("Follow the frozen repository instructions.")
+		expect(childPrompt).not.toContain("review-repository")
+		expect(childPrompt).not.toContain("LATEST_PARENT_TURN")
+		expect(childOptions.subagentInstructionPlacement).toBe("system")
+		expect(childOptions.subagentFrozenInstructions).toBe("Follow the frozen repository instructions.")
+		expect(childOptions.subagentInitialContext).toContain("Host-supplied managed-child context")
+		expect(childOptions.subagentInitialContext).toContain("review-repository")
+		expect(childOptions.subagentInitialContext).toContain("LATEST_PARENT_TURN")
+		expect(childOptions.subagentInitialContext).toContain("LATEST_PARENT_REPLY")
+		expect(childOptions.subagentInitialContext).not.toContain("Follow the frozen repository instructions.")
+		expect(childOptions.subagentInitialContext).not.toContain("mandatory_skill_check")
+		expect(childOptions.subagentInitialContext).not.toContain("internal_verification")
+		expect(childOptions.subagentInitialContext).not.toContain("OLD_PARENT_TURN")
+		expect(childOptions.subagentInitialContext).not.toContain("OLD_PARENT_REPLY")
+		expect(childOptions.subagentInitialContext).not.toContain("request_pacing_update")
+		expect(childOptions.subagentInitialContext).not.toContain("spawned_subagent_result")
+		expect(childOptions.subagentInitialContext).not.toContain("You did not use a tool in your previous response")
+		expect(parent.captureEffectiveInheritedInstructions).toHaveBeenCalledTimes(1)
+		expect(descriptor.inheritedInstructions).toBeUndefined()
+	})
+
+	it("fails before child start when the private instruction snapshot cannot be persisted", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		;(provider as any).taskSessions.getTask = (taskId: string) => (taskId === parent.taskId ? parent : undefined)
+		const start = vi.fn()
+		;(provider as any).createTask = vi.fn(
+			async (_prompt: string, _images: unknown, _parent: unknown, options: any) => {
+				const emitter = new EventEmitter()
+				return Object.assign(emitter, {
+					taskId: options.taskId,
+					persistFrozenSubagentInstructions: vi.fn(async () => {
+						throw new Error("snapshot storage unavailable")
+					}),
+					start,
+				})
+			},
+		)
+
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect snapshot startup", agent_kind: "review", fork_turns: "none" },
+		])
+		;(provider as any).finalizePreparedSubagentAuthorization(prepared)
+		const descriptor = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id)
+
+		await expect(
+			(provider as any).runSubagentEnvelope(prepared.envelopes[0], new AbortController().signal),
+		).rejects.toThrow("snapshot storage unavailable")
+		expect(start).not.toHaveBeenCalled()
+		expect(descriptor.inheritedInstructions).toBe("Language Preference: English")
 	})
 
 	it("allows a requested task name that belongs to a different root task", async () => {
@@ -630,6 +673,7 @@ If complete, use attempt_completion.
 						},
 					],
 					getTokenUsage: () => ({ totalTokensIn: 10, totalTokensOut: 5 }),
+					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
 					cancelCurrentRequest: vi.fn(),
 					abortTask: vi.fn(async () => undefined),
@@ -695,6 +739,7 @@ If complete, use attempt_completion.
 						},
 					],
 					getTokenUsage: () => ({ totalTokensIn: 10, totalTokensOut: 5 }),
+					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
 					cancelCurrentRequest: vi.fn(),
 					abortTask: vi.fn(async () => undefined),
@@ -760,6 +805,7 @@ If complete, use attempt_completion.
 						{ type: "say", say: "completion_result", text: "This report exceeds the frozen limit." },
 					],
 					getTokenUsage: () => testCase.usage,
+					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
 					cancelCurrentRequest: vi.fn(),
 					abortTask: vi.fn(async () => undefined),
@@ -881,6 +927,7 @@ If complete, use attempt_completion.
 					rootTaskId: parent.taskId,
 					clineMessages: [],
 					getTokenUsage: () => ({ totalTokensIn: 10, totalTokensOut: 5, totalCost: 0 }),
+					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
 					cancelCurrentRequest: vi.fn(),
 					abortTask: vi.fn(async () => {
@@ -1090,6 +1137,7 @@ If complete, use attempt_completion.
 						{ type: "say", say: "completion_result", text: "Could not make the requested edit." },
 					],
 					getTokenUsage: () => ({ totalTokensIn: 10, totalTokensOut: 5 }),
+					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 					finalizeSubagentHistory: vi.fn(async () => {
 						now += 50
 					}),
@@ -3304,6 +3352,7 @@ If complete, use attempt_completion.
 					taskId: options.taskId,
 					clineMessages: [{ type: "say", say: "completion_result", text: "Parser inspected" }],
 					getTokenUsage: () => ({ totalTokensIn: 10, totalTokensOut: 5 }),
+					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
 					cancelCurrentRequest: vi.fn(),
 					abortTask: vi.fn(async () => undefined),
@@ -3354,6 +3403,7 @@ If complete, use attempt_completion.
 					taskId: options.taskId,
 					clineMessages: [{ type: "say", say: "completion_result", text: "Parser inspected" }],
 					getTokenUsage: () => ({ totalTokensIn: 10, totalTokensOut: 5 }),
+					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
 					cancelCurrentRequest: vi.fn(),
 					abortTask: vi.fn(async () => undefined),

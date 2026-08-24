@@ -72,10 +72,12 @@ describe("taskMetadata sub-agent routing", () => {
 			workspace: "F:/workspace",
 			taskKind: "subagent",
 			subagentContextManifest: manifest,
+			subagentInstructionPlacement: "system",
 		})
 
 		expect(historyItem.subagentContextManifest).toEqual(manifest)
 		expect(historyItem.subagentContextManifest).not.toBe(manifest)
+		expect(historyItem.subagentInstructionPlacement).toBe("system")
 		expect(JSON.stringify(historyItem.subagentContextManifest)).not.toContain("private parent body")
 		expect(JSON.stringify(historyItem.subagentContextManifest)).not.toContain("private frozen instructions")
 		expect(JSON.stringify(historyItem.subagentContextManifest)).not.toContain("private AGENTS body")

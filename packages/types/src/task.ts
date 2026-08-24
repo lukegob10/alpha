@@ -135,6 +135,8 @@ export interface CreateTaskOptions {
 	subagentModelRoute?: SubagentModelRouteState
 	/** Credential-free audit metadata for the context inherited by this managed child. */
 	subagentContextManifest?: SubagentContextManifest
+	/** New managed children place the frozen inherited instruction body in the system/developer prompt. */
+	subagentInstructionPlacement?: "system"
 	subagentWriteScope?: string[]
 	subagentChangeSet?: import("./subagent.js").SubagentChangeSetState
 	/** Scoped authority prepared and approved by the parent delegation. */

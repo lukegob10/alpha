@@ -73,7 +73,11 @@ describe("OpenAiCodexHandler strict tool schemas", () => {
 
 		expect(tool.strict).toBe(true)
 		expect(task).not.toHaveProperty("anyOf")
-		expect(task.required).toEqual(["objective", "agent_kind", "write_scope", "expected_output"])
+		expect(task.required).toEqual(["objective", "fork_turns", "agent_kind", "write_scope", "expected_output"])
+		expect(task.properties.fork_turns).toMatchObject({
+			pattern: "^(?:none|all|[1-9][0-9]*)$",
+			maxLength: 16,
+		})
 		expect(task.properties.agent_kind.enum).toEqual(["explore", "review", "worker"])
 		expect(task.properties.write_scope.anyOf).toEqual([
 			expect.objectContaining({ type: "array", minItems: 1, maxItems: 12 }),

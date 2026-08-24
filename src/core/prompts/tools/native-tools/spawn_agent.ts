@@ -23,7 +23,7 @@ export const spawn_agent = {
 					maxLength: 16,
 					pattern: "^(?:none|all|[1-9][0-9]*)$",
 					description:
-						"Parent conversation inheritance: none, all, or a canonical positive decimal integer string selecting the most recent N user-led turns. Environment, instructions, skills, workspace, model route, and narrowed runtime policy are inherited independently.",
+						"Parent conversation inheritance after host sanitization and within its context bound: none, all available turns, or a canonical positive decimal integer string selecting the most recent N available user-led turns. Environment, instructions, skills, workspace, model route, and narrowed runtime policy are inherited independently.",
 				},
 				objective: {
 					type: "string",

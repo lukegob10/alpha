@@ -294,6 +294,97 @@ describe("NativeToolCallParser", () => {
 			})
 		})
 
+		describe("delegate_task tool", () => {
+			it.each([
+				{
+					label: "no parent turns",
+					payload: {
+						tasks: [{ objective: "Map the parser.", fork_turns: "none", agent_kind: "explore" }],
+					},
+				},
+				{
+					label: "all bounded parent turns",
+					payload: {
+						tasks: [
+							{
+								objective: "Review the parser.",
+								fork_turns: "all",
+								agent_kind: "review",
+								write_scope: null,
+								expected_output: ["risk summary"],
+							},
+						],
+					},
+				},
+				{
+					label: "different selections per child",
+					payload: {
+						tasks: [
+							{
+								objective: "Inspect the parser.",
+								fork_turns: "none",
+								agent_kind: "review",
+							},
+							{
+								objective: "Add parser coverage.",
+								fork_turns: "2",
+								agent_kind: "worker",
+								write_scope: ["src/core/assistant-message"],
+								expected_output: null,
+							},
+						],
+					},
+				},
+			])("parses $label", ({ payload }) => {
+				const result = NativeToolCallParser.parseToolCall({
+					id: "delegate-valid",
+					name: "delegate_task",
+					arguments: JSON.stringify(payload),
+				})
+
+				expect(result?.type).toBe("tool_use")
+				if (result?.type === "tool_use") expect(result.nativeArgs).toEqual(payload)
+			})
+
+			it.each([
+				["missing fork turns", { objective: "Inspect.", agent_kind: "review" }],
+				["noncanonical fork turns", { objective: "Inspect.", fork_turns: "01", agent_kind: "review" }],
+				["unsafe fork turns", { objective: "Inspect.", fork_turns: "9007199254740992", agent_kind: "review" }],
+				["worker without write scope", { objective: "Fix.", fork_turns: "none", agent_kind: "worker" }],
+				[
+					"unknown task field",
+					{ objective: "Inspect.", fork_turns: "none", agent_kind: "review", mode: "code" },
+				],
+			] as const)("rejects %s", (_label, task) => {
+				const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				const result = NativeToolCallParser.parseToolCall({
+					id: "delegate-invalid",
+					name: "delegate_task",
+					arguments: JSON.stringify({ tasks: [task] }),
+				})
+
+				expect(result).toBeNull()
+				expect(errorSpy).toHaveBeenCalled()
+				errorSpy.mockRestore()
+			})
+
+			it("rejects unknown top-level fields", () => {
+				const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				const result = NativeToolCallParser.parseToolCall({
+					id: "delegate-unknown-top-level",
+					name: "delegate_task",
+					arguments: JSON.stringify({
+						tasks: [{ objective: "Inspect.", fork_turns: "none", agent_kind: "review" }],
+						background: true,
+					}),
+				})
+
+				expect(result).toBeNull()
+				expect(errorSpy).toHaveBeenCalled()
+				errorSpy.mockRestore()
+			})
+		})
+
 		describe("agent lifecycle tools", () => {
 			it.each([
 				["list_agents", { path_prefix: "/root/review" }],
@@ -918,6 +1009,27 @@ describe("NativeToolCallParser", () => {
 					expect(finalized.partial).toBe(false)
 					expect(finalized.nativeArgs).toEqual(payload)
 				}
+			})
+		})
+
+		describe("delegate_task tool", () => {
+			it("preserves an explicit per-child fork selection through finalization", () => {
+				const id = "delegate-streaming"
+				const payload = {
+					tasks: [{ objective: "Inspect recent evidence.", fork_turns: "2", agent_kind: "explore" }],
+				}
+				const encoded = JSON.stringify(payload)
+				const splitAt = encoded.indexOf('"fork_turns"')
+				NativeToolCallParser.startStreamingToolCall(id, "delegate_task")
+
+				const incomplete = NativeToolCallParser.processStreamingChunk(id, encoded.slice(0, splitAt))
+				expect(incomplete?.nativeArgs).toBeUndefined()
+
+				const partial = NativeToolCallParser.processStreamingChunk(id, encoded.slice(splitAt))
+				expect(partial?.nativeArgs).toEqual(payload)
+
+				const finalized = NativeToolCallParser.finalizeStreamingToolCall(id)
+				expect((finalized as any)?.nativeArgs).toEqual(payload)
 			})
 		})
 

@@ -48,6 +48,7 @@ export type TaskMetadataOptions = {
 	subagentRole?: SubagentRole
 	subagentModelRoute?: SubagentModelRouteState
 	subagentContextManifest?: SubagentContextManifest
+	subagentInstructionPlacement?: "system"
 	subagentDelegationPolicy?: SubagentDelegationPolicy
 	subagentDelegationExplicitlyEnabled?: boolean
 	stopReason?: SubagentStopReason
@@ -72,6 +73,7 @@ export async function taskMetadata({
 	subagentRole,
 	subagentModelRoute,
 	subagentContextManifest,
+	subagentInstructionPlacement,
 	subagentDelegationPolicy,
 	subagentDelegationExplicitlyEnabled,
 	stopReason,
@@ -159,6 +161,7 @@ export async function taskMetadata({
 		...(subagentContextManifest && {
 			subagentContextManifest: structuredClone(subagentContextManifest),
 		}),
+		...(subagentInstructionPlacement && { subagentInstructionPlacement }),
 		...(subagentDelegationPolicy && { subagentDelegationPolicy }),
 		...(subagentDelegationExplicitlyEnabled !== undefined && { subagentDelegationExplicitlyEnabled }),
 		...(stopReason && { stopReason }),

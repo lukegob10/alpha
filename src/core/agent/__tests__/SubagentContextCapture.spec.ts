@@ -7,6 +7,8 @@ import {
 	captureUserLedTurns,
 	isValidSubagentContextManifest,
 	serializeSubagentContextManifest,
+	SUBAGENT_HOST_CONTEXT_HEADER,
+	SUBAGENT_INHERITED_CONTEXT_MAX_CHARS,
 } from "../SubagentContextCapture"
 
 const route = {
@@ -83,7 +85,8 @@ const history: ApiMessage[] = [
 	{ role: "user", content: "Second request" },
 	{
 		role: "assistant",
-		content: "Second answer <spawn_agent><objective>legacy replay</objective></spawn_agent>",
+		content:
+			"Second answer <spawn_agent><objective>legacy replay</objective></spawn_agent> <write_to_file><path>secret</path><content>legacy write payload</content></write_to_file>",
 	},
 	{ role: "user", content: [{ type: "text", text: "Third request" }] },
 	{ role: "assistant", content: [{ type: "text", text: "Third answer" }] },
@@ -142,6 +145,76 @@ describe("sub-agent context capture", () => {
 				{ role: "assistant", text: "Safe follow-on explanation" },
 			],
 		})
+	})
+
+	it("does not recapture a host-supplied managed-child context block", () => {
+		const turns = captureUserLedTurns("parent-task", [
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "<user_message>\nChild objective\n</user_message>" },
+					{
+						type: "text",
+						text: `${SUBAGENT_HOST_CONTEXT_HEADER}\n\nSelected parent evidence that must not cascade`,
+					},
+				],
+			},
+		])
+
+		expect(turns).toHaveLength(1)
+		expect(turns[0]?.messages).toEqual([
+			{ role: "user", sourceMessageIndex: 0, text: "<user_message>\nChild objective\n</user_message>" },
+		])
+	})
+
+	it("drops host-converted orphan tool results instead of treating them as human turns", () => {
+		const turns = captureUserLedTurns("parent-task", [
+			{
+				role: "user",
+				content: [{ type: "text", text: "Tool result:\nraw command output with password=unsafe-value" }],
+			},
+		])
+
+		expect(turns).toEqual([])
+	})
+
+	it("keeps summary prose while stripping system reminders and truncation markers", () => {
+		const turns = captureUserLedTurns("parent-task", [
+			{
+				role: "user",
+				isSummary: true,
+				content: [
+					{ type: "text", text: "## Conversation Summary\nKeep the validated parser finding." },
+					{
+						type: "text",
+						text: "<system-reminder>\n## Active Workflows\n<command>INTERNAL_DIRECTIVE</command>\n</system-reminder>",
+					},
+					{
+						type: "text",
+						text: "<system-reminder>\nFolded file noise and secret=do-not-inherit\n</system-reminder>",
+					},
+				],
+			},
+			{
+				role: "user",
+				isTruncationMarker: true,
+				content: "[Sliding window truncation: 42 messages hidden to reduce context]",
+			},
+			{ role: "assistant", content: "The parser finding remains valid." },
+		])
+
+		expect(turns).toHaveLength(1)
+		expect(turns[0]?.messages).toEqual([
+			{
+				role: "user",
+				sourceMessageIndex: 0,
+				text: "## Conversation Summary\nKeep the validated parser finding.",
+			},
+			{ role: "assistant", sourceMessageIndex: 2, text: "The parser finding remains valid." },
+		])
+		expect(turns[0]?.messages.map(({ text }) => text).join("\n")).not.toMatch(
+			/system-reminder|INTERNAL_DIRECTIVE|Folded file noise|Sliding window truncation/,
+		)
 	})
 
 	it("recovers direct human feedback from its originating interactive tool result", () => {
@@ -446,8 +519,110 @@ describe("sub-agent context capture", () => {
 		expect(rendered).not.toContain("must never be replayed")
 		expect(rendered).not.toContain("private tool result")
 		expect(rendered).not.toContain("legacy replay")
+		expect(rendered).not.toContain("legacy write payload")
 		expect(rendered).not.toContain("environment_details")
 		expect(rendered).not.toContain("volatile timestamp")
+	})
+
+	it("redacts credentials from inherited conversation evidence", () => {
+		const secrets = {
+			bearer: "bearer-token-ABC123456789",
+			openai: "sk-proj-ABC_def_1234567890",
+			password: "correct-horse-battery-staple",
+			awsSecret: "aws-secret-value-1234567890",
+			github: "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+			jwt: "eyJabcdefghijk.abcdefghijklmnop.abcdefghijklmnop",
+			urlPassword: "url-password-123",
+			privateKey: "private-key-body-123456",
+			basic: "dXNlcjpiYXNpYy1zZWNyZXQtMTIzNDU2",
+			google: "AIzaABCDEFGHIJKLMNOPQRSTUVWXYZ123456789",
+			jsonApiKey: "json-api-key-value-123456",
+		}
+		const result = captureSubagentContext({
+			parentTaskId: "credential-parent",
+			capturedAt: 1_700_000_000_000,
+			forkTurns: "all",
+			history: [
+				{
+					role: "user",
+					content: [
+						{
+							type: "text",
+							text: [
+								`Authorization: Bearer ${secrets.bearer}`,
+								`Authorization: Basic ${secrets.basic}`,
+								`api_key=${secrets.openai}`,
+								`"api key": "${secrets.jsonApiKey}"`,
+								`password: "${secrets.password}"`,
+								`AWS_SECRET_ACCESS_KEY=${secrets.awsSecret}`,
+								secrets.github,
+								secrets.jwt,
+								secrets.google,
+								`https://user:${secrets.urlPassword}@example.com/private`,
+								`-----BEGIN PRIVATE KEY-----\n${secrets.privateKey}\n-----END PRIVATE KEY-----`,
+							].join("\n"),
+						},
+					],
+				},
+			],
+			instructions: {
+				effectiveText: "Effective instructions",
+				sources: [{ kind: "aggregate", ref: "instructions", text: "Effective instructions" }],
+			},
+			skills: [],
+			cwd: "/workspace",
+			workspaceRoots: ["/workspace"],
+			modelRoute: route,
+			runtimePolicy,
+		})
+
+		for (const secret of Object.values(secrets)) {
+			expect(result.inheritedTurnContext).not.toContain(secret)
+		}
+		expect(result.inheritedTurnContext).toContain("[REDACTED CREDENTIAL]")
+	})
+
+	it("keeps the newest sanitized evidence within the hard inherited-context bound", () => {
+		const newestHead = "CTXMARK_NEWEST_HEAD"
+		const newestTail = "CTXMARK_NEWEST_TAIL"
+		const result = captureSubagentContext({
+			parentTaskId: "bounded-parent",
+			capturedAt: 1_700_000_000_000,
+			forkTurns: "all",
+			history: [
+				{ role: "user", content: `CTXMARK_OLDEST_${"o".repeat(12_000)}` },
+				{ role: "assistant", content: "old answer" },
+				{
+					role: "user",
+					content: `${newestHead}_${"n".repeat(40_000)}_${newestTail}`,
+				},
+			],
+			instructions: {
+				effectiveText: "Effective instructions",
+				sources: [{ kind: "aggregate", ref: "instructions", text: "Effective instructions" }],
+			},
+			skills: [],
+			cwd: "/workspace",
+			workspaceRoots: ["/workspace"],
+			modelRoute: route,
+			runtimePolicy,
+		})
+
+		expect(result.inheritedTurnContext.length).toBeLessThanOrEqual(SUBAGENT_INHERITED_CONTEXT_MAX_CHARS)
+		expect(result.inheritedTurnContext).toContain(newestHead)
+		expect(result.inheritedTurnContext).toContain(newestTail)
+		expect(result.inheritedTurnContext).toContain("inherited evidence truncated")
+		expect(result.inheritedTurnContext).not.toContain("CTXMARK_OLDEST")
+		expect(result.selectedTurns.map(({ ordinal }) => ordinal)).toEqual([1])
+		expect(result.manifest.selectedUserTurns.count).toBe(1)
+		expect(result.manifest.selectedUserTurns.refs).toEqual(
+			result.selectedTurns.map(({ ref, ordinal, digest, sourceMessageIndexes }) => ({
+				ref,
+				ordinal,
+				digest,
+				sourceMessageIndexes,
+			})),
+		)
 	})
 
 	it("produces deterministic refs and digests independent of volatile runtime metadata", () => {

@@ -78,6 +78,7 @@ describe("taskMetadata orchestration persistence", () => {
 			workspace: "F:/workspace",
 			taskKind: "subagent",
 			subagentContextManifest: manifest,
+			subagentInstructionPlacement: "system",
 			subagentDelegationPolicy: "explicit-only",
 			subagentDelegationExplicitlyEnabled: true,
 			stopReason: "timeout",
@@ -91,6 +92,7 @@ describe("taskMetadata orchestration persistence", () => {
 			parentTaskId: "parent-1",
 			subagentDelegationPolicy: "explicit-only",
 			subagentDelegationExplicitlyEnabled: true,
+			subagentInstructionPlacement: "system",
 			stopReason: "timeout",
 		})
 		expect(reloaded.subagentContextManifest?.orchestration).toEqual({

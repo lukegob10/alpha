@@ -421,7 +421,8 @@ async function loadAllAgentRulesFiles(cwd: string, enableSubfolderRules: boolean
 /**
  * Return the concrete agent-instruction files that contribute to the effective
  * task instructions. The context-inheritance manifest stores only these refs
- * and content digests; instruction bodies remain in the child prompt/history.
+ * and content digests; a managed child's exact aggregate body is persisted in
+ * its private instruction snapshot and replayed through the system layer.
  */
 export async function loadApplicableAgentInstructionSources(
 	cwd: string,
@@ -447,6 +448,22 @@ export async function loadApplicableAgentInstructionSources(
 	return sources
 }
 
+function formatApplicableAgentInstructionSources(
+	cwd: string,
+	sources: readonly { kind: "agents"; ref: string; text: string }[],
+): string {
+	return sources
+		.map(({ ref, text }) => {
+			const filename = path.basename(ref)
+			const directory = path.dirname(ref)
+			const showPath = path.resolve(directory) !== path.resolve(cwd)
+			const label = filename === "AGENTS.local.md" ? "Local" : "Standard"
+			const location = showPath ? ` from ${path.relative(cwd, directory)}` : ""
+			return `# Agent Rules ${label} (${filename})${location}:\n${text}`
+		})
+		.join("\n\n")
+}
+
 export async function addCustomInstructions(
 	modeCustomInstructions: string,
 	globalCustomInstructions: string,
@@ -456,6 +473,8 @@ export async function addCustomInstructions(
 		language?: string
 		rooIgnoreInstructions?: string
 		settings?: SystemPromptSettings
+		/** Already captured sources avoid rereading mutable AGENTS files at a child-launch boundary. */
+		agentInstructionSources?: readonly { kind: "agents"; ref: string; text: string }[]
 	} = {},
 ): Promise<string> {
 	const sections = []
@@ -559,7 +578,10 @@ export async function addCustomInstructions(
 	// Add AGENTS.md content if enabled (default: true)
 	// Load from root and optionally subdirectories with .roo folders based on enableSubfolderRules setting
 	if (options.settings?.useAgentRules !== false) {
-		const agentRulesContent = await loadAllAgentRulesFiles(cwd, enableSubfolderRules)
+		const agentRulesContent =
+			options.agentInstructionSources !== undefined
+				? formatApplicableAgentInstructionSources(cwd, options.agentInstructionSources)
+				: await loadAllAgentRulesFiles(cwd, enableSubfolderRules)
 		if (agentRulesContent && agentRulesContent.trim()) {
 			rules.push(agentRulesContent.trim())
 		}

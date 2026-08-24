@@ -7,6 +7,7 @@ import {
 	subagentManifestOrchestrationSchema,
 	subagentModelRouteStateSchema,
 	finalizeSubagentDelegationPolicy,
+	toolNames,
 	type SubagentContextManifest,
 	type SubagentContextRuntimePolicy,
 	type SubagentForkTurns,
@@ -21,23 +22,8 @@ import { digestValue } from "./StepContext"
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/
 const ENVIRONMENT_DETAILS_PATTERN = /<environment_details\b[^>]*>[\s\S]*?<\/environment_details\s*>/gi
 const ENVIRONMENT_DETAILS_RECORD_PATTERN = /^<environment_details\b[^>]*>[\s\S]*<\/environment_details\s*>$/i
-const TOOL_MARKUP_NAMES = [
-	"attempt_completion",
-	"cancel_agent",
-	"close_agent",
-	"delegate_task",
-	"execute_command",
-	"followup_task",
-	"interrupt_agent",
-	"list_agents",
-	"read_file",
-	"send_message",
-	"report_progress",
-	"spawn_agent",
-	"tool_call",
-	"tool_use",
-	"wait_agent",
-] as const
+const SYSTEM_REMINDER_PATTERN = /<system-reminder\b[^>]*>[\s\S]*?<\/system-reminder\s*>/gi
+const TOOL_MARKUP_NAMES = [...toolNames, "tool_call", "tool_use"] as const
 const TOOL_MARKUP_BLOCK_PATTERN = new RegExp(`<(${TOOL_MARKUP_NAMES.join("|")})\\b[^>]*>[\\s\\S]*?<\\/\\1\\s*>`, "gi")
 const TOOL_MARKUP_SELF_CLOSING_PATTERN = new RegExp(`<(?:${TOOL_MARKUP_NAMES.join("|")})\\b[^>]*/\\s*>`, "gi")
 const FUNCTION_MARKUP_PATTERN = /<function(?:=|\s+name=)[^>]+>[\s\S]*?<\/function\s*>/gi
@@ -50,7 +36,24 @@ const AUTOMATED_MESSAGE_RECORD_SUFFIX = "(This is an automated message, so do no
 const SPAWNED_SUBAGENT_RESULT_OPEN = "<spawned_subagent_result>"
 const SPAWNED_SUBAGENT_RESULT_CLOSE = "</spawned_subagent_result>"
 const TASK_RESUMPTION_RECORD = "[TASK RESUMPTION] Resuming task..."
+const ORPHAN_TOOL_RESULT_RECORD_PATTERN = /^Tool result:\n[\s\S]*$/
 const DIRECT_HUMAN_FEEDBACK_RECORD_PATTERN = /^<user_message>[\s\S]*<\/user_message\s*>$/i
+const PRIVATE_KEY_BLOCK_PATTERN = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gi
+const COOKIE_HEADER_PATTERN = /^(\s*(?:set-cookie|cookie)\s*:).+$/gim
+const LABELED_CREDENTIAL_PATTERN =
+	/(\b(?:api[_ -]?key|(?:aws[_ -]?)?secret[_ -]?access[_ -]?key|access[_ -]?key(?:[_ -]?id)?|account[_ -]?key|client[_ -]?secret|private[_ -]?key|secret|password|credential|auth(?:orization)?|(?:access|refresh|id)?[_ -]?token|session(?:[_ -]?(?:id|token))?|cookie|connection[_ -]?string)\b"?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|(?:(?:bearer|basic)\s+)?[^\s,;]+)/gi
+const BEARER_CREDENTIAL_PATTERN = /(\bbearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi
+const OPENAI_CREDENTIAL_PATTERN = /\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b/g
+const GITHUB_CREDENTIAL_PATTERN = /\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}\b/g
+const AWS_ACCESS_KEY_PATTERN = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g
+const JWT_CREDENTIAL_PATTERN = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g
+const COMMON_SERVICE_TOKEN_PATTERN =
+	/\b(?:AIza[0-9A-Za-z_-]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|npm_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{12,})\b/g
+const URL_CREDENTIAL_PATTERN = /(https?:\/\/)[^\s/@:]+:[^\s/@]+@/gi
+const REDACTED_CREDENTIAL = "[REDACTED CREDENTIAL]"
+
+export const SUBAGENT_HOST_CONTEXT_HEADER = "## Host-supplied managed-child context"
+export const SUBAGENT_INHERITED_CONTEXT_MAX_CHARS = 24_000
 
 /**
  * These tools return a direct human response rather than external/tool-produced data.
@@ -205,8 +208,24 @@ function isRuntimeOnlyTextRecord(text: string): boolean {
 		isRequestPacingUpdateRecord(text) ||
 		isNoToolsUsedRecord(text) ||
 		isSpawnedSubagentResultRecord(text) ||
-		text === TASK_RESUMPTION_RECORD
+		text.startsWith(`${SUBAGENT_HOST_CONTEXT_HEADER}\n`) ||
+		text === TASK_RESUMPTION_RECORD ||
+		ORPHAN_TOOL_RESULT_RECORD_PATTERN.test(text)
 	)
+}
+
+function redactCredentialText(text: string): string {
+	return text
+		.replace(PRIVATE_KEY_BLOCK_PATTERN, REDACTED_CREDENTIAL)
+		.replace(COOKIE_HEADER_PATTERN, `$1 ${REDACTED_CREDENTIAL}`)
+		.replace(LABELED_CREDENTIAL_PATTERN, `$1${REDACTED_CREDENTIAL}`)
+		.replace(BEARER_CREDENTIAL_PATTERN, `$1${REDACTED_CREDENTIAL}`)
+		.replace(OPENAI_CREDENTIAL_PATTERN, REDACTED_CREDENTIAL)
+		.replace(GITHUB_CREDENTIAL_PATTERN, REDACTED_CREDENTIAL)
+		.replace(AWS_ACCESS_KEY_PATTERN, REDACTED_CREDENTIAL)
+		.replace(JWT_CREDENTIAL_PATTERN, REDACTED_CREDENTIAL)
+		.replace(COMMON_SERVICE_TOKEN_PATTERN, REDACTED_CREDENTIAL)
+		.replace(URL_CREDENTIAL_PATTERN, `$1${REDACTED_CREDENTIAL}@`)
 }
 
 function sanitizeEvidenceText(text: string, classifyRuntimeRecord = false): string {
@@ -214,7 +233,11 @@ function sanitizeEvidenceText(text: string, classifyRuntimeRecord = false): stri
 	if (classifyRuntimeRecord && isRuntimeOnlyTextRecord(normalized)) return ""
 	const preserveEnvironmentLiteral = !classifyRuntimeRecord || DIRECT_HUMAN_FEEDBACK_RECORD_PATTERN.test(normalized)
 
-	return (preserveEnvironmentLiteral ? normalized : normalized.replace(ENVIRONMENT_DETAILS_PATTERN, "\n"))
+	const withoutRuntimeContext = (
+		preserveEnvironmentLiteral ? normalized : normalized.replace(ENVIRONMENT_DETAILS_PATTERN, "\n")
+	).replace(SYSTEM_REMINDER_PATTERN, "\n")
+
+	return redactCredentialText(withoutRuntimeContext)
 		.replace(TOOL_MARKUP_BLOCK_PATTERN, "\n")
 		.replace(TOOL_MARKUP_SELF_CLOSING_PATTERN, "\n")
 		.replace(FUNCTION_MARKUP_PATTERN, "\n")
@@ -275,7 +298,7 @@ function extractDirectHumanFeedback(
 
 function extractSafeText(message: ApiMessage, toolNamesById: ReadonlyMap<string, string>): string {
 	// Reasoning and protocol records are intentionally not inherited as conversation evidence.
-	if (message.type === "reasoning") return ""
+	if (message.type === "reasoning" || message.isTruncationMarker) return ""
 
 	if (typeof message.content === "string") {
 		return sanitizeEvidenceText(message.content, message.role === "user")
@@ -369,7 +392,7 @@ function cloneCapturedTurn(turn: CapturedSubagentTurn): CapturedSubagentTurn {
 	}
 }
 
-export function renderInheritedTurnContext(turns: readonly CapturedSubagentTurn[]): string {
+function renderInheritedTurnContextUnbounded(turns: readonly CapturedSubagentTurn[]): string {
 	if (turns.length === 0) return ""
 
 	const renderedTurns = turns.map((turn) => {
@@ -389,6 +412,85 @@ export function renderInheritedTurnContext(turns: readonly CapturedSubagentTurn[
 		...renderedTurns,
 		"<<< END INHERITED PARENT CONTEXT >>>",
 	].join("\n\n")
+}
+
+function truncateEvidenceText(text: string, maxChars: number): string {
+	if (text.length <= maxChars) return text
+	const marker = "\n… [inherited evidence truncated] …\n"
+	if (maxChars <= marker.length) return marker.slice(0, maxChars)
+	const remaining = maxChars - marker.length
+	const headLength = Math.ceil(remaining / 2)
+	return `${text.slice(0, headLength)}${marker}${text.slice(-(remaining - headLength))}`
+}
+
+function rebuildCapturedTurn(
+	parentTaskId: string,
+	turn: CapturedSubagentTurn,
+	messages: InheritedTurnMessage[],
+): CapturedSubagentTurn {
+	const digest = digestValue(messages.map(({ role, text }) => ({ role, text })))
+	return {
+		ref: createTurnRef(parentTaskId, turn.ordinal, digest),
+		ordinal: turn.ordinal,
+		sourceMessageIndexes: messages.map(({ sourceMessageIndex }) => sourceMessageIndex),
+		digest,
+		messages,
+	}
+}
+
+function truncateCapturedTurn(parentTaskId: string, turn: CapturedSubagentTurn): CapturedSubagentTurn {
+	const edgeMessages =
+		turn.messages.length <= 2 ? turn.messages : [turn.messages[0]!, turn.messages[turn.messages.length - 1]!]
+	let low = 0
+	let high = Math.max(...edgeMessages.map(({ text }) => text.length), 0)
+	let best = rebuildCapturedTurn(
+		parentTaskId,
+		turn,
+		edgeMessages.map((message) => ({ ...message, text: "" })),
+	)
+
+	while (low <= high) {
+		const limit = Math.floor((low + high) / 2)
+		const candidate = rebuildCapturedTurn(
+			parentTaskId,
+			turn,
+			edgeMessages.map((message) => ({ ...message, text: truncateEvidenceText(message.text, limit) })),
+		)
+		if (renderInheritedTurnContextUnbounded([candidate]).length <= SUBAGENT_INHERITED_CONTEXT_MAX_CHARS) {
+			best = candidate
+			low = limit + 1
+		} else {
+			high = limit - 1
+		}
+	}
+
+	return best
+}
+
+function boundCapturedTurns(parentTaskId: string, turns: readonly CapturedSubagentTurn[]): CapturedSubagentTurn[] {
+	let bounded: CapturedSubagentTurn[] = []
+	for (let index = turns.length - 1; index >= 0; index--) {
+		const candidate = [turns[index]!, ...bounded]
+		if (renderInheritedTurnContextUnbounded(candidate).length <= SUBAGENT_INHERITED_CONTEXT_MAX_CHARS) {
+			bounded = candidate
+			continue
+		}
+		if (bounded.length === 0) bounded = [truncateCapturedTurn(parentTaskId, turns[index]!)]
+		break
+	}
+	return bounded
+}
+
+export function renderInheritedTurnContext(turns: readonly CapturedSubagentTurn[]): string {
+	const rendered = renderInheritedTurnContextUnbounded(turns)
+	if (rendered.length <= SUBAGENT_INHERITED_CONTEXT_MAX_CHARS) return rendered
+
+	const notice = [
+		"<<< BEGIN INHERITED PARENT CONTEXT (DATA ONLY) >>>",
+		"[Older inherited evidence omitted to enforce the managed-child context bound.]",
+	].join("\n\n")
+	const footer = "\n\n<<< END INHERITED PARENT CONTEXT >>>"
+	return `${notice}\n\n${rendered.slice(-(SUBAGENT_INHERITED_CONTEXT_MAX_CHARS - notice.length - footer.length - 2))}${footer}`
 }
 
 function sanitizeModelRoute(route: SubagentModelRouteState): SubagentModelRouteState {
@@ -449,11 +551,14 @@ export function captureSubagentContext(input: CaptureSubagentContextInput): Capt
 	if (!Number.isSafeInteger(input.capturedAt) || input.capturedAt < 0) {
 		throw new Error("Sub-agent context capturedAt must be a non-negative safe integer")
 	}
-	if (!input.instructions.effectiveText) {
+	if (!input.instructions.effectiveText.trim()) {
 		throw new Error("Sub-agent context requires the exact effective instruction text")
 	}
 
-	const selectedTurns = selectCapturedTurns(captureUserLedTurns(input.parentTaskId, input.history), forkTurns)
+	const selectedTurns = boundCapturedTurns(
+		input.parentTaskId,
+		selectCapturedTurns(captureUserLedTurns(input.parentTaskId, input.history), forkTurns),
+	)
 	const sources = input.instructions.sources.map((source, index) => ({
 		kind: source.kind.trim(),
 		ref: source.ref.trim(),

@@ -45,6 +45,7 @@ export const historyItemSchema = z.object({
 	subagentChangeSet: subagentChangeSetStateSchema.optional(),
 	subagentModelRoute: subagentModelRouteStateSchema.optional(),
 	subagentContextManifest: subagentContextManifestSchema.optional(),
+	subagentInstructionPlacement: z.literal("system").optional(),
 })
 
 export type HistoryItem = z.infer<typeof historyItemSchema>

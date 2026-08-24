@@ -82,7 +82,12 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		expect(spawnTool?.function?.parameters?.properties).toHaveProperty("fork_turns")
 
 		const delegateTool = nativeTools.find((tool) => tool.function?.name === "delegate_task")
-		expect(JSON.stringify(delegateTool?.function?.parameters)).not.toContain("fork_turns")
+		const delegateTask = (delegateTool?.function?.parameters as any)?.properties?.tasks?.items
+		expect(delegateTask?.required).toEqual(expect.arrayContaining(["objective", "fork_turns", "agent_kind"]))
+		expect(delegateTask?.properties?.fork_turns).toMatchObject({
+			pattern: "^(?:none|all|[1-9][0-9]*)$",
+			maxLength: 16,
+		})
 
 		const completionTool = nativeTools.find((tool) => tool.function?.name === "attempt_completion")
 		expect(completionTool?.function?.parameters?.properties).not.toHaveProperty("outcome")

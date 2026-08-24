@@ -198,6 +198,40 @@ export class NativeToolCallParser {
 		return (args.agent_kind === "explore" || args.agent_kind === "review") && args.write_scope === null
 	}
 
+	private static isDelegateTaskArgs(value: unknown): value is NativeToolArgs["delegate_task"] {
+		if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+		const args = value as Record<string, unknown>
+		if (!this.hasOnlyKeys(args, ["tasks"]) || !Array.isArray(args.tasks)) return false
+		if (args.tasks.length < 1 || args.tasks.length > 2) return false
+
+		return args.tasks.every((value) => {
+			if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+			const task = value as Record<string, unknown>
+			if (
+				!this.hasOnlyKeys(task, ["objective", "fork_turns", "agent_kind", "write_scope", "expected_output"]) ||
+				typeof task.objective !== "string" ||
+				task.objective.length < 1 ||
+				!isSubagentForkTurns(task.fork_turns) ||
+				(task.expected_output !== undefined &&
+					task.expected_output !== null &&
+					!this.isBoundedNonEmptyStringArray(task.expected_output, 0, 12))
+			) {
+				return false
+			}
+
+			if (task.agent_kind === "worker") {
+				return this.isBoundedNonEmptyStringArray(task.write_scope, 1, 12)
+			}
+
+			return (
+				(task.agent_kind === "explore" || task.agent_kind === "review") &&
+				(task.write_scope === undefined ||
+					task.write_scope === null ||
+					this.isBoundedNonEmptyStringArray(task.write_scope, 1, 12))
+			)
+		})
+	}
+
 	/**
 	 * Recover a common model formatting error where multiple argument objects for the
 	 * same search_files call are emitted back-to-back instead of inside `queries`.
@@ -925,7 +959,7 @@ export class NativeToolCallParser {
 				break
 
 			case "delegate_task":
-				if (Array.isArray(partialArgs.tasks)) {
+				if (this.isDelegateTaskArgs(partialArgs)) {
 					nativeArgs = { tasks: partialArgs.tasks }
 				}
 				break
@@ -1463,24 +1497,7 @@ export class NativeToolCallParser {
 					break
 
 				case "delegate_task":
-					if (
-						Array.isArray(args.tasks) &&
-						args.tasks.length >= 1 &&
-						args.tasks.length <= 2 &&
-						args.tasks.every(
-							(item: unknown) =>
-								typeof item === "object" &&
-								item !== null &&
-								typeof (item as { objective?: unknown }).objective === "string" &&
-								["explore", "review", "worker"].includes(
-									(item as { agent_kind?: string }).agent_kind ?? "",
-								) &&
-								((item as { agent_kind?: string }).agent_kind !== "worker" ||
-									(Array.isArray((item as { write_scope?: unknown }).write_scope) &&
-										(item as { write_scope: unknown[] }).write_scope.length >= 1 &&
-										(item as { write_scope: unknown[] }).write_scope.length <= 12)),
-						)
-					) {
+					if (this.isDelegateTaskArgs(args)) {
 						nativeArgs = { tasks: args.tasks } as NativeArgsFor<TName>
 					}
 					break

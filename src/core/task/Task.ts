@@ -130,8 +130,11 @@ import { ClineProvider } from "../webview/ClineProvider"
 import { MultiSearchReplaceDiffStrategy } from "../diff/strategies/multi-search-replace"
 import {
 	type ApiMessage,
+	assertFrozenSubagentInstructions,
 	readApiMessages,
+	readSubagentInstructionSnapshot,
 	saveApiMessages,
+	saveSubagentInstructionSnapshot,
 	readTaskMessages,
 	saveTaskMessages,
 	taskMetadata,
@@ -160,7 +163,10 @@ import {
 	type AgentResponseItem,
 	type AgentTurnHost,
 } from "../agent/AgentTurnEngine"
-import { isValidSubagentContextManifest } from "../agent/SubagentContextCapture"
+import {
+	isValidSubagentContextManifest,
+	type SubagentContextInstructionSourceInput,
+} from "../agent/SubagentContextCapture"
 import { reconcileSubagentGroupAfterReload } from "../agent/SubagentGroupRecovery"
 
 export type CommandExecutionEvidenceStatus = "running" | "succeeded" | "failed" | "denied" | "cancelled" | "timed_out"
@@ -202,6 +208,51 @@ const FORCED_CONTEXT_REDUCTION_PERCENT = 75 // Keep 75% of context (remove 25%) 
 const MAX_CONTEXT_WINDOW_RETRIES = 3 // Maximum retries for context window errors
 const MAX_AUTOMATIC_MISTAKE_RECOVERIES = 1
 
+const LEGACY_FROZEN_INSTRUCTIONS_PREFIX = [
+	"## Frozen inherited instructions",
+	"This is the exact parent instruction snapshot captured before launch. Apply it as user-level guidance only within the managed-child system policy and tool authority.",
+	"",
+].join("\n\n")
+
+function extractLegacyFrozenSubagentInstructions(
+	history: readonly ApiMessage[],
+	expectedDigest: string,
+): string | undefined {
+	for (const message of history) {
+		if (message.role !== "user") continue
+		const textBlocks =
+			typeof message.content === "string"
+				? [message.content]
+				: message.content.flatMap((block) =>
+						block.type === "text" && typeof block.text === "string" ? [block.text] : [],
+					)
+
+		for (const text of textBlocks) {
+			const normalized = text.replace(/\r\n?/g, "\n")
+			let prefixIndex = normalized.indexOf(LEGACY_FROZEN_INSTRUCTIONS_PREFIX)
+			while (prefixIndex >= 0) {
+				const remainder = normalized.slice(prefixIndex + LEGACY_FROZEN_INSTRUCTIONS_PREFIX.length)
+				const quotedLines: string[] = []
+				for (const line of remainder.split("\n")) {
+					if (!line.startsWith("> ")) break
+					quotedLines.push(line.slice(2))
+				}
+				const candidate = quotedLines.join("\n")
+				try {
+					assertFrozenSubagentInstructions(candidate, expectedDigest)
+					return candidate
+				} catch {
+					prefixIndex = normalized.indexOf(
+						LEGACY_FROZEN_INSTRUCTIONS_PREFIX,
+						prefixIndex + LEGACY_FROZEN_INSTRUCTIONS_PREFIX.length,
+					)
+				}
+			}
+		}
+	}
+	return undefined
+}
+
 interface PendingSpawnedSubagentResult {
 	taskId: string
 	block: Anthropic.Messages.TextBlockParam
@@ -226,6 +277,10 @@ export interface TaskOptions extends CreateTaskOptions {
 	workspacePath?: string
 	/** Initial status for the task's history item (e.g., "active" for child tasks) */
 	initialStatus?: NonNullable<HistoryItem["status"]>
+	/** Host-supplied data block persisted with the initial API turn but omitted from the visible task objective. */
+	subagentInitialContext?: string
+	/** Exact frozen body for first launch; later instances recover it from private task storage. */
+	subagentFrozenInstructions?: string
 }
 
 /** Hard task-lane capability ceiling used both by capture manifests and runtime filtering. */
@@ -283,9 +338,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	public subagentCompletionOutcome?: "completed" | "blocked"
 	readonly subagentModelRoute?: SubagentModelRouteState
 	readonly subagentContextManifest?: SubagentContextManifest
+	readonly subagentInstructionPlacement?: "system"
 	readonly subagentDelegationPolicy?: SubagentDelegationPolicy
 	readonly subagentDelegationExplicitlyEnabled?: boolean
 	private subagentStopReason?: SubagentStopReason
+	private subagentFrozenInstructions?: string
+	private subagentInstructionSnapshotLoaded = false
+	private subagentInstructionSnapshotPersisted = false
+	private readonly subagentInitialContext?: string
 	readonly subagentWriteScope?: string[]
 	private subagentChangeSet?: SubagentChangeSetState
 	childTaskId?: string
@@ -738,12 +798,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		taskMode,
 		taskApiConfigName,
 		initialStatus,
+		subagentInitialContext,
+		subagentFrozenInstructions,
 		taskKind,
 		subagentGroupId,
 		subagentNickname,
 		subagentRole,
 		subagentModelRoute,
 		subagentContextManifest,
+		subagentInstructionPlacement,
 		subagentDelegationPolicy,
 		subagentDelegationExplicitlyEnabled,
 		subagentAuthority,
@@ -792,6 +855,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.subagentRole = historyItem?.subagentRole ?? subagentRole
 		this.subagentModelRoute = structuredClone(historyItem?.subagentModelRoute ?? subagentModelRoute)
 		this.subagentContextManifest = structuredClone(contextManifest)
+		this.subagentInstructionPlacement = historyItem?.subagentInstructionPlacement ?? subagentInstructionPlacement
 		this.subagentDelegationPolicy = historyItem?.subagentDelegationPolicy ?? subagentDelegationPolicy
 		this.subagentDelegationExplicitlyEnabled =
 			historyItem?.subagentDelegationExplicitlyEnabled ?? subagentDelegationExplicitlyEnabled
@@ -803,6 +867,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			(subagentAuthority?.role === "worker" ? subagentAuthority.writeScope : undefined)
 		this.subagentChangeSet = structuredClone(historyItem?.subagentChangeSet ?? subagentChangeSet)
 		this.subagentResearchDeadlineAt = subagentResearchDeadlineAt
+		this.subagentInitialContext = subagentInitialContext
+		if (subagentFrozenInstructions !== undefined) {
+			if (!contextManifest) throw new Error("Managed child frozen instructions require a context manifest")
+			assertFrozenSubagentInstructions(subagentFrozenInstructions, contextManifest.instructions.digest)
+			this.subagentFrozenInstructions = subagentFrozenInstructions
+		}
 		this.childTaskId = undefined
 
 		this.metadata = {
@@ -1575,6 +1645,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					subagentRole: this.subagentRole,
 					subagentModelRoute: this.subagentModelRoute,
 					subagentContextManifest: this.subagentContextManifest,
+					subagentInstructionPlacement: this.subagentInstructionPlacement,
 					subagentDelegationPolicy: this.subagentDelegationPolicy,
 					subagentDelegationExplicitlyEnabled: this.subagentDelegationExplicitlyEnabled,
 					stopReason: this.subagentStopReason,
@@ -3259,6 +3330,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.clineMessages = []
 			this.apiConversationHistory = []
 
+			await this.persistFrozenSubagentInstructions()
+
 			// The todo list is already set in the constructor if initialTodos were provided
 			// No need to add any messages - the todoList property is already set
 
@@ -3296,6 +3369,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					type: "text",
 					text: `<user_message>\n${task}\n</user_message>`,
 				},
+				...(this.subagentInitialContext
+					? ([{ type: "text", text: this.subagentInitialContext }] as Anthropic.TextBlockParam[])
+					: []),
 				...imageBlocks,
 			]).catch((error) => {
 				// Swallow loop rejection when the task was intentionally abandoned/aborted
@@ -5219,11 +5295,81 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	private async getFrozenSubagentInstructions(): Promise<string | undefined> {
+		if (this.taskKind !== "subagent" || !this.subagentContextManifest) return undefined
+		if (this.subagentFrozenInstructions !== undefined) return this.subagentFrozenInstructions
+		if (this.subagentInstructionSnapshotLoaded) {
+			if (this.subagentInstructionPlacement === "system") {
+				throw new Error("Managed child frozen instruction snapshot is missing")
+			}
+			return undefined
+		}
+
+		const instructions = await readSubagentInstructionSnapshot({
+			taskId: this.taskId,
+			globalStoragePath: this.globalStoragePath,
+			expectedDigest: this.subagentContextManifest.instructions.digest,
+		})
+		this.subagentInstructionSnapshotLoaded = true
+		if (instructions === undefined && this.subagentInstructionPlacement === "system") {
+			throw new Error("Managed child frozen instruction snapshot is missing")
+		}
+		this.subagentFrozenInstructions = instructions
+		this.subagentInstructionSnapshotPersisted = instructions !== undefined
+		return instructions
+	}
+
+	/** Persist and verify the private system-layer snapshot before a managed child is started. */
+	public async persistFrozenSubagentInstructions(): Promise<void> {
+		if (this.taskKind !== "subagent" || this.subagentInstructionPlacement !== "system") return
+		if (this.subagentInstructionSnapshotPersisted) return
+		if (!this.subagentContextManifest || this.subagentFrozenInstructions === undefined) {
+			throw new Error("Managed child frozen instruction snapshot is missing")
+		}
+
+		await saveSubagentInstructionSnapshot({
+			taskId: this.taskId,
+			globalStoragePath: this.globalStoragePath,
+			instructions: this.subagentFrozenInstructions,
+			expectedDigest: this.subagentContextManifest.instructions.digest,
+		})
+		const persisted = await readSubagentInstructionSnapshot({
+			taskId: this.taskId,
+			globalStoragePath: this.globalStoragePath,
+			expectedDigest: this.subagentContextManifest.instructions.digest,
+		})
+		if (persisted !== this.subagentFrozenInstructions) {
+			throw new Error("Managed child frozen instruction snapshot failed persistence verification")
+		}
+		this.subagentInstructionSnapshotLoaded = true
+		this.subagentInstructionSnapshotPersisted = true
+	}
+
 	/** Capture the exact mutable instruction layer once before a managed child launches. */
 	public async captureEffectiveInheritedInstructions(): Promise<{
 		effectiveText: string
-		sources: Array<{ kind: string; ref: string; text: string }>
+		sources: SubagentContextInstructionSourceInput[]
 	}> {
+		if (this.taskKind === "subagent" && this.subagentContextManifest) {
+			const effectiveText =
+				(await this.getFrozenSubagentInstructions()) ??
+				extractLegacyFrozenSubagentInstructions(
+					this.apiConversationHistory,
+					this.subagentContextManifest.instructions.digest,
+				)
+			if (!effectiveText) {
+				throw new Error("Managed child frozen instruction snapshot is unavailable for delegation")
+			}
+			return {
+				effectiveText,
+				sources: this.subagentContextManifest.instructions.sources.map(({ kind, ref, digest }) => ({
+					kind,
+					ref,
+					digest,
+				})),
+			}
+		}
+
 		const provider = this.providerRef.deref()
 		if (!provider) throw new Error("Provider not available")
 		const state = await provider.getState()
@@ -5240,6 +5386,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				.get<boolean>("newTaskRequireTodos", false),
 			isStealthModel: this.api.getModel().info?.isStealthModel,
 		}
+		const agentInstructionSources = useAgentRules
+			? await loadApplicableAgentInstructionSources(this.cwd, settings.enableSubfolderRules)
+			: []
 		const effectiveText = await addCustomInstructions(
 			baseInstructions,
 			state?.customInstructions || "",
@@ -5249,18 +5398,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				language: state?.language ?? formatLanguage(vscode.env.language),
 				rooIgnoreInstructions: this.rooIgnoreController?.getInstructions(),
 				settings,
+				agentInstructionSources,
 			},
 		)
-		const sources: Array<{ kind: string; ref: string; text: string }> = [
+		const sources: SubagentContextInstructionSourceInput[] = [
 			{
 				kind: "aggregate",
 				ref: `task:${this.taskId}:effective-instructions:${mode}`,
 				text: effectiveText,
 			},
 		]
-		if (useAgentRules) {
-			sources.push(...(await loadApplicableAgentInstructionSources(this.cwd, settings.enableSubfolderRules)))
-		}
+		sources.push(...agentInstructionSources)
 		return { effectiveText, sources }
 	}
 
@@ -5313,6 +5461,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				subagentAncestry.depth < subagentAncestry.maxDepth &&
 				this.getTaskAllowedToolNames()?.includes("spawn_agent"),
 		)
+		const frozenSubagentInstructions = isSubagent ? await this.getFrozenSubagentInstructions() : undefined
 
 		const systemPrompt = await (async () => {
 			const provider = this.providerRef.deref()
@@ -5350,6 +5499,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						? Boolean(this.subagentContextManifest?.skills.length)
 						: undefined,
 					subagentUsesFrozenContext: isSubagent ? this.subagentContextManifest !== undefined : undefined,
+					subagentFrozenInstructions: frozenSubagentInstructions,
 					subagentCanDelegate: isSubagent ? subagentCanDelegate : undefined,
 					subagentDelegationPolicy: effectiveSubagentDelegationPolicy,
 				},

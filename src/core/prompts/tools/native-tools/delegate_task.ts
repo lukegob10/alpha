@@ -4,7 +4,7 @@ export const delegate_task = {
 	function: {
 		name: "delegate_task",
 		description:
-			"Launch one or two independent Alpha sub-agents. Select roles by required authority: use worker for every objective that needs file changes; a worker may use commands for implementation or verification. Explore and review are strictly read-only and cannot edit or execute. Keep command-only work in the parent. Worker changes stay quarantined for explicit review and apply; after capture, the temporary worktree is removed and the change set remains as the reviewable proposal.",
+			"Launch one or two independent Alpha sub-agents and wait for their structured results. Each child must explicitly select parent conversation inheritance with fork_turns. Select roles by required authority: use worker for every objective that needs file changes; a worker may use commands for implementation or verification. Explore and review are strictly read-only and cannot edit or execute. Keep command-only work in the parent. Worker changes stay quarantined for explicit review and apply; after capture, the temporary worktree is removed and the change set remains as the reviewable proposal.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -17,9 +17,16 @@ export const delegate_task = {
 					items: {
 						type: "object",
 						description:
-							"A child-task draft. The host validates the selected role and derives the narrowest allowed authority from the parent.",
+							"A self-contained child task. The host validates the selected role, applies the requested bounded parent-turn inheritance, and derives the narrowest allowed authority from the parent.",
 						properties: {
 							objective: { type: "string", minLength: 1 },
+							fork_turns: {
+								type: "string",
+								maxLength: 16,
+								pattern: "^(?:none|all|[1-9][0-9]*)$",
+								description:
+									"Parent conversation inheritance for this child after host sanitization and within its context bound: none, all available turns, or a canonical positive decimal integer string selecting the most recent N available user-led turns. Environment, instructions, skills, workspace, model route, and narrowed runtime policy are inherited independently.",
+							},
 							agent_kind: {
 								type: "string",
 								enum: ["explore", "review", "worker"],
@@ -32,7 +39,7 @@ export const delegate_task = {
 										type: "array",
 										minItems: 1,
 										maxItems: 12,
-										items: { type: "string" },
+										items: { type: "string", minLength: 1 },
 									},
 									{ type: "null" },
 								],
@@ -41,11 +48,12 @@ export const delegate_task = {
 							},
 							expected_output: {
 								type: "array",
-								items: { type: "string" },
+								maxItems: 12,
+								items: { type: "string", minLength: 1 },
 								description: "Optional deliverables; omit or use null when not needed.",
 							},
 						},
-						required: ["objective", "agent_kind"],
+						required: ["objective", "fork_turns", "agent_kind"],
 						additionalProperties: false,
 					},
 				},

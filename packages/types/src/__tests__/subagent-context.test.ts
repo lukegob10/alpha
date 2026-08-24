@@ -74,12 +74,15 @@ describe("explicit sub-agent context contracts", () => {
 			tokensOut: 0,
 			totalCost: 0,
 			subagentContextManifest: manifest,
+			subagentInstructionPlacement: "system",
 		})
 		const snapshot = agentRuntimeSnapshotSchema.parse({ contextManifest: manifest })
 
 		expect(history.subagentContextManifest).toEqual(manifest)
+		expect(history.subagentInstructionPlacement).toBe("system")
 		expect(snapshot.contextManifest).toEqual(manifest)
 		expect(JSON.stringify(manifest)).not.toMatch(/apiKey|authorization|conversationBody/i)
+		expect(historyItemSchema.safeParse({ ...history, subagentInstructionPlacement: "user" }).success).toBe(false)
 	})
 
 	it("records selected turn ordinals, source indexes, references, and digests without bodies", () => {
