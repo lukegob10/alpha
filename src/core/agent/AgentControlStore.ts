@@ -307,6 +307,12 @@ export class AgentControlStore {
 			const recoveredAt = this.now()
 			for (const entry of draft.mailbox) {
 				if (!entry.claimId || entry.acknowledgedAt !== undefined) continue
+				// wait_agent claims carry a receipt in the native tool result. Keep
+				// those claims across host reload so the provider can reconcile the
+				// receipt from API history: persisted receipts are ACKed, while claims
+				// without a receipt are released for retry. Legacy automatic-delivery
+				// claims have no native receipt and remain recoverable by release.
+				if (entry.claimChannel === "wait") continue
 				delete entry.claimId
 				delete entry.claimedAt
 				delete entry.claimChannel
@@ -1042,7 +1048,7 @@ export class AgentControlStore {
 
 	/**
 	 * Claim unread mailbox entries transactionally. A claim is durable ownership:
-	 * other wait or automatic-delivery consumers cannot select the same entries.
+	 * no competing consumer can select the same entries before ACK or release.
 	 */
 	async claimMailbox(recipient: string, options: ClaimAgentMailboxOptions): Promise<AgentMailboxClaim> {
 		const claimId = options.claimId?.trim() || randomUUID()
@@ -1169,7 +1175,7 @@ export class AgentControlStore {
 	}
 
 	/**
-	 * Remember an automatic-delivery settlement until its durable write succeeds.
+	 * Remember a mailbox-claim settlement until its durable write succeeds.
 	 * The store outlives individual Task instances, so a same-host task replacement
 	 * can finish an ACK or release without changing its exact-once disposition.
 	 */

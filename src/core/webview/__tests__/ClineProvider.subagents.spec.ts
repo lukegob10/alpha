@@ -19,7 +19,6 @@ import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/
 import { BoundedDelegationManager } from "../../agent/BoundedDelegationManager"
 import { captureSubagentContext } from "../../agent/SubagentContextCapture"
 import { SubagentNicknameRegistry } from "../../agent/SubagentNicknameRegistry"
-import { Task } from "../../task/Task"
 import { readTaskMessages, saveTaskMessages } from "../../task-persistence"
 
 afterEach(() => vi.restoreAllMocks())
@@ -134,6 +133,7 @@ const makeParent = () => ({
 	getTaskCancellationSignal: vi.fn(() => new AbortController().signal),
 	getTaskLifetimeCancellationSignal: vi.fn(() => new AbortController().signal),
 	beginAgentWait: vi.fn(() => ({ signal: new AbortController().signal, dispose: vi.fn() })),
+	forgetWaitAgentResultClaim: vi.fn(),
 	getCommandExecutionEvidence: vi.fn(() => []),
 	getSubagentFileWriteScope: vi.fn(() => []),
 	emit: vi.fn(),
@@ -2516,7 +2516,7 @@ If complete, use attempt_completion.
 		expect(dispose).toHaveBeenCalledOnce()
 	})
 
-	it("serializes mailbox reads so a concurrent notification cannot be acknowledged and dropped", async () => {
+	it("leaves a notification that arrives after a native wait claim available for the next wait", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
 		const root = await (provider as any).ensureAgentControlRoot(parent)
@@ -2530,17 +2530,22 @@ If complete, use attempt_completion.
 			status: "running",
 		})
 
-		let releaseFirstRead!: () => void
-		const firstReadBlocked = new Promise<void>((resolve) => (releaseFirstRead = resolve))
-		let announceFirstRead!: () => void
-		const firstReadStarted = new Promise<void>((resolve) => (announceFirstRead = resolve))
-		const markDelivered = vi
-			.spyOn(provider as any, "markWaitDeliveredAgentResults")
-			.mockImplementationOnce(async () => {
-				announceFirstRead()
-				await firstReadBlocked
-			})
-			.mockResolvedValue(undefined)
+		let releaseFirstClaim!: () => void
+		const firstClaimBlocked = new Promise<void>((resolve) => (releaseFirstClaim = resolve))
+		let announceFirstClaim!: () => void
+		const firstClaimStarted = new Promise<void>((resolve) => (announceFirstClaim = resolve))
+		const store = (provider as any).agentControlStore as AgentControlStore
+		const originalClaimMailbox = store.claimMailbox.bind(store)
+		let blocked = false
+		vi.spyOn(store, "claimMailbox").mockImplementation(async (...args) => {
+			const claim = await originalClaimMailbox(...args)
+			if (!blocked && claim.entries.some((entry) => entry.name === "first_update")) {
+				blocked = true
+				announceFirstClaim()
+				await firstClaimBlocked
+			}
+			return claim
+		})
 
 		const waiting = provider.waitForAgent(parent as any, 10_000)
 		await vi.waitFor(() => expect(parent.beginAgentWait).toHaveBeenCalledOnce())
@@ -2553,7 +2558,7 @@ If complete, use attempt_completion.
 			kind: "message",
 			name: "first_update",
 		})
-		await firstReadStarted
+		await firstClaimStarted
 		await (provider as any).agentControlStore.appendEvent({
 			rootTaskId: root.rootTaskId,
 			sender: "running-child-read-race",
@@ -2562,21 +2567,25 @@ If complete, use attempt_completion.
 			name: "second_update",
 		})
 		await new Promise<void>((resolve) => setImmediate(resolve))
-		expect(markDelivered).toHaveBeenCalledOnce()
 
-		releaseFirstRead()
+		releaseFirstClaim()
 		await expect(waiting).resolves.toMatchObject({
 			timedOut: false,
+			source: "managed_agent_mailbox",
+			claimId: expect.any(String),
 			events: [expect.objectContaining({ name: "first_update" })],
 		})
 		expect(
-			(provider as any).agentControlStore
+			store
 				.getUnacknowledgedMailboxEntries(root.taskId, { rootTaskId: root.rootTaskId })
-				.map(({ name }: { name: string }) => name),
-		).toEqual(["second_update"])
+				.map(({ name, claimChannel }: { name: string; claimChannel?: string }) => ({ name, claimChannel })),
+		).toEqual([
+			{ name: "first_update", claimChannel: "wait" },
+			{ name: "second_update", claimChannel: undefined },
+		])
 	})
 
-	it("consumes mailbox results that were already injected into the parent model context", async () => {
+	it("does not treat lifecycle rendering as consumption of a native wait result", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
 		const root = await (provider as any).ensureAgentControlRoot(parent)
@@ -2624,28 +2633,42 @@ If complete, use attempt_completion.
 		})
 
 		const listed = (await provider.listAgents(parent as any)) as any
-		expect(listed.mailbox.unreadCount).toBe(0)
+		expect(listed.mailbox.unreadCount).toBe(1)
 
-		await expect(provider.waitForAgent(parent as any, 10_000)).resolves.toEqual({
+		const waited = (await provider.waitForAgent(parent as any, 10_000)) as any
+		expect(waited).toMatchObject({
 			timedOut: false,
-			events: [],
-			alreadyDelivered: true,
+			source: "managed_agent_mailbox",
+			claimId: expect.any(String),
+			events: [
+				expect.objectContaining({
+					kind: "result",
+					name: "agent_completed",
+					senderTaskId: child.taskId,
+					senderPath: child.path,
+					payload: expect.objectContaining({ taskId: child.taskId, status: "completed" }),
+				}),
+			],
 		})
 		expect(
-			(provider as any).agentControlStore.readMailbox(root.taskId, {
+			(provider as any).agentControlStore.getUnacknowledgedMailboxEntries(root.taskId, {
 				rootTaskId: root.rootTaskId,
-				includeDelivered: false,
-			}).entries,
+				kinds: ["result"],
+			}),
+		).toEqual([expect.objectContaining({ claimId: waited.claimId, claimChannel: "wait" })])
+
+		await provider.acknowledgeWaitAgentResults(parent as any, waited.claimId)
+		expect(
+			(provider as any).agentControlStore.getUnacknowledgedMailboxEntries(root.taskId, {
+				rootTaskId: root.rootTaskId,
+				kinds: ["result"],
+			}),
 		).toEqual([])
 	})
 
-	it("claims a wait_agent result before automatic result injection can duplicate it", async () => {
+	it("claims a native wait result without mutating its lifecycle projection", async () => {
 		const provider = makeProviderHarness()
-		const parentState = makeParent()
-		delete (parentState as Partial<typeof parentState>).cwd
-		const parent = Object.assign(Object.create(Task.prototype), parentState, {
-			workspacePath: "F:/workspace",
-		}) as Task
+		const parent = makeParent()
 		const root = await (provider as any).ensureAgentControlRoot(parent)
 		const child = await (provider as any).agentControlStore.createAgent({
 			taskId: "child-wait-claimed",
@@ -2704,29 +2727,189 @@ If complete, use attempt_completion.
 		})
 
 		// The durable result event can be published just before the retained group
-		// receives its terminal status. wait_agent must still claim ownership now.
-		expect(parent.hasUndeliveredSpawnedSubagentResults()).toBe(false)
-		const waited = (await provider.waitForAgent(parent, 10_000)) as any
+		// receives its terminal status. wait_agent must claim it without using the
+		// lifecycle row as a consumption receipt.
+		const waited = (await provider.waitForAgent(parent as any, 10_000)) as any
 
 		expect(waited).toMatchObject({
 			timedOut: false,
-			events: [expect.objectContaining({ name: "agent_completed" })],
+			source: "managed_agent_mailbox",
+			claimId: expect.any(String),
+			events: [
+				expect.objectContaining({
+					name: "agent_completed",
+					senderTaskId: child.taskId,
+					senderPath: child.path,
+					payload: expect.objectContaining({ status: "completed" }),
+				}),
+			],
 		})
-		expect(parent.upsertSubagentGroup).toHaveBeenCalledOnce()
-		expect(parent.clineMessages[0].subagentGroup?.agents[0].resultDeliveredAt).toEqual(expect.any(Number))
+		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
+		expect(parent.clineMessages[0].subagentGroup?.agents[0].resultDeliveredAt).toBeUndefined()
+		expect(
+			(provider as any).agentControlStore.getUnacknowledgedMailboxEntries(root.taskId, {
+				rootTaskId: root.rootTaskId,
+				kinds: ["result"],
+			}),
+		).toEqual([expect.objectContaining({ claimId: waited.claimId, claimChannel: "wait" })])
 
 		liveGroup.status = "completed"
 		liveGroup.completedAt = 2
 		liveGroup.agents[0].status = "completed"
 		liveGroup.agents[0].completedAt = 2
-		await parent.upsertSubagentGroup(liveGroup)
+		await (parent.upsertSubagentGroup as any)(liveGroup)
 
-		expect(parent.upsertSubagentGroup).toHaveBeenCalledTimes(2)
-		expect(parent.clineMessages[0].subagentGroup?.agents[0].resultDeliveredAt).toEqual(expect.any(Number))
-		expect(parent.hasUndeliveredSpawnedSubagentResults()).toBe(false)
+		expect(parent.upsertSubagentGroup).toHaveBeenCalledOnce()
+		expect(parent.clineMessages[0].subagentGroup?.agents[0].resultDeliveredAt).toBeUndefined()
 	})
 
-	it("does not claim an automatic result for non-result mailbox events", async () => {
+	it("returns ordered completion, failure, and cancellation provenance and blocks completion until its native receipt", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const root = await (provider as any).ensureAgentControlRoot(parent)
+		const terminalAgents = await Promise.all([
+			(provider as any).agentControlStore.createAgent({
+				taskId: "child-completed-native",
+				parentTaskId: root.taskId,
+				rootTaskId: root.rootTaskId,
+				nickname: "Completed native",
+				role: "explore",
+				objective: "Complete the audit",
+				status: "completed",
+			}),
+			(provider as any).agentControlStore.createAgent({
+				taskId: "child-failed-native",
+				parentTaskId: root.taskId,
+				rootTaskId: root.rootTaskId,
+				nickname: "Failed native",
+				role: "review",
+				objective: "Fail with evidence",
+				status: "failed",
+			}),
+			(provider as any).agentControlStore.createAgent({
+				taskId: "child-cancelled-native",
+				parentTaskId: root.taskId,
+				rootTaskId: root.rootTaskId,
+				nickname: "Cancelled native",
+				role: "review",
+				objective: "Cancel with evidence",
+				status: "cancelled",
+			}),
+		])
+		const terminalPayloads = [
+			{ taskId: terminalAgents[0].taskId, status: "completed", summary: "Audit complete." },
+			{
+				taskId: terminalAgents[1].taskId,
+				status: "failed",
+				summary: "Audit failed.",
+				stopReason: "runtime_error",
+			},
+			{
+				taskId: terminalAgents[2].taskId,
+				status: "cancelled",
+				summary: "Audit cancelled.",
+				stopReason: "parent_cancelled",
+			},
+		]
+		for (const [index, payload] of terminalPayloads.entries()) {
+			await (provider as any).agentControlStore.appendEvent({
+				eventId: `terminal-native-${index + 1}`,
+				rootTaskId: root.rootTaskId,
+				sender: payload.taskId,
+				recipient: root.taskId,
+				kind: "result",
+				name: `agent_${payload.status}`,
+				payload,
+			})
+		}
+
+		const firstWait = (await provider.waitForAgent(parent as any, 10_000)) as any
+		expect(firstWait).toMatchObject({
+			timedOut: false,
+			source: "managed_agent_mailbox",
+			claimId: expect.any(String),
+		})
+		expect(
+			firstWait.events.map((event: any) => ({
+				eventId: event.eventId,
+				senderTaskId: event.senderTaskId,
+				senderPath: event.senderPath,
+				status: event.payload.status,
+				summary: event.payload.summary,
+				stopReason: event.payload.stopReason,
+			})),
+		).toEqual([
+			{
+				eventId: "terminal-native-1",
+				senderTaskId: terminalAgents[0].taskId,
+				senderPath: terminalAgents[0].path,
+				status: "completed",
+				summary: "Audit complete.",
+				stopReason: undefined,
+			},
+			{
+				eventId: "terminal-native-2",
+				senderTaskId: terminalAgents[1].taskId,
+				senderPath: terminalAgents[1].path,
+				status: "failed",
+				summary: "Audit failed.",
+				stopReason: "runtime_error",
+			},
+			{
+				eventId: "terminal-native-3",
+				senderTaskId: terminalAgents[2].taskId,
+				senderPath: terminalAgents[2].path,
+				status: "cancelled",
+				summary: "Audit cancelled.",
+				stopReason: "parent_cancelled",
+			},
+		])
+
+		// Returning/rendering a wait result is not a durable receipt. The completion
+		// gate releases the orphaned claim for retry but keeps all results blocking.
+		await expect(provider.getParentCompletionDecision(parent as any)).resolves.toMatchObject({
+			allowed: false,
+			message: expect.stringContaining("3 immediate-parent terminal results remain unconsumed"),
+		})
+		const retried = (await provider.waitForAgent(parent as any, 10_000)) as any
+		expect(retried.claimId).not.toBe(firstWait.claimId)
+		expect(retried.events.map((event: any) => event.eventId)).toEqual([
+			"terminal-native-1",
+			"terminal-native-2",
+			"terminal-native-3",
+		])
+
+		parent.apiConversationHistory = [
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "call-terminal-native", name: "wait_agent", input: {} }],
+			},
+			{
+				role: "user",
+				content: [
+					{
+						type: "tool_result",
+						tool_use_id: "call-terminal-native",
+						content: JSON.stringify(retried),
+					},
+				],
+			},
+		] as any
+		await expect(provider.getParentCompletionDecision(parent as any)).resolves.toMatchObject({ allowed: true })
+		expect(
+			(provider as any).agentControlStore.getUnacknowledgedMailboxEntries(root.taskId, {
+				rootTaskId: root.rootTaskId,
+				kinds: ["result"],
+			}),
+		).toEqual([])
+		await expect(provider.waitForAgent(parent as any, 10_000)).resolves.toEqual({
+			timedOut: false,
+			noActiveAgents: true,
+			events: [],
+		})
+	})
+
+	it("returns non-result mailbox events without mutating the lifecycle projection", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
 		const root = await (provider as any).ensureAgentControlRoot(parent)
@@ -2952,20 +3135,30 @@ If complete, use attempt_completion.
 		}
 	})
 
-	it("settles a failed automatic ACK when the parent Task instance is replaced on the same host", async () => {
+	it("releases a reload-preserved native wait claim without a receipt and redelivers the same event once", async () => {
 		const persistence = new InMemoryAgentControlPersistence()
 		const beforeReload = new AgentControlStore(persistence)
 		await beforeReload.initialize()
 		await beforeReload.ensureRoot({ taskId: "parent-1", status: "running" })
 		await beforeReload.createAgent({
-			taskId: "recovered-child",
+			taskId: "reload-child-unpersisted",
 			parentTaskId: "parent-1",
-			groupId: "recovered-group",
-			nickname: "Recovered child",
+			groupId: "reload-group-unpersisted",
+			nickname: "Reload child unpersisted",
 			role: "review",
-			objective: "Be interrupted by reload",
-			status: "running",
+			objective: "Retain an unpersisted wait claim",
+			status: "completed",
 		})
+		await beforeReload.appendEvent({
+			eventId: "reload-result-unpersisted",
+			sender: "reload-child-unpersisted",
+			recipient: "parent-1",
+			kind: "result",
+			name: "agent_completed",
+			payload: { taskId: "reload-child-unpersisted", status: "completed", summary: "Recovered." },
+		})
+		const abandoned = await beforeReload.claimMailbox("parent-1", { channel: "wait", kinds: ["result"] })
+		await beforeReload.updateAgentStatus("parent-1", "interrupted")
 
 		const afterReload = new AgentControlStore(persistence)
 		await afterReload.initialize()
@@ -2973,20 +3166,73 @@ If complete, use attempt_completion.
 		;(provider as any).agentControlStore = afterReload
 		;(provider as any).agentControlStoreReady = Promise.resolve()
 
-		const claim = await provider.claimAutomaticSubagentResults(makeParent() as any, ["recovered-child"])
+		const waited = (await provider.waitForAgent(makeParent() as any, 10_000)) as any
+		expect(waited).toMatchObject({
+			timedOut: false,
+			source: "managed_agent_mailbox",
+			claimId: expect.any(String),
+			events: [expect.objectContaining({ eventId: "reload-result-unpersisted" })],
+		})
+		expect(waited.claimId).not.toBe(abandoned.claimId)
+		expect(afterReload.getUnacknowledgedMailboxEntries("parent-1", { kinds: ["result"] })).toEqual([
+			expect.objectContaining({ eventId: "reload-result-unpersisted", claimId: waited.claimId }),
+		])
+	})
 
-		expect(claim.taskIds).toEqual(["recovered-child"])
-		const acknowledge = vi
-			.spyOn(afterReload, "acknowledgeMailboxClaim")
-			.mockRejectedValueOnce(new Error("temporary persistence failure"))
-		await expect(provider.acknowledgeAutomaticSubagentResults(makeParent() as any, claim.claimId)).rejects.toThrow(
-			"temporary persistence failure",
-		)
+	it("ACKs a reload-preserved native wait claim with a persisted receipt without redelivery", async () => {
+		const persistence = new InMemoryAgentControlPersistence()
+		const beforeReload = new AgentControlStore(persistence)
+		await beforeReload.initialize()
+		await beforeReload.ensureRoot({ taskId: "parent-1", status: "interrupted" })
+		await beforeReload.appendEvent({
+			eventId: "reload-result-persisted",
+			recipient: "parent-1",
+			kind: "result",
+			name: "agent_failed",
+			payload: { taskId: "reload-child-persisted", status: "failed", stopReason: "runtime_error" },
+		})
+		const claimed = await beforeReload.claimMailbox("parent-1", { channel: "wait", kinds: ["result"] })
 
-		const replacementClaim = await provider.claimAutomaticSubagentResults(makeParent() as any, ["recovered-child"])
-		expect(replacementClaim.taskIds).toEqual([])
-		expect(acknowledge).toHaveBeenCalledTimes(2)
+		const afterReload = new AgentControlStore(persistence)
+		await afterReload.initialize()
+		const provider = makeProviderHarness()
+		;(provider as any).agentControlStore = afterReload
+		;(provider as any).agentControlStoreReady = Promise.resolve()
+		const parent = makeParent()
+		parent.apiConversationHistory = [
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "call.reload.receipt", name: "wait_agent", input: {} }],
+			},
+			{
+				role: "user",
+				content: [
+					{
+						type: "tool_result",
+						tool_use_id: "call_reload_receipt",
+						content: JSON.stringify({
+							timedOut: false,
+							source: "managed_agent_mailbox",
+							claimId: claimed.claimId,
+							events: claimed.entries,
+						}),
+					},
+				],
+			},
+		] as any
+
+		await expect(provider.waitForAgent(parent as any, 10_000)).resolves.toEqual({
+			timedOut: false,
+			events: [],
+			alreadyDelivered: true,
+		})
+		expect(parent.forgetWaitAgentResultClaim).toHaveBeenCalledWith(claimed.claimId)
 		expect(afterReload.getUnacknowledgedMailboxEntries("parent-1", { kinds: ["result"] })).toEqual([])
+		await expect(provider.waitForAgent(parent as any, 10_000)).resolves.toEqual({
+			timedOut: false,
+			noActiveAgents: true,
+			events: [],
+		})
 	})
 
 	it("recovers a legacy orchestration omission with frozen legacy defaults", async () => {

@@ -121,6 +121,7 @@ import { fileExistsAtPath } from "../../utils/fs"
 import { setTtsEnabled, setTtsSpeed } from "../../utils/tts"
 import { getWorkspaceGitInfo } from "../../utils/git"
 import { getWorkspacePath } from "../../utils/path"
+import { sanitizeToolUseId } from "../../utils/tool-id"
 
 import { setPanel } from "../../activate/registerCommands"
 
@@ -210,6 +211,7 @@ interface PendingEditOperation {
 
 const SUBAGENT_RESEARCH_WINDOW_MS = 75_000
 const MANAGED_AGENT_TREE_TEXT_LIMIT = 1_000
+const WAIT_AGENT_RESULT_SOURCE = "managed_agent_mailbox"
 
 const boundedManagedAgentText = (value: string | undefined, limit = MANAGED_AGENT_TREE_TEXT_LIMIT): string =>
 	(value ?? "").trim().slice(0, limit)
@@ -5091,6 +5093,8 @@ export class ClineProvider
 	public async getParentCompletionDecision(parent: Task): Promise<ParentCompletionDecision> {
 		await this.recordParentVerificationEvidence(parent)
 		const root = await this.ensureAgentControlRoot(parent)
+		await this.agentControlStore.retryPendingMailboxClaimSettlements(parent.taskId, root.rootTaskId)
+		await this.reconcileWaitAgentClaims(parent, root.rootTaskId)
 		const verificationDecision = this.agentControlStore.getParentCompletionDecision(parent.taskId, root.rootTaskId)
 		const activeDescendants = this.agentControlStore
 			.listDescendants(parent.taskId, root.rootTaskId)
@@ -5112,7 +5116,7 @@ export class ClineProvider
 					? `Cannot complete while ${activeDescendants.length} managed descendant${activeDescendants.length === 1 ? " is" : "s are"} still active: ${activePaths}. Wait for or cancel the descendant subtree, review its results, then retry attempt_completion.`
 					: undefined,
 				unacknowledgedResults.length > 0
-					? `Cannot complete while ${unacknowledgedResults.length} immediate-parent terminal result${unacknowledgedResults.length === 1 ? " remains" : "s remain"} unacknowledged. Consume the result with wait_agent or allow automatic result delivery, review it, then retry attempt_completion.`
+					? `Cannot complete while ${unacknowledgedResults.length} immediate-parent terminal result${unacknowledgedResults.length === 1 ? " remains" : "s remain"} unconsumed. Consume the result with wait_agent, review it, then retry attempt_completion.`
 					: undefined,
 			]
 				.filter(Boolean)
@@ -5139,7 +5143,6 @@ export class ClineProvider
 			rootTaskId: root.rootTaskId,
 			includeDelivered: false,
 		})
-		const unreadEntries = this.filterAutoDeliveredAgentEvents(parent, mailbox.entries)
 		const obligations = this.agentControlStore.getVerificationObligations({
 			rootTaskId: root.rootTaskId,
 			parentTaskId: parent.taskId,
@@ -5151,7 +5154,7 @@ export class ClineProvider
 			rootOrchestration: this.getRootOrchestrationSummary(root.rootTaskId),
 			agents: agents.map((record) => this.toAgentListItem(record)),
 			mailbox: {
-				unreadCount: unreadEntries.length,
+				unreadCount: mailbox.entries.length,
 				nextSequence: mailbox.nextSequence,
 			},
 			verification: {
@@ -5233,75 +5236,64 @@ export class ClineProvider
 		}
 	}
 
-	private filterAutoDeliveredAgentEvents(parent: Task, entries: AgentMailboxEntry[]): AgentMailboxEntry[] {
-		const deliveredTaskIds = new Set<string>()
-		for (const message of parent.clineMessages) {
-			const group = message.subagentGroup
-			if (group?.executionMode !== "async") continue
-			for (const agent of group.agents) {
-				if (agent.resultDeliveredAt !== undefined) deliveredTaskIds.add(agent.taskId)
+	private getPersistedWaitAgentClaimIds(parent: Task): Set<string> {
+		const waitToolCallIds = new Set<string>()
+		for (const message of parent.apiConversationHistory) {
+			if (message.role !== "assistant" || !Array.isArray(message.content)) continue
+			for (const block of message.content) {
+				if (block.type === "tool_use" && block.name === "wait_agent") {
+					waitToolCallIds.add(sanitizeToolUseId(block.id))
+				}
 			}
 		}
 
-		return entries.filter((entry) => {
-			if (entry.kind !== "result") return true
-			const taskId = entry.payload?.taskId
-			return typeof taskId !== "string" || !deliveredTaskIds.has(taskId)
-		})
+		const claimIds = new Set<string>()
+		for (const message of parent.apiConversationHistory) {
+			if (message.role !== "user" || !Array.isArray(message.content)) continue
+			for (const block of message.content) {
+				if (block.type !== "tool_result" || !waitToolCallIds.has(sanitizeToolUseId(block.tool_use_id))) continue
+				const textParts =
+					typeof block.content === "string"
+						? [block.content]
+						: (block.content ?? []).flatMap((part) => (part.type === "text" ? [part.text] : []))
+				for (const text of textParts) {
+					try {
+						const parsed = JSON.parse(text) as { source?: unknown; claimId?: unknown }
+						if (
+							parsed?.source === WAIT_AGENT_RESULT_SOURCE &&
+							typeof parsed.claimId === "string" &&
+							parsed.claimId.length > 0
+						) {
+							claimIds.add(parsed.claimId)
+						}
+					} catch {
+						// Other native tool results may be plain text or unrelated JSON.
+					}
+				}
+			}
+		}
+		return claimIds
 	}
 
-	/**
-	 * Give wait_agent ownership of result events before returning them to the
-	 * model. Without this durable transcript update, Task can also inject the
-	 * same terminal report while it builds the next model-facing user message.
-	 */
-	private async markWaitDeliveredAgentResults(parent: Task, entries: AgentMailboxEntry[]): Promise<void> {
-		const resultClaims = entries.flatMap((entry) => {
-			if (entry.kind !== "result") return []
-			const taskId = entry.payload?.taskId
-			if (typeof taskId !== "string") return []
-			return [{ taskId, groupId: typeof entry.payload?.groupId === "string" ? entry.payload.groupId : undefined }]
-		})
-		if (resultClaims.length === 0) return
-
-		const deliveredAt = Date.now()
-		const changedGroups = new Map<string, SubagentGroupState>()
-		for (const claim of resultClaims) {
-			const retainedGroup = claim.groupId
-				? this.preparedSubagentGroups.get(claim.groupId)?.group
-				: Array.from(this.preparedSubagentGroups.values()).find(
-						(prepared) =>
-							prepared.group.parentTaskId === parent.taskId &&
-							prepared.group.agents.some((agent) => agent.taskId === claim.taskId),
-					)?.group
-			const transcriptGroup = parent.clineMessages
-				.map((message) => message.subagentGroup)
-				.find(
-					(group) =>
-						group?.parentTaskId === parent.taskId &&
-						(claim.groupId === undefined || group.groupId === claim.groupId) &&
-						group.agents.some((agent) => agent.taskId === claim.taskId),
-				)
-			const group =
-				retainedGroup?.parentTaskId === parent.taskId &&
-				retainedGroup.executionMode === "async" &&
-				retainedGroup.agents.some((agent) => agent.taskId === claim.taskId)
-					? retainedGroup
-					: transcriptGroup
-			if (!group || group.executionMode !== "async") continue
-
-			const agent = group.agents.find((candidate) => candidate.taskId === claim.taskId)
-			if (!agent || agent.resultDeliveredAt !== undefined) continue
-
-			// A persisted result mailbox entry is terminal proof even if the retained
-			// presentation group has not yet received its queued terminal update.
-			agent.resultDeliveredAt = deliveredAt
-			changedGroups.set(group.groupId, group)
+	private async reconcileWaitAgentClaims(parent: Task, rootTaskId: string): Promise<number> {
+		const claims = new Map<string, AgentMailboxEntry[]>()
+		for (const entry of this.agentControlStore.getUnacknowledgedMailboxEntries(parent.taskId, { rootTaskId })) {
+			if (entry.claimChannel !== "wait" || !entry.claimId) continue
+			const entries = claims.get(entry.claimId) ?? []
+			entries.push(entry)
+			claims.set(entry.claimId, entries)
 		}
+		if (claims.size === 0) return 0
 
-		for (const group of changedGroups.values()) {
-			await parent.upsertSubagentGroup(group)
+		const persistedClaimIds = this.getPersistedWaitAgentClaimIds(parent)
+		let acknowledged = 0
+		for (const claimId of claims.keys()) {
+			const disposition = persistedClaimIds.has(claimId) ? "acknowledge" : "release"
+			await this.agentControlStore.settleMailboxClaim(parent.taskId, claimId, disposition, rootTaskId)
+			parent.forgetWaitAgentResultClaim(claimId)
+			if (disposition === "acknowledge") acknowledged++
 		}
+		return acknowledged
 	}
 
 	public async claimAutomaticSubagentResults(
@@ -5339,37 +5331,36 @@ export class ClineProvider
 		await this.agentControlStore.settleMailboxClaim(parent.taskId, claimId, "release", root.rootTaskId)
 	}
 
+	public async acknowledgeWaitAgentResults(parent: Task, claimId: string): Promise<void> {
+		const root = await this.ensureAgentControlRoot(parent)
+		await this.agentControlStore.settleMailboxClaim(parent.taskId, claimId, "acknowledge", root.rootTaskId)
+	}
+
 	public async waitForAgent(parent: Task, timeoutMs = 30_000): Promise<unknown> {
 		const root = await this.ensureAgentControlRoot(parent)
 		await this.agentControlStore.retryPendingMailboxClaimSettlements(parent.taskId, root.rootTaskId)
+		const reconciledClaimCount = await this.reconcileWaitAgentClaims(parent, root.rootTaskId)
 		const boundedTimeoutMs = Math.max(10_000, Math.min(timeoutMs, 300_000))
-		const takeAvailable = async (): Promise<{ events: AgentMailboxEntry[]; consumedCount: number }> => {
+		const takeAvailable = async (): Promise<{ events: AgentMailboxEntry[]; claimId?: string }> => {
 			const claim = await this.agentControlStore.claimMailbox(parent.taskId, {
 				rootTaskId: root.rootTaskId,
 				channel: "wait",
 			})
-			if (claim.entries.length === 0) return { events: [], consumedCount: 0 }
-			try {
-				const events = this.filterAutoDeliveredAgentEvents(parent, claim.entries)
-				await this.markWaitDeliveredAgentResults(parent, events)
-				await this.agentControlStore.acknowledgeMailboxClaim(parent.taskId, claim.claimId, root.rootTaskId)
-				return {
-					events,
-					consumedCount: claim.entries.length,
-				}
-			} catch (error) {
-				await this.agentControlStore.releaseMailboxClaim(parent.taskId, claim.claimId, root.rootTaskId)
-				throw error
-			}
+			if (claim.entries.length === 0) return { events: [] }
+			return { events: claim.entries, claimId: claim.claimId }
 		}
 
 		const immediate = await takeAvailable()
-		if (immediate.consumedCount > 0) {
+		if (immediate.claimId) {
 			return {
 				timedOut: false,
+				source: WAIT_AGENT_RESULT_SOURCE,
+				claimId: immediate.claimId,
 				events: immediate.events,
-				...(immediate.events.length === 0 ? { alreadyDelivered: true } : {}),
 			}
+		}
+		if (reconciledClaimCount > 0) {
+			return { timedOut: false, events: [], alreadyDelivered: true }
 		}
 		const activeAgents = this.agentControlStore
 			.listAgents({
@@ -5441,11 +5432,12 @@ export class ClineProvider
 						do {
 							readRequested = false
 							const available = await takeAvailable()
-							if (available.consumedCount > 0) {
+							if (available.claimId) {
 								settle({
 									timedOut: false,
+									source: WAIT_AGENT_RESULT_SOURCE,
+									claimId: available.claimId,
 									events: available.events,
-									...(available.events.length === 0 ? { alreadyDelivered: true } : {}),
 								})
 								return
 							}

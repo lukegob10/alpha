@@ -977,6 +977,7 @@ export async function presentAssistantMessage(cline: Task) {
 						askApproval,
 						handleError,
 						pushToolResult,
+						toolCallId: block.id,
 					})
 					break
 				case "send_message":

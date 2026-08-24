@@ -454,7 +454,7 @@ describe("ClineProvider Worker change-set actions", () => {
 			const blocked = await provider.getParentCompletionDecision(parent)
 
 			expect(blocked).toMatchObject({ allowed: false })
-			expect(blocked.message).toContain("terminal result remains unacknowledged")
+			expect(blocked.message).toContain("terminal result remains unconsumed")
 
 			await store.acknowledge("parent-1", entry.sequence, "parent-1")
 			await expect(provider.getParentCompletionDecision(parent)).resolves.toMatchObject({ allowed: true })

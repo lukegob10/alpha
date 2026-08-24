@@ -482,7 +482,7 @@ describe("AgentControlStore", () => {
 		expect(all[1]).toMatchObject({ eventId: "mail-2", deliveredAt: 6_000, acknowledgedAt: 6_000 })
 	})
 
-	it("grants exactly one durable owner to concurrent mailbox consumers", async () => {
+	it("grants exactly one durable owner to concurrent native wait consumers", async () => {
 		const { store } = await setup()
 		await store.createAgent({
 			taskId: "review-1",
@@ -501,26 +501,36 @@ describe("AgentControlStore", () => {
 			payload: { taskId: "review-1" },
 		})
 
-		const [waitClaim, automaticClaim] = await Promise.all([
+		const [firstClaim, secondClaim] = await Promise.all([
 			store.claimMailbox("root-1", { channel: "wait", kinds: ["result"] }),
-			store.claimMailbox("root-1", {
-				channel: "automatic",
-				kinds: ["result"],
-				payloadTaskIds: ["review-1"],
-			}),
+			store.claimMailbox("root-1", { channel: "wait", kinds: ["result"] }),
 		])
 
-		expect(waitClaim.entries.map(({ eventId }) => eventId)).toEqual(["result-1"])
-		expect(automaticClaim.entries).toEqual([])
+		expect(firstClaim.entries.map(({ eventId }) => eventId)).toEqual(["result-1"])
+		expect(secondClaim.entries).toEqual([])
 		expect(store.readMailbox("root-1", { includeDelivered: false }).entries).toEqual([])
-		expect(store.getUnacknowledgedMailboxEntries("root-1", { kinds: ["result"] })).toHaveLength(1)
+		expect(store.getUnacknowledgedMailboxEntries("root-1", { kinds: ["result"] })).toEqual([
+			expect.objectContaining({
+				eventId: "result-1",
+				claimId: firstClaim.claimId,
+				claimChannel: "wait",
+			}),
+		])
+		expect(store.getMailboxCursor("root-1")).toMatchObject({
+			lastDeliveredSequence: 0,
+			lastAcknowledgedSequence: 0,
+		})
 
-		await store.acknowledgeMailboxClaim("root-1", waitClaim.claimId)
-		await store.acknowledgeMailboxClaim("root-1", waitClaim.claimId)
+		await store.acknowledgeMailboxClaim("root-1", firstClaim.claimId)
+		await store.acknowledgeMailboxClaim("root-1", firstClaim.claimId)
 		expect(store.getUnacknowledgedMailboxEntries("root-1", { kinds: ["result"] })).toEqual([])
+		expect(store.getMailboxCursor("root-1")).toMatchObject({
+			lastDeliveredSequence: firstClaim.entries[0].sequence,
+			lastAcknowledgedSequence: firstClaim.entries[0].sequence,
+		})
 	})
 
-	it("releases unfinished durable mailbox claims during recovery", async () => {
+	it("releases unfinished legacy automatic mailbox claims during recovery", async () => {
 		const persistence = new InMemoryAgentControlPersistence()
 		const { store } = await setup(persistence)
 		await store.createAgent({
@@ -548,6 +558,36 @@ describe("AgentControlStore", () => {
 		expect(retried.entries.map(({ eventId }) => eventId)).toEqual(["result-retry"])
 	})
 
+	it("preserves a native wait claim across reload until history reconciliation chooses ACK or release", async () => {
+		const persistence = new InMemoryAgentControlPersistence()
+		const { store } = await setup(persistence)
+		await store.appendEvent({
+			eventId: "wait-reload-result",
+			recipient: "root-1",
+			kind: "result",
+			name: "agent_completed",
+		})
+		const claimed = await store.claimMailbox("root-1", { channel: "wait", kinds: ["result"] })
+
+		const reloaded = new AgentControlStore(persistence, clock(20_000))
+		await reloaded.initialize()
+		expect(reloaded.getUnacknowledgedMailboxEntries("root-1", { kinds: ["result"] })).toEqual([
+			expect.objectContaining({
+				eventId: "wait-reload-result",
+				claimId: claimed.claimId,
+				claimChannel: "wait",
+			}),
+		])
+		await expect(reloaded.claimMailbox("root-1", { channel: "wait", kinds: ["result"] })).resolves.toMatchObject({
+			entries: [],
+		})
+
+		await reloaded.releaseMailboxClaim("root-1", claimed.claimId)
+		const retried = await reloaded.claimMailbox("root-1", { channel: "wait", kinds: ["result"] })
+		expect(retried.entries.map(({ eventId }) => eventId)).toEqual(["wait-reload-result"])
+		expect(retried.claimId).not.toBe(claimed.claimId)
+	})
+
 	it("retains a failed claim settlement across same-host consumer replacement", async () => {
 		const { store } = await setup()
 		await store.appendEvent({
@@ -556,7 +596,7 @@ describe("AgentControlStore", () => {
 			kind: "result",
 			name: "agent_completed",
 		})
-		const claim = await store.claimMailbox("root-1", { channel: "automatic", kinds: ["result"] })
+		const claim = await store.claimMailbox("root-1", { channel: "wait", kinds: ["result"] })
 		const acknowledge = vi
 			.spyOn(store, "acknowledgeMailboxClaim")
 			.mockRejectedValueOnce(new Error("temporary persistence failure"))

@@ -79,8 +79,6 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			return
 		}
 
-		if (this.rejectCompletionWithUndeliveredSpawnedResult(task, pushToolResult)) return
-
 		try {
 			if (!result) {
 				task.consecutiveMistakeCount++
@@ -95,10 +93,8 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			await task.say("completion_result", result, undefined, false)
 
 			if (task.taskKind === "subagent") {
-				// task.say persists the completion report and may yield long enough for a
-				// nested child to finish. Recheck at the final transition boundary so the
-				// immediate parent's terminal result cannot be stranded.
-				if (this.rejectCompletionWithUndeliveredSpawnedResult(task, pushToolResult)) return
+				// task.say may yield long enough for a nested child to finish. Recheck
+				// the durable completion decision at the final transition boundary.
 				if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) return
 				task.subagentCompletionOutcome = outcome === "blocked" ? "blocked" : "completed"
 				pushToolResult("")
@@ -159,9 +155,8 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 
 			if (response === "yesButtonClicked") {
 				// A background child can finish while the completion prompt is open.
-				// Recheck immediately before the synchronous completion transition so
-				// its report cannot be stranded by that race.
-				if (this.rejectCompletionWithUndeliveredSpawnedResult(task, pushToolResult)) return
+				// Recheck the durable descendant/mailbox gate immediately before the
+				// synchronous completion transition.
 				if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) return
 				this.emitTaskCompleted(task)
 				return
@@ -205,20 +200,6 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 		const errorMsg =
 			decision.message ??
 			"Cannot complete while applied Worker changes still require parent review and verification."
-		task.consecutiveMistakeCount++
-		task.recordToolError("attempt_completion")
-		pushToolResult(formatResponse.toolError(errorMsg))
-		return true
-	}
-
-	private rejectCompletionWithUndeliveredSpawnedResult(
-		task: Task,
-		pushToolResult: (result: string) => void,
-	): boolean {
-		if (!task.hasUndeliveredSpawnedSubagentResults?.()) return false
-
-		const errorMsg =
-			"A background sub-agent finished during this task, but its report has not been reviewed yet. Continue the task once more; the report will be included in the next model request."
 		task.consecutiveMistakeCount++
 		task.recordToolError("attempt_completion")
 		pushToolResult(formatResponse.toolError(errorMsg))

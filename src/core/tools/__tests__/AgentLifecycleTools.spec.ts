@@ -34,6 +34,7 @@ function harness() {
 	const task = {
 		providerRef: { deref: () => provider },
 		recordToolError: vi.fn(),
+		retainWaitAgentResultClaim: vi.fn(),
 		say,
 		didToolFailInCurrentTurn: false,
 	} as any
@@ -175,6 +176,41 @@ describe("agent lifecycle tools", () => {
 			noActiveAgents: true,
 			eventCount: 0,
 		})
+	})
+
+	it("retains a native wait claim under the tool call ID before returning its provenance envelope", async () => {
+		const { provider, task, callbacks, pushToolResult } = harness()
+		callbacks.toolCallId = "call-native-wait"
+		const nativeResult = {
+			timedOut: false,
+			source: "managed_agent_mailbox",
+			claimId: "claim-native-wait",
+			events: [
+				{
+					eventId: "event-child-failed",
+					sequence: 7,
+					kind: "result",
+					name: "agent_failed",
+					senderTaskId: "child-failed",
+					senderPath: "/root/child_failed",
+					payload: {
+						taskId: "child-failed",
+						status: "failed",
+						summary: "The review failed.",
+						stopReason: "runtime_error",
+					},
+				},
+			],
+		}
+		provider.waitForAgent.mockResolvedValueOnce(nativeResult)
+
+		await waitAgentTool.execute({ timeout_ms: 10_000 }, task, callbacks)
+
+		expect(task.retainWaitAgentResultClaim).toHaveBeenCalledWith("call-native-wait", "claim-native-wait")
+		expect(pushToolResult).toHaveBeenCalledWith(JSON.stringify(nativeResult))
+		expect(task.retainWaitAgentResultClaim.mock.invocationCallOrder[0]).toBeLessThan(
+			pushToolResult.mock.invocationCallOrder[0],
+		)
 	})
 
 	it("replaces the in-progress row with an observable provider error", async () => {

@@ -160,6 +160,7 @@ export async function runAgentLifecycleOperation(
 	task: Task,
 	callbacks: ToolCallbacks,
 	operation: (provider: AgentLifecycleControlProvider) => Promise<unknown>,
+	beforePush?: (result: unknown) => Promise<void> | void,
 ): Promise<void> {
 	const provider = task.providerRef.deref() as (Partial<AgentLifecycleControlProvider> & object) | undefined
 	if (typeof provider?.[method] !== "function") {
@@ -176,6 +177,7 @@ export async function runAgentLifecycleOperation(
 		if (serialized === undefined) {
 			throw new Error(`agent lifecycle capability ${method} returned no JSON result`)
 		}
+		await beforePush?.(result)
 		callbacks.pushToolResult(serialized)
 		await publishLifecyclePresentation(name, task, "completed", false, result)
 	} catch (error) {

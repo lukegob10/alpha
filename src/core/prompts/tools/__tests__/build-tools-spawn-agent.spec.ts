@@ -76,11 +76,11 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		}>
 		const spawnTool = nativeTools.find((tool) => tool.function?.name === "spawn_agent")
 		expect(spawnTool?.function?.description).toContain(
-			"terminal report is automatically included in the parent's next model request",
+			"collect terminal results through wait_agent as native tool results",
 		)
+		expect(spawnTool?.function?.description).not.toContain("automatically included")
 		expect(spawnTool?.function?.parameters?.required).toEqual(expect.arrayContaining(["task_name", "fork_turns"]))
 		expect(spawnTool?.function?.parameters?.properties).toHaveProperty("fork_turns")
-
 		const delegateTool = nativeTools.find((tool) => tool.function?.name === "delegate_task")
 		const delegateTask = (delegateTool?.function?.parameters as any)?.properties?.tasks?.items
 		expect(delegateTask?.required).toEqual(expect.arrayContaining(["objective", "fork_turns", "agent_kind"]))
@@ -111,6 +111,9 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 			expect(names(result.tools as any)).toContain(tool)
 			expect(result.allowedFunctionNames).toContain(tool)
 		}
+		const waitTool = (result.tools as any[]).find((tool) => tool.function?.name === "wait_agent")
+		expect(waitTool?.function?.description).toContain("sender task/path provenance")
+		expect(waitTool?.function?.description).toContain("only after this tool result is persisted")
 		expect(names(result.tools as any)).not.toContain("report_progress")
 	})
 

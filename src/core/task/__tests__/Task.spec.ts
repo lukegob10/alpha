@@ -897,6 +897,7 @@ describe("Alpha", () => {
 					claimAutomaticSubagentResults: vi.fn().mockResolvedValue({ claimId: "claim-default", taskIds: [] }),
 					acknowledgeAutomaticSubagentResults: vi.fn().mockResolvedValue(undefined),
 					releaseAutomaticSubagentResults: vi.fn().mockResolvedValue(undefined),
+					acknowledgeWaitAgentResults: vi.fn().mockResolvedValue(undefined),
 				}
 
 				// Get the mocked delay function
@@ -1010,97 +1011,125 @@ describe("Alpha", () => {
 				expect(onPersisted).not.toHaveBeenCalled()
 			})
 
-			it("retries an automatic-result acknowledgement that could not be persisted in the prior turn", async () => {
+			it("acknowledges a native wait claim only after its matching tool result is durably saved", async () => {
 				const task = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
-					task: "recover an owned result claim",
+					task: "persist an owned native wait result",
 					startTask: false,
 				})
 				task.apiConversationHistory = [
-					{ role: "assistant", content: [{ type: "text", text: "ready" }], ts: 1 },
-				] as any
-				task.clineMessages = [
 					{
-						type: "say",
-						say: "subagent_group",
-						subagentGroup: {
-							groupId: "group-result-recovery",
-							parentTaskId: task.taskId,
-							executionMode: "async",
-							status: "completed",
-							createdAt: 1,
-							completedAt: 2,
-							agents: [
-								{
-									taskId: "child-result-recovery",
-									nickname: "Reviewer",
-									role: "review",
-									objective: "Review",
-									status: "completed",
-									completedAt: 2,
-									summary: "Reviewed",
-									usage: { durationMs: 1 },
-								},
-							],
-						},
+						role: "assistant",
+						content: [{ type: "tool_use", id: "call-wait", name: "wait_agent", input: {} }],
+						ts: 1,
 					},
 				] as any
-				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
-				vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(true)
-				mockProvider.claimAutomaticSubagentResults.mockResolvedValue({
-					claimId: "claim-result-recovery",
-					taskIds: ["child-result-recovery"],
-				})
-				mockProvider.acknowledgeAutomaticSubagentResults.mockRejectedValue(
-					new Error("agent-control write unavailable"),
-				)
+				task.retainWaitAgentResultClaim("call-wait", "claim-native-wait")
+				let releaseSave!: (saved: boolean) => void
+				const saveBlocked = new Promise<boolean>((resolve) => (releaseSave = resolve))
+				vi.spyOn(task as any, "saveApiConversationHistory").mockReturnValue(saveBlocked)
+				const toolResult = {
+					role: "user" as const,
+					content: [
+						{
+							type: "tool_result" as const,
+							tool_use_id: "call-wait",
+							content: JSON.stringify({ source: "managed_agent_mailbox", claimId: "claim-native-wait" }),
+						},
+					],
+				}
 
-				await expect(task.recursivelyMakeClineRequests([{ type: "text", text: "continue" }])).rejects.toThrow(
-					"automatic-result mailbox claim",
-				)
-				expect(mockProvider.acknowledgeAutomaticSubagentResults).toHaveBeenCalledTimes(2)
-				expect((task as any).pendingAutomaticResultClaimSettlement).toEqual({
-					claimId: "claim-result-recovery",
-					disposition: "acknowledge",
-				})
+				const persisting = (task as any).addToApiConversationHistory(toolResult)
+				expect(mockProvider.acknowledgeWaitAgentResults).not.toHaveBeenCalled()
+				releaseSave(true)
+				await expect(persisting).resolves.toBe(true)
 
-				mockProvider.acknowledgeAutomaticSubagentResults.mockResolvedValue(undefined)
-				vi.spyOn(task as any, "maybeWaitForProviderRateLimit").mockRejectedValueOnce(
-					new Error("stop after claim recovery"),
-				)
-				await expect(task.recursivelyMakeClineRequests([{ type: "text", text: "resume" }])).rejects.toThrow(
-					"stop after claim recovery",
-				)
-
-				expect(mockProvider.acknowledgeAutomaticSubagentResults).toHaveBeenCalledTimes(3)
-				expect(mockProvider.claimAutomaticSubagentResults).toHaveBeenCalledOnce()
-				expect((task as any).pendingAutomaticResultClaimSettlement).toBeUndefined()
+				expect(mockProvider.acknowledgeWaitAgentResults).toHaveBeenCalledWith(task, "claim-native-wait")
+				expect((task as any).pendingWaitAgentResultClaims.size).toBe(0)
 			})
 
-			it("retains a failed automatic-result release for bounded in-process recovery", async () => {
+			it("retains a native wait claim when history persistence fails and ACKs it after a successful retry", async () => {
 				const task = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
-					task: "recover a released result claim",
+					task: "retry a native wait receipt",
 					startTask: false,
 				})
-				;(task as any).retainAutomaticResultClaimSettlement("claim-release-recovery", "release")
-				mockProvider.releaseAutomaticSubagentResults
-					.mockRejectedValueOnce(new Error("agent-control write unavailable"))
-					.mockResolvedValueOnce(undefined)
+				task.apiConversationHistory = [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "call-retry", name: "wait_agent", input: {} }],
+						ts: 1,
+					},
+				] as any
+				task.retainWaitAgentResultClaim("call-retry", "claim-retry")
+				vi.spyOn(task as any, "saveApiConversationHistory")
+					.mockResolvedValueOnce(false)
+					.mockResolvedValueOnce(true)
+				const toolResult = {
+					role: "user" as const,
+					content: [
+						{
+							type: "tool_result" as const,
+							tool_use_id: "call-retry",
+							content: JSON.stringify({ source: "managed_agent_mailbox", claimId: "claim-retry" }),
+						},
+					],
+				}
 
-				await expect((task as any).retryPendingAutomaticResultClaimSettlement(mockProvider)).rejects.toThrow(
-					"agent-control write unavailable",
-				)
-				expect((task as any).pendingAutomaticResultClaimSettlement).toEqual({
-					claimId: "claim-release-recovery",
-					disposition: "release",
+				await expect((task as any).addToApiConversationHistory(toolResult)).resolves.toBe(false)
+				expect(mockProvider.acknowledgeWaitAgentResults).not.toHaveBeenCalled()
+				expect((task as any).pendingWaitAgentResultClaims.size).toBe(1)
+
+				vi.useFakeTimers()
+				try {
+					const retrying = task.retrySaveApiConversationHistory()
+					await vi.advanceTimersByTimeAsync(100)
+					await expect(retrying).resolves.toBe(true)
+				} finally {
+					vi.useRealTimers()
+				}
+				expect(mockProvider.acknowledgeWaitAgentResults).toHaveBeenCalledWith(task, "claim-retry")
+				expect((task as any).pendingWaitAgentResultClaims.size).toBe(0)
+			})
+
+			it("does not ACK a native wait claim from an error or mismatched JSON result with the same tool call ID", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "reject a false native wait receipt",
+					startTask: false,
 				})
-				await expect(
-					(task as any).retryPendingAutomaticResultClaimSettlement(mockProvider),
-				).resolves.toBeUndefined()
-				expect((task as any).pendingAutomaticResultClaimSettlement).toBeUndefined()
+				task.apiConversationHistory = [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "call-false-receipt", name: "wait_agent", input: {} }],
+						ts: 1,
+					},
+				] as any
+				task.retainWaitAgentResultClaim("call-false-receipt", "claim-expected")
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+
+				await (task as any).addToApiConversationHistory({
+					role: "user",
+					content: [
+						{
+							type: "tool_result",
+							tool_use_id: "call-false-receipt",
+							content: JSON.stringify({
+								source: "managed_agent_mailbox",
+								claimId: "claim-different",
+								error: "presentation failed",
+							}),
+						},
+					],
+				})
+
+				expect(mockProvider.acknowledgeWaitAgentResults).not.toHaveBeenCalled()
+				expect((task as any).pendingWaitAgentResultClaims).toEqual(
+					new Map([["call-false-receipt", "claim-expected"]]),
+				)
 			})
 
 			it("uses the task-owned profile when the foreground profile has a rate limit", async () => {

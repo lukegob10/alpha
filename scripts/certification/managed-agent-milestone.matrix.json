@@ -407,7 +407,7 @@
 		},
 		{
 			"id": "ROUTING-MAILBOX-001",
-			"requirement": "Mailbox events and terminal results route once to the owning parent with durable cursors.",
+			"requirement": "Mailbox events and terminal results route once to the owning parent with durable cursors and native wait receipts.",
 			"classification": "baseline",
 			"trackIds": ["runtime-invariants", "lifecycle-routing"],
 			"probes": [
@@ -416,8 +416,20 @@
 					"patterns": ["tracks per-recipient delivery and acknowledgement cursors durably"]
 				},
 				{
-					"label": "wait versus automatic injection claim",
-					"patterns": ["claims a wait_agent result before automatic result injection can duplicate it"]
+					"label": "native wait claim is not consumed by lifecycle rendering",
+					"patterns": ["does not treat lifecycle rendering as consumption of a native wait result"]
+				},
+				{
+					"label": "native wait receipt reload recovery",
+					"match": "all",
+					"patterns": [
+						"releases a reload-preserved native wait claim without a receipt and redelivers the same event once",
+						"ACKs a reload-preserved native wait claim with a persisted receipt without redelivery"
+					]
+				},
+				{
+					"label": "no synthetic child-result user content",
+					"patterns": ["leaves the next model-facing user content free of child-report injection"]
 				},
 				{
 					"label": "managed-child parent-control wait",
@@ -447,7 +459,7 @@
 				},
 				{
 					"label": "concurrent mailbox claim is exactly once",
-					"patterns": ["grants exactly one durable owner to concurrent mailbox consumers"]
+					"patterns": ["grants exactly one durable owner to concurrent native wait consumers"]
 				}
 			]
 		},

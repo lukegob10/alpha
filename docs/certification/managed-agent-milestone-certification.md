@@ -186,6 +186,8 @@ Those rows remain pending until dedicated evidence proves:
 - Former skipped Settings and selected legacy Task cases now execute with real assertions. The placeholder Settings
   assertion was removed.
 - Managed-parent completion now has explicit coverage for active descendants and undelivered descendant results.
+- Asynchronous terminal child results remain in the durable mailbox and lifecycle UI, enter model context only as
+  native `wait_agent` tool results, and are acknowledged only after the matching API-history receipt is persisted.
 - Root test orchestration no longer launches competing extension/webview bundles against the same output directory.
 - The asynchronous ErrorBoundary test waits for `componentDidCatch` source-map/telemetry work, eliminating a
   concurrency-sensitive environment-teardown rejection.
@@ -200,7 +202,8 @@ Those rows remain pending until dedicated evidence proves:
 3. Reserve root-keyed capacity and task names atomically before asynchronous preparation.
 4. Persist effective policy, ancestry, limits, deadlines, usage, and stop reason before launch. Reload must not read
    changed current Settings for an existing child.
-5. Keep mailbox result claiming atomic across explicit waits and automatic injection.
+5. Keep native `wait_agent` result claiming atomic and receipt-based. A lifecycle render must not consume a result;
+   reload must ACK a claim with a persisted matching tool result and release a claim without one for exact retry.
 6. Cascade cancel/interrupt/close through descendants with one terminal event and exact capacity release.
 7. Block managed-parent completion while descendants are active or terminal results are unowned. Keep nested Worker
    verification owned by its immediate Worker parent and the outer proposal owned by root.

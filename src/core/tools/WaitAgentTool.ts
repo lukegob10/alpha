@@ -17,8 +17,21 @@ export class WaitAgentTool extends BaseTool<"wait_agent"> {
 			return
 		}
 
-		await runAgentLifecycleOperation(this.name, "waitForAgent", task, callbacks, (provider) =>
-			provider.waitForAgent(task, timeoutMs),
+		await runAgentLifecycleOperation(
+			this.name,
+			"waitForAgent",
+			task,
+			callbacks,
+			(provider) => provider.waitForAgent(task, timeoutMs),
+			(result) => {
+				if (typeof result !== "object" || result === null || !("claimId" in result)) return
+				const claimId = (result as { claimId?: unknown }).claimId
+				if (typeof claimId !== "string" || claimId.length === 0) return
+				if (!callbacks.toolCallId) {
+					throw new Error("wait_agent received a mailbox claim without a native tool call ID")
+				}
+				task.retainWaitAgentResultClaim(callbacks.toolCallId, claimId)
+			},
 		)
 	}
 }

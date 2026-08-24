@@ -69,7 +69,7 @@ describe("Task asynchronous sub-agent result delivery", () => {
 		expect((active as any).shouldExposeAgentLifecycleTools()).toBe(false)
 	})
 
-	it("delivers only async terminal reports and persists exactly-once state", async () => {
+	it("keeps terminal reports in lifecycle state without exposing synthetic user content", () => {
 		const asyncGroup = makeGroup({
 			groupId: "async-group",
 			executionMode: "async",
@@ -84,7 +84,7 @@ describe("Task asynchronous sub-agent result delivery", () => {
 			groupId: "legacy-group",
 			summary: "Legacy blocking result.",
 		})
-		const { task, saveClineMessages } = makeTask([asyncGroup, blockingGroup, legacyGroup])
+		const { task } = makeTask([asyncGroup, blockingGroup, legacyGroup])
 		asyncGroup.agents[0].usage = {
 			durationMs: 21_000,
 			rateLimitWaitCount: 2,
@@ -92,24 +92,13 @@ describe("Task asynchronous sub-agent result delivery", () => {
 			rateLimitIntervalSeconds: 10,
 		}
 
-		const pending = (task as any).getPendingSpawnedSubagentResults()
-
-		expect(pending).toHaveLength(1)
-		expect(pending[0].taskId).toBe("async-group-child")
-		expect(pending[0].block.text).toContain("Parser inspection complete.")
-		expect(pending[0].block.text).toContain('"rateLimitWaitCount": 2')
-		expect(pending[0].block.text).not.toContain("Already returned by delegate_task.")
-		expect(task.hasUndeliveredSpawnedSubagentResults()).toBe(true)
-
-		await (task as any).markSpawnedSubagentResultsDelivered([pending[0].taskId])
-
-		expect(asyncGroup.agents[0].resultDeliveredAt).toEqual(expect.any(Number))
-		expect(saveClineMessages).toHaveBeenCalledOnce()
 		expect((task as any).getPendingSpawnedSubagentResults()).toEqual([])
-		expect(task.hasUndeliveredSpawnedSubagentResults()).toBe(false)
+		expect(JSON.stringify(task.clineMessages)).toContain("Parser inspection complete.")
+		expect(JSON.stringify(task.clineMessages)).toContain('"rateLimitWaitCount":2')
+		expect(JSON.stringify(task.clineMessages)).toContain("Already returned by delegate_task.")
 	})
 
-	it("waits for the aggregate terminal write before exposing a child report", () => {
+	it("does not turn a terminal aggregate update into a user-authored result", () => {
 		const group = makeGroup({
 			groupId: "racing-group",
 			executionMode: "async",
@@ -123,10 +112,10 @@ describe("Task asynchronous sub-agent result delivery", () => {
 		group.status = "completed"
 		group.completedAt = 3
 
-		expect((task as any).getPendingSpawnedSubagentResults()).toHaveLength(1)
+		expect((task as any).getPendingSpawnedSubagentResults()).toEqual([])
 	})
 
-	it("places the terminal report in the next model-facing user content", () => {
+	it("leaves the next model-facing user content free of child-report injection", () => {
 		const group = makeGroup({
 			groupId: "injected-group",
 			executionMode: "async",
@@ -139,14 +128,12 @@ describe("Task asynchronous sub-agent result delivery", () => {
 			"<environment_details>current state</environment_details>",
 		)
 
-		expect(result.pendingResults.map(({ taskId }: { taskId: string }) => taskId)).toEqual(["injected-group-child"])
+		expect(result.pendingResults).toEqual([])
 		expect(result.content).toEqual([
 			{ type: "text", text: "Parent tool result" },
-			expect.objectContaining({
-				type: "text",
-				text: expect.stringContaining("Use the confirmed backend finding."),
-			}),
 			{ type: "text", text: "<environment_details>current state</environment_details>" },
 		])
+		expect(JSON.stringify(result.content)).not.toContain("spawned_subagent_result")
+		expect(JSON.stringify(result.content)).not.toContain("Use the confirmed backend finding.")
 	})
 })

@@ -341,6 +341,19 @@ describe("spawn_agent native streaming pipeline", () => {
 		expect(task.userMessageContentReady).toBe(true)
 	})
 
+	it("passes the native wait tool call ID into claim retention", async () => {
+		const task = createPresentationTask("wait-receipt-parent")
+		task.assistantMessageContent = [createToolUse("call_wait_receipt", "wait_agent", { timeout_ms: 10_000 })]
+
+		await presentAssistantMessage(task as never)
+
+		expect(waitAgentHandle).toHaveBeenCalledOnce()
+		expect(waitAgentHandle.mock.calls[0][2]).toMatchObject({ toolCallId: "call_wait_receipt" })
+		expect(task.userMessageContent).toEqual([
+			expect.objectContaining({ tool_use_id: "call_wait_receipt", content: '{"timedOut":false}' }),
+		])
+	})
+
 	it.each(["new_task", "delegate_task", "attempt_completion", "switch_mode", "ask_followup_question", "wait_agent"])(
 		"keeps %s isolated from multi-tool batches",
 		(toolName) => {
