@@ -45,6 +45,13 @@ describe("providerModelConfig", () => {
 				serviceUrl: "https://code.visualstudio.com/api/extension-guides/language-model",
 			})
 		})
+
+		it("contains service config for Stellar", () => {
+			expect(PROVIDER_SERVICE_CONFIG.stellar).toEqual({
+				serviceName: "Stellar",
+				serviceUrl: "",
+			})
+		})
 	})
 
 	describe("getProviderServiceConfig", () => {
@@ -67,6 +74,7 @@ describe("providerModelConfig", () => {
 			expect(PROVIDER_DEFAULT_MODEL_IDS.bedrock).toBeDefined()
 			expect(PROVIDER_DEFAULT_MODEL_IDS.gemini).toBeDefined()
 			expect(PROVIDER_DEFAULT_MODEL_IDS["openai-native"]).toBeDefined()
+			expect(PROVIDER_DEFAULT_MODEL_IDS.stellar).toBe("Meta-Llama-3.3-70B-Instruct")
 		})
 	})
 
@@ -153,6 +161,7 @@ describe("providerModelConfig", () => {
 			expect(isStaticModelProvider("bedrock")).toBe(true)
 			expect(isStaticModelProvider("gemini")).toBe(true)
 			expect(isStaticModelProvider("openai-native")).toBe(true)
+			expect(isStaticModelProvider("stellar")).toBe(true)
 		})
 
 		it("returns false for providers without static models", () => {
@@ -174,6 +183,7 @@ describe("providerModelConfig", () => {
 			expect(PROVIDERS_WITH_CUSTOM_MODEL_UI).not.toContain("anthropic")
 			expect(PROVIDERS_WITH_CUSTOM_MODEL_UI).not.toContain("gemini")
 			expect(PROVIDERS_WITH_CUSTOM_MODEL_UI).not.toContain("bedrock")
+			expect(PROVIDERS_WITH_CUSTOM_MODEL_UI).not.toContain("stellar")
 		})
 	})
 
@@ -183,6 +193,7 @@ describe("providerModelConfig", () => {
 			expect(shouldUseGenericModelPicker("bedrock")).toBe(true)
 			expect(shouldUseGenericModelPicker("gemini")).toBe(true)
 			expect(shouldUseGenericModelPicker("deepseek")).toBe(true)
+			expect(shouldUseGenericModelPicker("stellar")).toBe(true)
 		})
 
 		it("returns false for providers with custom model UI", () => {

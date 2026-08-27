@@ -2080,6 +2080,45 @@ describe("Alpha", () => {
 			})
 		})
 
+		it("does not replace a steering message that is still pending persistence", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+
+			;(task as any).isTaskLoopActive = true
+
+			await task.steerUserMessage("first steering message", [])
+			await expect(task.steerUserMessage("second steering message", [])).rejects.toThrow(
+				"A steering message is already pending",
+			)
+
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "first steering message",
+				images: [],
+			})
+		})
+
+		it("does not replace a steering response that an active ask has not consumed", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+
+			;(task as any).activeAsk = { type: "followup", ts: Date.now() }
+
+			await task.steerUserMessage("first steering response", [])
+			await expect(task.steerUserMessage("second steering response", [])).rejects.toThrow(
+				"A steering message is already pending",
+			)
+
+			expect((task as any).askResponseText).toBe("first steering response")
+		})
+
 		it("does not surface a provider failure when steering before the first chunk arrives", async () => {
 			const task = new Task({
 				provider: mockProvider,

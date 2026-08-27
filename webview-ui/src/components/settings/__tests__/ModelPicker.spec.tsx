@@ -145,6 +145,18 @@ describe("ModelPicker", () => {
 		expect(mockSetApiConfigurationField).toHaveBeenCalledWith(defaultProps.modelIdKey, customModelId)
 	})
 
+	it("does not render service copy when the service URL is empty", async () => {
+		await act(async () => {
+			render(
+				<QueryClientProvider client={queryClient}>
+					<ModelPicker {...defaultProps} serviceName="Stellar" serviceUrl="" />
+				</QueryClientProvider>,
+			)
+		})
+
+		expect(screen.queryByRole("link", { name: "Stellar" })).not.toBeInTheDocument()
+	})
+
 	describe("Error Message Display", () => {
 		it("displays error message when errorMessage prop is provided", async () => {
 			const errorMessage = "Model not available for your organization"

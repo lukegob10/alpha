@@ -12,7 +12,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "2.1.1",
+		version: "2.1.2",
 	},
 }))
 
@@ -32,10 +32,10 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		render(<Announcement hideAnnouncement={vi.fn()} />)
 
-		expect(screen.getByText("Welcome to Alpha v2.1.1")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v2.1.2")).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Alpha v2.1.1 keeps the primary agent focused while managed subagents run bounded work in parallel and return durable results.",
+				"Alpha v2.1.2 expands reliable model access while keeping provider setup and task steering stable.",
 			),
 		).toBeInTheDocument()
 	})
@@ -45,20 +45,16 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText("Blocking handoffs and background delegation now have clear lifecycle contracts."),
+			screen.getByText("Stellar connects internal models through Helix authentication and enterprise PEM trust."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Child agents receive frozen instructions plus bounded, sanitized parent context."),
+			screen.getByText("Anthropic, Gemini, OpenAI, Vertex AI, and VS Code LM model catalogs are current."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Background completions return once through wait_agent and remain recoverable after reloads.",
-			),
+			screen.getByText("OpenAI-compatible and Vertex AI native tool calls are more resilient."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Integrated browser control and explicit context compaction round out the agent workflow.",
-			),
+			screen.getByText("Queued steering and custom model selection stay task-scoped and stable."),
 		).toBeInTheDocument()
 	})
 })

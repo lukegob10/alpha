@@ -3,6 +3,15 @@ import { describe, expect, it } from "vitest"
 import { MessageQueueService } from "../MessageQueueService"
 
 describe("MessageQueueService", () => {
+	it("reads a queued message without removing or reordering it", () => {
+		const queue = new MessageQueueService()
+		const first = queue.addMessage("first")!
+		const second = queue.addMessage("second")!
+
+		expect(queue.getMessage(first.id)).toBe(first)
+		expect(queue.messages).toEqual([first, second])
+	})
+
 	it("moves a queued message while preserving message objects", () => {
 		const queue = new MessageQueueService()
 		const first = queue.addMessage("first")!

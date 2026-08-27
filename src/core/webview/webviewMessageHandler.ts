@@ -3337,10 +3337,13 @@ export const webviewMessageHandler = async (
 				break
 			}
 
-			const queued = task.messageQueueService.takeMessage(message.text ?? "")
+			// Keep the queue as the owner until the task accepts the handoff. If steering
+			// races another steer or a terminal transition, the message remains retryable.
+			const queued = task.messageQueueService.getMessage(message.text ?? "")
 
 			if (queued) {
 				await task.steerUserMessage(queued.text, queued.images)
+				task.messageQueueService.removeMessage(queued.id)
 			}
 
 			break

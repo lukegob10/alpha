@@ -5,7 +5,7 @@ import { VSCodeLink, VSCodeTextArea, VSCodeTextField } from "@vscode/webview-ui-
 import { type ProviderSettings, VERTEX_REGIONS, VERTEX_1M_CONTEXT_MODEL_IDS } from "@alpha-code/types"
 
 import { useAppTranslation } from "@src/i18n/TranslationContext"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@src/components/ui"
+import { SearchableSelect, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@src/components/ui"
 
 type VertexProps = {
 	apiConfiguration: ProviderSettings
@@ -84,18 +84,20 @@ export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexPro
 			</VSCodeTextField>
 			<div>
 				<label className="block font-medium mb-1">{t("settings:providers.googleCloudRegion")}</label>
-				<Select value={location} onValueChange={(value) => setApiConfigurationField("location", value)}>
-					<SelectTrigger className="w-full">
-						<SelectValue placeholder={t("settings:common.select")} />
-					</SelectTrigger>
-					<SelectContent>
-						{VERTEX_REGIONS.map(({ value, label }) => (
-							<SelectItem key={value} value={value}>
-								{label}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
+				<SearchableSelect
+					value={location}
+					onValueChange={(value) => setApiConfigurationField("location", value)}
+					options={VERTEX_REGIONS}
+					placeholder={t("settings:common.select")}
+					searchPlaceholder={t("settings:providers.googleCloudRegionPicker.searchPlaceholder")}
+					emptyMessage={t("settings:providers.googleCloudRegionPicker.noMatchFound")}
+					allowCustomValue
+					customValueLabel={(value) =>
+						t("settings:providers.googleCloudRegionPicker.useCustomRegion", { region: value })
+					}
+					aria-label={t("settings:providers.googleCloudRegion")}
+					data-testid="vertex-region-picker"
+				/>
 			</div>
 			<VSCodeTextField
 				value={apiConfiguration?.vertexJsonCredentials || ""}
@@ -182,7 +184,7 @@ export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexPro
 					resize="vertical"
 					value={modelRoutingMapValue}
 					onInput={handleInputChange("modelRoutingMap")}
-					placeholder='{"gemini-3-flash-preview":{"modelOverride":"gateway-model-id"}}'
+					placeholder='{"gemini-3.7-flash":{"modelOverride":"gateway-model-id"}}'
 					rows={4}
 					className="w-full"
 					data-testid="vertex-gateway-model-routing-map"

@@ -1,4 +1,41 @@
-import { getApiProtocol } from "../provider-settings.js"
+import { getApiProtocol, MODELS_BY_PROVIDER, providerSettingsSchemaDiscriminated } from "../provider-settings.js"
+import { stellarDefaultModelId } from "../providers/stellar.js"
+
+describe("Stellar provider settings", () => {
+	it("is part of the standard model registry", () => {
+		expect(MODELS_BY_PROVIDER.stellar).toEqual({
+			id: "stellar",
+			label: "Stellar",
+			models: [stellarDefaultModelId],
+		})
+	})
+
+	it("retains Stellar connection and Helix settings in provider profiles", () => {
+		const parsed = providerSettingsSchemaDiscriminated.parse({
+			apiProvider: "stellar",
+			apiModelId: stellarDefaultModelId,
+			stellarBaseUrl: "https://gateway.example.com/stellar/v1",
+			stellarPemCaBundlePath: "C:\\certs\\corp.pem",
+			stellarHelixCommand: "helix auth access-token print -a",
+			stellarHelixParseMode: "json_field",
+			stellarHelixTokenKey: "token.value",
+			stellarTokenRefreshMinutes: 15,
+			stellarStreamingEnabled: false,
+		})
+
+		expect(parsed).toMatchObject({
+			apiProvider: "stellar",
+			apiModelId: stellarDefaultModelId,
+			stellarBaseUrl: "https://gateway.example.com/stellar/v1",
+			stellarPemCaBundlePath: "C:\\certs\\corp.pem",
+			stellarHelixCommand: "helix auth access-token print -a",
+			stellarHelixParseMode: "json_field",
+			stellarHelixTokenKey: "token.value",
+			stellarTokenRefreshMinutes: 15,
+			stellarStreamingEnabled: false,
+		})
+	})
+})
 
 describe("getApiProtocol", () => {
 	describe("Anthropic-style providers", () => {
@@ -59,6 +96,7 @@ describe("getApiProtocol", () => {
 			expect(getApiProtocol("openai", "claude-3-sonnet")).toBe("openai")
 			expect(getApiProtocol("litellm", "claude-instant")).toBe("openai")
 			expect(getApiProtocol("ollama", "claude-model")).toBe("openai")
+			expect(getApiProtocol("stellar", "Meta-Llama-3.3-70B-Instruct")).toBe("openai")
 		})
 	})
 

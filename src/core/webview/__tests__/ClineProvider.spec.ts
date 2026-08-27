@@ -489,8 +489,8 @@ describe("ClineProvider", () => {
 		expect(ClineProvider.getVisibleInstance()).toBe(provider)
 	})
 
-	test("shows the v2.1.1 announcement once per installation", async () => {
-		const announcementId = "august-2026-v2.1.1-agent-loop-convergence"
+	test("shows the v2.1.2 announcement once per installation", async () => {
+		const announcementId = "august-2026-v2.1.2-model-provider-refresh"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 

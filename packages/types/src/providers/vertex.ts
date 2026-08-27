@@ -3,9 +3,35 @@ import type { ModelInfo } from "../model.js"
 // https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/use-claude
 export type VertexModelId = keyof typeof vertexModels
 
-export const vertexDefaultModelId: VertexModelId = "claude-sonnet-4-5@20250929"
+export const vertexDefaultModelId: VertexModelId = "claude-sonnet-5"
 
 export const vertexModels = {
+	"gemini-3.7-flash": {
+		maxTokens: 65_536,
+		contextWindow: 1_048_576,
+		supportsImages: true,
+		supportsPromptCache: true,
+		supportsReasoningEffort: ["low", "medium", "high"],
+		reasoningEffort: "medium",
+		supportsTemperature: false,
+		inputPrice: 0.75,
+		outputPrice: 3.75,
+		cacheReadsPrice: 0.075,
+		description: "Gemini 3.7 Flash: Google's latest production Flash model for coding and agents",
+	},
+	"gemini-3.6-flash": {
+		maxTokens: 65_536,
+		contextWindow: 1_048_576,
+		supportsImages: true,
+		supportsPromptCache: true,
+		supportsReasoningEffort: ["minimal", "low", "medium", "high"],
+		reasoningEffort: "medium",
+		supportsTemperature: false,
+		inputPrice: 0.75,
+		outputPrice: 3.75,
+		cacheReadsPrice: 0.075,
+		description: "Gemini 3.6 Flash: Fast production model for grounded and agentic workloads",
+	},
 	"gemini-3.1-pro-preview": {
 		maxTokens: 65_536,
 		contextWindow: 1_048_576,
@@ -65,7 +91,7 @@ export const vertexModels = {
 		],
 	},
 	"gemini-3.5-flash": {
-		maxTokens: 65_535,
+		maxTokens: 65_536,
 		contextWindow: 1_048_576,
 		supportsImages: true,
 		supportsPromptCache: true,
@@ -78,55 +104,28 @@ export const vertexModels = {
 		outputPrice: 9.0,
 		cacheReadsPrice: 0.15,
 	},
-	"gemini-3-pro-preview": {
-		maxTokens: 65_536,
-		contextWindow: 1_048_576,
-		supportsImages: true,
-		supportsPromptCache: true,
-		supportsReasoningEffort: ["low", "high"],
-		reasoningEffort: "low",
-
-		supportsTemperature: true,
-		defaultTemperature: 1,
-		inputPrice: 4.0,
-		outputPrice: 18.0,
-		cacheReadsPrice: 0.4,
-		tiers: [
-			{
-				contextWindow: 200_000,
-				inputPrice: 2.0,
-				outputPrice: 12.0,
-				cacheReadsPrice: 0.2,
-			},
-			{
-				contextWindow: Infinity,
-				inputPrice: 4.0,
-				outputPrice: 18.0,
-				cacheReadsPrice: 0.4,
-			},
-		],
-	},
-	"gemini-3-flash-preview": {
+	"gemini-3.5-flash-lite": {
 		maxTokens: 65_536,
 		contextWindow: 1_048_576,
 		supportsImages: true,
 		supportsPromptCache: true,
 		supportsReasoningEffort: ["minimal", "low", "medium", "high"],
-		reasoningEffort: "medium",
+		reasoningEffort: "minimal",
 
 		supportsTemperature: true,
 		defaultTemperature: 1,
-		inputPrice: 0.5,
-		outputPrice: 3.0,
-		cacheReadsPrice: 0.05,
+		inputPrice: 0.3,
+		outputPrice: 2.5,
+		cacheReadsPrice: 0.03,
+		description: "Gemini 3.5 Flash-Lite: Cost-efficient model for high-volume agentic tasks",
 	},
 	"gemini-3.1-flash-lite": {
-		maxTokens: 65_535,
+		maxTokens: 65_536,
 		contextWindow: 1_048_576,
 		supportsImages: true,
 		supportsPromptCache: true,
 		supportsReasoningEffort: ["minimal", "low", "medium", "high"],
-		reasoningEffort: "medium",
+		reasoningEffort: "minimal",
 
 		supportsTemperature: true,
 		defaultTemperature: 1,
@@ -134,220 +133,53 @@ export const vertexModels = {
 		outputPrice: 1.5,
 		cacheReadsPrice: 0.025,
 	},
-	"gemini-2.5-flash-preview-05-20:thinking": {
-		maxTokens: 65_535,
-		contextWindow: 1_048_576,
+	"claude-fable-5": {
+		maxTokens: 128_000,
+		contextWindow: 1_000_000,
 		supportsImages: true,
 		supportsPromptCache: true,
-
-		inputPrice: 0.15,
-		outputPrice: 3.5,
-		maxThinkingTokens: 24_576,
-		supportsReasoningBudget: true,
-		requiredReasoningBudget: true,
+		inputPrice: 11.0,
+		outputPrice: 55.0,
+		cacheWritesPrice: 13.75,
+		cacheReadsPrice: 1.1,
+		supportsTemperature: false,
+		description: "Claude Fable 5: Anthropic's most capable widely released long-horizon agent model",
 	},
-	"gemini-2.5-flash-preview-05-20": {
-		maxTokens: 65_535,
-		contextWindow: 1_048_576,
+	"claude-mythos-5": {
+		maxTokens: 128_000,
+		contextWindow: 1_000_000,
 		supportsImages: true,
 		supportsPromptCache: true,
-
-		inputPrice: 0.15,
-		outputPrice: 0.6,
+		inputPrice: 11.0,
+		outputPrice: 55.0,
+		cacheWritesPrice: 13.75,
+		cacheReadsPrice: 1.1,
+		supportsTemperature: false,
+		description: "Claude Mythos 5: Invite-only model for defensive cybersecurity and biology research",
 	},
-	"gemini-2.5-flash": {
-		maxTokens: 64_000,
-		contextWindow: 1_048_576,
+	"claude-opus-5": {
+		maxTokens: 128_000,
+		contextWindow: 1_000_000,
 		supportsImages: true,
 		supportsPromptCache: true,
-
-		inputPrice: 0.3,
-		outputPrice: 2.5,
-		cacheReadsPrice: 0.075,
-		cacheWritesPrice: 1.0,
-		maxThinkingTokens: 24_576,
-		supportsReasoningBudget: true,
+		inputPrice: 5.5,
+		outputPrice: 27.5,
+		cacheWritesPrice: 6.875,
+		cacheReadsPrice: 0.55,
+		supportsTemperature: false,
+		description: "Claude Opus 5: Advanced model for complex agentic coding and enterprise work",
 	},
-	"gemini-2.5-flash-preview-04-17:thinking": {
-		maxTokens: 65_535,
-		contextWindow: 1_048_576,
-		supportsImages: true,
-		supportsPromptCache: false,
-
-		inputPrice: 0.15,
-		outputPrice: 3.5,
-		maxThinkingTokens: 24_576,
-		supportsReasoningBudget: true,
-		requiredReasoningBudget: true,
-	},
-	"gemini-2.5-flash-preview-04-17": {
-		maxTokens: 65_535,
-		contextWindow: 1_048_576,
-		supportsImages: true,
-		supportsPromptCache: false,
-
-		inputPrice: 0.15,
-		outputPrice: 0.6,
-	},
-	"gemini-2.5-pro-preview-03-25": {
-		maxTokens: 65_535,
-		contextWindow: 1_048_576,
+	"claude-sonnet-5": {
+		maxTokens: 128_000,
+		contextWindow: 1_000_000,
 		supportsImages: true,
 		supportsPromptCache: true,
-
-		inputPrice: 2.5,
-		outputPrice: 15,
-	},
-	"gemini-2.5-pro-preview-05-06": {
-		maxTokens: 65_535,
-		contextWindow: 1_048_576,
-		supportsImages: true,
-		supportsPromptCache: true,
-
-		inputPrice: 2.5,
-		outputPrice: 15,
-	},
-	"gemini-2.5-pro-preview-06-05": {
-		maxTokens: 65_535,
-		contextWindow: 1_048_576,
-		supportsImages: true,
-		supportsPromptCache: true,
-
-		inputPrice: 2.5,
-		outputPrice: 15,
-		maxThinkingTokens: 32_768,
-		supportsReasoningBudget: true,
-	},
-	"gemini-2.5-pro": {
-		maxTokens: 64_000,
-		contextWindow: 1_048_576,
-		supportsImages: true,
-		supportsPromptCache: true,
-
-		inputPrice: 2.5,
-		outputPrice: 15,
-		maxThinkingTokens: 32_768,
-		supportsReasoningBudget: true,
-		requiredReasoningBudget: true,
-		tiers: [
-			{
-				contextWindow: 200_000,
-				inputPrice: 1.25,
-				outputPrice: 10,
-				cacheReadsPrice: 0.31,
-			},
-			{
-				contextWindow: Infinity,
-				inputPrice: 2.5,
-				outputPrice: 15,
-				cacheReadsPrice: 0.625,
-			},
-		],
-	},
-	"gemini-2.5-pro-exp-03-25": {
-		maxTokens: 65_535,
-		contextWindow: 1_048_576,
-		supportsImages: true,
-		supportsPromptCache: false,
-
-		inputPrice: 0,
-		outputPrice: 0,
-	},
-	"gemini-2.0-pro-exp-02-05": {
-		maxTokens: 8192,
-		contextWindow: 2_097_152,
-		supportsImages: true,
-		supportsPromptCache: false,
-
-		inputPrice: 0,
-		outputPrice: 0,
-	},
-	"gemini-2.0-flash-001": {
-		maxTokens: 8192,
-		contextWindow: 1_048_576,
-		supportsImages: true,
-		supportsPromptCache: true,
-
-		inputPrice: 0.15,
-		outputPrice: 0.6,
-	},
-	"gemini-2.0-flash-lite-001": {
-		maxTokens: 8192,
-		contextWindow: 1_048_576,
-		supportsImages: true,
-		supportsPromptCache: false,
-
-		inputPrice: 0.075,
-		outputPrice: 0.3,
-	},
-	"gemini-2.0-flash-thinking-exp-01-21": {
-		maxTokens: 8192,
-		contextWindow: 32_768,
-		supportsImages: true,
-		supportsPromptCache: false,
-
-		inputPrice: 0,
-		outputPrice: 0,
-	},
-	"gemini-1.5-flash-002": {
-		maxTokens: 8192,
-		contextWindow: 1_048_576,
-		supportsImages: true,
-		supportsPromptCache: true,
-
-		inputPrice: 0.075,
-		outputPrice: 0.3,
-	},
-	"gemini-1.5-pro-002": {
-		maxTokens: 8192,
-		contextWindow: 2_097_152,
-		supportsImages: true,
-		supportsPromptCache: false,
-
-		inputPrice: 1.25,
-		outputPrice: 5,
-	},
-	"claude-sonnet-4@20250514": {
-		maxTokens: 8192,
-		contextWindow: 200_000, // Default 200K, extendable to 1M with beta flag 'context-1m-2025-08-07'
-		supportsImages: true,
-		supportsPromptCache: true,
-		inputPrice: 3.0, // $3 per million input tokens (≤200K context)
-		outputPrice: 15.0, // $15 per million output tokens (≤200K context)
-		cacheWritesPrice: 3.75, // $3.75 per million tokens
-		cacheReadsPrice: 0.3, // $0.30 per million tokens
-		supportsReasoningBudget: true,
-		// Tiered pricing for extended context (requires beta flag 'context-1m-2025-08-07')
-		tiers: [
-			{
-				contextWindow: 1_000_000, // 1M tokens with beta flag
-				inputPrice: 6.0, // $6 per million input tokens (>200K context)
-				outputPrice: 22.5, // $22.50 per million output tokens (>200K context)
-				cacheWritesPrice: 7.5, // $7.50 per million tokens (>200K context)
-				cacheReadsPrice: 0.6, // $0.60 per million tokens (>200K context)
-			},
-		],
-	},
-	"claude-sonnet-4-5@20250929": {
-		maxTokens: 8192,
-		contextWindow: 200_000, // Default 200K, extendable to 1M with beta flag 'context-1m-2025-08-07'
-		supportsImages: true,
-		supportsPromptCache: true,
-		inputPrice: 3.0, // $3 per million input tokens (≤200K context)
-		outputPrice: 15.0, // $15 per million output tokens (≤200K context)
-		cacheWritesPrice: 3.75, // $3.75 per million tokens
-		cacheReadsPrice: 0.3, // $0.30 per million tokens
-		supportsReasoningBudget: true,
-		// Tiered pricing for extended context (requires beta flag 'context-1m-2025-08-07')
-		tiers: [
-			{
-				contextWindow: 1_000_000, // 1M tokens with beta flag
-				inputPrice: 6.0, // $6 per million input tokens (>200K context)
-				outputPrice: 22.5, // $22.50 per million output tokens (>200K context)
-				cacheWritesPrice: 7.5, // $7.50 per million tokens (>200K context)
-				cacheReadsPrice: 0.6, // $0.60 per million tokens (>200K context)
-			},
-		],
+		inputPrice: 2.2,
+		outputPrice: 11.0,
+		cacheWritesPrice: 2.75,
+		cacheReadsPrice: 0.22,
+		supportsTemperature: false,
+		description: "Claude Sonnet 5: Fast model balancing frontier intelligence and cost",
 	},
 	"claude-sonnet-4-6": {
 		maxTokens: 8192,
@@ -369,17 +201,6 @@ export const vertexModels = {
 				cacheReadsPrice: 0.6, // $0.60 per million tokens (>200K context)
 			},
 		],
-	},
-	"claude-haiku-4-5@20251001": {
-		maxTokens: 8192,
-		contextWindow: 200_000,
-		supportsImages: true,
-		supportsPromptCache: true,
-		inputPrice: 1.0,
-		outputPrice: 5.0,
-		cacheWritesPrice: 1.25,
-		cacheReadsPrice: 0.1,
-		supportsReasoningBudget: true,
 	},
 	"claude-opus-4-6": {
 		maxTokens: 8192,
@@ -411,232 +232,28 @@ export const vertexModels = {
 		outputPrice: 27.5,
 		cacheWritesPrice: 6.875,
 		cacheReadsPrice: 0.55,
-		supportsReasoningBudget: true,
+		supportsTemperature: false,
 	},
 	"claude-opus-4-7": {
-		maxTokens: 8192,
-		contextWindow: 200_000, // Default 200K, extendable to 1M with beta flag 'context-1m-2025-08-07'
+		maxTokens: 128_000,
+		contextWindow: 1_000_000,
 		supportsImages: true,
 		supportsPromptCache: true,
-		inputPrice: 5.0, // $5 per million input tokens (≤200K context)
-		outputPrice: 25.0, // $25 per million output tokens (≤200K context)
-		cacheWritesPrice: 6.25, // $6.25 per million tokens
-		cacheReadsPrice: 0.5, // $0.50 per million tokens
-		supportsReasoningBudget: true,
-		// Tiered pricing for extended context (requires beta flag 'context-1m-2025-08-07')
-		tiers: [
-			{
-				contextWindow: 1_000_000, // 1M tokens with beta flag
-				inputPrice: 10.0, // $10 per million input tokens (>200K context)
-				outputPrice: 37.5, // $37.50 per million output tokens (>200K context)
-				cacheWritesPrice: 12.5, // $12.50 per million tokens (>200K context)
-				cacheReadsPrice: 1.0, // $1.00 per million tokens (>200K context)
-			},
-		],
-	},
-	"claude-opus-4-5@20251101": {
-		maxTokens: 8192,
-		contextWindow: 200_000,
-		supportsImages: true,
-		supportsPromptCache: true,
-		inputPrice: 5.0,
-		outputPrice: 25.0,
-		cacheWritesPrice: 6.25,
-		cacheReadsPrice: 0.5,
-		supportsReasoningBudget: true,
-	},
-	"claude-opus-4-1@20250805": {
-		maxTokens: 8192,
-		contextWindow: 200_000,
-		supportsImages: true,
-		supportsPromptCache: true,
-		inputPrice: 15.0,
-		outputPrice: 75.0,
-		cacheWritesPrice: 18.75,
-		cacheReadsPrice: 1.5,
-		supportsReasoningBudget: true,
-	},
-	"claude-opus-4@20250514": {
-		maxTokens: 8192,
-		contextWindow: 200_000,
-		supportsImages: true,
-		supportsPromptCache: true,
-		inputPrice: 15.0,
-		outputPrice: 75.0,
-		cacheWritesPrice: 18.75,
-		cacheReadsPrice: 1.5,
-	},
-	"claude-3-7-sonnet@20250219:thinking": {
-		maxTokens: 64_000,
-		contextWindow: 200_000,
-		supportsImages: true,
-		supportsPromptCache: true,
-		inputPrice: 3.0,
-		outputPrice: 15.0,
-		cacheWritesPrice: 3.75,
-		cacheReadsPrice: 0.3,
-		supportsReasoningBudget: true,
-		requiredReasoningBudget: true,
-	},
-	"claude-3-7-sonnet@20250219": {
-		maxTokens: 8192,
-		contextWindow: 200_000,
-		supportsImages: true,
-		supportsPromptCache: true,
-		inputPrice: 3.0,
-		outputPrice: 15.0,
-		cacheWritesPrice: 3.75,
-		cacheReadsPrice: 0.3,
-	},
-	"claude-3-5-sonnet-v2@20241022": {
-		maxTokens: 8192,
-		contextWindow: 200_000,
-		supportsImages: true,
-		supportsPromptCache: true,
-		inputPrice: 3.0,
-		outputPrice: 15.0,
-		cacheWritesPrice: 3.75,
-		cacheReadsPrice: 0.3,
-	},
-	"claude-3-5-sonnet@20240620": {
-		maxTokens: 8192,
-		contextWindow: 200_000,
-		supportsImages: true,
-		supportsPromptCache: true,
-		inputPrice: 3.0,
-		outputPrice: 15.0,
-		cacheWritesPrice: 3.75,
-		cacheReadsPrice: 0.3,
-	},
-	"claude-3-5-haiku@20241022": {
-		maxTokens: 8192,
-		contextWindow: 200_000,
-		supportsImages: false,
-		supportsPromptCache: true,
-		inputPrice: 1.0,
-		outputPrice: 5.0,
-		cacheWritesPrice: 1.25,
-		cacheReadsPrice: 0.1,
-	},
-	"claude-3-opus@20240229": {
-		maxTokens: 4096,
-		contextWindow: 200_000,
-		supportsImages: true,
-		supportsPromptCache: true,
-		inputPrice: 15.0,
-		outputPrice: 75.0,
-		cacheWritesPrice: 18.75,
-		cacheReadsPrice: 1.5,
-	},
-	"claude-3-haiku@20240307": {
-		maxTokens: 4096,
-		contextWindow: 200_000,
-		supportsImages: true,
-		supportsPromptCache: true,
-		inputPrice: 0.25,
-		outputPrice: 1.25,
-		cacheWritesPrice: 0.3,
-		cacheReadsPrice: 0.03,
-	},
-	"gemini-2.5-flash-lite-preview-06-17": {
-		maxTokens: 64_000,
-		contextWindow: 1_048_576,
-		supportsImages: true,
-		supportsPromptCache: true,
-
-		inputPrice: 0.1,
-		outputPrice: 0.4,
-		cacheReadsPrice: 0.025,
-		cacheWritesPrice: 1.0,
-		maxThinkingTokens: 24_576,
-		supportsReasoningBudget: true,
-	},
-	"llama-4-maverick-17b-128e-instruct-maas": {
-		maxTokens: 8192,
-		contextWindow: 131072,
-		supportsImages: false,
-		supportsPromptCache: false,
-		inputPrice: 0.35,
-		outputPrice: 1.15,
-		description: "Meta Llama 4 Maverick 17B Instruct model, 128K context.",
-	},
-	"deepseek-r1-0528-maas": {
-		maxTokens: 32_768,
-		contextWindow: 163_840,
-		supportsImages: false,
-		supportsPromptCache: false,
-		inputPrice: 1.35,
-		outputPrice: 5.4,
-		description: "DeepSeek R1 (0528). Available in us-central1",
-	},
-	"deepseek-v3.1-maas": {
-		maxTokens: 32_768,
-		contextWindow: 163_840,
-		supportsImages: false,
-		supportsPromptCache: false,
-		inputPrice: 0.6,
-		outputPrice: 1.7,
-		description: "DeepSeek V3.1. Available in us-west2",
-	},
-	"gpt-oss-120b-maas": {
-		maxTokens: 32_768,
-		contextWindow: 131_072,
-		supportsImages: false,
-		supportsPromptCache: false,
-		inputPrice: 0.15,
-		outputPrice: 0.6,
-		description: "OpenAI gpt-oss 120B. Available in us-central1",
-	},
-	"gpt-oss-20b-maas": {
-		maxTokens: 32_768,
-		contextWindow: 131_072,
-		supportsImages: false,
-		supportsPromptCache: false,
-		inputPrice: 0.075,
-		outputPrice: 0.3,
-		description: "OpenAI gpt-oss 20B. Available in us-central1",
-	},
-	"qwen3-coder-480b-a35b-instruct-maas": {
-		maxTokens: 32_768,
-		contextWindow: 262_144,
-		supportsImages: false,
-		supportsPromptCache: false,
-		inputPrice: 1.0,
-		outputPrice: 4.0,
-		description: "Qwen3 Coder 480B A35B Instruct. Available in us-south1",
-	},
-	"qwen3-235b-a22b-instruct-2507-maas": {
-		maxTokens: 16_384,
-		contextWindow: 262_144,
-		supportsImages: false,
-		supportsPromptCache: false,
-		inputPrice: 0.25,
-		outputPrice: 1.0,
-		description: "Qwen3 235B A22B Instruct. Available in us-south1",
-	},
-	"moonshotai/kimi-k2-thinking-maas": {
-		maxTokens: 16_384,
-		contextWindow: 262_144,
-		supportsPromptCache: false,
-		supportsImages: false,
-		inputPrice: 0.6,
-		outputPrice: 2.5,
-		description: "Kimi K2 Thinking Model with 256K context window.",
+		inputPrice: 5.5,
+		outputPrice: 27.5,
+		cacheWritesPrice: 6.875,
+		cacheReadsPrice: 0.55,
+		supportsTemperature: false,
 	},
 } as const satisfies Record<string, ModelInfo>
 
 // Vertex AI models that support 1M context window beta
 // Uses the same beta header 'context-1m-2025-08-07' as Anthropic and Bedrock
-export const VERTEX_1M_CONTEXT_MODEL_IDS = [
-	"claude-sonnet-4@20250514",
-	"claude-sonnet-4-5@20250929",
-	"claude-sonnet-4-6",
-	"claude-opus-4-6",
-	"claude-opus-4-7",
-] as const
+export const VERTEX_1M_CONTEXT_MODEL_IDS = ["claude-sonnet-4-6", "claude-opus-4-6"] as const
 
 export const VERTEX_REGIONS = [
 	{ value: "global", label: "global" },
+	{ value: "us", label: "us" },
 	{ value: "us-central1", label: "us-central1" },
 	{ value: "us-east1", label: "us-east1" },
 	{ value: "us-east4", label: "us-east4" },

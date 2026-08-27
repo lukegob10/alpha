@@ -285,6 +285,39 @@ describe("VSCodeLM", () => {
 		expect(props.secondaryLabelTransform(Object.keys(props.models)[0])).toContain("copilot-claude-opus-4.7")
 	})
 
+	it("makes every current Copilot model returned by VS Code selectable", () => {
+		const currentModels = [
+			["claude-opus-5", "Claude Opus 5"],
+			["gemini-3.6-flash", "Gemini 3.6 Flash"],
+			["gemini-3.7-flash", "Gemini 3.7 Flash"],
+			["mai-code-1.1-flash", "MAI-Code-1.1-Flash"],
+			["kimi-k3", "Kimi K3"],
+			["grok-4.5", "Grok 4.5"],
+			["grok-4.6", "Grok 4.6"],
+		] as const
+		const models = currentModels.map(([family, name]) => ({
+			vendor: "copilot",
+			family,
+			version: "2026-08",
+			id: `copilot-${family}`,
+			name,
+		}))
+
+		renderProvider()
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: models } } as MessageEvent)
+		})
+
+		const props = modelPickerProps.at(-1)
+		expect(Object.keys(props.models)).toHaveLength(currentModels.length)
+
+		for (const [family, name] of currentModels) {
+			const selector = `copilot/${family}/2026-08/copilot-${family}`
+			expect(Object.keys(props.models)).toContain(selector)
+			expect(props.labelTransform(selector)).toBe(name.replaceAll("-", " "))
+		}
+	})
+
 	it("keeps all equivalent selectors when one was already configured", () => {
 		const selectedModel = {
 			vendor: "copilot",

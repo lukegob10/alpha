@@ -326,7 +326,7 @@ export const ModelPicker = ({
 							hidePricing={hidePricing}
 						/>
 					)}
-					{!hidePricing && (
+					{!hidePricing && serviceUrl && (
 						<div className="text-sm text-vscode-descriptionForeground">
 							<Trans
 								i18nKey="settings:modelPicker.automaticFetch"

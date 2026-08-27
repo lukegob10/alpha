@@ -63,16 +63,8 @@ export class MessageQueueService extends EventEmitter<QueueEvents> {
 		return true
 	}
 
-	public takeMessage(id: string): QueuedMessage | undefined {
-		const { index, message } = this.findMessage(id)
-
-		if (!message) {
-			return undefined
-		}
-
-		this._messages.splice(index, 1)
-		this.emit("stateChanged", this._messages)
-		return message
+	public getMessage(id: string): QueuedMessage | undefined {
+		return this.findMessage(id).message
 	}
 
 	public updateMessage(id: string, text: string, images?: string[]): boolean {

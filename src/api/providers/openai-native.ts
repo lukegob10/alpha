@@ -365,7 +365,7 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 		const body: ResponsesRequestBody = {
 			model: model.id,
 			input: formattedInput,
-			stream: true,
+			stream: model.info.supportsStreaming !== false,
 			// Always use stateless operation with encrypted reasoning
 			store: false,
 			// Always include instructions (system prompt) for Responses API.
@@ -447,10 +447,32 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 
 		try {
 			// Use the official SDK with per-request headers
-			const stream = (await (this.client as any).responses.create(requestBody, {
+			const response = await (this.client as any).responses.create(requestBody, {
 				signal: this.abortController.signal,
 				headers: requestHeaders,
-			})) as AsyncIterable<any>
+			})
+
+			// Some higher-compute models only support non-streaming Responses API calls.
+			// Adapt their completed response into the same ApiStream chunks used by callers.
+			if (requestBody.stream === false) {
+				if (Array.isArray(response?.output)) {
+					for (const [outputIndex, item] of response.output.entries()) {
+						for await (const outChunk of this.processEvent(
+							{ type: "response.output_item.done", output_index: outputIndex, item },
+							model,
+						)) {
+							yield outChunk
+						}
+					}
+				}
+
+				for await (const outChunk of this.processEvent({ type: "response.completed", response }, model)) {
+					yield outChunk
+				}
+				return
+			}
+
+			const stream = response as AsyncIterable<any>
 
 			if (typeof (stream as any)[Symbol.asyncIterator] !== "function") {
 				throw new Error(
@@ -469,6 +491,10 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 				}
 			}
 		} catch (sdkErr: any) {
+			if (requestBody.stream === false) {
+				throw sdkErr
+			}
+
 			// For errors, fallback to manual SSE via fetch
 			yield* this.makeResponsesApiRequest(requestBody, model, metadata, systemPrompt, messages)
 		} finally {

@@ -63,7 +63,7 @@ async function main() {
 			},
 			...(vscodeExecutablePath
 				? { vscodeExecutablePath: path.resolve(vscodeExecutablePath) }
-				: { version: process.env.VSCODE_VERSION || "1.120.0" }),
+				: { version: process.env.VSCODE_VERSION || "1.122.1" }),
 		})
 	} finally {
 		await fs.rm(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 })

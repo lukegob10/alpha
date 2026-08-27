@@ -95,7 +95,7 @@ export function getModelParams({
 		format,
 	})
 
-	let temperature = customTemperature ?? model.defaultTemperature ?? defaultTemperature
+	let temperature: ModelParams["temperature"] = customTemperature ?? model.defaultTemperature ?? defaultTemperature
 	let reasoningBudget: ModelParams["reasoningBudget"] = undefined
 	let reasoningEffort: ModelParams["reasoningEffort"] = undefined
 	let verbosity: VerbosityLevel | undefined = customVerbosity
@@ -142,6 +142,13 @@ export function getModelParams({
 		if (effort && effort !== "disable") {
 			reasoningEffort = effort as ReasoningEffortExtended
 		}
+	}
+
+	// An explicit capability flag is authoritative, including when the caller
+	// supplied a custom temperature. Newer Claude and Gemini models reject the
+	// sampling parameter instead of silently ignoring it.
+	if (model.supportsTemperature === false) {
+		temperature = undefined
 	}
 
 	const params: BaseModelParams = { maxTokens, temperature, reasoningEffort, reasoningBudget, verbosity }

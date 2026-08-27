@@ -209,6 +209,30 @@ describe("AnthropicHandler", () => {
 			const requestOptions = mockCreate.mock.calls[mockCreate.mock.calls.length - 1]?.[1]
 			expect(requestOptions?.headers?.["anthropic-beta"]).toContain("context-1m-2025-08-07")
 		})
+
+		it("should cache prompts and omit temperature for Claude Sonnet 5", async () => {
+			const sonnet5Handler = new AnthropicHandler({
+				apiKey: "test-api-key",
+				apiModelId: "claude-sonnet-5",
+				modelTemperature: 0.7,
+			})
+
+			for await (const _chunk of sonnet5Handler.createMessage(systemPrompt, [
+				{ role: "user", content: [{ type: "text" as const, text: "Hello" }] },
+			])) {
+				// Consume stream
+			}
+
+			const [request, requestOptions] = mockCreate.mock.calls[mockCreate.mock.calls.length - 1] ?? []
+			expect(request).toEqual(
+				expect.objectContaining({
+					model: "claude-sonnet-5",
+					temperature: undefined,
+					system: [expect.objectContaining({ cache_control: { type: "ephemeral" } })],
+				}),
+			)
+			expect(requestOptions?.headers?.["anthropic-beta"]).toContain("prompt-caching-2024-07-31")
+		})
 	})
 
 	describe("completePrompt", () => {
@@ -318,6 +342,20 @@ describe("AnthropicHandler", () => {
 			expect(model.info.maxTokens).toBe(64000)
 			expect(model.info.contextWindow).toBe(200000)
 			expect(model.info.supportsReasoningBudget).toBe(true)
+		})
+
+		it("should handle Claude Sonnet 5 model correctly", () => {
+			const handler = new AnthropicHandler({
+				apiKey: "test-api-key",
+				apiModelId: "claude-sonnet-5",
+				modelTemperature: 0.7,
+			})
+			const model = handler.getModel()
+
+			expect(model.id).toBe("claude-sonnet-5")
+			expect(model.info.maxTokens).toBe(128_000)
+			expect(model.info.contextWindow).toBe(1_000_000)
+			expect(model.temperature).toBeUndefined()
 		})
 
 		it("should enable 1M context for Claude 4.5 Sonnet when beta flag is set", () => {

@@ -290,4 +290,23 @@ describe("ApiOptions Provider Filtering", () => {
 		delete (MODELS_BY_PROVIDER as any).testEmptyProvider
 		PROVIDERS.pop()
 	})
+
+	it("does not show a public provider-docs link for Stellar", () => {
+		vi.mocked(useSelectedModel).mockReturnValue({
+			provider: "stellar",
+			id: "Meta-Llama-3.3-70B-Instruct",
+			info: null,
+		} as any)
+
+		renderWithProviders({
+			...defaultProps,
+			apiConfiguration: {
+				apiProvider: "stellar",
+				apiModelId: "Meta-Llama-3.3-70B-Instruct",
+				stellarBaseUrl: "https://internal.example/stellar/v1",
+			} as ProviderSettings,
+		})
+
+		expect(screen.queryByText("settings:providers.apiProviderDocs")).not.toBeInTheDocument()
+	})
 })

@@ -33,6 +33,10 @@ interface SearchableSelectProps {
 	disabled?: boolean
 	/** Maximum items to display when not searching. Defaults to 50 for performance. */
 	maxDisplayItems?: number
+	/** Allow the current search text to be selected when it is not one of the predefined options. */
+	allowCustomValue?: boolean
+	/** Format the option shown for a custom value. Defaults to the value itself. */
+	customValueLabel?: (value: string) => React.ReactNode
 	"aria-label"?: string
 	"data-testid"?: string
 }
@@ -47,6 +51,8 @@ export function SearchableSelect({
 	className,
 	disabled,
 	maxDisplayItems = 50,
+	allowCustomValue = false,
+	customValueLabel,
 	"aria-label": ariaLabel,
 	"data-testid": dataTestId,
 }: SearchableSelectProps) {
@@ -58,6 +64,10 @@ export function SearchableSelect({
 
 	// Find the selected option
 	const selectedOption = options.find((option) => option.value === value)
+	const selectedLabel = selectedOption?.label ?? (allowCustomValue ? value : undefined)
+	const customValue = searchValue.trim()
+	const showCustomValue =
+		allowCustomValue && customValue.length > 0 && !options.some((option) => option.value === customValue)
 
 	// Filter options based on search, always limit for performance.
 	// Ensure the selected option remains visible even when truncating.
@@ -149,11 +159,11 @@ export function SearchableSelect({
 						"text-vscode-dropdown-foreground",
 						"focus-visible:border-vscode-focusBorder",
 						"aria-expanded:border-vscode-focusBorder",
-						!selectedOption && "text-muted-foreground",
+						!selectedLabel && "text-muted-foreground",
 						className,
 					)}
 					data-testid={dataTestId}>
-					<span className="truncate">{selectedOption ? selectedOption.label : placeholder}</span>
+					<span className="truncate">{selectedLabel ?? placeholder}</span>
 					<ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
 				</Button>
 			</PopoverTrigger>
@@ -201,6 +211,16 @@ export function SearchableSelect({
 								</CommandItem>
 							))}
 						</CommandGroup>
+						{showCustomValue && (
+							<CommandGroup forceMount className="border-t border-vscode-input-border">
+								<CommandItem
+									value={customValue}
+									onSelect={() => handleSelect(customValue)}
+									data-testid={dataTestId ? `${dataTestId}-custom-option` : undefined}>
+									{customValueLabel?.(customValue) ?? customValue}
+								</CommandItem>
+							</CommandGroup>
+						)}
 					</CommandList>
 				</Command>
 			</PopoverContent>

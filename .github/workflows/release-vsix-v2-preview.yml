@@ -66,14 +66,13 @@ jobs:
                   $notes = @"
                   Preview VSIX build from main-v2. This is not published to the VS Code Marketplace.
 
-                  Alpha v$version keeps the primary agent focused while managed subagents run bounded work in parallel
-                  and return durable results.
+                  Alpha v$version expands reliable model access while keeping provider setup and task steering stable.
 
                   Highlights:
-                  - Clear contracts for blocking handoffs and background delegation
-                  - Frozen child instructions with bounded, sanitized parent context
-                  - Exactly-once background completion delivery through ``wait_agent``, including after reloads
-                  - Integrated browser control and explicit task-context compaction
+                  - Internal Stellar access through Helix authentication and enterprise PEM trust
+                  - Current model catalogs across Anthropic, Gemini, OpenAI, Vertex AI, and VS Code LM
+                  - Hardened native tool calls for OpenAI-compatible and Vertex AI models
+                  - Task-scoped queued steering and stable custom model selection
 
                   Commit: ${{ github.sha }}
 

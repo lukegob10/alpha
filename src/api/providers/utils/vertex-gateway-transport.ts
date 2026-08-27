@@ -5,8 +5,12 @@ let configuredPemPath: string | undefined
 let fetchPatchedToUndici = false
 
 export async function configureVertexGatewayTransport(pemCaBundlePath: string): Promise<string> {
+	return configurePemCaTransport(pemCaBundlePath, "Vertex gateway")
+}
+
+export async function configurePemCaTransport(pemCaBundlePath: string, providerName = "Gateway"): Promise<string> {
 	const resolvedPemPath = path.resolve(pemCaBundlePath)
-	await assertPemPathExists(resolvedPemPath)
+	await assertPemPathExists(resolvedPemPath, providerName)
 
 	// Parity with Python/Google tooling expectations.
 	process.env.SSL_CERT_FILE = resolvedPemPath
@@ -22,7 +26,7 @@ export async function configureVertexGatewayTransport(pemCaBundlePath: string): 
 
 	const pemContents = await fs.readFile(resolvedPemPath, "utf8")
 	if (!pemContents.trim()) {
-		throw new Error(`Vertex gateway PEM CA bundle is empty: ${resolvedPemPath}`)
+		throw new Error(`${providerName} PEM CA bundle is empty: ${resolvedPemPath}`)
 	}
 
 	// Ensure Node's fetch uses undici and a dispatcher with explicit CA trust.
@@ -61,16 +65,16 @@ export function isVertexGatewayTransportConfiguredForPem(pemCaBundlePath: string
 	return configuredPemPath === path.resolve(pemCaBundlePath)
 }
 
-async function assertPemPathExists(resolvedPemPath: string): Promise<void> {
+async function assertPemPathExists(resolvedPemPath: string, providerName: string): Promise<void> {
 	let stats
 
 	try {
 		stats = await fs.stat(resolvedPemPath)
 	} catch {
-		throw new Error(`Vertex gateway PEM CA bundle path does not exist: ${resolvedPemPath}`)
+		throw new Error(`${providerName} PEM CA bundle path does not exist: ${resolvedPemPath}`)
 	}
 
 	if (!stats.isFile()) {
-		throw new Error(`Vertex gateway PEM CA bundle path is not a file: ${resolvedPemPath}`)
+		throw new Error(`${providerName} PEM CA bundle path is not a file: ${resolvedPemPath}`)
 	}
 }

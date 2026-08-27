@@ -161,6 +161,40 @@ describe("OpenAiNativeHandler", () => {
 				}
 			}).rejects.toThrow("OpenAI service error")
 		})
+
+		it("should adapt non-streaming GPT-5.5 Pro responses into stream chunks", async () => {
+			mockResponsesCreate.mockResolvedValue({
+				id: "resp_gpt55_pro",
+				output: [
+					{
+						type: "message",
+						content: [{ type: "output_text", text: "Completed response" }],
+					},
+				],
+				usage: { input_tokens: 12, output_tokens: 3 },
+			})
+
+			const proHandler = new OpenAiNativeHandler({
+				...mockOptions,
+				apiModelId: "gpt-5.5-pro",
+			})
+			const chunks: any[] = []
+
+			for await (const chunk of proHandler.createMessage(systemPrompt, messages)) {
+				chunks.push(chunk)
+			}
+
+			expect(mockResponsesCreate).toHaveBeenCalledWith(
+				expect.objectContaining({ model: "gpt-5.5-pro", stream: false }),
+				expect.anything(),
+			)
+			expect(chunks).toEqual(
+				expect.arrayContaining([
+					{ type: "text", text: "Completed response" },
+					expect.objectContaining({ type: "usage", inputTokens: 12, outputTokens: 3 }),
+				]),
+			)
+		})
 	})
 
 	describe("completePrompt", () => {
@@ -303,7 +337,7 @@ describe("OpenAiNativeHandler", () => {
 			])
 		})
 
-		it.each(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"])(
+		it.each(["gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"])(
 			"should expose GPT-5.6 %s with all supported reasoning levels",
 			(modelId) => {
 				const gpt56Handler = new OpenAiNativeHandler({
@@ -314,7 +348,14 @@ describe("OpenAiNativeHandler", () => {
 				const modelInfo = gpt56Handler.getModel()
 
 				expect(modelInfo.id).toBe(modelId)
-				expect(modelInfo.info.supportsReasoningEffort).toEqual(["low", "medium", "high", "xhigh", "max"])
+				expect(modelInfo.info.supportsReasoningEffort).toEqual([
+					"none",
+					"low",
+					"medium",
+					"high",
+					"xhigh",
+					"max",
+				])
 				expect(modelInfo.info.reasoningEffort).toBe("medium")
 			},
 		)

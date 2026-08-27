@@ -165,7 +165,7 @@ describe("VertexHandler", () => {
 
 		it("should handle streaming responses correctly for Claude", async () => {
 			handler = new AnthropicVertexHandler({
-				apiModelId: "claude-3-5-sonnet-v2@20241022",
+				apiModelId: "claude-sonnet-4-6",
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 			})
@@ -244,7 +244,7 @@ describe("VertexHandler", () => {
 
 			expect(mockCreate).toHaveBeenCalledWith(
 				expect.objectContaining({
-					model: "claude-3-5-sonnet-v2@20241022",
+					model: "claude-sonnet-4-6",
 					max_tokens: 8192,
 					temperature: 0,
 					thinking: undefined,
@@ -886,7 +886,7 @@ describe("VertexHandler", () => {
 	describe("completePrompt", () => {
 		it("should complete prompt successfully for Claude", async () => {
 			handler = new AnthropicVertexHandler({
-				apiModelId: "claude-3-5-sonnet-v2@20241022",
+				apiModelId: "claude-sonnet-4-6",
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 			})
@@ -895,7 +895,7 @@ describe("VertexHandler", () => {
 			expect(result).toBe("Test response")
 			expect(handler["client"].messages.create).toHaveBeenCalledWith(
 				expect.objectContaining({
-					model: "claude-3-5-sonnet-v2@20241022",
+					model: "claude-sonnet-4-6",
 					max_tokens: 8192,
 					temperature: 0,
 					messages: [
@@ -962,13 +962,13 @@ describe("VertexHandler", () => {
 	describe("getModel", () => {
 		it("should return correct model info for Claude", () => {
 			handler = new AnthropicVertexHandler({
-				apiModelId: "claude-3-5-sonnet-v2@20241022",
+				apiModelId: "claude-sonnet-4-6",
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 			})
 
 			const modelInfo = handler.getModel()
-			expect(modelInfo.id).toBe("claude-3-5-sonnet-v2@20241022")
+			expect(modelInfo.id).toBe("claude-sonnet-4-6")
 			expect(modelInfo.info).toBeDefined()
 			expect(modelInfo.info.maxTokens).toBe(8192)
 			expect(modelInfo.info.contextWindow).toBe(200_000)
@@ -977,7 +977,8 @@ describe("VertexHandler", () => {
 		it("honors custom maxTokens for thinking models", () => {
 			const handler = new AnthropicVertexHandler({
 				apiKey: "test-api-key",
-				apiModelId: "claude-3-7-sonnet@20250219:thinking",
+				apiModelId: "claude-sonnet-4-6",
+				enableReasoningEffort: true,
 				modelMaxTokens: 32_768,
 				modelMaxThinkingTokens: 16_384,
 			})
@@ -991,28 +992,28 @@ describe("VertexHandler", () => {
 		it("does not honor custom maxTokens for non-thinking models", () => {
 			const handler = new AnthropicVertexHandler({
 				apiKey: "test-api-key",
-				apiModelId: "claude-3-7-sonnet@20250219",
+				apiModelId: "claude-opus-4-8",
 				modelMaxTokens: 32_768,
 				modelMaxThinkingTokens: 16_384,
 			})
 
 			const result = handler.getModel()
-			expect(result.maxTokens).toBe(8192)
+			expect(result.maxTokens).toBe(128_000)
 			expect(result.reasoningBudget).toBeUndefined()
-			expect(result.temperature).toBe(0)
+			expect(result.temperature).toBeUndefined()
 		})
 
 		it("should route Claude model IDs through the Vertex gateway map", () => {
 			const handler = new AnthropicVertexHandler({
-				apiModelId: "claude-3-7-sonnet@20250219:thinking",
+				apiModelId: "claude-sonnet-4-6",
+				enableReasoningEffort: true,
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
-				vertexGatewayModelRoutingMap:
-					'{"claude-3-7-sonnet@20250219:thinking":"gateway-claude-3-7-sonnet:thinking"}',
+				vertexGatewayModelRoutingMap: '{"claude-sonnet-4-6":"gateway-claude-sonnet-4-6"}',
 			})
 
 			const result = handler.getModel()
-			expect(result.id).toBe("claude-3-7-sonnet@20250219")
+			expect(result.id).toBe("claude-sonnet-4-6")
 			expect(result.reasoningBudget).toBeDefined()
 		})
 
@@ -1029,10 +1030,11 @@ describe("VertexHandler", () => {
 			expect(model.info.contextWindow).toBe(1_000_000)
 			expect(model.info.inputPrice).toBe(5.5)
 			expect(model.info.outputPrice).toBe(27.5)
+			expect(model.temperature).toBeUndefined()
 			expect(model.betas).toBeUndefined()
 		})
 
-		it("should enable 1M context for Claude Sonnet 4 when beta flag is set", () => {
+		it("should enable 1M context for Claude Sonnet 4.6 when beta flag is set", () => {
 			const handler = new AnthropicVertexHandler({
 				apiModelId: VERTEX_1M_CONTEXT_MODEL_IDS[0],
 				vertexProjectId: "test-project",
@@ -1047,7 +1049,7 @@ describe("VertexHandler", () => {
 			expect(model.betas).toContain("context-1m-2025-08-07")
 		})
 
-		it("should enable 1M context for Claude Sonnet 4.5 when beta flag is set", () => {
+		it("should enable 1M context for Claude Opus 4.6 when beta flag is set", () => {
 			const handler = new AnthropicVertexHandler({
 				apiModelId: VERTEX_1M_CONTEXT_MODEL_IDS[1],
 				vertexProjectId: "test-project",
@@ -1057,8 +1059,8 @@ describe("VertexHandler", () => {
 
 			const model = handler.getModel()
 			expect(model.info.contextWindow).toBe(1_000_000)
-			expect(model.info.inputPrice).toBe(6.0)
-			expect(model.info.outputPrice).toBe(22.5)
+			expect(model.info.inputPrice).toBe(10.0)
+			expect(model.info.outputPrice).toBe(37.5)
 			expect(model.betas).toContain("context-1m-2025-08-07")
 		})
 
@@ -1077,7 +1079,7 @@ describe("VertexHandler", () => {
 			expect(model.betas).toContain("context-1m-2025-08-07")
 		})
 
-		it("should enable 1M context for Claude Opus 4.7 when beta flag is set", () => {
+		it("should use Claude Opus 4.7's native 1M context without the legacy beta", () => {
 			const handler = new AnthropicVertexHandler({
 				apiModelId: "claude-opus-4-7",
 				vertexProjectId: "test-project",
@@ -1087,9 +1089,10 @@ describe("VertexHandler", () => {
 
 			const model = handler.getModel()
 			expect(model.info.contextWindow).toBe(1_000_000)
-			expect(model.info.inputPrice).toBe(10.0)
-			expect(model.info.outputPrice).toBe(37.5)
-			expect(model.betas).toContain("context-1m-2025-08-07")
+			expect(model.info.inputPrice).toBe(5.5)
+			expect(model.info.outputPrice).toBe(27.5)
+			expect(model.temperature).toBeUndefined()
+			expect(model.betas).toBeUndefined()
 		})
 
 		it("should not enable 1M context when flag is disabled", () => {
@@ -1109,14 +1112,14 @@ describe("VertexHandler", () => {
 
 		it("should not enable 1M context for non-supported models even with flag", () => {
 			const handler = new AnthropicVertexHandler({
-				apiModelId: "claude-3-5-sonnet-v2@20241022",
+				apiModelId: "claude-opus-4-7",
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 				vertex1MContext: true,
 			})
 
 			const model = handler.getModel()
-			expect(model.info.contextWindow).toBe(200_000)
+			expect(model.info.contextWindow).toBe(1_000_000)
 			expect(model.betas).toBeUndefined()
 		})
 	})
@@ -1220,9 +1223,10 @@ describe("VertexHandler", () => {
 	})
 
 	describe("thinking model configuration", () => {
-		it("should configure thinking for models with :thinking suffix", () => {
+		it("should configure thinking for retained reasoning-budget models", () => {
 			const thinkingHandler = new AnthropicVertexHandler({
-				apiModelId: "claude-3-7-sonnet@20250219:thinking",
+				apiModelId: "claude-sonnet-4-6",
+				enableReasoningEffort: true,
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 				modelMaxTokens: 16384,
@@ -1231,7 +1235,7 @@ describe("VertexHandler", () => {
 
 			const modelInfo = thinkingHandler.getModel()
 
-			expect(modelInfo.id).toBe("claude-3-7-sonnet@20250219")
+			expect(modelInfo.id).toBe("claude-sonnet-4-6")
 			expect(modelInfo.reasoningBudget).toBe(4096)
 			expect(modelInfo.temperature).toBe(1.0) // Thinking requires temperature 1.0.
 		})
@@ -1239,7 +1243,8 @@ describe("VertexHandler", () => {
 		it("should calculate thinking budget correctly", () => {
 			// Test with explicit thinking budget
 			const handlerWithBudget = new AnthropicVertexHandler({
-				apiModelId: "claude-3-7-sonnet@20250219:thinking",
+				apiModelId: "claude-sonnet-4-6",
+				enableReasoningEffort: true,
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 				modelMaxTokens: 16384,
@@ -1250,7 +1255,8 @@ describe("VertexHandler", () => {
 
 			// Test with default thinking budget (80% of max tokens)
 			const handlerWithDefaultBudget = new AnthropicVertexHandler({
-				apiModelId: "claude-3-7-sonnet@20250219:thinking",
+				apiModelId: "claude-sonnet-4-6",
+				enableReasoningEffort: true,
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 				modelMaxTokens: 10000,
@@ -1260,7 +1266,8 @@ describe("VertexHandler", () => {
 
 			// Test with minimum thinking budget (should be at least 1024)
 			const handlerWithSmallMaxTokens = new AnthropicVertexHandler({
-				apiModelId: "claude-3-7-sonnet@20250219:thinking",
+				apiModelId: "claude-sonnet-4-6",
+				enableReasoningEffort: true,
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 				modelMaxTokens: 1000, // This would result in 800 tokens for thinking, but minimum is 1024
@@ -1271,7 +1278,8 @@ describe("VertexHandler", () => {
 
 		it("should pass thinking configuration to API", async () => {
 			const thinkingHandler = new AnthropicVertexHandler({
-				apiModelId: "claude-3-7-sonnet@20250219:thinking",
+				apiModelId: "claude-sonnet-4-6",
+				enableReasoningEffort: true,
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 				modelMaxTokens: 16384,

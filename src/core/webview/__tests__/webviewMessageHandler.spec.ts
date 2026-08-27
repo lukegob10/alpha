@@ -346,12 +346,14 @@ describe("webviewMessageHandler - queued message steering", () => {
 			text: "steer this now",
 			images: ["img1.png"],
 		}
-		const takeMessage = vi.fn().mockReturnValue(queuedMessage)
+		const getMessage = vi.fn().mockReturnValue(queuedMessage)
+		const removeMessage = vi.fn().mockReturnValue(true)
 		const steerUserMessage = vi.fn().mockResolvedValue(undefined)
 
 		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue({
 			messageQueueService: {
-				takeMessage,
+				getMessage,
+				removeMessage,
 			},
 			steerUserMessage,
 		} as any)
@@ -362,19 +364,52 @@ describe("webviewMessageHandler - queued message steering", () => {
 			taskId: "task-1",
 		})
 
-		expect(takeMessage).toHaveBeenCalledWith("queued-1")
+		expect(getMessage).toHaveBeenCalledWith("queued-1")
 		expect(steerUserMessage).toHaveBeenCalledWith("steer this now", ["img1.png"])
+		expect(removeMessage).toHaveBeenCalledWith("queued-1")
+		expect(steerUserMessage.mock.invocationCallOrder[0]).toBeLessThan(removeMessage.mock.invocationCallOrder[0])
+	})
+
+	it("keeps the queued message when the task rejects the steering handoff", async () => {
+		const queuedMessage = {
+			id: "queued-1",
+			timestamp: Date.now(),
+			text: "do not lose this",
+			images: [],
+		}
+		const getMessage = vi.fn().mockReturnValue(queuedMessage)
+		const removeMessage = vi.fn()
+		const steerUserMessage = vi.fn().mockRejectedValue(new Error("another steering message is pending"))
+
+		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue({
+			messageQueueService: {
+				getMessage,
+				removeMessage,
+			},
+			steerUserMessage,
+		} as any)
+
+		await expect(
+			webviewMessageHandler(mockClineProvider, {
+				type: "steerQueuedMessage",
+				text: "queued-1",
+				taskId: "task-1",
+			}),
+		).rejects.toThrow("another steering message is pending")
+
+		expect(getMessage).toHaveBeenCalledWith("queued-1")
+		expect(removeMessage).not.toHaveBeenCalled()
 	})
 
 	it("does not queue or steer messages into terminal tasks", async () => {
 		const addMessage = vi.fn()
-		const takeMessage = vi.fn()
+		const getMessage = vi.fn()
 		const steerUserMessage = vi.fn()
 		vi.mocked(mockClineProvider.canAcceptTaskInput).mockReturnValue(false)
 		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue({
 			messageQueueService: {
 				addMessage,
-				takeMessage,
+				getMessage,
 			},
 			steerUserMessage,
 		} as any)
@@ -392,7 +427,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 		})
 
 		expect(addMessage).not.toHaveBeenCalled()
-		expect(takeMessage).not.toHaveBeenCalled()
+		expect(getMessage).not.toHaveBeenCalled()
 		expect(steerUserMessage).not.toHaveBeenCalled()
 		expect(mockClineProvider.log).toHaveBeenCalledWith(
 			"[webviewMessageHandler] Ignoring queueMessage: task task-1 is terminal",

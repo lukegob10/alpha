@@ -357,7 +357,7 @@ export class ClineProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "august-2026-v2.1.1-agent-loop-convergence" // v2.1.1 agent loop convergence
+	public readonly latestAnnouncementId = "august-2026-v2.1.2-model-provider-refresh" // v2.1.2 model/provider refresh
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

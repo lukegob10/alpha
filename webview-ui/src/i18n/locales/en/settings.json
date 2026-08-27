@@ -558,6 +558,11 @@
 		"vscodeLmWarning": "Note: Models accessed via the VS Code Language Model API may be wrapped or fine-tuned by the provider, so behavior can differ from using the same model directly from a typical provider or router. To use a model from the Language Model dropdown, first switch to that model and then click Accept in the Copilot Chat prompt; otherwise you may see an error such as 400 \"The requested model is not supported\".",
 		"googleCloudProjectId": "Google Cloud Project ID",
 		"googleCloudRegion": "Google Cloud Region",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "Search or enter a region",
+			"noMatchFound": "No matching region found",
+			"useCustomRegion": "Use custom: {{region}}"
+		},
 		"googleCloudCredentials": "Google Cloud Credentials JSON",
 		"googleCloudKeyFile": "Google Cloud Key File",
 		"googleCloudSetup": {
@@ -576,6 +581,17 @@
 		"vertexGatewayTokenRefreshMinutes": "Vertex Gateway Token Refresh Minutes",
 		"vertexGatewayModelRoutingMap": "Vertex Gateway Model Routing Map",
 		"vertexGatewayModelRoutingMapDescription": "JSON object keyed by model ID. Values may be legacy model override strings or objects with projectId, location, modelOverride, and extraHeaders.",
+		"stellarDescription": "Connects to the internal Stellar OpenAI-compatible model gateway. The API key is retrieved automatically with Helix and is never stored.",
+		"stellarBaseUrl": "Stellar Base URL",
+		"stellarCaBundlePath": "Stellar PEM CA Bundle Path",
+		"stellarHelixCommand": "Stellar Helix Command",
+		"stellarHelixParseMode": "Stellar Helix Parse Mode",
+		"stellarHelixParseModeRawStdout": "Raw stdout",
+		"stellarHelixParseModeJsonField": "JSON field",
+		"stellarHelixTokenKey": "Stellar Helix Token Key",
+		"stellarTokenRefreshMinutes": "Stellar Token Refresh Minutes",
+		"stellarStreamingEnabledLabel": "Enable streaming responses",
+		"stellarStreamingEnabledDescription": "Disable this if the Stellar deployment does not support streaming. Responses will appear after completion.",
 		"lmStudio": {
 			"baseUrl": "Base URL (optional)",
 			"modelId": "Model ID",
@@ -1011,6 +1027,7 @@
 		"googleCloud": "You must provide a Google Cloud project ID and region.",
 		"vertexGateway": "Vertex gateway requires a base URL, CA bundle path, and Helix command.",
 		"vertexGatewayModelRoutingMap": "Vertex Gateway Model Routing Map must be a JSON object with string model IDs.",
+		"stellar": "Stellar requires a valid base URL and PEM CA bundle path.",
 		"modelId": "You must provide a valid model ID.",
 		"modelSelector": "You must provide a valid model selector.",
 		"openAi": "You must provide a valid base URL, API key, and model ID.",

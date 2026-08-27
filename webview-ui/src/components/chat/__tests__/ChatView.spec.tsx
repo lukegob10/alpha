@@ -1434,6 +1434,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		// First hydrate state with initial task
 		mockPostMessage({
+			currentTaskId: "task-1",
 			clineMessages: [
 				{
 					type: "say",
@@ -1449,6 +1450,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		// Add api_req_started without cost (spinner state - API request in progress)
 		mockPostMessage({
+			currentTaskId: "task-1",
 			clineMessages: [
 				{
 					type: "say",
@@ -1492,6 +1494,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				type: "queueMessage",
 				text: "follow-up question during spinner",
 				images: [],
+				taskId: "task-1",
 			})
 		})
 		await waitFor(() => {
@@ -1505,6 +1508,43 @@ describe("ChatView - Message Queueing Tests", () => {
 				askResponse: "messageResponse",
 			}),
 		)
+	})
+
+	it("keeps the draft when a queued message has no active task target", async () => {
+		const { getByTestId } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: undefined,
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: Date.now() - 2000,
+					text: "Initial task",
+				},
+				{
+					type: "say",
+					say: "api_req_started",
+					ts: Date.now(),
+					text: JSON.stringify({ apiProtocol: "anthropic" }),
+				},
+			],
+		})
+
+		await waitFor(() => {
+			expect(getByTestId("chat-textarea")).toBeInTheDocument()
+		})
+
+		vi.mocked(vscode.postMessage).mockClear()
+		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+
+		await act(async () => {
+			fireEvent.change(input, { target: { value: "keep this draft" } })
+			fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		})
+
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
+		expect(input.value).toBe("keep this draft")
 	})
 
 	it("renders a steer button for queued messages and posts steerQueuedMessage with the task id", async () => {
@@ -2114,6 +2154,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		// Hydrate state with API request in progress and existing queue
 		mockPostMessage({
+			currentTaskId: "task-1",
 			clineMessages: [
 				{
 					type: "say",
@@ -2157,6 +2198,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				type: "queueMessage",
 				text: "message during queue drain",
 				images: [],
+				taskId: "task-1",
 			})
 		})
 
@@ -2174,6 +2216,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		// Hydrate state with command_output ask (Proceed While Running state)
 		mockPostMessage({
+			currentTaskId: "task-1",
 			clineMessages: [
 				{
 					type: "say",
@@ -2220,6 +2263,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				type: "queueMessage",
 				text: "message during command execution",
 				images: [],
+				taskId: "task-1",
 			})
 		})
 

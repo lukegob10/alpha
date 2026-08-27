@@ -27,6 +27,7 @@ import {
 	bedrockDefaultModelId,
 	vertexDefaultModelId,
 	sambaNovaDefaultModelId,
+	stellarDefaultModelId,
 	internationalZAiDefaultModelId,
 	mainlandZAiDefaultModelId,
 	fireworksDefaultModelId,
@@ -85,6 +86,7 @@ import {
 	QwenCode,
 	Requesty,
 	SambaNova,
+	Stellar,
 	Unbound,
 	Vertex,
 	VSCodeLM,
@@ -351,6 +353,7 @@ const ApiOptions = ({
 				bedrock: { field: "apiModelId", default: bedrockDefaultModelId },
 				vertex: { field: "apiModelId", default: vertexDefaultModelId },
 				sambanova: { field: "apiModelId", default: sambaNovaDefaultModelId },
+				stellar: { field: "apiModelId", default: stellarDefaultModelId },
 				zai: {
 					field: "apiModelId",
 					default:
@@ -387,7 +390,7 @@ const ApiOptions = ({
 		const provider = PROVIDERS.find(({ value }) => value === selectedProvider)
 		const name = provider?.label
 
-		if (!name) {
+		if (!name || selectedProvider === "stellar") {
 			return undefined
 		}
 
@@ -663,6 +666,13 @@ const ApiOptions = ({
 
 					{selectedProvider === "sambanova" && (
 						<SambaNova
+							apiConfiguration={apiConfiguration}
+							setApiConfigurationField={setApiConfigurationField}
+						/>
+					)}
+
+					{selectedProvider === "stellar" && (
+						<Stellar
 							apiConfiguration={apiConfiguration}
 							setApiConfigurationField={setApiConfigurationField}
 						/>

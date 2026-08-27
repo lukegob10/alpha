@@ -71,7 +71,7 @@ describe("VertexHandler", () => {
 		const mockGetGenerativeModel = vitest.fn()
 
 		handler = new VertexHandler({
-			apiModelId: "gemini-1.5-pro-001",
+			apiModelId: "gemini-3.5-flash",
 			vertexProjectId: "test-project",
 			vertexRegion: "us-central1",
 		})
@@ -97,7 +97,7 @@ describe("VertexHandler", () => {
 			process.env.USERNAME = "soe123"
 
 			new VertexHandler({
-				apiModelId: "gemini-3-flash-preview",
+				apiModelId: "gemini-3.7-flash",
 				vertexProjectId: "test-project",
 				vertexRegion: "global",
 				vertexGatewayBaseUrl: "https://gateway.example.com/vertex",
@@ -163,7 +163,7 @@ describe("VertexHandler", () => {
 
 		it("should use non-streaming responses when Vertex streaming is disabled for Gemini", async () => {
 			handler = new VertexHandler({
-				apiModelId: "gemini-2.0-flash-001",
+				apiModelId: "gemini-3.1-flash-lite",
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 				vertexStreamingEnabled: false,
@@ -228,7 +228,7 @@ describe("VertexHandler", () => {
 
 		it("should emit fallback text when Vertex returns only reasoning", async () => {
 			handler = new VertexHandler({
-				apiModelId: "gemini-2.0-flash-001",
+				apiModelId: "gemini-3.1-flash-lite",
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 				vertexStreamingEnabled: false,
@@ -331,7 +331,7 @@ describe("VertexHandler", () => {
 
 		it("should retry auth failures before emitting chunks when Vertex streaming is disabled", async () => {
 			handler = new VertexHandler({
-				apiModelId: "gemini-2.0-flash-001",
+				apiModelId: "gemini-3.1-flash-lite",
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 				vertexStreamingEnabled: false,
@@ -414,41 +414,47 @@ describe("VertexHandler", () => {
 		it("should return correct model info for Gemini", () => {
 			// Create a new instance with specific model ID
 			const testHandler = new VertexHandler({
-				apiModelId: "gemini-2.0-flash-001",
+				apiModelId: "gemini-3.1-flash-lite",
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 			})
 
 			// Don't mock getModel here as we want to test the actual implementation
 			const modelInfo = testHandler.getModel()
-			expect(modelInfo.id).toBe("gemini-2.0-flash-001")
+			expect(modelInfo.id).toBe("gemini-3.1-flash-lite")
 			expect(modelInfo.info).toBeDefined()
-			expect(modelInfo.info.maxTokens).toBe(8192)
+			expect(modelInfo.info.maxTokens).toBe(65_536)
 			expect(modelInfo.info.contextWindow).toBe(1048576)
 		})
 
 		it.each([
-			["gemini-3.5-flash", 65_535, 1.5, 9.0],
-			["gemini-3.1-flash-lite", 65_535, 0.25, 1.5],
-		])("should return native Vertex model info for %s", (apiModelId, maxTokens, inputPrice, outputPrice) => {
-			const testHandler = new VertexHandler({
-				apiModelId,
-				vertexProjectId: "test-project",
-				vertexRegion: "global",
-			})
+			["gemini-3.7-flash", 65_536, 0.75, 3.75, ["low", "medium", "high"]],
+			["gemini-3.6-flash", 65_536, 0.75, 3.75, ["minimal", "low", "medium", "high"]],
+			["gemini-3.5-flash", 65_536, 1.5, 9.0, ["minimal", "low", "medium", "high"]],
+			["gemini-3.5-flash-lite", 65_536, 0.3, 2.5, ["minimal", "low", "medium", "high"]],
+			["gemini-3.1-flash-lite", 65_536, 0.25, 1.5, ["minimal", "low", "medium", "high"]],
+		])(
+			"should return native Vertex model info for %s",
+			(apiModelId, maxTokens, inputPrice, outputPrice, reasoningEfforts) => {
+				const testHandler = new VertexHandler({
+					apiModelId,
+					vertexProjectId: "test-project",
+					vertexRegion: "global",
+				})
 
-			const modelInfo = testHandler.getModel()
-			expect(modelInfo.id).toBe(apiModelId)
-			expect(modelInfo.info.maxTokens).toBe(maxTokens)
-			expect(modelInfo.info.contextWindow).toBe(1_048_576)
-			expect(modelInfo.info.inputPrice).toBe(inputPrice)
-			expect(modelInfo.info.outputPrice).toBe(outputPrice)
-			expect(modelInfo.info.supportsReasoningEffort).toEqual(["minimal", "low", "medium", "high"])
-		})
+				const modelInfo = testHandler.getModel()
+				expect(modelInfo.id).toBe(apiModelId)
+				expect(modelInfo.info.maxTokens).toBe(maxTokens)
+				expect(modelInfo.info.contextWindow).toBe(1_048_576)
+				expect(modelInfo.info.inputPrice).toBe(inputPrice)
+				expect(modelInfo.info.outputPrice).toBe(outputPrice)
+				expect(modelInfo.info.supportsReasoningEffort).toEqual(reasoningEfforts)
+			},
+		)
 
 		it("should exclude apply_diff and include edit in tool preferences", () => {
 			const testHandler = new VertexHandler({
-				apiModelId: "gemini-2.0-flash-001",
+				apiModelId: "gemini-3.1-flash-lite",
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 			})
@@ -460,7 +466,7 @@ describe("VertexHandler", () => {
 
 		it("should not duplicate tool entries if already present", () => {
 			const testHandler = new VertexHandler({
-				apiModelId: "gemini-2.0-flash-001",
+				apiModelId: "gemini-3.1-flash-lite",
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 			})
@@ -474,13 +480,13 @@ describe("VertexHandler", () => {
 
 		it("should route selected model IDs through the Vertex gateway map", () => {
 			const testHandler = new VertexHandler({
-				apiModelId: "gemini-3-flash-preview",
+				apiModelId: "gemini-3.7-flash",
 				vertexProjectId: "test-project",
 				vertexRegion: "global",
-				vertexGatewayModelRoutingMap: '{"gemini-3-flash-preview":"gateway-gemini-flash"}',
+				vertexGatewayModelRoutingMap: '{"gemini-3.7-flash":"gateway-gemini-flash"}',
 			})
 
-			expect(testHandler.getModel().id).toBe("gemini-3-flash-preview")
+			expect(testHandler.getModel().id).toBe("gemini-3.7-flash")
 		})
 
 		it("should pass through unknown Vertex Gemini model IDs with Gemini defaults", () => {

@@ -93,6 +93,7 @@ body:
         - OpenRouter
         - Requesty
         - SambaNova
+        - Stellar
         - Unbound
         - VS Code Language Model API
         - xAI (Grok)

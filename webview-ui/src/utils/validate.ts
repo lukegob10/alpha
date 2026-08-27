@@ -86,6 +86,11 @@ function validateModelsAndKeysProvided(apiConfiguration: ProviderSettings): stri
 				return i18next.t("settings:validation.vertexGatewayModelRoutingMap")
 			}
 			break
+		case "stellar":
+			if (!hasValidStellarConfiguration(apiConfiguration)) {
+				return i18next.t("settings:validation.stellar")
+			}
+			break
 		case "gemini":
 			if (!apiConfiguration.geminiApiKey) {
 				return i18next.t("settings:validation.apiKey")
@@ -191,6 +196,21 @@ function validateProviderAgainstOrganizationSettings(
 
 function hasConfiguredValue(value: unknown): boolean {
 	return typeof value === "string" ? value.trim().length > 0 : value !== undefined && value !== null
+}
+
+function hasValidStellarConfiguration(apiConfiguration: ProviderSettings): boolean {
+	if (
+		!hasConfiguredValue(apiConfiguration.stellarBaseUrl) ||
+		!hasConfiguredValue(apiConfiguration.stellarPemCaBundlePath)
+	) {
+		return false
+	}
+
+	try {
+		return URL.canParse(apiConfiguration.stellarBaseUrl!.trim())
+	} catch {
+		return false
+	}
 }
 
 function hasVertexProjectAndLocation(apiConfiguration: ProviderSettings): boolean {

@@ -20,6 +20,8 @@ import {
 	getVscodeLlmModelInfo,
 	openAiCodexModels,
 	sambaNovaModels,
+	stellarDefaultModelId,
+	stellarModels,
 	internationalZAiModels,
 	mainlandZAiModels,
 	fireworksModels,
@@ -308,6 +310,11 @@ function getSelectedModel({
 		case "sambanova": {
 			const id = apiConfiguration.apiModelId ?? defaultModelId
 			const info = sambaNovaModels[id as keyof typeof sambaNovaModels]
+			return { id, info }
+		}
+		case "stellar": {
+			const id = apiConfiguration.apiModelId ?? defaultModelId
+			const info = stellarModels[id as keyof typeof stellarModels] ?? stellarModels[stellarDefaultModelId]
 			return { id, info }
 		}
 		case "fireworks": {

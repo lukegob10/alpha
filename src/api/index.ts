@@ -28,6 +28,7 @@ import {
 	LiteLLMHandler,
 	QwenCodeHandler,
 	SambaNovaHandler,
+	StellarHandler,
 	ZAiHandler,
 	FireworksHandler,
 	VercelAiGatewayHandler,
@@ -162,6 +163,8 @@ export function buildApiHandler(configuration: ProviderSettings): ApiHandler {
 			return new LiteLLMHandler(options)
 		case "sambanova":
 			return new SambaNovaHandler(options)
+		case "stellar":
+			return new StellarHandler(options)
 		case "zai":
 			return new ZAiHandler(options)
 		case "fireworks":

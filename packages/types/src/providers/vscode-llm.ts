@@ -22,8 +22,10 @@ export const vscodeLlmDefaultModelId: VscodeLlmModelId = "gpt-5.5"
 const COPILOT_DEFAULT_CONTEXT_WINDOW = 128_000
 const COPILOT_GPT_5_CONTEXT_WINDOW = 272_000
 const COPILOT_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "medium", "high"]
+const COPILOT_MINIMAL_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["minimal", "low", "medium", "high"]
 const COPILOT_EXTRA_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["none", "low", "medium", "high", "xhigh"]
 const COPILOT_CODEX_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "medium", "high", "xhigh"]
+const COPILOT_KIMI_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "high", "max"]
 const COPILOT_MAX_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = [
 	"none",
 	"low",
@@ -197,18 +199,26 @@ export const vscodeLlmModels = {
 		family: "claude-opus-4.8-fast",
 		supportsImages: true,
 		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+	}),
+	"claude-opus-5": copilotModel({
+		name: "Claude Opus 5",
+		family: "claude-opus-5",
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 	}),
 	"gemini-2.5-pro": copilotModel({
 		name: "Gemini 2.5 Pro",
 		family: "gemini-2.5-pro",
 		supportsImages: true,
+		deprecated: true,
 	}),
 	"gemini-3-flash": copilotModel({
 		name: "Gemini 3 Flash",
 		family: "gemini-3-flash",
 		supportsImages: true,
 		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+		deprecated: true,
 	}),
 	"gemini-3.1-pro": copilotModel({
 		name: "Gemini 3.1 Pro",
@@ -222,9 +232,27 @@ export const vscodeLlmModels = {
 		supportsImages: true,
 		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
 	}),
+	"gemini-3.6-flash": copilotModel({
+		name: "Gemini 3.6 Flash",
+		family: "gemini-3.6-flash",
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_MINIMAL_REASONING_EFFORTS,
+	}),
+	"gemini-3.7-flash": copilotModel({
+		name: "Gemini 3.7 Flash",
+		family: "gemini-3.7-flash",
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+	}),
 	"mai-code-1-flash": copilotModel({
 		name: "MAI-Code-1-Flash",
 		family: "mai-code-1-flash",
+	}),
+	"mai-code-1.1-flash": copilotModel({
+		name: "MAI-Code-1.1-Flash",
+		family: "mai-code-1.1-flash",
+		contextWindow: 256_000,
+		supportsImages: true,
 	}),
 	"raptor-mini": copilotModel({
 		name: "Raptor mini",
@@ -233,6 +261,23 @@ export const vscodeLlmModels = {
 	"kimi-k2.7-code": copilotModel({
 		name: "Kimi K2.7 Code",
 		family: "kimi-k2.7-code",
+	}),
+	"kimi-k3": copilotModel({
+		name: "Kimi K3",
+		family: "kimi-k3",
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_KIMI_REASONING_EFFORTS,
+		supportsContextWindowConfiguration: true,
+	}),
+	"grok-4.5": copilotModel({
+		name: "Grok 4.5",
+		family: "grok-4.5",
+		supportsImages: true,
+	}),
+	"grok-4.6": copilotModel({
+		name: "Grok 4.6",
+		family: "grok-4.6",
+		supportsImages: true,
 	}),
 	"gpt-4.1": copilotModel({
 		name: "GPT-4.1",

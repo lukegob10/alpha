@@ -753,6 +753,20 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[isCondensing, sendingDisabled],
 	)
 
+	const postQueuedMessage = useCallback(
+		(text: string, images: string[]) => {
+			// Queue messages are task-scoped on the extension side. Preserve the draft
+			// during transient view/task state instead of posting a request it will reject.
+			if (!visibleCurrentTaskId) {
+				return false
+			}
+
+			vscode.postMessage({ type: "queueMessage", text, images, taskId: visibleCurrentTaskId })
+			return true
+		},
+		[visibleCurrentTaskId],
+	)
+
 	/**
 	 * Handles sending messages to the extension
 	 * @param text - The message text to send
@@ -808,9 +822,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 
 			if (isLastFollowUpAnswered) {
-				vscode.postMessage({ type: "queueMessage", text, images, ...visibleTaskPayload })
-				setInputValue("")
-				setSelectedImages([])
+				if (postQueuedMessage(text, images)) {
+					setInputValue("")
+					setSelectedImages([])
+				}
 				return
 			}
 
@@ -822,9 +837,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				(clineAskRef.current !== undefined && approvalAskTypes.has(clineAskRef.current))
 
 			if (shouldQueueMessage) {
-				vscode.postMessage({ type: "queueMessage", text, images, ...visibleTaskPayload })
-				setInputValue("")
-				setSelectedImages([])
+				if (postQueuedMessage(text, images)) {
+					setInputValue("")
+					setSelectedImages([])
+				}
 				return
 			}
 
@@ -861,6 +877,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			editingQueuedMessage,
 			isVisibleTaskCompleted,
 			isLastFollowUpAnswered,
+			postQueuedMessage,
 			startNewTask,
 			handleCondenseContext,
 			visibleCurrentTaskId,
@@ -891,17 +908,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// Handle enqueue button click from textarea
 	const handleEnqueueCurrentMessage = useCallback(() => {
 		const text = inputValue.trim()
-		if (text || selectedImages.length > 0) {
-			vscode.postMessage({
-				type: "queueMessage",
-				text,
-				images: selectedImages,
-				...visibleTaskPayload,
-			})
+		if ((text || selectedImages.length > 0) && postQueuedMessage(text, selectedImages)) {
 			setInputValue("")
 			setSelectedImages([])
 		}
-	}, [visibleTaskPayload, inputValue, selectedImages])
+	}, [inputValue, postQueuedMessage, selectedImages])
 
 	const startQueuedMessageEdit = useCallback(
 		(message: QueuedMessage) => {
@@ -1815,14 +1826,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			// Special case: during command_output, queue the message instead of
 			// triggering the primary button action (which would lose the message)
 			if (clineAskRef.current === "command_output" && hasInput) {
-				vscode.postMessage({
-					type: "queueMessage",
-					text: inputValue.trim(),
-					images: selectedImages,
-					...visibleTaskPayload,
-				})
-				setInputValue("")
-				setSelectedImages([])
+				if (postQueuedMessage(inputValue.trim(), selectedImages)) {
+					setInputValue("")
+					setSelectedImages([])
+				}
 				return
 			}
 

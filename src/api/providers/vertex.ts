@@ -22,7 +22,7 @@ export class VertexHandler extends GeminiHandler implements SingleCompletionHand
 		// with a Claude model name, which Vertex rejects as an invalid request.
 		if (modelId?.startsWith("gemini-") && !(modelId in vertexModels)) {
 			id = modelId
-			info = vertexModels["gemini-3-flash-preview"]
+			info = vertexModels["gemini-3.7-flash"]
 		}
 
 		const params = getModelParams({

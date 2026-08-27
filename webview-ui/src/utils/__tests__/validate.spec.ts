@@ -196,6 +196,38 @@ describe("Model Validation Functions", () => {
 			const result = validateApiConfigurationExcludingModelErrors(config, mockRouterModels, allowAllOrganization)
 			expect(result).toBeUndefined()
 		})
+
+		it("requires a valid Stellar base URL and PEM CA bundle path", () => {
+			const missingPem: ProviderSettings = {
+				apiProvider: "stellar",
+				stellarBaseUrl: "https://gateway.example.com/stellar/v1",
+			}
+			const invalidUrl: ProviderSettings = {
+				apiProvider: "stellar",
+				stellarBaseUrl: "not-a-url",
+				stellarPemCaBundlePath: "C:\\certs\\corp.pem",
+			}
+
+			expect(
+				validateApiConfigurationExcludingModelErrors(missingPem, mockRouterModels, allowAllOrganization),
+			).toBe("settings:validation.stellar")
+			expect(
+				validateApiConfigurationExcludingModelErrors(invalidUrl, mockRouterModels, allowAllOrganization),
+			).toBe("settings:validation.stellar")
+		})
+
+		it("accepts a complete Stellar configuration without a stored API key", () => {
+			const config: ProviderSettings = {
+				apiProvider: "stellar",
+				stellarBaseUrl: "https://gateway.example.com/stellar/v1",
+				stellarPemCaBundlePath: "C:\\certs\\corp.pem",
+				apiModelId: "Meta-Llama-3.3-70B-Instruct",
+			}
+
+			expect(
+				validateApiConfigurationExcludingModelErrors(config, mockRouterModels, allowAllOrganization),
+			).toBeUndefined()
+		})
 	})
 })
 

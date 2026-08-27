@@ -15,6 +15,7 @@ import {
 	openAiNativeModels,
 	qwenCodeModels,
 	sambaNovaModels,
+	stellarModels,
 	vertexModels,
 	vscodeLlmModels,
 	xaiModels,
@@ -116,6 +117,7 @@ export const providerNames = [
 	"openai-native",
 	"qwen-code",
 	"sambanova",
+	"stellar",
 	"vertex",
 	"xai",
 	"zai",
@@ -254,6 +256,16 @@ const vertexSchema = apiModelIdProviderModelSchema.extend({
 	vertexGatewayModelRoutingMap: z.string().optional(),
 	vertexStreamingEnabled: z.boolean().optional(),
 	vertex1MContext: z.boolean().optional(), // Enable 'context-1m-2025-08-07' beta for 1M context window.
+})
+
+const stellarSchema = apiModelIdProviderModelSchema.extend({
+	stellarBaseUrl: z.string().optional(),
+	stellarPemCaBundlePath: z.string().optional(),
+	stellarHelixCommand: z.string().optional(),
+	stellarHelixParseMode: z.enum(["raw_stdout", "json_field"]).optional(),
+	stellarHelixTokenKey: z.string().optional(),
+	stellarTokenRefreshMinutes: z.number().int().min(1).optional(),
+	stellarStreamingEnabled: z.boolean().optional(),
 })
 
 const openAiSchema = baseProviderSettingsSchema.extend({
@@ -411,6 +423,7 @@ export const providerSettingsSchemaDiscriminated = z.discriminatedUnion("apiProv
 	openRouterSchema.merge(z.object({ apiProvider: z.literal("openrouter") })),
 	bedrockSchema.merge(z.object({ apiProvider: z.literal("bedrock") })),
 	vertexSchema.merge(z.object({ apiProvider: z.literal("vertex") })),
+	stellarSchema.merge(z.object({ apiProvider: z.literal("stellar") })),
 	openAiSchema.merge(z.object({ apiProvider: z.literal("openai") })),
 	ollamaSchema.merge(z.object({ apiProvider: z.literal("ollama") })),
 	vsCodeLmSchema.merge(z.object({ apiProvider: z.literal("vscode-lm") })),
@@ -444,6 +457,7 @@ export const providerSettingsSchema = z.object({
 	...openRouterSchema.shape,
 	...bedrockSchema.shape,
 	...vertexSchema.shape,
+	...stellarSchema.shape,
 	...openAiSchema.shape,
 	...ollamaSchema.shape,
 	...vsCodeLmSchema.shape,
@@ -521,6 +535,7 @@ export const modelIdKeysByProvider: Record<TypicalProvider, ModelIdKey> = {
 	openrouter: "openRouterModelId",
 	bedrock: "apiModelId",
 	vertex: "apiModelId",
+	stellar: "apiModelId",
 	"openai-codex": "apiModelId",
 	"openai-native": "openAiModelId",
 	ollama: "ollamaModelId",
@@ -636,6 +651,11 @@ export const MODELS_BY_PROVIDER: Record<
 		id: "vertex",
 		label: "GCP Vertex AI",
 		models: Object.keys(vertexModels),
+	},
+	stellar: {
+		id: "stellar",
+		label: "Stellar",
+		models: Object.keys(stellarModels),
 	},
 	"vscode-lm": {
 		id: "vscode-lm",

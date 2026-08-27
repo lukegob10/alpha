@@ -6,14 +6,14 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.1 Preview
+## Welcome to Alpha v2.1.2 Preview
 
-Alpha v2.1.1 keeps the primary agent focused while managed subagents run bounded work in parallel and return durable results.
+Alpha v2.1.2 expands reliable model access while keeping provider setup and task steering stable.
 
-- Clear contracts for blocking handoffs and background delegation
-- Frozen child instructions with bounded, sanitized parent context
-- Exactly-once background completion delivery through `wait_agent`, including after reloads
-- Integrated browser control and explicit task-context compaction
+- Internal Stellar access through Helix authentication and enterprise PEM trust
+- Current model catalogs and capabilities across Anthropic, Gemini, OpenAI, Vertex AI, and VS Code LM
+- Hardened native tool calls for OpenAI-compatible and Vertex AI models
+- Task-scoped queued steering and custom model selection without Settings bounce
 
 <details>
   <summary>🌐 Available languages</summary>

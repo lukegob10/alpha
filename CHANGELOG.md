@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.1.2
+
+### Patch Changes
+
+- Add the internal Stellar provider with OpenAI-compatible chat completions, Helix token refresh, PEM CA trust, streaming controls, and custom model IDs.
+- Refresh the built-in Anthropic, Gemini, OpenAI, Vertex AI, and VS Code language-model catalogs and capability metadata.
+- Harden OpenAI-compatible and Vertex AI native tool-call handling across streaming and non-streaming responses.
+- Keep queued steering messages scoped to the active task and preserve drafts when the task is not ready to accept them.
+- Support organization-specific custom model selections without destabilizing the Settings edit buffer.
+
 ## 2.1.1
 
 ### Patch Changes

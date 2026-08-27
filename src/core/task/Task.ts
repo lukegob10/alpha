@@ -2982,6 +2982,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (text.length === 0 && images.length === 0) {
 			return
 		}
+		if (this.abort || this.didComplete) {
+			throw new Error("The task cannot accept a steering message")
+		}
+		if (
+			this.pendingSteerMessage ||
+			this.steerMessageAwaitingPersistence ||
+			this.askResponse !== undefined ||
+			this.deferredAskResponse !== undefined
+		) {
+			throw new Error("A steering message is already pending")
+		}
 		const retainForDurableRecovery = () => {
 			this.pendingSteerMessage = { text, images, ...(onPersisted ? { onPersisted } : {}) }
 			this.steerMessageAwaitingPersistence = true

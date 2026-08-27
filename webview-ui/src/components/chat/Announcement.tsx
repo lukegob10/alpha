@@ -35,18 +35,14 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 				</DialogHeader>
 				<div className="space-y-2 text-sm">
 					<p>
-						Alpha v{Package.version} keeps the primary agent focused while managed subagents run bounded
-						work in parallel and return durable results.
+						Alpha v{Package.version} expands reliable model access while keeping provider setup and task
+						steering stable.
 					</p>
 					<ul className="list-disc space-y-1 pl-5">
-						<li>Blocking handoffs and background delegation now have clear lifecycle contracts.</li>
-						<li>Child agents receive frozen instructions plus bounded, sanitized parent context.</li>
-						<li>
-							Background completions return once through wait_agent and remain recoverable after reloads.
-						</li>
-						<li>
-							Integrated browser control and explicit context compaction round out the agent workflow.
-						</li>
+						<li>Stellar connects internal models through Helix authentication and enterprise PEM trust.</li>
+						<li>Anthropic, Gemini, OpenAI, Vertex AI, and VS Code LM model catalogs are current.</li>
+						<li>OpenAI-compatible and Vertex AI native tool calls are more resilient.</li>
+						<li>Queued steering and custom model selection stay task-scoped and stable.</li>
 					</ul>
 				</div>
 			</DialogContent>
