@@ -87,4 +87,18 @@ describe("Task external mutation capability", () => {
 
 		expect(recordParentVerificationEvidence).not.toHaveBeenCalled()
 	})
+
+	it("records an immutable, deduplicated verification scope for command evidence", () => {
+		const task = makeTask({ taskKind: "primary", commandExecutionEvidence: new Map() })
+		const requestedScope = ["change-1", "change-1", "change-2"]
+
+		task.beginCommandExecution("verification-command", "execution-1", "pnpm test", requestedScope)
+		requestedScope.push("change-3")
+
+		const firstRead = task.getCommandExecutionEvidence()
+		expect(firstRead[0]?.verificationChangeSetIds).toEqual(["change-1", "change-2"])
+
+		firstRead[0]?.verificationChangeSetIds?.push("change-4")
+		expect(task.getCommandExecutionEvidence()[0]?.verificationChangeSetIds).toEqual(["change-1", "change-2"])
+	})
 })

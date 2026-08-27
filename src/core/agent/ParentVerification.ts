@@ -38,9 +38,9 @@ export function summarizeParentVerification(
 	const unresolvedCount = obligations.filter((item) => ["required", "pending", "failed"].includes(item.status)).length
 	const message =
 		representative.status === "failed"
-			? "Parent verification failed; run a parent command that references an applied file again."
+			? `Parent verification failed; rerun execute_command with verification.change_set_ids including "${representative.changeSetId}".`
 			: representative.status === "pending"
-				? "Applied changes need a passing parent command that references an applied file."
+				? `Applied changes need a passing execute_command scoped to change set "${representative.changeSetId}".`
 				: representative.status === "required"
 					? "Worker changes are quarantined for review."
 					: representative.status === "satisfied"
@@ -69,7 +69,7 @@ export function decideParentCompletion(obligations: readonly ParentVerificationO
 
 	const details = blockingObligations.map((item) => {
 		const worker = item.workerPath ? `${item.workerNickname} (${item.workerPath})` : item.workerNickname
-		const failure = item.status === "failed" ? "; the latest parent command failed" : ""
+		const failure = item.status === "failed" ? "; the latest scoped verification command failed" : ""
 		return `${worker}, change set ${item.changeSetId} (${item.changedFiles.length} file${item.changedFiles.length === 1 ? "" : "s"})${failure}`
 	})
 	const count = blockingObligations.length
@@ -79,7 +79,7 @@ export function decideParentCompletion(obligations: readonly ParentVerificationO
 		message:
 			`Cannot complete while ${count} applied Worker change set${count === 1 ? "" : "s"} ` +
 			`await${count === 1 ? "s" : ""} parent verification. ` +
-			`Run a verification command in the parent task that references at least one applied file, then retry attempt_completion. ` +
+			`Run a genuine verification command in the parent task and name each covered change set in verification.change_set_ids, then retry attempt_completion. ` +
 			`Needs attention: ${details.join("; ")}.`,
 	}
 }

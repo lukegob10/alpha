@@ -143,6 +143,7 @@ describe("AgentControlStore nested trees", () => {
 					executionId: "verify-nested-execution",
 					status: "succeeded",
 					command: "pnpm test src/nested.ts",
+					verificationChangeSetIds: ["nested-change"],
 					startedAt: 2_101,
 					completedAt: 2_102,
 					exitCode: 0,

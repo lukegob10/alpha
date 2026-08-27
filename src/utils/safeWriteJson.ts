@@ -15,6 +15,10 @@ export interface SafeWriteJsonOptions {
 	 * @default false
 	 */
 	prettyPrint?: boolean
+	/** Optional synchronous fenced replacement for the temporary-file commit. */
+	commitTempFile?: (temporaryPath: string, destinationPath: string) => void
+	/** Replace the destination in one rename instead of creating a rollback backup. */
+	atomicReplace?: boolean
 }
 
 /**
@@ -91,28 +95,38 @@ async function safeWriteJson(filePath: string, data: any, options?: SafeWriteJso
 
 		await _streamDataToFile(actualTempNewFilePath, data, options?.prettyPrint)
 
-		// Step 2: Check if the target file exists. If so, rename it to a backup path.
-		try {
-			// Check for target file existence
-			await fs.access(absoluteFilePath)
-			// Target exists, create a backup path and rename.
-			actualTempBackupFilePath = path.join(
-				path.dirname(absoluteFilePath),
-				`.${path.basename(absoluteFilePath)}.bak_${Date.now()}_${Math.random().toString(36).substring(2)}.tmp`,
-			)
-			await fs.rename(absoluteFilePath, actualTempBackupFilePath)
-		} catch (accessError: any) {
-			// Explicitly type accessError
-			if (accessError.code !== "ENOENT") {
-				// An error other than "file not found" occurred during access check.
-				throw accessError
+		// Step 2: The default path retains a rollback backup. Callers with an
+		// external transaction fence can choose a single atomic replacement so
+		// there is no missing-target window after ownership is checked.
+		if (!options?.atomicReplace) {
+			try {
+				// Check for target file existence
+				await fs.access(absoluteFilePath)
+				// Target exists, create a backup path and rename.
+				actualTempBackupFilePath = path.join(
+					path.dirname(absoluteFilePath),
+					`.${path.basename(absoluteFilePath)}.bak_${Date.now()}_${Math.random().toString(36).substring(2)}.tmp`,
+				)
+				await fs.rename(absoluteFilePath, actualTempBackupFilePath)
+			} catch (accessError: any) {
+				// Explicitly type accessError
+				if (accessError.code !== "ENOENT") {
+					// An error other than "file not found" occurred during access check.
+					throw accessError
+				}
+				// Target file does not exist, so no backup is made. actualTempBackupFilePath remains null.
 			}
-			// Target file does not exist, so no backup is made. actualTempBackupFilePath remains null.
 		}
 
 		// Step 3: Rename the new temporary file to the target file path.
 		// This is the main "commit" step.
-		await fs.rename(actualTempNewFilePath, absoluteFilePath)
+		if (options?.commitTempFile) {
+			// The callback is intentionally synchronous: persistence implementations
+			// can validate an unstealable lock and rename in one JavaScript turn.
+			options.commitTempFile(actualTempNewFilePath, absoluteFilePath)
+		} else {
+			await fs.rename(actualTempNewFilePath, absoluteFilePath)
+		}
 
 		// If we reach here, the new file is successfully in place.
 		// The original actualTempNewFilePath is now the main file, so we shouldn't try to clean it up as "temp".

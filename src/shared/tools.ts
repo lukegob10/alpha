@@ -108,6 +108,7 @@ export const toolParamNames = [
 	"replace_all", // edit tool parameter for replacing all occurrences
 	"expected_replacements", // edit_file parameter for multiple occurrences
 	"timeout", // execute_command parameter
+	"verification", // execute_command verification scope
 	"artifact_id", // read_command_output parameter
 	"search", // read_command_output parameter for grep-like search
 	"offset", // read_command_output and read_file parameter
@@ -144,6 +145,7 @@ export const toolParamNames = [
 	"expected_output",
 	"path_prefix",
 	"timeout_ms",
+	"until_terminal",
 	"target",
 ] as const
 
@@ -158,7 +160,13 @@ export type NativeToolArgs = BrowserToolArgs & {
 	read_file: import("@alpha-code/types").ReadFileToolParams
 	read_command_output: { artifact_id: string; search?: string; offset?: number; limit?: number }
 	attempt_completion: { result: string; outcome?: "completed" | "blocked" }
-	execute_command: { command: string; cwd?: string; timeout?: number | null }
+	execute_command: {
+		command: string
+		cwd?: string | null
+		timeout?: number | null
+		/** Explicitly identifies applied Worker change sets this command validates. */
+		verification?: { change_set_ids: string[] } | null
+	}
 	apply_diff: { path: string; diff: string }
 	edit: { file_path: string; old_string: string; new_string: string; replace_all?: boolean }
 	search_and_replace: { file_path: string; old_string: string; new_string: string; replace_all?: boolean }
@@ -322,7 +330,7 @@ export interface McpToolUse {
 export interface ExecuteCommandToolUse extends ToolUse<"execute_command"> {
 	name: "execute_command"
 	// Pick<Record<ToolParamName, string>, "command"> makes "command" required, but Partial<> makes it optional
-	params: Partial<Pick<Record<ToolParamName, string>, "command" | "cwd" | "timeout">>
+	params: Partial<Pick<Record<ToolParamName, string>, "command" | "cwd" | "timeout" | "verification">>
 }
 
 export interface ReadFileToolUse extends ToolUse<"read_file"> {

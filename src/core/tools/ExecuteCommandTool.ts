@@ -27,8 +27,9 @@ class ShellIntegrationError extends Error {}
 
 interface ExecuteCommandParams {
 	command: string
-	cwd?: string
+	cwd?: string | null
 	timeout?: number | null
+	verification?: { change_set_ids: string[] } | null
 }
 
 export function resolveAgentTimeoutMs(timeoutSeconds: number | null | undefined): number {
@@ -49,7 +50,8 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 	readonly name = "execute_command" as const
 
 	async execute(params: ExecuteCommandParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
-		const { command, cwd: customCwd, timeout: timeoutSeconds } = params
+		const { command, cwd: requestedCwd, timeout: timeoutSeconds, verification } = params
+		const customCwd = requestedCwd ?? undefined
 		const { handleError, pushToolResult, askApproval } = callbacks
 		let commandEvidenceId: string | undefined
 
@@ -64,7 +66,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			const canonicalCommand = unescapeHtmlEntities(command)
 			const executionId = task.lastMessageTs?.toString() ?? Date.now().toString()
 			commandEvidenceId = callbacks.toolCallId ?? `${executionId}:legacy:${randomUUID()}`
-			task.beginCommandExecution?.(commandEvidenceId, executionId, canonicalCommand)
+			task.beginCommandExecution?.(commandEvidenceId, executionId, canonicalCommand, verification?.change_set_ids)
 
 			if (isGitHubCliCommand(canonicalCommand)) {
 				task.failCommandExecution?.(commandEvidenceId)

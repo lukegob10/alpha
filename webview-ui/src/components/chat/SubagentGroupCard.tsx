@@ -61,11 +61,11 @@ const parentVerificationCopy: Record<
 	},
 	pending: {
 		label: "Verification pending",
-		nextAction: "Run a parent verification command that names at least one applied file.",
+		nextAction: "Run a parent verification command scoped to this applied change set.",
 	},
 	failed: {
 		label: "Verification failed",
-		nextAction: "Fix the issue, then rerun a parent verification command that names an applied file.",
+		nextAction: "Fix the issue, then rerun verification for this applied change set.",
 	},
 	satisfied: {
 		label: "Verified",

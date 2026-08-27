@@ -26,6 +26,7 @@ import { initializeNetworkProxy } from "./utils/networkProxy"
 import { Package } from "./shared/package"
 import { formatLanguage } from "./shared/language"
 import { ContextProxy } from "./core/config/ContextProxy"
+import { AgentControlStore } from "./core/agent/AgentControlStore"
 import { ClineProvider } from "./core/webview/ClineProvider"
 import { DIFF_VIEW_URI_SCHEME } from "./integrations/editor/DiffViewProvider"
 import { TerminalRegistry } from "./integrations/terminal/TerminalRegistry"
@@ -323,6 +324,11 @@ export async function activate(context: vscode.ExtensionContext) {
 export async function deactivate() {
 	outputChannel.appendLine(`${Package.name} extension deactivated`)
 
+	try {
+		await AgentControlStore.shutdownGlobalStores()
+	} catch (error) {
+		outputChannel.appendLine(`Failed to release managed-agent runtime ownership: ${String(error)}`)
+	}
 	await McpServerManager.cleanup(extensionContext)
 	TelemetryService.instance.shutdown()
 	TerminalRegistry.cleanup()

@@ -179,8 +179,10 @@ export interface CommandExecutionEvidence {
 	signalName?: string
 	startedAt: number
 	completedAt?: number
-	/** Task-memory only. Durable verification stores matched paths, never command text. */
+	/** Task-memory only. Durable verification stores the covered applied paths, never command text. */
 	command?: string
+	/** Explicit applied change sets this command was requested to verify. */
+	verificationChangeSetIds?: string[]
 }
 
 const SAFE_EXTERNAL_MUTATION_ASKS = new Set<ClineAsk>([
@@ -2289,14 +2291,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.messageQueueService.clear()
 	}
 
-	public beginCommandExecution(toolCallId: string, executionId: string, command?: string): void {
+	public beginCommandExecution(
+		toolCallId: string,
+		executionId: string,
+		command?: string,
+		verificationChangeSetIds?: readonly string[],
+	): void {
 		if (this.commandExecutionEvidence.has(toolCallId)) return
+		const scopedChangeSetIds =
+			verificationChangeSetIds === undefined ? undefined : [...new Set(verificationChangeSetIds)]
 		this.commandExecutionEvidence.set(toolCallId, {
 			toolCallId,
 			executionId,
 			status: "running",
 			startedAt: Date.now(),
 			command,
+			...(scopedChangeSetIds ? { verificationChangeSetIds: scopedChangeSetIds } : {}),
 		})
 	}
 
@@ -2330,7 +2340,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public getCommandExecutionEvidence(): CommandExecutionEvidence[] {
-		return [...this.commandExecutionEvidence.values()].map((evidence) => ({ ...evidence }))
+		return [...this.commandExecutionEvidence.values()].map((evidence) => ({
+			...evidence,
+			...(evidence.verificationChangeSetIds
+				? { verificationChangeSetIds: [...evidence.verificationChangeSetIds] }
+				: {}),
+		}))
 	}
 
 	public hasActiveCommandExecutions(): boolean {
@@ -3925,6 +3940,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		const host: AgentTurnHost<TaskTurnInput> = {
 			shouldAbort: () => this.abort,
+			canCompleteWithoutTools: () =>
+				// Managed children must publish a durable terminal result through attempt_completion.
+				this.taskKind === "primary" &&
+				this.userMessageContent.length === 0 &&
+				this.pendingSteerMessage === undefined &&
+				this.messageQueueService.isEmpty(),
 			runStep: async (input) => {
 				const didEndLoop = await this.recursivelyMakeClineRequests(
 					input.userContent,
@@ -3937,10 +3958,32 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					return { response, nextInput: "complete" }
 				}
 
-				const nextUserContent =
-					this.userMessageContent.length > 0
-						? [...this.userMessageContent]
-						: [{ type: "text" as const, text: formatResponse.noToolsUsed() }]
+				let requiresContinuation = this.userMessageContent.length > 0 || this.pendingSteerMessage !== undefined
+				let nextUserContent: Anthropic.Messages.ContentBlockParam[]
+
+				if (this.userMessageContent.length > 0) {
+					nextUserContent = [...this.userMessageContent]
+				} else if (this.pendingSteerMessage !== undefined) {
+					// recursivelyMakeClineRequests consumes durable steering before the next API request.
+					nextUserContent = [{ type: "text", text: formatResponse.noToolsUsed() }]
+				} else {
+					const isVisiblePrimaryResponse =
+						this.taskKind === "primary" &&
+						response.toolCalls.length === 0 &&
+						response.text.trim().length > 0
+					const queuedMessage =
+						isVisiblePrimaryResponse && !this.messageQueueService.isEmpty()
+							? this.messageQueueService.dequeueMessage()
+							: undefined
+
+					if (queuedMessage) {
+						requiresContinuation = true
+						await this.say("user_feedback", queuedMessage.text, queuedMessage.images)
+						nextUserContent = this.buildUserMessageContent(queuedMessage.text, queuedMessage.images)
+					} else {
+						nextUserContent = [{ type: "text", text: formatResponse.noToolsUsed() }]
+					}
+				}
 
 				return {
 					response,
@@ -3948,6 +3991,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						userContent: nextUserContent,
 						includeFileDetails: false,
 					},
+					...(requiresContinuation ? { requiresContinuation: true } : {}),
 				}
 			},
 		}
@@ -5082,11 +5126,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							return true
 						}
 
-						// If the model did not tool use, then we need to tell it to
-						// either use a tool or attempt_completion.
+						// Primary tasks may end with ordinary assistant text. Managed children
+						// retain the explicit completion tool because it publishes their durable
+						// terminal result back to the parent.
 						const didToolUse = hasToolUses
 
-						if (!didToolUse) {
+						if (!didToolUse && this.taskKind === "subagent") {
 							// Increment consecutive no-tool-use counter
 							this.consecutiveNoToolUseCount++
 
@@ -5103,7 +5148,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								text: formatResponse.noToolsUsed(),
 							})
 						} else {
-							// Reset counter when tools are used successfully
+							// Reset the legacy recovery counter after tools or a valid primary response.
 							this.consecutiveNoToolUseCount = 0
 						}
 

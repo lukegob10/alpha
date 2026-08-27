@@ -124,7 +124,7 @@ describe("SubagentGroupCard Worker regressions", () => {
 		expect(screen.getByRole("button", { name: /Open Maple · Completed · Verify/i })).toBeEnabled()
 		await user.click(screen.getByRole("button", { name: "Actions for Maple" }))
 		expect(screen.getByText("Verification pending")).toBeInTheDocument()
-		expect(screen.getByText(/names at least one applied file/i)).toBeInTheDocument()
+		expect(screen.getByText(/scoped to this applied change set/i)).toBeInTheDocument()
 		expect(screen.queryByRole("menuitem", { name: "Apply changes" })).not.toBeInTheDocument()
 		expect(screen.queryByRole("menuitem", { name: "Discard" })).not.toBeInTheDocument()
 		await user.keyboard("{Escape}")

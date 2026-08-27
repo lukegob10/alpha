@@ -122,7 +122,7 @@ export const parentVerificationEvidenceSchema = z.object({
 	completedAt: z.number().int().nonnegative(),
 	exitCode: z.number().int().optional(),
 	signalName: z.string().optional(),
-	/** Credential-free explanation of why this command was relevant. */
+	/** Credential-free applied paths covered by the explicit verification scope. */
 	matchedFiles: z.array(z.string().min(1)).min(1).optional(),
 })
 export type ParentVerificationEvidence = z.infer<typeof parentVerificationEvidenceSchema>

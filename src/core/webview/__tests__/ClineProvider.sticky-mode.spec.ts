@@ -169,15 +169,60 @@ vi.mock("p-wait-for", () => ({
 	default: vi.fn().mockImplementation(async () => Promise.resolve()),
 }))
 
-vi.mock("fs/promises", () => ({
-	mkdir: vi.fn().mockResolvedValue(undefined),
-	writeFile: vi.fn().mockResolvedValue(undefined),
-	readFile: vi.fn().mockResolvedValue(""),
-	readdir: vi.fn().mockResolvedValue([]),
-	unlink: vi.fn().mockResolvedValue(undefined),
-	rmdir: vi.fn().mockResolvedValue(undefined),
-	access: vi.fn().mockResolvedValue(undefined),
-	rm: vi.fn().mockResolvedValue(undefined),
+vi.mock("fs/promises", () => {
+	const transactionFiles = new Map<string, string>()
+	const transactionDirectories = new Set<string>()
+	return {
+		mkdir: vi.fn().mockImplementation(async (filePath: string) => {
+			if (filePath.includes(".transaction.lock")) transactionDirectories.add(filePath)
+		}),
+		writeFile: vi.fn().mockImplementation(async (filePath: string, data: unknown) => {
+			if (filePath.includes(".transaction.lock")) transactionFiles.set(filePath, String(data))
+		}),
+		readFile: vi.fn().mockImplementation((filePath: string) => {
+			if (transactionFiles.has(filePath)) return Promise.resolve(transactionFiles.get(filePath))
+			if (filePath.includes(".transaction.lock")) {
+				return Promise.reject(Object.assign(new Error("not found"), { code: "ENOENT" }))
+			}
+			return filePath.endsWith("agent_control.json")
+				? Promise.reject(Object.assign(new Error("not found"), { code: "ENOENT" }))
+				: Promise.resolve("")
+		}),
+		readdir: vi.fn().mockResolvedValue([]),
+		stat: vi.fn().mockImplementation(async (filePath: string) => {
+			if (!transactionDirectories.has(filePath)) {
+				throw Object.assign(new Error("not found"), { code: "ENOENT" })
+			}
+			return { isDirectory: () => true }
+		}),
+		rename: vi.fn().mockImplementation(async (sourcePath: string, destinationPath: string) => {
+			if (transactionDirectories.has(destinationPath)) {
+				throw Object.assign(new Error("not empty"), { code: "ENOTEMPTY" })
+			}
+			if (!transactionDirectories.delete(sourcePath)) {
+				throw Object.assign(new Error("not found"), { code: "ENOENT" })
+			}
+			transactionDirectories.add(destinationPath)
+			for (const [filePath, data] of [...transactionFiles]) {
+				if (!filePath.startsWith(sourcePath)) continue
+				transactionFiles.delete(filePath)
+				transactionFiles.set(`${destinationPath}${filePath.slice(sourcePath.length)}`, data)
+			}
+		}),
+		unlink: vi.fn().mockImplementation(async (filePath: string) => {
+			transactionFiles.delete(filePath)
+		}),
+		rmdir: vi.fn().mockImplementation(async (filePath: string) => {
+			transactionDirectories.delete(filePath)
+		}),
+		access: vi.fn().mockResolvedValue(undefined),
+		rm: vi.fn().mockResolvedValue(undefined),
+	}
+})
+
+vi.mock("proper-lockfile", () => ({
+	lock: vi.fn().mockResolvedValue(vi.fn().mockResolvedValue(undefined)),
+	check: vi.fn().mockResolvedValue(true),
 }))
 
 vi.mock("../../../utils/storage", async (importOriginal) => {

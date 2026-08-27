@@ -213,6 +213,11 @@ const SUBAGENT_RESEARCH_WINDOW_MS = 75_000
 const MANAGED_AGENT_TREE_TEXT_LIMIT = 1_000
 const WAIT_AGENT_RESULT_SOURCE = "managed_agent_mailbox"
 
+interface WaitForAgentOptions {
+	target?: string
+	untilTerminal?: boolean
+}
+
 const boundedManagedAgentText = (value: string | undefined, limit = MANAGED_AGENT_TREE_TEXT_LIMIT): string =>
 	(value ?? "").trim().slice(0, limit)
 
@@ -5172,7 +5177,7 @@ export class ClineProvider
 						item.status === "required"
 							? "Review and apply or discard the quarantined change set."
 							: item.status === "pending" || item.status === "failed"
-								? "Run a parent verification command that references an applied file."
+								? `Run execute_command with verification.change_set_ids including "${item.changeSetId}".`
 								: undefined,
 				})),
 			},
@@ -5336,15 +5341,27 @@ export class ClineProvider
 		await this.agentControlStore.settleMailboxClaim(parent.taskId, claimId, "acknowledge", root.rootTaskId)
 	}
 
-	public async waitForAgent(parent: Task, timeoutMs = 30_000): Promise<unknown> {
+	public async waitForAgent(parent: Task, timeoutMs = 30_000, options: WaitForAgentOptions = {}): Promise<unknown> {
 		const root = await this.ensureAgentControlRoot(parent)
 		await this.agentControlStore.retryPendingMailboxClaimSettlements(parent.taskId, root.rootTaskId)
 		const reconciledClaimCount = await this.reconcileWaitAgentClaims(parent, root.rootTaskId)
+		const untilTerminal = options.untilTerminal === true
+		const target = options.target ? await this.requireControlledAgent(parent, options.target) : undefined
+		if (target && !untilTerminal) {
+			throw new Error("A targeted wait requires untilTerminal to be true")
+		}
+		if (target && target.parentTaskId !== parent.taskId) {
+			throw new Error(
+				`Agent ${target.path} is not an immediate child of this task; terminal results are collected by ${target.parentPath}`,
+			)
+		}
 		const boundedTimeoutMs = Math.max(10_000, Math.min(timeoutMs, 300_000))
 		const takeAvailable = async (): Promise<{ events: AgentMailboxEntry[]; claimId?: string }> => {
 			const claim = await this.agentControlStore.claimMailbox(parent.taskId, {
 				rootTaskId: root.rootTaskId,
 				channel: "wait",
+				...(untilTerminal ? { kinds: ["result" as const] } : {}),
+				...(target ? { payloadTaskIds: [target.taskId] } : {}),
 			})
 			if (claim.entries.length === 0) return { events: [] }
 			return { events: claim.entries, claimId: claim.claimId }
@@ -5359,25 +5376,91 @@ export class ClineProvider
 				events: immediate.events,
 			}
 		}
-		if (reconciledClaimCount > 0) {
+		if (reconciledClaimCount > 0 && !untilTerminal) {
 			return { timedOut: false, events: [], alreadyDelivered: true }
 		}
-		const activeAgents = this.agentControlStore
+		const visibleAgents = this.agentControlStore
 			.listAgents({
 				rootTaskId: root.rootTaskId,
 				includeRoot: false,
-				statuses: ["pending", "running", "cancelling"],
 			})
 			.filter(
 				(record) =>
 					record.parentTaskId === parent.taskId ||
 					this.agentControlStore.isDescendant(parent.taskId, record.taskId, root.rootTaskId),
 			)
+		const activeAgents = visibleAgents.filter((record) =>
+			(["pending", "running", "cancelling"] as AgentLifecycleStatus[]).includes(record.status),
+		)
 		const caller = this.agentControlStore.getAgent(parent.taskId, root.rootTaskId)
 		const canReceiveParentControl =
 			caller?.parentTaskId !== undefined &&
 			(["pending", "running", "cancelling"] as AgentLifecycleStatus[]).includes(caller.status)
-		if (activeAgents.length === 0 && !canReceiveParentControl) {
+		const matchingActiveAgents = target
+			? activeAgents.filter((record) => record.taskId === target.taskId)
+			: untilTerminal
+				? activeAgents.filter((record) => record.parentTaskId === parent.taskId)
+				: activeAgents
+		const terminalCandidates = target
+			? [this.agentControlStore.getAgent(target.taskId, root.rootTaskId) ?? target]
+			: untilTerminal
+				? visibleAgents.filter((record) => record.parentTaskId === parent.taskId)
+				: []
+		const inactiveTerminalCandidates = terminalCandidates.filter(
+			(record) => !("pending" === record.status || "running" === record.status || "cancelling" === record.status),
+		)
+		const terminalEventTimes = new Map(
+			inactiveTerminalCandidates.map((record) => [record.taskId, record.finishedAt ?? record.updatedAt]),
+		)
+		const publishedTerminalTaskIds = new Set<string>()
+		let afterSequence = 0
+		while (publishedTerminalTaskIds.size < terminalEventTimes.size) {
+			const page = this.agentControlStore.readMailbox(parent.taskId, {
+				rootTaskId: root.rootTaskId,
+				afterSequence,
+				includeDelivered: true,
+				kinds: ["result"],
+				limit: 1_000,
+			})
+			for (const entry of page.entries) {
+				const taskId = typeof entry.payload?.taskId === "string" ? entry.payload.taskId : undefined
+				const terminalAt = taskId ? terminalEventTimes.get(taskId) : undefined
+				if (taskId && terminalAt !== undefined && entry.createdAt >= terminalAt) {
+					publishedTerminalTaskIds.add(taskId)
+				}
+			}
+			if (page.entries.length < 1_000) break
+			afterSequence = page.nextSequence
+		}
+		const terminalPublicationPending = inactiveTerminalCandidates.some(
+			(record) => !publishedTerminalTaskIds.has(record.taskId),
+		)
+		if (
+			matchingActiveAgents.length === 0 &&
+			!terminalPublicationPending &&
+			(!canReceiveParentControl || untilTerminal)
+		) {
+			// Close the claim/state-scan race: a matching result may have committed
+			// after the first claim but before the durable publication scan. Its
+			// presence proves publication, not delivery, so claim once more before
+			// returning an empty/already-delivered fast path.
+			const finalAvailable = await takeAvailable()
+			if (finalAvailable.claimId) {
+				return {
+					timedOut: false,
+					source: WAIT_AGENT_RESULT_SOURCE,
+					claimId: finalAvailable.claimId,
+					events: finalAvailable.events,
+				}
+			}
+			if (target) {
+				return {
+					timedOut: false,
+					events: [],
+					alreadyDelivered: true,
+					target: { taskId: target.taskId, path: target.path, status: target.status },
+				}
+			}
 			return { timedOut: false, noActiveAgents: true, events: [] }
 		}
 		// A managed child can have no descendants and still need to sleep until its
@@ -5461,7 +5544,12 @@ export class ClineProvider
 					void finish()
 				}, boundedTimeoutMs)
 				unsubscribe = this.agentControlStore.subscribe((entry) => {
-					if (entry.rootTaskId === root.rootTaskId && entry.recipientTaskId === parent.taskId) {
+					if (
+						entry.rootTaskId === root.rootTaskId &&
+						entry.recipientTaskId === parent.taskId &&
+						(!untilTerminal || entry.kind === "result") &&
+						(!target || entry.payload?.taskId === target.taskId)
+					) {
 						void finish()
 					}
 				})
@@ -7377,8 +7465,7 @@ export class ClineProvider
 					changeSetId,
 					success: true,
 					changeSetStatus: changeSet.status,
-					message:
-						"Worker changes were applied. Run a parent verification command that references an applied file.",
+					message: `Worker changes were applied. Run a genuine verification command with verification.change_set_ids including "${changeSetId}".`,
 				}
 			}
 		} catch (error) {

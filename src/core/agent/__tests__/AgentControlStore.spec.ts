@@ -1,9 +1,15 @@
 import * as fs from "fs/promises"
+import * as fsSync from "fs"
 import * as os from "os"
 import * as path from "path"
 import { randomUUID } from "crypto"
 
-import { AgentControlStore, FileAgentControlPersistence, InMemoryAgentControlPersistence } from "../AgentControlStore"
+import {
+	AgentControlStore,
+	FileAgentControlPersistence,
+	InMemoryAgentControlPersistence,
+	type AgentControlPersistence,
+} from "../AgentControlStore"
 
 const clock = (initial = 1_000) => {
 	let current = initial
@@ -83,6 +89,7 @@ describe("AgentControlStore", () => {
 					executionId: "execution-early",
 					status: "succeeded",
 					command: "node scripts/verify.js src/example.ts",
+					verificationChangeSetIds: ["change-1"],
 					startedAt: 2_099,
 					completedAt: 2_101,
 				},
@@ -91,12 +98,26 @@ describe("AgentControlStore", () => {
 		expect(
 			await store.recordParentVerificationEvidence("root-1", [
 				{
-					toolCallId: "unrelated",
+					toolCallId: "unscoped-echo",
 					executionId: "execution-unrelated",
 					status: "succeeded",
-					command: "pnpm test unrelated.spec.ts",
+					command: "echo src/example.ts",
 					startedAt: 2_101,
 					completedAt: 2_102,
+					exitCode: 0,
+				},
+			]),
+		).toEqual([])
+		expect(
+			await store.recordParentVerificationEvidence("root-1", [
+				{
+					toolCallId: "wrong-scope",
+					executionId: "execution-wrong-scope",
+					status: "succeeded",
+					command: "pnpm test",
+					verificationChangeSetIds: ["another-change"],
+					startedAt: 2_102,
+					completedAt: 2_103,
 					exitCode: 0,
 				},
 			]),
@@ -108,13 +129,16 @@ describe("AgentControlStore", () => {
 				executionId: "execution-failed",
 				status: "failed",
 				command: "node scripts/verify.js src/example.ts",
+				verificationChangeSetIds: ["change-1"],
 				startedAt: 2_101,
 				completedAt: 2_102,
 				exitCode: 1,
 			},
 		])
 		expect(failed).toMatchObject([{ status: "failed", verification: { status: "failed" } }])
-		expect(store.getParentCompletionDecision("root-1").message).toContain("latest parent command failed")
+		expect(store.getParentCompletionDecision("root-1").message).toContain(
+			"latest scoped verification command failed",
+		)
 		expect(
 			await store.recordParentVerificationEvidence("root-1", [
 				{
@@ -122,6 +146,7 @@ describe("AgentControlStore", () => {
 					executionId: "execution-failed",
 					status: "failed",
 					command: "node scripts/verify.js src/example.ts",
+					verificationChangeSetIds: ["change-1"],
 					startedAt: 2_101,
 					completedAt: 2_102,
 					exitCode: 1,
@@ -134,7 +159,8 @@ describe("AgentControlStore", () => {
 				toolCallId: "verify-passed",
 				executionId: "execution-passed",
 				status: "succeeded",
-				command: "node scripts/verify.js src/example.ts",
+				command: "pnpm test",
+				verificationChangeSetIds: ["change-1"],
 				startedAt: 2_103,
 				completedAt: 2_104,
 				exitCode: 0,
@@ -194,7 +220,8 @@ describe("AgentControlStore", () => {
 				toolCallId: "aggregate-verification",
 				executionId: "aggregate-execution",
 				status: "succeeded",
-				command: "pnpm test src/one.ts src/two.ts",
+				command: "pnpm test",
+				verificationChangeSetIds: ["applied-1", "applied-2"],
 				startedAt: 3_200,
 				completedAt: 3_300,
 				exitCode: 0,
@@ -689,28 +716,660 @@ describe("AgentControlStore", () => {
 
 	it("persists one atomic versioned snapshot under global storage", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-"))
+		const stores: AgentControlStore[] = []
 		try {
 			const persistence = new FileAgentControlPersistence(directory)
 			const first = new AgentControlStore(persistence, clock(50_000))
+			stores.push(first)
 			await first.initialize()
 			await first.ensureRoot({ taskId: "root-file", status: "interrupted" })
 
 			const raw = JSON.parse(await fs.readFile(persistence.filePath, "utf8"))
-			expect(raw).toMatchObject({ version: 1, agents: [{ taskId: "root-file", path: "/root" }] })
+			expect(raw).toMatchObject({ version: 2, agents: [{ taskId: "root-file", path: "/root" }] })
 
 			const reloaded = new AgentControlStore(new FileAgentControlPersistence(directory), clock(60_000))
+			stores.push(reloaded)
 			await reloaded.initialize()
 			expect(reloaded.getAgent("root-file")?.path).toBe("/root")
+		} finally {
+			await Promise.all(stores.map((store) => store.shutdown()))
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("coalesces concurrent initialization and permits a retry after failure", async () => {
+		let releaseFirstAttempt!: () => void
+		const firstAttemptBlocked = new Promise<void>((resolve) => {
+			releaseFirstAttempt = resolve
+		})
+		let attempts = 0
+		const transactionStarted = vi.fn()
+		const persistence: AgentControlPersistence = {
+			read: vi.fn().mockResolvedValue(undefined),
+			write: vi.fn().mockResolvedValue(undefined),
+			async withTransaction<T>(operation: () => Promise<T>): Promise<T> {
+				transactionStarted()
+				attempts++
+				if (attempts === 1) {
+					await firstAttemptBlocked
+					throw new Error("transaction unavailable")
+				}
+				return operation()
+			},
+		}
+		const store = new AgentControlStore(persistence, clock(65_000))
+
+		const first = store.initialize()
+		const second = store.initialize()
+		const failedInitializations = Promise.allSettled([first, second])
+		await vi.waitFor(() => expect(transactionStarted).toHaveBeenCalledTimes(1))
+		releaseFirstAttempt()
+		expect(await failedInitializations).toEqual([
+			expect.objectContaining({ status: "rejected", reason: new Error("transaction unavailable") }),
+			expect.objectContaining({ status: "rejected", reason: new Error("transaction unavailable") }),
+		])
+
+		await expect(store.initialize()).resolves.toBeUndefined()
+		expect(transactionStarted).toHaveBeenCalledTimes(2)
+		expect(store.getSnapshot()).toMatchObject({ version: 2, agents: [] })
+	})
+
+	it("commits initialized state only after the persistence transaction releases", async () => {
+		let failRelease = true
+		const persistence: AgentControlPersistence = {
+			read: vi.fn().mockResolvedValue(undefined),
+			write: vi.fn().mockResolvedValue(undefined),
+			async withTransaction<T>(operation: () => Promise<T>): Promise<T> {
+				const result = await operation()
+				if (failRelease) {
+					failRelease = false
+					throw new Error("transaction release failed")
+				}
+				return result
+			},
+		}
+		const store = new AgentControlStore(persistence, clock(66_000))
+
+		await expect(store.initialize()).rejects.toThrow("transaction release failed")
+		expect(() => store.getSnapshot()).toThrow("initialize() must complete")
+		await expect(store.initialize()).resolves.toBeUndefined()
+		expect(store.getSnapshot()).toMatchObject({ version: 2, agents: [] })
+	})
+
+	it("treats shutdown as terminal for an activation-scoped owner", async () => {
+		const store = new AgentControlStore(new InMemoryAgentControlPersistence(), clock(67_000))
+		await store.initialize()
+		await store.shutdown()
+
+		await expect(store.initialize()).rejects.toThrow("cannot be reinitialized after shutdown")
+	})
+
+	it("rejects a file transaction after its process lock is removed", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-fence-"))
+		try {
+			const persistence = new FileAgentControlPersistence(directory)
+			await expect(
+				persistence.withTransaction(async () => {
+					await fs.rename(
+						`${persistence.filePath}.transaction.lock`,
+						`${persistence.filePath}.transaction.lock.removed`,
+					)
+					return "must-not-commit"
+				}),
+			).rejects.toThrow("transaction ownership was lost")
+			await expect(persistence.withTransaction(async () => "next-transaction")).resolves.toBe("next-transaction")
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true })
 		}
 	})
 
-	it("shares one in-process store for the same global storage path", () => {
-		const storagePath = path.join(os.tmpdir(), `alpha-agent-control-shared-${randomUUID()}`)
+	it("rejects ownership loss at the synchronous commit fence without replacing the snapshot", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-commit-fence-"))
+		const persistence = new FileAgentControlPersistence(directory)
+		const store = new AgentControlStore(persistence, clock(68_000), { ownerId: "commit-fence-host" })
+		const internals = persistence as unknown as { assertTransactionOwnerSync(): void }
+		const originalAssertTransactionOwner = internals.assertTransactionOwnerSync.bind(persistence)
+		let transactionFence: ReturnType<typeof vi.spyOn> | undefined
+		const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined)
+		try {
+			await store.initialize()
+			await store.ensureRoot({ taskId: "commit-fence-root", status: "running" })
+			transactionFence = vi.spyOn(internals, "assertTransactionOwnerSync").mockImplementation(() => {
+				fsSync.renameSync(
+					`${persistence.filePath}.transaction.lock`,
+					`${persistence.filePath}.transaction.lock.removed`,
+				)
+				originalAssertTransactionOwner()
+			})
 
-		expect(AgentControlStore.forGlobalStorage(storagePath)).toBe(
-			AgentControlStore.forGlobalStorage(path.resolve(storagePath)),
-		)
+			await expect(store.updateAgentSnapshot("commit-fence-root", { stopReason: "failed" })).rejects.toThrow(
+				"transaction ownership was lost",
+			)
+			const persisted = JSON.parse(await fs.readFile(persistence.filePath, "utf8"))
+			expect(persisted.agents[0].snapshot).toBeUndefined()
+		} finally {
+			transactionFence?.mockRestore()
+			errorLog.mockRestore()
+			await store.shutdown()
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("does not report a committed write as failed when post-commit lock cleanup fails", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-post-commit-fence-"))
+		const persistence = new FileAgentControlPersistence(directory)
+		const store = new AgentControlStore(persistence, clock(69_000), { ownerId: "post-commit-fence-host" })
+		const internals = persistence as unknown as { releaseTransactionLock(token: string): Promise<void> }
+		let releaseFailure: { mockRestore(): void } | undefined
+		const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined)
+		try {
+			await store.initialize()
+			await store.ensureRoot({ taskId: "post-commit-fence-root", status: "running" })
+			releaseFailure = vi
+				.spyOn(internals, "releaseTransactionLock")
+				.mockRejectedValueOnce(new Error("post-commit cleanup unavailable"))
+
+			await expect(
+				store.updateAgentSnapshot("post-commit-fence-root", { stopReason: "failed" }),
+			).resolves.toMatchObject({ snapshot: { stopReason: "failed" } })
+			const persisted = JSON.parse(await fs.readFile(persistence.filePath, "utf8"))
+			expect(persisted.agents[0].snapshot).toEqual({ stopReason: "failed" })
+		} finally {
+			releaseFailure?.mockRestore()
+			errorLog.mockRestore()
+			await store.shutdown()
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("serializes concurrent reclaimers without allowing a stale reaper to remove the new owner", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-reapers-"))
+		const persistenceA = new FileAgentControlPersistence(directory)
+		const persistenceB = new FileAgentControlPersistence(directory)
+		const deadPid = 2_147_483_647
+
+		try {
+			const lockPath = `${persistenceA.filePath}.transaction.lock`
+			await fs.mkdir(lockPath, { recursive: true })
+			await fs.writeFile(
+				path.join(lockPath, "owner.json"),
+				JSON.stringify({ token: "abandoned-owner", pid: deadPid }),
+				"utf8",
+			)
+			let activeTransactions = 0
+			let maximumActiveTransactions = 0
+			const run = (persistence: FileAgentControlPersistence) =>
+				persistence.withTransaction(async () => {
+					activeTransactions++
+					maximumActiveTransactions = Math.max(maximumActiveTransactions, activeTransactions)
+					await new Promise<void>((resolve) => setTimeout(resolve, 25))
+					activeTransactions--
+				})
+
+			await Promise.all([run(persistenceA), run(persistenceB)])
+			expect(maximumActiveTransactions).toBe(1)
+			await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" })
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("continues after a reaper crashes with a permanent dead-owner tombstone", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-reaper-crash-"))
+		const persistence = new FileAgentControlPersistence(directory)
+		const tombstonePath = `${persistence.filePath}.transaction.lock.reap.abandoned-owner`
+
+		try {
+			await fs.mkdir(tombstonePath, { recursive: true })
+			await fs.writeFile(
+				path.join(tombstonePath, "owner.json"),
+				JSON.stringify({ token: "abandoned-owner", pid: 2_147_483_647 }),
+				"utf8",
+			)
+
+			await expect(persistence.withTransaction(async () => "recovered")).resolves.toBe("recovered")
+			await expect(fs.stat(tombstonePath)).resolves.toMatchObject({})
+			await expect(fs.stat(`${persistence.filePath}.transaction.lock`)).rejects.toMatchObject({ code: "ENOENT" })
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("fails closed without replacing an ownerless legacy transaction directory", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-legacy-lock-"))
+		const persistence = new FileAgentControlPersistence(directory)
+		const internals = persistence as unknown as {
+			observeTransactionLockForAcquisition(): Promise<"legacy" | undefined>
+			tryCreateTransactionLock(owner: { token: string; pid: number }): Promise<boolean>
+		}
+		const lockPath = `${persistence.filePath}.transaction.lock`
+
+		try {
+			await fs.mkdir(lockPath, { recursive: true })
+			await expect(internals.observeTransactionLockForAcquisition()).resolves.toBe("legacy")
+			await expect(
+				internals.tryCreateTransactionLock({ token: "must-not-replace-legacy", pid: process.pid }),
+			).resolves.toBe(false)
+			expect((await fs.readdir(lockPath)).length).toBe(0)
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("prevents a delayed stale reaper from moving the succeeding live lock", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-stale-reaper-"))
+		const persistence = new FileAgentControlPersistence(directory)
+		const internals = persistence as unknown as {
+			tryReapTransactionLock(owner: { token: string; pid: number }): Promise<boolean>
+		}
+		const staleOwner = { token: "stale-reaper-owner", pid: 2_147_483_647 }
+		const lockPath = `${persistence.filePath}.transaction.lock`
+
+		try {
+			await fs.mkdir(lockPath, { recursive: true })
+			await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify(staleOwner), "utf8")
+			await expect(internals.tryReapTransactionLock(staleOwner)).resolves.toBe(true)
+
+			await persistence.withTransaction(async () => {
+				await expect(internals.tryReapTransactionLock(staleOwner)).resolves.toBe(false)
+				await expect(persistence.assertTransactionOwner()).resolves.toBeUndefined()
+			})
+			await expect(fs.stat(`${lockPath}.reap.${staleOwner.token}`)).resolves.toMatchObject({})
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("preserves interleaved mutations from independent file-backed stores", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-writers-"))
+		const stores: AgentControlStore[] = []
+		try {
+			const first = new AgentControlStore(new FileAgentControlPersistence(directory), clock(70_000), {
+				ownerId: "writer-a-host",
+			})
+			const second = new AgentControlStore(new FileAgentControlPersistence(directory), clock(80_000), {
+				ownerId: "writer-b-host",
+			})
+			stores.push(first, second)
+			await Promise.all([first.initialize(), second.initialize()])
+
+			await Promise.all([
+				first.ensureRoot({ taskId: "root-a", status: "running" }),
+				second.ensureRoot({ taskId: "root-b", status: "running" }),
+			])
+
+			const [firstWorker, secondWorker] = await Promise.all([
+				first.createAgent({
+					taskId: "worker-a",
+					parentTaskId: "root-a",
+					nickname: "Worker",
+					role: "explore",
+					objective: "Inspect A",
+					status: "completed",
+				}),
+				second.createAgent({
+					taskId: "worker-b",
+					parentTaskId: "root-b",
+					nickname: "Worker",
+					role: "review",
+					objective: "Inspect B",
+					status: "completed",
+				}),
+			])
+			expect([firstWorker.path, secondWorker.path]).toEqual(["/root/worker", "/root/worker"])
+
+			await Promise.all([
+				first.appendEvent({
+					eventId: "writer-a-event",
+					sender: "worker-a",
+					recipient: "root-a",
+					kind: "result",
+					name: "writer_a_completed",
+				}),
+				second.appendEvent({
+					eventId: "writer-b-event",
+					sender: "worker-b",
+					recipient: "root-b",
+					kind: "result",
+					name: "writer_b_completed",
+				}),
+			])
+			const [claimedByFirst, claimedBySecond] = await Promise.all([
+				first.claimMailbox("root-a", {
+					channel: "wait",
+					claimId: "writer-a-claim",
+					kinds: ["result"],
+					limit: 1,
+				}),
+				second.claimMailbox("root-b", {
+					channel: "wait",
+					claimId: "writer-b-claim",
+					kinds: ["result"],
+					limit: 1,
+				}),
+			])
+			expect(claimedByFirst.entries).toHaveLength(1)
+			expect(claimedBySecond.entries).toHaveLength(1)
+			await Promise.all([
+				first.settleMailboxClaim("root-a", claimedByFirst.claimId, "acknowledge"),
+				second.settleMailboxClaim("root-b", claimedBySecond.claimId, "acknowledge"),
+			])
+
+			const reloaded = new AgentControlStore(new FileAgentControlPersistence(directory), clock(90_000), {
+				ownerId: "observer-host",
+			})
+			stores.push(reloaded)
+			await reloaded.initialize()
+			expect(reloaded.listChildren("root-a").map(({ taskId }) => taskId)).toEqual(["worker-a"])
+			expect(reloaded.listChildren("root-b").map(({ taskId }) => taskId)).toEqual(["worker-b"])
+			const writerEvents = reloaded
+				.getSnapshot()
+				.mailbox.filter(({ eventId }) => eventId === "writer-a-event" || eventId === "writer-b-event")
+			expect(writerEvents.map(({ eventId }) => eventId).sort()).toEqual(["writer-a-event", "writer-b-event"])
+			expect(new Set(writerEvents.map(({ sequence }) => sequence))).toHaveProperty("size", 2)
+			expect(writerEvents.filter(({ acknowledgedAt }) => acknowledgedAt !== undefined)).toHaveLength(2)
+		} finally {
+			await Promise.all(stores.map((store) => store.shutdown()))
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("preserves live foreign runs, recovers abandoned ownership, and fences the stale writer", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-owners-"))
+		const stores: AgentControlStore[] = []
+		try {
+			const firstPersistence = new FileAgentControlPersistence(directory)
+			const first = new AgentControlStore(firstPersistence, clock(100_000), { ownerId: "host-a" })
+			const second = new AgentControlStore(new FileAgentControlPersistence(directory), clock(110_000), {
+				ownerId: "host-b",
+			})
+			stores.push(first, second)
+			await first.initialize()
+			await first.ensureRoot({ taskId: "owned-root", status: "running" })
+			await first.createAgent({
+				taskId: "owned-child",
+				parentTaskId: "owned-root",
+				nickname: "Worker",
+				role: "worker",
+				objective: "Keep working",
+				status: "running",
+			})
+			await first.createAgent({
+				taskId: "owned-completed-child",
+				parentTaskId: "owned-root",
+				nickname: "Completed Worker",
+				role: "review",
+				objective: "Retain completed history",
+				status: "completed",
+			})
+			await first.appendEvent({
+				eventId: "owned-result",
+				sender: "owned-child",
+				recipient: "owned-root",
+				kind: "result",
+				name: "still_owned",
+			})
+			await first.appendEvent({
+				eventId: "owned-automatic-result",
+				sender: "owned-child",
+				recipient: "owned-root",
+				kind: "result",
+				name: "retry_after_recovery",
+			})
+
+			await second.initialize()
+			expect(second.getAgent("owned-root")).toMatchObject({ status: "running", runtimeOwnerId: "host-a" })
+			expect(second.getAgent("owned-child")).toMatchObject({ status: "running", runtimeOwnerId: "host-a" })
+
+			await first.ensureRoot({ taskId: "claim-owned-root", status: "running" })
+			await first.appendEvent({
+				eventId: "claim-owned-event",
+				recipient: "claim-owned-root",
+				kind: "result",
+				name: "claim_owned",
+			})
+			const liveForeignClaim = await first.claimMailbox("claim-owned-root", {
+				channel: "wait",
+				claimId: "live-foreign-claim",
+				kinds: ["result"],
+			})
+			await first.updateAgentStatus("claim-owned-root", "interrupted")
+			await expect(second.updateAgentStatus("claim-owned-root", "pending")).rejects.toThrow(
+				/mailbox claim owned by another live extension host/,
+			)
+			await first.releaseMailboxClaim("claim-owned-root", liveForeignClaim.claimId)
+			await second.updateAgentStatus("claim-owned-root", "pending")
+			await second.updateAgentStatus("claim-owned-root", "interrupted")
+
+			await expect(second.ensureRoot({ taskId: "owned-root", status: "running" })).rejects.toThrow(
+				/owned by another live extension host/,
+			)
+			await expect(
+				second.createAgent({
+					taskId: "foreign-child",
+					parentTaskId: "owned-root",
+					nickname: "Foreign",
+					role: "explore",
+					objective: "Must not start",
+				}),
+			).rejects.toThrow(/owned by another live extension host/)
+			await expect(second.claimMailbox("owned-root", { channel: "wait", kinds: ["result"] })).rejects.toThrow(
+				/owned by another live extension host/,
+			)
+			await expect(second.updateAgentSnapshot("owned-child", { stopReason: "failed" })).rejects.toThrow(
+				/owned by another live extension host/,
+			)
+			await expect(second.purgeRoot("owned-root")).rejects.toThrow(/owned by another live extension host/)
+			await expect(
+				second.appendEvent({
+					eventId: "foreign-senderless-event",
+					recipient: "owned-root",
+					kind: "control",
+					name: "must_not_publish",
+				}),
+			).rejects.toThrow(/owned by another live extension host/)
+			await expect(second.updateAgentStatus("owned-completed-child", "pending")).rejects.toThrow(
+				/owned by another live extension host/,
+			)
+			await expect(second.closeAgent("owned-completed-child")).rejects.toThrow(
+				/owned by another live extension host/,
+			)
+			await expect(
+				second.recordWorkerChangeSet({
+					rootTaskId: "owned-root",
+					parentTaskId: "owned-root",
+					workerTaskId: "owned-child",
+					workerNickname: "Worker",
+					groupId: "foreign-verification",
+					changeSet: {
+						id: "foreign-change-set",
+						status: "applied",
+						changedFiles: ["src/foreign.ts"],
+						createdAt: 110_001,
+						updatedAt: 110_002,
+					},
+				}),
+			).rejects.toThrow(/owned by another live extension host/)
+			await expect(
+				second.recordParentVerificationEvidence("owned-root", [
+					{
+						toolCallId: "foreign-verification",
+						executionId: "foreign-verification-execution",
+						status: "succeeded",
+						startedAt: 110_003,
+						completedAt: 110_004,
+					},
+				]),
+			).rejects.toThrow(/owned by another live extension host/)
+			const retainedWaitClaim = await first.claimMailbox("owned-root", {
+				channel: "wait",
+				claimId: "host-a-wait-claim",
+				kinds: ["result"],
+				limit: 1,
+			})
+			const abandonedAutomaticClaim = await first.claimMailbox("owned-root", {
+				channel: "automatic",
+				claimId: "host-a-automatic-claim",
+				kinds: ["result"],
+				limit: 1,
+			})
+
+			// Simulate an abrupt host exit: the durable records remain active while
+			// the activation heartbeat stops and its lock directory ages past TTL.
+			await firstPersistence.releaseOwnerLease("host-a")
+			const staleOwnerLock = path.join(`${firstPersistence.filePath}.owners`, "host-a.lock")
+			await fs.mkdir(staleOwnerLock, { recursive: true })
+			const staleMtime = new Date(Date.now() - 2 * 60_000)
+			await fs.utimes(staleOwnerLock, staleMtime, staleMtime)
+			await expect(second.recoverAbandonedOwners()).resolves.toBe(2)
+			await expect(fs.stat(staleOwnerLock)).rejects.toMatchObject({ code: "ENOENT" })
+			expect(second.getAgent("owned-root")?.status).toBe("interrupted")
+			expect(second.getAgent("owned-root")?.runtimeOwnerId).toBeUndefined()
+			expect(second.getAgent("owned-child")?.status).toBe("interrupted")
+			expect(second.getAgent("owned-child")?.runtimeOwnerId).toBeUndefined()
+			const recoveredWaitClaim = second.getSnapshot().mailbox.find(({ eventId }) => eventId === "owned-result")
+			expect(recoveredWaitClaim?.claimId).toBe(retainedWaitClaim.claimId)
+			expect(recoveredWaitClaim?.claimOwnerId).toBeUndefined()
+			const recoveredAutomaticClaim = second
+				.getSnapshot()
+				.mailbox.find(({ eventId }) => eventId === "owned-automatic-result")
+			expect(abandonedAutomaticClaim.entries.map(({ eventId }) => eventId)).toEqual(["owned-automatic-result"])
+			expect(recoveredAutomaticClaim?.claimId).toBeUndefined()
+			expect(recoveredAutomaticClaim?.claimOwnerId).toBeUndefined()
+			await expect(
+				second.settleMailboxClaim("owned-root", retainedWaitClaim.claimId, "release"),
+			).resolves.toBeUndefined()
+			await expect(second.closeAgent("owned-completed-child")).resolves.toMatchObject({
+				taskId: "owned-completed-child",
+			})
+			await expect(first.updateAgentSnapshot("owned-child", { stopReason: "interrupted" })).rejects.toThrow(
+				/runtime owner lease host-a expired/,
+			)
+
+			await second.shutdown()
+			const resumed = new AgentControlStore(new FileAgentControlPersistence(directory), clock(120_000), {
+				ownerId: "host-c",
+			})
+			stores.push(resumed)
+			await resumed.initialize()
+			await resumed.updateAgentStatus("owned-root", "pending")
+			await resumed.updateAgentStatus("owned-child", "pending")
+			expect(resumed.getAgent("owned-root")).toMatchObject({ status: "pending", runtimeOwnerId: "host-c" })
+			expect(resumed.getAgent("owned-child")).toMatchObject({ status: "pending", runtimeOwnerId: "host-c" })
+		} finally {
+			await Promise.all(stores.map((store) => store.shutdown()))
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("migrates ownerless legacy v1 active records to the fenced v2 state", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-legacy-owner-"))
+		const stores: AgentControlStore[] = []
+		try {
+			const persistence = new FileAgentControlPersistence(directory)
+			await fs.writeFile(
+				persistence.filePath,
+				JSON.stringify({
+					version: 1,
+					updatedAt: 1,
+					nextSequence: 1,
+					agents: [
+						{
+							taskId: "legacy-root",
+							path: "/root",
+							rootTaskId: "legacy-root",
+							nickname: "root",
+							role: "root",
+							objective: "Legacy active task",
+							status: "running",
+							createdAt: 1,
+							updatedAt: 1,
+							startedAt: 1,
+						},
+					],
+					tombstones: [],
+					mailbox: [],
+					mailboxCursors: {},
+					verificationObligations: [],
+				}),
+				"utf8",
+			)
+			const store = new AgentControlStore(persistence, clock(130_000), { ownerId: "legacy-recovery-host" })
+			stores.push(store)
+			await store.initialize()
+			expect(store.getAgent("legacy-root")?.status).toBe("interrupted")
+			expect(store.getAgent("legacy-root")?.runtimeOwnerId).toBeUndefined()
+			expect(JSON.parse(await fs.readFile(persistence.filePath, "utf8")).version).toBe(2)
+		} finally {
+			await Promise.all(stores.map((store) => store.shutdown()))
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("durably migrates an unchanged empty v1 snapshot during initialization", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-empty-v1-"))
+		const persistence = new FileAgentControlPersistence(directory)
+		const store = new AgentControlStore(persistence, clock(135_000), { ownerId: "empty-v1-host" })
+
+		try {
+			await fs.writeFile(
+				persistence.filePath,
+				JSON.stringify({
+					version: 1,
+					updatedAt: 1,
+					nextSequence: 1,
+					agents: [],
+					tombstones: [],
+					mailbox: [],
+					mailboxCursors: {},
+					verificationObligations: [],
+				}),
+				"utf8",
+			)
+
+			await store.initialize()
+			expect(store.getSnapshot().version).toBe(2)
+			expect(JSON.parse(await fs.readFile(persistence.filePath, "utf8")).version).toBe(2)
+		} finally {
+			await store.shutdown()
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("fails closed without rewriting an unsupported control-state version", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-unsupported-version-"))
+		const persistence = new FileAgentControlPersistence(directory)
+		const unsupportedState = {
+			version: 3,
+			updatedAt: 1,
+			nextSequence: 1,
+			agents: [],
+			tombstones: [],
+			mailbox: [],
+			mailboxCursors: {},
+			verificationObligations: [],
+		}
+
+		try {
+			await fs.writeFile(persistence.filePath, JSON.stringify(unsupportedState), "utf8")
+			const store = new AgentControlStore(persistence, clock(140_000), { ownerId: "unsupported-version-host" })
+
+			await expect(store.initialize()).rejects.toThrow()
+			expect(JSON.parse(await fs.readFile(persistence.filePath, "utf8"))).toEqual(unsupportedState)
+		} finally {
+			await persistence.releaseOwnerLease("unsupported-version-host")
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("shares one store per activation and rotates it after global shutdown", async () => {
+		const storagePath = path.join(os.tmpdir(), `alpha-agent-control-shared-${randomUUID()}`)
+		const first = AgentControlStore.forGlobalStorage(storagePath)
+
+		expect(first).toBe(AgentControlStore.forGlobalStorage(path.resolve(storagePath)))
+		await AgentControlStore.shutdownGlobalStores()
+		const nextActivation = AgentControlStore.forGlobalStorage(storagePath)
+		expect(nextActivation).not.toBe(first)
+		await AgentControlStore.shutdownGlobalStores()
 	})
 })

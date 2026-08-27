@@ -1,11 +1,14 @@
 import * as fs from "fs/promises"
+import * as fsSync from "fs"
 import * as path from "path"
 import { randomUUID } from "crypto"
 import { isDeepStrictEqual } from "util"
+import * as lockfile from "proper-lockfile"
 
 import {
 	agentCanonicalPathSchema,
 	agentControlStateSchema,
+	agentRuntimeOwnerIdSchema,
 	type AgentCanonicalPath,
 	type AgentControlState,
 	type AgentLifecycleStatus,
@@ -14,6 +17,7 @@ import {
 	type AgentMailboxKind,
 	type AgentRecord,
 	type AgentRuntimeSnapshot,
+	type AgentRuntimeOwnerId,
 	type AgentTerminalResultMetadata,
 	type ClosedAgentTombstone,
 	type ParentVerificationObligation,
@@ -34,6 +38,10 @@ import {
 const ACTIVE_STATUSES = new Set<AgentLifecycleStatus>(["pending", "running", "cancelling"])
 const TERMINAL_STATUSES = new Set<AgentLifecycleStatus>(["completed", "blocked", "failed", "cancelled", "timed_out"])
 const CLOSABLE_STATUSES = new Set<AgentLifecycleStatus>([...TERMINAL_STATUSES, "interrupted"])
+const DEFAULT_OWNER_LEASE_STALE_MS = 60_000
+const DEFAULT_OWNER_LEASE_UPDATE_MS = 10_000
+const DEFAULT_RECOVERY_SCAN_INTERVAL_MS = 30_000
+const TRANSACTION_LOCK_RETRY_DELAYS_MS = [50, 100, 200, 400, 800, 1_000] as const
 
 const ALLOWED_TRANSITIONS: Record<AgentLifecycleStatus, ReadonlySet<AgentLifecycleStatus>> = {
 	pending: new Set([
@@ -57,7 +65,7 @@ const ALLOWED_TRANSITIONS: Record<AgentLifecycleStatus, ReadonlySet<AgentLifecyc
 }
 
 const initialState = (now: number): AgentControlState => ({
-	version: 1,
+	version: 2,
 	updatedAt: now,
 	nextSequence: 1,
 	agents: [],
@@ -68,11 +76,42 @@ const initialState = (now: number): AgentControlState => ({
 })
 
 const clone = <T>(value: T): T => structuredClone(value)
+interface TransactionLockOwner {
+	token: string
+	pid: number
+}
+
+interface ActiveTransaction {
+	token: string
+	committed: boolean
+}
+
+interface PersistedAgentControlState {
+	state: AgentControlState
+	migrated: boolean
+}
 
 /** Replaceable persistence seam used by the production file store and deterministic tests. */
 export interface AgentControlPersistence {
 	read(): Promise<unknown | undefined>
 	write(state: AgentControlState): Promise<void>
+	/**
+	 * Optional exclusive transaction boundary for persistence shared by multiple
+	 * store instances or processes. Implementations must hold the boundary for
+	 * the complete read-modify-write operation. Persistence without this hook
+	 * retains the store's in-process serialization semantics.
+	 */
+	withTransaction?<T>(operation: () => Promise<T>): Promise<T>
+	/** Optional commit fence for implementations whose transaction lock can be stolen after staleness. */
+	assertTransactionOwner?(): Promise<void>
+	/** Optional activation-scoped lease seam used by cross-process persistence. */
+	acquireOwnerLease?(
+		ownerId: AgentRuntimeOwnerId,
+		options: { staleMs: number; updateMs: number; onCompromised: (error: Error) => void },
+	): Promise<void>
+	isOwnerLeaseLive?(ownerId: AgentRuntimeOwnerId, staleMs: number): Promise<boolean>
+	tryRevokeOwnerLease?(ownerId: AgentRuntimeOwnerId, staleMs: number): Promise<boolean>
+	releaseOwnerLease?(ownerId: AgentRuntimeOwnerId): Promise<void>
 }
 
 export class InMemoryAgentControlPersistence implements AgentControlPersistence {
@@ -93,9 +132,318 @@ export class InMemoryAgentControlPersistence implements AgentControlPersistence 
 
 export class FileAgentControlPersistence implements AgentControlPersistence {
 	readonly filePath: string
+	private readonly transactionLockPath: string
+	private readonly ownerLeaseDirectory: string
+	private readonly ownerLeaseReleases = new Map<AgentRuntimeOwnerId, () => Promise<void>>()
+	private activeTransaction?: ActiveTransaction
 
 	constructor(globalStoragePath: string) {
 		this.filePath = path.join(globalStoragePath, GlobalFileNames.agentControl)
+		// This deliberately matches the directory path used by the former
+		// proper-lockfile transaction lease. A legacy live holder therefore blocks
+		// admission instead of running concurrently with the process-owned lock.
+		this.transactionLockPath = `${this.filePath}.transaction.lock`
+		this.ownerLeaseDirectory = `${this.filePath}.owners`
+	}
+
+	async acquireOwnerLease(
+		ownerId: AgentRuntimeOwnerId,
+		options: { staleMs: number; updateMs: number; onCompromised: (error: Error) => void },
+	): Promise<void> {
+		if (this.ownerLeaseReleases.has(ownerId)) return
+		await fs.mkdir(this.ownerLeaseDirectory, { recursive: true })
+		const release = await lockfile.lock(this.ownerLeasePath(ownerId), {
+			stale: options.staleMs,
+			update: options.updateMs,
+			realpath: false,
+			retries: 0,
+			onCompromised: (error) => {
+				this.ownerLeaseReleases.delete(ownerId)
+				options.onCompromised(error)
+			},
+		})
+		this.ownerLeaseReleases.set(ownerId, release)
+	}
+
+	async isOwnerLeaseLive(ownerId: AgentRuntimeOwnerId, staleMs: number): Promise<boolean> {
+		return lockfile.check(this.ownerLeasePath(ownerId), { stale: staleMs, realpath: false })
+	}
+
+	async tryRevokeOwnerLease(ownerId: AgentRuntimeOwnerId, staleMs: number): Promise<boolean> {
+		let release: () => Promise<void>
+		try {
+			release = await lockfile.lock(this.ownerLeasePath(ownerId), {
+				stale: staleMs,
+				update: Math.max(1_000, Math.min(DEFAULT_OWNER_LEASE_UPDATE_MS, staleMs / 2)),
+				realpath: false,
+				retries: 0,
+				onCompromised: () => undefined,
+			})
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ELOCKED") return false
+			throw error
+		}
+		await release()
+		return true
+	}
+
+	async releaseOwnerLease(ownerId: AgentRuntimeOwnerId): Promise<void> {
+		const release = this.ownerLeaseReleases.get(ownerId)
+		if (!release) return
+		this.ownerLeaseReleases.delete(ownerId)
+		try {
+			await release()
+		} catch (error) {
+			if (!new Set(["ENOENT", "ENOTACQUIRED", "ERELEASED"]).has((error as NodeJS.ErrnoException).code ?? "")) {
+				throw error
+			}
+		}
+	}
+
+	private ownerLeasePath(ownerId: AgentRuntimeOwnerId): string {
+		return path.join(this.ownerLeaseDirectory, ownerId)
+	}
+
+	async withTransaction<T>(operation: () => Promise<T>): Promise<T> {
+		const transaction: ActiveTransaction = { token: randomUUID(), committed: false }
+		await this.acquireTransactionLock(transaction.token)
+		this.activeTransaction = transaction
+		let result: T
+		let operationFailed = false
+		let operationError: unknown
+		try {
+			result = await operation()
+			// A real file write performs its final fence synchronously with the
+			// atomic rename. Read-only/test transactions still validate ownership
+			// before release.
+			if (!transaction.committed) await this.assertTransactionOwner()
+		} catch (error) {
+			operationFailed = true
+			operationError = error
+		}
+		let releaseFailed = false
+		let releaseError: unknown
+		try {
+			await this.releaseTransactionLock(transaction.token)
+		} catch (error) {
+			releaseFailed = true
+			releaseError = error
+		}
+		if (this.activeTransaction === transaction) {
+			this.activeTransaction = undefined
+		}
+		// Preserve the mutation failure when both the operation and cleanup fail.
+		if (operationFailed) throw operationError
+		// Once the synchronous fenced rename committed, a later cleanup failure
+		// must not turn a durable success into a rejected API call. The immutable
+		// process-owned protocol prevents normal contenders from causing this;
+		// surface cleanup failures only for transactions that did not commit.
+		if (releaseFailed && !transaction.committed) throw releaseError
+		if (releaseFailed) {
+			console.error("[AgentControlStore] Failed to release a committed transaction lock", releaseError)
+		}
+		return result!
+	}
+
+	async assertTransactionOwner(): Promise<void> {
+		const transaction = this.activeTransaction
+		if (!transaction) throw new Error("Agent control transaction is not active")
+		const observed = await this.readTransactionLock(this.transactionLockPath)
+		if (observed?.token !== transaction.token) throw new Error("Agent control transaction ownership was lost")
+	}
+
+	private assertTransactionOwnerSync(): void {
+		const transaction = this.activeTransaction
+		if (!transaction) throw new Error("Agent control transaction is not active")
+		let observed: TransactionLockOwner
+		try {
+			observed = this.parseTransactionLock(
+				fsSync.readFileSync(this.transactionLockOwnerPath(this.transactionLockPath), "utf8"),
+			)
+		} catch (error) {
+			throw new Error("Agent control transaction ownership was lost", { cause: error })
+		}
+		if (observed.token !== transaction.token) throw new Error("Agent control transaction ownership was lost")
+	}
+
+	private commitTransactionFile(temporaryPath: string, destinationPath: string): void {
+		const transaction = this.activeTransaction
+		if (!transaction) throw new Error("Agent control transaction is not active")
+		this.assertTransactionOwnerSync()
+		fsSync.renameSync(temporaryPath, destinationPath)
+		transaction.committed = true
+	}
+
+	private async acquireTransactionLock(transactionToken: string): Promise<void> {
+		await fs.mkdir(path.dirname(this.transactionLockPath), { recursive: true })
+		const owner: TransactionLockOwner = { token: transactionToken, pid: process.pid }
+		for (let attempt = 0; ; attempt++) {
+			if (await this.tryCreateTransactionLock(owner)) return
+			const observed = await this.observeTransactionLockForAcquisition()
+			if (
+				observed !== "legacy" &&
+				observed &&
+				!this.isProcessLive(observed.pid) &&
+				(await this.tryReapTransactionLock(observed))
+			) {
+				continue
+			}
+			const delayMs = TRANSACTION_LOCK_RETRY_DELAYS_MS[attempt]
+			if (delayMs === undefined) {
+				throw Object.assign(new Error("Agent control transaction lock is already held"), {
+					code: "ELOCKED",
+					file: this.transactionLockPath,
+				})
+			}
+			await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+		}
+	}
+
+	private async observeTransactionLockForAcquisition(): Promise<TransactionLockOwner | "legacy" | undefined> {
+		try {
+			return await this.readTransactionLock(this.transactionLockPath)
+		} catch (readError) {
+			try {
+				const lock = await fs.stat(this.transactionLockPath)
+				if (lock.isDirectory()) {
+					// Empty proper-lockfile transaction directories only existed in an
+					// unlanded predecessor of this protocol. Never replace one: on POSIX
+					// rename could otherwise claim an empty live legacy directory.
+					return "legacy"
+				}
+			} catch {
+				// Preserve the original parsing/read failure below.
+			}
+			throw readError
+		}
+	}
+
+	private async tryCreateTransactionLock(owner: TransactionLockOwner): Promise<boolean> {
+		try {
+			await fs.stat(this.transactionLockPath)
+			return false
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+		}
+
+		const candidatePath = `${this.transactionLockPath}.candidate.${owner.token}`
+		const candidateOwnerPath = this.transactionLockOwnerPath(candidatePath)
+		let acquired = false
+		try {
+			await fs.mkdir(candidatePath)
+			await fs.writeFile(candidateOwnerPath, JSON.stringify(owner), { encoding: "utf8", flag: "wx" })
+			try {
+				await fs.rename(candidatePath, this.transactionLockPath)
+				acquired = true
+				return true
+			} catch (error) {
+				try {
+					await fs.stat(this.transactionLockPath)
+					return false
+				} catch (statError) {
+					if ((statError as NodeJS.ErrnoException).code !== "ENOENT") throw statError
+				}
+				throw error
+			}
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") return false
+			throw error
+		} finally {
+			if (!acquired) await this.removeTransactionLockDirectory(candidatePath, true)
+		}
+	}
+
+	private async tryReapTransactionLock(observed: TransactionLockOwner): Promise<boolean> {
+		const reapPath = `${this.transactionLockPath}.reap.${observed.token}`
+		try {
+			await fs.rename(this.transactionLockPath, reapPath)
+		} catch (error) {
+			try {
+				// A permanent deterministic tombstone means a previous reaper already
+				// moved this exact owner. It also prevents a delayed stale reaper from
+				// renaming a newly acquired non-empty lock directory on any platform.
+				await fs.stat(reapPath)
+				return false
+			} catch (reapStatError) {
+				if ((reapStatError as NodeJS.ErrnoException).code !== "ENOENT") throw reapStatError
+			}
+			try {
+				await fs.stat(this.transactionLockPath)
+				throw error
+			} catch (lockStatError) {
+				if ((lockStatError as NodeJS.ErrnoException).code === "ENOENT") return true
+				throw error
+			}
+		}
+
+		const quarantined = await this.readTransactionLock(reapPath)
+		if (!quarantined || quarantined.token !== observed.token || this.isProcessLive(quarantined.pid)) {
+			throw new Error("Agent control transaction reaper quarantined an unexpected live owner")
+		}
+		// Keep the non-empty tombstone permanently. Removing it would allow a
+		// delayed second reaper for the old token to capture a successor's lock.
+		return true
+	}
+
+	private async releaseTransactionLock(transactionToken: string): Promise<void> {
+		const observed = await this.readTransactionLock(this.transactionLockPath)
+		if (!observed || observed.token !== transactionToken) return
+		const releasePath = `${this.transactionLockPath}.release.${transactionToken}`
+		await fs.rename(this.transactionLockPath, releasePath)
+		await this.removeTransactionLockDirectory(releasePath, false)
+	}
+
+	private async readTransactionLock(lockPath: string): Promise<TransactionLockOwner | undefined> {
+		try {
+			return this.parseTransactionLock(await fs.readFile(this.transactionLockOwnerPath(lockPath), "utf8"))
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+				try {
+					await fs.stat(lockPath)
+				} catch (statError) {
+					if ((statError as NodeJS.ErrnoException).code === "ENOENT") return undefined
+				}
+			}
+			throw error
+		}
+	}
+
+	private transactionLockOwnerPath(lockPath: string): string {
+		return path.join(lockPath, "owner.json")
+	}
+
+	private async removeTransactionLockDirectory(lockPath: string, ignoreMissing: boolean): Promise<void> {
+		await fs.unlink(this.transactionLockOwnerPath(lockPath)).catch((error: NodeJS.ErrnoException) => {
+			if (!ignoreMissing || error.code !== "ENOENT") throw error
+		})
+		await fs.rmdir(lockPath).catch((error: NodeJS.ErrnoException) => {
+			if (!ignoreMissing || error.code !== "ENOENT") throw error
+		})
+	}
+
+	private parseTransactionLock(serialized: string): TransactionLockOwner {
+		const candidate = JSON.parse(serialized) as Partial<TransactionLockOwner>
+		if (
+			typeof candidate.token !== "string" ||
+			!candidate.token ||
+			!Number.isInteger(candidate.pid) ||
+			candidate.pid! <= 0
+		) {
+			throw new Error("Agent control transaction lock metadata is invalid")
+		}
+		return { token: candidate.token, pid: candidate.pid! }
+	}
+
+	private isProcessLive(pid: number): boolean {
+		try {
+			process.kill(pid, 0)
+			return true
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code
+			if (code === "ESRCH") return false
+			if (code === "EPERM") return true
+			throw error
+		}
 	}
 
 	async read(): Promise<unknown | undefined> {
@@ -110,7 +458,15 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 	}
 
 	async write(state: AgentControlState): Promise<void> {
-		await safeWriteJson(this.filePath, state, { prettyPrint: true })
+		await safeWriteJson(this.filePath, state, {
+			prettyPrint: true,
+			...(this.activeTransaction
+				? {
+						atomicReplace: true,
+						commitTempFile: (source, destination) => this.commitTransactionFile(source, destination),
+					}
+				: {}),
+		})
 	}
 }
 
@@ -161,8 +517,10 @@ export interface ParentCommandVerificationEvidence {
 	signalName?: string
 	startedAt: number
 	completedAt?: number
-	/** Ephemeral command text used only to associate evidence with changed paths. */
+	/** Ephemeral command text retained for diagnostics, never used to infer verification scope. */
 	command?: string
+	/** Applied Worker change sets this command explicitly verifies. */
+	verificationChangeSetIds?: readonly string[]
 }
 
 export interface RecordWorkerChangeSetResult {
@@ -258,6 +616,33 @@ interface PendingMailboxClaimSettlement {
 	disposition: AgentMailboxClaimDisposition
 }
 
+type AgentControlOwnerLeasePersistence = AgentControlPersistence &
+	Required<
+		Pick<
+			AgentControlPersistence,
+			"withTransaction" | "acquireOwnerLease" | "isOwnerLeaseLive" | "tryRevokeOwnerLease" | "releaseOwnerLease"
+		>
+	>
+
+export interface AgentControlStoreOptions {
+	ownerId?: string
+	ownerLeaseStaleMs?: number
+	ownerLeaseUpdateMs?: number
+	/** Zero disables periodic stale-owner recovery. Lease heartbeats remain active. */
+	recoveryScanIntervalMs?: number
+}
+
+const hasOwnerLeasePersistence = (
+	persistence: AgentControlPersistence,
+): persistence is AgentControlOwnerLeasePersistence =>
+	Boolean(
+		persistence.withTransaction &&
+			persistence.acquireOwnerLease &&
+			persistence.isOwnerLeaseLive &&
+			persistence.tryRevokeOwnerLease &&
+			persistence.releaseOwnerLease,
+	)
+
 /**
  * Durable source of truth for agent identity, tree state, and parent/child mailboxes.
  *
@@ -266,157 +651,175 @@ interface PendingMailboxClaimSettlement {
  */
 export class AgentControlStore {
 	private static readonly globalStores = new Map<string, AgentControlStore>()
+	private static runtimeOwnerId = agentRuntimeOwnerIdSchema.parse(randomUUID())
 	private state: AgentControlState
 	private initialized = false
+	private disposed = false
+	private initialization?: Promise<void>
 	private writeLock: Promise<void> = Promise.resolve()
 	private readonly listeners = new Set<AgentMailboxListener>()
 	private readonly pendingMailboxClaimSettlements = new Map<string, PendingMailboxClaimSettlement>()
+	private readonly runtimeOwnerId: AgentRuntimeOwnerId
+	private readonly ownerLeaseStaleMs: number
+	private readonly ownerLeaseUpdateMs: number
+	private readonly recoveryScanIntervalMs: number
+	private ownerLeaseHeld = false
+	private ownerLeaseCompromisedError?: Error
+	private recoveryScanTimer?: ReturnType<typeof setInterval>
+	private recoveryScanInFlight?: Promise<void>
 
 	constructor(
 		private readonly persistence: AgentControlPersistence,
 		private readonly now: () => number = Date.now,
+		options: AgentControlStoreOptions = {},
 	) {
 		this.state = initialState(this.now())
+		this.runtimeOwnerId = agentRuntimeOwnerIdSchema.parse(options.ownerId ?? randomUUID())
+		this.ownerLeaseStaleMs = options.ownerLeaseStaleMs ?? DEFAULT_OWNER_LEASE_STALE_MS
+		this.ownerLeaseUpdateMs = options.ownerLeaseUpdateMs ?? DEFAULT_OWNER_LEASE_UPDATE_MS
+		this.recoveryScanIntervalMs = options.recoveryScanIntervalMs ?? 0
+		if (!Number.isFinite(this.ownerLeaseStaleMs) || this.ownerLeaseStaleMs < 2_000) {
+			throw new Error("Agent owner lease stale interval must be at least 2,000ms")
+		}
+		if (
+			!Number.isFinite(this.ownerLeaseUpdateMs) ||
+			this.ownerLeaseUpdateMs < 1_000 ||
+			this.ownerLeaseUpdateMs > this.ownerLeaseStaleMs / 2
+		) {
+			throw new Error("Agent owner lease update interval must be between 1,000ms and half the stale interval")
+		}
+		if (!Number.isFinite(this.recoveryScanIntervalMs) || this.recoveryScanIntervalMs < 0) {
+			throw new Error("Agent owner recovery scan interval must be non-negative")
+		}
 	}
 
 	static forGlobalStorage(globalStoragePath: string, now?: () => number): AgentControlStore {
 		const key = path.resolve(globalStoragePath)
 		let store = this.globalStores.get(key)
 		if (!store) {
-			store = new AgentControlStore(new FileAgentControlPersistence(key), now)
+			store = new AgentControlStore(new FileAgentControlPersistence(key), now, {
+				ownerId: this.runtimeOwnerId,
+				recoveryScanIntervalMs: DEFAULT_RECOVERY_SCAN_INTERVAL_MS,
+			})
 			this.globalStores.set(key, store)
 		}
 		return store
 	}
 
+	static async shutdownGlobalStores(): Promise<void> {
+		const stores = [...this.globalStores.values()]
+		const results = await Promise.allSettled(stores.map((store) => store.shutdown()))
+		this.globalStores.clear()
+		this.runtimeOwnerId = agentRuntimeOwnerIdSchema.parse(randomUUID())
+		const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected")
+		if (failures.length > 0) {
+			throw new AggregateError(
+				failures.map(({ reason }) => reason),
+				"Failed to shut down one or more agent control stores",
+			)
+		}
+	}
+
 	/** Load persisted state and convert abandoned active runs to interrupted exactly once. */
 	async initialize(): Promise<void> {
-		await this.withWriteLock(async () => {
+		if (this.disposed) throw new Error("AgentControlStore cannot be reinitialized after shutdown")
+		if (this.initialized) return
+		if (this.initialization) return this.initialization
+
+		const initialization = this.withWriteLock(async () => {
+			if (this.disposed) throw new Error("AgentControlStore cannot be reinitialized after shutdown")
 			if (this.initialized) {
 				return
 			}
 
-			const stored = await this.persistence.read()
-			const draft = stored === undefined ? initialState(this.now()) : agentControlStateSchema.parse(stored)
-			const highestSequence = draft.mailbox.reduce((highest, entry) => Math.max(highest, entry.sequence), 0)
-			draft.nextSequence = Math.max(draft.nextSequence, highestSequence + 1)
+			const acquiredOwnerLease = await this.acquireOwnerLease()
+			try {
+				let loadedState!: AgentControlState
+				let recoveredEvents: AgentMailboxEntry[] = []
+				await this.withPersistenceTransaction(async () => {
+					await this.assertCurrentOwnerLease()
+					const persisted = await this.readPersistedState()
+					const draft = persisted.state
 
-			const recoveredEvents: AgentMailboxEntry[] = []
-			let recoveredRecordCount = 0
-			let recoveredClaimCount = 0
-			const recoveredAt = this.now()
-			for (const entry of draft.mailbox) {
-				if (!entry.claimId || entry.acknowledgedAt !== undefined) continue
-				// wait_agent claims carry a receipt in the native tool result. Keep
-				// those claims across host reload so the provider can reconcile the
-				// receipt from API history: persisted receipts are ACKed, while claims
-				// without a receipt are released for retry. Legacy automatic-delivery
-				// claims have no native receipt and remain recoverable by release.
-				if (entry.claimChannel === "wait") continue
-				delete entry.claimId
-				delete entry.claimedAt
-				delete entry.claimChannel
-				recoveredClaimCount++
-			}
-			for (const record of draft.agents) {
-				if (!ACTIVE_STATUSES.has(record.status)) {
-					continue
-				}
+					const recoveredAt = this.now()
+					const recovery = await this.recoverAbandonedState(draft, recoveredAt)
 
-				const previousStatus = record.status
-				const previousUpdatedAt = record.updatedAt
-				record.status = "interrupted"
-				record.updatedAt = recoveredAt
-				record.interruptedAt = recoveredAt
-				recoveredRecordCount++
-
-				const parent = record.parentTaskId
-					? draft.agents.find((candidate) => candidate.taskId === record.parentTaskId)
-					: undefined
-				const stopReason = record.parentTaskId && !parent ? "orphaned" : "interrupted"
-				record.snapshot = { ...record.snapshot, stopReason }
-				const recoveryRecipient =
-					parent ??
-					(record.parentTaskId
-						? draft.agents.find(
-								(candidate) => candidate.taskId === record.rootTaskId && candidate.role === "root",
-							)
-						: undefined)
-				if (!recoveryRecipient) {
-					continue
-				}
-				const eventId = `agent-recovery:${record.rootTaskId}:${record.taskId}:${previousStatus}:${previousUpdatedAt}`
-				if (!draft.mailbox.some((entry) => entry.eventId === eventId)) {
-					const entry: AgentMailboxEntry = {
-						eventId,
-						sequence: draft.nextSequence++,
-						rootTaskId: record.rootTaskId,
-						senderTaskId: record.taskId,
-						senderPath: record.path,
-						recipientTaskId: recoveryRecipient.taskId,
-						recipientPath: recoveryRecipient.path,
-						kind: "lifecycle",
-						name: "recovered_interrupted",
-						payload: {
-							previousStatus,
-							stopReason,
-							...(parent ? {} : { orphaned: true, missingParentTaskId: record.parentTaskId }),
-						},
-						createdAt: recoveredAt,
+					if (recovery.changed || persisted.migrated) {
+						draft.updatedAt = recoveredAt
+						agentControlStateSchema.parse(draft)
+						await this.assertCurrentOwnerLease()
+						await this.assertPersistenceTransaction()
+						await this.persistence.write(draft)
 					}
-					draft.mailbox.push(entry)
-					recoveredEvents.push(entry)
-				}
 
-				// A recovered interruption is also the terminal outcome of the
-				// abandoned run. Publish the same result shape as the normal child
-				// completion path so automatic report delivery can claim it and the
-				// parent completion guard cannot wait forever on a lifecycle-only
-				// event.
-				const resultEventId = `agent-recovery-result:${record.rootTaskId}:${record.taskId}:${previousStatus}:${previousUpdatedAt}`
-				if (!draft.mailbox.some((entry) => entry.eventId === resultEventId)) {
-					const entry: AgentMailboxEntry = {
-						eventId: resultEventId,
-						sequence: draft.nextSequence++,
-						rootTaskId: record.rootTaskId,
-						senderTaskId: record.taskId,
-						senderPath: record.path,
-						recipientTaskId: recoveryRecipient.taskId,
-						recipientPath: recoveryRecipient.path,
-						kind: "result",
-						name: "agent_interrupted",
-						payload: {
-							taskId: record.taskId,
-							path: record.path,
-							...(record.groupId ? { groupId: record.groupId } : {}),
-							status: "interrupted",
-							summary:
-								stopReason === "orphaned"
-									? "The sub-agent was orphaned because its parent was unavailable during recovery."
-									: "The extension reloaded before this sub-agent finished.",
-							stopReason,
-							previousStatus,
-						},
-						createdAt: recoveredAt,
-					}
-					draft.mailbox.push(entry)
-					recoveredEvents.push(entry)
-				}
+					loadedState = draft
+					recoveredEvents = recovery.events
+				})
+				this.state = loadedState
+				this.initialized = true
+				this.publish(recoveredEvents)
+			} catch (error) {
+				if (acquiredOwnerLease) await this.releaseOwnerLease()
+				throw error
 			}
-
-			if (recoveredRecordCount > 0 || recoveredClaimCount > 0) {
-				draft.updatedAt = recoveredAt
-				await this.persistence.write(draft)
-			}
-
-			this.state = draft
-			this.initialized = true
-			this.publish(recoveredEvents)
 		})
+		this.initialization = initialization
+		try {
+			await initialization
+			this.startRecoveryScan()
+		} finally {
+			if (this.initialization === initialization) this.initialization = undefined
+		}
 	}
 
 	async flush(): Promise<void> {
 		await this.writeLock
+	}
+
+	/** Release this extension-host activation's lease without touching retained records. */
+	async shutdown(): Promise<void> {
+		this.disposed = true
+		this.stopRecoveryScan()
+		await this.recoveryScanInFlight?.catch(() => undefined)
+		await this.initialization?.catch(() => undefined)
+		// Initialization starts the scan after its transaction completes. Stop it
+		// again in case shutdown raced an in-flight initialization.
+		this.stopRecoveryScan()
+		await this.withWriteLock(async () => {
+			await this.releaseOwnerLease()
+			this.initialized = false
+		})
+	}
+
+	/** Reap active records only after their previous runtime owner's lease is revoked. */
+	async recoverAbandonedOwners(): Promise<number> {
+		this.assertInitialized()
+		if (!this.hasOwnerLeases()) return 0
+		return this.withWriteLock(async () => {
+			let recoveredState!: AgentControlState
+			let recoveredEvents: AgentMailboxEntry[] = []
+			let recoveredRecordCount = 0
+			await this.withPersistenceTransaction(async () => {
+				await this.assertCurrentOwnerLease()
+				const persisted = await this.readPersistedState()
+				const draft = persisted.state
+				const recoveredAt = this.now()
+				const recovery = await this.recoverAbandonedState(draft, recoveredAt)
+				if (recovery.changed || persisted.migrated) {
+					draft.updatedAt = recoveredAt
+					agentControlStateSchema.parse(draft)
+					await this.assertCurrentOwnerLease()
+					await this.assertPersistenceTransaction()
+					await this.persistence.write(draft)
+				}
+				recoveredState = draft
+				recoveredEvents = recovery.events
+				recoveredRecordCount = recovery.recordCount
+			})
+			this.state = recoveredState
+			this.publish(recoveredEvents)
+			return recoveredRecordCount
+		})
 	}
 
 	getSnapshot(): AgentControlState {
@@ -433,17 +836,25 @@ export class AgentControlStore {
 		this.assertInitialized()
 		if (!rootTaskId.trim()) throw new Error("A root task ID is required")
 		const cursorKeyPrefix = `${rootTaskId}:`
+		const hasRetainedState = (state: AgentControlState) =>
+			state.agents.some((record) => record.rootTaskId === rootTaskId) ||
+			state.tombstones.some((record) => record.rootTaskId === rootTaskId) ||
+			state.mailbox.some((entry) => entry.rootTaskId === rootTaskId) ||
+			Object.keys(state.mailboxCursors).some((key) => key.startsWith(cursorKeyPrefix)) ||
+			state.verificationObligations.some((obligation) => obligation.rootTaskId === rootTaskId)
 
-		return this.withWriteLock(async () => {
-			const hasRetainedState =
-				this.state.agents.some((record) => record.rootTaskId === rootTaskId) ||
-				this.state.tombstones.some((record) => record.rootTaskId === rootTaskId) ||
-				this.state.mailbox.some((entry) => entry.rootTaskId === rootTaskId) ||
-				Object.keys(this.state.mailboxCursors).some((key) => key.startsWith(cursorKeyPrefix)) ||
-				this.state.verificationObligations.some((obligation) => obligation.rootTaskId === rootTaskId)
-			if (!hasRetainedState) return false
+		// Preserve the existing no-write fast path for in-process persistence.
+		// File-backed persistence must inspect durable state while holding its
+		// cross-process transaction boundary.
+		if (!this.persistence.withTransaction && !hasRetainedState(this.state)) return false
 
-			const draft = clone(this.state)
+		const purged = await this.transact((draft) => {
+			if (!hasRetainedState(draft)) return false
+			for (const record of draft.agents) {
+				if (record.rootTaskId === rootTaskId && ACTIVE_STATUSES.has(record.status)) {
+					this.assertRecordOwned(draft, record, "purge its root")
+				}
+			}
 			draft.agents = draft.agents.filter((record) => record.rootTaskId !== rootTaskId)
 			draft.tombstones = draft.tombstones.filter((record) => record.rootTaskId !== rootTaskId)
 			draft.mailbox = draft.mailbox.filter((entry) => entry.rootTaskId !== rootTaskId)
@@ -453,15 +864,14 @@ export class AgentControlStore {
 			draft.verificationObligations = draft.verificationObligations.filter(
 				(obligation) => obligation.rootTaskId !== rootTaskId,
 			)
-			draft.updatedAt = this.now()
-			agentControlStateSchema.parse(draft)
-			await this.persistence.write(draft)
-			this.state = draft
+			return true
+		})
+		if (purged) {
 			for (const [claimId, settlement] of this.pendingMailboxClaimSettlements) {
 				if (settlement.rootTaskId === rootTaskId) this.pendingMailboxClaimSettlements.delete(claimId)
 			}
-			return true
-		})
+		}
+		return purged
 	}
 
 	/** Register the primary parent even when it is not managed as a subagent run. */
@@ -472,6 +882,8 @@ export class AgentControlStore {
 				if (existing.role !== "root" || existing.rootTaskId !== input.taskId || existing.path !== "/root") {
 					throw new Error(`Task ${input.taskId} is already registered as a non-root agent`)
 				}
+				this.assertRecordOwned(draft, existing, "operate this root task")
+				this.claimRecordOwnership(existing)
 				return clone(existing)
 			}
 
@@ -491,6 +903,9 @@ export class AgentControlStore {
 				updatedAt: timestamp,
 				startedAt: status === "running" ? timestamp : undefined,
 				interruptedAt: status === "interrupted" ? timestamp : undefined,
+				...(this.hasOwnerLeases() && ACTIVE_STATUSES.has(status)
+					? { runtimeOwnerId: this.runtimeOwnerId }
+					: {}),
 				snapshot: input.snapshot ? clone(input.snapshot) : undefined,
 			}
 			draft.agents.push(record)
@@ -513,6 +928,8 @@ export class AgentControlStore {
 			if (!ACTIVE_STATUSES.has(parent.status)) {
 				throw new Error(`Parent agent ${parent.path} cannot create a child while status is ${parent.status}`)
 			}
+			this.assertRecordOwned(draft, parent, "create a child")
+			this.claimRecordOwnership(parent)
 
 			const timestamp = this.now()
 			const status = input.status ?? "pending"
@@ -532,6 +949,9 @@ export class AgentControlStore {
 				startedAt: status === "running" ? timestamp : undefined,
 				interruptedAt: status === "interrupted" ? timestamp : undefined,
 				finishedAt: TERMINAL_STATUSES.has(status) ? timestamp : undefined,
+				...(this.hasOwnerLeases() && ACTIVE_STATUSES.has(status)
+					? { runtimeOwnerId: this.runtimeOwnerId }
+					: {}),
 				snapshot: input.snapshot ? clone(input.snapshot) : undefined,
 			}
 			draft.agents.push(record)
@@ -547,6 +967,7 @@ export class AgentControlStore {
 	): Promise<AgentRecord> {
 		return this.transact((draft) => {
 			const record = this.requireMutableRecord(draft, target, rootTaskId)
+			this.assertRecordOwned(draft, record, "update its lifecycle")
 			const timestamp = input.at ?? this.now()
 			if (record.status !== status && !ALLOWED_TRANSITIONS[record.status].has(status)) {
 				throw new Error(`Invalid agent lifecycle transition ${record.status} -> ${status} for ${record.path}`)
@@ -561,6 +982,7 @@ export class AgentControlStore {
 			}
 
 			record.status = status
+			this.claimRecordOwnership(record)
 			record.updatedAt = timestamp
 			if (input.snapshot) {
 				record.snapshot = clone(input.snapshot)
@@ -597,6 +1019,8 @@ export class AgentControlStore {
 	): Promise<AgentRecord> {
 		return this.transact((draft) => {
 			const record = this.requireMutableRecord(draft, target, rootTaskId)
+			this.assertRecordOwned(draft, record, "update its runtime snapshot")
+			this.claimRecordOwnership(record)
 			record.snapshot = clone(snapshot)
 			record.updatedAt = this.now()
 			return clone(record)
@@ -729,13 +1153,24 @@ export class AgentControlStore {
 		if (changedFiles.length === 0) return { changed: false }
 
 		const obligationId = parentVerificationObligationId(input.changeSet.id)
-		const before = this.state.verificationObligations.find((item) => item.id === obligationId)
-		const wouldChange = !before || this.changeSetWouldAdvance(before, input)
-		if (!wouldChange) return { obligation: clone(before), changed: false, previousStatus: before.status }
+		if (!this.persistence.withTransaction) {
+			const before = this.state.verificationObligations.find((item) => item.id === obligationId)
+			const wouldChange = !before || this.changeSetWouldAdvance(before, input)
+			if (!wouldChange) return { obligation: clone(before), changed: false, previousStatus: before.status }
+		}
 
 		return this.transact((draft) => {
+			this.assertParentMutationOwned(
+				draft,
+				input.parentTaskId,
+				input.rootTaskId,
+				"record Worker verification state",
+			)
 			const timestamp = input.at ?? this.now()
 			let obligation = draft.verificationObligations.find((item) => item.id === obligationId)
+			if (obligation && !this.changeSetWouldAdvance(obligation, input)) {
+				return { obligation: clone(obligation), changed: false, previousStatus: obligation.status }
+			}
 			const previousStatus = obligation?.status
 			if (obligation) {
 				this.assertVerificationIdentity(obligation, input)
@@ -778,7 +1213,7 @@ export class AgentControlStore {
 		})
 	}
 
-	/** Persist terminal parent command evidence against every applied obligation it can cover. */
+	/** Persist explicitly scoped terminal parent-command evidence against applied obligations. */
 	async recordParentVerificationEvidence(
 		parentTaskId: string,
 		evidence: readonly ParentCommandVerificationEvidence[],
@@ -796,24 +1231,28 @@ export class AgentControlStore {
 			)
 		if (terminalEvidence.length === 0) return []
 
-		const candidates = this.state.verificationObligations.filter(
-			(item) =>
-				item.parentTaskId === parentTaskId &&
-				(!rootTaskId || item.rootTaskId === rootTaskId) &&
-				(item.status === "pending" || item.status === "failed") &&
-				item.appliedAt !== undefined,
-		)
-		const wouldChange = candidates.some((item) => {
-			const selected = this.selectVerificationEvidence(item, terminalEvidence)
-			if (!selected) return false
-			const status = selected.evidence.status === "succeeded" ? "passed" : "failed"
-			return (
-				item.verification?.executionId !== selected.evidence.executionId || item.verification.status !== status
+		if (!this.persistence.withTransaction) {
+			const candidates = this.state.verificationObligations.filter(
+				(item) =>
+					item.parentTaskId === parentTaskId &&
+					(!rootTaskId || item.rootTaskId === rootTaskId) &&
+					(item.status === "pending" || item.status === "failed") &&
+					item.appliedAt !== undefined,
 			)
-		})
-		if (!wouldChange) return []
+			const wouldChange = candidates.some((item) => {
+				const selected = this.selectVerificationEvidence(item, terminalEvidence)
+				if (!selected) return false
+				const status = selected.evidence.status === "succeeded" ? "passed" : "failed"
+				return (
+					item.verification?.executionId !== selected.evidence.executionId ||
+					item.verification.status !== status
+				)
+			})
+			if (!wouldChange) return []
+		}
 
 		return this.transact((draft) => {
+			this.assertParentMutationOwned(draft, parentTaskId, rootTaskId, "record parent verification evidence")
 			const changed: ParentVerificationObligation[] = []
 			for (const obligation of draft.verificationObligations) {
 				if (
@@ -845,8 +1284,8 @@ export class AgentControlStore {
 				obligation.status = status === "passed" ? "satisfied" : "failed"
 				obligation.reason =
 					status === "passed"
-						? "A parent verification command completed successfully after application."
-						: "The latest parent verification command did not complete successfully."
+						? "An explicitly scoped parent verification command completed successfully after application."
+						: "The latest explicitly scoped parent verification command did not complete successfully."
 				obligation.updatedAt = selected.evidence.completedAt
 				changed.push(clone(obligation))
 			}
@@ -858,6 +1297,7 @@ export class AgentControlStore {
 	async closeAgent(target: string, rootTaskId?: string): Promise<ClosedAgentTombstone> {
 		return this.transact((draft) => {
 			const record = this.requireMutableRecord(draft, target, rootTaskId)
+			this.assertRecordOwned(draft, record, "close it")
 			if (!CLOSABLE_STATUSES.has(record.status)) {
 				throw new Error(`Agent ${record.path} cannot be closed while status is ${record.status}`)
 			}
@@ -958,21 +1398,11 @@ export class AgentControlStore {
 		if (obligation.appliedAt === undefined) return undefined
 		const relevant = evidence.flatMap((item) => {
 			if (item.startedAt < obligation.appliedAt!) return []
-			const matchedFiles = this.getReferencedChangedFiles(item.command, obligation.changedFiles)
-			return matchedFiles.length > 0 ? [{ evidence: item, matchedFiles }] : []
+			if (!item.verificationChangeSetIds?.includes(obligation.changeSetId)) return []
+			return [{ evidence: item, matchedFiles: [...obligation.changedFiles] }]
 		})
 		if (relevant.length === 0) return undefined
 		return relevant.find((item) => item.evidence.status === "succeeded") ?? relevant.at(-1)
-	}
-
-	private getReferencedChangedFiles(command: string | undefined, changedFiles: readonly string[]): string[] {
-		if (!command?.trim()) return []
-		const normalizedCommand = command.replace(/\\/g, "/")
-		return changedFiles.filter((changedFile) => {
-			const normalizedFile = changedFile.replace(/\\/g, "/").replace(/^\.\//, "")
-			const escapedFile = normalizedFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-			return new RegExp(`(^|[\\s\"'=:(,])(?:\\./)?${escapedFile}(?=$|[\\s\"';),])`, "i").test(normalizedCommand)
-		})
 	}
 
 	private assertVerificationIdentity(
@@ -1001,7 +1431,10 @@ export class AgentControlStore {
 			}
 
 			const recipient = this.requireOpenAddress(draft, input.recipient, input.rootTaskId)
-			const sender = input.sender ? this.requireOpenAddress(draft, input.sender, recipient.rootTaskId) : undefined
+			const sender = input.sender
+				? this.requireOwnedAddress(draft, input.sender, recipient.rootTaskId, "publish an event")
+				: undefined
+			if (!sender) this.assertTreeOwned(draft, recipient.rootTaskId, "publish an event")
 			const entry: AgentMailboxEntry = {
 				eventId: input.eventId ?? randomUUID(),
 				sequence: draft.nextSequence++,
@@ -1054,7 +1487,7 @@ export class AgentControlStore {
 		const claimId = options.claimId?.trim() || randomUUID()
 		const claimedAt = this.now()
 		return this.transact((draft) => {
-			const address = this.requireAddress(draft, recipient, options.rootTaskId)
+			const address = this.requireOwnedAddress(draft, recipient, options.rootTaskId, "claim its mailbox")
 			const existing = draft.mailbox.filter((entry) => entry.claimId === claimId)
 			if (existing.length > 0) {
 				if (
@@ -1062,10 +1495,18 @@ export class AgentControlStore {
 						(entry) =>
 							entry.rootTaskId !== address.rootTaskId ||
 							entry.recipientTaskId !== address.taskId ||
-							entry.claimChannel !== options.channel,
+							entry.claimChannel !== options.channel ||
+							(this.hasOwnerLeases() &&
+								entry.claimOwnerId !== undefined &&
+								entry.claimOwnerId !== this.runtimeOwnerId),
 					)
 				) {
 					throw new Error(`Mailbox claim ID ${claimId} was reused with different ownership`)
+				}
+				if (this.hasOwnerLeases()) {
+					for (const entry of existing) {
+						if (entry.acknowledgedAt === undefined) entry.claimOwnerId ??= this.runtimeOwnerId
+					}
 				}
 				return {
 					claimId,
@@ -1097,6 +1538,7 @@ export class AgentControlStore {
 				entry.claimId = claimId
 				entry.claimedAt = claimedAt
 				entry.claimChannel = options.channel
+				if (this.hasOwnerLeases()) entry.claimOwnerId = this.runtimeOwnerId
 			}
 
 			return { claimId, channel: options.channel, entries: entries.map(clone) }
@@ -1111,12 +1553,15 @@ export class AgentControlStore {
 		acknowledgedAt = this.now(),
 	): Promise<AgentMailboxCursor> {
 		return this.transact((draft) => {
-			const address = this.requireAddress(draft, recipient, rootTaskId)
+			const address = this.requireOwnedAddress(draft, recipient, rootTaskId, "acknowledge its mailbox")
 			const claimedEntries = draft.mailbox.filter((entry) => entry.claimId === claimId)
 			if (claimedEntries.length === 0) throw new Error(`Unknown mailbox claim: ${claimId}`)
 			if (
 				claimedEntries.some(
-					(entry) => entry.rootTaskId !== address.rootTaskId || entry.recipientTaskId !== address.taskId,
+					(entry) =>
+						entry.rootTaskId !== address.rootTaskId ||
+						entry.recipientTaskId !== address.taskId ||
+						(entry.claimOwnerId !== undefined && entry.claimOwnerId !== this.runtimeOwnerId),
 				)
 			) {
 				throw new Error(`Mailbox claim ${claimId} belongs to a different recipient`)
@@ -1153,11 +1598,14 @@ export class AgentControlStore {
 	/** Release an unfinished claim so another consumer may retry it. */
 	async releaseMailboxClaim(recipient: string, claimId: string, rootTaskId?: string): Promise<number> {
 		return this.transact((draft) => {
-			const address = this.requireAddress(draft, recipient, rootTaskId)
+			const address = this.requireOwnedAddress(draft, recipient, rootTaskId, "release its mailbox claim")
 			const claimedEntries = draft.mailbox.filter((entry) => entry.claimId === claimId)
 			if (
 				claimedEntries.some(
-					(entry) => entry.rootTaskId !== address.rootTaskId || entry.recipientTaskId !== address.taskId,
+					(entry) =>
+						entry.rootTaskId !== address.rootTaskId ||
+						entry.recipientTaskId !== address.taskId ||
+						(entry.claimOwnerId !== undefined && entry.claimOwnerId !== this.runtimeOwnerId),
 				)
 			) {
 				throw new Error(`Mailbox claim ${claimId} belongs to a different recipient`)
@@ -1168,6 +1616,7 @@ export class AgentControlStore {
 				delete entry.claimId
 				delete entry.claimedAt
 				delete entry.claimChannel
+				delete entry.claimOwnerId
 				released++
 			}
 			return released
@@ -1188,7 +1637,11 @@ export class AgentControlStore {
 		this.assertInitialized()
 		const normalizedClaimId = claimId.trim()
 		if (!normalizedClaimId) throw new Error("A mailbox claim ID is required")
-		const address = this.requireAddress(this.state, recipient, rootTaskId)
+		const address = this.persistence.withTransaction
+			? await this.transact((draft) =>
+					clone(this.requireOwnedAddress(draft, recipient, rootTaskId, "settle its mailbox claim")),
+				)
+			: this.requireAddress(this.state, recipient, rootTaskId)
 		const settlement: PendingMailboxClaimSettlement = {
 			claimId: normalizedClaimId,
 			recipientTaskId: address.taskId,
@@ -1317,7 +1770,12 @@ export class AgentControlStore {
 			throw new Error("Mailbox sequence must be a non-negative integer")
 		}
 		return this.transact((draft) => {
-			const address = this.requireAddress(draft, recipient, rootTaskId)
+			const address = this.requireOwnedAddress(
+				draft,
+				recipient,
+				rootTaskId,
+				acknowledge ? "acknowledge its mailbox" : "mark its mailbox delivered",
+			)
 			const effectiveThroughSequence = Math.min(throughSequence, draft.nextSequence - 1)
 			for (const entry of draft.mailbox) {
 				if (
@@ -1347,16 +1805,281 @@ export class AgentControlStore {
 	private async transact<T>(mutate: (draft: AgentControlState) => T): Promise<T> {
 		this.assertInitialized()
 		return this.withWriteLock(async () => {
-			const draft = clone(this.state)
-			const previousMailboxLength = draft.mailbox.length
-			const value = mutate(draft)
-			draft.updatedAt = this.now()
-			agentControlStateSchema.parse(draft)
-			await this.persistence.write(draft)
-			this.state = draft
-			this.publish(draft.mailbox.slice(previousMailboxLength))
+			let committedState!: AgentControlState
+			let publishedEntries: AgentMailboxEntry[] = []
+			let value!: T
+			await this.withPersistenceTransaction(async () => {
+				await this.assertCurrentOwnerLease()
+				const reloadDurableState = this.persistence.withTransaction !== undefined
+				const persisted = reloadDurableState ? await this.readPersistedState() : undefined
+				const base = persisted?.state ?? this.state
+				const draft = clone(base)
+				const previousMailboxLength = draft.mailbox.length
+				value = mutate(draft)
+
+				// A file transaction may have refreshed state while finding the
+				// requested mutation already applied. Refresh the local projection but
+				// avoid rewriting an identical complete snapshot.
+				if (reloadDurableState && !persisted?.migrated && isDeepStrictEqual(draft, base)) {
+					committedState = base
+					return
+				}
+
+				draft.updatedAt = this.now()
+				agentControlStateSchema.parse(draft)
+				await this.assertCurrentOwnerLease()
+				await this.assertPersistenceTransaction()
+				await this.persistence.write(draft)
+				committedState = draft
+				publishedEntries = draft.mailbox.slice(previousMailboxLength)
+			})
+			this.state = committedState
+			this.publish(publishedEntries)
 			return value
 		})
+	}
+
+	private ownerLeasePersistence(): AgentControlOwnerLeasePersistence | undefined {
+		return hasOwnerLeasePersistence(this.persistence) ? this.persistence : undefined
+	}
+
+	private hasOwnerLeases(): boolean {
+		return this.ownerLeasePersistence() !== undefined
+	}
+
+	private async acquireOwnerLease(): Promise<boolean> {
+		const persistence = this.ownerLeasePersistence()
+		if (!persistence || this.ownerLeaseHeld) return false
+		this.ownerLeaseCompromisedError = undefined
+		await persistence.acquireOwnerLease(this.runtimeOwnerId, {
+			staleMs: this.ownerLeaseStaleMs,
+			updateMs: this.ownerLeaseUpdateMs,
+			onCompromised: (error) => {
+				this.ownerLeaseHeld = false
+				this.ownerLeaseCompromisedError = error
+				console.error(`[AgentControlStore] Runtime owner lease ${this.runtimeOwnerId} was compromised`, error)
+			},
+		})
+		this.ownerLeaseHeld = true
+		return true
+	}
+
+	private async releaseOwnerLease(): Promise<void> {
+		const persistence = this.ownerLeasePersistence()
+		if (!persistence) return
+		this.ownerLeaseHeld = false
+		await persistence.releaseOwnerLease(this.runtimeOwnerId)
+	}
+
+	private async assertCurrentOwnerLease(): Promise<void> {
+		const persistence = this.ownerLeasePersistence()
+		if (!persistence) return
+		if (this.ownerLeaseCompromisedError) {
+			throw new Error(`Agent runtime owner lease ${this.runtimeOwnerId} was compromised`, {
+				cause: this.ownerLeaseCompromisedError,
+			})
+		}
+		if (!this.ownerLeaseHeld) throw new Error(`Agent runtime owner lease ${this.runtimeOwnerId} is not held`)
+		if (!(await persistence.isOwnerLeaseLive(this.runtimeOwnerId, this.ownerLeaseStaleMs))) {
+			await this.releaseOwnerLease()
+			throw new Error(`Agent runtime owner lease ${this.runtimeOwnerId} expired`)
+		}
+	}
+
+	private async resolveLiveOwnerIds(draft: AgentControlState): Promise<Set<AgentRuntimeOwnerId>> {
+		const persistence = this.ownerLeasePersistence()
+		if (!persistence) return new Set()
+		const ownerIds = new Set<AgentRuntimeOwnerId>()
+		for (const record of draft.agents) {
+			if (ACTIVE_STATUSES.has(record.status) && record.runtimeOwnerId) ownerIds.add(record.runtimeOwnerId)
+		}
+		for (const entry of draft.mailbox) {
+			if (entry.claimId && entry.acknowledgedAt === undefined && entry.claimOwnerId) {
+				ownerIds.add(entry.claimOwnerId)
+			}
+		}
+
+		const liveOwnerIds = new Set<AgentRuntimeOwnerId>()
+		for (const ownerId of ownerIds) {
+			const live = await persistence.isOwnerLeaseLive(ownerId, this.ownerLeaseStaleMs)
+			if (live) {
+				liveOwnerIds.add(ownerId)
+				continue
+			}
+			// Acquiring a stale owner's lock while the state transaction is held
+			// is the fencing step: a concurrent renewal wins with ELOCKED; a
+			// successful acquire/release compromises the suspended old handle.
+			const revoked = await persistence.tryRevokeOwnerLease(ownerId, this.ownerLeaseStaleMs)
+			if (!revoked) liveOwnerIds.add(ownerId)
+		}
+		return liveOwnerIds
+	}
+
+	private async recoverAbandonedState(
+		draft: AgentControlState,
+		recoveredAt: number,
+	): Promise<{ changed: boolean; recordCount: number; events: AgentMailboxEntry[] }> {
+		const events: AgentMailboxEntry[] = []
+		let recordCount = 0
+		let claimCount = 0
+		let inactiveOwnerCount = 0
+		const liveOwnerIds = await this.resolveLiveOwnerIds(draft)
+		for (const entry of draft.mailbox) {
+			if (!entry.claimId || entry.acknowledgedAt !== undefined) continue
+			if (entry.claimOwnerId && liveOwnerIds.has(entry.claimOwnerId)) continue
+			if (entry.claimChannel === "wait") {
+				// Preserve the receipt for API-history reconciliation, but do not
+				// assign it to an unrelated periodic reaper. The eventual recipient
+				// owner may settle an unowned retained claim.
+				if (entry.claimOwnerId !== undefined) {
+					delete entry.claimOwnerId
+					claimCount++
+				}
+				continue
+			}
+			delete entry.claimId
+			delete entry.claimedAt
+			delete entry.claimChannel
+			delete entry.claimOwnerId
+			claimCount++
+		}
+
+		for (const record of draft.agents) {
+			if (!ACTIVE_STATUSES.has(record.status)) {
+				if (this.hasOwnerLeases() && record.runtimeOwnerId !== undefined) {
+					delete record.runtimeOwnerId
+					inactiveOwnerCount++
+				}
+				continue
+			}
+			if (record.runtimeOwnerId && liveOwnerIds.has(record.runtimeOwnerId)) continue
+
+			const previousStatus = record.status
+			const previousUpdatedAt = record.updatedAt
+			const previousOwnerId = record.runtimeOwnerId
+			record.status = "interrupted"
+			record.updatedAt = recoveredAt
+			record.interruptedAt = recoveredAt
+			if (this.hasOwnerLeases()) delete record.runtimeOwnerId
+			recordCount++
+
+			const parent = record.parentTaskId
+				? draft.agents.find((candidate) => candidate.taskId === record.parentTaskId)
+				: undefined
+			const stopReason = record.parentTaskId && !parent ? "orphaned" : "interrupted"
+			record.snapshot = { ...record.snapshot, stopReason }
+			const recoveryRecipient =
+				parent ??
+				(record.parentTaskId
+					? draft.agents.find(
+							(candidate) => candidate.taskId === record.rootTaskId && candidate.role === "root",
+						)
+					: undefined)
+			if (!recoveryRecipient) continue
+
+			const eventId = `agent-recovery:${record.rootTaskId}:${record.taskId}:${previousOwnerId ?? "legacy"}:${previousStatus}:${previousUpdatedAt}`
+			if (!draft.mailbox.some((entry) => entry.eventId === eventId)) {
+				const entry: AgentMailboxEntry = {
+					eventId,
+					sequence: draft.nextSequence++,
+					rootTaskId: record.rootTaskId,
+					senderTaskId: record.taskId,
+					senderPath: record.path,
+					recipientTaskId: recoveryRecipient.taskId,
+					recipientPath: recoveryRecipient.path,
+					kind: "lifecycle",
+					name: "recovered_interrupted",
+					payload: {
+						previousStatus,
+						stopReason,
+						...(parent ? {} : { orphaned: true, missingParentTaskId: record.parentTaskId }),
+					},
+					createdAt: recoveredAt,
+				}
+				draft.mailbox.push(entry)
+				events.push(entry)
+			}
+
+			const resultEventId = `agent-recovery-result:${record.rootTaskId}:${record.taskId}:${previousOwnerId ?? "legacy"}:${previousStatus}:${previousUpdatedAt}`
+			if (!draft.mailbox.some((entry) => entry.eventId === resultEventId)) {
+				const entry: AgentMailboxEntry = {
+					eventId: resultEventId,
+					sequence: draft.nextSequence++,
+					rootTaskId: record.rootTaskId,
+					senderTaskId: record.taskId,
+					senderPath: record.path,
+					recipientTaskId: recoveryRecipient.taskId,
+					recipientPath: recoveryRecipient.path,
+					kind: "result",
+					name: "agent_interrupted",
+					payload: {
+						taskId: record.taskId,
+						path: record.path,
+						...(record.groupId ? { groupId: record.groupId } : {}),
+						status: "interrupted",
+						summary:
+							stopReason === "orphaned"
+								? "The sub-agent was orphaned because its parent was unavailable during recovery."
+								: "The extension reloaded before this sub-agent finished.",
+						stopReason,
+						previousStatus,
+					},
+					createdAt: recoveredAt,
+				}
+				draft.mailbox.push(entry)
+				events.push(entry)
+			}
+		}
+
+		return { changed: recordCount > 0 || claimCount > 0 || inactiveOwnerCount > 0, recordCount, events }
+	}
+
+	private startRecoveryScan(): void {
+		if (!this.hasOwnerLeases() || this.recoveryScanIntervalMs <= 0 || this.recoveryScanTimer) return
+		this.recoveryScanTimer = setInterval(() => {
+			if (this.recoveryScanInFlight) return
+			const scan = this.recoverAbandonedOwners().then(
+				() => undefined,
+				(error) => {
+					console.error("[AgentControlStore] Failed to recover abandoned runtime owners", error)
+				},
+			)
+			this.recoveryScanInFlight = scan
+			void scan.then(() => {
+				if (this.recoveryScanInFlight === scan) this.recoveryScanInFlight = undefined
+			})
+		}, this.recoveryScanIntervalMs)
+		this.recoveryScanTimer.unref?.()
+	}
+
+	private stopRecoveryScan(): void {
+		if (!this.recoveryScanTimer) return
+		clearInterval(this.recoveryScanTimer)
+		this.recoveryScanTimer = undefined
+	}
+
+	private async readPersistedState(): Promise<PersistedAgentControlState> {
+		const stored = await this.persistence.read()
+		const state = stored === undefined ? initialState(this.now()) : agentControlStateSchema.parse(stored)
+		const highestSequence = state.mailbox.reduce((highest, entry) => Math.max(highest, entry.sequence), 0)
+		state.nextSequence = Math.max(state.nextSequence, highestSequence + 1)
+		return {
+			state,
+			migrated:
+				stored !== undefined &&
+				typeof stored === "object" &&
+				stored !== null &&
+				"version" in stored &&
+				stored.version === 1,
+		}
+	}
+
+	private withPersistenceTransaction<T>(operation: () => Promise<T>): Promise<T> {
+		return this.persistence.withTransaction ? this.persistence.withTransaction(operation) : operation()
+	}
+
+	private async assertPersistenceTransaction(): Promise<void> {
+		await this.persistence.assertTransactionOwner?.()
 	}
 
 	private withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -1467,6 +2190,86 @@ export class AgentControlStore {
 			throw new Error(`Unknown agent target: ${target}`)
 		}
 		return record
+	}
+
+	private assertRecordOwned(draft: AgentControlState, record: AgentRecord, action: string): void {
+		this.assertTreeOwned(draft, record.rootTaskId, action)
+	}
+
+	private assertTreeOwned(draft: AgentControlState, rootTaskId: string, action: string): void {
+		if (!this.hasOwnerLeases()) return
+		const foreignClaim = draft.mailbox.find(
+			(entry) =>
+				entry.rootTaskId === rootTaskId &&
+				entry.claimId !== undefined &&
+				entry.acknowledgedAt === undefined &&
+				entry.claimOwnerId !== undefined &&
+				entry.claimOwnerId !== this.runtimeOwnerId,
+		)
+		if (foreignClaim) {
+			throw new Error(
+				`Agent tree ${rootTaskId} has a mailbox claim owned by another live extension host and this host cannot ${action}`,
+			)
+		}
+		const foreignActiveRecord = draft.agents.find(
+			(candidate) =>
+				candidate.rootTaskId === rootTaskId &&
+				ACTIVE_STATUSES.has(candidate.status) &&
+				candidate.runtimeOwnerId !== undefined &&
+				candidate.runtimeOwnerId !== this.runtimeOwnerId,
+		)
+		if (foreignActiveRecord) {
+			throw new Error(
+				`Agent tree ${rootTaskId} is owned by another live extension host and this host cannot ${action}`,
+			)
+		}
+		for (const candidate of draft.agents) {
+			if (
+				candidate.rootTaskId === rootTaskId &&
+				ACTIVE_STATUSES.has(candidate.status) &&
+				candidate.runtimeOwnerId === undefined
+			) {
+				candidate.runtimeOwnerId = this.runtimeOwnerId
+			}
+		}
+	}
+
+	private assertParentMutationOwned(
+		draft: AgentControlState,
+		parentTaskId: string,
+		rootTaskId: string | undefined,
+		action: string,
+	): void {
+		const parent = this.resolveRecord(draft, parentTaskId, rootTaskId)
+		if (parent) {
+			this.assertRecordOwned(draft, parent, action)
+			this.claimRecordOwnership(parent)
+			return
+		}
+		const tombstone = this.resolveTombstone(draft, parentTaskId, rootTaskId)
+		if (!tombstone) throw new Error(`Unknown parent agent target: ${parentTaskId}`)
+		this.assertTreeOwned(draft, tombstone.rootTaskId, action)
+	}
+
+	private claimRecordOwnership(record: AgentRecord): void {
+		if (!this.hasOwnerLeases()) return
+		if (ACTIVE_STATUSES.has(record.status)) record.runtimeOwnerId = this.runtimeOwnerId
+		else delete record.runtimeOwnerId
+	}
+
+	private requireOwnedAddress(
+		draft: AgentControlState,
+		target: string,
+		rootTaskId: string | undefined,
+		action: string,
+	): MutableAddress {
+		const record = this.resolveRecord(draft, target, rootTaskId)
+		if (!record) {
+			throw new Error(`Unknown or closed agent target: ${target}`)
+		}
+		this.assertRecordOwned(draft, record, action)
+		this.claimRecordOwnership(record)
+		return { taskId: record.taskId, path: record.path, rootTaskId: record.rootTaskId }
 	}
 
 	private requireAddress(draft: AgentControlState, target: string, rootTaskId?: string): MutableAddress {

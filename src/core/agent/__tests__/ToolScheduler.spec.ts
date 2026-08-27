@@ -377,10 +377,14 @@ describe("ToolScheduler", () => {
 		let peak = 0
 		let approvalsInFlight = 0
 		let peakApprovals = 0
+		let releaseHandlers!: () => void
+		const allHandlersStarted = new Promise<void>((resolve) => {
+			releaseHandlers = resolve
+		})
 		task.ask = async () => {
 			approvalsInFlight += 1
 			peakApprovals = Math.max(peakApprovals, approvalsInFlight)
-			await wait(1)
+			await Promise.resolve()
 			approvalsInFlight -= 1
 			return { response: "yesButtonClicked" } as any
 		}
@@ -389,7 +393,8 @@ describe("ToolScheduler", () => {
 				expect(await callbacks.askApproval("tool", "read file")).toBe(true)
 				active += 1
 				peak = Math.max(peak, active)
-				await wait(100)
+				if (active === 6) releaseHandlers()
+				await allHandlersStarted
 				callbacks.pushToolResult(`content-${call.id}`)
 				active -= 1
 			}),

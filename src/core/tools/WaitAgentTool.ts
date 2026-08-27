@@ -3,15 +3,28 @@ import type { WaitAgentParams } from "@alpha-code/types"
 import type { Task } from "../task/Task"
 
 import { BaseTool, type ToolCallbacks } from "./BaseTool"
-import { recordLifecycleToolError, resolveWaitTimeout, runAgentLifecycleOperation } from "./AgentLifecycleTool"
+import {
+	optionalAgentTarget,
+	recordLifecycleToolError,
+	resolveUntilTerminal,
+	resolveWaitTimeout,
+	runAgentLifecycleOperation,
+} from "./AgentLifecycleTool"
 
 export class WaitAgentTool extends BaseTool<"wait_agent"> {
 	readonly name = "wait_agent" as const
 
 	async execute(params: WaitAgentParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
 		let timeoutMs: number
+		let target: string | undefined
+		let untilTerminal: boolean
 		try {
 			timeoutMs = resolveWaitTimeout((params as WaitAgentParams | undefined)?.timeout_ms)
+			target = optionalAgentTarget((params as WaitAgentParams | undefined)?.target)
+			untilTerminal = resolveUntilTerminal((params as WaitAgentParams | undefined)?.until_terminal)
+			if (target && !untilTerminal) {
+				throw new Error("target requires until_terminal to be true")
+			}
 		} catch (error) {
 			recordLifecycleToolError(this.name, task, callbacks, error)
 			return
@@ -22,7 +35,10 @@ export class WaitAgentTool extends BaseTool<"wait_agent"> {
 			"waitForAgent",
 			task,
 			callbacks,
-			(provider) => provider.waitForAgent(task, timeoutMs),
+			(provider) =>
+				target || untilTerminal
+					? provider.waitForAgent(task, timeoutMs, { target, untilTerminal })
+					: provider.waitForAgent(task, timeoutMs),
 			(result) => {
 				if (typeof result !== "object" || result === null || !("claimId" in result)) return
 				const claimId = (result as { claimId?: unknown }).claimId

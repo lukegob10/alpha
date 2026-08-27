@@ -28,6 +28,10 @@ export type TerminalAgentLifecycleStatus = z.infer<typeof terminalAgentLifecycle
 export const agentControlRoleSchema = z.enum(["root", "explore", "review", "worker"])
 export type AgentControlRole = z.infer<typeof agentControlRoleSchema>
 
+/** Activation-scoped fencing token for the extension host executing an agent. */
+export const agentRuntimeOwnerIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/)
+export type AgentRuntimeOwnerId = z.infer<typeof agentRuntimeOwnerIdSchema>
+
 /** A canonical path is scoped to one root task. Different roots may both contain `/root/review`. */
 export const agentCanonicalPathSchema = z.string().regex(/^\/root(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/)
 export type AgentCanonicalPath = z.infer<typeof agentCanonicalPathSchema>
@@ -75,6 +79,7 @@ export const agentRecordSchema = z.object({
 	startedAt: z.number().optional(),
 	interruptedAt: z.number().optional(),
 	finishedAt: z.number().optional(),
+	runtimeOwnerId: agentRuntimeOwnerIdSchema.optional(),
 	snapshot: agentRuntimeSnapshotSchema.optional(),
 	terminalResult: agentTerminalResultMetadataSchema.optional(),
 })
@@ -110,6 +115,7 @@ export const agentMailboxEntrySchema = z.object({
 	claimId: z.string().min(1).optional(),
 	claimedAt: z.number().optional(),
 	claimChannel: z.enum(["wait", "automatic"]).optional(),
+	claimOwnerId: agentRuntimeOwnerIdSchema.optional(),
 	deliveredAt: z.number().optional(),
 	acknowledgedAt: z.number().optional(),
 })
@@ -124,8 +130,7 @@ export const agentMailboxCursorSchema = z.object({
 })
 export type AgentMailboxCursor = z.infer<typeof agentMailboxCursorSchema>
 
-export const agentControlStateSchema = z.object({
-	version: z.literal(1),
+const agentControlStateFields = {
 	updatedAt: z.number(),
 	nextSequence: z.number().int().positive(),
 	agents: z.array(agentRecordSchema),
@@ -133,5 +138,24 @@ export const agentControlStateSchema = z.object({
 	mailbox: z.array(agentMailboxEntrySchema),
 	mailboxCursors: z.record(z.string(), agentMailboxCursorSchema),
 	verificationObligations: z.array(parentVerificationObligationSchema).default([]),
+}
+
+const currentAgentControlStateSchema = z.object({
+	version: z.literal(2),
+	...agentControlStateFields,
 })
+
+const legacyAgentControlStateSchema = z
+	.object({
+		version: z.literal(1),
+		...agentControlStateFields,
+	})
+	.transform(({ version: _legacyVersion, ...state }) => ({ ...state, version: 2 as const }))
+
+/**
+ * Version 2 adds runtime-owner fencing. Version 1 is migrated on read, while
+ * every subsequent write uses 2 so older hosts reject the file instead of
+ * silently stripping ownership fields during a mixed-version session.
+ */
+export const agentControlStateSchema = z.union([currentAgentControlStateSchema, legacyAgentControlStateSchema])
 export type AgentControlState = z.infer<typeof agentControlStateSchema>

@@ -25,7 +25,11 @@ const visibleAgentLifecycleTools = new Set<AgentLifecycleToolName>(["list_agents
 /** Minimal host surface required by the model-facing lifecycle tools. */
 export interface AgentLifecycleControlProvider {
 	listAgents(parent: Task, pathPrefix?: string): Promise<unknown>
-	waitForAgent(parent: Task, timeoutMs?: number): Promise<unknown>
+	waitForAgent(
+		parent: Task,
+		timeoutMs?: number,
+		options?: { target?: string; untilTerminal?: boolean },
+	): Promise<unknown>
 	sendMessageToAgent(parent: Task, target: string, message: string): Promise<unknown>
 	reportAgentProgress(child: Task, message: string): Promise<unknown>
 	followupAgentTask(parent: Task, target: string, message: string): Promise<unknown>
@@ -43,6 +47,11 @@ export function requireAgentTarget(value: unknown): string {
 		throw new Error("target must be a nonempty task ID or canonical agent path such as /root/review")
 	}
 	return value
+}
+
+export function optionalAgentTarget(value: unknown): string | undefined {
+	if (value === undefined || value === null) return undefined
+	return requireAgentTarget(value)
 }
 
 export function optionalCanonicalPath(value: unknown): string | undefined {
@@ -80,6 +89,14 @@ export function resolveWaitTimeout(value: unknown): number {
 		throw new Error(
 			`timeout_ms must be an integer from ${WAIT_AGENT_MIN_TIMEOUT_MS} to ${WAIT_AGENT_MAX_TIMEOUT_MS}`,
 		)
+	}
+	return value
+}
+
+export function resolveUntilTerminal(value: unknown): boolean {
+	if (value === undefined || value === null) return false
+	if (typeof value !== "boolean") {
+		throw new Error("until_terminal must be a boolean")
 	}
 	return value
 }

@@ -2963,6 +2963,217 @@ If complete, use attempt_completion.
 		expect(parent.clineMessages[0].subagentGroup.agents[0].resultDeliveredAt).toBeUndefined()
 	})
 
+	it("lets two targeted terminal waits claim only their own results and leaves lifecycle traffic unread", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const root = await (provider as any).ensureAgentControlRoot(parent)
+		const first = await (provider as any).agentControlStore.createAgent({
+			taskId: "targeted-first",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "First",
+			role: "review",
+			objective: "Finish first",
+			status: "completed",
+		})
+		const second = await (provider as any).agentControlStore.createAgent({
+			taskId: "targeted-second",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Second",
+			role: "review",
+			objective: "Finish second",
+			status: "completed",
+		})
+		await (provider as any).agentControlStore.appendEvent({
+			rootTaskId: root.rootTaskId,
+			sender: first.taskId,
+			recipient: root.taskId,
+			kind: "lifecycle",
+			name: "agent_started",
+			payload: { phase: "running" },
+		})
+		for (const record of [first, second]) {
+			await (provider as any).agentControlStore.appendEvent({
+				rootTaskId: root.rootTaskId,
+				sender: record.taskId,
+				recipient: root.taskId,
+				kind: "result",
+				name: "agent_completed",
+				payload: { taskId: record.taskId, status: "completed" },
+			})
+		}
+
+		const waited = (await provider.waitForAgent(parent as any, 10_000, {
+			target: second.path,
+			untilTerminal: true,
+		})) as any
+
+		expect(waited).toMatchObject({
+			timedOut: false,
+			source: "managed_agent_mailbox",
+			claimId: expect.any(String),
+			events: [expect.objectContaining({ kind: "result", senderTaskId: second.taskId })],
+		})
+		expect(
+			(provider as any).agentControlStore
+				.getUnacknowledgedMailboxEntries(root.taskId, { rootTaskId: root.rootTaskId })
+				.map((entry: any) => [entry.kind, entry.senderTaskId, entry.claimId]),
+		).toEqual([
+			["lifecycle", first.taskId, undefined],
+			["result", first.taskId, undefined],
+			["result", second.taskId, waited.claimId],
+		])
+		await provider.acknowledgeWaitAgentResults(parent as any, waited.claimId)
+		const firstWaited = (await provider.waitForAgent(parent as any, 10_000, {
+			target: first.path,
+			untilTerminal: true,
+		})) as any
+		expect(firstWaited).toMatchObject({
+			timedOut: false,
+			source: "managed_agent_mailbox",
+			claimId: expect.any(String),
+			events: [expect.objectContaining({ kind: "result", senderTaskId: first.taskId })],
+		})
+		expect(
+			(provider as any).agentControlStore
+				.getUnacknowledgedMailboxEntries(root.taskId, { rootTaskId: root.rootTaskId })
+				.map((entry: any) => [entry.kind, entry.senderTaskId, entry.claimId]),
+		).toEqual([
+			["lifecycle", first.taskId, undefined],
+			["result", first.taskId, firstWaited.claimId],
+		])
+		await provider.acknowledgeWaitAgentResults(parent as any, firstWaited.claimId)
+		expect(
+			(provider as any).agentControlStore.getUnacknowledgedMailboxEntries(root.taskId, {
+				rootTaskId: root.rootTaskId,
+			}),
+		).toEqual([expect.objectContaining({ kind: "lifecycle", senderTaskId: first.taskId })])
+	})
+
+	it("waits through the terminal-status publication window until the matching result exists", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const root = await (provider as any).ensureAgentControlRoot(parent)
+		const child = await (provider as any).agentControlStore.createAgent({
+			taskId: "terminal-publication-race",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Publication race",
+			role: "review",
+			objective: "Publish a result after status",
+			status: "completed",
+		})
+
+		const waiting = provider.waitForAgent(parent as any, 10_000, {
+			target: child.taskId,
+			untilTerminal: true,
+		})
+		await vi.waitFor(() => expect(parent.beginAgentWait).toHaveBeenCalledOnce())
+		await (provider as any).agentControlStore.appendEvent({
+			rootTaskId: root.rootTaskId,
+			sender: child.taskId,
+			recipient: root.taskId,
+			kind: "result",
+			name: "agent_completed",
+			payload: { taskId: child.taskId, status: "completed" },
+		})
+
+		await expect(waiting).resolves.toMatchObject({
+			timedOut: false,
+			events: [expect.objectContaining({ senderTaskId: child.taskId, kind: "result" })],
+		})
+	})
+
+	it("claims a targeted terminal result committed between the first claim and publication scan", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const root = await (provider as any).ensureAgentControlRoot(parent)
+		const child = await (provider as any).agentControlStore.createAgent({
+			taskId: "terminal-claim-scan-race",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Claim scan race",
+			role: "review",
+			objective: "Publish between claim and scan",
+			status: "completed",
+		})
+		await (provider as any).agentControlStore.appendEvent({
+			rootTaskId: root.rootTaskId,
+			sender: child.taskId,
+			recipient: root.taskId,
+			kind: "lifecycle",
+			name: "agent_started",
+			payload: { phase: "running" },
+		})
+		const store = (provider as any).agentControlStore
+		const claimMailbox = store.claimMailbox.bind(store)
+		let claimCount = 0
+		const claimSpy = vi.spyOn(store, "claimMailbox").mockImplementation(async (...args: any[]) => {
+			const claim = await claimMailbox(...args)
+			claimCount++
+			if (claimCount === 1) {
+				await store.appendEvent({
+					rootTaskId: root.rootTaskId,
+					sender: child.taskId,
+					recipient: root.taskId,
+					kind: "result",
+					name: "agent_completed",
+					payload: { taskId: child.taskId, status: "completed" },
+				})
+			}
+			return claim
+		})
+
+		const waited = (await provider.waitForAgent(parent as any, 10_000, {
+			target: child.taskId,
+			untilTerminal: true,
+		})) as any
+
+		expect(claimSpy).toHaveBeenCalledTimes(2)
+		expect(waited).toMatchObject({
+			timedOut: false,
+			source: "managed_agent_mailbox",
+			claimId: expect.any(String),
+			events: [expect.objectContaining({ senderTaskId: child.taskId, kind: "result" })],
+		})
+		await provider.acknowledgeWaitAgentResults(parent as any, waited.claimId)
+		expect(store.getUnacknowledgedMailboxEntries(root.taskId, { rootTaskId: root.rootTaskId })).toEqual([
+			expect.objectContaining({ kind: "lifecycle", senderTaskId: child.taskId }),
+		])
+	})
+
+	it("rejects targeted terminal waits for descendants owned by another immediate parent", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const root = await (provider as any).ensureAgentControlRoot(parent)
+		const child = await (provider as any).agentControlStore.createAgent({
+			taskId: "target-parent",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Target parent",
+			role: "review",
+			objective: "Own the nested result",
+			status: "running",
+		})
+		const grandchild = await (provider as any).agentControlStore.createAgent({
+			taskId: "target-grandchild",
+			parentTaskId: child.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Target grandchild",
+			role: "review",
+			objective: "Finish below the caller",
+			status: "running",
+		})
+
+		await expect(
+			provider.waitForAgent(parent as any, 10_000, {
+				target: grandchild.path,
+				untilTerminal: true,
+			}),
+		).rejects.toThrow("not an immediate child")
+	})
+
 	it("persists root completion, interruption, and resumption transitions", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()

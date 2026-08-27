@@ -568,6 +568,16 @@ export class NativeToolCallParser {
 		return undefined
 	}
 
+	private static parseCommandVerificationScope(value: unknown): { change_set_ids: string[] } | null | undefined {
+		if (value === null) return null
+		if (typeof value !== "object" || value === undefined) return undefined
+		const ids = (value as { change_set_ids?: unknown }).change_set_ids
+		if (!Array.isArray(ids) || ids.length === 0) return undefined
+		const normalized = ids.map((id) => (typeof id === "string" ? id.trim() : ""))
+		if (normalized.some((id) => id.length === 0)) return undefined
+		return { change_set_ids: [...new Set(normalized)] }
+	}
+
 	/**
 	 * Convert raw file entries from API (with line_ranges) to FileEntry objects
 	 * (with lineRanges). Handles multiple formats for backward compatibility:
@@ -713,6 +723,7 @@ export class NativeToolCallParser {
 						command: partialArgs.command,
 						cwd: partialArgs.cwd,
 						timeout: partialArgs.timeout,
+						verification: this.parseCommandVerificationScope(partialArgs.verification),
 					}
 				}
 				break
@@ -915,13 +926,28 @@ export class NativeToolCallParser {
 
 			case "wait_agent":
 				if (
-					this.hasOnlyKeys(partialArgs, ["timeout_ms"]) &&
+					this.hasOnlyKeys(partialArgs, ["timeout_ms", "target", "until_terminal"]) &&
 					(partialArgs.timeout_ms === undefined ||
 						partialArgs.timeout_ms === null ||
-						this.isWaitTimeout(partialArgs.timeout_ms))
+						this.isWaitTimeout(partialArgs.timeout_ms)) &&
+					(partialArgs.target === undefined ||
+						partialArgs.target === null ||
+						this.isAgentTarget(partialArgs.target)) &&
+					(partialArgs.until_terminal === undefined ||
+						partialArgs.until_terminal === null ||
+						typeof partialArgs.until_terminal === "boolean")
 				) {
 					nativeArgs = {
 						timeout_ms: partialArgs.timeout_ms === null ? undefined : partialArgs.timeout_ms,
+						...(Object.hasOwn(partialArgs, "target")
+							? { target: partialArgs.target === null ? undefined : partialArgs.target }
+							: {}),
+						...(Object.hasOwn(partialArgs, "until_terminal")
+							? {
+									until_terminal:
+										partialArgs.until_terminal === null ? undefined : partialArgs.until_terminal,
+								}
+							: {}),
 					}
 				}
 				break
@@ -1136,6 +1162,7 @@ export class NativeToolCallParser {
 							command: args.command,
 							cwd: args.cwd,
 							timeout: args.timeout,
+							verification: this.parseCommandVerificationScope(args.verification),
 						} as NativeArgsFor<TName>
 					}
 					break
@@ -1448,13 +1475,25 @@ export class NativeToolCallParser {
 
 				case "wait_agent":
 					if (
-						this.hasOnlyKeys(args, ["timeout_ms"]) &&
+						this.hasOnlyKeys(args, ["timeout_ms", "target", "until_terminal"]) &&
 						(args.timeout_ms === undefined ||
 							args.timeout_ms === null ||
-							this.isWaitTimeout(args.timeout_ms))
+							this.isWaitTimeout(args.timeout_ms)) &&
+						(args.target === undefined || args.target === null || this.isAgentTarget(args.target)) &&
+						(args.until_terminal === undefined ||
+							args.until_terminal === null ||
+							typeof args.until_terminal === "boolean")
 					) {
 						nativeArgs = {
 							timeout_ms: args.timeout_ms === null ? undefined : args.timeout_ms,
+							...(Object.hasOwn(args, "target")
+								? { target: args.target === null ? undefined : args.target }
+								: {}),
+							...(Object.hasOwn(args, "until_terminal")
+								? {
+										until_terminal: args.until_terminal === null ? undefined : args.until_terminal,
+									}
+								: {}),
 						} as NativeArgsFor<TName>
 					}
 					break

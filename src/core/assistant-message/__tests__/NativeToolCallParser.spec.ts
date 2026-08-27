@@ -91,6 +91,52 @@ describe("NativeToolCallParser", () => {
 			}
 		})
 
+		it("preserves an explicit execute-command verification scope", () => {
+			const result = NativeToolCallParser.parseToolCall({
+				id: "verify-worker-change",
+				name: "execute_command",
+				arguments: JSON.stringify({
+					command: "pnpm test",
+					cwd: null,
+					timeout: null,
+					verification: { change_set_ids: ["change-1", "change-1", "change-2"] },
+				}),
+			})
+
+			expect(result?.type).toBe("tool_use")
+			if (result?.type === "tool_use") {
+				expect(result.nativeArgs).toEqual({
+					command: "pnpm test",
+					cwd: null,
+					timeout: null,
+					verification: { change_set_ids: ["change-1", "change-2"] },
+				})
+			}
+		})
+
+		it("does not promote a malformed execute-command verification scope", () => {
+			const result = NativeToolCallParser.parseToolCall({
+				id: "invalid-verification",
+				name: "execute_command",
+				arguments: JSON.stringify({
+					command: "echo src/example.ts",
+					cwd: null,
+					timeout: null,
+					verification: { change_set_ids: [] },
+				}),
+			})
+
+			expect(result?.type).toBe("tool_use")
+			if (result?.type === "tool_use") {
+				expect(result.nativeArgs).toEqual({
+					command: "echo src/example.ts",
+					cwd: null,
+					timeout: null,
+					verification: undefined,
+				})
+			}
+		})
+
 		it("rejects an unknown completion outcome instead of treating it as success", () => {
 			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
 			const result = NativeToolCallParser.parseToolCall({
@@ -389,6 +435,7 @@ describe("NativeToolCallParser", () => {
 			it.each([
 				["list_agents", { path_prefix: "/root/review" }],
 				["wait_agent", { timeout_ms: 45_000 }],
+				["wait_agent", { timeout_ms: 45_000, target: "/root/review", until_terminal: true }],
 				["send_message", { target: "/root/review", message: "Check the parser edge case." }],
 				["report_progress", { message: "Finished the parser audit." }],
 				["followup_task", { target: "child-123", message: "Verify the second pass." }],
@@ -415,7 +462,7 @@ describe("NativeToolCallParser", () => {
 				const wait = NativeToolCallParser.parseToolCall({
 					id: "wait-default",
 					name: "wait_agent",
-					arguments: JSON.stringify({ timeout_ms: null }),
+					arguments: JSON.stringify({ timeout_ms: null, target: null, until_terminal: null }),
 				})
 				const cancel = NativeToolCallParser.parseToolCall({
 					id: "cancel-default",
@@ -424,13 +471,19 @@ describe("NativeToolCallParser", () => {
 				})
 
 				expect((list as any)?.nativeArgs).toEqual({ path_prefix: undefined })
-				expect((wait as any)?.nativeArgs).toEqual({ timeout_ms: undefined })
+				expect((wait as any)?.nativeArgs).toEqual({
+					timeout_ms: undefined,
+					target: undefined,
+					until_terminal: undefined,
+				})
 				expect((cancel as any)?.nativeArgs).toEqual({ target: "child-123", reason: undefined })
 			})
 
 			it.each([
 				["list_agents", { path_prefix: "/root/Review" }],
 				["wait_agent", { timeout_ms: 9_999 }],
+				["wait_agent", { timeout_ms: 10_000, target: "/root/Review", until_terminal: true }],
+				["wait_agent", { timeout_ms: 10_000, target: "/root/review", until_terminal: "yes" }],
 				["send_message", { target: "/root/review", message: "" }],
 				["report_progress", { message: "", extra: true }],
 				["followup_task", { target: "/root/review", message: "Next", extra: true }],

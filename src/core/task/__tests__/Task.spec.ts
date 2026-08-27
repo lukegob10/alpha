@@ -2477,11 +2477,12 @@ describe("Alpha", () => {
 	})
 
 	describe("v2.0.9 root task loop", () => {
-		const createTask = () =>
+		const createTask = (taskKind: "primary" | "subagent" = "primary") =>
 			new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				task: "root loop regression",
+				taskKind,
 				startTask: false,
 				enableCheckpoints: false,
 			})
@@ -2513,11 +2514,132 @@ describe("Alpha", () => {
 			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([[toolResult], false])
 		})
 
-		it("uses the no-tools recovery prompt for an empty nonterminal turn", async () => {
+		it("ends a primary turn on a visible assistant response without synthesizing recovery input", async () => {
 			const task = createTask()
+			const requestStep = vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+				task.assistantMessageContent = [{ type: "text", content: "The requested explanation.", partial: false }]
+				return false
+			})
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(task.userMessageContent).toEqual([])
+		})
+
+		it("does not discard pending user continuation after a no-tool response", async () => {
+			const task = createTask()
+			const queuedUserContent = [{ type: "text" as const, text: "Please continue with this detail." }]
 			const requestStep = vi
 				.spyOn(task, "recursivelyMakeClineRequests")
-				.mockResolvedValueOnce(false)
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [
+						{ type: "text", content: "I can continue when that detail is available.", partial: false },
+					]
+					task.userMessageContent = queuedUserContent
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([queuedUserContent, false])
+		})
+
+		it("promotes one queued user message with images after a visible primary response", async () => {
+			const task = createTask()
+			const firstImage = "data:image/png;base64,Zmlyc3Q="
+			const secondImage = "data:image/jpeg;base64,c2Vjb25k"
+			task.messageQueueService.addMessage("Use this queued detail.", [firstImage])
+			task.messageQueueService.addMessage("Keep this for later.", [secondImage])
+			const feedback = vi.spyOn(task, "say").mockResolvedValue(undefined)
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [
+						{ type: "text", content: "The first requested explanation.", partial: false },
+					]
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+				[
+					{ type: "text", text: "<user_message>\nUse this queued detail.\n</user_message>" },
+					{
+						type: "image",
+						source: { type: "base64", media_type: "image/png", data: "Zmlyc3Q=" },
+					},
+				],
+				false,
+			])
+			expect(feedback).toHaveBeenCalledWith("user_feedback", "Use this queued detail.", [firstImage])
+			expect(task.messageQueueService.messages).toHaveLength(1)
+			expect(task.messageQueueService.messages[0]).toMatchObject({
+				text: "Keep this for later.",
+				images: [secondImage],
+			})
+		})
+
+		it("keeps the queue behind pending turn content", async () => {
+			const task = createTask()
+			const pendingContent = [{ type: "text" as const, text: "tool result continuation" }]
+			task.messageQueueService.addMessage("queued after tool results")
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [
+						{ type: "text", content: "I handled the previous step.", partial: false },
+					]
+					task.userMessageContent = pendingContent
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([pendingContent, false])
+			expect(task.messageQueueService.messages).toHaveLength(1)
+		})
+
+		it("keeps the queue behind pending steering", async () => {
+			const task = createTask()
+			task.messageQueueService.addMessage("queued after steering")
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [
+						{ type: "text", content: "I received the original request.", partial: false },
+					]
+					;(task as any).pendingSteerMessage = { text: "higher-priority steering", images: [] }
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+				[{ type: "text", text: formatResponse.noToolsUsed() }],
+				false,
+			])
+			expect(task.messageQueueService.messages).toHaveLength(1)
+		})
+
+		it("keeps managed children on the explicit attempt_completion contract", async () => {
+			const task = createTask("subagent")
+			task.messageQueueService.addMessage("do not consume child queue implicitly")
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [
+						{ type: "text", content: "Managed child progress.", partial: false },
+					]
+					return false
+				})
 				.mockResolvedValueOnce(true)
 
 			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
@@ -2527,6 +2649,7 @@ describe("Alpha", () => {
 				[{ type: "text", text: formatResponse.noToolsUsed() }],
 				false,
 			])
+			expect(task.messageQueueService.messages).toHaveLength(1)
 		})
 
 		it("stops at the completion boundary without starting another request", async () => {

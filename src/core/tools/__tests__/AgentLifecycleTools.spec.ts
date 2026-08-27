@@ -70,6 +70,13 @@ describe("agent lifecycle tools", () => {
 			required: ["message"],
 			properties: { message: { type: "string", minLength: 1, maxLength: 2_000 } },
 		})
+		expect(definitions.find((definition) => definition.name === "wait_agent")?.parameters).toMatchObject({
+			required: ["timeout_ms", "target", "until_terminal"],
+			properties: {
+				target: expect.any(Object),
+				until_terminal: expect.any(Object),
+			},
+		})
 	})
 
 	it("dispatches every operation without asking for approval", async () => {
@@ -213,6 +220,21 @@ describe("agent lifecycle tools", () => {
 		)
 	})
 
+	it("dispatches a targeted terminal wait without changing legacy wait calls", async () => {
+		const { provider, task, callbacks } = harness()
+
+		await waitAgentTool.execute(
+			{ timeout_ms: 120_000, target: "/root/review", until_terminal: true },
+			task,
+			callbacks,
+		)
+
+		expect(provider.waitForAgent).toHaveBeenCalledWith(task, 120_000, {
+			target: "/root/review",
+			untilTerminal: true,
+		})
+	})
+
 	it("replaces the in-progress row with an observable provider error", async () => {
 		const { provider, task, say, callbacks, pushToolResult } = harness()
 		provider.listAgents.mockRejectedValueOnce(new Error("Registry unavailable"))
@@ -236,14 +258,16 @@ describe("agent lifecycle tools", () => {
 		await sendMessageTool.execute({ target: "/root/Review", message: "Check this." }, task, callbacks)
 		await reportProgressTool.execute({ message: "x".repeat(2_001) }, task, callbacks)
 		await waitAgentTool.execute({ timeout_ms: 9_999 }, task, callbacks)
+		await waitAgentTool.execute({ target: "/root/review" }, task, callbacks)
 
 		expect(provider.sendMessageToAgent).not.toHaveBeenCalled()
 		expect(provider.reportAgentProgress).not.toHaveBeenCalled()
 		expect(provider.waitForAgent).not.toHaveBeenCalled()
-		expect(task.recordToolError).toHaveBeenCalledTimes(3)
+		expect(task.recordToolError).toHaveBeenCalledTimes(4)
 		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("canonical agent path"))
 		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("2,000 characters"))
 		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("timeout_ms"))
+		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("until_terminal"))
 		expect(task.didToolFailInCurrentTurn).toBe(true)
 	})
 })

@@ -46,6 +46,7 @@ class ManagedAgentScriptedAI {
 	removeFromCache?: () => void
 	private readonly turnsByTask = new Map<string, number>()
 	private readonly rolesByTask = new Map<string, ScriptRole>()
+	private readonly verificationChangeSetsByRole = new Map<ScriptRole, string[]>()
 
 	registerTaskRole(taskId: string, nickname: string): void {
 		const rolesByNickname: Record<string, ScriptRole> = {
@@ -56,6 +57,11 @@ class ManagedAgentScriptedAI {
 		const role = rolesByNickname[nickname]
 		if (!role) throw new Error(`Unexpected managed-agent nickname ${nickname}`)
 		this.rolesByTask.set(taskId, role)
+	}
+
+	setVerificationChangeSets(role: Extract<ScriptRole, "root" | "outer">, changeSetIds: string[]): void {
+		assert.ok(changeSetIds.length > 0, `Verification scope for ${role} must not be empty`)
+		this.verificationChangeSetsByRole.set(role, [...new Set(changeSetIds)])
 	}
 
 	async *createMessage(
@@ -71,7 +77,7 @@ class ManagedAgentScriptedAI {
 		console.log(`[managed-agent-e2e] model task=${taskId} role=${role} turn=${turn}`)
 		this.assertPriorToolSucceeded(role, turn, messages)
 		this.turnsByTask.set(taskId, turn + 1)
-		const call = this.getToolCall(role, turn)
+		const call = await this.getToolCall(role, turn)
 
 		yield {
 			type: "tool_call",
@@ -137,7 +143,7 @@ class ManagedAgentScriptedAI {
 		}
 	}
 
-	private getToolCall(role: ScriptRole, turn: number): ScriptedToolCall {
+	private async getToolCall(role: ScriptRole, turn: number): Promise<ScriptedToolCall> {
 		const scripts: Record<ScriptRole, ScriptedToolCall[]> = {
 			root: [
 				{
@@ -162,7 +168,22 @@ class ManagedAgentScriptedAI {
 						expected_output: ["A quarantined throwaway change set."],
 					},
 				},
-				{ name: "wait_agent", arguments: { timeout_ms: 20_000 } },
+				{
+					name: "wait_agent",
+					arguments: {
+						timeout_ms: 20_000,
+						target: "/root/outer-worker",
+						until_terminal: true,
+					},
+				},
+				{
+					name: "wait_agent",
+					arguments: {
+						timeout_ms: 20_000,
+						target: "/root/discard-worker",
+						until_terminal: true,
+					},
+				},
 				{
 					name: "ask_followup_question",
 					arguments: {
@@ -198,7 +219,14 @@ class ManagedAgentScriptedAI {
 						expected_output: ["A quarantined nested fixture change."],
 					},
 				},
-				{ name: "wait_agent", arguments: { timeout_ms: 20_000 } },
+				{
+					name: "wait_agent",
+					arguments: {
+						timeout_ms: 20_000,
+						target: "/root/outer-worker/nested-writer",
+						until_terminal: true,
+					},
+				},
 				{
 					name: "execute_command",
 					arguments: {
@@ -251,6 +279,20 @@ class ManagedAgentScriptedAI {
 
 		const call = scripts[role][turn]
 		if (!call) throw new Error(`Unexpected ${role} model turn ${turn + 1}`)
+		if (call.name === "execute_command") {
+			await waitFor(() => (this.verificationChangeSetsByRole.get(role)?.length ?? 0) > 0, {
+				timeout: 60_000,
+				interval: 25,
+			})
+			const changeSetIds = this.verificationChangeSetsByRole.get(role)!
+			return {
+				...call,
+				arguments: {
+					...call.arguments,
+					verification: { change_set_ids: [...changeSetIds] },
+				},
+			}
+		}
 		return call
 	}
 }
@@ -535,6 +577,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			)
 			assert.equal(nestedApply.success, true, nestedApply.message)
 			assert.equal(nestedApply.changeSetStatus, "applied")
+			scriptedAI.setVerificationChangeSets("outer", [nestedChangeSet.changeSetId])
 
 			const [outerChangeSet, discardChangeSet] = await Promise.all([
 				waitForPendingChangeSet(groups, rootTaskId, OUTER_OBJECTIVE),
@@ -557,6 +600,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			)
 			assert.equal(outerApply.success, true, outerApply.message)
 			assert.equal(outerApply.changeSetStatus, "applied")
+			scriptedAI.setVerificationChangeSets("root", [outerChangeSet.changeSetId])
 			await waitFor(() => followupTasks.has(rootTaskId!), { timeout: 60_000, interval: 50 })
 
 			const stateBeforeResume = await provider.getStateToPostToWebview()

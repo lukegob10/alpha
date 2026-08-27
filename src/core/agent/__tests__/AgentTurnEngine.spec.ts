@@ -66,11 +66,70 @@ describe("AgentResponseAccumulator", () => {
 		expect(response.items).toContainEqual({
 			type: "error",
 			message: 'Unable to parse arguments for tool call "read_file" (call-1).',
+			callId: "call-1",
+			toolName: "read_file",
 		})
 	})
 })
 
 describe("AgentTurnEngine", () => {
+	it("treats a visible assistant response without tool calls as a completed turn", async () => {
+		const host: AgentTurnHost<string> = {
+			shouldAbort: () => false,
+			runStep: vi.fn(async () => ({
+				response: { ...emptyResponse(), text: "The requested explanation." },
+				nextInput: "synthetic-recovery",
+			})),
+		}
+
+		const result = await new AgentTurnEngine(host).run("first")
+
+		expect(result).toEqual({ status: "completed", steps: 1 })
+		expect(host.runStep).toHaveBeenCalledOnce()
+	})
+
+	it("lets hosts require an explicit completion boundary", async () => {
+		const host: AgentTurnHost<string> = {
+			shouldAbort: () => false,
+			canCompleteWithoutTools: () => false,
+			runStep: vi
+				.fn()
+				.mockResolvedValueOnce({
+					response: { ...emptyResponse(), text: "Managed child progress." },
+					nextInput: "explicit-completion-required",
+				})
+				.mockResolvedValueOnce({ response: emptyResponse(), nextInput: "complete" }),
+		}
+
+		const result = await new AgentTurnEngine(host).run("first")
+
+		expect(result).toEqual({ status: "completed", steps: 2 })
+		expect(host.runStep).toHaveBeenNthCalledWith(2, "explicit-completion-required")
+	})
+
+	it("runs selected continuation input before implicit completion", async () => {
+		const host: AgentTurnHost<string> = {
+			shouldAbort: () => false,
+			canCompleteWithoutTools: () => true,
+			runStep: vi
+				.fn()
+				.mockResolvedValueOnce({
+					response: { ...emptyResponse(), text: "First answer." },
+					nextInput: "queued-user-message",
+					requiresContinuation: true,
+				})
+				.mockResolvedValueOnce({
+					response: { ...emptyResponse(), text: "Answer with queued context." },
+					nextInput: "unused-recovery",
+				}),
+		}
+
+		const result = await new AgentTurnEngine(host).run("first")
+
+		expect(result).toEqual({ status: "completed", steps: 2 })
+		expect(host.runStep).toHaveBeenNthCalledWith(2, "queued-user-message")
+	})
+
 	it("sequences steps and stops when the host completes", async () => {
 		const calls: string[] = []
 		const host: AgentTurnHost<string> = {

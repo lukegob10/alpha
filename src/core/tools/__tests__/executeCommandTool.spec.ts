@@ -356,8 +356,30 @@ describe("executeCommandTool", () => {
 				"worker-verification-1",
 				expect.any(String),
 				"pnpm test",
+				undefined,
 			)
 			expect(executeCommandModule.resolveAgentTimeoutMs(30)).toBe(30_000)
+		})
+
+		it("records only the explicit applied change-set verification scope", async () => {
+			mockToolUse.nativeArgs = {
+				command: "pnpm test",
+				verification: { change_set_ids: ["change-1", "change-2"] },
+			}
+
+			await executeCommandTool.handle(mockCline as Task, mockToolUse, {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				toolCallId: "parent-verification-1",
+			})
+
+			expect(mockCline.beginCommandExecution).toHaveBeenCalledWith(
+				"parent-verification-1",
+				expect.any(String),
+				"pnpm test",
+				["change-1", "change-2"],
+			)
 		})
 
 		it("assigns unique evidence ids to legacy command calls from the same message", async () => {

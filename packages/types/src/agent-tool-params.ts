@@ -4,6 +4,10 @@ export interface ListAgentsParams {
 
 export interface WaitAgentParams {
 	timeout_ms?: number
+	/** Optional immediate-child task ID or canonical path. Requires until_terminal. */
+	target?: string
+	/** Ignore progress/control traffic and wait for a terminal child result. */
+	until_terminal?: boolean
 }
 
 export interface SendMessageParams {
