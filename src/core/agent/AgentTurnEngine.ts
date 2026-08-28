@@ -26,10 +26,15 @@ export interface AgentTurnHost<TInput> {
 	onStepComplete?(response: AgentResponse, step: number): Promise<void> | void
 }
 
-export interface AgentTurnOutcome {
-	status: "completed" | "aborted"
-	steps: number
-}
+export type AgentTurnOutcome =
+	| {
+			status: "completed"
+			steps: number
+			response: AgentResponse
+			/** Whether the host ended explicitly or an ordinary assistant response ended the turn. */
+			completionReason: "host" | "assistant"
+	  }
+	| { status: "aborted"; steps: number }
 
 /**
  * Provider-neutral agent turn sequencer.
@@ -59,9 +64,12 @@ export class AgentTurnEngine<TInput> {
 				(this.host.canCompleteWithoutTools?.(result.response, steps) ?? true)
 
 			if (result.nextInput === "complete" || completedWithoutTools) {
+				if (this.host.shouldAbort()) return { status: "aborted", steps }
 				return {
-					status: this.host.shouldAbort() ? "aborted" : "completed",
+					status: "completed",
 					steps,
+					response: result.response,
+					completionReason: result.nextInput === "complete" ? "host" : "assistant",
 				}
 			}
 

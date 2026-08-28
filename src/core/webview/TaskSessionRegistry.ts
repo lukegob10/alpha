@@ -27,7 +27,9 @@ const terminalLifecycleStates = new Set<TaskLifecycleState>([
 	TaskLifecycleState.Closed,
 ])
 
-const terminalAskTypes = new Set<ClineAsk>(["completion_result", "resume_completed_task"])
+// A fresh completion_result is still an open review/follow-up boundary. Only a
+// persisted resume_completed_task represents an already-terminal session.
+const terminalAskTypes = new Set<ClineAsk>(["resume_completed_task"])
 
 const isTerminalLifecycle = (lifecycle: TaskLifecycleState) => terminalLifecycleStates.has(lifecycle)
 

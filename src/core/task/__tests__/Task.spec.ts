@@ -7,7 +7,7 @@ import { EventEmitter } from "events"
 import * as vscode from "vscode"
 import { Anthropic } from "@anthropic-ai/sdk"
 
-import type { GlobalState, ProviderSettings, ModelInfo } from "@alpha-code/types"
+import { RooCodeEventName, type GlobalState, type ProviderSettings, type ModelInfo } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../Task"
@@ -481,6 +481,32 @@ describe("Alpha", () => {
 			await (cline as any).addToClineMessages({ ts: 1, type: "say", say: "text", text: "test task" }, "task")
 
 			expect(mockProvider.postTaskStateToWebview).toHaveBeenCalledTimes(1)
+			expect(mockProvider.postStateToWebviewWithoutTaskHistory).not.toHaveBeenCalled()
+		})
+
+		it("publishes subsequent messages incrementally without rebuilding extension state", async () => {
+			const cline = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			const message = { ts: 2, type: "say", say: "text", text: "next message" } as const
+			mockProvider.postMessageToWebview.mockClear()
+			mockProvider.postTaskStateToWebview = vi.fn().mockResolvedValue(undefined)
+			mockProvider.postStateToWebviewWithoutTaskHistory.mockClear()
+
+			await (cline as any).addToClineMessages(message)
+
+			expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "messageCreated",
+					taskId: cline.taskId,
+					clineMessage: message,
+					clineMessagesSeq: expect.any(Number),
+				}),
+			)
+			expect(mockProvider.postTaskStateToWebview).not.toHaveBeenCalled()
 			expect(mockProvider.postStateToWebviewWithoutTaskHistory).not.toHaveBeenCalled()
 		})
 	})
@@ -2636,13 +2662,25 @@ describe("Alpha", () => {
 			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([[toolResult], false])
 		})
 
-		it("ends a primary turn on a visible assistant response without synthesizing recovery input", async () => {
+		it("publishes a durable completion boundary for an ordinary primary response", async () => {
 			const task = createTask()
+			let streamedMessageTs: number | undefined
 			task.consecutiveMistakeCount = 1
 			task.consecutiveNoToolUseCount = 2
 			task.consecutiveNoAssistantMessagesCount = 1
 			;(task as any).automaticMistakeRecoveryCount = 1
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({
+				response: "yesButtonClicked",
+				text: "",
+				images: [],
+			})
+			const say = vi.spyOn(task, "say")
+			const flush = vi.spyOn(task, "flushPendingToolResultsToHistory")
+			const completed = vi.fn()
+			task.on(RooCodeEventName.TaskCompleted, completed)
 			const requestStep = vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+				await task.say("text", "The requested explanation.", undefined, false)
+				streamedMessageTs = task.clineMessages.at(-1)?.ts
 				task.assistantMessageContent = [{ type: "text", content: "The requested explanation.", partial: false }]
 				return false
 			})
@@ -2650,11 +2688,88 @@ describe("Alpha", () => {
 			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 
 			expect(requestStep).toHaveBeenCalledOnce()
+			expect(ask).toHaveBeenCalledOnce()
+			expect(ask).toHaveBeenCalledWith("completion_result", "", false)
+			expect(say).not.toHaveBeenCalledWith("completion_result", expect.anything())
+			const visibleFinals = task.clineMessages.filter(
+				(message) => message.type === "say" && message.say === "completion_result",
+			)
+			expect(visibleFinals).toHaveLength(1)
+			expect(visibleFinals[0]).toMatchObject({
+				ts: streamedMessageTs,
+				text: "The requested explanation.",
+				partial: false,
+			})
+			expect(task.clineMessages).not.toContainEqual(
+				expect.objectContaining({ type: "say", say: "text", text: "The requested explanation." }),
+			)
+			expect(flush).toHaveBeenCalledOnce()
+			expect(completed).toHaveBeenCalledOnce()
+			expect(completed).toHaveBeenCalledWith(task.taskId, expect.anything(), task.toolUsage)
+			expect(await task.finalizeTaskCompletion()).toBe(false)
+			expect(completed).toHaveBeenCalledOnce()
 			expect(task.userMessageContent).toEqual([])
 			expect(task.consecutiveMistakeCount).toBe(0)
 			expect(task.consecutiveNoToolUseCount).toBe(0)
 			expect(task.consecutiveNoAssistantMessagesCount).toBe(0)
 			expect((task as any).automaticMistakeRecoveryCount).toBe(0)
+		})
+
+		it("lets a queued follow-up arriving at the completion boundary win over acceptance", async () => {
+			const task = createTask()
+			vi.spyOn(task, "ask").mockImplementationOnce(async () => {
+				task.messageQueueService.addMessage("Please add the missing detail.")
+				return { response: "yesButtonClicked", text: "", images: [] }
+			})
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [{ type: "text", content: "Initial answer.", partial: false }]
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+				[{ type: "text", text: "<user_message>\nPlease add the missing detail.\n</user_message>" }],
+				false,
+			])
+			expect(task.messageQueueService.isEmpty()).toBe(true)
+		})
+
+		it("continues the same task when the user replies at the ordinary completion boundary", async () => {
+			const task = createTask()
+			const ask = vi
+				.spyOn(task, "ask")
+				.mockResolvedValueOnce({
+					response: "messageResponse",
+					text: "Please expand on that.",
+					images: [],
+				})
+				.mockResolvedValueOnce({ response: "yesButtonClicked", text: "", images: [] })
+			const say = vi.spyOn(task, "say").mockResolvedValue(undefined)
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [{ type: "text", content: "First answer.", partial: false }]
+					return false
+				})
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [{ type: "text", content: "Expanded answer.", partial: false }]
+					return false
+				})
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+				[{ type: "text", text: "<user_message>\nPlease expand on that.\n</user_message>" }],
+				false,
+			])
+			expect(say).toHaveBeenCalledWith("user_feedback", "Please expand on that.", [])
+			expect(ask).toHaveBeenCalledTimes(2)
 		})
 
 		it("does not discard pending user continuation after a no-tool response", async () => {

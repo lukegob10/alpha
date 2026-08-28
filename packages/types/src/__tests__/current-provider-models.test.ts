@@ -193,7 +193,6 @@ describe("current provider model catalogs", () => {
 					supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
 					supportsContextWindowConfiguration: true,
 					extendedContextSize: 936_000,
-					extendedContextIsDefault: true,
 				}),
 			)
 			expect(vscodeLlmModels["claude-sonnet-4.6"].supportsReasoningEffort).toEqual([
@@ -229,7 +228,7 @@ describe("current provider model catalogs", () => {
 					supportsContextWindowConfiguration: true,
 				}),
 			)
-			expect(vscodeLlmModels["gemini-3.5-flash"].extendedContextIsDefault).toBe(true)
+			expect(vscodeLlmModels["gemini-3.5-flash"].contextWindow).toBe(200_000)
 			expect(vscodeLlmModels["grok-4.6"]).toEqual(
 				expect.objectContaining({
 					contextWindow: 200_000,
@@ -275,7 +274,7 @@ describe("current provider model catalogs", () => {
 			expect(catalogFamilies).not.toContain("claude-mythos-5")
 		})
 
-		it("deduplicates live selector variants and filters Mythos", () => {
+		it("preserves distinct live model IDs, deduplicates exact identities, and filters Mythos", () => {
 			const models = mergeVscodeLlmModels([
 				{
 					vendor: "copilot",
@@ -291,6 +290,12 @@ describe("current provider model catalogs", () => {
 				},
 				{
 					vendor: "copilot",
+					family: "gpt-5.5",
+					id: "copilot-gpt-5.5-standard",
+					maxInputTokens: 271_000,
+				},
+				{
+					vendor: "copilot",
 					family: "claude-mythos-5",
 					id: "claude-mythos-5",
 				},
@@ -298,6 +303,7 @@ describe("current provider model catalogs", () => {
 			const gpt55Models = models.filter((model) => getVscodeLlmModelInfo(model) === vscodeLlmModels["gpt-5.5"])
 
 			expect(gpt55Models).toEqual([
+				expect.objectContaining({ id: "copilot-gpt-5.5-standard", maxInputTokens: 272_000 }),
 				expect.objectContaining({ id: "copilot-gpt-5.5-extended", maxInputTokens: 921_793 }),
 			])
 			expect(models.some((model) => JSON.stringify(model).includes("mythos"))).toBe(false)

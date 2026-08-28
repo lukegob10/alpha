@@ -5,11 +5,7 @@ import * as vscode from "vscode"
 import pWaitFor from "p-wait-for"
 import delay from "delay"
 
-import type { ExperimentId } from "@alpha-code/types"
-
-import { formatLanguage } from "../../shared/language"
-import { defaultModeSlug } from "../../shared/modes"
-import { getFullModeDetails } from "../../shared/modes-extension"
+import { defaultMode, defaultModeSlug, getModeBySlug } from "../../shared/modes"
 import { getApiMetrics } from "../../shared/getApiMetrics"
 import { listFiles } from "../../services/glob/list-files"
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
@@ -19,6 +15,7 @@ import { formatResponse } from "../prompts/responses"
 import { getGitStatus } from "../../utils/git"
 
 import { Task } from "../task/Task"
+import type { ClineProvider } from "../webview/ClineProvider"
 import { formatReminderSection } from "./reminder"
 
 const isWithinPath = (root: string, candidate: string): boolean => {
@@ -26,7 +23,13 @@ const isWithinPath = (root: string, candidate: string): boolean => {
 	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
 }
 
-export async function getEnvironmentDetails(cline: Task, includeFileDetails: boolean = false) {
+type EnvironmentState = Awaited<ReturnType<ClineProvider["getState"]>>
+
+export async function getEnvironmentDetails(
+	cline: Task,
+	includeFileDetails: boolean = false,
+	stateOverride?: EnvironmentState,
+) {
 	let details = ""
 	const pacing = cline.getRequestPacingMetrics?.()
 	const pacingDetails =
@@ -35,7 +38,7 @@ export async function getEnvironmentDetails(cline: Task, includeFileDetails: boo
 			: ""
 
 	const clineProvider = cline.providerRef.deref()
-	const state = await clineProvider?.getState()
+	const state = stateOverride ?? (await clineProvider?.getState())
 	const { maxWorkspaceFiles = 200 } = state ?? {}
 
 	if (cline.taskKind === "subagent") {
@@ -247,22 +250,10 @@ Workspace files are intentionally omitted. Paths explicitly named by the objecti
 	const { id: modelId } = cline.api.getModel()
 
 	// Add current mode and any mode-specific warnings.
-	const {
-		mode,
-		customModes,
-		customModePrompts,
-		experiments = {} as Record<ExperimentId, boolean>,
-		customInstructions: globalCustomInstructions,
-		language,
-	} = state ?? {}
+	const { mode, customModes } = state ?? {}
 
 	const currentMode = mode ?? defaultModeSlug
-
-	const modeDetails = await getFullModeDetails(currentMode, customModes, customModePrompts, {
-		cwd: cline.cwd,
-		globalCustomInstructions,
-		language: language ?? formatLanguage(vscode.env.language),
-	})
+	const modeDetails = getModeBySlug(currentMode, customModes) ?? defaultMode
 
 	details += `\n\n# Current Mode\n`
 	details += `<slug>${currentMode}</slug>\n`

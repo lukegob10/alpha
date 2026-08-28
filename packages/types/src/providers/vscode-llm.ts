@@ -9,7 +9,6 @@ export type VscodeLlmModelInfo = ModelInfo & {
 	maxInputTokens: number
 	supportsContextWindowConfiguration?: boolean
 	extendedContextSize?: number
-	extendedContextIsDefault?: boolean
 }
 export type VscodeLlmModelSelectorLike = {
 	vendor?: string
@@ -65,7 +64,6 @@ function copilotModel({
 	supportsReasoningEffort,
 	supportsContextWindowConfiguration = false,
 	extendedContextSize,
-	extendedContextIsDefault = false,
 	deprecated,
 }: {
 	name: string
@@ -76,7 +74,6 @@ function copilotModel({
 	supportsReasoningEffort?: ModelInfo["supportsReasoningEffort"]
 	supportsContextWindowConfiguration?: boolean
 	extendedContextSize?: number
-	extendedContextIsDefault?: boolean
 	deprecated?: boolean
 }): VscodeLlmModelInfo {
 	return {
@@ -96,7 +93,6 @@ function copilotModel({
 		extendedContextSize: supportsContextWindowConfiguration
 			? (extendedContextSize ?? COPILOT_EXTENDED_CONTEXT_SIZE)
 			: undefined,
-		extendedContextIsDefault: supportsContextWindowConfiguration ? extendedContextIsDefault : undefined,
 		deprecated,
 	}
 }
@@ -181,7 +177,6 @@ export const vscodeLlmModels = {
 		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
-		extendedContextIsDefault: true,
 	}),
 	"claude-haiku-4.5": copilotModel({
 		name: "Claude Haiku 4.5",
@@ -201,7 +196,6 @@ export const vscodeLlmModels = {
 		supportsReasoningEffort: COPILOT_CLAUDE_46_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
-		extendedContextIsDefault: true,
 	}),
 	"claude-sonnet-5": copilotModel({
 		name: "Claude Sonnet 5",
@@ -211,7 +205,6 @@ export const vscodeLlmModels = {
 		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
-		extendedContextIsDefault: true,
 	}),
 	"claude-opus-4.5": copilotModel({
 		name: "Claude Opus 4.5",
@@ -226,7 +219,6 @@ export const vscodeLlmModels = {
 		supportsReasoningEffort: COPILOT_CLAUDE_46_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
-		extendedContextIsDefault: true,
 	}),
 	"claude-opus-4.7": copilotModel({
 		name: "Claude Opus 4.7",
@@ -236,7 +228,6 @@ export const vscodeLlmModels = {
 		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
-		extendedContextIsDefault: true,
 	}),
 	"claude-opus-4.8": copilotModel({
 		name: "Claude Opus 4.8",
@@ -246,7 +237,6 @@ export const vscodeLlmModels = {
 		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
-		extendedContextIsDefault: true,
 	}),
 	"claude-opus-4.8-fast": copilotModel({
 		name: "Claude Opus 4.8 (fast mode) (Preview)",
@@ -256,7 +246,6 @@ export const vscodeLlmModels = {
 		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
-		extendedContextIsDefault: true,
 	}),
 	"claude-opus-5": copilotModel({
 		name: "Claude Opus 5",
@@ -266,7 +255,6 @@ export const vscodeLlmModels = {
 		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
-		extendedContextIsDefault: true,
 	}),
 	"gemini-2.5-pro": copilotModel({
 		name: "Gemini 2.5 Pro",
@@ -298,7 +286,6 @@ export const vscodeLlmModels = {
 		supportsReasoningEffort: COPILOT_MINIMAL_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_GEMINI_EXTENDED_CONTEXT_SIZE,
-		extendedContextIsDefault: true,
 	}),
 	"gemini-3.6-flash": copilotModel({
 		name: "Gemini 3.6 Flash",
@@ -308,7 +295,6 @@ export const vscodeLlmModels = {
 		supportsReasoningEffort: COPILOT_MINIMAL_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_GEMINI_EXTENDED_CONTEXT_SIZE,
-		extendedContextIsDefault: true,
 	}),
 	"gemini-3.7-flash": copilotModel({
 		name: "Gemini 3.7 Flash",
@@ -318,7 +304,6 @@ export const vscodeLlmModels = {
 		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_GEMINI_EXTENDED_CONTEXT_SIZE,
-		extendedContextIsDefault: true,
 	}),
 	"mai-code-1-flash": copilotModel({
 		name: "MAI-Code-1-Flash",
@@ -468,6 +453,12 @@ function getVscodeLlmSelectorKey(model: VscodeLlmModelSelectorLike): string {
 	return [model.vendor, model.family, model.version, model.id].filter(Boolean).join("/")
 }
 
+function getVscodeLlmLiveIdentityKey(model: VscodeLlmModelSelectorLike): string {
+	// VS Code documents model IDs as opaque, provider-owned identifiers. A family
+	// describes capabilities; it is not a unique routing identity.
+	return model.id ? `id:${model.vendor ?? ""}/${model.id}` : `selector:${getVscodeLlmSelectorKey(model)}`
+}
+
 function isHiddenVscodeLlmModel(model: VscodeLlmModelSelectorLike): boolean {
 	const searchableValues = [model.family, model.id, model.name, model.version]
 		.filter(Boolean)
@@ -503,11 +494,10 @@ export function getVscodeLlmCatalogModels(): VscodeLlmModelMetadata[] {
 		})
 }
 
-/** Collapse aliases/variants from the live, account-specific VS Code model list. */
+/** Deduplicate exact live identities without collapsing provider-returned variants. */
 export function mergeVscodeLlmModels(liveModels: readonly VscodeLlmModelMetadata[]): VscodeLlmModelMetadata[] {
 	const mergedModels: VscodeLlmModelMetadata[] = []
-	const canonicalIndexes = new Map<VscodeLlmModelId, number>()
-	const unknownSelectorIndexes = new Map<string, number>()
+	const identityIndexes = new Map<string, number>()
 
 	for (const liveModel of liveModels) {
 		const serializedModel = serializeVscodeLlmModel(liveModel)
@@ -515,29 +505,21 @@ export function mergeVscodeLlmModels(liveModels: readonly VscodeLlmModelMetadata
 			continue
 		}
 
-		const modelId = getVscodeLlmModelId(serializedModel)
+		const identityKey = getVscodeLlmLiveIdentityKey(serializedModel)
+		if (!identityKey || identityKey === "selector:") {
+			continue
+		}
 
-		if (modelId) {
-			const existingIndex = canonicalIndexes.get(modelId)
-			if (existingIndex === undefined) {
-				canonicalIndexes.set(modelId, mergedModels.length)
-				mergedModels.push(serializedModel)
-			} else {
-				const existingModel = mergedModels[existingIndex]
-				if (existingModel && shouldPreferVscodeLlmModel(serializedModel, existingModel)) {
-					mergedModels[existingIndex] = serializedModel
-				}
+		const existingIndex = identityIndexes.get(identityKey)
+		if (existingIndex === undefined) {
+			identityIndexes.set(identityKey, mergedModels.length)
+			mergedModels.push(serializedModel)
+		} else {
+			const existingModel = mergedModels[existingIndex]
+			if (existingModel && shouldPreferVscodeLlmModel(serializedModel, existingModel)) {
+				mergedModels[existingIndex] = serializedModel
 			}
-			continue
 		}
-
-		const selectorKey = getVscodeLlmSelectorKey(serializedModel)
-		if (!selectorKey || unknownSelectorIndexes.has(selectorKey)) {
-			continue
-		}
-
-		unknownSelectorIndexes.set(selectorKey, mergedModels.length)
-		mergedModels.push(serializedModel)
 	}
 
 	return mergedModels

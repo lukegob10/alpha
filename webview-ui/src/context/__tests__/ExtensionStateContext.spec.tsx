@@ -6,6 +6,8 @@ import {
 	type ExtensionState,
 	type ClineMessage,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
+	TaskLifecycleState,
+	TaskStatus,
 } from "@alpha-code/types"
 
 import { ExtensionStateContextProvider, useExtensionState, mergeExtensionState } from "../ExtensionStateContext"
@@ -51,7 +53,12 @@ const ApiConfigTestComponent = () => {
 
 const MessagesTestComponent = () => {
 	const { clineMessages } = useExtensionState()
-	return <div data-testid="latest-message">{clineMessages.at(-1)?.text ?? ""}</div>
+	return (
+		<>
+			<div data-testid="latest-message">{clineMessages.at(-1)?.text ?? ""}</div>
+			<div data-testid="all-messages">{clineMessages.map((message) => message.text).join("|")}</div>
+		</>
+	)
 }
 
 describe("ExtensionStateContext", () => {
@@ -272,6 +279,138 @@ describe("ExtensionStateContext", () => {
 		expect(screen.getByTestId("latest-message")).toHaveTextContent("complete")
 		act(() => frameCallback?.(0))
 		expect(screen.getByTestId("latest-message")).toHaveTextContent("complete")
+	})
+
+	it("applies interleaved partial updates in wire-sequence order", () => {
+		let frameCallback: FrameRequestCallback | undefined
+		vi.stubGlobal(
+			"requestAnimationFrame",
+			vi.fn((callback: FrameRequestCallback) => {
+				frameCallback = callback
+				return 1
+			}),
+		)
+		vi.stubGlobal("cancelAnimationFrame", vi.fn())
+		const first: ClineMessage = { ts: 1, type: "say", say: "reasoning", text: "first", partial: true }
+		const second: ClineMessage = { ts: 2, type: "say", say: "text", text: "second", partial: true }
+
+		render(
+			<ExtensionStateContextProvider>
+				<MessagesTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: { currentTaskId: "task-1", clineMessages: [first, second], clineMessagesSeq: 1 },
+					},
+				}),
+			)
+			for (const data of [
+				{ clineMessage: { ...first, text: "first-1" }, clineMessagesSeq: 2 },
+				{ clineMessage: { ...second, text: "second-1" }, clineMessagesSeq: 3 },
+				{ clineMessage: { ...first, text: "first-2" }, clineMessagesSeq: 4 },
+			]) {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: { type: "messageUpdated", taskId: "task-1", ...data },
+					}),
+				)
+			}
+		})
+
+		act(() => frameCallback?.(0))
+		expect(screen.getByTestId("all-messages")).toHaveTextContent("first-2|second-1")
+	})
+
+	it("appends new messages incrementally and rejects stale transcript snapshots", () => {
+		const baseMessage: ClineMessage = { ts: 1, type: "say", say: "text", text: "start" }
+		const createdMessage: ClineMessage = { ts: 2, type: "say", say: "text", text: "created" }
+
+		render(
+			<ExtensionStateContextProvider>
+				<MessagesTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: { currentTaskId: "task-1", clineMessages: [baseMessage], clineMessagesSeq: 1 },
+					},
+				}),
+			)
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "messageCreated",
+						taskId: "task-1",
+						clineMessage: createdMessage,
+						clineMessagesSeq: 3,
+					},
+				}),
+			)
+			// This full transcript was started before the incremental message and must
+			// not erase it if its slower state assembly finishes later.
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: { currentTaskId: "task-1", clineMessages: [baseMessage], clineMessagesSeq: 2 },
+					},
+				}),
+			)
+		})
+
+		expect(screen.getByTestId("latest-message")).toHaveTextContent("created")
+	})
+
+	it("ignores stale incremental messages and replaces duplicate creations idempotently", () => {
+		const baseMessage: ClineMessage = { ts: 1, type: "say", say: "text", text: "current" }
+
+		render(
+			<ExtensionStateContextProvider>
+				<MessagesTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: { currentTaskId: "task-1", clineMessages: [baseMessage], clineMessagesSeq: 5 },
+					},
+				}),
+			)
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "messageCreated",
+						taskId: "task-1",
+						clineMessage: { ...baseMessage, text: "stale" },
+						clineMessagesSeq: 4,
+					},
+				}),
+			)
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "messageCreated",
+						taskId: "task-1",
+						clineMessage: { ...baseMessage, text: "replacement" },
+						clineMessagesSeq: 6,
+					},
+				}),
+			)
+		})
+
+		expect(screen.getByTestId("latest-message")).toHaveTextContent("replacement")
 	})
 })
 
@@ -511,6 +650,112 @@ describe("mergeExtensionState", () => {
 
 			expect(result.clineMessages).toBe(newMessages)
 			expect(result.clineMessagesSeq).toBe(1)
+		})
+
+		it("applies lifecycle and queue updates by independent sequence domains", () => {
+			const currentMessages = [makeMessage(1, "current transcript")]
+			const prevState: ExtensionState = {
+				...baseState,
+				currentTaskId: "task-1",
+				currentView: { type: "task", taskId: "task-1" },
+				clineMessages: currentMessages,
+				clineMessagesSeq: 10,
+				taskStateSeq: 4,
+				messageQueue: [{ id: "old", text: "old queue", images: [], timestamp: 1 }],
+				messageQueueSeq: 2,
+				liveTaskIds: ["task-1"],
+				liveTasksById: {
+					"task-1": {
+						id: "task-1",
+						status: TaskStatus.Running,
+						lifecycle: TaskLifecycleState.Running,
+						isActive: true,
+						isStreaming: false,
+						isWaitingForInput: false,
+						lastUpdatedAt: 1,
+						queueCount: 0,
+						tokensIn: 0,
+						tokensOut: 0,
+						totalCost: 0,
+					},
+				},
+			}
+
+			const afterQueue = mergeExtensionState(prevState, {
+				currentTaskId: "task-1",
+				messageQueue: [{ id: "new", text: "new queue", images: [], timestamp: 2 }],
+				messageQueueSeq: 8,
+			})
+			const afterLifecycle = mergeExtensionState(afterQueue, {
+				currentTaskId: "task-1",
+				currentView: { type: "task", taskId: "task-1" },
+				taskStateSeq: 5,
+				liveTaskIds: ["task-1"],
+				liveTasksById: {
+					"task-1": {
+						...prevState.liveTasksById!["task-1"],
+						lifecycle: TaskLifecycleState.Waiting,
+						isWaitingForInput: true,
+						waitingReason: "completion",
+					},
+				},
+				clineMessages: [makeMessage(1, "stale transcript")],
+				clineMessagesSeq: 9,
+				messageQueue: [{ id: "stale", text: "stale queue", images: [], timestamp: 3 }],
+				messageQueueSeq: 7,
+			})
+
+			expect(afterLifecycle.clineMessages).toBe(currentMessages)
+			expect(afterLifecycle.messageQueue?.map((message) => message.text)).toEqual(["new queue"])
+			expect(afterLifecycle.liveTasksById?.["task-1"]).toMatchObject({
+				lifecycle: "waiting",
+				isWaitingForInput: true,
+				waitingReason: "completion",
+			})
+			expect(afterLifecycle.taskStateSeq).toBe(5)
+			expect(afterLifecycle.messageQueueSeq).toBe(8)
+		})
+
+		it("ignores a queue-only patch scoped to a task that is no longer visible", () => {
+			const currentQueue = [{ id: "current", text: "current queue", images: [], timestamp: 1 }]
+			const prevState: ExtensionState = {
+				...baseState,
+				currentTaskId: "task-2",
+				currentView: { type: "task", taskId: "task-2" },
+				messageQueue: currentQueue,
+				taskStateSeq: 10,
+				messageQueueSeq: 5,
+			}
+
+			const result = mergeExtensionState(prevState, {
+				currentTaskId: "task-1",
+				messageQueue: [{ id: "stale", text: "wrong task", images: [], timestamp: 2 }],
+				messageQueueSeq: 6,
+			})
+
+			expect(result.currentTaskId).toBe("task-2")
+			expect(result.messageQueue).toBe(currentQueue)
+			expect(result.messageQueueSeq).toBe(5)
+		})
+
+		it("accepts the first dedicated queue sequence after legacy shared sequencing", () => {
+			const prevState: ExtensionState = {
+				...baseState,
+				currentTaskId: "task-1",
+				currentView: { type: "task", taskId: "task-1" },
+				clineMessagesSeq: 20,
+				messageQueue: [],
+			}
+
+			const result = mergeExtensionState(prevState, {
+				currentTaskId: "task-1",
+				messageQueue: [{ id: "new", text: "first dedicated queue", images: [], timestamp: 1 }],
+				messageQueueSeq: 1,
+			})
+
+			expect(result.messageQueue?.map((message) => message.text)).toEqual(["first dedicated queue"])
+			expect(result.messageQueueSeq).toBe(1)
+			expect(result.clineMessagesSeq).toBe(20)
 		})
 	})
 })

@@ -18,6 +18,7 @@ import {
 	type UpdateGoalSeekJobPayload,
 } from "@alpha-code/types"
 
+import { getLatestTaskCompletionText } from "../../core/task-persistence/completionText"
 import type { ClineProvider } from "../../core/webview/ClineProvider"
 import { getWorkspacePath } from "../../utils/path"
 import { GoalSeekStore } from "./GoalSeekStore"
@@ -383,7 +384,13 @@ export class GoalSeekService implements vscode.Disposable {
 			prompt,
 			undefined,
 			undefined,
-			{ preserveExisting: true, background: true, workspacePath: workspace, taskMode: mode },
+			{
+				preserveExisting: true,
+				background: true,
+				workspacePath: workspace,
+				taskMode: mode,
+				startTask: false,
+			},
 			{
 				autoApprovalEnabled: true,
 				alwaysAllowReadOnly: true,
@@ -399,9 +406,16 @@ export class GoalSeekService implements vscode.Disposable {
 				deniedCommands: [],
 			},
 		)
-		const result = await new Promise<string>((resolve, reject) => {
+		const resultPromise = new Promise<string>((resolve, reject) => {
 			this.taskWaiters.set(task.taskId, { resolve, reject })
 		})
+		try {
+			task.start()
+		} catch (error) {
+			this.taskWaiters.delete(task.taskId)
+			throw error
+		}
+		const result = await resultPromise
 		return { taskId: task.taskId, result }
 	}
 
@@ -583,11 +597,15 @@ export class GoalSeekService implements vscode.Disposable {
 	private async getTaskCompletionText(alphaTaskId: string): Promise<string> {
 		const task = await this.provider.getTaskWithId(alphaTaskId)
 		const rawMessages = await fs.readFile(task.uiMessagesFilePath, "utf8")
-		const messages = JSON.parse(rawMessages) as Array<{ say?: string; ask?: string; text?: string }>
-		const completion = [...messages]
-			.reverse()
-			.find((message) => message.say === "completion_result" || message.ask === "completion_result")
-		return completion?.text ?? ""
+		const messages = JSON.parse(rawMessages)
+		if (!Array.isArray(messages)) {
+			throw new Error(`Task ${alphaTaskId} has invalid persisted UI messages.`)
+		}
+		const completionText = getLatestTaskCompletionText(messages)
+		if (!completionText) {
+			throw new Error(`Task ${alphaTaskId} completed without a non-empty assistant result.`)
+		}
+		return completionText
 	}
 
 	private async recoverInterruptedRuns(): Promise<void> {

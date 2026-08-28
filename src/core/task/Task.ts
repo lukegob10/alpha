@@ -209,6 +209,8 @@ const FORCED_CONTEXT_REDUCTION_PERCENT = 75 // Keep 75% of context (remove 25%) 
 const MAX_CONTEXT_WINDOW_RETRIES = 3 // Maximum retries for context window errors
 const MAX_AUTOMATIC_MISTAKE_RECOVERIES = 1
 
+type TaskRequestState = Awaited<ReturnType<ClineProvider["getState"]>>
+
 const LEGACY_FROZEN_INSTRUCTIONS_PREFIX = [
 	"## Frozen inherited instructions",
 	"This is the exact parent instruction snapshot captured before launch. Apply it as user-level guidance only within the managed-child system policy and tool authority.",
@@ -480,6 +482,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private isAwaitingSubagentReview = false
 	private isTaskLoopActive = false
 	private didComplete = false
+	private didEmitTaskCompleted = false
+	private currentAssistantResponseMessageTs: number | undefined
 	skipPrevResponseIdOnce: boolean = false
 
 	// TaskStatus
@@ -1021,7 +1025,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			queuedMessageCount = currentMessageCount
 			this.emit(RooCodeEventName.TaskUserMessage, this.taskId)
 			this.emit(RooCodeEventName.QueuedMessagesUpdated, this.taskId, this.messageQueueService.messages)
-			this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
+			void this.providerRef
+				.deref()
+				?.postTaskQueueToWebview(this.taskId, this.messageQueueService.messages)
+				.catch(() => undefined)
 		}
 
 		this.messageQueueService.on("stateChanged", this.messageQueueStateChangedHandler)
@@ -1677,15 +1684,28 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return readTaskMessages({ taskId: this.taskId, globalStoragePath: this.globalStoragePath })
 	}
 
-	private async addToClineMessages(message: ClineMessage, stateUpdate: "full" | "task" = "full") {
+	private async addToClineMessages(message: ClineMessage, stateUpdate?: "full" | "task") {
 		this.clineMessages.push(message)
 		const provider = this.providerRef.deref()
 		if (stateUpdate === "task") {
 			await provider?.postTaskStateToWebview()
-		} else {
+		} else if (stateUpdate === "full") {
 			// Avoid resending large, mostly-static fields (notably taskHistory) on every chat message update.
 			// taskHistory is maintained in-memory in the webview and updated via taskHistoryItemUpdated.
 			await provider?.postStateToWebviewWithoutTaskHistory()
+		} else {
+			if (typeof provider?.postTaskMessageToWebview === "function") {
+				await provider.postTaskMessageToWebview("messageCreated", this.taskId, message)
+			} else if (typeof provider?.postMessageToWebview === "function") {
+				// Compatibility for narrow provider doubles and alternate hosts.
+				await provider.postMessageToWebview({
+					type: "messageCreated",
+					taskId: this.taskId,
+					clineMessage: message,
+				})
+			} else {
+				await provider?.postStateToWebviewWithoutTaskHistory()
+			}
 		}
 		this.emit(RooCodeEventName.Message, { action: "created", message })
 		await this.saveClineMessages()
@@ -1699,7 +1719,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private async updateClineMessage(message: ClineMessage) {
 		const provider = this.providerRef.deref()
-		await provider?.postMessageToWebview({ type: "messageUpdated", taskId: this.taskId, clineMessage: message })
+		if (typeof provider?.postTaskMessageToWebview === "function") {
+			await provider.postTaskMessageToWebview("messageUpdated", this.taskId, message)
+		} else {
+			await provider?.postMessageToWebview({ type: "messageUpdated", taskId: this.taskId, clineMessage: message })
+		}
 		this.emit(RooCodeEventName.Message, { action: "updated", message })
 	}
 
@@ -2222,18 +2246,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Wait for askResponse to be set
 		await pWaitFor(
 			() => {
-				if (this.askResponse !== undefined || this.lastMessageTs !== askTs) {
-					return true
-				}
-
 				// If a queued message arrives while we're blocked on an ask (e.g. a follow-up
-				// suggestion click that was incorrectly queued due to UI state), consume it
-				// immediately so the task doesn't hang.
+				// suggestion click that was incorrectly queued due to UI state), it wins over
+				// a simultaneous completion acceptance so guidance is never discarded.
 				if (shouldDrainQueuedMessageForAsk && !this.messageQueueService.isEmpty()) {
 					const message = this.messageQueueService.dequeueMessage()
 					if (message) {
 						this.handleWebviewAskResponse("messageResponse", message.text, message.images)
+						return true
 					}
+				}
+
+				if (this.askResponse !== undefined || this.lastMessageTs !== askTs) {
+					return true
 				}
 
 				return false
@@ -2375,6 +2400,34 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.deferredAskResponse = undefined
 		this.userMessageContentReady = true
 		this.messageQueueService.clear()
+	}
+
+	/**
+	 * Publish the terminal task transition exactly once.
+	 *
+	 * Both explicit `attempt_completion` calls and ordinary assistant responses
+	 * converge here so lifecycle state, final usage, and telemetry cannot drift.
+	 */
+	public async finalizeTaskCompletion(): Promise<boolean> {
+		if (this.didEmitTaskCompleted) return false
+
+		// Reserve the transition before awaiting the persistence barrier so concurrent
+		// acceptance paths cannot publish the same completion twice.
+		this.didEmitTaskCompleted = true
+		try {
+			if (!(await this.flushPendingToolResultsToHistory())) {
+				throw new Error("Unable to persist pending tool results before task completion.")
+			}
+
+			this.markCompleted()
+			this.emitFinalTokenUsageUpdate()
+			TelemetryService.instance.captureTaskCompleted(this.taskId)
+			this.emit(RooCodeEventName.TaskCompleted, this.taskId, this.getTokenUsage(), this.toolUsage)
+			return true
+		} catch (error) {
+			this.didEmitTaskCompleted = false
+			throw error
+		}
 	}
 
 	public beginCommandExecution(
@@ -2610,7 +2663,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private shouldExposeAgentLifecycleTools(): boolean {
-		return this.taskKind === "primary"
+		if (this.taskKind !== "primary") return false
+		if (this.clineMessages.some((message) => message.say === "subagent_group")) return true
+
+		return this.providerRef?.deref()?.hasManagedAgentLifecycleState?.(this.rootTaskId ?? this.taskId) ?? true
 	}
 
 	public getInheritedSubagentSkill(name: string) {
@@ -3145,10 +3201,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// to ensure tool_use/tool_result pairs are complete in history
 		await this.flushPendingToolResultsToHistory()
 
-		const systemPrompt = await this.getSystemPrompt()
-
 		// Get condensing configuration
 		const state = await this.providerRef.deref()?.getState()
+		const systemPrompt = await this.getSystemPrompt(state)
 		const customCondensingPrompt = state?.customSupportPrompts?.CONDENSE
 		const mode = await this.getTaskMode()
 		const apiConfiguration = this.apiConfiguration
@@ -3190,7 +3245,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				: {}),
 		}
 		// Generate environment details to include in the condensed summary
-		const environmentDetails = await getEnvironmentDetails(this, true)
+		const environmentDetails = await getEnvironmentDetails(this, true, state)
 
 		const filesReadByRoo = await this.getFilesReadByRooSafely("condenseContext")
 
@@ -3279,6 +3334,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (partial) {
 				if (isUpdatingPreviousPartial) {
 					// Existing partial message, so update it.
+					if (type === "text" && !options.isNonInteractive) {
+						this.currentAssistantResponseMessageTs = lastMessage.ts
+					}
 					lastMessage.text = text
 					lastMessage.images = images
 					lastMessage.partial = partial
@@ -3290,6 +3348,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 					if (!options.isNonInteractive) {
 						this.lastMessageTs = sayTs
+						if (type === "text") this.currentAssistantResponseMessageTs = sayTs
 					}
 
 					await this.addToClineMessages(
@@ -3313,6 +3372,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (isUpdatingPreviousPartial) {
 					if (!options.isNonInteractive) {
 						this.lastMessageTs = lastMessage.ts
+						if (type === "text") this.currentAssistantResponseMessageTs = lastMessage.ts
 					}
 
 					lastMessage.text = text
@@ -3332,6 +3392,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 					if (!options.isNonInteractive) {
 						this.lastMessageTs = sayTs
+						if (type === "text") this.currentAssistantResponseMessageTs = sayTs
 					}
 
 					await this.addToClineMessages(
@@ -3358,6 +3419,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// asynchronously and could interrupt a pending ask.
 			if (!options.isNonInteractive) {
 				this.lastMessageTs = sayTs
+				if (type === "text") this.currentAssistantResponseMessageTs = sayTs
 			}
 
 			await this.addToClineMessages(
@@ -3374,6 +3436,55 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				options.stateUpdate,
 			)
 		}
+	}
+
+	/**
+	 * Publish one canonical visible final response for every provider.
+	 *
+	 * Ordinary assistant text is streamed as `say:text`. Once the turn is known
+	 * to be terminal, promote that same row in place instead of appending a
+	 * second, provider-specific completion card. Native `attempt_completion`
+	 * calls use the same path, preserving their tool protocol while replacing
+	 * any same-turn preamble with the authoritative result.
+	 */
+	public async presentCompletionResult(text: string, images?: string[], partial: boolean = false): Promise<void> {
+		const completionText = redactTaskPrivatePaths(this, text)
+		const currentMessage = this.currentAssistantResponseMessageTs
+			? this.findMessageByTimestamp(this.currentAssistantResponseMessageTs)
+			: undefined
+
+		if (
+			currentMessage?.type === "say" &&
+			(currentMessage.say === "text" || currentMessage.say === "completion_result")
+		) {
+			currentMessage.say = "completion_result"
+			currentMessage.text = completionText
+			currentMessage.images = images
+			currentMessage.partial = partial
+
+			if (!partial) await this.saveClineMessages()
+			await this.updateClineMessage(currentMessage)
+			return
+		}
+
+		await this.say("completion_result", completionText, images, partial)
+		const addedMessage = this.clineMessages.at(-1)
+		if (addedMessage?.type === "say" && addedMessage.say === "completion_result") {
+			this.currentAssistantResponseMessageTs = addedMessage.ts
+		}
+	}
+
+	/** Remove terminal styling when a final verification gate rejects a candidate. */
+	public async retractCompletionResult(): Promise<void> {
+		const currentMessage = this.currentAssistantResponseMessageTs
+			? this.findMessageByTimestamp(this.currentAssistantResponseMessageTs)
+			: undefined
+		if (currentMessage?.type !== "say" || currentMessage.say !== "completion_result") return
+
+		currentMessage.say = "text"
+		currentMessage.partial = false
+		await this.saveClineMessages()
+		await this.updateClineMessage(currentMessage)
 	}
 
 	async sayAndCreateMissingParamError(toolName: ToolName, paramName: string, relPath?: string) {
@@ -3525,6 +3636,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		this._started = true
 		this.didComplete = false
+		this.didEmitTaskCompleted = false
 		this.abort = false
 		this.abandoned = false
 		this.abortReason = undefined
@@ -3597,8 +3709,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			if (this.taskKind === "subagent" && !subagentFollowup) {
 				this.isInitialized = true
-				this.markCompleted()
-				this.emit(RooCodeEventName.TaskCompleted, this.taskId, this.getTokenUsage(), this.toolUsage)
+				await this.finalizeTaskCompletion()
 				await this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
 				return
 			}
@@ -4049,12 +4160,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		const host: AgentTurnHost<TaskTurnInput> = {
 			shouldAbort: () => this.abort,
-			canCompleteWithoutTools: () =>
+			canCompleteWithoutTools: () => {
 				// Managed children must publish a durable terminal result through attempt_completion.
-				this.taskKind === "primary" &&
-				this.userMessageContent.length === 0 &&
-				this.pendingSteerMessage === undefined &&
-				this.messageQueueService.isEmpty(),
+				return (
+					this.taskKind === "primary" &&
+					this.userMessageContent.length === 0 &&
+					this.pendingSteerMessage === undefined
+				)
+			},
 			runStep: async (input) => {
 				const didEndLoop = await this.recursivelyMakeClineRequests(
 					input.userContent,
@@ -4122,16 +4235,62 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			},
 		}
 
-		const wasAgentTurnEngineActive = this.isAgentTurnEngineActive
-		this.isAgentTurnEngineActive = true
-		try {
-			await new AgentTurnEngine(host).run({
-				userContent,
-				includeFileDetails: true,
-				onUserContentPersisted: onInitialUserContentPersisted,
-			})
-		} finally {
-			this.isAgentTurnEngineActive = wasAgentTurnEngineActive
+		const engine = new AgentTurnEngine(host)
+		const runAgentTurn = async (input: TaskTurnInput) => {
+			const wasAgentTurnEngineActive = this.isAgentTurnEngineActive
+			this.isAgentTurnEngineActive = true
+			try {
+				return await engine.run(input)
+			} finally {
+				this.isAgentTurnEngineActive = wasAgentTurnEngineActive
+			}
+		}
+
+		let nextTurnInput: TaskTurnInput = {
+			userContent,
+			includeFileDetails: true,
+			onUserContentPersisted: onInitialUserContentPersisted,
+		}
+
+		while (!this.abort && !this.didComplete) {
+			const outcome = await runAgentTurn(nextTurnInput)
+
+			if (
+				outcome.status !== "completed" ||
+				outcome.completionReason !== "assistant" ||
+				this.abort ||
+				this.didComplete
+			) {
+				return
+			}
+
+			// Normalize ordinary provider text into the same visible final-result row
+			// used by attempt_completion, then publish a hidden review/follow-up boundary.
+			await this.presentCompletionResult(outcome.response.text)
+			const { response, text, images } = await this.ask("completion_result", "", false)
+			if (this.abort || this.didComplete) return
+
+			const queuedFollowup =
+				response === "yesButtonClicked" ? this.messageQueueService.dequeueMessage() : undefined
+			const feedbackText = queuedFollowup?.text ?? text ?? ""
+			const feedbackImages = queuedFollowup?.images ?? images ?? []
+
+			if (response === "yesButtonClicked" && !queuedFollowup) {
+				await this.finalizeTaskCompletion()
+				return
+			}
+
+			if (!feedbackText.trim() && feedbackImages.length === 0) {
+				// A dismissal without feedback is terminal; never issue an empty model request.
+				await this.finalizeTaskCompletion()
+				return
+			}
+
+			await this.say("user_feedback", feedbackText, feedbackImages)
+			nextTurnInput = {
+				userContent: this.buildUserMessageContent(feedbackText, feedbackImages),
+				includeFileDetails: false,
+			}
 		}
 	}
 
@@ -4213,7 +4372,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				)
 
 				const provider = this.providerRef.deref()
-				const state = provider ? await provider.getState() : undefined
+				let state = provider ? await provider.getState() : undefined
 
 				const showRooIgnoredFiles = state?.showRooIgnoredFiles ?? false
 				const includeDiagnosticMessages = state?.includeDiagnosticMessages ?? true
@@ -4233,18 +4392,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				})
 
 				// Switch mode if specified in a slash command's frontmatter
-				if (slashCommandMode) {
-					const provider = this.providerRef.deref()
-					if (provider) {
-						const state = await provider.getState()
-						const targetMode = getModeBySlug(slashCommandMode, state?.customModes)
-						if (targetMode) {
-							await provider.setTaskMode(this.taskId, slashCommandMode)
-						}
+				if (slashCommandMode && provider) {
+					const targetMode = getModeBySlug(slashCommandMode, state?.customModes)
+					if (targetMode) {
+						await provider.setTaskMode(this.taskId, slashCommandMode)
+						state = await provider.getState()
 					}
 				}
 
-				const environmentDetails = await getEnvironmentDetails(this, currentIncludeFileDetails)
+				const environmentDetails = await getEnvironmentDetails(this, currentIncludeFileDetails, state)
 
 				// Remove any existing environment_details blocks before adding fresh ones.
 				// This prevents duplicate environment details when resuming tasks,
@@ -4369,7 +4525,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					)
 				}
 				const pacingWaitCountBefore = this.requestPacingWaitCount
-				await this.maybeWaitForProviderRateLimit(currentItem.retryAttempt ?? 0)
+				await this.maybeWaitForProviderRateLimit(currentItem.retryAttempt ?? 0, state)
 				if (this.requestPacingWaitCount > pacingWaitCountBefore) {
 					await this.appendRequestPacingUpdateToLatestUserMessage()
 				}
@@ -4383,17 +4539,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					"api_req_started",
 					JSON.stringify({
 						apiProtocol,
-					}),
+					} satisfies ClineApiReqInfo),
 				)
 
 				const lastApiReqIndex = findLastIndex(this.clineMessages, (m) => m.say === "api_req_started")
-
-				this.clineMessages[lastApiReqIndex].text = JSON.stringify({
-					apiProtocol,
-				} satisfies ClineApiReqInfo)
-
-				await this.saveClineMessages()
-				await this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
 
 				try {
 					let cacheWriteTokens = 0
@@ -4487,6 +4636,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.currentStreamingContentIndex = 0
 					this.currentStreamingDidCheckpoint = false
 					this.assistantMessageContent = []
+					this.currentAssistantResponseMessageTs = undefined
 					this.didCompleteReadingStream = false
 					this.userMessageContent = []
 					this.userMessageContentReady = false
@@ -4518,6 +4668,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// limit error, which gets thrown on the first chunk).
 					const stream = this.attemptApiRequest(currentItem.retryAttempt ?? 0, {
 						skipProviderRateLimit: true,
+						state,
 					})
 					let assistantMessage = ""
 					let reasoningMessage = ""
@@ -5066,7 +5217,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 
 					await this.saveClineMessages()
-					await this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
 
 					// No legacy text-stream tool parser state to reset.
 
@@ -5588,8 +5738,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return { effectiveText, sources }
 	}
 
-	private async getSystemPrompt(): Promise<string> {
-		const state = await this.providerRef.deref()?.getState()
+	private async getSystemPrompt(stateOverride?: TaskRequestState): Promise<string> {
+		const state = stateOverride ?? (await this.providerRef.deref()?.getState())
 		const { mcpEnabled } = state ?? {}
 		const isSubagent = this.taskKind === "subagent"
 		let mcpHub: McpHub | undefined
@@ -5755,7 +5905,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		try {
 			// Generate environment details to include in the condensed summary
-			const environmentDetails = await getEnvironmentDetails(this, true)
+			const environmentDetails = await getEnvironmentDetails(this, true, state)
 
 			// Force aggressive truncation by keeping only 75% of the conversation history
 			const truncateResult = await manageContext({
@@ -5766,7 +5916,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				apiHandler: this.api,
 				autoCondenseContext: true,
 				autoCondenseContextPercent: FORCED_CONTEXT_REDUCTION_PERCENT,
-				systemPrompt: await this.getSystemPrompt(),
+				systemPrompt: await this.getSystemPrompt(state),
 				taskId: this.taskId,
 				profileThresholds,
 				currentProfileId,
@@ -5826,7 +5976,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * NOTE: This is intentionally treated as expected behavior and is surfaced via
 	 * the `api_req_rate_limit_wait` say type (not an error).
 	 */
-	private async maybeWaitForProviderRateLimit(retryAttempt: number): Promise<void> {
+	private async maybeWaitForProviderRateLimit(retryAttempt: number, stateOverride?: TaskRequestState): Promise<void> {
 		// A task owns a frozen provider profile. Background sub-agents may be
 		// routed differently from the foreground profile exposed by getState().
 		const rateLimitSeconds = this.apiConfiguration?.rateLimitSeconds ?? 0
@@ -5835,7 +5985,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			return
 		}
 
-		const laneKey = await this.getProviderRateLimitLaneKey()
+		const laneKey = await this.getProviderRateLimitLaneKey(stateOverride)
 		const existingLane = Task.providerRateLimitLanes.get(laneKey)
 		const lane = existingLane ?? { queue: Promise.resolve() }
 		if (!existingLane) {
@@ -5877,14 +6027,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		await reservation
 	}
 
-	private async getProviderRateLimitLaneKey(): Promise<string> {
+	private async getProviderRateLimitLaneKey(stateOverride?: TaskRequestState): Promise<string> {
 		const routedProfileId = this.subagentModelRoute?.profileId
 		if (routedProfileId) {
 			return `profile:${routedProfileId}`
 		}
 
 		await this.waitForApiConfigInitialization()
-		const state = await this.providerRef.deref()?.getState()
+		const state = stateOverride ?? (await this.providerRef.deref()?.getState())
 		const profileName = this._taskApiConfigName ?? state?.currentApiConfigName
 		const profileId = state?.listApiConfigMeta?.find((profile: any) => profile.name === profileName)?.id
 		if (profileId) {
@@ -5917,9 +6067,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public async *attemptApiRequest(
 		retryAttempt: number = 0,
-		options: { skipProviderRateLimit?: boolean } = {},
+		options: { skipProviderRateLimit?: boolean; state?: TaskRequestState } = {},
 	): ApiStream {
-		const state = await this.providerRef.deref()?.getState()
+		const state = options.state ?? (await this.providerRef.deref()?.getState())
 
 		const {
 			autoApprovalEnabled,
@@ -5935,9 +6085,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const customCondensingPrompt = state?.customSupportPrompts?.CONDENSE
 
 		if (!options.skipProviderRateLimit) {
-			await this.maybeWaitForProviderRateLimit(retryAttempt)
+			await this.maybeWaitForProviderRateLimit(retryAttempt, state)
 		}
-		const systemPrompt = await this.getSystemPrompt()
+		const systemPrompt = await this.getSystemPrompt(state)
 		const { contextTokens } = this.getTokenUsage()
 
 		if (contextTokens) {
@@ -6026,7 +6176,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// getEnvironmentDetails(this, true) triggers a recursive workspace listing which
 			// adds overhead - avoid this for the common case where context is below threshold.
 			const contextMgmtEnvironmentDetails = contextManagementWillRun
-				? await getEnvironmentDetails(this, true)
+				? await getEnvironmentDetails(this, true, state)
 				: undefined
 
 			// Get files read by Alpha for code folding - only when context management will run

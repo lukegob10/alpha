@@ -868,7 +868,9 @@ If complete, use attempt_completion.
 			child = Object.assign(emitter, {
 				taskId,
 				clineMessages: [
-					{ ts: 100, type: "say", say: "completion_result", text: "Initial retained report" },
+					// Deliberately collides with the current run's startedAt. Runtime message
+					// boundaries, not timestamps, must keep this report out of the result.
+					{ ts: 200, type: "say", say: "completion_result", text: "Initial retained report" },
 					{
 						ts: 110,
 						type: "ask",
@@ -1007,7 +1009,7 @@ If complete, use attempt_completion.
 			const emitter = new EventEmitter()
 			child = Object.assign(emitter, {
 				taskId,
-				clineMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Initial retained report" }],
+				clineMessages: [{ ts: 200, type: "say", say: "completion_result", text: "Initial retained report" }],
 				getTokenUsage: () => ({ totalTokensIn: 15, totalTokensOut: 8 }),
 				finalizeSubagentHistory: vi.fn(async () => undefined),
 				cancelCurrentRequest: vi.fn(),
@@ -3229,23 +3231,33 @@ If complete, use attempt_completion.
 		expect(publicationOrder).toEqual(["lifecycle", "event"])
 	})
 
-	it("persists a completed root before publishing the completion-result idle state", async () => {
+	it("keeps a completion-result candidate waiting without publishing terminal state", async () => {
 		const provider = makeProviderHarness()
 		const parent = { ...makeParent(), taskAsk: { ask: "completion_result" } }
 		await (provider as any).ensureAgentControlRoot(parent)
+		const initialRootStatus = (provider as any).agentControlStore.getAgent(parent.taskId, parent.taskId)?.status
 		const publicationOrder: string[] = []
-		;(provider as any).markTaskLifecycle = vi.fn((_taskId: string, lifecycle: TaskLifecycleState) => {
-			expect(lifecycle).toBe(TaskLifecycleState.Completed)
-			expect((provider as any).agentControlStore.getAgent(parent.taskId, parent.taskId)?.status).toBe("completed")
-			publicationOrder.push("lifecycle")
-		})
+		;(provider as any).markTaskLifecycle = vi.fn(
+			(_taskId: string, lifecycle: TaskLifecycleState, waitingReason?: string) => {
+				expect(lifecycle).toBe(TaskLifecycleState.Waiting)
+				expect(waitingReason).toBe("completion")
+				expect((provider as any).agentControlStore.getAgent(parent.taskId, parent.taskId)?.status).toBe(
+					initialRootStatus,
+				)
+				publicationOrder.push("lifecycle")
+			},
+		)
 		;(provider as any).emit = vi.fn((event: RooCodeEventName) => {
+			expect(event).not.toBe(RooCodeEventName.TaskCompleted)
 			if (event === RooCodeEventName.TaskIdle) publicationOrder.push("event")
 			return true
 		})
 
 		await (provider as any).completeIdleTaskLifecycle(parent, parent.taskId)
 
+		expect((provider as any).agentControlStore.getAgent(parent.taskId, parent.taskId)?.status).toBe(
+			initialRootStatus,
+		)
 		expect(publicationOrder).toEqual(["lifecycle", "event"])
 	})
 
@@ -3981,7 +3993,7 @@ If complete, use attempt_completion.
 			],
 		}
 
-		const inspected = (provider as any).getSubagentInspectedPaths(child)
+		const inspected = (provider as any).getSubagentInspectedPaths(child.clineMessages)
 		const summary = (provider as any).describeIncompleteSubagent("timed_out", inspected)
 
 		expect(inspected).toEqual(["src/server.ts", "src/router.ts", "src/auth.ts"])

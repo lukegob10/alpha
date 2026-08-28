@@ -175,6 +175,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 			historyItem: { parentTaskId: "B" },
 			providerRef: { deref: () => provider },
 			say: vi.fn().mockResolvedValue(undefined),
+			presentCompletionResult: vi.fn().mockResolvedValue(undefined),
 			emit: vi.fn(),
 			getTokenUsage: vi.fn(() => ({})),
 			toolUsage: {},
@@ -182,6 +183,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 			userMessageContent: [],
 			consecutiveMistakeCount: 0,
 			emitFinalTokenUsageUpdate: vi.fn(),
+			finalizeTaskCompletion: vi.fn(),
 		} as unknown as Task
 
 		const blockC = {
@@ -222,6 +224,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 			historyItem: { parentTaskId: "A" },
 			providerRef: { deref: () => provider },
 			say: vi.fn().mockResolvedValue(undefined),
+			presentCompletionResult: vi.fn().mockResolvedValue(undefined),
 			emit: vi.fn(),
 			getTokenUsage: vi.fn(() => ({})),
 			toolUsage: {},
@@ -229,6 +232,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 			userMessageContent: [],
 			consecutiveMistakeCount: 0,
 			emitFinalTokenUsageUpdate: vi.fn(),
+			finalizeTaskCompletion: vi.fn(),
 		} as unknown as Task
 
 		const blockB = {

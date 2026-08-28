@@ -97,8 +97,7 @@ function formatVsCodeLmModelDetail(model: VSCodeLmModel | undefined): string | u
 }
 
 function getVsCodeLmPickerKey(model: LanguageModelChatSelector): string {
-	const canonicalModelId = getVscodeLlmModelId(model)
-	return canonicalModelId ? `copilot/${canonicalModelId}` : stringifyVsCodeLmModelSelector(model)
+	return model.id ? [model.vendor, model.id].filter(Boolean).join("/") : stringifyVsCodeLmModelSelector(model)
 }
 
 function toStoredVsCodeLmSelector(model: VSCodeLmModel): LanguageModelChatSelector {
@@ -113,20 +112,18 @@ function toStoredVsCodeLmSelector(model: VSCodeLmModel): LanguageModelChatSelect
 function buildVsCodeLmModelInfo(model: VSCodeLmModel, configuredContextSize?: number): ModelInfo {
 	const staticInfo = getVscodeLlmModelInfo(model)
 	const extendedContextSize = getVscodeLlmExtendedContextSize(model)
-	const isExtendedContextSelected =
-		configuredContextSize === extendedContextSize ||
-		(configuredContextSize === undefined && staticInfo?.extendedContextIsDefault)
+	const isExtendedContextSelected = configuredContextSize === extendedContextSize
 	const liveContextWindow =
-		typeof model.maxInputTokens === "number" && Number.isFinite(model.maxInputTokens)
+		typeof model.maxInputTokens === "number" && Number.isFinite(model.maxInputTokens) && model.maxInputTokens > 0
 			? model.maxInputTokens
 			: undefined
-	const contextWindow = staticInfo?.supportsContextWindowConfiguration
-		? isExtendedContextSelected && extendedContextSize
-			? liveContextWindow && liveContextWindow >= extendedContextSize * 0.9
-				? Math.min(extendedContextSize, liveContextWindow)
-				: extendedContextSize
-			: staticInfo.contextWindow
-		: (liveContextWindow ?? staticInfo?.contextWindow ?? openAiModelInfoSaneDefaults.contextWindow)
+	const configuredWindow =
+		staticInfo?.supportsContextWindowConfiguration && isExtendedContextSelected && extendedContextSize
+			? extendedContextSize
+			: staticInfo?.contextWindow
+	const contextWindow = liveContextWindow
+		? Math.min(liveContextWindow, configuredWindow ?? liveContextWindow)
+		: (configuredWindow ?? openAiModelInfoSaneDefaults.contextWindow)
 
 	return {
 		...openAiModelInfoSaneDefaults,
@@ -159,12 +156,6 @@ function findMatchingModelId(
 		return undefined
 	}
 
-	const pickerKey = getVsCodeLmPickerKey(selector)
-	const canonicalMatch = models.find((model) => getVsCodeLmPickerKey(model) === pickerKey)
-	if (canonicalMatch) {
-		return pickerKey
-	}
-
 	const exactKey = stringifyVsCodeLmModelSelector(selector)
 	const exactMatch = models.find((model) => stringifyVsCodeLmModelSelector(model) === exactKey)
 	if (exactMatch) {
@@ -172,7 +163,18 @@ function findMatchingModelId(
 	}
 
 	const compatibleMatches = models.filter((model) => selectorMatchesModel(selector, model))
-	return compatibleMatches.length === 1 ? getVsCodeLmPickerKey(compatibleMatches[0]) : undefined
+	if (compatibleMatches.length === 1) {
+		return getVsCodeLmPickerKey(compatibleMatches[0])
+	}
+
+	// Legacy selectors sometimes contain a documented family but no live opaque ID.
+	// Resolve those only when the canonical capability mapping is unambiguous.
+	const canonicalModelId = getVscodeLlmModelId(selector)
+	if (!canonicalModelId) {
+		return undefined
+	}
+	const canonicalMatches = models.filter((model) => getVscodeLlmModelId(model) === canonicalModelId)
+	return canonicalMatches.length === 1 ? getVsCodeLmPickerKey(canonicalMatches[0]) : undefined
 }
 
 export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeLMProps) => {
@@ -223,11 +225,16 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 		[modelsById],
 	)
 
-	// Transform any stored selector variant back to its canonical picker key.
-	const displayTransform = useCallback((value: unknown) => {
-		if (!value) return ""
-		return getVsCodeLmPickerKey(value as LanguageModelChatSelector)
-	}, [])
+	// Transform a stored exact selector (or an unambiguous legacy selector) to
+	// the corresponding live picker identity.
+	const displayTransform = useCallback(
+		(value: unknown) => {
+			if (!value) return ""
+			const selector = value as LanguageModelChatSelector
+			return findMatchingModelId(selector, vsCodeLmModels) ?? getVsCodeLmPickerKey(selector)
+		},
+		[vsCodeLmModels],
+	)
 
 	const selectedModelId = useMemo(
 		() => findMatchingModelId(apiConfiguration.vsCodeLmModelSelector, vsCodeLmModels),
@@ -240,9 +247,7 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 	const extendedContextSize = selectedModel ? getVscodeLlmExtendedContextSize(selectedModel) : undefined
 	const selectedStaticModelInfo = selectedModel ? getVscodeLlmModelInfo(selectedModel) : undefined
 	const defaultContextSize = selectedStaticModelInfo?.contextWindow
-	const isExtendedContextSelected =
-		apiConfiguration.vsCodeLmContextSize === extendedContextSize ||
-		(apiConfiguration.vsCodeLmContextSize === undefined && selectedStaticModelInfo?.extendedContextIsDefault)
+	const isExtendedContextSelected = apiConfiguration.vsCodeLmContextSize === extendedContextSize
 	const selectedContextSizeValue =
 		isExtendedContextSelected && extendedContextSize
 			? extendedContextSize.toString()
@@ -285,8 +290,9 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 			setApiConfigurationField,
 		],
 	)
-	const defaultModelId = modelsById.has("copilot/gpt-5.5")
-		? "copilot/gpt-5.5"
+	const preferredDefaultModel = vsCodeLmModels.find((model) => getVscodeLlmModelId(model) === "gpt-5.5")
+	const defaultModelId = preferredDefaultModel
+		? getVsCodeLmPickerKey(preferredDefaultModel)
 		: (Array.from(modelsById.keys()).sort((left, right) => left.localeCompare(right))[0] ?? "")
 	const selectedModelUnavailable =
 		Boolean(apiConfiguration.vsCodeLmModelSelector) && vsCodeLmModels.length > 0 && !selectedModel

@@ -8,7 +8,6 @@ import type { Mock } from "vitest"
 import * as vscode from "vscode"
 
 import { getEnvironmentDetails } from "../getEnvironmentDetails"
-import { getFullModeDetails } from "../../../shared/modes-extension"
 import { isToolAllowedForMode } from "../../tools/validateToolUse"
 import { getApiMetrics } from "../../../shared/getApiMetrics"
 import { listFiles } from "../../../services/glob/list-files"
@@ -48,7 +47,6 @@ vi.mock("execa", () => ({
 	execa: vi.fn(),
 }))
 
-vi.mock("../../../shared/modes-extension")
 vi.mock("../../../shared/getApiMetrics")
 vi.mock("../../../services/glob/list-files")
 vi.mock("../../../integrations/terminal/TerminalRegistry")
@@ -129,11 +127,6 @@ describe("getEnvironmentDetails", () => {
 
 		// Mock other dependencies.
 		;(getApiMetrics as Mock).mockReturnValue({ contextTokens: 50000, totalCost: 0.25 })
-		;(getFullModeDetails as Mock).mockResolvedValue({
-			name: "💻 Code",
-			roleDefinition: "You are a code assistant",
-			customInstructions: "Custom instructions",
-		})
 		;(isToolAllowedForMode as Mock).mockReturnValue(true)
 		;(listFiles as Mock).mockResolvedValue([["file1.ts", "file2.ts"], false])
 		;(formatResponse.formatFilesList as Mock).mockReturnValue("file1.ts\nfile2.ts")
@@ -162,13 +155,16 @@ describe("getEnvironmentDetails", () => {
 
 		expect(mockProvider.getState).toHaveBeenCalled()
 
-		expect(getFullModeDetails).toHaveBeenCalledWith("code", [], undefined, {
-			cwd: mockCwd,
-			globalCustomInstructions: "test instructions",
-			language: "en",
-		})
+		expect(result).toContain("<name>💻 Code</name>")
 
 		expect(getApiMetrics).toHaveBeenCalledWith(mockCline.clineMessages)
+	})
+
+	it("reuses the request state snapshot instead of re-reading provider state", async () => {
+		const result = await getEnvironmentDetails(mockCline as Task, false, mockState)
+
+		expect(result).toContain("<name>💻 Code</name>")
+		expect(mockProvider.getState).not.toHaveBeenCalled()
 	})
 
 	it("reports configured request pacing as performance data rather than an API error", async () => {
@@ -232,7 +228,6 @@ describe("getEnvironmentDetails", () => {
 		expect(result).not.toContain("# Current Cost")
 		expect(result).not.toContain("# Current Time")
 		expect(listFiles).not.toHaveBeenCalled()
-		expect(getFullModeDetails).not.toHaveBeenCalled()
 	})
 
 	it("includes task-local pacing observations in compact sub-agent context", async () => {

@@ -84,7 +84,12 @@ describe("AgentTurnEngine", () => {
 
 		const result = await new AgentTurnEngine(host).run("first")
 
-		expect(result).toEqual({ status: "completed", steps: 1 })
+		expect(result).toEqual({
+			status: "completed",
+			steps: 1,
+			completionReason: "assistant",
+			response: { ...emptyResponse(), text: "The requested explanation." },
+		})
 		expect(host.runStep).toHaveBeenCalledOnce()
 	})
 
@@ -103,9 +108,80 @@ describe("AgentTurnEngine", () => {
 
 		const result = await new AgentTurnEngine(host).run("first")
 
-		expect(result).toEqual({ status: "completed", steps: 2 })
+		expect(result).toEqual({
+			status: "completed",
+			steps: 2,
+			completionReason: "host",
+			response: emptyResponse(),
+		})
 		expect(host.runStep).toHaveBeenNthCalledWith(2, "explicit-completion-required")
 	})
+
+	it.each([
+		{
+			label: "an explicit attempt_completion call",
+			response: {
+				...emptyResponse(),
+				items: [
+					{
+						type: "tool_call" as const,
+						id: "completion-1",
+						name: "attempt_completion",
+						arguments: { result: "Finished." },
+					},
+				],
+				toolCalls: [
+					{
+						type: "tool_call" as const,
+						id: "completion-1",
+						name: "attempt_completion",
+						arguments: { result: "Finished." },
+					},
+				],
+			},
+		},
+		{
+			label: "assistant text accompanied by attempt_completion",
+			response: {
+				items: [
+					{ type: "text" as const, text: "Finished." },
+					{
+						type: "tool_call" as const,
+						id: "completion-1",
+						name: "attempt_completion",
+						arguments: { result: "Finished." },
+					},
+				],
+				text: "Finished.",
+				reasoning: "",
+				toolCalls: [
+					{
+						type: "tool_call" as const,
+						id: "completion-1",
+						name: "attempt_completion",
+						arguments: { result: "Finished." },
+					},
+				],
+			},
+		},
+	] satisfies Array<{ label: string; response: AgentResponse }>)(
+		"treats $label as one host-owned completion step",
+		async ({ response }) => {
+			const onStepComplete = vi.fn()
+			const host: AgentTurnHost<string> = {
+				shouldAbort: () => false,
+				runStep: vi.fn(async () => ({ response, nextInput: "complete" as const })),
+				onStepComplete,
+			}
+
+			const result = await new AgentTurnEngine(host).run("first")
+
+			expect(result).toEqual({ status: "completed", steps: 1, completionReason: "host", response })
+			expect(host.runStep).toHaveBeenCalledOnce()
+			expect(onStepComplete).toHaveBeenCalledOnce()
+			expect(onStepComplete).toHaveBeenCalledWith(response, 1)
+		},
+	)
 
 	it("runs selected continuation input before implicit completion", async () => {
 		const host: AgentTurnHost<string> = {
@@ -126,7 +202,12 @@ describe("AgentTurnEngine", () => {
 
 		const result = await new AgentTurnEngine(host).run("first")
 
-		expect(result).toEqual({ status: "completed", steps: 2 })
+		expect(result).toEqual({
+			status: "completed",
+			steps: 2,
+			completionReason: "assistant",
+			response: { ...emptyResponse(), text: "Answer with queued context." },
+		})
 		expect(host.runStep).toHaveBeenNthCalledWith(2, "queued-user-message")
 	})
 
@@ -145,7 +226,12 @@ describe("AgentTurnEngine", () => {
 
 		const result = await new AgentTurnEngine(host).run("first")
 
-		expect(result).toEqual({ status: "completed", steps: 2 })
+		expect(result).toEqual({
+			status: "completed",
+			steps: 2,
+			completionReason: "host",
+			response: emptyResponse(),
+		})
 		expect(calls).toEqual(["first", "second"])
 	})
 

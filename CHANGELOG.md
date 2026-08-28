@@ -8,6 +8,9 @@
 - Preserve exact selectors and display names for current Copilot GPT-5.3-Codex, GPT-5.5, GPT-5.6 Luna/Sol/Terra, Anthropic Claude, Gemini, MAI, Raptor, Kimi, and Grok models while continuing to exclude Mythos.
 - Correct Claude context and reasoning metadata, and offer standard versus extended / 1M context only when the selected live model advertises the larger tier.
 - Add model refresh, unavailable-selection guidance, exact-selector initialization, and clearer errors for missing Copilot authentication in an Extension Development Host.
+- Keep VS Code LM requests on the public VS Code 1.122.1 API, move token estimation off the generation critical path, and report the VS Code 1.128 requirement when Copilot cannot expose GPT-5.6 on an older host.
+- Normalize tool and non-tool providers onto one persisted completion boundary, promote streamed assistant text in place instead of rendering a duplicate final, and let queued follow-ups continue the same task safely.
+- Reduce extension/webview churn with incremental transcript, queue, and todo updates protected by independent ordering domains.
 
 ## 2.1.5
 

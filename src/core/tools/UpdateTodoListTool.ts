@@ -148,6 +148,7 @@ export function getTodoListForTask(cline: Task): TodoItem[] | undefined {
 export async function setTodoListForTask(cline?: Task, todos?: TodoItem[]) {
 	if (cline === undefined) return
 	cline.todoList = Array.isArray(todos) ? todos : []
+	await cline.providerRef.deref()?.postTaskTodosToWebview?.(cline.taskId, cline.todoList)
 }
 
 export function restoreTodoListForTask(cline: Task, todoList?: TodoItem[]) {

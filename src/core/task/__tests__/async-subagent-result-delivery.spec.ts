@@ -73,6 +73,22 @@ describe("Task asynchronous sub-agent result delivery", () => {
 		expect((active as any).shouldExposeAgentLifecycleTools()).toBe(false)
 	})
 
+	it("omits idle lifecycle controls when the durable store confirms there are no managed agents", () => {
+		const idle = makeTask([]).task
+		Object.assign(idle, {
+			providerRef: {
+				deref: () => ({ hasManagedAgentLifecycleState: () => false }),
+			},
+		})
+
+		expect((idle as any).shouldExposeAgentLifecycleTools()).toBe(false)
+
+		idle.clineMessages = makeTask([
+			makeGroup({ groupId: "known-group", executionMode: "async", summary: "Known result." }),
+		]).task.clineMessages
+		expect((idle as any).shouldExposeAgentLifecycleTools()).toBe(true)
+	})
+
 	it("keeps durable descendants and mailbox results reachable after transcript compaction and reload", async () => {
 		const persistence = new InMemoryAgentControlPersistence()
 		const first = new AgentControlStore(persistence, () => 1_000)

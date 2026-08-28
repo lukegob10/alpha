@@ -109,6 +109,27 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		expect(names(result.tools as any)).not.toContain("report_progress")
 	})
 
+	it("keeps delegation entry points while trimming idle lifecycle controls", async () => {
+		const result = await buildNativeToolsArrayWithRestrictions({
+			provider,
+			cwd: "F:/workspace",
+			mode: "code",
+			customModes: undefined,
+			experiments: {},
+			apiConfiguration: undefined,
+			includeAllToolsWithRestrictions: true,
+			taskKind: "primary",
+			enableAgentLifecycleTools: false,
+		})
+
+		expect(names(result.tools as any)).toContain("spawn_agent")
+		expect(names(result.tools as any)).toContain("delegate_task")
+		for (const tool of orchestrationTools.filter((tool) => tool !== "spawn_agent")) {
+			expect(names(result.tools as any)).not.toContain(tool)
+			expect(result.allowedFunctionNames).not.toContain(tool)
+		}
+	})
+
 	it("exposes orchestration tools when a managed child's frozen runtime policy grants delegation", async () => {
 		const allowedToolNames = managedChildAllowedTools(true)
 		expect(allowedToolNames).toEqual(expect.arrayContaining(orchestrationTools))

@@ -55,6 +55,7 @@ export interface ExtensionMessage {
 		| "theme"
 		| "workspaceUpdated"
 		| "invoke"
+		| "messageCreated"
 		| "messageUpdated"
 		| "mcpServers"
 		| "enhancedPrompt"
@@ -163,6 +164,8 @@ export interface ExtensionMessage {
 		path?: string
 	}>
 	clineMessage?: ClineMessage
+	/** Transcript sequence shared with transcript snapshots for ordered incremental delivery. */
+	clineMessagesSeq?: number
 	routerModels?: RouterModels
 	openAiModels?: string[]
 	ollamaModels?: ModelRecord
@@ -418,12 +421,17 @@ export type ExtensionState = Pick<
 	debug?: boolean
 
 	/**
-	 * Monotonically increasing sequence number for task-view state pushes.
-	 * When present, the frontend should only apply task identity, lifecycle projection,
-	 * queue, and messages from a push whose sequence is newer than the last applied one.
+	 * Monotonically increasing sequence number for transcript snapshots and
+	 * incremental message pushes.
 	 * The legacy field name is retained for wire compatibility.
 	 */
 	clineMessagesSeq?: number
+	/** Sequence for task identity and lifecycle projections. */
+	taskStateSeq?: number
+	/** Sequence for the visible task's queued messages. */
+	messageQueueSeq?: number
+	/** Sequence for the visible task's todo projection. */
+	currentTaskTodosSeq?: number
 }
 
 export interface Command {

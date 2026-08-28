@@ -41,6 +41,7 @@ import {
 	type ToolUsage,
 	type ExtensionMessage,
 	type ExtensionState,
+	type QueuedMessage,
 	type SubagentGroupState,
 	type SubagentLifecycleEvent,
 	type SubagentRunPhase,
@@ -359,11 +360,11 @@ export class ClineProvider
 	private pendingOperations: Map<string, PendingEditOperation> = new Map()
 	private static readonly PENDING_OPERATION_TIMEOUT_MS = 30000 // 30 seconds
 
-	/**
-	 * Monotonically increasing sequence number for task-view state pushes.
-	 * Used by the frontend to reject stale snapshots that arrive out-of-order.
-	 */
+	/** Independent wire-order guards for task-view state domains. */
 	private clineMessagesSeq = 0
+	private taskStateSeq = 0
+	private messageQueueSeq = 0
+	private currentTaskTodosSeq = 0
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
@@ -2387,10 +2388,59 @@ export class ClineProvider
 	}
 
 	async postStateToWebview() {
-		const sequence = ++this.clineMessagesSeq
+		const clineMessagesSeq = ++this.clineMessagesSeq
+		const taskStateSeq = ++this.taskStateSeq
+		const messageQueueSeq = ++this.messageQueueSeq
+		const currentTaskTodosSeq = ++this.currentTaskTodosSeq
 		const state = await this.getStateToPostToWebview()
-		state.clineMessagesSeq = sequence
+		Object.assign(state, { clineMessagesSeq, taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
 		await this.postMessageToWebview({ type: "state", state })
+	}
+
+	/**
+	 * Publish a single task message without rebuilding or serializing extension state.
+	 * The transcript sequence prevents a slower transcript snapshot from
+	 * overwriting a newer incremental message after asynchronous state assembly.
+	 */
+	async postTaskMessageToWebview(
+		type: "messageCreated" | "messageUpdated",
+		taskId: string,
+		clineMessage: ClineMessage,
+	): Promise<void> {
+		const clineMessagesSeq = ++this.clineMessagesSeq
+		await this.postMessageToWebview({ type, taskId, clineMessage, clineMessagesSeq })
+	}
+
+	/** Publish only the visible task's queue instead of rebuilding extension state. */
+	async postTaskQueueToWebview(taskId: string, messageQueue: QueuedMessage[]): Promise<void> {
+		if (!this.isTaskOnScreen(taskId)) return
+
+		const messageQueueSeq = ++this.messageQueueSeq
+		await this.postMessageToWebview({
+			type: "state",
+			state: { currentTaskId: taskId, messageQueue, messageQueueSeq },
+		})
+	}
+
+	/** Publish only the visible task's todos instead of rebuilding extension state. */
+	async postTaskTodosToWebview(taskId: string, currentTaskTodos: TodoItem[]): Promise<void> {
+		if (!this.isTaskOnScreen(taskId)) return
+
+		const currentTaskTodosSeq = ++this.currentTaskTodosSeq
+		await this.postMessageToWebview({
+			type: "state",
+			state: { currentTaskId: taskId, currentTaskTodos, currentTaskTodosSeq },
+		})
+	}
+
+	/**
+	 * Synchronous fast-path used while building model tools. Until durable agent
+	 * state has loaded, retain the controls conservatively; afterwards idle roots
+	 * can omit seven unused lifecycle schemas from every request.
+	 */
+	hasManagedAgentLifecycleState(rootTaskId: string): boolean {
+		if (!this.agentControlStoreLoadedAt) return true
+		return this.agentControlStore.listAgents({ rootTaskId, includeRoot: false }).length > 0
 	}
 
 	/**
@@ -2402,7 +2452,10 @@ export class ClineProvider
 	 * full refresh follow in the background.
 	 */
 	async postTaskStateToWebview(options: { clearManagedAgentTree?: boolean } = {}): Promise<void> {
-		const sequence = ++this.clineMessagesSeq
+		const clineMessagesSeq = ++this.clineMessagesSeq
+		const taskStateSeq = ++this.taskStateSeq
+		const messageQueueSeq = ++this.messageQueueSeq
+		const currentTaskTodosSeq = ++this.currentTaskTodosSeq
 		const currentTask = this.currentView.type === "task" ? this.getLiveTask(this.currentView.taskId) : undefined
 		let mode =
 			this.currentView.type === "newTaskDraft"
@@ -2431,7 +2484,10 @@ export class ClineProvider
 			liveTasksById: this.getLiveTaskMetadata(),
 			clineMessages: currentTask?.clineMessages ?? [],
 			messageQueue: currentTask?.messageQueueService?.messages,
-			clineMessagesSeq: sequence,
+			clineMessagesSeq,
+			taskStateSeq,
+			messageQueueSeq,
+			currentTaskTodosSeq,
 		}
 
 		if (options.clearManagedAgentTree) {
@@ -2450,9 +2506,12 @@ export class ClineProvider
 	 *   `taskHistoryUpdated` / `taskHistoryItemUpdated`.
 	 */
 	async postStateToWebviewWithoutTaskHistory(): Promise<void> {
-		const sequence = ++this.clineMessagesSeq
+		const clineMessagesSeq = ++this.clineMessagesSeq
+		const taskStateSeq = ++this.taskStateSeq
+		const messageQueueSeq = ++this.messageQueueSeq
+		const currentTaskTodosSeq = ++this.currentTaskTodosSeq
 		const state = await this.getStateToPostToWebview()
-		state.clineMessagesSeq = sequence
+		Object.assign(state, { clineMessagesSeq, taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
 		const { taskHistory: _omit, ...rest } = state
 		await this.postMessageToWebview({ type: "state", state: rest })
 	}
@@ -2466,9 +2525,11 @@ export class ClineProvider
 	 *   overwrites newer messages the task has streamed in the meantime.
 	 */
 	async postStateToWebviewWithoutClineMessages(): Promise<void> {
-		const sequence = ++this.clineMessagesSeq
+		const taskStateSeq = ++this.taskStateSeq
+		const messageQueueSeq = ++this.messageQueueSeq
+		const currentTaskTodosSeq = ++this.currentTaskTodosSeq
 		const state = await this.getStateToPostToWebview()
-		state.clineMessagesSeq = sequence
+		Object.assign(state, { taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
 		const { clineMessages: _omitMessages, taskHistory: _omitHistory, ...rest } = state
 		await this.postMessageToWebview({ type: "state", state: rest })
 	}
@@ -3551,19 +3612,66 @@ export class ClineProvider
 	}
 
 	private getIdleTaskLifecycle(task: Task): TaskLifecycleState {
-		return task.taskAsk?.ask === "completion_result" || task.taskAsk?.ask === "resume_completed_task"
-			? TaskLifecycleState.Completed
-			: TaskLifecycleState.Waiting
+		return task.taskAsk?.ask === "resume_completed_task" ? TaskLifecycleState.Completed : TaskLifecycleState.Waiting
 	}
 
-	/** Align the durable orchestration root before publishing a completion-result idle state. */
+	/** Publish idle state without treating an unaccepted completion candidate as terminal. */
 	private async completeIdleTaskLifecycle(task: Task, taskId: string): Promise<void> {
 		const lifecycle = this.getIdleTaskLifecycle(task)
 		if (lifecycle === TaskLifecycleState.Completed) {
 			await this.updateAgentControlRootStatus(taskId, "completed")
 		}
-		this.markTaskLifecycle(taskId, lifecycle, lifecycle === TaskLifecycleState.Waiting ? "idle" : undefined)
+		const waitingReason =
+			lifecycle === TaskLifecycleState.Waiting
+				? task.taskAsk?.ask === "completion_result"
+					? "completion"
+					: "idle"
+				: undefined
+		this.markTaskLifecycle(taskId, lifecycle, waitingReason)
 		this.emit(RooCodeEventName.TaskIdle, taskId)
+	}
+
+	/**
+	 * Accept and durably finish the visible task's completion candidate before a
+	 * foreground new-task transition. This keeps the live-task cap and retained
+	 * follow-up state consistent even when the user immediately starts another task.
+	 */
+	private async finalizeActiveCompletionCandidate(): Promise<void> {
+		const task = this.getActiveTask()
+		if (!task) return
+
+		const lifecycle = this.taskSessions.getMetadata()[task.taskId]?.lifecycle
+		if (
+			lifecycle === TaskLifecycleState.Completed ||
+			lifecycle === TaskLifecycleState.Failed ||
+			lifecycle === TaskLifecycleState.Closed
+		) {
+			return
+		}
+
+		const latestMessage = task.clineMessages.at(-1)
+		const hasCompletionCandidate =
+			task.taskAsk?.ask === "completion_result" ||
+			(latestMessage?.type === "ask" && latestMessage.ask === "completion_result")
+		if (!hasCompletionCandidate) return
+
+		task.approveAsk()
+		try {
+			await pWaitFor(
+				() => {
+					const currentLifecycle = this.taskSessions.getMetadata()[task.taskId]?.lifecycle
+					return (
+						this.getLiveTask(task.taskId) !== task ||
+						currentLifecycle === TaskLifecycleState.Completed ||
+						currentLifecycle === TaskLifecycleState.Failed ||
+						currentLifecycle === TaskLifecycleState.Closed
+					)
+				},
+				{ timeout: 5_000 },
+			)
+		} catch {
+			throw new Error("The current task could not be finalized before starting a new task.")
+		}
 	}
 
 	public getCurrentTask(): Task | undefined {
@@ -3626,6 +3734,7 @@ export class ClineProvider
 	}
 
 	public async startBlankTask(): Promise<void> {
+		await this.finalizeActiveCompletionCandidate()
 		const previous = this.getActiveTask()
 		this.taskSessions.clearFocus()
 		this.currentView = { type: "newTaskDraft" }
@@ -3701,6 +3810,10 @@ export class ClineProvider
 		options: ManagedCreateTaskOptions = {},
 		configuration: RooCodeSettings = {},
 	): Promise<Task> {
+		if (!parentTask && options.preserveExisting && !options.background) {
+			await this.finalizeActiveCompletionCandidate()
+		}
+
 		const topLevelTaskMode = !parentTask
 			? (options.taskMode ?? configuration.mode ?? this.newTaskDraftMode)
 			: options.taskMode
@@ -6949,6 +7062,7 @@ export class ClineProvider
 		}
 
 		const requestPacingAtStart = this.getTaskRequestPacingMetrics(child)
+		const currentRunMessages: ClineMessage[] = []
 		let result = await new Promise<Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">>(
 			(resolve) => {
 				let settled = false
@@ -6975,17 +7089,14 @@ export class ClineProvider
 									? "interrupted"
 									: "failed",
 				): void => {
-					const inspectedPaths = this.getSubagentInspectedPaths(child, startedAt)
+					// A retained follow-up shares its transcript with earlier runs. Use the
+					// messages emitted after this run's listeners were installed instead of
+					// comparing millisecond timestamps, which can collide.
+					const resultMessages = followupInstruction ? currentRunMessages : child.clineMessages
+					const inspectedPaths = this.getSubagentInspectedPaths(resultMessages)
 					const summary =
 						summaryOverride ??
-						findLast(
-							child.clineMessages,
-							(message) =>
-								message.say === "completion_result" &&
-								// A retained child keeps earlier completion reports in its transcript.
-								// Only a report emitted during this lifecycle run can complete it.
-								(typeof message.ts !== "number" || message.ts >= startedAt),
-						)?.text ??
+						findLast(resultMessages, (message) => message.say === "completion_result")?.text ??
 						this.describeIncompleteSubagent(status, inspectedPaths)
 
 					resolve({
@@ -7105,6 +7216,7 @@ export class ClineProvider
 					return false
 				}
 				const onMessage = ({ message }: { message: ClineMessage }) => {
+					currentRunMessages.push(message)
 					if (enforceBudgets()) return
 					const phase = this.getSubagentPhaseForMessage(message)
 					if (!phase) return
@@ -7760,10 +7872,9 @@ export class ClineProvider
 		}))
 	}
 
-	private getSubagentInspectedPaths(child: Task, startedAt?: number): string[] {
+	private getSubagentInspectedPaths(messages: readonly ClineMessage[]): string[] {
 		const paths = new Set<string>()
-		for (const message of child.clineMessages) {
-			if (startedAt !== undefined && typeof message.ts === "number" && message.ts < startedAt) continue
+		for (const message of messages) {
 			if (message.ask !== "tool" || !message.text) continue
 			try {
 				const payload = JSON.parse(message.text) as {

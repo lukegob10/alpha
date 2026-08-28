@@ -72,6 +72,9 @@ jobs:
                   - Only selectors returned by the live VS Code Language Model API are clickable
                   - Current GPT-5.3-Codex, GPT-5.5, GPT-5.6 Luna/Sol/Terra, Anthropic Claude, Gemini, MAI, Raptor, Kimi, and Grok aliases are recognized and deduplicated
                   - Standard and extended / 1M context choices follow the capabilities advertised by the selected live model
+                  - VS Code 1.122.1 remains supported; GPT-5.6 receives explicit VS Code 1.128+ upgrade guidance when unavailable
+                  - Tool and non-tool providers share one persisted completion and follow-up lifecycle without duplicate final messages
+                  - Incremental transcript, queue, and todo updates reduce extension-host and webview state churn
                   - Missing Copilot sign-in, unavailable saved models, and model refresh have clear settings guidance
 
                   Commit: ${{ github.sha }}

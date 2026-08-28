@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { parseMarkdownChecklist } from "../UpdateTodoListTool"
+import { parseMarkdownChecklist, setTodoListForTask } from "../UpdateTodoListTool"
 import { TodoItem } from "@alpha-code/types"
 
 describe("parseMarkdownChecklist", () => {
@@ -239,5 +239,22 @@ Just some text
 			const result2 = parseMarkdownChecklist(md2)
 			expect(result1[0].id).toBe(result2[0].id)
 		})
+	})
+})
+
+describe("setTodoListForTask", () => {
+	it("publishes a targeted todo update", async () => {
+		const postTaskTodosToWebview = vi.fn().mockResolvedValue(undefined)
+		const task = {
+			taskId: "task-1",
+			todoList: [],
+			providerRef: { deref: () => ({ postTaskTodosToWebview }) },
+		} as any
+		const todos: TodoItem[] = [{ id: "todo-1", content: "Verify performance", status: "in_progress" }]
+
+		await setTodoListForTask(task, todos)
+
+		expect(task.todoList).toEqual(todos)
+		expect(postTaskTodosToWebview).toHaveBeenCalledWith("task-1", todos)
 	})
 })

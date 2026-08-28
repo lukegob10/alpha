@@ -1,7 +1,8 @@
 import type { Mock } from "vitest"
 
-const { mockGetApiRequestTimeoutSetting, mockCancellationSources } = vi.hoisted(() => ({
+const { mockGetApiRequestTimeoutSetting, mockCancellationSources, mockVsCodeVersion } = vi.hoisted(() => ({
 	mockGetApiRequestTimeoutSetting: vi.fn(() => 600),
+	mockVsCodeVersion: { value: "1.135.0" },
 	mockCancellationSources: [] as Array<{
 		token: {
 			isCancellationRequested: boolean
@@ -28,7 +29,28 @@ vi.mock("vscode", () => {
 		) {}
 	}
 
+	class MockLanguageModelToolResultPart {
+		constructor(
+			public callId: string,
+			public content: unknown[],
+		) {}
+	}
+
+	class MockLanguageModelDataPart {
+		static image(data: Uint8Array, mimeType: string) {
+			return new MockLanguageModelDataPart(data, mimeType)
+		}
+
+		constructor(
+			public data: Uint8Array,
+			public mimeType: string,
+		) {}
+	}
+
 	return {
+		get version() {
+			return mockVsCodeVersion.value
+		},
 		workspace: {
 			onDidChangeConfiguration: vi.fn((_callback) => ({
 				dispose: vi.fn(),
@@ -70,6 +92,8 @@ vi.mock("vscode", () => {
 		},
 		LanguageModelTextPart: MockLanguageModelTextPart,
 		LanguageModelToolCallPart: MockLanguageModelToolCallPart,
+		LanguageModelToolResultPart: MockLanguageModelToolResultPart,
+		LanguageModelDataPart: MockLanguageModelDataPart,
 		lm: {
 			selectChatModels: vi.fn(),
 			onDidChangeChatModels: vi.fn((_callback) => ({
@@ -80,6 +104,7 @@ vi.mock("vscode", () => {
 })
 
 import * as vscode from "vscode"
+import type OpenAI from "openai"
 import { VsCodeLmHandler, getVsCodeLmModels } from "../vscode-lm"
 import type { ApiHandlerOptions } from "../../../shared/api"
 import type { Anthropic } from "@anthropic-ai/sdk"
@@ -137,6 +162,7 @@ describe("VsCodeLmHandler", () => {
 		vi.clearAllMocks()
 		mockCancellationSources.length = 0
 		mockGetApiRequestTimeoutSetting.mockReturnValue(600)
+		mockVsCodeVersion.value = "1.135.0"
 		handler = new VsCodeLmHandler(defaultOptions)
 	})
 
@@ -185,6 +211,33 @@ describe("VsCodeLmHandler", () => {
 			})
 		})
 
+		it("should reject an ambiguous broad selector instead of choosing the first model", async () => {
+			;(vscode.lm.selectChatModels as Mock).mockResolvedValueOnce([
+				{ ...mockLanguageModelChat, id: "test-model-standard", version: "standard" },
+				{ ...mockLanguageModelChat, id: "test-model-extended", version: "extended" },
+			])
+
+			await expect(handler["createClient"]({ vendor: "test-vendor", family: "test-family" })).rejects.toThrow(
+				/is ambiguous and matched 2 models/,
+			)
+		})
+
+		it("should select the unique exact match even if VS Code returns broader results", async () => {
+			const selectedModel = { ...mockLanguageModelChat, id: "selected-model" }
+			;(vscode.lm.selectChatModels as Mock).mockResolvedValueOnce([
+				{ ...mockLanguageModelChat, id: "other-model" },
+				selectedModel,
+			])
+
+			const client = await handler["createClient"]({
+				vendor: "test-vendor",
+				family: "test-family",
+				id: "selected-model",
+			})
+
+			expect(client).toBe(selectedModel)
+		})
+
 		it("should throw a clear error when no models are available", async () => {
 			;(vscode.lm.selectChatModels as Mock).mockResolvedValueOnce([])
 
@@ -202,6 +255,31 @@ describe("VsCodeLmHandler", () => {
 				"The selected VS Code language model is not available in this window",
 			)
 			expect(vscode.lm.selectChatModels).toHaveBeenNthCalledWith(2, {})
+		})
+
+		it("should explain the VS Code minimum when an unavailable GPT-5.6 selector is stale", async () => {
+			mockVsCodeVersion.value = "1.122.1"
+			;(vscode.lm.selectChatModels as Mock).mockResolvedValueOnce([])
+
+			await expect(
+				handler["createClient"]({ vendor: "copilot", family: "gpt-5.6-sol", id: "copilot-gpt-5.6-sol" }),
+			).rejects.toThrow(/require VS Code 1\.128\.0 or newer \(current: 1\.122\.1\)/)
+			expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(1)
+		})
+
+		it("should keep live GPT-5.6 discovery authoritative on older VS Code builds", async () => {
+			mockVsCodeVersion.value = "1.122.1"
+			const liveModel = {
+				...mockLanguageModelChat,
+				vendor: "copilot",
+				family: "gpt-5.6-sol",
+				id: "copilot-gpt-5.6-sol",
+			}
+			;(vscode.lm.selectChatModels as Mock).mockResolvedValueOnce([liveModel])
+
+			await expect(
+				handler["createClient"]({ vendor: "copilot", family: "gpt-5.6-sol", id: "copilot-gpt-5.6-sol" }),
+			).resolves.toBe(liveModel)
 		})
 	})
 
@@ -254,6 +332,64 @@ describe("VsCodeLmHandler", () => {
 			})
 		})
 
+		it("should send the system prompt as the first user message without pre-stream token API calls", async () => {
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Response")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System instructions", [
+				{ role: "user", content: "Hello" },
+			])) {
+				// consume stream
+			}
+
+			const requestMessages = mockLanguageModelChat.sendRequest.mock.calls.at(-1)?.[0]
+			expect(requestMessages?.[0]).toMatchObject({
+				role: "user",
+				content: [expect.objectContaining({ value: "System instructions" })],
+			})
+			expect(mockLanguageModelChat.countTokens).not.toHaveBeenCalled()
+		})
+
+		it("should include serialized tool schemas in the synchronous input estimate", async () => {
+			mockLanguageModelChat.sendRequest.mockImplementation(async () => ({
+				stream: (async function* () {})(),
+			}))
+
+			const collectInputTokens = async (tools?: OpenAI.Chat.ChatCompletionTool[]) => {
+				const chunks = []
+				for await (const chunk of handler.createMessage("System", [{ role: "user", content: "Hello" }], {
+					taskId: "test-task",
+					tools,
+				})) {
+					chunks.push(chunk)
+				}
+
+				return chunks.find((chunk) => chunk.type === "usage")?.inputTokens ?? 0
+			}
+
+			const withoutTools = await collectInputTokens()
+			const withTools = await collectInputTokens([
+				{
+					type: "function",
+					function: {
+						name: "calculator",
+						description: "Calculate an arithmetic expression",
+						parameters: {
+							type: "object",
+							properties: { expression: { type: "string" } },
+							required: ["expression"],
+						},
+					},
+				},
+			])
+
+			expect(withTools).toBeGreaterThan(withoutTools)
+			expect(mockLanguageModelChat.countTokens).not.toHaveBeenCalled()
+		})
+
 		it("should stream structurally compatible text parts", async () => {
 			const responseText = "Structural text part"
 			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
@@ -292,15 +428,20 @@ describe("VsCodeLmHandler", () => {
 			})
 		})
 
-		it("should ignore VS Code LM metadata chunks", async () => {
+		it("should use terminal VS Code LM usage metadata without re-tokenizing the response", async () => {
 			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined)
 			const responseText = "Text before metadata"
+			const usage = {
+				prompt_tokens: 321,
+				completion_tokens: 45,
+				total_tokens: 366,
+			}
 
 			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
 				stream: (async function* () {
 					yield new vscode.LanguageModelTextPart(responseText)
 					yield { mimeType: "stateful_marker", data: new Uint8Array() }
-					yield { mimeType: "usage", data: new Uint8Array() }
+					yield { mimeType: "usage", data: new TextEncoder().encode(JSON.stringify(usage)) }
 				})(),
 			})
 
@@ -313,16 +454,62 @@ describe("VsCodeLmHandler", () => {
 				type: "text",
 				text: responseText,
 			})
-			expect(chunks.at(-1)).toMatchObject({
+			expect(chunks.at(-1)).toEqual({
 				type: "usage",
-				inputTokens: expect.any(Number),
-				outputTokens: expect.any(Number),
+				inputTokens: usage.prompt_tokens,
+				outputTokens: usage.completion_tokens,
 			})
+			expect(mockLanguageModelChat.countTokens).not.toHaveBeenCalledWith(responseText, expect.anything())
 			expect(warnSpy).not.toHaveBeenCalledWith(
 				"Alpha <Language Model API>: Unknown chunk type received:",
 				expect.anything(),
 			)
 			warnSpy.mockRestore()
+		})
+
+		it("should finish immediately with estimated output usage when metadata is unavailable", async () => {
+			const responseText = "Fallback output token estimate"
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart(responseText)
+				})(),
+			})
+
+			const chunks = []
+			for await (const chunk of handler.createMessage("System", [{ role: "user", content: "Hello" }])) {
+				chunks.push(chunk)
+			}
+
+			expect(chunks).toEqual([
+				{ type: "text", text: responseText },
+				expect.objectContaining({
+					type: "usage",
+					outputTokens: Math.ceil(new TextEncoder().encode(responseText).byteLength / 3),
+				}),
+			])
+			expect(mockLanguageModelChat.countTokens).not.toHaveBeenCalledWith(responseText, expect.anything())
+		})
+
+		it("should ignore malformed usage metadata without delaying stream completion", async () => {
+			const responseText = "Response with malformed usage"
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart(responseText)
+					yield { mimeType: "usage", data: new TextEncoder().encode("not-json") }
+				})(),
+			})
+
+			const chunks = []
+			for await (const chunk of handler.createMessage("System", [{ role: "user", content: "Hello" }])) {
+				chunks.push(chunk)
+			}
+
+			expect(chunks.at(-1)).toEqual({
+				type: "usage",
+				inputTokens: expect.any(Number),
+				outputTokens: Math.ceil(new TextEncoder().encode(responseText).byteLength / 3),
+			})
+			expect(mockLanguageModelChat.countTokens).not.toHaveBeenCalledWith(responseText, expect.anything())
 		})
 
 		it("should emit tool_call chunks when tools are provided", async () => {
@@ -597,11 +784,11 @@ describe("VsCodeLmHandler", () => {
 					modelOptions: {
 						reasoningEffort: "high",
 					},
-					configuration: {
-						reasoningEffort: "high",
-					},
 				}),
 				expect.anything(),
+			)
+			expect(mockCopilotGpt55LanguageModelChat.sendRequest.mock.calls.at(-1)?.[1]).not.toHaveProperty(
+				"configuration",
 			)
 			expect(chunks[0]).toEqual({
 				type: "text",
@@ -633,15 +820,12 @@ describe("VsCodeLmHandler", () => {
 					modelOptions: {
 						reasoningEffort: "xhigh",
 					},
-					configuration: {
-						reasoningEffort: "xhigh",
-					},
 				}),
 				expect.anything(),
 			)
 		})
 
-		it("should pass maximum reasoning and extended context through Copilot model configuration", async () => {
+		it("should pass maximum reasoning and extended context through public model options", async () => {
 			handler = new VsCodeLmHandler({
 				...defaultOptions,
 				enableReasoningEffort: true,
@@ -667,16 +851,12 @@ describe("VsCodeLmHandler", () => {
 						reasoningEffort: "max",
 						contextSize: 922_000,
 					},
-					configuration: {
-						reasoningEffort: "max",
-						contextSize: 922_000,
-					},
 				}),
 				expect.anything(),
 			)
 		})
 
-		it("should pass Claude's 1M-tier input budget through Copilot model configuration", async () => {
+		it("should pass Claude's 1M-tier input budget through public model options", async () => {
 			handler = new VsCodeLmHandler({
 				...defaultOptions,
 				enableReasoningEffort: true,
@@ -708,13 +888,12 @@ describe("VsCodeLmHandler", () => {
 				expect.any(Array),
 				expect.objectContaining({
 					modelOptions: { reasoningEffort: "max", contextSize: 936_000 },
-					configuration: { reasoningEffort: "max", contextSize: 936_000 },
 				}),
 				expect.anything(),
 			)
 		})
 
-		it("should pass the selected standard context through Copilot model configuration", async () => {
+		it("should pass the selected standard context through public model options", async () => {
 			handler = new VsCodeLmHandler({
 				...defaultOptions,
 				vsCodeLmContextSize: 272_000,
@@ -737,7 +916,6 @@ describe("VsCodeLmHandler", () => {
 				expect.any(Array),
 				expect.objectContaining({
 					modelOptions: { contextSize: 272_000 },
-					configuration: { contextSize: 272_000 },
 				}),
 				expect.anything(),
 			)
@@ -767,9 +945,6 @@ describe("VsCodeLmHandler", () => {
 				expect.any(Array),
 				expect.objectContaining({
 					modelOptions: {
-						reasoningEffort: "high",
-					},
-					configuration: {
 						reasoningEffort: "high",
 					},
 				}),
@@ -958,7 +1133,7 @@ describe("VsCodeLmHandler", () => {
 
 			const model = handler.getModel()
 			expect(model.info.supportsReasoningEffort).toEqual(["none", "low", "medium", "high", "xhigh"])
-			expect(model.info.contextWindow).toBe(272_000)
+			expect(model.info.contextWindow).toBe(128_000)
 		})
 
 		it("should return Copilot GPT-5.3 Codex reasoning effort support from static model metadata", async () => {
@@ -975,10 +1150,10 @@ describe("VsCodeLmHandler", () => {
 
 			const model = handler.getModel()
 			expect(model.info.supportsReasoningEffort).toEqual(["low", "medium", "high", "xhigh"])
-			expect(model.info.contextWindow).toBe(272_000)
+			expect(model.info.contextWindow).toBe(128_000)
 		})
 
-		it("should return Copilot's provider-default extended window for Claude Opus 4.7", async () => {
+		it("should keep Claude Opus 4.7 on its standard context unless extended context is selected", async () => {
 			const mockModel = {
 				...mockLanguageModelChat,
 				id: "copilot-claude-opus-4.7",
@@ -992,7 +1167,7 @@ describe("VsCodeLmHandler", () => {
 
 			const model = handler.getModel()
 			expect(model.info.supportsReasoningEffort).toEqual(["low", "medium", "high", "xhigh", "max"])
-			expect(model.info.contextWindow).toBe(936_000)
+			expect(model.info.contextWindow).toBe(200_000)
 		})
 
 		it("should report the selected extended input window", () => {
@@ -1021,6 +1196,31 @@ describe("VsCodeLmHandler", () => {
 			expect(model.info.contextWindow).toBe(272_000)
 		})
 
+		it("should hard-cap the reported context window to the finite live input limit", () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				vsCodeLmContextSize: 922_000,
+			})
+			handler["client"] = {
+				...mockCopilotGpt56TerraLanguageModelChat,
+				maxInputTokens: 123_456,
+			} as any
+
+			expect(handler.getModel().info.contextWindow).toBe(123_456)
+		})
+
+		it.each([Number.NaN, Number.POSITIVE_INFINITY, 0, -1])(
+			"should use a finite positive static context when the live limit is invalid (%s)",
+			(maxInputTokens) => {
+				handler["client"] = {
+					...mockCopilotGpt55LanguageModelChat,
+					maxInputTokens,
+				} as any
+
+				expect(handler.getModel().info.contextWindow).toBe(272_000)
+			},
+		)
+
 		it("should return fallback model info when no client exists", () => {
 			// Clear the client first
 			handler["client"] = null
@@ -1044,7 +1244,13 @@ describe("VsCodeLmHandler", () => {
 			const result = await handler.countTokens(content)
 
 			expect(result).toBe(42)
-			expect(mockLanguageModelChat.countTokens).toHaveBeenCalledWith("Hello world", expect.any(Object))
+			expect(mockLanguageModelChat.countTokens).toHaveBeenCalledWith(
+				expect.objectContaining({
+					role: "user",
+					content: [expect.objectContaining({ value: "Hello world" })],
+				}),
+				expect.any(Object),
+			)
 		})
 
 		it("should count tokens when called during an active request", async () => {
@@ -1062,20 +1268,57 @@ describe("VsCodeLmHandler", () => {
 			const result = await handler.countTokens(content)
 
 			expect(result).toBe(50)
-			expect(mockLanguageModelChat.countTokens).toHaveBeenCalledWith("Test content", expect.any(Object))
+			expect(mockLanguageModelChat.countTokens).toHaveBeenCalledWith(
+				expect.objectContaining({
+					role: "user",
+					content: [expect.objectContaining({ value: "Test content" })],
+				}),
+				expect.any(Object),
+			)
 		})
 
-		it("should return 0 when no client is available", async () => {
+		it("should return a conservative nonzero fallback when no client is available", async () => {
 			handler["client"] = null
 			handler["currentRequestCancellation"] = null
 
 			const content: Anthropic.Messages.ContentBlockParam[] = [{ type: "text", text: "Hello" }]
 			const result = await handler.countTokens(content)
 
-			expect(result).toBe(0)
+			expect(result).toBe(Math.ceil(new TextEncoder().encode("Hello").byteLength / 3))
 		})
 
-		it("should handle image blocks with placeholder", async () => {
+		it("should pass complete chat message objects to the VS Code tokenizer", async () => {
+			const message = vscode.LanguageModelChatMessage.User("Count the complete message")
+			mockLanguageModelChat.countTokens.mockResolvedValueOnce(17)
+
+			const result = await handler["internalCountTokens"](message)
+
+			expect(result).toBe(17)
+			expect(mockLanguageModelChat.countTokens).toHaveBeenCalledWith(message, expect.any(Object))
+		})
+
+		it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, "invalid"])(
+			"should use a conservative fallback for invalid tokenizer output (%s)",
+			async (tokenCount) => {
+				mockLanguageModelChat.countTokens.mockResolvedValueOnce(tokenCount as number)
+
+				const result = await handler.countTokens([{ type: "text", text: "Fallback text" }])
+
+				expect(result).toBeGreaterThan(0)
+			},
+		)
+
+		it("should use a conservative fallback when the tokenizer fails", async () => {
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+			mockLanguageModelChat.countTokens.mockRejectedValueOnce(new Error("Tokenizer unavailable"))
+
+			const result = await handler.countTokens([{ type: "text", text: "Fallback text" }])
+
+			expect(result).toBeGreaterThan(0)
+			warnSpy.mockRestore()
+		})
+
+		it("should pass structured image messages to the VS Code tokenizer", async () => {
 			handler["currentRequestCancellation"] = null
 			mockLanguageModelChat.countTokens.mockResolvedValueOnce(5)
 
@@ -1085,7 +1328,13 @@ describe("VsCodeLmHandler", () => {
 			const result = await handler.countTokens(content)
 
 			expect(result).toBe(5)
-			expect(mockLanguageModelChat.countTokens).toHaveBeenCalledWith("[IMAGE]", expect.any(Object))
+			expect(mockLanguageModelChat.countTokens).toHaveBeenCalledWith(
+				expect.objectContaining({
+					role: "user",
+					content: [expect.objectContaining({ mimeType: "image/png", data: expect.any(Uint8Array) })],
+				}),
+				expect.any(Object),
+			)
 		})
 	})
 
@@ -1135,9 +1384,6 @@ describe("VsCodeLmHandler", () => {
 				expect.any(Array),
 				expect.objectContaining({
 					modelOptions: {
-						reasoningEffort: "medium",
-					},
-					configuration: {
 						reasoningEffort: "medium",
 					},
 				}),
@@ -1200,11 +1446,12 @@ describe("getVsCodeLmModels", () => {
 		expect(models).toEqual([])
 	})
 
-	it("deduplicates live variants and excludes Mythos", async () => {
+	it("preserves unique live model ids, deduplicates exact identities, and excludes Mythos", async () => {
 		const selectChatModels = vscode.lm.selectChatModels as Mock
 		selectChatModels.mockReset()
 		selectChatModels.mockResolvedValue([
 			{ ...mockCopilotGpt55LanguageModelChat, id: "gpt-5.5-standard", maxInputTokens: 272_000 },
+			{ ...mockCopilotGpt55LanguageModelChat, id: "gpt-5.5-extended", maxInputTokens: 500_000 },
 			{ ...mockCopilotGpt55LanguageModelChat, id: "gpt-5.5-extended", maxInputTokens: 921_793 },
 			{
 				...mockLanguageModelChat,
@@ -1218,7 +1465,10 @@ describe("getVsCodeLmModels", () => {
 		const models = await getVsCodeLmModels()
 		const gpt55Models = models.filter((model) => model.family === "gpt-5.5")
 
-		expect(gpt55Models).toEqual([expect.objectContaining({ id: "gpt-5.5-extended", maxInputTokens: 921_793 })])
+		expect(gpt55Models).toEqual([
+			expect.objectContaining({ id: "gpt-5.5-standard", maxInputTokens: 272_000 }),
+			expect.objectContaining({ id: "gpt-5.5-extended", maxInputTokens: 921_793 }),
+		])
 		expect(models.some((model) => JSON.stringify(model).includes("mythos"))).toBe(false)
 	})
 })

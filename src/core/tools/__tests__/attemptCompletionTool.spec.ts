@@ -77,7 +77,12 @@ describe("attemptCompletionTool", () => {
 			recordToolError: vi.fn(),
 			todoList: undefined,
 			say: vi.fn().mockResolvedValue(undefined),
+			presentCompletionResult: vi.fn().mockResolvedValue(undefined),
+			retractCompletionResult: vi.fn().mockResolvedValue(undefined),
 			ask: vi.fn().mockResolvedValue({ response: "yesButtonClicked", text: "", images: [] }),
+			messageQueueService: {
+				dequeueMessage: vi.fn().mockReturnValue(undefined),
+			} as any,
 			markCompleted: vi.fn(),
 			emitFinalTokenUsageUpdate: vi.fn(),
 			emit: vi.fn(),
@@ -92,6 +97,18 @@ describe("attemptCompletionTool", () => {
 			apiConfiguration: { apiProvider: "test" } as any,
 			api: { getModel: vi.fn().mockReturnValue({ id: "test-model", info: {} }) } as any,
 		}
+		mockTask.finalizeTaskCompletion = vi.fn().mockImplementation(async () => {
+			mockTask.markCompleted?.()
+			mockTask.emitFinalTokenUsageUpdate?.()
+			mockCaptureTaskCompleted("task_1")
+			;(mockTask.emit as any)?.(
+				RooCodeEventName.TaskCompleted,
+				"task_1",
+				mockTask.getTokenUsage?.() ?? {},
+				mockTask.toolUsage ?? {},
+			)
+			return true
+		})
 	})
 
 	it("prevents an editing worker from completing while a command is active", async () => {
@@ -108,7 +125,7 @@ describe("attemptCompletionTool", () => {
 		await attemptCompletionTool.execute({ result: "Verification passed." }, mockTask as Task, callbacks)
 
 		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("command is still running"))
-		expect(mockTask.say).not.toHaveBeenCalledWith("completion_result", expect.anything(), undefined, false)
+		expect(mockTask.presentCompletionResult).not.toHaveBeenCalled()
 		expect(mockTask.emit).not.toHaveBeenCalledWith(RooCodeEventName.TaskCompleted, expect.anything())
 	})
 
@@ -130,7 +147,7 @@ describe("attemptCompletionTool", () => {
 			await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
 
 			expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining(status))
-			expect(mockTask.say).not.toHaveBeenCalledWith("completion_result", expect.anything(), undefined, false)
+			expect(mockTask.presentCompletionResult).not.toHaveBeenCalled()
 			expect(mockTask.ask).not.toHaveBeenCalled()
 			expect(mockTask.markCompleted).not.toHaveBeenCalled()
 		},
@@ -150,9 +167,10 @@ describe("attemptCompletionTool", () => {
 
 		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
 
-		expect(mockTask.say).toHaveBeenCalledWith("completion_result", "Task complete.", undefined, false)
+		expect(mockTask.presentCompletionResult).toHaveBeenCalledWith("Task complete.", undefined, false)
 		expect(mockTask.ask).toHaveBeenCalledWith("completion_result", "", false)
 		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("became pending"))
+		expect(mockTask.retractCompletionResult).toHaveBeenCalledOnce()
 		expect(mockTask.markCompleted).not.toHaveBeenCalled()
 	})
 
@@ -665,6 +683,11 @@ describe("attemptCompletionTool", () => {
 				await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
 
 				expect(mockHandleError).not.toHaveBeenCalled()
+				expect(mockPushToolResult).toHaveBeenCalledWith("")
+				expect(mockTask.finalizeTaskCompletion).toHaveBeenCalledOnce()
+				expect(mockPushToolResult.mock.invocationCallOrder[0]).toBeLessThan(
+					(mockTask.finalizeTaskCompletion as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0],
+				)
 				expect(mockTask.markCompleted).toHaveBeenCalled()
 				expect(mockCaptureTaskCompleted).toHaveBeenCalledWith("task_1")
 				expect(mockTask.emit).toHaveBeenCalledWith(

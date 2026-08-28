@@ -90,6 +90,7 @@ describe("Single-open-task invariant", () => {
 		const provider = {
 			clineStack: [{ taskId: "existing-1" }],
 			taskSessions: { canCreateTask: vi.fn(() => true) },
+			finalizeActiveCompletionCandidate: vi.fn().mockResolvedValue(undefined),
 			setValues: vi.fn(),
 			getState: vi.fn().mockResolvedValue({
 				apiConfiguration: { apiProvider: "anthropic", consecutiveMistakeLimit: 0 },
@@ -137,6 +138,7 @@ describe("Single-open-task invariant", () => {
 		const provider = {
 			clineStack: [{ taskId: "existing-1" }],
 			taskSessions: { canCreateTask: vi.fn(() => false) },
+			finalizeActiveCompletionCandidate: vi.fn().mockResolvedValue(undefined),
 			setValues: vi.fn(),
 			getState: vi.fn().mockResolvedValue({
 				apiConfiguration: { apiProvider: "anthropic", consecutiveMistakeLimit: 0 },
@@ -184,6 +186,7 @@ describe("Single-open-task invariant", () => {
 
 		const provider = {
 			getActiveTask: vi.fn(() => activeTask),
+			finalizeActiveCompletionCandidate: vi.fn().mockResolvedValue(undefined),
 			taskSessions: { clearFocus },
 			resetNewTaskDraftMode,
 			postTaskStateToWebview,

@@ -67,7 +67,7 @@ describe("VSCodeLM", () => {
 		render(<VSCodeLM apiConfiguration={apiConfiguration} setApiConfigurationField={setApiConfigurationField} />)
 	}
 
-	it("deduplicates selector variants under one canonical model key", () => {
+	it("keeps distinct provider-returned model IDs independently selectable", () => {
 		renderProvider()
 
 		const models: LanguageModelChatSelector[] = [
@@ -92,8 +92,9 @@ describe("VSCodeLM", () => {
 		})
 
 		const props = modelPickerProps.at(-1)
-		expect(Object.keys(props.models)).toEqual(["copilot/gpt-5.5"])
-		expect(props.labelTransform("copilot/gpt-5.5")).toBe("GPT-5.5 · High")
+		expect(Object.keys(props.models)).toEqual(["copilot/copilot-gpt-5.5-low", "copilot/copilot-gpt-5.5-high"])
+		expect(props.labelTransform("copilot/copilot-gpt-5.5-low")).toBe("GPT-5.5 · Low")
+		expect(props.labelTransform("copilot/copilot-gpt-5.5-high")).toBe("GPT-5.5 · High")
 		expect(props.allowCustomModel).toBe(false)
 	})
 
@@ -113,13 +114,13 @@ describe("VSCodeLM", () => {
 
 		const props = modelPickerProps.at(-1)
 
-		expect(props.valueTransform("copilot/gpt-5.5")).toEqual({
+		expect(props.valueTransform("copilot/copilot-gpt-5.5-high")).toEqual({
 			vendor: selectedModel.vendor,
 			family: selectedModel.family,
 			version: selectedModel.version,
 			id: selectedModel.id,
 		})
-		expect(props.displayTransform(selectedModel)).toBe("copilot/gpt-5.5")
+		expect(props.displayTransform(selectedModel)).toBe("copilot/copilot-gpt-5.5-high")
 		expect(screen.getByTestId("model-picker")).toBeInTheDocument()
 	})
 
@@ -213,7 +214,7 @@ describe("VSCodeLM", () => {
 
 	it.each([
 		["gemini-3.1-pro", "Gemini 3.1 Pro (Preview)", 936_000, 200_000, 936_000],
-		["gemini-3.6-flash", "Gemini 3.6 Flash", 936_000, 936_000, 936_000],
+		["gemini-3.6-flash", "Gemini 3.6 Flash", 936_000, 200_000, 936_000],
 		["grok-4.6", "Grok 4.6", 425_001, 200_000, 425_001],
 	] as const)(
 		"renders the live standard and extended context tiers for %s",
@@ -349,7 +350,7 @@ describe("VSCodeLM", () => {
 		const props = thinkingBudgetProps.at(-1)
 		expect(props.modelInfo).toEqual(
 			expect.objectContaining({
-				contextWindow: 936_000,
+				contextWindow: 200_000,
 				supportsImages: true,
 				supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
 			}),
@@ -357,13 +358,13 @@ describe("VSCodeLM", () => {
 		expect(screen.getByTestId("context-size-select")).toBeInTheDocument()
 		expect(screen.getByText("settings:providers.vscodeLmContextSize.default")).toBeInTheDocument()
 		expect(screen.getByText("settings:providers.vscodeLmContextSize.extended")).toBeInTheDocument()
-		expect(selectProps.at(-1).value).toBe("936000")
+		expect(selectProps.at(-1).value).toBe("200000")
 
 		act(() => selectProps.at(-1).onValueChange("936000"))
 		expect(setApiConfigurationField).toHaveBeenCalledWith("vsCodeLmContextSize", 936_000)
 	})
 
-	it("deduplicates equivalent selectors returned by the VS Code LM API", () => {
+	it("keeps equivalent families separate when VS Code returns distinct IDs", () => {
 		const models = [
 			{
 				vendor: "copilot",
@@ -387,9 +388,12 @@ describe("VSCodeLM", () => {
 		})
 
 		const props = modelPickerProps.at(-1)
-		expect(Object.keys(props.models)).toEqual(["copilot/claude-opus-4.7"])
+		expect(Object.keys(props.models)).toEqual([
+			"copilot/copilot-claude-opus-4.7",
+			"copilot/copilot-claude-opus-4.7-alt",
+		])
 		expect(props.labelTransform(Object.keys(props.models)[0])).toBe("Claude Opus 4.7")
-		expect(props.secondaryLabelTransform(Object.keys(props.models)[0])).toContain("copilot-claude-opus-4.7-alt")
+		expect(props.secondaryLabelTransform(Object.keys(props.models)[1])).toContain("copilot-claude-opus-4.7-alt")
 	})
 
 	it("makes every current Copilot model returned by VS Code selectable", () => {
@@ -436,13 +440,13 @@ describe("VSCodeLM", () => {
 		expect(Object.keys(props.models)).toHaveLength(currentModels.length)
 
 		for (const [family, name] of currentModels) {
-			const selector = `copilot/${family}`
+			const selector = `copilot/copilot-${family}`
 			expect(Object.keys(props.models)).toContain(selector)
 			expect(props.labelTransform(selector)).toBe(name)
 		}
 	})
 
-	it("maps an already configured selector variant to the canonical entry", () => {
+	it("maps an already configured selector to its exact live identity", () => {
 		const selectedModel = {
 			vendor: "copilot",
 			family: "claude-opus-4.7",
@@ -470,8 +474,11 @@ describe("VSCodeLM", () => {
 		})
 
 		const props = modelPickerProps.at(-1)
-		expect(Object.keys(props.models)).toEqual(["copilot/claude-opus-4.7"])
-		expect(props.displayTransform(selectedModel)).toBe("copilot/claude-opus-4.7")
+		expect(Object.keys(props.models)).toEqual([
+			"copilot/copilot-claude-opus-4.7",
+			"copilot/copilot-claude-opus-4.7-alt",
+		])
+		expect(props.displayTransform(selectedModel)).toBe("copilot/copilot-claude-opus-4.7-alt")
 		expect(thinkingBudgetProps.at(-1).modelInfo).toEqual(
 			expect.objectContaining({
 				supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
@@ -564,7 +571,7 @@ describe("VSCodeLM", () => {
 		expect(setApiConfigurationField).not.toHaveBeenCalledWith("vsCodeLmModelSelector", expect.anything())
 	})
 
-	it("uses the canonical model capabilities for a legacy selector with duplicate live variants", () => {
+	it("rejects an ambiguous legacy selector instead of choosing a live variant", () => {
 		const models = [
 			{
 				vendor: "copilot",
@@ -593,12 +600,8 @@ describe("VSCodeLM", () => {
 			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: models } } as MessageEvent)
 		})
 
-		const props = thinkingBudgetProps.at(-1)
-		expect(props.modelInfo).toEqual(
-			expect.objectContaining({
-				supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh"],
-			}),
-		)
+		expect(thinkingBudgetProps.at(-1).modelInfo).toBeUndefined()
+		expect(modelPickerProps.at(-1).errorMessage).toBe("settings:providers.vscodeLmUnavailable")
 	})
 
 	it("shows an unavailable error for a persisted selector that VS Code did not return", () => {

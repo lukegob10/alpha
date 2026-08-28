@@ -1,7 +1,6 @@
 import * as vscode from "vscode"
 
-import { RooCodeEventName, type HistoryItem } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
+import type { HistoryItem } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
@@ -90,15 +89,18 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 
 			task.consecutiveMistakeCount = 0
 
-			await task.say("completion_result", result, undefined, false)
+			await task.presentCompletionResult(result, undefined, false)
 
 			if (task.taskKind === "subagent") {
 				// task.say may yield long enough for a nested child to finish. Recheck
 				// the durable completion decision at the final transition boundary.
-				if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) return
+				if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) {
+					await task.retractCompletionResult()
+					return
+				}
 				task.subagentCompletionOutcome = outcome === "blocked" ? "blocked" : "completed"
 				pushToolResult("")
-				this.emitTaskCompleted(task)
+				await this.emitTaskCompleted(task)
 				return
 			}
 
@@ -127,7 +129,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 								pushToolResult,
 							)
 							if (delegation === "delegated") {
-								this.emitTaskCompleted(task)
+								await this.emitTaskCompleted(task)
 							}
 							if (delegation !== "continue") return
 						} else {
@@ -151,22 +153,30 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				}
 			}
 
-			const { response, text, images } = await task.ask("completion_result", "", false)
+			const { text, images } = await task.ask("completion_result", "", false)
+			const providedFeedback = Boolean(text?.trim()) || Boolean(images?.length)
+			const queuedFollowup = providedFeedback ? undefined : task.messageQueueService.dequeueMessage()
+			const feedbackText = queuedFollowup?.text ?? text ?? ""
+			const feedbackImages = queuedFollowup?.images ?? images ?? []
 
-			if (response === "yesButtonClicked") {
+			if (!feedbackText.trim() && feedbackImages.length === 0) {
 				// A background child can finish while the completion prompt is open.
 				// Recheck the durable descendant/mailbox gate immediately before the
-				// synchronous completion transition.
-				if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) return
-				this.emitTaskCompleted(task)
+				// persisted completion transition.
+				if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) {
+					await task.retractCompletionResult()
+					return
+				}
+				pushToolResult("")
+				await this.emitTaskCompleted(task)
 				return
 			}
 
 			// User provided feedback - push tool result to continue the conversation
-			await task.say("user_feedback", text ?? "", images)
+			await task.say("user_feedback", feedbackText, feedbackImages)
 
-			const feedbackText = `<user_message>\n${text}\n</user_message>`
-			pushToolResult(formatResponse.toolResult(feedbackText, images))
+			const toolFeedback = `<user_message>\n${feedbackText}\n</user_message>`
+			pushToolResult(formatResponse.toolResult(toolFeedback, feedbackImages))
 		} catch (error) {
 			await handleError("inspecting site", error as Error)
 		}
@@ -248,23 +258,16 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			if (lastMessage && lastMessage.ask === "command") {
 				await task.ask("command", command ?? "", block.partial).catch(() => {})
 			} else {
-				await task.say("completion_result", result ?? "", undefined, false)
+				await task.presentCompletionResult(result ?? "", undefined, false)
 				await task.ask("command", command ?? "", block.partial).catch(() => {})
 			}
 		} else {
-			await task.say("completion_result", result ?? "", undefined, block.partial)
+			await task.presentCompletionResult(result ?? "", undefined, block.partial)
 		}
 	}
 
-	private emitTaskCompleted(task: Task): void {
-		task.markCompleted?.()
-
-		// Force final token usage update before emitting TaskCompleted.
-		// This ensures the latest stats are captured regardless of throttle timer.
-		task.emitFinalTokenUsageUpdate()
-
-		TelemetryService.instance.captureTaskCompleted(task.taskId)
-		task.emit(RooCodeEventName.TaskCompleted, task.taskId, task.getTokenUsage(), task.toolUsage)
+	private async emitTaskCompleted(task: Task): Promise<void> {
+		await task.finalizeTaskCompletion()
 	}
 }
 

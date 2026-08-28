@@ -51,6 +51,37 @@ type VsCodeLmModelConfiguration = {
 	contextSize?: number
 }
 
+const VSCODE_GPT_56_MIN_VERSION = "1.128.0"
+
+function isVersionBefore(version: string, minimum: string): boolean {
+	const parse = (value: string) =>
+		value
+			.match(/^\d+(?:\.\d+){0,2}/)?.[0]
+			.split(".")
+			.map(Number)
+	const currentParts = parse(version)
+	const minimumParts = parse(minimum)
+	if (!currentParts || !minimumParts) {
+		return false
+	}
+
+	for (let index = 0; index < 3; index++) {
+		const current = currentParts[index] ?? 0
+		const required = minimumParts[index] ?? 0
+		if (current !== required) {
+			return current < required
+		}
+	}
+
+	return false
+}
+
+function isGpt56Selector(selector: vscode.LanguageModelChatSelector): boolean {
+	return Object.values(selector).some(
+		(value) => typeof value === "string" && value.toLowerCase().replace(/[_\s]/g, "-").includes("gpt-5.6"),
+	)
+}
+
 function getVsCodeLmReasoningEffortOption(
 	model: vscode.LanguageModelChat | vscode.LanguageModelChatSelector,
 	enableReasoningEffort: boolean | undefined,
@@ -119,16 +150,6 @@ function applyVsCodeLmModelConfiguration(
 		...(requestOptions.modelOptions ?? {}),
 		...configuration,
 	}
-
-	// Current VS Code forwards this internal/proposed field to provider-side
-	// modelConfiguration, which Copilot reads for per-request model settings.
-	const requestOptionsWithConfiguration = requestOptions as vscode.LanguageModelChatRequestOptions & {
-		configuration?: Record<string, unknown>
-	}
-	requestOptionsWithConfiguration.configuration = {
-		...(requestOptionsWithConfiguration.configuration ?? {}),
-		...configuration,
-	}
 }
 
 function getVsCodeLmMetadataMimeType(chunk: unknown): string | undefined {
@@ -140,9 +161,74 @@ function getVsCodeLmMetadataMimeType(chunk: unknown): string | undefined {
 	return typeof mimeType === "string" ? mimeType : undefined
 }
 
+type VsCodeLmUsage = {
+	inputTokens: number
+	outputTokens: number
+}
+
+function getFiniteUsageValue(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : undefined
+}
+
+function getVsCodeLmUsage(chunk: unknown): VsCodeLmUsage | undefined {
+	if (getVsCodeLmMetadataMimeType(chunk) !== "usage") {
+		return undefined
+	}
+
+	const data = (chunk as { data?: unknown }).data
+	if (!(data instanceof Uint8Array)) {
+		return undefined
+	}
+
+	try {
+		const parsed = JSON.parse(new TextDecoder().decode(data)) as Record<string, unknown>
+		const inputTokens = getFiniteUsageValue(
+			parsed.prompt_tokens ?? parsed.input_tokens ?? parsed.promptTokens ?? parsed.inputTokens,
+		)
+		const outputTokens = getFiniteUsageValue(
+			parsed.completion_tokens ?? parsed.output_tokens ?? parsed.completionTokens ?? parsed.outputTokens,
+		)
+
+		return inputTokens !== undefined && outputTokens !== undefined ? { inputTokens, outputTokens } : undefined
+	} catch {
+		return undefined
+	}
+}
+
+function estimateTokens(text: string): number {
+	if (text.length === 0) {
+		return 0
+	}
+
+	// UTF-8 bytes account for non-ASCII text more reliably than UTF-16 length.
+	// Three bytes per token intentionally errs above the usual English/code ratio.
+	return Math.max(1, Math.ceil(new TextEncoder().encode(text).byteLength / 3))
+}
+
+function isLanguageModelChatMessageLike(value: unknown): value is vscode.LanguageModelChatMessage {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"role" in value &&
+		"content" in value &&
+		Array.isArray((value as { content?: unknown }).content)
+	)
+}
+
+function estimateVsCodeLmInputTokens(
+	messages: vscode.LanguageModelChatMessage[],
+	tools: vscode.LanguageModelChatTool[],
+): number {
+	const serializedMessages = messages
+		.map((message) => `${String(message.role)}:${message.name ?? ""}:${extractTextCountFromMessage(message)}`)
+		.join("\n")
+	const serializedTools = tools.length > 0 ? JSON.stringify(tools) : ""
+
+	return estimateTokens([serializedMessages, serializedTools].filter(Boolean).join("\n"))
+}
+
 function isIgnorableVsCodeLmMetadataChunk(chunk: unknown): boolean {
-	const mimeType = getVsCodeLmMetadataMimeType(chunk)
-	return mimeType === "stateful_marker" || mimeType === "usage"
+	return getVsCodeLmMetadataMimeType(chunk) === "stateful_marker"
 }
 
 function buildVsCodeLmModelInfo(
@@ -150,21 +236,19 @@ function buildVsCodeLmModelInfo(
 	configuredContextSize?: ProviderSettings["vsCodeLmContextSize"],
 ): ModelInfo {
 	const staticInfo = getVscodeLlmModelInfo(client)
-	const liveContextWindow = typeof client.maxInputTokens === "number" ? Math.max(0, client.maxInputTokens) : undefined
-	const selectedContextSize = getVsCodeLmContextSizeOption(client, configuredContextSize)?.contextSize
-	const providerDefaultContextSize =
-		configuredContextSize === undefined && staticInfo?.extendedContextIsDefault
-			? getVscodeLlmExtendedContextSize(client)
+	const liveContextWindow =
+		typeof client.maxInputTokens === "number" && Number.isFinite(client.maxInputTokens) && client.maxInputTokens > 0
+			? Math.floor(client.maxInputTokens)
 			: undefined
-	const effectiveContextSize = selectedContextSize ?? providerDefaultContextSize
-	// Clamp only when the live value is the same tier with provider overhead reserved.
-	const contextWindow = effectiveContextSize
-		? typeof liveContextWindow === "number" && liveContextWindow >= effectiveContextSize * 0.9
-			? Math.min(effectiveContextSize, liveContextWindow)
-			: effectiveContextSize
-		: staticInfo?.supportsContextWindowConfiguration
-			? staticInfo.contextWindow
-			: (liveContextWindow ?? staticInfo?.contextWindow ?? openAiModelInfoSaneDefaults.contextWindow)
+	const selectedContextSize = getVsCodeLmContextSizeOption(client, configuredContextSize)?.contextSize
+	const configuredOrStaticContextWindow = selectedContextSize ?? staticInfo?.contextWindow ?? liveContextWindow
+	const safeContextWindow =
+		typeof configuredOrStaticContextWindow === "number" &&
+		Number.isFinite(configuredOrStaticContextWindow) &&
+		configuredOrStaticContextWindow > 0
+			? Math.floor(configuredOrStaticContextWindow)
+			: openAiModelInfoSaneDefaults.contextWindow
+	const contextWindow = liveContextWindow ? Math.min(safeContextWindow, liveContextWindow) : safeContextWindow
 
 	return {
 		...openAiModelInfoSaneDefaults,
@@ -296,11 +380,31 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				getApiRequestTimeout(),
 			)
 
-			if (models && Array.isArray(models) && models.length > 0) {
-				return models[0]
+			const selectorEntries = Object.entries(selector).filter(
+				(entry): entry is [keyof vscode.LanguageModelChatSelector, string] =>
+					typeof entry[1] === "string" && entry[1].length > 0,
+			)
+			const exactMatches = (models ?? []).filter((model) =>
+				selectorEntries.every(([key, value]) => model[key] === value),
+			)
+
+			if (exactMatches.length === 1) {
+				return exactMatches[0]
 			}
 
-			const hasSpecificSelector = Object.values(selector).some(Boolean)
+			if (exactMatches.length > 1) {
+				throw new Error(
+					`The VS Code language model selector '${stringifyVsCodeLmModelSelector(selector) || "<all models>"}' is ambiguous and matched ${exactMatches.length} models. Choose a model with a unique id.`,
+				)
+			}
+
+			if (isGpt56Selector(selector) && isVersionBefore(vscode.version, VSCODE_GPT_56_MIN_VERSION)) {
+				throw new Error(
+					`GPT-5.6 models through the VS Code Language Model API require VS Code ${VSCODE_GPT_56_MIN_VERSION} or newer (current: ${vscode.version}). Update VS Code, then enable the model with 'Chat: Manage Language Models'.`,
+				)
+			}
+
+			const hasSpecificSelector = selectorEntries.length > 0
 			const availableModels = hasSpecificSelector
 				? await withApiRequestTimeout(
 						vscode.lm.selectChatModels({}),
@@ -361,35 +465,36 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	 * @returns A promise resolving to the token count
 	 */
 	override async countTokens(content: Array<Anthropic.Messages.ContentBlockParam>): Promise<number> {
-		// Convert Anthropic content blocks to a string for VSCode LM token counting
-		let textContent = ""
-
-		for (const block of content) {
-			if (block.type === "text") {
-				textContent += block.text || ""
-			} else if (block.type === "image") {
-				// VSCode LM doesn't support images directly, so we'll just use a placeholder
-				textContent += "[IMAGE]"
-			}
-		}
-
-		return this.internalCountTokens(textContent)
+		const [message] = convertToVsCodeLmMessages([{ role: "user", content }])
+		return message ? this.internalCountTokens(message) : 0
 	}
 
 	/**
 	 * Private implementation of token counting used internally by VsCodeLmHandler
 	 */
 	private async internalCountTokens(text: string | vscode.LanguageModelChatMessage): Promise<number> {
+		const fallbackTokens =
+			typeof text === "string"
+				? estimateTokens(text)
+				: isLanguageModelChatMessageLike(text)
+					? estimateTokens(extractTextCountFromMessage(text))
+					: 1
+
 		// Check for required dependencies
 		if (!this.client) {
 			console.warn("Alpha <Language Model API>: No client available for token counting")
-			return 0
+			return fallbackTokens
 		}
 
 		// Validate input
-		if (!text) {
+		if (!text || fallbackTokens === 0) {
 			console.debug("Alpha <Language Model API>: Empty text provided for token counting")
 			return 0
+		}
+
+		if (typeof text !== "string" && !isLanguageModelChatMessageLike(text)) {
+			console.warn("Alpha <Language Model API>: Invalid input type for token counting")
+			return fallbackTokens
 		}
 
 		// Token counting can involve the same provider backend as generation. Keep it cancellable,
@@ -408,51 +513,30 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		}
 
 		try {
-			// Handle different input types
-			let tokenCount: number
-
-			if (typeof text === "string") {
-				tokenCount = await withApiRequestTimeout(
-					this.client.countTokens(text, cancellationToken),
-					"VS Code LM token counting",
-					getApiRequestTimeout(),
-					() => tempCancellation?.cancel(),
-				)
-			} else if (text instanceof vscode.LanguageModelChatMessage) {
-				// For chat messages, ensure we have content
-				if (!text.content || (Array.isArray(text.content) && text.content.length === 0)) {
-					console.debug("Alpha <Language Model API>: Empty chat message content")
-					return 0
-				}
-				const countMessage = extractTextCountFromMessage(text)
-				tokenCount = await withApiRequestTimeout(
-					this.client.countTokens(countMessage, cancellationToken),
-					"VS Code LM token counting",
-					getApiRequestTimeout(),
-					() => tempCancellation?.cancel(),
-				)
-			} else {
-				console.warn("Alpha <Language Model API>: Invalid input type for token counting")
-				return 0
-			}
+			const tokenCount = await withApiRequestTimeout(
+				this.client.countTokens(text, cancellationToken),
+				"VS Code LM token counting",
+				getApiRequestTimeout(),
+				() => tempCancellation?.cancel(),
+			)
 
 			// Validate the result
-			if (typeof tokenCount !== "number") {
+			if (typeof tokenCount !== "number" || !Number.isFinite(tokenCount)) {
 				console.warn("Alpha <Language Model API>: Non-numeric token count received:", tokenCount)
-				return 0
+				return fallbackTokens
 			}
 
-			if (tokenCount < 0) {
-				console.warn("Alpha <Language Model API>: Negative token count received:", tokenCount)
-				return 0
+			if (tokenCount <= 0) {
+				console.warn("Alpha <Language Model API>: Non-positive token count received:", tokenCount)
+				return fallbackTokens
 			}
 
-			return tokenCount
+			return Math.ceil(tokenCount)
 		} catch (error) {
 			// Handle specific error types
 			if (error instanceof vscode.CancellationError) {
 				console.debug("Alpha <Language Model API>: Token counting cancelled by user")
-				return 0
+				return fallbackTokens
 			}
 
 			const errorMessage = error instanceof Error ? error.message : "Unknown error"
@@ -463,7 +547,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				console.debug("Token counting error stack:", error.stack)
 			}
 
-			return 0 // Fallback to prevent stream interruption
+			return fallbackTokens
 		} finally {
 			// Clean up temporary cancellation token
 			linkedCancellation?.dispose()
@@ -471,12 +555,6 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				tempCancellation.dispose()
 			}
 		}
-	}
-
-	private async calculateTotalInputTokens(vsCodeLmMessages: vscode.LanguageModelChatMessage[]): Promise<number> {
-		const messageTokens: number[] = await Promise.all(vsCodeLmMessages.map((msg) => this.internalCountTokens(msg)))
-
-		return messageTokens.reduce((sum: number, tokens: number): number => sum + tokens, 0)
 	}
 
 	private ensureCleanState(): void {
@@ -515,30 +593,6 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		return this.client
 	}
 
-	private cleanMessageContent(content: any): any {
-		if (!content) {
-			return content
-		}
-
-		if (typeof content === "string") {
-			return content
-		}
-
-		if (Array.isArray(content)) {
-			return content.map((item) => this.cleanMessageContent(item))
-		}
-
-		if (typeof content === "object") {
-			const cleaned: any = {}
-			for (const [key, value] of Object.entries(content)) {
-				cleaned[key] = this.cleanMessageContent(value)
-			}
-			return cleaned
-		}
-
-		return content
-	}
-
 	override async *createMessage(
 		systemPrompt: string,
 		messages: Anthropic.Messages.MessageParam[],
@@ -548,33 +602,26 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		this.ensureCleanState()
 		const client: vscode.LanguageModelChat = await this.getClient()
 
-		// Process messages
-		const cleanedMessages = messages.map((msg) => ({
-			...msg,
-			content: this.cleanMessageContent(msg.content),
-		}))
-
 		// Convert Anthropic messages to VS Code LM messages
 		const vsCodeLmMessages: vscode.LanguageModelChatMessage[] = [
-			vscode.LanguageModelChatMessage.Assistant(systemPrompt),
-			...convertToVsCodeLmMessages(cleanedMessages),
+			vscode.LanguageModelChatMessage.User(systemPrompt),
+			...convertToVsCodeLmMessages(messages),
 		]
+		const tools = convertToVsCodeLmTools(metadata?.tools ?? [])
+		const totalInputTokens = estimateVsCodeLmInputTokens(vsCodeLmMessages, tools)
 
 		// Initialize cancellation token for the request
 		this.currentRequestCancellation = new vscode.CancellationTokenSource()
 
-		// Calculate input tokens before starting the stream
-		const totalInputTokens: number = await this.calculateTotalInputTokens(vsCodeLmMessages)
-
-		// Accumulate the text and count at the end of the stream to reduce token counting overhead.
+		// Keep a lightweight fallback estimate for providers that do not report usage metadata.
 		let accumulatedText: string = ""
+		let reportedUsage: VsCodeLmUsage | undefined
 
 		try {
 			// Create the response stream with required options
 			const requestOptions: vscode.LanguageModelChatRequestOptions = {
 				justification: `Alpha would like to use '${client.name}' from '${client.vendor}', Click 'Allow' to proceed.`,
 			}
-			const tools = convertToVsCodeLmTools(metadata?.tools ?? [])
 
 			applyVsCodeLmModelConfiguration(requestOptions, getVsCodeLmModelConfiguration(client, this.options))
 
@@ -607,6 +654,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				const chunk = nextChunk.value
 				if (typeof chunk === "string") {
 					accumulatedText += chunk
+					reportedUsage = undefined
 					yield {
 						type: "text",
 						text: chunk,
@@ -619,6 +667,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 					}
 
 					accumulatedText += chunk.value
+					reportedUsage = undefined
 					yield {
 						type: "text",
 						text: chunk.value,
@@ -653,6 +702,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 						if (metadata?.tools?.length) {
 							const argumentsString = JSON.stringify(chunk.input)
 							accumulatedText += argumentsString
+							reportedUsage = undefined
 							yield {
 								type: "tool_call",
 								id: chunk.callId,
@@ -665,6 +715,13 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 						// Continue processing other chunks even if one fails
 						continue
 					}
+				} else if (getVsCodeLmMetadataMimeType(chunk) === "usage") {
+					const usage = getVsCodeLmUsage(chunk)
+					if (usage) {
+						reportedUsage = usage
+					} else {
+						console.debug("Alpha <Language Model API>: Ignoring malformed usage metadata chunk")
+					}
 				} else if (isIgnorableVsCodeLmMetadataChunk(chunk)) {
 					console.debug(
 						"Alpha <Language Model API>: Ignoring metadata chunk:",
@@ -675,14 +732,13 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				}
 			}
 
-			// Count tokens in the accumulated text after stream completion
-			const totalOutputTokens: number = await this.internalCountTokens(accumulatedText)
-
-			// Report final usage after stream completion
+			// VS Code 1.122.1's Copilot provider reports authoritative usage in a terminal
+			// LanguageModelDataPart. Avoid re-tokenizing the completed response here: countTokens
+			// can call the provider backend and otherwise delays the visible completion boundary.
 			yield {
 				type: "usage",
-				inputTokens: totalInputTokens,
-				outputTokens: totalOutputTokens,
+				inputTokens: reportedUsage?.inputTokens ?? totalInputTokens,
+				outputTokens: reportedUsage?.outputTokens ?? estimateTokens(accumulatedText),
 			}
 		} catch (error: unknown) {
 			this.ensureCleanState()

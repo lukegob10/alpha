@@ -1935,6 +1935,65 @@ describe("ChatView - Message Queueing Tests", () => {
 		)
 	})
 
+	it("releases queue mode when an ordinary response publishes its hidden completion boundary", async () => {
+		const { getByTestId } = renderChatView()
+		const taskMessage = {
+			type: "say" as const,
+			say: "task",
+			ts: 1,
+			text: "Initial task",
+		}
+		const requestStarted = {
+			type: "say" as const,
+			say: "api_req_started",
+			ts: 2,
+			text: JSON.stringify({ apiProtocol: "openai" }),
+		}
+		const taskState = {
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			currentTaskItem: { id: "task-1", task: "Initial task", ts: 1 },
+		}
+
+		mockPostMessage({
+			...taskState,
+			clineMessages: [taskMessage, requestStarted],
+		})
+
+		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		await waitFor(() => expect(input.getAttribute("data-sending-disabled")).toBe("true"))
+
+		mockPostMessage({
+			...taskState,
+			clineMessages: [
+				taskMessage,
+				{
+					...requestStarted,
+					text: JSON.stringify({ apiProtocol: "openai", cost: 0, tokensIn: 10, tokensOut: 3 }),
+				},
+				{ type: "say", say: "completion_result", ts: 3, text: "Hello world!", partial: false },
+				{ type: "ask", ask: "completion_result", ts: 4, text: "", partial: false },
+			],
+		})
+
+		await waitFor(() => expect(input.getAttribute("data-sending-disabled")).toBe("false"))
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.change(input, { target: { value: "continue in this task" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+		await waitFor(() => {
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "askResponse",
+				askResponse: "messageResponse",
+				text: "continue in this task",
+				images: [],
+				taskId: "task-1",
+			})
+		})
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
+	})
+
 	it("starts a new task instead of answering a stale follow-up on a completed live task", async () => {
 		const { getByTestId } = renderChatView()
 
@@ -1996,9 +2055,12 @@ describe("ChatView - Message Queueing Tests", () => {
 		)
 	})
 
-	it.each(["completion_result", "resume_completed_task"] as const)(
+	it.each([
+		["completion_result", "waiting", true, "completion"],
+		["resume_completed_task", "completed", false, undefined],
+	] as const)(
 		"continues the same task when the composer is submitted at %s",
-		async (completionAsk) => {
+		async (completionAsk, lifecycle, isWaitingForInput, waitingReason) => {
 			const { getByTestId } = renderChatView()
 
 			mockPostMessage({
@@ -2008,10 +2070,11 @@ describe("ChatView - Message Queueing Tests", () => {
 					"task-1": {
 						id: "task-1",
 						status: "running",
-						lifecycle: "completed",
+						lifecycle,
 						isActive: true,
 						isStreaming: false,
-						isWaitingForInput: false,
+						isWaitingForInput,
+						waitingReason,
 						lastUpdatedAt: Date.now(),
 						queueCount: 0,
 						tokensIn: 0,

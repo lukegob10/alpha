@@ -88,7 +88,7 @@ describe("TaskSessionRegistry", () => {
 		})
 	})
 
-	it("treats completion-result waits as completed for live task capacity", () => {
+	it("keeps completion-result candidates live and waiting for review", () => {
 		const registry = new TaskSessionRegistry(1)
 
 		registry.register(
@@ -97,12 +97,32 @@ describe("TaskSessionRegistry", () => {
 				taskAsk: { ts: 101, type: "ask", ask: "completion_result" },
 			} as Partial<Task>),
 		)
-		registry.markLifecycle("task-a", TaskLifecycleState.Waiting, "idle")
+		registry.markLifecycle("task-a", TaskLifecycleState.Waiting, "completion")
 
-		expect(registry.getLiveTaskIds()).toEqual([])
+		expect(registry.getLiveTaskIds()).toEqual(["task-a"])
+		expect(registry.getLiveTaskCount()).toBe(1)
+		expect(registry.canCreateTask()).toBe(false)
+		expect(registry.canAcceptInput("task-a")).toBe(true)
+		expect(registry.getMetadata()["task-a"]).toMatchObject({
+			lifecycle: TaskLifecycleState.Waiting,
+			isWaitingForInput: true,
+			waitingReason: "completion",
+		})
+	})
+
+	it("keeps persisted resume-completed asks terminal", () => {
+		const registry = new TaskSessionRegistry(1)
+
+		registry.register(
+			createTask("task-a", {
+				isStreaming: false,
+				taskAsk: { ts: 101, type: "ask", ask: "resume_completed_task" },
+			} as Partial<Task>),
+		)
+		registry.markLifecycle("task-a", TaskLifecycleState.Waiting, "resumable")
+
 		expect(registry.getLiveTaskCount()).toBe(0)
 		expect(registry.canCreateTask()).toBe(true)
-		expect(registry.canAcceptInput("task-a")).toBe(true)
 		expect(registry.getMetadata()["task-a"]).toMatchObject({
 			lifecycle: TaskLifecycleState.Completed,
 			isWaitingForInput: false,
@@ -140,8 +160,8 @@ describe("TaskSessionRegistry", () => {
 		} as Partial<Task>)
 
 		registry.register(task)
-		registry.markLifecycle("task-a", TaskLifecycleState.Waiting, "idle")
-		expect(registry.canCreateTask()).toBe(true)
+		registry.markLifecycle("task-a", TaskLifecycleState.Waiting, "completion")
+		expect(registry.canCreateTask()).toBe(false)
 		;(task as any).taskAsk = undefined
 		registry.markLifecycle("task-a", TaskLifecycleState.Running)
 

@@ -690,6 +690,55 @@ describe("ClineProvider", () => {
 		})
 	})
 
+	test("publishes incremental task messages and queues without building full extension state", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		mockPostMessage.mockClear()
+		const getFullState = vi.spyOn(provider, "getStateToPostToWebview")
+		const message = { ts: 1, type: "say", say: "text", text: "hello" } as const
+
+		await provider.postTaskMessageToWebview("messageCreated", "task-1", message)
+		vi.spyOn(provider, "isTaskOnScreen").mockReturnValue(true)
+		await provider.postTaskQueueToWebview("task-1", [
+			{ id: "queued-1", text: "continue", images: [], timestamp: 2 },
+		])
+		await provider.postTaskTodosToWebview("task-1", [
+			{ id: "todo-1", content: "Verify performance", status: "in_progress" },
+		])
+
+		expect(getFullState).not.toHaveBeenCalled()
+		expect(mockPostMessage).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({
+				type: "messageCreated",
+				taskId: "task-1",
+				clineMessage: message,
+				clineMessagesSeq: expect.any(Number),
+			}),
+		)
+		expect(mockPostMessage).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				type: "state",
+				state: expect.objectContaining({
+					currentTaskId: "task-1",
+					messageQueue: [expect.objectContaining({ text: "continue" })],
+					messageQueueSeq: expect.any(Number),
+				}),
+			}),
+		)
+		expect(mockPostMessage).toHaveBeenNthCalledWith(
+			3,
+			expect.objectContaining({
+				type: "state",
+				state: expect.objectContaining({
+					currentTaskId: "task-1",
+					currentTaskTodos: [expect.objectContaining({ content: "Verify performance" })],
+					currentTaskTodosSeq: expect.any(Number),
+				}),
+			}),
+		)
+	})
+
 	test("processes webview messages in arrival order", async () => {
 		await provider.resolveWebviewView(mockWebviewView)
 		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
@@ -720,6 +769,41 @@ describe("ClineProvider", () => {
 			},
 			undefined,
 		)
+	})
+
+	test("accepts a retained completion candidate before a foreground task transition", async () => {
+		const candidate = new Task(defaultTaskOptions)
+		Object.assign(candidate, {
+			taskAsk: { ts: 2, type: "ask", ask: "completion_result", text: "" },
+			clineMessages: [
+				{ ts: 1, type: "say", say: "completion_result", text: "Finished." },
+				{ ts: 2, type: "ask", ask: "completion_result", text: "" },
+			],
+			approveAsk: vi.fn(),
+		})
+		await provider.addClineToStack(candidate)
+
+		await (provider as any).finalizeActiveCompletionCandidate()
+
+		expect(candidate.approveAsk).toHaveBeenCalledOnce()
+	})
+
+	test("waits for completion finalization before entering the blank-task view", async () => {
+		const candidate = new Task(defaultTaskOptions)
+		await provider.addClineToStack(candidate)
+		let releaseFinalization!: () => void
+		const finalization = new Promise<void>((resolve) => {
+			releaseFinalization = resolve
+		})
+		const finalize = vi.spyOn(provider as any, "finalizeActiveCompletionCandidate").mockReturnValue(finalization)
+
+		const transition = provider.startBlankTask()
+		await vi.waitFor(() => expect(finalize).toHaveBeenCalledOnce())
+		expect(provider.getActiveTask()).toBe(candidate)
+
+		releaseFinalization()
+		await transition
+		expect(provider.getActiveTask()).toBeUndefined()
 	})
 
 	test("dispose is idempotent — second call is a no-op", async () => {

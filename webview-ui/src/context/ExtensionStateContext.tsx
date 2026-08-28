@@ -154,25 +154,54 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 	const experiments = { ...prevExperiments, ...(newExperiments ?? {}) }
 	const rest = { ...prevRest, ...newRest }
 
-	// Task-view fields form one snapshot. Applying only part of a stale snapshot can pair a
-	// completed task's id/view with a newer draft or transcript, so reject the entire task-view
-	// portion whenever its sequence is not strictly newer. Unrelated settings in the push still apply.
-	if (
-		newState.clineMessagesSeq !== undefined &&
-		prevState.clineMessagesSeq !== undefined &&
-		newState.clineMessagesSeq <= prevState.clineMessagesSeq
-	) {
+	const hasDedicatedDomainSequence =
+		newState.taskStateSeq !== undefined ||
+		newState.messageQueueSeq !== undefined ||
+		newState.currentTaskTodosSeq !== undefined
+	const legacyDomainSequence = hasDedicatedDomainSequence ? undefined : newState.clineMessagesSeq
+	const incomingTaskStateSeq = newState.taskStateSeq ?? legacyDomainSequence
+	const incomingQueueSeq = newState.messageQueueSeq ?? legacyDomainSequence
+	const incomingTodosSeq = newState.currentTaskTodosSeq ?? legacyDomainSequence
+	const previousTaskStateSeq =
+		prevState.taskStateSeq ?? (hasDedicatedDomainSequence ? undefined : prevState.clineMessagesSeq)
+	const previousQueueSeq =
+		prevState.messageQueueSeq ?? (hasDedicatedDomainSequence ? undefined : prevState.clineMessagesSeq)
+	const previousTodosSeq =
+		prevState.currentTaskTodosSeq ?? (hasDedicatedDomainSequence ? undefined : prevState.clineMessagesSeq)
+	const isStale = (incoming: number | undefined, previous: number | undefined) =>
+		incoming !== undefined && previous !== undefined && incoming <= previous
+
+	// Transcript, lifecycle, queue, and todos are delivered independently. Guard
+	// each domain separately so a tiny queue patch cannot suppress a valid later
+	// lifecycle snapshot (or let an older full snapshot erase a newer queue).
+	if (isStale(newState.clineMessagesSeq, prevState.clineMessagesSeq)) {
 		rest.clineMessages = prevState.clineMessages
+		rest.clineMessagesSeq = prevState.clineMessagesSeq
+	}
+
+	const taskStateIsStale = isStale(incomingTaskStateSeq, previousTaskStateSeq)
+	const patchHasNoTaskStateSequence = hasDedicatedDomainSequence && incomingTaskStateSeq === undefined
+	if (taskStateIsStale || patchHasNoTaskStateSequence) {
 		rest.currentTaskId = prevState.currentTaskId
 		rest.currentTaskItem = prevState.currentTaskItem
-		rest.currentTaskTodos = prevState.currentTaskTodos
 		rest.currentView = prevState.currentView
 		rest.activeTaskId = prevState.activeTaskId
 		rest.liveTaskIds = prevState.liveTaskIds
 		rest.liveTasksById = prevState.liveTasksById
 		rest.managedAgentTree = prevState.managedAgentTree
+		rest.taskStateSeq = prevState.taskStateSeq
+	}
+
+	const targetsDifferentTask =
+		newState.currentTaskId !== undefined && newState.currentTaskId !== prevState.currentTaskId
+	const rejectScopedDomains = targetsDifferentTask && (taskStateIsStale || patchHasNoTaskStateSequence)
+	if (rejectScopedDomains || isStale(incomingQueueSeq, previousQueueSeq)) {
 		rest.messageQueue = prevState.messageQueue
-		rest.clineMessagesSeq = prevState.clineMessagesSeq
+		rest.messageQueueSeq = prevState.messageQueueSeq
+	}
+	if (rejectScopedDomains || isStale(incomingTodosSeq, previousTodosSeq)) {
+		rest.currentTaskTodos = prevState.currentTaskTodos
+		rest.currentTaskTodosSeq = prevState.currentTaskTodosSeq
 	}
 
 	// Note that we completely replace the previous apiConfiguration and customSupportPrompts objects
@@ -294,7 +323,12 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const [includeTaskHistoryInEnhance, setIncludeTaskHistoryInEnhance] = useState(true)
 	const [includeCurrentTime, setIncludeCurrentTime] = useState(true)
 	const [includeCurrentCost, setIncludeCurrentCost] = useState(true)
-	const pendingMessageUpdatesRef = useRef(new Map<string, { taskId?: string; clineMessage: ClineMessage }>())
+	type IncrementalMessage = {
+		taskId?: string
+		clineMessage: ClineMessage
+		clineMessagesSeq?: number
+	}
+	const pendingMessageUpdatesRef = useRef(new Map<string, IncrementalMessage>())
 	const messageUpdateFrameRef = useRef<number | undefined>(undefined)
 
 	const setListApiConfigMeta = useCallback(
@@ -312,15 +346,19 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		}))
 	}, [])
 
-	const applyMessageUpdates = useCallback((updates: Array<{ taskId?: string; clineMessage: ClineMessage }>) => {
+	const applyMessageUpdates = useCallback((updates: IncrementalMessage[]) => {
 		if (updates.length === 0) return
 
 		setState((prevState) => {
 			let nextMessages = prevState.clineMessages
+			let nextSequence = prevState.clineMessagesSeq
 			let didChange = false
 
-			for (const { taskId, clineMessage } of updates) {
+			for (const { taskId, clineMessage, clineMessagesSeq } of updates) {
 				if (taskId && taskId !== prevState.currentTaskId) continue
+				if (clineMessagesSeq !== undefined && nextSequence !== undefined && clineMessagesSeq <= nextSequence) {
+					continue
+				}
 
 				const index = findLastIndex(nextMessages, (msg) => msg.ts === clineMessage.ts)
 				if (index === -1) {
@@ -336,10 +374,50 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					didChange = true
 				}
 				nextMessages[index] = clineMessage
+				if (clineMessagesSeq !== undefined) nextSequence = clineMessagesSeq
 			}
 
-			return didChange ? { ...prevState, clineMessages: nextMessages } : prevState
+			return didChange ? { ...prevState, clineMessages: nextMessages, clineMessagesSeq: nextSequence } : prevState
 		})
+	}, [])
+
+	const applyMessageCreation = useCallback(({ taskId, clineMessage, clineMessagesSeq }: IncrementalMessage) => {
+		setState((prevState) => {
+			if (taskId && taskId !== prevState.currentTaskId) return prevState
+			if (
+				clineMessagesSeq !== undefined &&
+				prevState.clineMessagesSeq !== undefined &&
+				clineMessagesSeq <= prevState.clineMessagesSeq
+			) {
+				return prevState
+			}
+
+			const existingIndex = findLastIndex(prevState.clineMessages, (message) => message.ts === clineMessage.ts)
+			const clineMessages = [...prevState.clineMessages]
+			if (existingIndex === -1) {
+				clineMessages.push(clineMessage)
+			} else {
+				clineMessages[existingIndex] = clineMessage
+			}
+
+			return {
+				...prevState,
+				clineMessages,
+				clineMessagesSeq: clineMessagesSeq ?? prevState.clineMessagesSeq,
+			}
+		})
+	}, [])
+
+	const takePendingMessageUpdates = useCallback(() => {
+		const updates = Array.from(pendingMessageUpdatesRef.current.values())
+		pendingMessageUpdatesRef.current.clear()
+		// Replacing a Map value retains its original insertion position. Sort by the
+		// latest wire sequence so interleaved updates for multiple messages all apply.
+		updates.sort((left, right) => {
+			if (left.clineMessagesSeq === undefined || right.clineMessagesSeq === undefined) return 0
+			return left.clineMessagesSeq - right.clineMessagesSeq
+		})
+		return updates
 	}, [])
 
 	const flushPendingMessageUpdates = useCallback(() => {
@@ -348,25 +426,21 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 			messageUpdateFrameRef.current = undefined
 		}
 
-		const updates = Array.from(pendingMessageUpdatesRef.current.values())
-		pendingMessageUpdatesRef.current.clear()
-		applyMessageUpdates(updates)
-	}, [applyMessageUpdates])
+		applyMessageUpdates(takePendingMessageUpdates())
+	}, [applyMessageUpdates, takePendingMessageUpdates])
 
 	const queuePartialMessageUpdate = useCallback(
-		(taskId: string | undefined, clineMessage: ClineMessage) => {
+		(taskId: string | undefined, clineMessage: ClineMessage, clineMessagesSeq?: number) => {
 			const key = `${taskId ?? ""}:${clineMessage.ts}`
-			pendingMessageUpdatesRef.current.set(key, { taskId, clineMessage })
+			pendingMessageUpdatesRef.current.set(key, { taskId, clineMessage, clineMessagesSeq })
 
 			if (messageUpdateFrameRef.current !== undefined) return
 			messageUpdateFrameRef.current = requestAnimationFrame(() => {
 				messageUpdateFrameRef.current = undefined
-				const updates = Array.from(pendingMessageUpdatesRef.current.values())
-				pendingMessageUpdatesRef.current.clear()
-				applyMessageUpdates(updates)
+				applyMessageUpdates(takePendingMessageUpdates())
 			})
 		},
-		[applyMessageUpdates],
+		[applyMessageUpdates, takePendingMessageUpdates],
 	)
 
 	const handleMessage = useCallback(
@@ -445,13 +519,25 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					const key = `${message.taskId ?? ""}:${clineMessage.ts}`
 
 					if (clineMessage.partial) {
-						queuePartialMessageUpdate(message.taskId, clineMessage)
+						queuePartialMessageUpdate(message.taskId, clineMessage, message.clineMessagesSeq)
 					} else {
 						// A terminal update supersedes any partial for the same message and is
 						// applied immediately so completion controls never lag behind the stream.
+						flushPendingMessageUpdates()
 						pendingMessageUpdatesRef.current.delete(key)
-						applyMessageUpdates([{ taskId: message.taskId, clineMessage }])
+						applyMessageUpdates([
+							{ taskId: message.taskId, clineMessage, clineMessagesSeq: message.clineMessagesSeq },
+						])
 					}
+					break
+				}
+				case "messageCreated": {
+					flushPendingMessageUpdates()
+					applyMessageCreation({
+						taskId: message.taskId,
+						clineMessage: message.clineMessage!,
+						clineMessagesSeq: message.clineMessagesSeq,
+					})
 					break
 				}
 				case "skills": {
@@ -539,7 +625,13 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 				}
 			}
 		},
-		[applyMessageUpdates, flushPendingMessageUpdates, queuePartialMessageUpdate, setListApiConfigMeta],
+		[
+			applyMessageCreation,
+			applyMessageUpdates,
+			flushPendingMessageUpdates,
+			queuePartialMessageUpdate,
+			setListApiConfigMeta,
+		],
 	)
 
 	useEffect(() => {
