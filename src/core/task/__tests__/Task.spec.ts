@@ -392,6 +392,28 @@ describe("Alpha", () => {
 			expect(cline.consecutiveMistakeLimit).toBe(5)
 		})
 
+		it("retains the concrete tool failure behind mistake-limit recovery", () => {
+			const cline = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+
+			cline.recordToolError("attempt_completion", "Completion still needs verification")
+			cline.consecutiveMistakeLimit = 1
+
+			expect(cline.didToolFailInCurrentTurn).toBe(true)
+			const guidance = (cline as any).getMistakeLimitGuidance()
+			expect(guidance).toContain(
+				"Most recent tool failure: attempt_completion — Completion still needs verification",
+			)
+			expect(guidance).toContain("The previous completion call failed. Do not repeat it unchanged")
+			expect(guidance).toContain(
+				"This provider profile's Error & Repetition Limit is 1, so a single failed tool call opens this dialog.",
+			)
+		})
+
 		it("retains the original root identity across a nested task chain", () => {
 			const root = new Task({
 				provider: mockProvider,
@@ -427,6 +449,39 @@ describe("Alpha", () => {
 			expect(() => {
 				new Task({ provider: mockProvider, apiConfiguration: mockApiConfig })
 			}).toThrow("Either historyItem or task/images must be provided")
+		})
+
+		it("does not wait for MCP initialization when counting startup tools", async () => {
+			const cline = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			const fullState = vi.spyOn(mockProvider, "getState").mockImplementation(() => new Promise<never>(() => {}))
+			vi.spyOn(mockProvider, "getValue").mockReturnValue(true)
+			vi.spyOn(mockProvider, "getMcpHub").mockReturnValue(undefined)
+
+			await expect((cline as any).getEnabledMcpToolsCount()).resolves.toEqual({
+				enabledToolCount: 0,
+				enabledServerCount: 0,
+			})
+			expect(fullState).not.toHaveBeenCalled()
+		})
+
+		it("publishes the initial user message through the lightweight task snapshot", async () => {
+			const cline = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			mockProvider.postTaskStateToWebview = vi.fn().mockResolvedValue(undefined)
+
+			await (cline as any).addToClineMessages({ ts: 1, type: "say", say: "text", text: "test task" }, "task")
+
+			expect(mockProvider.postTaskStateToWebview).toHaveBeenCalledTimes(1)
+			expect(mockProvider.postStateToWebviewWithoutTaskHistory).not.toHaveBeenCalled()
 		})
 	})
 
@@ -1851,6 +1906,26 @@ describe("Alpha", () => {
 				expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
 			})
 
+			it("treats explicit user feedback as recovery guidance", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "initial task",
+					startTask: false,
+				})
+				task.consecutiveMistakeCount = 1
+				task.consecutiveNoToolUseCount = 2
+				task.consecutiveNoAssistantMessagesCount = 1
+				;(task as any).automaticMistakeRecoveryCount = 1
+
+				await task.submitUserMessage("Did we finish?")
+
+				expect(task.consecutiveMistakeCount).toBe(0)
+				expect(task.consecutiveNoToolUseCount).toBe(0)
+				expect(task.consecutiveNoAssistantMessagesCount).toBe(0)
+				expect((task as any).automaticMistakeRecoveryCount).toBe(0)
+			})
+
 			it("should handle empty messages gracefully", async () => {
 				const task = new Task({
 					provider: mockProvider,
@@ -2048,6 +2123,10 @@ describe("Alpha", () => {
 
 			task.isStreaming = true
 			task.currentRequestAbortController = abortController
+			task.consecutiveMistakeCount = 1
+			task.consecutiveNoToolUseCount = 2
+			task.consecutiveNoAssistantMessagesCount = 1
+			;(task as any).automaticMistakeRecoveryCount = 1
 
 			await task.steerUserMessage("interrupt with this", ["image1.png"])
 
@@ -2058,6 +2137,10 @@ describe("Alpha", () => {
 				text: "interrupt with this",
 				images: ["image1.png"],
 			})
+			expect(task.consecutiveMistakeCount).toBe(0)
+			expect(task.consecutiveNoToolUseCount).toBe(0)
+			expect(task.consecutiveNoAssistantMessagesCount).toBe(0)
+			expect((task as any).automaticMistakeRecoveryCount).toBe(0)
 		})
 
 		it("retains steered content when the task loop is active before streaming starts", async () => {
@@ -2555,6 +2638,10 @@ describe("Alpha", () => {
 
 		it("ends a primary turn on a visible assistant response without synthesizing recovery input", async () => {
 			const task = createTask()
+			task.consecutiveMistakeCount = 1
+			task.consecutiveNoToolUseCount = 2
+			task.consecutiveNoAssistantMessagesCount = 1
+			;(task as any).automaticMistakeRecoveryCount = 1
 			const requestStep = vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
 				task.assistantMessageContent = [{ type: "text", content: "The requested explanation.", partial: false }]
 				return false
@@ -2564,6 +2651,10 @@ describe("Alpha", () => {
 
 			expect(requestStep).toHaveBeenCalledOnce()
 			expect(task.userMessageContent).toEqual([])
+			expect(task.consecutiveMistakeCount).toBe(0)
+			expect(task.consecutiveNoToolUseCount).toBe(0)
+			expect(task.consecutiveNoAssistantMessagesCount).toBe(0)
+			expect((task as any).automaticMistakeRecoveryCount).toBe(0)
 		})
 
 		it("does not discard pending user continuation after a no-tool response", async () => {
@@ -2890,15 +2981,49 @@ describe("Queued message processing after condense", () => {
 		// Make condense fast + deterministic
 		vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("system")
 		const submitSpy = vi.spyOn(task, "submitUserMessage").mockResolvedValue(undefined)
+		task.consecutiveMistakeCount = 1
+		task.consecutiveNoToolUseCount = 2
+		task.consecutiveNoAssistantMessagesCount = 1
+		;(task as any).automaticMistakeRecoveryCount = 1
 
 		// Queue a message during condensing
 		task.messageQueueService.addMessage("queued text", ["img1.png"])
+		expect(task.consecutiveMistakeCount).toBe(0)
+		expect(task.consecutiveNoToolUseCount).toBe(0)
+		expect(task.consecutiveNoAssistantMessagesCount).toBe(0)
+		expect((task as any).automaticMistakeRecoveryCount).toBe(0)
 
 		await task.condenseContext()
 
 		expect(submitSpy).not.toHaveBeenCalled()
 		expect(task.messageQueueService.isEmpty()).toBe(false)
 		expect(task.messageQueueService.messages[0]?.text).toBe("queued text")
+	})
+
+	it("uses queued user guidance instead of reopening the mistake-limit dialog", async () => {
+		const provider = createProvider()
+		const task = new Task({
+			provider,
+			apiConfiguration: apiConfig,
+			task: "initial task",
+			startTask: false,
+		})
+		const feedback = vi.spyOn(task, "say").mockResolvedValue(undefined)
+		task.consecutiveMistakeLimit = 1
+		task.messageQueueService.addMessage("Did we finish?")
+		// Simulate the in-flight model turn failing after the message was queued.
+		task.consecutiveMistakeCount = 1
+		const userContent: Anthropic.Messages.ContentBlockParam[] = []
+
+		await (task as any).handleConsecutiveMistakeLimit(userContent)
+
+		expect(feedback).toHaveBeenCalledWith("user_feedback", "Did we finish?", undefined)
+		expect(task.messageQueueService.isEmpty()).toBe(true)
+		expect(userContent).toContainEqual({
+			type: "text",
+			text: "<user_message>\nDid we finish?\n</user_message>",
+		})
+		expect(task.consecutiveMistakeCount).toBe(0)
 	})
 
 	it("does not cross-drain queues between separate tasks", async () => {

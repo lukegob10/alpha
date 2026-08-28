@@ -49,9 +49,11 @@ describe("Single-open-task invariant", () => {
 				enableCheckpoints: true,
 				checkpointTimeout: 60,
 			}),
+			getProviderSettingsSnapshot: vi.fn(() => ({ apiProvider: "anthropic", consecutiveMistakeLimit: 0 })),
 			removeClineFromStack,
 			updateGlobalState: vi.fn().mockResolvedValue(undefined),
 			addClineToStack,
+			postTaskStateToWebview: vi.fn().mockResolvedValue(undefined),
 			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
 			setProviderProfile: vi.fn(),
 			log: vi.fn(),
@@ -61,6 +63,11 @@ describe("Single-open-task invariant", () => {
 			taskCreationCallback: vi.fn(),
 			contextProxy: {
 				extensionUri: {},
+				getValues: vi.fn(() => ({
+					enableCheckpoints: true,
+					checkpointTimeout: 60,
+					experiments: {},
+				})),
 				setValue: vi.fn(),
 				getValue: vi.fn(),
 				setProviderSettings: vi.fn(),
@@ -90,9 +97,11 @@ describe("Single-open-task invariant", () => {
 				enableCheckpoints: true,
 				checkpointTimeout: 60,
 			}),
+			getProviderSettingsSnapshot: vi.fn(() => ({ apiProvider: "anthropic", consecutiveMistakeLimit: 0 })),
 			removeClineFromStack,
 			updateGlobalState: vi.fn().mockResolvedValue(undefined),
 			addClineToStack,
+			postTaskStateToWebview: vi.fn().mockResolvedValue(undefined),
 			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
 			setProviderProfile: vi.fn(),
 			log: vi.fn(),
@@ -101,6 +110,11 @@ describe("Single-open-task invariant", () => {
 			taskCreationCallback: vi.fn(),
 			contextProxy: {
 				extensionUri: {},
+				getValues: vi.fn(() => ({
+					enableCheckpoints: true,
+					checkpointTimeout: 60,
+					experiments: {},
+				})),
 				setValue: vi.fn(),
 				getValue: vi.fn(),
 				setProviderSettings: vi.fn(),
@@ -130,6 +144,7 @@ describe("Single-open-task invariant", () => {
 				enableCheckpoints: true,
 				checkpointTimeout: 60,
 			}),
+			getProviderSettingsSnapshot: vi.fn(() => ({ apiProvider: "anthropic", consecutiveMistakeLimit: 0 })),
 			removeClineFromStack: vi.fn(),
 			addClineToStack,
 			setProviderProfile: vi.fn(),
@@ -139,6 +154,11 @@ describe("Single-open-task invariant", () => {
 			taskCreationCallback: vi.fn(),
 			contextProxy: {
 				extensionUri: {},
+				getValues: vi.fn(() => ({
+					enableCheckpoints: true,
+					checkpointTimeout: 60,
+					experiments: {},
+				})),
 				setValue: vi.fn(),
 				getValue: vi.fn(),
 				setProviderSettings: vi.fn(),
@@ -157,16 +177,19 @@ describe("Single-open-task invariant", () => {
 	it("Extension blank task intent: backgrounds current task and resets chat UI", async () => {
 		const activeTask = { taskId: "existing-1", emit: vi.fn() }
 		const clearFocus = vi.fn()
-		const resetNewTaskDraftMode = vi.fn().mockResolvedValue(undefined)
-		const postStateToWebview = vi.fn().mockResolvedValue(undefined)
+		const resetNewTaskDraftMode = vi.fn()
+		const postTaskStateToWebview = vi.fn().mockResolvedValue(undefined)
+		const postStateToWebview = vi.fn(() => new Promise<void>(() => {}))
 		const postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 
 		const provider = {
 			getActiveTask: vi.fn(() => activeTask),
 			taskSessions: { clearFocus },
 			resetNewTaskDraftMode,
+			postTaskStateToWebview,
 			postStateToWebview,
 			postMessageToWebview,
+			log: vi.fn(),
 		} as unknown as ClineProvider
 
 		await (ClineProvider.prototype as any).startBlankTask.call(provider)
@@ -174,6 +197,7 @@ describe("Single-open-task invariant", () => {
 		expect(clearFocus).toHaveBeenCalledTimes(1)
 		expect(resetNewTaskDraftMode).toHaveBeenCalledTimes(1)
 		expect(activeTask.emit).toHaveBeenCalledWith("taskUnfocused")
+		expect(postTaskStateToWebview).toHaveBeenCalledWith({ clearManagedAgentTree: true })
 		expect(postStateToWebview).toHaveBeenCalledTimes(1)
 		expect(postMessageToWebview).toHaveBeenCalledWith({
 			type: "action",

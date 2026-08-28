@@ -6,14 +6,14 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.3 Preview
+## Welcome to Alpha v2.1.4 Preview
 
-Alpha v2.1.3 focuses everyday agent work on a clean Plan and Code workflow without changing the proven Code loop.
+Alpha v2.1.4 makes starting and finishing tasks more responsive and reliable, especially in managed corporate environments.
 
-- Plan and Code are the only ordinary user-facing mode choices
-- `Shift+Tab` switches modes while the chat composer is focused
-- Code and Plan stay in the same task and provider configuration
-- Existing legacy and custom-mode tasks remain compatible without cluttering new work
+- New tasks transition into the active task immediately without waiting for unrelated state, MCP, or credential-store work
+- MCP availability is reused opportunistically and never blocks the first model request
+- Completion feedback and queued guidance clear stale recovery state and reach the model reliably
+- Recovery diagnostics identify the failed tool and error instead of showing only generic guidance
 
 <details>
   <summary>🌐 Available languages</summary>

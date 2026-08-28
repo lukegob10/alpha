@@ -94,7 +94,6 @@ import { getModelMaxOutputTokens } from "../../shared/api"
 
 // services
 import { McpHub } from "../../services/mcp/McpHub"
-import { McpServerManager } from "../../services/mcp/McpServerManager"
 import { RepoPerTaskCheckpointService } from "../../services/checkpoints"
 
 // integrations
@@ -582,6 +581,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	consecutiveNoToolUseCount: number = 0
 	consecutiveNoAssistantMessagesCount: number = 0
 	private automaticMistakeRecoveryCount: number = 0
+	private lastToolFailure?: { toolName: ToolName; error?: string }
 	toolUsage: ToolUsage = {}
 
 	// Checkpoints
@@ -1009,7 +1009,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		this.messageQueueService = new MessageQueueService()
 
+		let queuedMessageCount = 0
 		this.messageQueueStateChangedHandler = () => {
+			const currentMessageCount = this.messageQueueService.messages.length
+			if (currentMessageCount > queuedMessageCount) {
+				// A new user-authored instruction breaks a sequence of model mistakes.
+				// Do not let a stale error pre-empt the queued guidance with the
+				// mistake-limit dialog before the model can act on it.
+				this.resetMistakeRecoveryState()
+			}
+			queuedMessageCount = currentMessageCount
 			this.emit(RooCodeEventName.TaskUserMessage, this.taskId)
 			this.emit(RooCodeEventName.QueuedMessagesUpdated, this.taskId, this.messageQueueService.messages)
 			this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
@@ -1668,12 +1677,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return readTaskMessages({ taskId: this.taskId, globalStoragePath: this.globalStoragePath })
 	}
 
-	private async addToClineMessages(message: ClineMessage) {
+	private async addToClineMessages(message: ClineMessage, stateUpdate: "full" | "task" = "full") {
 		this.clineMessages.push(message)
 		const provider = this.providerRef.deref()
-		// Avoid resending large, mostly-static fields (notably taskHistory) on every chat message update.
-		// taskHistory is maintained in-memory in the webview and updated via taskHistoryItemUpdated.
-		await provider?.postStateToWebviewWithoutTaskHistory()
+		if (stateUpdate === "task") {
+			await provider?.postTaskStateToWebview()
+		} else {
+			// Avoid resending large, mostly-static fields (notably taskHistory) on every chat message update.
+			// taskHistory is maintained in-memory in the webview and updated via taskHistoryItemUpdated.
+			await provider?.postStateToWebviewWithoutTaskHistory()
+		}
 		this.emit(RooCodeEventName.Message, { action: "created", message })
 		await this.saveClineMessages()
 	}
@@ -1833,6 +1846,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			)
 		}
 
+		const lastToolFailure = this.getLastToolFailureGuidance()
+		if (lastToolFailure) {
+			details.push(lastToolFailure)
+		}
+		if (this.lastToolFailure?.toolName === "attempt_completion") {
+			details.push(
+				"The previous completion call failed. Do not repeat it unchanged; resolve its reported blocker or correct its arguments before retrying once.",
+			)
+		}
+		if (this.consecutiveMistakeLimit === 1) {
+			details.push(
+				"This provider profile's Error & Repetition Limit is 1, so a single failed tool call opens this dialog.",
+			)
+		}
+
 		details.push(
 			"Recovery guidance: continue with one concrete next action. Use a tool if work remains, use attempt_completion if the task is finished, and use ask_followup_question only when a specific missing input blocks progress.",
 			"If delegating, call new_task by itself in its own assistant turn. Do not batch new_task with any other tool.",
@@ -1859,6 +1887,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			)
 		}
 
+		const lastToolFailure = this.getLastToolFailureGuidance()
+		if (lastToolFailure) {
+			details.push(lastToolFailure)
+		}
+		if (this.lastToolFailure?.toolName === "attempt_completion") {
+			details.push(
+				"The previous completion call failed. Do not repeat it unchanged; resolve its reported blocker or correct its arguments before retrying once.",
+			)
+		}
+		if (this.consecutiveMistakeLimit === 1) {
+			details.push(
+				"This provider profile's Error & Repetition Limit is 1, so a single failed tool call opens this dialog.",
+			)
+		}
+
 		details.push(
 			"Use exactly one concrete next action now: call one valid tool with complete arguments if work remains, call attempt_completion if finished, or call ask_followup_question only when a specific missing input blocks progress.",
 			"If the requested work includes workspace changes and inspection is sufficient, call an edit or other mutation tool now. More reads, searches, todo updates, or status narration do not apply the change.",
@@ -1866,6 +1909,26 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		)
 
 		return details.join("\n")
+	}
+
+	private getLastToolFailureGuidance(): string | undefined {
+		if (!this.lastToolFailure) return undefined
+		const normalizedError = this.lastToolFailure.error?.replace(/\s+/g, " ").trim().slice(0, 500)
+		return normalizedError
+			? `Most recent tool failure: ${this.lastToolFailure.toolName} — ${normalizedError}`
+			: `Most recent tool failure: ${this.lastToolFailure.toolName}.`
+	}
+
+	private resetConsecutiveMistakeState(): void {
+		this.consecutiveMistakeCount = 0
+		this.consecutiveNoToolUseCount = 0
+		this.consecutiveNoAssistantMessagesCount = 0
+	}
+
+	private resetMistakeRecoveryState(): void {
+		this.resetConsecutiveMistakeState()
+		this.automaticMistakeRecoveryCount = 0
+		this.lastToolFailure = undefined
 	}
 
 	private async shouldAutoRecoverFromMistakeLimit(): Promise<boolean> {
@@ -1900,6 +1963,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			),
 		)
 
+		const queuedGuidance = this.messageQueueService.isEmpty()
+			? undefined
+			: this.messageQueueService.dequeueMessage()
+		if (queuedGuidance) {
+			// The user has already supplied the guidance this safeguard would ask
+			// for. Deliver it with the pending tool result instead of interrupting
+			// it with another generic mistake-limit dialog.
+			await this.say("user_feedback", queuedGuidance.text, queuedGuidance.images)
+			currentUserContent.push(...this.buildUserMessageContent(queuedGuidance.text, queuedGuidance.images))
+			this.resetMistakeRecoveryState()
+			return
+		}
+
 		if (
 			this.automaticMistakeRecoveryCount < MAX_AUTOMATIC_MISTAKE_RECOVERIES &&
 			(await this.shouldAutoRecoverFromMistakeLimit())
@@ -1908,7 +1984,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const text = this.getAutomaticMistakeLimitGuidance()
 			currentUserContent.push({ type: "text", text: formatResponse.tooManyMistakes(text) })
 			await this.say("user_feedback", text)
-			this.consecutiveMistakeCount = 0
+			// Keep the bounded automatic-attempt count, but give that attempt a
+			// clean consecutive-error window. Retaining the no-tool counter here
+			// caused one recovery response to immediately reopen the same dialog.
+			this.resetConsecutiveMistakeState()
 			return
 		}
 
@@ -1931,8 +2010,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await this.say("user_feedback", text, images)
 		}
 
-		this.consecutiveMistakeCount = 0
-		this.automaticMistakeRecoveryCount = 0
+		this.resetMistakeRecoveryState()
 	}
 
 	private getOffscreenMistakeLimitGuidance(): string {
@@ -2212,6 +2290,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.askResponseText = text
 		this.askResponseImages = images
 
+		if (askResponse === "messageResponse" && (Boolean(text?.trim()) || Boolean(images?.length))) {
+			// Human guidance is the recovery boundary the mistake dialog asks for.
+			// Clear stale counters before the next request so that guidance reaches
+			// the model instead of being intercepted by another dialog.
+			this.resetMistakeRecoveryState()
+		}
+
 		// Create a checkpoint whenever the user sends a message.
 		// Use allowEmpty=true to ensure a checkpoint is recorded even if there are no file changes.
 		// Suppress the checkpoint_saved chat row for this particular checkpoint to keep the timeline clean.
@@ -2278,6 +2363,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public markCompleted(): void {
 		this.didComplete = true
+		this.resetMistakeRecoveryState()
 		this.cancelAutoApprovalTimeout()
 		this.activeAsk = undefined
 		this.askResponse = undefined
@@ -2993,6 +3079,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		) {
 			throw new Error("A steering message is already pending")
 		}
+
+		this.resetMistakeRecoveryState()
 		const retainForDurableRecovery = () => {
 			this.pendingSteerMessage = { text, images, ...(onPersisted ? { onPersisted } : {}) }
 			this.steerMessageAwaitingPersistence = true
@@ -3172,6 +3260,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		progressStatus?: ToolProgressStatus,
 		options: {
 			isNonInteractive?: boolean
+			stateUpdate?: "full" | "task"
 		} = {},
 		contextCondense?: ContextCondense,
 		contextTruncation?: ContextTruncation,
@@ -3203,16 +3292,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						this.lastMessageTs = sayTs
 					}
 
-					await this.addToClineMessages({
-						ts: sayTs,
-						type: "say",
-						say: type,
-						text,
-						images,
-						partial,
-						contextCondense,
-						contextTruncation,
-					})
+					await this.addToClineMessages(
+						{
+							ts: sayTs,
+							type: "say",
+							say: type,
+							text,
+							images,
+							partial,
+							contextCondense,
+							contextTruncation,
+						},
+						options.stateUpdate,
+					)
 				}
 			} else {
 				// New now have a complete version of a previously partial message.
@@ -3242,15 +3334,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						this.lastMessageTs = sayTs
 					}
 
-					await this.addToClineMessages({
-						ts: sayTs,
-						type: "say",
-						say: type,
-						text,
-						images,
-						contextCondense,
-						contextTruncation,
-					})
+					await this.addToClineMessages(
+						{
+							ts: sayTs,
+							type: "say",
+							say: type,
+							text,
+							images,
+							contextCondense,
+							contextTruncation,
+						},
+						options.stateUpdate,
+					)
 				}
 			}
 		} else {
@@ -3265,16 +3360,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.lastMessageTs = sayTs
 			}
 
-			await this.addToClineMessages({
-				ts: sayTs,
-				type: "say",
-				say: type,
-				text,
-				images,
-				checkpoint,
-				contextCondense,
-				contextTruncation,
-			})
+			await this.addToClineMessages(
+				{
+					ts: sayTs,
+					type: "say",
+					say: type,
+					text,
+					images,
+					checkpoint,
+					contextCondense,
+					contextTruncation,
+				},
+				options.stateUpdate,
+			)
 		}
 	}
 
@@ -3304,12 +3402,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				return { enabledToolCount: 0, enabledServerCount: 0 }
 			}
 
-			const { mcpEnabled } = (await provider.getState()) ?? {}
-			if (!(mcpEnabled ?? true)) {
+			if (!(provider.getValue("mcpEnabled") ?? true)) {
 				return { enabledToolCount: 0, enabledServerCount: 0 }
 			}
 
-			const mcpHub = await McpServerManager.getInstance(provider.context, provider)
+			// MCP initialization belongs to provider activation, not task startup.
+			// Count the servers that are already available without making a new task
+			// wait for configuration reads or connection timeouts.
+			const mcpHub = provider.getMcpHub()
 			if (!mcpHub) {
 				return { enabledToolCount: 0, enabledServerCount: 0 }
 			}
@@ -3362,9 +3462,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// The todo list is already set in the constructor if initialTodos were provided
 			// No need to add any messages - the todoList property is already set
 
-			await this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
-
-			await this.say("text", task, images)
+			await this.say("text", task, images, undefined, undefined, undefined, { stateUpdate: "task" })
 
 			// Internal sub-agents never receive MCP authority, so avoid initializing
 			// or counting foreground MCP servers for their isolated task startup.
@@ -3964,6 +4062,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					input.onUserContentPersisted,
 				)
 				const response = this.buildCurrentAgentResponse()
+				const hasVisiblePrimaryText =
+					this.taskKind === "primary" && response.toolCalls.length === 0 && response.text.trim().length > 0
+				const hasErrorToolResult = this.userMessageContent.some(
+					(block) => block.type === "tool_result" && block.is_error === true,
+				)
+				const hasSuccessfulToolResponse =
+					response.toolCalls.length > 0 &&
+					this.consecutiveMistakeCount === 0 &&
+					!this.didToolFailInCurrentTurn &&
+					!hasErrorToolResult
+
+				if (hasVisiblePrimaryText || hasSuccessfulToolResponse) {
+					this.resetMistakeRecoveryState()
+				} else if (response.text.trim().length > 0 || response.toolCalls.length > 0) {
+					// Even an invalid tool response breaks a run of empty provider replies.
+					this.consecutiveNoAssistantMessagesCount = 0
+				}
 
 				if (didEndLoop || this.abort || this.didComplete) {
 					return { response, nextInput: "complete" }
@@ -4068,6 +4183,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (pendingSteer) {
 					this.pendingSteerMessage = undefined
 					await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
+					// The failed turn may have re-armed the limit after steering was
+					// accepted. Reset again at durable consumption time so this exact
+					// guidance reaches the next model request.
+					this.resetMistakeRecoveryState()
 					stack.push({
 						userContent: [
 							...currentUserContent,
@@ -5481,17 +5600,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				throw new Error("Provider reference lost during view transition")
 			}
 
-			// Wait for MCP hub initialization through McpServerManager
-			mcpHub = await McpServerManager.getInstance(provider.context, provider)
-
-			if (!mcpHub) {
-				throw new Error("Failed to get MCP hub from server manager")
-			}
-
-			// Wait for MCP servers to be connected before generating system prompt
-			await pWaitFor(() => !mcpHub!.isConnecting, { timeout: 10_000 }).catch(() => {
-				console.error("MCP servers failed to connect in time")
-			})
+			// The provider initializes MCP in the background. A task should use the
+			// currently ready hub, if any, but must not wait up to ten seconds for MCP
+			// configuration or connections before its first model request.
+			mcpHub = provider.getMcpHub()
 		}
 
 		const rooIgnoreInstructions = this.rooIgnoreController?.getInstructions()
@@ -6457,6 +6569,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		this.toolUsage[toolName].failures++
+		this.didToolFailInCurrentTurn = true
+		this.lastToolFailure = { toolName, ...(error ? { error } : {}) }
 
 		if (error) {
 			this.emit(RooCodeEventName.TaskToolFailed, this.taskId, toolName, error)

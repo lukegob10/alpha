@@ -601,7 +601,7 @@ describe("ClineProvider - Sticky Mode", () => {
 			expect((task as any).apiConfiguration).toBe(apiConfiguration)
 			expect(await (task as any).getTaskApiConfigName()).toBe("shared-code-plan-profile")
 			expect((await provider.getState()).mode).toBe("code")
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "code")
+			expect(mockContext.globalState.update).not.toHaveBeenCalledWith("mode", "code")
 			expect(getModeConfigIdSpy).not.toHaveBeenCalled()
 			expect(activateProviderProfileSpy).not.toHaveBeenCalled()
 		})

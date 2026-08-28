@@ -21,7 +21,6 @@ import {
 	type TaskProviderLike,
 	type TaskProviderEvents,
 	type GlobalState,
-	type ProviderName,
 	type ProviderSettings,
 	type RooCodeSettings,
 	type ProviderSettingsEntry,
@@ -106,6 +105,7 @@ import { downloadTask, getTaskFileName } from "../../integrations/misc/export-ma
 import { resolveDefaultSaveUri, saveLastExportPath } from "../../utils/export"
 import { getTheme } from "../../integrations/theme/getTheme"
 import WorkspaceTracker from "../../integrations/workspace/WorkspaceTracker"
+import { openAiCodexOAuthManager } from "../../integrations/openai-codex/oauth"
 
 import { McpHub } from "../../services/mcp/McpHub"
 import { McpServerManager } from "../../services/mcp/McpServerManager"
@@ -611,10 +611,11 @@ export class ClineProvider
 		// Perform special setup provider specific tasks.
 		await this.performPreparationTasks(task)
 
-		// Ensure getState() resolves correctly.
-		const state = await this.getState()
+		// The task already owns its frozen mode. Reading the entire provider state
+		// here performs unrelated file I/O on every task launch.
+		const taskMode = (await getTaskModeForSwitch(task)) ?? this.contextProxy.getValue("mode") ?? defaultModeSlug
 
-		if (!state || typeof state.mode !== "string") {
+		if (typeof taskMode !== "string") {
 			throw new Error(t("common:errors.retrieve_current_mode"))
 		}
 	}
@@ -741,7 +742,7 @@ export class ClineProvider
 		}
 
 		if (enteredNewTaskDraft) {
-			await this.resetNewTaskDraftMode()
+			this.resetNewTaskDraftMode()
 		}
 	}
 
@@ -2393,6 +2394,54 @@ export class ClineProvider
 	}
 
 	/**
+	 * Publish only the state needed to switch or update the visible task.
+	 *
+	 * Task submission is latency-sensitive, while getStateToPostToWebview also
+	 * reads configuration files, waits for stores, and assembles large settings
+	 * payloads. Keep that work out of the interaction path and let a sequenced
+	 * full refresh follow in the background.
+	 */
+	async postTaskStateToWebview(options: { clearManagedAgentTree?: boolean } = {}): Promise<void> {
+		const sequence = ++this.clineMessagesSeq
+		const currentTask = this.currentView.type === "task" ? this.getLiveTask(this.currentView.taskId) : undefined
+		let mode =
+			this.currentView.type === "newTaskDraft"
+				? this.newTaskDraftMode
+				: (this.contextProxy.getValue("mode") ?? defaultModeSlug)
+
+		if (currentTask) {
+			try {
+				mode = currentTask.taskMode
+			} catch {
+				// A rehydrating task may not have finished loading its frozen mode yet.
+			}
+		}
+
+		const state: Partial<ExtensionState> = {
+			apiConfiguration: currentTask?.apiConfiguration ?? this.getProviderSettingsSnapshot(),
+			currentApiConfigName:
+				currentTask?.taskApiConfigName ?? this.contextProxy.getValue("currentApiConfigName") ?? "default",
+			mode,
+			currentTaskId: currentTask?.taskId,
+			currentTaskItem: currentTask ? this.taskHistoryStore.get(currentTask.taskId) : undefined,
+			currentTaskTodos: currentTask?.todoList ?? [],
+			currentView: this.currentView,
+			activeTaskId: this.getActiveTaskId(),
+			liveTaskIds: this.getLiveTaskIds(),
+			liveTasksById: this.getLiveTaskMetadata(),
+			clineMessages: currentTask?.clineMessages ?? [],
+			messageQueue: currentTask?.messageQueueService?.messages,
+			clineMessagesSeq: sequence,
+		}
+
+		if (options.clearManagedAgentTree) {
+			state.managedAgentTree = undefined
+		}
+
+		await this.postMessageToWebview({ type: "state", state })
+	}
+
+	/**
 	 * Like postStateToWebview but intentionally omits taskHistory.
 	 *
 	 * Rationale:
@@ -2980,14 +3029,10 @@ export class ClineProvider
 			openRouterImageApiKey,
 			githubToken,
 			openRouterImageGenerationSelectedModel,
-			openAiCodexIsAuthenticated: await (async () => {
-				try {
-					const { openAiCodexOAuthManager } = await import("../../integrations/openai-codex/oauth")
-					return await openAiCodexOAuthManager.isAuthenticated()
-				} catch {
-					return false
-				}
-			})(),
+			// Rendering generic extension state must never refresh an OAuth token.
+			// Secret loading is warmed during activation and actual token validation
+			// remains on OpenAI Codex request paths.
+			openAiCodexIsAuthenticated: openAiCodexOAuthManager.hasStoredCredentials(),
 			debug: vscode.workspace.getConfiguration(Package.name).get<boolean>("debug", false),
 		}
 	}
@@ -2998,6 +3043,20 @@ export class ClineProvider
 	 * https://www.eliostruyf.com/devhack-code-extension-storage-options/
 	 */
 
+	private getProviderSettingsSnapshot(): ProviderSettings {
+		const stateValues = this.contextProxy.getValues()
+		const providerSettings = this.contextProxy.getProviderSettings()
+
+		if (!providerSettings.apiProvider) {
+			providerSettings.apiProvider =
+				stateValues.apiProvider && !isRetiredProvider(stateValues.apiProvider)
+					? stateValues.apiProvider
+					: "anthropic"
+		}
+
+		return providerSettings
+	}
+
 	async getState(): Promise<
 		Omit<
 			ExtensionState,
@@ -3007,14 +3066,8 @@ export class ClineProvider
 		const stateValues = this.contextProxy.getValues()
 		const customModes = await this.customModesManager.getCustomModes()
 
-		// Determine apiProvider with the same logic as before, while filtering retired providers.
-		const apiProvider: ProviderName =
-			stateValues.apiProvider && !isRetiredProvider(stateValues.apiProvider)
-				? stateValues.apiProvider
-				: "anthropic"
-
 		// Build the apiConfiguration object combining state values and secrets.
-		const providerSettings = this.contextProxy.getProviderSettings()
+		const providerSettings = this.getProviderSettingsSnapshot()
 		const orchestrationSettings = resolveSubagentOrchestrationSettings({
 			maxConcurrentSubagents: stateValues.maxConcurrentSubagents,
 			subagentDelegationPolicy: stateValues.subagentDelegationPolicy,
@@ -3025,11 +3078,6 @@ export class ClineProvider
 			subagentRootTokenBudget: stateValues.subagentRootTokenBudget,
 			subagentRootCostBudget: stateValues.subagentRootCostBudget,
 		})
-
-		// Ensure apiProvider is set properly if not already in state
-		if (!providerSettings.apiProvider) {
-			providerSettings.apiProvider = apiProvider
-		}
 
 		// Return the same structure as before.
 		return {
@@ -3573,23 +3621,25 @@ export class ClineProvider
 		return true
 	}
 
-	private async resetNewTaskDraftMode(): Promise<void> {
+	private resetNewTaskDraftMode(): void {
 		this.newTaskDraftMode = defaultModeSlug
-		await this.updateGlobalState("mode", defaultModeSlug)
 	}
 
 	public async startBlankTask(): Promise<void> {
 		const previous = this.getActiveTask()
 		this.taskSessions.clearFocus()
 		this.currentView = { type: "newTaskDraft" }
-		await this.resetNewTaskDraftMode()
+		this.resetNewTaskDraftMode()
 		previous?.emit(RooCodeEventName.TaskUnfocused)
 		await this.postMessageToWebview({
 			type: "action",
 			action: "chatButtonClicked",
 			values: { force: true },
 		})
-		await this.postStateToWebview()
+		await this.postTaskStateToWebview({ clearManagedAgentTree: true })
+		void this.postStateToWebview().catch((error) => {
+			this.log(`[startBlankTask] Background state refresh failed: ${String(error)}`)
+		})
 		await this.postMessageToWebview({ type: "invoke", invoke: "newChat" })
 	}
 
@@ -3654,8 +3704,9 @@ export class ClineProvider
 		const topLevelTaskMode = !parentTask
 			? (options.taskMode ?? configuration.mode ?? this.newTaskDraftMode)
 			: options.taskMode
+		const hasConfigurationOverrides = Object.keys(configuration).length > 0
 
-		if (configuration) {
+		if (hasConfigurationOverrides) {
 			const sanitizedConfiguration = {
 				...configuration,
 				...(configuration.allowedCommands !== undefined
@@ -3693,14 +3744,22 @@ export class ClineProvider
 			}
 		}
 
-		const {
-			apiConfiguration: currentApiConfiguration,
-			currentApiConfigName,
-			enableCheckpoints,
-			checkpointTimeout,
-			experiments,
-			subagentDelegationPolicy: currentSubagentDelegationPolicy,
-		} = await this.getState()
+		const stateValues = this.contextProxy.getValues()
+		const currentApiConfiguration = this.getProviderSettingsSnapshot()
+		const currentApiConfigName = stateValues.currentApiConfigName ?? "default"
+		const enableCheckpoints = stateValues.enableCheckpoints ?? true
+		const checkpointTimeout = stateValues.checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS
+		const experiments = stateValues.experiments ?? experimentDefault
+		const currentSubagentDelegationPolicy = resolveSubagentOrchestrationSettings({
+			maxConcurrentSubagents: stateValues.maxConcurrentSubagents,
+			subagentDelegationPolicy: stateValues.subagentDelegationPolicy,
+			subagentMaxDepth: stateValues.subagentMaxDepth,
+			subagentRoleTimeoutsMs: stateValues.subagentRoleTimeoutsMs,
+			subagentMaxInputTokens: stateValues.subagentMaxInputTokens,
+			subagentMaxOutputTokens: stateValues.subagentMaxOutputTokens,
+			subagentRootTokenBudget: stateValues.subagentRootTokenBudget,
+			subagentRootCostBudget: stateValues.subagentRootCostBudget,
+		}).delegationPolicy
 		const apiConfiguration = options.apiConfiguration ?? currentApiConfiguration
 		const taskApiConfigName = options.taskApiConfigName ?? currentApiConfigName ?? "default"
 
@@ -3770,15 +3829,24 @@ export class ClineProvider
 			await task.persistFrozenSubagentInstructions()
 		}
 
-		if (!parentTask && !background) {
-			await this.updateGlobalState("mode", topLevelTaskMode ?? defaultModeSlug)
-		}
+		const modePersistence =
+			!parentTask && !background
+				? this.updateGlobalState("mode", topLevelTaskMode ?? defaultModeSlug).catch((error) => {
+						this.log(`[createTask] Failed to persist task mode: ${String(error)}`)
+					})
+				: Promise.resolve()
 
 		await this.addClineToStack(task, { focus: !background })
-		await this.postStateToWebviewWithoutTaskHistory()
+		await this.postTaskStateToWebview({ clearManagedAgentTree: !background })
+		if (hasConfigurationOverrides) {
+			void this.postStateToWebviewWithoutTaskHistory().catch((error) => {
+				this.log(`[createTask] Background state refresh failed: ${String(error)}`)
+			})
+		}
 		if (options.startTask !== false) {
 			task.start()
 		}
+		await modePersistence
 
 		this.log(
 			`[createTask] ${task.parentTask ? "child" : "parent"} task ${task.taskId}.${task.instanceId} instantiated`,

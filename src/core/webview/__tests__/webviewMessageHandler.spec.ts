@@ -9,6 +9,7 @@ vi.mock("../../../integrations/openai-codex/oauth", () => ({
 	openAiCodexOAuthManager: {
 		getAccessToken: vi.fn(),
 		getAccountId: vi.fn(),
+		hasStoredCredentials: vi.fn(() => false),
 	},
 }))
 

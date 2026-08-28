@@ -66,13 +66,13 @@ jobs:
                   $notes = @"
                   Preview VSIX build from main-v2. This is not published to the VS Code Marketplace.
 
-                  Alpha v$version focuses everyday agent work on a clean Plan and Code workflow without changing the proven Code loop.
+                  Alpha v$version makes starting and finishing tasks more responsive and reliable, especially in managed corporate environments.
 
                   Highlights:
-                  - Plan and Code are the only ordinary user-facing mode choices
-                  - Shift+Tab switches modes while the chat composer is focused
-                  - Code and Plan stay in the same task and provider configuration
-                  - Existing legacy and custom-mode tasks remain compatible without cluttering new work
+                  - New tasks open and start without waiting for unrelated full-state, MCP, or credential-store work
+                  - The first model request uses any currently ready MCP state without waiting for connection timeouts
+                  - Completion feedback and queued guidance are no longer intercepted by stale recovery state
+                  - Recovery diagnostics identify the failed tool and bounded error details
 
                   Commit: ${{ github.sha }}
 

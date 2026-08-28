@@ -54,9 +54,24 @@ describe("ClineProvider.createTask start control", () => {
 				checkpointTimeout: 60,
 				experiments: {},
 			})),
+			getProviderSettingsSnapshot: vi.fn(() => ({
+				apiProvider: "openai-native",
+				apiModelId: "gpt-4.1",
+				consecutiveMistakeLimit: 3,
+			})),
+			contextProxy: {
+				getValues: vi.fn(() => ({
+					currentApiConfigName: "default",
+					enableCheckpoints: false,
+					checkpointTimeout: 60,
+					experiments: {},
+				})),
+				getValue: vi.fn(),
+			},
 			removeClineFromStack: vi.fn(),
 			updateGlobalState: vi.fn(async () => undefined),
 			addClineToStack: vi.fn(async () => undefined),
+			postTaskStateToWebview: vi.fn(async () => undefined),
 			postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined),
 			log: vi.fn(),
 		}) as unknown as ClineProvider
@@ -81,5 +96,31 @@ describe("ClineProvider.createTask start control", () => {
 		expect(taskMocks.instances).toHaveLength(1)
 		expect(taskMocks.start).toHaveBeenCalledTimes(1)
 		expect((provider as any).updateGlobalState).toHaveBeenCalledWith("mode", "code")
+	})
+
+	it("publishes and starts before slow mode persistence finishes", async () => {
+		let finishPersistence!: () => void
+		const provider = createProvider()
+		;(provider as any).updateGlobalState = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					finishPersistence = resolve
+				}),
+		)
+
+		let creationSettled = false
+		const creation = ClineProvider.prototype.createTask.call(provider, "Normal work").then((task) => {
+			creationSettled = true
+			return task
+		})
+
+		await vi.waitFor(() => {
+			expect((provider as any).postTaskStateToWebview).toHaveBeenCalledTimes(1)
+			expect(taskMocks.start).toHaveBeenCalledTimes(1)
+		})
+		expect(creationSettled).toBe(false)
+
+		finishPersistence()
+		await creation
 	})
 })

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.4
+
+### Patch Changes
+
+- Remove slow full-state, MCP connection, and credential-store work from the new-task submission path so a submitted task opens and starts promptly in managed corporate environments.
+- Prevent stale mistake-recovery state from intercepting completion feedback, queued guidance, or otherwise productive turns, and include the failed tool and bounded error details in future recovery guidance.
+
 ## 2.1.3
 
 ### Patch Changes

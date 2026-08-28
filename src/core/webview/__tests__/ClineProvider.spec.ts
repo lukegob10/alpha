@@ -19,6 +19,7 @@ import { setTtsEnabled } from "../../../utils/tts"
 import { ContextProxy } from "../../config/ContextProxy"
 import { Task, TaskOptions } from "../../task/Task"
 import { safeWriteJson } from "../../../utils/safeWriteJson"
+import { openAiCodexOAuthManager } from "../../../integrations/openai-codex/oauth"
 
 import { ClineProvider } from "../ClineProvider"
 import { MessageManager } from "../../message-manager"
@@ -670,6 +671,25 @@ describe("ClineProvider", () => {
 		expect(mockPostMessage.mock.calls[1][0].state.clineMessagesSeq).toBe(1)
 	})
 
+	test("publishes a task transition without building full extension state", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		mockPostMessage.mockClear()
+		const getFullState = vi.spyOn(provider, "getStateToPostToWebview")
+
+		await provider.postTaskStateToWebview({ clearManagedAgentTree: true })
+
+		expect(getFullState).not.toHaveBeenCalled()
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "state",
+			state: expect.objectContaining({
+				currentView: { type: "newTaskDraft" },
+				clineMessages: [],
+				mode: "code",
+				managedAgentTree: undefined,
+			}),
+		})
+	})
+
 	test("processes webview messages in arrival order", async () => {
 		await provider.resolveWebviewView(mockWebviewView)
 		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
@@ -969,6 +989,23 @@ describe("ClineProvider", () => {
 
 		expect(state.githubToken).toBe("ghp-test-token")
 		expect(webviewState.githubToken).toBe("ghp-test-token")
+	})
+
+	test("builds webview state from cached OpenAI Codex credential presence without validating a token", async () => {
+		const cachedStatus = vi.spyOn(openAiCodexOAuthManager, "hasStoredCredentials").mockReturnValue(true)
+		const validateToken = vi
+			.spyOn(openAiCodexOAuthManager, "isAuthenticated")
+			.mockImplementation(() => new Promise<boolean>(() => {}))
+
+		try {
+			const webviewState = await provider.getStateToPostToWebview()
+
+			expect(webviewState.openAiCodexIsAuthenticated).toBe(true)
+			expect(validateToken).not.toHaveBeenCalled()
+		} finally {
+			cachedStatus.mockRestore()
+			validateToken.mockRestore()
+		}
 	})
 
 	test("getState preserves code index embedding rate limit settings", async () => {

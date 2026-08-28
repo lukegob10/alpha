@@ -27,7 +27,15 @@ describe("Task mistake-limit recovery", () => {
 		;(task as any).consecutiveNoToolUseCount = 2
 		;(task as any).consecutiveNoAssistantMessagesCount = 0
 		;(task as any).automaticMistakeRecoveryCount = 0
+		;(task as any).lastToolFailure = {
+			toolName: "attempt_completion",
+			error: "Completion is still blocked by pending verification.",
+		}
 		;(task as any).providerRef = { deref: () => provider }
+		;(task as any).messageQueueService = {
+			isEmpty: vi.fn(() => true),
+			dequeueMessage: vi.fn(() => undefined),
+		}
 		;(task as any).say = vi.fn(async () => {})
 		;(task as any).ask = vi.fn()
 		return task
@@ -46,6 +54,8 @@ describe("Task mistake-limit recovery", () => {
 		expect((task as any).ask).not.toHaveBeenCalled()
 		expect((task as any).say).toHaveBeenCalledWith("user_feedback", expect.stringContaining("Automatic recovery"))
 		expect((task as any).consecutiveMistakeCount).toBe(0)
+		expect((task as any).consecutiveNoToolUseCount).toBe(0)
+		expect((task as any).consecutiveNoAssistantMessagesCount).toBe(0)
 		expect((task as any).automaticMistakeRecoveryCount).toBe(1)
 		expect(userContent).toHaveLength(1)
 
@@ -53,6 +63,10 @@ describe("Task mistake-limit recovery", () => {
 		expect(guidance.status).toBe("guidance")
 		expect(guidance.feedback).toContain("Continue without waiting for user input")
 		expect(guidance.feedback).toContain("Recovery attempt: 1/1")
+		expect(guidance.feedback).toContain(
+			"Most recent tool failure: attempt_completion — Completion is still blocked by pending verification.",
+		)
+		expect(guidance.feedback).toContain("The previous completion call failed. Do not repeat it unchanged")
 		expect(guidance.feedback).toContain(
 			"More reads, searches, todo updates, or status narration do not apply the change",
 		)
@@ -76,12 +90,17 @@ describe("Task mistake-limit recovery", () => {
 
 		expect((task as any).ask).toHaveBeenCalledWith(
 			"mistake_limit_reached",
-			expect.stringContaining("Task lane: mode=code, providerProfile=5.4 nano"),
+			expect.stringContaining(
+				"Most recent tool failure: attempt_completion — Completion is still blocked by pending verification.",
+			),
 			undefined,
 			undefined,
 			true,
 		)
 		expect((task as any).consecutiveMistakeCount).toBe(0)
+		expect((task as any).consecutiveNoToolUseCount).toBe(0)
+		expect((task as any).consecutiveNoAssistantMessagesCount).toBe(0)
+		expect((task as any).automaticMistakeRecoveryCount).toBe(0)
 
 		const guidance = JSON.parse(userContent[0].text)
 		expect(guidance.feedback).toBe("manual recovery guidance")
