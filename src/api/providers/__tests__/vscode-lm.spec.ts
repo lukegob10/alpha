@@ -102,6 +102,7 @@ const mockCopilotGpt55LanguageModelChat = {
 	vendor: "copilot",
 	family: "gpt-5.5",
 	version: "2026-06-01",
+	maxInputTokens: 921_793,
 }
 
 const mockCopilotGpt53CodexLanguageModelChat = {
@@ -188,8 +189,19 @@ describe("VsCodeLmHandler", () => {
 			;(vscode.lm.selectChatModels as Mock).mockResolvedValueOnce([])
 
 			await expect(handler["createClient"]({})).rejects.toThrow(
-				"No VS Code language models matched the selected provider/model",
+				"No VS Code language models are available in this window",
 			)
+		})
+
+		it("should distinguish an unavailable selection from an unavailable provider", async () => {
+			;(vscode.lm.selectChatModels as Mock)
+				.mockResolvedValueOnce([])
+				.mockResolvedValueOnce([mockLanguageModelChat])
+
+			await expect(handler["createClient"]({ vendor: "copilot", family: "gpt-5.6-sol" })).rejects.toThrow(
+				"The selected VS Code language model is not available in this window",
+			)
+			expect(vscode.lm.selectChatModels).toHaveBeenNthCalledWith(2, {})
 		})
 	})
 
@@ -664,6 +676,44 @@ describe("VsCodeLmHandler", () => {
 			)
 		})
 
+		it("should pass Claude's 1M-tier input budget through Copilot model configuration", async () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				enableReasoningEffort: true,
+				reasoningEffort: "max",
+				vsCodeLmContextSize: 936_000,
+			})
+			const claudeModel = {
+				...mockLanguageModelChat,
+				id: "claude-opus-4.8",
+				name: "Claude Opus 4.8",
+				vendor: "copilot",
+				family: "claude-opus-4.8",
+				version: "claude-opus-4.8",
+				maxInputTokens: 936_000,
+			}
+			handler["client"] = claudeModel as any
+
+			claudeModel.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Claude response")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "Think fully" }])) {
+				// consume stream
+			}
+
+			expect(claudeModel.sendRequest).toHaveBeenCalledWith(
+				expect.any(Array),
+				expect.objectContaining({
+					modelOptions: { reasoningEffort: "max", contextSize: 936_000 },
+					configuration: { reasoningEffort: "max", contextSize: 936_000 },
+				}),
+				expect.anything(),
+			)
+		})
+
 		it("should pass the selected standard context through Copilot model configuration", async () => {
 			handler = new VsCodeLmHandler({
 				...defaultOptions,
@@ -928,7 +978,7 @@ describe("VsCodeLmHandler", () => {
 			expect(model.info.contextWindow).toBe(272_000)
 		})
 
-		it("should return the regular context window for Copilot Claude Opus 4.7 by default", async () => {
+		it("should return Copilot's provider-default extended window for Claude Opus 4.7", async () => {
 			const mockModel = {
 				...mockLanguageModelChat,
 				id: "copilot-claude-opus-4.7",
@@ -941,8 +991,8 @@ describe("VsCodeLmHandler", () => {
 			handler["client"] = mockModel as any
 
 			const model = handler.getModel()
-			expect(model.info.supportsReasoningEffort).toEqual(["low", "medium", "high"])
-			expect(model.info.contextWindow).toBe(128_000)
+			expect(model.info.supportsReasoningEffort).toEqual(["low", "medium", "high", "xhigh", "max"])
+			expect(model.info.contextWindow).toBe(936_000)
 		})
 
 		it("should report the selected extended input window", () => {
@@ -957,7 +1007,7 @@ describe("VsCodeLmHandler", () => {
 			expect(model.info.supportsReasoningEffort).toEqual(["none", "low", "medium", "high", "xhigh", "max"])
 		})
 
-		it("should report extended context when the live selector still advertises the standard tier", () => {
+		it("should ignore a stale extended setting when the live selector only advertises the standard tier", () => {
 			handler = new VsCodeLmHandler({
 				...defaultOptions,
 				vsCodeLmContextSize: 922_000,
@@ -968,7 +1018,7 @@ describe("VsCodeLmHandler", () => {
 			} as any
 
 			const model = handler.getModel()
-			expect(model.info.contextWindow).toBe(922_000)
+			expect(model.info.contextWindow).toBe(272_000)
 		})
 
 		it("should return fallback model info when no client exists", () => {
@@ -1111,7 +1161,7 @@ describe("VsCodeLmHandler", () => {
 })
 
 describe("getVsCodeLmModels", () => {
-	it("merges serializable live selectors into the current catalog", async () => {
+	it("returns only serializable selectors discovered in the current VS Code window", async () => {
 		const unknownModel = {
 			...mockLanguageModelChat,
 			id: "claude-3.7-sonnet",
@@ -1125,39 +1175,29 @@ describe("getVsCodeLmModels", () => {
 		const models = await getVsCodeLmModels()
 
 		expect(vscode.lm.selectChatModels).toHaveBeenCalledWith({})
-		expect(models).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ vendor: "copilot", family: "gpt-5.3-codex" }),
-				expect.objectContaining({ vendor: "copilot", family: "gpt-5.5" }),
-				expect.objectContaining({
-					vendor: currentModel.vendor,
-					family: currentModel.family,
-					version: currentModel.version,
-					id: currentModel.id,
-					name: currentModel.name,
-					maxInputTokens: currentModel.maxInputTokens,
-				}),
-				expect.objectContaining({ id: unknownModel.id, name: unknownModel.name }),
-			]),
-		)
+		expect(models).toEqual([
+			expect.objectContaining({ id: unknownModel.id, name: unknownModel.name }),
+			expect.objectContaining({
+				vendor: currentModel.vendor,
+				family: currentModel.family,
+				version: currentModel.version,
+				id: currentModel.id,
+				name: currentModel.name,
+				maxInputTokens: currentModel.maxInputTokens,
+			}),
+		])
+		expect(models.some((model) => model.family === "gpt-5.5")).toBe(false)
 		expect(models.every((model) => !("sendRequest" in model))).toBe(true)
 	})
 
-	it("returns the catalog when VS Code model discovery fails", async () => {
+	it("returns no clickable models when VS Code model discovery fails", async () => {
 		const selectChatModels = vscode.lm.selectChatModels as Mock
 		selectChatModels.mockReset()
 		selectChatModels.mockRejectedValue(new Error("Copilot consent required"))
 
 		const models = await getVsCodeLmModels()
 
-		expect(models).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ vendor: "copilot", family: "gpt-5.6-luna" }),
-				expect.objectContaining({ vendor: "copilot", family: "gpt-5.6-sol" }),
-				expect.objectContaining({ vendor: "copilot", family: "gpt-5.6-terra" }),
-				expect.objectContaining({ vendor: "copilot", family: "claude-opus-4.8" }),
-			]),
-		)
+		expect(models).toEqual([])
 	})
 
 	it("deduplicates live variants and excludes Mythos", async () => {

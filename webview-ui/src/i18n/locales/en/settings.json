@@ -417,7 +417,7 @@
 		"noProviderMatchFound": "No providers found",
 		"noMatchFound": "No matching profiles found",
 		"retiredProviderMessage": "Sorry, this provider is no longer supported. We saw very few Alpha users actually using it and we need to reduce the surface area of our codebase so we can keep shipping fast and serving our community well in this space. It was a really hard decision but it lets us focus on what matters most to you. It sucks, we know.",
-		"vscodeLmDescription": " The VS Code Language Model API allows you to run models provided by other VS Code extensions (including but not limited to GitHub Copilot). The easiest way to get started is to install the Copilot and Copilot Chat extensions from the VS Code Marketplace.",
+		"vscodeLmDescription": "The VS Code Language Model API lets Alpha use models made available by providers such as GitHub Copilot in this VS Code window.",
 		"awsCustomArnUse": "Enter a valid Amazon Bedrock ARN for the model you want to use. Format examples:",
 		"awsCustomArnDesc": "Make sure the region in the ARN matches your selected AWS Region above.",
 		"openRouterApiKey": "OpenRouter API Key",
@@ -549,13 +549,17 @@
 		"enablePromptCachingTitle": "Enable prompt caching to improve performance and reduce costs for supported models.",
 		"cacheUsageNote": "Note: If you don't see cache usage, try selecting a different model and then selecting your desired model again.",
 		"vscodeLmModel": "Language Model",
+		"vscodeLmLoading": "Loading the language models available in this VS Code window...",
+		"vscodeLmNoModels": "No language models are available in this VS Code window. Sign in to GitHub Copilot here, enable the models you need with 'Chat: Manage Language Models', and then refresh.",
+		"vscodeLmRefresh": "Refresh models",
+		"vscodeLmUnavailable": "The selected model is not available in this VS Code window. Choose a model returned by VS Code, or enable it with 'Chat: Manage Language Models'.",
 		"vscodeLmContextSize": {
 			"label": "Context window",
 			"default": "Standard ({{contextSize}} input tokens)",
-			"extended": "Extended / 1M ({{contextSize}} input tokens)",
+			"extended": "Extended ({{contextSize}} input tokens)",
 			"description": "Choose the input-token budget sent to GitHub Copilot for this model. Extended context can consume more premium requests."
 		},
-		"vscodeLmWarning": "Note: Models accessed via the VS Code Language Model API may be wrapped or fine-tuned by the provider, so behavior can differ from using the same model directly from a typical provider or router. To use a model from the Language Model dropdown, first switch to that model and then click Accept in the Copilot Chat prompt; otherwise you may see an error such as 400 \"The requested model is not supported\".",
+		"vscodeLmWarning": "Alpha only lists models returned by the VS Code Language Model API for this window. GitHub Copilot availability depends on your sign-in, plan, organization policy, and the models enabled in 'Chat: Manage Language Models'. VS Code may ask you to approve model access when you first use one.",
 		"googleCloudProjectId": "Google Cloud Project ID",
 		"googleCloudRegion": "Google Cloud Region",
 		"googleCloudRegionPicker": {

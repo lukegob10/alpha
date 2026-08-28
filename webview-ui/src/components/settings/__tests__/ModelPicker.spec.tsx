@@ -145,6 +145,59 @@ describe("ModelPicker", () => {
 		expect(mockSetApiConfigurationField).toHaveBeenCalledWith(defaultProps.modelIdKey, customModelId)
 	})
 
+	it("can restrict selection to models supplied by the provider", async () => {
+		await act(async () => {
+			render(
+				<QueryClientProvider client={queryClient}>
+					<ModelPicker {...defaultProps} allowCustomModel={false} />
+				</QueryClientProvider>,
+			)
+		})
+
+		await act(async () => {
+			fireEvent.click(screen.getByTestId("model-picker-button"))
+		})
+
+		await act(async () => {
+			vi.advanceTimersByTime(100)
+		})
+
+		await act(async () => {
+			fireEvent.input(screen.getByTestId("model-input"), { target: { value: "unavailable-model" } })
+		})
+
+		await act(async () => {
+			vi.advanceTimersByTime(100)
+		})
+
+		expect(screen.queryByTestId("use-custom-model")).not.toBeInTheDocument()
+	})
+
+	it("uses the value transform when initializing a compound model selector", async () => {
+		const valueTransform = vi.fn((modelId: string) => ({ vendor: "test-provider", id: modelId }))
+
+		await act(async () => {
+			render(
+				<QueryClientProvider client={queryClient}>
+					<ModelPicker
+						{...defaultProps}
+						apiConfiguration={{ apiProvider: "vscode-lm" }}
+						modelIdKey="vsCodeLmModelSelector"
+						valueTransform={valueTransform}
+						displayTransform={(value) => (value as { id?: string } | undefined)?.id ?? ""}
+					/>
+				</QueryClientProvider>,
+			)
+		})
+
+		expect(valueTransform).toHaveBeenCalledWith("model1")
+		expect(mockSetApiConfigurationField).toHaveBeenCalledWith(
+			"vsCodeLmModelSelector",
+			{ vendor: "test-provider", id: "model1" },
+			false,
+		)
+	})
+
 	it("does not render service copy when the service URL is empty", async () => {
 		await act(async () => {
 			render(

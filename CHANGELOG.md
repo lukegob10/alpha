@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.6
+
+### Patch Changes
+
+- Make VS Code's live Language Model API response authoritative so account-, plan-, policy-, or window-unavailable models are never exposed as clickable choices.
+- Preserve exact selectors and display names for current Copilot GPT-5.3-Codex, GPT-5.5, GPT-5.6 Luna/Sol/Terra, Anthropic Claude, Gemini, MAI, Raptor, Kimi, and Grok models while continuing to exclude Mythos.
+- Correct Claude context and reasoning metadata, and offer standard versus extended / 1M context only when the selected live model advertises the larger tier.
+- Add model refresh, unavailable-selection guidance, exact-selector initialization, and clearer errors for missing Copilot authentication in an Extension Development Host.
+
 ## 2.1.5
 
 ### Patch Changes

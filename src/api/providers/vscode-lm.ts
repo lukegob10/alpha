@@ -80,7 +80,7 @@ function getVsCodeLmContextSizeOption(
 ): Pick<VsCodeLmModelConfiguration, "contextSize"> | undefined {
 	const modelInfo = getVscodeLlmModelInfo(model)
 	const extendedContextSize = getVscodeLlmExtendedContextSize(model)
-	if (!modelInfo?.supportsContextWindowConfiguration || !contextSize) {
+	if (!modelInfo?.supportsContextWindowConfiguration || !extendedContextSize || !contextSize) {
 		return undefined
 	}
 
@@ -88,11 +88,8 @@ function getVsCodeLmContextSizeOption(
 		return { contextSize }
 	}
 
-	// A catalog-only selection stores Copilot's documented rounded extended
-	// budget. Once the live model is available, prefer its provider-specific
-	// rounded value in case VS Code reserves a small amount of overhead.
-	if (contextSize === extendedContextSize || contextSize === modelInfo.extendedContextSize) {
-		return { contextSize: extendedContextSize ?? contextSize }
+	if (contextSize === extendedContextSize) {
+		return { contextSize: extendedContextSize }
 	}
 
 	return undefined
@@ -155,17 +152,19 @@ function buildVsCodeLmModelInfo(
 	const staticInfo = getVscodeLlmModelInfo(client)
 	const liveContextWindow = typeof client.maxInputTokens === "number" ? Math.max(0, client.maxInputTokens) : undefined
 	const selectedContextSize = getVsCodeLmContextSizeOption(client, configuredContextSize)?.contextSize
-	// Clamp only when the live value is the same tier with provider overhead
-	// reserved. A standard-tier selector must not cap an explicitly selected 1M tier.
-	const contextWindow = selectedContextSize
-		? typeof liveContextWindow === "number" && liveContextWindow >= selectedContextSize * 0.9
-			? Math.min(selectedContextSize, liveContextWindow)
-			: selectedContextSize
+	const providerDefaultContextSize =
+		configuredContextSize === undefined && staticInfo?.extendedContextIsDefault
+			? getVscodeLlmExtendedContextSize(client)
+			: undefined
+	const effectiveContextSize = selectedContextSize ?? providerDefaultContextSize
+	// Clamp only when the live value is the same tier with provider overhead reserved.
+	const contextWindow = effectiveContextSize
+		? typeof liveContextWindow === "number" && liveContextWindow >= effectiveContextSize * 0.9
+			? Math.min(effectiveContextSize, liveContextWindow)
+			: effectiveContextSize
 		: staticInfo?.supportsContextWindowConfiguration
 			? staticInfo.contextWindow
-			: typeof staticInfo?.contextWindow === "number" && typeof liveContextWindow === "number"
-				? Math.max(staticInfo.contextWindow, liveContextWindow)
-				: (liveContextWindow ?? staticInfo?.contextWindow ?? openAiModelInfoSaneDefaults.contextWindow)
+			: (liveContextWindow ?? staticInfo?.contextWindow ?? openAiModelInfoSaneDefaults.contextWindow)
 
 	return {
 		...openAiModelInfoSaneDefaults,
@@ -301,8 +300,23 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				return models[0]
 			}
 
+			const hasSpecificSelector = Object.values(selector).some(Boolean)
+			const availableModels = hasSpecificSelector
+				? await withApiRequestTimeout(
+						vscode.lm.selectChatModels({}),
+						"VS Code LM availability check",
+						getApiRequestTimeout(),
+					)
+				: models
+
+			if (!availableModels?.length) {
+				throw new Error(
+					"No VS Code language models are available in this window. Sign in to GitHub Copilot in this window and enable a model with 'Chat: Manage Language Models'.",
+				)
+			}
+
 			throw new Error(
-				"No VS Code language models matched the selected provider/model. Open 'Chat: Manage Language Models' and select an available model.",
+				"The selected VS Code language model is not available in this window. Choose one of the models returned in Alpha settings or enable it with 'Chat: Manage Language Models'.",
 			)
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "Unknown error"
@@ -813,9 +827,9 @@ export async function getVsCodeLmModels() {
 				"VS Code LM model list refresh",
 				getApiRequestTimeout(),
 			)) || []
-		// Live selectors are the authority for account-specific routing. Merge them
-		// into the documented Copilot catalog so the picker is still complete before
-		// model consent has been granted, and collapse aliases/versions to one entry.
+		// Live selectors are the authority for account-specific routing. Static
+		// catalog entries describe capabilities, but must never become clickable
+		// when the current VS Code window did not return them.
 		return mergeVscodeLlmModels(
 			models.map(({ vendor, family, version, id, name, maxInputTokens }) => ({
 				vendor,
@@ -830,6 +844,6 @@ export async function getVsCodeLmModels() {
 		console.error(
 			`Error fetching VS Code LM models: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
 		)
-		return mergeVscodeLlmModels([])
+		return []
 	}
 }

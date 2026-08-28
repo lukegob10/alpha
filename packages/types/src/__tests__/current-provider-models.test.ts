@@ -138,19 +138,33 @@ describe("current provider model catalogs", () => {
 
 	describe("VS Code LM / GitHub Copilot", () => {
 		const currentCopilotModelIds = [
+			"gpt-5-mini",
 			"gpt-5.3-codex",
+			"gpt-5.4",
+			"gpt-5.4-mini",
 			"gpt-5.5",
 			"gpt-5.6-luna",
 			"gpt-5.6-sol",
 			"gpt-5.6-terra",
+			"claude-fable-5",
+			"claude-haiku-4.5",
+			"claude-sonnet-4.5",
+			"claude-sonnet-4.6",
+			"claude-sonnet-5",
+			"claude-opus-4.5",
 			"claude-opus-4.6",
 			"claude-opus-4.7",
 			"claude-opus-4.8",
-			"claude-sonnet-4.6",
+			"claude-opus-4.8-fast",
 			"claude-opus-5",
+			"gemini-3.1-pro",
+			"gemini-3.5-flash",
 			"gemini-3.6-flash",
 			"gemini-3.7-flash",
+			"mai-code-1-flash",
 			"mai-code-1.1-flash",
+			"raptor-mini",
+			"kimi-k2.7-code",
 			"kimi-k3",
 			"grok-4.5",
 			"grok-4.6",
@@ -174,23 +188,71 @@ describe("current provider model catalogs", () => {
 		it("models the extended capabilities exposed by current Copilot models", () => {
 			expect(vscodeLlmModels["claude-opus-5"]).toEqual(
 				expect.objectContaining({
+					contextWindow: 200_000,
 					supportsImages: true,
-					supportsReasoningEffort: ["low", "medium", "high"],
+					supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
 					supportsContextWindowConfiguration: true,
+					extendedContextSize: 936_000,
+					extendedContextIsDefault: true,
 				}),
 			)
+			expect(vscodeLlmModels["claude-sonnet-4.6"].supportsReasoningEffort).toEqual([
+				"low",
+				"medium",
+				"high",
+				"max",
+			])
+			expect(vscodeLlmModels["claude-haiku-4.5"].supportsImages).toBe(true)
+			expect(vscodeLlmModels["claude-opus-4.8-fast"].name).toBe("Claude Opus 4.8 (fast mode) (Preview)")
 			expect(vscodeLlmModels["kimi-k3"]).toEqual(
 				expect.objectContaining({
+					contextWindow: 917_504,
 					supportsImages: true,
 					supportsReasoningEffort: ["low", "high", "max"],
+				}),
+			)
+			expect(vscodeLlmModels["kimi-k3"].supportsContextWindowConfiguration).toBe(false)
+			expect(vscodeLlmModels["mai-code-1.1-flash"]).toEqual(
+				expect.objectContaining({ supportsImages: true, supportsReasoningEffort: ["low", "medium", "high"] }),
+			)
+			expect(vscodeLlmModels["gpt-5.4"]).toEqual(
+				expect.objectContaining({
+					supportsImages: true,
+					supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh"],
+				}),
+			)
+			expect(vscodeLlmModels["gemini-3.1-pro"]).toEqual(
+				expect.objectContaining({
+					name: "Gemini 3.1 Pro (Preview)",
+					contextWindow: 200_000,
+					extendedContextSize: 936_000,
 					supportsContextWindowConfiguration: true,
 				}),
 			)
-			expect(vscodeLlmModels["mai-code-1.1-flash"]).toEqual(
-				expect.objectContaining({ contextWindow: 256_000, supportsImages: true }),
+			expect(vscodeLlmModels["gemini-3.5-flash"].extendedContextIsDefault).toBe(true)
+			expect(vscodeLlmModels["grok-4.6"]).toEqual(
+				expect.objectContaining({
+					contextWindow: 200_000,
+					extendedContextSize: 425_001,
+					supportsContextWindowConfiguration: true,
+				}),
 			)
 			expect(vscodeLlmModels["gpt-5.6-luna"].contextWindow).toBe(200_000)
-			expect(getVscodeLlmExtendedContextSize({ family: "gpt-5.5", vendor: "copilot" })).toBe(922_000)
+			expect(getVscodeLlmExtendedContextSize({ family: "gpt-5.5", vendor: "copilot" })).toBeUndefined()
+			expect(
+				getVscodeLlmExtendedContextSize({
+					family: "gpt-5.5",
+					vendor: "copilot",
+					maxInputTokens: 921_793,
+				}),
+			).toBe(922_000)
+			expect(
+				getVscodeLlmExtendedContextSize({
+					family: "claude-opus-4.8",
+					vendor: "copilot",
+					maxInputTokens: 936_000,
+				}),
+			).toBe(936_000)
 		})
 
 		it("provides a current catalog fallback without retired or fictitious models", () => {
@@ -239,6 +301,16 @@ describe("current provider model catalogs", () => {
 				expect.objectContaining({ id: "copilot-gpt-5.5-extended", maxInputTokens: 921_793 }),
 			])
 			expect(models.some((model) => JSON.stringify(model).includes("mythos"))).toBe(false)
+		})
+
+		it("never turns the static catalog into selectable live models", () => {
+			expect(mergeVscodeLlmModels([])).toEqual([])
+		})
+
+		it("recognizes the opaque Raptor selector returned by Copilot", () => {
+			expect(getVscodeLlmModelInfo({ vendor: "copilot", family: "oswe-vscode", id: "oswe-vscode-prime" })).toBe(
+				vscodeLlmModels["raptor-mini"],
+			)
 		})
 
 		it("keeps retired Gemini models only as deprecated compatibility metadata", () => {

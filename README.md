@@ -6,14 +6,14 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.5 Preview
+## Welcome to Alpha v2.1.6 Preview
 
-Alpha v2.1.5 refreshes the VS Code Language Model provider for the current GitHub Copilot catalog.
+Alpha v2.1.6 makes the VS Code Language Model provider match the models that GitHub Copilot actually exposes in the current VS Code window.
 
-- Current GPT-5.3-Codex, GPT-5.5, GPT-5.6 Luna/Sol/Terra, and Claude models remain selectable even before live discovery completes
-- Duplicate Copilot aliases and selector variants collapse into one clear model entry
-- Compatible models expose explicit standard and extended / 1M context choices with model-correct standard limits
-- Unsupported Mythos entries are removed from the bundled and live-discovered model lists
+- Only live, usable VS Code model selectors are clickable; stale catalog fallbacks no longer lead to runtime selection errors
+- Current GPT-5.3-Codex, GPT-5.5, GPT-5.6 Luna/Sol/Terra, Anthropic Claude, Gemini, MAI, Raptor, Kimi, and Grok names and aliases are recognized and deduplicated
+- Claude and GPT context controls use model-correct standard limits and appear only when the live model advertises the extended / 1M tier
+- Missing Copilot sign-in, unavailable saved models, and model refresh are handled directly in provider settings
 
 <details>
   <summary>🌐 Available languages</summary>

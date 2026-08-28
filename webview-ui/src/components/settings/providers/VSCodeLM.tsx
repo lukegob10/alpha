@@ -13,11 +13,9 @@ import {
 } from "@alpha-code/types"
 
 import { useAppTranslation } from "@src/i18n/TranslationContext"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@src/components/ui"
-import {
-	parseVsCodeLmModelSelector,
-	stringifyVsCodeLmModelSelector,
-} from "../../../../../src/shared/vsCodeSelectorUtils"
+import { Button, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@src/components/ui"
+import { vscode } from "@src/utils/vscode"
+import { stringifyVsCodeLmModelSelector } from "../../../../../src/shared/vsCodeSelectorUtils"
 
 import { ModelPicker } from "../ModelPicker"
 import { ThinkingBudget } from "../ThinkingBudget"
@@ -77,8 +75,10 @@ function formatVsCodeLmModelLabel(model: VSCodeLmModel | undefined, fallbackId: 
 	}
 
 	const staticInfo = getVscodeLlmModelInfo(model)
-	const baseName = staticInfo?.name || model.name || model.family || model.id || fallbackId
-	const cleanedName = titleCaseIdentifier(baseName.replace(/^copilot[-/\s]+/i, ""))
+	const providerName = staticInfo?.name || model.name
+	const baseName = providerName || model.family || model.id || fallbackId
+	const nameWithoutVendor = baseName.replace(/^copilot[-/\s]+/i, "")
+	const cleanedName = providerName ? nameWithoutVendor : titleCaseIdentifier(nameWithoutVendor)
 	const reasoningLevel = inferReasoningLevel(model)
 
 	if (!reasoningLevel || cleanedName.toLowerCase().includes(reasoningLevel.toLowerCase())) {
@@ -114,15 +114,19 @@ function buildVsCodeLmModelInfo(model: VSCodeLmModel, configuredContextSize?: nu
 	const staticInfo = getVscodeLlmModelInfo(model)
 	const extendedContextSize = getVscodeLlmExtendedContextSize(model)
 	const isExtendedContextSelected =
-		configuredContextSize === extendedContextSize || configuredContextSize === staticInfo?.extendedContextSize
-	// A slightly smaller live maximum is provider overhead for the selected tier;
-	// a much smaller value is the standard tier and must not cap an explicit 1M choice.
-	const contextWindow =
-		isExtendedContextSelected && extendedContextSize
-			? typeof model.maxInputTokens === "number" && model.maxInputTokens >= extendedContextSize * 0.9
-				? Math.min(extendedContextSize, model.maxInputTokens)
+		configuredContextSize === extendedContextSize ||
+		(configuredContextSize === undefined && staticInfo?.extendedContextIsDefault)
+	const liveContextWindow =
+		typeof model.maxInputTokens === "number" && Number.isFinite(model.maxInputTokens)
+			? model.maxInputTokens
+			: undefined
+	const contextWindow = staticInfo?.supportsContextWindowConfiguration
+		? isExtendedContextSelected && extendedContextSize
+			? liveContextWindow && liveContextWindow >= extendedContextSize * 0.9
+				? Math.min(extendedContextSize, liveContextWindow)
 				: extendedContextSize
-			: (staticInfo?.contextWindow ?? model.maxInputTokens ?? openAiModelInfoSaneDefaults.contextWindow)
+			: staticInfo.contextWindow
+		: (liveContextWindow ?? staticInfo?.contextWindow ?? openAiModelInfoSaneDefaults.contextWindow)
 
 	return {
 		...openAiModelInfoSaneDefaults,
@@ -175,6 +179,7 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 	const { t } = useAppTranslation()
 
 	const [vsCodeLmModels, setVsCodeLmModels] = useState<VSCodeLmModel[]>([])
+	const [hasLoadedModels, setHasLoadedModels] = useState(false)
 
 	const onMessage = useCallback((event: MessageEvent) => {
 		const message: ExtensionMessage = event.data
@@ -184,6 +189,7 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 				{
 					const newModels = message.vsCodeLmModels ?? []
 					setVsCodeLmModels(newModels)
+					setHasLoadedModels(true)
 				}
 				break
 		}
@@ -207,12 +213,12 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 		return new Map(vsCodeLmModels.map((model) => [getVsCodeLmPickerKey(model), model]))
 	}, [vsCodeLmModels])
 
-	// Transform the deduplicated picker key back to the exact live selector (or
-	// the broad catalog selector while VS Code discovery is unavailable).
+	// Transform the deduplicated picker key back to the exact selector returned
+	// by VS Code. The picker never manufactures broad fallback selectors.
 	const valueTransform = useCallback(
 		(modelId: string) => {
 			const model = modelsById.get(modelId)
-			return model ? toStoredVsCodeLmSelector(model) : parseVsCodeLmModelSelector(modelId)
+			return model ? toStoredVsCodeLmSelector(model) : undefined
 		},
 		[modelsById],
 	)
@@ -236,7 +242,7 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 	const defaultContextSize = selectedStaticModelInfo?.contextWindow
 	const isExtendedContextSelected =
 		apiConfiguration.vsCodeLmContextSize === extendedContextSize ||
-		apiConfiguration.vsCodeLmContextSize === selectedStaticModelInfo?.extendedContextSize
+		(apiConfiguration.vsCodeLmContextSize === undefined && selectedStaticModelInfo?.extendedContextIsDefault)
 	const selectedContextSizeValue =
 		isExtendedContextSelected && extendedContextSize
 			? extendedContextSize.toString()
@@ -266,8 +272,7 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 			if (
 				apiConfiguration.vsCodeLmContextSize &&
 				apiConfiguration.vsCodeLmContextSize !== nextDefaultContextSize &&
-				apiConfiguration.vsCodeLmContextSize !== nextExtendedContextSize &&
-				apiConfiguration.vsCodeLmContextSize !== nextStaticModelInfo?.extendedContextSize
+				apiConfiguration.vsCodeLmContextSize !== nextExtendedContextSize
 			) {
 				setApiConfigurationField("vsCodeLmContextSize", undefined)
 			}
@@ -280,6 +285,15 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 			setApiConfigurationField,
 		],
 	)
+	const defaultModelId = modelsById.has("copilot/gpt-5.5")
+		? "copilot/gpt-5.5"
+		: (Array.from(modelsById.keys()).sort((left, right) => left.localeCompare(right))[0] ?? "")
+	const selectedModelUnavailable =
+		Boolean(apiConfiguration.vsCodeLmModelSelector) && vsCodeLmModels.length > 0 && !selectedModel
+	const refreshModels = useCallback(() => {
+		setHasLoadedModels(false)
+		vscode.postMessage({ type: "requestVsCodeLmModels" })
+	}, [])
 
 	return (
 		<>
@@ -288,7 +302,7 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 					<ModelPicker
 						apiConfiguration={apiConfiguration}
 						setApiConfigurationField={setApiConfigurationField}
-						defaultModelId="copilot/gpt-5.5"
+						defaultModelId={defaultModelId}
 						models={modelsRecord}
 						modelIdKey="vsCodeLmModelSelector"
 						serviceName="VS Code LM"
@@ -299,6 +313,10 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 						secondaryLabelTransform={(modelId) => formatVsCodeLmModelDetail(modelsById.get(modelId))}
 						onModelChange={onModelChange}
 						selectedModelInfoOverride={selectedModelInfo}
+						errorMessage={
+							selectedModelUnavailable ? t("settings:providers.vscodeLmUnavailable") : undefined
+						}
+						allowCustomModel={false}
 						hidePricing
 					/>
 					{extendedContextSize && (
@@ -344,9 +362,20 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 			) : (
 				<div>
 					<label className="block font-medium mb-1">{t("settings:providers.vscodeLmModel")}</label>
-					<div className="text-sm text-vscode-descriptionForeground">
-						{t("settings:providers.vscodeLmDescription")}
+					<div className="text-sm text-vscode-descriptionForeground mb-2">
+						{t(
+							hasLoadedModels
+								? "settings:providers.vscodeLmNoModels"
+								: "settings:providers.vscodeLmLoading",
+						)}
 					</div>
+					<Button
+						type="button"
+						variant="secondary"
+						onClick={refreshModels}
+						data-testid="refresh-vscode-lm-models">
+						{t("settings:providers.vscodeLmRefresh")}
+					</Button>
 				</div>
 			)}
 			<div className="text-sm text-vscode-errorForeground">{t("settings:providers.vscodeLmWarning")}</div>

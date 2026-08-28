@@ -9,6 +9,7 @@ export type VscodeLlmModelInfo = ModelInfo & {
 	maxInputTokens: number
 	supportsContextWindowConfiguration?: boolean
 	extendedContextSize?: number
+	extendedContextIsDefault?: boolean
 }
 export type VscodeLlmModelSelectorLike = {
 	vendor?: string
@@ -27,11 +28,25 @@ const COPILOT_DEFAULT_CONTEXT_WINDOW = 128_000
 const COPILOT_GPT_5_CONTEXT_WINDOW = 272_000
 const COPILOT_GPT_5_6_LUNA_CONTEXT_WINDOW = 200_000
 const COPILOT_EXTENDED_CONTEXT_SIZE = 922_000
+const COPILOT_CLAUDE_CONTEXT_WINDOW = 200_000
+const COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE = 936_000
+const COPILOT_GEMINI_CONTEXT_WINDOW = 200_000
+const COPILOT_GEMINI_EXTENDED_CONTEXT_SIZE = 936_000
+const COPILOT_GROK_CONTEXT_WINDOW = 200_000
+const COPILOT_GROK_EXTENDED_CONTEXT_SIZE = 425_001
 const COPILOT_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "medium", "high"]
 const COPILOT_MINIMAL_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["minimal", "low", "medium", "high"]
 const COPILOT_EXTRA_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["none", "low", "medium", "high", "xhigh"]
 const COPILOT_CODEX_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "medium", "high", "xhigh"]
 const COPILOT_KIMI_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "high", "max"]
+const COPILOT_CLAUDE_46_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "medium", "high", "max"]
+const COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = [
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+]
 const COPILOT_MAX_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = [
 	"none",
 	"low",
@@ -49,6 +64,8 @@ function copilotModel({
 	supportsImages = false,
 	supportsReasoningEffort,
 	supportsContextWindowConfiguration = false,
+	extendedContextSize,
+	extendedContextIsDefault = false,
 	deprecated,
 }: {
 	name: string
@@ -58,6 +75,8 @@ function copilotModel({
 	supportsImages?: boolean
 	supportsReasoningEffort?: ModelInfo["supportsReasoningEffort"]
 	supportsContextWindowConfiguration?: boolean
+	extendedContextSize?: number
+	extendedContextIsDefault?: boolean
 	deprecated?: boolean
 }): VscodeLlmModelInfo {
 	return {
@@ -74,7 +93,10 @@ function copilotModel({
 		supportsToolCalling: true,
 		supportsReasoningEffort,
 		supportsContextWindowConfiguration,
-		extendedContextSize: supportsContextWindowConfiguration ? COPILOT_EXTENDED_CONTEXT_SIZE : undefined,
+		extendedContextSize: supportsContextWindowConfiguration
+			? (extendedContextSize ?? COPILOT_EXTENDED_CONTEXT_SIZE)
+			: undefined,
+		extendedContextIsDefault: supportsContextWindowConfiguration ? extendedContextIsDefault : undefined,
 		deprecated,
 	}
 }
@@ -86,12 +108,14 @@ export const vscodeLlmModels = {
 	"gpt-5-mini": copilotModel({
 		name: "GPT-5 mini",
 		family: "gpt-5-mini",
+		supportsImages: true,
 		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
 	}),
 	"gpt-5.3-codex": copilotModel({
 		name: "GPT-5.3-Codex",
 		family: "gpt-5.3-codex",
 		contextWindow: COPILOT_GPT_5_CONTEXT_WINDOW,
+		supportsImages: true,
 		supportsReasoningEffort: COPILOT_CODEX_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 	}),
@@ -99,13 +123,15 @@ export const vscodeLlmModels = {
 		name: "GPT-5.4",
 		family: "gpt-5.4",
 		contextWindow: COPILOT_GPT_5_CONTEXT_WINDOW,
-		supportsReasoningEffort: COPILOT_CODEX_REASONING_EFFORTS,
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_EXTRA_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 	}),
 	"gpt-5.4-mini": copilotModel({
 		name: "GPT-5.4 mini",
 		family: "gpt-5.4-mini",
 		contextWindow: COPILOT_GPT_5_CONTEXT_WINDOW,
+		supportsImages: true,
 		supportsReasoningEffort: COPILOT_EXTRA_REASONING_EFFORTS,
 	}),
 	"gpt-5.4-nano": copilotModel({
@@ -119,6 +145,7 @@ export const vscodeLlmModels = {
 		name: "GPT-5.5",
 		family: "gpt-5.5",
 		contextWindow: COPILOT_GPT_5_CONTEXT_WINDOW,
+		supportsImages: true,
 		supportsReasoningEffort: COPILOT_EXTRA_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 	}),
@@ -149,13 +176,17 @@ export const vscodeLlmModels = {
 	"claude-fable-5": copilotModel({
 		name: "Claude Fable 5",
 		family: "claude-fable-5",
+		contextWindow: COPILOT_CLAUDE_CONTEXT_WINDOW,
 		supportsImages: true,
-		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
+		extendedContextIsDefault: true,
 	}),
 	"claude-haiku-4.5": copilotModel({
 		name: "Claude Haiku 4.5",
 		family: "claude-haiku-4.5",
+		supportsImages: true,
 	}),
 	"claude-sonnet-4.5": copilotModel({
 		name: "Claude Sonnet 4.5",
@@ -165,16 +196,22 @@ export const vscodeLlmModels = {
 	"claude-sonnet-4.6": copilotModel({
 		name: "Claude Sonnet 4.6",
 		family: "claude-sonnet-4.6",
+		contextWindow: COPILOT_CLAUDE_CONTEXT_WINDOW,
 		supportsImages: true,
-		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+		supportsReasoningEffort: COPILOT_CLAUDE_46_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
+		extendedContextIsDefault: true,
 	}),
 	"claude-sonnet-5": copilotModel({
 		name: "Claude Sonnet 5",
 		family: "claude-sonnet-5",
+		contextWindow: COPILOT_CLAUDE_CONTEXT_WINDOW,
 		supportsImages: true,
-		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
+		extendedContextIsDefault: true,
 	}),
 	"claude-opus-4.5": copilotModel({
 		name: "Claude Opus 4.5",
@@ -184,36 +221,52 @@ export const vscodeLlmModels = {
 	"claude-opus-4.6": copilotModel({
 		name: "Claude Opus 4.6",
 		family: "claude-opus-4.6",
+		contextWindow: COPILOT_CLAUDE_CONTEXT_WINDOW,
 		supportsImages: true,
-		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+		supportsReasoningEffort: COPILOT_CLAUDE_46_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
+		extendedContextIsDefault: true,
 	}),
 	"claude-opus-4.7": copilotModel({
 		name: "Claude Opus 4.7",
 		family: "claude-opus-4.7",
+		contextWindow: COPILOT_CLAUDE_CONTEXT_WINDOW,
 		supportsImages: true,
-		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
+		extendedContextIsDefault: true,
 	}),
 	"claude-opus-4.8": copilotModel({
 		name: "Claude Opus 4.8",
 		family: "claude-opus-4.8",
+		contextWindow: COPILOT_CLAUDE_CONTEXT_WINDOW,
 		supportsImages: true,
-		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
+		extendedContextIsDefault: true,
 	}),
 	"claude-opus-4.8-fast": copilotModel({
-		name: "Claude Opus 4.8 (fast mode)",
+		name: "Claude Opus 4.8 (fast mode) (Preview)",
 		family: "claude-opus-4.8-fast",
+		contextWindow: COPILOT_CLAUDE_CONTEXT_WINDOW,
 		supportsImages: true,
-		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
+		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
+		extendedContextIsDefault: true,
 	}),
 	"claude-opus-5": copilotModel({
 		name: "Claude Opus 5",
 		family: "claude-opus-5",
+		contextWindow: COPILOT_CLAUDE_CONTEXT_WINDOW,
 		supportsImages: true,
-		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
+		extendedContextIsDefault: true,
 	}),
 	"gemini-2.5-pro": copilotModel({
 		name: "Gemini 2.5 Pro",
@@ -229,66 +282,91 @@ export const vscodeLlmModels = {
 		deprecated: true,
 	}),
 	"gemini-3.1-pro": copilotModel({
-		name: "Gemini 3.1 Pro",
+		name: "Gemini 3.1 Pro (Preview)",
 		family: "gemini-3.1-pro",
-		contextWindow: 200_000,
+		contextWindow: COPILOT_GEMINI_CONTEXT_WINDOW,
 		supportsImages: true,
 		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_GEMINI_EXTENDED_CONTEXT_SIZE,
 	}),
 	"gemini-3.5-flash": copilotModel({
 		name: "Gemini 3.5 Flash",
 		family: "gemini-3.5-flash",
+		contextWindow: COPILOT_GEMINI_CONTEXT_WINDOW,
 		supportsImages: true,
-		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+		supportsReasoningEffort: COPILOT_MINIMAL_REASONING_EFFORTS,
+		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_GEMINI_EXTENDED_CONTEXT_SIZE,
+		extendedContextIsDefault: true,
 	}),
 	"gemini-3.6-flash": copilotModel({
 		name: "Gemini 3.6 Flash",
 		family: "gemini-3.6-flash",
+		contextWindow: COPILOT_GEMINI_CONTEXT_WINDOW,
 		supportsImages: true,
 		supportsReasoningEffort: COPILOT_MINIMAL_REASONING_EFFORTS,
+		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_GEMINI_EXTENDED_CONTEXT_SIZE,
+		extendedContextIsDefault: true,
 	}),
 	"gemini-3.7-flash": copilotModel({
 		name: "Gemini 3.7 Flash",
 		family: "gemini-3.7-flash",
+		contextWindow: COPILOT_GEMINI_CONTEXT_WINDOW,
 		supportsImages: true,
 		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_GEMINI_EXTENDED_CONTEXT_SIZE,
+		extendedContextIsDefault: true,
 	}),
 	"mai-code-1-flash": copilotModel({
 		name: "MAI-Code-1-Flash",
 		family: "mai-code-1-flash",
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
 	}),
 	"mai-code-1.1-flash": copilotModel({
 		name: "MAI-Code-1.1-Flash",
 		family: "mai-code-1.1-flash",
-		contextWindow: 256_000,
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
 		supportsImages: true,
 	}),
 	"raptor-mini": copilotModel({
 		name: "Raptor mini",
 		family: "raptor-mini",
+		contextWindow: 200_000,
+		supportsImages: true,
 	}),
 	"kimi-k2.7-code": copilotModel({
 		name: "Kimi K2.7 Code",
 		family: "kimi-k2.7-code",
+		contextWindow: 224_000,
+		supportsImages: true,
 	}),
 	"kimi-k3": copilotModel({
 		name: "Kimi K3",
 		family: "kimi-k3",
+		contextWindow: 917_504,
 		supportsImages: true,
 		supportsReasoningEffort: COPILOT_KIMI_REASONING_EFFORTS,
-		supportsContextWindowConfiguration: true,
 	}),
 	"grok-4.5": copilotModel({
 		name: "Grok 4.5",
 		family: "grok-4.5",
-		contextWindow: 200_000,
+		contextWindow: COPILOT_GROK_CONTEXT_WINDOW,
 		supportsImages: true,
+		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
+		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_GROK_EXTENDED_CONTEXT_SIZE,
 	}),
 	"grok-4.6": copilotModel({
 		name: "Grok 4.6",
 		family: "grok-4.6",
-		contextWindow: 200_000,
+		contextWindow: COPILOT_GROK_CONTEXT_WINDOW,
 		supportsImages: true,
+		supportsReasoningEffort: COPILOT_CODEX_REASONING_EFFORTS,
+		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_GROK_EXTENDED_CONTEXT_SIZE,
 	}),
 	"gpt-4.1": copilotModel({
 		name: "GPT-4.1",
@@ -311,6 +389,7 @@ const vscodeLlmModelAliases: Partial<Record<VscodeLlmModelId, readonly string[]>
 	"gemini-3-flash": ["gemini-3-flash-preview"],
 	"gemini-3.1-pro": ["gemini-3.1-pro-preview"],
 	"mai-code-1-flash": ["mai-code-1-flash-picker"],
+	"raptor-mini": ["oswe-vscode-prime", "oswe-vscode"],
 }
 
 const hiddenVscodeLlmModelIds = ["claude-mythos-5"] as const
@@ -400,11 +479,6 @@ function isHiddenVscodeLlmModel(model: VscodeLlmModelSelectorLike): boolean {
 }
 
 function shouldPreferVscodeLlmModel(candidate: VscodeLlmModelMetadata, current: VscodeLlmModelMetadata): boolean {
-	const currentIsCatalogFallback = !current.id && !current.version && current.maxInputTokens === undefined
-	if (currentIsCatalogFallback) {
-		return true
-	}
-
 	return (
 		typeof candidate.maxInputTokens === "number" &&
 		candidate.maxInputTokens > (current.maxInputTokens ?? Number.NEGATIVE_INFINITY)
@@ -412,9 +486,9 @@ function shouldPreferVscodeLlmModel(candidate: VscodeLlmModelMetadata, current: 
 }
 
 /**
- * Returns the current Copilot catalog as broad selectors. A live selector can replace
- * each entry later, but these fallbacks keep the settings picker usable before VS Code
- * has returned account-specific models or Copilot consent has been granted.
+ * Returns the documented Copilot catalog as broad selectors for capability inspection.
+ * These selectors must not be presented as available models: availability is scoped to
+ * the current VS Code window, Copilot account, plan, and organization policy.
  */
 export function getVscodeLlmCatalogModels(): VscodeLlmModelMetadata[] {
 	return (Object.keys(vscodeLlmModels) as VscodeLlmModelId[])
@@ -429,18 +503,11 @@ export function getVscodeLlmCatalogModels(): VscodeLlmModelMetadata[] {
 		})
 }
 
-/** Merge account-specific VS Code selectors into the catalog and collapse aliases/variants. */
+/** Collapse aliases/variants from the live, account-specific VS Code model list. */
 export function mergeVscodeLlmModels(liveModels: readonly VscodeLlmModelMetadata[]): VscodeLlmModelMetadata[] {
-	const mergedModels = getVscodeLlmCatalogModels()
+	const mergedModels: VscodeLlmModelMetadata[] = []
 	const canonicalIndexes = new Map<VscodeLlmModelId, number>()
 	const unknownSelectorIndexes = new Map<string, number>()
-
-	mergedModels.forEach((model, index) => {
-		const modelId = getVscodeLlmModelId(model)
-		if (modelId) {
-			canonicalIndexes.set(modelId, index)
-		}
-	})
 
 	for (const liveModel of liveModels) {
 		const serializedModel = serializeVscodeLlmModel(liveModel)
@@ -485,17 +552,14 @@ export function getVscodeLlmExtendedContextSize(model: VscodeLlmModelSelectorLik
 	const modelInfo = getVscodeLlmModelInfo(model)
 	const maxInputTokens = model.maxInputTokens
 
-	if (!modelInfo?.supportsContextWindowConfiguration) {
+	if (
+		!modelInfo?.supportsContextWindowConfiguration ||
+		typeof maxInputTokens !== "number" ||
+		!Number.isFinite(maxInputTokens) ||
+		maxInputTokens <= modelInfo.contextWindow
+	) {
 		return undefined
 	}
 
-	if (
-		typeof maxInputTokens === "number" &&
-		Number.isFinite(maxInputTokens) &&
-		maxInputTokens > modelInfo.contextWindow
-	) {
-		return Math.round(maxInputTokens / 1_000) * 1_000
-	}
-
-	return modelInfo.extendedContextSize
+	return modelInfo.extendedContextSize ?? Math.round(maxInputTokens / 1_000) * 1_000
 }
