@@ -12,6 +12,7 @@ import { getAllModes } from "@alpha/modes"
 
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { vscode } from "@/utils/vscode"
+import { getUserFacingModeOptions, normalizeUserFacingModeSlug } from "@/utils/modePresentation"
 import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Textarea } from "@/components/ui"
 
 import { Tab, TabContent, TabHeader } from "../common/Tab"
@@ -143,7 +144,6 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 	const [selectedId, setSelectedId] = useState<string | undefined>(scheduledTasks[0]?.id)
 	const selectedTask = scheduledTasks.find((task) => task.id === selectedId)
 	const nowPlusHour = Date.now() + 60 * 60 * 1000
-	const modes = useMemo(() => getAllModes(customModes), [customModes])
 
 	const [name, setName] = useState("")
 	const [prompt, setPrompt] = useState("")
@@ -153,7 +153,8 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 	const [skillName, setSkillName] = useState("")
 	const [pluginName, setPluginName] = useState("")
 	const [executionArguments, setExecutionArguments] = useState("")
-	const [taskMode, setTaskMode] = useState<string>(mode)
+	const [taskMode, setTaskMode] = useState<string>(() => normalizeUserFacingModeSlug(mode))
+	const modes = useMemo(() => getUserFacingModeOptions(getAllModes(customModes), taskMode), [customModes, taskMode])
 	const [autoApproval, setAutoApproval] = useState<ScheduledTaskAutoApproval>(defaultAutoApproval)
 	const [scheduleType, setScheduleType] = useState<ScheduleKind>("daily")
 	const [startAt, setStartAt] = useState(localDateTimeValue(nowPlusHour))
@@ -175,7 +176,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 		setSkillName("")
 		setPluginName("")
 		setExecutionArguments("")
-		setTaskMode(mode)
+		setTaskMode(normalizeUserFacingModeSlug(mode))
 		setAutoApproval(defaultAutoApproval)
 		setScheduleType("daily")
 		setStartAt(localDateTimeValue(nowPlusHour))
@@ -200,7 +201,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 			setExecutionArguments(
 				execution.type === "skill" || execution.type === "plugin" ? (execution.arguments ?? "") : "",
 			)
-			setTaskMode(task.mode ?? mode)
+			setTaskMode(task.mode ?? normalizeUserFacingModeSlug(mode))
 			setAutoApproval(normalizeAutoApproval(task.autoApproval))
 			setScheduleType(task.schedule.type)
 			setStartAt(localDateTimeValue(task.schedule.startAt))

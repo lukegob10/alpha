@@ -302,6 +302,8 @@ vi.mock("../../../shared/modes", () => ({
 		}
 	}),
 	defaultModeSlug: "code",
+	isCodePlanModeTransition: (currentMode: string | undefined, newMode: string) =>
+		(currentMode === "code" && newMode === "architect") || (currentMode === "architect" && newMode === "code"),
 }))
 
 vi.mock("../../prompts/system", () => ({
@@ -489,8 +491,8 @@ describe("ClineProvider", () => {
 		expect(ClineProvider.getVisibleInstance()).toBe(provider)
 	})
 
-	test("shows the v2.1.2 announcement once per installation", async () => {
-		const announcementId = "august-2026-v2.1.2-model-provider-refresh"
+	test("shows the v2.1.3 announcement once per installation", async () => {
+		const announcementId = "august-2026-v2.1.3-plan-code-workflow"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
@@ -1254,11 +1256,11 @@ describe("ClineProvider", () => {
 			getProfile: vi.fn().mockResolvedValue(profile),
 		} as any
 
-		// Switch to architect mode
-		await messageHandler({ type: "mode", text: "architect" })
+		// Switch to a legacy mode that still has its own saved profile.
+		await messageHandler({ type: "mode", text: "debug" })
 
-		// Should load the saved config for architect mode
-		expect(provider.providerSettingsManager.getModeConfigId).toHaveBeenCalledWith("architect")
+		// Legacy modes retain mode-specific profile behavior.
+		expect(provider.providerSettingsManager.getModeConfigId).toHaveBeenCalledWith("debug")
 		expect(provider.providerSettingsManager.activateProfile).toHaveBeenCalledWith({ name: "test-config" })
 		expect(mockContext.globalState.update).toHaveBeenCalledWith("currentApiConfigName", "test-config")
 	})
@@ -1277,11 +1279,11 @@ describe("ClineProvider", () => {
 
 		provider.setValue("currentApiConfigName", "current-config")
 
-		// Switch to architect mode
-		await messageHandler({ type: "mode", text: "architect" })
+		// Switch to a legacy mode without a saved profile.
+		await messageHandler({ type: "mode", text: "debug" })
 
-		// Should save current config as default for architect mode
-		expect(provider.providerSettingsManager.setModeConfig).toHaveBeenCalledWith("architect", "current-id")
+		// Legacy modes retain mode-specific profile behavior.
+		expect(provider.providerSettingsManager.setModeConfig).toHaveBeenCalledWith("debug", "current-id")
 	})
 
 	it("saves config as default for current mode when loading config", async () => {
@@ -1841,14 +1843,14 @@ describe("ClineProvider", () => {
 				getProfile: vi.fn().mockResolvedValue(profile),
 			} as any
 
-			// Switch to architect mode
-			await provider.handleModeSwitch("architect")
+			// Switch to a legacy mode with a saved profile.
+			await provider.handleModeSwitch("debug")
 
 			// Verify mode was updated
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "architect")
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "debug")
 
 			// Verify saved config was loaded
-			expect(provider.providerSettingsManager.getModeConfigId).toHaveBeenCalledWith("architect")
+			expect(provider.providerSettingsManager.getModeConfigId).toHaveBeenCalledWith("debug")
 			expect(provider.providerSettingsManager.activateProfile).toHaveBeenCalledWith({ name: "saved-config" })
 			expect(mockContext.globalState.update).toHaveBeenCalledWith("currentApiConfigName", "saved-config")
 
@@ -1873,14 +1875,14 @@ describe("ClineProvider", () => {
 				return undefined
 			})
 
-			// Switch to architect mode
-			await provider.handleModeSwitch("architect")
+			// Switch to a legacy mode without a saved profile.
+			await provider.handleModeSwitch("debug")
 
 			// Verify mode was updated
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "architect")
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "debug")
 
 			// Verify current config was saved as default for new mode
-			expect(provider.providerSettingsManager.setModeConfig).toHaveBeenCalledWith("architect", "current-id")
+			expect(provider.providerSettingsManager.setModeConfig).toHaveBeenCalledWith("debug", "current-id")
 
 			// Verify state was posted to webview
 			expect(mockPostMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "state" }))

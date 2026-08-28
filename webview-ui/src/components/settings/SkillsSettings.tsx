@@ -29,6 +29,7 @@ import {
 } from "@/components/ui"
 import { vscode } from "@/utils/vscode"
 import { buildDocLink } from "@/utils/docLinks"
+import { getUserFacingModeOptions } from "@/utils/modePresentation"
 
 import { SectionHeader } from "./SectionHeader"
 import { CreateSkillDialog } from "./CreateSkillDialog"
@@ -53,8 +54,11 @@ export const SkillsSettings: React.FC = () => {
 
 	// Get available modes for the checkboxes (built-in + custom modes)
 	const availableModes = useMemo(() => {
-		return getAllModes(customModes).map((m) => ({ slug: m.slug, name: m.name }))
-	}, [customModes])
+		return getUserFacingModeOptions(getAllModes(customModes), selectedModes).map((m) => ({
+			slug: m.slug,
+			name: m.name,
+		}))
+	}, [customModes, selectedModes])
 
 	const handleRefresh = useCallback(() => {
 		vscode.postMessage({ type: "requestSkills" })
@@ -274,30 +278,6 @@ export const SkillsSettings: React.FC = () => {
 						</div>
 					)}
 				</div>
-			</div>
-
-			{/* Fixed Footer */}
-			<div className="px-6 py-1 text-sm border-t border-vscode-panel-border text-muted-foreground">
-				<Trans
-					i18nKey="settings:skills.footer"
-					components={{
-						MarketplaceLink: (
-							<span
-								onClick={() => {
-									window.postMessage(
-										{
-											type: "action",
-											action: "marketplaceButtonClicked",
-											values: { marketplaceTab: "mode" },
-										},
-										"*",
-									)
-								}}
-								className="text-vscode-textLink-foreground hover:underline cursor-pointer"
-							/>
-						),
-					}}
-				/>
 			</div>
 
 			{/* Delete Confirmation Dialog */}

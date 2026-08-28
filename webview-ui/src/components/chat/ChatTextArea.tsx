@@ -7,9 +7,10 @@ import type { ExtensionMessage } from "@alpha-code/types"
 
 import { mentionRegex, mentionRegexGlobal, commandRegexGlobal, unescapeSpaces } from "@alpha/context-mentions"
 import { WebviewMessage } from "@alpha/WebviewMessage"
-import { Mode, getAllModes } from "@alpha/modes"
+import { Mode, codeModeSlug, getAllModes, planModeSlug } from "@alpha/modes"
 
 import { vscode } from "@src/utils/vscode"
+import { getUserFacingModeOptions } from "@src/utils/modePresentation"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import {
@@ -96,7 +97,6 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			clineMessages,
 			commands,
 			enterBehavior,
-			lockApiConfigAcrossModes,
 		} = useExtensionState()
 
 		// Find the ID and display text for the currently selected API configuration.
@@ -253,7 +253,9 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			}
 		}, [inputValue, setInputValue, t])
 
-		const allModes = useMemo(() => getAllModes(customModes), [customModes])
+		const allModes = useMemo(() => getUserFacingModeOptions(getAllModes(customModes), mode), [customModes, mode])
+		const modeSwitchDisabled = isStreaming || isEditMode
+		const contextMenuModes = useMemo(() => (modeSwitchDisabled ? [] : allModes), [allModes, modeSwitchDisabled])
 
 		// Memoized check for whether the input has content (text or images)
 		const hasInputContent = useMemo(() => {
@@ -318,6 +320,11 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				}
 
 				if (type === ContextMenuOptionType.Mode && value) {
+					if (modeSwitchDisabled) {
+						setShowContextMenu(false)
+						return
+					}
+
 					// Handle mode selection.
 					setMode(value)
 					setInputValue("")
@@ -404,13 +411,22 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					}, 0)
 				}
 			},
-			// eslint-disable-next-line react-hooks/exhaustive-deps
-			[setInputValue, cursorPosition],
+			[setInputValue, cursorPosition, modeSwitchDisabled, setMode],
 		)
+
+		const togglePrimaryMode = useCallback(() => {
+			const nextMode: Mode = mode === codeModeSlug ? planModeSlug : codeModeSlug
+			setMode(nextMode)
+			vscode.postMessage({ type: "mode", text: nextMode })
+		}, [mode, setMode])
 
 		const handleKeyDown = useCallback(
 			(event: React.KeyboardEvent<HTMLTextAreaElement>) => {
 				if (showContextMenu) {
+					if (event.key === "Tab" && event.shiftKey) {
+						return
+					}
+
 					if (event.key === "Escape") {
 						setSelectedType(null)
 						setSelectedMenuIndex(3) // File by default
@@ -426,7 +442,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								selectedType,
 								queryItems,
 								fileSearchResults,
-								allModes,
+								contextMenuModes,
 								commands,
 							)
 							const optionsLength = options.length
@@ -464,7 +480,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							selectedType,
 							queryItems,
 							fileSearchResults,
-							allModes,
+							contextMenuModes,
 							commands,
 						)[selectedMenuIndex]
 						if (
@@ -480,6 +496,22 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				}
 
 				const isComposing = event.nativeEvent?.isComposing ?? false
+				if (
+					!event.defaultPrevented &&
+					!showContextMenu &&
+					!modeSwitchDisabled &&
+					event.key === "Tab" &&
+					event.shiftKey &&
+					!event.ctrlKey &&
+					!event.altKey &&
+					!event.metaKey &&
+					!event.repeat &&
+					!isComposing
+				) {
+					event.preventDefault()
+					togglePrimaryMode()
+					return
+				}
 
 				// Handle prompt history navigation using custom hook
 				if (handleHistoryNavigation(event, showContextMenu, isComposing)) {
@@ -569,13 +601,15 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				setInputValue,
 				justDeletedSpaceAfterMention,
 				queryItems,
-				allModes,
+				contextMenuModes,
 				fileSearchResults,
 				handleHistoryNavigation,
 				resetHistoryNavigation,
 				commands,
 				enterBehavior,
 				isEditMode,
+				modeSwitchDisabled,
+				togglePrimaryMode,
 			],
 		)
 
@@ -1013,11 +1047,6 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			vscode.postMessage({ type: "loadApiConfigurationById", text: value })
 		}, [])
 
-		const handleToggleLockApiConfig = useCallback(() => {
-			const newValue = !lockApiConfigAcrossModes
-			vscode.postMessage({ type: "lockApiConfigAcrossModes", bool: newValue })
-		}, [lockApiConfigAcrossModes])
-
 		return (
 			<div
 				className={cn(
@@ -1074,7 +1103,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									setSelectedIndex={setSelectedMenuIndex}
 									selectedType={selectedType}
 									queryItems={queryItems}
-									modes={allModes}
+									modes={contextMenuModes}
 									loading={searchLoading}
 									dynamicSearchResults={fileSearchResults}
 									commands={commands}
@@ -1132,6 +1161,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									textAreaRef.current = el
 								}}
 								value={inputValue}
+								aria-keyshortcuts={modeSwitchDisabled ? undefined : "Shift+Tab"}
 								onChange={(e) => {
 									handleInputChange(e)
 									updateHighlights()
@@ -1367,6 +1397,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							value={mode}
 							title={t("chat:selectMode")}
 							onChange={handleModeChange}
+							disabled={modeSwitchDisabled}
 							triggerClassName="text-ellipsis overflow-hidden flex-shrink-0"
 							modeShortcutText={modeShortcutText}
 							customModes={customModes}
@@ -1382,8 +1413,6 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							listApiConfigMeta={listApiConfigMeta || []}
 							pinnedApiConfigs={pinnedApiConfigs}
 							togglePinnedApiConfig={togglePinnedApiConfig}
-							lockApiConfigAcrossModes={!!lockApiConfigAcrossModes}
-							onToggleLockApiConfig={handleToggleLockApiConfig}
 						/>
 						<AutoApproveDropdown triggerClassName="min-w-[28px] text-ellipsis overflow-hidden flex-shrink" />
 					</div>

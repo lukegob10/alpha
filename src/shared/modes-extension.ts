@@ -1,7 +1,7 @@
 import type { CustomModePrompts, ModeConfig } from "@alpha-code/types"
 
 import { addCustomInstructions } from "../core/prompts/sections/custom-instructions"
-import { getModeBySlug, modes } from "./modes"
+import { defaultMode, getModeBySlug } from "./modes"
 
 // Helper function to get complete mode details with all overrides.
 export async function getFullModeDetails(
@@ -15,7 +15,7 @@ export async function getFullModeDetails(
 	},
 ): Promise<ModeConfig> {
 	// First get the base mode config from custom modes or built-in modes
-	const baseMode = getModeBySlug(modeSlug, customModes) || modes.find((m) => m.slug === modeSlug) || modes[0]
+	const baseMode = getModeBySlug(modeSlug, customModes) || defaultMode
 
 	// Check for any prompt component overrides
 	const promptComponent = customModePrompts?.[modeSlug]

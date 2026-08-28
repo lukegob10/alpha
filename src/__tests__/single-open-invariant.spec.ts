@@ -50,6 +50,7 @@ describe("Single-open-task invariant", () => {
 				checkpointTimeout: 60,
 			}),
 			removeClineFromStack,
+			updateGlobalState: vi.fn().mockResolvedValue(undefined),
 			addClineToStack,
 			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
 			setProviderProfile: vi.fn(),
@@ -90,6 +91,7 @@ describe("Single-open-task invariant", () => {
 				checkpointTimeout: 60,
 			}),
 			removeClineFromStack,
+			updateGlobalState: vi.fn().mockResolvedValue(undefined),
 			addClineToStack,
 			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
 			setProviderProfile: vi.fn(),
@@ -155,12 +157,14 @@ describe("Single-open-task invariant", () => {
 	it("Extension blank task intent: backgrounds current task and resets chat UI", async () => {
 		const activeTask = { taskId: "existing-1", emit: vi.fn() }
 		const clearFocus = vi.fn()
+		const resetNewTaskDraftMode = vi.fn().mockResolvedValue(undefined)
 		const postStateToWebview = vi.fn().mockResolvedValue(undefined)
 		const postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 
 		const provider = {
 			getActiveTask: vi.fn(() => activeTask),
 			taskSessions: { clearFocus },
+			resetNewTaskDraftMode,
 			postStateToWebview,
 			postMessageToWebview,
 		} as unknown as ClineProvider
@@ -168,6 +172,7 @@ describe("Single-open-task invariant", () => {
 		await (ClineProvider.prototype as any).startBlankTask.call(provider)
 
 		expect(clearFocus).toHaveBeenCalledTimes(1)
+		expect(resetNewTaskDraftMode).toHaveBeenCalledTimes(1)
 		expect(activeTask.emit).toHaveBeenCalledWith("taskUnfocused")
 		expect(postStateToWebview).toHaveBeenCalledTimes(1)
 		expect(postMessageToWebview).toHaveBeenCalledWith({

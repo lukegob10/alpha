@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.1.3
+
+### Patch Changes
+
+- Focus ordinary user-facing mode selection on Plan and Code across chat, follow-up suggestions, slash suggestions, scheduled tasks, Goal Seek, Marketplace, and skill setup.
+- Add a composer-scoped `Shift+Tab` shortcut for switching between Plan and Code, with guards for streaming, queued-message editing, composition, repeated events, and conflicting modifiers.
+- Keep Code and Plan changes within the current task and provider configuration while resetting new-task drafts to Code.
+- Preserve legacy and custom-mode tasks for compatibility without offering them in normal mode selectors or Settings setup.
+- Keep mode configuration edits buffered in Settings until the user explicitly saves them.
+
 ## 2.1.2
 
 ### Patch Changes

@@ -49,7 +49,7 @@ import { ModeConfig } from "@alpha-code/types"
 
 import { SYSTEM_PROMPT } from "../system"
 import { McpHub } from "../../../services/mcp/McpHub"
-import { defaultModeSlug, modes, Mode } from "../../../shared/modes"
+import { defaultMode, defaultModeSlug, Mode, planModeSlug } from "../../../shared/modes"
 import "../../../utils/path"
 import { addCustomInstructions } from "../sections/custom-instructions"
 import { MultiSearchReplaceDiffStrategy } from "../../diff/strategies/multi-search-replace"
@@ -220,7 +220,7 @@ describe("SYSTEM_PROMPT", () => {
 			false, // supportsImages
 			undefined, // mcpHub
 			undefined, // diffStrategy
-			defaultModeSlug, // mode
+			planModeSlug, // keep the historical Plan snapshot explicit
 			undefined, // customModePrompts
 			undefined, // customModes
 			undefined, // globalCustomInstructions
@@ -241,7 +241,7 @@ describe("SYSTEM_PROMPT", () => {
 			false,
 			mockMcpHub, // mcpHub
 			undefined, // diffStrategy
-			defaultModeSlug, // mode
+			planModeSlug, // keep the historical Plan snapshot explicit
 			undefined, // customModePrompts
 			undefined, // customModes,
 			undefined, // globalCustomInstructions
@@ -260,7 +260,7 @@ describe("SYSTEM_PROMPT", () => {
 			false,
 			undefined, // explicitly undefined mcpHub
 			undefined, // diffStrategy
-			defaultModeSlug, // mode
+			planModeSlug, // keep the historical Plan snapshot explicit
 			undefined, // customModePrompts
 			undefined, // customModes,
 			undefined, // globalCustomInstructions
@@ -525,7 +525,7 @@ describe("SYSTEM_PROMPT", () => {
 		// Role definition from promptComponent should be at the top
 		expect(prompt.indexOf("Custom prompt role definition")).toBeLessThan(prompt.indexOf("TOOL USE"))
 		// Should not contain the default mode's role definition
-		expect(prompt).not.toContain(modes[0].roleDefinition)
+		expect(prompt).not.toContain(defaultMode.roleDefinition)
 	})
 
 	it("should include the adaptive engineering workflow in code mode only", async () => {
@@ -563,6 +563,24 @@ describe("SYSTEM_PROMPT", () => {
 		expect(askPrompt).not.toContain("use equivalent evidence at the same behavioral level")
 		expect(askPrompt).not.toContain("not compressed code, monolithic responsibilities, or the fewest files")
 		expect(askPrompt).not.toContain("Do not optimize for file count")
+	})
+
+	it("should fall back to Code when the requested mode no longer exists", async () => {
+		const prompt = await SYSTEM_PROMPT(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			"removed-mode",
+			undefined,
+			undefined,
+			undefined,
+			experiments,
+		)
+
+		expect(prompt.startsWith(defaultMode.roleDefinition)).toBe(true)
+		expect(prompt).toContain("privately form a concise operational frame")
 	})
 
 	it("should let a code prompt override replace the default code workflow", async () => {
@@ -611,10 +629,10 @@ describe("SYSTEM_PROMPT", () => {
 		)
 
 		// Should use the default mode's role definition
-		expect(prompt.indexOf(modes[0].roleDefinition)).toBeLessThan(prompt.indexOf("TOOL USE"))
+		expect(prompt.indexOf(defaultMode.roleDefinition)).toBeLessThan(prompt.indexOf("TOOL USE"))
 	})
 
-	it("should exclude update_todo_list tool when todoListEnabled is false", async () => {
+	it("should exclude the embedded update_todo_list catalog in Plan when todoListEnabled is false", async () => {
 		const settings = {
 			todoListEnabled: false,
 			useAgentRules: true,
@@ -627,7 +645,7 @@ describe("SYSTEM_PROMPT", () => {
 			false,
 			undefined, // mcpHub
 			undefined, // diffStrategy
-			defaultModeSlug, // mode
+			planModeSlug, // mode
 			undefined, // customModePrompts
 			undefined, // customModes
 			undefined, // globalCustomInstructions
@@ -642,7 +660,7 @@ describe("SYSTEM_PROMPT", () => {
 		// Mode instructions will still reference the tool with a fallback to markdown
 	})
 
-	it("should include update_todo_list tool when todoListEnabled is true", async () => {
+	it("should keep Plan's update_todo_list reference when todoListEnabled is true", async () => {
 		const settings = {
 			todoListEnabled: true,
 			useAgentRules: true,
@@ -655,7 +673,7 @@ describe("SYSTEM_PROMPT", () => {
 			false,
 			undefined, // mcpHub
 			undefined, // diffStrategy
-			defaultModeSlug, // mode
+			planModeSlug, // mode
 			undefined, // customModePrompts
 			undefined, // customModes
 			undefined, // globalCustomInstructions
@@ -683,7 +701,7 @@ describe("SYSTEM_PROMPT", () => {
 			false,
 			undefined, // mcpHub
 			undefined, // diffStrategy
-			defaultModeSlug, // mode
+			planModeSlug, // mode
 			undefined, // customModePrompts
 			undefined, // customModes
 			undefined, // globalCustomInstructions
@@ -743,7 +761,7 @@ describe("SYSTEM_PROMPT", () => {
 		expect(prompt).not.toContain("Examples:")
 
 		// Should still contain role definition and other non-XML sections
-		expect(prompt).toContain(modes[0].roleDefinition)
+		expect(prompt).toContain(defaultMode.roleDefinition)
 		expect(prompt).toContain("CAPABILITIES")
 		expect(prompt).toContain("RULES")
 		expect(prompt).toContain("SYSTEM INFORMATION")

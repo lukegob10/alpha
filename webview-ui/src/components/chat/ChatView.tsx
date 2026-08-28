@@ -24,10 +24,10 @@ import { SuggestionItem } from "@alpha-code/types"
 import { combineApiRequests } from "@alpha/combineApiRequests"
 import { combineCommandSequences } from "@alpha/combineCommandSequences"
 import { getApiMetrics } from "@alpha/getApiMetrics"
-import { getAllModes } from "@alpha/modes"
 import { getLatestTodo } from "@alpha/todo"
 
 import { vscode } from "@src/utils/vscode"
+import { normalizeUserFacingSuggestionMode } from "@src/utils/modePresentation"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 import { useSelectedModel } from "@src/components/ui/hooks/useSelectedModel"
@@ -62,7 +62,6 @@ export interface ChatViewRef {
 
 export const MAX_IMAGES_PER_MESSAGE = 20 // This is the Anthropic limit.
 
-const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0
 const messageResponseAskTypes = new Set<ClineAsk>([
 	"followup",
 	"completion_result",
@@ -95,7 +94,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	})
 
 	const { t } = useAppTranslation()
-	const modeShortcutText = `${isMac ? "⌘" : "Ctrl"} + . ${t("chat:forNextMode")}, ${isMac ? "⌘" : "Ctrl"} + Shift + . ${t("chat:forPreviousMode")}`
+	const modeShortcutText = "Shift + Tab"
 
 	const extensionState = useExtensionState()
 	const {
@@ -109,7 +108,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		mode,
 		setMode,
 		alwaysAllowModeSwitch,
-		customModes,
 		telemetrySetting,
 		soundEnabled,
 		soundVolume,
@@ -1637,13 +1635,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				markFollowUpAsAnswered()
 			}
 
-			// Check if we need to switch modes
-			if (suggestion.mode) {
+			// Suggestions may contain legacy mode hints. Keep the visible workflow
+			// within Plan/Code and ignore unknown custom-mode hints.
+			const suggestedMode = normalizeUserFacingSuggestionMode(suggestion.mode)
+			if (suggestedMode && !event?.shiftKey) {
 				// Only switch modes if it's a manual click (event exists) or auto-approval is allowed
 				const isManualClick = !!event
 				if (isManualClick || alwaysAllowModeSwitch) {
 					// Switch mode without waiting
-					switchToMode(suggestion.mode)
+					switchToMode(suggestedMode)
 				}
 			}
 
@@ -1771,48 +1771,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			hasLatestCheckpoint,
 		],
 	)
-
-	// Function to handle mode switching
-	const switchToNextMode = useCallback(() => {
-		const allModes = getAllModes(customModes)
-		const currentModeIndex = allModes.findIndex((m) => m.slug === mode)
-		const nextModeIndex = (currentModeIndex + 1) % allModes.length
-		// Update local state and notify extension to sync mode change
-		switchToMode(allModes[nextModeIndex].slug)
-	}, [mode, customModes, switchToMode])
-
-	// Function to handle switching to previous mode
-	const switchToPreviousMode = useCallback(() => {
-		const allModes = getAllModes(customModes)
-		const currentModeIndex = allModes.findIndex((m) => m.slug === mode)
-		const previousModeIndex = (currentModeIndex - 1 + allModes.length) % allModes.length
-		// Update local state and notify extension to sync mode change
-		switchToMode(allModes[previousModeIndex].slug)
-	}, [mode, customModes, switchToMode])
-
-	// Mode switching keyboard handler. Scroll-intent keyboard detection
-	// Native keyboard scrolling is handled by the focusable transcript scroller.
-	const handleKeyDown = useCallback(
-		(event: KeyboardEvent) => {
-			if ((event.metaKey || event.ctrlKey) && event.key === ".") {
-				event.preventDefault()
-				if (event.shiftKey) {
-					switchToPreviousMode()
-				} else {
-					switchToNextMode()
-				}
-			}
-		},
-		[switchToNextMode, switchToPreviousMode],
-	)
-
-	useEffect(() => {
-		window.addEventListener("keydown", handleKeyDown)
-
-		return () => {
-			window.removeEventListener("keydown", handleKeyDown)
-		}
-	}, [handleKeyDown])
 
 	useImperativeHandle(ref, () => ({
 		acceptInput: () => {

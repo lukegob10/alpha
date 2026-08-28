@@ -42,8 +42,16 @@ export function getToolsForMode(groups: readonly GroupEntry[]): string[] {
 // Main modes configuration as an ordered array
 export const modes = DEFAULT_MODES
 
-// Export the default mode slug
-export const defaultModeSlug = modes[0].slug
+// Keep the registry order stable for persisted/legacy mode compatibility while
+// making Code the explicit default for new work and invalid-mode fallbacks.
+export const codeModeSlug = "code"
+export const planModeSlug = "architect"
+export const defaultModeSlug = codeModeSlug
+export const defaultMode = modes.find((mode) => mode.slug === defaultModeSlug) ?? modes[0]
+
+export const isCodePlanModeTransition = (currentMode: string | undefined, newMode: string): boolean =>
+	(currentMode === codeModeSlug && newMode === planModeSlug) ||
+	(currentMode === planModeSlug && newMode === codeModeSlug)
 
 // Helper functions
 export function getModeBySlug(slug: string, customModes?: ModeConfig[]): ModeConfig | undefined {
@@ -88,30 +96,6 @@ export function getAllModes(customModes?: ModeConfig[]): ModeConfig[] {
 	return allModes
 }
 
-/**
- * Return the simplified profile choices for new tasks while preserving custom
- * modes and the selected legacy mode for saved-task compatibility.
- */
-export function getRecommendedModes(customModes?: ModeConfig[], selectedMode?: string): ModeConfig[] {
-	const workSource = getModeBySlug("code") ?? modes[0]
-	const planSource = getModeBySlug("architect") ?? modes[0]
-	const recommended: ModeConfig[] = [
-		{ ...workSource, slug: "work", name: "Work" },
-		{ ...planSource, slug: "plan", name: "Plan" },
-	]
-
-	if (selectedMode && !["work", "plan"].includes(selectedMode)) {
-		const selected = getModeBySlug(selectedMode, customModes)
-		if (selected) recommended.push(selected)
-	}
-
-	for (const customMode of customModes ?? []) {
-		if (!recommended.some((mode) => mode.slug === customMode.slug)) recommended.push(customMode)
-	}
-
-	return recommended
-}
-
 // Check if a mode is custom or an override
 export function isCustomMode(slug: string, customModes?: ModeConfig[]): boolean {
 	return !!customModes?.some((mode) => mode.slug === slug)
@@ -144,7 +128,7 @@ export function getModeSelection(mode: string, promptComponent?: PromptComponent
 	}
 
 	// Otherwise, use built-in mode as base and merge with promptComponent
-	const baseMode = builtInMode || modes[0] // fallback to default mode
+	const baseMode = builtInMode || defaultMode
 
 	return {
 		roleDefinition: promptComponent?.roleDefinition || baseMode.roleDefinition || "",

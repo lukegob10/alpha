@@ -148,6 +148,8 @@ vi.mock("../../../shared/modes", () => ({
 		groups: ["read", "edit"],
 	}),
 	defaultModeSlug: "code",
+	isCodePlanModeTransition: (currentMode: string | undefined, newMode: string) =>
+		(currentMode === "code" && newMode === "architect") || (currentMode === "architect" && newMode === "code"),
 }))
 
 vi.mock("../../prompts/system", () => ({
@@ -389,6 +391,44 @@ describe("ClineProvider - Sticky Mode", () => {
 			)
 		})
 
+		it.each([
+			["code", "architect"],
+			["architect", "code"],
+		])(
+			"retains the exact task provider and conversation for a %s to %s task-local switch",
+			async (currentMode, newMode) => {
+				const apiConfiguration = {
+					apiProvider: "openrouter" as const,
+					openRouterModelId: "anthropic/claude-sonnet-4.6",
+				}
+				const task = new Task({
+					provider,
+					apiConfiguration,
+					taskMode: currentMode,
+					taskApiConfigName: "shared-code-plan-profile",
+				})
+				;(task as any).clineMessages.push({ type: "say", text: "keep this conversation" })
+				;(task as any).apiConversationHistory.push({ role: "user", content: "keep this history" })
+
+				const originalMessages = (task as any).clineMessages
+				const originalConversationHistory = (task as any).apiConversationHistory
+				const getModeConfigIdSpy = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
+				const setTaskProviderProfileSpy = vi.spyOn(provider, "setTaskProviderProfile")
+
+				await provider.addClineToStack(task as any)
+				await provider.setTaskMode((task as any).taskId, newMode, { postState: false })
+
+				expect(provider.getCurrentTask()).toBe(task)
+				expect((task as any)._taskMode).toBe(newMode)
+				expect((task as any).apiConfiguration).toBe(apiConfiguration)
+				expect(await (task as any).getTaskApiConfigName()).toBe("shared-code-plan-profile")
+				expect((task as any).clineMessages).toBe(originalMessages)
+				expect((task as any).apiConversationHistory).toBe(originalConversationHistory)
+				expect(getModeConfigIdSpy).not.toHaveBeenCalled()
+				expect(setTaskProviderProfileSpy).not.toHaveBeenCalled()
+			},
+		)
+
 		it("applies the target mode provider profile to the task lane during task-local mode switches", async () => {
 			const task = new Task({
 				provider,
@@ -537,9 +577,138 @@ describe("ClineProvider - Sticky Mode", () => {
 		})
 	})
 
+	describe("New task mode boundary", () => {
+		it("resets a blank draft to Code without changing the active provider lane", async () => {
+			const apiConfiguration = {
+				apiProvider: "openrouter" as const,
+				openRouterModelId: "anthropic/claude-sonnet-4.6",
+			}
+			const task = new Task({
+				provider,
+				apiConfiguration,
+				taskMode: "architect",
+				taskApiConfigName: "shared-code-plan-profile",
+			})
+			const getModeConfigIdSpy = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
+			const activateProviderProfileSpy = vi.spyOn(provider, "activateProviderProfile")
+
+			await provider.addClineToStack(task as any)
+			await provider.setValue("mode", "architect")
+			await provider.startBlankTask()
+
+			expect(provider.getCurrentTask()).toBeUndefined()
+			expect(provider.getLiveTask((task as any).taskId)).toBe(task)
+			expect((task as any).apiConfiguration).toBe(apiConfiguration)
+			expect(await (task as any).getTaskApiConfigName()).toBe("shared-code-plan-profile")
+			expect((await provider.getState()).mode).toBe("code")
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "code")
+			expect(getModeConfigIdSpy).not.toHaveBeenCalled()
+			expect(activateProviderProfileSpy).not.toHaveBeenCalled()
+		})
+
+		it("defaults an immediate top-level task created from a Plan task to Code", async () => {
+			const apiConfiguration = {
+				apiProvider: "openrouter" as const,
+				openRouterModelId: "anthropic/claude-sonnet-4.6",
+			}
+			const planTask = new Task({
+				provider,
+				apiConfiguration,
+				taskMode: "architect",
+				taskApiConfigName: "shared-code-plan-profile",
+			})
+
+			await provider.addClineToStack(planTask as any)
+			await provider.setValue("mode", "architect")
+			const codeTask = await provider.createTask("Start fresh", undefined, undefined, {
+				preserveExisting: true,
+				startTask: false,
+			})
+
+			expect((planTask as any)._taskMode).toBe("architect")
+			expect((codeTask as any)._taskMode).toBe("code")
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "code")
+		})
+
+		it("honors an explicit Plan selection made after opening a blank draft", async () => {
+			const apiConfiguration = {
+				apiProvider: "openrouter" as const,
+				openRouterModelId: "anthropic/claude-sonnet-4.6",
+			}
+			const previousTask = new Task({
+				provider,
+				apiConfiguration,
+				taskMode: "architect",
+				taskApiConfigName: "shared-code-plan-profile",
+			})
+			const getModeConfigIdSpy = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
+
+			await provider.addClineToStack(previousTask as any)
+			await provider.startBlankTask()
+			await provider.handleModeSwitch("architect")
+			const planTask = await provider.createTask("Plan this", undefined, undefined, {
+				preserveExisting: true,
+				startTask: false,
+			})
+
+			expect((planTask as any)._taskMode).toBe("architect")
+			expect(getModeConfigIdSpy).not.toHaveBeenCalled()
+		})
+	})
+
 	describe("handleModeSwitch", () => {
 		beforeEach(async () => {
 			await provider.resolveWebviewView(mockWebviewView)
+		})
+
+		it("treats an unset fresh-install mode as Code when switching to Plan before the first task", async () => {
+			await provider.setValue("mode", undefined)
+			const getModeConfigIdSpy = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
+			const listConfigSpy = vi.spyOn(provider.providerSettingsManager, "listConfig")
+			const setModeConfigSpy = vi.spyOn(provider.providerSettingsManager, "setModeConfig")
+			const activateProviderProfileSpy = vi.spyOn(provider, "activateProviderProfile")
+
+			await provider.handleModeSwitch("architect")
+
+			expect(provider.getCurrentTask()).toBeUndefined()
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "architect")
+			expect(getModeConfigIdSpy).not.toHaveBeenCalled()
+			expect(listConfigSpy).not.toHaveBeenCalled()
+			expect(setModeConfigSpy).not.toHaveBeenCalled()
+			expect(activateProviderProfileSpy).not.toHaveBeenCalled()
+		})
+
+		it.each([
+			["code", "architect"],
+			["architect", "code"],
+		])("does not load or create a provider profile for a %s to %s switch", async (currentMode, newMode) => {
+			const apiConfiguration = {
+				apiProvider: "openrouter" as const,
+				openRouterModelId: "anthropic/claude-sonnet-4.6",
+			}
+			const task = new Task({
+				provider,
+				apiConfiguration,
+				taskMode: currentMode,
+				taskApiConfigName: "shared-code-plan-profile",
+			})
+			const getModeConfigIdSpy = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
+			const listConfigSpy = vi.spyOn(provider.providerSettingsManager, "listConfig")
+			const setModeConfigSpy = vi.spyOn(provider.providerSettingsManager, "setModeConfig")
+			const activateProviderProfileSpy = vi.spyOn(provider, "activateProviderProfile")
+
+			await provider.addClineToStack(task as any)
+			await provider.handleModeSwitch(newMode)
+
+			expect(provider.getCurrentTask()).toBe(task)
+			expect((task as any)._taskMode).toBe(newMode)
+			expect((task as any).apiConfiguration).toBe(apiConfiguration)
+			expect(await (task as any).getTaskApiConfigName()).toBe("shared-code-plan-profile")
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", newMode)
+			expect(getModeConfigIdSpy).not.toHaveBeenCalled()
+			expect(listConfigSpy).not.toHaveBeenCalled()
+			expect(setModeConfigSpy).not.toHaveBeenCalled()
+			expect(activateProviderProfileSpy).not.toHaveBeenCalled()
 		})
 
 		it("should save mode to task metadata when switching modes", async () => {

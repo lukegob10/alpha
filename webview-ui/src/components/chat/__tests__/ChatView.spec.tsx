@@ -47,8 +47,25 @@ vi.mock("use-sound", () => ({
 
 // Mock components that use ESM dependencies
 vi.mock("../ChatRow", () => ({
-	default: function MockChatRow({ message }: { message: ClineMessage }) {
-		return <div data-testid="chat-row">{JSON.stringify(message)}</div>
+	default: function MockChatRow({
+		message,
+		onSuggestionClick,
+	}: {
+		message: ClineMessage
+		onSuggestionClick?: (suggestion: { answer: string; mode?: string }, event?: React.MouseEvent) => void
+	}) {
+		return (
+			<div data-testid="chat-row">
+				{JSON.stringify(message)}
+				{message.ask === "followup" && (
+					<button
+						data-testid="copy-mode-suggestion"
+						onClick={(event) => onSuggestionClick?.({ answer: "Draft plan", mode: "architect" }, event)}>
+						Copy suggestion
+					</button>
+				)}
+			</div>
+		)
 	},
 }))
 
@@ -363,6 +380,41 @@ describe("ChatView - Context Condensation Requests", () => {
 			expect.objectContaining({ type: expect.stringMatching(/^(?:newTask|queueMessage|askResponse)$/) }),
 		)
 		expect(input).toHaveValue("")
+	})
+})
+
+describe("ChatView - Follow-up suggestion copy", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it("copies a suggested answer without committing its suggested mode", async () => {
+		const { getByTestId } = renderChatView()
+
+		mockPostMessage({
+			mode: "code",
+			currentTaskId: "task-with-followup",
+			currentView: { type: "task", taskId: "task-with-followup" },
+			currentTaskItem: {
+				id: "task-with-followup",
+				number: 1,
+				ts: 100,
+				task: "Test follow-up",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				workspace: "/test/workspace",
+			},
+			clineMessages: [
+				{ type: "say", say: "task", ts: 100, text: "Test follow-up" },
+				{ type: "ask", ask: "followup", ts: 101, text: "Choose an answer" },
+			],
+		})
+
+		const copySuggestion = await waitFor(() => getByTestId("copy-mode-suggestion"))
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(copySuggestion, { shiftKey: true })
+
+		await waitFor(() => expect(mockInputRef.current).toHaveValue("Draft plan"))
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "mode" }))
 	})
 })
 

@@ -61,7 +61,7 @@ describe("ChatTextArea", () => {
 		onHeightChange: vi.fn(),
 		mode: defaultModeSlug,
 		setMode: vi.fn(),
-		modeShortcutText: "(⌘. for next mode)",
+		modeShortcutText: "Shift + Tab",
 	}
 
 	beforeEach(() => {
@@ -75,6 +75,152 @@ describe("ChatTextArea", () => {
 			},
 			taskHistory: [],
 			cwd: "/test/workspace",
+		})
+	})
+
+	describe("mode selection surface", () => {
+		it("offers only Plan and Code built-ins through slash-mode suggestions", () => {
+			const { container } = render(<ChatTextArea {...defaultProps} />)
+			const textarea = container.querySelector("textarea")!
+			expect(textarea).toHaveAttribute("aria-keyshortcuts", "Shift+Tab")
+
+			fireEvent.change(textarea, { target: { value: "/", selectionStart: 1 } })
+
+			expect(screen.getByText("/plan")).toBeInTheDocument()
+			expect(screen.getByText("/code")).toBeInTheDocument()
+			expect(screen.queryByText("/ask")).not.toBeInTheDocument()
+			expect(screen.queryByText("/debug")).not.toBeInTheDocument()
+			expect(screen.queryByText("/orchestrator")).not.toBeInTheDocument()
+		})
+
+		it.each([
+			["code", "architect"],
+			["architect", "code"],
+			["debug", "code"],
+		] as const)("toggles %s to %s with Shift+Tab in the composer", (currentMode, expectedMode) => {
+			const setMode = vi.fn()
+			const { container } = render(<ChatTextArea {...defaultProps} mode={currentMode} setMode={setMode} />)
+			const textarea = container.querySelector("textarea")!
+			const event = new KeyboardEvent("keydown", {
+				key: "Tab",
+				shiftKey: true,
+				bubbles: true,
+				cancelable: true,
+			})
+
+			fireEvent(textarea, event)
+
+			expect(event.defaultPrevented).toBe(true)
+			expect(setMode).toHaveBeenCalledWith(expectedMode)
+			expect(mockPostMessage).toHaveBeenCalledWith({ type: "mode", text: expectedMode })
+		})
+
+		it("leaves ordinary Tab behavior untouched", () => {
+			const setMode = vi.fn()
+			const { container } = render(<ChatTextArea {...defaultProps} setMode={setMode} />)
+			const textarea = container.querySelector("textarea")!
+			const event = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })
+
+			fireEvent(textarea, event)
+
+			expect(event.defaultPrevented).toBe(false)
+			expect(setMode).not.toHaveBeenCalled()
+			expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "mode" }))
+		})
+
+		it.each([{ ctrlKey: true }, { altKey: true }, { metaKey: true }, { repeat: true }])(
+			"does not intercept modified or repeated Shift+Tab: %o",
+			(eventOptions) => {
+				const setMode = vi.fn()
+				const { container } = render(<ChatTextArea {...defaultProps} setMode={setMode} />)
+				const textarea = container.querySelector("textarea")!
+
+				fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true, ...eventOptions })
+
+				expect(setMode).not.toHaveBeenCalled()
+			},
+		)
+
+		it("does not switch modes while an IME composition is active", () => {
+			const setMode = vi.fn()
+			const { container } = render(<ChatTextArea {...defaultProps} setMode={setMode} />)
+			const textarea = container.querySelector("textarea")!
+			const event = new KeyboardEvent("keydown", {
+				key: "Tab",
+				shiftKey: true,
+				bubbles: true,
+				cancelable: true,
+			})
+			Object.defineProperty(event, "isComposing", { value: true })
+
+			fireEvent(textarea, event)
+
+			expect(event.defaultPrevented).toBe(false)
+			expect(setMode).not.toHaveBeenCalled()
+		})
+
+		it("respects a Shift+Tab event already owned by another handler", () => {
+			const setMode = vi.fn()
+			const { container } = render(<ChatTextArea {...defaultProps} setMode={setMode} />)
+			const textarea = container.querySelector("textarea")!
+			const event = new KeyboardEvent("keydown", {
+				key: "Tab",
+				shiftKey: true,
+				bubbles: true,
+				cancelable: true,
+			})
+			event.preventDefault()
+
+			fireEvent(textarea, event)
+
+			expect(setMode).not.toHaveBeenCalled()
+		})
+
+		it("does not switch modes while streaming", () => {
+			const setMode = vi.fn()
+			const { container } = render(<ChatTextArea {...defaultProps} setMode={setMode} isStreaming={true} />)
+			const textarea = container.querySelector("textarea")!
+			expect(screen.getByTestId("mode-selector-trigger")).toBeDisabled()
+			expect(textarea).not.toHaveAttribute("aria-keyshortcuts")
+
+			fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true })
+			fireEvent.change(textarea, { target: { value: "/", selectionStart: 1 } })
+
+			expect(setMode).not.toHaveBeenCalled()
+			expect(screen.queryByText("/plan")).not.toBeInTheDocument()
+			expect(screen.queryByText("/code")).not.toBeInTheDocument()
+		})
+
+		it("does not switch modes while editing a queued message", () => {
+			const setMode = vi.fn()
+			const { container } = render(<ChatTextArea {...defaultProps} setMode={setMode} isEditMode={true} />)
+			const textarea = container.querySelector("textarea")!
+
+			expect(screen.getByTestId("mode-selector-trigger")).toBeDisabled()
+			expect(textarea).not.toHaveAttribute("aria-keyshortcuts")
+			fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true })
+
+			expect(setMode).not.toHaveBeenCalled()
+			expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "mode" }))
+		})
+
+		it("leaves Shift+Tab to context-menu navigation while suggestions are open", () => {
+			const setMode = vi.fn()
+			const { container } = render(<ChatTextArea {...defaultProps} setMode={setMode} />)
+			const textarea = container.querySelector("textarea")!
+			fireEvent.change(textarea, { target: { value: "/", selectionStart: 1 } })
+			expect(screen.getByText("Modes")).toBeInTheDocument()
+
+			const event = new KeyboardEvent("keydown", {
+				key: "Tab",
+				shiftKey: true,
+				bubbles: true,
+				cancelable: true,
+			})
+			fireEvent(textarea, event)
+
+			expect(event.defaultPrevented).toBe(false)
+			expect(setMode).not.toHaveBeenCalled()
 		})
 	})
 
@@ -1225,7 +1371,12 @@ describe("ChatTextArea", () => {
 				})
 
 				const { container } = render(
-					<ChatTextArea {...defaultProps} inputValue="Updated queued prompt" isEditMode={true} onSend={onSend} />,
+					<ChatTextArea
+						{...defaultProps}
+						inputValue="Updated queued prompt"
+						isEditMode={true}
+						onSend={onSend}
+					/>,
 				)
 
 				const textarea = container.querySelector("textarea")!

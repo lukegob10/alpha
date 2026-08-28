@@ -1,4 +1,5 @@
 import { Fzf } from "fzf"
+import { planModeSlug } from "@alpha/modes"
 
 import type { ModeConfig, Command } from "@alpha-code/types"
 
@@ -192,13 +193,14 @@ export function getContextMenuOptions(
 				? fzf.find(slashQuery).map((result) => ({
 						type: ContextMenuOptionType.Mode,
 						value: result.item.original.slug,
-						slashCommand: `/${result.item.original.slug}`,
+						slashCommand:
+							result.item.original.slug === planModeSlug ? "/plan" : `/${result.item.original.slug}`,
 						description: getModeDescription(result.item.original),
 					}))
 				: modes.map((mode) => ({
 						type: ContextMenuOptionType.Mode,
 						value: mode.slug,
-						slashCommand: `/${mode.slug}`,
+						slashCommand: mode.slug === planModeSlug ? "/plan" : `/${mode.slug}`,
 						description: getModeDescription(mode),
 					}))
 

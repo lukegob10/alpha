@@ -6,14 +6,14 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.2 Preview
+## Welcome to Alpha v2.1.3 Preview
 
-Alpha v2.1.2 expands reliable model access while keeping provider setup and task steering stable.
+Alpha v2.1.3 focuses everyday agent work on a clean Plan and Code workflow without changing the proven Code loop.
 
-- Internal Stellar access through Helix authentication and enterprise PEM trust
-- Current model catalogs and capabilities across Anthropic, Gemini, OpenAI, Vertex AI, and VS Code LM
-- Hardened native tool calls for OpenAI-compatible and Vertex AI models
-- Task-scoped queued steering and custom model selection without Settings bounce
+- Plan and Code are the only ordinary user-facing mode choices
+- `Shift+Tab` switches modes while the chat composer is focused
+- Code and Plan stay in the same task and provider configuration
+- Existing legacy and custom-mode tasks remain compatible without cluttering new work
 
 <details>
   <summary>🌐 Available languages</summary>
@@ -45,7 +45,7 @@ Alpha v2.1.2 expands reliable model access while keeping provider setup and task
 ## What Can Alpha Do For YOU?
 
 - Generate Code from natural language descriptions and specs
-- Adapt with Modes: Code, Architect, Ask, Debug, and Custom Modes
+- Keep day-to-day work focused with Plan and Code modes
 - Refactor & Debug existing code
 - Write & Update documentation
 - Answer Questions about your codebase
@@ -57,13 +57,14 @@ Developer note: the implementation and future swarm plan are documented in [Mult
 
 ## Modes
 
-Alpha adapts to how you work:
+Alpha keeps the normal chat workflow focused:
 
-- Code Mode: everyday coding, edits, and file ops
-- Architect Mode: plan systems, specs, and migrations
-- Ask Mode: fast answers, explanations, and docs
-- Debug Mode: trace issues, add logs, isolate root causes
-- Custom Modes: build specialized modes for your team or workflow
+- Plan Mode: plan systems, specs, and migrations
+- Code Mode: everyday coding, investigation, debugging, orchestration, edits, and file operations
+
+Press `Shift+Tab` while the chat composer is focused to switch between Plan and Code.
+
+Existing custom-mode, Ask, Debug, and Orchestrator tasks and stored configurations remain compatible, but they are no longer offered in the normal mode selectors.
 
 ## Resources
 

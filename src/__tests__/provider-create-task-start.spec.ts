@@ -55,6 +55,7 @@ describe("ClineProvider.createTask start control", () => {
 				experiments: {},
 			})),
 			removeClineFromStack: vi.fn(),
+			updateGlobalState: vi.fn(async () => undefined),
 			addClineToStack: vi.fn(async () => undefined),
 			postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined),
 			log: vi.fn(),
@@ -69,6 +70,7 @@ describe("ClineProvider.createTask start control", () => {
 
 		expect(taskMocks.instances).toHaveLength(1)
 		expect(taskMocks.start).not.toHaveBeenCalled()
+		expect((provider as any).updateGlobalState).toHaveBeenCalledWith("mode", "code")
 	})
 
 	it("starts a task by default", async () => {
@@ -78,5 +80,6 @@ describe("ClineProvider.createTask start control", () => {
 
 		expect(taskMocks.instances).toHaveLength(1)
 		expect(taskMocks.start).toHaveBeenCalledTimes(1)
+		expect((provider as any).updateGlobalState).toHaveBeenCalledWith("mode", "code")
 	})
 })

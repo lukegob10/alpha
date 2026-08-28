@@ -137,6 +137,8 @@ vi.mock("../../../shared/modes", () => ({
 		groups: ["read", "edit"],
 	}),
 	defaultModeSlug: "code",
+	isCodePlanModeTransition: (currentMode: string | undefined, newMode: string) =>
+		(currentMode === "code" && newMode === "architect") || (currentMode === "architect" && newMode === "code"),
 }))
 
 vi.mock("../../prompts/system", () => ({
@@ -511,7 +513,7 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 	})
 
 	describe("createTaskWithHistoryItem", () => {
-		it("should restore provider profile from history item when reopening task outside CLI runtime", async () => {
+		it("should restore a legacy task's mode and provider profile when reopening outside CLI runtime", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
 
 			// Create a history item with saved provider profile
@@ -525,7 +527,7 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 				cacheWrites: 0,
 				cacheReads: 0,
 				totalCost: 0.001,
-				mode: "code",
+				mode: "ask",
 				apiConfigName: "saved-profile", // Saved provider profile
 			}
 
@@ -551,6 +553,7 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			expect(activateProviderProfileSpy).not.toHaveBeenCalledWith({ name: "saved-profile" }, expect.anything())
 			expect(vi.mocked(Task)).toHaveBeenLastCalledWith(
 				expect.objectContaining({
+					historyItem: expect.objectContaining({ mode: "ask" }),
 					taskApiConfigName: "saved-profile",
 					apiConfiguration: expect.objectContaining({
 						apiProvider: "anthropic",

@@ -34,9 +34,14 @@ vi.mock("@/utils/docLinks", () => ({
 
 // Mock modes
 vi.mock("@alpha/modes", () => ({
+	codeModeSlug: "code",
+	planModeSlug: "architect",
 	getAllModes: () => [
-		{ slug: "code", name: "Code" },
 		{ slug: "architect", name: "Architect" },
+		{ slug: "code", name: "Code" },
+		{ slug: "ask", name: "Ask" },
+		{ slug: "debug", name: "Debug" },
+		{ slug: "orchestrator", name: "Orchestrator" },
 	],
 }))
 
@@ -272,6 +277,39 @@ describe("SkillsSettings", () => {
 		fireEvent.click(addButton!)
 
 		expect(screen.getByTestId("create-skill-dialog")).toHaveAttribute("data-open", "true")
+	})
+
+	it("keeps every saved legacy mode visible when editing a skill binding", () => {
+		const legacySkills: SkillMetadata[] = [
+			{
+				name: "legacy-bound-skill",
+				description: "Uses saved legacy modes",
+				path: "/workspace/.alpha/skills/legacy-bound-skill/SKILL.md",
+				source: "project",
+				modeSlugs: ["ask", "debug"],
+			},
+		]
+		renderSkillsSettings(legacySkills)
+
+		const configureButton = screen
+			.getAllByTestId("button")
+			.find((button) => button.querySelector(".lucide-settings"))
+		fireEvent.click(configureButton!)
+
+		expect(screen.getByTestId("checkbox-mode-architect")).toBeInTheDocument()
+		expect(screen.getByText("Plan")).toBeInTheDocument()
+		expect(screen.getByTestId("checkbox-mode-code")).toBeInTheDocument()
+		expect(screen.getByTestId("checkbox-mode-ask")).toBeChecked()
+		expect(screen.getByTestId("checkbox-mode-debug")).toBeChecked()
+		expect(screen.queryByTestId("checkbox-mode-orchestrator")).not.toBeInTheDocument()
+
+		fireEvent.click(screen.getByText("settings:skills.modeDialog.save"))
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "updateSkillModes",
+			skillName: "legacy-bound-skill",
+			source: "project",
+			newSkillModeSlugs: ["ask", "debug"],
+		})
 	})
 
 	it("opens delete confirmation dialog when delete button is clicked", () => {

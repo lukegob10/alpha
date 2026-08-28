@@ -35,14 +35,14 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 				</DialogHeader>
 				<div className="space-y-2 text-sm">
 					<p>
-						Alpha v{Package.version} expands reliable model access while keeping provider setup and task
-						steering stable.
+						Alpha v{Package.version} focuses everyday agent work on a clean Plan and Code workflow without
+						changing the proven Code loop.
 					</p>
 					<ul className="list-disc space-y-1 pl-5">
-						<li>Stellar connects internal models through Helix authentication and enterprise PEM trust.</li>
-						<li>Anthropic, Gemini, OpenAI, Vertex AI, and VS Code LM model catalogs are current.</li>
-						<li>OpenAI-compatible and Vertex AI native tool calls are more resilient.</li>
-						<li>Queued steering and custom model selection stay task-scoped and stable.</li>
+						<li>Plan and Code are the only ordinary user-facing mode choices.</li>
+						<li>Press Shift+Tab in the chat composer to switch between them.</li>
+						<li>Code and Plan stay in the same task and provider configuration.</li>
+						<li>Existing legacy and custom-mode tasks remain compatible.</li>
 					</ul>
 				</div>
 			</DialogContent>

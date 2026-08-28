@@ -66,13 +66,13 @@ jobs:
                   $notes = @"
                   Preview VSIX build from main-v2. This is not published to the VS Code Marketplace.
 
-                  Alpha v$version expands reliable model access while keeping provider setup and task steering stable.
+                  Alpha v$version focuses everyday agent work on a clean Plan and Code workflow without changing the proven Code loop.
 
                   Highlights:
-                  - Internal Stellar access through Helix authentication and enterprise PEM trust
-                  - Current model catalogs across Anthropic, Gemini, OpenAI, Vertex AI, and VS Code LM
-                  - Hardened native tool calls for OpenAI-compatible and Vertex AI models
-                  - Task-scoped queued steering and stable custom model selection
+                  - Plan and Code are the only ordinary user-facing mode choices
+                  - Shift+Tab switches modes while the chat composer is focused
+                  - Code and Plan stay in the same task and provider configuration
+                  - Existing legacy and custom-mode tasks remain compatible without cluttering new work
 
                   Commit: ${{ github.sha }}
 

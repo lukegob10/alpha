@@ -7,7 +7,6 @@ import { useStateManager } from "./useStateManager"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { vscode } from "@/utils/vscode"
 import { MarketplaceListView } from "./MarketplaceListView"
-import { cn } from "@/lib/utils"
 import { TooltipProvider } from "@/components/ui/tooltip"
 
 interface MarketplaceViewProps {
@@ -15,7 +14,7 @@ interface MarketplaceViewProps {
 	stateManager: MarketplaceViewStateManager
 	targetTab?: "mcp" | "mode"
 }
-export function MarketplaceView({ stateManager, onDone, targetTab }: MarketplaceViewProps) {
+export function MarketplaceView({ stateManager, onDone }: MarketplaceViewProps) {
 	const { t } = useAppTranslation()
 	const [state, manager] = useStateManager(stateManager)
 	const [hasReceivedInitialState, setHasReceivedInitialState] = useState(false)
@@ -28,11 +27,13 @@ export function MarketplaceView({ stateManager, onDone, targetTab }: Marketplace
 		}
 	}, [state.allItems, hasReceivedInitialState])
 
+	// Legacy callers and persisted view state may still request the hidden mode
+	// catalog. Keep that state compatible, but project this ordinary surface to MCP.
 	useEffect(() => {
-		if (targetTab && (targetTab === "mcp" || targetTab === "mode")) {
-			manager.transition({ type: "SET_ACTIVE_TAB", payload: { tab: targetTab } })
+		if (state.activeTab === "mode") {
+			manager.transition({ type: "SET_ACTIVE_TAB", payload: { tab: "mcp" } })
 		}
-	}, [targetTab, manager])
+	}, [state.activeTab, manager])
 
 	// Ensure marketplace state manager processes messages when component mounts
 	useEffect(() => {
@@ -98,50 +99,15 @@ export function MarketplaceView({ stateManager, onDone, targetTab }: Marketplace
 							<h3 className="font-bold m-0">{t("marketplace:title")}</h3>
 						</div>
 					</div>
-
-					<div className="mt-2 w-full">
-						<div className="surface-raised relative flex rounded-xl p-1">
-							<button
-								className={cn(
-									"relative z-10 flex h-8 flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg text-sm font-medium text-vscode-foreground transition-colors duration-150 hover:bg-[var(--alpha-accent-soft)]",
-									state.activeTab === "mcp" &&
-										"border border-[var(--border-accent)] bg-[var(--alpha-accent-soft)] shadow-sm",
-								)}
-								onClick={() => manager.transition({ type: "SET_ACTIVE_TAB", payload: { tab: "mcp" } })}>
-								MCP
-							</button>
-							<button
-								className={cn(
-									"relative z-10 flex h-8 flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg text-sm font-medium text-vscode-foreground transition-colors duration-150 hover:bg-[var(--alpha-accent-soft)]",
-									state.activeTab === "mode" &&
-										"border border-[var(--border-accent)] bg-[var(--alpha-accent-soft)] shadow-sm",
-								)}
-								onClick={() =>
-									manager.transition({ type: "SET_ACTIVE_TAB", payload: { tab: "mode" } })
-								}>
-								Modes
-							</button>
-						</div>
-					</div>
 				</TabHeader>
 
 				<TabContent className="p-3 pt-2">
-					{state.activeTab === "mcp" && (
-						<MarketplaceListView
-							stateManager={stateManager}
-							allTags={allTags}
-							filteredTags={filteredTags}
-							filterByType="mcp"
-						/>
-					)}
-					{state.activeTab === "mode" && (
-						<MarketplaceListView
-							stateManager={stateManager}
-							allTags={allTags}
-							filteredTags={filteredTags}
-							filterByType="mode"
-						/>
-					)}
+					<MarketplaceListView
+						stateManager={stateManager}
+						allTags={allTags}
+						filteredTags={filteredTags}
+						filterByType="mcp"
+					/>
 				</TabContent>
 			</Tab>
 		</TooltipProvider>

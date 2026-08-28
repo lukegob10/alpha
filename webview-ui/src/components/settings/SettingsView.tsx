@@ -236,6 +236,8 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		includeCurrentTime,
 		includeCurrentCost,
 		maxGitStatusFiles,
+		customModePrompts,
+		customInstructions,
 	} = cachedState
 
 	const apiConfiguration = useMemo(() => cachedState.apiConfiguration ?? {}, [cachedState.apiConfiguration])
@@ -496,6 +498,8 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					githubToken,
 					openRouterImageGenerationSelectedModel,
 					experiments,
+					customModePrompts,
+					customInstructions,
 					customSupportPrompts,
 				},
 			})
@@ -966,7 +970,14 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 						)}
 
 						{/* Modes Section */}
-						{renderTab === "modes" && <ModesView />}
+						{renderTab === "modes" && (
+							<ModesView
+								customModePrompts={customModePrompts}
+								customInstructions={customInstructions}
+								setCustomModePrompts={(value) => setCachedStateField("customModePrompts", value)}
+								setCustomInstructions={(value) => setCachedStateField("customInstructions", value)}
+							/>
+						)}
 
 						{/* MCP Section */}
 						{renderTab === "mcp" && <McpView />}

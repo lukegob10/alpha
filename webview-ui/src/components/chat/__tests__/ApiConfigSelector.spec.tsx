@@ -72,8 +72,6 @@ describe("ApiConfigSelector", () => {
 		],
 		pinnedApiConfigs: { config1: true },
 		togglePinnedApiConfig: mockTogglePinnedApiConfig,
-		lockApiConfigAcrossModes: false,
-		onToggleLockApiConfig: vi.fn(),
 	}
 
 	beforeEach(() => {
@@ -86,6 +84,14 @@ describe("ApiConfigSelector", () => {
 		const trigger = screen.getByTestId("dropdown-trigger")
 		expect(trigger).toBeInTheDocument()
 		expect(trigger).toHaveTextContent("Config 1")
+	})
+
+	test("does not expose a provider lock toggle in the two-state workflow", () => {
+		render(<ApiConfigSelector {...defaultProps} />)
+
+		expect(screen.queryByRole("button", { name: "chat:lockApiConfigAcrossModes" })).not.toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "chat:unlockApiConfigAcrossModes" })).not.toBeInTheDocument()
+		expect(document.querySelector(".codicon-lock, .codicon-unlock")).not.toBeInTheDocument()
 	})
 
 	test("handles disabled state correctly", () => {

@@ -3,12 +3,11 @@ import { vi, describe, it, expect, beforeEach } from "vitest"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import React from "react"
 
-// Mock vscode API
-const mockPostMessage = vi.fn()
-const mockVscode = {
-	postMessage: mockPostMessage,
-}
-;(global as any).acquireVsCodeApi = () => mockVscode
+const mockPostMessage = vi.hoisted(() => vi.fn())
+
+vi.mock("@src/utils/vscode", () => ({
+	vscode: { postMessage: mockPostMessage },
+}))
 
 // Import the actual component
 import SettingsView from "../SettingsView"
@@ -165,7 +164,25 @@ vi.mock("@src/components/ui", () => ({
 
 // Mock ModesView and McpView since they're rendered during indexing
 vi.mock("@src/components/modes/ModesView", () => ({
-	default: () => null,
+	default: ({ customModePrompts, customInstructions, setCustomModePrompts, setCustomInstructions }: any) => (
+		<div>
+			<div data-testid="cached-mode-prompts">{JSON.stringify(customModePrompts)}</div>
+			<div data-testid="cached-global-instructions">{customInstructions}</div>
+			<button
+				data-testid="change-mode-prompt"
+				onClick={() =>
+					setCustomModePrompts({
+						...customModePrompts,
+						code: { ...customModePrompts?.code, roleDefinition: "Unsaved code role" },
+					})
+				}>
+				Change prompt
+			</button>
+			<button data-testid="clear-global-instructions" onClick={() => setCustomInstructions("")}>
+				Clear global instructions
+			</button>
+		</div>
+	),
 }))
 
 vi.mock("@src/components/mcp/McpView", () => ({
@@ -343,5 +360,45 @@ describe("SettingsView - Change Detection Fix", () => {
 
 		// onDone should be called
 		expect(onDone).toHaveBeenCalled()
+	})
+
+	it("buffers mode prompt edits and persists them only through Settings Save", async () => {
+		;(useExtensionState as any).mockReturnValue(
+			createExtensionState({
+				customModePrompts: {
+					code: { description: "Existing description" },
+					debug: { roleDefinition: "Preserved legacy role" },
+				},
+				customInstructions: "Existing global instructions",
+			}),
+		)
+
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="modes" />
+			</QueryClientProvider>,
+		)
+
+		await waitFor(() => expect(screen.getByTestId("change-mode-prompt")).toBeInTheDocument())
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByTestId("change-mode-prompt"))
+		fireEvent.click(screen.getByTestId("clear-global-instructions"))
+
+		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "mode" }))
+		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+		expect(screen.getByTestId("save-button")).toBeEnabled()
+
+		fireEvent.click(screen.getByTestId("save-button"))
+
+		const updateSettings = mockPostMessage.mock.calls
+			.map(([message]) => message)
+			.find((message) => message.type === "updateSettings")
+		expect(updateSettings.updatedSettings).toMatchObject({
+			customModePrompts: {
+				code: { description: "Existing description", roleDefinition: "Unsaved code role" },
+				debug: { roleDefinition: "Preserved legacy role" },
+			},
+			customInstructions: "",
+		})
 	})
 })

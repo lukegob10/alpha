@@ -1,5 +1,7 @@
 # Mode Simplification Proposal
 
+> **Status:** Superseded by the Plan/Code implementation. The normal product surface now exposes only Plan and Code; legacy modes and custom-mode data remain available solely for compatibility with existing tasks and configurations.
+
 ## Question
 
 Does it make sense to keep all current user-facing modes, or should the product simplify them?

@@ -251,6 +251,8 @@ vi.mock("../../../shared/modes", () => ({
 	}),
 	getGroupName: vi.fn().mockReturnValue("General Tools"),
 	defaultModeSlug: "code",
+	isCodePlanModeTransition: (currentMode: string | undefined, newMode: string) =>
+		(currentMode === "code" && newMode === "architect") || (currentMode === "architect" && newMode === "code"),
 }))
 
 vi.mock("../diff/strategies/multi-search-replace", () => ({

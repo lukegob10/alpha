@@ -1,6 +1,6 @@
 import type { PromptComponent } from "@alpha-code/types"
 
-import { getModeSelection, modes } from "../modes"
+import { defaultMode, getModeSelection, modes } from "../modes"
 
 describe("getModeSelection with empty promptComponent", () => {
 	it("should use built-in mode instructions when promptComponent is undefined", () => {
@@ -82,8 +82,6 @@ describe("getModeSelection with empty promptComponent", () => {
 	})
 
 	it("should fall back to default mode when built-in mode is not found", () => {
-		const defaultMode = modes[0] // First mode is the default
-
 		// Test with non-existent mode
 		const partialPromptComponent: PromptComponent = {
 			customInstructions: "Custom instructions for unknown mode",

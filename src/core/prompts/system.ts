@@ -2,7 +2,7 @@ import * as vscode from "vscode"
 
 import { type ModeConfig, type PromptComponent, type CustomModePrompts, type TodoItem } from "@alpha-code/types"
 
-import { Mode, modes, defaultModeSlug, getModeBySlug, getGroupName, getModeSelection } from "../../shared/modes"
+import { Mode, defaultMode, defaultModeSlug, getModeBySlug, getGroupName, getModeSelection } from "../../shared/modes"
 import { DiffStrategy } from "../../shared/tools"
 import { formatLanguage } from "../../shared/language"
 import { isEmpty } from "../../utils/object"
@@ -80,7 +80,7 @@ async function generatePrompt(
 	}
 
 	// Get the full mode config to ensure we have the role definition (used for groups, etc.)
-	const modeConfig = getModeBySlug(mode, customModeConfigs) || modes.find((m) => m.slug === mode) || modes[0]
+	const modeConfig = getModeBySlug(mode, customModeConfigs) || defaultMode
 	const { roleDefinition, baseInstructions } = getModeSelection(mode, promptComponent, customModeConfigs)
 	const subagentRole = settings?.subagentRole
 
@@ -170,7 +170,7 @@ export const SYSTEM_PROMPT = async (
 	const promptComponent = getPromptComponent(customModePrompts, mode)
 
 	// Get full mode config from custom modes or fall back to built-in modes
-	const currentMode = getModeBySlug(mode, customModes) || modes.find((m) => m.slug === mode) || modes[0]
+	const currentMode = getModeBySlug(mode, customModes) || defaultMode
 
 	return generatePrompt(
 		context,

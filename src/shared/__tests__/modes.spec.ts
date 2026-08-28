@@ -9,10 +9,33 @@ vi.mock("../../core/prompts/sections/custom-instructions", () => ({
 	addCustomInstructions: vi.fn().mockResolvedValue("Combined instructions"),
 }))
 
-import { FileRestrictionError, modes, getModeSelection } from "../modes"
+import {
+	defaultMode,
+	defaultModeSlug,
+	FileRestrictionError,
+	getModeBySlug,
+	getModeSelection,
+	isCodePlanModeTransition,
+	modes,
+} from "../modes"
 import { getFullModeDetails } from "../modes-extension"
 import { isToolAllowedForMode } from "../../core/tools/validateToolUse"
 import { addCustomInstructions } from "../../core/prompts/sections/custom-instructions"
+
+describe("built-in mode compatibility contract", () => {
+	it("uses Code as the default without reordering the persisted mode registry", () => {
+		expect(defaultModeSlug).toBe("code")
+		expect(defaultMode.slug).toBe("code")
+		expect(modes[0].slug).toBe("architect")
+		expect(isCodePlanModeTransition("code", "architect")).toBe(true)
+		expect(isCodePlanModeTransition("architect", "code")).toBe(true)
+		expect(isCodePlanModeTransition("code", "debug")).toBe(false)
+	})
+
+	it.each(["architect", "ask", "debug", "orchestrator"])("keeps the %s compatibility slug runnable", (modeSlug) => {
+		expect(getModeBySlug(modeSlug)?.slug).toBe(modeSlug)
+	})
+})
 
 describe("isToolAllowedForMode", () => {
 	const customModes: ModeConfig[] = [
@@ -718,12 +741,9 @@ describe("FileRestrictionError", () => {
 			)
 		})
 
-		it("falls back to first mode for non-existent mode", async () => {
+		it("falls back to Code for a non-existent mode", async () => {
 			const result = await getFullModeDetails("non-existent")
-			expect(result).toMatchObject({
-				...modes[0],
-				// The first mode (architect) has its own customInstructions
-			})
+			expect(result).toMatchObject(defaultMode)
 		})
 	})
 
@@ -825,7 +845,6 @@ describe("getModeSelection", () => {
 
 	test("should fall back to default mode if slug does not exist in custom, prompt, or built-in modes", () => {
 		const selection = getModeSelection("non-existent-mode", undefined, customModesList)
-		const defaultMode = modes[0] // First mode is the default
 		expect(selection.roleDefinition).toBe(defaultMode.roleDefinition)
 		expect(selection.baseInstructions).toBe(defaultMode.customInstructions || "")
 	})

@@ -6,6 +6,7 @@ import { getAllModes } from "@alpha/modes"
 
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { vscode } from "@/utils/vscode"
+import { getUserFacingModeOptions, normalizeUserFacingModeSlug } from "@/utils/modePresentation"
 import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Textarea } from "@/components/ui"
 
 import { Tab, TabContent, TabHeader } from "../common/Tab"
@@ -28,7 +29,6 @@ const scoreLabel = (result?: GoalSeekVerifierResult) => {
 
 const GoalSeekView = ({ onDone, targetJobId }: GoalSeekViewProps) => {
 	const { goalSeekJobs = [], goalSeekRuns = [], goalSeekAttempts = [], cwd, mode, customModes } = useExtensionState()
-	const modes = useMemo(() => getAllModes(customModes), [customModes])
 	const [selectedId, setSelectedId] = useState<string | undefined>(targetJobId ?? goalSeekJobs[0]?.id)
 	const selectedJob = goalSeekJobs.find((job) => job.id === selectedId)
 	const selectedRuns = goalSeekRuns.filter((run) => run.jobId === selectedId)
@@ -45,7 +45,8 @@ const GoalSeekView = ({ onDone, targetJobId }: GoalSeekViewProps) => {
 	const [maxAttempts, setMaxAttempts] = useState(10)
 	const [maxFailedAttempts, setMaxFailedAttempts] = useState(3)
 	const [candidateCount, setCandidateCount] = useState(10)
-	const [jobMode, setJobMode] = useState<string>(mode)
+	const [jobMode, setJobMode] = useState<string>(() => normalizeUserFacingModeSlug(mode))
+	const modes = useMemo(() => getUserFacingModeOptions(getAllModes(customModes), jobMode), [customModes, jobMode])
 
 	const resetForm = () => {
 		setSelectedId(undefined)
@@ -59,7 +60,7 @@ const GoalSeekView = ({ onDone, targetJobId }: GoalSeekViewProps) => {
 		setMaxAttempts(10)
 		setMaxFailedAttempts(3)
 		setCandidateCount(10)
-		setJobMode(mode)
+		setJobMode(normalizeUserFacingModeSlug(mode))
 	}
 
 	const editJob = (job: GoalSeekJob) => {
@@ -74,7 +75,7 @@ const GoalSeekView = ({ onDone, targetJobId }: GoalSeekViewProps) => {
 		setMaxAttempts(job.maxAttempts)
 		setMaxFailedAttempts(job.maxFailedAttempts)
 		setCandidateCount(job.candidateCount)
-		setJobMode(job.mode ?? mode)
+		setJobMode(job.mode ?? normalizeUserFacingModeSlug(mode))
 	}
 
 	const buildVerifier = (): GoalSeekVerifier =>

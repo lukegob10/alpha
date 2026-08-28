@@ -95,7 +95,7 @@ import { Package } from "../../shared/package"
 import { findLast } from "../../shared/array"
 import { supportPrompt } from "../../shared/support-prompt"
 import { GlobalFileNames } from "../../shared/globalFileNames"
-import { Mode, defaultModeSlug, getModeBySlug } from "../../shared/modes"
+import { Mode, defaultModeSlug, getModeBySlug, isCodePlanModeTransition } from "../../shared/modes"
 import { experimentDefault } from "../../shared/experiments"
 import { formatLanguage } from "../../shared/language"
 import { WebviewMessage } from "../../shared/WebviewMessage"
@@ -213,6 +213,15 @@ const SUBAGENT_RESEARCH_WINDOW_MS = 75_000
 const MANAGED_AGENT_TREE_TEXT_LIMIT = 1_000
 const WAIT_AGENT_RESULT_SOURCE = "managed_agent_mailbox"
 
+const getTaskModeForSwitch = async (task: Task): Promise<string | undefined> => {
+	if (typeof task.getTaskMode === "function") {
+		return task.getTaskMode()
+	}
+
+	const taskWithLegacyModeShape = task as unknown as { _taskMode?: string; taskMode?: string }
+	return taskWithLegacyModeShape._taskMode ?? taskWithLegacyModeShape.taskMode
+}
+
 interface WaitForAgentOptions {
 	target?: string
 	untilTerminal?: boolean
@@ -287,6 +296,7 @@ export class ClineProvider
 	private clineStack: Task[] = []
 	private taskSessions: TaskSessionRegistry
 	private currentView: CurrentTaskView = { type: "newTaskDraft" }
+	private newTaskDraftMode: Mode = defaultModeSlug
 	private readonly workspaceMutationGate = new WorkspaceMutationGate()
 	private readonly subagentNicknameRegistry = new SubagentNicknameRegistry()
 	private readonly preparedSubagentGroups = new Map<string, PreparedSubagentGroup>()
@@ -357,7 +367,7 @@ export class ClineProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "august-2026-v2.1.2-model-provider-refresh" // v2.1.2 model/provider refresh
+	public readonly latestAnnouncementId = "august-2026-v2.1.3-plan-code-workflow" // v2.1.3 Plan/Code workflow
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -588,6 +598,7 @@ export class ClineProvider
 		this.taskSessions.register(task, { focus: shouldFocus })
 		if (shouldFocus) {
 			this.currentView = { type: "task", taskId: task.taskId }
+			this.newTaskDraftMode = defaultModeSlug
 		}
 		this.taskSessions.markLifecycle(task.taskId, TaskLifecycleState.Initializing)
 		if (shouldFocus && previous && previous.taskId !== task.taskId) {
@@ -657,6 +668,8 @@ export class ClineProvider
 		this.taskSessions.markLifecycle(currentTask.taskId, TaskLifecycleState.Closing)
 		let task: Task | undefined = this.taskSessions?.unregister(currentTask.taskId) ?? currentTask
 		const nextActiveTaskId = this.getActiveTaskId()
+		const enteredNewTaskDraft =
+			this.currentView.type === "task" && this.currentView.taskId === currentTask.taskId && !nextActiveTaskId
 		if (this.currentView.type === "task" && this.currentView.taskId === currentTask.taskId) {
 			this.currentView = nextActiveTaskId ? { type: "task", taskId: nextActiveTaskId } : { type: "newTaskDraft" }
 		}
@@ -725,6 +738,10 @@ export class ClineProvider
 					)
 				}
 			}
+		}
+
+		if (enteredNewTaskDraft) {
+			await this.resetNewTaskDraftMode()
 		}
 	}
 
@@ -1312,6 +1329,7 @@ export class ClineProvider
 			this.taskSessions.register(task, { focus: shouldFocus })
 			if (shouldFocus) {
 				this.currentView = { type: "task", taskId: task.taskId }
+				this.newTaskDraftMode = defaultModeSlug
 				task.emit(RooCodeEventName.TaskFocused)
 			} else if (this.getActiveTaskId() === task.taskId) {
 				this.taskSessions.clearFocus()
@@ -1599,6 +1617,9 @@ export class ClineProvider
 	 */
 	public async handleModeSwitch(newMode: Mode) {
 		const task = this.getCurrentTask()
+		const currentMode =
+			(task ? ((await getTaskModeForSwitch(task)) ?? this.getGlobalState("mode")) : this.newTaskDraftMode) ??
+			defaultModeSlug
 
 		if (task) {
 			try {
@@ -1616,8 +1637,18 @@ export class ClineProvider
 		}
 
 		await this.updateGlobalState("mode", newMode)
+		if (!task) {
+			this.newTaskDraftMode = newMode
+		}
 
 		this.emit(RooCodeEventName.ModeChanged, newMode)
+
+		// Code and Plan are two workflows over the same active provider lane. Their
+		// transition must not activate or create a mode-specific provider mapping.
+		if (isCodePlanModeTransition(currentMode, newMode)) {
+			await this.postStateToWebview()
+			return
+		}
 
 		// If workspace lock is on, keep the current API config — don't load mode-specific config
 		const lockApiConfigAcrossModes = this.context.workspaceState.get("lockApiConfigAcrossModes", false)
@@ -1773,6 +1804,7 @@ export class ClineProvider
 			throw new Error(`Cannot switch mode for unknown task ${taskId}`)
 		}
 		const { postState = true, applyModeProfile = true } = options
+		const currentMode = await getTaskModeForSwitch(task)
 
 		TelemetryService.instance.captureModeSwitch(task.taskId, mode)
 		task.emit(RooCodeEventName.TaskModeSwitched, task.taskId, mode)
@@ -1791,7 +1823,7 @@ export class ClineProvider
 			;(task as any)._taskMode = mode
 		}
 
-		if (applyModeProfile) {
+		if (applyModeProfile && !isCodePlanModeTransition(currentMode, mode)) {
 			await this.applyModeProviderProfileToTask(task, mode)
 		}
 
@@ -2875,7 +2907,10 @@ export class ClineProvider
 			currentApiConfigName: currentTaskApiConfigName ?? currentApiConfigName ?? "default",
 			listApiConfigMeta: listApiConfigMeta ?? [],
 			pinnedApiConfigs: pinnedApiConfigs ?? {},
-			mode: currentTaskMode ?? mode ?? defaultModeSlug,
+			mode:
+				currentTaskMode ??
+				(this.currentView.type === "newTaskDraft" ? this.newTaskDraftMode : mode) ??
+				defaultModeSlug,
 			customModePrompts: customModePrompts ?? {},
 			customSupportPrompts: customSupportPrompts ?? {},
 			enhancementApiConfigId,
@@ -3054,7 +3089,10 @@ export class ClineProvider
 			terminalZshOhMy: stateValues.terminalZshOhMy ?? false,
 			terminalZshP10k: stateValues.terminalZshP10k ?? false,
 			terminalZdotdir: stateValues.terminalZdotdir ?? false,
-			mode: stateValues.mode ?? defaultModeSlug,
+			mode:
+				this.currentView.type === "newTaskDraft"
+					? this.newTaskDraftMode
+					: (stateValues.mode ?? defaultModeSlug),
 			language: stateValues.language ?? formatLanguage(vscode.env.language),
 			mcpEnabled: stateValues.mcpEnabled ?? true,
 			mcpServers: this.mcpHub?.getAllServers() ?? [],
@@ -3529,15 +3567,22 @@ export class ClineProvider
 		}
 
 		this.currentView = { type: "task", taskId: task.taskId }
+		this.newTaskDraftMode = defaultModeSlug
 		task.emit(RooCodeEventName.TaskFocused)
 		await this.postStateToWebview()
 		return true
+	}
+
+	private async resetNewTaskDraftMode(): Promise<void> {
+		this.newTaskDraftMode = defaultModeSlug
+		await this.updateGlobalState("mode", defaultModeSlug)
 	}
 
 	public async startBlankTask(): Promise<void> {
 		const previous = this.getActiveTask()
 		this.taskSessions.clearFocus()
 		this.currentView = { type: "newTaskDraft" }
+		await this.resetNewTaskDraftMode()
 		previous?.emit(RooCodeEventName.TaskUnfocused)
 		await this.postMessageToWebview({
 			type: "action",
@@ -3606,6 +3651,10 @@ export class ClineProvider
 		options: ManagedCreateTaskOptions = {},
 		configuration: RooCodeSettings = {},
 	): Promise<Task> {
+		const topLevelTaskMode = !parentTask
+			? (options.taskMode ?? configuration.mode ?? this.newTaskDraftMode)
+			: options.taskMode
+
 		if (configuration) {
 			const sanitizedConfiguration = {
 				...configuration,
@@ -3712,12 +3761,17 @@ export class ClineProvider
 			// its initial state update, so state.currentTaskId is available ASAP.
 			startTask: false,
 			...taskOptions,
+			taskMode: topLevelTaskMode,
 			// Freeze ordinary root tasks at creation so a later settings change or
 			// reload cannot silently change their delegation semantics.
 			subagentDelegationPolicy: frozenSubagentDelegationPolicy,
 		})
 		if (taskOptions.subagentInstructionPlacement === "system") {
 			await task.persistFrozenSubagentInstructions()
+		}
+
+		if (!parentTask && !background) {
+			await this.updateGlobalState("mode", topLevelTaskMode ?? defaultModeSlug)
 		}
 
 		await this.addClineToStack(task, { focus: !background })

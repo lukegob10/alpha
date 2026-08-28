@@ -382,26 +382,6 @@ describe("CreateSkillDialog", () => {
 		expect(screen.getByTestId("select-item-project")).toBeInTheDocument()
 	})
 
-	it("renders mode selection checkboxes", () => {
-		render(
-			<CreateSkillDialog
-				open={true}
-				onOpenChange={mockOnOpenChange}
-				onSkillCreated={mockOnSkillCreated}
-				hasWorkspace={true}
-			/>,
-		)
-
-		// Should have "Any mode" checkbox (checked by default)
-		expect(screen.getByTestId("checkbox-create-mode-any")).toBeInTheDocument()
-		expect(screen.getByTestId("checkbox-create-mode-any")).toBeChecked()
-		// Should have built-in mode checkboxes
-		expect(screen.getByTestId("checkbox-create-mode-code")).toBeInTheDocument()
-		expect(screen.getByTestId("checkbox-create-mode-architect")).toBeInTheDocument()
-		// Should have custom mode checkbox from state
-		expect(screen.getByTestId("checkbox-create-mode-custom-mode")).toBeInTheDocument()
-	})
-
 	it("unchecks 'Any mode' when a specific mode is selected", () => {
 		render(
 			<CreateSkillDialog

@@ -7,6 +7,7 @@ import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 import { SuggestionItem } from "@alpha-code/types"
 import { cn } from "@/lib/utils"
+import { getUserFacingModeName, normalizeUserFacingSuggestionMode } from "@/utils/modePresentation"
 
 const DEFAULT_FOLLOWUP_TIMEOUT_MS = 60000
 const COUNTDOWN_INTERVAL_MS = 1000
@@ -111,6 +112,7 @@ export const FollowUpSuggest = ({
 		<div className="flex mb-2 flex-col h-full gap-2">
 			{suggestions.map((suggestion, index) => {
 				const isFirstSuggestion = index === 0
+				const suggestedMode = normalizeUserFacingSuggestionMode(suggestion.mode)
 
 				return (
 					<div key={`${suggestion.answer}-${ts}`} className="w-full relative group">
@@ -134,10 +136,10 @@ export const FollowUpSuggest = ({
 								{t("chat:followUpSuggest.timerPrefix", { seconds: countdown })}
 							</p>
 						)}
-						{suggestion.mode && (
+						{suggestedMode && (
 							<div className="absolute bottom-0 right-0 text-[10px] text-vscode-badge-foreground pl-1 pr-2.5 pt-0.5 pb-1.5 flex items-center gap-0.5 bg-transparent rounded-xl">
 								<span className="codicon codicon-arrow-right" style={{ fontSize: "8px" }} />
-								{suggestion.mode}
+								{getUserFacingModeName(suggestedMode)}
 							</div>
 						)}
 						<StandardTooltip content={t("chat:followUpSuggest.copyToInput")}>

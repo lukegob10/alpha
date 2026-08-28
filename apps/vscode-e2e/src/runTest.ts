@@ -48,22 +48,31 @@ async function main() {
 		const testFile = readOption("--file") ?? process.env.TEST_FILE
 		const providerMode = readProviderMode()
 		const vscodeExecutablePath = process.env.VSCODE_EXECUTABLE_PATH
+		const vscodeVersion = readOption("--vscode-version") ?? process.env.VSCODE_VERSION ?? "1.122.1"
+		const expectedVSCodeVersion = /^\d+\.\d+\.\d+$/.test(vscodeVersion) ? vscodeVersion : undefined
 
 		await runTests({
 			extensionDevelopmentPath,
 			extensionTestsPath,
-			launchArgs: [testWorkspace, `--user-data-dir=${userDataDir}`, `--extensions-dir=${extensionsDir}`],
+			launchArgs: [
+				testWorkspace,
+				`--user-data-dir=${userDataDir}`,
+				`--extensions-dir=${extensionsDir}`,
+				"--disable-extension=vscode.git",
+			],
 			extensionTestsEnv: {
 				...process.env,
 				ALPHA_E2E_EXTENSION_ID: extensionId,
 				ALPHA_E2E_PROVIDER_MODE: providerMode,
 				ALPHA_E2E_WORKSPACE: testWorkspace,
+				...(!vscodeExecutablePath &&
+					expectedVSCodeVersion && { ALPHA_E2E_EXPECTED_VSCODE_VERSION: expectedVSCodeVersion }),
 				...(testGrep && { TEST_GREP: testGrep }),
 				...(testFile && { TEST_FILE: testFile }),
 			},
 			...(vscodeExecutablePath
 				? { vscodeExecutablePath: path.resolve(vscodeExecutablePath) }
-				: { version: process.env.VSCODE_VERSION || "1.122.1" }),
+				: { version: vscodeVersion }),
 		})
 	} finally {
 		await fs.rm(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 })

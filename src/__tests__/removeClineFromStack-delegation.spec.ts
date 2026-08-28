@@ -23,6 +23,7 @@ describe("ClineProvider.removeClineFromStack() delegation awareness", () => {
 		}
 
 		const updateTaskHistory = vi.fn().mockResolvedValue([])
+		const resetNewTaskDraftMode = vi.fn().mockResolvedValue(undefined)
 		const getTaskWithId = opts.getTaskWithIdError
 			? vi.fn().mockRejectedValue(opts.getTaskWithIdError)
 			: vi.fn().mockImplementation(async (id: string) => {
@@ -41,16 +42,17 @@ describe("ClineProvider.removeClineFromStack() delegation awareness", () => {
 			},
 			currentView: { type: "task", taskId: opts.childTaskId },
 			getActiveTaskId: vi.fn().mockReturnValue(undefined),
+			resetNewTaskDraftMode,
 			log: vi.fn(),
 			getTaskWithId,
 			updateTaskHistory,
 		}
 
-		return { provider, childTask, updateTaskHistory, getTaskWithId }
+		return { provider, childTask, updateTaskHistory, getTaskWithId, resetNewTaskDraftMode }
 	}
 
 	it("repairs parent metadata (delegated → active) when a delegated child is removed", async () => {
-		const { provider, updateTaskHistory, getTaskWithId } = buildMockProvider({
+		const { provider, updateTaskHistory, getTaskWithId, resetNewTaskDraftMode } = buildMockProvider({
 			childTaskId: "child-1",
 			parentTaskId: "parent-1",
 			parentHistoryItem: {
@@ -72,6 +74,7 @@ describe("ClineProvider.removeClineFromStack() delegation awareness", () => {
 
 		// Stack should be empty after pop
 		expect(provider.clineStack).toHaveLength(0)
+		expect(resetNewTaskDraftMode).toHaveBeenCalledTimes(1)
 
 		// Parent lookup should have been called
 		expect(getTaskWithId).toHaveBeenCalledWith("parent-1")
@@ -192,6 +195,7 @@ describe("ClineProvider.removeClineFromStack() delegation awareness", () => {
 			},
 			currentView: { type: "newTaskDraft" },
 			getActiveTaskId: vi.fn().mockReturnValue(undefined),
+			resetNewTaskDraftMode: vi.fn().mockResolvedValue(undefined),
 			log: vi.fn(),
 			getTaskWithId: vi.fn(),
 			updateTaskHistory: vi.fn(),
@@ -278,6 +282,7 @@ describe("ClineProvider.removeClineFromStack() delegation awareness", () => {
 			},
 			currentView: { type: "task", taskId: "task-B" },
 			getActiveTaskId: vi.fn().mockReturnValue(undefined),
+			resetNewTaskDraftMode: vi.fn().mockResolvedValue(undefined),
 			log: vi.fn(),
 			getTaskWithId,
 			updateTaskHistory,

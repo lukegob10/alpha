@@ -159,6 +159,8 @@ vi.mock("../../../shared/modes", () => {
 			groups: ["read", "edit"],
 		}),
 		defaultModeSlug: "code",
+		isCodePlanModeTransition: (currentMode: string | undefined, newMode: string) =>
+			(currentMode === "code" && newMode === "architect") || (currentMode === "architect" && newMode === "code"),
 	}
 })
 
@@ -358,17 +360,15 @@ describe("ClineProvider - Lock API Config Across Modes", () => {
 
 			const getModeConfigIdSpy = vi
 				.spyOn(provider.providerSettingsManager, "getModeConfigId")
-				.mockResolvedValue("architect-profile-id")
+				.mockResolvedValue("debug-profile-id")
 			const listConfigSpy = vi
 				.spyOn(provider.providerSettingsManager, "listConfig")
-				.mockResolvedValue([
-					{ name: "architect-profile", id: "architect-profile-id", apiProvider: "anthropic" },
-				])
+				.mockResolvedValue([{ name: "debug-profile", id: "debug-profile-id", apiProvider: "anthropic" }])
 			const activateProviderProfileSpy = vi
 				.spyOn(provider, "activateProviderProfile")
 				.mockResolvedValue(undefined)
 
-			await provider.handleModeSwitch("architect")
+			await provider.handleModeSwitch("debug")
 
 			expect(getModeConfigIdSpy).not.toHaveBeenCalled()
 			expect(listConfigSpy).not.toHaveBeenCalled()
@@ -380,12 +380,12 @@ describe("ClineProvider - Lock API Config Across Modes", () => {
 
 			const getModeConfigIdSpy = vi
 				.spyOn(provider.providerSettingsManager, "getModeConfigId")
-				.mockResolvedValue("architect-profile-id")
+				.mockResolvedValue("debug-profile-id")
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "architect-profile", id: "architect-profile-id", apiProvider: "anthropic" },
+				{ name: "debug-profile", id: "debug-profile-id", apiProvider: "anthropic" },
 			])
 			vi.spyOn(provider.providerSettingsManager, "getProfile").mockResolvedValue({
-				name: "architect-profile",
+				name: "debug-profile",
 				apiProvider: "anthropic",
 			})
 
@@ -393,10 +393,10 @@ describe("ClineProvider - Lock API Config Across Modes", () => {
 				.spyOn(provider, "activateProviderProfile")
 				.mockResolvedValue(undefined)
 
-			await provider.handleModeSwitch("architect")
+			await provider.handleModeSwitch("debug")
 
-			expect(getModeConfigIdSpy).toHaveBeenCalledWith("architect")
-			expect(activateProviderProfileSpy).toHaveBeenCalledWith({ name: "architect-profile" })
+			expect(getModeConfigIdSpy).toHaveBeenCalledWith("debug")
+			expect(activateProviderProfileSpy).toHaveBeenCalledWith({ name: "debug-profile" })
 		})
 	})
 })

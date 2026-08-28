@@ -1,7 +1,6 @@
-import { render, screen, fireEvent } from "@/utils/test-utils"
+import { fireEvent, render, screen } from "@/utils/test-utils"
 
 import type { ModeConfig } from "@alpha-code/types"
-
 import type { Mode } from "@alpha/modes"
 
 import { ModeSelector } from "../ModeSelector"
@@ -35,7 +34,6 @@ vi.mock("@/utils/TelemetryClient", () => ({
 	},
 }))
 
-// Create a variable to control what getAllModes returns.
 let mockModes: ModeConfig[] = []
 
 vi.mock("@alpha/modes", async () => {
@@ -43,258 +41,141 @@ vi.mock("@alpha/modes", async () => {
 	return {
 		...actual,
 		getAllModes: () => mockModes,
-		defaultModeSlug: "code", // Export the default mode slug for tests
+		defaultModeSlug: "code",
 	}
 })
 
+const primaryAndCompatibilityModes: ModeConfig[] = [
+	{
+		slug: "architect",
+		name: "Architect",
+		description: "Plan work",
+		roleDefinition: "Plan",
+		groups: ["read"],
+	},
+	{
+		slug: "code",
+		name: "Code",
+		description: "Implement work",
+		roleDefinition: "Code",
+		groups: ["read", "edit"],
+	},
+	{ slug: "ask", name: "Ask", roleDefinition: "Ask", groups: ["read"] },
+	{ slug: "debug", name: "Debug", roleDefinition: "Debug", groups: ["read", "edit"] },
+	{ slug: "orchestrator", name: "Orchestrator", roleDefinition: "Orchestrator", groups: [] },
+	{
+		slug: "security-review",
+		name: "Security Review",
+		roleDefinition: "Review",
+		groups: ["read"],
+	},
+]
+
+const renderSelector = (value: Mode = "code", onChange = vi.fn(), disabled = false) =>
+	render(
+		<ModeSelector
+			title="Mode Selector"
+			value={value}
+			onChange={onChange}
+			disabled={disabled}
+			modeShortcutText="Shift + Tab"
+			customModes={[primaryAndCompatibilityModes.at(-1)!]}
+		/>,
+	)
+
 describe("ModeSelector", () => {
-	test("shows custom description from customModePrompts", () => {
-		const customModePrompts = {
-			code: {
-				description: "Custom code mode description",
-			},
-		}
-
-		render(
-			<ModeSelector
-				title="Mode Selector"
-				value={"code" as Mode}
-				onChange={vi.fn()}
-				modeShortcutText="Ctrl+M"
-				customModePrompts={customModePrompts}
-			/>,
-		)
-
-		expect(screen.getByTestId("mode-selector-trigger")).toBeInTheDocument()
+	beforeEach(() => {
+		mockModes = primaryAndCompatibilityModes
 	})
 
-	test("falls back to default description when no custom prompt", () => {
-		render(
-			<ModeSelector title="Mode Selector" value={"code" as Mode} onChange={vi.fn()} modeShortcutText="Ctrl+M" />,
-		)
-
-		expect(screen.getByTestId("mode-selector-trigger")).toBeInTheDocument()
-	})
-
-	test("shows search bar when there are more than 6 modes", () => {
-		mockModes = Array.from({ length: 7 }, (_, i) => ({
-			slug: `mode-${i}`,
-			name: `Mode ${i}`,
-			description: `Description for mode ${i}`,
-			roleDefinition: "Role definition",
-			groups: ["read", "edit"],
-		}))
-
-		render(
-			<ModeSelector
-				title="Mode Selector"
-				value={"mode-0" as Mode}
-				onChange={vi.fn()}
-				modeShortcutText="Ctrl+M"
-			/>,
-		)
-
-		// Click to open the popover.
-		fireEvent.click(screen.getByTestId("mode-selector-trigger"))
-
-		// Search input should be visible.
-		expect(screen.getByTestId("mode-search-input")).toBeInTheDocument()
-
-		// Info icon should be visible.
-		expect(screen.getByText("chat:modeSelector.title")).toBeInTheDocument()
-		const infoIcon = document.querySelector(".codicon-info")
-		expect(infoIcon).toBeInTheDocument()
-	})
-
-	test("shows info blurb instead of search bar when there are 6 or fewer modes", () => {
-		mockModes = Array.from({ length: 5 }, (_, i) => ({
-			slug: `mode-${i}`,
-			name: `Mode ${i}`,
-			description: `Description for mode ${i}`,
-			roleDefinition: "Role definition",
-			groups: ["read", "edit"],
-		}))
-
-		render(
-			<ModeSelector
-				title="Mode Selector"
-				value={"mode-0" as Mode}
-				onChange={vi.fn()}
-				modeShortcutText="Ctrl+M"
-			/>,
-		)
-
-		// Click to open the popover.
-		fireEvent.click(screen.getByTestId("mode-selector-trigger"))
-
-		// Search input should NOT be visible.
-		expect(screen.queryByTestId("mode-search-input")).not.toBeInTheDocument()
-
-		// Info blurb should be visible.
-		expect(screen.getByText(/chat:modeSelector.description/)).toBeInTheDocument()
-
-		// Info icon should NOT be visible.
-		const infoIcon = document.querySelector(".codicon-info")
-		expect(infoIcon).not.toBeInTheDocument()
-	})
-
-	test("filters modes correctly when searching", () => {
-		mockModes = Array.from({ length: 7 }, (_, i) => ({
-			slug: `mode-${i}`,
-			name: `Mode ${i}`,
-			description: `Description for mode ${i}`,
-			roleDefinition: "Role definition",
-			groups: ["read", "edit"],
-		}))
-
-		render(
-			<ModeSelector
-				title="Mode Selector"
-				value={"mode-0" as Mode}
-				onChange={vi.fn()}
-				modeShortcutText="Ctrl+M"
-			/>,
-		)
-
-		// Click to open the popover.
-		fireEvent.click(screen.getByTestId("mode-selector-trigger"))
-
-		// Type in search.
-		const searchInput = screen.getByTestId("mode-search-input")
-		fireEvent.change(searchInput, { target: { value: "Mode 3" } })
-
-		// Should show filtered results.
-		const modeItems = screen.getAllByTestId("mode-selector-item")
-		expect(modeItems.length).toBeLessThan(7) // Should have filtered some out.
-	})
-
-	test("respects disableSearch prop even when there are more than 6 modes", () => {
-		mockModes = Array.from({ length: 10 }, (_, i) => ({
-			slug: `mode-${i}`,
-			name: `Mode ${i}`,
-			description: `Description for mode ${i}`,
-			roleDefinition: "Role definition",
-			groups: ["read", "edit"],
-		}))
-
-		render(
-			<ModeSelector
-				title="Mode Selector"
-				value={"mode-0" as Mode}
-				onChange={vi.fn()}
-				modeShortcutText="Ctrl+M"
-				disableSearch={true}
-			/>,
-		)
-
-		// Click to open the popover.
-		fireEvent.click(screen.getByTestId("mode-selector-trigger"))
-
-		// Search input should NOT be visible even with 10 modes.
-		expect(screen.queryByTestId("mode-search-input")).not.toBeInTheDocument()
-
-		// Info blurb should be visible instead.
-		expect(screen.getByText(/chat:modeSelector.description/)).toBeInTheDocument()
-
-		// Info icon should NOT be visible.
-		const infoIcon = document.querySelector(".codicon-info")
-		expect(infoIcon).not.toBeInTheDocument()
-	})
-
-	test("shows search when disableSearch is false (default) and modes > 6", () => {
-		mockModes = Array.from({ length: 8 }, (_, i) => ({
-			slug: `mode-${i}`,
-			name: `Mode ${i}`,
-			description: `Description for mode ${i}`,
-			roleDefinition: "Role definition",
-			groups: ["read", "edit"],
-		}))
-
-		// Don't pass disableSearch prop (should default to false).
-		render(
-			<ModeSelector
-				title="Mode Selector"
-				value={"mode-0" as Mode}
-				onChange={vi.fn()}
-				modeShortcutText="Ctrl+M"
-			/>,
-		)
-
-		fireEvent.click(screen.getByTestId("mode-selector-trigger"))
-
-		expect(screen.getByTestId("mode-search-input")).toBeInTheDocument()
-
-		const infoIcon = document.querySelector(".codicon-info")
-		expect(infoIcon).toBeInTheDocument()
-	})
-
-	test("falls back to default mode when current mode is not available", async () => {
-		// Set up modes including "code" as the default mode (which getAllModes returns first)
-		mockModes = [
-			{
-				slug: "code",
-				name: "Code",
-				description: "Code mode",
-				roleDefinition: "Role definition",
-				groups: ["read", "edit"],
-			},
-			{
-				slug: "other",
-				name: "Other",
-				description: "Other mode",
-				roleDefinition: "Role definition",
-				groups: ["read"],
-			},
-		]
-
+	it("offers only Plan and Code during normal switching", () => {
 		const onChange = vi.fn()
+		renderSelector("code", onChange)
 
-		render(
-			<ModeSelector
-				title="Mode Selector"
-				value={"non-existent-mode" as Mode}
-				onChange={onChange}
-				modeShortcutText="Ctrl+M"
-			/>,
-		)
+		fireEvent.click(screen.getByTestId("mode-selector-trigger"))
 
-		// The component should automatically call onChange with the fallback mode (code)
-		// via useEffect after render
-		await vi.waitFor(() => {
-			expect(onChange).toHaveBeenCalledWith("code")
-		})
+		const items = screen.getAllByTestId("mode-selector-item")
+		expect(items).toHaveLength(2)
+		expect(items[0]).toHaveTextContent("Plan")
+		expect(items[1]).toHaveTextContent("Code")
+		expect(screen.queryByText("Ask")).not.toBeInTheDocument()
+		expect(screen.queryByText("Debug")).not.toBeInTheDocument()
+		expect(screen.queryByText("Orchestrator")).not.toBeInTheDocument()
+		expect(screen.queryByText("Security Review")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("mode-search-input")).not.toBeInTheDocument()
+		expect(document.querySelector(".codicon-extensions")).not.toBeInTheDocument()
+		expect(screen.getByText(/Shift \+ Tab/)).toBeInTheDocument()
+
+		fireEvent.click(items[0])
+		expect(onChange).toHaveBeenCalledWith("architect")
 	})
 
-	test("shows default mode name when current mode is not available", () => {
-		// Set up modes where "code" is available (the default mode)
-		mockModes = [
-			{
-				slug: "code",
-				name: "Code",
-				description: "Code mode",
-				roleDefinition: "Role definition",
-				groups: ["read", "edit"],
-			},
-			{
-				slug: "other",
-				name: "Other",
-				description: "Other mode",
-				roleDefinition: "Role definition",
-				groups: ["read"],
-			},
-		]
+	it("closes an open selector and blocks selection when switching becomes disabled", () => {
+		const onChange = vi.fn()
+		const { rerender } = renderSelector("code", onChange)
 
-		render(
+		fireEvent.click(screen.getByTestId("mode-selector-trigger"))
+		expect(screen.getAllByTestId("mode-selector-item")).toHaveLength(2)
+
+		rerender(
 			<ModeSelector
 				title="Mode Selector"
-				value={"non-existent-mode" as Mode}
-				onChange={vi.fn()}
-				modeShortcutText="Ctrl+M"
+				value="code"
+				onChange={onChange}
+				disabled={true}
+				modeShortcutText="Shift + Tab"
+				customModes={[primaryAndCompatibilityModes.at(-1)!]}
 			/>,
 		)
 
-		// Should show the default mode name instead of empty string
-		const trigger = screen.getByTestId("mode-selector-trigger")
-		expect(trigger).toHaveTextContent("Code")
+		expect(screen.getByTestId("mode-selector-trigger")).toBeDisabled()
+		expect(screen.queryByTestId("mode-selector-item")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByTestId("mode-selector-trigger"))
+		expect(onChange).not.toHaveBeenCalled()
+	})
+
+	it("keeps an active legacy mode visible without coercing its slug", () => {
+		const onChange = vi.fn()
+		renderSelector("debug", onChange)
+
+		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent("Debug")
+		expect(onChange).not.toHaveBeenCalled()
+
+		fireEvent.click(screen.getByTestId("mode-selector-trigger"))
+		expect(screen.getAllByTestId("mode-selector-item")).toHaveLength(3)
+	})
+
+	it("keeps an active custom mode visible but hides it from other tasks", () => {
+		const { unmount } = renderSelector("security-review")
+		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent("Security Review")
+		unmount()
+
+		renderSelector("code")
+		fireEvent.click(screen.getByTestId("mode-selector-trigger"))
+		expect(screen.queryByText("Security Review")).not.toBeInTheDocument()
+	})
+
+	it("uses a cached description override for a primary setup", () => {
+		render(
+			<ModeSelector
+				title="Mode Selector"
+				value="code"
+				onChange={vi.fn()}
+				modeShortcutText="Shift + Tab"
+				customModePrompts={{ code: { description: "Custom code description" } }}
+			/>,
+		)
+
+		fireEvent.click(screen.getByTestId("mode-selector-trigger"))
+		expect(screen.getByText("Custom code description")).toBeInTheDocument()
+	})
+
+	it("falls back to Code when the stored mode no longer exists", async () => {
+		mockModes = primaryAndCompatibilityModes.slice(0, 2)
+		const onChange = vi.fn()
+		renderSelector("missing-mode", onChange)
+
+		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent("Code")
+		await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith("code"))
 	})
 })

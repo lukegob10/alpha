@@ -12,7 +12,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "2.1.2",
+		version: "2.1.3",
 	},
 }))
 
@@ -32,10 +32,10 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		render(<Announcement hideAnnouncement={vi.fn()} />)
 
-		expect(screen.getByText("Welcome to Alpha v2.1.2")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v2.1.3")).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Alpha v2.1.2 expands reliable model access while keeping provider setup and task steering stable.",
+				"Alpha v2.1.3 focuses everyday agent work on a clean Plan and Code workflow without changing the proven Code loop.",
 			),
 		).toBeInTheDocument()
 	})
@@ -44,17 +44,9 @@ describe("Announcement", () => {
 		render(<Announcement hideAnnouncement={vi.fn()} />)
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
-		expect(
-			screen.getByText("Stellar connects internal models through Helix authentication and enterprise PEM trust."),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText("Anthropic, Gemini, OpenAI, Vertex AI, and VS Code LM model catalogs are current."),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText("OpenAI-compatible and Vertex AI native tool calls are more resilient."),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText("Queued steering and custom model selection stay task-scoped and stable."),
-		).toBeInTheDocument()
+		expect(screen.getByText("Plan and Code are the only ordinary user-facing mode choices.")).toBeInTheDocument()
+		expect(screen.getByText("Press Shift+Tab in the chat composer to switch between them.")).toBeInTheDocument()
+		expect(screen.getByText("Code and Plan stay in the same task and provider configuration.")).toBeInTheDocument()
+		expect(screen.getByText("Existing legacy and custom-mode tasks remain compatible.")).toBeInTheDocument()
 	})
 })

@@ -6,6 +6,12 @@ import { setDefaultSuiteTimeout } from "./test-utils"
 suite("Alpha Extension", function () {
 	setDefaultSuiteTimeout(this)
 
+	test("Runs on the requested VS Code version", function () {
+		const expectedVersion = process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION
+		if (!expectedVersion) this.skip()
+		assert.equal(vscode.version, expectedVersion)
+	})
+
 	test("Commands should be registered", async () => {
 		const expectedCommands = [
 			"SidebarProvider.open",
