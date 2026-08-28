@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.5
+
+### Patch Changes
+
+- Keep the VS Code Language Model provider selectable before account-specific discovery completes by merging live selectors into a current GitHub Copilot catalog fallback.
+- Add and deduplicate current GPT-5.3-Codex, GPT-5.5, GPT-5.6 Luna/Sol/Terra, and Claude model selectors while removing the unsupported Mythos entry.
+- Add explicit standard and extended context-window selection for compatible Copilot models, including the correct 200K Luna and 272K GPT-5.5/Sol/Terra standard tiers and the provider-adjusted 1M tier.
+
 ## 2.1.4
 
 ### Patch Changes

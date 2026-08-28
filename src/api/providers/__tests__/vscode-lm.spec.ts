@@ -664,6 +664,35 @@ describe("VsCodeLmHandler", () => {
 			)
 		})
 
+		it("should pass the selected standard context through Copilot model configuration", async () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				vsCodeLmContextSize: 272_000,
+			})
+			handler["client"] = mockCopilotGpt55LanguageModelChat as any
+
+			mockCopilotGpt55LanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Standard context response")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System", [
+				{ role: "user", content: "Use standard context" },
+			])) {
+				// consume stream
+			}
+
+			expect(mockCopilotGpt55LanguageModelChat.sendRequest).toHaveBeenCalledWith(
+				expect.any(Array),
+				expect.objectContaining({
+					modelOptions: { contextSize: 272_000 },
+					configuration: { contextSize: 272_000 },
+				}),
+				expect.anything(),
+			)
+		})
+
 		it("should pass selected high reasoning effort through request options for Copilot GPT-5.3 Codex", async () => {
 			handler = new VsCodeLmHandler({
 				...defaultOptions,
@@ -928,6 +957,20 @@ describe("VsCodeLmHandler", () => {
 			expect(model.info.supportsReasoningEffort).toEqual(["none", "low", "medium", "high", "xhigh", "max"])
 		})
 
+		it("should report extended context when the live selector still advertises the standard tier", () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				vsCodeLmContextSize: 922_000,
+			})
+			handler["client"] = {
+				...mockCopilotGpt55LanguageModelChat,
+				maxInputTokens: 272_000,
+			} as any
+
+			const model = handler.getModel()
+			expect(model.info.contextWindow).toBe(922_000)
+		})
+
 		it("should return fallback model info when no client exists", () => {
 			// Clear the client first
 			handler["client"] = null
@@ -1068,8 +1111,8 @@ describe("VsCodeLmHandler", () => {
 })
 
 describe("getVsCodeLmModels", () => {
-	it("returns every model exposed by VS Code as serializable metadata", async () => {
-		const retiredModel = {
+	it("merges serializable live selectors into the current catalog", async () => {
+		const unknownModel = {
 			...mockLanguageModelChat,
 			id: "claude-3.7-sonnet",
 			name: "Claude 3.7 Sonnet",
@@ -1077,29 +1120,65 @@ describe("getVsCodeLmModels", () => {
 		const currentModel = { ...mockCopilotGpt56TerraLanguageModelChat }
 		const selectChatModels = vscode.lm.selectChatModels as Mock
 		selectChatModels.mockReset()
-		selectChatModels.mockResolvedValue([retiredModel, currentModel])
+		selectChatModels.mockResolvedValue([unknownModel, currentModel])
 
 		const models = await getVsCodeLmModels()
 
 		expect(vscode.lm.selectChatModels).toHaveBeenCalledWith({})
-		expect(models).toEqual([
+		expect(models).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ vendor: "copilot", family: "gpt-5.3-codex" }),
+				expect.objectContaining({ vendor: "copilot", family: "gpt-5.5" }),
+				expect.objectContaining({
+					vendor: currentModel.vendor,
+					family: currentModel.family,
+					version: currentModel.version,
+					id: currentModel.id,
+					name: currentModel.name,
+					maxInputTokens: currentModel.maxInputTokens,
+				}),
+				expect.objectContaining({ id: unknownModel.id, name: unknownModel.name }),
+			]),
+		)
+		expect(models.every((model) => !("sendRequest" in model))).toBe(true)
+	})
+
+	it("returns the catalog when VS Code model discovery fails", async () => {
+		const selectChatModels = vscode.lm.selectChatModels as Mock
+		selectChatModels.mockReset()
+		selectChatModels.mockRejectedValue(new Error("Copilot consent required"))
+
+		const models = await getVsCodeLmModels()
+
+		expect(models).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ vendor: "copilot", family: "gpt-5.6-luna" }),
+				expect.objectContaining({ vendor: "copilot", family: "gpt-5.6-sol" }),
+				expect.objectContaining({ vendor: "copilot", family: "gpt-5.6-terra" }),
+				expect.objectContaining({ vendor: "copilot", family: "claude-opus-4.8" }),
+			]),
+		)
+	})
+
+	it("deduplicates live variants and excludes Mythos", async () => {
+		const selectChatModels = vscode.lm.selectChatModels as Mock
+		selectChatModels.mockReset()
+		selectChatModels.mockResolvedValue([
+			{ ...mockCopilotGpt55LanguageModelChat, id: "gpt-5.5-standard", maxInputTokens: 272_000 },
+			{ ...mockCopilotGpt55LanguageModelChat, id: "gpt-5.5-extended", maxInputTokens: 921_793 },
 			{
-				vendor: retiredModel.vendor,
-				family: retiredModel.family,
-				version: retiredModel.version,
-				id: retiredModel.id,
-				name: retiredModel.name,
-				maxInputTokens: retiredModel.maxInputTokens,
-			},
-			{
-				vendor: currentModel.vendor,
-				family: currentModel.family,
-				version: currentModel.version,
-				id: currentModel.id,
-				name: currentModel.name,
-				maxInputTokens: currentModel.maxInputTokens,
+				...mockLanguageModelChat,
+				vendor: "copilot",
+				family: "claude-mythos-5",
+				id: "claude-mythos-5",
+				name: "Claude Mythos 5",
 			},
 		])
-		expect(models[0]).not.toHaveProperty("sendRequest")
+
+		const models = await getVsCodeLmModels()
+		const gpt55Models = models.filter((model) => model.family === "gpt-5.5")
+
+		expect(gpt55Models).toEqual([expect.objectContaining({ id: "gpt-5.5-extended", maxInputTokens: 921_793 })])
+		expect(models.some((model) => JSON.stringify(model).includes("mythos"))).toBe(false)
 	})
 })

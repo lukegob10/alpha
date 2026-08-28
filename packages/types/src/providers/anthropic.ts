@@ -19,18 +19,6 @@ export const anthropicModels = {
 		supportsTemperature: false,
 		description: "Claude Fable 5: Anthropic's most capable widely released long-horizon agent model",
 	},
-	"claude-mythos-5": {
-		maxTokens: 128_000,
-		contextWindow: 1_000_000,
-		supportsImages: true,
-		supportsPromptCache: true,
-		inputPrice: 10.0,
-		outputPrice: 50.0,
-		cacheWritesPrice: 12.5,
-		cacheReadsPrice: 1.0,
-		supportsTemperature: false,
-		description: "Claude Mythos 5: Invite-only model for defensive cybersecurity and biology research",
-	},
 	"claude-opus-5": {
 		maxTokens: 128_000,
 		contextWindow: 1_000_000,

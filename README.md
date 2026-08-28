@@ -6,14 +6,14 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.4 Preview
+## Welcome to Alpha v2.1.5 Preview
 
-Alpha v2.1.4 makes starting and finishing tasks more responsive and reliable, especially in managed corporate environments.
+Alpha v2.1.5 refreshes the VS Code Language Model provider for the current GitHub Copilot catalog.
 
-- New tasks transition into the active task immediately without waiting for unrelated state, MCP, or credential-store work
-- MCP availability is reused opportunistically and never blocks the first model request
-- Completion feedback and queued guidance clear stale recovery state and reach the model reliably
-- Recovery diagnostics identify the failed tool and error instead of showing only generic guidance
+- Current GPT-5.3-Codex, GPT-5.5, GPT-5.6 Luna/Sol/Terra, and Claude models remain selectable even before live discovery completes
+- Duplicate Copilot aliases and selector variants collapse into one clear model entry
+- Compatible models expose explicit standard and extended / 1M context choices with model-correct standard limits
+- Unsupported Mythos entries are removed from the bundled and live-discovered model lists
 
 <details>
   <summary>🌐 Available languages</summary>

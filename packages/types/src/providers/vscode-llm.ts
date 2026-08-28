@@ -8,6 +8,7 @@ export type VscodeLlmModelInfo = ModelInfo & {
 	supportsToolCalling: boolean
 	maxInputTokens: number
 	supportsContextWindowConfiguration?: boolean
+	extendedContextSize?: number
 }
 export type VscodeLlmModelSelectorLike = {
 	vendor?: string
@@ -15,12 +16,17 @@ export type VscodeLlmModelSelectorLike = {
 	id?: string
 	name?: string
 	version?: string
+	maxInputTokens?: number
 }
+
+export type VscodeLlmModelMetadata = VscodeLlmModelSelectorLike
 
 export const vscodeLlmDefaultModelId: VscodeLlmModelId = "gpt-5.5"
 
 const COPILOT_DEFAULT_CONTEXT_WINDOW = 128_000
 const COPILOT_GPT_5_CONTEXT_WINDOW = 272_000
+const COPILOT_GPT_5_6_LUNA_CONTEXT_WINDOW = 200_000
+const COPILOT_EXTENDED_CONTEXT_SIZE = 922_000
 const COPILOT_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "medium", "high"]
 const COPILOT_MINIMAL_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["minimal", "low", "medium", "high"]
 const COPILOT_EXTRA_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["none", "low", "medium", "high", "xhigh"]
@@ -68,6 +74,7 @@ function copilotModel({
 		supportsToolCalling: true,
 		supportsReasoningEffort,
 		supportsContextWindowConfiguration,
+		extendedContextSize: supportsContextWindowConfiguration ? COPILOT_EXTENDED_CONTEXT_SIZE : undefined,
 		deprecated,
 	}
 }
@@ -106,6 +113,7 @@ export const vscodeLlmModels = {
 		family: "gpt-5.4-nano",
 		contextWindow: COPILOT_GPT_5_CONTEXT_WINDOW,
 		supportsReasoningEffort: COPILOT_EXTRA_REASONING_EFFORTS,
+		deprecated: true,
 	}),
 	"gpt-5.5": copilotModel({
 		name: "GPT-5.5",
@@ -117,7 +125,7 @@ export const vscodeLlmModels = {
 	"gpt-5.6-luna": copilotModel({
 		name: "GPT-5.6 Luna",
 		family: "gpt-5.6-luna",
-		contextWindow: COPILOT_GPT_5_CONTEXT_WINDOW,
+		contextWindow: COPILOT_GPT_5_6_LUNA_CONTEXT_WINDOW,
 		supportsImages: true,
 		supportsReasoningEffort: COPILOT_MAX_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
@@ -223,6 +231,7 @@ export const vscodeLlmModels = {
 	"gemini-3.1-pro": copilotModel({
 		name: "Gemini 3.1 Pro",
 		family: "gemini-3.1-pro",
+		contextWindow: 200_000,
 		supportsImages: true,
 		supportsReasoningEffort: COPILOT_REASONING_EFFORTS,
 	}),
@@ -272,11 +281,13 @@ export const vscodeLlmModels = {
 	"grok-4.5": copilotModel({
 		name: "Grok 4.5",
 		family: "grok-4.5",
+		contextWindow: 200_000,
 		supportsImages: true,
 	}),
 	"grok-4.6": copilotModel({
 		name: "Grok 4.6",
 		family: "grok-4.6",
+		contextWindow: 200_000,
 		supportsImages: true,
 	}),
 	"gpt-4.1": copilotModel({
@@ -296,6 +307,20 @@ export const vscodeLlmModels = {
 	}),
 } as const satisfies Record<string, VscodeLlmModelInfo>
 
+const vscodeLlmModelAliases: Partial<Record<VscodeLlmModelId, readonly string[]>> = {
+	"gemini-3-flash": ["gemini-3-flash-preview"],
+	"gemini-3.1-pro": ["gemini-3.1-pro-preview"],
+	"mai-code-1-flash": ["mai-code-1-flash-picker"],
+}
+
+const hiddenVscodeLlmModelIds = ["claude-mythos-5"] as const
+
+function getVscodeLlmModelIdentifiers(modelId: VscodeLlmModelId): string[] {
+	return [modelId, vscodeLlmModels[modelId].family, ...(vscodeLlmModelAliases[modelId] ?? [])].filter(
+		(value, index, identifiers) => identifiers.indexOf(value) === index,
+	)
+}
+
 function includesCompleteModelId(value: string, modelId: string): boolean {
 	let searchFromIndex = 0
 
@@ -306,7 +331,7 @@ function includesCompleteModelId(value: string, modelId: string): boolean {
 		}
 
 		const nextCharacter = value[matchIndex + modelId.length]
-		if (!nextCharacter || !/[a-z0-9.-]/i.test(nextCharacter)) {
+		if (!nextCharacter || !/[a-z0-9.]/i.test(nextCharacter)) {
 			return true
 		}
 
@@ -316,7 +341,7 @@ function includesCompleteModelId(value: string, modelId: string): boolean {
 	return false
 }
 
-export function getVscodeLlmModelInfo(model: VscodeLlmModelSelectorLike): VscodeLlmModelInfo | undefined {
+export function getVscodeLlmModelId(model: VscodeLlmModelSelectorLike): VscodeLlmModelId | undefined {
 	if (model.vendor && model.vendor.toLowerCase() !== "copilot") {
 		return undefined
 	}
@@ -325,23 +350,130 @@ export function getVscodeLlmModelInfo(model: VscodeLlmModelSelectorLike): Vscode
 		.filter(Boolean)
 		.map((value) => value!.toLowerCase())
 
-	for (const [modelId, modelInfo] of Object.entries(vscodeLlmModels)) {
-		if (searchableValues.some((value) => value === modelId)) {
-			return modelInfo
+	for (const modelId of Object.keys(vscodeLlmModels) as VscodeLlmModelId[]) {
+		if (searchableValues.some((value) => getVscodeLlmModelIdentifiers(modelId).includes(value))) {
+			return modelId
 		}
 	}
 
-	const longestModelIdsFirst = Object.entries(vscodeLlmModels).sort(
-		([leftModelId], [rightModelId]) => rightModelId.length - leftModelId.length,
-	)
+	const longestIdentifiersFirst = (Object.keys(vscodeLlmModels) as VscodeLlmModelId[])
+		.flatMap((modelId) => getVscodeLlmModelIdentifiers(modelId).map((identifier) => ({ identifier, modelId })))
+		.sort((left, right) => right.identifier.length - left.identifier.length)
 
-	for (const [modelId, modelInfo] of longestModelIdsFirst) {
-		if (searchableValues.some((value) => includesCompleteModelId(value, modelId))) {
-			return modelInfo
+	for (const { identifier, modelId } of longestIdentifiersFirst) {
+		if (searchableValues.some((value) => includesCompleteModelId(value, identifier))) {
+			return modelId
 		}
 	}
 
 	return undefined
+}
+
+export function getVscodeLlmModelInfo(model: VscodeLlmModelSelectorLike): VscodeLlmModelInfo | undefined {
+	const modelId = getVscodeLlmModelId(model)
+	return modelId ? vscodeLlmModels[modelId] : undefined
+}
+
+function serializeVscodeLlmModel(model: VscodeLlmModelMetadata): VscodeLlmModelMetadata {
+	return {
+		vendor: model.vendor,
+		family: model.family,
+		version: model.version,
+		id: model.id,
+		name: model.name,
+		maxInputTokens: model.maxInputTokens,
+	}
+}
+
+function getVscodeLlmSelectorKey(model: VscodeLlmModelSelectorLike): string {
+	return [model.vendor, model.family, model.version, model.id].filter(Boolean).join("/")
+}
+
+function isHiddenVscodeLlmModel(model: VscodeLlmModelSelectorLike): boolean {
+	const searchableValues = [model.family, model.id, model.name, model.version]
+		.filter(Boolean)
+		.map((value) => value!.toLowerCase())
+
+	return hiddenVscodeLlmModelIds.some((modelId) =>
+		searchableValues.some((value) => includesCompleteModelId(value, modelId)),
+	)
+}
+
+function shouldPreferVscodeLlmModel(candidate: VscodeLlmModelMetadata, current: VscodeLlmModelMetadata): boolean {
+	const currentIsCatalogFallback = !current.id && !current.version && current.maxInputTokens === undefined
+	if (currentIsCatalogFallback) {
+		return true
+	}
+
+	return (
+		typeof candidate.maxInputTokens === "number" &&
+		candidate.maxInputTokens > (current.maxInputTokens ?? Number.NEGATIVE_INFINITY)
+	)
+}
+
+/**
+ * Returns the current Copilot catalog as broad selectors. A live selector can replace
+ * each entry later, but these fallbacks keep the settings picker usable before VS Code
+ * has returned account-specific models or Copilot consent has been granted.
+ */
+export function getVscodeLlmCatalogModels(): VscodeLlmModelMetadata[] {
+	return (Object.keys(vscodeLlmModels) as VscodeLlmModelId[])
+		.filter((modelId) => !vscodeLlmModels[modelId].deprecated)
+		.map((modelId) => {
+			const modelInfo = vscodeLlmModels[modelId]
+			return {
+				vendor: "copilot",
+				family: vscodeLlmModelAliases[modelId]?.[0] ?? modelInfo.family,
+				name: modelInfo.name,
+			}
+		})
+}
+
+/** Merge account-specific VS Code selectors into the catalog and collapse aliases/variants. */
+export function mergeVscodeLlmModels(liveModels: readonly VscodeLlmModelMetadata[]): VscodeLlmModelMetadata[] {
+	const mergedModels = getVscodeLlmCatalogModels()
+	const canonicalIndexes = new Map<VscodeLlmModelId, number>()
+	const unknownSelectorIndexes = new Map<string, number>()
+
+	mergedModels.forEach((model, index) => {
+		const modelId = getVscodeLlmModelId(model)
+		if (modelId) {
+			canonicalIndexes.set(modelId, index)
+		}
+	})
+
+	for (const liveModel of liveModels) {
+		const serializedModel = serializeVscodeLlmModel(liveModel)
+		if (isHiddenVscodeLlmModel(serializedModel)) {
+			continue
+		}
+
+		const modelId = getVscodeLlmModelId(serializedModel)
+
+		if (modelId) {
+			const existingIndex = canonicalIndexes.get(modelId)
+			if (existingIndex === undefined) {
+				canonicalIndexes.set(modelId, mergedModels.length)
+				mergedModels.push(serializedModel)
+			} else {
+				const existingModel = mergedModels[existingIndex]
+				if (existingModel && shouldPreferVscodeLlmModel(serializedModel, existingModel)) {
+					mergedModels[existingIndex] = serializedModel
+				}
+			}
+			continue
+		}
+
+		const selectorKey = getVscodeLlmSelectorKey(serializedModel)
+		if (!selectorKey || unknownSelectorIndexes.has(selectorKey)) {
+			continue
+		}
+
+		unknownSelectorIndexes.set(selectorKey, mergedModels.length)
+		mergedModels.push(serializedModel)
+	}
+
+	return mergedModels
 }
 
 /**
@@ -349,20 +481,21 @@ export function getVscodeLlmModelInfo(model: VscodeLlmModelSelectorLike): Vscode
  * Copilot's context-size values are rounded token budgets (for example, 922,000), while
  * `maxInputTokens` reserves a small amount of provider overhead (for example, 921,793).
  */
-export function getVscodeLlmExtendedContextSize(
-	model: VscodeLlmModelSelectorLike & { maxInputTokens?: number },
-): number | undefined {
+export function getVscodeLlmExtendedContextSize(model: VscodeLlmModelSelectorLike): number | undefined {
 	const modelInfo = getVscodeLlmModelInfo(model)
 	const maxInputTokens = model.maxInputTokens
 
-	if (
-		!modelInfo?.supportsContextWindowConfiguration ||
-		typeof maxInputTokens !== "number" ||
-		!Number.isFinite(maxInputTokens) ||
-		maxInputTokens <= modelInfo.contextWindow
-	) {
+	if (!modelInfo?.supportsContextWindowConfiguration) {
 		return undefined
 	}
 
-	return Math.round(maxInputTokens / 1_000) * 1_000
+	if (
+		typeof maxInputTokens === "number" &&
+		Number.isFinite(maxInputTokens) &&
+		maxInputTokens > modelInfo.contextWindow
+	) {
+		return Math.round(maxInputTokens / 1_000) * 1_000
+	}
+
+	return modelInfo.extendedContextSize
 }

@@ -2,7 +2,13 @@ import { anthropicModels } from "../providers/anthropic.js"
 import { geminiModels } from "../providers/gemini.js"
 import { openAiNativeModels } from "../providers/openai.js"
 import { VERTEX_1M_CONTEXT_MODEL_IDS, vertexDefaultModelId, vertexModels } from "../providers/vertex.js"
-import { getVscodeLlmModelInfo, vscodeLlmModels } from "../providers/vscode-llm.js"
+import {
+	getVscodeLlmCatalogModels,
+	getVscodeLlmExtendedContextSize,
+	getVscodeLlmModelInfo,
+	mergeVscodeLlmModels,
+	vscodeLlmModels,
+} from "../providers/vscode-llm.js"
 
 describe("current provider model catalogs", () => {
 	describe("OpenAI", () => {
@@ -69,7 +75,6 @@ describe("current provider model catalogs", () => {
 				"gemini-3.5-flash-lite",
 				"gemini-3.1-flash-lite",
 				"claude-fable-5",
-				"claude-mythos-5",
 				"claude-opus-5",
 				"claude-sonnet-5",
 				"claude-sonnet-4-6",
@@ -96,7 +101,6 @@ describe("current provider model catalogs", () => {
 	describe("Anthropic", () => {
 		const currentClaudeIds = [
 			"claude-fable-5",
-			"claude-mythos-5",
 			"claude-opus-5",
 			"claude-sonnet-5",
 			"claude-opus-4-8",
@@ -106,6 +110,8 @@ describe("current provider model catalogs", () => {
 		it("includes the current Claude IDs in both Anthropic and Vertex AI", () => {
 			expect(Object.keys(anthropicModels)).toEqual(expect.arrayContaining([...currentClaudeIds]))
 			expect(Object.keys(vertexModels)).toEqual(expect.arrayContaining([...currentClaudeIds]))
+			expect(anthropicModels).not.toHaveProperty("claude-mythos-5")
+			expect(vertexModels).not.toHaveProperty("claude-mythos-5")
 		})
 
 		it("uses the default 1M context and 128K output limits for Claude 4.7 and later", () => {
@@ -132,6 +138,15 @@ describe("current provider model catalogs", () => {
 
 	describe("VS Code LM / GitHub Copilot", () => {
 		const currentCopilotModelIds = [
+			"gpt-5.3-codex",
+			"gpt-5.5",
+			"gpt-5.6-luna",
+			"gpt-5.6-sol",
+			"gpt-5.6-terra",
+			"claude-opus-4.6",
+			"claude-opus-4.7",
+			"claude-opus-4.8",
+			"claude-sonnet-4.6",
 			"claude-opus-5",
 			"gemini-3.6-flash",
 			"gemini-3.7-flash",
@@ -174,6 +189,56 @@ describe("current provider model catalogs", () => {
 			expect(vscodeLlmModels["mai-code-1.1-flash"]).toEqual(
 				expect.objectContaining({ contextWindow: 256_000, supportsImages: true }),
 			)
+			expect(vscodeLlmModels["gpt-5.6-luna"].contextWindow).toBe(200_000)
+			expect(getVscodeLlmExtendedContextSize({ family: "gpt-5.5", vendor: "copilot" })).toBe(922_000)
+		})
+
+		it("provides a current catalog fallback without retired or fictitious models", () => {
+			const catalogFamilies = getVscodeLlmCatalogModels().map((model) => model.family)
+
+			expect(catalogFamilies).toEqual(
+				expect.arrayContaining([
+					"gpt-5.3-codex",
+					"gpt-5.5",
+					"gpt-5.6-luna",
+					"gpt-5.6-sol",
+					"gpt-5.6-terra",
+					"claude-opus-4.6",
+					"claude-opus-4.7",
+					"claude-opus-4.8",
+					"claude-sonnet-4.6",
+				]),
+			)
+			expect(catalogFamilies).not.toContain("gpt-5.4-nano")
+			expect(catalogFamilies).not.toContain("claude-mythos-5")
+		})
+
+		it("deduplicates live selector variants and filters Mythos", () => {
+			const models = mergeVscodeLlmModels([
+				{
+					vendor: "copilot",
+					family: "gpt-5.5",
+					id: "copilot-gpt-5.5-standard",
+					maxInputTokens: 272_000,
+				},
+				{
+					vendor: "copilot",
+					family: "gpt-5.5",
+					id: "copilot-gpt-5.5-extended",
+					maxInputTokens: 921_793,
+				},
+				{
+					vendor: "copilot",
+					family: "claude-mythos-5",
+					id: "claude-mythos-5",
+				},
+			])
+			const gpt55Models = models.filter((model) => getVscodeLlmModelInfo(model) === vscodeLlmModels["gpt-5.5"])
+
+			expect(gpt55Models).toEqual([
+				expect.objectContaining({ id: "copilot-gpt-5.5-extended", maxInputTokens: 921_793 }),
+			])
+			expect(models.some((model) => JSON.stringify(model).includes("mythos"))).toBe(false)
 		})
 
 		it("keeps retired Gemini models only as deprecated compatibility metadata", () => {
