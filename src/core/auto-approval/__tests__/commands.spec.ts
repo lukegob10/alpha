@@ -1,4 +1,9 @@
-import { containsDangerousSubstitution, getCommandDecision } from "../commands"
+import {
+	containsDangerousSubstitution,
+	createSubagentCommandApprovalPolicy,
+	getCommandDecision,
+	getSubagentCommandDecision,
+} from "../commands"
 
 describe("containsDangerousSubstitution", () => {
 	describe("zsh array assignments (should NOT be flagged)", () => {
@@ -35,6 +40,42 @@ describe("getCommandDecision", () => {
 		const command = 'files=(a.ts b.ts); for f in "${files[@]}"; do echo "$f"; done'
 		const result = getCommandDecision(command, ["*"])
 		expect(result).toBe("auto_approve")
+	})
+})
+
+describe("plaintext-free inherited command approval", () => {
+	it("preserves longest-prefix and chain decisions without persisting command text", () => {
+		const allowed = ["git", "git push --dry-run", "mycli --token hunter2"]
+		const denied = ["git push", "curl -u user:password"]
+		const policy = createSubagentCommandApprovalPolicy(allowed, denied, "8".repeat(64))
+		const serialized = JSON.stringify(policy)
+
+		for (const command of [...allowed, ...denied]) expect(serialized).not.toContain(command)
+		for (const command of [
+			"git status",
+			"git push origin main",
+			"git push --dry-run origin main",
+			"npm test",
+			"git status && git push origin main",
+		]) {
+			expect(getSubagentCommandDecision(command, policy)).toBe(getCommandDecision(command, allowed, denied))
+		}
+	})
+
+	it("preserves wildcard approval and denial precedence", () => {
+		const policy = createSubagentCommandApprovalPolicy(["*"], ["git push"], "9".repeat(64))
+
+		expect(getSubagentCommandDecision("pnpm test", policy)).toBe("auto_approve")
+		expect(getSubagentCommandDecision("git push origin main", policy)).toBe("auto_deny")
+		expect(getSubagentCommandDecision('echo "${var@P}"', policy)).toBe("ask_user")
+	})
+
+	it("preserves configured prefix whitespace semantics", () => {
+		const allowed = [" git", " * "]
+		const policy = createSubagentCommandApprovalPolicy(allowed, [], "a".repeat(64))
+
+		expect(getSubagentCommandDecision("git status", policy)).toBe(getCommandDecision("git status", allowed, []))
+		expect(getSubagentCommandDecision("git status", policy)).toBe("ask_user")
 	})
 })
 

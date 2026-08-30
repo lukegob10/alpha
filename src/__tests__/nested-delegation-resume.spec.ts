@@ -63,6 +63,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 	it("C completes → reopens B; then B completes → reopens A; emits correct events; no resume_task asks", async () => {
 		// Track which task is "current" to satisfy provider.reopenParentFromDelegation() child-close logic
 		let currentActiveId: string | undefined = "C"
+		const liveTasks = new Map<string, any>()
 
 		// History index: A is parent of B, B is parent of C
 		const historyIndex: Record<string, any> = {
@@ -111,34 +112,31 @@ describe("Nested delegation resume (A → B → C)", () => {
 		}
 
 		const emitSpy = vi.fn()
-		const removeClineFromStack = vi.fn().mockImplementation(async () => {
-			// Simulate closing current child
-			currentActiveId = undefined
+		const removeClineFromStack = vi.fn().mockImplementation(async (options?: { taskId?: string }) => {
+			const taskId = options?.taskId ?? currentActiveId
+			if (taskId) liveTasks.delete(taskId)
+			if (currentActiveId === taskId) currentActiveId = undefined
 		})
 		const createTaskWithHistoryItem = vi
 			.fn()
 			.mockImplementation(async (historyItem: any, opts?: { startTask?: boolean }) => {
-				// Assert startTask:false to avoid resume asks
-				expect(opts).toEqual(expect.objectContaining({ startTask: false }))
-				// Reopen the parent
-				currentActiveId = historyItem.id
-				// Return minimal parent instance with resumeAfterDelegation
-				return {
+				// The parent is staged off-screen while its child is still live.
+				expect(opts).toEqual({ startTask: false, preserveExisting: true, background: true })
+				const instance = {
 					taskId: historyItem.id,
+					messageQueueService: { addMessage: vi.fn(() => true) },
 					resumeAfterDelegation: vi.fn().mockResolvedValue(undefined),
 					overwriteClineMessages: vi.fn().mockResolvedValue(undefined),
 					overwriteApiConversationHistory: vi.fn().mockResolvedValue(undefined),
 				}
+				liveTasks.set(historyItem.id, instance)
+				return instance
 			})
 
 		const getTaskWithId = vi.fn(async (id: string) => {
 			if (!historyIndex[id]) throw new Error("Task not found")
 			return {
 				historyItem: historyIndex[id],
-				apiConversationHistory: [],
-				taskDirPath: "/tmp",
-				apiConversationHistoryFilePath: "/tmp/api.json",
-				uiMessagesFilePath: "/tmp/ui.json",
 			}
 		})
 
@@ -152,7 +150,14 @@ describe("Nested delegation resume (A → B → C)", () => {
 			contextProxy: { globalStorageUri: { fsPath: "/tmp" } },
 			getTaskWithId,
 			emit: emitSpy,
-			getCurrentTask: vi.fn(() => (currentActiveId ? ({ taskId: currentActiveId } as any) : undefined)),
+			getCurrentTask: vi.fn(() => (currentActiveId ? liveTasks.get(currentActiveId) : undefined)),
+			getLiveTask: vi.fn((taskId: string) => liveTasks.get(taskId)),
+			isTaskOnScreen: vi.fn((taskId: string) => taskId === currentActiveId),
+			focusTask: vi.fn(async (taskId: string) => {
+				if (!liveTasks.has(taskId)) return false
+				currentActiveId = taskId
+				return true
+			}),
 			getParentCompletionDecision: vi.fn(async () => ({ allowed: true })),
 			removeClineFromStack,
 			createTaskWithHistoryItem,
@@ -184,9 +189,25 @@ describe("Nested delegation resume (A → B → C)", () => {
 			consecutiveMistakeCount: 0,
 			emitFinalTokenUsageUpdate: vi.fn(),
 			finalizeTaskCompletion: vi.fn(),
+			getCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
+			messageQueueService: {
+				isEmpty: vi.fn(() => true),
+				on: vi.fn(),
+				off: vi.fn(),
+				addMessage: vi.fn(() => true),
+			},
+			pushToolResultToUserContent: vi.fn(() => true),
+			flushPendingToolResultsToHistory: vi.fn(async () => true),
+			rollbackPersistedToolResult: vi.fn().mockResolvedValue(undefined),
+			removePendingToolResult: vi.fn(),
+			retractCompletionResult: vi.fn().mockResolvedValue(undefined),
+			suspendAfterCurrentTurn: vi.fn(),
+			recordToolError: vi.fn(),
 		} as unknown as Task
+		liveTasks.set("C", clineC)
 
 		const blockC = {
+			id: "attempt-completion-c",
 			type: "tool_use",
 			name: "attempt_completion",
 			params: { result: "C finished" },
@@ -233,9 +254,25 @@ describe("Nested delegation resume (A → B → C)", () => {
 			consecutiveMistakeCount: 0,
 			emitFinalTokenUsageUpdate: vi.fn(),
 			finalizeTaskCompletion: vi.fn(),
+			getCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
+			messageQueueService: {
+				isEmpty: vi.fn(() => true),
+				on: vi.fn(),
+				off: vi.fn(),
+				addMessage: vi.fn(() => true),
+			},
+			pushToolResultToUserContent: vi.fn(() => true),
+			flushPendingToolResultsToHistory: vi.fn(async () => true),
+			rollbackPersistedToolResult: vi.fn().mockResolvedValue(undefined),
+			removePendingToolResult: vi.fn(),
+			retractCompletionResult: vi.fn().mockResolvedValue(undefined),
+			suspendAfterCurrentTurn: vi.fn(),
+			recordToolError: vi.fn(),
 		} as unknown as Task
+		liveTasks.set("B", clineB)
 
 		const blockB = {
+			id: "attempt-completion-b",
 			type: "tool_use",
 			name: "attempt_completion",
 			params: { result: "B finished" },

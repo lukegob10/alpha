@@ -18,6 +18,31 @@ export class WorkspaceMutationGate {
 	private active = false
 	private queue: WorkspaceMutationRequest<unknown>[] = []
 
+	/**
+	 * Acquire the gate synchronously only when no mutation is active or queued.
+	 * This is used for fail-closed policy transitions: the admission decision and
+	 * the transition body form one critical section, so a mutation cannot enter
+	 * between a separate busy check and the state change.
+	 */
+	public runIfIdle<T>(
+		taskId: string,
+		label: string,
+		run: () => Promise<T>,
+		isCancelled?: () => boolean,
+	): Promise<T> | undefined {
+		void taskId
+		void label
+		if (this.active || this.queue.length > 0 || isCancelled?.()) return undefined
+
+		this.active = true
+		return Promise.resolve()
+			.then(run)
+			.finally(() => {
+				this.active = false
+				this.drain()
+			})
+	}
+
 	public run<T>(taskId: string, label: string, run: () => Promise<T>, isCancelled?: () => boolean): Promise<T> {
 		if (isCancelled?.()) {
 			return Promise.reject(new WorkspaceMutationCancelledError(taskId, label))

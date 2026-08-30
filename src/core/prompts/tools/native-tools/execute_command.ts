@@ -23,57 +23,81 @@ Example: Running a build with a timeout
 Example: Verifying an applied Worker change set
 { "command": "npm test", "cwd": null, "timeout": null, "verification": { "change_set_ids": ["change-set-id"] } }`
 
+const PLAN_EXECUTE_COMMAND_DESCRIPTION = `Run one host-classified, source-non-mutating inspection or verification command in strict Plan mode. The host accepts only a conservative single-command allow-list, such as read-only git inspection and installed test, lint-check, or no-emit type-check binaries. Verification may execute trusted repository test/config code and create ordinary tool caches; it cannot target output, temp, cache, config, or plugin paths. Shell chaining, pipes, redirection, substitution, expansion, globs, watchers, update/fix/write flags, package installation, arbitrary scripts, and mutating commands are rejected even when command auto-approval is enabled. Use read_command_output for additional output from a backgrounded command.
+
+Parameters:
+- command: (required) One allow-listed command with no shell composition or expansion
+- cwd: (optional) A workspace-relative working directory that cannot contain '..' or resolve through a symlink outside the task workspace
+- timeout: (optional) A bounded timeout; do not start a watcher or server
+- verification: must be null because Plan cannot validate applied Worker changes
+
+Examples:
+{ "command": "git --no-pager status --short", "cwd": null, "timeout": null, "verification": null }
+{ "command": "pnpm --dir src exec vitest run shared/__tests__/plan-mode.spec.ts", "cwd": null, "timeout": null, "verification": null }
+{ "command": "pnpm exec tsc --noEmit", "cwd": null, "timeout": null, "verification": null }`
+
 const COMMAND_PARAMETER_DESCRIPTION = `Shell command to execute`
 
 const CWD_PARAMETER_DESCRIPTION = `Optional working directory for the command, relative or absolute`
+
+const PLAN_CWD_PARAMETER_DESCRIPTION = `Optional workspace-relative working directory. Absolute paths, '..' traversal, and paths that resolve through a symlink outside the task workspace are rejected`
 
 const TIMEOUT_PARAMETER_DESCRIPTION = `Timeout in seconds. When exceeded, the command continues running in the background and output collected so far is returned. Use this for long-running processes like dev servers, file watchers, or any command that may not exit on its own`
 
 const VERIFICATION_PARAMETER_DESCRIPTION = `Optional explicit verification scope. Use null for ordinary commands. When this command genuinely validates applied Worker changes, provide the exact applied change-set IDs it covers`
 
-export default {
-	type: "function",
-	function: {
-		name: "execute_command",
-		description: EXECUTE_COMMAND_DESCRIPTION,
-		strict: true,
-		parameters: {
-			type: "object",
-			properties: {
-				command: {
-					type: "string",
-					description: COMMAND_PARAMETER_DESCRIPTION,
-				},
-				cwd: {
-					type: ["string", "null"],
-					description: CWD_PARAMETER_DESCRIPTION,
-				},
-				timeout: {
-					type: ["number", "null"],
-					description: TIMEOUT_PARAMETER_DESCRIPTION,
-				},
-				verification: {
-					anyOf: [
-						{
-							type: "object",
-							properties: {
-								change_set_ids: {
-									type: "array",
-									items: { type: "string", minLength: 1 },
-									minItems: 1,
-									description: "Applied Worker change-set IDs validated by this command",
-								},
+export function createExecuteCommandTool(planMode = false): OpenAI.Chat.ChatCompletionTool {
+	return {
+		type: "function",
+		function: {
+			name: "execute_command",
+			description: planMode ? PLAN_EXECUTE_COMMAND_DESCRIPTION : EXECUTE_COMMAND_DESCRIPTION,
+			strict: true,
+			parameters: {
+				type: "object",
+				properties: {
+					command: {
+						type: "string",
+						description: COMMAND_PARAMETER_DESCRIPTION,
+					},
+					cwd: {
+						type: ["string", "null"],
+						description: planMode ? PLAN_CWD_PARAMETER_DESCRIPTION : CWD_PARAMETER_DESCRIPTION,
+					},
+					timeout: {
+						type: ["number", "null"],
+						description: TIMEOUT_PARAMETER_DESCRIPTION,
+					},
+					verification: planMode
+						? {
+								type: "null",
+								description: "Plan mode cannot verify applied Worker changes; this value must be null",
+							}
+						: {
+								anyOf: [
+									{
+										type: "object",
+										properties: {
+											change_set_ids: {
+												type: "array",
+												items: { type: "string", minLength: 1 },
+												minItems: 1,
+												description: "Applied Worker change-set IDs validated by this command",
+											},
+										},
+										required: ["change_set_ids"],
+										additionalProperties: false,
+									},
+									{ type: "null" },
+								],
+								description: VERIFICATION_PARAMETER_DESCRIPTION,
 							},
-							required: ["change_set_ids"],
-							additionalProperties: false,
-						},
-						{ type: "null" },
-					],
-					description: VERIFICATION_PARAMETER_DESCRIPTION,
 				},
+				required: ["command", "cwd", "timeout", "verification"],
+				additionalProperties: false,
 			},
-			required: ["command", "cwd", "timeout", "verification"],
-			additionalProperties: false,
 		},
-	},
-} satisfies OpenAI.Chat.ChatCompletionTool
+	} satisfies OpenAI.Chat.ChatCompletionTool
+}
+
+export default createExecuteCommandTool()

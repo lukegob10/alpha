@@ -148,6 +148,7 @@ vi.mock("../../../shared/modes", () => ({
 		groups: ["read", "edit"],
 	}),
 	defaultModeSlug: "code",
+	planModeSlug: "architect",
 	isCodePlanModeTransition: (currentMode: string | undefined, newMode: string) =>
 		(currentMode === "code" && newMode === "architect") || (currentMode === "architect" && newMode === "code"),
 }))

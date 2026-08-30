@@ -90,7 +90,70 @@ export const subagentContextSkillSchema = z
 	.strict()
 export type SubagentContextSkill = z.infer<typeof subagentContextSkillSchema>
 
-/** Persisted, credential-free record of the authority actually applied to the child. */
+/**
+ * The user's effective approval grant at the point a managed child is created.
+ * Runtime settings may narrow this grant, but descendants may never widen it.
+ */
+export const subagentCommandApprovalRuleSchema = z
+	.object({
+		/** UTF-16 code-unit length of the normalized command prefix. */
+		prefixLength: z.number().int().positive(),
+		/** Salted digest of the normalized prefix; the prefix itself is never persisted. */
+		digest: subagentContextDigestSchema,
+	})
+	.strict()
+export type SubagentCommandApprovalRule = z.infer<typeof subagentCommandApprovalRuleSchema>
+
+export const subagentCommandApprovalPolicySchema = z
+	.object({
+		algorithm: z.literal("sha256-salted-prefix-v1"),
+		salt: subagentContextDigestSchema,
+		allowAll: z.boolean(),
+		denyAll: z.boolean(),
+		allowed: z.array(subagentCommandApprovalRuleSchema),
+		denied: z.array(subagentCommandApprovalRuleSchema),
+	})
+	.strict()
+export type SubagentCommandApprovalPolicy = z.infer<typeof subagentCommandApprovalPolicySchema>
+
+export const subagentAutoApprovalPolicySchema = z
+	.object({
+		autoApprovalEnabled: z.boolean(),
+		alwaysAllowReadOnly: z.boolean(),
+		alwaysAllowReadOnlyOutsideWorkspace: z.boolean(),
+		alwaysAllowWrite: z.boolean(),
+		alwaysAllowWriteOutsideWorkspace: z.boolean(),
+		alwaysAllowWriteProtected: z.boolean(),
+		alwaysAllowExecute: z.boolean(),
+		alwaysAllowSubagents: z.boolean(),
+		commandApproval: subagentCommandApprovalPolicySchema,
+		/** Additional frozen command-policy ceilings inherited across nested launches. Every ceiling must approve. */
+		commandApprovalCeilings: z.array(subagentCommandApprovalPolicySchema).max(16).optional(),
+	})
+	.strict()
+export type SubagentAutoApprovalPolicy = z.infer<typeof subagentAutoApprovalPolicySchema>
+
+/** Fail-closed ceiling for retained children whose legacy manifest predates approval capture. */
+export const disabledSubagentAutoApprovalPolicy: SubagentAutoApprovalPolicy = subagentAutoApprovalPolicySchema.parse({
+	autoApprovalEnabled: false,
+	alwaysAllowReadOnly: false,
+	alwaysAllowReadOnlyOutsideWorkspace: false,
+	alwaysAllowWrite: false,
+	alwaysAllowWriteOutsideWorkspace: false,
+	alwaysAllowWriteProtected: false,
+	alwaysAllowExecute: false,
+	alwaysAllowSubagents: false,
+	commandApproval: {
+		algorithm: "sha256-salted-prefix-v1",
+		salt: "0".repeat(64),
+		allowAll: false,
+		denyAll: false,
+		allowed: [],
+		denied: [],
+	},
+})
+
+/** Persisted record of child authority that excludes plaintext command rules and credentials. */
 export const subagentContextRuntimePolicySchema = z
 	.object({
 		role: subagentRoleSchema,
@@ -106,6 +169,11 @@ export const subagentContextRuntimePolicySchema = z
 		writeScope: z.array(z.string().min(1)).min(1).max(12).optional(),
 		/** Entries in writeScope that grant one exact file rather than a directory subtree. */
 		fileWriteScope: z.array(z.string().min(1)).max(12).optional(),
+		/**
+		 * Approval ceiling inherited from the parent. Optional only for retained
+		 * manifests created before approval inheritance was introduced.
+		 */
+		autoApproval: subagentAutoApprovalPolicySchema.optional(),
 		digest: subagentContextDigestSchema,
 	})
 	.strict()

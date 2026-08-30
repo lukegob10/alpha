@@ -1,6 +1,6 @@
 import type OpenAI from "openai"
 import type { ModeConfig, ToolName, ToolGroup, ModelInfo } from "@alpha-code/types"
-import { getModeBySlug, getToolsForMode } from "../../../shared/modes"
+import { getModeBySlug, getToolsForMode, planModeSlug } from "../../../shared/modes"
 import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS, TOOL_ALIASES } from "../../../shared/tools"
 import { defaultModeSlug } from "../../../shared/modes"
 import type { CodeIndexManager } from "../../../services/code-index/manager"
@@ -243,7 +243,13 @@ export function filterNativeToolsForMode(
 	}
 
 	// Get all tools for this mode (including always-available tools)
-	const allToolsForMode = getToolsForMode(modeConfig.groups)
+	// Plan is a host policy boundary. Derive its candidates from the runtime
+	// validator rather than persisted groups (or a stale serialized mode catalog),
+	// then let the validator reduce the complete native catalog to the canonical set.
+	const allToolsForMode =
+		modeSlug === planModeSlug
+			? nativeTools.flatMap((tool) => ("function" in tool && tool.function ? [tool.function.name] : []))
+			: getToolsForMode(modeConfig.groups)
 
 	// Filter to only tools that pass permission checks
 	let allowedToolNames = new Set(
@@ -268,10 +274,10 @@ export function filterNativeToolsForMode(
 	)
 	allowedToolNames = customizedTools
 
-	// Asynchronous agent orchestration is intentionally limited to the primary Code
-	// workflow. Custom modes may opt into the broader agents group for legacy
-	// delegation, but do not acquire the lifecycle control plane implicitly.
-	if (modeSlug !== "code") {
+	// The primary Code workflow and strict Plan workflow both use the managed
+	// lifecycle control plane. Other custom and legacy modes do not acquire it
+	// merely by naming the broader agents group.
+	if (modeSlug !== "code" && modeSlug !== planModeSlug) {
 		for (const tool of [
 			"spawn_agent",
 			"list_agents",
@@ -377,6 +383,20 @@ export function isToolAllowedInMode(
 	settings?: Record<string, any>,
 ): boolean {
 	const modeSlug = mode ?? defaultModeSlug
+
+	if (
+		modeSlug === planModeSlug &&
+		!isToolAllowedForMode(
+			resolveToolAlias(toolName) as ToolName,
+			modeSlug,
+			customModes ?? [],
+			undefined,
+			undefined,
+			experiments ?? {},
+		)
+	) {
+		return false
+	}
 
 	// Check if it's an always-available tool
 	if (ALWAYS_AVAILABLE_TOOLS.includes(toolName)) {

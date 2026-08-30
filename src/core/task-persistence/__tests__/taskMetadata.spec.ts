@@ -1,4 +1,5 @@
 import { taskMetadata } from "../taskMetadata"
+import { createSubagentCommandApprovalPolicy } from "../../auto-approval/commands"
 import { captureSubagentContext } from "../../agent/SubagentContextCapture"
 
 describe("taskMetadata sub-agent routing", () => {
@@ -60,6 +61,17 @@ describe("taskMetadata sub-agent routing", () => {
 				requireApproval: false,
 				allowedTools: ["read_file", "attempt_completion"],
 				workspaceRoots: ["F:/workspace"],
+				autoApproval: {
+					autoApprovalEnabled: true,
+					alwaysAllowReadOnly: true,
+					alwaysAllowReadOnlyOutsideWorkspace: false,
+					alwaysAllowWrite: false,
+					alwaysAllowWriteOutsideWorkspace: false,
+					alwaysAllowWriteProtected: false,
+					alwaysAllowExecute: true,
+					alwaysAllowSubagents: true,
+					commandApproval: createSubagentCommandApprovalPolicy(["git diff"], ["git push"], "3".repeat(64)),
+				},
 			},
 		})
 
@@ -78,6 +90,9 @@ describe("taskMetadata sub-agent routing", () => {
 		expect(historyItem.subagentContextManifest).toEqual(manifest)
 		expect(historyItem.subagentContextManifest).not.toBe(manifest)
 		expect(historyItem.subagentInstructionPlacement).toBe("system")
+		expect(historyItem.subagentContextManifest?.runtimePolicy.autoApproval).toEqual(
+			manifest.runtimePolicy.autoApproval,
+		)
 		expect(JSON.stringify(historyItem.subagentContextManifest)).not.toContain("private parent body")
 		expect(JSON.stringify(historyItem.subagentContextManifest)).not.toContain("private frozen instructions")
 		expect(JSON.stringify(historyItem.subagentContextManifest)).not.toContain("private AGENTS body")

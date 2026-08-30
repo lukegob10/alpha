@@ -108,6 +108,7 @@ readme.md text
 
 			// Verify standard patterns are included
 			expect(excludePatterns).toContain(".git/")
+			expect(excludePatterns).toContain(".venv/")
 
 			// Verify we have standard patterns but no LFS patterns
 			// Check for a few known patterns from different categories

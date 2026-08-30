@@ -92,6 +92,7 @@ describe("ClineProvider Worker change-set actions", () => {
 		const parent = Object.assign(Object.create(Task.prototype), {
 			taskId: "parent-1",
 			taskKind: "primary",
+			_taskMode: "code",
 			metadata: { task: "Coordinate work" },
 			clineMessages: [{ ts: 1, type: "say", say: "subagent_group", subagentGroup: group }],
 			abort: false,
@@ -132,6 +133,58 @@ describe("ClineProvider Worker change-set actions", () => {
 
 		return { provider, parent, group, store, persistence, historyItems }
 	}
+
+	it(
+		"denies Apply capability and execution in Plan while allowing Discard",
+		async () => {
+			const artifact = await createArtifact()
+			const { provider, parent } = await createHarness(artifact)
+			parent.setTaskMode("architect")
+
+			await expect(
+				provider.getSubagentChangeSetActionCapability("parent-1", "group-1", artifact.id),
+			).resolves.toMatchObject({
+				allowed: false,
+				state: "unavailable",
+				actions: {
+					apply: { allowed: false, state: "unavailable" },
+					discard: { allowed: true, state: "available" },
+				},
+			})
+
+			await expect(provider.applySubagentChangeSet("parent-1", "group-1", artifact.id)).resolves.toMatchObject({
+				success: false,
+				message: expect.stringContaining("Plan mode cannot apply"),
+			})
+			expect((await managedSubagentWorktreeService.load(storage, artifact.id)).status).toBe("pending_review")
+			await expect(provider.discardSubagentChangeSet("parent-1", "group-1", artifact.id)).resolves.toMatchObject({
+				success: true,
+				changeSetStatus: "discarded",
+			})
+		},
+		TEST_TIMEOUT_MS,
+	)
+
+	it(
+		"rechecks Plan mode inside the mutation gate before applying",
+		async () => {
+			const artifact = await createArtifact()
+			const { provider, parent } = await createHarness(artifact)
+			const runWorkspaceMutation = provider.runWorkspaceMutation.bind(provider)
+			vi.spyOn(provider, "runWorkspaceMutation").mockImplementation(async (task, label, run) => {
+				parent.setTaskMode("architect")
+				return runWorkspaceMutation(task, label, run)
+			})
+
+			await expect(provider.applySubagentChangeSet("parent-1", "group-1", artifact.id)).resolves.toMatchObject({
+				success: false,
+				message: expect.stringContaining("Plan mode cannot apply"),
+			})
+			expect((await managedSubagentWorktreeService.load(storage, artifact.id)).status).toBe("pending_review")
+			await expect(fs.readFile(path.join(repo, "docs/worker.txt"), "utf8")).rejects.toThrow()
+		},
+		TEST_TIMEOUT_MS,
+	)
 
 	it(
 		"lands the real patch, advances required to pending, survives reload, and verifies once",

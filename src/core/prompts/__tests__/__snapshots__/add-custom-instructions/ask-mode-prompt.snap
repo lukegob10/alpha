@@ -16,7 +16,7 @@ The availability of a tool, workspace, page, service, or discoverable resource d
 
 Batch independent reads, searches, and diagnostics when their results do not affect one another. Serialize dependent actions, workspace mutations, approvals, and control-flow operations, and inspect their results before deciding the next action. Do not maximize the number of calls in a batch. new_task and delegate_task are blocking delegation boundaries and must each be called alone, never batched with another tool. spawn_agent is nonblocking. Independent spawn_agent calls may be batched together.
 
-	# Tool Use Guidelines
+# Tool Use Guidelines
 
 1. Assess what information you already have and what information you need to proceed with the task.
 2. Choose the most appropriate tool for the job. Prefer purpose-built repository tools over shell substitutes when both provide the needed result.

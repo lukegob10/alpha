@@ -42,6 +42,8 @@ const DEFAULT_OWNER_LEASE_STALE_MS = 60_000
 const DEFAULT_OWNER_LEASE_UPDATE_MS = 10_000
 const DEFAULT_RECOVERY_SCAN_INTERVAL_MS = 30_000
 const TRANSACTION_LOCK_RETRY_DELAYS_MS = [50, 100, 200, 400, 800, 1_000] as const
+const TRANSACTION_LOCK_RELEASE_RETRY_DELAYS_MS = [10, 25, 50, 100, 200] as const
+const TRANSIENT_LOCK_RELEASE_ERROR_CODES = new Set(["EACCES", "EBUSY", "EPERM"])
 
 const ALLOWED_TRANSITIONS: Record<AgentLifecycleStatus, ReadonlySet<AgentLifecycleStatus>> = {
 	pending: new Set([
@@ -135,6 +137,7 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 	private readonly transactionLockPath: string
 	private readonly ownerLeaseDirectory: string
 	private readonly ownerLeaseReleases = new Map<AgentRuntimeOwnerId, () => Promise<void>>()
+	private readonly releasedTransactionTokens = new Set<string>()
 	private activeTransaction?: ActiveTransaction
 
 	constructor(globalStoragePath: string) {
@@ -283,6 +286,17 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 			if (
 				observed !== "legacy" &&
 				observed &&
+				(this.releasedTransactionTokens.has(observed.token) ||
+					(await this.isTransactionLockMarkedReleased(this.transactionLockPath, observed.token)))
+			) {
+				if (await this.tryReapReleasedTransactionLock(observed)) {
+					this.releasedTransactionTokens.delete(observed.token)
+					continue
+				}
+			}
+			if (
+				observed !== "legacy" &&
+				observed &&
 				!this.isProcessLive(observed.pid) &&
 				(await this.tryReapTransactionLock(observed))
 			) {
@@ -389,8 +403,98 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		const observed = await this.readTransactionLock(this.transactionLockPath)
 		if (!observed || observed.token !== transactionToken) return
 		const releasePath = `${this.transactionLockPath}.release.${transactionToken}`
-		await fs.rename(this.transactionLockPath, releasePath)
+		for (let attempt = 0; ; attempt++) {
+			try {
+				await this.renameTransactionLock(this.transactionLockPath, releasePath)
+				break
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code ?? ""
+				if (code === "ENOENT") return
+				const delayMs = TRANSACTION_LOCK_RELEASE_RETRY_DELAYS_MS[attempt]
+				if (!TRANSIENT_LOCK_RELEASE_ERROR_CODES.has(code)) throw error
+				if (delayMs === undefined) {
+					// A committed write must remain successful, but the live owner may not
+					// permanently block the next transaction. Publish a durable release
+					// marker that any store instance can safely quarantine by exact token.
+					this.releasedTransactionTokens.add(transactionToken)
+					await this.markTransactionLockReleased(transactionToken)
+					throw error
+				}
+
+				await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+				// A transient Windows file lock can clear between attempts. Recheck the
+				// token so a delayed retry can never move a successor's lock.
+				const current = await this.readTransactionLock(this.transactionLockPath)
+				if (!current || current.token !== transactionToken) return
+			}
+		}
 		await this.removeTransactionLockDirectory(releasePath, false)
+	}
+
+	private transactionLockReleasedMarkerPath(lockPath: string): string {
+		return path.join(lockPath, "released")
+	}
+
+	private async markTransactionLockReleased(transactionToken: string): Promise<void> {
+		const observed = await this.readTransactionLock(this.transactionLockPath)
+		if (!observed || observed.token !== transactionToken) return
+		const markerPath = this.transactionLockReleasedMarkerPath(this.transactionLockPath)
+		try {
+			await fs.writeFile(markerPath, transactionToken, { encoding: "utf8", flag: "wx" })
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+			const retainedToken = await fs.readFile(markerPath, "utf8")
+			if (retainedToken !== transactionToken) {
+				throw new Error("Agent control transaction release marker belongs to another owner")
+			}
+		}
+	}
+
+	private async isTransactionLockMarkedReleased(lockPath: string, transactionToken: string): Promise<boolean> {
+		try {
+			return (await fs.readFile(this.transactionLockReleasedMarkerPath(lockPath), "utf8")) === transactionToken
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+			throw error
+		}
+	}
+
+	private async tryReapReleasedTransactionLock(observed: TransactionLockOwner): Promise<boolean> {
+		const releasedPath = `${this.transactionLockPath}.released.${observed.token}`
+		try {
+			await this.renameTransactionLock(this.transactionLockPath, releasedPath)
+		} catch (error) {
+			try {
+				// A permanent token-specific tombstone prevents a delayed releaser from
+				// ever moving a successor's live lock.
+				await fs.stat(releasedPath)
+				return false
+			} catch (releasedStatError) {
+				if ((releasedStatError as NodeJS.ErrnoException).code !== "ENOENT") throw releasedStatError
+			}
+			try {
+				await fs.stat(this.transactionLockPath)
+				if (TRANSIENT_LOCK_RELEASE_ERROR_CODES.has((error as NodeJS.ErrnoException).code ?? "")) {
+					return false
+				}
+				throw error
+			} catch (lockStatError) {
+				if ((lockStatError as NodeJS.ErrnoException).code === "ENOENT") return true
+				throw error
+			}
+		}
+
+		const quarantined = await this.readTransactionLock(releasedPath)
+		const markedReleased = await this.isTransactionLockMarkedReleased(releasedPath, observed.token)
+		if (!quarantined || quarantined.token !== observed.token || !markedReleased) {
+			throw new Error("Agent control transaction releaser quarantined an unexpected owner")
+		}
+		// Keep the non-empty tombstone permanently for delayed-releaser safety.
+		return true
+	}
+
+	private async renameTransactionLock(source: string, destination: string): Promise<void> {
+		await fs.rename(source, destination)
 	}
 
 	private async readTransactionLock(lockPath: string): Promise<TransactionLockOwner | undefined> {
@@ -966,50 +1070,95 @@ export class AgentControlStore {
 		rootTaskId?: string,
 	): Promise<AgentRecord> {
 		return this.transact((draft) => {
-			const record = this.requireMutableRecord(draft, target, rootTaskId)
-			this.assertRecordOwned(draft, record, "update its lifecycle")
-			const timestamp = input.at ?? this.now()
-			if (record.status !== status && !ALLOWED_TRANSITIONS[record.status].has(status)) {
-				throw new Error(`Invalid agent lifecycle transition ${record.status} -> ${status} for ${record.path}`)
-			}
-			if (input.terminalResult && input.terminalResult.status !== status) {
-				throw new Error(
-					`Terminal result status ${input.terminalResult.status} does not match agent status ${status}`,
-				)
-			}
-			if (input.terminalResult && !TERMINAL_STATUSES.has(status)) {
-				throw new Error(`Agent status ${status} cannot contain terminal result metadata`)
+			return clone(this.applyAgentStatusTransition(draft, target, status, input, rootTaskId))
+		})
+	}
+
+	/** Commit a lifecycle transition and its parent mailbox event in one durable transaction. */
+	async updateAgentStatusAndAppendEvent(
+		target: string,
+		status: AgentLifecycleStatus,
+		input: UpdateAgentStatusInput,
+		eventInput: AppendAgentMailboxEventInput,
+		rootTaskId?: string,
+	): Promise<{ record: AgentRecord; event: AgentMailboxEntry; appended: boolean }> {
+		return this.transact((draft) => {
+			const record = this.applyAgentStatusTransition(draft, target, status, input, rootTaskId)
+			if (eventInput.eventId) {
+				const existing = draft.mailbox.find((entry) => entry.eventId === eventInput.eventId)
+				if (existing) {
+					this.assertIdempotentEvent(existing, eventInput)
+					return { record: clone(record), event: clone(existing), appended: false }
+				}
 			}
 
-			record.status = status
-			this.claimRecordOwnership(record)
-			record.updatedAt = timestamp
-			if (input.snapshot) {
-				record.snapshot = clone(input.snapshot)
+			const recipient = this.requireOpenAddress(draft, eventInput.recipient, eventInput.rootTaskId)
+			const sender = eventInput.sender
+				? this.requireOwnedAddress(draft, eventInput.sender, recipient.rootTaskId, "publish an event")
+				: undefined
+			if (!sender) this.assertTreeOwned(draft, recipient.rootTaskId, "publish an event")
+			const event: AgentMailboxEntry = {
+				eventId: eventInput.eventId ?? randomUUID(),
+				sequence: draft.nextSequence++,
+				rootTaskId: recipient.rootTaskId,
+				senderTaskId: sender?.taskId,
+				senderPath: sender?.path,
+				recipientTaskId: recipient.taskId,
+				recipientPath: recipient.path,
+				kind: eventInput.kind,
+				name: eventInput.name,
+				payload: eventInput.payload ? clone(eventInput.payload) : undefined,
+				createdAt: eventInput.createdAt ?? this.now(),
 			}
-			if (ACTIVE_STATUSES.has(status) && record.snapshot) {
-				delete record.snapshot.stopReason
-				if (Object.keys(record.snapshot).length === 0) delete record.snapshot
-			}
-			if (status === "running") {
-				record.startedAt ??= timestamp
-			}
-			if (status === "interrupted") {
-				record.interruptedAt = timestamp
-			}
-			if (status === "pending") {
-				delete record.finishedAt
-				delete record.interruptedAt
-				delete record.terminalResult
-			}
-			if (TERMINAL_STATUSES.has(status)) {
-				record.finishedAt = timestamp
-				record.terminalResult = input.terminalResult
-					? clone(input.terminalResult)
-					: { status: status as AgentTerminalResultMetadata["status"], completedAt: timestamp }
-			}
-			return clone(record)
+			draft.mailbox.push(event)
+			return { record: clone(record), event: clone(event), appended: true }
 		})
+	}
+
+	private applyAgentStatusTransition(
+		draft: AgentControlState,
+		target: string,
+		status: AgentLifecycleStatus,
+		input: UpdateAgentStatusInput,
+		rootTaskId?: string,
+	): AgentRecord {
+		const record = this.requireMutableRecord(draft, target, rootTaskId)
+		this.assertRecordOwned(draft, record, "update its lifecycle")
+		const timestamp = input.at ?? this.now()
+		if (record.status !== status && !ALLOWED_TRANSITIONS[record.status].has(status)) {
+			throw new Error(`Invalid agent lifecycle transition ${record.status} -> ${status} for ${record.path}`)
+		}
+		if (input.terminalResult && input.terminalResult.status !== status) {
+			throw new Error(
+				`Terminal result status ${input.terminalResult.status} does not match agent status ${status}`,
+			)
+		}
+		if (input.terminalResult && !TERMINAL_STATUSES.has(status)) {
+			throw new Error(`Agent status ${status} cannot contain terminal result metadata`)
+		}
+
+		record.status = status
+		this.claimRecordOwnership(record)
+		record.updatedAt = timestamp
+		if (input.snapshot) record.snapshot = clone(input.snapshot)
+		if (ACTIVE_STATUSES.has(status) && record.snapshot) {
+			delete record.snapshot.stopReason
+			if (Object.keys(record.snapshot).length === 0) delete record.snapshot
+		}
+		if (status === "running") record.startedAt ??= timestamp
+		if (status === "interrupted") record.interruptedAt = timestamp
+		if (status === "pending") {
+			delete record.finishedAt
+			delete record.interruptedAt
+			delete record.terminalResult
+		}
+		if (TERMINAL_STATUSES.has(status)) {
+			record.finishedAt = timestamp
+			record.terminalResult = input.terminalResult
+				? clone(input.terminalResult)
+				: { status: status as AgentTerminalResultMetadata["status"], completedAt: timestamp }
+		}
+		return record
 	}
 
 	async updateAgentSnapshot(

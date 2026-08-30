@@ -4,6 +4,7 @@ const makeTask = (overrides: Record<string, unknown> = {}) =>
 	Object.assign(Object.create(Task.prototype), {
 		abort: false,
 		didComplete: false,
+		_taskMode: "code",
 		isTaskLoopActive: true,
 		activeAsk: { type: "followup", ts: 1 },
 		askKind: "primary",
@@ -56,6 +57,20 @@ describe("Task external mutation capability", () => {
 		expect(task.getExternalMutationCapability()).toMatchObject({
 			allowed: false,
 			reason: expect.stringContaining("queued work"),
+		})
+	})
+
+	it("denies Apply in Plan while retaining proposal discard capability", () => {
+		const task = makeTask({ _taskMode: "architect" })
+
+		expect(task.getExternalMutationCapability()).toEqual({
+			allowed: false,
+			state: "unavailable",
+			reason: "Plan mode cannot apply Worker changes. Switch to Code mode to apply this proposal.",
+		})
+		expect(task.getSubagentChangeSetDiscardCapability()).toMatchObject({
+			allowed: true,
+			state: "available",
 		})
 	})
 

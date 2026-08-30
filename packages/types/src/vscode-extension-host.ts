@@ -359,6 +359,8 @@ export type ExtensionState = Pick<
 	currentTaskItem?: HistoryItem
 	currentTaskTodos?: TodoItem[] // Initial todos for the current task
 	currentView?: CurrentTaskView
+	/** True when the visible managed child has a frozen approval ceiling below global "All". */
+	currentTaskAutoApprovalRestricted?: boolean
 	activeTaskId?: string
 	liveTaskIds?: string[]
 	liveTasksById?: Record<string, LiveTaskMetadata>

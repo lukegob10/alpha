@@ -29,13 +29,87 @@ describe("mode-validator", () => {
 		})
 
 		describe("architect mode", () => {
-			it("allows configured tools", () => {
-				// Architect mode has read and mcp groups
-				const architectTools = [...TOOL_GROUPS.read.tools, ...TOOL_GROUPS.mcp.tools]
+			it("allows only read-only planning, conservative commands, and managed-agent tools", () => {
+				const architectTools = [
+					...TOOL_GROUPS.read.tools,
+					...TOOL_GROUPS.command.tools,
+					...TOOL_GROUPS.agents.tools,
+				]
 				architectTools.forEach((tool) => {
 					expect(isToolAllowedForMode(tool, architectMode, [])).toBe(true)
 				})
+				expect(isToolAllowedForMode("ask_followup_question", architectMode, [])).toBe(true)
+				expect(isToolAllowedForMode("attempt_completion", architectMode, [])).toBe(true)
+				expect(isToolAllowedForMode("write_to_file", architectMode, [])).toBe(false)
+				expect(isToolAllowedForMode("execute_command", architectMode, [])).toBe(true)
+				expect(isToolAllowedForMode("use_mcp_tool", architectMode, [])).toBe(false)
+				expect(isToolAllowedForMode("new_task", architectMode, [])).toBe(false)
+				expect(isToolAllowedForMode("switch_mode", architectMode, [])).toBe(false)
+				expect(isToolAllowedForMode("update_todo_list", architectMode, [])).toBe(false)
 				expect(isToolAllowedForMode("read_page", architectMode, [])).toBe(false)
+			})
+
+			it("enforces the Plan command classifier independently of auto-approval settings", () => {
+				expect(
+					isToolAllowedForMode("execute_command", architectMode, [], undefined, {
+						command: "pnpm --dir src exec vitest run shared/__tests__/plan-mode.spec.ts",
+						verification: null,
+					}),
+				).toBe(true)
+				for (const command of [
+					"pnpm install",
+					"eslint --fix .",
+					"eslint --fi\\x .",
+					"go test -coverprofile=coverage.out ./...",
+					"git status && git diff",
+				]) {
+					expect(
+						isToolAllowedForMode("execute_command", architectMode, [], undefined, {
+							command,
+							verification: null,
+						}),
+					).toBe(false)
+				}
+				expect(
+					isToolAllowedForMode("execute_command", architectMode, [], undefined, {
+						command: "pnpm exec tsc --noEmit",
+						verification: { change_set_ids: ["worker-change"] },
+					}),
+				).toBe(false)
+				for (const cwd of ["/tmp", "C:/outside", "../outside", "src/../../outside"]) {
+					expect(
+						isToolAllowedForMode("execute_command", architectMode, [], undefined, {
+							command: "pnpm exec tsc --noEmit",
+							cwd,
+							verification: null,
+						}),
+					).toBe(false)
+				}
+			})
+
+			it("rejects Worker authority at execution time", () => {
+				expect(
+					isToolAllowedForMode("spawn_agent", architectMode, [], undefined, {
+						agent_kind: "explore",
+						write_scope: null,
+					}),
+				).toBe(true)
+				expect(
+					isToolAllowedForMode("spawn_agent", architectMode, [], undefined, {
+						agent_kind: "worker",
+						write_scope: ["src"],
+					}),
+				).toBe(false)
+				expect(
+					isToolAllowedForMode("delegate_task", architectMode, [], undefined, {
+						tasks: [{ agent_kind: "review", write_scope: null }],
+					}),
+				).toBe(true)
+				expect(
+					isToolAllowedForMode("delegate_task", architectMode, [], undefined, {
+						tasks: [{ agent_kind: "worker", write_scope: ["src"] }],
+					}),
+				).toBe(false)
 			})
 		})
 
@@ -197,14 +271,22 @@ describe("mode-validator", () => {
 		})
 
 		it("throws error for disallowed tools in architect mode", () => {
-			// execute_command is a valid tool but not allowed in architect mode
-			expect(() => validateToolUse("execute_command", "architect", [])).toThrow(
-				'Tool "execute_command" is not allowed in architect mode.',
-			)
+			expect(() =>
+				validateToolUse("execute_command", "architect", [], undefined, {
+					command: "pnpm install",
+					verification: null,
+				}),
+			).toThrow('Tool "execute_command" is not allowed in architect mode.')
 		})
 
 		it("does not throw for allowed tools in architect mode", () => {
 			expect(() => validateToolUse("read_file", "architect", [])).not.toThrow()
+			expect(() =>
+				validateToolUse("execute_command", "architect", [], undefined, {
+					command: "pnpm exec tsc --noEmit",
+					verification: null,
+				}),
+			).not.toThrow()
 		})
 
 		it("throws error when tool requirement is not met", () => {

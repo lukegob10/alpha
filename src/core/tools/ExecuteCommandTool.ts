@@ -12,6 +12,7 @@ import { Task } from "../task/Task"
 
 import { ToolUse, ToolResponse } from "../../shared/tools"
 import { formatResponse } from "../prompts/responses"
+import { defaultModeSlug, planModeSlug } from "../../shared/modes"
 import { unescapeHtmlEntities } from "../../utils/text-normalization"
 import { ExitCodeDetails, RooTerminalCallbacks, RooTerminalProcess } from "../../integrations/terminal/types"
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
@@ -21,6 +22,7 @@ import { Package } from "../../shared/package"
 import { t } from "../../i18n"
 import { getTaskDirectoryPath } from "../../utils/storage"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { isToolAllowedForMode } from "./validateToolUse"
 import { redactTaskPrivatePaths } from "./taskPathPresentation"
 
 class ShellIntegrationError extends Error {}
@@ -94,6 +96,25 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 
 			if (!didApprove) {
 				task.failCommandExecution?.(commandEvidenceId, "denied")
+				return
+			}
+
+			const executionMode = typeof task.getTaskMode === "function" ? await task.getTaskMode() : defaultModeSlug
+			if (
+				!isToolAllowedForMode("execute_command", executionMode, [], undefined, {
+					command: canonicalCommand,
+					cwd: customCwd ?? null,
+					timeout: timeoutSeconds ?? null,
+					verification: verification ?? null,
+				})
+			) {
+				task.failCommandExecution?.(commandEvidenceId, "denied")
+				task.recordToolError("execute_command", "Command authority changed while approval was pending")
+				pushToolResult(
+					formatResponse.toolError(
+						`Command was not started because it is not allowed in the task's current ${executionMode} mode.`,
+					),
+				)
 				return
 			}
 
@@ -207,15 +228,23 @@ export async function executeCommandInTerminal(
 	let workingDir: string
 
 	const isManagedWorker = task.taskKind === "subagent" && task.subagentRole === "worker"
+	const executionMode = typeof task.getTaskMode === "function" ? await task.getTaskMode() : defaultModeSlug
+	const isPlanMode = executionMode === planModeSlug
+	const restrictCommandCwdToWorkspace = isManagedWorker || isPlanMode
 	const cancellationResult = (): [boolean, ToolResponse] => {
 		if (toolCallId) task.failCommandExecution?.(toolCallId, "cancelled")
 		return [false, "Command was not started because the task was cancelled."]
 	}
 	const taskWasCancelled = () => task.abort || task.getTaskLifetimeCancellationSignal().aborted
 	if (taskWasCancelled()) return cancellationResult()
-	if (isManagedWorker && customCwd && path.isAbsolute(customCwd)) {
+	if (restrictCommandCwdToWorkspace && customCwd && path.isAbsolute(customCwd)) {
 		if (toolCallId) task.failCommandExecution?.(toolCallId)
-		return [false, "Editing workers may use only workspace-relative command directories."]
+		return [
+			false,
+			isPlanMode
+				? "Plan commands may use only workspace-relative command directories."
+				: "Editing workers may use only workspace-relative command directories.",
+		]
 	}
 	if (!customCwd) {
 		workingDir = task.cwd
@@ -227,17 +256,25 @@ export async function executeCommandInTerminal(
 
 	try {
 		await fs.access(workingDir)
-		if (isManagedWorker) {
+		if (restrictCommandCwdToWorkspace) {
 			const [realWorkspace, realWorkingDir] = await Promise.all([fs.realpath(task.cwd), fs.realpath(workingDir)])
 			const relative = path.relative(realWorkspace, realWorkingDir)
 			if (relative.startsWith("..") || path.isAbsolute(relative)) {
 				if (toolCallId) task.failCommandExecution?.(toolCallId)
-				return [false, "Editing worker command directory is outside its isolated workspace."]
+				return [
+					false,
+					isPlanMode
+						? "Plan command directory resolves outside the task workspace."
+						: "Editing worker command directory is outside its isolated workspace.",
+				]
 			}
 		}
 	} catch (error) {
 		if (toolCallId) task.failCommandExecution?.(toolCallId)
-		return [false, `Working directory '${isManagedWorker ? customCwd || "." : workingDir}' does not exist.`]
+		return [
+			false,
+			`Working directory '${restrictCommandCwdToWorkspace ? customCwd || "." : workingDir}' does not exist.`,
+		]
 	}
 
 	let message: { text?: string; images?: string[] } | undefined

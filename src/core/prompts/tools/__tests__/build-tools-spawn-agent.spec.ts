@@ -130,6 +130,79 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		}
 	})
 
+	it("narrows the Plan catalog and schemas to read-only Explore and Review orchestration", async () => {
+		const result = await buildNativeToolsArrayWithRestrictions({
+			provider,
+			cwd: "F:/workspace",
+			mode: "architect",
+			customModes: undefined,
+			experiments: {},
+			apiConfiguration: undefined,
+			includeAllToolsWithRestrictions: true,
+			taskKind: "primary",
+		})
+
+		expect(result.allowedFunctionNames).toEqual(
+			expect.arrayContaining([
+				"read_file",
+				"search_files",
+				"list_files",
+				"ask_followup_question",
+				"attempt_completion",
+				"execute_command",
+				"read_command_output",
+				"delegate_task",
+				...orchestrationTools,
+			]),
+		)
+		for (const forbidden of ["new_task", "switch_mode", "update_todo_list", "write_to_file", "use_mcp_tool"]) {
+			expect(result.allowedFunctionNames).not.toContain(forbidden)
+		}
+
+		const planTools = result.tools as any[]
+		const executeCommand = planTools.find((tool) => tool.function?.name === "execute_command")
+		expect(executeCommand.function.description).toContain("host-classified")
+		expect(executeCommand.function.description).toContain("Shell chaining")
+		expect(executeCommand.function.parameters.properties.verification).toMatchObject({ type: "null" })
+		expect(executeCommand.function.description).not.toContain("npm run dev")
+		const spawnAgent = planTools.find((tool) => tool.function?.name === "spawn_agent")
+		expect(spawnAgent.function.description).not.toMatch(/worker|quarantined/i)
+		expect(spawnAgent.function.parameters.properties.agent_kind.enum).toEqual(["explore", "review"])
+		expect(spawnAgent.function.parameters.properties.write_scope).toMatchObject({ type: "null" })
+
+		const delegateTask = planTools.find((tool) => tool.function?.name === "delegate_task")
+		const delegatedItem = delegateTask.function.parameters.properties.tasks.items
+		expect(delegateTask.function.description).not.toMatch(/worker|quarantined/i)
+		expect(delegatedItem.properties.agent_kind.enum).toEqual(["explore", "review"])
+		expect(delegatedItem.properties.write_scope).toMatchObject({ type: "null" })
+	})
+
+	it("ignores persisted architect groups when building the Plan catalog", async () => {
+		const result = await buildNativeToolsArrayWithRestrictions({
+			provider,
+			cwd: "F:/workspace",
+			mode: "architect",
+			customModes: [
+				{
+					slug: "architect",
+					name: "Unsafe legacy override",
+					roleDefinition: "Edit files",
+					groups: ["edit", "mcp"],
+				},
+			],
+			experiments: {},
+			apiConfiguration: undefined,
+			taskKind: "primary",
+		})
+
+		expect(names(result.tools as any)).toEqual(
+			expect.arrayContaining(["read_file", "execute_command", "read_command_output", "spawn_agent"]),
+		)
+		expect(names(result.tools as any)).not.toEqual(
+			expect.arrayContaining(["write_to_file", "apply_diff", "use_mcp_tool"]),
+		)
+	})
+
 	it("exposes orchestration tools when a managed child's frozen runtime policy grants delegation", async () => {
 		const allowedToolNames = managedChildAllowedTools(true)
 		expect(allowedToolNames).toEqual(expect.arrayContaining(orchestrationTools))

@@ -23,6 +23,8 @@ type CheckpointSimpleGitOptions = Partial<SimpleGitOptions> & {
 	}
 }
 
+const EXCLUDED_VENV_PATHSPECS = [":(glob).venv", ":(glob).venv/**", ":(glob)**/.venv", ":(glob)**/.venv/**"] as const
+
 /**
  * Creates a SimpleGit instance with sanitized environment variables to prevent
  * interference from inherited git environment variables like GIT_DIR and GIT_WORK_TREE.
@@ -185,6 +187,7 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 			}
 
 			await this.writeExcludeFile()
+			await this.migrateTrackedExcludes(git)
 			this.baseHash = await git.revparse(["HEAD"])
 		} else {
 			this.log(`[${this.constructor.name}#initShadowGit] creating shadow git repo at ${this.checkpointsDir}`)
@@ -236,16 +239,59 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		try {
 			await git.add([".", "--ignore-errors"])
 		} catch (error) {
-			this.log(
-				`[${this.constructor.name}#stageAll] failed to add files to git: ${error instanceof Error ? error.message : String(error)}`,
+			const normalizedError = error instanceof Error ? error : new Error(String(error))
+			this.log(`[${this.constructor.name}#stageAll] failed to add files to git: ${normalizedError.message}`)
+			throw normalizedError
+		}
+	}
+
+	private async migrateTrackedExcludes(git: SimpleGit): Promise<void> {
+		// A failed add can leave this private index partially staged. Rebuild it
+		// from the last complete checkpoint before applying exclusion migrations.
+		await git.raw(["read-tree", "HEAD"])
+
+		const trackedVenvPaths = await git.raw(["ls-files", "-z", "--", ...EXCLUDED_VENV_PATHSPECS])
+		if (!trackedVenvPaths) {
+			return
+		}
+
+		// Remove dependency environments from the shadow index only. The user's
+		// workspace remains untouched and the new exclude prevents re-staging.
+		await git.raw(["rm", "-r", "-f", "--cached", "--ignore-unmatch", "--", ...EXCLUDED_VENV_PATHSPECS])
+
+		const stagedChanges = await git.diffSummary(["--cached"])
+		const unexpectedChanges = stagedChanges.files.filter(({ file }) => !file.split(/[\\/]/).includes(".venv"))
+		if (unexpectedChanges.length > 0) {
+			throw new Error(
+				`Checkpoint exclusion migration staged unexpected paths: ${unexpectedChanges
+					.map(({ file }) => file)
+					.join(", ")}`,
 			)
 		}
+
+		const { commit } = await git.commit("Update checkpoint exclusions")
+		if (!commit) {
+			throw new Error("Checkpoint exclusion migration did not create a commit")
+		}
+
+		this.log(
+			`[${this.constructor.name}#migrateTrackedExcludes] removed ${stagedChanges.files.length} tracked .venv path(s) from the shadow repository`,
+		)
 	}
 
 	private async getNestedGitRepository(): Promise<string | null> {
 		try {
 			// Find all .git/HEAD files that are not at the root level.
-			const args = ["--files", "--hidden", "--follow", "-g", "**/.git/HEAD", this.workspaceDir]
+			const args = [
+				"--files",
+				"--hidden",
+				"--follow",
+				"-g",
+				"**/.git/HEAD",
+				"-g",
+				"!**/.venv/**",
+				this.workspaceDir,
+			]
 
 			const gitPaths = await executeRipgrep({ args, workspacePath: this.workspaceDir })
 
@@ -322,14 +368,26 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 
 			const startTime = Date.now()
 			await this.stageAll(this.git)
+
+			if (!options?.allowEmpty) {
+				const stagedChanges = await this.git.diffSummary(["--cached"])
+				if (stagedChanges.files.length === 0) {
+					const duration = Date.now() - startTime
+					this.log(
+						`[${this.constructor.name}#saveCheckpoint] found no staged changes after ${duration}ms; skipping checkpoint commit`,
+					)
+					return undefined
+				}
+			}
+
 			const commitArgs = options?.allowEmpty ? { "--allow-empty": null } : undefined
 			const result = await this.git.commit(message, commitArgs)
 			const fromHash = this._checkpoints[this._checkpoints.length - 1] ?? this.baseHash!
 			const toHash = result.commit || fromHash
-			this._checkpoints.push(toHash)
 			const duration = Date.now() - startTime
 
 			if (result.commit) {
+				this._checkpoints.push(toHash)
 				this.emit("checkpoint", {
 					type: "checkpoint",
 					fromHash,
@@ -351,7 +409,7 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		} catch (e) {
 			const error = e instanceof Error ? e : new Error(String(e))
 			this.log(`[${this.constructor.name}#saveCheckpoint] failed to create checkpoint: ${error.message}`)
-			this.emit("error", { type: "error", error })
+			this.emitCheckpointError(error)
 			throw error
 		}
 	}
@@ -381,7 +439,7 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		} catch (e) {
 			const error = e instanceof Error ? e : new Error(String(e))
 			this.log(`[${this.constructor.name}#restoreCheckpoint] failed to restore checkpoint: ${error.message}`)
-			this.emit("error", { type: "error", error })
+			this.emitCheckpointError(error)
 			throw error
 		}
 	}
@@ -423,6 +481,14 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 	/**
 	 * EventEmitter
 	 */
+
+	private emitCheckpointError(error: Error): void {
+		// Node treats an unhandled "error" event as a new exception. Preserve the
+		// original Git error when the UI has not registered an observer yet.
+		if (this.listenerCount("error") > 0) {
+			this.emit("error", { type: "error", error })
+		}
+	}
 
 	override emit<K extends keyof CheckpointEventMap>(event: K, data: CheckpointEventMap[K]) {
 		return super.emit(event, data)

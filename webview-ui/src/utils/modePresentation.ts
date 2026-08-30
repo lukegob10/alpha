@@ -1,5 +1,5 @@
 import type { ModeConfig } from "@alpha-code/types"
-import { codeModeSlug, planModeSlug } from "@alpha/modes"
+import { codeModeSlug, planMode, planModeSlug } from "@alpha/modes"
 
 export type UserFacingModeSlug = typeof codeModeSlug | typeof planModeSlug
 
@@ -23,16 +23,25 @@ export function getUserFacingModeOptions(
 ): ModeConfig[] {
 	const selectedModeSlugs = new Set(typeof selectedModes === "string" ? [selectedModes] : (selectedModes ?? []))
 
-	return allModes
-		.filter((mode) => Object.hasOwn(PRIMARY_BUILT_IN_MODE_NAMES, mode.slug) || selectedModeSlugs.has(mode.slug))
-		.map((mode) => {
-			if (!Object.hasOwn(PRIMARY_BUILT_IN_MODE_NAMES, mode.slug)) {
-				return mode
-			}
+	const visibleModes: ModeConfig[] = []
+	const seenSlugs = new Set<string>()
+	for (const candidate of allModes) {
+		if (seenSlugs.has(candidate.slug)) continue
+		if (!Object.hasOwn(PRIMARY_BUILT_IN_MODE_NAMES, candidate.slug) && !selectedModeSlugs.has(candidate.slug))
+			continue
+		seenSlugs.add(candidate.slug)
 
-			const displayName = PRIMARY_BUILT_IN_MODE_NAMES[mode.slug as UserFacingModeSlug]
-			return displayName && mode.name !== displayName ? { ...mode, name: displayName } : mode
-		})
+		const mode = candidate.slug === planModeSlug ? planMode : candidate
+		if (!Object.hasOwn(PRIMARY_BUILT_IN_MODE_NAMES, mode.slug)) {
+			visibleModes.push(mode)
+			continue
+		}
+
+		const displayName = PRIMARY_BUILT_IN_MODE_NAMES[mode.slug as UserFacingModeSlug]
+		visibleModes.push(displayName && mode.name !== displayName ? { ...mode, name: displayName } : mode)
+	}
+
+	return visibleModes
 }
 
 /**

@@ -6,14 +6,14 @@ import askFollowupQuestion from "./ask_followup_question"
 import { createAttemptCompletionTool } from "./attempt_completion"
 import codebaseSearch from "./codebase_search"
 import editTool from "./edit"
-import executeCommand from "./execute_command"
+import { createExecuteCommandTool } from "./execute_command"
 import generateImage from "./generate_image"
 import githubApi from "./github_api"
 import { browserTools } from "./browser"
 import listFiles from "./list_files"
 import newTask from "./new_task"
-import { delegate_task as delegateTask } from "./delegate_task"
-import { spawn_agent as spawnAgent } from "./spawn_agent"
+import { createDelegateTaskTool, type ManagedAgentKind } from "./delegate_task"
+import { createSpawnAgentTool } from "./spawn_agent"
 import { list_agents as listAgents } from "./list_agents"
 import { wait_agent as waitAgent } from "./wait_agent"
 import { send_message as sendMessage } from "./send_message"
@@ -47,6 +47,10 @@ export interface NativeToolsOptions {
 	availableBrowserToolNames?: readonly string[]
 	/** Selects role-specific tool contracts without exposing managed-child fields to primary tasks. */
 	taskKind?: "primary" | "subagent"
+	/** Narrows managed-agent roles advertised to the model. Runtime policy validates them independently. */
+	agentKinds?: readonly ManagedAgentKind[]
+	/** Advertise the host-enforced non-mutating command contract used by strict Plan mode. */
+	planMode?: boolean
 }
 
 /**
@@ -56,7 +60,13 @@ export interface NativeToolsOptions {
  * @returns Array of native tool definitions
  */
 export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.ChatCompletionTool[] {
-	const { supportsImages = false, availableBrowserToolNames, taskKind = "primary" } = options
+	const {
+		supportsImages = false,
+		availableBrowserToolNames,
+		taskKind = "primary",
+		agentKinds,
+		planMode = false,
+	} = options
 
 	const readFileOptions: ReadFileToolOptions = {
 		supportsImages,
@@ -77,14 +87,14 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		askFollowupQuestion,
 		createAttemptCompletionTool(taskKind),
 		codebaseSearch,
-		executeCommand,
+		createExecuteCommandTool(planMode),
 		generateImage,
 		githubApi,
 		...availableBrowserTools,
 		listFiles,
 		newTask,
-		delegateTask,
-		spawnAgent,
+		createDelegateTaskTool(agentKinds),
+		createSpawnAgentTool(agentKinds),
 		listAgents,
 		waitAgent,
 		sendMessage,

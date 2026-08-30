@@ -28,3 +28,20 @@ describe("parseMentions - URL mention handling", () => {
 		expect(result.text).toContain("'https://example.com'")
 	})
 })
+
+describe("parseMentions - built-in Plan command", () => {
+	it("switches mode and removes the command while preserving its inline prompt", async () => {
+		const result = await parseMentions("<user_message>\n/plan inspect the provider flow\n</user_message>", "/test")
+
+		expect(result.mode).toBe("architect")
+		expect(result.text).toBe("<user_message>\ninspect the provider flow\n</user_message>")
+		expect(result.slashCommandHelp).toBeUndefined()
+	})
+
+	it("does not claim similarly named workspace commands", async () => {
+		const result = await parseMentions("<user_message>\n/planner inspect the flow\n</user_message>", "/test")
+
+		expect(result.mode).toBeUndefined()
+		expect(result.text).toContain("/planner")
+	})
+})

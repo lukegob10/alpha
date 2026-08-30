@@ -20,6 +20,7 @@ import { BoundedDelegationManager } from "../../agent/BoundedDelegationManager"
 import { captureSubagentContext } from "../../agent/SubagentContextCapture"
 import { SubagentNicknameRegistry } from "../../agent/SubagentNicknameRegistry"
 import { readTaskMessages, saveTaskMessages } from "../../task-persistence"
+import { WorkspaceMutationGate } from "../../task/WorkspaceMutationGate"
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -40,6 +41,12 @@ const makeProviderHarness = (
 		alwaysAllowSubagents?: boolean
 		alwaysAllowReadOnly?: boolean
 		alwaysAllowWrite?: boolean
+		alwaysAllowReadOnlyOutsideWorkspace?: boolean
+		alwaysAllowWriteOutsideWorkspace?: boolean
+		alwaysAllowWriteProtected?: boolean
+		alwaysAllowExecute?: boolean
+		allowedCommands?: string[]
+		deniedCommands?: string[]
 	} = {},
 	profiles: Array<Record<string, any>> = [],
 ) => {
@@ -78,6 +85,7 @@ const makeProviderHarness = (
 			getLiveTaskIds: () => [],
 			getMetadata: () => ({}),
 			getTask: () => undefined,
+			markLifecycle: vi.fn(),
 		},
 		taskHistoryStore: {
 			get: () => undefined,
@@ -96,13 +104,16 @@ const makeProviderHarness = (
 		agentControlStore,
 		agentControlStoreReady,
 		agentControlRootStatusWrites: new Map(),
+		pendingManagedTaskCompletions: new Map(),
+		workspaceMutationGate: new WorkspaceMutationGate(),
 		boundedDelegationManager: { cancel: () => false },
-		asyncSubagentRunManager: { cancel: () => false, getSnapshot: () => undefined },
+		asyncSubagentRunManager: { cancel: () => false, getSnapshot: () => undefined, waitForResult: () => undefined },
 		getTaskWithId: vi.fn(async (taskId: string) => ({ historyItem: historyItems.get(taskId) })),
 		updateTaskHistory: vi.fn(async (item: any) => {
 			historyItems.set(item.id, item)
 			return [...historyItems.values()]
 		}),
+		postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
 		log: vi.fn(),
 	}) as ClineProvider
 	;(provider as any).__historyItems = historyItems
@@ -137,10 +148,127 @@ const makeParent = () => ({
 	getCommandExecutionEvidence: vi.fn(() => []),
 	getSubagentFileWriteScope: vi.fn(() => []),
 	emit: vi.fn(),
+	say: vi.fn(async () => undefined),
 	upsertSubagentGroup: vi.fn(async () => undefined),
 })
 
 describe("ClineProvider bounded sub-agent preparation", () => {
+	it("permits read-only Explore and Review agents in Plan mode", async () => {
+		const provider = makeProviderHarness(2)
+		const parent = makeParent()
+		parent.getTaskMode.mockResolvedValue("architect")
+
+		await expect(
+			provider.prepareSubagentGroup(parent as any, [
+				{ objective: "Inspect the data flow", agent_kind: "explore" },
+				{ objective: "Review the proposed boundaries", agent_kind: "review" },
+			]),
+		).resolves.toMatchObject({
+			group: {
+				agents: [{ role: "explore" }, { role: "review" }],
+			},
+		})
+	})
+
+	it("rejects editing Workers in Plan mode before creating approval state", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		parent.getTaskMode.mockResolvedValue("architect")
+
+		await expect(
+			provider.prepareSubagentGroup(parent as any, [
+				{
+					objective: "Implement the planned change",
+					agent_kind: "worker",
+					write_scope: ["src/core"],
+				},
+			]),
+		).rejects.toThrow("Plan mode permits only read-only Explore and Review sub-agents")
+		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
+	})
+
+	it("rejects Code to Plan admission while a Worker descendant is pending", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		vi.spyOn(managedSubagentWorktreeService, "validateScope").mockResolvedValue({
+			gitRoot: parent.cwd,
+			logicalWorkspace: parent.cwd,
+			logicalWorkspaceFromRoot: "",
+			writeScope: ["src/core"],
+			gitRelativeScope: ["src/core"],
+			fileWriteScope: [],
+			gitRelativeFileScope: [],
+		})
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{
+				objective: "Implement the approved change",
+				agent_kind: "worker",
+				write_scope: ["src/core"],
+			},
+		])
+		;(provider as any).finalizePreparedSubagentAuthorization(prepared)
+		await (provider as any).ensurePreparedSubagentControlRecords(parent, prepared)
+
+		await expect((provider as any).assertPlanModeEntryAllowed(parent, "code", "architect")).rejects.toThrow(
+			"Cannot enter Plan mode while 1 Worker descendant is active",
+		)
+	})
+
+	it("rejects steering or relaunching a retained Worker after Code switches to Plan", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		vi.spyOn(managedSubagentWorktreeService, "validateScope").mockResolvedValue({
+			gitRoot: parent.cwd,
+			logicalWorkspace: parent.cwd,
+			logicalWorkspaceFromRoot: "",
+			writeScope: ["src/core"],
+			gitRelativeScope: ["src/core"],
+			fileWriteScope: [],
+			gitRelativeFileScope: [],
+		})
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{
+				objective: "Implement the approved change",
+				agent_kind: "worker",
+				write_scope: ["src/core"],
+			},
+		])
+		;(provider as any).finalizePreparedSubagentAuthorization(prepared)
+		const records = await (provider as any).ensurePreparedSubagentControlRecords(parent, prepared)
+		const record = records.get(prepared.envelopes[0].id)
+		parent.getTaskMode.mockResolvedValue("architect")
+
+		await expect(provider.sendMessageToAgent(parent as any, record.path, "Keep editing")).rejects.toThrow(
+			"Plan mode cannot send a message to Worker",
+		)
+
+		await (provider as any).agentControlStore.updateAgentStatus(record.taskId, "completed", {}, record.rootTaskId)
+		await expect(provider.followupAgentTask(parent as any, record.path, "Edit one more file")).rejects.toThrow(
+			"Plan mode cannot relaunch Worker",
+		)
+	})
+
+	it("gives a legacy primary handoff child its own managed-agent root", async () => {
+		const provider = makeProviderHarness()
+		const legacyChild = {
+			...makeParent(),
+			taskId: "legacy-child",
+			parentTaskId: "parent-1",
+			rootTaskId: "parent-1",
+			taskKind: "primary",
+		}
+
+		await expect(provider.getParentCompletionDecision(legacyChild as any)).resolves.toMatchObject({ allowed: true })
+		const listed = (await provider.listAgents(legacyChild as any)) as any
+
+		expect(listed.rootTaskId).toBe("legacy-child")
+		expect((provider as any).agentControlStore.getAgent("legacy-child", "legacy-child")).toMatchObject({
+			role: "root",
+			rootTaskId: "legacy-child",
+		})
+		expect((provider as any).agentControlStore.getAgent("legacy-child", "parent-1")).toBeUndefined()
+	})
+
 	it("preflights capacity before creating approval state", async () => {
 		const provider = makeProviderHarness(1)
 		const parent = makeParent()
@@ -1329,6 +1457,110 @@ If complete, use attempt_completion.
 			explicitUserRequest: true,
 		})
 		expect(finalizedSubagentContextManifestSchema.safeParse(optedInManifest).success).toBe(true)
+	})
+
+	it("freezes the parent auto-approval ceiling into every descendant manifest", async () => {
+		const provider = makeProviderHarness(3, {
+			autoApprovalEnabled: true,
+			alwaysAllowSubagents: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowWrite: true,
+			alwaysAllowExecute: true,
+			allowedCommands: ["git diff"],
+			deniedCommands: ["git push"],
+			subagentDelegationPolicy: "proactive",
+			subagentMaxDepth: 2,
+		})
+		const root = makeParent()
+		const direct = await provider.prepareSubagentGroup(root as any, [
+			{ objective: "Inspect the first layer", agent_kind: "review" },
+		])
+		const directManifest = (provider as any).subagentDescriptors.get(direct.envelopes[0].id).contextManifest
+
+		expect(directManifest.runtimePolicy.autoApproval).toMatchObject({
+			autoApprovalEnabled: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowWrite: true,
+			alwaysAllowExecute: true,
+			alwaysAllowSubagents: true,
+			commandApproval: {
+				algorithm: "sha256-salted-prefix-v1",
+				allowAll: false,
+				denyAll: false,
+				allowed: [expect.objectContaining({ prefixLength: "git diff".length })],
+				denied: [expect.objectContaining({ prefixLength: "git push".length })],
+			},
+		})
+		expect(JSON.stringify(directManifest.runtimePolicy.autoApproval)).not.toContain("git diff")
+		expect(JSON.stringify(directManifest.runtimePolicy.autoApproval)).not.toContain("git push")
+
+		await (provider as any).contextProxy.setValues({
+			autoApprovalEnabled: false,
+			alwaysAllowSubagents: false,
+		})
+		const child = {
+			...makeParent(),
+			taskId: direct.envelopes[0].id,
+			rootTaskId: root.taskId,
+			taskKind: "subagent",
+			subagentContextManifest: directManifest,
+			subagentDelegationPolicy: "proactive",
+		}
+		const nested = await provider.prepareSubagentGroup(child as any, [
+			{ objective: "Inspect the second layer", agent_kind: "explore" },
+		])
+		const nestedManifest = (provider as any).subagentDescriptors.get(nested.envelopes[0].id).contextManifest
+
+		expect(nested.requiresExplicitApproval).toBe(true)
+		expect(nestedManifest.runtimePolicy.autoApproval).toMatchObject({
+			autoApprovalEnabled: false,
+			alwaysAllowSubagents: false,
+			commandApprovalCeilings: expect.arrayContaining([
+				directManifest.runtimePolicy.autoApproval.commandApproval,
+			]),
+		})
+		expect(nestedManifest.runtimePolicy.autoApproval.commandApprovalCeilings).toHaveLength(1)
+	})
+
+	it("requires explicit approval when a retained parent predates approval capture", async () => {
+		const provider = makeProviderHarness(3, {
+			autoApprovalEnabled: true,
+			alwaysAllowSubagents: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowWrite: true,
+			subagentDelegationPolicy: "proactive",
+			subagentMaxDepth: 2,
+		})
+		const root = makeParent()
+		const direct = await provider.prepareSubagentGroup(root as any, [
+			{ objective: "Capture a modern child", agent_kind: "review" },
+		])
+		const legacyManifest = structuredClone(
+			(provider as any).subagentDescriptors.get(direct.envelopes[0].id).contextManifest,
+		)
+		delete legacyManifest.runtimePolicy.autoApproval
+
+		const retainedChild = {
+			...makeParent(),
+			taskId: direct.envelopes[0].id,
+			rootTaskId: root.taskId,
+			taskKind: "subagent",
+			subagentContextManifest: legacyManifest,
+			subagentDelegationPolicy: "proactive",
+		}
+		const nested = await provider.prepareSubagentGroup(retainedChild as any, [
+			{ objective: "Do not inherit widened live settings", agent_kind: "explore" },
+		])
+		const nestedManifest = (provider as any).subagentDescriptors.get(nested.envelopes[0].id).contextManifest
+
+		expect(nested.requiresExplicitApproval).toBe(true)
+		expect(nestedManifest.runtimePolicy.autoApproval).toMatchObject({
+			autoApprovalEnabled: false,
+			alwaysAllowReadOnly: false,
+			alwaysAllowWrite: false,
+			alwaysAllowExecute: false,
+			alwaysAllowSubagents: false,
+		})
 	})
 
 	it("applies a live explicit-only setting as a narrowing cap to an open proactive task", async () => {
@@ -3581,6 +3813,12 @@ If complete, use attempt_completion.
 		const routingSettings: Parameters<typeof makeProviderHarness>[1] = {
 			subagentDelegationPolicy: "proactive",
 			subagentRoleTimeoutsMs: { explore: 180_000 },
+			autoApprovalEnabled: true,
+			alwaysAllowSubagents: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowExecute: true,
+			allowedCommands: ["git diff"],
+			deniedCommands: ["git push"],
 		}
 		const provider = makeProviderHarness(2, routingSettings)
 		const parent = makeParent()
@@ -3596,6 +3834,18 @@ If complete, use attempt_completion.
 		expect(capturedManifest.orchestration).toMatchObject({
 			delegationPolicy: { policy: "proactive" },
 			limits: { timeoutMs: 180_000 },
+		})
+		expect(capturedManifest.runtimePolicy.autoApproval).toMatchObject({
+			autoApprovalEnabled: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowExecute: true,
+			alwaysAllowSubagents: true,
+			commandApproval: {
+				allowAll: false,
+				denyAll: false,
+				allowed: [expect.objectContaining({ prefixLength: "git diff".length })],
+				denied: [expect.objectContaining({ prefixLength: "git push".length })],
+			},
 		})
 		;(provider as any).__historyItems.set(prepared.envelopes[0].id, {
 			id: prepared.envelopes[0].id,
@@ -3631,6 +3881,11 @@ If complete, use attempt_completion.
 		;(provider as any).reservedSubagentSlots.clear()
 		routingSettings.subagentDelegationPolicy = "explicit-only"
 		routingSettings.subagentRoleTimeoutsMs = { explore: 600_000 }
+		routingSettings.autoApprovalEnabled = false
+		routingSettings.alwaysAllowSubagents = false
+		routingSettings.alwaysAllowExecute = false
+		routingSettings.allowedCommands = ["*"]
+		routingSettings.deniedCommands = []
 		parent.apiConversationHistory = [{ role: "user", content: "NEW_PARENT_TURN_MUST_NOT_BE_CAPTURED" }]
 		parent.captureEffectiveInheritedInstructions.mockClear()
 		const startPreparedSubagentRun = vi.fn(
@@ -3673,6 +3928,9 @@ If complete, use attempt_completion.
 			"Inspect the restored edge case",
 		)
 		expect((provider as any).subagentDescriptors.get(retained.taskId)?.contextManifest).toEqual(capturedManifest)
+		expect(
+			(provider as any).subagentDescriptors.get(retained.taskId)?.contextManifest.runtimePolicy.autoApproval,
+		).toEqual(capturedManifest.runtimePolicy.autoApproval)
 		const restored = startPreparedSubagentRun.mock.calls[0][1]
 		expect(restored.envelopes[0].budget.timeoutMs).toBe(180_000)
 		expect(restored.envelopes[0].budget.timeoutMs).not.toBe(routingSettings.subagentRoleTimeoutsMs.explore)
@@ -3849,6 +4107,78 @@ If complete, use attempt_completion.
 		expect(updates.at(-1)?.status).toBe("completed")
 	})
 
+	it("registers blocking children before launch and durably closes their synchronous lifecycle", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		;(provider as any).taskSessions.getTask = (taskId: string) => (taskId === parent.taskId ? parent : undefined)
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect the parser", agent_kind: "explore" },
+			{ objective: "Review the dispatcher", agent_kind: "review" },
+		])
+		const store = (provider as any).agentControlStore as AgentControlStore
+		const observedStatuses: string[] = []
+		;(provider as any).boundedDelegationManager = new BoundedDelegationManager(async (envelope) => {
+			const record = store.getAgent(envelope.id, parent.taskId)
+			expect(record).toMatchObject({
+				taskId: envelope.id,
+				parentTaskId: parent.taskId,
+				groupId: prepared.group.groupId,
+				status: "running",
+			})
+			observedStatuses.push(record!.status)
+
+			const decision = await provider.getParentCompletionDecision({
+				taskId: envelope.id,
+				rootTaskId: parent.taskId,
+				taskKind: "subagent",
+				subagentRole: "review",
+			} as any)
+			expect(decision.allowed).toBe(true)
+
+			return {
+				taskId: envelope.id,
+				status: "completed" as const,
+				summary: `Completed ${envelope.objective}`,
+				evidence: [],
+				changedFiles: [],
+				verification: [],
+				remainingRisks: [],
+				usage: { durationMs: 10 },
+				stopReason: "completed" as const,
+			}
+		})
+
+		const result = await provider.runSubagentGroup(parent as any, prepared, new AbortController().signal)
+
+		expect(result.status).toBe("completed")
+		expect(observedStatuses).toEqual(["running", "running"])
+		for (const envelope of prepared.envelopes) {
+			const record = store.getAgent(envelope.id, parent.taskId)
+			expect(record).toMatchObject({
+				status: "completed",
+				terminalResult: {
+					status: "completed",
+					stopReason: "completed",
+					metadata: { delivery: "delegate_task" },
+				},
+				snapshot: { metadata: { delivery: "delegate_task" } },
+			})
+		}
+		expect(store.getUnacknowledgedMailboxEntries(parent.taskId, { kinds: ["result"] })).toEqual([])
+		await expect(provider.getParentCompletionDecision(parent as any)).resolves.toMatchObject({ allowed: true })
+		await expect(
+			provider.waitForAgent(parent as any, 10_000, {
+				target: prepared.envelopes[0].id,
+				untilTerminal: true,
+			}),
+		).resolves.toMatchObject({
+			timedOut: false,
+			events: [],
+			alreadyDelivered: true,
+			target: { taskId: prepared.envelopes[0].id, status: "completed" },
+		})
+	})
+
 	it("retries a transient child-result persistence failure without changing the child outcome", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
@@ -3923,6 +4253,16 @@ If complete, use attempt_completion.
 			agents: [{ status: "failed", error: "message store unavailable" }],
 		})
 		expect(parent.upsertSubagentGroup).toHaveBeenLastCalledWith(prepared.group)
+		const record = (provider as any).agentControlStore.getAgent(prepared.envelopes[0].id, parent.taskId)
+		expect(record).toMatchObject({
+			status: "failed",
+			terminalResult: {
+				status: "failed",
+				error: "message store unavailable",
+				metadata: { delivery: "delegate_task" },
+			},
+		})
+		await expect(provider.getParentCompletionDecision(parent as any)).resolves.toMatchObject({ allowed: true })
 	})
 
 	it("preserves an already-requested parent cancellation as cancelled", async () => {
@@ -3971,6 +4311,15 @@ If complete, use attempt_completion.
 			status: "cancelled",
 			agents: [{ status: "cancelled" }],
 		})
+		const record = (provider as any).agentControlStore.getAgent(prepared.envelopes[0].id, parent.taskId)
+		expect(record).toMatchObject({
+			status: "cancelled",
+			terminalResult: {
+				status: "cancelled",
+				metadata: { delivery: "delegate_task" },
+			},
+		})
+		await expect(provider.getParentCompletionDecision(parent as any)).resolves.toMatchObject({ allowed: true })
 	})
 
 	it("summarizes useful partial work from an incomplete child transcript", () => {

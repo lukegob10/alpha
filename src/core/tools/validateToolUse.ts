@@ -2,11 +2,33 @@ import type { ToolName, ModeConfig, ExperimentId, GroupOptions, GroupEntry } fro
 import { toolNames as validToolNames } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 
-import { type Mode, FileRestrictionError, getModeBySlug, getGroupName } from "../../shared/modes"
+import { type Mode, FileRestrictionError, getModeBySlug, getGroupName, planModeSlug } from "../../shared/modes"
 import { EXPERIMENT_IDS } from "../../shared/experiments"
+import { isPlanCommandAllowed, isPlanCommandCwdAllowed } from "../../shared/plan-command"
 import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS, TOOL_ALIASES } from "../../shared/tools"
 
 const executableNativeToolNames = validToolNames
+
+const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
+	"read_file",
+	"search_files",
+	"list_files",
+	"codebase_search",
+	"ask_followup_question",
+	"attempt_completion",
+	"execute_command",
+	"read_command_output",
+	"delegate_task",
+	"spawn_agent",
+	"list_agents",
+	"wait_agent",
+	"send_message",
+	"report_progress",
+	"followup_task",
+	"interrupt_agent",
+	"cancel_agent",
+	"close_agent",
+])
 
 /**
  * Checks if a tool name is a valid, known tool.
@@ -146,6 +168,36 @@ export function isToolAllowedForMode(
 		// If toolRequirements is a boolean false, all tools are disabled
 		return false
 	}
+
+	// The built-in Plan mode is a host-enforced collaboration state, not a
+	// customizable file-restriction preset. Fail closed before the global and
+	// custom-tool shortcuts so stale settings cannot restore mutating authority.
+	if (modeSlug === planModeSlug && !PLAN_MODE_ALLOWED_TOOLS.has(resolvedTool)) {
+		return false
+	}
+
+	if (modeSlug === planModeSlug && resolvedTool === "spawn_agent") {
+		if (toolParams?.agent_kind && !["explore", "review"].includes(toolParams.agent_kind)) return false
+		if (toolParams?.write_scope != null) return false
+	}
+
+	if (modeSlug === planModeSlug && resolvedTool === "delegate_task" && Array.isArray(toolParams?.tasks)) {
+		for (const task of toolParams.tasks) {
+			if (!task || typeof task !== "object") continue
+			if (task.agent_kind && !["explore", "review"].includes(task.agent_kind)) return false
+			if (task.write_scope != null) return false
+		}
+	}
+
+	if (modeSlug === planModeSlug && resolvedTool === "execute_command" && toolParams) {
+		if (typeof toolParams.command !== "string" || !isPlanCommandAllowed(toolParams.command)) return false
+		if (!isPlanCommandCwdAllowed(toolParams.cwd)) return false
+		if (toolParams.verification != null) return false
+	}
+
+	// Plan's allowed set is canonical and cannot be weakened or expanded by a
+	// persisted custom mode that reuses the historical `architect` slug.
+	if (modeSlug === planModeSlug) return true
 
 	// Always allow these tools (unless explicitly disabled above)
 	if (ALWAYS_AVAILABLE_TOOLS.includes(tool as any)) {

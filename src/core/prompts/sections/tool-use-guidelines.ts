@@ -1,4 +1,7 @@
-export function getToolUseGuidelinesSection(subagentRole?: "explore" | "review" | "worker"): string {
+export function getToolUseGuidelinesSection(
+	subagentRole?: "explore" | "review" | "worker",
+	isPlanMode = false,
+): string {
 	if (subagentRole) {
 		return `# Tool Use Guidelines
 
@@ -7,6 +10,16 @@ export function getToolUseGuidelinesSection(subagentRole?: "explore" | "review" 
 3. Group independent read-only operations; serialize dependent operations and worker mutations.
 4. Treat returned results as the source of truth. Never assume success from missing or incomplete output.
 5. If the objective cannot be completed with this child authority or available workspace evidence, report the constraint through attempt_completion instead of inventing information.`
+	}
+
+	if (isPlanMode) {
+		return `# Tool Use Guidelines
+
+1. Begin with the request and repository evidence already available.
+2. Use the narrowest read-only repository tool that resolves the next material uncertainty. Prefer repository tools; use execute_command only for a host-approved inspection or verification that those tools cannot supply as well.
+3. Group independent reads; serialize dependent investigation, commands, and agent coordination.
+4. Treat returned evidence as authoritative and distinguish verified facts from assumptions.
+5. Ask the user only when reasonable exploration cannot resolve a decision that materially changes the plan.`
 	}
 
 	return `# Tool Use Guidelines

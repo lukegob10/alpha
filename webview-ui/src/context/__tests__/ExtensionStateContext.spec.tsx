@@ -61,6 +61,20 @@ const MessagesTestComponent = () => {
 	)
 }
 
+const WelcomeStateTestComponent = () => {
+	const { showWelcome, currentTaskId } = useExtensionState()
+	return (
+		<>
+			<div data-testid="show-welcome">{String(showWelcome)}</div>
+			<div data-testid="current-task-id">{currentTaskId ?? ""}</div>
+		</>
+	)
+}
+
+const dispatchExtensionState = (state: Partial<ExtensionState>) => {
+	window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state } }))
+}
+
 describe("ExtensionStateContext", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals()
@@ -198,6 +212,130 @@ describe("ExtensionStateContext", () => {
 				modelTemperature: 0.7, // Should add this from partial update
 			}),
 		)
+	})
+
+	it("does not replace an established chat with provider setup during partial state updates", () => {
+		render(
+			<ExtensionStateContextProvider>
+				<WelcomeStateTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		act(() => {
+			dispatchExtensionState({
+				apiConfiguration: { apiProvider: "openai-codex" },
+				currentTaskId: "task-1",
+				currentView: { type: "task", taskId: "task-1" },
+				taskStateSeq: 1,
+			})
+		})
+
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent("false")
+		expect(screen.getByTestId("current-task-id")).toHaveTextContent("task-1")
+
+		act(() => {
+			// Queue and todo fast paths intentionally omit apiConfiguration.
+			dispatchExtensionState({ currentTaskId: "task-1", messageQueue: [], messageQueueSeq: 2 })
+			dispatchExtensionState({ currentTaskId: "task-1", currentTaskTodos: [], currentTaskTodosSeq: 2 })
+		})
+
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent("false")
+
+		act(() => {
+			// A provider-only refresh is also not allowed to cover the established task.
+			dispatchExtensionState({ apiConfiguration: {} })
+		})
+
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent("false")
+
+		act(() => {
+			// Even a temporarily incomplete full provider snapshot cannot cover an active task.
+			dispatchExtensionState({
+				apiConfiguration: {},
+				currentTaskId: "task-1",
+				currentView: { type: "task", taskId: "task-1" },
+				taskStateSeq: 2,
+			})
+		})
+
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent("false")
+	})
+
+	it("opens provider setup only for an unconfigured new-task draft", () => {
+		render(
+			<ExtensionStateContextProvider>
+				<WelcomeStateTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		act(() => {
+			dispatchExtensionState({ apiConfiguration: {}, currentView: { type: "newTaskDraft" }, taskStateSeq: 1 })
+		})
+
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent("true")
+
+		act(() => {
+			dispatchExtensionState({ apiConfiguration: { apiProvider: "openai-codex" } })
+		})
+
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent("false")
+	})
+
+	it("never infers missing provider setup from an initial queue fast-path", () => {
+		render(
+			<ExtensionStateContextProvider>
+				<WelcomeStateTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		act(() => {
+			dispatchExtensionState({ currentTaskId: "task-1", messageQueueSeq: 1, messageQueue: [] })
+		})
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent("false")
+
+		act(() => {
+			dispatchExtensionState({
+				apiConfiguration: {},
+				currentTaskId: "task-1",
+				currentView: { type: "task", taskId: "task-1" },
+				taskStateSeq: 1,
+				messageQueueSeq: 2,
+			})
+		})
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent("false")
+	})
+
+	it("hides setup immediately when a fresh active-task fast-path overtakes a draft snapshot", () => {
+		render(
+			<ExtensionStateContextProvider>
+				<WelcomeStateTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		act(() => {
+			dispatchExtensionState({
+				apiConfiguration: {},
+				currentView: { type: "newTaskDraft" },
+				taskStateSeq: 1,
+				messageQueueSeq: 1,
+			})
+		})
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent("true")
+
+		act(() => {
+			dispatchExtensionState({ currentTaskId: "task-2", messageQueueSeq: 2, messageQueue: [] })
+		})
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent("false")
+
+		act(() => {
+			// A stale lifecycle snapshot must not clear the newer fast-path signal.
+			dispatchExtensionState({
+				apiConfiguration: {},
+				currentView: { type: "newTaskDraft" },
+				taskStateSeq: 1,
+			})
+		})
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent("false")
 	})
 
 	it("coalesces partial message updates per animation frame and applies completion immediately", () => {

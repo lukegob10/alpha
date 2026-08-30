@@ -452,6 +452,8 @@ export const clineMessageSchema = z.object({
 	checkpoint: z.record(z.string(), z.unknown()).optional(),
 	progressStatus: toolProgressStatusSchema.optional(),
 	subagentGroup: subagentGroupStateSchema.optional(),
+	/** Idempotency key for a legacy blocking child result injected into its parent. */
+	subtaskResultChildId: z.string().min(1).optional(),
 	/**
 	 * Data for successful context condensation.
 	 * Present when `say: "condense_context"` and `partial: false`.

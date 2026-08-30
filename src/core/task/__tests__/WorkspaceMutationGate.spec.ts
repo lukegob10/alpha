@@ -59,4 +59,38 @@ describe("WorkspaceMutationGate", () => {
 		await first
 		await expect(second).rejects.toBeInstanceOf(WorkspaceMutationCancelledError)
 	})
+
+	it("admits a fail-closed transition only when no mutation is active or queued", async () => {
+		const gate = new WorkspaceMutationGate()
+		const mutationRelease = deferred()
+		const mutation = gate.run("task-a", "edit", () => mutationRelease.promise)
+		await Promise.resolve()
+
+		expect(gate.runIfIdle("task-a", "enter Plan", async () => "entered")).toBeUndefined()
+
+		mutationRelease.resolve()
+		await mutation
+		await Promise.resolve()
+		await expect(gate.runIfIdle("task-a", "enter Plan", async () => "entered")).resolves.toBe("entered")
+	})
+
+	it("holds an admitted transition against a racing Worker launch", async () => {
+		const gate = new WorkspaceMutationGate()
+		const transitionRelease = deferred()
+		const order: string[] = []
+		const transition = gate.runIfIdle("parent", "enter Plan", async () => {
+			order.push("plan:start")
+			await transitionRelease.promise
+			order.push("plan:end")
+		})
+		const worker = gate.run("parent", "Worker launch admission", async () => {
+			order.push("worker:start")
+		})
+
+		await Promise.resolve()
+		expect(order).toEqual(["plan:start"])
+		transitionRelease.resolve()
+		await Promise.all([transition, worker])
+		expect(order).toEqual(["plan:start", "plan:end", "worker:start"])
+	})
 })

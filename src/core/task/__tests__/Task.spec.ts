@@ -286,6 +286,9 @@ describe("Alpha", () => {
 		mockProvider.postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebviewWithoutTaskHistory = vi.fn().mockResolvedValue(undefined)
+		mockProvider.updateTaskHistory = vi.fn().mockResolvedValue([])
+		mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+		mockProvider.rollbackTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
 		mockProvider.getTaskWithId = vi.fn().mockImplementation(async (id) => ({
 			historyItem: {
 				id,
@@ -2625,8 +2628,8 @@ describe("Alpha", () => {
 	})
 
 	describe("v2.0.9 root task loop", () => {
-		const createTask = (taskKind: "primary" | "subagent" = "primary") =>
-			new Task({
+		const createTask = (taskKind: "primary" | "subagent" = "primary") => {
+			const task = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				task: "root loop regression",
@@ -2634,6 +2637,19 @@ describe("Alpha", () => {
 				startTask: false,
 				enableCheckpoints: false,
 			})
+			vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(true)
+			vi.spyOn(task as any, "enqueueClineMessagesSave").mockImplementation(async (...args: unknown[]) => {
+				const [createSnapshot, onPersisted] = args as [() => unknown, (() => void) | undefined]
+				createSnapshot()
+				onPersisted?.()
+				return true
+			})
+			return task
+		}
+
+		beforeEach(() => {
+			mockProvider.getParentCompletionDecision = vi.fn().mockResolvedValue({ allowed: true })
+		})
 
 		it.each([
 			["successful", false],
@@ -2715,6 +2731,139 @@ describe("Alpha", () => {
 			expect((task as any).automaticMistakeRecoveryCount).toBe(0)
 		})
 
+		it("does not expose a newly staged completion when every transcript write fails", async () => {
+			const task = createTask()
+			const stagedSnapshots: any[][] = []
+			vi.mocked((task as any).enqueueClineMessagesSave).mockImplementation(
+				async (createSnapshot: () => any[]) => {
+					stagedSnapshots.push(createSnapshot())
+					return false
+				},
+			)
+			const publish = vi.spyOn(task as any, "publishClineMessageCreated")
+
+			await expect(task.presentCompletionResult("Durable final answer.")).rejects.toThrow(
+				"Unable to persist the completion result",
+			)
+
+			expect(stagedSnapshots).toHaveLength(3)
+			expect(stagedSnapshots).toEqual(
+				expect.arrayContaining([
+					expect.arrayContaining([
+						expect.objectContaining({ say: "completion_result", text: "Durable final answer." }),
+					]),
+				]),
+			)
+			expect(task.clineMessages).not.toContainEqual(expect.objectContaining({ say: "completion_result" }))
+			expect(publish).not.toHaveBeenCalled()
+		})
+
+		it("keeps the last durable terminal style when retraction persistence fails", async () => {
+			const task = createTask()
+			const completion = {
+				ts: 42,
+				type: "say" as const,
+				say: "completion_result" as const,
+				text: "Persisted final answer.",
+				partial: false,
+			}
+			task.clineMessages = [completion]
+			;(task as any).currentAssistantResponseMessageTs = completion.ts
+			const stagedSnapshots: any[][] = []
+			vi.mocked((task as any).enqueueClineMessagesSave).mockImplementation(
+				async (createSnapshot: () => any[]) => {
+					stagedSnapshots.push(createSnapshot())
+					return false
+				},
+			)
+			const update = vi.spyOn(task as any, "updateClineMessage")
+
+			await expect(task.retractCompletionResult()).rejects.toThrow(
+				"Unable to persist the rejected completion state",
+			)
+
+			expect(stagedSnapshots).toHaveLength(3)
+			expect(stagedSnapshots[0]).toContainEqual(expect.objectContaining({ say: "text", partial: false }))
+			expect(task.clineMessages).toEqual([completion])
+			expect(update).not.toHaveBeenCalled()
+			expect((task as any).suspendAfterCurrentTurnReason).toContain("paused before another model request")
+		})
+
+		it("does not expose a completion boundary when raw text fails the durable completion gate", async () => {
+			const task = createTask()
+			mockProvider.getParentCompletionDecision.mockResolvedValue({
+				allowed: false,
+				message: "A managed descendant is still active.",
+			})
+			const ask = vi.spyOn(task, "ask")
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockImplementationOnce(async () => {
+					await task.say("text", "Everything is finished.", undefined, false)
+					task.assistantMessageContent = [
+						{ type: "text", content: "Everything is finished.", partial: false },
+					]
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(ask).not.toHaveBeenCalledWith("completion_result", expect.anything(), expect.anything())
+			expect(task.clineMessages).not.toContainEqual(
+				expect.objectContaining({ type: "say", say: "completion_result" }),
+			)
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[1]?.[0]).toEqual([
+				expect.objectContaining({ type: "text", text: expect.stringContaining("still active") }),
+			])
+		})
+
+		it("returns an accepted raw completion from a legacy child to its parent", async () => {
+			const parent = createTask()
+			const child = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "legacy child",
+				parentTask: parent,
+				rootTask: parent,
+				startTask: false,
+				enableCheckpoints: false,
+			})
+			vi.spyOn(child as any, "saveClineMessages").mockResolvedValue(true)
+			vi.spyOn(child as any, "enqueueClineMessagesSave").mockImplementation(async (...args: unknown[]) => {
+				const [createSnapshot, onPersisted] = args as [() => unknown, (() => void) | undefined]
+				createSnapshot()
+				onPersisted?.()
+				return true
+			})
+			mockProvider.getTaskWithId = vi.fn().mockResolvedValue({
+				historyItem: { id: child.taskId, status: "active" },
+			})
+			mockProvider.reopenParentFromDelegation = vi.fn().mockResolvedValue(undefined)
+			vi.spyOn(child, "ask").mockResolvedValue({
+				response: "yesButtonClicked",
+				text: "",
+				images: [],
+			})
+			const finalize = vi.spyOn(child, "finalizeTaskCompletion").mockResolvedValue(true)
+			vi.spyOn(child, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+				child.assistantMessageContent = [{ type: "text", content: "Legacy review complete.", partial: false }]
+				return false
+			})
+
+			await (child as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(mockProvider.reopenParentFromDelegation).toHaveBeenCalledWith({
+				parentTaskId: parent.taskId,
+				childTaskId: child.taskId,
+				completionResultSummary: "Legacy review complete.",
+			})
+			// The transactional parent handoff owns the terminal child state. Finalizing
+			// the child independently would publish a duplicate completion boundary.
+			expect(finalize).not.toHaveBeenCalled()
+		})
+
 		it("lets a queued follow-up arriving at the completion boundary win over acceptance", async () => {
 			const task = createTask()
 			vi.spyOn(task, "ask").mockImplementationOnce(async () => {
@@ -2741,6 +2890,7 @@ describe("Alpha", () => {
 
 		it("continues the same task when the user replies at the ordinary completion boundary", async () => {
 			const task = createTask()
+			const retract = vi.spyOn(task, "retractCompletionResult")
 			const ask = vi
 				.spyOn(task, "ask")
 				.mockResolvedValueOnce({
@@ -2757,6 +2907,9 @@ describe("Alpha", () => {
 					return false
 				})
 				.mockImplementationOnce(async () => {
+					expect(task.clineMessages).toContainEqual(
+						expect.objectContaining({ type: "say", say: "text", text: "First answer." }),
+					)
 					task.assistantMessageContent = [{ type: "text", content: "Expanded answer.", partial: false }]
 					return false
 				})
@@ -2768,8 +2921,46 @@ describe("Alpha", () => {
 				[{ type: "text", text: "<user_message>\nPlease expand on that.\n</user_message>" }],
 				false,
 			])
+			expect(retract).toHaveBeenCalledOnce()
 			expect(say).toHaveBeenCalledWith("user_feedback", "Please expand on that.", [])
 			expect(ask).toHaveBeenCalledTimes(2)
+		})
+
+		it("does not start another model turn when completion demotion cannot be persisted", async () => {
+			const task = createTask()
+			let saveAttempt = 0
+			vi.mocked((task as any).enqueueClineMessagesSave).mockImplementation(
+				async (createSnapshot: () => unknown, onPersisted?: () => void) => {
+					createSnapshot()
+					saveAttempt++
+					if (saveAttempt === 1) {
+						onPersisted?.()
+						return true
+					}
+					return false
+				},
+			)
+			vi.spyOn(task, "ask").mockResolvedValue({
+				response: "messageResponse",
+				text: "Please keep working.",
+				images: [],
+			})
+			const say = vi.spyOn(task, "say")
+			const requestStep = vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+				task.assistantMessageContent = [{ type: "text", content: "Premature answer.", partial: false }]
+				return false
+			})
+
+			await expect((task as any).initiateTaskLoop([{ type: "text", text: "start" }])).rejects.toThrow(
+				"Unable to persist the rejected completion state",
+			)
+
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(say).not.toHaveBeenCalledWith("user_feedback", expect.anything(), expect.anything())
+			expect(task.clineMessages).toContainEqual(
+				expect.objectContaining({ type: "say", say: "completion_result", text: "Premature answer." }),
+			)
+			expect((task as any).suspendAfterCurrentTurnReason).toContain("paused before another model request")
 		})
 
 		it("does not discard pending user continuation after a no-tool response", async () => {
@@ -3034,6 +3225,38 @@ describe("Alpha", () => {
 
 			startTaskSpy.mockRestore()
 		})
+	})
+})
+
+describe("Plan completion presentation", () => {
+	it("normalizes a primary Plan response to one exact proposed-plan block", async () => {
+		const message = { ts: 1, type: "say", say: "text", text: "streamed draft", partial: true }
+		const commitClineMessageMutation = vi.fn(
+			async (_timestamp: number, _context: string, mutate: (value: any) => any) => {
+				const committed = mutate(message)
+				Object.assign(message, committed)
+				return { message, created: false }
+			},
+		)
+		const task = {
+			taskKind: "primary",
+			cwd: "F:/workspace",
+			getTaskMode: vi.fn().mockResolvedValue("architect"),
+			currentAssistantResponseMessageTs: 1,
+			findMessageByTimestamp: vi.fn().mockReturnValue(message),
+			commitClineMessageMutation,
+			updateClineMessage: vi.fn().mockResolvedValue(undefined),
+			say: vi.fn().mockResolvedValue(undefined),
+		} as unknown as Task
+
+		await Task.prototype.presentCompletionResult.call(task, "# Provider plan\n- Update model lookup")
+
+		expect(message).toMatchObject({
+			say: "completion_result",
+			text: "<proposed_plan>\n# Provider plan\n- Update model lookup\n</proposed_plan>",
+			partial: false,
+		})
+		expect((task as any).say).not.toHaveBeenCalled()
 	})
 })
 

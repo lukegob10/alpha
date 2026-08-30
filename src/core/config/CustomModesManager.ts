@@ -50,6 +50,7 @@ export class CustomModesManager {
 	private disposables: vscode.Disposable[] = []
 	private isWriting = false
 	private writeQueue: Array<() => Promise<void>> = []
+	private settingsFileCreation?: Promise<void>
 	private cachedModes: ModeConfig[] | null = null
 	private cachedAt: number = 0
 
@@ -252,7 +253,15 @@ export class CustomModesManager {
 		const fileExists = await fileExistsAtPath(filePath)
 
 		if (!fileExists) {
-			await this.queueWrite(() => fs.writeFile(filePath, yaml.stringify({ customModes: [] }, { lineWidth: 0 })))
+			const creation =
+				this.settingsFileCreation ??
+				fs.writeFile(filePath, yaml.stringify({ customModes: [] }, { lineWidth: 0 }))
+			this.settingsFileCreation = creation
+			try {
+				await creation
+			} finally {
+				if (this.settingsFileCreation === creation) this.settingsFileCreation = undefined
+			}
 		}
 
 		return filePath

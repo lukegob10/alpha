@@ -6,6 +6,7 @@ export function getCapabilitiesSection(
 	subagentRole?: "explore" | "review" | "worker",
 	subagentCanDelegate = false,
 	subagentDelegationPolicy?: "explicit-only" | "proactive",
+	isPlanMode = false,
 ): string {
 	if (subagentRole) {
 		const roleCapabilities =
@@ -24,6 +25,17 @@ CAPABILITIES
 - ${roleCapabilities}${delegationCapability}
 - The current workspace directory is '${cwd}'. A recursive workspace file list may be supplied in environment_details. Stay within this workspace and the objective's evidence scope.
 - Complete the bounded objective from available repository evidence, then report through attempt_completion.`
+	}
+
+	if (isPlanMode) {
+		return `====
+
+CAPABILITIES
+
+- You may inspect the workspace with read, list, search, and available codebase-search tools. You may run a host-classified inspection or source-non-mutating verification command and read its retained output. Verification may execute trusted repository test/config code and create ordinary tool caches, but cannot target output, temp, cache, config, or plugin paths.
+- You may ask a focused follow-up question and coordinate bounded managed Explore or Review children using the available agent lifecycle controls.
+- The current workspace directory is '${cwd}'. A recursive workspace file list may be supplied in environment_details. Stay within this workspace and the user's planning objective.
+- Plan mode cannot edit files, run arbitrary or mutating commands, launch or advance Workers, or invoke other side-effecting capabilities.`
 	}
 
 	return `====

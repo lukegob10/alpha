@@ -71,6 +71,7 @@ import {
 	MAX_MCP_TOOLS_THRESHOLD,
 	countEnabledMcpTools,
 	resolveSubagentDelegationPolicy,
+	disabledSubagentAutoApprovalPolicy,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
@@ -88,9 +89,10 @@ import { t } from "../../i18n"
 import { formatLanguage } from "../../shared/language"
 import { getApiMetrics, hasTokenUsageChanged, hasToolUsageChanged } from "../../shared/getApiMetrics"
 import { ClineAskResponse } from "../../shared/WebviewMessage"
-import { defaultModeSlug, getModeBySlug, getModeSelection } from "../../shared/modes"
+import { defaultModeSlug, getModeBySlug, getModeSelection, planModeSlug } from "../../shared/modes"
 import { DiffStrategy, type ToolUse, type ToolParamName, toolParamNames } from "../../shared/tools"
 import { getModelMaxOutputTokens } from "../../shared/api"
+import { ensureProposedPlanBlock } from "../../shared/plan-mode"
 
 // services
 import { McpHub } from "../../services/mcp/McpHub"
@@ -152,7 +154,7 @@ import {
 import { processUserContentMentions } from "../mentions/processUserContentMentions"
 import { getMessagesSinceLastSummary, summarizeConversation, getEffectiveApiHistory } from "../condense"
 import { MessageQueueService } from "../message-queue/MessageQueueService"
-import { AutoApprovalHandler, checkAutoApproval } from "../auto-approval"
+import { AutoApprovalHandler, checkAutoApprovalWithInheritedPolicy } from "../auto-approval"
 import { MessageManager } from "../message-manager"
 import { validateAndFixToolResultIds } from "./validateToolResultIds"
 import { mergeConsecutiveApiMessages } from "./mergeConsecutiveApiMessages"
@@ -182,6 +184,13 @@ export interface CommandExecutionEvidence {
 	command?: string
 	/** Explicit applied change sets this command was requested to verify. */
 	verificationChangeSetIds?: string[]
+}
+
+export interface CompletionGateDecision {
+	allowed: boolean
+	message?: string
+	/** False when the durable gate itself was unavailable, rather than an obligation the model can resolve. */
+	modelCanResolveRejection: boolean
 }
 
 const SAFE_EXTERNAL_MUTATION_ASKS = new Set<ClineAsk>([
@@ -474,6 +483,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		disposition: "acknowledge" | "release"
 	}
 	private readonly pendingWaitAgentResultClaims = new Map<string, string>()
+	private readonly persistedToolResultIds = new Set<string>()
 	private steerMessageAwaitingPersistence = false
 	private isAgentTurnEngineActive = false
 	private externalMutationLease?: { label: string; token: symbol }
@@ -483,6 +493,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private isTaskLoopActive = false
 	private didComplete = false
 	private didEmitTaskCompleted = false
+	private suspendAfterCurrentTurnReason?: string
 	private currentAssistantResponseMessageTs: number | undefined
 	skipPrevResponseIdOnce: boolean = false
 
@@ -631,9 +642,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * @returns true if added, false if duplicate was skipped
 	 */
 	public pushToolResultToUserContent(toolResult: Anthropic.ToolResultBlockParam): boolean {
+		const normalizedToolUseId = sanitizeToolUseId(toolResult.tool_use_id)
+		if (this.persistedToolResultIds.has(normalizedToolUseId)) {
+			return false
+		}
 		const existingResult = this.userMessageContent.find(
 			(block): block is Anthropic.ToolResultBlockParam =>
-				block.type === "tool_result" && block.tool_use_id === toolResult.tool_use_id,
+				block.type === "tool_result" && sanitizeToolUseId(block.tool_use_id) === normalizedToolUseId,
 		)
 		if (existingResult) {
 			console.warn(
@@ -647,7 +662,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				: toolResult.content?.map((block) =>
 						block.type === "text" ? { ...block, text: redactTaskPrivatePaths(this, block.text) } : block,
 					)
-		this.userMessageContent.push({ ...toolResult, content })
+		this.userMessageContent.push({ ...toolResult, tool_use_id: normalizedToolUseId, content })
 		return true
 	}
 
@@ -1594,15 +1609,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// - Reset to false at the start of each API request
 		// - Set to true after the assistant message is saved in recursivelyMakeClineRequests
 		if (!this.assistantMessageSavedToHistory) {
-			await pWaitFor(() => this.assistantMessageSavedToHistory || this.abort, {
+			const reachedAssistantBoundary = await pWaitFor(() => this.assistantMessageSavedToHistory || this.abort, {
 				interval: 50,
 				timeout: 30_000, // 30 second timeout as safety net
-			}).catch(() => {
-				// If timeout or abort, log and proceed anyway to avoid hanging
-				console.warn(
-					`[Task#${this.taskId}] flushPendingToolResultsToHistory: timed out waiting for assistant message to be saved`,
-				)
 			})
+				.then(() => this.assistantMessageSavedToHistory)
+				.catch(() => {
+					console.warn(
+						`[Task#${this.taskId}] flushPendingToolResultsToHistory: timed out waiting for assistant message to be saved`,
+					)
+					return false
+				})
+			if (!reachedAssistantBoundary) return false
 		}
 
 		// If task was aborted while waiting, don't flush
@@ -1611,9 +1629,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		// Save the user message with tool_result blocks
+		const pendingContent = [...this.userMessageContent]
 		const userMessage: Anthropic.MessageParam = {
 			role: "user",
-			content: this.userMessageContent,
+			content: pendingContent,
 		}
 
 		// Validate and fix tool_result IDs when the previous *effective* message is an assistant message.
@@ -1628,9 +1647,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		if (saved) {
 			await this.settlePersistedWaitAgentResultClaims(userMessageWithTs as ApiMessage)
-			// Clear the pending content since it's now saved
-			this.userMessageContent = []
+			for (const block of pendingContent) {
+				if (block.type === "tool_result") {
+					this.persistedToolResultIds.add(sanitizeToolUseId(block.tool_use_id))
+				}
+			}
+			// Remove only the snapshot that was persisted. Tool results arriving while
+			// the write was in flight belong to a later boundary and must be retained.
+			if (pendingContent.every((block, index) => this.userMessageContent[index] === block)) {
+				this.userMessageContent.splice(0, pendingContent.length)
+			} else {
+				const persisted = new Set(pendingContent)
+				this.userMessageContent = this.userMessageContent.filter((block) => !persisted.has(block))
+			}
 		} else {
+			const appendedIndex = this.apiConversationHistory.indexOf(userMessageWithTs as ApiMessage)
+			if (appendedIndex >= 0) this.apiConversationHistory.splice(appendedIndex, 1)
 			console.warn(
 				`[Task#${this.taskId}] flushPendingToolResultsToHistory: save failed, retaining pending tool results in memory`,
 			)
@@ -1686,6 +1718,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private async addToClineMessages(message: ClineMessage, stateUpdate?: "full" | "task") {
 		this.clineMessages.push(message)
+		await this.publishClineMessageCreated(message, stateUpdate)
+		await this.saveClineMessages()
+	}
+
+	private async publishClineMessageCreated(message: ClineMessage, stateUpdate?: "full" | "task") {
 		const provider = this.providerRef.deref()
 		if (stateUpdate === "task") {
 			await provider?.postTaskStateToWebview()
@@ -1708,7 +1745,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		}
 		this.emit(RooCodeEventName.Message, { action: "created", message })
-		await this.saveClineMessages()
 	}
 
 	public async overwriteClineMessages(newMessages: ClineMessage[]) {
@@ -1727,12 +1763,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.emit(RooCodeEventName.Message, { action: "updated", message })
 	}
 
-	private async saveClineMessages(): Promise<boolean> {
+	private async enqueueClineMessagesSave(
+		createSnapshot: () => ClineMessage[] = () => structuredClone(this.clineMessages),
+		onPersisted?: () => void,
+	): Promise<boolean> {
 		const save = this.clineMessagesSaveQueue.then(async () => {
 			try {
 				// Snapshot only after earlier writes finish. This prevents a slower, stale
 				// write from overwriting a newer terminal transcript during concurrent updates.
-				const messages = structuredClone(this.clineMessages)
+				const messages = createSnapshot()
 				await saveTaskMessages({
 					messages,
 					taskId: this.taskId,
@@ -1776,6 +1815,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.debouncedEmitTokenUsage(tokenUsage, this.toolUsage)
 
 				await this.providerRef.deref()?.updateTaskHistory(historyItem)
+				onPersisted?.()
 				return true
 			} catch (error) {
 				console.error("Failed to save Alpha messages:", error)
@@ -1787,6 +1827,62 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// boolean result for this specific operation.
 		this.clineMessagesSaveQueue = save.then(() => undefined)
 		return save
+	}
+
+	private async saveClineMessages(): Promise<boolean> {
+		return this.enqueueClineMessagesSave()
+	}
+
+	/**
+	 * Persist a message mutation before exposing it in memory or to the webview.
+	 * The save queue is also the commit fence: later transcript saves observe the
+	 * committed live mutation, while a failed attempt leaves the visible state alone.
+	 */
+	private async commitClineMessageMutation(
+		timestamp: number,
+		context: string,
+		mutate: (message: ClineMessage | undefined) => ClineMessage | undefined,
+	): Promise<{ message: ClineMessage; created: boolean } | undefined> {
+		for (const retryDelayMs of [0, 50, 200]) {
+			if (retryDelayMs > 0) await delay(retryDelayMs)
+
+			let stagedMessage: ClineMessage | undefined
+			let created = false
+			let committedMessage: ClineMessage | undefined
+			const saved = await this.enqueueClineMessagesSave(
+				() => {
+					const messages = structuredClone(this.clineMessages)
+					const index = messages.findIndex((message) => message.ts === timestamp)
+					created = index < 0
+					stagedMessage = mutate(index >= 0 ? messages[index] : undefined)
+					if (!stagedMessage) return messages
+					if (index >= 0) messages[index] = stagedMessage
+					else messages.push(stagedMessage)
+					return messages
+				},
+				() => {
+					if (!stagedMessage) return
+					const liveIndex = this.clineMessages.findIndex((message) => message.ts === timestamp)
+					committedMessage = structuredClone(stagedMessage)
+					if (liveIndex >= 0) this.clineMessages[liveIndex] = committedMessage
+					else this.clineMessages.push(committedMessage)
+				},
+			)
+
+			if (saved) {
+				return committedMessage ? { message: committedMessage, created } : undefined
+			}
+		}
+
+		throw new Error(`Unable to persist ${context}.`)
+	}
+
+	private async requireClineMessagesSaved(context: string): Promise<void> {
+		for (const retryDelayMs of [0, 50, 200]) {
+			if (retryDelayMs > 0) await delay(retryDelayMs)
+			if (await this.saveClineMessages()) return
+		}
+		throw new Error(`Unable to persist ${context}.`)
 	}
 
 	private findMessageByTimestamp(ts: number): ClineMessage | undefined {
@@ -2158,7 +2254,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			? ({ decision: "approve" } as const)
 			: offscreenAutoResponse
 				? ({ decision: "ask" } as const)
-				: await checkAutoApproval({ state, ask: type, text, isProtected })
+				: await checkAutoApprovalWithInheritedPolicy({
+						state,
+						inheritedState:
+							this.taskKind === "subagent"
+								? (this.subagentContextManifest?.runtimePolicy.autoApproval ??
+									disabledSubagentAutoApprovalPolicy)
+								: undefined,
+						ask: type,
+						text,
+						isProtected,
+					})
 
 		if (offscreenAutoResponse) {
 			this.handleWebviewAskResponse(
@@ -2399,7 +2505,59 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.interactiveAsk = undefined
 		this.deferredAskResponse = undefined
 		this.userMessageContentReady = true
-		this.messageQueueService.clear()
+	}
+
+	/** Stop after the current tool protocol boundary instead of spending another model turn. */
+	public suspendAfterCurrentTurn(reason: string): void {
+		this.suspendAfterCurrentTurnReason = reason
+	}
+
+	/** Remove a staged native tool result when its terminal transaction fails. */
+	public removePendingToolResult(toolCallId: string): boolean {
+		const sanitizedId = sanitizeToolUseId(toolCallId)
+		const index = this.userMessageContent.findIndex(
+			(block) => block.type === "tool_result" && sanitizeToolUseId(block.tool_use_id) === sanitizedId,
+		)
+		if (index < 0) return false
+		this.userMessageContent.splice(index, 1)
+		return true
+	}
+
+	/**
+	 * Undo a just-persisted terminal tool result when a later completion guard
+	 * observes queued user guidance. The assistant tool_use remains in history;
+	 * the caller immediately supplies the replacement result for the next turn.
+	 */
+	public async rollbackPersistedToolResult(toolCallId: string): Promise<boolean> {
+		const sanitizedId = sanitizeToolUseId(toolCallId)
+		const originalHistory = this.apiConversationHistory
+		const nextHistory = structuredClone(originalHistory)
+		for (let index = nextHistory.length - 1; index >= 0; index--) {
+			const message = nextHistory[index]
+			if (message.role !== "user" || !Array.isArray(message.content)) continue
+			const nextContent = message.content.filter(
+				(block) => block.type !== "tool_result" || sanitizeToolUseId(block.tool_use_id) !== sanitizedId,
+			)
+			if (nextContent.length === message.content.length) continue
+			if (nextContent.length === 0) nextHistory.splice(index, 1)
+			else message.content = nextContent
+			this.apiConversationHistory = nextHistory
+			try {
+				if (!(await this.saveApiConversationHistory())) {
+					throw new Error("Unable to roll back the interrupted completion tool result.")
+				}
+			} catch (error) {
+				// The durable transcript still contains the terminal result. Restore the
+				// matching in-memory view and retain its dedupe reservation so a later
+				// error callback cannot create a conflicting second result.
+				if (this.apiConversationHistory === nextHistory) this.apiConversationHistory = originalHistory
+				throw error
+			}
+			this.persistedToolResultIds.delete(sanitizedId)
+			return true
+		}
+		this.persistedToolResultIds.delete(sanitizedId)
+		return false
 	}
 
 	/**
@@ -2408,15 +2566,35 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * Both explicit `attempt_completion` calls and ordinary assistant responses
 	 * converge here so lifecycle state, final usage, and telemetry cannot drift.
 	 */
-	public async finalizeTaskCompletion(): Promise<boolean> {
+	public async finalizeTaskCompletion(stagedToolCallId?: string): Promise<boolean> {
 		if (this.didEmitTaskCompleted) return false
 
 		// Reserve the transition before awaiting the persistence barrier so concurrent
 		// acceptance paths cannot publish the same completion twice.
 		this.didEmitTaskCompleted = true
+		let preparedPrimaryLifecycle = false
 		try {
+			if (this.taskKind === "primary") {
+				const provider = this.providerRef.deref()
+				if (!provider || typeof provider.prepareTaskCompletionLifecycle !== "function") {
+					throw new Error("Unable to durably prepare the task lifecycle for completion.")
+				}
+				await provider.prepareTaskCompletionLifecycle(this.taskId)
+				preparedPrimaryLifecycle = true
+			}
 			if (!(await this.flushPendingToolResultsToHistory())) {
 				throw new Error("Unable to persist pending tool results before task completion.")
+			}
+
+			// User guidance wins any race with the asynchronous persistence barriers
+			// above. No await occurs between this check and markCompleted().
+			if (!this.messageQueueService.isEmpty()) {
+				if (stagedToolCallId) await this.rollbackPersistedToolResult(stagedToolCallId)
+				if (preparedPrimaryLifecycle) {
+					await this.providerRef.deref()?.rollbackTaskCompletionLifecycle(this.taskId)
+				}
+				this.didEmitTaskCompleted = false
+				return false
 			}
 
 			this.markCompleted()
@@ -2425,9 +2603,81 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.emit(RooCodeEventName.TaskCompleted, this.taskId, this.getTokenUsage(), this.toolUsage)
 			return true
 		} catch (error) {
+			if (stagedToolCallId && this.persistedToolResultIds.has(sanitizeToolUseId(stagedToolCallId))) {
+				try {
+					await this.rollbackPersistedToolResult(stagedToolCallId)
+				} catch (toolResultRollbackError) {
+					this.didEmitTaskCompleted = false
+					throw new AggregateError(
+						[error, toolResultRollbackError],
+						"Task completion failed and its staged tool result could not be restored.",
+					)
+				}
+			}
+			if (preparedPrimaryLifecycle) {
+				try {
+					await this.providerRef.deref()?.rollbackTaskCompletionLifecycle(this.taskId)
+				} catch (rollbackError) {
+					this.didEmitTaskCompleted = false
+					throw new AggregateError(
+						[error, rollbackError],
+						"Task completion failed and its orchestration lifecycle could not be restored.",
+					)
+				}
+			}
 			this.didEmitTaskCompleted = false
 			throw error
 		}
+	}
+
+	/**
+	 * Load the single durable completion decision used by both explicit
+	 * `attempt_completion` calls and provider text-only completion fallback.
+	 * Completion always fails closed when the provider or its ledger is unavailable.
+	 */
+	public async getCompletionGateDecision(): Promise<CompletionGateDecision> {
+		const provider = this.providerRef?.deref()
+		if (!provider || typeof provider.getParentCompletionDecision !== "function") {
+			return {
+				allowed: false,
+				modelCanResolveRejection: false,
+				message:
+					"Cannot verify managed-agent completion obligations because the durable completion decision is unavailable.",
+			}
+		}
+
+		try {
+			const decision = await provider.getParentCompletionDecision(this)
+			return { ...decision, modelCanResolveRejection: true }
+		} catch (error) {
+			return {
+				allowed: false,
+				modelCanResolveRejection: false,
+				message: `Cannot verify managed-agent completion obligations right now: ${error instanceof Error ? error.message : String(error)}`,
+			}
+		}
+	}
+
+	/** Return an accepted text-only completion through the legacy blocking handoff, when applicable. */
+	private async returnCompletionToLegacyParent(result: string): Promise<boolean> {
+		if (this.taskKind !== "primary" || !this.parentTaskId) return false
+
+		const provider = this.providerRef.deref()
+		if (!provider) throw new Error("Cannot return legacy child completion because the provider is unavailable")
+		const { historyItem } = await provider.getTaskWithId(this.taskId)
+		if (historyItem.status === "completed") return false
+		if (historyItem.status !== "active") {
+			throw new Error(
+				`Cannot return legacy child completion while task ${this.taskId} has status ${historyItem.status ?? "unknown"}`,
+			)
+		}
+
+		await provider.reopenParentFromDelegation({
+			parentTaskId: this.parentTaskId,
+			childTaskId: this.taskId,
+			completionResultSummary: result,
+		})
+		return true
 	}
 
 	public beginCommandExecution(
@@ -2489,6 +2739,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public hasActiveCommandExecutions(): boolean {
 		return [...this.commandExecutionEvidence.values()].some((evidence) => evidence.status === "running")
+	}
+
+	/** A mode transition must not cross an unresolved approval boundary. */
+	public hasPendingAsk(): boolean {
+		return this.activeAsk !== undefined
 	}
 
 	private failActiveCommandExecutions(status: "cancelled" | "failed"): void {
@@ -2666,7 +2921,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (this.taskKind !== "primary") return false
 		if (this.clineMessages.some((message) => message.say === "subagent_group")) return true
 
-		return this.providerRef?.deref()?.hasManagedAgentLifecycleState?.(this.rootTaskId ?? this.taskId) ?? true
+		// A legacy new_task child is still a primary task even though it carries
+		// blocking-handoff lineage. Its managed-agent control plane is rooted here,
+		// not at the legacy ancestor.
+		return this.providerRef?.deref()?.hasManagedAgentLifecycleState?.(this.taskId) ?? true
 	}
 
 	public getInheritedSubagentSkill(name: string) {
@@ -2810,12 +3068,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
-	public getExternalMutationCapability(): ExternalMutationCapability {
+	private getExternalMutationCapabilityForAction(allowInPlan: boolean): ExternalMutationCapability {
 		if (this.abort) {
 			return { allowed: false, state: "unavailable", reason: "The parent task is stopping." }
 		}
 		if (this.didComplete) {
 			return { allowed: false, state: "unavailable", reason: "The parent task has already completed." }
+		}
+		if (!allowInPlan && this._taskMode === planModeSlug) {
+			return {
+				allowed: false,
+				state: "unavailable",
+				reason: "Plan mode cannot apply Worker changes. Switch to Code mode to apply this proposal.",
+			}
 		}
 		if (this.externalMutationLease) {
 			return {
@@ -2888,6 +3153,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	public getExternalMutationCapability(): ExternalMutationCapability {
+		return this.getExternalMutationCapabilityForAction(false)
+	}
+
 	public getSubagentChangeSetDiscardCapability(): ExternalMutationCapability {
 		if (this.abort) {
 			return { allowed: false, state: "unavailable", reason: "The parent task is stopping." }
@@ -2906,7 +3175,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				reason: "The completed parent can still discard this quarantined proposal.",
 			}
 		}
-		return this.getExternalMutationCapability()
+		return this.getExternalMutationCapabilityForAction(true)
 	}
 
 	private acquireExternalMutationLease(
@@ -2986,7 +3255,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		this.initialStatus = status
 		this.subagentStopReason = stopReason ?? this.defaultSubagentStopReason(status)
-		await this.saveClineMessages()
+		await this.requireClineMessagesSaved("the managed sub-agent terminal transcript")
 
 		const provider = this.providerRef.deref()
 		if (!provider) return
@@ -3448,30 +3717,37 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * any same-turn preamble with the authoritative result.
 	 */
 	public async presentCompletionResult(text: string, images?: string[], partial: boolean = false): Promise<void> {
-		const completionText = redactTaskPrivatePaths(this, text)
-		const currentMessage = this.currentAssistantResponseMessageTs
-			? this.findMessageByTimestamp(this.currentAssistantResponseMessageTs)
-			: undefined
-
-		if (
-			currentMessage?.type === "say" &&
-			(currentMessage.say === "text" || currentMessage.say === "completion_result")
-		) {
-			currentMessage.say = "completion_result"
-			currentMessage.text = completionText
-			currentMessage.images = images
-			currentMessage.partial = partial
-
-			if (!partial) await this.saveClineMessages()
-			await this.updateClineMessage(currentMessage)
+		const mode = await this.getTaskMode()
+		const normalizedText =
+			this.taskKind === "primary" && mode === planModeSlug && !partial ? ensureProposedPlanBlock(text) : text
+		const completionText = redactTaskPrivatePaths(this, normalizedText)
+		// Stream an in-progress completion as ordinary assistant text. Terminal
+		// styling is reserved for the durable final boundary below.
+		if (partial) {
+			await this.say("text", completionText, images, true)
 			return
 		}
 
-		await this.say("completion_result", completionText, images, partial)
-		const addedMessage = this.clineMessages.at(-1)
-		if (addedMessage?.type === "say" && addedMessage.say === "completion_result") {
-			this.currentAssistantResponseMessageTs = addedMessage.ts
-		}
+		const currentMessage = this.currentAssistantResponseMessageTs
+			? this.findMessageByTimestamp(this.currentAssistantResponseMessageTs)
+			: undefined
+		const canPromoteCurrent =
+			currentMessage?.type === "say" &&
+			(currentMessage.say === "text" || currentMessage.say === "completion_result")
+		const completionTs = canPromoteCurrent ? currentMessage.ts : Date.now()
+		const committed = await this.commitClineMessageMutation(completionTs, "the completion result", (message) => ({
+			...(message?.type === "say" ? message : { ts: completionTs, type: "say" as const }),
+			say: "completion_result",
+			text: completionText,
+			images,
+			partial: false,
+		}))
+		if (!committed) throw new Error("Unable to stage the completion result.")
+
+		this.lastMessageTs = committed.message.ts
+		this.currentAssistantResponseMessageTs = committed.message.ts
+		if (committed.created) await this.publishClineMessageCreated(committed.message)
+		else await this.updateClineMessage(committed.message)
 	}
 
 	/** Remove terminal styling when a final verification gate rejects a candidate. */
@@ -3481,10 +3757,26 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			: undefined
 		if (currentMessage?.type !== "say" || currentMessage.say !== "completion_result") return
 
-		currentMessage.say = "text"
-		currentMessage.partial = false
-		await this.saveClineMessages()
-		await this.updateClineMessage(currentMessage)
+		try {
+			const committed = await this.commitClineMessageMutation(
+				currentMessage.ts,
+				"the rejected completion state",
+				(message) =>
+					message?.type === "say"
+						? {
+								...message,
+								say: "text",
+								partial: false,
+							}
+						: undefined,
+			)
+			if (committed) await this.updateClineMessage(committed.message)
+		} catch (error) {
+			this.suspendAfterCurrentTurn(
+				"The rejected completion state could not be committed durably. The task was paused before another model request.",
+			)
+			throw error
+		}
 	}
 
 	async sayAndCreateMissingParamError(toolName: ToolName, paramName: string, relPath?: string) {
@@ -4175,6 +4467,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					input.onUserContentPersisted,
 				)
 				const response = this.buildCurrentAgentResponse()
+				const suspensionReason = this.suspendAfterCurrentTurnReason
+				if (suspensionReason) {
+					this.suspendAfterCurrentTurnReason = undefined
+					const persisted = await this.flushPendingToolResultsToHistory()
+					await this.say(
+						"error",
+						persisted
+							? suspensionReason
+							: `${suspensionReason}\n\nThe completion error could not be persisted; the task was paused without another model request.`,
+					)
+					return { response, nextInput: "complete" }
+				}
 				const hasVisiblePrimaryText =
 					this.taskKind === "primary" && response.toolCalls.length === 0 && response.text.trim().length > 0
 				const hasErrorToolResult = this.userMessageContent.some(
@@ -4251,6 +4555,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			includeFileDetails: true,
 			onUserContentPersisted: onInitialUserContentPersisted,
 		}
+		const continueAfterCompletionRejection = async (
+			decision: CompletionGateDecision,
+		): Promise<TaskTurnInput | undefined> => {
+			const message =
+				decision.message ??
+				"Cannot complete while managed-agent results or parent verification obligations remain unresolved."
+			if (decision.modelCanResolveRejection) this.consecutiveMistakeCount++
+			await this.say("error", message)
+			if (!decision.modelCanResolveRejection) return undefined
+			return {
+				userContent: [{ type: "text", text: formatResponse.toolError(message) }],
+				includeFileDetails: false,
+			}
+		}
 
 		while (!this.abort && !this.didComplete) {
 			const outcome = await runAgentTurn(nextTurnInput)
@@ -4264,6 +4582,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				return
 			}
 
+			// Text-only provider completions participate in the exact same durable
+			// descendant/verification gate as attempt_completion. Do this before
+			// promoting the streamed text to terminal styling so a rejected candidate
+			// can never expose an accept-to-finish path.
+			const initialCompletionDecision = await this.getCompletionGateDecision()
+			if (!initialCompletionDecision.allowed) {
+				const continuation = await continueAfterCompletionRejection(initialCompletionDecision)
+				if (!continuation) return
+				nextTurnInput = continuation
+				continue
+			}
+
 			// Normalize ordinary provider text into the same visible final-result row
 			// used by attempt_completion, then publish a hidden review/follow-up boundary.
 			await this.presentCompletionResult(outcome.response.text)
@@ -4275,17 +4605,66 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const feedbackText = queuedFollowup?.text ?? text ?? ""
 			const feedbackImages = queuedFollowup?.images ?? images ?? []
 
-			if (response === "yesButtonClicked" && !queuedFollowup) {
-				await this.finalizeTaskCompletion()
+			const shouldFinish =
+				(response === "yesButtonClicked" && !queuedFollowup) ||
+				(!feedbackText.trim() && feedbackImages.length === 0)
+			if (shouldFinish) {
+				// A background child or verification obligation can change while the
+				// review boundary is open. Recheck immediately before the terminal write.
+				const finalCompletionDecision = await this.getCompletionGateDecision()
+				if (!finalCompletionDecision.allowed) {
+					await this.retractCompletionResult()
+					const continuation = await continueAfterCompletionRejection(finalCompletionDecision)
+					if (!continuation) return
+					nextTurnInput = continuation
+					continue
+				}
+
+				const lateQueuedFeedback = this.messageQueueService.dequeueMessage()
+				if (lateQueuedFeedback) {
+					await this.retractCompletionResult()
+					await this.say("user_feedback", lateQueuedFeedback.text, lateQueuedFeedback.images)
+					nextTurnInput = {
+						userContent: this.buildUserMessageContent(lateQueuedFeedback.text, lateQueuedFeedback.images),
+						includeFileDetails: false,
+					}
+					continue
+				}
+
+				try {
+					if (await this.returnCompletionToLegacyParent(outcome.response.text)) return
+				} catch (error) {
+					await this.retractCompletionResult()
+					const continuation = await continueAfterCompletionRejection({
+						allowed: false,
+						modelCanResolveRejection: false,
+						message: `Cannot finish the delegated child right now: ${error instanceof Error ? error.message : String(error)}`,
+					})
+					if (!continuation) return
+					nextTurnInput = continuation
+					continue
+				}
+
+				const finalized = await this.finalizeTaskCompletion()
+				if (!finalized) {
+					const concurrentFeedback = this.messageQueueService.dequeueMessage()
+					if (concurrentFeedback) {
+						await this.retractCompletionResult()
+						await this.say("user_feedback", concurrentFeedback.text, concurrentFeedback.images)
+						nextTurnInput = {
+							userContent: this.buildUserMessageContent(
+								concurrentFeedback.text,
+								concurrentFeedback.images,
+							),
+							includeFileDetails: false,
+						}
+						continue
+					}
+				}
 				return
 			}
 
-			if (!feedbackText.trim() && feedbackImages.length === 0) {
-				// A dismissal without feedback is terminal; never issue an empty model request.
-				await this.finalizeTaskCompletion()
-				return
-			}
-
+			await this.retractCompletionResult()
 			await this.say("user_feedback", feedbackText, feedbackImages)
 			nextTurnInput = {
 				userContent: this.buildUserMessageContent(feedbackText, feedbackImages),
@@ -5322,18 +5701,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							}
 						}
 
-						// Enforce new_task isolation before any tools execute. A mixed new_task batch
-						// must be rejected as a complete turn so every saved tool_use has a matching
-						// tool_result and delegation cannot dispose the parent with dangling calls.
+						// Enforce terminal-tool isolation before any tools execute. Delegation and
+						// completion both close or suspend the current turn, so mixing either with
+						// another tool would leave results racing a terminal transition.
 						const assistantToolUses = assistantContent.filter(
 							(block): block is Anthropic.ToolUseBlockParam => block.type === "tool_use",
 						)
-						const hasMixedNewTaskBatch =
-							assistantToolUses.length > 1 && assistantToolUses.some((block) => block.name === "new_task")
+						const terminalTool = assistantToolUses.find(
+							(block) => block.name === "new_task" || block.name === "attempt_completion",
+						)
+						const hasMixedTerminalToolBatch = assistantToolUses.length > 1 && terminalTool !== undefined
 
-						if (hasMixedNewTaskBatch) {
-							const isolationError =
-								"new_task must be called by itself in a message turn. No tools from this turn were executed. Retry by calling only new_task after any required setup is complete."
+						if (hasMixedTerminalToolBatch) {
+							const isolationError = `${terminalTool.name} must be called by itself in a message turn. No tools from this turn were executed. Retry by calling only ${terminalTool.name} after any required setup is complete.`
 
 							for (const tool of assistantToolUses) {
 								this.pushToolResultToUserContent({

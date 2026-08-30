@@ -1,4 +1,14 @@
-export function getObjectiveSection(): string {
+export function getObjectiveSection(isPlanMode = false): string {
+	if (isPlanMode) {
+		return `====
+
+OBJECTIVE
+
+Investigate the user's intended outcome and produce a decision-complete implementation plan. Interpret the request as a whole, preserve its deliverables and constraints, and ground the plan in relevant repository evidence.
+
+Resolve discoverable details through non-mutating exploration. Ask only for a material choice that cannot be inferred safely from the request or environment. Once the plan is complete, hand it off in the required proposed-plan block; do not implement it or ask for approval.`
+	}
+
 	return `====
 
 OBJECTIVE

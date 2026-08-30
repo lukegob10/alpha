@@ -8,6 +8,7 @@ import { customToolRegistry, formatNative } from "@alpha-code/core"
 import type { ClineProvider } from "../webview/ClineProvider"
 import { getRooDirectoriesForCwd } from "../../services/roo-config/index.js"
 import { getAvailableVSCodeBrowserToolNames } from "../../services/browser/VSCodeBrowserTools"
+import { planModeSlug } from "../../shared/modes"
 
 import { getNativeTools, getMcpServerTools } from "../prompts/tools/native-tools"
 import {
@@ -135,6 +136,8 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 		supportsImages,
 		availableBrowserToolNames: getAvailableVSCodeBrowserToolNames(),
 		taskKind,
+		agentKinds: mode === planModeSlug ? ["explore", "review"] : undefined,
+		planMode: mode === planModeSlug,
 	})
 	// Managed child lanes provide a frozen authority allow-list. Retain only the
 	// orchestration schemas explicitly granted there; report_progress is the one
@@ -173,7 +176,7 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 	// Add custom tools if they are available and the experiment is enabled.
 	let nativeCustomTools: OpenAI.Chat.ChatCompletionFunctionTool[] = []
 
-	if (experiments?.customTools) {
+	if (experiments?.customTools && mode !== planModeSlug) {
 		const toolDirs = getRooDirectoriesForCwd(cwd).map((dir) => path.join(dir, "tools"))
 		await customToolRegistry.loadFromDirectoriesIfStale(toolDirs)
 		const customTools = customToolRegistry.getAllSerialized()

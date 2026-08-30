@@ -1,6 +1,7 @@
 // pnpm --filter alpha test core/webview/__tests__/ClineProvider.spec.ts
 
 import Anthropic from "@anthropic-ai/sdk"
+import EventEmitter from "events"
 import * as vscode from "vscode"
 import axios from "axios"
 
@@ -10,6 +11,7 @@ import {
 	type ExtensionMessage,
 	type ExtensionState,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
+	RooCodeEventName,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
@@ -490,6 +492,59 @@ describe("ClineProvider", () => {
 		// @ts-ignore - accessing private property for testing
 		provider.view = mockWebviewView
 		expect(ClineProvider.getVisibleInstance()).toBe(provider)
+	})
+
+	test("defers managed-child completion publication until the durable lifecycle acknowledgement", () => {
+		const child = Object.assign(new EventEmitter(), {
+			taskId: "managed-child",
+			taskKind: "subagent" as const,
+		}) as Task
+		const prepareRootCompletion = vi.spyOn(provider, "prepareTaskCompletionLifecycle")
+		const providerCompletion = vi.fn()
+		provider.on(RooCodeEventName.TaskCompleted, providerCompletion)
+		const tokenUsage = {
+			totalTokensIn: 3,
+			totalTokensOut: 0,
+			totalCost: 0,
+			contextTokens: 0,
+		}
+
+		;(provider as any).taskCreationCallback(child)
+		child.emit(RooCodeEventName.TaskCompleted, child.taskId, tokenUsage, {})
+
+		expect(prepareRootCompletion).not.toHaveBeenCalled()
+		expect(providerCompletion).not.toHaveBeenCalled()
+		expect((provider as any).pendingManagedTaskCompletions.get(child.taskId)).toEqual({
+			tokenUsage,
+			toolUsage: {},
+		})
+		;(provider as any).publishDurableManagedTaskCompletion(child.taskId)
+
+		expect(providerCompletion).toHaveBeenCalledWith(child.taskId, tokenUsage, {})
+	})
+
+	test("serializes a delayed running write before the root completion barrier", async () => {
+		const taskId = "serialized-root-completion"
+		const writes: string[] = []
+		let releaseRunning!: () => void
+		const runningBlocked = new Promise<void>((resolve) => {
+			releaseRunning = resolve
+		})
+		vi.spyOn(provider as any, "persistAgentControlRootStatus").mockImplementation(async (...args: unknown[]) => {
+			const [candidateTaskId, status] = args as [string, string]
+			if (candidateTaskId === taskId && status === "running") await runningBlocked
+			writes.push(status)
+		})
+		vi.spyOn(provider as any, "prepareTaskCompletionLifecycleWrite").mockImplementation(async () => {
+			writes.push("completed")
+		})
+
+		const runningWrite = (provider as any).updateAgentControlRootStatus(taskId, "running")
+		const completionWrite = provider.prepareTaskCompletionLifecycle(taskId)
+		releaseRunning()
+		await Promise.all([runningWrite, completionWrite])
+
+		expect(writes).toEqual(["running", "completed"])
 	})
 
 	test("shows the v2.1.3 announcement once per installation", async () => {
@@ -1063,6 +1118,19 @@ describe("ClineProvider", () => {
 				update: vi.fn(),
 			} as any)
 		}
+	})
+
+	test("marks a visible legacy managed child as approval-restricted", async () => {
+		const child = new Task(defaultTaskOptions) as any
+		child.taskKind = "subagent"
+		child.subagentContextManifest = { runtimePolicy: {} }
+		child.getTaskMode = vi.fn(async () => "code")
+		child.getTaskApiConfigName = vi.fn(async () => "default")
+		await provider.addClineToStack(child)
+
+		const webviewState = await provider.getStateToPostToWebview()
+
+		expect(webviewState.currentTaskAutoApprovalRestricted).toBe(true)
 	})
 
 	test("includes saved GitHub token in state posted to webview", async () => {

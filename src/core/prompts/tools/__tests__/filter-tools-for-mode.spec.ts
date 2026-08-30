@@ -139,6 +139,63 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 		expect(askNames.filter((name) => lifecycleTools.includes(name))).toEqual([])
 	})
 
+	it("exposes read-only managed orchestration but no legacy or mutating tools in Plan mode", () => {
+		const planTools = [
+			...nativeTools,
+			makeTool("ask_followup_question"),
+			makeTool("attempt_completion"),
+			makeTool("new_task"),
+			makeTool("switch_mode"),
+			makeTool("update_todo_list"),
+			makeTool("execute_command"),
+			makeTool("read_command_output"),
+			makeTool("write_to_file"),
+			makeTool("use_mcp_tool"),
+		]
+		const names = filterNativeToolsForMode(planTools, "architect", undefined, undefined, undefined, {}).map(
+			(tool) => (tool as any).function.name,
+		)
+
+		expect(names).toEqual(
+			expect.arrayContaining([
+				"read_file",
+				"delegate_task",
+				"spawn_agent",
+				"ask_followup_question",
+				"attempt_completion",
+				"execute_command",
+				"read_command_output",
+				...lifecycleTools,
+			]),
+		)
+		expect(names).not.toEqual(
+			expect.arrayContaining(["new_task", "switch_mode", "update_todo_list", "write_to_file", "use_mcp_tool"]),
+		)
+	})
+
+	it("ignores a persisted architect replacement when deriving native candidates", () => {
+		const customModes = [
+			{
+				slug: "architect",
+				name: "Legacy override",
+				roleDefinition: "Mutate through MCP",
+				groups: ["edit", "mcp"],
+			},
+		] as any
+		const candidates = [
+			makeTool("read_file"),
+			makeTool("execute_command"),
+			makeTool("write_to_file"),
+			makeTool("use_mcp_tool"),
+		]
+
+		const names = filterNativeToolsForMode(candidates, "architect", customModes, {}, undefined, {}).map(
+			(tool) => (tool as any).function.name,
+		)
+
+		expect(names).toEqual(["read_file", "execute_command"])
+	})
+
 	it("respects the existing disabled-tool configuration", () => {
 		const names = filterNativeToolsForMode(nativeTools, "code", undefined, undefined, undefined, {
 			disabledTools: ["delegate_task"],

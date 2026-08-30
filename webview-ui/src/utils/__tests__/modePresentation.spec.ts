@@ -45,18 +45,19 @@ describe("getUserFacingModeOptions", () => {
 		expect(visibleModes.map((mode) => mode.slug)).toEqual(["architect", "code", "ask", "debug"])
 	})
 
-	it("retains an override's configuration while presenting its canonical setup name", () => {
+	it("ignores an architect override and deduplicates the canonical Plan option", () => {
 		const architectOverride = customMode("architect", "Design Review")
-		const overriddenModes = modes.map((mode) => (mode.slug === "architect" ? architectOverride : mode))
+		const overriddenModes = [architectOverride, ...modes]
 
 		const [visibleOverride] = getUserFacingModeOptions(overriddenModes)
 
 		expect(visibleOverride).toMatchObject({
 			slug: "architect",
 			name: "Plan",
-			roleDefinition: "Design Review role",
-			groups: ["read"],
+			roleDefinition: expect.stringContaining("Plan collaboration mode"),
+			groups: ["read", "command", "agents"],
 		})
+		expect(getUserFacingModeOptions(overriddenModes).filter((mode) => mode.slug === "architect")).toHaveLength(1)
 		expect(architectOverride.name).toBe("Design Review")
 	})
 })

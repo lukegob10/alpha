@@ -19,9 +19,18 @@ export async function getModesSection(context: vscode.ExtensionContext): Promise
 		.filter((mode) => mode.slug === planModeSlug || mode.slug === codeModeSlug)
 		.map((mode) => ({
 			...mode,
-			roleDefinition: customModePrompts[mode.slug]?.roleDefinition ?? mode.roleDefinition,
-			whenToUse: customModePrompts[mode.slug]?.whenToUse ?? mode.whenToUse,
-			customInstructions: customModePrompts[mode.slug]?.customInstructions ?? mode.customInstructions,
+			roleDefinition:
+				mode.slug === planModeSlug
+					? mode.roleDefinition
+					: (customModePrompts[mode.slug]?.roleDefinition ?? mode.roleDefinition),
+			whenToUse:
+				mode.slug === planModeSlug
+					? mode.whenToUse
+					: (customModePrompts[mode.slug]?.whenToUse ?? mode.whenToUse),
+			customInstructions:
+				mode.slug === planModeSlug
+					? mode.customInstructions
+					: (customModePrompts[mode.slug]?.customInstructions ?? mode.customInstructions),
 		}))
 
 	const modesContent = `====
@@ -39,10 +48,6 @@ ${primaryModes
 			// Fallback to the first sentence of roleDefinition if whenToUse is not available
 			description = mode.roleDefinition.split(".")[0]
 		}
-		if (mode.slug === planModeSlug) {
-			description = `${description} When the plan is ready for implementation, switch to Code mode (${codeModeSlug}).`
-		}
-
 		const name = mode.slug === planModeSlug ? "Plan" : "Code"
 		return `  * "${name}" mode (${mode.slug}) - ${description}`
 	})

@@ -1,8 +1,22 @@
 import * as vscode from "vscode"
 
-import { type ModeConfig, type PromptComponent, type CustomModePrompts, type TodoItem } from "@alpha-code/types"
+import {
+	PLAN_MODE_INSTRUCTIONS,
+	type ModeConfig,
+	type PromptComponent,
+	type CustomModePrompts,
+	type TodoItem,
+} from "@alpha-code/types"
 
-import { Mode, defaultMode, defaultModeSlug, getModeBySlug, getGroupName, getModeSelection } from "../../shared/modes"
+import {
+	Mode,
+	defaultMode,
+	defaultModeSlug,
+	getModeBySlug,
+	getGroupName,
+	getModeSelection,
+	planModeSlug,
+} from "../../shared/modes"
 import { DiffStrategy } from "../../shared/tools"
 import { formatLanguage } from "../../shared/language"
 import { isEmpty } from "../../utils/object"
@@ -83,6 +97,7 @@ async function generatePrompt(
 	const modeConfig = getModeBySlug(mode, customModeConfigs) || defaultMode
 	const { roleDefinition, baseInstructions } = getModeSelection(mode, promptComponent, customModeConfigs)
 	const subagentRole = settings?.subagentRole
+	const isPlanMode = !subagentRole && mode === planModeSlug
 
 	// Check if MCP functionality should be included
 	const hasMcpGroup = modeConfig.groups.some((groupEntry) => getGroupName(groupEntry) === "mcp")
@@ -96,11 +111,29 @@ async function generatePrompt(
 
 	const [modesSection, skillsSection] = subagentRole
 		? ["", ""]
-		: await Promise.all([getModesSection(context), getSkillsSection(skillsManager, mode as string)])
+		: await Promise.all([
+				getModesSection(context),
+				isPlanMode ? Promise.resolve("") : getSkillsSection(skillsManager, mode as string),
+			])
 
 	// Tools catalog is not included in the system prompt.
 	const toolsCatalog = ""
 	const frozenSubagentInstructionsSection = getFrozenSubagentInstructionsSection(settings)
+	const effectiveBaseInstructions = isPlanMode && baseInstructions === PLAN_MODE_INSTRUCTIONS ? "" : baseInstructions
+	const customInstructions =
+		subagentRole && settings?.subagentUsesFrozenContext
+			? ""
+			: await addCustomInstructions(
+					subagentRole ? "" : effectiveBaseInstructions,
+					globalCustomInstructions || "",
+					cwd,
+					mode,
+					{
+						language: language ?? formatLanguage(vscode.env.language),
+						rooIgnoreInstructions,
+						settings,
+					},
+				)
 
 	const basePrompt = `${roleDefinition}
 
@@ -111,9 +144,10 @@ ${getSharedToolUseSection(
 	settings?.subagentHasInheritedSkills,
 	settings?.subagentCanDelegate,
 	settings?.subagentDelegationPolicy,
+	isPlanMode,
 )}${toolsCatalog}
 
-	${getToolUseGuidelinesSection(subagentRole)}
+${getToolUseGuidelinesSection(subagentRole, isPlanMode)}
 
 ${getCapabilitiesSection(
 	cwd,
@@ -121,25 +155,18 @@ ${getCapabilitiesSection(
 	subagentRole,
 	settings?.subagentCanDelegate,
 	settings?.subagentDelegationPolicy,
+	isPlanMode,
 )}
 
 ${modesSection}
 ${skillsSection ? `\n${skillsSection}` : ""}
-${getRulesSection(cwd, settings)}
+${getRulesSection(cwd, settings, isPlanMode)}
 
 ${getSystemInfoSection(cwd)}${frozenSubagentInstructionsSection ? `\n\n${frozenSubagentInstructionsSection}` : ""}
 
-${subagentRole ? "" : getObjectiveSection()}
+${subagentRole ? "" : getObjectiveSection(isPlanMode)}
 
-${
-	subagentRole && settings?.subagentUsesFrozenContext
-		? ""
-		: await addCustomInstructions(subagentRole ? "" : baseInstructions, globalCustomInstructions || "", cwd, mode, {
-				language: language ?? formatLanguage(vscode.env.language),
-				rooIgnoreInstructions,
-				settings,
-			})
-}`
+${customInstructions}${isPlanMode ? `\n\n${PLAN_MODE_INSTRUCTIONS}` : ""}`
 
 	return basePrompt
 }
@@ -167,7 +194,7 @@ export const SYSTEM_PROMPT = async (
 	}
 
 	// Check if it's a custom mode
-	const promptComponent = getPromptComponent(customModePrompts, mode)
+	const promptComponent = mode === planModeSlug ? undefined : getPromptComponent(customModePrompts, mode)
 
 	// Get full mode config from custom modes or fall back to built-in modes
 	const currentMode = getModeBySlug(mode, customModes) || defaultMode

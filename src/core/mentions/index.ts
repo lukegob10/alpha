@@ -19,6 +19,8 @@ import { RooIgnoreController } from "../ignore/RooIgnoreController"
 import { getCommand, type Command } from "../../services/command/commands"
 import { buildSkillResult, resolveSkillContentForMode, type SkillLookup } from "../../services/skills/skillInvocation"
 import type { SkillContent } from "../../shared/skills"
+import { parsePlanModeCommand } from "../../shared/plan-mode"
+import { planModeSlug } from "../../shared/modes"
 
 export async function openMention(cwd: string, mention?: string): Promise<void> {
 	if (!mention) {
@@ -111,10 +113,15 @@ export async function parseMentions(
 	const validCommands: Map<string, Command> = new Map()
 	const validSkills: Map<string, SkillContent> = new Map()
 	const contentBlocks: MentionContentBlock[] = []
-	let commandMode: string | undefined // Track mode from the first slash command that has one
+	const planCommand = parsePlanModeCommand(text)
+	let parsedText = planCommand?.rewrittenText ?? text
+	let commandMode: string | undefined = planCommand ? planModeSlug : undefined
 
 	// First pass: check which command mentions exist and cache the results
-	const commandMatches = Array.from(text.matchAll(commandRegexGlobal))
+	// `/plan <prompt>` is one atomic built-in command. Its remainder is user
+	// prompt text, not another slash-command/skill invocation to resolve under
+	// the mode that was active before Plan admission.
+	const commandMatches = planCommand ? [] : Array.from(parsedText.matchAll(commandRegexGlobal))
 	const uniqueCommandNames = new Set(commandMatches.map(([, commandName]) => commandName))
 
 	const commandExistenceChecks = await Promise.all(
@@ -151,7 +158,6 @@ export async function parseMentions(
 	}
 
 	// Only replace text for commands that actually exist (keep "see below" for commands)
-	let parsedText = text
 	for (const [match, commandName] of commandMatches) {
 		if (validCommands.has(commandName) || validSkills.has(commandName)) {
 			parsedText = parsedText.replace(match, `Command '${commandName}' (see below for command content)`)

@@ -6,6 +6,7 @@ import {
 	subagentForkTurnsSchema,
 	subagentManifestOrchestrationSchema,
 	subagentModelRouteStateSchema,
+	subagentAutoApprovalPolicySchema,
 	finalizeSubagentDelegationPolicy,
 	toolNames,
 	type SubagentContextManifest,
@@ -507,7 +508,37 @@ function sanitizeModelRoute(route: SubagentModelRouteState): SubagentModelRouteS
 	})
 }
 
+function sanitizeAutoApprovalPolicy(
+	input: NonNullable<RuntimePolicyInput["autoApproval"]>,
+): NonNullable<SubagentContextRuntimePolicy["autoApproval"]> {
+	const normalizeRules = (rules: typeof input.commandApproval.allowed) =>
+		[...new Map(rules.map((rule) => [`${rule.prefixLength}:${rule.digest}`, { ...rule }] as const)).values()].sort(
+			(left, right) => left.prefixLength - right.prefixLength || left.digest.localeCompare(right.digest),
+		)
+	const sanitizeCommandApproval = (policy: typeof input.commandApproval) => ({
+		...policy,
+		allowed: normalizeRules(policy.allowed),
+		denied: normalizeRules(policy.denied),
+	})
+
+	return subagentAutoApprovalPolicySchema.parse({
+		autoApprovalEnabled: input.autoApprovalEnabled,
+		alwaysAllowReadOnly: input.alwaysAllowReadOnly,
+		alwaysAllowReadOnlyOutsideWorkspace: input.alwaysAllowReadOnlyOutsideWorkspace,
+		alwaysAllowWrite: input.alwaysAllowWrite,
+		alwaysAllowWriteOutsideWorkspace: input.alwaysAllowWriteOutsideWorkspace,
+		alwaysAllowWriteProtected: input.alwaysAllowWriteProtected,
+		alwaysAllowExecute: input.alwaysAllowExecute,
+		alwaysAllowSubagents: input.alwaysAllowSubagents,
+		commandApproval: sanitizeCommandApproval(input.commandApproval),
+		...(input.commandApprovalCeilings
+			? { commandApprovalCeilings: input.commandApprovalCeilings.map(sanitizeCommandApproval) }
+			: {}),
+	})
+}
+
 function buildRuntimePolicy(input: RuntimePolicyInput): SubagentContextRuntimePolicy {
+	const autoApproval = input.autoApproval ? sanitizeAutoApprovalPolicy(input.autoApproval) : undefined
 	const withoutDigest = {
 		role: input.role,
 		read: input.read,
@@ -521,6 +552,7 @@ function buildRuntimePolicy(input: RuntimePolicyInput): SubagentContextRuntimePo
 		workspaceRoots: uniqueSorted(input.workspaceRoots.map((root) => path.resolve(root))),
 		...(input.writeScope ? { writeScope: uniqueSorted(input.writeScope) } : {}),
 		...(input.fileWriteScope ? { fileWriteScope: uniqueSorted(input.fileWriteScope) } : {}),
+		...(autoApproval ? { autoApproval } : {}),
 	}
 	const digest = digestValue(withoutDigest)
 	if (input.digest !== undefined && input.digest !== digest) {

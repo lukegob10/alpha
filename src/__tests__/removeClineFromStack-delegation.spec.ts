@@ -209,6 +209,23 @@ describe("ClineProvider.removeClineFromStack() delegation awareness", () => {
 		expect(provider.updateTaskHistory).not.toHaveBeenCalled()
 	})
 
+	it("never removes the active task when an exact requested task is missing", async () => {
+		const { provider, childTask } = buildMockProvider({ childTaskId: "active-task" })
+		Object.assign(provider, {
+			getLiveTask: vi.fn().mockReturnValue(undefined),
+			getActiveTask: vi.fn().mockReturnValue(childTask),
+		})
+
+		await (ClineProvider.prototype as any).removeClineFromStack.call(provider, {
+			taskId: "already-removed-task",
+			requireAbortSuccess: true,
+		})
+
+		expect(childTask.abortTask).not.toHaveBeenCalled()
+		expect(provider.taskSessions.unregister).not.toHaveBeenCalled()
+		expect(provider.clineStack).toEqual([childTask])
+	})
+
 	it("skips delegation repair when skipDelegationRepair option is true", async () => {
 		const { provider, updateTaskHistory, getTaskWithId } = buildMockProvider({
 			childTaskId: "child-1",

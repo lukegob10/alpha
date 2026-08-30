@@ -51,6 +51,7 @@ import {
 	type SubagentChangeSetActionCapability,
 	type SubagentChangeSetActionResult,
 	type SubagentContextManifest,
+	type SubagentAutoApprovalPolicy,
 	type SubagentManifestOrchestration,
 	type ResolvedSubagentOrchestrationSettings,
 	type SubagentEffectiveLimits,
@@ -87,6 +88,7 @@ import {
 	subagentRootOrchestrationSummarySchema,
 	managedAgentTreeProjectionSchema,
 	subagentUsageSchema,
+	disabledSubagentAutoApprovalPolicy,
 } from "@alpha-code/types"
 import { aggregateTaskCostsRecursive, type AggregatedCosts } from "./aggregateTaskCosts"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -95,7 +97,14 @@ import { Package } from "../../shared/package"
 import { findLast } from "../../shared/array"
 import { supportPrompt } from "../../shared/support-prompt"
 import { GlobalFileNames } from "../../shared/globalFileNames"
-import { Mode, defaultModeSlug, getModeBySlug, isCodePlanModeTransition } from "../../shared/modes"
+import {
+	Mode,
+	defaultModeSlug,
+	getAllModes,
+	getModeBySlug,
+	isCodePlanModeTransition,
+	planModeSlug,
+} from "../../shared/modes"
 import { experimentDefault } from "../../shared/experiments"
 import { formatLanguage } from "../../shared/language"
 import { WebviewMessage } from "../../shared/WebviewMessage"
@@ -190,6 +199,7 @@ import { validateAndFixToolResultIds } from "../task/validateToolResultIds"
 import { normalizeMaxLiveTasks, TaskSessionRegistry } from "./TaskSessionRegistry"
 import type { SkillCatalogEntry } from "../prompts/sections"
 import { getEffectiveApiHistory } from "../condense"
+import { createSubagentCommandApprovalPolicy } from "../auto-approval/commands"
 
 /**
  * https://github.com/microsoft/vscode-webview-ui-toolkit-samples/blob/main/default/weather-webview/src/providers/WeatherViewProvider.ts
@@ -210,9 +220,16 @@ interface PendingEditOperation {
 	createdAt: number
 }
 
+interface LegacyHandoffInputBuffer {
+	phase: "preparing" | "committing"
+	messages: Array<{ text: string; images?: string[] }>
+	forwardToTaskId?: string
+}
+
 const SUBAGENT_RESEARCH_WINDOW_MS = 75_000
 const MANAGED_AGENT_TREE_TEXT_LIMIT = 1_000
 const WAIT_AGENT_RESULT_SOURCE = "managed_agent_mailbox"
+const BLOCKING_SUBAGENT_RESULT_DELIVERY = "delegate_task"
 
 const getTaskModeForSwitch = async (task: Task): Promise<string | undefined> => {
 	if (typeof task.getTaskMode === "function") {
@@ -336,6 +353,8 @@ export class ClineProvider
 	private readonly agentControlStoreReady: Promise<void>
 	private agentControlStoreLoadedAt?: number
 	private readonly agentControlRootStatusWrites = new Map<string, Promise<void>>()
+	private readonly pendingManagedTaskCompletions = new Map<string, { tokenUsage: TokenUsage; toolUsage: ToolUsage }>()
+	private readonly legacyHandoffInputBuffers = new Map<string, LegacyHandoffInputBuffer>()
 	private codeIndexStatusSubscription?: vscode.Disposable
 	private codeIndexManager?: CodeIndexManager
 	private _workspaceTracker?: WorkspaceTracker // workSpaceTracker read-only for access outside this class
@@ -356,6 +375,7 @@ export class ClineProvider
 	private globalStateWriteThroughTimer: ReturnType<typeof setTimeout> | null = null
 	private globalStateWriteThroughQueue: Promise<void> = Promise.resolve()
 	private webviewMessageQueue: Promise<void> = Promise.resolve()
+	private modeSwitchQueue: Promise<void> = Promise.resolve()
 	private static readonly GLOBAL_STATE_WRITE_THROUGH_DEBOUNCE_MS = 5000 // 5 seconds
 	private pendingOperations: Map<string, PendingEditOperation> = new Map()
 	private static readonly PENDING_OPERATION_TIMEOUT_MS = 30000 // 30 seconds
@@ -453,7 +473,15 @@ export class ClineProvider
 				this.emit(RooCodeEventName.TaskStarted, instance.taskId)
 			}
 			const onTaskCompleted = (taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage) => {
-				void this.completeTaskLifecycle(taskId, tokenUsage, toolUsage)
+				if (instance.taskKind === "subagent") {
+					// Managed children become externally terminal only after their result and
+					// parent mailbox event have committed atomically in the control store.
+					this.pendingManagedTaskCompletions.set(taskId, { tokenUsage, toolUsage })
+					return
+				}
+				void this.completeTaskLifecycle(taskId, tokenUsage, toolUsage).catch((error) => {
+					this.log(`Failed to publish task ${taskId} completion: ${String(error)}`)
+				})
 			}
 			const onTaskAborted = () => {
 				const failed = instance.abortReason === "streaming_failed"
@@ -641,19 +669,23 @@ export class ClineProvider
 
 	// Removes and destroys the top Alpha instance (the current finished task),
 	// activating the previous one (resuming the parent task).
-	async removeClineFromStack(options?: { skipDelegationRepair?: boolean; taskId?: string }) {
+	async removeClineFromStack(options?: {
+		skipDelegationRepair?: boolean
+		taskId?: string
+		requireAbortSuccess?: boolean
+	}) {
 		const clineStack = this.clineStack ?? []
-		const currentTask =
-			(options?.taskId ? this.getLiveTask(options.taskId) : undefined) ??
-			(typeof this.getActiveTask === "function" ? this.getActiveTask() : undefined) ??
-			clineStack.at(-1)
+		const currentTask = options?.taskId
+			? this.getLiveTask(options.taskId)
+			: ((typeof this.getActiveTask === "function" ? this.getActiveTask() : undefined) ?? clineStack.at(-1))
 		if (!currentTask) {
 			return
 		}
 
-		const requiresConfirmedWorkerCleanup =
-			currentTask.taskKind === "subagent" && currentTask.subagentRole === "worker"
-		if (requiresConfirmedWorkerCleanup) {
+		const requiresConfirmedCleanup =
+			options?.requireAbortSuccess === true ||
+			(currentTask.taskKind === "subagent" && currentTask.subagentRole === "worker")
+		if (requiresConfirmedCleanup) {
 			try {
 				// A Worker may own an OS process tree. Keep its live-session handle
 				// registered until cleanup succeeds so a failed termination can be retried.
@@ -687,7 +719,7 @@ export class ClineProvider
 			try {
 				// Managed Workers were already aborted before unregistering so a
 				// cleanup failure could not discard the only retry handle.
-				if (!requiresConfirmedWorkerCleanup) {
+				if (!requiresConfirmedCleanup) {
 					// Abort the running task and set isAbandoned to true so
 					// all running promises will exit as well.
 					await task.abortTask(true)
@@ -1617,8 +1649,19 @@ export class ClineProvider
 	 * Handle switching to a new mode, including updating the associated API configuration
 	 * @param newMode The mode to switch to
 	 */
-	public async handleModeSwitch(newMode: Mode) {
+	public handleModeSwitch(newMode: Mode): Promise<void> {
+		// Capture the target lane at invocation time, then serialize switches. This
+		// preserves click order while keeping Plan admission atomic with the shared
+		// workspace-mutation gate.
 		const task = this.getCurrentTask()
+		const operation = (this.modeSwitchQueue ?? Promise.resolve()).then(() =>
+			this.handleModeSwitchForTask(newMode, task),
+		)
+		this.modeSwitchQueue = operation.catch(() => undefined)
+		return operation
+	}
+
+	private async handleModeSwitchForTask(newMode: Mode, task: Task | undefined): Promise<void> {
 		const currentMode =
 			(task ? ((await getTaskModeForSwitch(task)) ?? this.getGlobalState("mode")) : this.newTaskDraftMode) ??
 			defaultModeSlug
@@ -1807,6 +1850,32 @@ export class ClineProvider
 		}
 		const { postState = true, applyModeProfile = true } = options
 		const currentMode = await getTaskModeForSwitch(task)
+		if (mode === planModeSlug && currentMode !== planModeSlug) {
+			const transition = this.workspaceMutationGate.runIfIdle(
+				task.taskId,
+				"enter Plan mode",
+				() => this.setTaskModeWithinAdmission(task, currentMode, mode, { postState, applyModeProfile }),
+				() => task.abort,
+			)
+			if (!transition) {
+				throw new Error(
+					"Cannot enter Plan mode while a workspace mutation, command, or Worker admission is active or queued. Let it finish or cancel it, then retry.",
+				)
+			}
+			return transition
+		}
+
+		return this.setTaskModeWithinAdmission(task, currentMode, mode, { postState, applyModeProfile })
+	}
+
+	private async setTaskModeWithinAdmission(
+		task: Task,
+		currentMode: string | undefined,
+		mode: string,
+		options: { postState: boolean; applyModeProfile: boolean },
+	): Promise<void> {
+		const { postState, applyModeProfile } = options
+		await this.assertPlanModeEntryAllowed(task, currentMode, mode)
 
 		TelemetryService.instance.captureModeSwitch(task.taskId, mode)
 		task.emit(RooCodeEventName.TaskModeSwitched, task.taskId, mode)
@@ -1831,6 +1900,59 @@ export class ClineProvider
 
 		if (postState && this.isTaskOnScreen(task.taskId)) {
 			await this.postStateToWebview()
+		}
+	}
+
+	private async assertPlanModeEntryAllowed(
+		task: Task,
+		currentMode: string | undefined,
+		newMode: string,
+	): Promise<void> {
+		if (newMode !== planModeSlug || currentMode === planModeSlug) return
+		if (task.hasActiveCommandExecutions?.()) {
+			throw new Error("Cannot enter Plan mode while a command is still active. Stop or wait for it, then retry.")
+		}
+		if (task.hasPendingAsk?.()) {
+			throw new Error("Cannot enter Plan mode while an approval or other task prompt is unresolved.")
+		}
+
+		await this.agentControlStoreReady
+		const rootTaskId = this.getAgentControlRootTaskId(task)
+		const callerRecord = this.agentControlStore.getAgent(task.taskId, rootTaskId)
+		if (!callerRecord) return
+
+		const activeStatuses: ReadonlySet<string> = new Set(["pending", "running", "cancelling"])
+		const activeWorkers = this.agentControlStore
+			.listDescendants(callerRecord.taskId, rootTaskId)
+			.filter((record) => record.role === "worker" && activeStatuses.has(record.status))
+		const activeWorkerTargets = new Map(activeWorkers.map((record) => [record.taskId, record.path]))
+
+		for (const prepared of this.preparedSubagentGroups.values()) {
+			if (!activeStatuses.has(prepared.group.status)) continue
+			if (!prepared.group.agents.some((agent) => agent.role === "worker" && activeStatuses.has(agent.status))) {
+				continue
+			}
+			if (
+				prepared.group.parentTaskId === task.taskId ||
+				this.agentControlStore.isDescendant(task.taskId, prepared.group.parentTaskId, rootTaskId)
+			) {
+				for (const agent of prepared.group.agents) {
+					if (
+						agent.role === "worker" &&
+						activeStatuses.has(agent.status) &&
+						!activeWorkerTargets.has(agent.taskId)
+					) {
+						activeWorkerTargets.set(agent.taskId, agent.nickname)
+					}
+				}
+			}
+		}
+
+		if (activeWorkerTargets.size > 0) {
+			const targets = [...activeWorkerTargets.values()].join(", ")
+			throw new Error(
+				`Cannot enter Plan mode while ${activeWorkerTargets.size} Worker descendant${activeWorkerTargets.size === 1 ? " is" : "s are"} active: ${targets}. Wait for or cancel the Worker${activeWorkerTargets.size === 1 ? "" : "s"}, then retry.`,
+			)
 		}
 	}
 
@@ -2595,6 +2717,66 @@ export class ClineProvider
 		return this.mergeCommandLists("deniedCommands", "denied", globalStateCommands)
 	}
 
+	/** Capture the effective approval grant without persisting plaintext command rules. */
+	private snapshotSubagentAutoApprovalPolicy(settings: RooCodeSettings): SubagentAutoApprovalPolicy {
+		const allowedCommands = this.mergeAllowedCommands(settings.allowedCommands)
+		const deniedCommands = this.mergeDeniedCommands(settings.deniedCommands)
+		return {
+			autoApprovalEnabled: settings.autoApprovalEnabled === true,
+			alwaysAllowReadOnly: settings.alwaysAllowReadOnly === true,
+			alwaysAllowReadOnlyOutsideWorkspace: settings.alwaysAllowReadOnlyOutsideWorkspace === true,
+			alwaysAllowWrite: settings.alwaysAllowWrite === true,
+			alwaysAllowWriteOutsideWorkspace: settings.alwaysAllowWriteOutsideWorkspace === true,
+			alwaysAllowWriteProtected: settings.alwaysAllowWriteProtected === true,
+			alwaysAllowExecute: settings.alwaysAllowExecute === true,
+			alwaysAllowSubagents: settings.alwaysAllowSubagents === true,
+			commandApproval: createSubagentCommandApprovalPolicy(allowedCommands, deniedCommands),
+		}
+	}
+
+	private isFullSubagentAutoApprovalPolicy(policy: SubagentAutoApprovalPolicy): boolean {
+		const commandPolicies = [policy.commandApproval, ...(policy.commandApprovalCeilings ?? [])]
+		return (
+			policy.autoApprovalEnabled &&
+			policy.alwaysAllowReadOnly &&
+			policy.alwaysAllowReadOnlyOutsideWorkspace &&
+			policy.alwaysAllowWrite &&
+			policy.alwaysAllowWriteOutsideWorkspace &&
+			policy.alwaysAllowWriteProtected &&
+			policy.alwaysAllowExecute &&
+			policy.alwaysAllowSubagents &&
+			commandPolicies.every(
+				(commandPolicy) =>
+					commandPolicy.allowAll && !commandPolicy.denyAll && commandPolicy.denied.length === 0,
+			)
+		)
+	}
+
+	/** Freeze the effective nested grant without recovering or persisting plaintext command prefixes. */
+	private intersectSubagentAutoApprovalPolicies(
+		live: SubagentAutoApprovalPolicy,
+		inherited: SubagentAutoApprovalPolicy,
+	): SubagentAutoApprovalPolicy {
+		return {
+			autoApprovalEnabled: live.autoApprovalEnabled && inherited.autoApprovalEnabled,
+			alwaysAllowReadOnly: live.alwaysAllowReadOnly && inherited.alwaysAllowReadOnly,
+			alwaysAllowReadOnlyOutsideWorkspace:
+				live.alwaysAllowReadOnlyOutsideWorkspace && inherited.alwaysAllowReadOnlyOutsideWorkspace,
+			alwaysAllowWrite: live.alwaysAllowWrite && inherited.alwaysAllowWrite,
+			alwaysAllowWriteOutsideWorkspace:
+				live.alwaysAllowWriteOutsideWorkspace && inherited.alwaysAllowWriteOutsideWorkspace,
+			alwaysAllowWriteProtected: live.alwaysAllowWriteProtected && inherited.alwaysAllowWriteProtected,
+			alwaysAllowExecute: live.alwaysAllowExecute && inherited.alwaysAllowExecute,
+			alwaysAllowSubagents: live.alwaysAllowSubagents && inherited.alwaysAllowSubagents,
+			commandApproval: live.commandApproval,
+			commandApprovalCeilings: [
+				...(live.commandApprovalCeilings ?? []),
+				inherited.commandApproval,
+				...(inherited.commandApprovalCeilings ?? []),
+			],
+		}
+	}
+
 	/**
 	 * Common utility for merging command lists from global state and workspace configuration.
 	 * Implements the Command Denylist feature's merging strategy with proper validation.
@@ -2656,7 +2838,7 @@ export class ClineProvider
 		settings: ResolvedSubagentOrchestrationSettings,
 	): Promise<ManagedAgentTreeProjection | undefined> {
 		await this.agentControlStoreReady
-		const rootTaskId = currentTask.rootTaskId ?? currentTask.taskId
+		const rootTaskId = this.getAgentControlRootTaskId(currentTask)
 		const records = this.agentControlStore.listAgents({ rootTaskId, includeRoot: true })
 		const rootRecord = records.find((record) => record.taskId === rootTaskId && record.role === "root")
 		if (!rootRecord) return undefined
@@ -2899,6 +3081,13 @@ export class ClineProvider
 		const mergedDeniedCommands = this.mergeDeniedCommands(deniedCommands)
 		const cwd = this.cwd
 		const currentTask = this.currentView.type === "task" ? this.getLiveTask(this.currentView.taskId) : undefined
+		const currentTaskAutoApprovalRestricted =
+			currentTask?.taskKind === "subagent"
+				? !this.isFullSubagentAutoApprovalPolicy(
+						currentTask.subagentContextManifest?.runtimePolicy.autoApproval ??
+							disabledSubagentAutoApprovalPolicy,
+					)
+				: false
 		let currentTaskMode: string | undefined
 		let currentTaskApiConfigName: string | undefined
 		if (currentTask) {
@@ -2980,6 +3169,7 @@ export class ClineProvider
 			uriScheme: vscode.env.uriScheme,
 			currentTaskId: currentTask?.taskId,
 			currentView: this.currentView,
+			currentTaskAutoApprovalRestricted,
 			activeTaskId: this.getActiveTaskId(),
 			liveTaskIds: this.getLiveTaskIds(),
 			liveTasksById: this.getLiveTaskMetadata(),
@@ -3547,9 +3737,48 @@ export class ClineProvider
 
 	/** Publish primary completion only after its orchestration root is durably terminal. */
 	private async completeTaskLifecycle(taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage): Promise<void> {
-		await this.updateAgentControlRootStatus(taskId, "completed")
+		await this.prepareTaskCompletionLifecycle(taskId)
 		this.markTaskLifecycle(taskId, TaskLifecycleState.Completed)
 		this.emit(RooCodeEventName.TaskCompleted, taskId, tokenUsage, toolUsage)
+	}
+
+	/**
+	 * Durability barrier used by Task before it publishes an accepted primary
+	 * completion. Unlike the background lifecycle mirror, failures propagate so
+	 * the task can remain recoverable instead of reporting a false terminal state.
+	 */
+	public prepareTaskCompletionLifecycle(taskId: string): Promise<void> {
+		return this.enqueueAgentControlRootWrite(taskId, () => this.prepareTaskCompletionLifecycleWrite(taskId))
+	}
+
+	private async prepareTaskCompletionLifecycleWrite(taskId: string): Promise<void> {
+		await this.agentControlStoreReady
+		const root = this.agentControlStore.getAgent(taskId, taskId)
+		if (!root || root.role !== "root") {
+			throw new Error(`Missing orchestration root for task ${taskId}`)
+		}
+		if (root.status === "completed") return
+		let current = root
+		if (current.status === "interrupted") {
+			current = await this.agentControlStore.updateAgentStatus(current.taskId, "pending", {}, current.rootTaskId)
+		}
+		if (!["pending", "running", "cancelling"].includes(current.status)) {
+			throw new Error(`Orchestration root ${taskId} cannot complete from ${current.status}`)
+		}
+		await this.agentControlStore.updateAgentStatus(current.taskId, "completed", {}, current.rootTaskId)
+	}
+
+	/** Restore a prepared root when a later terminal persistence barrier fails. */
+	public rollbackTaskCompletionLifecycle(taskId: string): Promise<void> {
+		return this.enqueueAgentControlRootWrite(taskId, () => this.rollbackTaskCompletionLifecycleWrite(taskId))
+	}
+
+	private async rollbackTaskCompletionLifecycleWrite(taskId: string): Promise<void> {
+		await this.agentControlStoreReady
+		let root = this.agentControlStore.getAgent(taskId, taskId)
+		if (!root || root.role !== "root" || root.status !== "completed") return
+		root = await this.agentControlStore.updateAgentStatus(root.taskId, "pending", {}, root.rootTaskId)
+		await this.agentControlStore.updateAgentStatus(root.taskId, "running", {}, root.rootTaskId)
 	}
 
 	/** Keep a registered orchestration root aligned with its primary task session. */
@@ -3557,15 +3786,44 @@ export class ClineProvider
 		taskId: string,
 		status: "running" | "interrupted" | "completed" | "failed",
 	): Promise<void> {
+		return this.enqueueAgentControlRootWrite(taskId, () => this.persistAgentControlRootStatus(taskId, status))
+	}
+
+	private enqueueAgentControlRootWrite(taskId: string, operation: () => Promise<void>): Promise<void> {
 		const previous = this.agentControlRootStatusWrites.get(taskId) ?? Promise.resolve()
-		const write = previous.then(() => this.persistAgentControlRootStatus(taskId, status))
+		const write = previous.catch(() => undefined).then(operation)
 		this.agentControlRootStatusWrites.set(taskId, write)
-		void write.finally(() => {
+		const cleanup = () => {
 			if (this.agentControlRootStatusWrites.get(taskId) === write) {
 				this.agentControlRootStatusWrites.delete(taskId)
 			}
-		})
+		}
+		void write.then(cleanup, cleanup)
 		return write
+	}
+
+	private publishDurableManagedTaskCompletion(taskId: string, status: AgentLifecycleStatus = "completed"): void {
+		const completion = this.pendingManagedTaskCompletions.get(taskId)
+		const completedSuccessfully = status === "completed" || status === "blocked"
+		if (!completion && completedSuccessfully) {
+			this.log(`Managed task ${taskId} reached a durable terminal state without a TaskCompleted payload`)
+			return
+		}
+		this.pendingManagedTaskCompletions.delete(taskId)
+		this.markTaskLifecycle(
+			taskId,
+			completedSuccessfully
+				? TaskLifecycleState.Completed
+				: status === "failed"
+					? TaskLifecycleState.Failed
+					: TaskLifecycleState.Closed,
+		)
+		if (!completion || !completedSuccessfully) return
+		try {
+			this.emit(RooCodeEventName.TaskCompleted, taskId, completion.tokenUsage, completion.toolUsage)
+		} catch (error) {
+			this.log(`Failed to notify listeners of managed task ${taskId} completion: ${String(error)}`)
+		}
 	}
 
 	private async persistAgentControlRootStatus(
@@ -3692,6 +3950,34 @@ export class ClineProvider
 
 	public canAcceptTaskInput(taskId: string | undefined): boolean {
 		return this.taskSessions.canAcceptInput(taskId)
+	}
+
+	/**
+	 * Queue user guidance without dropping it while a delegated child is moving
+	 * back to its parent. The handoff owns the buffer until either the child is
+	 * restored or the parent is live and can accept the message.
+	 */
+	public queueMessageForTask(taskId: string | undefined, text: string, images?: string[]): boolean {
+		if (!taskId || (!text && !images?.length)) return false
+		const handoff = this.legacyHandoffInputBuffers.get(taskId)
+		if (handoff) {
+			const copiedImages = images ? [...images] : undefined
+			if (handoff.forwardToTaskId) {
+				const destination = this.getLiveTask(handoff.forwardToTaskId)
+				try {
+					if (destination?.messageQueueService.addMessage(text, copiedImages)) return true
+				} catch (error) {
+					this.log?.(
+						`[queueMessageForTask] Unable to forward delegated-child guidance to ${handoff.forwardToTaskId}; retaining it in the handoff buffer: ${error instanceof Error ? error.message : String(error)}`,
+					)
+				}
+			}
+			handoff.messages.push({ text, images: copiedImages })
+			return true
+		}
+		const task = this.getLiveTask(taskId)
+		if (!task || !this.canAcceptTaskInput(taskId)) return false
+		return Boolean(task.messageQueueService.addMessage(text, images))
 	}
 
 	public isTaskOnScreen(taskId: string): boolean {
@@ -3979,7 +4265,7 @@ export class ClineProvider
 		await this.agentControlStoreReady
 		await this.cancelManagedTaskDescendants(
 			task.taskId,
-			task.rootTaskId ?? task.taskId,
+			this.getAgentControlRootTaskId(task),
 			`Managed descendants cancelled because task ${task.taskId} was cancelled`,
 		)
 
@@ -4108,7 +4394,7 @@ export class ClineProvider
 	public async getModes(): Promise<{ slug: string; name: string }[]> {
 		try {
 			const customModes = await this.customModesManager.getCustomModes()
-			return [...DEFAULT_MODES, ...customModes].map(({ slug, name }) => ({ slug, name }))
+			return getAllModes(customModes).map(({ slug, name }) => ({ slug, name }))
 		} catch (error) {
 			return DEFAULT_MODES.map(({ slug, name }) => ({ slug, name }))
 		}
@@ -4370,13 +4656,27 @@ export class ClineProvider
 		toolCallId?: string,
 	): Promise<PreparedSubagentGroup> {
 		const parentMode = await parent.getTaskMode()
-		if (parentMode !== "code") {
-			throw new Error("delegate_task is available only in Code mode")
-		}
 		const normalizedDrafts = normalizeSubagentTaskDrafts(drafts)
+		if (parentMode !== "code" && parentMode !== planModeSlug) {
+			throw new Error("Managed sub-agents are available only in Code and Plan modes")
+		}
+		if (parentMode === planModeSlug && normalizedDrafts.some((draft) => draft.agent_kind === "worker")) {
+			throw new Error(
+				"Plan mode permits only read-only Explore and Review sub-agents; switch to Code for Worker edits",
+			)
+		}
 		assertSubagentTaskAuthorities(normalizedDrafts)
 		const parentAuthority = this.getParentDelegationAuthority(parent)
 		const settings = this.contextProxy.getValues()
+		const liveAutoApprovalPolicy = this.snapshotSubagentAutoApprovalPolicy(settings)
+		const inheritedAutoApprovalPolicy =
+			parent.taskKind === "subagent"
+				? (parent.subagentContextManifest?.runtimePolicy.autoApproval ?? disabledSubagentAutoApprovalPolicy)
+				: liveAutoApprovalPolicy
+		const childAutoApprovalPolicy =
+			parent.taskKind === "subagent"
+				? this.intersectSubagentAutoApprovalPolicies(liveAutoApprovalPolicy, inheritedAutoApprovalPolicy)
+				: liveAutoApprovalPolicy
 		const orchestrationSettings = this.getResolvedSubagentOrchestrationSettings()
 		const controlRoot = await this.ensureAgentControlRoot(parent)
 		const orchestrationBases = normalizedDrafts.map((draft) =>
@@ -4395,11 +4695,12 @@ export class ClineProvider
 				taskExplicitlyEnabled: parent.subagentDelegationExplicitlyEnabled === true,
 			}),
 		)
-		const autoEligible =
-			settings.autoApprovalEnabled === true &&
-			settings.alwaysAllowSubagents === true &&
-			settings.alwaysAllowReadOnly === true &&
-			normalizedDrafts.every((draft) => draft.agent_kind !== "worker" || settings.alwaysAllowWrite === true)
+		const isAutoEligibleFor = (policy: SubagentAutoApprovalPolicy) =>
+			policy.autoApprovalEnabled &&
+			policy.alwaysAllowSubagents &&
+			policy.alwaysAllowReadOnly &&
+			normalizedDrafts.every((draft) => draft.agent_kind !== "worker" || policy.alwaysAllowWrite)
+		const autoEligible = isAutoEligibleFor(liveAutoApprovalPolicy) && isAutoEligibleFor(inheritedAutoApprovalPolicy)
 		const requiresExplicitApproval =
 			!autoEligible ||
 			provisionalDelegationPolicies.some((decision) => decision.authorization === "pending-approval")
@@ -4444,7 +4745,7 @@ export class ClineProvider
 			.listAgents({ rootTaskId: controlRoot.rootTaskId, includeRoot: false })
 			.map((record) => record.nickname)
 		for (const descriptor of this.subagentDescriptors.values()) {
-			const descriptorRootTaskId = descriptor.parent.rootTaskId ?? descriptor.parent.taskId
+			const descriptorRootTaskId = this.getAgentControlRootTaskId(descriptor.parent)
 			if (descriptorRootTaskId === controlRoot.rootTaskId) reservedNames.push(descriptor.nickname)
 		}
 		const nicknames = this.subagentNicknameRegistry.assign(
@@ -4556,6 +4857,7 @@ export class ClineProvider
 									fileWriteScope: [...validatedScope!.fileWriteScope],
 								}
 							: {}),
+						autoApproval: childAutoApprovalPolicy,
 					},
 				})
 			}),
@@ -4749,30 +5051,36 @@ export class ClineProvider
 		if (prepared.envelopes.length !== 1 || prepared.group.agents.length !== 1) {
 			throw new Error("spawn_agent requires exactly one prepared child")
 		}
-		try {
-			this.finalizePreparedSubagentAuthorization(prepared)
+		const launch = async () => {
+			try {
+				await this.assertPreparedSubagentGroupAllowedInCurrentMode(parent, prepared)
+				this.finalizePreparedSubagentAuthorization(prepared)
 
-			const envelope = prepared.envelopes[0]
-			const agent = prepared.group.agents[0]
-			const root = await this.ensureAgentControlRoot(parent)
-			let controlRecord = this.agentControlStore.getAgent(envelope.id, root.rootTaskId)
-			if (!controlRecord) {
-				controlRecord = await this.agentControlStore.createAgent({
-					taskId: envelope.id,
-					parentTaskId: parent.taskId,
-					rootTaskId: root.rootTaskId,
-					groupId: prepared.group.groupId,
-					nickname: agent.nickname,
-					role: agent.role,
-					objective: agent.objective,
-					status: agent.status,
-					snapshot: this.toAgentRuntimeSnapshot(agent),
-				})
+				const envelope = prepared.envelopes[0]
+				const controlRecords = await this.ensurePreparedSubagentControlRecords(parent, prepared)
+				const controlRecord = controlRecords.get(envelope.id)
+				if (!controlRecord) throw new Error(`Missing managed-agent record for ${envelope.id}`)
+				return await this.startPreparedSubagentRun(parent, prepared, parentSignal, controlRecord, false)
+			} catch (error) {
+				this.releaseSubagentGroup(prepared.group.groupId)
+				throw error
 			}
-			return await this.startPreparedSubagentRun(parent, prepared, parentSignal, controlRecord, false)
-		} catch (error) {
-			this.releaseSubagentGroup(prepared.group.groupId)
-			throw error
+		}
+
+		return prepared.group.agents[0].role === "worker"
+			? this.workspaceMutationGate.run(parent.taskId, "Worker launch admission", launch, () => parent.abort)
+			: launch()
+	}
+
+	private async assertPreparedSubagentGroupAllowedInCurrentMode(
+		parent: Task,
+		prepared: PreparedSubagentGroup,
+	): Promise<void> {
+		if (
+			(await getTaskModeForSwitch(parent)) === planModeSlug &&
+			prepared.group.agents.some((agent) => agent.role === "worker")
+		) {
+			throw new Error("Plan mode cannot launch or relaunch a Worker; switch to Code before starting it")
 		}
 	}
 
@@ -4795,15 +5103,23 @@ export class ClineProvider
 		const unsubscribe = this.asyncSubagentRunManager.subscribe((event) => {
 			if (event.groupId !== prepared.group.groupId || event.taskId !== envelope.id) return
 			lifecycleWrites = lifecycleWrites
+				.catch(() => undefined)
 				.then(async () => {
-					try {
-						await this.persistSpawnedSubagentLifecycle(parent, controlRecord, event)
-					} catch (error) {
-						this.log(`Failed to persist sub-agent ${event.taskId} control event: ${String(error)}`)
+					await this.retryDurableSubagentWrite(
+						`persist sub-agent ${event.taskId} ${event.type} lifecycle`,
+						() => this.persistSpawnedSubagentLifecycle(parent, controlRecord, event),
+					)
+					if (event.type === "completed") {
+						this.publishDurableManagedTaskCompletion(
+							event.taskId,
+							event.snapshot.status as AgentLifecycleStatus,
+						)
 					}
 					await this.publishSpawnedSubagentLifecycle(parent, prepared, event)
 				})
-				.catch((error) => this.log(`Failed to publish sub-agent ${event.taskId} lifecycle: ${String(error)}`))
+			void lifecycleWrites.catch((error) =>
+				this.log(`Failed to publish sub-agent ${event.taskId} lifecycle: ${String(error)}`),
+			)
 		})
 
 		try {
@@ -4840,7 +5156,15 @@ export class ClineProvider
 				() => lifecycleWrites,
 				unsubscribe,
 				() => parentSignal.removeEventListener("abort", cancelFromParent),
-			).catch((error) => this.log(`Failed to finalize spawned sub-agent ${handle.taskId}: ${String(error)}`))
+			).catch(async (error) => {
+				const message = `Managed sub-agent ${handle.path} finished, but its durable result could not be committed: ${error instanceof Error ? error.message : String(error)}. The result remains pending for recovery.`
+				this.log(message)
+				if (typeof parent.say === "function") {
+					await parent
+						.say("error", message, undefined, false, undefined, undefined, { isNonInteractive: true })
+						.catch(() => undefined)
+				}
+			})
 			return handle
 		} catch (error) {
 			parentSignal.removeEventListener("abort", cancelFromParent)
@@ -4852,7 +5176,7 @@ export class ClineProvider
 				try {
 					const failedAt = Date.now()
 					const message = error instanceof Error ? error.message : String(error)
-					await this.agentControlStore.updateAgentStatus(
+					await this.agentControlStore.updateAgentStatusAndAppendEvent(
 						controlRecord.taskId,
 						"failed",
 						{
@@ -4864,25 +5188,25 @@ export class ClineProvider
 								stopReason: "failed",
 							},
 						},
+						{
+							eventId: `agent-launch-failed:${controlRecord.rootTaskId}:${controlRecord.taskId}:${failedAt}`,
+							rootTaskId: controlRecord.rootTaskId,
+							sender: controlRecord.taskId,
+							recipient: parent.taskId,
+							kind: "result",
+							name: "agent_failed",
+							payload: {
+								taskId: controlRecord.taskId,
+								path: controlRecord.path,
+								groupId: controlRecord.groupId,
+								status: "failed",
+								summary: message,
+								stopReason: "failed",
+							},
+							createdAt: failedAt,
+						},
 						controlRecord.rootTaskId,
 					)
-					await this.agentControlStore.appendEvent({
-						eventId: `agent-launch-failed:${controlRecord.rootTaskId}:${controlRecord.taskId}:${failedAt}`,
-						rootTaskId: controlRecord.rootTaskId,
-						sender: controlRecord.taskId,
-						recipient: parent.taskId,
-						kind: "result",
-						name: "agent_failed",
-						payload: {
-							taskId: controlRecord.taskId,
-							path: controlRecord.path,
-							groupId: controlRecord.groupId,
-							status: "failed",
-							summary: message,
-							stopReason: "failed",
-						},
-						createdAt: failedAt,
-					})
 				} catch (persistenceError) {
 					this.log(
 						`Failed to persist sub-agent launch failure for ${envelope.id}: ${String(persistenceError)}`,
@@ -4894,9 +5218,37 @@ export class ClineProvider
 		}
 	}
 
+	private async retryDurableSubagentWrite<T>(label: string, operation: () => Promise<T>): Promise<T> {
+		let lastError: unknown
+		for (const retryDelayMs of [0, 50, 200, 500]) {
+			if (retryDelayMs > 0) await delay(retryDelayMs)
+			try {
+				return await operation()
+			} catch (error) {
+				lastError = error
+				this.log(`Failed to ${label}${retryDelayMs > 0 ? " on retry" : ""}: ${String(error)}`)
+			}
+		}
+		throw lastError instanceof Error ? lastError : new Error(String(lastError ?? `Unable to ${label}`))
+	}
+
+	/**
+	 * Resolve the root of the managed-agent control plane for a task.
+	 *
+	 * Legacy `new_task` children carry parent/root lineage while remaining primary
+	 * tasks. That lineage belongs to the blocking handoff protocol, not to the
+	 * managed-agent registry. Treating it as a managed root makes the child address
+	 * an agent record that was never registered. Every primary task therefore owns
+	 * an independent managed-agent root; only managed sub-agents inherit one.
+	 */
+	private getAgentControlRootTaskId(task: Task): string {
+		if (task.taskKind !== "subagent") return task.taskId
+		return task.subagentContextManifest?.orchestration?.ancestry.rootTaskId ?? task.rootTaskId ?? task.taskId
+	}
+
 	private async ensureAgentControlRoot(parent: Task): Promise<AgentRecord> {
 		await this.agentControlStoreReady
-		const rootTaskId = parent.rootTaskId ?? parent.taskId
+		const rootTaskId = this.getAgentControlRootTaskId(parent)
 		let root = await this.agentControlStore.ensureRoot({
 			taskId: rootTaskId,
 			nickname: "root",
@@ -4912,14 +5264,142 @@ export class ClineProvider
 		return root
 	}
 
+	/**
+	 * Make every approved child addressable before either execution path can
+	 * create its Task. Completion, cancellation, list_agents, and nested
+	 * delegation all rely on this durable parent/child identity.
+	 */
+	private async ensurePreparedSubagentControlRecords(
+		parent: Task,
+		prepared: PreparedSubagentGroup,
+		records = new Map<string, AgentRecord>(),
+	): Promise<Map<string, AgentRecord>> {
+		const root = await this.ensureAgentControlRoot(parent)
+		for (let index = 0; index < prepared.envelopes.length; index++) {
+			const envelope = prepared.envelopes[index]
+			const agent = prepared.group.agents[index]
+			let record = this.agentControlStore.getAgent(envelope.id, root.rootTaskId)
+			if (record) {
+				if (
+					record.parentTaskId !== parent.taskId ||
+					record.groupId !== prepared.group.groupId ||
+					record.role !== agent.role ||
+					record.objective !== agent.objective
+				) {
+					throw new Error(`Managed-agent identity collision for ${envelope.id}`)
+				}
+			} else {
+				record = await this.agentControlStore.createAgent({
+					taskId: envelope.id,
+					parentTaskId: parent.taskId,
+					rootTaskId: root.rootTaskId,
+					groupId: prepared.group.groupId,
+					nickname: agent.nickname,
+					role: agent.role,
+					objective: agent.objective,
+					status: agent.status,
+					snapshot: this.toAgentRuntimeSnapshot(agent),
+				})
+			}
+			records.set(envelope.id, record)
+		}
+		return records
+	}
+
+	private async markBlockingSubagentControlRecordsRunning(
+		prepared: PreparedSubagentGroup,
+		records: Map<string, AgentRecord>,
+		startedAt: number,
+	): Promise<void> {
+		for (const agent of prepared.group.agents) {
+			const retained = records.get(agent.taskId)
+			if (!retained) throw new Error(`Missing managed-agent record for ${agent.taskId}`)
+			const current = this.agentControlStore.getAgent(agent.taskId, retained.rootTaskId)
+			if (!current || (current.status !== "pending" && current.status !== "running")) {
+				throw new Error(
+					`Managed agent ${retained.path} cannot launch from ${current?.status ?? "missing"} state`,
+				)
+			}
+			const updated = await this.agentControlStore.updateAgentStatus(
+				agent.taskId,
+				"running",
+				{ at: startedAt, snapshot: this.toAgentRuntimeSnapshot(agent) },
+				retained.rootTaskId,
+			)
+			records.set(agent.taskId, updated)
+		}
+	}
+
+	private isBlockingSubagentResultDelivered(record: AgentRecord): boolean {
+		return (
+			record.terminalResult?.metadata?.delivery === BLOCKING_SUBAGENT_RESULT_DELIVERY ||
+			record.snapshot?.metadata?.delivery === BLOCKING_SUBAGENT_RESULT_DELIVERY
+		)
+	}
+
+	/** Persist a delegate_task terminal state without creating unread mailbox work. */
+	private async persistBlockingSubagentTerminalState(
+		prepared: PreparedSubagentGroup,
+		records: Map<string, AgentRecord>,
+		taskId: string,
+	): Promise<void> {
+		const agent = prepared.group.agents.find((item) => item.taskId === taskId)
+		const retained = records.get(taskId)
+		if (!agent || !retained) throw new Error(`Missing blocking sub-agent state for ${taskId}`)
+		if (agent.status === "pending" || agent.status === "running" || agent.status === "cancelling") {
+			throw new Error(`Managed agent ${retained.path} is still ${agent.status}`)
+		}
+
+		const current = this.agentControlStore.getAgent(taskId, retained.rootTaskId)
+		if (!current) throw new Error(`Managed agent ${retained.path} disappeared before terminal persistence`)
+		const active = current.status === "pending" || current.status === "running" || current.status === "cancelling"
+		if (!active && current.status !== agent.status) {
+			throw new Error(`Managed agent ${retained.path} already ended as ${current.status}, not ${agent.status}`)
+		}
+
+		const completedAt = agent.completedAt ?? Date.now()
+		const snapshot = this.toAgentRuntimeSnapshot(agent)
+		snapshot.metadata = {
+			...snapshot.metadata,
+			delivery: BLOCKING_SUBAGENT_RESULT_DELIVERY,
+		}
+		const terminalResult: AgentTerminalResultMetadata | undefined =
+			agent.status === "interrupted"
+				? undefined
+				: {
+						status: agent.status,
+						summary: agent.summary,
+						error: agent.error,
+						changedFiles: agent.changedFiles ? [...agent.changedFiles] : undefined,
+						requiresParentVerification: agent.requiresParentVerification,
+						completedAt,
+						usage: { ...agent.usage },
+						stopReason: agent.stopReason,
+						metadata: { delivery: BLOCKING_SUBAGENT_RESULT_DELIVERY },
+					}
+		const updated = await this.agentControlStore.updateAgentStatus(
+			taskId,
+			agent.status,
+			{ at: completedAt, snapshot, terminalResult },
+			retained.rootTaskId,
+		)
+		records.set(taskId, updated)
+		this.publishDurableManagedTaskCompletion(taskId, agent.status as AgentLifecycleStatus)
+	}
+
 	private toAgentRuntimeSnapshot(agent: SubagentGroupState["agents"][number]): AgentRuntimeSnapshot {
 		const contextManifest = this.subagentDescriptors.get(agent.taskId)?.contextManifest
+		const usage = Object.fromEntries(
+			Object.entries(agent.usage).filter(
+				(entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]),
+			),
+		)
 		return {
 			phase: agent.phase,
 			summary: agent.summary ?? agent.error,
 			modelRouteId: agent.modelRoute?.profileId ?? agent.modelRoute?.modelId,
 			requiresParentVerification: agent.requiresParentVerification,
-			usage: { ...agent.usage },
+			usage,
 			stopReason: agent.stopReason,
 			...(contextManifest ? { contextManifest: structuredClone(contextManifest) } : {}),
 			metadata: {
@@ -4953,7 +5433,24 @@ export class ClineProvider
 						stopReason: event.snapshot.stopReason,
 					}
 				: undefined
-		await this.agentControlStore.updateAgentStatus(
+		// The spawn handle and list_agents already expose active transitions. Keep
+		// those transitions durable without turning them into unread parent mail;
+		// otherwise the first wait_agent call returns immediately on launch noise
+		// and encourages an unnecessary polling/model-turn loop.
+		if (event.type !== "completed") {
+			await this.agentControlStore.updateAgentStatus(
+				record.taskId,
+				status,
+				{
+					at: event.occurredAt,
+					snapshot: this.toAgentRuntimeSnapshot(event.snapshot),
+					terminalResult,
+				},
+				record.rootTaskId,
+			)
+			return
+		}
+		await this.agentControlStore.updateAgentStatusAndAppendEvent(
 			record.taskId,
 			status,
 			{
@@ -4961,31 +5458,26 @@ export class ClineProvider
 				snapshot: this.toAgentRuntimeSnapshot(event.snapshot),
 				terminalResult,
 			},
+			{
+				eventId: `agent-lifecycle:${event.eventId}`,
+				rootTaskId: record.rootTaskId,
+				sender: record.taskId,
+				recipient: parent.taskId,
+				kind: "result",
+				name: `agent_${event.snapshot.status}`,
+				payload: {
+					taskId: record.taskId,
+					path: record.path,
+					groupId: record.groupId,
+					status: event.snapshot.status,
+					summary: event.snapshot.summary ?? event.snapshot.error,
+					stopReason: event.snapshot.stopReason,
+					usage: event.snapshot.usage,
+				},
+				createdAt: event.occurredAt,
+			},
 			record.rootTaskId,
 		)
-		// The spawn handle and list_agents already expose active transitions. Keep
-		// those transitions durable without turning them into unread parent mail;
-		// otherwise the first wait_agent call returns immediately on launch noise
-		// and encourages an unnecessary polling/model-turn loop.
-		if (event.type !== "completed") return
-		await this.agentControlStore.appendEvent({
-			eventId: `agent-lifecycle:${event.eventId}`,
-			rootTaskId: record.rootTaskId,
-			sender: record.taskId,
-			recipient: parent.taskId,
-			kind: "result",
-			name: `agent_${event.snapshot.status}`,
-			payload: {
-				taskId: record.taskId,
-				path: record.path,
-				groupId: record.groupId,
-				status: event.snapshot.status,
-				summary: event.snapshot.summary ?? event.snapshot.error,
-				stopReason: event.snapshot.stopReason,
-				usage: event.snapshot.usage,
-			},
-			createdAt: event.occurredAt,
-		})
 	}
 
 	private async publishSpawnedSubagentLifecycle(
@@ -5021,14 +5513,13 @@ export class ClineProvider
 		unsubscribe: () => void,
 		detachParentSignal: () => void,
 	): Promise<void> {
+		let durableTerminalPublication = false
 		try {
 			const result = await completion
 			await getLifecycleWrites()
-			try {
-				await this.applySubagentResult(prepared, result)
-			} catch (error) {
-				this.log(`Failed to publish spawned sub-agent ${result.taskId} result: ${String(error)}`)
-			}
+			await this.retryDurableSubagentWrite(`publish spawned sub-agent ${result.taskId} result`, () =>
+				this.applySubagentResult(prepared, result),
+			)
 
 			prepared.group.status =
 				result.status === "completed"
@@ -5041,16 +5532,14 @@ export class ClineProvider
 								? "timed_out"
 								: "failed"
 			prepared.group.completedAt = Date.now()
-			try {
-				await parent.upsertSubagentGroup(prepared.group)
-			} catch (error) {
-				this.log(`Failed to publish terminal sub-agent group ${prepared.group.groupId}: ${String(error)}`)
-			}
+			await this.retryDurableSubagentWrite(`publish terminal sub-agent group ${prepared.group.groupId}`, () =>
+				parent.upsertSubagentGroup(prepared.group),
+			)
+			durableTerminalPublication = true
 		} finally {
-			await getLifecycleWrites()
 			unsubscribe()
 			detachParentSignal()
-			this.retainCompletedSubagentGroup(prepared.group.groupId)
+			if (durableTerminalPublication) this.retainCompletedSubagentGroup(prepared.group.groupId)
 		}
 	}
 
@@ -5071,26 +5560,25 @@ export class ClineProvider
 			const parent =
 				this.getLiveTask(parentTaskId) ??
 				[...this.subagentDescriptors.values()].find((descriptor) => descriptor.groupId === groupId)?.parent
+			const cancellationRequested = new Map<string, boolean>()
 			for (const agent of prepared.group.agents) {
-				if (
-					!this.asyncSubagentRunManager.cancel(
+				const didCancel =
+					this.asyncSubagentRunManager.cancel(
 						agent.taskId,
 						"Sub-agent group cancelled by user",
 						"parent_cancelled",
-					)
-				) {
+					) ||
 					this.boundedDelegationManager.cancel(
 						agent.taskId,
 						"Sub-agent group cancelled by user",
 						"parent_cancelled",
 					)
-				}
+				cancellationRequested.set(agent.taskId, didCancel)
 			}
-			controller.abort(new InternalTaskCancellationError("parent_cancelled", "Sub-agent group cancelled by user"))
 			await this.agentControlStoreReady
 			for (const agent of prepared.group.agents) {
 				const descriptor = this.subagentDescriptors.get(agent.taskId)
-				const rootTaskId = descriptor?.parent.rootTaskId ?? descriptor?.parent.taskId ?? parentTaskId
+				const rootTaskId = descriptor ? this.getAgentControlRootTaskId(descriptor.parent) : parentTaskId
 				const record = this.agentControlStore.getAgent(agent.taskId, rootTaskId)
 				if (record) {
 					await this.cancelManagedAgentSubtree(
@@ -5098,9 +5586,11 @@ export class ClineProvider
 						record,
 						"Sub-agent group cancelled by user",
 						"parent_cancelled",
+						cancellationRequested.get(agent.taskId) === true,
 					)
 				}
 			}
+			controller.abort(new InternalTaskCancellationError("parent_cancelled", "Sub-agent group cancelled by user"))
 			if (parent) await parent.upsertSubagentGroup(prepared.group)
 			return
 		}
@@ -5116,6 +5606,7 @@ export class ClineProvider
 		const prepared = this.preparedSubagentGroups.get(groupId)
 		const agent = prepared?.group.agents.find((item) => item.taskId === taskId)
 		const child = this.getLiveTask(taskId)
+		const descriptor = this.subagentDescriptors.get(taskId)
 		const instruction = text.trim()
 		if (
 			!prepared ||
@@ -5127,6 +5618,10 @@ export class ClineProvider
 			child.subagentGroupId !== groupId
 		) {
 			void vscode.window.showWarningMessage("This sub-agent is no longer available to steer.")
+			return
+		}
+		if (agent.role === "worker" && descriptor && (await getTaskModeForSwitch(descriptor.parent)) === planModeSlug) {
+			void vscode.window.showWarningMessage("Plan mode cannot steer a Worker. Switch to Code to advance it.")
 			return
 		}
 		if (!instruction || instruction.length > 2_000) {
@@ -5152,7 +5647,7 @@ export class ClineProvider
 		agent.steerCount = (agent.steerCount ?? 0) + 1
 		agent.lastSteeredAt = steeredAt
 		await child.steerUserMessage(instruction)
-		await this.subagentDescriptors.get(taskId)?.parent.upsertSubagentGroup(prepared.group)
+		await descriptor?.parent.upsertSubagentGroup(prepared.group)
 	}
 
 	public async cancelSubagent(parentTaskId: string, groupId: string, taskId: string): Promise<void> {
@@ -5172,15 +5667,21 @@ export class ClineProvider
 		agent.cancelRequestedAt = Date.now()
 		delete agent.pendingApproval
 		const reason = new Error("Sub-agent cancelled by user")
-		if (!this.asyncSubagentRunManager.cancel(taskId, reason, "parent_cancelled")) {
+		const cancellationRequested =
+			this.asyncSubagentRunManager.cancel(taskId, reason, "parent_cancelled") ||
 			this.boundedDelegationManager.cancel(taskId, reason, "parent_cancelled")
-		}
 		await this.agentControlStoreReady
 		const descriptor = this.subagentDescriptors.get(taskId)
-		const rootTaskId = descriptor?.parent.rootTaskId ?? descriptor?.parent.taskId ?? parentTaskId
+		const rootTaskId = descriptor ? this.getAgentControlRootTaskId(descriptor.parent) : parentTaskId
 		const record = this.agentControlStore.getAgent(taskId, rootTaskId)
 		if (record) {
-			await this.cancelManagedAgentSubtree(parentTaskId, record, reason.message, "parent_cancelled")
+			await this.cancelManagedAgentSubtree(
+				parentTaskId,
+				record,
+				reason.message,
+				"parent_cancelled",
+				cancellationRequested,
+			)
 		}
 		await descriptor?.parent.upsertSubagentGroup(prepared.group)
 	}
@@ -5250,7 +5751,7 @@ export class ClineProvider
 	}
 
 	private async refreshParentVerificationProjections(parent: Task): Promise<void> {
-		const rootTaskId = parent.rootTaskId ?? parent.taskId
+		const rootTaskId = this.getAgentControlRootTaskId(parent)
 		for (const message of parent.clineMessages) {
 			const group = message.subagentGroup
 			if (!group || group.parentTaskId !== parent.taskId) continue
@@ -5315,12 +5816,15 @@ export class ClineProvider
 			(parent.subagentRole !== "worker" || parent.subagentContextManifest?.runtimePolicy.role !== "worker")
 		)
 			return
+		// Commands can finish before this primary task has ever spawned a managed
+		// child. Materialize its own control root before writing evidence so both
+		// ordinary roots and legacy blocking-handoff children have a valid owner.
+		const root = await this.ensureAgentControlRoot(parent)
 		await this.synchronizeParentVerificationObligations(parent)
-		const rootTaskId = parent.rootTaskId ?? parent.taskId
 		const changed = await this.agentControlStore.recordParentVerificationEvidence(
 			parent.taskId,
 			parent.getCommandExecutionEvidence(),
-			rootTaskId,
+			root.rootTaskId,
 		)
 		for (const obligation of changed) await this.publishParentVerificationTransition(parent, obligation)
 		if (changed.length > 0) {
@@ -5438,6 +5942,7 @@ export class ClineProvider
 	private toAgentListItem(record: AgentRecord) {
 		const parentVerification = this.agentControlStore.getWorkerVerificationSummary(record.taskId, record.rootTaskId)
 		const orchestration = record.snapshot?.contextManifest?.orchestration
+		const blockingResultDelivered = this.isBlockingSubagentResultDelivered(record)
 		return {
 			taskId: record.taskId,
 			path: record.path,
@@ -5472,7 +5977,7 @@ export class ClineProvider
 					: (record.snapshot?.requiresParentVerification ??
 						record.terminalResult?.requiresParentVerification),
 			parentVerification,
-			resultAvailable: record.terminalResult !== undefined,
+			resultAvailable: record.terminalResult !== undefined && !blockingResultDelivered,
 		}
 	}
 
@@ -5668,7 +6173,7 @@ export class ClineProvider
 			afterSequence = page.nextSequence
 		}
 		const terminalPublicationPending = inactiveTerminalCandidates.some(
-			(record) => !publishedTerminalTaskIds.has(record.taskId),
+			(record) => !this.isBlockingSubagentResultDelivered(record) && !publishedTerminalTaskIds.has(record.taskId),
 		)
 		if (
 			matchingActiveAgents.length === 0 &&
@@ -5802,6 +6307,7 @@ export class ClineProvider
 	public async sendMessageToAgent(parent: Task, target: string, message: string): Promise<unknown> {
 		const instruction = this.normalizeAgentInstruction(message, "Message")
 		const record = await this.requireControlledAgent(parent, target)
+		await this.assertPlanAgentAdvanceAllowed(parent, record, "send a message to")
 		if (!(record.status === "pending" || record.status === "running")) {
 			throw new Error(`Agent ${record.path} is ${record.status}; use followup_task after it stops`)
 		}
@@ -5938,6 +6444,7 @@ export class ClineProvider
 
 	public async requiresExplicitAgentFollowupApproval(parent: Task, target: string): Promise<boolean> {
 		const record = await this.requireControlledAgent(parent, target)
+		await this.assertPlanAgentAdvanceAllowed(parent, record, "relaunch")
 		const manifest =
 			this.subagentDescriptors.get(record.taskId)?.contextManifest ?? record.snapshot?.contextManifest
 		return manifest?.orchestration?.delegationPolicy.policy !== "proactive"
@@ -5946,6 +6453,18 @@ export class ClineProvider
 	public async followupAgentTask(parent: Task, target: string, message: string): Promise<unknown> {
 		const instruction = this.normalizeAgentInstruction(message, "Follow-up instruction")
 		const record = await this.requireControlledAgent(parent, target)
+		const resume = () => this.followupAgentTaskAfterAdmission(parent, record, instruction)
+		return record.role === "worker"
+			? this.workspaceMutationGate.run(parent.taskId, "Worker follow-up admission", resume, () => parent.abort)
+			: resume()
+	}
+
+	private async followupAgentTaskAfterAdmission(
+		parent: Task,
+		record: AgentRecord,
+		instruction: string,
+	): Promise<unknown> {
+		await this.assertPlanAgentAdvanceAllowed(parent, record, "relaunch")
 		await this.synchronizeParentVerificationObligations(parent)
 		if (
 			record.role === "worker" &&
@@ -6017,6 +6536,12 @@ export class ClineProvider
 			retainedSnapshot !== undefined,
 		)
 		return { ...handle, followup: true }
+	}
+
+	private async assertPlanAgentAdvanceAllowed(parent: Task, record: AgentRecord, action: string): Promise<void> {
+		if ((await getTaskModeForSwitch(parent)) === planModeSlug && record.role === "worker") {
+			throw new Error(`Plan mode cannot ${action} Worker ${record.path}; switch to Code to advance it`)
+		}
 	}
 
 	private assertRetainedAgentRelaunchCapacity(
@@ -6128,6 +6653,7 @@ export class ClineProvider
 		target: AgentRecord,
 		reason: string,
 		targetStopReason: "cancelled" | "parent_cancelled" | "ancestor_cancelled" = "parent_cancelled",
+		targetCancellationAlreadyRequested = false,
 	): Promise<{ targetCancelled: boolean; descendantTaskIds: string[] }> {
 		const descendants = this.agentControlStore
 			.listDescendants(target.taskId, target.rootTaskId)
@@ -6150,6 +6676,7 @@ export class ClineProvider
 					? reason
 					: `Agent ${record.path} cancelled because ${target.path} was cancelled`
 			const didCancel =
+				(record.taskId === target.taskId && targetCancellationAlreadyRequested) ||
 				record.status === "cancelling" ||
 				this.asyncSubagentRunManager.cancel(record.taskId, message, stopReason) ||
 				this.boundedDelegationManager.cancel(record.taskId, message, stopReason)
@@ -6716,26 +7243,47 @@ export class ClineProvider
 		prepared: PreparedSubagentGroup,
 		parentSignal: AbortSignal,
 	): Promise<SubagentToolResult> {
-		this.finalizePreparedSubagentAuthorization(prepared)
+		const controlRecords = new Map<string, AgentRecord>()
+		const admit = async () => {
+			await this.assertPreparedSubagentGroupAllowedInCurrentMode(parent, prepared)
+			this.finalizePreparedSubagentAuthorization(prepared)
+			// Create pending control rows before releasing Worker admission. A
+			// concurrent Code -> Plan transition will then see an active Worker and
+			// fail closed before any child can begin running.
+			await this.ensurePreparedSubagentControlRecords(parent, prepared, controlRecords)
+		}
+		try {
+			if (prepared.group.agents.some((agent) => agent.role === "worker")) {
+				await this.workspaceMutationGate.run(parent.taskId, "Worker blocking launch admission", admit, () =>
+					Boolean(parent.abort || parentSignal.aborted),
+				)
+			} else {
+				await admit()
+			}
+		} catch (error) {
+			this.releaseSubagentGroup(prepared.group.groupId)
+			throw error
+		}
 		const controller = new AbortController()
 		const cancelFromParent = () => controller.abort(parentSignal.reason)
 		if (parentSignal.aborted) cancelFromParent()
 		else parentSignal.addEventListener("abort", cancelFromParent, { once: true })
 		this.subagentGroupControllers.set(prepared.group.groupId, controller)
 
-		const startedAt = Date.now()
-		prepared.group.executionMode = "blocking"
-		prepared.group.status = "running"
-		prepared.group.startedAt = startedAt
-		for (const agent of prepared.group.agents) {
-			agent.status = "running"
-			agent.startedAt = startedAt
-			agent.phase = "starting"
-			agent.phaseStartedAt = startedAt
-		}
-
 		let resultsPromise: Promise<InternalTaskResult[]> | undefined
 		try {
+			const startedAt = Date.now()
+			prepared.group.executionMode = "blocking"
+			prepared.group.status = "running"
+			prepared.group.startedAt = startedAt
+			for (const agent of prepared.group.agents) {
+				agent.status = "running"
+				agent.startedAt = startedAt
+				agent.phase = "starting"
+				agent.phaseStartedAt = startedAt
+			}
+			await this.markBlockingSubagentControlRecordsRunning(prepared, controlRecords, startedAt)
+
 			// Register every child with the bounded manager before publishing the
 			// running state. Otherwise an immediate row-level cancel can arrive in
 			// the narrow window where the UI says running but cancel(taskId) cannot
@@ -6752,6 +7300,11 @@ export class ClineProvider
 					// Preserve it even when the live parent card cannot be updated yet; the
 					// aggregate terminal write below is a final best-effort reconciliation.
 					this.log(`Failed to publish sub-agent ${result.taskId} result: ${String(error)}`)
+				} finally {
+					await this.retryDurableSubagentWrite(
+						`persist blocking sub-agent ${result.taskId} terminal state`,
+						() => this.persistBlockingSubagentTerminalState(prepared, controlRecords, result.taskId),
+					)
 				}
 			}
 
@@ -6829,6 +7382,7 @@ export class ClineProvider
 				delete agent.phase
 				delete agent.phaseStartedAt
 				agent.error = message
+				agent.stopReason = wasCancelled ? "parent_cancelled" : "failed"
 				agent.completedAt = completedAt
 				agent.usage.durationMs = Math.max(
 					0,
@@ -6840,11 +7394,32 @@ export class ClineProvider
 				completed > 0 ? "partial" : wasCancelled ? "cancelled" : "failed"
 			prepared.group.status = status
 			prepared.group.completedAt = completedAt
+			const terminalPersistenceErrors: unknown[] = []
+			for (const agent of prepared.group.agents) {
+				if (!controlRecords.has(agent.taskId)) continue
+				try {
+					await this.retryDurableSubagentWrite(
+						`persist blocking sub-agent ${agent.taskId} terminal state after group failure`,
+						() => this.persistBlockingSubagentTerminalState(prepared, controlRecords, agent.taskId),
+					)
+				} catch (persistenceError) {
+					terminalPersistenceErrors.push(persistenceError)
+					this.log(
+						`Failed to persist blocking sub-agent ${agent.taskId} terminal state: ${String(persistenceError)}`,
+					)
+				}
+			}
 			try {
 				await parent.upsertSubagentGroup(prepared.group)
 			} catch (persistenceError) {
 				this.log(
 					`Failed to publish failed sub-agent group ${prepared.group.groupId}: ${String(persistenceError)}`,
+				)
+			}
+			if (terminalPersistenceErrors.length > 0) {
+				throw new AggregateError(
+					terminalPersistenceErrors,
+					`Sub-agent group ${prepared.group.groupId} stopped, but its terminal lifecycle could not be persisted. Completion is suspended until durable recovery succeeds.`,
 				)
 			}
 
@@ -7263,7 +7838,10 @@ export class ClineProvider
 					signal.addEventListener("abort", onCancelled, { once: true })
 					if (followupInstruction) {
 						descriptor.pendingFollowup = undefined
-						const record = this.agentControlStore.getAgent(child.taskId, parent.rootTaskId ?? parent.taskId)
+						const record = this.agentControlStore.getAgent(
+							child.taskId,
+							this.getAgentControlRootTaskId(parent),
+						)
 						const queued = record ? this.getQueuedAgentMessage(record) : undefined
 						const instruction = queued
 							? `${followupInstruction}\n\nAdditional parent steering:\n${queued.message}`
@@ -7278,7 +7856,10 @@ export class ClineProvider
 								this.log(`Failed to acknowledge queued steering for ${child.taskId}: ${String(error)}`),
 							)
 					} else {
-						const record = this.agentControlStore.getAgent(child.taskId, parent.rootTaskId ?? parent.taskId)
+						const record = this.agentControlStore.getAgent(
+							child.taskId,
+							this.getAgentControlRootTaskId(parent),
+						)
 						void (record ? this.deliverQueuedAgentMessage(child, record) : Promise.resolve()).then(
 							() => child.start(),
 							(error) => finish("failed", child.getTokenUsage(), String(error)),
@@ -7342,7 +7923,10 @@ export class ClineProvider
 				result.stopReason,
 			)
 		} catch (error) {
-			this.log(`Failed to finalize sub-agent ${child.taskId} history: ${String(error)}`)
+			throw new Error(
+				`Failed to durably finalize sub-agent ${child.taskId} history: ${error instanceof Error ? error.message : String(error)}`,
+				{ cause: error },
+			)
 		}
 
 		// Worker capture removes the managed worktree, and history finalization can
@@ -7660,9 +8244,16 @@ export class ClineProvider
 			message: "Worker changes could not be applied.",
 		}
 		try {
-			const result = await this.runWorkspaceMutation(target.parent, "apply worker change set", () =>
-				managedSubagentWorktreeService.apply(this.context.globalStorageUri.fsPath, changeSetId),
-			)
+			const result = await this.runWorkspaceMutation(target.parent, "apply worker change set", async () => {
+				// Recheck under the workspace mutation gate. The mode may have changed after
+				// the UI capability response or the external-mutation lease was acquired.
+				if ((await getTaskModeForSwitch(target.parent)) === planModeSlug) {
+					throw new Error(
+						"Plan mode cannot apply Worker changes. Switch to Code mode to apply this proposal.",
+					)
+				}
+				return managedSubagentWorktreeService.apply(this.context.globalStorageUri.fsPath, changeSetId)
+			})
 			const artifact = await managedSubagentWorktreeService.load(
 				this.context.globalStorageUri.fsPath,
 				changeSetId,
@@ -8055,43 +8646,22 @@ export class ClineProvider
 		//    is already added to apiConversationHistory by the normal flow in
 		//    recursivelyMakeClineRequests BEFORE tools start executing. We only need to
 		//    flush the pending user message with tool_results.
-		try {
-			const flushSuccess = await parent.flushPendingToolResultsToHistory()
-
-			if (!flushSuccess) {
-				console.warn(`[delegateParentAndOpenChild] Flush failed for parent ${parentTaskId}, retrying...`)
-				const retrySuccess = await parent.retrySaveApiConversationHistory()
-
-				if (!retrySuccess) {
-					console.error(
-						`[delegateParentAndOpenChild] CRITICAL: Parent ${parentTaskId} API history not persisted to disk. Child return may produce stale state.`,
-					)
-					vscode.window.showWarningMessage(
-						"Warning: Parent task state could not be saved. The parent task may lose recent context when resumed.",
-					)
-				}
-			}
-		} catch (error) {
-			this.log(
-				`[delegateParentAndOpenChild] Error flushing pending tool results (non-fatal): ${
-					error instanceof Error ? error.message : String(error)
-				}`,
+		let flushSuccess = false
+		for (const retryDelayMs of [0, 50, 200]) {
+			if (retryDelayMs > 0) await delay(retryDelayMs)
+			flushSuccess = await parent.flushPendingToolResultsToHistory()
+			if (flushSuccess) break
+		}
+		if (!flushSuccess) {
+			throw new Error(
+				`Cannot delegate task ${parentTaskId} because its pending tool results could not be persisted.`,
 			)
 		}
 
 		// 3) Enforce single-open invariant by closing/disposing the parent first
 		//    This ensures we never have >1 tasks open at any time during delegation.
 		//    Await abort completion to ensure clean disposal and prevent unhandled rejections.
-		try {
-			await this.removeClineFromStack({ taskId: parentTaskId, skipDelegationRepair: true })
-		} catch (error) {
-			this.log(
-				`[delegateParentAndOpenChild] Error during parent disposal (non-fatal): ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			)
-			// Non-fatal: proceed with child creation even if parent cleanup had issues
-		}
+		await this.removeClineFromStack({ taskId: parentTaskId, skipDelegationRepair: true })
 
 		// 4) Create child as sole active (parent reference preserved for lineage)
 		// Pass initialStatus: "active" to ensure the child task's historyItem is created
@@ -8127,11 +8697,21 @@ export class ClineProvider
 			}
 			await this.updateTaskHistory(updatedHistory)
 		} catch (err) {
-			this.log(
-				`[delegateParentAndOpenChild] Failed to persist parent metadata for ${parentTaskId} -> ${child.taskId}: ${
-					(err as Error)?.message ?? String(err)
-				}`,
-			)
+			let cleanupError: unknown
+			try {
+				await this.removeClineFromStack({ taskId: child.taskId, skipDelegationRepair: true })
+			} catch (error) {
+				cleanupError = error
+			}
+			const metadataError =
+				err instanceof Error ? err : new Error(`Failed to persist parent delegation metadata: ${String(err)}`)
+			if (cleanupError) {
+				throw new AggregateError(
+					[metadataError, cleanupError],
+					`Parent ${parentTaskId} delegation failed and staged child ${child.taskId} could not be removed`,
+				)
+			}
+			throw metadataError
 		}
 
 		// 6) Start the child task now that parent metadata is safely persisted.
@@ -8148,7 +8728,10 @@ export class ClineProvider
 	}
 
 	/**
-	 * Reopen parent task from delegation with write-back and events.
+	 * Commit a legacy delegated-child result without ever leaving the child as the
+	 * only recoverable live session. The parent is staged first, and user guidance
+	 * is buffered across the child-disposal await so it cannot disappear with the
+	 * child's MessageQueueService.
 	 */
 	public async reopenParentFromDelegation(params: {
 		parentTaskId: string
@@ -8161,201 +8744,300 @@ export class ClineProvider
 			typeof this.isTaskOnScreen === "function"
 				? this.isTaskOnScreen(childTaskId)
 				: this.getCurrentTask()?.taskId === childTaskId
-
-		// 1) Load parent from history and current persisted messages
-		const { historyItem } = await this.getTaskWithId(parentTaskId)
-
-		let parentClineMessages: ClineMessage[] = []
-		try {
-			parentClineMessages = await readTaskMessages({
-				taskId: parentTaskId,
-				globalStoragePath,
-			})
-		} catch {
-			parentClineMessages = []
+		const { historyItem, uiMessagesFilePath, apiConversationHistoryFilePath } =
+			await this.getTaskWithId(parentTaskId)
+		const originalParentHistory = structuredClone(historyItem)
+		const isMatchingCommittedRetry =
+			historyItem.completedByChildId === childTaskId &&
+			historyItem.completionResultSummary === completionResultSummary
+		if (
+			historyItem.completedByChildId === childTaskId &&
+			historyItem.completionResultSummary !== undefined &&
+			historyItem.completionResultSummary !== completionResultSummary
+		) {
+			throw new Error(`Delegated child ${childTaskId} was already committed with a different result`)
+		}
+		const hasExpectedLink = historyItem.awaitingChildId === childTaskId || historyItem.delegatedToId === childTaskId
+		const hasConflictingLink =
+			(historyItem.awaitingChildId !== undefined && historyItem.awaitingChildId !== childTaskId) ||
+			(historyItem.delegatedToId !== undefined && historyItem.delegatedToId !== childTaskId)
+		if (
+			!isMatchingCommittedRetry &&
+			!(historyItem.status === "delegated" && hasExpectedLink && !hasConflictingLink)
+		) {
+			throw new Error(`Parent ${parentTaskId} is not awaiting delegated child ${childTaskId}`)
 		}
 
-		let parentApiMessages: any[] = []
-		try {
-			parentApiMessages = (await readApiMessages({
-				taskId: parentTaskId,
-				globalStoragePath,
-			})) as any[]
-		} catch {
-			parentApiMessages = []
-		}
-
-		// 2) Inject synthetic records: UI subtask_result and update API tool_result
-		const ts = Date.now()
-
-		// Defensive: ensure arrays
-		if (!Array.isArray(parentClineMessages)) parentClineMessages = []
-		if (!Array.isArray(parentApiMessages)) parentApiMessages = []
-
-		const subtaskUiMessage: ClineMessage = {
-			type: "say",
-			say: "subtask_result",
-			text: completionResultSummary,
-			ts,
-		}
-		parentClineMessages.push(subtaskUiMessage)
-		await saveTaskMessages({ messages: parentClineMessages, taskId: parentTaskId, globalStoragePath })
-
-		// Find the tool_use_id from the last assistant message's new_task tool_use
-		let toolUseId: string | undefined
-		for (let i = parentApiMessages.length - 1; i >= 0; i--) {
-			const msg = parentApiMessages[i]
-			if (msg.role === "assistant" && Array.isArray(msg.content)) {
-				for (const block of msg.content) {
-					if (block.type === "tool_use" && block.name === "new_task") {
-						toolUseId = block.id
-						break
-					}
-				}
-				if (toolUseId) break
-			}
-		}
-
-		// Preferred: if the parent history contains the native tool_use for new_task,
-		// inject a matching tool_result for the Anthropic message contract:
-		// user → assistant (tool_use) → user (tool_result)
-		if (toolUseId) {
-			// Check if the last message is already a user message with a tool_result for this tool_use_id
-			// (in case this is a retry or the history was already updated)
-			const lastMsg = parentApiMessages[parentApiMessages.length - 1]
-			let alreadyHasToolResult = false
-			if (lastMsg?.role === "user" && Array.isArray(lastMsg.content)) {
-				for (const block of lastMsg.content) {
-					if (block.type === "tool_result" && block.tool_use_id === toolUseId) {
-						// Update the existing tool_result content
-						block.content = `Subtask ${childTaskId} completed.\n\nResult:\n${completionResultSummary}`
-						alreadyHasToolResult = true
-						break
-					}
-				}
-			}
-
-			// If no existing tool_result found, create a NEW user message with the tool_result
-			if (!alreadyHasToolResult) {
-				parentApiMessages.push({
-					role: "user",
-					content: [
-						{
-							type: "tool_result" as const,
-							tool_use_id: toolUseId,
-							content: `Subtask ${childTaskId} completed.\n\nResult:\n${completionResultSummary}`,
-						},
-					],
-					ts,
-				})
-			}
-
-			// Validate the newly injected tool_result against the preceding assistant message.
-			// This ensures the tool_result's tool_use_id matches a tool_use in the immediately
-			// preceding assistant message (Anthropic API requirement).
-			const lastMessage = parentApiMessages[parentApiMessages.length - 1]
-			if (lastMessage?.role === "user") {
-				const validatedMessage = validateAndFixToolResultIds(lastMessage, parentApiMessages.slice(0, -1))
-				parentApiMessages[parentApiMessages.length - 1] = validatedMessage
-			}
-		} else {
-			// If there is no corresponding tool_use in the parent API history, we cannot emit a
-			// tool_result. Fall back to a plain user text note so the parent can still resume.
-			parentApiMessages.push({
-				role: "user",
-				content: [
-					{
-						type: "text" as const,
-						text: `Subtask ${childTaskId} completed.\n\nResult:\n${completionResultSummary}`,
-					},
-				],
-				ts,
-			})
-		}
-
-		await saveApiMessages({ messages: parentApiMessages as any, taskId: parentTaskId, globalStoragePath })
-
-		// 3) Close child instance if still open (single-open-task invariant).
-		//    This MUST happen BEFORE updating the child's status to "completed" because
-		//    removeClineFromStack() → abortTask(true) → saveClineMessages() writes
-		//    the historyItem with initialStatus (typically "active"), which would
-		//    overwrite a "completed" status set earlier.
 		const liveChild =
 			typeof this.getLiveTask === "function"
 				? this.getLiveTask(childTaskId)
 				: this.getCurrentTask()?.taskId === childTaskId
 					? this.getCurrentTask()
 					: undefined
-		if (liveChild) {
-			await this.removeClineFromStack({ taskId: childTaskId })
+		const handoffBuffers: Map<string, LegacyHandoffInputBuffer> = ((this as any).legacyHandoffInputBuffers ??=
+			new Map<string, LegacyHandoffInputBuffer>())
+		if (handoffBuffers.has(childTaskId)) {
+			throw new Error(`Delegated child ${childTaskId} already has a handoff in progress`)
 		}
-
-		// 4) Update child metadata to "completed" status.
-		//    This runs after the abort so it overwrites the stale "active" status
-		//    that saveClineMessages() may have written during step 3.
-		try {
-			const { historyItem: childHistory } = await this.getTaskWithId(childTaskId)
-			await this.updateTaskHistory({
-				...childHistory,
-				status: "completed",
-			})
-		} catch (err) {
-			this.log(
-				`[reopenParentFromDelegation] Failed to persist child completed status for ${childTaskId}: ${
-					(err as Error)?.message ?? String(err)
-				}`,
-			)
-		}
-
-		// 5) Update parent metadata and persist BEFORE emitting completion event
-		const childIds = Array.from(new Set([...(historyItem.childIds ?? []), childTaskId]))
-		const updatedHistory: typeof historyItem = {
-			...historyItem,
-			status: "active",
-			completedByChildId: childTaskId,
-			completionResultSummary,
-			awaitingChildId: undefined,
-			childIds,
-		}
-		await this.updateTaskHistory(updatedHistory)
-
-		// 6) Emit TaskDelegationCompleted (provider-level)
-		try {
-			this.emit(RooCodeEventName.TaskDelegationCompleted, parentTaskId, childTaskId, completionResultSummary)
-		} catch {
-			// non-fatal
-		}
-
-		// 7) Reopen the parent from history (restores saved mode). If the child was
-		//    off-screen, keep the parent off-screen too.
-		//    IMPORTANT: startTask=false to suppress resume-from-history ask scheduling
-		const parentInstance = await this.createTaskWithHistoryItem(
-			updatedHistory,
-			childWasOnScreen ? { startTask: false } : { startTask: false, preserveExisting: true, background: true },
-		)
-
-		// 8) Inject restored histories into the in-memory instance before resuming
-		if (parentInstance) {
-			try {
-				await parentInstance.overwriteClineMessages(parentClineMessages)
-			} catch {
-				// non-fatal
+		const handoff: LegacyHandoffInputBuffer = { phase: "preparing", messages: [] }
+		handoffBuffers.set(childTaskId, handoff)
+		let childQueueChanged = false
+		const capturedDirectMessageIds = new Set<string>()
+		const onChildQueueChanged = (messages: QueuedMessage[]) => {
+			childQueueChanged = messages.length > 0
+			if (handoff.phase !== "committing") return
+			for (const message of messages) {
+				if (capturedDirectMessageIds.has(message.id)) continue
+				capturedDirectMessageIds.add(message.id)
+				handoff.messages.push({ text: message.text, images: message.images ? [...message.images] : undefined })
 			}
+		}
+		liveChild?.messageQueueService?.on?.("stateChanged", onChildQueueChanged)
+
+		let originalUiMessages: ClineMessage[] | undefined
+		let originalApiMessages: any[] | undefined
+		let parentUiMessages: ClineMessage[] | undefined
+		let parentApiMessages: any[] | undefined
+		let transcriptsTouched = false
+		let parentHistoryCommitted = false
+		let parentInstance: Task | undefined
+		let childRemoved = false
+
+		const readRequiredArray = async (filePath: string, label: string): Promise<any[]> => {
+			const parsed = JSON.parse(await fs.readFile(filePath, "utf8"))
+			if (!Array.isArray(parsed)) throw new Error(`${label} is not an array`)
+			return parsed
+		}
+		const restoreTranscripts = async (): Promise<void> => {
+			if (!originalUiMessages || !originalApiMessages) return
+			const outcomes = await Promise.allSettled([
+				saveTaskMessages({ messages: originalUiMessages, taskId: parentTaskId, globalStoragePath }),
+				saveApiMessages({ messages: originalApiMessages as any, taskId: parentTaskId, globalStoragePath }),
+			])
+			const failures = outcomes.flatMap((outcome) => (outcome.status === "rejected" ? [outcome.reason] : []))
+			if (failures.length > 0) {
+				throw new AggregateError(failures, `Unable to restore parent ${parentTaskId} transcripts`)
+			}
+		}
+		const hasPrecommitGuidance = () =>
+			handoff.messages.length > 0 ||
+			childQueueChanged ||
+			Boolean(liveChild?.messageQueueService && !liveChild.messageQueueService.isEmpty())
+
+		try {
 			try {
-				await parentInstance.overwriteApiConversationHistory(parentApiMessages as any)
-			} catch {
-				// non-fatal
+				if (hasPrecommitGuidance()) {
+					throw new Error("Queued user guidance arrived before the delegated child handoff began")
+				}
+
+				parentUiMessages = (
+					uiMessagesFilePath
+						? await readRequiredArray(uiMessagesFilePath, `Parent UI history for ${parentTaskId}`)
+						: await readTaskMessages({ taskId: parentTaskId, globalStoragePath })
+				) as ClineMessage[]
+				parentApiMessages = apiConversationHistoryFilePath
+					? await readRequiredArray(apiConversationHistoryFilePath, `Parent API history for ${parentTaskId}`)
+					: await readApiMessages({ taskId: parentTaskId, globalStoragePath })
+				originalUiMessages = structuredClone(parentUiMessages)
+				originalApiMessages = structuredClone(parentApiMessages)
+
+				const ts = Date.now()
+				const existingUiResult = parentUiMessages.find(
+					(message) => message.say === "subtask_result" && message.subtaskResultChildId === childTaskId,
+				)
+				if (existingUiResult) existingUiResult.text = completionResultSummary
+				else {
+					parentUiMessages.push({
+						type: "say",
+						say: "subtask_result",
+						text: completionResultSummary,
+						ts,
+						subtaskResultChildId: childTaskId,
+					})
+				}
+
+				let toolUseId: string | undefined
+				for (let index = parentApiMessages.length - 1; index >= 0 && !toolUseId; index--) {
+					const message = parentApiMessages[index]
+					if (message.role !== "assistant" || !Array.isArray(message.content)) continue
+					toolUseId = message.content.find(
+						(block: any) => block.type === "tool_use" && block.name === "new_task",
+					)?.id
+				}
+				const resultText = `Subtask ${childTaskId} completed.\n\nResult:\n${completionResultSummary}`
+				if (toolUseId) {
+					let existingToolResult: any
+					for (let index = parentApiMessages.length - 1; index >= 0 && !existingToolResult; index--) {
+						const message = parentApiMessages[index]
+						if (message?.role !== "user" || !Array.isArray(message.content)) continue
+						existingToolResult = message.content.find(
+							(block: any) => block.type === "tool_result" && block.tool_use_id === toolUseId,
+						)
+					}
+					if (existingToolResult) existingToolResult.content = resultText
+					else {
+						parentApiMessages.push({
+							role: "user",
+							content: [{ type: "tool_result" as const, tool_use_id: toolUseId, content: resultText }],
+							ts,
+						})
+					}
+					const lastMessage = parentApiMessages.at(-1)
+					if (lastMessage?.role === "user") {
+						parentApiMessages[parentApiMessages.length - 1] = validateAndFixToolResultIds(
+							lastMessage,
+							parentApiMessages.slice(0, -1),
+						)
+					}
+				} else if (
+					!parentApiMessages.some(
+						(message) =>
+							Array.isArray(message?.content) &&
+							message.content.some((block: any) => block?.type === "text" && block.text === resultText),
+					)
+				) {
+					parentApiMessages.push({ role: "user", content: [{ type: "text" as const, text: resultText }], ts })
+				}
+
+				if (hasPrecommitGuidance()) {
+					throw new Error("Queued user guidance arrived before the delegated child handoff was persisted")
+				}
+				transcriptsTouched = true
+				await saveTaskMessages({ messages: parentUiMessages, taskId: parentTaskId, globalStoragePath })
+				await saveApiMessages({ messages: parentApiMessages as any, taskId: parentTaskId, globalStoragePath })
+
+				const updatedHistory: typeof historyItem = {
+					...historyItem,
+					status: "active",
+					completedByChildId: childTaskId,
+					completionResultSummary,
+					awaitingChildId: undefined,
+					childIds: Array.from(new Set([...(historyItem.childIds ?? []), childTaskId])),
+				}
+				await this.updateTaskHistory(updatedHistory)
+				parentHistoryCommitted = true
+				parentInstance = await this.createTaskWithHistoryItem(updatedHistory, {
+					startTask: false,
+					preserveExisting: true,
+					background: true,
+				})
+				if (!parentInstance) throw new Error(`Unable to stage delegated parent ${parentTaskId}`)
+
+				try {
+					await parentInstance.overwriteClineMessages?.(parentUiMessages)
+				} catch (error) {
+					this.log?.(
+						`[reopenParentFromDelegation] Parent UI refresh will recover from disk: ${String(error)}`,
+					)
+				}
+				try {
+					await parentInstance.overwriteApiConversationHistory?.(parentApiMessages as any)
+				} catch (error) {
+					this.log?.(
+						`[reopenParentFromDelegation] Parent API refresh will recover from disk: ${String(error)}`,
+					)
+				}
+				if (hasPrecommitGuidance()) {
+					throw new Error("Queued user guidance arrived before the delegated child handoff committed")
+				}
+
+				handoff.phase = "committing"
+				if (liveChild) {
+					await this.removeClineFromStack({
+						taskId: childTaskId,
+						skipDelegationRepair: true,
+						requireAbortSuccess: true,
+					})
+				}
+				childRemoved = true
+				handoff.forwardToTaskId = parentTaskId
+			} catch (error) {
+				const rollbackErrors: unknown[] = []
+				if (parentInstance) {
+					try {
+						await this.removeClineFromStack({
+							taskId: parentTaskId,
+							skipDelegationRepair: true,
+							requireAbortSuccess: true,
+						})
+					} catch (rollbackError) {
+						rollbackErrors.push(rollbackError)
+					}
+				}
+				if (parentHistoryCommitted) {
+					try {
+						await this.updateTaskHistory(originalParentHistory)
+					} catch (rollbackError) {
+						rollbackErrors.push(rollbackError)
+					}
+				}
+				if (transcriptsTouched) {
+					try {
+						await restoreTranscripts()
+					} catch (rollbackError) {
+						rollbackErrors.push(rollbackError)
+					}
+				}
+				if (rollbackErrors.length > 0) {
+					throw new AggregateError(
+						[error, ...rollbackErrors],
+						`Delegated child ${childTaskId} handoff failed and could not be fully restored`,
+					)
+				}
+				throw error
 			}
 
-			// Auto-resume parent without ask("resume_task")
-			await parentInstance.resumeAfterDelegation()
-		}
+			// The parent and its result are now durable and live. Any remaining
+			// persistence/resume issue is recoverable from that parent, so it must not
+			// tell the child to roll back its already-committed completion tool_result.
+			try {
+				let childStatusSaved = false
+				let childStatusError: unknown
+				for (const retryDelayMs of [0, 50, 200]) {
+					if (retryDelayMs > 0) await delay(retryDelayMs)
+					try {
+						const { historyItem: childHistory } = await this.getTaskWithId(childTaskId)
+						await this.updateTaskHistory({ ...childHistory, status: "completed" })
+						childStatusSaved = true
+						break
+					} catch (error) {
+						childStatusError = error
+					}
+				}
+				if (!childStatusSaved && !isMatchingCommittedRetry) {
+					this.log?.(
+						`[reopenParentFromDelegation] Parent committed but child status repair failed: ${String(childStatusError)}`,
+					)
+				}
 
-		// 9) Emit TaskDelegationResumed (provider-level)
-		try {
-			this.emit(RooCodeEventName.TaskDelegationResumed, parentTaskId, childTaskId)
-		} catch {
-			// non-fatal
+				for (const message of handoff.messages.splice(0)) {
+					parentInstance!.messageQueueService?.addMessage(message.text, message.images)
+				}
+				if (childWasOnScreen && typeof this.focusTask === "function") await this.focusTask(parentTaskId)
+				this.emit(RooCodeEventName.TaskDelegationCompleted, parentTaskId, childTaskId, completionResultSummary)
+				await parentInstance!.resumeAfterDelegation()
+				this.emit(RooCodeEventName.TaskDelegationResumed, parentTaskId, childTaskId)
+			} catch (error) {
+				this.log?.(
+					`[reopenParentFromDelegation] Parent ${parentTaskId} is durably recoverable but automatic resume failed: ${error instanceof Error ? error.message : String(error)}`,
+				)
+				await parentInstance
+					?.say?.(
+						"error",
+						"The delegated result was saved, but automatic parent resume failed. Reopen this task to continue.",
+					)
+					.catch(() => undefined)
+			}
+		} finally {
+			liveChild?.messageQueueService?.off?.("stateChanged", onChildQueueChanged)
+			handoffBuffers.delete(childTaskId)
+			const getLiveTask = typeof this.getLiveTask === "function" ? this.getLiveTask.bind(this) : undefined
+			const destination = childRemoved
+				? (getLiveTask?.(parentTaskId) ?? parentInstance)
+				: (getLiveTask?.(childTaskId) ?? liveChild)
+			for (const message of handoff.messages.splice(0)) {
+				destination?.messageQueueService?.addMessage(message.text, message.images)
+			}
 		}
 	}
 

@@ -45,7 +45,7 @@ vi.mock("fs/promises")
 
 import * as vscode from "vscode"
 
-import { ModeConfig } from "@alpha-code/types"
+import { ModeConfig, PLAN_MODE_INSTRUCTIONS } from "@alpha-code/types"
 
 import { SYSTEM_PROMPT } from "../system"
 import { McpHub } from "../../../services/mcp/McpHub"
@@ -632,7 +632,7 @@ describe("SYSTEM_PROMPT", () => {
 		expect(prompt.indexOf(defaultMode.roleDefinition)).toBeLessThan(prompt.indexOf("TOOL USE"))
 	})
 
-	it("should exclude the embedded update_todo_list catalog in Plan when todoListEnabled is false", async () => {
+	it("keeps legacy todo settings from restoring todo management in Plan", async () => {
 		const settings = {
 			todoListEnabled: false,
 			useAgentRules: true,
@@ -655,18 +655,70 @@ describe("SYSTEM_PROMPT", () => {
 			settings, // settings
 		)
 
-		// Should not contain the tool description
 		expect(prompt).not.toContain("## update_todo_list")
-		// Mode instructions will still reference the tool with a fallback to markdown
+		expect(prompt).not.toContain("use the `update_todo_list` tool")
+		expect(prompt).toContain("Do not use a todo-management tool as the plan")
 	})
 
-	it("should keep Plan's update_todo_list reference when todoListEnabled is true", async () => {
+	it("keeps the strict Plan contract canonical despite persisted prompt overrides", async () => {
+		const customModePrompts = {
+			[planModeSlug]: {
+				roleDefinition: "Custom planner",
+				customInstructions: "Legacy override: edit a plan file and ask for approval.",
+			},
+		}
+
+		const prompt = await SYSTEM_PROMPT(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			planModeSlug,
+			customModePrompts,
+			undefined,
+			undefined,
+			experiments,
+		)
+
+		expect(prompt).not.toContain("Legacy override: edit a plan file and ask for approval.")
+		expect(prompt).not.toContain("Custom planner")
+		expect(prompt.trim().endsWith(PLAN_MODE_INSTRUCTIONS)).toBe(true)
+		expect(prompt).toContain("non-mutating repository inspection only")
+		expect(prompt).toContain("host-classified inspection or verification commands")
+		expect(prompt).toContain("exactly one non-empty <proposed_plan> block")
+		expect(prompt).not.toContain("You have access to tools that let you execute CLI commands")
+		expect(prompt.split("\n").some((line) => line.startsWith("\t"))).toBe(false)
+	})
+
+	it("keeps Plan independent of the legacy todo-enabled setting", async () => {
 		const settings = {
 			todoListEnabled: true,
 			useAgentRules: true,
 			newTaskRequireTodos: false,
 		}
 
+		const prompt = await SYSTEM_PROMPT(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			planModeSlug,
+			undefined,
+			undefined,
+			undefined,
+			experiments,
+			undefined,
+			undefined,
+			settings,
+		)
+
+		expect(prompt).not.toContain("## update_todo_list")
+		expect(prompt).not.toContain("use the `update_todo_list` tool")
+	})
+
+	it("keeps Plan independent of an unspecified todo-enabled setting", async () => {
 		const prompt = await SYSTEM_PROMPT(
 			mockContext,
 			"/test/path",
@@ -680,39 +732,10 @@ describe("SYSTEM_PROMPT", () => {
 			experiments,
 			undefined, // language
 			undefined, // rooIgnoreInstructions
-			settings, // settings
+			undefined, // settings
 		)
 
-		// update_todo_list is still referenced by mode instructions, but tool catalogs are not embedded.
-		expect(prompt).toContain("update_todo_list")
-		expect(prompt).not.toContain("## update_todo_list")
-	})
-
-	it("should include update_todo_list tool when todoListEnabled is undefined", async () => {
-		const settings = {
-			todoListEnabled: true,
-			useAgentRules: true,
-			newTaskRequireTodos: false,
-		}
-
-		const prompt = await SYSTEM_PROMPT(
-			mockContext,
-			"/test/path",
-			false,
-			undefined, // mcpHub
-			undefined, // diffStrategy
-			planModeSlug, // mode
-			undefined, // customModePrompts
-			undefined, // customModes
-			undefined, // globalCustomInstructions
-			experiments,
-			undefined, // language
-			undefined, // rooIgnoreInstructions
-			settings, // settings
-		)
-
-		// update_todo_list is still referenced by mode instructions, but tool catalogs are not embedded.
-		expect(prompt).toContain("update_todo_list")
+		expect(prompt).not.toContain("use the `update_todo_list` tool")
 		expect(prompt).not.toContain("## update_todo_list")
 	})
 

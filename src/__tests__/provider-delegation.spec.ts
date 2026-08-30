@@ -10,6 +10,7 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 		const parentTask = {
 			taskId: "parent-1",
 			emit: vi.fn(),
+			flushPendingToolResultsToHistory: vi.fn().mockResolvedValue(true),
 			getTaskApiConfigName: vi.fn().mockResolvedValue("profile-1"),
 			apiConfiguration: { apiProvider: "anthropic" },
 		} as any
@@ -115,6 +116,7 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 		const parentTask = {
 			taskId: "parent-1",
 			emit: vi.fn(),
+			flushPendingToolResultsToHistory: vi.fn().mockResolvedValue(true),
 			getTaskApiConfigName: vi.fn().mockResolvedValue("profile-1"),
 			apiConfiguration: { apiProvider: "anthropic" },
 		} as any
@@ -170,6 +172,7 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 		const parentTask = {
 			taskId: "parent-1",
 			emit: vi.fn(),
+			flushPendingToolResultsToHistory: vi.fn().mockResolvedValue(true),
 			getTaskApiConfigName: vi.fn().mockResolvedValue("profile-1"),
 			apiConfiguration: { apiProvider: "anthropic" },
 		} as any

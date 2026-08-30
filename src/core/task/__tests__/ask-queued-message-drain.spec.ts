@@ -1,4 +1,5 @@
 import { Task } from "../Task"
+import { createSubagentCommandApprovalPolicy } from "../../auto-approval/commands"
 
 // Keep this test focused: if a queued message arrives while Task.ask() is blocked,
 // it should be consumed and used to fulfill the ask.
@@ -25,6 +26,91 @@ describe("Task.ask queued message drain", () => {
 		;(task as any).providerRef = { deref: () => undefined }
 		return task
 	}
+
+	const inheritedCommandPolicy = {
+		autoApprovalEnabled: true,
+		alwaysAllowReadOnly: true,
+		alwaysAllowReadOnlyOutsideWorkspace: false,
+		alwaysAllowWrite: true,
+		alwaysAllowWriteOutsideWorkspace: false,
+		alwaysAllowWriteProtected: false,
+		alwaysAllowExecute: true,
+		alwaysAllowSubagents: true,
+		commandApproval: createSubagentCommandApprovalPolicy(["git"], ["git push"], "7".repeat(64)),
+	}
+
+	it("uses the inherited command policy for a managed child", async () => {
+		const task = await createAskOnlyTask()
+		;(task as any).taskKind = "subagent"
+		;(task as any).subagentContextManifest = { runtimePolicy: { autoApproval: inheritedCommandPolicy } }
+		;(task as any).providerRef = {
+			deref: () => ({
+				getState: vi.fn(async () => ({
+					...inheritedCommandPolicy,
+					allowedCommands: ["*"],
+					deniedCommands: [],
+				})),
+				isTaskOnScreen: vi.fn(() => true),
+			}),
+		}
+
+		await expect(task.ask("command", "git diff", false)).resolves.toMatchObject({
+			response: "yesButtonClicked",
+		})
+	})
+
+	it("does not let wider live settings exceed a managed child's inherited command policy", async () => {
+		const task = await createAskOnlyTask()
+		;(task as any).taskKind = "subagent"
+		;(task as any).subagentContextManifest = { runtimePolicy: { autoApproval: inheritedCommandPolicy } }
+		;(task as any).providerRef = {
+			deref: () => ({
+				getState: vi.fn(async () => ({
+					...inheritedCommandPolicy,
+					allowedCommands: ["*"],
+					deniedCommands: [],
+				})),
+				isTaskOnScreen: vi.fn(() => true),
+			}),
+		}
+
+		const askPromise = task.ask("command", "pnpm test", false)
+		setTimeout(() => {
+			;(task as any).handleWebviewAskResponse("messageResponse", "manual approval required")
+		}, 0)
+
+		await expect(askPromise).resolves.toMatchObject({
+			response: "messageResponse",
+			text: "manual approval required",
+		})
+	})
+
+	it("fails closed for a retained managed child without a captured approval ceiling", async () => {
+		const task = await createAskOnlyTask()
+		;(task as any).taskKind = "subagent"
+		;(task as any).subagentContextManifest = { runtimePolicy: {} }
+		;(task as any).providerRef = {
+			deref: () => ({
+				getState: vi.fn(async () => ({
+					autoApprovalEnabled: true,
+					alwaysAllowExecute: true,
+					allowedCommands: ["*"],
+					deniedCommands: [],
+				})),
+				isTaskOnScreen: vi.fn(() => true),
+			}),
+		}
+
+		const askPromise = task.ask("command", "pnpm test", false)
+		setTimeout(() => {
+			;(task as any).handleWebviewAskResponse("messageResponse", "legacy child requires approval")
+		}, 0)
+
+		await expect(askPromise).resolves.toMatchObject({
+			response: "messageResponse",
+			text: "legacy child requires approval",
+		})
+	})
 
 	it.each(["followup", "tool", "command"] as const)(
 		"does not consume queued messages while blocked on %s ask",

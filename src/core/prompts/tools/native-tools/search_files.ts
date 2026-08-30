@@ -27,6 +27,12 @@ const REGEX_PARAMETER_DESCRIPTION = `Rust-compatible regular expression pattern 
 
 const FILE_PATTERN_PARAMETER_DESCRIPTION = `Optional glob to limit which files are searched (e.g., *.ts)`
 
+const SEARCH_FILES_INPUT_LIMITS = {
+	path: 4_096,
+	regex: 8_192,
+	filePattern: 2_048,
+} as const
+
 export default {
 	type: "function",
 	function: {
@@ -46,14 +52,17 @@ export default {
 						properties: {
 							path: {
 								type: "string",
+								maxLength: SEARCH_FILES_INPUT_LIMITS.path,
 								description: PATH_PARAMETER_DESCRIPTION,
 							},
 							regex: {
 								type: "string",
+								maxLength: SEARCH_FILES_INPUT_LIMITS.regex,
 								description: REGEX_PARAMETER_DESCRIPTION,
 							},
 							file_pattern: {
 								type: ["string", "null"],
+								maxLength: SEARCH_FILES_INPUT_LIMITS.filePattern,
 								description: FILE_PATTERN_PARAMETER_DESCRIPTION,
 							},
 						},
@@ -63,14 +72,17 @@ export default {
 				},
 				path: {
 					type: "string",
+					maxLength: SEARCH_FILES_INPUT_LIMITS.path,
 					description: PATH_PARAMETER_DESCRIPTION,
 				},
 				regex: {
 					type: "string",
+					maxLength: SEARCH_FILES_INPUT_LIMITS.regex,
 					description: REGEX_PARAMETER_DESCRIPTION,
 				},
 				file_pattern: {
 					type: ["string", "null"],
+					maxLength: SEARCH_FILES_INPUT_LIMITS.filePattern,
 					description: FILE_PATTERN_PARAMETER_DESCRIPTION,
 				},
 			},

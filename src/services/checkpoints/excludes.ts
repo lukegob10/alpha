@@ -13,6 +13,7 @@ const getBuildArtifactPatterns = () => [
 	".sass-cache/",
 	".terraform/",
 	".terragrunt-cache/",
+	".venv/",
 	".vs/",
 	".vscode/",
 	"Pods/",

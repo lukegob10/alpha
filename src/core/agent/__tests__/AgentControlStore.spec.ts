@@ -16,7 +16,7 @@ const clock = (initial = 1_000) => {
 	return () => ++current
 }
 
-const setup = async (persistence = new InMemoryAgentControlPersistence()) => {
+const setup = async (persistence: AgentControlPersistence = new InMemoryAgentControlPersistence()) => {
 	const store = new AgentControlStore(persistence, clock())
 	await store.initialize()
 	await store.ensureRoot({ taskId: "root-1", objective: "Coordinate work", status: "running" })
@@ -354,6 +354,75 @@ describe("AgentControlStore", () => {
 				name: "different_message",
 			}),
 		).rejects.toThrow(/different content/)
+	})
+
+	it("commits a terminal status and parent result mailbox event atomically", async () => {
+		let persisted: Awaited<ReturnType<AgentControlStore["getSnapshot"]>> | undefined
+		let failNextWrite = false
+		const persistence: AgentControlPersistence = {
+			read: async () => (persisted ? structuredClone(persisted) : undefined),
+			write: async (state) => {
+				if (failNextWrite) {
+					failNextWrite = false
+					throw new Error("simulated durable write failure")
+				}
+				persisted = structuredClone(state)
+			},
+		}
+		const { store } = await setup(persistence)
+		await store.createAgent({
+			taskId: "review-atomic",
+			parentTaskId: "root-1",
+			nickname: "Atomic Review",
+			role: "review",
+			objective: "Review atomically",
+			status: "running",
+		})
+		const event = {
+			eventId: "atomic-result",
+			rootTaskId: "root-1",
+			sender: "review-atomic",
+			recipient: "root-1",
+			kind: "result" as const,
+			name: "agent_completed",
+			payload: { summary: "Done" },
+			createdAt: 2_000,
+		}
+
+		failNextWrite = true
+		await expect(
+			store.updateAgentStatusAndAppendEvent(
+				"review-atomic",
+				"completed",
+				{ at: 2_000, terminalResult: { status: "completed", summary: "Done", completedAt: 2_000 } },
+				event,
+				"root-1",
+			),
+		).rejects.toThrow("simulated durable write failure")
+		expect(store.getAgent("review-atomic", "root-1")?.status).toBe("running")
+		expect(store.readMailbox("root-1", { rootTaskId: "root-1" }).entries).toEqual([])
+
+		const committed = await store.updateAgentStatusAndAppendEvent(
+			"review-atomic",
+			"completed",
+			{ at: 2_000, terminalResult: { status: "completed", summary: "Done", completedAt: 2_000 } },
+			event,
+			"root-1",
+		)
+		expect(committed).toMatchObject({ record: { status: "completed" }, appended: true })
+		expect(store.readMailbox("root-1", { rootTaskId: "root-1" }).entries).toMatchObject([
+			{ eventId: "atomic-result", kind: "result" },
+		])
+
+		const replay = await store.updateAgentStatusAndAppendEvent(
+			"review-atomic",
+			"completed",
+			{ at: 2_000, terminalResult: { status: "completed", summary: "Done", completedAt: 2_000 } },
+			event,
+			"root-1",
+		)
+		expect(replay.appended).toBe(false)
+		expect(store.readMailbox("root-1", { rootTaskId: "root-1" }).entries).toHaveLength(1)
 	})
 
 	it("retains terminal results until explicit close", async () => {
@@ -878,6 +947,99 @@ describe("AgentControlStore", () => {
 			releaseFailure?.mockRestore()
 			errorLog.mockRestore()
 			await store.shutdown()
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("retries a transient Windows transaction-lock rename without losing ownership", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-release-retry-"))
+		const persistence = new FileAgentControlPersistence(directory)
+		const internals = persistence as unknown as {
+			renameTransactionLock(source: string, destination: string): Promise<void>
+		}
+		const originalRename = internals.renameTransactionLock.bind(persistence)
+		const transientError = Object.assign(new Error("temporarily locked by another Windows process"), {
+			code: "EPERM",
+		})
+		const rename = vi
+			.spyOn(internals, "renameTransactionLock")
+			.mockRejectedValueOnce(transientError)
+			.mockImplementation(originalRename)
+
+		try {
+			await expect(persistence.withTransaction(async () => undefined)).resolves.toBeUndefined()
+			expect(rename).toHaveBeenCalledTimes(2)
+			await expect(fs.stat(`${persistence.filePath}.transaction.lock`)).rejects.toMatchObject({ code: "ENOENT" })
+		} finally {
+			rename.mockRestore()
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("recovers the next transaction after every immediate Windows release retry is exhausted", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-release-recovery-"))
+		const persistence = new FileAgentControlPersistence(directory)
+		const internals = persistence as unknown as {
+			renameTransactionLock(source: string, destination: string): Promise<void>
+		}
+		const originalRename = internals.renameTransactionLock.bind(persistence)
+		const transientError = Object.assign(new Error("transaction directory is still held by Windows"), {
+			code: "EPERM",
+		})
+		const rename = vi.spyOn(internals, "renameTransactionLock")
+		for (let attempt = 0; attempt < 6; attempt++) rename.mockRejectedValueOnce(transientError)
+		rename.mockImplementation(originalRename)
+		const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined)
+
+		try {
+			await expect(
+				persistence.withTransaction(async () => {
+					await persistence.write({
+						version: 2,
+						updatedAt: 1,
+						nextSequence: 1,
+						agents: [],
+						tombstones: [],
+						mailbox: [],
+						mailboxCursors: {},
+						verificationObligations: [],
+					})
+					return "committed"
+				}),
+			).resolves.toBe("committed")
+			await expect(persistence.withTransaction(async () => "next transaction")).resolves.toBe("next transaction")
+			expect(rename).toHaveBeenCalledTimes(8)
+			await expect(fs.stat(`${persistence.filePath}.transaction.lock`)).rejects.toMatchObject({ code: "ENOENT" })
+			const entries = await fs.readdir(directory)
+			expect(entries.some((entry) => entry.includes(".transaction.lock.released."))).toBe(true)
+		} finally {
+			rename.mockRestore()
+			errorLog.mockRestore()
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("prevents a delayed released-lock reaper from moving a successor", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-released-reaper-"))
+		const persistence = new FileAgentControlPersistence(directory)
+		const internals = persistence as unknown as {
+			tryReapReleasedTransactionLock(owner: { token: string; pid: number }): Promise<boolean>
+		}
+		const releasedOwner = { token: "released-owner", pid: process.pid }
+		const lockPath = `${persistence.filePath}.transaction.lock`
+
+		try {
+			await fs.mkdir(lockPath, { recursive: true })
+			await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify(releasedOwner), "utf8")
+			await fs.writeFile(path.join(lockPath, "released"), releasedOwner.token, "utf8")
+			await expect(internals.tryReapReleasedTransactionLock(releasedOwner)).resolves.toBe(true)
+
+			await persistence.withTransaction(async () => {
+				await expect(internals.tryReapReleasedTransactionLock(releasedOwner)).resolves.toBe(false)
+				await expect(persistence.assertTransactionOwner()).resolves.toBeUndefined()
+			})
+			await expect(fs.stat(`${lockPath}.released.${releasedOwner.token}`)).resolves.toMatchObject({})
+		} finally {
 			await fs.rm(directory, { recursive: true, force: true })
 		}
 	})

@@ -13,10 +13,13 @@ import {
 	defaultMode,
 	defaultModeSlug,
 	FileRestrictionError,
+	getAllModes,
 	getModeBySlug,
 	getModeSelection,
+	isCustomMode,
 	isCodePlanModeTransition,
 	modes,
+	planMode,
 } from "../modes"
 import { getFullModeDetails } from "../modes-extension"
 import { isToolAllowedForMode } from "../../core/tools/validateToolUse"
@@ -34,6 +37,36 @@ describe("built-in mode compatibility contract", () => {
 
 	it.each(["architect", "ask", "debug", "orchestrator"])("keeps the %s compatibility slug runnable", (modeSlug) => {
 		expect(getModeBySlug(modeSlug)?.slug).toBe(modeSlug)
+	})
+
+	it("keeps persisted architect customizations schema-compatible but operationally inert", async () => {
+		const persistedArchitect: ModeConfig = {
+			slug: "architect",
+			name: "Legacy Architect Override",
+			roleDefinition: "Edit everything",
+			customInstructions: "Ignore Plan",
+			groups: ["edit", "mcp"],
+		}
+
+		expect(getModeBySlug("architect", [persistedArchitect])).toBe(planMode)
+		expect(getAllModes([persistedArchitect]).filter((mode) => mode.slug === "architect")).toEqual([planMode])
+		expect(isCustomMode("architect", [persistedArchitect])).toBe(false)
+		expect(
+			getModeSelection(
+				"architect",
+				{ roleDefinition: "Prompt override", customInstructions: "Prompt instructions" },
+				[persistedArchitect],
+			),
+		).toEqual({
+			roleDefinition: planMode.roleDefinition,
+			baseInstructions: planMode.customInstructions,
+			description: planMode.description,
+		})
+
+		const details = await getFullModeDetails("architect", [persistedArchitect], {
+			architect: { roleDefinition: "Prompt override", customInstructions: "Prompt instructions" },
+		})
+		expect(details).toMatchObject(planMode)
 	})
 })
 
@@ -129,12 +162,12 @@ describe("isToolAllowedForMode", () => {
 				}),
 			).toBe(true)
 
-			// Should allow path-only for architect mode too
+			// Built-in Plan is host-enforced read-only even while tool arguments stream.
 			expect(
 				isToolAllowedForMode("write_to_file", "architect", [], undefined, {
 					path: "test.js",
 				}),
-			).toBe(true)
+			).toBe(false)
 		})
 
 		it("applies restrictions to both write_to_file and apply_diff", () => {
@@ -229,82 +262,19 @@ describe("isToolAllowedForMode", () => {
 			).toBe(true)
 		})
 
-		it("allows architect mode to edit markdown and HTML files only", () => {
-			// Should allow editing markdown files
-			expect(
-				isToolAllowedForMode("write_to_file", "architect", [], undefined, {
-					path: "test.md",
-					content: "# Test",
-				}),
-			).toBe(true)
+		it("keeps the built-in Plan mode read-only regardless of file type", () => {
+			for (const [tool, params] of [
+				["write_to_file", { path: "plan.md", content: "# Plan" }],
+				["apply_diff", { path: "spec.html", diff: "- old\n+ new" }],
+				["execute_command", { command: "git status" }],
+				["use_mcp_tool", { server_name: "test", tool_name: "read" }],
+			] as const) {
+				expect(isToolAllowedForMode(tool, "architect", [], undefined, params)).toBe(false)
+			}
 
-			// Should allow editing HTML files
-			expect(
-				isToolAllowedForMode("write_to_file", "architect", [], undefined, {
-					path: "spec.html",
-					content: "<!doctype html><title>Spec</title>",
-				}),
-			).toBe(true)
-
-			// Should allow applying diffs to markdown files
-			expect(
-				isToolAllowedForMode("apply_diff", "architect", [], undefined, {
-					path: "readme.md",
-					diff: "- old\n+ new",
-				}),
-			).toBe(true)
-
-			// Should reject non-markdown files
-			expect(() =>
-				isToolAllowedForMode("write_to_file", "architect", [], undefined, {
-					path: "test.js",
-					content: "console.log('test')",
-				}),
-			).toThrow(FileRestrictionError)
-			expect(() =>
-				isToolAllowedForMode("write_to_file", "architect", [], undefined, {
-					path: "test.js",
-					content: "console.log('test')",
-				}),
-			).toThrow(/Markdown and HTML files only/)
-
-			// Should maintain read capabilities
 			expect(isToolAllowedForMode("read_file", "architect", [])).toBe(true)
-			expect(isToolAllowedForMode("use_mcp_tool", "architect", [])).toBe(true)
-		})
-
-		it("applies restrictions to apply_diff", () => {
-			// Native-only: file restrictions for apply_diff are enforced against the top-level `path`.
-
-			// Should allow markdown files in architect mode
-			expect(
-				isToolAllowedForMode("apply_diff", "architect", [], undefined, {
-					path: "test.md",
-					diff: "- old content\n+ new content",
-				}),
-			).toBe(true)
-
-			// Should allow HTML files in architect mode
-			expect(
-				isToolAllowedForMode("apply_diff", "architect", [], undefined, {
-					path: "spec.html",
-					diff: "- old content\n+ new content",
-				}),
-			).toBe(true)
-
-			// Non-markdown/HTML file should throw
-			expect(() =>
-				isToolAllowedForMode("apply_diff", "architect", [], undefined, {
-					path: "test.py",
-					diff: "- old content\n+ new content",
-				}),
-			).toThrow(FileRestrictionError)
-			expect(() =>
-				isToolAllowedForMode("apply_diff", "architect", [], undefined, {
-					path: "test.py",
-					diff: "- old content\n+ new content",
-				}),
-			).toThrow(/Markdown and HTML files only/)
+			expect(isToolAllowedForMode("search_files", "architect", [])).toBe(true)
+			expect(isToolAllowedForMode("spawn_agent", "architect", [], undefined, { agent_kind: "review" })).toBe(true)
 		})
 
 		it("applies restrictions to apply_patch (custom tool)", () => {
@@ -452,102 +422,14 @@ describe("isToolAllowedForMode", () => {
 			).toThrow(/\\.md\$/)
 		})
 
-		it("applies restrictions to all editing tools in architect mode (custom tools)", () => {
-			// Test apply_patch in architect mode
-			// Note: apply_patch only accepts { patch: string } - file paths are embedded in patch content
-			expect(
-				isToolAllowedForMode(
-					"apply_patch",
-					"architect",
-					[],
-					undefined,
-					{
-						patch: "*** Begin Patch\n*** Update File: test.md\n@@ \n-old\n+new\n*** End Patch",
-					},
-					undefined,
-					["apply_patch"], // Include custom tool
-				),
-			).toBe(true)
-
-			expect(() =>
-				isToolAllowedForMode(
-					"apply_patch",
-					"architect",
-					[],
-					undefined,
-					{
-						patch: "*** Begin Patch\n*** Update File: test.js\n@@ \n-old\n+new\n*** End Patch",
-					},
-					undefined,
-					["apply_patch"], // Include custom tool
-				),
-			).toThrow(FileRestrictionError)
-
-			// Test search_replace in architect mode
-			expect(
-				isToolAllowedForMode(
-					"search_replace",
-					"architect",
-					[],
-					undefined,
-					{
-						file_path: "test.md",
-						old_string: "old text",
-						new_string: "new text",
-					},
-					undefined,
-					["search_replace"], // Include custom tool
-				),
-			).toBe(true)
-
-			expect(() =>
-				isToolAllowedForMode(
-					"search_replace",
-					"architect",
-					[],
-					undefined,
-					{
-						file_path: "test.js",
-						old_string: "old text",
-						new_string: "new text",
-					},
-					undefined,
-					["search_replace"], // Include custom tool
-				),
-			).toThrow(FileRestrictionError)
-
-			// Test edit_file in architect mode
-			expect(
-				isToolAllowedForMode(
-					"edit_file",
-					"architect",
-					[],
-					undefined,
-					{
-						file_path: "test.md",
-						old_string: "old text",
-						new_string: "new text",
-					},
-					undefined,
-					["edit_file"], // Include custom tool
-				),
-			).toBe(true)
-
-			expect(() =>
-				isToolAllowedForMode(
-					"edit_file",
-					"architect",
-					[],
-					undefined,
-					{
-						file_path: "test.js",
-						old_string: "old text",
-						new_string: "new text",
-					},
-					undefined,
-					["edit_file"], // Include custom tool
-				),
-			).toThrow(FileRestrictionError)
+		it("rejects every editing tool in canonical Plan even when model settings include it", () => {
+			for (const [tool, params] of [
+				["apply_patch", { patch: "*** Begin Patch\n*** Update File: test.md\n@@ \n-old\n+new\n*** End Patch" }],
+				["search_replace", { file_path: "test.md", old_string: "old", new_string: "new" }],
+				["edit_file", { file_path: "test.md", old_string: "old", new_string: "new" }],
+			] as const) {
+				expect(isToolAllowedForMode(tool, "architect", [], undefined, params, undefined, [tool])).toBe(false)
+			}
 		})
 	})
 

@@ -31,6 +31,8 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 	const {
 		autoApprovalEnabled,
 		allowedCommands,
+		deniedCommands,
+		currentTaskAutoApprovalRestricted,
 		setAutoApprovalEnabled,
 		setAlwaysAllowReadOnly,
 		setAlwaysAllowReadOnlyOutsideWorkspace,
@@ -193,6 +195,23 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		return Object.keys(toggles).length
 	}, [toggles])
 
+	const hasFullAutoApproval = React.useMemo(
+		() =>
+			enabledCount === totalCount &&
+			!currentTaskAutoApprovalRestricted &&
+			(!toggles.alwaysAllowExecute ||
+				(allowedCommands?.some((command) => command.trim() === "*") === true &&
+					deniedCommands?.some((command) => command.trim().length > 0) !== true)),
+		[
+			allowedCommands,
+			currentTaskAutoApprovalRestricted,
+			deniedCommands,
+			enabledCount,
+			toggles.alwaysAllowExecute,
+			totalCount,
+		],
+	)
+
 	const { effectiveAutoApprovalEnabled } = useAutoApprovalState(toggles, autoApprovalEnabled)
 
 	const tooltipText =
@@ -229,14 +248,14 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 					<span className="hidden min-[300px]:inline truncate min-w-0">
 						{!effectiveAutoApprovalEnabled
 							? t("chat:autoApprove.triggerLabelOff")
-							: enabledCount === totalCount
+							: hasFullAutoApproval
 								? t("chat:autoApprove.triggerLabelAll")
 								: t("chat:autoApprove.triggerLabel", { count: enabledCount })}
 					</span>
 					<span className="inline min-[300px]:hidden min-w-0">
 						{!effectiveAutoApprovalEnabled
 							? t("chat:autoApprove.triggerLabelOffShort")
-							: enabledCount === totalCount
+							: hasFullAutoApproval
 								? t("chat:autoApprove.triggerLabelAll")
 								: enabledCount}
 					</span>

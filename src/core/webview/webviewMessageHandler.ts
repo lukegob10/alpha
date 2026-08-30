@@ -3317,12 +3317,10 @@ export const webviewMessageHandler = async (
 		 */
 
 		case "queueMessage": {
-			const task = getRequiredTaskForMessage(provider, message, "queueMessage")
-			if (!task) {
-				break
-			}
 			const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
-			task.messageQueueService.addMessage(resolved.text, resolved.images)
+			if (!provider.queueMessageForTask(message.taskId, resolved.text, resolved.images)) {
+				provider.log(`[webviewMessageHandler] Ignoring queueMessage: missing, terminal, or unknown taskId`)
+			}
 			break
 		}
 		case "removeQueuedMessage": {

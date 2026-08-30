@@ -58,6 +58,7 @@ describe("AutoApproveDropdown", () => {
 		mockState = {
 			autoApprovalEnabled: false,
 			allowedCommands: ["git"],
+			deniedCommands: [],
 			alwaysAllowReadOnly: false,
 			alwaysAllowReadOnlyOutsideWorkspace: false,
 			alwaysAllowWrite: false,
@@ -135,5 +136,80 @@ describe("AutoApproveDropdown", () => {
 			updatedSettings: { alwaysAllowSubagents: true },
 		})
 		expect(mockSetters.setAlwaysAllowSubagents).toHaveBeenCalledWith(true)
+	})
+
+	it("does not label a restricted command allowlist as full auto-approval", () => {
+		mockState = {
+			...mockState,
+			autoApprovalEnabled: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowReadOnlyOutsideWorkspace: true,
+			alwaysAllowWrite: true,
+			alwaysAllowWriteOutsideWorkspace: true,
+			alwaysAllowWriteProtected: true,
+			alwaysAllowExecute: true,
+			alwaysAllowMcp: true,
+			alwaysAllowModeSwitch: true,
+			alwaysAllowSubtasks: true,
+			alwaysAllowSubagents: true,
+			alwaysAllowFollowupQuestions: true,
+			allowedCommands: ["git diff", "git log"],
+		}
+
+		render(<AutoApproveDropdown />)
+
+		expect(screen.queryAllByText("chat:autoApprove.triggerLabelAll")).toHaveLength(0)
+		expect(screen.getAllByText("8 auto-approved").length).toBeGreaterThan(0)
+	})
+
+	it("does not label a wildcard with command denials as full auto-approval", () => {
+		mockState = {
+			...mockState,
+			autoApprovalEnabled: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowReadOnlyOutsideWorkspace: true,
+			alwaysAllowWrite: true,
+			alwaysAllowWriteOutsideWorkspace: true,
+			alwaysAllowWriteProtected: true,
+			alwaysAllowExecute: true,
+			alwaysAllowMcp: true,
+			alwaysAllowModeSwitch: true,
+			alwaysAllowSubtasks: true,
+			alwaysAllowSubagents: true,
+			alwaysAllowFollowupQuestions: true,
+			allowedCommands: ["*"],
+			deniedCommands: ["git push"],
+		}
+
+		render(<AutoApproveDropdown />)
+
+		expect(screen.queryAllByText("chat:autoApprove.triggerLabelAll")).toHaveLength(0)
+		expect(screen.getAllByText("8 auto-approved").length).toBeGreaterThan(0)
+	})
+
+	it("does not advertise global All while the visible child has a frozen approval cap", () => {
+		mockState = {
+			...mockState,
+			autoApprovalEnabled: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowReadOnlyOutsideWorkspace: true,
+			alwaysAllowWrite: true,
+			alwaysAllowWriteOutsideWorkspace: true,
+			alwaysAllowWriteProtected: true,
+			alwaysAllowExecute: true,
+			alwaysAllowMcp: true,
+			alwaysAllowModeSwitch: true,
+			alwaysAllowSubtasks: true,
+			alwaysAllowSubagents: true,
+			alwaysAllowFollowupQuestions: true,
+			allowedCommands: ["*"],
+			deniedCommands: [],
+			currentTaskAutoApprovalRestricted: true,
+		}
+
+		render(<AutoApproveDropdown />)
+
+		expect(screen.queryAllByText("chat:autoApprove.triggerLabelAll")).toHaveLength(0)
+		expect(screen.getAllByText("8 auto-approved").length).toBeGreaterThan(0)
 	})
 })

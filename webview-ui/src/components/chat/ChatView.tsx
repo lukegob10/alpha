@@ -20,6 +20,8 @@ import type {
 import { isRetiredProvider, TaskLifecycleState } from "@alpha-code/types"
 
 import { findLast } from "@alpha/array"
+import { planModeSlug } from "@alpha/modes"
+import { parsePlanModeCommand } from "@alpha/plan-mode"
 import { SuggestionItem } from "@alpha-code/types"
 import { combineApiRequests } from "@alpha/combineApiRequests"
 import { combineCommandSequences } from "@alpha/combineCommandSequences"
@@ -321,9 +323,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		// Only send cancel if there's actual input (user is typing)
 		// and we have a pending follow-up question
 		if (isFollowUpAutoApprovalPaused) {
-			vscode.postMessage({ type: "cancelAutoApproval" })
+			vscode.postMessage({ type: "cancelAutoApproval", ...visibleTaskPayload })
 		}
-	}, [isFollowUpAutoApprovalPaused])
+	}, [isFollowUpAutoApprovalPaused, visibleTaskPayload])
 
 	const isProfileDisabled = false
 
@@ -773,6 +775,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const handleSendMessage = useCallback(
 		(text: string, images: string[]) => {
 			text = text.trim()
+			const planCommand = parsePlanModeCommand(text)
 
 			if (!text && images.length === 0) {
 				return
@@ -807,6 +810,34 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			if (apiConfiguration?.apiProvider && isRetiredProvider(apiConfiguration.apiProvider)) {
 				setShowRetiredProviderWarning(true)
 				return
+			}
+
+			if (planCommand) {
+				const isPlanCommandUnavailable =
+					sendingDisabled ||
+					isStreaming ||
+					visibleMessageQueue.length > 0 ||
+					isLastFollowUpAnswered ||
+					clineAskRef.current === "command_output" ||
+					(clineAskRef.current !== undefined && approvalAskTypes.has(clineAskRef.current))
+
+				// Match the CLI contract: mode commands do not become queued user
+				// messages while the current turn or an approval boundary is active.
+				if (isPlanCommandUnavailable) return
+
+				if (!planCommand.prompt && images.length === 0) {
+					if (mode !== planModeSlug) {
+						setMode(planModeSlug)
+						vscode.postMessage({ type: "mode", text: planModeSlug })
+					}
+					setInputValue("")
+					setSelectedImages([])
+					return
+				}
+
+				// Keep `/plan` attached to the user message. The extension host parses
+				// and admits the mode transition before persisting or sending the turn,
+				// so a rejected Plan transition can never leak this prompt into Code.
 			}
 
 			const lastMessage = messagesRef.current.at(-1)
@@ -879,6 +910,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			startNewTask,
 			handleCondenseContext,
 			visibleCurrentTaskId,
+			mode,
+			setMode,
 		], // messagesRef and clineAskRef are stable
 	)
 

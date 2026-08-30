@@ -248,6 +248,7 @@ describe("flushPendingToolResultsToHistory", () => {
 			task: "test task",
 			startTask: false,
 		})
+		task.assistantMessageSavedToHistory = true
 
 		// Set up pending tool result in userMessageContent
 		task.userMessageContent = [
@@ -278,6 +279,7 @@ describe("flushPendingToolResultsToHistory", () => {
 			task: "test task",
 			startTask: false,
 		})
+		task.assistantMessageSavedToHistory = true
 
 		// Set up pending tool result
 		task.userMessageContent = [
@@ -301,6 +303,7 @@ describe("flushPendingToolResultsToHistory", () => {
 			task: "test task",
 			startTask: false,
 		})
+		task.assistantMessageSavedToHistory = true
 
 		// Set up multiple pending tool results
 		task.userMessageContent = [
@@ -333,6 +336,7 @@ describe("flushPendingToolResultsToHistory", () => {
 			task: "test task",
 			startTask: false,
 		})
+		task.assistantMessageSavedToHistory = true
 
 		const beforeTs = Date.now()
 
@@ -408,6 +412,9 @@ describe("flushPendingToolResultsToHistory", () => {
 
 		// Clear mock call history
 		mockPWaitFor.mockClear()
+		mockPWaitFor.mockImplementationOnce(async () => {
+			task.assistantMessageSavedToHistory = true
+		})
 
 		await task.flushPendingToolResultsToHistory()
 

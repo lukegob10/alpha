@@ -26,7 +26,6 @@ export interface AttemptCompletionCallbacks extends ToolCallbacks {
  */
 interface DelegationProvider {
 	getTaskWithId(id: string): Promise<{ historyItem: HistoryItem }>
-	getParentCompletionDecision?(task: Task): Promise<{ allowed: boolean; message?: string }>
 	reopenParentFromDelegation(params: {
 		parentTaskId: string
 		childTaskId: string
@@ -39,7 +38,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 
 	async execute(params: AttemptCompletionParams, task: Task, callbacks: AttemptCompletionCallbacks): Promise<void> {
 		const { result, outcome } = params
-		const { handleError, pushToolResult, askFinishSubTaskApproval } = callbacks
+		const { handleError, pushToolResult, askFinishSubTaskApproval, toolCallId } = callbacks
 
 		// Prevent attempt_completion if any tool failed in the current turn
 		if (task.didToolFailInCurrentTurn) {
@@ -99,8 +98,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 					return
 				}
 				task.subagentCompletionOutcome = outcome === "blocked" ? "blocked" : "completed"
-				pushToolResult("")
-				await this.emitTaskCompleted(task)
+				await this.commitAcceptedCompletion(task, pushToolResult, toolCallId)
 				return
 			}
 
@@ -109,47 +107,50 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				// Check if this subtask has already completed and returned to parent
 				// to prevent duplicate tool_results when user revisits from history
 				const provider = task.providerRef.deref() as DelegationProvider | undefined
-				if (provider) {
-					try {
-						const { historyItem } = await provider.getTaskWithId(task.taskId)
-						const status = historyItem?.status
+				if (!provider) {
+					await this.rejectLegacyParentReturn(
+						task,
+						pushToolResult,
+						"Cannot finish the delegated child because its parent handoff provider is unavailable.",
+					)
+					return
+				}
 
-						if (status === "completed") {
-							// Subtask already completed - skip delegation flow entirely
-							// Fall through to normal completion ask flow below (outside this if block)
-							// This shows the user the completion result and waits for acceptance
-							// without injecting another tool_result to the parent
-						} else if (status === "active") {
-							// Normal subtask completion - do delegation
-							const delegation = await this.delegateToParent(
-								task,
-								result,
-								provider,
-								askFinishSubTaskApproval,
-								pushToolResult,
-							)
-							if (delegation === "delegated") {
-								await this.emitTaskCompleted(task)
-							}
-							if (delegation !== "continue") return
-						} else {
-							// Unexpected status (undefined or "delegated") - log error and skip delegation
-							// undefined indicates a bug in status persistence during child creation
-							// "delegated" would mean this child has its own grandchild pending (shouldn't reach attempt_completion)
-							console.error(
-								`[AttemptCompletionTool] Unexpected child task status "${status}" for task ${task.taskId}. ` +
-									`Expected "active" or "completed". Skipping delegation to prevent data corruption.`,
-							)
-							// Fall through to normal completion ask flow
-						}
-					} catch (err) {
-						// If we can't get the history, log error and skip delegation
-						console.error(
-							`[AttemptCompletionTool] Failed to get history for task ${task.taskId}: ${(err as Error)?.message ?? String(err)}. ` +
-								`Skipping delegation.`,
+				try {
+					const { historyItem } = await provider.getTaskWithId(task.taskId)
+					const status = historyItem?.status
+
+					if (status === "completed") {
+						// A completed historical child may show its result for review
+						// without reopening the parent a second time.
+					} else if (status === "active") {
+						const delegation = await this.delegateToParent(
+							task,
+							result,
+							provider,
+							askFinishSubTaskApproval,
+							pushToolResult,
+							toolCallId,
 						)
-						// Fall through to normal completion ask flow
+						if (delegation === "delegated") {
+							return
+						}
+						if (delegation !== "continue") return
+					} else {
+						await this.rejectLegacyParentReturn(
+							task,
+							pushToolResult,
+							`Cannot finish the delegated child while task ${task.taskId} has status ${status ?? "unknown"}.`,
+						)
+						return
 					}
+				} catch (error) {
+					await this.rejectLegacyParentReturn(
+						task,
+						pushToolResult,
+						`Cannot verify the delegated child handoff for task ${task.taskId}: ${error instanceof Error ? error.message : String(error)}`,
+					)
+					return
 				}
 			}
 
@@ -167,12 +168,12 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 					await task.retractCompletionResult()
 					return
 				}
-				pushToolResult("")
-				await this.emitTaskCompleted(task)
+				await this.commitAcceptedCompletion(task, pushToolResult, toolCallId)
 				return
 			}
 
 			// User provided feedback - push tool result to continue the conversation
+			await task.retractCompletionResult()
 			await task.say("user_feedback", feedbackText, feedbackImages)
 
 			const toolFeedback = `<user_message>\n${feedbackText}\n</user_message>`
@@ -184,36 +185,32 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 
 	private async rejectCompletionWithPendingParentVerification(
 		task: Task,
-		pushToolResult: (result: string) => void,
+		pushToolResult: AttemptCompletionCallbacks["pushToolResult"],
 	): Promise<boolean> {
-		const provider = task.providerRef?.deref() as DelegationProvider | undefined
-
-		let decision: { allowed: boolean; message?: string }
-		if (!provider?.getParentCompletionDecision) {
-			decision = {
-				allowed: false,
-				message:
-					"Cannot verify Worker completion obligations because the durable completion decision is unavailable.",
-			}
-		} else {
-			try {
-				decision = await provider.getParentCompletionDecision(task)
-			} catch (error) {
-				decision = {
-					allowed: false,
-					message: `Cannot verify Worker completion obligations right now: ${error instanceof Error ? error.message : String(error)}`,
-				}
-			}
-		}
+		const decision = await task.getCompletionGateDecision()
 		if (decision.allowed) return false
 
 		const errorMsg =
 			decision.message ??
 			"Cannot complete while applied Worker changes still require parent review and verification."
-		task.consecutiveMistakeCount++
-		task.recordToolError("attempt_completion")
+		if (decision.modelCanResolveRejection) {
+			task.consecutiveMistakeCount++
+			task.recordToolError("attempt_completion")
+		} else {
+			task.suspendAfterCurrentTurn(errorMsg)
+		}
 		pushToolResult(formatResponse.toolError(errorMsg))
 		return true
+	}
+
+	private async rejectLegacyParentReturn(
+		task: Task,
+		pushToolResult: AttemptCompletionCallbacks["pushToolResult"],
+		message: string,
+	): Promise<void> {
+		console.error(`[AttemptCompletionTool] ${message}`)
+		await task.retractCompletionResult()
+		pushToolResult(formatResponse.toolError(message))
 	}
 
 	/**
@@ -228,7 +225,8 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 		result: string,
 		provider: DelegationProvider,
 		askFinishSubTaskApproval: () => Promise<boolean>,
-		pushToolResult: (result: string) => void,
+		pushToolResult: AttemptCompletionCallbacks["pushToolResult"],
+		toolCallId?: string,
 	): Promise<"delegated" | "denied" | "continue"> {
 		const didApprove = await askFinishSubTaskApproval()
 
@@ -237,15 +235,85 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			return "denied"
 		}
 
-		pushToolResult("")
-
-		await provider.reopenParentFromDelegation({
-			parentTaskId: task.parentTaskId!,
-			childTaskId: task.taskId,
-			completionResultSummary: result,
+		if (!toolCallId?.trim()) {
+			throw new Error(
+				"Cannot return the delegated child because the completion tool call has no durable identifier.",
+			)
+		}
+		const staged = task.pushToolResultToUserContent({
+			type: "tool_result",
+			tool_use_id: toolCallId,
+			content: "(tool did not return anything)",
 		})
+		if (!staged) {
+			throw new Error("Cannot return the delegated child because its completion result was already recorded.")
+		}
+		if (!(await task.flushPendingToolResultsToHistory())) {
+			task.removePendingToolResult(toolCallId)
+			throw new Error("Cannot return the delegated child because its completion result could not be persisted.")
+		}
+
+		try {
+			await provider.reopenParentFromDelegation({
+				parentTaskId: task.parentTaskId!,
+				childTaskId: task.taskId,
+				completionResultSummary: result,
+			})
+		} catch (error) {
+			try {
+				await task.rollbackPersistedToolResult(toolCallId)
+			} catch (rollbackError) {
+				task.suspendAfterCurrentTurn(
+					"The delegated-child handoff could not be committed or rolled back durably. Resume after reviewing task history.",
+				)
+				throw new AggregateError(
+					[error, rollbackError],
+					"The delegated-child handoff failed and its completion result could not be rolled back.",
+				)
+			}
+			throw error
+		}
 
 		return "delegated"
+	}
+
+	private async commitAcceptedCompletion(
+		task: Task,
+		pushToolResult: AttemptCompletionCallbacks["pushToolResult"],
+		toolCallId?: string,
+	): Promise<boolean> {
+		if (!toolCallId?.trim()) {
+			throw new Error("Cannot complete the task because the completion tool call has no durable identifier.")
+		}
+		const staged = task.pushToolResultToUserContent({
+			type: "tool_result",
+			tool_use_id: toolCallId,
+			content: "(tool did not return anything)",
+		})
+		try {
+			const finalized = await task.finalizeTaskCompletion(staged ? toolCallId : undefined)
+			if (!finalized) {
+				if (toolCallId) task.removePendingToolResult(toolCallId)
+				const queued = task.messageQueueService.dequeueMessage()
+				if (queued) {
+					await task.retractCompletionResult()
+					await task.say("user_feedback", queued.text, queued.images)
+					pushToolResult(
+						formatResponse.toolResult(`<user_message>\n${queued.text}\n</user_message>`, queued.images),
+					)
+					return false
+				}
+			}
+			pushToolResult("")
+			return true
+		} catch (error) {
+			if (toolCallId) task.removePendingToolResult(toolCallId)
+			task.suspendAfterCurrentTurn(
+				"Task completion could not be committed durably. Resume after reviewing the task lifecycle and transcript.",
+			)
+			await task.retractCompletionResult().catch(() => undefined)
+			throw error
+		}
 	}
 
 	override async handlePartial(task: Task, block: ToolUse<"attempt_completion">): Promise<void> {
@@ -264,10 +332,6 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 		} else {
 			await task.presentCompletionResult(result ?? "", undefined, block.partial)
 		}
-	}
-
-	private async emitTaskCompleted(task: Task): Promise<void> {
-		await task.finalizeTaskCompletion()
 	}
 }
 

@@ -49,6 +49,7 @@ import { applyDiffTool as applyDiffToolClass } from "../tools/ApplyDiffTool"
 import { isValidToolName, validateToolUse } from "../tools/validateToolUse"
 import { codebaseSearchTool } from "../tools/CodebaseSearchTool"
 import { getVSCodeBrowserTool } from "../tools/VSCodeBrowserTool"
+import { resolveToolAlias } from "../prompts/tools/filter-tools-for-mode"
 
 import { formatResponse } from "../prompts/responses"
 import { sanitizeToolUseId } from "../../utils/tool-id"
@@ -302,6 +303,27 @@ export async function presentAssistantMessage(cline: Task) {
 					} else {
 						pushToolResult(formatResponse.toolDenied())
 					}
+					cline.didRejectTool = true
+					return false
+				}
+
+				// A mode switch can race an approval that was presented under an older
+				// tool policy. Revalidate at the execution boundary so approving a stale
+				// Code request cannot run an MCP capability after Plan is committed.
+				try {
+					const latestState = await cline.providerRef.deref()?.getState()
+					const latestMode = await cline.getTaskMode()
+					validateToolUse(
+						mcpBlock.name as ToolName,
+						latestMode,
+						latestState?.customModes ?? [],
+						undefined,
+						mcpBlock.arguments,
+						latestState?.experiments,
+					)
+				} catch (error) {
+					const message = `Approval expired after the task mode changed: ${error instanceof Error ? error.message : String(error)}`
+					pushToolResult(formatResponse.toolError(message))
 					cline.didRejectTool = true
 					return false
 				}
@@ -621,6 +643,36 @@ export async function presentAssistantMessage(cline: Task) {
 					return false
 				}
 
+				// Approval is not authority to execute under a later mode. Re-run the
+				// complete host policy after the await and before the tool can mutate.
+				try {
+					const latestState = await cline.providerRef.deref()?.getState()
+					const latestMode = await cline.getTaskMode()
+					const latestToolRequirements =
+						latestState?.disabledTools?.reduce(
+							(acc: Record<string, boolean>, tool: string) => {
+								acc[tool] = false
+								acc[resolveToolAlias(tool)] = false
+								return acc
+							},
+							{} as Record<string, boolean>,
+						) ?? {}
+					validateToolUse(
+						block.name as ToolName,
+						latestMode,
+						latestState?.customModes ?? [],
+						latestToolRequirements,
+						block.params,
+						latestState?.experiments,
+						cline.api.getModel().info?.includedTools,
+					)
+				} catch (error) {
+					const message = `Approval expired after the task mode changed: ${error instanceof Error ? error.message : String(error)}`
+					pushToolResult(formatResponse.toolError(message))
+					cline.didRejectTool = true
+					return false
+				}
+
 				// Store approval feedback to be merged into tool result (GitHub #10465)
 				// Don't push it as a separate tool_result here - that would create duplicates.
 				// The tool will call pushToolResult, which will merge the feedback into the actual result.
@@ -693,7 +745,6 @@ export async function presentAssistantMessage(cline: Task) {
 				// Resolve aliases in includedTools before validation
 				// e.g., "edit_file" should resolve to "apply_diff"
 				const rawIncludedTools = modelInfo?.info?.includedTools
-				const { resolveToolAlias } = await import("../prompts/tools/filter-tools-for-mode")
 				const includedTools = rawIncludedTools?.map((tool) => resolveToolAlias(tool))
 
 				try {
@@ -1033,6 +1084,7 @@ export async function presentAssistantMessage(cline: Task) {
 						pushToolResult,
 						askFinishSubTaskApproval,
 						toolDescription,
+						toolCallId: block.id,
 					}
 					await attemptCompletionTool.handle(
 						cline,

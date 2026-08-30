@@ -328,6 +328,104 @@ const renderChatView = (props: Partial<ChatViewProps> = {}) => {
 	)
 }
 
+describe("ChatView - Plan command", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it("sends an inline Plan command as one atomic host request", async () => {
+		const { getByTestId } = renderChatView()
+		mockPostMessage({ mode: "code", clineMessages: [] })
+
+		const input = await waitFor(() => getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.change(input, { target: { value: "/plan inspect the provider flow" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+		await waitFor(() => {
+			expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "newTask",
+				text: "/plan inspect the provider flow",
+				images: [],
+			})
+		})
+		expect(input).toHaveValue("")
+	})
+
+	it("uses the mode-only message for /plan without an inline prompt", async () => {
+		const { getByTestId } = renderChatView()
+		mockPostMessage({ mode: "code", clineMessages: [] })
+
+		const input = await waitFor(() => getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.change(input, { target: { value: "/plan" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+		await waitFor(() => {
+			expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+			expect(vscode.postMessage).toHaveBeenCalledWith({ type: "mode", text: "architect" })
+		})
+		expect(input).toHaveValue("")
+	})
+
+	it("keeps /plan attached to a follow-up response for atomic host admission", async () => {
+		const { getByTestId } = renderChatView()
+		mockPostMessage({
+			mode: "code",
+			currentTaskId: "active-task",
+			currentView: { type: "task", taskId: "active-task" },
+			currentTaskItem: { id: "active-task", task: "Current task", ts: 1 },
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Current task" },
+				{ type: "ask", ask: "followup", ts: 2, text: "What should I inspect?" },
+			],
+		})
+
+		const input = await waitFor(() => getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.change(input, { target: { value: "/plan inspect the provider flow" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+		await waitFor(() => {
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "askResponse",
+				askResponse: "messageResponse",
+				text: "/plan inspect the provider flow",
+				images: [],
+				taskId: "active-task",
+			})
+		})
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "mode" }))
+	})
+
+	it("leaves /plan unavailable and unqueued while the model is working", async () => {
+		const { getByTestId } = renderChatView()
+		mockPostMessage({
+			mode: "code",
+			currentTaskId: "active-task",
+			currentView: { type: "task", taskId: "active-task" },
+			currentTaskItem: { id: "active-task", task: "Current task", ts: 1 },
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Current task" },
+				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
+			],
+		})
+
+		const input = await waitFor(() => getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
+		await waitFor(() => expect(input.getAttribute("data-sending-disabled")).toBe("true"))
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.change(input, { target: { value: "/plan inspect the provider flow" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "mode" }))
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
+		expect(input).toHaveValue("/plan inspect the provider flow")
+	})
+})
+
 describe("ChatView - Context Condensation Requests", () => {
 	beforeEach(() => vi.clearAllMocks())
 
@@ -385,6 +483,30 @@ describe("ChatView - Context Condensation Requests", () => {
 
 describe("ChatView - Follow-up suggestion copy", () => {
 	beforeEach(() => vi.clearAllMocks())
+
+	it("cancels follow-up auto-approval for the visible task when typing begins", async () => {
+		const { getByTestId } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-with-followup",
+			currentView: { type: "task", taskId: "task-with-followup" },
+			clineMessages: [
+				{ type: "say", say: "task", ts: 100, text: "Test follow-up" },
+				{ type: "ask", ask: "followup", ts: 101, text: "Choose an answer" },
+			],
+		})
+
+		const input = await waitFor(() => getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.change(input, { target: { value: "I am answering" } })
+
+		await waitFor(() =>
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "cancelAutoApproval",
+				taskId: "task-with-followup",
+			}),
+		)
+	})
 
 	it("copies a suggested answer without committing its suggested mode", async () => {
 		const { getByTestId } = renderChatView()

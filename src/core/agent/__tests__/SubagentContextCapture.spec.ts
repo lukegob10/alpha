@@ -1,6 +1,7 @@
 import path from "path"
 
 import { formatResponse } from "../../prompts/responses"
+import { createSubagentCommandApprovalPolicy } from "../../auto-approval/commands"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import {
 	captureSubagentContext,
@@ -31,6 +32,17 @@ const runtimePolicy = {
 	requireApproval: true,
 	allowedTools: ["search_files", "read_file", "read_file"],
 	workspaceRoots: ["/workspace"],
+	autoApproval: {
+		autoApprovalEnabled: true,
+		alwaysAllowReadOnly: true,
+		alwaysAllowReadOnlyOutsideWorkspace: false,
+		alwaysAllowWrite: false,
+		alwaysAllowWriteOutsideWorkspace: false,
+		alwaysAllowWriteProtected: false,
+		alwaysAllowExecute: false,
+		alwaysAllowSubagents: true,
+		commandApproval: createSubagentCommandApprovalPolicy(["git diff"], ["git push"], "1".repeat(64)),
+	},
 }
 
 const pacingUpdate = (waitCount: number, totalWaitMs = waitCount * 1_000) =>
@@ -709,7 +721,19 @@ describe("sub-agent context capture", () => {
 			cwd: "/workspace",
 			workspaceRoots: ["/workspace"],
 			modelRoute: { ...route, apiKey: secret } as any,
-			runtimePolicy: { ...runtimePolicy, apiToken: secret } as any,
+			runtimePolicy: {
+				...runtimePolicy,
+				apiToken: secret,
+				autoApproval: {
+					...runtimePolicy.autoApproval,
+					alwaysAllowExecute: true,
+					commandApproval: createSubagentCommandApprovalPolicy(
+						[`mycli --token ${secret}`, `curl -u user:${secret}`, `postgres://user:${secret}@host/db`],
+						[],
+						"2".repeat(64),
+					),
+				},
+			} as any,
 		})
 
 		const serialized = serializeSubagentContextManifest(result.manifest)
@@ -719,6 +743,16 @@ describe("sub-agent context capture", () => {
 		expect(serialized).not.toContain("User body")
 		expect(serialized).not.toContain("Authorization")
 		expect(serialized).not.toContain("Skill instructions")
+		expect(result.manifest.runtimePolicy.autoApproval).toMatchObject({
+			alwaysAllowExecute: true,
+			commandApproval: {
+				algorithm: "sha256-salted-prefix-v1",
+				allowed: expect.arrayContaining([
+					expect.objectContaining({ digest: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+				]),
+				denied: [],
+			},
+		})
 		expect(result.manifest.workspace.cwd).toBe(path.resolve("/workspace"))
 	})
 
@@ -747,6 +781,18 @@ describe("sub-agent context capture", () => {
 			isValidSubagentContextManifest({
 				...result.manifest,
 				runtimePolicy: { ...result.manifest.runtimePolicy, digest: "0".repeat(64) },
+			}),
+		).toBe(false)
+		expect(
+			isValidSubagentContextManifest({
+				...result.manifest,
+				runtimePolicy: {
+					...result.manifest.runtimePolicy,
+					autoApproval: {
+						...result.manifest.runtimePolicy.autoApproval!,
+						alwaysAllowExecute: true,
+					},
+				},
 			}),
 		).toBe(false)
 		expect(() =>

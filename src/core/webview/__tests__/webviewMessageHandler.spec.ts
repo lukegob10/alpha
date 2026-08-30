@@ -78,6 +78,11 @@ const mockClineProvider = {
 	getCurrentTask: vi.fn(),
 	getLiveTask: vi.fn(),
 	canAcceptTaskInput: vi.fn(() => true),
+	queueMessageForTask: vi.fn((taskId: string, text: string, images?: string[]) => {
+		const task = mockClineProvider.getLiveTask(taskId)
+		if (!task || !mockClineProvider.canAcceptTaskInput(taskId)) return false
+		return Boolean(task.messageQueueService.addMessage(text, images))
+	}),
 	getTaskWithId: vi.fn(),
 	createTask: vi.fn(),
 	createTaskWithHistoryItem: vi.fn(),
@@ -431,7 +436,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 		expect(getMessage).not.toHaveBeenCalled()
 		expect(steerUserMessage).not.toHaveBeenCalled()
 		expect(mockClineProvider.log).toHaveBeenCalledWith(
-			"[webviewMessageHandler] Ignoring queueMessage: task task-1 is terminal",
+			"[webviewMessageHandler] Ignoring queueMessage: missing, terminal, or unknown taskId",
 		)
 		expect(mockClineProvider.log).toHaveBeenCalledWith(
 			"[webviewMessageHandler] Ignoring steerQueuedMessage: task task-1 is terminal",

@@ -185,6 +185,7 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 		rest.currentTaskId = prevState.currentTaskId
 		rest.currentTaskItem = prevState.currentTaskItem
 		rest.currentView = prevState.currentView
+		rest.currentTaskAutoApprovalRestricted = prevState.currentTaskAutoApprovalRestricted
 		rest.activeTaskId = prevState.activeTaskId
 		rest.liveTaskIds = prevState.liveTaskIds
 		rest.liveTasksById = prevState.liveTasksById
@@ -304,7 +305,8 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	})
 
 	const [didHydrateState, setDidHydrateState] = useState(false)
-	const [showWelcome, setShowWelcome] = useState(false)
+	const [providerSetupRequired, setProviderSetupRequired] = useState(false)
+	const [observedActiveTaskId, setObservedActiveTaskId] = useState<string>()
 	const [theme, setTheme] = useState<any>(undefined)
 	const [filePaths, setFilePaths] = useState<string[]>([])
 	const [openedTabs, setOpenedTabs] = useState<Array<{ label: string; isActive: boolean; path?: string }>>([])
@@ -323,6 +325,9 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const [includeTaskHistoryInEnhance, setIncludeTaskHistoryInEnhance] = useState(true)
 	const [includeCurrentTime, setIncludeCurrentTime] = useState(true)
 	const [includeCurrentCost, setIncludeCurrentCost] = useState(true)
+	const latestTaskStateSeqRef = useRef<number>()
+	const latestMessageQueueSeqRef = useRef<number>()
+	const latestTaskTodosSeqRef = useRef<number>()
 	type IncrementalMessage = {
 		taskId?: string
 		clineMessage: ClineMessage
@@ -453,7 +458,44 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					flushPendingMessageUpdates()
 					const newState = message.state ?? {}
 					setState((prevState) => mergeExtensionState(prevState, newState))
-					setShowWelcome(!checkExistKey(newState.apiConfiguration))
+
+					// Queue/todo fast paths can arrive before the full task snapshot. They
+					// intentionally do not own task-domain state, but a fresh patch for a
+					// concrete task is still authoritative evidence that a chat is active.
+					// Track that evidence separately so onboarding can never flash over it.
+					const taskStateSeq = newState.taskStateSeq
+					if (taskStateSeq !== undefined && taskStateSeq > (latestTaskStateSeqRef.current ?? -1)) {
+						latestTaskStateSeqRef.current = taskStateSeq
+						setObservedActiveTaskId(newState.currentTaskId)
+					} else if (taskStateSeq === undefined && newState.currentTaskId !== undefined) {
+						const hasFreshQueueSignal =
+							newState.messageQueueSeq !== undefined &&
+							newState.messageQueueSeq > (latestMessageQueueSeqRef.current ?? -1)
+						const hasFreshTodosSignal =
+							newState.currentTaskTodosSeq !== undefined &&
+							newState.currentTaskTodosSeq > (latestTaskTodosSeqRef.current ?? -1)
+						if (hasFreshQueueSignal || hasFreshTodosSignal) {
+							setObservedActiveTaskId(newState.currentTaskId)
+						}
+					}
+					if (
+						newState.messageQueueSeq !== undefined &&
+						newState.messageQueueSeq > (latestMessageQueueSeqRef.current ?? -1)
+					) {
+						latestMessageQueueSeqRef.current = newState.messageQueueSeq
+					}
+					if (
+						newState.currentTaskTodosSeq !== undefined &&
+						newState.currentTaskTodosSeq > (latestTaskTodosSeqRef.current ?? -1)
+					) {
+						latestTaskTodosSeqRef.current = newState.currentTaskTodosSeq
+					}
+
+					// Configuration-less state messages are partial transport patches, not
+					// evidence that provider setup is missing.
+					if (newState.apiConfiguration !== undefined) {
+						setProviderSetupRequired(!checkExistKey(newState.apiConfiguration))
+					}
 					setDidHydrateState(true)
 					// Update alwaysAllowFollowupQuestions if present in state message
 					if ((newState as any).alwaysAllowFollowupQuestions !== undefined) {
@@ -649,6 +691,15 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	useEffect(() => {
 		vscode.postMessage({ type: "webviewDidLaunch" })
 	}, [])
+
+	// Provider setup is onboarding for a new-task draft, never an overlay for an
+	// established chat. Deriving the task guard from the sequence-aware merged
+	// state also prevents stale lifecycle patches from hiding the current view.
+	const showWelcome =
+		providerSetupRequired &&
+		state.currentView?.type !== "task" &&
+		state.currentTaskId === undefined &&
+		observedActiveTaskId === undefined
 
 	const contextValue: ExtensionStateContextType = {
 		...state,

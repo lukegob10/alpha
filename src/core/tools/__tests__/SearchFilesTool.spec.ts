@@ -1,4 +1,5 @@
 import type { Task } from "../../task/Task"
+import searchFilesDefinition from "../../prompts/tools/native-tools/search_files"
 import { SearchFilesTool } from "../SearchFilesTool"
 
 const { regexSearchFilesMock } = vi.hoisted(() => ({
@@ -89,5 +90,72 @@ describe("SearchFilesTool", () => {
 			content: "results for TODO",
 		})
 		expect(pushToolResult).toHaveBeenCalledWith("results for TODO")
+	})
+
+	it("bounds approval and model-facing output from broad searches", async () => {
+		regexSearchFilesMock.mockResolvedValue("match\n".repeat(10_000))
+		const task = createTask()
+		const askApproval = vi.fn().mockResolvedValue(true)
+		const pushToolResult = vi.fn()
+		const tool = new SearchFilesTool()
+
+		await tool.execute({ path: ".", regex: "TODO|FIXME" }, task, {
+			askApproval,
+			handleError: vi.fn(),
+			pushToolResult,
+		})
+
+		const approvalPayload = askApproval.mock.calls[0][1] as string
+		const modelResult = pushToolResult.mock.calls[0][0] as string
+		expect(approvalPayload.length).toBeLessThanOrEqual(16_000)
+		expect(modelResult.length).toBeLessThanOrEqual(16_000)
+		expect(approvalPayload).toContain("Search output truncated")
+		expect(modelResult).toContain("Search output truncated")
+	})
+
+	it("hard-bounds metadata-only overflow and reports dropped batch entries", async () => {
+		regexSearchFilesMock.mockResolvedValue("ok")
+		const task = createTask()
+		const askApproval = vi.fn().mockResolvedValue(true)
+		const pushToolResult = vi.fn()
+		const oversizedMetadata = "\u0000".repeat(30_000)
+
+		await new SearchFilesTool().execute(
+			{
+				queries: Array.from({ length: 8 }, (_, index) => ({
+					path: `src/query-${index}`,
+					regex: oversizedMetadata,
+					file_pattern: oversizedMetadata,
+				})),
+			},
+			task,
+			{ askApproval, handleError: vi.fn(), pushToolResult },
+		)
+
+		const approvalPayload = askApproval.mock.calls[0][1] as string
+		const modelResult = pushToolResult.mock.calls[0][0] as string
+		const approval = JSON.parse(approvalPayload)
+		const visibleSearches = approval.batchSearches ?? [approval]
+
+		expect(approvalPayload.length).toBeLessThanOrEqual(16_000)
+		expect(modelResult.length).toBeLessThanOrEqual(16_000)
+		expect(visibleSearches.length).toBeGreaterThan(0)
+		expect(visibleSearches.length).toBeLessThan(8)
+		expect(visibleSearches[0].regex).toContain("...[truncated]")
+		expect(visibleSearches[0].filePattern).toContain("...[truncated]")
+		expect(approvalPayload).toContain("showing")
+		expect(modelResult).toContain("showing")
+	})
+
+	it("declares bounded path, regex, and file-pattern schema inputs", () => {
+		const schema = searchFilesDefinition.function.parameters as any
+		const batchProperties = schema.properties.queries.items.properties
+
+		expect(schema.properties.path.maxLength).toBe(4_096)
+		expect(schema.properties.regex.maxLength).toBe(8_192)
+		expect(schema.properties.file_pattern.maxLength).toBe(2_048)
+		expect(batchProperties.path.maxLength).toBe(4_096)
+		expect(batchProperties.regex.maxLength).toBe(8_192)
+		expect(batchProperties.file_pattern.maxLength).toBe(2_048)
 	})
 })

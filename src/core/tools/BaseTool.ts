@@ -166,6 +166,10 @@ export abstract class BaseTool<TName extends ToolName> {
 		}
 
 		// Execute with typed parameters
-		await this.execute(params, task, callbacks)
+		await this.execute(
+			params,
+			task,
+			callbacks.toolCallId || !block.id ? callbacks : { ...callbacks, toolCallId: block.id },
+		)
 	}
 }

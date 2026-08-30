@@ -1,6 +1,7 @@
 // npx vitest run src/core/tools/__tests__/executeCommandTool.spec.ts
 
 import type { ToolUsage } from "@alpha-code/types"
+import fs from "fs/promises"
 import * as vscode from "vscode"
 
 import { Task } from "../../task/Task"
@@ -16,6 +17,7 @@ vitest.mock("execa", () => ({
 vitest.mock("fs/promises", () => ({
 	default: {
 		access: vitest.fn().mockResolvedValue(undefined),
+		realpath: vitest.fn(async (value: string) => value),
 	},
 }))
 
@@ -40,6 +42,7 @@ vitest.mock("../../prompts/responses")
 // Import the module
 import * as executeCommandModule from "../ExecuteCommandTool"
 const { executeCommandTool } = executeCommandModule
+const executeCommandInTerminalActual = executeCommandModule.executeCommandInTerminal
 
 describe("executeCommandTool", () => {
 	// Setup common test variables
@@ -401,6 +404,34 @@ describe("executeCommandTool", () => {
 				expect.stringMatching(new RegExp(`^${mockCline.lastMessageTs}:legacy:`)),
 				expect.stringMatching(new RegExp(`^${mockCline.lastMessageTs}:legacy:`)),
 			])
+		})
+	})
+
+	describe("Plan command working-directory confinement", () => {
+		it("rejects an absolute working directory before opening a terminal", async () => {
+			mockCline.getTaskMode = vitest.fn().mockResolvedValue("architect")
+
+			const result = await executeCommandInTerminalActual(mockCline as Task, {
+				executionId: "plan-cwd-absolute",
+				command: "pnpm exec tsc --noEmit",
+				customCwd: "C:\\outside",
+			})
+
+			expect(result).toEqual([false, "Plan commands may use only workspace-relative command directories."])
+		})
+
+		it("rejects a relative working directory whose realpath escapes through a symlink", async () => {
+			mockCline.cwd = "F:\\workspace"
+			mockCline.getTaskMode = vitest.fn().mockResolvedValue("architect")
+			vitest.mocked(fs.realpath).mockResolvedValueOnce("F:\\workspace").mockResolvedValueOnce("F:\\outside")
+
+			const result = await executeCommandInTerminalActual(mockCline as Task, {
+				executionId: "plan-cwd-symlink",
+				command: "pnpm exec tsc --noEmit",
+				customCwd: "linked-directory",
+			})
+
+			expect(result).toEqual([false, "Plan command directory resolves outside the task workspace."])
 		})
 	})
 })

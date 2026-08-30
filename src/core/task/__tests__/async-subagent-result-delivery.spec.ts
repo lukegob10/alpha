@@ -89,6 +89,19 @@ describe("Task asynchronous sub-agent result delivery", () => {
 		expect((idle as any).shouldExposeAgentLifecycleTools()).toBe(true)
 	})
 
+	it("queries a legacy primary handoff child by its own managed root", () => {
+		const legacyChild = makeTask([]).task
+		const hasManagedAgentLifecycleState = vi.fn(() => false)
+		Object.assign(legacyChild, {
+			taskId: "legacy-child",
+			rootTaskId: "legacy-parent",
+			providerRef: { deref: () => ({ hasManagedAgentLifecycleState }) },
+		})
+
+		expect((legacyChild as any).shouldExposeAgentLifecycleTools()).toBe(false)
+		expect(hasManagedAgentLifecycleState).toHaveBeenCalledWith("legacy-child")
+	})
+
 	it("keeps durable descendants and mailbox results reachable after transcript compaction and reload", async () => {
 		const persistence = new InMemoryAgentControlPersistence()
 		const first = new AgentControlStore(persistence, () => 1_000)

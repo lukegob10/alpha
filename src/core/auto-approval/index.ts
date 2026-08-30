@@ -4,6 +4,7 @@ import {
 	type McpServerUse,
 	type FollowUpData,
 	type ExtensionState,
+	type SubagentAutoApprovalPolicy,
 	isNonBlockingAsk,
 } from "@alpha-code/types"
 
@@ -11,7 +12,7 @@ import { ClineAskResponse } from "../../shared/WebviewMessage"
 
 import { isWriteToolAction, isReadOnlyToolAction } from "./tools"
 import { isMcpToolAlwaysAllowed } from "./mcp"
-import { getCommandDecision } from "./commands"
+import { getCommandDecision, getSubagentCommandDecision } from "./commands"
 
 // We have auto-approval actions for different categories.
 export type AutoApprovalState =
@@ -45,17 +46,19 @@ export type CheckAutoApprovalResult =
 			fn: () => { askResponse: ClineAskResponse; text?: string; images?: string[] }
 	  }
 
+export interface CheckAutoApprovalInput {
+	state?: Pick<ExtensionState, AutoApprovalState | AutoApprovalStateOptions>
+	ask: ClineAsk
+	text?: string
+	isProtected?: boolean
+}
+
 export async function checkAutoApproval({
 	state,
 	ask,
 	text,
 	isProtected,
-}: {
-	state?: Pick<ExtensionState, AutoApprovalState | AutoApprovalStateOptions>
-	ask: ClineAsk
-	text?: string
-	isProtected?: boolean
-}): Promise<CheckAutoApprovalResult> {
+}: CheckAutoApprovalInput): Promise<CheckAutoApprovalResult> {
 	if (isNonBlockingAsk(ask)) {
 		return { decision: "approve" }
 	}
@@ -207,6 +210,47 @@ export async function checkAutoApproval({
 	}
 
 	return { decision: "ask" }
+}
+
+/**
+ * Apply the live settings and the approval grant captured for a managed child.
+ * The captured grant is an upper bound: live settings can revoke approval, but
+ * changing global settings later cannot silently widen a child's authority.
+ */
+export async function checkAutoApprovalWithInheritedPolicy({
+	inheritedState,
+	...input
+}: CheckAutoApprovalInput & {
+	inheritedState?: SubagentAutoApprovalPolicy
+}): Promise<CheckAutoApprovalResult> {
+	if (!inheritedState) return checkAutoApproval(input)
+	const checkInheritedPolicy = async (): Promise<CheckAutoApprovalResult> => {
+		if (input.ask !== "command") return checkAutoApproval({ ...input, state: inheritedState })
+		if (!inheritedState.autoApprovalEnabled || !inheritedState.alwaysAllowExecute || !input.text) {
+			return { decision: "ask" }
+		}
+		const decisions = [inheritedState.commandApproval, ...(inheritedState.commandApprovalCeilings ?? [])].map(
+			(policy) => getSubagentCommandDecision(input.text!, policy),
+		)
+		if (decisions.some((decision) => decision === "auto_deny")) return { decision: "deny" }
+		if (decisions.every((decision) => decision === "auto_approve")) return { decision: "approve" }
+		return { decision: "ask" }
+	}
+
+	const [liveResult, inheritedResult] = await Promise.all([checkAutoApproval(input), checkInheritedPolicy()])
+	const results = [liveResult, inheritedResult]
+
+	if (results.some(({ decision }) => decision === "deny")) return { decision: "deny" }
+	if (results.some(({ decision }) => decision === "ask")) return { decision: "ask" }
+
+	const timeouts = results.filter(
+		(result): result is Extract<CheckAutoApprovalResult, { decision: "timeout" }> => result.decision === "timeout",
+	)
+	if (timeouts.length > 0) {
+		return timeouts.reduce((longest, current) => (current.timeout > longest.timeout ? current : longest))
+	}
+
+	return { decision: "approve" }
 }
 
 export { AutoApprovalHandler } from "./AutoApprovalHandler"

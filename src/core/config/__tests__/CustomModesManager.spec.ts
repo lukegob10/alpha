@@ -662,6 +662,35 @@ describe("CustomModesManager", () => {
 			expect(fs.writeFile).toHaveBeenCalledWith(settingsPath, expect.stringMatching(/^customModes: \[\]/))
 		})
 
+		it("waits for one shared settings-file creation when startup callers race", async () => {
+			;(fileExistsAtPath as Mock).mockResolvedValue(false)
+			let finishWrite: (() => void) | undefined
+			;(fs.writeFile as Mock).mockImplementation(
+				() =>
+					new Promise<void>((resolve) => {
+						finishWrite = resolve
+					}),
+			)
+			let firstResolved = false
+			let secondResolved = false
+
+			const first = manager.getCustomModesFilePath().then((value) => {
+				firstResolved = true
+				return value
+			})
+			const second = manager.getCustomModesFilePath().then((value) => {
+				secondResolved = true
+				return value
+			})
+			await vi.waitFor(() => expect(fs.writeFile).toHaveBeenCalledOnce())
+
+			expect(firstResolved).toBe(false)
+			expect(secondResolved).toBe(false)
+			finishWrite?.()
+			await expect(Promise.all([first, second])).resolves.toEqual([mockSettingsPath, mockSettingsPath])
+			expect(fs.writeFile).toHaveBeenCalledOnce()
+		})
+
 		it("watches file for changes", async () => {
 			const configPath = path.join(mockStoragePath, "settings", GlobalFileNames.customModes)
 

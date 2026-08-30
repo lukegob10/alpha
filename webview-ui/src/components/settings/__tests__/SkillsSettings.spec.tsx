@@ -36,6 +36,7 @@ vi.mock("@/utils/docLinks", () => ({
 vi.mock("@alpha/modes", () => ({
 	codeModeSlug: "code",
 	planModeSlug: "architect",
+	planMode: { slug: "architect", name: "Plan" },
 	getAllModes: () => [
 		{ slug: "architect", name: "Architect" },
 		{ slug: "code", name: "Code" },

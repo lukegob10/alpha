@@ -115,7 +115,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 				status: "active",
 				completedByChildId: "child-1",
 			}),
-			{ startTask: false },
+			{ startTask: false, preserveExisting: true, background: true },
 		)
 	})
 
@@ -708,9 +708,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 		).resolves.toBeUndefined()
 
 		expect(logSpy).toHaveBeenCalledWith(
-			expect.stringContaining(
-				"[reopenParentFromDelegation] Failed to persist child completed status for child-rpd04:",
-			),
+			expect.stringContaining("[reopenParentFromDelegation] Parent committed but child status repair failed:"),
 		)
 		expect(updateTaskHistory).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -721,6 +719,228 @@ describe("History resume delegation - parent metadata transitions", () => {
 		)
 		expect(parentInstance.resumeAfterDelegation).toHaveBeenCalledTimes(1)
 		expect(emitSpy).toHaveBeenCalledWith(RooCodeEventName.TaskDelegationResumed, "parent-rpd04", "child-rpd04")
+	})
+
+	it("rolls back the staged parent and preserves guidance that arrives before child removal", async () => {
+		const parentTaskId = "parent-precommit-race"
+		const childTaskId = "child-precommit-race"
+		const operations: string[] = []
+		const childQueue = {
+			isEmpty: vi.fn(() => true),
+			on: vi.fn(),
+			off: vi.fn(),
+			addMessage: vi.fn(() => true),
+		}
+		const liveChild = { taskId: childTaskId, messageQueueService: childQueue }
+		const parentInstance = {
+			taskId: parentTaskId,
+			messageQueueService: { addMessage: vi.fn(() => true) },
+			resumeAfterDelegation: vi.fn().mockResolvedValue(undefined),
+			overwriteClineMessages: vi.fn().mockResolvedValue(undefined),
+			overwriteApiConversationHistory: vi.fn().mockResolvedValue(undefined),
+		}
+		const originalParentHistory = {
+			id: parentTaskId,
+			status: "delegated",
+			delegatedToId: childTaskId,
+			awaitingChildId: childTaskId,
+			childIds: [childTaskId],
+			ts: 900,
+			task: "Parent precommit race",
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+		}
+		const updateTaskHistory = vi.fn(async (historyItem: { status?: string }) => {
+			operations.push(`history:${historyItem.status}`)
+			return []
+		})
+		const removeClineFromStack = vi.fn(async (options: { taskId?: string }) => {
+			operations.push(`remove:${options.taskId}`)
+		})
+		let provider: ClineProvider
+		const createTaskWithHistoryItem = vi.fn(async (_historyItem: unknown, options: unknown) => {
+			operations.push("stage-parent")
+			expect(options).toEqual({ startTask: false, preserveExisting: true, background: true })
+			expect(
+				(ClineProvider.prototype as any).queueMessageForTask.call(
+					provider,
+					childTaskId,
+					"Please incorporate this before finishing",
+					["queued-image"],
+				),
+			).toBe(true)
+			return parentInstance
+		})
+
+		provider = {
+			contextProxy: { globalStorageUri: { fsPath: "/storage" } },
+			getTaskWithId: vi.fn().mockResolvedValue({ historyItem: originalParentHistory }),
+			getLiveTask: vi.fn((taskId: string) => (taskId === childTaskId ? liveChild : undefined)),
+			isTaskOnScreen: vi.fn(() => true),
+			emit: vi.fn(),
+			removeClineFromStack,
+			createTaskWithHistoryItem,
+			updateTaskHistory,
+		} as unknown as ClineProvider
+
+		vi.mocked(readTaskMessages).mockResolvedValue([{ type: "say", say: "text", text: "before", ts: 1 }] as any)
+		vi.mocked(readApiMessages).mockResolvedValue([
+			{ role: "user", content: [{ type: "text", text: "before" }], ts: 1 },
+		] as any)
+		vi.mocked(saveTaskMessages).mockResolvedValue(undefined)
+		vi.mocked(saveApiMessages).mockResolvedValue(undefined)
+
+		await expect(
+			(ClineProvider.prototype as any).reopenParentFromDelegation.call(provider, {
+				parentTaskId,
+				childTaskId,
+				completionResultSummary: "Child result",
+			}),
+		).rejects.toThrow("Queued user guidance arrived before the delegated child handoff committed")
+
+		expect(removeClineFromStack).toHaveBeenCalledTimes(1)
+		expect(removeClineFromStack).toHaveBeenCalledWith({
+			taskId: parentTaskId,
+			skipDelegationRepair: true,
+			requireAbortSuccess: true,
+		})
+		expect(operations).toEqual(["history:active", "stage-parent", `remove:${parentTaskId}`, "history:delegated"])
+		expect(childQueue.addMessage).toHaveBeenCalledWith("Please incorporate this before finishing", ["queued-image"])
+		expect(parentInstance.messageQueueService.addMessage).not.toHaveBeenCalled()
+		expect(parentInstance.resumeAfterDelegation).not.toHaveBeenCalled()
+		expect(vi.mocked(saveTaskMessages)).toHaveBeenCalledTimes(2)
+		expect(vi.mocked(saveApiMessages)).toHaveBeenCalledTimes(2)
+	})
+
+	it("routes child-addressed guidance to the parent during removal and an in-flight resume", async () => {
+		const parentTaskId = "parent-remove-race"
+		const childTaskId = "child-remove-race"
+		const parentQueue = { addMessage: vi.fn(() => true) }
+		let signalResumeStarted!: () => void
+		let releaseResume!: () => void
+		const resumeStarted = new Promise<void>((resolve) => {
+			signalResumeStarted = resolve
+		})
+		const resumeGate = new Promise<void>((resolve) => {
+			releaseResume = resolve
+		})
+		const childQueue = {
+			isEmpty: vi.fn(() => true),
+			on: vi.fn(),
+			off: vi.fn(),
+			addMessage: vi.fn(() => true),
+		}
+		const liveChild = { taskId: childTaskId, messageQueueService: childQueue }
+		const parentInstance = {
+			taskId: parentTaskId,
+			messageQueueService: parentQueue,
+			resumeAfterDelegation: vi.fn(async () => {
+				signalResumeStarted()
+				await resumeGate
+			}),
+			overwriteClineMessages: vi.fn().mockResolvedValue(undefined),
+			overwriteApiConversationHistory: vi.fn().mockResolvedValue(undefined),
+		}
+		const parentHistory = {
+			id: parentTaskId,
+			status: "delegated",
+			delegatedToId: childTaskId,
+			awaitingChildId: childTaskId,
+			childIds: [childTaskId],
+			ts: 910,
+			task: "Parent remove race",
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+		}
+		let childIsLive = true
+		let parentIsStaged = false
+		let provider: ClineProvider
+		const removeClineFromStack = vi.fn(async (options: { taskId?: string }) => {
+			expect(options).toEqual({
+				taskId: childTaskId,
+				skipDelegationRepair: true,
+				requireAbortSuccess: true,
+			})
+			expect(
+				(ClineProvider.prototype as any).queueMessageForTask.call(
+					provider,
+					childTaskId,
+					"Queued while the child is closing",
+					["race-image"],
+				),
+			).toBe(true)
+			childIsLive = false
+		})
+		const focusTask = vi.fn().mockResolvedValue(true)
+
+		provider = {
+			contextProxy: { globalStorageUri: { fsPath: "/storage" } },
+			getTaskWithId: vi.fn(async (taskId: string) => ({
+				historyItem:
+					taskId === parentTaskId
+						? parentHistory
+						: {
+								id: childTaskId,
+								status: "active",
+								ts: 911,
+								task: "Child remove race",
+								tokensIn: 0,
+								tokensOut: 0,
+								totalCost: 0,
+							},
+			})),
+			getLiveTask: vi.fn((taskId: string) => {
+				if (taskId === childTaskId && childIsLive) return liveChild
+				if (taskId === parentTaskId && parentIsStaged) return parentInstance
+				return undefined
+			}),
+			isTaskOnScreen: vi.fn((taskId: string) => taskId === childTaskId),
+			emit: vi.fn(),
+			removeClineFromStack,
+			createTaskWithHistoryItem: vi.fn(async (_historyItem: unknown, options: unknown) => {
+				expect(options).toEqual({ startTask: false, preserveExisting: true, background: true })
+				parentIsStaged = true
+				return parentInstance
+			}),
+			updateTaskHistory: vi.fn().mockResolvedValue([]),
+			focusTask,
+		} as unknown as ClineProvider
+
+		vi.mocked(readTaskMessages).mockResolvedValue([])
+		vi.mocked(readApiMessages).mockResolvedValue([])
+		vi.mocked(saveTaskMessages).mockResolvedValue(undefined)
+		vi.mocked(saveApiMessages).mockResolvedValue(undefined)
+
+		const handoffPromise = (ClineProvider.prototype as any).reopenParentFromDelegation.call(provider, {
+			parentTaskId,
+			childTaskId,
+			completionResultSummary: "Child result",
+		})
+		await resumeStarted
+
+		// The one-time pre-resume drain has already run. A stale child-addressed
+		// message must now be forwarded synchronously instead of waiting for finally.
+		expect(
+			(ClineProvider.prototype as any).queueMessageForTask.call(
+				provider,
+				childTaskId,
+				"Queued after the initial drain",
+			),
+		).toBe(true)
+		expect(parentQueue.addMessage).toHaveBeenCalledWith("Queued after the initial drain", undefined)
+		expect((provider as any).legacyHandoffInputBuffers.get(childTaskId).messages).toHaveLength(0)
+
+		releaseResume()
+		await expect(handoffPromise).resolves.toBeUndefined()
+
+		expect(parentQueue.addMessage).toHaveBeenCalledWith("Queued while the child is closing", ["race-image"])
+		expect(parentQueue.addMessage).toHaveBeenCalledTimes(2)
+		expect(childQueue.addMessage).not.toHaveBeenCalled()
+		expect(focusTask).toHaveBeenCalledWith(parentTaskId)
+		expect(parentInstance.resumeAfterDelegation).toHaveBeenCalledTimes(1)
+		expect((provider as any).legacyHandoffInputBuffers.size).toBe(0)
 	})
 
 	it("handles empty history gracefully when injecting synthetic messages", async () => {
