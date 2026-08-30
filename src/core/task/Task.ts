@@ -1710,6 +1710,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return false
 	}
 
+	private async persistAssistantResponseBeforeEffects(
+		message: Anthropic.MessageParam,
+		reasoning?: string,
+	): Promise<boolean> {
+		const saved = await this.addToApiConversationHistory(message, reasoning)
+		if (!saved && !(await this.retrySaveApiConversationHistory())) {
+			this.assistantMessageSavedToHistory = false
+			this.suspendAfterCurrentTurn(
+				"The assistant response could not be saved, so the turn stopped before executing tool calls or making another model request.",
+			)
+			return false
+		}
+
+		this.assistantMessageSavedToHistory = true
+		return true
+	}
+
 	// Alpha Messages
 
 	private async getSavedClineMessages(): Promise<ClineMessage[]> {
@@ -2341,36 +2358,49 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}, statusMutationTimeout),
 				)
 			}
-		} else if (isMessageQueued && shouldDrainQueuedMessageForAsk) {
-			const message = this.messageQueueService.dequeueMessage()
-
-			if (message) {
-				this.handleWebviewAskResponse("messageResponse", message.text, message.images)
-			}
 		}
 
 		// Wait for askResponse to be set
-		await pWaitFor(
-			() => {
-				// If a queued message arrives while we're blocked on an ask (e.g. a follow-up
-				// suggestion click that was incorrectly queued due to UI state), it wins over
-				// a simultaneous completion acceptance so guidance is never discarded.
-				if (shouldDrainQueuedMessageForAsk && !this.messageQueueService.isEmpty()) {
-					const message = this.messageQueueService.dequeueMessage()
-					if (message) {
-						this.handleWebviewAskResponse("messageResponse", message.text, message.images)
+		try {
+			await pWaitFor(
+				() => {
+					if (this.abort) {
 						return true
 					}
-				}
 
-				if (this.askResponse !== undefined || this.lastMessageTs !== askTs) {
-					return true
-				}
+					// If a queued message arrives while we're blocked on an ask (e.g. a follow-up
+					// suggestion click that was incorrectly queued due to UI state), it wins over
+					// a simultaneous completion acceptance so guidance is never discarded.
+					if (shouldDrainQueuedMessageForAsk && !this.messageQueueService.isEmpty()) {
+						const message = this.messageQueueService.dequeueMessage()
+						if (message) {
+							this.handleWebviewAskResponse("messageResponse", message.text, message.images)
+							return true
+						}
+					}
 
-				return false
-			},
-			{ interval: 100 },
-		)
+					if (this.askResponse !== undefined || this.lastMessageTs !== askTs) {
+						return true
+					}
+
+					return false
+				},
+				{ interval: 100 },
+			)
+		} finally {
+			// Every exit path owns and clears only the timers created for this ask.
+			timeouts.forEach((timeout) => clearTimeout(timeout))
+			if (this.autoApprovalTimeoutRef && timeouts.includes(this.autoApprovalTimeoutRef)) {
+				this.autoApprovalTimeoutRef = undefined
+			}
+		}
+
+		if (this.abort) {
+			if (this.activeAsk?.ts === askTs) {
+				this.activeAsk = undefined
+			}
+			throw new Error(`[RooCode#ask] task ${this.taskId}.${this.instanceId} aborted`)
+		}
 
 		if (this.lastMessageTs !== askTs) {
 			if (this.activeAsk?.ts === askTs) {
@@ -2390,9 +2420,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.askResponse = undefined
 		this.askResponseText = undefined
 		this.askResponseImages = undefined
-
-		// Cancel the timeouts if they are still running.
-		timeouts.forEach((timeout) => clearTimeout(timeout))
 
 		// Switch back to an active state.
 		if (this.idleAsk || this.resumableAsk || this.interactiveAsk) {
@@ -5733,11 +5760,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						// This is critical for new_task: when it triggers delegation, flushPendingToolResultsToHistory()
 						// will save the user message with tool_results. The assistant message must already be in history
 						// so that tool_result blocks appear AFTER their corresponding tool_use blocks.
-						await this.addToApiConversationHistory(
+						const assistantResponsePersisted = await this.persistAssistantResponseBeforeEffects(
 							{ role: "assistant", content: assistantContent },
 							reasoningMessage || undefined,
 						)
-						this.assistantMessageSavedToHistory = true
+						if (!assistantResponsePersisted) {
+							return true
+						}
 
 						TelemetryService.instance.captureConversationMessage(this.taskId, "assistant")
 					}

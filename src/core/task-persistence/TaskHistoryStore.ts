@@ -3,6 +3,7 @@ import * as fsSync from "fs"
 import * as path from "path"
 
 import type { HistoryItem } from "@alpha-code/types"
+import deepEqual from "fast-deep-equal"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { safeWriteJson } from "../../utils/safeWriteJson"
@@ -238,7 +239,7 @@ export class TaskHistoryStore {
 	/**
 	 * Scan task directories vs index and fix any drift.
 	 *
-	 * - Tasks on disk but missing from cache: read and add
+	 * - Tasks on disk: refresh from their authoritative per-task file
 	 * - Tasks in cache but missing from disk: remove
 	 */
 	async reconcile(): Promise<void> {
@@ -260,18 +261,18 @@ export class TaskHistoryStore {
 			const cacheIds = new Set(this.cache.keys())
 			let changed = false
 
-			// Tasks on disk but not in cache: read their history_item.json
+			// Per-task files are authoritative. Refresh existing cache entries too:
+			// the index can lag a successful per-task write after a crash, and other
+			// extension instances update these files without changing task IDs.
 			for (const taskId of onDiskIds) {
-				if (!cacheIds.has(taskId)) {
-					try {
-						const item = await this.readTaskFile(taskId)
-						if (item) {
-							this.cache.set(taskId, item)
-							changed = true
-						}
-					} catch {
-						// Corrupted or missing file, skip
+				try {
+					const item = await this.readTaskFile(taskId)
+					if (item && !deepEqual(this.cache.get(taskId), item)) {
+						this.cache.set(taskId, item)
+						changed = true
 					}
+				} catch {
+					// Corrupted or missing file, keep the last known-good cache entry.
 				}
 			}
 

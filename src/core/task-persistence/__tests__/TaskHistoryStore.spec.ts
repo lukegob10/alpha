@@ -84,6 +84,24 @@ describe("TaskHistoryStore", () => {
 			expect(store.get("task-1")).toBeDefined()
 			expect(store.get("task-2")).toBeDefined()
 		})
+
+		it("refreshes a stale index entry from the authoritative per-task file", async () => {
+			const tasksDir = path.join(tmpDir, "tasks")
+			const taskDir = path.join(tasksDir, "stale-task")
+			await fs.mkdir(taskDir, { recursive: true })
+
+			const staleItem = makeHistoryItem({ id: "stale-task", status: "active", tokensIn: 10 })
+			const authoritativeItem = { ...staleItem, status: "completed" as const, tokensIn: 500 }
+			await fs.writeFile(path.join(taskDir, GlobalFileNames.historyItem), JSON.stringify(authoritativeItem))
+			await fs.writeFile(
+				path.join(tasksDir, GlobalFileNames.historyIndex),
+				JSON.stringify({ version: 1, updatedAt: Date.now(), entries: [staleItem] }),
+			)
+
+			await store.initialize()
+
+			expect(store.get("stale-task")).toMatchObject({ status: "completed", tokensIn: 500 })
+		})
 	})
 
 	describe("get()", () => {

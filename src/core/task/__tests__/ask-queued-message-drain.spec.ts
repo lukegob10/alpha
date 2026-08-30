@@ -145,6 +145,31 @@ describe("Task.ask queued message drain", () => {
 		expect(result.text).toBe("picked answer")
 	})
 
+	it.each(["completion_result", "resume_task", "resume_completed_task"] as const)(
+		"consumes exactly one pre-queued message in FIFO order for %s",
+		async (askType) => {
+			const task = await createAskOnlyTask()
+			;(task as any).messageQueueService.addMessage("first queued turn")
+			;(task as any).messageQueueService.addMessage("second queued turn")
+
+			const result = await task.ask(askType, "Done", false)
+
+			expect(result).toMatchObject({ response: "messageResponse", text: "first queued turn" })
+			expect((task as any).messageQueueService.messages).toHaveLength(1)
+			expect((task as any).messageQueueService.messages[0]?.text).toBe("second queued turn")
+		},
+	)
+
+	it("settles a blocked ask when the task is aborted", async () => {
+		const task = await createAskOnlyTask()
+		const askPromise = task.ask("followup", "Q?", false)
+
+		;(task as any).abort = true
+
+		await expect(askPromise).rejects.toThrow("aborted")
+		expect((task as any).activeAsk).toBeUndefined()
+	})
+
 	it("does not consume queued messages for command_output asks", async () => {
 		const task = await createAskOnlyTask()
 

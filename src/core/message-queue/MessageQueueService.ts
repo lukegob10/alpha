@@ -102,6 +102,10 @@ export class MessageQueueService extends EventEmitter<QueueEvents> {
 
 	public dequeueMessage(): QueuedMessage | undefined {
 		const message = this._messages.shift()
+		if (!message) {
+			return undefined
+		}
+
 		this.emit("stateChanged", this._messages)
 		return message
 	}

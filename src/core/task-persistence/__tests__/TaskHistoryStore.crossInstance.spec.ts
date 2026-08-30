@@ -122,7 +122,7 @@ describe("TaskHistoryStore cross-instance safety", () => {
 		expect(storeB.get("shared-task")).toBeUndefined()
 	})
 
-	it("per-task file updates by one instance are visible to another after invalidation", async () => {
+	it("per-task file updates by one instance are visible to another after reconciliation", async () => {
 		await storeA.initialize()
 		await storeB.initialize()
 
@@ -137,8 +137,8 @@ describe("TaskHistoryStore cross-instance safety", () => {
 		// Instance A updates the task
 		await storeA.upsert({ ...item, tokensIn: 500 })
 
-		// Instance B invalidates and re-reads
-		await storeB.invalidate("update-task")
+		// Reconciliation re-reads existing IDs instead of trusting B's stale cache.
+		await storeB.reconcile()
 		expect(storeB.get("update-task")!.tokensIn).toBe(500)
 	})
 

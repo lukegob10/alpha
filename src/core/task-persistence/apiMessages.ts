@@ -74,21 +74,9 @@ export async function readApiMessages({
 
 		if (await fileExistsAtPath(oldPath)) {
 			const fileContent = await fs.readFile(oldPath, "utf8")
+			let parsedData: unknown
 			try {
-				const parsedData = JSON.parse(fileContent)
-				if (!Array.isArray(parsedData)) {
-					console.warn(
-						`[readApiMessages] Parsed OLD data is not an array (got ${typeof parsedData}), returning empty. TaskId: ${taskId}, Path: ${oldPath}`,
-					)
-					return []
-				}
-				if (parsedData.length === 0) {
-					console.error(
-						`[Alpha-Debug] readApiMessages: Found OLD API conversation history file (claude_messages.json), but it's empty (parsed as []). TaskId: ${taskId}, Path: ${oldPath}`,
-					)
-				}
-				await fs.unlink(oldPath)
-				return parsedData
+				parsedData = JSON.parse(fileContent)
 			} catch (error) {
 				console.warn(
 					`[readApiMessages] Error parsing OLD API conversation history file (claude_messages.json), returning empty. TaskId: ${taskId}, Path: ${oldPath}, Error: ${error}`,
@@ -96,6 +84,33 @@ export async function readApiMessages({
 				// DO NOT unlink oldPath if parsing failed.
 				return []
 			}
+
+			if (!Array.isArray(parsedData)) {
+				console.warn(
+					`[readApiMessages] Parsed OLD data is not an array (got ${typeof parsedData}), returning empty. TaskId: ${taskId}, Path: ${oldPath}`,
+				)
+				return []
+			}
+			if (parsedData.length === 0) {
+				console.error(
+					`[Alpha-Debug] readApiMessages: Found OLD API conversation history file (claude_messages.json), but it's empty (parsed as []). TaskId: ${taskId}, Path: ${oldPath}`,
+				)
+			}
+
+			try {
+				// Commit the replacement before removing the fallback. resumeTaskFromHistory
+				// reads twice, so deleting the only durable copy here loses the task.
+				await safeWriteJson(filePath, parsedData)
+				await fs.unlink(oldPath)
+			} catch (error) {
+				// Keep serving the parsed fallback and retain whichever durable copy
+				// remains. A later read can safely retry the idempotent migration.
+				console.warn(
+					`[readApiMessages] Failed to migrate OLD API conversation history file. TaskId: ${taskId}, Old path: ${oldPath}, New path: ${filePath}, Error: ${error}`,
+				)
+			}
+
+			return parsedData
 		}
 	}
 

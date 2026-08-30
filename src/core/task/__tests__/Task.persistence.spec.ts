@@ -356,6 +356,49 @@ describe("Task persistence", () => {
 		})
 	})
 
+	describe("assistant response persistence boundary", () => {
+		it("stops the turn before effects when assistant history cannot be saved", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			vi.spyOn(task as any, "addToApiConversationHistory").mockResolvedValue(false)
+			const retry = vi.spyOn(task, "retrySaveApiConversationHistory").mockResolvedValue(false)
+
+			const persisted = await (task as any).persistAssistantResponseBeforeEffects({
+				role: "assistant",
+				content: [{ type: "tool_use", id: "tool-1", name: "read_file", input: {} }],
+			})
+
+			expect(persisted).toBe(false)
+			expect(retry).toHaveBeenCalledOnce()
+			expect(task.assistantMessageSavedToHistory).toBe(false)
+			expect((task as any).suspendAfterCurrentTurnReason).toContain("could not be saved")
+		})
+
+		it("opens the effects boundary only after a failed save is recovered", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			vi.spyOn(task as any, "addToApiConversationHistory").mockResolvedValue(false)
+			vi.spyOn(task, "retrySaveApiConversationHistory").mockResolvedValue(true)
+
+			const persisted = await (task as any).persistAssistantResponseBeforeEffects({
+				role: "assistant",
+				content: [{ type: "tool_use", id: "tool-1", name: "read_file", input: {} }],
+			})
+
+			expect(persisted).toBe(true)
+			expect(task.assistantMessageSavedToHistory).toBe(true)
+			expect((task as any).suspendAfterCurrentTurnReason).toBeUndefined()
+		})
+	})
+
 	// ── saveClineMessages ────────────────────────────────────────────────
 
 	describe("saveClineMessages", () => {
