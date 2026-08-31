@@ -33,6 +33,14 @@ const converter = new Convert({
 	newline: false, // We handle newlines ourselves via <pre>
 })
 
+const escapeHtml = (value: string): string =>
+	value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;")
+
 /**
  * Renders terminal output with ANSI color/formatting support.
  *
@@ -47,9 +55,9 @@ export const TerminalOutput: React.FC<TerminalOutputProps> = ({ content, classNa
 		try {
 			return converter.toHtml(content)
 		} catch {
-			// Fallback: if conversion fails, show raw text (stripped of ANSI)
+			// Keep the innerHTML sink safe even if the ANSI converter fails.
 			// eslint-disable-next-line no-control-regex
-			return content.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, "")
+			return escapeHtml(content.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, ""))
 		}
 	}, [content])
 
