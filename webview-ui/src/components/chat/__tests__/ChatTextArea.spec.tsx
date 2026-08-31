@@ -353,6 +353,7 @@ describe("ChatTextArea", () => {
 			const mockFocus = vi.fn()
 			textarea.select = mockSelect
 			textarea.focus = mockFocus
+			fireEvent.click(getEnhancePromptButton())
 
 			// Simulate receiving enhanced prompt message
 			window.dispatchEvent(
@@ -380,6 +381,7 @@ describe("ChatTextArea", () => {
 			})
 
 			render(<ChatTextArea {...defaultProps} setInputValue={setInputValue} inputValue="Original prompt" />)
+			fireEvent.click(getEnhancePromptButton())
 
 			// Simulate receiving enhanced prompt message
 			window.dispatchEvent(
@@ -395,22 +397,29 @@ describe("ChatTextArea", () => {
 			expect(setInputValue).toHaveBeenCalledWith("Enhanced test prompt")
 		})
 
-		it("should not crash when textarea ref is not available", () => {
+		it("ignores unsolicited enhanced prompt responses", () => {
 			const setInputValue = vi.fn()
 
-			render(<ChatTextArea {...defaultProps} setInputValue={setInputValue} />)
+			render(<ChatTextArea {...defaultProps} setInputValue={setInputValue} inputValue="Original prompt" />)
 
-			// Simulate receiving enhanced prompt message when textarea ref might not be ready
-			expect(() => {
-				window.dispatchEvent(
-					new MessageEvent("message", {
-						data: {
-							type: "enhancedPrompt",
-							text: "Enhanced test prompt",
-						},
-					}),
-				)
-			}).not.toThrow()
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "enhancedPrompt", text: "Foreign enhanced prompt" },
+				}),
+			)
+
+			expect(setInputValue).not.toHaveBeenCalledWith("Foreign enhanced prompt")
+		})
+
+		it("does not submit a second enhancement while one is pending", () => {
+			render(<ChatTextArea {...defaultProps} inputValue="Original prompt" />)
+			const enhanceButton = getEnhancePromptButton()
+
+			fireEvent.click(enhanceButton)
+			fireEvent.click(enhanceButton)
+
+			expect(mockPostMessage.mock.calls.filter(([message]) => message.type === "enhancePrompt")).toHaveLength(1)
+			expect(enhanceButton).toBeDisabled()
 		})
 	})
 

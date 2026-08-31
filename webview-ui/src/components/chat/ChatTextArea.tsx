@@ -131,7 +131,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			const messageHandler = (event: MessageEvent) => {
 				const message = event.data
 
-				if (message.type === "enhancedPrompt") {
+				if (message.type === "enhancedPrompt" && isEnhancingPrompt) {
 					if (message.text && textAreaRef.current) {
 						try {
 							// Use execCommand to replace text while preserving undo history
@@ -204,7 +204,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 			window.addEventListener("message", messageHandler)
 			return () => window.removeEventListener("message", messageHandler)
-		}, [setInputValue, searchRequestId, inputValue])
+		}, [setInputValue, searchRequestId, inputValue, isEnhancingPrompt])
 
 		const [isDraggingOver, setIsDraggingOver] = useState(false)
 		const [textAreaBaseHeight, setTextAreaBaseHeight] = useState<number | undefined>(undefined)
@@ -243,6 +243,10 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		}, [selectedType, searchQuery])
 
 		const handleEnhancePrompt = useCallback(() => {
+			if (isEnhancingPrompt) {
+				return
+			}
+
 			const trimmedInput = inputValue.trim()
 
 			if (trimmedInput) {
@@ -251,7 +255,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			} else {
 				setInputValue(t("chat:enhancePromptDescription"))
 			}
-		}, [inputValue, setInputValue, t])
+		}, [inputValue, isEnhancingPrompt, setInputValue, t])
 
 		const allModes = useMemo(() => getUserFacingModeOptions(getAllModes(customModes), mode), [customModes, mode])
 		const modeSwitchDisabled = isStreaming || isEditMode
@@ -1273,7 +1277,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									<StandardTooltip content={t("chat:enhancePrompt")}>
 										<button
 											aria-label={t("chat:enhancePrompt")}
-											disabled={false}
+											disabled={isEnhancingPrompt}
 											onClick={handleEnhancePrompt}
 											className={cn(
 												"relative inline-flex items-center justify-center",
