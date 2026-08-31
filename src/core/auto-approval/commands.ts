@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "crypto"
 import type { SubagentCommandApprovalPolicy, SubagentCommandApprovalRule } from "@alpha-code/types"
 
 import { parseCommand } from "../../shared/parse-command"
+import { analyzeShellCommands, containsDynamicExecutable } from "./shellCommand"
 
 const SUBAGENT_COMMAND_APPROVAL_ALGORITHM = "sha256-salted-prefix-v1" as const
 
@@ -323,8 +324,12 @@ function aggregateCommandDecision(
 		return "auto_approve"
 	}
 
-	// Parse into sub-commands (split by &&, ||, ;, |)
-	const subCommands = parseCommand(command)
+	// Keep the established parser for compatibility, then add commands that are
+	// executable through quoted, parameter-default, arithmetic, or process substitution.
+	const shellAnalysis = analyzeShellCommands(command)
+	const subCommands = [
+		...new Set([...parseCommand(command), ...shellAnalysis.commands.flatMap((inner) => parseCommand(inner))]),
+	]
 
 	// Check each sub-command and collect decisions
 	const decisions: CommandDecision[] = subCommands.map((cmd) => {
@@ -341,6 +346,12 @@ function aggregateCommandDecision(
 
 	// Require explicit user approval for dangerous patterns
 	if (containsDangerousSubstitution(command)) {
+		return "ask_user"
+	}
+
+	// A prefix policy cannot determine an executable supplied by shell expansion.
+	// Never inherit approval for an indeterminate command name.
+	if (shellAnalysis.malformedSubstitution || containsDynamicExecutable(command)) {
 		return "ask_user"
 	}
 

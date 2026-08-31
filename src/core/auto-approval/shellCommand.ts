@@ -132,20 +132,26 @@ export function analyzeShellCommands(source: string): ShellCommandAnalysis {
 	}
 }
 
-/** Tokenize shell command chains while retaining quoted paths. */
-export function tokenizeShellCommands(source: string): string[][] {
-	const commands: string[][] = []
-	let tokens: string[] = []
+interface ShellTokenDetail {
+	value: string
+	startsWithDynamicExpansion: boolean
+}
+
+function tokenizeShellCommandDetails(source: string): ShellTokenDetail[][] {
+	const commands: ShellTokenDetail[][] = []
+	let tokens: ShellTokenDetail[] = []
 	let current = ""
 	let tokenStarted = false
+	let startsWithDynamicExpansion = false
 	let quote: "single" | "double" | null = null
 	let substitutionDepth = 0
 	let inBackticks = false
 
 	const pushToken = () => {
-		if (tokenStarted) tokens.push(current)
+		if (tokenStarted) tokens.push({ value: current, startsWithDynamicExpansion })
 		current = ""
 		tokenStarted = false
+		startsWithDynamicExpansion = false
 	}
 	const pushCommand = () => {
 		pushToken()
@@ -178,6 +184,7 @@ export function tokenizeShellCommands(source: string): string[][] {
 			}
 		}
 		if (character === "`" && findBacktickEnd(source, index) !== undefined) {
+			if (current.length === 0) startsWithDynamicExpansion = true
 			current += character
 			tokenStarted = true
 			inBackticks = true
@@ -194,6 +201,7 @@ export function tokenizeShellCommands(source: string): string[][] {
 			continue
 		}
 		if (character === "$" && nextCharacter === "(") {
+			if (current.length === 0) startsWithDynamicExpansion = true
 			current += "$("
 			tokenStarted = true
 			substitutionDepth++
@@ -232,10 +240,28 @@ export function tokenizeShellCommands(source: string): string[][] {
 			}
 		}
 
+		if (current.length === 0 && character === "$" && quote !== "single") {
+			startsWithDynamicExpansion = true
+		}
 		current += character
 		tokenStarted = true
 	}
 
 	pushCommand()
 	return commands
+}
+
+/** Tokenize shell command chains while retaining quoted paths. */
+export function tokenizeShellCommands(source: string): string[][] {
+	return tokenizeShellCommandDetails(source).map((tokens) => tokens.map(({ value }) => value))
+}
+
+export function containsDynamicExecutable(source: string): boolean {
+	const extracted = extractCommandSubstitutions(source)
+	return [source, ...extracted.commands].flatMap(tokenizeShellCommandDetails).some((tokens) => {
+		let commandIndex = 0
+		while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[commandIndex]?.value ?? "")) commandIndex++
+		const executable = tokens[commandIndex]
+		return executable?.startsWithDynamicExpansion === true && /^(?:\$|`)/.test(executable.value)
+	})
 }

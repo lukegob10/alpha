@@ -139,4 +139,56 @@ describe("getCommandDecision — integration with dangerous substitution checks"
 	it("should ask user for dangerous parameter expansion even when command is allowed", () => {
 		expect(getCommandDecision('echo "${var@P}"', allowedCommands)).toBe("ask_user")
 	})
+
+	it.each(['echo "$(whoami)"', "echo ${value:-$(whoami)}", "echo $(( $(whoami) ))", 'echo "`whoami`"'])(
+		"checks executable substitutions hidden from the outer command parser: %s",
+		(command) => {
+			expect(getCommandDecision(command, allowedCommands)).toBe("ask_user")
+		},
+	)
+
+	it("preserves auto-approval when both the outer and substituted commands are allowed", () => {
+		expect(getCommandDecision('echo "$(whoami)"', ["echo", "whoami"])).toBe("auto_approve")
+		expect(getCommandDecision('echo "line`nbreak"', ["echo"])).toBe("auto_approve")
+	})
+
+	it("asks for malformed substitutions instead of inheriting approval from the outer command", () => {
+		expect(getCommandDecision('echo "$(whoami"', allowedCommands)).toBe("ask_user")
+	})
+
+	it("does not inherit wildcard approval for an executable supplied by variable expansion", () => {
+		expect(getCommandDecision("x=rm; $x victim", ["*"], ["rm"])).toBe("ask_user")
+		expect(getCommandDecision("x=rm; ${x} victim", ["*"], ["rm"])).toBe("ask_user")
+	})
+
+	it("asks when command substitution supplies the executable name", () => {
+		expect(getCommandDecision("$(echo rm) victim", ["echo"], ["rm"])).toBe("ask_user")
+		expect(getCommandDecision("`echo rm` victim", ["echo"], ["rm"])).toBe("ask_user")
+	})
+
+	it("checks commands executed through process substitution", () => {
+		expect(getCommandDecision("cat <(whoami)", ["cat"])).toBe("ask_user")
+		expect(getCommandDecision("cat >(whoami)", ["cat"])).toBe("ask_user")
+		expect(getCommandDecision('cat <(echo "$(whoami)")', ["cat", "echo"])).toBe("ask_user")
+		expect(getCommandDecision('echo "$(cat <(whoami))"', ["echo", "cat"])).toBe("ask_user")
+		expect(getCommandDecision("cat <(whoami", ["cat", "whoami"])).toBe("ask_user")
+		expect(getCommandDecision("cat >(whoami", ["cat", "whoami"])).toBe("ask_user")
+	})
+
+	it("preserves quoted process-substitution literals and fully allowed process commands", () => {
+		expect(getCommandDecision('cat "<(whoami)"', ["cat"])).toBe("auto_approve")
+		expect(getCommandDecision("cat <(echo allowed)", ["cat", "echo"])).toBe("auto_approve")
+	})
+
+	it("preserves approval for literal dollar-prefixed executable names", () => {
+		expect(getCommandDecision("'$cmd' victim", ["*"], ["rm"])).toBe("auto_approve")
+		expect(getCommandDecision("\\$cmd victim", ["*"], ["rm"])).toBe("auto_approve")
+	})
+
+	it("applies substitution and executable-variable checks to hashed inherited policy", () => {
+		const policy = createSubagentCommandApprovalPolicy(["*"], ["rm"], "b".repeat(64))
+
+		expect(getSubagentCommandDecision('echo "$(rm victim)"', policy)).toBe("auto_deny")
+		expect(getSubagentCommandDecision("x=rm; $x victim", policy)).toBe("ask_user")
+	})
 })
