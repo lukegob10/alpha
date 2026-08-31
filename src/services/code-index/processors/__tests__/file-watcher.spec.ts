@@ -285,7 +285,7 @@ describe("FileWatcher", () => {
 		})
 	})
 
-	describe("dispose", () => {
+	describe("lifecycle", () => {
 		it("does not replace an initialized native watcher", async () => {
 			const callsBeforeInitialize = vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length
 			await fileWatcher.initialize()
@@ -302,6 +302,46 @@ describe("FileWatcher", () => {
 			fileWatcher.dispose()
 
 			expect(mockWatcher.dispose).toHaveBeenCalled()
+		})
+
+		it("recreates the native watcher after a restartable stop", async () => {
+			const callsBeforeInitialize = vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length
+			await fileWatcher.initialize()
+
+			fileWatcher.stop()
+			await fileWatcher.initialize()
+
+			expect(vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length - callsBeforeInitialize).toBe(
+				2,
+			)
+			expect(mockWatcher.dispose).toHaveBeenCalledTimes(1)
+		})
+
+		it("waits for accepted batches before restarting", async () => {
+			const callsBeforeInitialize = vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length
+			await fileWatcher.initialize()
+			fileWatcher.stop()
+			const batch = deferred<void>()
+			;(fileWatcher as unknown as { batchProcessingTail: Promise<void> }).batchProcessingTail = batch.promise
+
+			const restart = fileWatcher.initialize()
+			await Promise.resolve()
+			expect(vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length - callsBeforeInitialize).toBe(
+				1,
+			)
+
+			batch.resolve(undefined)
+			await restart
+			expect(vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length - callsBeforeInitialize).toBe(
+				2,
+			)
+		})
+
+		it("rejects initialization after terminal disposal", async () => {
+			await fileWatcher.initialize()
+			fileWatcher.dispose()
+
+			await expect(fileWatcher.initialize()).rejects.toThrow(/disposed/i)
 		})
 	})
 

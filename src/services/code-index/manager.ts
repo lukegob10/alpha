@@ -308,6 +308,7 @@ export class CodeIndexManager {
 	 */
 	public dispose(): void {
 		this.stopIndexing()
+		this._orchestrator?.dispose()
 		this._stateManager.dispose()
 	}
 
@@ -364,6 +365,7 @@ export class CodeIndexManager {
 	private async retireOrchestrator(orchestrator: CodeIndexOrchestrator): Promise<void> {
 		orchestrator.stopIndexing()
 		await orchestrator.whenIdle()
+		orchestrator.dispose()
 	}
 
 	private async recreateServicesExclusive(): Promise<void> {

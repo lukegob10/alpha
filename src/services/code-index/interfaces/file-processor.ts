@@ -56,6 +56,9 @@ export interface IFileWatcher extends vscode.Disposable {
 	 */
 	initialize(): Promise<void>
 
+	/** Stops accepting filesystem events while preserving event subscribers for a later restart. */
+	stop(): void
+
 	/** Resolves after all batches already accepted by the watcher have settled. */
 	whenIdle(): Promise<void>
 

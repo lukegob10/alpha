@@ -218,6 +218,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 					onDidStartBatchProcessing: vi.fn(),
 					onBatchProgressUpdate: vi.fn(),
 					watch: vi.fn(),
+					stop: vi.fn(),
 					stopWatcher: vi.fn(),
 					dispose: vi.fn(),
 				}),
@@ -229,6 +230,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 						onDidStartBatchProcessing: vi.fn(),
 						onBatchProgressUpdate: vi.fn(),
 						watch: vi.fn(),
+						stop: vi.fn(),
 						stopWatcher: vi.fn(),
 						dispose: vi.fn(),
 					},
@@ -274,6 +276,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				stopWatcher: vi.fn(),
 				stopIndexing: vi.fn(),
 				whenIdle: vi.fn().mockResolvedValue(undefined),
+				dispose: vi.fn(),
 			}
 			;(manager as any)._searchService = {}
 
@@ -296,6 +299,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 					onDidStartBatchProcessing: vi.fn(),
 					onBatchProgressUpdate: vi.fn(),
 					watch: vi.fn(),
+					stop: vi.fn(),
 					stopWatcher: vi.fn(),
 					dispose: vi.fn(),
 				}),
@@ -307,6 +311,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 						onDidStartBatchProcessing: vi.fn(),
 						onBatchProgressUpdate: vi.fn(),
 						watch: vi.fn(),
+						stop: vi.fn(),
 						stopWatcher: vi.fn(),
 						dispose: vi.fn(),
 					},
@@ -353,6 +358,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				onDidStartBatchProcessing: vi.fn(),
 				onBatchProgressUpdate: vi.fn(),
 				watch: vi.fn(),
+				stop: vi.fn(),
 				stopWatcher: vi.fn(),
 				dispose: vi.fn(),
 			}
@@ -512,6 +518,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				stopWatcher: vi.fn(),
 				stopIndexing: vi.fn(),
 				whenIdle: vi.fn().mockResolvedValue(undefined),
+				dispose: vi.fn(),
 				state: "Error",
 			}
 			;(manager as any)._searchService = {}
@@ -532,6 +539,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				stopWatcher: vi.fn(),
 				stopIndexing: vi.fn(),
 				whenIdle: vi.fn().mockReturnValue(idle.promise),
+				dispose: vi.fn(),
 				state: "Error",
 			}
 			;(manager as any)._orchestrator = oldOrchestrator
@@ -549,6 +557,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 
 			expect(oldOrchestrator.stopIndexing).toHaveBeenCalledTimes(1)
 			expect(oldOrchestrator.whenIdle).toHaveBeenCalledTimes(1)
+			expect(oldOrchestrator.dispose).toHaveBeenCalledTimes(1)
 			expect(orchestratorBeforeRelease).toBe(oldOrchestrator)
 			expect(secondSettledBeforeRelease).toBe(false)
 			expect((manager as any)._orchestrator).toBeUndefined()
@@ -639,6 +648,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 						onDidStartBatchProcessing: vi.fn(),
 						onBatchProgressUpdate: vi.fn(),
 						watch: vi.fn(),
+						stop: vi.fn(),
 						stopWatcher: vi.fn(),
 						dispose: vi.fn(),
 					},
@@ -721,6 +731,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				stopWatcher: vi.fn(),
 				stopIndexing: vi.fn(),
 				whenIdle: vi.fn().mockResolvedValue(undefined),
+				dispose: vi.fn(),
 			}
 			;(manager as any)._searchService = {}
 
@@ -857,6 +868,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				stopIndexing: vi.fn(),
 				stopWatcher: vi.fn(),
 				whenIdle: vi.fn().mockResolvedValue(undefined),
+				dispose: vi.fn(),
 				state: "Indexing",
 			}
 			;(manager as any)._orchestrator = mockOrchestrator
@@ -879,6 +891,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				stopIndexing: vi.fn(),
 				stopWatcher: vi.fn(),
 				whenIdle: vi.fn().mockResolvedValue(undefined),
+				dispose: vi.fn(),
 				state: "Indexing",
 			}
 			;(manager as any)._orchestrator = mockOrchestrator

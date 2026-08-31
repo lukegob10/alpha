@@ -39,6 +39,8 @@ export class FileWatcher implements IFileWatcher {
 	private accumulatedEvents: Map<string, { uri: vscode.Uri; type: "create" | "change" | "delete" }> = new Map()
 	private batchProcessDebounceTimer?: NodeJS.Timeout
 	private batchProcessingTail: Promise<void> = Promise.resolve()
+	private lifecycleVersion = 0
+	private disposed = false
 	private readonly BATCH_DEBOUNCE_DELAY_MS = 500
 	private readonly FILE_PROCESSING_CONCURRENCY_LIMIT = 10
 	private readonly batchSegmentThreshold: number
@@ -111,6 +113,22 @@ export class FileWatcher implements IFileWatcher {
 	 * Initializes the file watcher
 	 */
 	async initialize(): Promise<void> {
+		if (this.disposed) {
+			throw new Error("Cannot initialize a disposed file watcher.")
+		}
+		if (this.fileWatcher) {
+			return
+		}
+		const lifecycleVersion = this.lifecycleVersion
+		await this.whenIdle()
+		if (this.disposed) {
+			throw new Error("Cannot initialize a disposed file watcher.")
+		}
+		if (lifecycleVersion !== this.lifecycleVersion) {
+			const error = new Error("File watcher initialization was stopped.")
+			error.name = "AbortError"
+			throw error
+		}
 		if (this.fileWatcher) {
 			return
 		}
@@ -127,20 +145,29 @@ export class FileWatcher implements IFileWatcher {
 		this.fileWatcher.onDidDelete(this.handleFileDeleted.bind(this))
 	}
 
-	/**
-	 * Disposes the file watcher
-	 */
-	dispose(): void {
+	stop(): void {
+		this.lifecycleVersion++
 		this.fileWatcher?.dispose()
 		this.fileWatcher = undefined
 		if (this.batchProcessDebounceTimer) {
 			clearTimeout(this.batchProcessDebounceTimer)
 			this.batchProcessDebounceTimer = undefined
 		}
+		this.accumulatedEvents.clear()
+	}
+
+	/**
+	 * Disposes the file watcher
+	 */
+	dispose(): void {
+		if (this.disposed) {
+			return
+		}
+		this.disposed = true
+		this.stop()
 		this._onDidStartBatchProcessing.dispose()
 		this._onBatchProgressUpdate.dispose()
 		this._onDidFinishBatchProcessing.dispose()
-		this.accumulatedEvents.clear()
 	}
 
 	/**

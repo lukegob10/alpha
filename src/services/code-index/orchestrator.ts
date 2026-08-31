@@ -389,13 +389,23 @@ export class CodeIndexOrchestrator {
 	 * Stops the file watcher and cleans up resources.
 	 */
 	public stopWatcher(): void {
-		this.fileWatcher.dispose()
-		this._fileWatcherSubscriptions.forEach((sub) => sub.dispose())
-		this._fileWatcherSubscriptions = []
+		this.fileWatcher.stop()
+		this.disposeWatcherSubscriptions()
 
 		if (this.stateManager.state !== "Error" && this.stateManager.state !== "Stopping") {
 			this.stateManager.setSystemState("Standby", t("embeddings:orchestrator.fileWatcherStopped"))
 		}
+	}
+
+	public dispose(): void {
+		this._abortController?.abort()
+		this.fileWatcher.dispose()
+		this.disposeWatcherSubscriptions()
+	}
+
+	private disposeWatcherSubscriptions(): void {
+		this._fileWatcherSubscriptions.forEach((subscription) => subscription.dispose())
+		this._fileWatcherSubscriptions = []
 	}
 
 	public async whenIdle(): Promise<void> {

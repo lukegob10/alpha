@@ -9,6 +9,54 @@ const deferred = <T>() => {
 	return { promise, resolve }
 }
 
+const terminalEvent = <T>() => {
+	const listeners = new Set<(value: T) => void>()
+	let disposed = false
+	return {
+		event: (listener: (value: T) => void) => {
+			if (disposed) {
+				return { dispose: () => undefined }
+			}
+			listeners.add(listener)
+			return { dispose: () => listeners.delete(listener) }
+		},
+		fire: (value: T) => {
+			for (const listener of listeners) {
+				listener(value)
+			}
+		},
+		dispose: () => {
+			disposed = true
+			listeners.clear()
+		},
+	}
+}
+
+type WatcherProgress = {
+	processedInBatch: number
+	totalInBatch: number
+	currentFile?: string
+}
+
+type WatcherSummary = {
+	processedFiles: Array<{
+		path: string
+		status: "success" | "skipped" | "error" | "processed_for_batching" | "local_error"
+		error?: Error
+	}>
+	batchError?: Error
+}
+
+const attachTerminalWatcherEvents = (fileWatcher: any) => {
+	const startEvent = terminalEvent<string[]>()
+	const progressEvent = terminalEvent<WatcherProgress>()
+	const finishEvent = terminalEvent<WatcherSummary>()
+	fileWatcher.onDidStartBatchProcessing = startEvent.event
+	fileWatcher.onBatchProgressUpdate = progressEvent.event
+	fileWatcher.onDidFinishBatchProcessing = finishEvent.event
+	return { startEvent, progressEvent, finishEvent }
+}
+
 // Mock vscode workspace so startIndexing passes workspace check
 vi.mock("vscode", () => {
 	const path = require("path")
@@ -104,6 +152,7 @@ describe("CodeIndexOrchestrator - error path cleanup gating", () => {
 
 		fileWatcher = {
 			initialize: vi.fn().mockResolvedValue(undefined),
+			stop: vi.fn(),
 			onDidStartBatchProcessing: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 			onBatchProgressUpdate: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 			onDidFinishBatchProcessing: vi.fn().mockReturnValue({ dispose: vi.fn() }),
@@ -245,6 +294,7 @@ describe("CodeIndexOrchestrator - stopIndexing", () => {
 
 		fileWatcher = {
 			initialize: vi.fn().mockResolvedValue(undefined),
+			stop: vi.fn(),
 			onDidStartBatchProcessing: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 			onBatchProgressUpdate: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 			onDidFinishBatchProcessing: vi.fn().mockReturnValue({ dispose: vi.fn() }),
@@ -476,6 +526,37 @@ describe("CodeIndexOrchestrator - stopIndexing", () => {
 		})
 		progressHandler({ processedInBatch: 1, totalInBatch: 1 })
 
+		expect(stateManager.state).toBe("Error")
+	})
+
+	it("delivers watcher failures after stop and restart", async () => {
+		const { startEvent, progressEvent, finishEvent } = attachTerminalWatcherEvents(fileWatcher)
+		fileWatcher.stop = vi.fn()
+		fileWatcher.dispose = vi.fn(() => {
+			startEvent.dispose()
+			progressEvent.dispose()
+			finishEvent.dispose()
+		})
+		scanner.scanDirectory.mockResolvedValue({ stats: { processed: 0, skipped: 0 }, totalBlockCount: 0 })
+		const orchestrator = new CodeIndexOrchestrator(
+			configManager,
+			stateManager,
+			workspacePath,
+			cacheManager,
+			vectorStore,
+			scanner,
+			fileWatcher,
+		)
+
+		await orchestrator.startIndexing()
+		orchestrator.stopIndexing()
+		await orchestrator.whenIdle()
+		await orchestrator.startIndexing()
+		finishEvent.fire({
+			processedFiles: [{ path: "broken.ts", status: "local_error", error: new Error("parse failed") }],
+		})
+
+		expect(fileWatcher.initialize).toHaveBeenCalledTimes(2)
 		expect(stateManager.state).toBe("Error")
 	})
 })
