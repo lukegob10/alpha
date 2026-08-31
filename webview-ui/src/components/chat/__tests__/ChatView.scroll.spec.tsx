@@ -51,7 +51,6 @@ vi.mock("../TaskHeader", () => ({
 		</button>
 	),
 }))
-vi.mock("./ProfileViolationWarning", nullDefaultModule)
 vi.mock("../common/DismissibleUpsell", nullDefaultModule)
 vi.mock("../CheckpointWarning", () => ({ CheckpointWarning: () => null }))
 vi.mock("../QueuedMessages", () => ({ QueuedMessages: () => null }))

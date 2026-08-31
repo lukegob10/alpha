@@ -393,7 +393,6 @@
 			"copy_code": "複製程式碼"
 		}
 	},
-	"profileViolationWarning": "目前設定檔與您的組織設定不相容",
 	"shellIntegration": {
 		"title": "命令執行警告",
 		"description": "命令正在沒有 VS Code 終端機 Shell 整合的情況下執行。若要隱藏此警告，可在 <settingsLink>Alpha 設定</settingsLink> 的 <strong>終端機</strong> 區塊中停用 Shell 整合，或使用下方連結排解 VS Code 終端機整合問題。",

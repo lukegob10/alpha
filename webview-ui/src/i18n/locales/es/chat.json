@@ -363,7 +363,6 @@
 			"copy_code": "Copiar código"
 		}
 	},
-	"profileViolationWarning": "El perfil actual no es compatible con la configuración de tu organización",
 	"shellIntegration": {
 		"title": "Advertencia de ejecución de comandos",
 		"description": "Tu comando se está ejecutando sin la integración de shell de terminal de VSCode. Para suprimir esta advertencia, puedes desactivar la integración de shell en la sección <strong>Terminal</strong> de la <settingsLink>configuración de Alpha</settingsLink> o solucionar problemas de integración de terminal de VSCode usando el enlace de abajo.",

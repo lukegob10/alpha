@@ -363,7 +363,6 @@
 			"copy_code": "Code kopiëren"
 		}
 	},
-	"profileViolationWarning": "Het huidige profiel is niet compatibel met de instellingen van uw organisatie",
 	"shellIntegration": {
 		"title": "Waarschuwing commando-uitvoering",
 		"description": "Je commando wordt uitgevoerd zonder VSCode-terminal shell-integratie. Om deze waarschuwing te onderdrukken kun je shell-integratie uitschakelen in het gedeelte <strong>Terminal</strong> van de <settingsLink>Alpha-instellingen</settingsLink> of de VSCode-terminalintegratie oplossen via de onderstaande link.",
