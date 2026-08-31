@@ -51,9 +51,10 @@ describe("QwenCodeHandler streaming content", () => {
 	it("matches thinking tags split across stream chunks", async () => {
 		mockCreate.mockResolvedValueOnce({
 			[Symbol.asyncIterator]: async function* () {
-				yield { choices: [{ delta: { content: "<think>foo" } }] }
-				yield { choices: [{ delta: { content: "bar" } }] }
-				yield { choices: [{ delta: { content: "</think>answer" } }] }
+				yield { choices: [{ delta: { content: "<thi" } }] }
+				yield { choices: [{ delta: { content: "nk>foo" } }] }
+				yield { choices: [{ delta: { content: "bar</thi" } }] }
+				yield { choices: [{ delta: { content: "nk>answer" } }] }
 			},
 		})
 
@@ -66,5 +67,25 @@ describe("QwenCodeHandler streaming content", () => {
 
 		expect(reasoning.join("")).toBe("foobar")
 		expect(text.join("")).toBe("answer")
+	})
+
+	it("classifies thinking tags after a nonempty text prefix", async () => {
+		mockCreate.mockResolvedValueOnce({
+			[Symbol.asyncIterator]: async function* () {
+				yield { choices: [{ delta: { content: "prefix:" } }] }
+				yield { choices: [{ delta: { content: "<think>reasoning" } }] }
+				yield { choices: [{ delta: { content: "</think>suffix" } }] }
+			},
+		})
+
+		const reasoning: string[] = []
+		const text: string[] = []
+		for await (const chunk of handler.createMessage("test prompt", [])) {
+			if (chunk.type === "reasoning") reasoning.push(chunk.text)
+			if (chunk.type === "text") text.push(chunk.text)
+		}
+
+		expect(reasoning.join("")).toBe("reasoning")
+		expect(text.join("")).toBe("prefix:suffix")
 	})
 })

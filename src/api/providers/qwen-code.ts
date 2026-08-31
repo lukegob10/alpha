@@ -329,6 +329,7 @@ export class QwenCodeHandler extends BaseProvider implements SingleCompletionHan
 					type: chunk.matched ? "reasoning" : "text",
 					text: chunk.data,
 				}) as const,
+			Number.POSITIVE_INFINITY,
 		)
 
 		for await (const apiChunk of stream) {
