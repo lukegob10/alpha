@@ -43,7 +43,7 @@ vi.mock("../openrouter")
 vi.mock("../requesty")
 
 // Mock ContextProxy with a simple static instance
-vi.mock("../../../core/config/ContextProxy", () => ({
+vi.mock("../../../../core/config/ContextProxy", () => ({
 	ContextProxy: {
 		instance: {
 			globalStorageUri: {
@@ -128,6 +128,35 @@ describe("getModels with new GetModelsOptions", () => {
 		expect(result).toEqual(mockModels)
 	})
 
+	it("keeps sequential credential-scoped catalogs isolated", async () => {
+		const cacheEntries = new Map<string, unknown>()
+		const MockedNodeCache = vi.mocked(NodeCache)
+		const mockCache = new MockedNodeCache()
+		;(mockCache.get as Mock).mockImplementation((key: string) => cacheEntries.get(key))
+		;(mockCache.set as Mock).mockImplementation((key: string, value: unknown) => {
+			cacheEntries.set(key, value)
+			return true
+		})
+		mockGetLiteLLMModels.mockImplementation(async (_apiKey, baseUrl) => ({
+			[baseUrl]: {
+				maxTokens: 4096,
+				contextWindow: 8192,
+				supportsPromptCache: false,
+			},
+		}))
+
+		const first = await getModels({ provider: "litellm", apiKey: "first-secret", baseUrl: "http://first.test" })
+		const second = await getModels({ provider: "litellm", apiKey: "second-secret", baseUrl: "http://second.test" })
+
+		expect(first).toHaveProperty("http://first.test")
+		expect(second).toHaveProperty("http://second.test")
+		expect(mockGetLiteLLMModels).toHaveBeenCalledTimes(2)
+		const keys = [...cacheEntries.keys()]
+		expect(new Set(keys).size).toBe(2)
+		expect(keys.join(" ")).not.toContain("first-secret")
+		expect(keys.join(" ")).not.toContain("second-secret")
+	})
+
 	it("handles errors and re-throws them", async () => {
 		const expectedError = new Error("LiteLLM connection failed")
 		mockGetLiteLLMModels.mockRejectedValue(expectedError)
@@ -196,10 +225,6 @@ describe("getModelsFromCache disk fallback", () => {
 	})
 
 	it("returns disk cache data when memory cache misses and context is available", () => {
-		// Note: This test validates the logic but the ContextProxy mock in test environment
-		// returns undefined for getCacheDirectoryPathSync, which is expected behavior
-		// when the context is not fully initialized. The actual disk cache loading
-		// is validated through integration tests.
 		const diskModels = {
 			"disk-model": {
 				maxTokens: 4096,
@@ -213,9 +238,8 @@ describe("getModelsFromCache disk fallback", () => {
 
 		const result = getModelsFromCache("openrouter")
 
-		// In the test environment, ContextProxy.instance may not be fully initialized,
-		// so getCacheDirectoryPathSync returns undefined and disk cache is not attempted
-		expect(result).toBeUndefined()
+		expect(result).toEqual(diskModels)
+		expect(fsSync.readFileSync).toHaveBeenCalledWith(expect.stringContaining("openrouter_models.json"), "utf8")
 	})
 
 	it("handles disk read errors gracefully", () => {
@@ -429,6 +453,27 @@ describe("empty cache protection", () => {
 			const [result1, result2] = await Promise.all([promise1, promise2])
 			expect(result1).toEqual(mockModels)
 			expect(result2).toEqual(mockModels)
+		})
+
+		it("does not coalesce concurrent refreshes for different provider configurations", async () => {
+			mockGet.mockReturnValue(undefined)
+			mockGetLiteLLMModels.mockImplementation(async (_apiKey, baseUrl) => ({
+				[baseUrl]: {
+					maxTokens: 4096,
+					contextWindow: 8192,
+					supportsPromptCache: false,
+				},
+			}))
+			const { refreshModels } = await import("../modelCache")
+
+			const [first, second] = await Promise.all([
+				refreshModels({ provider: "litellm", apiKey: "first", baseUrl: "http://first.test" }),
+				refreshModels({ provider: "litellm", apiKey: "second", baseUrl: "http://second.test" }),
+			])
+
+			expect(first).toHaveProperty("http://first.test")
+			expect(second).toHaveProperty("http://second.test")
+			expect(mockGetLiteLLMModels).toHaveBeenCalledTimes(2)
 		})
 	})
 })

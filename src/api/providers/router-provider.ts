@@ -2,7 +2,7 @@ import OpenAI from "openai"
 
 import { type ModelInfo, type ModelRecord } from "@alpha-code/types"
 
-import { ApiHandlerOptions, RouterName } from "../../shared/api"
+import { ApiHandlerOptions, GetModelsOptions, RouterName } from "../../shared/api"
 
 import { BaseProvider } from "./base-provider"
 import { getModels, getModelsFromCache } from "./fetchers/modelCache"
@@ -27,6 +27,7 @@ export abstract class RouterProvider extends BaseProvider {
 	protected readonly defaultModelId: string
 	protected readonly defaultModelInfo: ModelInfo
 	protected readonly client: OpenAI
+	private readonly modelCacheOptions: GetModelsOptions
 
 	constructor({
 		options,
@@ -44,6 +45,7 @@ export abstract class RouterProvider extends BaseProvider {
 		this.modelId = modelId
 		this.defaultModelId = defaultModelId
 		this.defaultModelInfo = defaultModelInfo
+		this.modelCacheOptions = { provider: name, apiKey, baseUrl: baseURL } as GetModelsOptions
 
 		this.client = new OpenAI({
 			baseURL,
@@ -56,7 +58,7 @@ export abstract class RouterProvider extends BaseProvider {
 	}
 
 	public async fetchModel() {
-		this.models = await getModels({ provider: this.name, apiKey: this.client.apiKey, baseUrl: this.client.baseURL })
+		this.models = await getModels(this.modelCacheOptions)
 		return this.getModel()
 	}
 
@@ -70,7 +72,7 @@ export abstract class RouterProvider extends BaseProvider {
 
 		// Fall back to global cache (synchronous disk/memory cache)
 		// This ensures models are available before fetchModel() is called
-		const cachedModels = getModelsFromCache(this.name)
+		const cachedModels = getModelsFromCache(this.modelCacheOptions)
 		if (cachedModels?.[id]) {
 			// Also populate instance models for future calls
 			this.models = cachedModels

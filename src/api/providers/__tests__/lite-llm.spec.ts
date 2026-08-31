@@ -2,6 +2,7 @@ import OpenAI from "openai"
 import { Anthropic } from "@anthropic-ai/sdk"
 
 import { LiteLLMHandler } from "../lite-llm"
+import { getModelsFromCache } from "../fetchers/modelCache"
 import { ApiHandlerOptions } from "../../../shared/api"
 import { litellmDefaultModelId, litellmDefaultModelInfo } from "@alpha-code/types"
 
@@ -63,6 +64,16 @@ describe("LiteLLMHandler", () => {
 			litellmModelId: litellmDefaultModelId,
 		}
 		handler = new LiteLLMHandler(mockOptions)
+	})
+
+	it("reads the cache for the active LiteLLM credentials and endpoint", () => {
+		handler.getModel()
+
+		expect(getModelsFromCache).toHaveBeenCalledWith({
+			provider: "litellm",
+			apiKey: "test-key",
+			baseUrl: "http://localhost:4000",
+		})
 	})
 
 	describe("prompt caching", () => {
