@@ -538,9 +538,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 				vscode.postMessage({
 					type: "updateVSCodeSetting",
 					setting: "terminal.integrated.inheritEnv",
-					// The shared message shape currently narrows `value` to number even though this
-					// allowlisted VS Code setting is boolean.
-					value: terminalInheritEnv as never,
+					value: terminalInheritEnv,
 				})
 				terminalInheritEnvInitial.current = terminalInheritEnv
 			}
