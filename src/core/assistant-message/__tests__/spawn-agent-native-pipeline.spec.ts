@@ -7,26 +7,46 @@ import {
 	presentAssistantMessage,
 } from "../presentAssistantMessage"
 import { Task } from "../../task/Task"
+import { AskIgnoredError } from "../../task/AskIgnoredError"
 import { spawnAgentTool } from "../../tools/SpawnAgentTool"
 import { listAgentsTool } from "../../tools/ListAgentsTool"
 import { waitAgentTool } from "../../tools/WaitAgentTool"
 import { sendMessageTool } from "../../tools/SendMessageTool"
 import { cancelAgentTool } from "../../tools/CancelAgentTool"
+import { validateToolUse } from "../../tools/validateToolUse"
+import { readFileTool } from "../../tools/ReadFileTool"
+import { askFollowupQuestionTool } from "../../tools/AskFollowupQuestionTool"
 
-const { spawnAgentHandle, listAgentsHandle, waitAgentHandle, sendMessageHandle, cancelAgentHandle } = vi.hoisted(
-	() => ({
-		spawnAgentHandle: vi.fn(),
-		listAgentsHandle: vi.fn(),
-		waitAgentHandle: vi.fn(),
-		sendMessageHandle: vi.fn(),
-		cancelAgentHandle: vi.fn(),
-	}),
-)
+const {
+	spawnAgentHandle,
+	listAgentsHandle,
+	waitAgentHandle,
+	sendMessageHandle,
+	cancelAgentHandle,
+	readFileHandle,
+	askFollowupQuestionHandle,
+} = vi.hoisted(() => ({
+	spawnAgentHandle: vi.fn(),
+	listAgentsHandle: vi.fn(),
+	waitAgentHandle: vi.fn(),
+	sendMessageHandle: vi.fn(),
+	cancelAgentHandle: vi.fn(),
+	readFileHandle: vi.fn(),
+	askFollowupQuestionHandle: vi.fn(),
+}))
 
 vi.mock("../../tools/validateToolUse", () => ({
 	validateToolUse: vi.fn(),
 	isValidToolName: vi.fn((toolName: string) =>
-		["spawn_agent", "list_agents", "wait_agent", "send_message", "cancel_agent"].includes(toolName),
+		[
+			"spawn_agent",
+			"list_agents",
+			"wait_agent",
+			"send_message",
+			"cancel_agent",
+			"read_file",
+			"ask_followup_question",
+		].includes(toolName),
 	),
 }))
 vi.mock("../../tools/SpawnAgentTool", () => ({
@@ -52,6 +72,17 @@ vi.mock("../../tools/SendMessageTool", () => ({
 vi.mock("../../tools/CancelAgentTool", () => ({
 	cancelAgentTool: {
 		handle: cancelAgentHandle,
+	},
+}))
+vi.mock("../../tools/ReadFileTool", () => ({
+	readFileTool: {
+		handle: readFileHandle,
+		getReadFileToolDescription: vi.fn(() => "[read_file]"),
+	},
+}))
+vi.mock("../../tools/AskFollowupQuestionTool", () => ({
+	askFollowupQuestionTool: {
+		handle: askFollowupQuestionHandle,
 	},
 }))
 vi.mock("@alpha-code/telemetry", () => ({
@@ -84,6 +115,12 @@ describe("spawn_agent native streaming pipeline", () => {
 		})
 		cancelAgentHandle.mockImplementation(async (_task, _block, callbacks) => {
 			callbacks.pushToolResult('{"status":"cancelled"}')
+		})
+		readFileHandle.mockImplementation(async (_task, _block, callbacks) => {
+			callbacks.pushToolResult("file contents")
+		})
+		askFollowupQuestionHandle.mockImplementation(async (_task, _block, callbacks) => {
+			callbacks.pushToolResult("question answered")
 		})
 	})
 
@@ -125,7 +162,10 @@ describe("spawn_agent native streaming pipeline", () => {
 			api: {
 				getModel: () => ({ id: "test-model", info: {} }),
 			},
-			getTaskMode: vi.fn().mockResolvedValue("code"),
+			getTaskMode: vi.fn().mockResolvedValue("architect"),
+			getTaskToolDenialReason: vi.fn((_name: string, params: Record<string, unknown>) =>
+				params.write_scope === null ? undefined : "Plan-mode spawn_agent requires a read-only scope.",
+			),
 			recordToolUsage: vi.fn(),
 			recordToolError: vi.fn(),
 			toolRepetitionDetector: {
@@ -134,7 +174,7 @@ describe("spawn_agent native streaming pipeline", () => {
 			providerRef: {
 				deref: () => ({
 					getState: vi.fn().mockResolvedValue({
-						mode: "code",
+						mode: "architect",
 						customModes: [],
 						experiments: { customTools: false },
 						disabledTools: [],
@@ -153,6 +193,10 @@ describe("spawn_agent native streaming pipeline", () => {
 				processNativeToolCallStreamEvents(events: ToolCallStreamEvent[]): void
 			}
 		).processNativeToolCallStreamEvents
+		spawnAgentHandle.mockImplementationOnce(async (_task, _block, callbacks) => {
+			expect(await callbacks.askApproval("tool", "{}")).toBe(true)
+			callbacks.pushToolResult('{"runId":"run-1","status":"running"}')
+		})
 
 		processNativeToolCallStreamEvents.call(task, rawEvents)
 
@@ -163,11 +207,17 @@ describe("spawn_agent native streaming pipeline", () => {
 			name: "spawn_agent",
 			partial: false,
 			nativeArgs,
+			params: expect.objectContaining({
+				write_scope: "null",
+				expected_output: JSON.stringify(nativeArgs.expected_output),
+			}),
 		})
 
 		await presentAssistantMessage(task as never)
 
 		expect(spawnAgentTool.handle).toHaveBeenCalledOnce()
+		expect(task.getTaskToolDenialReason).toHaveBeenCalledWith("spawn_agent", nativeArgs)
+		expect(vi.mocked(validateToolUse).mock.calls.map((call) => call[4])).toEqual([nativeArgs, nativeArgs])
 		expect(spawnAgentTool.handle).toHaveBeenCalledWith(
 			task,
 			expect.objectContaining({
@@ -187,6 +237,183 @@ describe("spawn_agent native streaming pipeline", () => {
 				content: expect.stringContaining("missing nativeArgs"),
 			}),
 		)
+	})
+
+	it("treats a superseded spawn approval as a rejection and releases the presentation lock", async () => {
+		const task = createPresentationTask("superseded-approval-parent")
+		task.assistantMessageContent = [
+			createToolUse("call_spawn_superseded", "spawn_agent", {
+				task_name: "reviewer",
+				fork_turns: "none",
+				objective: "Review the lifecycle.",
+				agent_kind: "review",
+				write_scope: null,
+				expected_output: ["findings"],
+			}),
+		]
+		task.ask.mockRejectedValueOnce(new AskIgnoredError("superseded"))
+		spawnAgentHandle.mockImplementationOnce(async (_task, _block, callbacks) => {
+			expect(await callbacks.askApproval("tool", "{}")).toBe(false)
+		})
+
+		await expect(presentAssistantMessage(task as never)).resolves.toBeUndefined()
+
+		expect(task.didRejectTool).toBe(true)
+		expect(task.presentAssistantMessageLocked).toBe(false)
+		expect(task.userMessageContent).toEqual([
+			expect.objectContaining({
+				tool_use_id: "call_spawn_superseded",
+				content: expect.stringContaining("Approval request was superseded"),
+				is_error: true,
+			}),
+		])
+	})
+
+	it("emits an error result when a complete tool-internal ask is superseded", async () => {
+		const task = createPresentationTask("superseded-followup-parent")
+		task.assistantMessageContent = [
+			createToolUse("call_followup_superseded", "ask_followup_question", {
+				question: "Continue?",
+				follow_up: [{ text: "Yes", mode: null }],
+			}),
+		]
+		task.ask.mockRejectedValueOnce(new AskIgnoredError("superseded"))
+		askFollowupQuestionHandle.mockImplementationOnce(async (cline, _block, callbacks) => {
+			try {
+				await cline.ask("followup", "{}", false)
+			} catch (error) {
+				await callbacks.handleError("asking a follow-up question", error)
+			}
+		})
+
+		await expect(presentAssistantMessage(task as never)).resolves.toBeUndefined()
+
+		expect(askFollowupQuestionTool.handle).toHaveBeenCalledOnce()
+		expect(task.didRejectTool).toBe(true)
+		expect(task.userMessageContent).toEqual([
+			expect.objectContaining({
+				tool_use_id: "call_followup_superseded",
+				content: expect.stringContaining("Approval request was superseded"),
+				is_error: true,
+			}),
+		])
+		expect(task.currentStreamingContentIndex).toBe(1)
+		expect(task.userMessageContentReady).toBe(true)
+		expect(task.presentAssistantMessageLocked).toBe(false)
+	})
+
+	it("upgrades a provisional result when its handler rejects and continues in order", async () => {
+		const task = createPresentationTask("failed-handler-parent")
+		const privateWorkspaceRoot = "C:\\private\\agent-worktree"
+		task.taskKind = "subagent"
+		task.subagentRole = "worker"
+		task.cwd = privateWorkspaceRoot
+		task.subagentPrivateWorkspaceRoot = privateWorkspaceRoot
+		task.assistantMessageContent = [
+			createToolUse("call_spawn_failed", "spawn_agent", {}),
+			createToolUse("call_list_after_failure", "list_agents", {}),
+		]
+		spawnAgentHandle.mockImplementationOnce(async (_task, _block, callbacks) => {
+			callbacks.pushToolResult("provisional spawn result")
+			throw new Error(`spawn failed in ${privateWorkspaceRoot}\\src\\index.ts`)
+		})
+
+		await expect(presentAssistantMessage(task as never)).resolves.toBeUndefined()
+
+		expect(task.presentAssistantMessageLocked).toBe(false)
+		expect(task.userMessageContent).toEqual([
+			expect.objectContaining({
+				tool_use_id: "call_spawn_failed",
+				content: expect.stringContaining("spawn failed"),
+				is_error: true,
+			}),
+			expect.objectContaining({
+				tool_use_id: "call_list_after_failure",
+				content: '{"agents":[]}',
+			}),
+		])
+		expect(listAgentsTool.handle).toHaveBeenCalledOnce()
+		expect(task.userMessageContent[0].content).toContain("provisional spawn result")
+		expect(task.userMessageContent[0].content).not.toContain("agent-worktree")
+		expect(task.userMessageContentReady).toBe(true)
+	})
+
+	it("drains a final update queued at the lock-owner release boundary", async () => {
+		const task = createPresentationTask("release-boundary-parent")
+		task.didCompleteReadingStream = false
+		task.assistantMessageContent = [{ type: "text", content: "streaming", partial: true }]
+		let pendingUpdate = false
+		let armBoundaryUpdate = false
+		let scheduledBoundaryUpdate = false
+		Object.defineProperty(task, "presentAssistantMessageHasPendingUpdates", {
+			get() {
+				if (armBoundaryUpdate && !scheduledBoundaryUpdate) {
+					scheduledBoundaryUpdate = true
+					queueMicrotask(() => {
+						task.assistantMessageContent[0].partial = false
+						task.assistantMessageContent[0].content = "complete"
+						task.didCompleteReadingStream = true
+						void presentAssistantMessage(task as never)
+					})
+				}
+				return pendingUpdate
+			},
+			set(value: boolean) {
+				pendingUpdate = value
+			},
+		})
+		task.say.mockImplementation(async () => {
+			armBoundaryUpdate = true
+		})
+
+		await presentAssistantMessage(task as never)
+
+		expect(task.say).toHaveBeenCalledTimes(2)
+		expect(task.say).toHaveBeenLastCalledWith("text", "complete", undefined, false)
+		expect(task.currentStreamingContentIndex).toBe(1)
+		expect(task.userMessageContentReady).toBe(true)
+		expect(task.presentAssistantMessageLocked).toBe(false)
+	})
+
+	it("keeps ordinary multi-block presentation pending until every handler settles", async () => {
+		const task = createPresentationTask("ordinary-sequence-parent")
+		task.assistantMessageContent = [
+			createToolUse("call_read_first", "read_file", { path: "first.ts" }),
+			createToolUse("call_read_second", "read_file", { path: "second.ts" }),
+		]
+		let releaseSecondRead: () => void = () => undefined
+		const secondReadMayFinish = new Promise<void>((resolve) => {
+			releaseSecondRead = resolve
+		})
+		let markSecondReadStarted: () => void = () => undefined
+		const secondReadStarted = new Promise<void>((resolve) => {
+			markSecondReadStarted = resolve
+		})
+		readFileHandle.mockImplementation(async (_task, block, callbacks) => {
+			if (block.id === "call_read_second") {
+				markSecondReadStarted()
+				await secondReadMayFinish
+			}
+			callbacks.pushToolResult(`${block.nativeArgs.path} contents`)
+		})
+
+		let presentationSettled = false
+		const presentation = presentAssistantMessage(task as never).then(() => {
+			presentationSettled = true
+		})
+		await secondReadStarted
+		await Promise.resolve()
+
+		expect(presentationSettled).toBe(false)
+		releaseSecondRead()
+		await presentation
+
+		expect(readFileTool.handle).toHaveBeenCalledTimes(2)
+		expect(task.userMessageContent.map((result) => result.tool_use_id)).toEqual([
+			"call_read_first",
+			"call_read_second",
+		])
+		expect(task.presentAssistantMessageLocked).toBe(false)
 	})
 
 	it("executes two spawn_agent calls from one provider response and resolves after both ordered results", async () => {
@@ -378,6 +605,10 @@ function createPresentationTask(taskId: string) {
 	return {
 		taskId,
 		instanceId: `${taskId}-instance`,
+		taskKind: "primary" as "primary" | "subagent",
+		subagentRole: undefined as string | undefined,
+		cwd: "C:\\workspace",
+		subagentPrivateWorkspaceRoot: undefined as string | undefined,
 		abort: false,
 		presentAssistantMessageLocked: false,
 		presentAssistantMessageHasPendingUpdates: false,

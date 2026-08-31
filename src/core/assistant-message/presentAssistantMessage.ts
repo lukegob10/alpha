@@ -50,6 +50,7 @@ import { isValidToolName, validateToolUse } from "../tools/validateToolUse"
 import { codebaseSearchTool } from "../tools/CodebaseSearchTool"
 import { getVSCodeBrowserTool } from "../tools/VSCodeBrowserTool"
 import { resolveToolAlias } from "../prompts/tools/filter-tools-for-mode"
+import { redactTaskPrivatePaths } from "../tools/taskPathPresentation"
 
 import { formatResponse } from "../prompts/responses"
 import { sanitizeToolUseId } from "../../utils/tool-id"
@@ -101,6 +102,81 @@ export function isBatchableAgentToolSequence(toolNames: readonly string[]): bool
 	return toolNames.length > 1 && toolNames.every((toolName) => batchableAgentToolNames.has(toolName))
 }
 
+async function requestToolApproval(
+	cline: Task,
+	pushToolResult: (content: ToolResponse, isError?: boolean) => void,
+	type: ClineAsk,
+	partialMessage?: string,
+	progressStatus?: ToolProgressStatus,
+	isProtected?: boolean,
+) {
+	try {
+		return await cline.ask(type, partialMessage, false, progressStatus, isProtected || false)
+	} catch (error) {
+		if (!(error instanceof AskIgnoredError)) throw error
+
+		pushToolResult(formatResponse.toolError(`Approval request was superseded: ${error.message}`), true)
+		cline.didRejectTool = true
+		return undefined
+	}
+}
+
+async function recoverUnexpectedToolPresentationError(cline: Task, error: unknown): Promise<boolean> {
+	if (cline.abort) return false
+
+	const block = cline.assistantMessageContent[cline.currentStreamingContentIndex]
+	if ((block?.type !== "tool_use" && block?.type !== "mcp_tool_use") || !block.id) return false
+
+	const toolCallId = sanitizeToolUseId(block.id)
+	const errorMessage = redactTaskPrivatePaths(
+		cline,
+		`Error executing ${block.name}: ${error instanceof Error ? error.message : String(error)}`,
+	)
+	const matchingResultIndex = cline.userMessageContent.findIndex(
+		(content) => content.type === "tool_result" && content.tool_use_id === toolCallId,
+	)
+
+	if (matchingResultIndex >= 0) {
+		const matchingResult = cline.userMessageContent[matchingResultIndex]
+		if (matchingResult.type === "tool_result") {
+			const failureContent = formatResponse.toolError(errorMessage)
+			cline.userMessageContent[matchingResultIndex] = {
+				...matchingResult,
+				content:
+					typeof matchingResult.content === "string"
+						? `${matchingResult.content}\n\n${failureContent}`
+						: [...(matchingResult.content ?? []), { type: "text", text: failureContent }],
+				is_error: true,
+			}
+		}
+	} else {
+		cline.pushToolResultToUserContent({
+			type: "tool_result",
+			tool_use_id: toolCallId,
+			content: formatResponse.toolError(errorMessage),
+			is_error: true,
+		})
+	}
+
+	cline.consecutiveMistakeCount++
+	cline.didToolFailInCurrentTurn = true
+	try {
+		cline.recordToolError(block.name as ToolName, errorMessage)
+	} catch {
+		// Best-effort telemetry must not prevent native tool-result recovery.
+	}
+	await cline.say("error", errorMessage).catch(() => undefined)
+
+	cline.currentStreamingContentIndex++
+	if (cline.currentStreamingContentIndex < cline.assistantMessageContent.length) {
+		cline.presentAssistantMessageHasPendingUpdates = true
+	} else if (cline.didCompleteReadingStream) {
+		cline.userMessageContentReady = true
+	}
+
+	return true
+}
+
 /**
  * Processes and presents assistant message content to the user interface.
  *
@@ -130,6 +206,24 @@ export async function presentAssistantMessage(cline: Task) {
 
 	cline.presentAssistantMessageLocked = true
 	cline.presentAssistantMessageHasPendingUpdates = false
+	try {
+		do {
+			cline.presentAssistantMessageHasPendingUpdates = false
+			try {
+				await presentAssistantMessageContent(cline)
+			} catch (error) {
+				if (!(await recoverUnexpectedToolPresentationError(cline, error))) throw error
+			}
+		} while (cline.presentAssistantMessageHasPendingUpdates)
+	} finally {
+		cline.presentAssistantMessageLocked = false
+	}
+}
+
+async function presentAssistantMessageContent(cline: Task) {
+	if (cline.abort) {
+		throw new Error(`[Task#presentAssistantMessage] task ${cline.taskId}.${cline.instanceId} aborted`)
+	}
 
 	if (cline.currentStreamingContentIndex >= cline.assistantMessageContent.length) {
 		// This may happen if the last content block was completed before
@@ -140,7 +234,6 @@ export async function presentAssistantMessage(cline: Task) {
 			cline.userMessageContentReady = true
 		}
 
-		cline.presentAssistantMessageLocked = false
 		return
 	}
 
@@ -157,7 +250,6 @@ export async function presentAssistantMessage(cline: Task) {
 			`Block content:`,
 			JSON.stringify(cline.assistantMessageContent[cline.currentStreamingContentIndex], null, 2),
 		)
-		cline.presentAssistantMessageLocked = false
 		return
 	}
 
@@ -183,7 +275,6 @@ export async function presentAssistantMessage(cline: Task) {
 
 			cline.currentStreamingContentIndex = cline.assistantMessageContent.length
 			cline.userMessageContentReady = true
-			cline.presentAssistantMessageLocked = false
 			return
 		}
 	}
@@ -232,7 +323,7 @@ export async function presentAssistantMessage(cline: Task) {
 			// Store approval feedback to merge into tool result (GitHub #10465)
 			let approvalFeedback: { text: string; images?: string[] } | undefined
 
-			const pushToolResult = (content: ToolResponse, feedbackImages?: string[]) => {
+			const pushToolResult = (content: ToolResponse, isError = false) => {
 				if (hasToolResult) {
 					console.warn(
 						`[presentAssistantMessage] Skipping duplicate tool_result for mcp_tool_use: ${toolCallId}`,
@@ -270,6 +361,7 @@ export async function presentAssistantMessage(cline: Task) {
 						type: "tool_result",
 						tool_use_id: sanitizeToolUseId(toolCallId),
 						content: resultContent,
+						...(isError ? { is_error: true } : {}),
 					})
 
 					if (imageBlocks.length > 0) {
@@ -288,13 +380,16 @@ export async function presentAssistantMessage(cline: Task) {
 				progressStatus?: ToolProgressStatus,
 				isProtected?: boolean,
 			) => {
-				const { response, text, images } = await cline.ask(
+				const approval = await requestToolApproval(
+					cline,
+					pushToolResult,
 					type,
 					partialMessage,
-					false,
 					progressStatus,
-					isProtected || false,
+					isProtected,
 				)
+				if (!approval) return false
+				const { response, text, images } = approval
 
 				if (response !== "yesButtonClicked") {
 					if (text) {
@@ -323,7 +418,7 @@ export async function presentAssistantMessage(cline: Task) {
 					)
 				} catch (error) {
 					const message = `Approval expired after the task mode changed: ${error instanceof Error ? error.message : String(error)}`
-					pushToolResult(formatResponse.toolError(message))
+					pushToolResult(formatResponse.toolError(message), true)
 					cline.didRejectTool = true
 					return false
 				}
@@ -340,9 +435,14 @@ export async function presentAssistantMessage(cline: Task) {
 			}
 
 			const handleError = async (action: string, error: Error) => {
-				// Silently ignore AskIgnoredError - this is an internal control flow
-				// signal, not an actual error. It occurs when a newer ask supersedes an older one.
 				if (error instanceof AskIgnoredError) {
+					if (!mcpBlock.partial) {
+						pushToolResult(
+							formatResponse.toolError(`Approval request was superseded: ${error.message}`),
+							true,
+						)
+						cline.didRejectTool = true
+					}
 					return
 				}
 				const errorString = `Error ${action}: ${JSON.stringify(serializeError(error))}`
@@ -350,7 +450,7 @@ export async function presentAssistantMessage(cline: Task) {
 					"error",
 					`Error ${action}:\n${error.message ?? JSON.stringify(serializeError(error), null, 2)}`,
 				)
-				pushToolResult(formatResponse.toolError(errorString))
+				pushToolResult(formatResponse.toolError(errorString), true)
 			}
 
 			if (!mcpBlock.partial) {
@@ -419,6 +519,7 @@ export async function presentAssistantMessage(cline: Task) {
 			// Native tool calling is the only supported tool calling mechanism.
 			// A tool_use block without an id is invalid and cannot be executed.
 			const toolCallId = (block as any).id as string | undefined
+			const policyParams = block.nativeArgs ?? block.params
 			if (!toolCallId) {
 				const errorMessage =
 					"Invalid tool call: missing tool_use.id. XML tool calls are no longer supported. Remove any XML tool markup (e.g. <read_file>...</read_file>) and use native tool calling instead."
@@ -572,7 +673,7 @@ export async function presentAssistantMessage(cline: Task) {
 			// Store approval feedback to merge into tool result (GitHub #10465)
 			let approvalFeedback: { text: string; images?: string[] } | undefined
 
-			const pushToolResult = (content: ToolResponse) => {
+			const pushToolResult = (content: ToolResponse, isError = false) => {
 				// Native tool calling: only allow ONE tool_result per tool call
 				if (hasToolResult) {
 					console.warn(
@@ -608,6 +709,7 @@ export async function presentAssistantMessage(cline: Task) {
 					type: "tool_result",
 					tool_use_id: sanitizeToolUseId(toolCallId),
 					content: resultContent,
+					...(isError ? { is_error: true } : {}),
 				})
 
 				if (imageBlocks.length > 0) {
@@ -623,13 +725,16 @@ export async function presentAssistantMessage(cline: Task) {
 				progressStatus?: ToolProgressStatus,
 				isProtected?: boolean,
 			) => {
-				const { response, text, images } = await cline.ask(
+				const approval = await requestToolApproval(
+					cline,
+					pushToolResult,
 					type,
 					partialMessage,
-					false,
 					progressStatus,
-					isProtected || false,
+					isProtected,
 				)
+				if (!approval) return false
+				const { response, text, images } = approval
 
 				if (response !== "yesButtonClicked") {
 					// Handle both messageResponse and noButtonClicked with text.
@@ -662,13 +767,13 @@ export async function presentAssistantMessage(cline: Task) {
 						latestMode,
 						latestState?.customModes ?? [],
 						latestToolRequirements,
-						block.params,
+						policyParams,
 						latestState?.experiments,
 						cline.api.getModel().info?.includedTools,
 					)
 				} catch (error) {
 					const message = `Approval expired after the task mode changed: ${error instanceof Error ? error.message : String(error)}`
-					pushToolResult(formatResponse.toolError(message))
+					pushToolResult(formatResponse.toolError(message), true)
 					cline.didRejectTool = true
 					return false
 				}
@@ -694,9 +799,14 @@ export async function presentAssistantMessage(cline: Task) {
 			}
 
 			const handleError = async (action: string, error: Error) => {
-				// Silently ignore AskIgnoredError - this is an internal control flow
-				// signal, not an actual error. It occurs when a newer ask supersedes an older one.
 				if (error instanceof AskIgnoredError) {
+					if (!block.partial) {
+						pushToolResult(
+							formatResponse.toolError(`Approval request was superseded: ${error.message}`),
+							true,
+						)
+						cline.didRejectTool = true
+					}
 					return
 				}
 				const errorString = `Error ${action}: ${JSON.stringify(serializeError(error))}`
@@ -706,7 +816,7 @@ export async function presentAssistantMessage(cline: Task) {
 					`Error ${action}:\n${error.message ?? JSON.stringify(serializeError(error), null, 2)}`,
 				)
 
-				pushToolResult(formatResponse.toolError(errorString))
+				pushToolResult(formatResponse.toolError(errorString), true)
 			}
 
 			const runWorkspaceMutation = async (label: string, run: () => Promise<void>) => {
@@ -748,7 +858,7 @@ export async function presentAssistantMessage(cline: Task) {
 				const includedTools = rawIncludedTools?.map((tool) => resolveToolAlias(tool))
 
 				try {
-					const taskToolDenialReason = cline.getTaskToolDenialReason?.(block.name, block.params)
+					const taskToolDenialReason = cline.getTaskToolDenialReason?.(block.name, policyParams)
 					if (taskToolDenialReason) {
 						throw new Error(taskToolDenialReason)
 					}
@@ -768,7 +878,7 @@ export async function presentAssistantMessage(cline: Task) {
 						taskMode,
 						customModes ?? [],
 						toolRequirements,
-						block.params,
+						policyParams,
 						stateExperiments,
 						includedTools,
 					)
@@ -1167,7 +1277,7 @@ export async function presentAssistantMessage(cline: Task) {
 									console.error(message)
 									cline.consecutiveMistakeCount++
 									await cline.say("error", message)
-									pushToolResult(formatResponse.toolError(message))
+									pushToolResult(formatResponse.toolError(message), true)
 									break
 								}
 							}
@@ -1220,11 +1330,6 @@ export async function presentAssistantMessage(cline: Task) {
 	// breaking without presenting any UI. For example the write_to_file tool
 	// was breaking when relpath was undefined, and for invalid relpath it never
 	// presented UI.
-	// This needs to be placed here, if not then calling
-	// cline.presentAssistantMessage below would fail (sometimes) since it's
-	// locked.
-	cline.presentAssistantMessageLocked = false
-
 	// NOTE: When tool is rejected, iterator stream is interrupted and it waits
 	// for `userMessageContentReady` to be true. Future calls to present will
 	// skip execution since `didRejectTool` and iterate until `contentIndex` is
@@ -1251,19 +1356,11 @@ export async function presentAssistantMessage(cline: Task) {
 
 		if (cline.currentStreamingContentIndex < cline.assistantMessageContent.length) {
 			// There are already more content blocks to stream, so we'll call
-			// this function ourselves.
-			const toolNames = cline.assistantMessageContent
-				.filter((contentBlock) => contentBlock.type === "tool_use" || contentBlock.type === "mcp_tool_use")
-				.map((contentBlock) => contentBlock.name)
-
-			if (isBatchableAgentToolSequence(toolNames)) {
-				// Keep the top-level presentation promise alive through the complete
-				// lifecycle batch. The controls still execute serially in provider order,
-				// so approvals, authority checks, and state transitions cannot race.
-				await presentAssistantMessage(cline)
-			} else {
-				presentAssistantMessage(cline)
-			}
+			// this function ourselves. Keep the top-level presentation promise alive
+			// so errors cannot escape as unhandled rejections and the presentation lock
+			// continues to serialize every content block.
+			cline.presentAssistantMessageHasPendingUpdates = false
+			await presentAssistantMessageContent(cline)
 			return
 		} else {
 			// CRITICAL FIX: If we're out of bounds and the stream is complete, set userMessageContentReady
@@ -1276,7 +1373,8 @@ export async function presentAssistantMessage(cline: Task) {
 
 	// Block is partial, but the read stream may have finished.
 	if (cline.presentAssistantMessageHasPendingUpdates) {
-		presentAssistantMessage(cline)
+		cline.presentAssistantMessageHasPendingUpdates = false
+		await presentAssistantMessageContent(cline)
 	}
 }
 
