@@ -56,7 +56,10 @@ export function parseUnifiedDiff(source: string, filePath?: string): DiffLine[] 
 				const firstChar = (raw as string)[0]
 				const content = (raw as string).slice(1)
 
-				if (firstChar === "-") {
+				// Diff metadata is not a source line and must not advance either counter.
+				if (firstChar === "\\") {
+					continue
+				} else if (firstChar === "-") {
 					lines.push({
 						oldLineNum: oldLine,
 						newLineNum: null,
