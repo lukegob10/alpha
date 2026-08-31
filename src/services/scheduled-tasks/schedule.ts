@@ -36,12 +36,28 @@ export const getNextRunAt = (schedule: ScheduledTaskSchedule, after: number): nu
 		return schedule.startAt > after ? schedule.startAt : undefined
 	}
 
-	let next = schedule.startAt
-	let guard = 0
-
-	while (next <= after && guard < 10000) {
-		next = addInterval(schedule, next)
-		guard += 1
+	let next: number
+	if (schedule.type === "monthly") {
+		next = schedule.startAt
+		let guard = 0
+		while (next <= after && guard < 10000) {
+			next = addInterval(schedule, next)
+			guard += 1
+		}
+		if (next <= after) {
+			return undefined
+		}
+	} else {
+		const intervalMs = addInterval(schedule, 0)
+		if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+			return undefined
+		}
+		const elapsed = after - schedule.startAt
+		const intervalsToAdvance = elapsed >= 0 ? Math.floor(elapsed / intervalMs) + 1 : 0
+		next = schedule.startAt + intervalsToAdvance * intervalMs
+		if (!Number.isFinite(next) || next <= after) {
+			return undefined
+		}
 	}
 
 	if ("endAt" in schedule && schedule.endAt !== undefined && next > schedule.endAt) {
