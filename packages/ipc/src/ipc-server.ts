@@ -17,8 +17,15 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements RooCodeI
 	private readonly _socketPath: string
 	private readonly _log: (...args: unknown[]) => void
 	private readonly _clients: Map<string, Socket>
+	private readonly _handleConnect = (socket: Socket) => this.onConnect(socket)
+	private readonly _handleDisconnect = (socket: Socket) => this.onDisconnect(socket)
+	private readonly _handleMessage = (data: unknown) => this.onMessage(data)
+	private readonly _handleStart = () => this.onStart()
 
 	private _isListening = false
+	private _isDisposed = false
+	private _serverStarted = false
+	private _server?: typeof ipc.server
 
 	constructor(socketPath: string, log = console.log) {
 		super()
@@ -29,17 +36,75 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements RooCodeI
 	}
 
 	public listen() {
+		if (this._isListening || this._isDisposed) {
+			return
+		}
+
 		this._isListening = true
 
 		ipc.config.silent = true
 
-		ipc.serve(this.socketPath, () => {
-			ipc.server.on("connect", (socket) => this.onConnect(socket))
-			ipc.server.on("socket.disconnected", (socket) => this.onDisconnect(socket))
-			ipc.server.on("message", (data) => this.onMessage(data))
-		})
+		ipc.serve(this.socketPath, this._handleStart)
 
-		ipc.server.start()
+		const server = (this._server = ipc.server)
+
+		try {
+			server.start()
+		} catch (error) {
+			this._isListening = false
+			this._server = undefined
+			this.detachServerListeners(server, true)
+			throw error
+		}
+	}
+
+	private onStart() {
+		const server = this._server
+
+		if (!server) {
+			return
+		}
+
+		this._serverStarted = true
+
+		if (!this._isListening) {
+			this.stopServer(server)
+			this.releaseServer(server)
+			return
+		}
+
+		server.on("connect", this._handleConnect)
+		server.on("socket.disconnected", this._handleDisconnect)
+		server.on("message", this._handleMessage)
+	}
+
+	private detachServerListeners(server: typeof ipc.server, includeStart = false) {
+		server.off("connect", this._handleConnect)
+		server.off("socket.disconnected", this._handleDisconnect)
+		server.off("message", this._handleMessage)
+
+		if (includeStart) {
+			server.off("start", this._handleStart)
+		}
+	}
+
+	private stopServer(server: typeof ipc.server) {
+		try {
+			server.stop()
+		} catch (error) {
+			this.log(
+				`[server#dispose] error stopping server -> ${error instanceof Error ? error.message : String(error)}`,
+			)
+		}
+	}
+
+	private releaseServer(server: typeof ipc.server) {
+		this.detachServerListeners(server, true)
+		this._serverStarted = false
+
+		if (this._server === server) {
+			this._server = undefined
+		}
 	}
 
 	private onConnect(socket: Socket) {
@@ -125,6 +190,36 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements RooCodeI
 		} else {
 			ipc.server.emit(client, "message", message)
 		}
+	}
+
+	public dispose() {
+		const server = this._server
+
+		this._isDisposed = true
+		this._isListening = false
+
+		if (server) {
+			this.detachServerListeners(server)
+		}
+
+		for (const socket of this._clients.values()) {
+			try {
+				socket.destroy()
+			} catch (error) {
+				this.log(
+					`[server#dispose] error destroying client socket -> ${error instanceof Error ? error.message : String(error)}`,
+				)
+			}
+		}
+
+		this._clients.clear()
+
+		if (server && this._serverStarted) {
+			this.stopServer(server)
+			this.releaseServer(server)
+		}
+
+		this.removeAllListeners()
 	}
 
 	public get socketPath() {
