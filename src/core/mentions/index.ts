@@ -98,6 +98,34 @@ File: ${filePath}
 ${result.content}`
 }
 
+function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
+	const relativePath = path.relative(rootPath, candidatePath)
+	return (
+		relativePath === "" ||
+		(relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativePath))
+	)
+}
+
+async function resolveWorkspaceMentionPath(cwd: string, candidatePath: string): Promise<string> {
+	const workspacePath = path.resolve(cwd)
+	const resolvedCandidate = path.resolve(candidatePath)
+
+	if (!isPathWithinRoot(workspacePath, resolvedCandidate)) {
+		throw new Error("Mention path is outside the current workspace.")
+	}
+
+	const [realWorkspacePath, realCandidatePath] = await Promise.all([
+		fs.realpath(workspacePath),
+		fs.realpath(resolvedCandidate),
+	])
+
+	if (!isPathWithinRoot(realWorkspacePath, realCandidatePath)) {
+		throw new Error("Mention path is outside the current workspace.")
+	}
+
+	return realCandidatePath
+}
+
 export async function parseMentions(
 	text: string,
 	cwd: string,
@@ -276,10 +304,10 @@ async function getFileOrFolderContentWithMetadata(
 	fileContextTracker?: FileContextTracker,
 ): Promise<MentionContentBlock> {
 	const unescapedPath = unescapeSpaces(mentionPath)
-	const absPath = path.resolve(cwd, unescapedPath)
 	const isFolder = mentionPath.endsWith("/")
 
 	try {
+		const absPath = await resolveWorkspaceMentionPath(cwd, path.resolve(cwd, unescapedPath))
 		const stats = await fs.stat(absPath)
 
 		if (stats.isFile()) {
@@ -354,8 +382,11 @@ async function getFileOrFolderContentWithMetadata(
 					folderListing += `${linePrefix}${displayName}\n`
 					if (!isIgnored) {
 						const filePath = path.join(mentionPath, entry.name)
-						const absoluteFilePath = path.resolve(absPath, entry.name)
 						try {
+							const absoluteFilePath = await resolveWorkspaceMentionPath(
+								cwd,
+								path.resolve(absPath, entry.name),
+							)
 							const isBinary = await isBinaryFile(absoluteFilePath).catch(() => false)
 							if (!isBinary) {
 								const result = await extractTextFromFileWithMetadata(absoluteFilePath)
