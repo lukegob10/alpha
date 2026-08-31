@@ -9,6 +9,14 @@ import type { HistoryItem } from "@alpha-code/types"
 import { TaskHistoryStore } from "../TaskHistoryStore"
 import { GlobalFileNames } from "../../../shared/globalFileNames"
 
+const { mockUnlink } = vi.hoisted(() => ({ mockUnlink: vi.fn() }))
+
+vi.mock("fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("fs/promises")>()
+	mockUnlink.mockImplementation((...args: Parameters<typeof actual.unlink>) => actual.unlink(...args))
+	return { ...actual, unlink: mockUnlink }
+})
+
 vi.mock("../../../utils/storage", () => ({
 	getStorageBasePath: vi.fn().mockImplementation((defaultPath: string) => defaultPath),
 }))
@@ -40,6 +48,7 @@ describe("TaskHistoryStore", () => {
 	let store: TaskHistoryStore
 
 	beforeEach(async () => {
+		mockUnlink.mockClear()
 		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "task-history-test-"))
 		store = new TaskHistoryStore(tmpDir)
 	})
@@ -232,6 +241,20 @@ describe("TaskHistoryStore", () => {
 			await store.initialize()
 			await expect(store.delete("non-existent")).resolves.not.toThrow()
 		})
+
+		it("rejects non-ENOENT unlink failures without projecting a successful deletion", async () => {
+			await store.initialize()
+			const item = makeHistoryItem({ id: "delete-denied" })
+			await store.upsert(item)
+			const unlinkError = Object.assign(new Error("permission denied"), { code: "EACCES" })
+			mockUnlink.mockRejectedValueOnce(unlinkError)
+
+			await expect(store.delete(item.id)).rejects.toBe(unlinkError)
+
+			expect(store.get(item.id)).toEqual(item)
+			await store.reconcile()
+			expect(store.get(item.id)).toEqual(item)
+		})
 	})
 
 	describe("deleteMany()", () => {
@@ -246,6 +269,21 @@ describe("TaskHistoryStore", () => {
 			await store.deleteMany(["batch-1", "batch-3"])
 			expect(store.getAll()).toHaveLength(1)
 			expect(store.get("batch-2")).toBeDefined()
+		})
+
+		it("rejects non-ENOENT unlink failures without removing the failed item from cache", async () => {
+			await store.initialize()
+			const failedItem = makeHistoryItem({ id: "batch-delete-denied" })
+			const removableItem = makeHistoryItem({ id: "batch-delete-ok" })
+			await store.upsert(failedItem)
+			await store.upsert(removableItem)
+			const unlinkError = Object.assign(new Error("permission denied"), { code: "EACCES" })
+			mockUnlink.mockRejectedValueOnce(unlinkError)
+
+			await expect(store.deleteMany([failedItem.id, removableItem.id])).rejects.toBe(unlinkError)
+
+			expect(store.get(failedItem.id)).toEqual(failedItem)
+			expect(store.get(removableItem.id)).toBeUndefined()
 		})
 	})
 

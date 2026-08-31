@@ -190,15 +190,8 @@ export class TaskHistoryStore {
 	 */
 	async delete(taskId: string): Promise<void> {
 		return this.withLock(async () => {
+			await this.removeTaskFile(taskId)
 			this.cache.delete(taskId)
-
-			// Remove per-task file (best-effort)
-			try {
-				const filePath = await this.getTaskFilePath(taskId)
-				await fs.unlink(filePath)
-			} catch {
-				// File may already be deleted
-			}
 
 			this.scheduleIndexWrite()
 
@@ -214,22 +207,33 @@ export class TaskHistoryStore {
 	 */
 	async deleteMany(taskIds: string[]): Promise<void> {
 		return this.withLock(async () => {
-			for (const taskId of taskIds) {
-				this.cache.delete(taskId)
+			const failures: unknown[] = []
 
+			for (const taskId of taskIds) {
 				try {
-					const filePath = await this.getTaskFilePath(taskId)
-					await fs.unlink(filePath)
-				} catch {
-					// File may already be deleted
+					await this.removeTaskFile(taskId)
+					this.cache.delete(taskId)
+				} catch (error) {
+					failures.push(error)
 				}
 			}
 
-			this.scheduleIndexWrite()
+			// Keep successful deletions durable even when another item in the batch
+			// could not be removed. Failed items remain cached and authoritative.
+			if (failures.length < taskIds.length || taskIds.length === 0) {
+				this.scheduleIndexWrite()
 
-			// Call onWrite callback inside the lock for serialized write-through
-			if (this.onWrite) {
-				await this.onWrite(this.getAll())
+				// Call onWrite callback inside the lock for serialized write-through
+				if (this.onWrite) {
+					await this.onWrite(this.getAll())
+				}
+			}
+
+			if (failures.length === 1) {
+				throw failures[0]
+			}
+			if (failures.length > 1) {
+				throw new AggregateError(failures, "Failed to delete one or more task history files")
 			}
 		})
 	}
@@ -441,6 +445,21 @@ export class TaskHistoryStore {
 	private async writeTaskFile(item: HistoryItem): Promise<void> {
 		const filePath = await this.getTaskFilePath(item.id)
 		await safeWriteJson(filePath, item)
+	}
+
+	/**
+	 * Remove a per-task history file. An absent file already satisfies deletion;
+	 * every other I/O failure must remain visible to the caller.
+	 */
+	private async removeTaskFile(taskId: string): Promise<void> {
+		const filePath = await this.getTaskFilePath(taskId)
+		try {
+			await fs.unlink(filePath)
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+				throw error
+			}
+		}
 	}
 
 	/**
