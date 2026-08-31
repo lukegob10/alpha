@@ -5,6 +5,7 @@
 	"scripts": {
 		"lint": "eslint src --ext=ts,tsx --max-warnings=0",
 		"check-types": "tsc -b",
+		"test": "vitest run",
 		"dev": "scripts/check-services.sh && next dev -p 3446",
 		"format": "prettier --write src",
 		"build": "next build",

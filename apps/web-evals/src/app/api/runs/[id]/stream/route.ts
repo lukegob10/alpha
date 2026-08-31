@@ -14,6 +14,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 	const stream = new SSEStream()
 	const run = await findRun(Number(id))
 	const redis = await redisClient()
+	const subscriber = redis.duplicate()
+	subscriber.on("error", (error) => console.error(`[stream#${requestId}] Redis subscriber error:`, error))
 
 	let isStreamClosed = false
 	const channelName = `evals:${run.id}`
@@ -42,12 +44,22 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 		}
 
 		isStreamClosed = true
+		request.signal.removeEventListener("abort", onAbort)
 
 		try {
-			await redis.unsubscribe(channelName)
+			await subscriber.unsubscribe(channelName, onMessage)
 			console.log(`[stream#${requestId}] unsubscribed from ${channelName}`)
 		} catch (error) {
 			console.error(`[stream#${requestId}] error unsubscribing:`, error)
+		}
+
+		try {
+			await subscriber.close()
+		} catch (error) {
+			console.error(`[stream#${requestId}] error closing Redis subscriber:`, error)
+			if (subscriber.isOpen) {
+				subscriber.destroy()
+			}
 		}
 
 		try {
@@ -57,15 +69,29 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 		}
 	}
 
-	await redis.subscribe(channelName, onMessage)
-
-	request.signal.addEventListener("abort", () => {
+	const onAbort = () => {
 		console.log(`[stream#${requestId}] abort`)
 
 		disconnect().catch((error) => {
 			console.error(`[stream#${requestId}] cleanup error:`, error)
 		})
-	})
+	}
+
+	try {
+		await subscriber.connect()
+		await subscriber.subscribe(channelName, onMessage)
+	} catch (error) {
+		if (subscriber.isOpen) {
+			subscriber.destroy()
+		}
+		await stream.close()
+		throw error
+	}
+
+	request.signal.addEventListener("abort", onAbort, { once: true })
+	if (request.signal.aborted) {
+		await disconnect()
+	}
 
 	return stream.getResponse()
 }
