@@ -94,6 +94,35 @@ describe("Non-Destructive Sliding Window Truncation", () => {
 			const result = truncateConversation(manyMessages, 0.5, "test-task-id")
 			expect(result.messagesRemoved).toBe(4)
 		})
+
+		it("truncates only messages visible after the latest summary", () => {
+			const condenseId = "condense-before-truncation"
+			const condensedHistory: ApiMessage[] = [
+				{ role: "user", content: "Old task", ts: 1, condenseParent: condenseId },
+				{ role: "assistant", content: "Old response 1", ts: 2, condenseParent: condenseId },
+				{ role: "user", content: "Old request 2", ts: 3, condenseParent: condenseId },
+				{ role: "assistant", content: "Old response 2", ts: 4, condenseParent: condenseId },
+				{ role: "user", content: "Old request 3", ts: 5, condenseParent: condenseId },
+				{ role: "assistant", content: "Old response 3", ts: 6, condenseParent: condenseId },
+				{ role: "user", content: "Summary", ts: 7, isSummary: true, condenseId },
+				{ role: "assistant", content: "Visible response 1", ts: 8 },
+				{ role: "user", content: "Visible request 2", ts: 9 },
+				{ role: "assistant", content: "Visible response 2", ts: 10 },
+				{ role: "user", content: "Visible request 3", ts: 11 },
+				{ role: "assistant", content: "Visible response 3", ts: 12 },
+				{ role: "user", content: "Visible request 4", ts: 13 },
+			]
+			const effectiveBefore = getEffectiveApiHistory(condensedHistory)
+
+			const result = truncateConversation(condensedHistory, 0.5, "test-task-id")
+			const effectiveAfter = getEffectiveApiHistory(result.messages)
+			const newlyHidden = result.messages.filter((message) => message.truncationParent === result.truncationId)
+
+			expect(result.messagesRemoved).toBe(2)
+			expect(newlyHidden.map((message) => message.content)).toEqual(["Visible response 1", "Visible request 2"])
+			expect(newlyHidden.every((message) => !message.condenseParent)).toBe(true)
+			expect(effectiveAfter).toHaveLength(effectiveBefore.length - result.messagesRemoved + 1)
+		})
 	})
 
 	describe("getEffectiveApiHistory()", () => {

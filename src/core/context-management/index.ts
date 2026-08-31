@@ -70,11 +70,20 @@ export function truncateConversation(messages: ApiMessage[], fracToRemove: numbe
 
 	const truncationId = crypto.randomUUID()
 
-	// Filter to only visible messages (those not already truncated)
-	// We need to track original indices to correctly tag messages in the full array
+	// A summary is a fresh-start boundary: messages before the latest summary remain
+	// stored for rewind, but they are not visible to the API and must not consume a
+	// later truncation quota. Track original indices so tagging stays non-destructive.
+	let effectiveStartIndex = 0
+	for (let index = messages.length - 1; index >= 0; index--) {
+		if (messages[index].isSummary) {
+			effectiveStartIndex = index
+			break
+		}
+	}
+
 	const visibleIndices: number[] = []
 	messages.forEach((msg, index) => {
-		if (!msg.truncationParent && !msg.isTruncationMarker) {
+		if (index >= effectiveStartIndex && !msg.truncationParent && !msg.isTruncationMarker) {
 			visibleIndices.push(index)
 		}
 	})
