@@ -39,13 +39,17 @@ function fuzzySearch(lines: string[], searchChunk: string, startIndex: number, e
 	let bestMatchIndex = -1
 	let bestMatchContent = ""
 	const searchLen = searchChunk.split(/\r?\n/).length
+	const maxStartIndex = endIndex - searchLen
+	if (maxStartIndex < startIndex) {
+		return { bestScore, bestMatchIndex, bestMatchContent }
+	}
 
 	// Middle-out from the midpoint
-	const midPoint = Math.floor((startIndex + endIndex) / 2)
+	const midPoint = Math.floor((startIndex + maxStartIndex) / 2)
 	let leftIndex = midPoint
 	let rightIndex = midPoint + 1
 
-	while (leftIndex >= startIndex || rightIndex <= endIndex - searchLen) {
+	while (leftIndex >= startIndex || rightIndex <= maxStartIndex) {
 		if (leftIndex >= startIndex) {
 			const originalChunk = lines.slice(leftIndex, leftIndex + searchLen).join("\n")
 			const similarity = getSimilarity(originalChunk, searchChunk)
@@ -57,7 +61,7 @@ function fuzzySearch(lines: string[], searchChunk: string, startIndex: number, e
 			leftIndex--
 		}
 
-		if (rightIndex <= endIndex - searchLen) {
+		if (rightIndex <= maxStartIndex) {
 			const originalChunk = lines.slice(rightIndex, rightIndex + searchLen).join("\n")
 			const similarity = getSimilarity(originalChunk, searchChunk)
 			if (similarity > bestScore) {
@@ -381,8 +385,10 @@ export class MultiSearchReplaceDiffStrategy implements DiffStrategy {
 				const exactEndIndex = exactStartIndex + searchLen - 1
 
 				// Try exact match first
-				const originalChunk = resultLines.slice(exactStartIndex, exactEndIndex + 1).join("\n")
-				const similarity = getSimilarity(originalChunk, searchChunk)
+				const originalChunkLines = resultLines.slice(exactStartIndex, exactEndIndex + 1)
+				const originalChunk = originalChunkLines.join("\n")
+				const similarity =
+					originalChunkLines.length === searchLen ? getSimilarity(originalChunk, searchChunk) : 0
 				if (similarity >= this.fuzzyThreshold) {
 					matchIndex = exactStartIndex
 					bestMatchScore = similarity
