@@ -50,9 +50,39 @@ export async function getStorageBasePath(defaultPath: string): Promise<string> {
 /**
  * Gets the storage directory path for a task
  */
+export function resolveTaskDirectoryPath(basePath: string, taskId: string): string {
+	const isSinglePathComponent =
+		taskId.length > 0 &&
+		taskId !== "." &&
+		taskId !== ".." &&
+		!taskId.includes("\0") &&
+		path.posix.basename(taskId) === taskId &&
+		path.win32.basename(taskId) === taskId &&
+		!path.posix.isAbsolute(taskId) &&
+		!path.win32.isAbsolute(taskId)
+
+	if (!isSinglePathComponent) {
+		throw new Error("Invalid task ID")
+	}
+
+	const tasksRoot = path.resolve(basePath, "tasks")
+	const taskDir = path.resolve(tasksRoot, taskId)
+	const relativeTaskPath = path.relative(tasksRoot, taskDir)
+	if (
+		!relativeTaskPath ||
+		relativeTaskPath === ".." ||
+		relativeTaskPath.startsWith(`..${path.sep}`) ||
+		path.isAbsolute(relativeTaskPath)
+	) {
+		throw new Error("Invalid task ID")
+	}
+
+	return taskDir
+}
+
 export async function getTaskDirectoryPath(globalStoragePath: string, taskId: string): Promise<string> {
 	const basePath = await getStorageBasePath(globalStoragePath)
-	const taskDir = path.join(basePath, "tasks", taskId)
+	const taskDir = resolveTaskDirectoryPath(basePath, taskId)
 	await fs.mkdir(taskDir, { recursive: true })
 	return taskDir
 }
