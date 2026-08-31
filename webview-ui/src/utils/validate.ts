@@ -338,8 +338,9 @@ function validateDynamicProviderModelId(
 	}
 
 	const models = routerModels?.[provider]
+	const modelIds = models ? Object.keys(models) : []
 
-	if (models && Object.keys(models).length > 1 && !Object.keys(models).includes(modelId)) {
+	if (modelIds.length > 0 && !modelIds.includes(modelId)) {
 		return i18next.t("settings:validation.modelAvailability", { modelId })
 	}
 

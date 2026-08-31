@@ -83,6 +83,30 @@ describe("Model Validation Functions", () => {
 			expect(result).toContain("settings:validation.modelAvailability")
 		})
 
+		it("validates membership when a provider exposes exactly one model", () => {
+			const singleModelCatalog: RouterModels = {
+				...mockRouterModels,
+				openrouter: {
+					"only-model": mockRouterModels.openrouter["valid-model"],
+				},
+			}
+
+			expect(
+				getModelValidationError(
+					{ apiProvider: "openrouter", openRouterModelId: "only-model" },
+					singleModelCatalog,
+					allowAllOrganization,
+				),
+			).toBeUndefined()
+			expect(
+				getModelValidationError(
+					{ apiProvider: "openrouter", openRouterModelId: "stale-model" },
+					singleModelCatalog,
+					allowAllOrganization,
+				),
+			).toContain("settings:validation.modelAvailability")
+		})
+
 		it("returns error for model not allowed by organization", () => {
 			const config: ProviderSettings = {
 				apiProvider: "openrouter",
