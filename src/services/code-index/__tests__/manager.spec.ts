@@ -3,6 +3,14 @@ import { CodeIndexServiceFactory } from "../service-factory"
 import type { MockedClass } from "vitest"
 import * as path from "path"
 
+const deferred = <T>() => {
+	let resolve!: (value: T) => void
+	const promise = new Promise<T>((resolvePromise) => {
+		resolve = resolvePromise
+	})
+	return { promise, resolve }
+}
+
 // Helper: create a mock vscode.Uri from an fsPath
 function mockUri(fsPath: string, scheme = "file") {
 	return {
@@ -262,7 +270,11 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 			;(manager as any)._cacheManager = mockCacheManager
 
 			// Simulate an initialized manager by setting the required properties
-			;(manager as any)._orchestrator = { stopWatcher: vi.fn(), stopIndexing: vi.fn() }
+			;(manager as any)._orchestrator = {
+				stopWatcher: vi.fn(),
+				stopIndexing: vi.fn(),
+				whenIdle: vi.fn().mockResolvedValue(undefined),
+			}
 			;(manager as any)._searchService = {}
 
 			// Verify manager is considered initialized
@@ -496,7 +508,12 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 			})
 
 			// Mock orchestrator and search service to simulate initialized state
-			;(manager as any)._orchestrator = { stopWatcher: vi.fn(), stopIndexing: vi.fn(), state: "Error" }
+			;(manager as any)._orchestrator = {
+				stopWatcher: vi.fn(),
+				stopIndexing: vi.fn(),
+				whenIdle: vi.fn().mockResolvedValue(undefined),
+				state: "Error",
+			}
 			;(manager as any)._searchService = {}
 			;(manager as any)._serviceFactory = {}
 		})
@@ -507,6 +524,34 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 
 			// Assert
 			expect(mockStateManager.setSystemState).toHaveBeenCalledWith("Standby", "")
+		})
+
+		it("retires the active orchestrator before concurrent recovery calls settle", async () => {
+			const idle = deferred<void>()
+			const oldOrchestrator = {
+				stopWatcher: vi.fn(),
+				stopIndexing: vi.fn(),
+				whenIdle: vi.fn().mockReturnValue(idle.promise),
+				state: "Error",
+			}
+			;(manager as any)._orchestrator = oldOrchestrator
+			const firstRecovery = manager.recoverFromError()
+			let secondSettled = false
+			const secondRecovery = manager.recoverFromError().then(() => {
+				secondSettled = true
+			})
+			await Promise.resolve()
+			const orchestratorBeforeRelease = (manager as any)._orchestrator
+			const secondSettledBeforeRelease = secondSettled
+
+			idle.resolve(undefined)
+			await Promise.all([firstRecovery, secondRecovery])
+
+			expect(oldOrchestrator.stopIndexing).toHaveBeenCalledTimes(1)
+			expect(oldOrchestrator.whenIdle).toHaveBeenCalledTimes(1)
+			expect(orchestratorBeforeRelease).toBe(oldOrchestrator)
+			expect(secondSettledBeforeRelease).toBe(false)
+			expect((manager as any)._orchestrator).toBeUndefined()
 		})
 
 		it("should reset internal service instances", async () => {
@@ -626,7 +671,11 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 			// Setup manager with service instances
 			;(manager as any)._configManager = mockConfigManager
 			;(manager as any)._serviceFactory = {}
-			;(manager as any)._orchestrator = { stopWatcher: vi.fn(), stopIndexing: vi.fn() }
+			;(manager as any)._orchestrator = {
+				stopWatcher: vi.fn(),
+				stopIndexing: vi.fn(),
+				whenIdle: vi.fn().mockResolvedValue(undefined),
+			}
 			;(manager as any)._searchService = {}
 
 			// Spy on console.error
@@ -761,6 +810,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 			const mockOrchestrator = {
 				stopIndexing: vi.fn(),
 				stopWatcher: vi.fn(),
+				whenIdle: vi.fn().mockResolvedValue(undefined),
 				state: "Indexing",
 			}
 			;(manager as any)._orchestrator = mockOrchestrator
@@ -782,6 +832,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 			const mockOrchestrator = {
 				stopIndexing: vi.fn(),
 				stopWatcher: vi.fn(),
+				whenIdle: vi.fn().mockResolvedValue(undefined),
 				state: "Indexing",
 			}
 			;(manager as any)._orchestrator = mockOrchestrator

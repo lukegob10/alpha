@@ -111,6 +111,9 @@ export class FileWatcher implements IFileWatcher {
 	 * Initializes the file watcher
 	 */
 	async initialize(): Promise<void> {
+		if (this.fileWatcher) {
+			return
+		}
 		// Create file watcher
 		const filePattern = new vscode.RelativePattern(
 			this.workspacePath,
@@ -129,8 +132,10 @@ export class FileWatcher implements IFileWatcher {
 	 */
 	dispose(): void {
 		this.fileWatcher?.dispose()
+		this.fileWatcher = undefined
 		if (this.batchProcessDebounceTimer) {
 			clearTimeout(this.batchProcessDebounceTimer)
+			this.batchProcessDebounceTimer = undefined
 		}
 		this._onDidStartBatchProcessing.dispose()
 		this._onBatchProgressUpdate.dispose()

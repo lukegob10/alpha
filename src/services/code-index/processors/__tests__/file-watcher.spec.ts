@@ -286,6 +286,17 @@ describe("FileWatcher", () => {
 	})
 
 	describe("dispose", () => {
+		it("does not replace an initialized native watcher", async () => {
+			const callsBeforeInitialize = vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length
+			await fileWatcher.initialize()
+			await fileWatcher.initialize()
+
+			expect(vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length - callsBeforeInitialize).toBe(
+				1,
+			)
+			expect(mockWatcher.dispose).not.toHaveBeenCalled()
+		})
+
 		it("should dispose of the watcher when disposed", async () => {
 			await fileWatcher.initialize()
 			fileWatcher.dispose()

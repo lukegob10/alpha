@@ -28,8 +28,9 @@ export class CodeIndexManager {
 	private _searchService: CodeIndexSearchService | undefined
 	private _cacheManager: CacheManager | undefined
 
-	// Flag to prevent race conditions during error recovery
-	private _isRecoveringFromError = false
+	private _recoveryOperation: Promise<void> | null = null
+	private _serviceRecreationOperation: Promise<void> | null = null
+	private _serviceLifecycleTail: Promise<void> = Promise.resolve()
 
 	public static getInstance(context: vscode.ExtensionContext, workspacePath?: string): CodeIndexManager | undefined {
 		// Resolve the workspace folder to get both fsPath and the real URI
@@ -171,7 +172,8 @@ export class CodeIndexManager {
 		// 2. Check if feature is enabled
 		if (!this.isFeatureEnabled) {
 			if (this._orchestrator) {
-				this._orchestrator.stopWatcher()
+				this._orchestrator.stopIndexing()
+				await this._orchestrator.whenIdle()
 			}
 			return { requiresRestart }
 		}
@@ -275,14 +277,30 @@ export class CodeIndexManager {
 	 * - Service instances will be recreated on next initialize() call
 	 * - Prevents race conditions from multiple concurrent recovery attempts
 	 */
-	public async recoverFromError(): Promise<void> {
-		// Prevent race conditions from multiple rapid recovery attempts
-		if (this._isRecoveringFromError) {
-			return
+	public recoverFromError(): Promise<void> {
+		if (this._recoveryOperation) {
+			return this._recoveryOperation
 		}
+		const operation = this.enqueueServiceLifecycle(() => this.recoverFromErrorExclusive())
+		this._recoveryOperation = operation
+		const clearOperation = () => {
+			if (this._recoveryOperation === operation) {
+				this._recoveryOperation = null
+			}
+		}
+		void operation.then(clearOperation, clearOperation)
+		return operation
+	}
 
-		this._isRecoveringFromError = true
+	private async recoverFromErrorExclusive(): Promise<void> {
 		try {
+			if (this._orchestrator) {
+				try {
+					await this.retireOrchestrator(this._orchestrator)
+				} catch (error) {
+					console.error("Failed to retire code index services during recovery:", error)
+				}
+			}
 			// Clear error state
 			this._stateManager.setSystemState("Standby", "")
 		} catch (error) {
@@ -295,9 +313,6 @@ export class CodeIndexManager {
 			this._serviceFactory = undefined
 			this._orchestrator = undefined
 			this._searchService = undefined
-
-			// Reset the flag after recovery is complete
-			this._isRecoveringFromError = false
 		}
 	}
 
@@ -346,10 +361,38 @@ export class CodeIndexManager {
 	 * Private helper method to recreate services with current configuration.
 	 * Used by both initialize() and handleSettingsChange().
 	 */
-	private async _recreateServices(): Promise<void> {
-		// Stop watcher if it exists
+	private _recreateServices(): Promise<void> {
+		if (this._serviceRecreationOperation) {
+			return this._serviceRecreationOperation
+		}
+		const operation = this.enqueueServiceLifecycle(() => this.recreateServicesExclusive())
+		this._serviceRecreationOperation = operation
+		const clearOperation = () => {
+			if (this._serviceRecreationOperation === operation) {
+				this._serviceRecreationOperation = null
+			}
+		}
+		void operation.then(clearOperation, clearOperation)
+		return operation
+	}
+
+	private enqueueServiceLifecycle(operation: () => Promise<void>): Promise<void> {
+		const result = this._serviceLifecycleTail.then(operation, operation)
+		this._serviceLifecycleTail = result.then(
+			() => undefined,
+			() => undefined,
+		)
+		return result
+	}
+
+	private async retireOrchestrator(orchestrator: CodeIndexOrchestrator): Promise<void> {
+		orchestrator.stopIndexing()
+		await orchestrator.whenIdle()
+	}
+
+	private async recreateServicesExclusive(): Promise<void> {
 		if (this._orchestrator) {
-			this.stopWatcher()
+			await this.retireOrchestrator(this._orchestrator)
 		}
 		// Clear existing services to ensure clean state
 		this._orchestrator = undefined
@@ -444,7 +487,10 @@ export class CodeIndexManager {
 
 			// If feature is disabled, stop the service (including any active scan)
 			if (!isFeatureEnabled) {
-				this.stopIndexing()
+				if (this._orchestrator) {
+					this._orchestrator.stopIndexing()
+					await this._orchestrator.whenIdle()
+				}
 				this._stateManager.setSystemState("Standby", "Code indexing is disabled")
 				return
 			}
