@@ -232,11 +232,13 @@ const TaskHeader = ({
 							<StandardTooltip content={isTaskExpanded ? t("chat:task.collapse") : t("chat:task.expand")}>
 								<button
 									onClick={toggleTaskExpanded}
-									className="shrink-0 min-h-[20px] min-w-[20px] p-[2px] cursor-pointer opacity-85 hover:opacity-100 bg-transparent border-none rounded-md">
+									aria-label={isTaskExpanded ? t("chat:task.collapse") : t("chat:task.expand")}
+									aria-expanded={isTaskExpanded}
+									className="shrink-0 min-h-[20px] min-w-[20px] p-[2px] cursor-pointer opacity-85 hover:opacity-100 bg-transparent border-none rounded-md focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder">
 									{isTaskExpanded ? (
 										<ChevronUp size={16} />
 									) : (
-										<ChevronDown size={16} className="opacity-0 group-hover:opacity-100" />
+										<ChevronDown size={16} className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100" />
 									)}
 								</button>
 							</StandardTooltip>

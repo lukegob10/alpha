@@ -174,6 +174,19 @@ describe("TaskHeader", () => {
 		expect(screen.getByText("chat:task.title")).toBeInTheDocument()
 	})
 
+	it("exposes expansion state on the keyboard control", () => {
+		renderTaskHeader()
+		const expandButton = screen.getByRole("button", { name: "chat:task.expand" })
+		expect(expandButton).toHaveAttribute("aria-expanded", "false")
+
+		fireEvent.click(expandButton)
+
+		expect(screen.getByRole("button", { name: "chat:task.collapse" })).toHaveAttribute(
+			"aria-expanded",
+			"true",
+		)
+	})
+
 	it("should render the condense context button when expanded", () => {
 		renderTaskHeader()
 		// First click to expand the task header
