@@ -380,4 +380,34 @@ describe("GoalSeekService run lifecycle", () => {
 		expect(store.runs.size).toBe(0)
 		expect(store.attempts.size).toBe(0)
 	})
+
+	it("drains a run preflight and rejects updates after deletion begins", async () => {
+		const workspace = process.cwd()
+		const { service, store } = createService([makeJob("job-a", workspace)])
+		const internals = service as unknown as {
+			assertCleanWorkspace(workspace: string): Promise<void>
+			executeRun(jobId: string, runId: string): Promise<void>
+			activeWorkspaceRuns: Map<string, string>
+		}
+		const clean = deferred<void>()
+		vi.spyOn(internals, "assertCleanWorkspace").mockReturnValue(clean.promise)
+		const execute = vi.spyOn(internals, "executeRun").mockResolvedValue(undefined)
+
+		await service.updateJob("job-a", { name: "Updated before delete" })
+		const run = service.runJob("job-a")
+		const deletion = service.deleteJob("job-a")
+		await Promise.resolve()
+		const jobWhileDeletionDrained = store.getJob("job-a")
+		await expect(service.updateJob("job-a", { name: "Updated after delete" })).rejects.toThrow(/delet/i)
+
+		clean.resolve(undefined)
+		await expect(run).rejects.toThrow(/deleted/i)
+		await deletion
+
+		expect(jobWhileDeletionDrained?.name).toBe("Updated before delete")
+		expect(execute).not.toHaveBeenCalled()
+		expect(store.jobs.size).toBe(0)
+		expect(store.runs.size).toBe(0)
+		expect(internals.activeWorkspaceRuns.size).toBe(0)
+	})
 })

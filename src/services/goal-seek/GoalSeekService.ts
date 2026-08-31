@@ -42,6 +42,13 @@ type TaskWaiter = {
 	reject: (error: Error) => void
 }
 
+type PendingRunStart = {
+	jobId: string
+	canceled: boolean
+	completion: Promise<void>
+	resolveCompletion: () => void
+}
+
 class GoalSeekRunCanceledError extends Error {
 	constructor() {
 		super("Goal Seek run was canceled.")
@@ -60,6 +67,9 @@ export class GoalSeekService implements vscode.Disposable {
 	private readonly canceledRuns = new Set<string>()
 	private readonly activeWorkspaceRuns = new Map<string, string>()
 	private readonly runExecutions = new Map<string, Promise<void>>()
+	private readonly pendingRunStarts = new Map<string, PendingRunStart>()
+	private readonly deletingJobs = new Set<string>()
+	private readonly jobDeletionOperations = new Map<string, Promise<void>>()
 	private readonly activeTasksByRun = new Map<string, Task>()
 	private readonly commandAbortControllers = new Map<string, AbortController>()
 	private disposed = false
@@ -127,6 +137,9 @@ export class GoalSeekService implements vscode.Disposable {
 	}
 
 	async updateJob(jobId: string, payload: UpdateGoalSeekJobPayload): Promise<void> {
+		if (this.deletingJobs.has(jobId)) {
+			throw new Error(`Goal Seek job is being deleted: ${jobId}`)
+		}
 		const existing = this.requireJob(jobId)
 		const job: GoalSeekJob = {
 			...existing,
@@ -144,7 +157,32 @@ export class GoalSeekService implements vscode.Disposable {
 		await this.broadcast()
 	}
 
-	async deleteJob(jobId: string): Promise<void> {
+	deleteJob(jobId: string): Promise<void> {
+		const activeDeletion = this.jobDeletionOperations.get(jobId)
+		if (activeDeletion) {
+			return activeDeletion
+		}
+
+		this.deletingJobs.add(jobId)
+		const operation = this.deleteJobExclusive(jobId)
+		this.jobDeletionOperations.set(jobId, operation)
+		const releaseDeletion = () => {
+			if (this.jobDeletionOperations.get(jobId) === operation) {
+				this.jobDeletionOperations.delete(jobId)
+				this.deletingJobs.delete(jobId)
+			}
+		}
+		void operation.then(releaseDeletion, releaseDeletion)
+		return operation
+	}
+
+	private async deleteJobExclusive(jobId: string): Promise<void> {
+		const pendingStarts = [...this.pendingRunStarts.values()].filter((pending) => pending.jobId === jobId)
+		for (const pending of pendingStarts) {
+			pending.canceled = true
+		}
+		await Promise.all(pendingStarts.map((pending) => pending.completion))
+
 		const activeRuns = this.store.getState().runs.filter((run) => run.jobId === jobId && run.status === "running")
 		for (const run of activeRuns) {
 			await this.cancelRun(run.id)
@@ -188,6 +226,9 @@ export class GoalSeekService implements vscode.Disposable {
 	}
 
 	async runJob(jobId: string): Promise<GoalSeekRun> {
+		if (this.deletingJobs.has(jobId)) {
+			throw new Error(`Goal Seek job was deleted before its run could start: ${jobId}`)
+		}
 		const job = this.requireJob(jobId)
 		const workspace = job.workspace || getWorkspacePath()
 		const run: GoalSeekRun = {
@@ -203,12 +244,23 @@ export class GoalSeekService implements vscode.Disposable {
 			throw new Error(`Goal Seek workspace already has an active run: ${workspace}`)
 		}
 		this.activeWorkspaceRuns.set(workspaceKey, run.id)
+		let resolveStartCompletion!: () => void
+		const pendingStart: PendingRunStart = {
+			jobId,
+			canceled: false,
+			completion: new Promise<void>((resolve) => {
+				resolveStartCompletion = resolve
+			}),
+			resolveCompletion: () => resolveStartCompletion(),
+		}
+		this.pendingRunStarts.set(run.id, pendingStart)
 
 		try {
 			await this.assertCleanWorkspace(workspace)
+			const currentJob = this.requireRunnableJob(pendingStart, run.id, workspaceKey, false)
 			await this.store.updateJobAndRun(
 				{
-					...job,
+					...currentJob,
 					lastRunId: run.id,
 					lastRunStatus: run.status,
 					lastRunSummary: undefined,
@@ -216,7 +268,9 @@ export class GoalSeekService implements vscode.Disposable {
 				},
 				run,
 			)
+			this.requireRunnableJob(pendingStart, run.id, workspaceKey, true)
 			await this.broadcast()
+			this.requireRunnableJob(pendingStart, run.id, workspaceKey, true)
 			const execution = this.executeRun(job.id, run.id)
 			this.runExecutions.set(run.id, execution)
 			const releaseOwnership = () => {
@@ -235,7 +289,33 @@ export class GoalSeekService implements vscode.Disposable {
 				this.activeWorkspaceRuns.delete(workspaceKey)
 			}
 			throw error
+		} finally {
+			this.pendingRunStarts.delete(run.id)
+			pendingStart.resolveCompletion()
 		}
+	}
+
+	private requireRunnableJob(
+		pendingStart: PendingRunStart,
+		runId: string,
+		workspaceKey: string,
+		requirePersistedRun: boolean,
+	): GoalSeekJob {
+		const currentJob = this.store.getJob(pendingStart.jobId)
+		if (pendingStart.canceled || this.deletingJobs.has(pendingStart.jobId) || !currentJob) {
+			throw new Error(`Goal Seek job was deleted before its run could start: ${pendingStart.jobId}`)
+		}
+		const currentWorkspace = currentJob.workspace || getWorkspacePath()
+		if (this.getWorkspaceKey(currentWorkspace) !== workspaceKey) {
+			throw new Error("Goal Seek job workspace changed while its run was starting. Start the run again.")
+		}
+		if (requirePersistedRun) {
+			const currentRun = this.store.getRun(runId)
+			if (!currentRun || currentRun.status !== "running") {
+				throw new GoalSeekRunCanceledError()
+			}
+		}
+		return currentJob
 	}
 
 	private getWorkspaceKey(workspace: string): string {
