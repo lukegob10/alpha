@@ -197,7 +197,7 @@ export class SimpleInstaller {
 			for (const param of uniqueParameters) {
 				const value = options.parameters[param.key]
 				if (value !== undefined) {
-					contentToUse = contentToUse.replace(new RegExp(`{{${param.key}}}`, "g"), String(value))
+					contentToUse = contentToUse.split(`{{${param.key}}}`).join(String(value))
 				}
 			}
 		}
@@ -222,7 +222,7 @@ export class SimpleInstaller {
 				for (const param of uniqueParametersForNewMethod) {
 					const value = options.parameters[param.key]
 					if (value !== undefined) {
-						contentToUse = contentToUse.replace(new RegExp(`{{${param.key}}}`, "g"), String(value))
+						contentToUse = contentToUse.split(`{{${param.key}}}`).join(String(value))
 					}
 				}
 			}
@@ -356,8 +356,10 @@ export class SimpleInstaller {
 				// Always write back the file, even if empty
 				await fs.writeFile(filePath, JSON.stringify(existingData, null, 2), "utf-8")
 			}
-		} catch (error) {
-			// File doesn't exist or other error, nothing to remove
+		} catch (error: any) {
+			if (error?.code !== "ENOENT") {
+				throw error
+			}
 		}
 	}
 
