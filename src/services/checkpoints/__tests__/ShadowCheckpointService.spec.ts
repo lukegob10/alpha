@@ -168,6 +168,35 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				expect(change!.content.before).toBe("New file content")
 				expect(change!.content.after).toBe("")
 			})
+
+			it("returns the link blob instead of reading through a workspace symlink", async ({ skip }) => {
+				const checkpointGit = (service as unknown as { git: SimpleGit }).git
+				const externalFile = path.join(tmpDir, `${path.basename(service.workspaceDir)}-outside.txt`)
+				const linkPath = path.join(service.workspaceDir, "outside-link.txt")
+				const secret = "SECRET_OUTSIDE_WORKSPACE"
+				await fs.writeFile(externalFile, secret)
+				await checkpointGit.addConfig("core.symlinks", "true")
+
+				try {
+					await fs.symlink(externalFile, linkPath, "file")
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code
+					if (code === "EPERM" || code === "EACCES" || code === "ENOTSUP") {
+						skip()
+						return
+					}
+					throw error
+				}
+
+				const changes = await service.getDiff({ from: service.baseHash })
+				const stagedEntry = await checkpointGit.raw(["ls-files", "-s", "--", "outside-link.txt"])
+				const stagedLink = await checkpointGit.show([":outside-link.txt"])
+				const change = changes.find(({ paths }) => paths.relative === "outside-link.txt")
+
+				expect(stagedEntry).toMatch(/^120000 /)
+				expect(change?.content.after).toBe(stagedLink)
+				expect(change?.content.after).not.toContain(secret)
+			})
 		})
 
 		describe(`${klass.name} checkpoint transactions`, () => {

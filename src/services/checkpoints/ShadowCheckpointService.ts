@@ -488,6 +488,17 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		return this.enqueueCheckpointOperation(() => this.getDiffTransaction({ from, to }))
 	}
 
+	private async readCurrentDiffContent(git: SimpleGit, relativePath: string, absolutePath: string): Promise<string> {
+		try {
+			const stats = await fs.lstat(absolutePath)
+			return stats.isSymbolicLink()
+				? await git.show([`:${relativePath}`])
+				: await fs.readFile(absolutePath, "utf8")
+		} catch {
+			return ""
+		}
+	}
+
 	private async getDiffTransaction({ from, to }: { from?: string; to?: string }): Promise<CheckpointDiff[]> {
 		if (!this.git) {
 			throw new Error("Shadow git repo not initialized")
@@ -514,7 +525,7 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 
 			const after = to
 				? await this.git.show([`${to}:${relPath}`]).catch(() => "")
-				: await fs.readFile(absPath, "utf8").catch(() => "")
+				: await this.readCurrentDiffContent(this.git, relPath, absPath)
 
 			result.push({ paths: { relative: relPath, absolute: absPath }, content: { before, after } })
 		}
