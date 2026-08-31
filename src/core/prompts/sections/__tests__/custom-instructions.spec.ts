@@ -55,6 +55,7 @@ vi.mock("path", async () => ({
 
 import fs from "fs/promises"
 import type { PathLike } from "fs"
+import path from "path"
 
 import { loadRuleFiles, addCustomInstructions } from "../custom-instructions"
 
@@ -64,6 +65,7 @@ const statMock = vi.fn()
 const readdirMock = vi.fn()
 const readlinkMock = vi.fn()
 const lstatMock = vi.fn()
+const realpathMock = vi.fn()
 
 // Replace fs functions with our mocks
 fs.readFile = readFileMock as any
@@ -71,11 +73,17 @@ fs.stat = statMock as any
 fs.readdir = readdirMock as any
 fs.readlink = readlinkMock as any
 fs.lstat = lstatMock as any
+fs.realpath = realpathMock as any
 
 // Mock process.cwd
 const originalCwd = process.cwd
 beforeAll(() => {
 	process.cwd = vi.fn().mockReturnValue("/fake/cwd")
+})
+
+beforeEach(() => {
+	realpathMock.mockReset()
+	realpathMock.mockImplementation(async (filePath: PathLike) => path.resolve(filePath.toString()))
 })
 
 afterAll(() => {
@@ -794,6 +802,11 @@ describe("addCustomInstructions", () => {
 			}
 			return Promise.reject({ code: "ENOENT" })
 		})
+		realpathMock.mockImplementation(async (filePath: PathLike) =>
+			filePath.toString().endsWith("AGENTS.md")
+				? path.resolve("/fake/path/actual-agents-file.md")
+				: path.resolve(filePath.toString()),
+		)
 
 		// Mock stat to indicate the resolved target is a file
 		statMock.mockImplementation((filePath: PathLike) => {
@@ -834,14 +847,38 @@ describe("addCustomInstructions", () => {
 		expect(result).toContain("# Agent Rules Standard (AGENTS.md):")
 		expect(result).toContain("Agent rules from symlinked file")
 
-		// Verify lstat was called to check if it's a symlink
-		expect(lstatMock).toHaveBeenCalledWith(expect.stringContaining("AGENTS.md"))
-
-		// Verify readlink was called to resolve the symlink
-		expect(readlinkMock).toHaveBeenCalledWith(expect.stringContaining("AGENTS.md"))
-
 		// Verify the resolved path was read
 		expect(readFileMock).toHaveBeenCalledWith(expect.stringContaining("actual-agents-file.md"), "utf-8")
+	})
+
+	it("does not follow an AGENTS.md symlink outside the workspace", async () => {
+		statMock.mockRejectedValue({ code: "ENOENT" })
+		lstatMock.mockImplementation((filePath: PathLike) =>
+			filePath.toString().endsWith("AGENTS.md")
+				? Promise.resolve({ isSymbolicLink: () => true })
+				: Promise.reject({ code: "ENOENT" }),
+		)
+		realpathMock.mockImplementation(async (filePath: PathLike) => {
+			return filePath.toString().endsWith("AGENTS.md")
+				? path.resolve("/outside/secret.md")
+				: path.resolve(filePath.toString())
+		})
+		readFileMock.mockImplementation((filePath: PathLike) => {
+			return filePath.toString().includes("outside")
+				? Promise.resolve("outside secret")
+				: Promise.reject({ code: "ENOENT" })
+		})
+
+		const result = await addCustomInstructions("", "", "/fake/path", "test-mode", {
+			settings: {
+				todoListEnabled: true,
+				useAgentRules: true,
+				newTaskRequireTodos: false,
+			},
+		})
+
+		expect(result).not.toContain("outside secret")
+		expect(readFileMock).not.toHaveBeenCalledWith(expect.stringContaining("outside"), "utf-8")
 	})
 
 	it("should handle AGENTS.md as a regular file when not a symlink", async () => {
@@ -884,12 +921,6 @@ describe("addCustomInstructions", () => {
 
 		expect(result).toContain("# Agent Rules Standard (AGENTS.md):")
 		expect(result).toContain("Agent rules from regular file")
-
-		// Verify lstat was called
-		expect(lstatMock).toHaveBeenCalledWith(expect.stringContaining("AGENTS.md"))
-
-		// Verify readlink was NOT called since it's not a symlink
-		expect(readlinkMock).not.toHaveBeenCalledWith(expect.stringContaining("AGENTS.md"))
 
 		// Verify the file was read directly
 		expect(readFileMock).toHaveBeenCalledWith(expect.stringContaining("AGENTS.md"), "utf-8")
@@ -1312,6 +1343,43 @@ describe("Directory existence checks", () => {
 
 // Indirectly test readTextFilesFromDirectory and formatDirectoryContent through loadRuleFiles
 describe("Rules directory reading", () => {
+	it("does not follow a project rule symlink outside the workspace", async () => {
+		statMock.mockImplementation((filePath: PathLike) => {
+			const normalizedPath = filePath.toString().replace(/\\/g, "/")
+			if (normalizedPath === "/fake/path/.alpha/rules") {
+				return Promise.resolve({ isDirectory: () => true, isFile: () => false })
+			}
+			if (normalizedPath.includes("outside-secret")) {
+				return Promise.resolve({ isDirectory: () => false, isFile: () => true })
+			}
+			return Promise.reject({ code: "ENOENT" })
+		})
+		readdirMock.mockResolvedValueOnce([
+			{
+				name: "outside-link.txt",
+				isFile: () => false,
+				isSymbolicLink: () => true,
+				parentPath: "/fake/path/.alpha/rules",
+			},
+		] as any)
+		readlinkMock.mockResolvedValue("../../../outside-secret.txt")
+		realpathMock.mockImplementation(async (filePath: PathLike) => {
+			return filePath.toString().includes("outside-secret")
+				? path.resolve("/outside/secret.txt")
+				: path.resolve(filePath.toString())
+		})
+		readFileMock.mockImplementation((filePath: PathLike) => {
+			return filePath.toString().includes("outside")
+				? Promise.resolve("outside rule secret")
+				: Promise.reject({ code: "ENOENT" })
+		})
+
+		const result = await loadRuleFiles("/fake/path")
+
+		expect(result).not.toContain("outside rule secret")
+		expect(readFileMock).not.toHaveBeenCalledWith("/outside/secret.txt", "utf-8")
+	})
+
 	it.skipIf(process.platform === "win32")("should follow symbolic links in the rules directory", async () => {
 		// Simulate .alpha/rules directory exists
 		statMock.mockResolvedValueOnce({
@@ -1570,11 +1638,6 @@ describe("Rules directory reading", () => {
 		readlinkMock.mockReset()
 		readFileMock.mockReset()
 
-		// First call: check if .alpha/rules directory exists
-		statMock.mockResolvedValueOnce({
-			isDirectory: vi.fn().mockReturnValue(true),
-		} as any)
-
 		// Simulate listing files with symlinks that point to files with different names
 		readdirMock.mockResolvedValueOnce([
 			{
@@ -1606,6 +1669,12 @@ describe("Rules directory reading", () => {
 		// Set up stat mock for the remaining calls
 		statMock.mockImplementation((path) => {
 			const normalizedPath = path.toString().replace(/\\/g, "/")
+			if (normalizedPath === "/fake/path/.alpha/rules") {
+				return Promise.resolve({
+					isFile: vi.fn().mockReturnValue(false),
+					isDirectory: vi.fn().mockReturnValue(true),
+				} as any)
+			}
 			// Target files exist and are files
 			if (normalizedPath.endsWith(".txt")) {
 				return Promise.resolve({
@@ -1613,10 +1682,7 @@ describe("Rules directory reading", () => {
 					isDirectory: vi.fn().mockReturnValue(false),
 				} as any)
 			}
-			return Promise.resolve({
-				isFile: vi.fn().mockReturnValue(false),
-				isDirectory: vi.fn().mockReturnValue(false),
-			} as any)
+			return Promise.reject({ code: "ENOENT" })
 		})
 
 		readFileMock.mockImplementation((filePath: PathLike) => {

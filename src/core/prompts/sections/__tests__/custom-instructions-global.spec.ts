@@ -7,6 +7,7 @@ const {
 	mockReadFile,
 	mockReaddir,
 	mockLstat,
+	mockRealpath,
 	mockGetRooDirectoriesForCwd,
 	mockGetAllRooDirectoriesForCwd,
 	mockGetAgentsDirectoriesForCwd,
@@ -17,6 +18,7 @@ const {
 	mockReadFile: vi.fn(),
 	mockReaddir: vi.fn(),
 	mockLstat: vi.fn(),
+	mockRealpath: vi.fn(),
 	mockGetRooDirectoriesForCwd: vi.fn(),
 	mockGetAllRooDirectoriesForCwd: vi.fn(),
 	mockGetAgentsDirectoriesForCwd: vi.fn(),
@@ -38,6 +40,7 @@ vi.mock("fs/promises", () => ({
 		readFile: mockReadFile,
 		readdir: mockReaddir,
 		lstat: mockLstat,
+		realpath: mockRealpath,
 	},
 }))
 
@@ -68,6 +71,7 @@ describe("custom-instructions global .roo support", () => {
 		mockGetGlobalRooDirectory.mockReturnValue(globalRooDir)
 		// Default lstat to reject (file not found)
 		mockLstat.mockRejectedValue(new Error("ENOENT"))
+		mockRealpath.mockImplementation(async (filePath) => filePath.toString())
 	})
 
 	afterEach(() => {
