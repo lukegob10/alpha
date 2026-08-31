@@ -48,8 +48,7 @@ export class CustomModesManager {
 	private static readonly cacheTTL = 10_000
 
 	private disposables: vscode.Disposable[] = []
-	private isWriting = false
-	private writeQueue: Array<() => Promise<void>> = []
+	private writeQueue: Promise<void> = Promise.resolve()
 	private settingsFileCreation?: Promise<void>
 	private cachedModes: ModeConfig[] | null = null
 	private cachedAt: number = 0
@@ -63,32 +62,12 @@ export class CustomModesManager {
 		})
 	}
 
-	private async queueWrite(operation: () => Promise<void>): Promise<void> {
-		this.writeQueue.push(operation)
-
-		if (!this.isWriting) {
-			await this.processWriteQueue()
-		}
-	}
-
-	private async processWriteQueue(): Promise<void> {
-		if (this.isWriting || this.writeQueue.length === 0) {
-			return
-		}
-
-		this.isWriting = true
-
-		try {
-			while (this.writeQueue.length > 0) {
-				const operation = this.writeQueue.shift()
-
-				if (operation) {
-					await operation()
-				}
-			}
-		} finally {
-			this.isWriting = false
-		}
+	private queueWrite(operation: () => Promise<void>): Promise<void> {
+		const result = this.writeQueue.then(operation)
+		// Keep the internal tail usable after a failure while returning the
+		// operation-specific result to the caller that enqueued it.
+		this.writeQueue = result.catch(() => {})
+		return result
 	}
 
 	private async getWorkspaceRoomodes(): Promise<string | undefined> {

@@ -634,6 +634,46 @@ describe("CustomModesManager", () => {
 			// Should trigger onUpdate
 			expect(mockOnUpdate).toHaveBeenCalled()
 		})
+
+		it("settles each queued caller with its own operation and continues after a rejection", async () => {
+			const queuedManager = manager as unknown as {
+				queueWrite: (operation: () => Promise<void>) => Promise<void>
+			}
+			const events: string[] = []
+			let releaseFirst: (() => void) | undefined
+
+			const first = queuedManager.queueWrite(async () => {
+				events.push("first:start")
+				await new Promise<void>((resolve) => {
+					releaseFirst = resolve
+				})
+				throw new Error("first failed")
+			})
+			const firstRejection = expect(first).rejects.toThrow("first failed")
+			let secondSettled = false
+			const second = queuedManager
+				.queueWrite(async () => {
+					events.push("second")
+				})
+				.finally(() => {
+					secondSettled = true
+				})
+
+			await vi.waitFor(() => expect(events).toEqual(["first:start"]))
+			expect(secondSettled).toBe(false)
+
+			releaseFirst?.()
+			await firstRejection
+			await expect(second).resolves.toBeUndefined()
+			expect(events).toEqual(["first:start", "second"])
+
+			await expect(
+				queuedManager.queueWrite(async () => {
+					events.push("third")
+				}),
+			).resolves.toBeUndefined()
+			expect(events).toEqual(["first:start", "second", "third"])
+		})
 	})
 
 	describe("File Operations", () => {
