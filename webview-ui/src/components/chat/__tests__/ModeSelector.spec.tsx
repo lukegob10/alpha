@@ -110,6 +110,18 @@ describe("ModeSelector", () => {
 		expect(onChange).toHaveBeenCalledWith("architect")
 	})
 
+	it("renders mode choices as native buttons", () => {
+		const onChange = vi.fn()
+		renderSelector("code", onChange)
+		fireEvent.click(screen.getByTestId("mode-selector-trigger"))
+		const planButton = screen.getByRole("button", { name: /Plan/ })
+
+		expect(planButton.tagName).toBe("BUTTON")
+		expect(planButton).toHaveAttribute("type", "button")
+		fireEvent.click(planButton)
+		expect(onChange).toHaveBeenCalledWith("architect")
+	})
+
 	it("closes an open selector and blocks selection when switching becomes disabled", () => {
 		const onChange = vi.fn()
 		const { rerender } = renderSelector("code", onChange)

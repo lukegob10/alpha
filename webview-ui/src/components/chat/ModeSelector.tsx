@@ -38,7 +38,7 @@ export const ModeSelector = ({
 	customModePrompts,
 }: ModeSelectorProps) => {
 	const [open, setOpen] = React.useState(false)
-	const selectedItemRef = React.useRef<HTMLDivElement>(null)
+	const selectedItemRef = React.useRef<HTMLButtonElement>(null)
 	const scrollContainerRef = React.useRef<HTMLDivElement>(null)
 	const lastNotifiedInvalidModeRef = React.useRef<string | null>(null)
 	const portalContainer = useAlphaPortal("alpha-portal")
@@ -181,26 +181,29 @@ export const ModeSelector = ({
 							{modes.map((mode) => {
 								const isSelected = mode.slug === value
 								return (
-									<div
+									<button
+										type="button"
 										key={mode.slug}
 										ref={isSelected ? selectedItemRef : null}
 										onClick={() => handleSelect(mode.slug)}
+										aria-pressed={isSelected}
 										className={cn(
-											"px-3 py-1.5 text-sm cursor-pointer flex items-center",
+											"w-full border-0 bg-transparent text-left text-vscode-foreground px-3 py-1.5 text-sm cursor-pointer flex items-center",
 											"hover:bg-vscode-list-hoverBackground",
+											"focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-vscode-focusBorder",
 											isSelected ? "bg-[var(--alpha-accent-soft)] text-vscode-foreground" : "",
 										)}
 										data-testid="mode-selector-item">
-										<div className="flex-1 min-w-0">
-											<div className="font-bold truncate">{mode.name}</div>
+										<span className="flex-1 min-w-0">
+											<span className="block font-bold truncate">{mode.name}</span>
 											{mode.description && (
-												<div className="text-xs text-vscode-descriptionForeground truncate">
+												<span className="block text-xs text-vscode-descriptionForeground truncate">
 													{mode.description}
-												</div>
+												</span>
 											)}
-										</div>
+										</span>
 										{isSelected && <Check className="ml-auto size-4 p-0.5" />}
-									</div>
+									</button>
 								)
 							})}
 						</div>

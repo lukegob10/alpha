@@ -127,17 +127,20 @@ export const WorktreeSelector = ({ disabled = false }: WorktreeSelectorProps) =>
 						{worktrees.map((worktree) => {
 							const isSelected = worktree.isCurrent
 							return (
-								<div
+								<button
+									type="button"
 									key={worktree.path}
 									onClick={() => !isSelected && handleSelect(worktree.path)}
+									aria-current={isSelected ? "true" : undefined}
 									data-testid="worktree-selector-item"
 									className={cn(
-										"px-3 py-1.5 text-sm cursor-pointer flex items-center",
+										"w-full border-0 bg-transparent text-left text-vscode-foreground px-3 py-1.5 text-sm cursor-pointer flex items-center",
 										"hover:bg-vscode-list-hoverBackground",
+										"focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-vscode-focusBorder",
 										isSelected && "bg-[var(--alpha-accent-soft)] text-vscode-foreground",
 									)}>
-									<div className="flex-1 min-w-0">
-										<div className="flex items-center gap-2">
+									<span className="flex-1 min-w-0">
+										<span className="flex items-center gap-2">
 											<GitBranch className="w-3 h-3 shrink-0" />
 											<span className="font-bold truncate">
 												{worktree.branch || t("worktrees:noBranch")}
@@ -145,13 +148,13 @@ export const WorktreeSelector = ({ disabled = false }: WorktreeSelectorProps) =>
 											{worktree.isBare && (
 												<span className="text-xs opacity-70">{t("worktrees:primary")}</span>
 											)}
-										</div>
-										<div className="text-xs text-vscode-descriptionForeground ml-5 truncate">
+										</span>
+										<span className="block text-xs text-vscode-descriptionForeground ml-5 truncate">
 											{worktree.path}
-										</div>
-									</div>
+										</span>
+									</span>
 									{isSelected && <Check className="ml-auto size-4 p-0.5" />}
-								</div>
+								</button>
 							)
 						})}
 					</div>
