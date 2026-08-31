@@ -59,6 +59,7 @@ import { initializeModelCacheRefresh } from "./api/providers/fetchers/modelCache
 
 let outputChannel: vscode.OutputChannel
 let extensionContext: vscode.ExtensionContext
+let sidebarProvider: ClineProvider | undefined
 
 /**
  * Check if we should auto-open the Alpha sidebar after switching to a worktree.
@@ -174,6 +175,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	}
 
 	const provider = new ClineProvider(context, outputChannel, "sidebar", contextProxy)
+	sidebarProvider = provider
 	const scheduledTaskService = new ScheduledTaskService(context, provider, outputChannel)
 	provider.setScheduledTaskService(scheduledTaskService)
 	context.subscriptions.push(scheduledTaskService)
@@ -323,6 +325,16 @@ export async function activate(context: vscode.ExtensionContext) {
 // This method is called when your extension is deactivated.
 export async function deactivate() {
 	outputChannel.appendLine(`${Package.name} extension deactivated`)
+
+	const provider = sidebarProvider
+	sidebarProvider = undefined
+	if (provider) {
+		try {
+			await provider.dispose()
+		} catch (error) {
+			outputChannel.appendLine(`Failed to dispose sidebar provider: ${String(error)}`)
+		}
+	}
 
 	try {
 		await AgentControlStore.shutdownGlobalStores()
