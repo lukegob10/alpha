@@ -194,6 +194,40 @@ describe("SpawnAgentTool", () => {
 		)
 	})
 
+	it("releases the prepared child when approval is interrupted", async () => {
+		const batch = prepared()
+		const failure = new Error("approval cancelled")
+		const provider = {
+			prepareSubagentGroup: vi.fn(async () => batch),
+			launchPreparedSubagentGroup: vi.fn(),
+			cancelPreparedSubagentGroup: vi.fn(),
+		}
+		const task = { providerRef: { deref: () => provider } } as any
+		const handleError = vi.fn()
+
+		await spawnAgentTool.execute(
+			{
+				task_name: "cancelled_explorer",
+				fork_turns: "none",
+				objective: "Inspect src",
+				agent_kind: "explore",
+				write_scope: null,
+				expected_output: null,
+			},
+			task,
+			{ askApproval: vi.fn().mockRejectedValue(failure), pushToolResult: vi.fn(), handleError } as any,
+		)
+
+		expect(provider.launchPreparedSubagentGroup).not.toHaveBeenCalled()
+		expect(provider.cancelPreparedSubagentGroup).toHaveBeenCalledTimes(1)
+		expect(provider.cancelPreparedSubagentGroup).toHaveBeenCalledWith(
+			task,
+			batch,
+			expect.stringContaining("interrupted"),
+		)
+		expect(handleError).toHaveBeenCalledWith("approving a sub-agent", failure)
+	})
+
 	it("releases a prepared child when launch fails", async () => {
 		const batch = prepared()
 		const failure = new Error("launcher failed")

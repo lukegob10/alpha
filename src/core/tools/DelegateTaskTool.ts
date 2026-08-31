@@ -53,21 +53,32 @@ export class DelegateTaskTool extends BaseTool<"delegate_task"> {
 			return
 		}
 
-		const approved = await callbacks.askApproval(
-			"tool",
-			JSON.stringify({
-				tool: "delegateTask",
-				groupId: prepared.group.groupId,
-				agents: prepared.group.agents.map(({ nickname, role, objective, writeScope }) => ({
-					nickname,
-					role,
-					objective,
-					writeScope,
-				})),
-			}),
-			undefined,
-			prepared.requiresExplicitApproval === true,
-		)
+		let approved: boolean
+		try {
+			approved = await callbacks.askApproval(
+				"tool",
+				JSON.stringify({
+					tool: "delegateTask",
+					groupId: prepared.group.groupId,
+					agents: prepared.group.agents.map(({ nickname, role, objective, writeScope }) => ({
+						nickname,
+						role,
+						objective,
+						writeScope,
+					})),
+				}),
+				undefined,
+				prepared.requiresExplicitApproval === true,
+			)
+		} catch (error) {
+			try {
+				await provider.cancelPreparedSubagentGroup(task, prepared, "Sub-agent approval was interrupted.")
+			} catch {
+				// Preserve the approval error; cancellation is best-effort cleanup.
+			}
+			await callbacks.handleError("approving sub-agents", error as Error)
+			return
+		}
 
 		if (!approved) {
 			await provider.cancelPreparedSubagentGroup(task, prepared, "The user denied this sub-agent group.")

@@ -207,6 +207,37 @@ describe("DelegateTaskTool", () => {
 		)
 	})
 
+	it("releases the prepared group when approval is interrupted", async () => {
+		const batch = prepared()
+		const failure = new Error("approval cancelled")
+		const provider = {
+			prepareSubagentGroup: vi.fn(async () => batch),
+			runSubagentGroup: vi.fn(),
+			cancelPreparedSubagentGroup: vi.fn(),
+		}
+		const task = { providerRef: { deref: () => provider } } as any
+		const handleError = vi.fn()
+
+		await delegateTaskTool.execute(
+			{ tasks: [{ objective: "Inspect src", fork_turns: "none", agent_kind: "explore" }] },
+			task,
+			{
+				askApproval: vi.fn().mockRejectedValue(failure),
+				pushToolResult: vi.fn(),
+				handleError,
+			} as any,
+		)
+
+		expect(provider.runSubagentGroup).not.toHaveBeenCalled()
+		expect(provider.cancelPreparedSubagentGroup).toHaveBeenCalledTimes(1)
+		expect(provider.cancelPreparedSubagentGroup).toHaveBeenCalledWith(
+			task,
+			batch,
+			expect.stringContaining("interrupted"),
+		)
+		expect(handleError).toHaveBeenCalledWith("approving sub-agents", failure)
+	})
+
 	it("passes two independent objectives to the bounded group runner in order", async () => {
 		const batch = prepared(["first", "second"])
 		const provider = {
