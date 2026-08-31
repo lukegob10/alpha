@@ -16,17 +16,12 @@ import {
 } from "../git"
 import { truncateOutput } from "../../integrations/misc/extract-text"
 
-type ExecFunction = (
-	command: string,
-	options: { cwd?: string },
-	callback: (error: ExecException | null, result?: { stdout: string; stderr: string }) => void,
-) => void
+type CallbackProcessFunction = (...args: any[]) => void
 
-type PromisifiedExec = (command: string, options?: { cwd?: string }) => Promise<{ stdout: string; stderr: string }>
-
-// Mock child_process.exec
+// Mock child_process process helpers.
 vitest.mock("child_process", () => ({
 	exec: vitest.fn(),
+	execFile: vitest.fn(),
 }))
 
 // Mock fs.promises
@@ -49,21 +44,18 @@ vitest.mock("vscode", () => ({
 
 // Mock util.promisify to return our own mock function
 vitest.mock("util", () => ({
-	promisify: vitest.fn((fn: ExecFunction): PromisifiedExec => {
-		return async (command: string, options?: { cwd?: string }) => {
+	promisify: vitest.fn((fn: CallbackProcessFunction) => {
+		return async (...args: any[]) => {
 			// Call the original mock to maintain the mock implementation
 			return new Promise((resolve, reject) => {
-				fn(
-					command,
-					options || {},
-					(error: ExecException | null, result?: { stdout: string; stderr: string }) => {
-						if (error) {
-							reject(error)
-						} else {
-							resolve(result!)
-						}
-					},
-				)
+				const callbackArgs = args.length === 1 ? [args[0], {}] : args
+				fn(...callbackArgs, (error: ExecException | null, result?: { stdout: string; stderr: string }) => {
+					if (error) {
+						reject(error)
+					} else {
+						resolve(result!)
+					}
+				})
 			})
 		}
 	}),
@@ -74,13 +66,28 @@ vitest.mock("../../integrations/misc/extract-text", () => ({
 	truncateOutput: vitest.fn((text) => text),
 }))
 
-import { exec } from "child_process"
+import { exec, execFile } from "child_process"
+
+function renderLegacyGitCommand(file: string, args: readonly string[]): string {
+	const renderedArgs = args.map((arg) => {
+		if (arg.startsWith("--format=")) return `--format="${arg.slice("--format=".length)}"`
+		if (arg.startsWith("--grep=")) return `--grep="${arg.slice("--grep=".length)}"`
+		return arg
+	})
+	return [file, ...renderedArgs].join(" ")
+}
 
 describe("git utils", () => {
 	const cwd = "/test/path"
 
 	beforeEach(() => {
 		vitest.clearAllMocks()
+		// Keep the legacy command-response fixtures below focused on returned data.
+		// Security regressions assert the real argv boundary directly.
+		vitest
+			.mocked(execFile)
+			.mockImplementation(((file: string, args: string[], options: any, callback: any) =>
+				vitest.mocked(exec)(renderLegacyGitCommand(file, args), options, callback)) as any)
 	})
 
 	describe("checkGitInstalled", () => {
@@ -265,6 +272,36 @@ describe("git utils", () => {
 				date: "2024-01-06",
 			})
 		})
+
+		it("passes shell metacharacters as one literal git argument", async () => {
+			const query = 'fix" & echo injected & rem "'
+			vitest.mocked(exec).mockImplementation((command: string, options: any, callback: any) => {
+				if (command === "git --version") {
+					callback(null, { stdout: "git version 2.39.2", stderr: "" })
+				} else if (command === "git rev-parse --git-dir") {
+					callback(null, { stdout: ".git", stderr: "" })
+				} else {
+					callback(new Error(`Unexpected shell command: ${command}`))
+				}
+				return {} as any
+			})
+			vitest.mocked(execFile).mockImplementation(((
+				_file: string,
+				_args: string[],
+				_options: any,
+				callback: any,
+			) => {
+				callback(null, { stdout: "", stderr: "" })
+				return {} as any
+			}) as any)
+
+			await searchCommits(query, cwd)
+
+			const [, args, options] = vitest.mocked(execFile).mock.calls[0]
+			expect(args).toContain(`--grep=${query}`)
+			expect(options).toEqual({ cwd })
+			expect(vitest.mocked(exec).mock.calls.flatMap(([command]) => String(command))).not.toContain(query)
+		})
 	})
 
 	describe("getCommitInfo", () => {
@@ -346,6 +383,14 @@ describe("git utils", () => {
 
 			const result = await getCommitInfo("abc123", cwd)
 			expect(result).toBe("Not a git repository")
+		})
+
+		it("rejects non-hash input before invoking git show", async () => {
+			const result = await getCommitInfo('abc123" & echo injected', cwd)
+
+			expect(result).toBe("Invalid commit hash")
+			expect(execFile).not.toHaveBeenCalled()
+			expect(exec).not.toHaveBeenCalled()
 		})
 	})
 
