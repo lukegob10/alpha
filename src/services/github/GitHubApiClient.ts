@@ -297,9 +297,12 @@ function runCurl(args: string[]): Promise<string> {
 				maxBuffer: 10 * 1024 * 1024,
 				windowsHide: true,
 			},
-			(error, stdout) => {
+			(error, stdout, stderr) => {
 				if (error) {
-					reject(error)
+					// ExecFile errors include the complete argv in their message. Curl argv
+					// contains Authorization headers, so never propagate that raw error.
+					const detail = stderr.trim() || `curl exited with code ${error.code ?? "unknown"}`
+					reject(new Error(detail))
 					return
 				}
 

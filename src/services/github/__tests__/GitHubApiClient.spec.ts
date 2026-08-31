@@ -138,6 +138,37 @@ describe("GitHubApiClient proxy configuration", () => {
 			]),
 		)
 	})
+
+	it("does not expose authorization values when curl fails", async () => {
+		const githubToken = "github-secret"
+		const proxyAuthorization = "Basic proxy-secret"
+		mockHttpConfiguration({
+			proxy: "http://proxy.example.com:8080",
+			proxyAuthorization,
+		})
+		vi.mocked(execFile).mockImplementation((_command, _args, _options, callback) => {
+			const error = Object.assign(
+				new Error(
+					`Command failed: curl --header Authorization: Bearer ${githubToken} --proxy-header ${proxyAuthorization}`,
+				),
+				{ code: 7 },
+			)
+			callback?.(error, "", "curl: (7) Failed to connect")
+			return undefined as any
+		})
+
+		let thrown: unknown
+		try {
+			await new GitHubApiClient(githubToken).getPullRequest({ owner: "owner", repo: "repo", pull_number: 1 })
+		} catch (error) {
+			thrown = error
+		}
+
+		const message = thrown instanceof Error ? thrown.message : String(thrown)
+		expect(message).toContain("curl: (7) Failed to connect")
+		expect(message).not.toContain(githubToken)
+		expect(message).not.toContain("proxy-secret")
+	})
 })
 
 function mockHttpConfiguration(values: Record<string, unknown>) {
