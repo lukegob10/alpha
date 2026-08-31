@@ -4,7 +4,7 @@ import * as os from "os"
 import * as path from "path"
 import * as vscode from "vscode"
 
-import type { GlobalState, ProviderSettings } from "@alpha-code/types"
+import type { GlobalState, HistoryItem, ProviderSettings } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../Task"
@@ -396,6 +396,66 @@ describe("Task persistence", () => {
 			expect(persisted).toBe(true)
 			expect(task.assistantMessageSavedToHistory).toBe(true)
 			expect((task as any).suspendAfterCurrentTurnReason).toBeUndefined()
+		})
+	})
+
+	describe("background lifecycle failure ownership", () => {
+		it("owns failures from start() without changing its void contract", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			const startupFailure = new Error("startup failed")
+			vi.spyOn(task as any, "startTask").mockRejectedValue(startupFailure)
+			const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
+
+			try {
+				expect(task.start()).toBeUndefined()
+				await vi.waitFor(() =>
+					expect(consoleError).toHaveBeenCalledWith(
+						expect.stringContaining("Background start failed"),
+						startupFailure,
+					),
+				)
+			} finally {
+				consoleError.mockRestore()
+			}
+		})
+
+		it("owns constructor-started resume failures", async () => {
+			const resumeFailure = new Error("resume failed")
+			const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
+			const historyItem: HistoryItem = {
+				id: "resume-failure",
+				number: 1,
+				ts: Date.now(),
+				task: "resume task",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			}
+
+			try {
+				new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					historyItem,
+					onCreated: (task) => {
+						vi.spyOn(task as any, "resumeTaskFromHistory").mockRejectedValue(resumeFailure)
+					},
+				})
+
+				await vi.waitFor(() =>
+					expect(consoleError).toHaveBeenCalledWith(
+						expect.stringContaining("Background resume failed"),
+						resumeFailure,
+					),
+				)
+			} finally {
+				consoleError.mockRestore()
+			}
 		})
 	})
 

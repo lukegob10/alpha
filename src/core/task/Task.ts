@@ -1085,13 +1085,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (startTask) {
 			this._started = true
 			if (task || images) {
-				this.startTask(task, images)
+				this.ownBackgroundLifecycle("start", this.startTask(task, images))
 			} else if (historyItem) {
-				this.resumeTaskFromHistory()
+				this.ownBackgroundLifecycle("resume", this.resumeTaskFromHistory())
 			} else {
 				throw new Error("Either historyItem or task/images must be provided")
 			}
 		}
+	}
+
+	private ownBackgroundLifecycle(operation: "start" | "resume", lifecycle: Promise<void>): void {
+		void lifecycle.catch((error) => {
+			console.error(`[Task#${this.taskId}] Background ${operation} failed:`, error)
+		})
 	}
 
 	/**
@@ -3872,7 +3878,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const { task, images } = this.metadata
 
 		if (task || images) {
-			this.startTask(task ?? undefined, images ?? undefined)
+			this.ownBackgroundLifecycle("start", this.startTask(task ?? undefined, images ?? undefined))
 		}
 	}
 
