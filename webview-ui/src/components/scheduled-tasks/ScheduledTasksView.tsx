@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowLeft, CalendarClock, Copy, Pause, Play, Plus, Shield, Terminal, Trash2 } from "lucide-react"
 
 import type {
@@ -141,7 +141,7 @@ const autoApprovalLabel = (autoApproval?: ScheduledTaskAutoApproval) => {
 const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) => {
 	const { scheduledTasks = [], scheduledTaskRuns = [], cwd, mode, customModes } = useExtensionState()
 	const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
-	const [selectedId, setSelectedId] = useState<string | undefined>(scheduledTasks[0]?.id)
+	const [selectedId, setSelectedId] = useState<string | undefined>()
 	const selectedTask = scheduledTasks.find((task) => task.id === selectedId)
 	const nowPlusHour = Date.now() + 60 * 60 * 1000
 
@@ -161,6 +161,8 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 	const [interval, setIntervalValue] = useState(1)
 	const [notificationPreference, setNotificationPreference] =
 		useState<ScheduledTaskNotificationPreference>("on_failure")
+	const handledTargetId = useRef<string>()
+	const hydratedDefaultTask = useRef(false)
 
 	const runsForSelected = useMemo(
 		() => scheduledTaskRuns.filter((run) => run.taskId === selectedId).slice(0, 20),
@@ -168,6 +170,8 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 	)
 
 	const resetForm = () => {
+		handledTargetId.current = targetTaskId
+		hydratedDefaultTask.current = true
 		setName("")
 		setPrompt("")
 		setExecutionType("prompt")
@@ -212,17 +216,43 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 	)
 
 	useEffect(() => {
-		if (!targetTaskId) {
+		if (targetTaskId) {
+			if (handledTargetId.current === targetTaskId) {
+				return
+			}
+
+			const targetTask = scheduledTasks.find((task) => task.id === targetTaskId)
+			if (targetTask) {
+				editTask(targetTask)
+				handledTargetId.current = targetTaskId
+				hydratedDefaultTask.current = true
+			}
 			return
 		}
-		const task = scheduledTasks.find((candidate) => candidate.id === targetTaskId)
-		if (task) {
-			editTask(task)
+
+		if (!hydratedDefaultTask.current && scheduledTasks[0]) {
+			editTask(scheduledTasks[0])
+			hydratedDefaultTask.current = true
 		}
 	}, [editTask, targetTaskId, scheduledTasks])
 
+	const startAtTimestamp = fromLocalDateTimeValue(startAt)
+	const canSave =
+		Boolean(name.trim()) &&
+		Boolean(prompt.trim()) &&
+		Number.isFinite(startAtTimestamp) &&
+		(scheduleType === "once" || (Number.isInteger(interval) && interval > 0)) &&
+		(executionType !== "command" ||
+			(Boolean(command.trim()) && Number.isInteger(timeoutMinutes) && timeoutMinutes > 0)) &&
+		(executionType !== "skill" || Boolean(skillName.trim())) &&
+		(executionType !== "plugin" || Boolean(pluginName.trim()))
+
 	const save = () => {
-		const schedule = buildSchedule(scheduleType, fromLocalDateTimeValue(startAt), timezone, Math.max(1, interval))
+		if (!canSave) {
+			return
+		}
+
+		const schedule = buildSchedule(scheduleType, startAtTimestamp, timezone, interval)
 		const execution: ScheduledTaskExecution =
 			executionType === "command"
 				? { type: "command", command, timeoutMs: Math.max(1, timeoutMinutes) * 60 * 1000 }
@@ -573,16 +603,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 								)}
 							</div>
 							<div className="flex flex-wrap gap-2">
-								<Button
-									variant="primary"
-									onClick={save}
-									disabled={
-										!name.trim() ||
-										!prompt.trim() ||
-										(executionType === "command" && !command.trim()) ||
-										(executionType === "skill" && !skillName.trim()) ||
-										(executionType === "plugin" && !pluginName.trim())
-									}>
+								<Button variant="primary" onClick={save} disabled={!canSave}>
 									{selectedTask ? "Save" : "Create"}
 								</Button>
 								{selectedTask && (

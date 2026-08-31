@@ -1,5 +1,4 @@
-import { useCallback, useEffect } from "react"
-import { useKeyPress } from "react-use"
+import { useCallback } from "react"
 import { AlertDialogProps } from "@radix-ui/react-alert-dialog"
 
 import {
@@ -25,7 +24,6 @@ interface DeleteTaskDialogProps extends AlertDialogProps {
 
 export const DeleteTaskDialog = ({ taskId, subtaskCount = 0, ...props }: DeleteTaskDialogProps) => {
 	const { t } = useAppTranslation()
-	const [isEnterPressed] = useKeyPress("Enter")
 
 	const { onOpenChange } = props
 
@@ -35,12 +33,6 @@ export const DeleteTaskDialog = ({ taskId, subtaskCount = 0, ...props }: DeleteT
 			onOpenChange?.(false)
 		}
 	}, [taskId, onOpenChange])
-
-	useEffect(() => {
-		if (taskId && isEnterPressed) {
-			onDelete()
-		}
-	}, [taskId, isEnterPressed, onDelete])
 
 	// Determine the message to show
 	const message =

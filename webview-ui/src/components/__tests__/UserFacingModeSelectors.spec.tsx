@@ -126,6 +126,34 @@ describe("secondary user-facing mode selectors", () => {
 		expect(screen.queryByTestId("select-item-orchestrator")).not.toBeInTheDocument()
 	})
 
+	it("hydrates a preselected Goal Seek job before allowing it to be saved", async () => {
+		mockExtensionState = {
+			...baseState(),
+			goalSeekJobs: [
+				{
+					id: "goal-1",
+					name: "Existing goal",
+					goal: "Keep the existing draft",
+					verifier: { type: "prompt", prompt: "Verify the result" },
+					direction: "maximize",
+					targetScore: 95,
+					maxAttempts: 7,
+					maxFailedAttempts: 2,
+					candidateCount: 4,
+					mode: "code",
+				},
+			],
+		}
+
+		render(<GoalSeekView onDone={vi.fn()} targetJobId="goal-1" />)
+
+		await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue("Existing goal"))
+		expect(screen.getByLabelText("Goal")).toHaveValue("Keep the existing draft")
+		expect(screen.getByLabelText("Verifier prompt")).toHaveValue("Verify the result")
+		expect(screen.getByLabelText("Target score")).toHaveValue(95)
+		expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
+	})
+
 	it("retains the saved legacy mode when a scheduled task is opened", async () => {
 		mockExtensionState = {
 			...baseState(),
@@ -156,5 +184,39 @@ describe("secondary user-facing mode selectors", () => {
 		expect(screen.getByTestId("select-item-code")).toHaveTextContent("Code")
 		expect(screen.queryByTestId("select-item-ask")).not.toBeInTheDocument()
 		expect(screen.queryByTestId("select-item-debug")).not.toBeInTheDocument()
+	})
+
+	it("hydrates the first scheduled task and preserves an edited draft across context refreshes", async () => {
+		const scheduledTask = {
+			id: "schedule-1",
+			name: "Existing schedule",
+			prompt: "Keep the existing prompt",
+			execution: { type: "prompt" },
+			mode: "code",
+			schedule: {
+				type: "daily",
+				startAt: Date.now() + 60_000,
+				timezone: "UTC",
+				intervalDays: 1,
+			},
+			notificationPreference: "on_failure",
+			enabled: true,
+		}
+		mockExtensionState = { ...baseState(), scheduledTasks: [scheduledTask] }
+
+		const { rerender } = render(<ScheduledTasksView onDone={vi.fn()} targetTaskId="schedule-1" />)
+
+		await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue("Existing schedule"))
+		fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Unsaved schedule edit" } })
+
+		mockExtensionState = {
+			...mockExtensionState,
+			scheduledTasks: [{ ...scheduledTask, lastRunStatus: "succeeded" }],
+		}
+		rerender(<ScheduledTasksView onDone={vi.fn()} targetTaskId="schedule-1" />)
+
+		expect(screen.getByLabelText("Name")).toHaveValue("Unsaved schedule edit")
+		expect(screen.getByLabelText("Prompt")).toHaveValue("Keep the existing prompt")
+		expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
 	})
 })

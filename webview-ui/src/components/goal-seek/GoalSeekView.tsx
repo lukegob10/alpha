@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowLeft, Plus, RotateCcw, Target, Trash2, XCircle } from "lucide-react"
 
 import type { GoalSeekJob, GoalSeekScoreDirection, GoalSeekVerifier, GoalSeekVerifierResult } from "@alpha-code/types"
@@ -29,7 +29,7 @@ const scoreLabel = (result?: GoalSeekVerifierResult) => {
 
 const GoalSeekView = ({ onDone, targetJobId }: GoalSeekViewProps) => {
 	const { goalSeekJobs = [], goalSeekRuns = [], goalSeekAttempts = [], cwd, mode, customModes } = useExtensionState()
-	const [selectedId, setSelectedId] = useState<string | undefined>(targetJobId ?? goalSeekJobs[0]?.id)
+	const [selectedId, setSelectedId] = useState<string | undefined>()
 	const selectedJob = goalSeekJobs.find((job) => job.id === selectedId)
 	const selectedRuns = goalSeekRuns.filter((run) => run.jobId === selectedId)
 	const latestRun = selectedRuns[0]
@@ -47,8 +47,12 @@ const GoalSeekView = ({ onDone, targetJobId }: GoalSeekViewProps) => {
 	const [candidateCount, setCandidateCount] = useState(10)
 	const [jobMode, setJobMode] = useState<string>(() => normalizeUserFacingModeSlug(mode))
 	const modes = useMemo(() => getUserFacingModeOptions(getAllModes(customModes), jobMode), [customModes, jobMode])
+	const handledTargetId = useRef<string>()
+	const hydratedDefaultJob = useRef(false)
 
 	const resetForm = () => {
+		handledTargetId.current = targetJobId
+		hydratedDefaultJob.current = true
 		setSelectedId(undefined)
 		setName("")
 		setGoal("")
@@ -63,20 +67,44 @@ const GoalSeekView = ({ onDone, targetJobId }: GoalSeekViewProps) => {
 		setJobMode(normalizeUserFacingModeSlug(mode))
 	}
 
-	const editJob = (job: GoalSeekJob) => {
-		setSelectedId(job.id)
-		setName(job.name)
-		setGoal(job.goal)
-		setVerifierType(job.verifier.type)
-		setVerifierPrompt("prompt" in job.verifier ? job.verifier.prompt : "")
-		setVerifierCommand("command" in job.verifier ? job.verifier.command : "")
-		setDirection(job.direction)
-		setTargetScore(job.targetScore)
-		setMaxAttempts(job.maxAttempts)
-		setMaxFailedAttempts(job.maxFailedAttempts)
-		setCandidateCount(job.candidateCount)
-		setJobMode(job.mode ?? normalizeUserFacingModeSlug(mode))
-	}
+	const editJob = useCallback(
+		(job: GoalSeekJob) => {
+			setSelectedId(job.id)
+			setName(job.name)
+			setGoal(job.goal)
+			setVerifierType(job.verifier.type)
+			setVerifierPrompt("prompt" in job.verifier ? job.verifier.prompt : "")
+			setVerifierCommand("command" in job.verifier ? job.verifier.command : "")
+			setDirection(job.direction)
+			setTargetScore(job.targetScore)
+			setMaxAttempts(job.maxAttempts)
+			setMaxFailedAttempts(job.maxFailedAttempts)
+			setCandidateCount(job.candidateCount)
+			setJobMode(job.mode ?? normalizeUserFacingModeSlug(mode))
+		},
+		[mode],
+	)
+
+	useEffect(() => {
+		if (targetJobId) {
+			if (handledTargetId.current === targetJobId) {
+				return
+			}
+
+			const targetJob = goalSeekJobs.find((job) => job.id === targetJobId)
+			if (targetJob) {
+				editJob(targetJob)
+				handledTargetId.current = targetJobId
+				hydratedDefaultJob.current = true
+			}
+			return
+		}
+
+		if (!hydratedDefaultJob.current && goalSeekJobs[0]) {
+			editJob(goalSeekJobs[0])
+			hydratedDefaultJob.current = true
+		}
+	}, [editJob, goalSeekJobs, targetJobId])
 
 	const buildVerifier = (): GoalSeekVerifier =>
 		verifierType === "prompt"
@@ -110,11 +138,19 @@ const GoalSeekView = ({ onDone, targetJobId }: GoalSeekViewProps) => {
 	}
 
 	const activeRun = selectedRuns.find((run) => run.status === "running" || run.status === "queued")
-	const canSave =
+	const canSave = Boolean(
 		name.trim() &&
-		goal.trim() &&
-		(verifierType === "command" || verifierPrompt.trim()) &&
-		(verifierType === "prompt" || verifierCommand.trim())
+			goal.trim() &&
+			(verifierType === "command" || verifierPrompt.trim()) &&
+			(verifierType === "prompt" || verifierCommand.trim()) &&
+			Number.isFinite(targetScore) &&
+			Number.isInteger(maxAttempts) &&
+			maxAttempts > 0 &&
+			Number.isInteger(maxFailedAttempts) &&
+			maxFailedAttempts >= 0 &&
+			Number.isInteger(candidateCount) &&
+			candidateCount > 0,
+	)
 
 	return (
 		<Tab>
