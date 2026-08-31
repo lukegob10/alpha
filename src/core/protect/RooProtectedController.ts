@@ -1,6 +1,8 @@
 import path from "path"
 import ignore, { Ignore } from "ignore"
 
+import { getPathRelativeToRoot, resolvePathWithExistingAncestor } from "../tools/pathSafety"
+
 export const SHIELD_SYMBOL = "\u{1F6E1}"
 
 /**
@@ -39,22 +41,19 @@ export class RooProtectedController {
 	 */
 	isWriteProtected(filePath: string): boolean {
 		try {
-			// Normalize path to be relative to cwd and use forward slashes
 			const absolutePath = path.resolve(this.cwd, filePath)
-			const relativePath = path.relative(this.cwd, absolutePath).toPosix()
+			const lexicalRelativePath = getPathRelativeToRoot(this.cwd, absolutePath)
+			if (lexicalRelativePath === undefined) return false
+			if (this.ignoreInstance.ignores(lexicalRelativePath)) return true
 
-			// Paths outside the cwd start with ".." and can't match any protected pattern.
-			// The ignore library throws RangeError for such paths, so skip them early.
-			if (relativePath.startsWith("..")) {
-				return false
-			}
-
-			// Use ignore library to check if file matches any protected pattern
-			return this.ignoreInstance.ignores(relativePath)
+			const realRoot = resolvePathWithExistingAncestor(this.cwd)
+			const realPath = resolvePathWithExistingAncestor(absolutePath)
+			const canonicalRelativePath = getPathRelativeToRoot(realRoot, realPath)
+			return canonicalRelativePath !== undefined && this.ignoreInstance.ignores(canonicalRelativePath)
 		} catch (error) {
 			// If there's an error processing the path, err on the side of caution
 			console.error(`Error checking protection for ${filePath}:`, error)
-			return false
+			return true
 		}
 	}
 

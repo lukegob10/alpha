@@ -1,3 +1,5 @@
+import fs from "fs"
+import os from "os"
 import path from "path"
 import { RooProtectedController } from "../RooProtectedController"
 
@@ -95,6 +97,30 @@ describe("RooProtectedController", () => {
 		it("should not throw for absolute paths outside cwd", () => {
 			expect(controller.isWriteProtected("/tmp/comment-2-pr63.json")).toBe(false)
 			expect(controller.isWriteProtected("/etc/passwd")).toBe(false)
+		})
+
+		it("protects legitimate in-workspace paths whose names begin with two dots", () => {
+			expect(controller.isWriteProtected("..hidden/.alphaignore")).toBe(true)
+		})
+
+		it("protects existing and new files reached through an alias to a protected directory", () => {
+			const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-protected-"))
+			try {
+				const protectedDirectory = path.join(tempRoot, ".vscode")
+				fs.mkdirSync(protectedDirectory)
+				fs.writeFileSync(path.join(protectedDirectory, "settings.json"), "{}")
+				fs.symlinkSync(
+					protectedDirectory,
+					path.join(tempRoot, "config-alias"),
+					process.platform === "win32" ? "junction" : "dir",
+				)
+
+				const aliasedController = new RooProtectedController(tempRoot)
+				expect(aliasedController.isWriteProtected("config-alias/settings.json")).toBe(true)
+				expect(aliasedController.isWriteProtected("config-alias/new.json")).toBe(true)
+			} finally {
+				fs.rmSync(tempRoot, { recursive: true, force: true })
+			}
 		})
 	})
 

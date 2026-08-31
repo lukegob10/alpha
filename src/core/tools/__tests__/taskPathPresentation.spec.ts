@@ -1,3 +1,5 @@
+import fs from "fs"
+import os from "os"
 import * as path from "path"
 
 import {
@@ -31,6 +33,28 @@ describe("managed worker path presentation", () => {
 		expect(getTaskDisplayPath(task, path.join(privateWorkspace, "docs", "report.md"))).toBe(
 			path.join(logicalWorkspace, "docs", "report.md"),
 		)
+	})
+
+	it("treats existing and not-yet-created targets through an outward symlink as outside", () => {
+		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-task-path-"))
+		try {
+			const workerRoot = path.join(tempRoot, "worker")
+			const outsideRoot = path.join(tempRoot, "outside")
+			fs.mkdirSync(workerRoot)
+			fs.mkdirSync(outsideRoot)
+			fs.writeFileSync(path.join(outsideRoot, "existing.txt"), "outside")
+			fs.symlinkSync(
+				outsideRoot,
+				path.join(workerRoot, "linked"),
+				process.platform === "win32" ? "junction" : "dir",
+			)
+
+			const linkedTask = { taskKind: "subagent" as const, subagentRole: "worker", cwd: workerRoot }
+			expect(isTaskPathOutsideWorkspace(linkedTask, path.join(workerRoot, "linked", "existing.txt"))).toBe(true)
+			expect(isTaskPathOutsideWorkspace(linkedTask, path.join(workerRoot, "linked", "new.txt"))).toBe(true)
+		} finally {
+			fs.rmSync(tempRoot, { recursive: true, force: true })
+		}
 	})
 
 	it("redacts native and posix private paths from arbitrary output", () => {

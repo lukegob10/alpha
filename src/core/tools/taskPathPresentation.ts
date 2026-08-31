@@ -2,6 +2,7 @@ import * as path from "path"
 
 import { getReadablePath } from "../../utils/path"
 import { isPathOutsideWorkspace } from "../../utils/pathUtils"
+import { isPathWithinRoot } from "./pathSafety"
 
 type TaskPathContext = {
 	taskKind?: "primary" | "subagent"
@@ -16,8 +17,7 @@ function isManagedWorker(task: TaskPathContext): boolean {
 }
 
 function isWithin(root: string, candidate: string): boolean {
-	const relative = path.relative(path.resolve(root), path.resolve(candidate))
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+	return isPathWithinRoot(root, candidate)
 }
 
 /**
