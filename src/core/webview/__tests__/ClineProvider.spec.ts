@@ -4,6 +4,7 @@ import Anthropic from "@anthropic-ai/sdk"
 import EventEmitter from "events"
 import * as vscode from "vscode"
 import axios from "axios"
+import fs from "fs/promises"
 
 import {
 	type ProviderSettingsEntry,
@@ -37,7 +38,7 @@ vi.mock("p-wait-for", () => ({
 vi.mock("fs/promises", () => {
 	const transactionFiles = new Map<string, string>()
 	const transactionDirectories = new Set<string>()
-	return {
+	const mockedFs = {
 		mkdir: vi.fn().mockImplementation(async (filePath: string) => {
 			if (filePath.includes(".transaction.lock")) transactionDirectories.add(filePath)
 		}),
@@ -80,6 +81,7 @@ vi.mock("fs/promises", () => {
 			transactionDirectories.delete(filePath)
 		}),
 	}
+	return { default: mockedFs, ...mockedFs }
 })
 
 // This suite replaces filesystem I/O with in-memory mocks. Keep the matching
@@ -824,6 +826,173 @@ describe("ClineProvider", () => {
 			},
 			undefined,
 		)
+	})
+
+	test("waits for an accepted webview message before draining tasks during disposal", async () => {
+		let releaseMessage!: () => void
+		const task = new Task(defaultTaskOptions)
+		const acceptedMessage = new Promise<void>((resolve) => {
+			releaseMessage = resolve
+		}).then(() => provider.addClineToStack(task))
+		;(provider as any).webviewMessageQueue = acceptedMessage
+
+		let disposed = false
+		const disposal = provider.dispose().then(() => {
+			disposed = true
+		})
+		await Promise.resolve()
+
+		expect(disposed).toBe(false)
+		releaseMessage()
+		await disposal
+
+		expect(task.abortTask).toHaveBeenCalled()
+		expect(provider.getTaskStackSize()).toBe(0)
+	})
+
+	test("does not cancel or close the active task for an unknown explicit task id", async () => {
+		const task = new Task(defaultTaskOptions)
+		await provider.addClineToStack(task)
+		const removeTask = vi.spyOn(provider, "removeClineFromStack")
+
+		await provider.cancelTask("missing-task", "webview_stop")
+		await provider.closeTask("missing-task")
+
+		expect(task.abortTask).not.toHaveBeenCalled()
+		expect(removeTask).not.toHaveBeenCalled()
+		expect(provider.getCurrentTask()).toBe(task)
+	})
+
+	const runLegacyHandoffWithBufferedGuidance = async (addMessage: ReturnType<typeof vi.fn>) => {
+		await Promise.all([
+			(provider as any).agentControlStoreReady.catch(() => undefined),
+			(provider as any).taskHistoryStoreReady.catch(() => undefined),
+		])
+
+		const parentTaskId = "legacy-parent"
+		const childTaskId = "legacy-child"
+		const historyItem = (id: string, task: string, extra: Record<string, unknown> = {}) => ({
+			id,
+			number: id === parentTaskId ? 1 : 2,
+			ts: id === parentTaskId ? 1 : 2,
+			task,
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+			workspace: "/test/workspace",
+			...extra,
+		})
+		const originalReadFile = (fs.readFile as any).getMockImplementation()
+		;(fs.readFile as any).mockImplementation(async (filePath: string) => {
+			if (filePath === "/legacy/ui.json" || filePath === "/legacy/api.json") return "[]"
+			return originalReadFile?.(filePath, "utf8")
+		})
+
+		let resolveChildStatus!: (value: any) => void
+		let childStatusPending!: () => void
+		const childStatusRequested = new Promise<void>((resolve) => {
+			childStatusPending = resolve
+		})
+		const childStatus = new Promise<any>((resolve) => {
+			resolveChildStatus = resolve
+		})
+		const parentInstance = {
+			taskId: parentTaskId,
+			messageQueueService: { addMessage },
+			overwriteClineMessages: vi.fn(),
+			overwriteApiConversationHistory: vi.fn(),
+			resumeAfterDelegation: vi.fn(),
+			say: vi.fn().mockResolvedValue(undefined),
+		} as any
+		const liveChild = {
+			taskId: childTaskId,
+			messageQueueService: {
+				on: vi.fn(),
+				off: vi.fn(),
+				isEmpty: vi.fn(() => true),
+			},
+		} as any
+
+		vi.spyOn(provider, "isTaskOnScreen").mockReturnValue(false)
+		vi.spyOn(provider, "getLiveTask").mockImplementation((taskId) => {
+			if (taskId === parentTaskId) return parentInstance
+			if (taskId === childTaskId) return liveChild
+			return undefined
+		})
+		vi.spyOn(provider, "getTaskWithId").mockImplementation(async (taskId) => {
+			if (taskId === parentTaskId) {
+				return {
+					historyItem: historyItem(parentTaskId, "parent", {
+						status: "delegated",
+						awaitingChildId: childTaskId,
+					}),
+					uiMessagesFilePath: "/legacy/ui.json",
+					apiConversationHistoryFilePath: "/legacy/api.json",
+				} as any
+			}
+
+			childStatusPending()
+			return childStatus
+		})
+		vi.spyOn(provider, "updateTaskHistory").mockResolvedValue([])
+		vi.spyOn(provider, "createTaskWithHistoryItem").mockResolvedValue(parentInstance)
+		vi.spyOn(provider, "removeClineFromStack").mockImplementation(async () => {
+			provider.queueMessageForTask(childTaskId, "older guidance")
+		})
+
+		const reopening = provider.reopenParentFromDelegation({
+			parentTaskId,
+			childTaskId,
+			completionResultSummary: "done",
+		})
+		await childStatusRequested
+
+		return {
+			childTaskId,
+			reopening,
+			resolveChildStatus: () =>
+				resolveChildStatus({
+					historyItem: historyItem(childTaskId, "child"),
+				}),
+			restoreReadFile: () => (fs.readFile as any).mockImplementation(originalReadFile),
+		}
+	}
+
+	test("preserves FIFO order while forwarding guidance from a delegated child", async () => {
+		const queued: string[] = []
+		const addMessage = vi.fn((text: string) => {
+			queued.push(text)
+			return { id: text, timestamp: Date.now(), text }
+		})
+		const handoff = await runLegacyHandoffWithBufferedGuidance(addMessage)
+
+		provider.queueMessageForTask(handoff.childTaskId, "newer guidance")
+		handoff.resolveChildStatus()
+		await handoff.reopening
+		handoff.restoreReadFile()
+
+		expect(queued).toEqual(["older guidance", "newer guidance"])
+	})
+
+	test("retains buffered guidance until enqueue succeeds", async () => {
+		const queued: string[] = []
+		const addMessage = vi
+			.fn()
+			.mockImplementationOnce(() => {
+				throw new Error("queue unavailable")
+			})
+			.mockImplementation((text: string) => {
+				queued.push(text)
+				return { id: text, timestamp: Date.now(), text }
+			})
+		const handoff = await runLegacyHandoffWithBufferedGuidance(addMessage)
+
+		handoff.resolveChildStatus()
+		await handoff.reopening
+		handoff.restoreReadFile()
+
+		expect(addMessage).toHaveBeenCalledTimes(2)
+		expect(queued).toEqual(["older guidance"])
 	})
 
 	test("accepts a retained completion candidate before a foreground task transition", async () => {

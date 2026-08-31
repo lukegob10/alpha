@@ -221,7 +221,7 @@ interface PendingEditOperation {
 }
 
 interface LegacyHandoffInputBuffer {
-	phase: "preparing" | "committing"
+	phase: "preparing" | "committing" | "recovering"
 	messages: Array<{ text: string; images?: string[] }>
 	forwardToTaskId?: string
 }
@@ -875,6 +875,11 @@ export class ClineProvider
 		this._disposed = true
 		this.log("Disposing ClineProvider...")
 
+		// Stop accepting webview work, then let the last already-accepted message
+		// settle before removing tasks it may have created.
+		this.clearWebviewResources()
+		await this.webviewMessageQueue
+
 		// Clear all tasks from the stack.
 		while (this.clineStack.length > 0) {
 			await this.removeClineFromStack()
@@ -890,8 +895,6 @@ export class ClineProvider
 			this.view.dispose()
 			this.log("Disposed webview")
 		}
-
-		this.clearWebviewResources()
 
 		// Clean up cloud service event listener
 
@@ -3952,6 +3955,18 @@ export class ClineProvider
 		return this.taskSessions.canAcceptInput(taskId)
 	}
 
+	private flushLegacyHandoffMessages(handoff: LegacyHandoffInputBuffer, destination: Task | undefined): boolean {
+		if (!destination) return false
+
+		while (handoff.messages.length > 0) {
+			const message = handoff.messages[0]
+			if (!destination.messageQueueService.addMessage(message.text, message.images)) return false
+			handoff.messages.shift()
+		}
+
+		return true
+	}
+
 	/**
 	 * Queue user guidance without dropping it while a delegated child is moving
 	 * back to its parent. The handoff owns the buffer until either the child is
@@ -3965,7 +3980,13 @@ export class ClineProvider
 			if (handoff.forwardToTaskId) {
 				const destination = this.getLiveTask(handoff.forwardToTaskId)
 				try {
-					if (destination?.messageQueueService.addMessage(text, copiedImages)) return true
+					if (
+						this.flushLegacyHandoffMessages(handoff, destination) &&
+						destination?.messageQueueService.addMessage(text, copiedImages)
+					) {
+						if (handoff.phase === "recovering") this.legacyHandoffInputBuffers.delete(taskId)
+						return true
+					}
 				} catch (error) {
 					this.log?.(
 						`[queueMessageForTask] Unable to forward delegated-child guidance to ${handoff.forwardToTaskId}; retaining it in the handoff buffer: ${error instanceof Error ? error.message : String(error)}`,
@@ -4255,33 +4276,10 @@ export class ClineProvider
 	}
 
 	public async cancelTask(taskId?: string, source: TaskCancellationSource = "unknown"): Promise<void> {
-		const task = this.getLiveTask(taskId) ?? this.getCurrentTask()
+		const task = taskId ? this.getLiveTask(taskId) : this.getCurrentTask()
 
 		if (!task) {
 			return
-		}
-
-		this.log(`[cancelTask] source=${source} task=${task.taskId}.${task.instanceId}`)
-		await this.agentControlStoreReady
-		await this.cancelManagedTaskDescendants(
-			task.taskId,
-			this.getAgentControlRootTaskId(task),
-			`Managed descendants cancelled because task ${task.taskId} was cancelled`,
-		)
-
-		let historyItem: HistoryItem | undefined
-		try {
-			const history = await this.getTaskWithId(task.taskId)
-			historyItem = history.historyItem
-		} catch (error) {
-			// During task startup there is a short window where currentTask exists
-			// but task history has not been persisted yet. Cancelling should still
-			// abort safely; we just skip post-cancel rehydration in that case.
-			if (error instanceof Error && error.message === "Task not found") {
-				this.log(`[cancelTask] task history missing for ${task.taskId}; skipping rehydrate`)
-			} else {
-				throw error
-			}
 		}
 
 		// Preserve parent and root task information for history item.
@@ -4301,9 +4299,34 @@ export class ClineProvider
 		// Begin abort without delaying request cancellation, but retain the promise:
 		// rehydration must not start until the final transcript save has completed.
 		const abortPromise = task.abortTask()
+		// Ancillary cancellation work below must never turn an abort rejection into
+		// an unhandled promise if it fails first.
+		void abortPromise.catch(() => undefined)
 
 		// Immediately mark the original instance as abandoned to prevent any residual activity
 		task.abandoned = true
+
+		this.log(`[cancelTask] source=${source} task=${task.taskId}.${task.instanceId}`)
+		try {
+			await this.agentControlStoreReady
+			await this.cancelManagedTaskDescendants(
+				task.taskId,
+				this.getAgentControlRootTaskId(task),
+				`Managed descendants cancelled because task ${task.taskId} was cancelled`,
+			)
+		} catch (error) {
+			this.log(`[cancelTask] managed descendant cleanup failed for ${task.taskId}: ${String(error)}`)
+		}
+
+		let historyItem: HistoryItem | undefined
+		try {
+			const history = await this.getTaskWithId(task.taskId)
+			historyItem = history.historyItem
+		} catch (error) {
+			// Cancellation is authoritative even when optional rehydration data is
+			// unavailable or corrupt.
+			this.log(`[cancelTask] task history unavailable for ${task.taskId}; skipping rehydrate: ${String(error)}`)
+		}
 
 		await pWaitFor(
 			() =>
@@ -4358,7 +4381,7 @@ export class ClineProvider
 	}
 
 	public async closeTask(taskId?: string): Promise<void> {
-		const task = this.getLiveTask(taskId) ?? this.getCurrentTask()
+		const task = taskId ? this.getLiveTask(taskId) : this.getCurrentTask()
 		if (!task) {
 			return
 		}
@@ -8950,7 +8973,6 @@ export class ClineProvider
 					})
 				}
 				childRemoved = true
-				handoff.forwardToTaskId = parentTaskId
 			} catch (error) {
 				const rollbackErrors: unknown[] = []
 				if (parentInstance) {
@@ -9010,9 +9032,10 @@ export class ClineProvider
 					)
 				}
 
-				for (const message of handoff.messages.splice(0)) {
-					parentInstance!.messageQueueService?.addMessage(message.text, message.images)
+				if (!this.flushLegacyHandoffMessages(handoff, parentInstance)) {
+					throw new Error(`Unable to queue delegated guidance for parent ${parentTaskId}`)
 				}
+				handoff.forwardToTaskId = parentTaskId
 				if (childWasOnScreen && typeof this.focusTask === "function") await this.focusTask(parentTaskId)
 				this.emit(RooCodeEventName.TaskDelegationCompleted, parentTaskId, childTaskId, completionResultSummary)
 				await parentInstance!.resumeAfterDelegation()
@@ -9030,13 +9053,22 @@ export class ClineProvider
 			}
 		} finally {
 			liveChild?.messageQueueService?.off?.("stateChanged", onChildQueueChanged)
-			handoffBuffers.delete(childTaskId)
 			const getLiveTask = typeof this.getLiveTask === "function" ? this.getLiveTask.bind(this) : undefined
 			const destination = childRemoved
 				? (getLiveTask?.(parentTaskId) ?? parentInstance)
 				: (getLiveTask?.(childTaskId) ?? liveChild)
-			for (const message of handoff.messages.splice(0)) {
-				destination?.messageQueueService?.addMessage(message.text, message.images)
+			try {
+				this.flushLegacyHandoffMessages(handoff, destination)
+			} catch (error) {
+				this.log?.(
+					`[reopenParentFromDelegation] Unable to flush retained guidance for ${childTaskId}: ${String(error)}`,
+				)
+			}
+			if (handoff.messages.length === 0) {
+				handoffBuffers.delete(childTaskId)
+			} else {
+				handoff.phase = "recovering"
+				handoff.forwardToTaskId = destination?.taskId
 			}
 		}
 	}

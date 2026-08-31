@@ -284,6 +284,25 @@ describe("ClineProvider flicker-free cancel", () => {
 		expect(rehydrate).toHaveBeenCalledOnce()
 	})
 
+	it("starts local cancellation even when lifecycle and history persistence fail", async () => {
+		mockTask1.isStreaming = false
+		mockTask1.cancelCurrentRequest = vi.fn()
+		;(provider as any).clineStack = [mockTask1]
+		;(provider as any).getLiveTask = vi.fn(() => mockTask1)
+		;(provider as any).agentControlStoreReady = Promise.reject(new Error("control store unavailable"))
+		vi.mocked(provider.getTaskWithId).mockRejectedValueOnce(new Error("history unavailable"))
+
+		await expect(provider.cancelTask("task-1", "webview_stop")).resolves.toBeUndefined()
+
+		expect(mockTask1.cancelCurrentRequest).toHaveBeenCalledOnce()
+		expect(mockTask1.abortTask).toHaveBeenCalledOnce()
+		expect(mockTask1.abandoned).toBe(true)
+		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
+			expect.stringContaining("managed descendant cleanup failed"),
+		)
+		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining("history unavailable"))
+	})
+
 	it("should remove task from stack when creating different task", async () => {
 		// Setup: Add a task to the stack first
 		;(provider as any).clineStack = [mockTask1]
