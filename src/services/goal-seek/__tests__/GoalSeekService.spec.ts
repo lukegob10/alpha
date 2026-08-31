@@ -190,6 +190,35 @@ describe("GoalSeekService task completion", () => {
 })
 
 describe("GoalSeekService run lifecycle", () => {
+	it("preserves job edits made while a run is active", async () => {
+		const workspace = process.cwd()
+		const staleJob = makeJob("job-a", workspace)
+		const { service, store } = createService([staleJob])
+		const internals = service as unknown as {
+			finishRun(job: GoalSeekJob, run: GoalSeekRun): Promise<void>
+		}
+		const running: GoalSeekRun = {
+			id: "run-a",
+			jobId: staleJob.id,
+			status: "running",
+			startedAt: 1,
+			currentIteration: 0,
+			failedAttempts: 0,
+		}
+		await store.updateJobAndRun(staleJob, running)
+		await service.updateJob(staleJob.id, { name: "Edited during run" })
+
+		await internals.finishRun(staleJob, {
+			...running,
+			status: "failed",
+			exitReason: "max_attempts_reached",
+			finishedAt: 2,
+		})
+
+		expect(store.getJob(staleJob.id)?.name).toBe("Edited during run")
+		expect(store.getJob(staleJob.id)?.lastRunStatus).toBe("failed")
+	})
+
 	it("claims a workspace before awaiting its cleanliness check", async () => {
 		const workspace = process.cwd()
 		const { service, store } = createService([makeJob("job-a", workspace), makeJob("job-b", workspace)])

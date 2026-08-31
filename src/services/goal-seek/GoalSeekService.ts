@@ -696,10 +696,14 @@ export class GoalSeekService implements vscode.Disposable {
 	}
 
 	private async finishRun(job: GoalSeekJob, run: GoalSeekRun): Promise<void> {
+		const currentJob = this.store.getJob(job.id)
+		if (!currentJob) {
+			return
+		}
 		const summary = this.describeRunSummary(run)
 		await this.store.updateJobAndRun(
 			{
-				...job,
+				...currentJob,
 				lastRunId: run.id,
 				lastRunStatus: run.status,
 				lastRunSummary: summary,
