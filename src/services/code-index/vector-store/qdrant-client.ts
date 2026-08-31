@@ -481,13 +481,21 @@ export class QdrantVectorStore implements IVectorStore {
 		}
 
 		try {
-			// First check if the collection exists
-			const collectionExists = await this.collectionExists()
-			if (!collectionExists) {
-				console.warn(
-					`[QdrantVectorStore] Skipping deletion - collection "${this.collectionName}" does not exist`,
-				)
-				return
+			// Mutation callers need to distinguish a confirmed missing collection from
+			// a connectivity failure; the general collectionExists() helper intentionally
+			// collapses both cases for non-mutating startup checks.
+			try {
+				await this.client.getCollection(this.collectionName)
+			} catch (collectionError: any) {
+				const status =
+					collectionError?.status || collectionError?.response?.status || collectionError?.statusCode
+				if (status === 404) {
+					console.warn(
+						`[QdrantVectorStore] Skipping deletion - collection "${this.collectionName}" does not exist`,
+					)
+					return
+				}
+				throw collectionError
 			}
 
 			const workspaceRoot = this.workspacePath
@@ -536,6 +544,7 @@ export class QdrantVectorStore implements IVectorStore {
 				// Include first few file paths for debugging (avoid logging too many)
 				samplePaths: filePaths.slice(0, 3),
 			})
+			throw error
 		}
 	}
 

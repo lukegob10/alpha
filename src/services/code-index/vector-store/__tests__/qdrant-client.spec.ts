@@ -1022,6 +1022,37 @@ describe("QdrantVectorStore", () => {
 		)
 		;(console.warn as any).mockRestore()
 	})
+	describe("deletePointsByMultipleFilePaths", () => {
+		it("propagates collection lookup failures instead of reporting a successful deletion", async () => {
+			const lookupError = new Error("Qdrant unavailable")
+			mockQdrantClientInstance.getCollection.mockRejectedValue(lookupError)
+			const consoleErrorSpy = vitest.spyOn(console, "error").mockImplementation(() => {})
+
+			await expect(vectorStore.deletePointsByMultipleFilePaths(["src/test.ts"])).rejects.toThrow(lookupError)
+			expect(mockQdrantClientInstance.delete).not.toHaveBeenCalled()
+			consoleErrorSpy.mockRestore()
+		})
+
+		it("propagates delete failures so callers do not commit stale cache state", async () => {
+			const deleteError = new Error("Delete failed")
+			mockQdrantClientInstance.getCollection.mockResolvedValue({} as any)
+			mockQdrantClientInstance.delete.mockRejectedValue(deleteError)
+			const consoleErrorSpy = vitest.spyOn(console, "error").mockImplementation(() => {})
+
+			await expect(vectorStore.deletePointsByMultipleFilePaths(["src/test.ts"])).rejects.toThrow(deleteError)
+			expect(mockQdrantClientInstance.delete).toHaveBeenCalledTimes(1)
+			consoleErrorSpy.mockRestore()
+		})
+
+		it("keeps a missing collection as a successful no-op", async () => {
+			mockQdrantClientInstance.getCollection.mockRejectedValue({ response: { status: 404 } })
+			const consoleWarnSpy = vitest.spyOn(console, "warn").mockImplementation(() => {})
+
+			await expect(vectorStore.deletePointsByMultipleFilePaths(["src/test.ts"])).resolves.toBeUndefined()
+			expect(mockQdrantClientInstance.delete).not.toHaveBeenCalled()
+			consoleWarnSpy.mockRestore()
+		})
+	})
 	describe("deleteCollection", () => {
 		it("should delete collection when it exists", async () => {
 			// Mock collectionExists to return true
