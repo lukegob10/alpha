@@ -5,7 +5,7 @@ import { fileURLToPath } from "url"
 import pWaitFor from "p-wait-for"
 
 import type { TaskSessionEntry } from "@alpha-code/core/cli"
-import type { Command, ModelRecord, WebviewMessage } from "@alpha-code/types"
+import type { Command, ModelRecord } from "@alpha-code/types"
 import { getProviderDefaultModelId } from "@alpha-code/types"
 
 import { ExtensionHost, type ExtensionHostOptions } from "@/agent/index.js"
@@ -32,6 +32,7 @@ type CommandLike = Pick<Command, "name" | "source" | "filePath" | "description" 
 type ModeLike = { slug: string; name: string }
 type SessionLike = TaskSessionEntry
 type ListHostOptions = { ephemeral: boolean }
+type ListRequestType = "requestCommands" | "requestModes" | "requestRouterModels"
 
 export function parseFormat(rawFormat: string | undefined): ListFormat {
 	const format = (rawFormat ?? "json").toLowerCase()
@@ -144,7 +145,7 @@ async function createListHost(options: BaseListOptions, hostOptions: ListHostOpt
  */
 function requestFromExtension<T>(
 	host: ExtensionHost,
-	requestType: WebviewMessage["type"],
+	requestType: ListRequestType,
 	extract: (message: Record<string, unknown>) => T | undefined,
 	values?: Record<string, unknown>,
 ): Promise<T> {
