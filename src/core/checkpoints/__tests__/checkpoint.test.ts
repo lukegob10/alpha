@@ -282,17 +282,22 @@ describe("Checkpoint functionality", () => {
 			expect(mockCheckpointService.restoreCheckpoint).not.toHaveBeenCalled()
 		})
 
-		it("should disable checkpoints on error", async () => {
+		it("should disable checkpoints and propagate restore errors to the caller", async () => {
 			mockCheckpointService.restoreCheckpoint.mockRejectedValue(new Error("Restore failed"))
 
-			await checkpointRestore(mockTask, {
-				ts: 2,
-				commitHash: "abc123",
-				mode: "restore",
-			})
+			await expect(
+				checkpointRestore(mockTask, {
+					ts: 2,
+					commitHash: "abc123",
+					mode: "restore",
+				}),
+			).rejects.toThrow("Restore failed")
 
 			expect(mockTask.enableCheckpoints).toBe(false)
 			expect(mockProvider.log).toHaveBeenCalledWith("[checkpointRestore] disabling checkpoints for this task")
+			expect(mockTask.overwriteApiConversationHistory).not.toHaveBeenCalled()
+			expect(mockTask.overwriteClineMessages).not.toHaveBeenCalled()
+			expect(mockProvider.cancelTask).not.toHaveBeenCalled()
 		})
 	})
 

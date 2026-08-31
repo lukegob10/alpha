@@ -298,6 +298,7 @@ export async function checkpointRestore(
 	} catch (err) {
 		provider?.log("[checkpointRestore] disabling checkpoints for this task")
 		task.enableCheckpoints = false
+		throw err
 	}
 }
 
