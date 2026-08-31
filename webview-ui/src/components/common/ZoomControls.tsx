@@ -56,6 +56,16 @@ export function ZoomControls({
 		}
 	}
 
+	const handleContinuousZoomKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, amount: number) => {
+		if (!useContinuousZoom || !adjustZoom || event.repeat) return
+
+		if (event.key === "Enter" || event.key === " ") {
+			// Prevent the button's native follow-on click from applying a second step.
+			event.preventDefault()
+			adjustZoom(amount)
+		}
+	}
+
 	// Clean up interval on unmount
 	useEffect(() => {
 		return () => {
@@ -71,6 +81,11 @@ export function ZoomControls({
 				icon="zoom-out"
 				title={zoomOutTitle}
 				onClick={!useContinuousZoom ? onZoomOut || (() => adjustZoom?.(zoomOutStep)) : undefined}
+				onKeyDown={
+					useContinuousZoom && adjustZoom
+						? (event) => handleContinuousZoomKeyDown(event, zoomOutStep)
+						: undefined
+				}
 				onMouseDown={useContinuousZoom && adjustZoom ? () => startContinuousZoom(zoomOutStep) : undefined}
 				onMouseUp={useContinuousZoom && adjustZoom ? stopContinuousZoom : undefined}
 				onMouseLeave={useContinuousZoom && adjustZoom ? stopContinuousZoom : undefined}
@@ -82,6 +97,11 @@ export function ZoomControls({
 				icon="zoom-in"
 				title={zoomInTitle}
 				onClick={!useContinuousZoom ? onZoomIn || (() => adjustZoom?.(zoomInStep)) : undefined}
+				onKeyDown={
+					useContinuousZoom && adjustZoom
+						? (event) => handleContinuousZoomKeyDown(event, zoomInStep)
+						: undefined
+				}
 				onMouseDown={useContinuousZoom && adjustZoom ? () => startContinuousZoom(zoomInStep) : undefined}
 				onMouseUp={useContinuousZoom && adjustZoom ? stopContinuousZoom : undefined}
 				onMouseLeave={useContinuousZoom && adjustZoom ? stopContinuousZoom : undefined}

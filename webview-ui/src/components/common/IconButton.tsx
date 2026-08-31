@@ -3,6 +3,7 @@ import { StandardTooltip } from "@/components/ui"
 interface IconButtonProps {
 	icon: string
 	onClick?: (e: React.MouseEvent) => void
+	onKeyDown?: (e: React.KeyboardEvent<HTMLButtonElement>) => void
 	onMouseDown?: (e: React.MouseEvent) => void
 	onMouseUp?: (e: React.MouseEvent) => void
 	onMouseLeave?: (e: React.MouseEvent) => void
@@ -14,6 +15,7 @@ interface IconButtonProps {
 export function IconButton({
 	icon,
 	onClick,
+	onKeyDown,
 	onMouseDown,
 	onMouseUp,
 	onMouseLeave,
@@ -39,6 +41,7 @@ export function IconButton({
 			className={`${sizeClasses[size]} flex items-center justify-center border-none text-vscode-editor-foreground cursor-pointer rounded-[3px] ${variantClasses[variant]}`}
 			aria-label={title}
 			onClick={handleClick}
+			onKeyDown={onKeyDown}
 			onMouseDown={onMouseDown}
 			onMouseUp={onMouseUp}
 			onMouseLeave={onMouseLeave}>
