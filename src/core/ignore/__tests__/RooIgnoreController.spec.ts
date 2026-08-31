@@ -158,6 +158,72 @@ describe("RooIgnoreController", () => {
 			// Cleanup
 			consoleSpy.mockRestore()
 		})
+
+		it("keeps the last known-good policy while a reload is pending or fails", async () => {
+			mockFileExists.mockResolvedValue(true)
+			mockReadFile.mockResolvedValueOnce("secrets/**")
+			await controller.initialize()
+
+			let rejectReload!: (error: Error) => void
+			mockReadFile.mockImplementationOnce(
+				() =>
+					new Promise((_, reject) => {
+						rejectReload = reject
+					}) as ReturnType<typeof fs.readFile>,
+			)
+			const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+			const reload = controller.initialize()
+			await vi.waitFor(() => expect(mockReadFile).toHaveBeenCalledTimes(2))
+
+			expect(controller.validateAccess("secrets/key.json")).toBe(false)
+			rejectReload(new Error("transient read failure"))
+			await reload
+			expect(controller.validateAccess("secrets/key.json")).toBe(false)
+			expect(controller.rooIgnoreContent).toBe("secrets/**")
+			consoleSpy.mockRestore()
+		})
+
+		it("does not let an older overlapping reload replace newer rules", async () => {
+			mockFileExists.mockResolvedValue(true)
+			let resolveOlder!: (content: string) => void
+			let resolveNewer!: (content: string) => void
+			mockReadFile
+				.mockImplementationOnce(
+					() =>
+						new Promise((resolve) => {
+							resolveOlder = resolve
+						}) as ReturnType<typeof fs.readFile>,
+				)
+				.mockImplementationOnce(
+					() =>
+						new Promise((resolve) => {
+							resolveNewer = resolve
+						}) as ReturnType<typeof fs.readFile>,
+				)
+
+			const olderReload = controller.initialize()
+			await vi.waitFor(() => expect(mockReadFile).toHaveBeenCalledTimes(1))
+			const newerReload = controller.initialize()
+			await vi.waitFor(() => expect(mockReadFile).toHaveBeenCalledTimes(2))
+
+			resolveNewer("new-policy/**")
+			await newerReload
+			resolveOlder("old-policy/**")
+			await olderReload
+
+			expect(controller.rooIgnoreContent).toBe("new-policy/**")
+			expect(controller.validateAccess("new-policy/key.json")).toBe(false)
+			expect(controller.validateAccess("old-policy/key.json")).toBe(true)
+		})
+
+		it("treats an existing empty .alphaignore as an active policy file", async () => {
+			mockFileExists.mockResolvedValue(true)
+			mockReadFile.mockResolvedValue("")
+			await controller.initialize()
+
+			expect(controller.validateAccess(".alphaignore")).toBe(false)
+			expect(controller.getInstructions()).toContain(".alphaignore")
+		})
 	})
 
 	describe("validateAccess", () => {

@@ -16,6 +16,7 @@ export class RooIgnoreController {
 	private cwd: string
 	private ignoreInstance: Ignore
 	private disposables: vscode.Disposable[] = []
+	private loadGeneration = 0
 	rooIgnoreContent: string | undefined
 
 	constructor(cwd: string) {
@@ -62,20 +63,24 @@ export class RooIgnoreController {
 	 * Load custom patterns from .alphaignore if it exists
 	 */
 	private async loadRooIgnore(): Promise<void> {
+		const generation = ++this.loadGeneration
 		try {
-			// Reset ignore instance to prevent duplicate patterns
-			this.ignoreInstance = ignore()
 			const ignorePath = path.join(this.cwd, ".alphaignore")
 			if (await fileExistsAtPath(ignorePath)) {
 				const content = await fs.readFile(ignorePath, "utf8")
+				const nextIgnoreInstance = ignore().add(content).add(".alphaignore")
+				if (generation !== this.loadGeneration) return
+
 				this.rooIgnoreContent = content
-				this.ignoreInstance.add(content)
-				this.ignoreInstance.add(".alphaignore")
+				this.ignoreInstance = nextIgnoreInstance
 			} else {
+				if (generation !== this.loadGeneration) return
+
 				this.rooIgnoreContent = undefined
+				this.ignoreInstance = ignore()
 			}
 		} catch (error) {
-			// Should never happen: reading file failed even though it exists
+			// Retain the last known-good policy if the file cannot be reloaded.
 			console.error("Unexpected error loading .alphaignore:", error)
 		}
 	}
@@ -88,7 +93,7 @@ export class RooIgnoreController {
 	 */
 	validateAccess(filePath: string): boolean {
 		// Always allow access if .alphaignore does not exist
-		if (!this.rooIgnoreContent) {
+		if (this.rooIgnoreContent === undefined) {
 			return true
 		}
 		try {
@@ -122,7 +127,7 @@ export class RooIgnoreController {
 	 */
 	validateCommand(command: string): string | undefined {
 		// Always allow if no .alphaignore exists
-		if (!this.rooIgnoreContent) {
+		if (this.rooIgnoreContent === undefined) {
 			return undefined
 		}
 
@@ -195,6 +200,7 @@ export class RooIgnoreController {
 	 * Clean up resources when the controller is no longer needed
 	 */
 	dispose(): void {
+		this.loadGeneration++
 		this.disposables.forEach((d) => d.dispose())
 		this.disposables = []
 	}
@@ -204,7 +210,7 @@ export class RooIgnoreController {
 	 * @returns Formatted instructions or undefined if .alphaignore doesn't exist
 	 */
 	getInstructions(): string | undefined {
-		if (!this.rooIgnoreContent) {
+		if (this.rooIgnoreContent === undefined) {
 			return undefined
 		}
 
