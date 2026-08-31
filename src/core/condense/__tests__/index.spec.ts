@@ -785,6 +785,37 @@ describe("summarizeConversation", () => {
 		expect(result.error).toBeUndefined()
 	})
 
+	it("does not expose history hidden by truncation to the summarizer", async () => {
+		const truncationId = "truncation-before-condense"
+		const hiddenContent = "hidden history must not be summarized"
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Initial task", ts: 1 },
+			{ role: "assistant", content: hiddenContent, ts: 2, truncationParent: truncationId },
+			{ role: "user", content: "hidden reply", ts: 3, truncationParent: truncationId },
+			{
+				role: "user",
+				content: "[Sliding window truncation]",
+				ts: 4,
+				isTruncationMarker: true,
+				truncationId,
+			},
+			{ role: "assistant", content: "Visible response", ts: 5 },
+			{ role: "user", content: "Visible follow-up", ts: 6 },
+		]
+
+		await summarizeConversation({
+			messages,
+			apiHandler: mockApiHandler,
+			systemPrompt: defaultSystemPrompt,
+			taskId,
+		})
+
+		const requestMessages = vi.mocked(mockApiHandler.createMessage).mock.calls[0][1]
+		const serializedRequest = JSON.stringify(requestMessages)
+		expect(serializedRequest).toContain("Visible follow-up")
+		expect(serializedRequest).not.toContain(hiddenContent)
+	})
+
 	it("should preserve command blocks from first message in summary", async () => {
 		const messages: ApiMessage[] = [
 			{
