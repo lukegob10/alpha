@@ -54,14 +54,18 @@ export async function processUserContentMentions({
 	skillsManager?: SkillLookup
 	currentMode?: string
 }): Promise<ProcessUserContentMentionsResult> {
-	// Track the first mode found from slash commands
-	let commandMode: string | undefined
+	const commandModes: Array<{ blockIndex: number; contentIndex: number; mode: string }> = []
+	const captureCommandMode = (mode: string | undefined, blockIndex: number, contentIndex: number) => {
+		if (mode) {
+			commandModes.push({ blockIndex, contentIndex, mode })
+		}
+	}
 
 	// Process userContent array, which contains text and image parts.
 	// We need to apply parseMentions() to TextPart's text that contains "<user_message>".
 	const content = (
 		await Promise.all(
-			userContent.map(async (block) => {
+			userContent.map(async (block, blockIndex) => {
 				const shouldProcessMentions = (text: string) => text.includes("<user_message>")
 
 				if (block.type === "text") {
@@ -77,10 +81,7 @@ export async function processUserContentMentions({
 							skillsManager,
 							currentMode,
 						)
-						// Capture the first mode found
-						if (!commandMode && result.mode) {
-							commandMode = result.mode
-						}
+						captureCommandMode(result.mode, blockIndex, 0)
 
 						// Build the blocks array:
 						// 1. User's text (with @ mentions replaced by clean paths)
@@ -122,10 +123,7 @@ export async function processUserContentMentions({
 								skillsManager,
 								currentMode,
 							)
-							// Capture the first mode found
-							if (!commandMode && result.mode) {
-								commandMode = result.mode
-							}
+							captureCommandMode(result.mode, blockIndex, 0)
 
 							// Build content array with file blocks included
 							const contentParts: Array<{ type: "text"; text: string }> = [
@@ -160,7 +158,7 @@ export async function processUserContentMentions({
 					} else if (Array.isArray(block.content)) {
 						const parsedContent = (
 							await Promise.all(
-								block.content.map(async (contentBlock) => {
+								block.content.map(async (contentBlock, contentIndex) => {
 									if (contentBlock.type === "text" && shouldProcessMentions(contentBlock.text)) {
 										const result = await parseMentions(
 											contentBlock.text,
@@ -173,10 +171,7 @@ export async function processUserContentMentions({
 											skillsManager,
 											currentMode,
 										)
-										// Capture the first mode found
-										if (!commandMode && result.mode) {
-											commandMode = result.mode
-										}
+										captureCommandMode(result.mode, blockIndex, contentIndex)
 
 										// Build blocks array with file content
 										const blocks: Array<{ type: "text"; text: string }> = [
@@ -220,6 +215,8 @@ export async function processUserContentMentions({
 			}),
 		)
 	).flat()
+	const commandMode = commandModes.sort((a, b) => a.blockIndex - b.blockIndex || a.contentIndex - b.contentIndex)[0]
+		?.mode
 
 	return { content: content as Anthropic.Messages.ContentBlockParam[], mode: commandMode }
 }
