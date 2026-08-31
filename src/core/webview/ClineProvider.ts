@@ -226,6 +226,18 @@ interface LegacyHandoffInputBuffer {
 	forwardToTaskId?: string
 }
 
+function flushLegacyHandoffMessages(handoff: LegacyHandoffInputBuffer, destination: Task | undefined): boolean {
+	if (!destination) return false
+
+	while (handoff.messages.length > 0) {
+		const message = handoff.messages[0]
+		if (!destination.messageQueueService.addMessage(message.text, message.images)) return false
+		handoff.messages.shift()
+	}
+
+	return true
+}
+
 const SUBAGENT_RESEARCH_WINDOW_MS = 75_000
 const MANAGED_AGENT_TREE_TEXT_LIMIT = 1_000
 const WAIT_AGENT_RESULT_SOURCE = "managed_agent_mailbox"
@@ -3962,18 +3974,6 @@ export class ClineProvider
 		return this.taskSessions.canAcceptInput(taskId)
 	}
 
-	private flushLegacyHandoffMessages(handoff: LegacyHandoffInputBuffer, destination: Task | undefined): boolean {
-		if (!destination) return false
-
-		while (handoff.messages.length > 0) {
-			const message = handoff.messages[0]
-			if (!destination.messageQueueService.addMessage(message.text, message.images)) return false
-			handoff.messages.shift()
-		}
-
-		return true
-	}
-
 	/**
 	 * Queue user guidance without dropping it while a delegated child is moving
 	 * back to its parent. The handoff owns the buffer until either the child is
@@ -3988,7 +3988,7 @@ export class ClineProvider
 				const destination = this.getLiveTask(handoff.forwardToTaskId)
 				try {
 					if (
-						this.flushLegacyHandoffMessages(handoff, destination) &&
+						flushLegacyHandoffMessages(handoff, destination) &&
 						destination?.messageQueueService.addMessage(text, copiedImages)
 					) {
 						if (handoff.phase === "recovering") this.legacyHandoffInputBuffers.delete(taskId)
@@ -9039,7 +9039,7 @@ export class ClineProvider
 					)
 				}
 
-				if (!this.flushLegacyHandoffMessages(handoff, parentInstance)) {
+				if (!flushLegacyHandoffMessages(handoff, parentInstance)) {
 					throw new Error(`Unable to queue delegated guidance for parent ${parentTaskId}`)
 				}
 				handoff.forwardToTaskId = parentTaskId
@@ -9065,7 +9065,7 @@ export class ClineProvider
 				? (getLiveTask?.(parentTaskId) ?? parentInstance)
 				: (getLiveTask?.(childTaskId) ?? liveChild)
 			try {
-				this.flushLegacyHandoffMessages(handoff, destination)
+				flushLegacyHandoffMessages(handoff, destination)
 			} catch (error) {
 				this.log?.(
 					`[reopenParentFromDelegation] Unable to flush retained guidance for ${childTaskId}: ${String(error)}`,

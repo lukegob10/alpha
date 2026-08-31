@@ -1236,6 +1236,9 @@ describe("AgentControlStore", () => {
 		}
 	})
 
+	// This integration path intentionally performs many separately fenced real-filesystem
+	// transactions. Keep unit tests on the default timeout, but allow Windows CI scheduling
+	// headroom when this spec runs beside the rest of the disk-heavy extension suite.
 	it("preserves live foreign runs, recovers abandoned ownership, and fences the stale writer", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-owners-"))
 		const stores: AgentControlStore[] = []
@@ -1422,7 +1425,7 @@ describe("AgentControlStore", () => {
 			await Promise.all(stores.map((store) => store.shutdown()))
 			await fs.rm(directory, { recursive: true, force: true })
 		}
-	})
+	}, 60_000)
 
 	it("migrates ownerless legacy v1 active records to the fenced v2 state", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-legacy-owner-"))
