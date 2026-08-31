@@ -54,11 +54,14 @@ function computeReplacements(
 		}
 
 		if (chunk.oldLines.length === 0) {
-			// Pure addition (no old lines). Add at the end or before final empty line.
+			// Anchored additions belong immediately after their context. Unanchored
+			// additions retain the existing append-at-end behavior.
 			const insertionIdx =
-				originalLines.length > 0 && originalLines[originalLines.length - 1] === ""
-					? originalLines.length - 1
-					: originalLines.length
+				chunk.changeContext !== null
+					? lineIndex
+					: originalLines.length > 0 && originalLines[originalLines.length - 1] === ""
+						? originalLines.length - 1
+						: originalLines.length
 			replacements.push([insertionIdx, 0, chunk.newLines])
 			continue
 		}

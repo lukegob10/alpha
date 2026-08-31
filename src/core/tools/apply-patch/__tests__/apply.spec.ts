@@ -122,6 +122,20 @@ describe("apply-patch apply", () => {
 			expect(result).toBe("foo\nbar\nadded\n")
 		})
 
+		it("inserts a pure addition after its explicit context", () => {
+			const original = "before\nanchor\nafter\n"
+			const chunks: UpdateFileChunk[] = [
+				{
+					changeContext: "anchor",
+					oldLines: [],
+					newLines: ["inserted"],
+					isEndOfFile: false,
+				},
+			]
+
+			expect(applyChunksToContent(original, "test.txt", chunks)).toBe("before\nanchor\ninserted\nafter\n")
+		})
+
 		it("should handle isEndOfFile flag", () => {
 			const original = "foo\nbar\nbaz\n"
 			const chunks: UpdateFileChunk[] = [
