@@ -138,7 +138,15 @@ export class XAIHandler extends BaseProvider implements SingleCompletionHandler 
 		}
 
 		const normalizeUsage = createUsageNormalizer()
-		yield* processResponsesApiStream(stream, normalizeUsage)
+		try {
+			yield* processResponsesApiStream(stream, normalizeUsage)
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : String(error)
+			TelemetryService.instance.captureException(
+				new ApiProviderError(errorMessage, this.providerName, model.id, "createMessage"),
+			)
+			throw handleOpenAIError(error, this.providerName)
+		}
 	}
 
 	async completePrompt(prompt: string): Promise<string> {

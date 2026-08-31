@@ -33,6 +33,22 @@ export async function* processResponsesApiStream(
 	let lastPendingToolCall: PendingToolCallIdentity | undefined
 
 	for await (const event of stream) {
+		if (event?.type === "response.failed" || event?.type === "response.error" || event?.type === "error") {
+			const error = event?.error ?? event?.response?.error
+			const message =
+				typeof error === "string"
+					? error
+					: typeof error?.message === "string"
+						? error.message
+						: typeof event?.message === "string"
+							? event.message
+							: event.type === "response.failed"
+								? "Unknown failure"
+								: "Unknown error"
+			const prefix = event.type === "response.failed" ? "Response failed" : "Responses API error"
+			throw new Error(`${prefix}: ${message}`)
+		}
+
 		// Text content deltas
 		if (event?.type === "response.output_text.delta" || event?.type === "response.text.delta") {
 			if (event?.delta) {

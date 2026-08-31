@@ -326,6 +326,43 @@ describe("processResponsesApiStream", () => {
 		})
 	})
 
+	describe("terminal errors", () => {
+		it("throws for response.failed errors nested on the response", async () => {
+			const stream = mockStream([
+				{ type: "response.failed", response: { error: { message: "model overloaded" } } },
+			])
+
+			await expect(collectChunks(processResponsesApiStream(stream, noopUsage))).rejects.toThrow(
+				"Response failed: model overloaded",
+			)
+		})
+
+		it.each([
+			["response.error", { error: { message: "request rejected" } }],
+			["error", { message: "connection lost" }],
+		])("throws for %s events", async (type, detail) => {
+			const stream = mockStream([{ type, ...detail }])
+
+			await expect(collectChunks(processResponsesApiStream(stream, noopUsage))).rejects.toThrow()
+		})
+
+		it("rejects a failure after yielding partial text", async () => {
+			const iterator = processResponsesApiStream(
+				mockStream([
+					{ type: "response.output_text.delta", delta: "partial" },
+					{ type: "response.failed", response: { error: { message: "boom" } } },
+				]),
+				noopUsage,
+			)
+
+			await expect(iterator.next()).resolves.toEqual({
+				done: false,
+				value: { type: "text", text: "partial" },
+			})
+			await expect(iterator.next()).rejects.toThrow("Response failed: boom")
+		})
+	})
+
 	describe("full conversation stream", () => {
 		it("should handle a complete stream with reasoning, text, and usage", async () => {
 			const mockNormalize = (usage: any) => ({
