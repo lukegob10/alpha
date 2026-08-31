@@ -213,6 +213,44 @@ describe("importExport", () => {
 			])
 		})
 
+		it("waits for provider state persistence before reporting success", async () => {
+			;(vscode.window.showOpenDialog as Mock).mockResolvedValue([{ fsPath: "/mock/path/settings.json" }])
+			;(fs.readFile as Mock).mockResolvedValue(
+				JSON.stringify({
+					providerProfiles: {
+						currentApiConfigName: "test",
+						apiConfigs: { test: { apiProvider: "openai", id: "test-id" } },
+					},
+				}),
+			)
+			mockProviderSettingsManager.export.mockResolvedValue({
+				currentApiConfigName: "default",
+				apiConfigs: { default: { apiProvider: "anthropic", id: "default-id" } },
+			})
+			mockProviderSettingsManager.listConfig.mockResolvedValue([])
+
+			let finishProviderPersistence: (() => void) | undefined
+			mockContextProxy.setProviderSettings.mockReturnValue(
+				new Promise<void>((resolve) => {
+					finishProviderPersistence = resolve
+				}),
+			)
+			let settled = false
+			const importing = importSettings({
+				providerSettingsManager: mockProviderSettingsManager,
+				contextProxy: mockContextProxy,
+				customModesManager: mockCustomModesManager,
+			}).finally(() => {
+				settled = true
+			})
+
+			await vi.waitFor(() => expect(mockContextProxy.setProviderSettings).toHaveBeenCalledOnce())
+			expect(settled).toBe(false)
+
+			finishProviderPersistence?.()
+			await expect(importing).resolves.toMatchObject({ success: true })
+		})
+
 		it("should return success: false when file content is invalid", async () => {
 			;(vscode.window.showOpenDialog as Mock).mockResolvedValue([{ fsPath: "/mock/path/settings.json" }])
 
