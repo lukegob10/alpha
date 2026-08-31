@@ -56,6 +56,9 @@ export interface IFileWatcher extends vscode.Disposable {
 	 */
 	initialize(): Promise<void>
 
+	/** Resolves after all batches already accepted by the watcher have settled. */
+	whenIdle(): Promise<void>
+
 	/**
 	 * Event emitted when a batch of files begins processing.
 	 * The event payload is an array of file paths included in the batch.

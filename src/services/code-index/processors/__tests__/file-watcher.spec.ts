@@ -4,6 +4,14 @@ import * as vscode from "vscode"
 
 import { FileWatcher } from "../file-watcher"
 
+const deferred = <T>() => {
+	let resolve!: (value: T) => void
+	const promise = new Promise<T>((resolvePromise) => {
+		resolve = resolvePromise
+	})
+	return { promise, resolve }
+}
+
 // Mock TelemetryService
 vi.mock("../../../../../packages/telemetry/src/TelemetryService", () => ({
 	TelemetryService: {
@@ -283,6 +291,65 @@ describe("FileWatcher", () => {
 			fileWatcher.dispose()
 
 			expect(mockWatcher.dispose).toHaveBeenCalled()
+		})
+	})
+
+	describe("batch ordering", () => {
+		it("finishes an earlier change batch before processing a later delete", async () => {
+			const filePath = "/mock/workspace/src/file.ts"
+			const uri = { fsPath: filePath } as vscode.Uri
+			const upsertStarted = deferred<void>()
+			const releaseUpsert = deferred<void>()
+			const operations: string[] = []
+			const internals = fileWatcher as unknown as {
+				accumulatedEvents: Map<string, { uri: vscode.Uri; type: "create" | "change" | "delete" }>
+				triggerBatchProcessing(): Promise<void>
+			}
+			vi.spyOn(fileWatcher, "processFile").mockResolvedValue({
+				path: filePath,
+				status: "processed_for_batching",
+				newHash: "new-hash",
+				pointsToUpsert: [
+					{
+						id: "point-a",
+						vector: [0.1],
+						payload: { filePath: "src/file.ts", codeChunk: "code", startLine: 1, endLine: 1 },
+					},
+				],
+			})
+			mockVectorStore.deletePointsByMultipleFilePaths.mockImplementation(async () => {
+				operations.push("delete")
+			})
+			mockVectorStore.upsertPoints.mockImplementationOnce(async () => {
+				operations.push("upsert-start")
+				upsertStarted.resolve(undefined)
+				await releaseUpsert.promise
+				operations.push("upsert-end")
+			})
+			mockCacheManager.updateHash.mockImplementation(() => operations.push("cache-update"))
+			mockCacheManager.deleteHash.mockImplementation(() => operations.push("cache-delete"))
+
+			internals.accumulatedEvents.set(filePath, { uri, type: "change" })
+			const changeBatch = internals.triggerBatchProcessing()
+			await upsertStarted.promise
+
+			internals.accumulatedEvents.set(filePath, { uri, type: "delete" })
+			const deleteBatch = internals.triggerBatchProcessing()
+			await Promise.resolve()
+			const operationsBeforeRelease = [...operations]
+
+			releaseUpsert.resolve(undefined)
+			await Promise.all([changeBatch, deleteBatch])
+
+			expect(operationsBeforeRelease).toEqual(["delete", "upsert-start"])
+			expect(operations).toEqual([
+				"delete",
+				"upsert-start",
+				"upsert-end",
+				"cache-update",
+				"delete",
+				"cache-delete",
+			])
 		})
 	})
 })

@@ -38,6 +38,7 @@ export class FileWatcher implements IFileWatcher {
 	private ignoreController: RooIgnoreController
 	private accumulatedEvents: Map<string, { uri: vscode.Uri; type: "create" | "change" | "delete" }> = new Map()
 	private batchProcessDebounceTimer?: NodeJS.Timeout
+	private batchProcessingTail: Promise<void> = Promise.resolve()
 	private readonly BATCH_DEBOUNCE_DELAY_MS = 500
 	private readonly FILE_PROCESSING_CONCURRENCY_LIMIT = 10
 	private readonly batchSegmentThreshold: number
@@ -177,18 +178,28 @@ export class FileWatcher implements IFileWatcher {
 	/**
 	 * Triggers processing of accumulated events
 	 */
-	private async triggerBatchProcessing(): Promise<void> {
+	private triggerBatchProcessing(): Promise<void> {
 		if (this.accumulatedEvents.size === 0) {
-			return
+			return Promise.resolve()
 		}
 
 		const eventsToProcess = new Map(this.accumulatedEvents)
 		this.accumulatedEvents.clear()
+		const processBatch = async () => {
+			const filePathsInBatch = Array.from(eventsToProcess.keys())
+			this._onDidStartBatchProcessing.fire(filePathsInBatch)
+			await this.processBatch(eventsToProcess)
+		}
+		const result = this.batchProcessingTail.then(processBatch, processBatch)
+		this.batchProcessingTail = result.then(
+			() => undefined,
+			() => undefined,
+		)
+		return result
+	}
 
-		const filePathsInBatch = Array.from(eventsToProcess.keys())
-		this._onDidStartBatchProcessing.fire(filePathsInBatch)
-
-		await this.processBatch(eventsToProcess)
+	public whenIdle(): Promise<void> {
+		return this.batchProcessingTail
 	}
 
 	/**
