@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { CodeIndexOrchestrator } from "../orchestrator"
 
+const deferred = <T>() => {
+	let resolve!: (value: T) => void
+	const promise = new Promise<T>((resolvePromise) => {
+		resolve = resolvePromise
+	})
+	return { promise, resolve }
+}
+
 // Mock vscode workspace so startIndexing passes workspace check
 vi.mock("vscode", () => {
 	const path = require("path")
@@ -200,6 +208,7 @@ describe("CodeIndexOrchestrator - stopIndexing", () => {
 			markIndexingIncomplete: vi.fn().mockResolvedValue(undefined),
 			markIndexingComplete: vi.fn().mockResolvedValue(undefined),
 			clearCollection: vi.fn().mockResolvedValue(undefined),
+			deleteCollection: vi.fn().mockResolvedValue(undefined),
 		}
 
 		scanner = {
@@ -212,6 +221,7 @@ describe("CodeIndexOrchestrator - stopIndexing", () => {
 			onBatchProgressUpdate: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 			onDidFinishBatchProcessing: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 			dispose: vi.fn(),
+			whenIdle: vi.fn().mockResolvedValue(undefined),
 		}
 	})
 
@@ -332,5 +342,73 @@ describe("CodeIndexOrchestrator - stopIndexing", () => {
 		expect(cacheManager.clearCacheFile).not.toHaveBeenCalled()
 		// Collection should NOT be cleared on user-initiated stop
 		expect(vectorStore.clearCollection).not.toHaveBeenCalled()
+	})
+
+	it("aborts and settles an active scan before clearing its collection", async () => {
+		const scanStarted = deferred<AbortSignal>()
+		const releaseScan = deferred<void>()
+		scanner.scanDirectory.mockImplementation(
+			async (_dir: string, _onError?: any, _onBlocksIndexed?: any, _onFileParsed?: any, signal?: AbortSignal) => {
+				scanStarted.resolve(signal!)
+				await releaseScan.promise
+				return { stats: { processed: 1, skipped: 0 }, totalBlockCount: 1 }
+			},
+		)
+		const orchestrator = new CodeIndexOrchestrator(
+			configManager,
+			stateManager,
+			workspacePath,
+			cacheManager,
+			vectorStore,
+			scanner,
+			fileWatcher,
+		)
+
+		const indexing = orchestrator.startIndexing()
+		const signal = await scanStarted.promise
+		const clearing = orchestrator.clearIndexData()
+		await Promise.resolve()
+		const deletedBeforeScanSettled = vectorStore.deleteCollection.mock.calls.length
+
+		releaseScan.resolve(undefined)
+		await Promise.all([indexing, clearing])
+
+		expect(signal.aborted).toBe(true)
+		expect(deletedBeforeScanSettled).toBe(0)
+		expect(vectorStore.deleteCollection).toHaveBeenCalledTimes(1)
+		expect(vectorStore.markIndexingComplete).not.toHaveBeenCalled()
+	})
+
+	it("does not expose a second start when only the watcher is stopped during a scan", async () => {
+		const scanStarted = deferred<void>()
+		const releaseScan = deferred<void>()
+		scanner.scanDirectory.mockImplementation(async () => {
+			scanStarted.resolve(undefined)
+			await releaseScan.promise
+			return { stats: { processed: 0, skipped: 0 }, totalBlockCount: 0 }
+		})
+		const orchestrator = new CodeIndexOrchestrator(
+			configManager,
+			stateManager,
+			workspacePath,
+			cacheManager,
+			vectorStore,
+			scanner,
+			fileWatcher,
+		)
+
+		const firstStart = orchestrator.startIndexing()
+		await scanStarted.promise
+		orchestrator.stopWatcher()
+		const secondStart = orchestrator.startIndexing()
+		for (let i = 0; i < 5; i++) {
+			await Promise.resolve()
+		}
+		const scanCallsBeforeRelease = scanner.scanDirectory.mock.calls.length
+
+		releaseScan.resolve(undefined)
+		await Promise.all([firstStart, secondStart])
+
+		expect(scanCallsBeforeRelease).toBe(1)
 	})
 })
