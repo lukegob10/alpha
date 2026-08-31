@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => {
 		cleanupMcp: vi.fn().mockResolvedValue(undefined),
 		shutdownTelemetry: vi.fn(),
 		cleanupTerminal: vi.fn(),
+		getContextProxy: vi.fn().mockResolvedValue(provider.contextProxy),
 	}
 })
 
@@ -60,7 +61,7 @@ vi.mock("../../utils/networkProxy", () => ({ initializeNetworkProxy: vi.fn().moc
 vi.mock("../../shared/package", () => ({ Package: { name: "alpha", outputChannel: "Alpha" } }))
 vi.mock("../../shared/language", () => ({ formatLanguage: vi.fn((language) => language) }))
 vi.mock("../../core/config/ContextProxy", () => ({
-	ContextProxy: { getInstance: vi.fn().mockResolvedValue(mocks.provider.contextProxy) },
+	ContextProxy: { getInstance: mocks.getContextProxy },
 }))
 vi.mock("../../core/agent/AgentControlStore", () => ({
 	AgentControlStore: { shutdownGlobalStores: mocks.shutdownGlobalStores },
@@ -112,6 +113,33 @@ import type * as vscode from "vscode"
 import { activate, deactivate } from "../../extension"
 
 describe("extension lifecycle", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("persists the default command policy before initializing provider state", async () => {
+		let finishGlobalStateUpdate!: () => void
+		const context = {
+			extensionPath: "/extension",
+			extensionUri: {},
+			globalStorageUri: { fsPath: "/storage" },
+			globalState: {
+				get: vi.fn(),
+				update: vi.fn(() => new Promise<void>((resolve) => (finishGlobalStateUpdate = resolve))),
+			},
+			subscriptions: [],
+		} as unknown as vscode.ExtensionContext
+
+		const activating = activate(context)
+		await vi.waitFor(() => expect(context.globalState.update).toHaveBeenCalledWith("allowedCommands", []))
+		expect(mocks.getContextProxy).not.toHaveBeenCalled()
+
+		finishGlobalStateUpdate()
+		await activating
+		expect(mocks.getContextProxy).toHaveBeenCalledWith(context)
+		await deactivate()
+	})
+
 	it("awaits sidebar provider disposal before shutting down global services", async () => {
 		let finishProviderDisposal!: () => void
 		mocks.provider.dispose.mockImplementationOnce(
