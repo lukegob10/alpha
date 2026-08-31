@@ -2,7 +2,7 @@
 
 import type OpenAI from "openai"
 
-import { filterNativeToolsForMode } from "../filter-tools-for-mode"
+import { filterMcpToolsForMode, filterNativeToolsForMode } from "../filter-tools-for-mode"
 
 function makeTool(name: string): OpenAI.Chat.ChatCompletionTool {
 	return {
@@ -87,6 +87,25 @@ describe("filterNativeToolsForMode - disabledTools", () => {
 		const resultNames = result.map((t) => (t as any).function.name)
 		expect(resultNames).not.toContain("search_and_replace")
 		expect(resultNames).not.toContain("edit")
+	})
+})
+
+describe("tool filtering - invalid mode fallback", () => {
+	const nativeTools: OpenAI.Chat.ChatCompletionTool[] = [
+		makeTool("read_file"),
+		makeTool("write_to_file"),
+		makeTool("execute_command"),
+	]
+	const mcpTools: OpenAI.Chat.ChatCompletionTool[] = [makeTool("mcp_server_tool")]
+
+	it("uses the complete Code-mode tool policy when a persisted mode no longer exists", () => {
+		const codeTools = filterNativeToolsForMode(nativeTools, "code", undefined, {}, undefined, {})
+		const fallbackTools = filterNativeToolsForMode(nativeTools, "deleted-custom-mode", undefined, {}, undefined, {})
+
+		expect(fallbackTools).toEqual(codeTools)
+		expect(filterMcpToolsForMode(mcpTools, "deleted-custom-mode", undefined, {})).toEqual(
+			filterMcpToolsForMode(mcpTools, "code", undefined, {}),
+		)
 	})
 })
 

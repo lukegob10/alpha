@@ -52,6 +52,23 @@ for (const [canonical, aliases] of CANONICAL_TO_ALIASES.entries()) {
  */
 const RENAMED_TOOL_CACHE: Map<string, OpenAI.Chat.ChatCompletionTool> = new Map()
 
+function resolveEffectiveMode(
+	mode: string | undefined,
+	customModes: ModeConfig[] | undefined,
+): { modeSlug: string; modeConfig: ModeConfig } {
+	const requestedModeSlug = mode ?? defaultModeSlug
+	const requestedModeConfig = getModeBySlug(requestedModeSlug, customModes)
+
+	if (requestedModeConfig) {
+		return { modeSlug: requestedModeSlug, modeConfig: requestedModeConfig }
+	}
+
+	return {
+		modeSlug: defaultModeSlug,
+		modeConfig: getModeBySlug(defaultModeSlug, customModes)!,
+	}
+}
+
 /**
  * Gets or creates a renamed tool definition with the alias name.
  * Uses RENAMED_TOOL_CACHE to avoid repeated object allocation.
@@ -232,15 +249,9 @@ export function filterNativeToolsForMode(
 	mcpHub?: McpHub,
 ): OpenAI.Chat.ChatCompletionTool[] {
 	// Get mode configuration and all tools for this mode
-	const modeSlug = mode ?? defaultModeSlug
-	let modeConfig = getModeBySlug(modeSlug, customModes)
-
-	// Fallback to default mode if current mode config is not found
-	// This ensures the agent always has functional tools even if a custom mode is deleted
-	// or configuration becomes corrupted
-	if (!modeConfig) {
-		modeConfig = getModeBySlug(defaultModeSlug, customModes)!
-	}
+	// Keep the effective slug and config paired so the runtime validator applies
+	// the same Code-mode fallback when a persisted custom mode disappears.
+	const { modeSlug, modeConfig } = resolveEffectiveMode(mode, customModes)
 
 	// Get all tools for this mode (including always-available tools)
 	// Plan is a host policy boundary. Derive its candidates from the runtime
@@ -382,7 +393,7 @@ export function isToolAllowedInMode(
 	codeIndexManager?: CodeIndexManager,
 	settings?: Record<string, any>,
 ): boolean {
-	const modeSlug = mode ?? defaultModeSlug
+	const { modeSlug } = resolveEffectiveMode(mode, customModes)
 
 	if (
 		modeSlug === planModeSlug &&
@@ -479,7 +490,7 @@ export function filterMcpToolsForMode(
 	customModes: ModeConfig[] | undefined,
 	experiments: Record<string, boolean> | undefined,
 ): OpenAI.Chat.ChatCompletionTool[] {
-	const modeSlug = mode ?? defaultModeSlug
+	const { modeSlug } = resolveEffectiveMode(mode, customModes)
 
 	// MCP tools are always in the mcp group, check if use_mcp_tool is allowed
 	const isMcpAllowed = isToolAllowedForMode(
