@@ -33,6 +33,8 @@ export const MarketplaceInstallModal: React.FC<MarketplaceInstallModalProps> = (
 	const [parameterValues, setParameterValues] = useState<Record<string, string>>({})
 	const [validationError, setValidationError] = useState<string | null>(null)
 	const [installationComplete, setInstallationComplete] = useState(false)
+	const [isInstalling, setIsInstalling] = useState(false)
+	const installationPending = React.useRef(false)
 
 	// Reset state when item changes
 	React.useEffect(() => {
@@ -41,6 +43,8 @@ export const MarketplaceInstallModal: React.FC<MarketplaceInstallModalProps> = (
 			setParameterValues({})
 			setValidationError(null)
 			setInstallationComplete(false)
+			setIsInstalling(false)
+			installationPending.current = false
 		}
 	}, [item])
 
@@ -129,9 +133,16 @@ export const MarketplaceInstallModal: React.FC<MarketplaceInstallModalProps> = (
 
 	// Listen for installation result messages
 	useEffect(() => {
+		if ((!isOpen && !isInstalling) || !item) {
+			return
+		}
+
 		const handleMessage = (event: MessageEvent) => {
 			const message = event.data
-			if (message.type === "marketplaceInstallResult" && message.slug === item?.id) {
+			if (message.type === "marketplaceInstallResult" && message.slug === item.id) {
+				installationPending.current = false
+				setIsInstalling(false)
+
 				if (message.success) {
 					// Installation succeeded - show success state
 					setInstallationComplete(true)
@@ -151,10 +162,10 @@ export const MarketplaceInstallModal: React.FC<MarketplaceInstallModalProps> = (
 
 		window.addEventListener("message", handleMessage)
 		return () => window.removeEventListener("message", handleMessage)
-	}, [item?.id])
+	}, [isInstalling, isOpen, item])
 
 	const handleInstall = () => {
-		if (!item) return
+		if (!item || installationPending.current) return
 
 		// Clear previous validation error
 		setValidationError(null)
@@ -167,6 +178,9 @@ export const MarketplaceInstallModal: React.FC<MarketplaceInstallModalProps> = (
 				return
 			}
 		}
+
+		installationPending.current = true
+		setIsInstalling(true)
 
 		// Prepare parameters - ensure optional parameters have empty string if not provided
 		const finalParameters: Record<string, any> = { ...parameterValues }
@@ -210,7 +224,7 @@ export const MarketplaceInstallModal: React.FC<MarketplaceInstallModalProps> = (
 	if (!item) return null
 
 	return (
-		<Dialog open={isOpen} onOpenChange={onClose}>
+		<Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
 			<DialogContent className="sm:max-w-[500px]">
 				<DialogHeader>
 					<DialogTitle>
@@ -376,7 +390,9 @@ export const MarketplaceInstallModal: React.FC<MarketplaceInstallModalProps> = (
 							<Button variant="outline" onClick={onClose}>
 								{t("common:answers.cancel")}
 							</Button>
-							<Button onClick={handleInstall}>{t("marketplace:install.button")}</Button>
+							<Button disabled={isInstalling} onClick={handleInstall}>
+								{t(`marketplace:install.${isInstalling ? "installing" : "button"}`)}
+							</Button>
 						</>
 					)}
 				</DialogFooter>
