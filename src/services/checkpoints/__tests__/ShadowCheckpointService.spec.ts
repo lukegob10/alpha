@@ -58,6 +58,22 @@ const initWorkspaceRepo = async ({
 	return { git, testFile }
 }
 
+describe("checkpoint path guards", () => {
+	it("rejects normalized aliases of protected directories", () => {
+		const protectedAlias = `${os.homedir()}${path.sep}.`
+		expect(
+			() => new RepoPerTaskCheckpointService("task", path.join(tmpDir, "shadow"), protectedAlias, () => {}),
+		).toThrow(`Cannot use checkpoints in ${protectedAlias}`)
+	})
+
+	it("rejects filesystem roots", () => {
+		const filesystemRoot = path.parse(tmpDir).root
+		expect(
+			() => new RepoPerTaskCheckpointService("task", path.join(tmpDir, "shadow"), filesystemRoot, () => {}),
+		).toThrow(`Cannot use checkpoints in ${filesystemRoot}`)
+	})
+})
+
 describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 	"CheckpointService",
 	(klass, prefix) => {

@@ -1,4 +1,5 @@
 import fs from "fs/promises"
+import { realpathSync } from "fs"
 import os from "os"
 import * as path from "path"
 import crypto from "crypto"
@@ -130,8 +131,25 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		const documentsPath = path.join(homedir, "Documents")
 		const downloadsPath = path.join(homedir, "Downloads")
 		const protectedPaths = [homedir, desktopPath, documentsPath, downloadsPath]
+		let canonicalWorkspaceDir: string
+		try {
+			canonicalWorkspaceDir = realpathSync.native(path.resolve(workspaceDir))
+		} catch {
+			throw new Error(`Cannot use checkpoints in ${workspaceDir}`)
+		}
+		const canonicalProtectedPaths = protectedPaths.map((protectedPath) => {
+			try {
+				return realpathSync.native(path.resolve(protectedPath))
+			} catch {
+				return path.resolve(protectedPath)
+			}
+		})
+		const filesystemRoot = path.parse(canonicalWorkspaceDir).root
 
-		if (protectedPaths.includes(workspaceDir)) {
+		if (
+			arePathsEqual(canonicalWorkspaceDir, filesystemRoot) ||
+			canonicalProtectedPaths.some((protectedPath) => arePathsEqual(protectedPath, canonicalWorkspaceDir))
+		) {
 			throw new Error(`Cannot use checkpoints in ${workspaceDir}`)
 		}
 
