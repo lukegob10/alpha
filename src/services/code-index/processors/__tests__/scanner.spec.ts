@@ -2,9 +2,10 @@
 
 import { DirectoryScanner } from "../scanner"
 import { stat } from "fs/promises"
+import * as vscode from "vscode"
 
 // Mock TelemetryService
-vi.mock("../../../../../packages/telemetry/src/TelemetryService", () => ({
+vi.mock("@alpha-code/telemetry", () => ({
 	TelemetryService: {
 		instance: {
 			captureEvent: vi.fn(),
@@ -75,6 +76,7 @@ describe("DirectoryScanner", () => {
 	let mockStats: any
 
 	beforeEach(async () => {
+		vi.clearAllMocks()
 		mockEmbedder = {
 			createEmbeddings: vi.fn().mockResolvedValue({ embeddings: [[0.1, 0.2, 0.3]] }),
 			embedderInfo: { name: "mock-embedder", dimensions: 384 },
@@ -145,6 +147,7 @@ describe("DirectoryScanner", () => {
 			birthtimeNs: BigInt(0),
 		}
 		vi.mocked(stat).mockResolvedValue(mockStats)
+		vi.mocked(vscode.workspace.fs.readFile).mockResolvedValue(Buffer.from("test content"))
 
 		// Get and mock the listFiles function
 		const { listFiles } = await import("../../../glob/list-files")
@@ -393,6 +396,147 @@ describe("DirectoryScanner", () => {
 			expect(points[0].payload.segmentHash).toBe("unique-segment-hash-1")
 			expect(points[1].payload.segmentHash).toBe("unique-segment-hash-2")
 			expect(points[2].payload.segmentHash).toBe("unique-segment-hash-3")
+		})
+
+		it("keeps a modified file in one logical batch across the segment threshold", async () => {
+			const { listFiles } = await import("../../../glob/list-files")
+			vi.mocked(listFiles).mockResolvedValue([["test/file1.js"], false])
+			mockCacheManager.getHash.mockReturnValue("old-hash")
+			mockEmbedder.createEmbeddings.mockImplementation(async (texts: string[]) => ({
+				embeddings: texts.map(() => [0.1, 0.2, 0.3]),
+			}))
+			mockCodeParser.parseFile.mockResolvedValue(
+				[1, 2, 3].map((line) => ({
+					file_path: "test/file1.js",
+					content: `block ${line}`,
+					start_line: line,
+					end_line: line,
+					identifier: `block-${line}`,
+					type: "function",
+					fileHash: "new-hash",
+					segmentHash: `segment-${line}`,
+				})),
+			)
+			const thresholdScanner = new DirectoryScanner(
+				mockEmbedder,
+				mockVectorStore,
+				mockCodeParser,
+				mockCacheManager,
+				mockIgnoreInstance,
+				2,
+			)
+
+			await thresholdScanner.scanDirectory("/test")
+
+			expect(mockVectorStore.deletePointsByMultipleFilePaths).toHaveBeenCalledOnce()
+			expect(mockVectorStore.deletePointsByMultipleFilePaths).toHaveBeenCalledWith(["test/file1.js"])
+			expect(mockEmbedder.createEmbeddings.mock.calls.map(([texts]: [string[]]) => texts.length)).toEqual([2, 1])
+			expect(mockVectorStore.upsertPoints).toHaveBeenCalledTimes(2)
+			expect(mockCacheManager.updateHash).toHaveBeenCalledOnce()
+			expect(mockVectorStore.deletePointsByMultipleFilePaths.mock.invocationCallOrder[0]).toBeLessThan(
+				mockVectorStore.upsertPoints.mock.invocationCallOrder[0],
+			)
+			expect(mockVectorStore.upsertPoints.mock.invocationCallOrder[1]).toBeLessThan(
+				mockCacheManager.updateHash.mock.invocationCallOrder[0],
+			)
+		})
+
+		it("commits file metadata when the block count exactly matches the threshold", async () => {
+			const { listFiles } = await import("../../../glob/list-files")
+			vi.mocked(listFiles).mockResolvedValue([["test/file1.js"], false])
+			mockCacheManager.getHash.mockReturnValue("old-hash")
+			mockEmbedder.createEmbeddings.mockImplementation(async (texts: string[]) => ({
+				embeddings: texts.map(() => [0.1, 0.2, 0.3]),
+			}))
+			mockCodeParser.parseFile.mockResolvedValue(
+				[1, 2].map((line) => ({
+					file_path: "test/file1.js",
+					content: `block ${line}`,
+					start_line: line,
+					end_line: line,
+					identifier: `block-${line}`,
+					type: "function",
+					fileHash: "new-hash",
+					segmentHash: `segment-${line}`,
+				})),
+			)
+			const thresholdScanner = new DirectoryScanner(
+				mockEmbedder,
+				mockVectorStore,
+				mockCodeParser,
+				mockCacheManager,
+				mockIgnoreInstance,
+				2,
+			)
+
+			await thresholdScanner.scanDirectory("/test")
+
+			expect(mockVectorStore.deletePointsByMultipleFilePaths).toHaveBeenCalledWith(["test/file1.js"])
+			expect(mockCacheManager.updateHash).toHaveBeenCalledOnce()
+		})
+
+		it("removes stale vectors before caching a changed file that now parses to zero blocks", async () => {
+			const { listFiles } = await import("../../../glob/list-files")
+			vi.mocked(listFiles).mockResolvedValue([["test/file1.js"], false])
+			mockCacheManager.getHash.mockReturnValue("old-hash")
+			mockCodeParser.parseFile.mockResolvedValue([])
+
+			await scanner.scanDirectory("/test")
+
+			expect(mockVectorStore.deletePointsByMultipleFilePaths).toHaveBeenCalledWith(["test/file1.js"])
+			expect(mockVectorStore.upsertPoints).not.toHaveBeenCalled()
+			expect(mockCacheManager.updateHash).toHaveBeenCalledOnce()
+			expect(mockVectorStore.deletePointsByMultipleFilePaths.mock.invocationCallOrder[0]).toBeLessThan(
+				mockCacheManager.updateHash.mock.invocationCallOrder[0],
+			)
+		})
+
+		it("preserves cached vectors when an existing file cannot be read transiently", async () => {
+			const { listFiles } = await import("../../../glob/list-files")
+			vi.mocked(listFiles).mockResolvedValue([["test/file1.js"], false])
+			mockCacheManager.getAllHashes.mockReturnValue({ "test/file1.js": "old-hash" })
+			vi.mocked(vscode.workspace.fs.readFile).mockRejectedValueOnce(new Error("temporary read failure"))
+			const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+			await scanner.scanDirectory("/test", vi.fn())
+
+			expect(mockVectorStore.deletePointsByFilePath).not.toHaveBeenCalled()
+			expect(mockCacheManager.deleteHash).not.toHaveBeenCalled()
+			consoleErrorSpy.mockRestore()
+		})
+
+		it("surfaces a rejected batch without an unhandled cleanup rejection", async () => {
+			vi.useFakeTimers()
+			const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+			try {
+				const { listFiles } = await import("../../../glob/list-files")
+				vi.mocked(listFiles).mockResolvedValue([["test/file1.js"], false])
+				mockCodeParser.parseFile.mockResolvedValue([
+					{
+						file_path: "test/file1.js",
+						content: "const value = 1",
+						start_line: 1,
+						end_line: 1,
+						identifier: "value",
+						type: "variable",
+						fileHash: "new-hash",
+						segmentHash: "segment-1",
+					},
+				])
+				mockEmbedder.createEmbeddings.mockRejectedValue(new Error("embedding service unavailable"))
+				const reportedFailure = new Error("batch failure callback")
+
+				const scanPromise = scanner.scanDirectory("/test", () => {
+					throw reportedFailure
+				})
+				const rejection = expect(scanPromise).rejects.toBe(reportedFailure)
+
+				await vi.runAllTimersAsync()
+				await rejection
+			} finally {
+				consoleErrorSpy.mockRestore()
+				vi.useRealTimers()
+			}
 		})
 
 		it("should stop processing files when signal is aborted", async () => {
