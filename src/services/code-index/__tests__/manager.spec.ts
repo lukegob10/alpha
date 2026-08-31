@@ -554,6 +554,52 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 			expect((manager as any)._orchestrator).toBeUndefined()
 		})
 
+		it("preserves recreate, recover, recreate call order", async () => {
+			const firstRecreateStarted = deferred<void>()
+			const releaseFirstRecreate = deferred<void>()
+			const recoveryStarted = deferred<void>()
+			const releaseRecovery = deferred<void>()
+			const operations: string[] = []
+			const internals = manager as any
+			vi.spyOn(internals, "recreateServicesExclusive")
+				.mockImplementationOnce(async () => {
+					operations.push("recreate-a-start")
+					firstRecreateStarted.resolve(undefined)
+					await releaseFirstRecreate.promise
+					operations.push("recreate-a-end")
+				})
+				.mockImplementationOnce(async () => {
+					operations.push("recreate-c")
+				})
+			vi.spyOn(internals, "recoverFromErrorExclusive").mockImplementationOnce(async () => {
+				operations.push("recover-b-start")
+				recoveryStarted.resolve(undefined)
+				await releaseRecovery.promise
+				operations.push("recover-b-end")
+			})
+
+			const firstRecreate = internals._recreateServices()
+			await firstRecreateStarted.promise
+			const recovery = manager.recoverFromError()
+			const secondRecreate = internals._recreateServices()
+			expect(operations).toEqual(["recreate-a-start"])
+
+			releaseFirstRecreate.resolve(undefined)
+			await recoveryStarted.promise
+			expect(operations).toEqual(["recreate-a-start", "recreate-a-end", "recover-b-start"])
+
+			releaseRecovery.resolve(undefined)
+			await Promise.all([firstRecreate, recovery, secondRecreate])
+
+			expect(operations).toEqual([
+				"recreate-a-start",
+				"recreate-a-end",
+				"recover-b-start",
+				"recover-b-end",
+				"recreate-c",
+			])
+		})
+
 		it("should reset internal service instances", async () => {
 			// Verify initial state
 			expect((manager as any)._configManager).toBeDefined()

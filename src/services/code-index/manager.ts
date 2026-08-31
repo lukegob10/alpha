@@ -28,8 +28,6 @@ export class CodeIndexManager {
 	private _searchService: CodeIndexSearchService | undefined
 	private _cacheManager: CacheManager | undefined
 
-	private _recoveryOperation: Promise<void> | null = null
-	private _serviceRecreationOperation: Promise<void> | null = null
 	private _serviceLifecycleTail: Promise<void> = Promise.resolve()
 
 	public static getInstance(context: vscode.ExtensionContext, workspacePath?: string): CodeIndexManager | undefined {
@@ -278,18 +276,7 @@ export class CodeIndexManager {
 	 * - Prevents race conditions from multiple concurrent recovery attempts
 	 */
 	public recoverFromError(): Promise<void> {
-		if (this._recoveryOperation) {
-			return this._recoveryOperation
-		}
-		const operation = this.enqueueServiceLifecycle(() => this.recoverFromErrorExclusive())
-		this._recoveryOperation = operation
-		const clearOperation = () => {
-			if (this._recoveryOperation === operation) {
-				this._recoveryOperation = null
-			}
-		}
-		void operation.then(clearOperation, clearOperation)
-		return operation
+		return this.enqueueServiceLifecycle(() => this.recoverFromErrorExclusive())
 	}
 
 	private async recoverFromErrorExclusive(): Promise<void> {
@@ -362,18 +349,7 @@ export class CodeIndexManager {
 	 * Used by both initialize() and handleSettingsChange().
 	 */
 	private _recreateServices(): Promise<void> {
-		if (this._serviceRecreationOperation) {
-			return this._serviceRecreationOperation
-		}
-		const operation = this.enqueueServiceLifecycle(() => this.recreateServicesExclusive())
-		this._serviceRecreationOperation = operation
-		const clearOperation = () => {
-			if (this._serviceRecreationOperation === operation) {
-				this._serviceRecreationOperation = null
-			}
-		}
-		void operation.then(clearOperation, clearOperation)
-		return operation
+		return this.enqueueServiceLifecycle(() => this.recreateServicesExclusive())
 	}
 
 	private enqueueServiceLifecycle(operation: () => Promise<void>): Promise<void> {
