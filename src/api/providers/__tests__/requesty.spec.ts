@@ -4,6 +4,7 @@ import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 
 import { RequestyHandler } from "../requesty"
+import { getModels } from "../fetchers/modelCache"
 import { ApiHandlerOptions } from "../../../shared/api"
 import { Package } from "../../../shared/package"
 import { ApiHandlerCreateMessageMetadata } from "../../index"
@@ -84,6 +85,12 @@ describe("RequestyHandler", () => {
 		it("returns correct model info when options are provided", async () => {
 			const handler = new RequestyHandler(mockOptions)
 			const result = await handler.fetchModel()
+
+			expect(getModels).toHaveBeenCalledWith({
+				provider: "requesty",
+				baseUrl: "https://router.requesty.ai/v1",
+				apiKey: "test-key",
+			})
 
 			expect(result).toMatchObject({
 				id: mockOptions.requestyModelId,
