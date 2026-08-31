@@ -106,6 +106,7 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 	protected git?: SimpleGit
 	protected readonly log: (message: string) => void
 	protected shadowGitConfigWorktree?: string
+	private checkpointOperationTail: Promise<void> = Promise.resolve()
 
 	public get baseHash() {
 		return this._baseHash
@@ -372,7 +373,23 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		return this.shadowGitConfigWorktree
 	}
 
-	public async saveCheckpoint(
+	private enqueueCheckpointOperation<T>(operation: () => Promise<T>): Promise<T> {
+		const result = this.checkpointOperationTail.then(operation, operation)
+		this.checkpointOperationTail = result.then(
+			() => undefined,
+			() => undefined,
+		)
+		return result
+	}
+
+	public saveCheckpoint(
+		message: string,
+		options?: { allowEmpty?: boolean; suppressMessage?: boolean },
+	): Promise<CheckpointResult | undefined> {
+		return this.enqueueCheckpointOperation(() => this.saveCheckpointTransaction(message, options))
+	}
+
+	private async saveCheckpointTransaction(
 		message: string,
 		options?: { allowEmpty?: boolean; suppressMessage?: boolean },
 	): Promise<CheckpointResult | undefined> {
@@ -433,7 +450,11 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		}
 	}
 
-	public async restoreCheckpoint(commitHash: string) {
+	public restoreCheckpoint(commitHash: string): Promise<void> {
+		return this.enqueueCheckpointOperation(() => this.restoreCheckpointTransaction(commitHash))
+	}
+
+	private async restoreCheckpointTransaction(commitHash: string) {
 		try {
 			this.log(`[${this.constructor.name}#restoreCheckpoint] starting checkpoint restore`)
 
@@ -463,7 +484,11 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		}
 	}
 
-	public async getDiff({ from, to }: { from?: string; to?: string }): Promise<CheckpointDiff[]> {
+	public getDiff({ from, to }: { from?: string; to?: string }): Promise<CheckpointDiff[]> {
+		return this.enqueueCheckpointOperation(() => this.getDiffTransaction({ from, to }))
+	}
+
+	private async getDiffTransaction({ from, to }: { from?: string; to?: string }): Promise<CheckpointDiff[]> {
 		if (!this.git) {
 			throw new Error("Shadow git repo not initialized")
 		}

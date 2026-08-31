@@ -14,6 +14,14 @@ import { RepoPerTaskCheckpointService } from "../RepoPerTaskCheckpointService"
 
 let tmpDir: string
 
+const deferred = () => {
+	let resolve!: () => void
+	const promise = new Promise<void>((resolvePromise) => {
+		resolve = resolvePromise
+	})
+	return { promise, resolve }
+}
+
 beforeAll(async () => {
 	tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-checkpoint-service-"))
 })
@@ -159,6 +167,51 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				expect(change).toBeDefined()
 				expect(change!.content.before).toBe("New file content")
 				expect(change!.content.after).toBe("")
+			})
+		})
+
+		describe(`${klass.name} checkpoint transactions`, () => {
+			it("does not restore while a checkpoint save is inspecting staged changes", async () => {
+				const checkpointGit = (service as unknown as { git: SimpleGit }).git
+				const diffStarted = deferred()
+				const releaseDiff = deferred()
+				const operations: string[] = []
+				const diffSummary = checkpointGit.diffSummary.bind(checkpointGit)
+
+				vitest.spyOn(checkpointGit, "diffSummary").mockImplementationOnce(async (options) => {
+					operations.push("save-diff-start")
+					diffStarted.resolve()
+					await releaseDiff.promise
+					operations.push("save-diff-end")
+					return diffSummary(options)
+				})
+				vitest.spyOn(checkpointGit, "clean").mockImplementation(async () => {
+					operations.push("restore-clean")
+					return checkpointGit
+				})
+				vitest.spyOn(checkpointGit, "reset").mockResolvedValue(checkpointGit)
+
+				await fs.writeFile(testFile, "Content to checkpoint")
+				const save = service.saveCheckpoint("Serialized save")
+				await diffStarted.promise
+
+				const restore = service.restoreCheckpoint(service.baseHash!)
+				await Promise.resolve()
+				const operationsBeforeRelease = [...operations]
+
+				releaseDiff.resolve()
+				await Promise.all([save, restore])
+
+				expect(operationsBeforeRelease).toEqual(["save-diff-start"])
+				expect(operations).toEqual(["save-diff-start", "save-diff-end", "restore-clean"])
+			})
+
+			it("continues checkpoint transactions after a save fails", async () => {
+				const checkpointGit = (service as unknown as { git: SimpleGit }).git
+				vitest.spyOn(checkpointGit, "add").mockRejectedValueOnce(new Error("staging failed"))
+
+				await expect(service.saveCheckpoint("Failed save")).rejects.toThrow("staging failed")
+				await expect(service.restoreCheckpoint(service.baseHash!)).resolves.toBeUndefined()
 			})
 		})
 
