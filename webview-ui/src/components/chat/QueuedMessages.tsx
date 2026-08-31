@@ -70,15 +70,15 @@ export const QueuedMessages = ({
 									: "border-[var(--border-subtle)]"
 							} ${dragOverIndex === index ? "border-[var(--alpha-accent)]" : ""}`}>
 							<div className="flex items-center justify-between gap-1">
-								<div
-									role="button"
+								<button
+									type="button"
 									tabIndex={isEditing ? -1 : 0}
 									aria-label={t("queuedMessages.dragHandle")}
 									title={t("queuedMessages.dragTooltip")}
 									draggable={!isEditing}
 									className={`inline-flex h-7 shrink-0 items-center justify-center px-1 text-vscode-descriptionForeground ${
 										isEditing ? "opacity-40 cursor-default" : "cursor-grab active:cursor-grabbing"
-									}`}
+									} border-0 bg-transparent`}
 									onDragStart={(e) => {
 										if (isEditing) {
 											e.preventDefault()
@@ -92,9 +92,16 @@ export const QueuedMessages = ({
 										draggedIndexRef.current = null
 										setDragOverIndex(null)
 									}}
+									onKeyDown={(e) => {
+										if (isEditing || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return
+										const targetIndex = e.key === "ArrowUp" ? index - 1 : index + 1
+										if (targetIndex < 0 || targetIndex >= queue.length) return
+										e.preventDefault()
+										onReorder(index, targetIndex)
+									}}
 									onClick={(e) => e.stopPropagation()}>
 									<GripVertical className="w-4 h-4" />
-								</div>
+								</button>
 								<div className="flex-grow px-2 py-1 wrap-anywhere">
 									<div
 										className={`px-1 py-0.5 -mx-1 -my-0.5 rounded transition-colors ${
@@ -115,6 +122,7 @@ export const QueuedMessages = ({
 										size="icon"
 										className="shrink-0"
 										title={t("queuedMessages.editTooltip")}
+										aria-label={t("queuedMessages.editTooltip")}
 										disabled={isEditing}
 										onClick={(e) => {
 											e.stopPropagation()
@@ -138,6 +146,8 @@ export const QueuedMessages = ({
 										size="icon"
 										className="shrink-0"
 										disabled={isEditing}
+										aria-label={t("common:answers.remove")}
+										title={t("common:answers.remove")}
 										onClick={(e) => {
 											e.stopPropagation()
 											onRemove(index)

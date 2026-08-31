@@ -40,6 +40,37 @@ describe("QueuedMessages", () => {
 		expect(onReorder).toHaveBeenCalledWith(1, 0)
 	})
 
+	it("reorders queued messages with arrow keys", () => {
+		const onReorder = vi.fn()
+		render(
+			<QueuedMessages
+				queue={queue}
+				onRemove={vi.fn()}
+				onSteer={vi.fn()}
+				onEdit={vi.fn()}
+				onReorder={onReorder}
+			/>,
+		)
+
+		fireEvent.keyDown(screen.getAllByLabelText("queuedMessages.dragHandle")[1], { key: "ArrowUp" })
+
+		expect(onReorder).toHaveBeenCalledWith(1, 0)
+	})
+
+	it("gives the remove action an accessible name", () => {
+		render(
+			<QueuedMessages
+				queue={queue}
+				onRemove={vi.fn()}
+				onSteer={vi.fn()}
+				onEdit={vi.fn()}
+				onReorder={vi.fn()}
+			/>,
+		)
+
+		expect(screen.getAllByRole("button", { name: "common:answers.remove" })).toHaveLength(2)
+	})
+
 	it("disables queued actions for the row currently being edited", () => {
 		render(
 			<QueuedMessages
