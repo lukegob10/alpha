@@ -4,7 +4,6 @@ import {
 	type BundledTheme,
 	type BundledLanguage,
 	bundledLanguages,
-	bundledThemes,
 } from "shiki"
 
 // Extend BundledLanguage to include 'txt' because Shiki supports this but it is
@@ -126,6 +125,7 @@ const LANGUAGE_LOAD_DELAY = 0
 
 // Common languages for first-stage initialization
 const initialLanguages: BundledLanguage[] = ["shell", "log"]
+const activeThemes: BundledTheme[] = ["github-light", "github-dark"]
 
 // Singleton state
 const state: {
@@ -151,7 +151,7 @@ export const getHighlighter = async (language?: string): Promise<Highlighter> =>
 				// console.debug("[Shiki] Initialization started...")
 
 				const instance = await createHighlighter({
-					themes: Object.keys(bundledThemes) as BundledTheme[],
+					themes: activeThemes,
 					langs: initialLanguages,
 				})
 
@@ -164,7 +164,12 @@ export const getHighlighter = async (language?: string): Promise<Highlighter> =>
 				initialLanguages.forEach((lang) => state.loadedLanguages.add(lang))
 
 				return instance
-			})()
+			})().catch((error) => {
+				// A transient initialization failure should not poison the webview session.
+				state.instance = null
+				state.instanceInitPromise = null
+				throw error
+			})
 		}
 
 		// Wait for initialization to complete
