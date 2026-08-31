@@ -541,6 +541,48 @@ describe("importExport", () => {
 		})
 
 		describe("lenient import with invalid providers", () => {
+			it("preserves retired providers and legacy fields without a warning", async () => {
+				;(vscode.window.showOpenDialog as Mock).mockResolvedValue([{ fsPath: "/mock/path/settings.json" }])
+				;(fs.readFile as Mock).mockResolvedValue(
+					JSON.stringify({
+						providerProfiles: {
+							currentApiConfigName: "retired-profile",
+							apiConfigs: {
+								"retired-profile": {
+									apiProvider: "groq",
+									id: "retired-id",
+									groqApiKey: "legacy-groq-key",
+								},
+							},
+						},
+					}),
+				)
+				mockProviderSettingsManager.export.mockResolvedValue({
+					currentApiConfigName: "default",
+					apiConfigs: { default: { apiProvider: "anthropic", id: "default-id" } },
+				})
+				mockProviderSettingsManager.listConfig.mockResolvedValue([])
+
+				const result = await importSettings({
+					providerSettingsManager: mockProviderSettingsManager,
+					contextProxy: mockContextProxy,
+					customModesManager: mockCustomModesManager,
+				})
+
+				expect(result).toMatchObject({ success: true, warnings: undefined })
+				expect(mockProviderSettingsManager.import).toHaveBeenCalledWith(
+					expect.objectContaining({
+						currentApiConfigName: "retired-profile",
+						apiConfigs: expect.objectContaining({
+							"retired-profile": expect.objectContaining({
+								apiProvider: "groq",
+								groqApiKey: "legacy-groq-key",
+							}),
+						}),
+					}),
+				)
+			})
+
 			it("should sanitize profiles with invalid apiProvider and return warnings", async () => {
 				// Test importing a profile with a removed/invalid provider like "claude-code"
 				;(vscode.window.showOpenDialog as Mock).mockResolvedValue([{ fsPath: "/mock/path/settings.json" }])

@@ -10,6 +10,7 @@ import {
 	globalSettingsSchema,
 	providerSettingsWithIdSchema,
 	isProviderName,
+	isRetiredProvider,
 	type ProviderSettingsWithId,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -47,9 +48,12 @@ function sanitizeProviderConfig(configName: string, apiConfig: unknown): { confi
 	}
 
 	const config = apiConfig as Record<string, unknown>
+	const isKnownProvider =
+		typeof config.apiProvider === "string" &&
+		(isProviderName(config.apiProvider) || isRetiredProvider(config.apiProvider))
 
 	// Check if apiProvider is set and if it's still valid
-	if (config.apiProvider !== undefined && !isProviderName(config.apiProvider)) {
+	if (config.apiProvider !== undefined && !isKnownProvider) {
 		const invalidProvider = config.apiProvider
 		// Return a new config object without the invalid apiProvider
 		const { apiProvider, ...restConfig } = config
@@ -105,7 +109,15 @@ export async function importSettingsFromPath(
 			}
 
 			// Then validate the sanitized config
-			const result = providerSettingsWithIdSchema.safeParse(sanitizedConfig)
+			const providerValue =
+				typeof sanitizedConfig === "object" && sanitizedConfig !== null && "apiProvider" in sanitizedConfig
+					? (sanitizedConfig as Record<string, unknown>).apiProvider
+					: undefined
+			const schema =
+				typeof providerValue === "string" && isRetiredProvider(providerValue)
+					? providerSettingsWithIdSchema.passthrough()
+					: providerSettingsWithIdSchema
+			const result = schema.safeParse(sanitizedConfig)
 			if (result.success) {
 				validApiConfigs[configName] = result.data
 			} else {

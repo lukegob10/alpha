@@ -499,7 +499,7 @@ export class ProviderSettingsManager {
 	public async export() {
 		try {
 			return await this.lock(async () => {
-				const profiles = providerProfilesSchema.parse(await this.load())
+				const profiles = await this.load()
 				const configs = profiles.apiConfigs
 				for (const name in configs) {
 					const apiProvider = configs[name].apiProvider
