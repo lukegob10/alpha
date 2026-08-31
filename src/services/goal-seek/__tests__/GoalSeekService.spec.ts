@@ -1,7 +1,14 @@
 import type * as vscode from "vscode"
 import { describe, expect, it, vi } from "vitest"
 
-import type { GoalSeekAttempt, GoalSeekJob, GoalSeekRun, GoalSeekState } from "@alpha-code/types"
+import type {
+	GoalSeekAttempt,
+	GoalSeekCandidate,
+	GoalSeekJob,
+	GoalSeekRun,
+	GoalSeekState,
+	GoalSeekVerifierResult,
+} from "@alpha-code/types"
 
 import type { ClineProvider } from "../../../core/webview/ClineProvider"
 import type { GoalSeekStore } from "../GoalSeekStore"
@@ -104,6 +111,28 @@ const makeJob = (id: string, workspace: string): GoalSeekJob => ({
 	updatedAt: 1,
 })
 
+const candidate: GoalSeekCandidate = {
+	id: "candidate-a",
+	title: "Bounded improvement",
+	rationale: "Improve the target",
+	expectedRewardImpact: 10,
+	affectedPaths: ["src/example.ts"],
+	directoryRisk: 1,
+	complexity: 1,
+	regressionRisk: 1,
+	reversibility: 100,
+	utilityScore: 10,
+}
+
+const passingVerifierResult: GoalSeekVerifierResult = {
+	score: 100,
+	direction: "maximize",
+	improved: true,
+	passedTarget: true,
+	reason: "Target reached",
+	rawOutput: '{"score":100}',
+}
+
 const createService = (jobs: GoalSeekJob[]) => {
 	const provider = { postMessageToWebview: vi.fn().mockResolvedValue(undefined) } as unknown as ClineProvider
 	const context = { globalStorageUri: { fsPath: "test-storage" } } as vscode.ExtensionContext
@@ -111,7 +140,7 @@ const createService = (jobs: GoalSeekJob[]) => {
 	const service = new GoalSeekService(context, provider, outputChannel)
 	const store = new MemoryGoalSeekStore(jobs)
 	;(service as unknown as { store: GoalSeekStore }).store = store as unknown as GoalSeekStore
-	return { service, store }
+	return { service, store, provider }
 }
 
 type GoalSeekServiceInternals = {
@@ -190,5 +219,86 @@ describe("GoalSeekService run lifecycle", () => {
 		})
 		expect(store.runs.size).toBe(1)
 		expect(executeSpy).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not commit or succeed when canceled during implementation", async () => {
+		const workspace = process.cwd()
+		const { service, store } = createService([makeJob("job-a", workspace)])
+		const internals = service as unknown as {
+			assertCleanWorkspace(workspace: string): Promise<void>
+			generateCandidates(job: GoalSeekJob, run: GoalSeekRun, feedback: string): Promise<GoalSeekCandidate[]>
+			gitRevParse(workspace: string, ref: string): Promise<string>
+			runAlphaTask(
+				prompt: string,
+				workspace: string | undefined,
+				mode: string | undefined,
+				writeCapable: boolean,
+			): Promise<{ taskId: string; result: string }>
+			runVerifier(job: GoalSeekJob, run: GoalSeekRun, attempt: GoalSeekAttempt): Promise<GoalSeekVerifierResult>
+			commitAcceptedAttempt(
+				job: GoalSeekJob,
+				selected: GoalSeekCandidate,
+				attempt: GoalSeekAttempt,
+			): Promise<void>
+			gitResetHard(workspace: string, ref: string): Promise<void>
+			runExecutions: Map<string, Promise<void>>
+			canceledRuns: Set<string>
+		}
+		const implementationStarted = deferred<void>()
+		const implementation = deferred<{ taskId: string; result: string }>()
+		vi.spyOn(internals, "assertCleanWorkspace").mockResolvedValue(undefined)
+		vi.spyOn(internals, "generateCandidates").mockResolvedValue([candidate])
+		vi.spyOn(internals, "gitRevParse").mockResolvedValue("checkpoint-a")
+		vi.spyOn(internals, "runAlphaTask").mockImplementation(async () => {
+			implementationStarted.resolve(undefined)
+			return implementation.promise
+		})
+		vi.spyOn(internals, "runVerifier").mockResolvedValue(passingVerifierResult)
+		const commit = vi.spyOn(internals, "commitAcceptedAttempt").mockResolvedValue(undefined)
+		const reset = vi.spyOn(internals, "gitResetHard").mockResolvedValue(undefined)
+
+		const run = await service.runJob("job-a")
+		const execution = internals.runExecutions.get(run.id)!
+		await implementationStarted.promise
+		const cancellation = service.cancelRun(run.id)
+		await Promise.resolve()
+		implementation.resolve({ taskId: "implementation-task", result: "Implemented" })
+		await Promise.all([cancellation, execution])
+
+		expect(commit).not.toHaveBeenCalled()
+		expect(reset).toHaveBeenCalledWith(workspace, "checkpoint-a")
+		expect(store.getRun(run.id)?.status).toBe("canceled")
+		expect(store.getJob("job-a")?.lastRunStatus).toBe("canceled")
+		expect([...store.attempts.values()]).toMatchObject([{ status: "canceled" }])
+		expect(internals.canceledRuns.has(run.id)).toBe(false)
+	})
+
+	it("aborts active background work before cancellation settles", async () => {
+		const workspace = process.cwd()
+		const { service, store, provider } = createService([makeJob("job-a", workspace)])
+		const internals = service as unknown as {
+			assertCleanWorkspace(workspace: string): Promise<void>
+			generateCandidates(job: GoalSeekJob, run: GoalSeekRun, feedback: string): Promise<GoalSeekCandidate[]>
+			gitRevParse(workspace: string, ref: string): Promise<string>
+			gitResetHard(workspace: string, ref: string): Promise<void>
+		}
+		const taskStarted = deferred<void>()
+		const abortTask = vi.fn().mockResolvedValue(undefined)
+		;(provider as unknown as { createTask: ReturnType<typeof vi.fn> }).createTask = vi.fn().mockResolvedValue({
+			taskId: "implementation-task",
+			start: () => taskStarted.resolve(undefined),
+			abortTask,
+		})
+		vi.spyOn(internals, "assertCleanWorkspace").mockResolvedValue(undefined)
+		vi.spyOn(internals, "generateCandidates").mockResolvedValue([candidate])
+		vi.spyOn(internals, "gitRevParse").mockResolvedValue("checkpoint-a")
+		vi.spyOn(internals, "gitResetHard").mockResolvedValue(undefined)
+
+		const run = await service.runJob("job-a")
+		await taskStarted.promise
+		await service.cancelRun(run.id)
+
+		expect(abortTask).toHaveBeenCalledTimes(1)
+		expect(store.getRun(run.id)?.status).toBe("canceled")
 	})
 })

@@ -21,6 +21,7 @@ import {
 } from "@alpha-code/types"
 
 import { getLatestTaskCompletionText } from "../../core/task-persistence/completionText"
+import type { Task } from "../../core/task/Task"
 import type { ClineProvider } from "../../core/webview/ClineProvider"
 import { getWorkspacePath } from "../../utils/path"
 import { GoalSeekStore } from "./GoalSeekStore"
@@ -41,6 +42,13 @@ type TaskWaiter = {
 	reject: (error: Error) => void
 }
 
+class GoalSeekRunCanceledError extends Error {
+	constructor() {
+		super("Goal Seek run was canceled.")
+		this.name = "GoalSeekRunCanceledError"
+	}
+}
+
 const truncateOutput = (output: string): string =>
 	output.length > MAX_COMMAND_OUTPUT_CHARS
 		? `${output.slice(0, MAX_COMMAND_OUTPUT_CHARS)}\n[output truncated]`
@@ -52,6 +60,8 @@ export class GoalSeekService implements vscode.Disposable {
 	private readonly canceledRuns = new Set<string>()
 	private readonly activeWorkspaceRuns = new Map<string, string>()
 	private readonly runExecutions = new Map<string, Promise<void>>()
+	private readonly activeTasksByRun = new Map<string, Task>()
+	private readonly commandAbortControllers = new Map<string, AbortController>()
 	private disposed = false
 
 	constructor(
@@ -74,6 +84,15 @@ export class GoalSeekService implements vscode.Disposable {
 		this.disposed = true
 		this.provider.off(RooCodeEventName.TaskCompleted, this.handleTaskCompleted)
 		this.provider.off(RooCodeEventName.TaskAborted, this.handleTaskAborted)
+		for (const runId of this.runExecutions.keys()) {
+			this.canceledRuns.add(runId)
+		}
+		for (const controller of this.commandAbortControllers.values()) {
+			controller.abort()
+		}
+		for (const task of this.activeTasksByRun.values()) {
+			void task.abortTask().catch(() => undefined)
+		}
 		for (const waiter of this.taskWaiters.values()) {
 			waiter.reject(new Error("Goal Seek service disposed."))
 		}
@@ -131,15 +150,36 @@ export class GoalSeekService implements vscode.Disposable {
 	}
 
 	async cancelRun(runId: string): Promise<void> {
-		this.canceledRuns.add(runId)
 		const run = this.store.getRun(runId)
-		if (run && run.status === "running") {
-			await this.finishRun(this.requireJob(run.jobId), {
-				...run,
-				status: "canceled",
-				exitReason: "canceled",
-				finishedAt: Date.now(),
-			})
+		if (!run || run.status !== "running") {
+			return
+		}
+
+		this.canceledRuns.add(runId)
+		this.commandAbortControllers.get(runId)?.abort()
+		const activeTask = this.activeTasksByRun.get(runId)
+		if (activeTask) {
+			const waiter = this.taskWaiters.get(activeTask.taskId)
+			if (waiter) {
+				this.taskWaiters.delete(activeTask.taskId)
+				waiter.reject(new GoalSeekRunCanceledError())
+			}
+			await Promise.allSettled([activeTask.abortTask()])
+		}
+
+		const execution = this.runExecutions.get(runId)
+		if (execution) {
+			await execution
+			return
+		}
+
+		const job = this.store.getJob(run.jobId)
+		try {
+			if (job) {
+				await this.finishCanceledExecution(job, runId)
+			}
+		} finally {
+			this.canceledRuns.delete(runId)
 		}
 	}
 
@@ -182,6 +222,7 @@ export class GoalSeekService implements vscode.Disposable {
 				if (this.activeWorkspaceRuns.get(workspaceKey) === run.id) {
 					this.activeWorkspaceRuns.delete(workspaceKey)
 				}
+				this.canceledRuns.delete(run.id)
 			}
 			void execution.then(releaseOwnership, releaseOwnership)
 			return run
@@ -210,19 +251,15 @@ export class GoalSeekService implements vscode.Disposable {
 		if (!run) {
 			return
 		}
+		let activeAttempt: GoalSeekAttempt | undefined
+		let activeCheckpointRef: string | undefined
 
 		try {
 			let feedback = ""
 			while (run.currentIteration < job.maxAttempts && run.failedAttempts < job.maxFailedAttempts) {
-				if (this.canceledRuns.has(run.id) || this.disposed) {
-					await this.finishRun(job, {
-						...run,
-						status: "canceled",
-						exitReason: "canceled",
-						finishedAt: Date.now(),
-					})
-					return
-				}
+				this.throwIfRunCanceled(run.id)
+				activeAttempt = undefined
+				activeCheckpointRef = undefined
 
 				const iteration = run.currentIteration + 1
 				let attempt: GoalSeekAttempt = {
@@ -233,18 +270,29 @@ export class GoalSeekService implements vscode.Disposable {
 					candidates: [],
 					startedAt: Date.now(),
 				}
+				activeAttempt = attempt
 				await this.store.upsertAttempt(attempt)
+				this.throwIfRunCanceled(run.id)
 				run = await this.updateRun({ ...run, currentIteration: iteration })
+				this.throwIfRunCanceled(run.id)
 
 				const candidates = await this.generateCandidates(job, run, feedback)
+				this.throwIfRunCanceled(run.id)
 				const selected = candidates[0]
 				attempt = { ...attempt, candidates, selectedCandidateId: selected.id, status: "implementing" }
+				activeAttempt = attempt
 				await this.store.upsertAttempt(attempt)
+				this.throwIfRunCanceled(run.id)
 				await this.broadcast()
+				this.throwIfRunCanceled(run.id)
 
 				const checkpointRef = await this.gitRevParse(job.workspace || getWorkspacePath(), "HEAD")
+				activeCheckpointRef = checkpointRef
+				this.throwIfRunCanceled(run.id)
 				attempt = { ...attempt, checkpointRef }
+				activeAttempt = attempt
 				await this.store.upsertAttempt(attempt)
+				this.throwIfRunCanceled(run.id)
 
 				try {
 					const implementationResult = await this.runAlphaTask(
@@ -252,36 +300,47 @@ export class GoalSeekService implements vscode.Disposable {
 						job.workspace,
 						job.mode,
 						true,
+						run.id,
 					)
+					this.throwIfRunCanceled(run.id)
 					attempt = {
 						...attempt,
 						implementationTaskId: implementationResult.taskId,
 						status: "verifying",
 						summary: implementationResult.result,
 					}
+					activeAttempt = attempt
 					await this.store.upsertAttempt(attempt)
+					this.throwIfRunCanceled(run.id)
 
 					const verifierResult = await this.runVerifier(job, run, attempt)
+					this.throwIfRunCanceled(run.id)
 					const improved = compareGoalSeekScores(run.bestScore, verifierResult.score, job.direction)
 					const passedTarget = hasPassedGoalSeekTarget(verifierResult.score, job.targetScore, job.direction)
 					const finishedAt = Date.now()
 
 					if (improved) {
+						this.throwIfRunCanceled(run.id)
 						await this.commitAcceptedAttempt(job, selected, attempt)
+						this.throwIfRunCanceled(run.id)
 						attempt = {
 							...attempt,
 							status: "accepted",
 							verifierResult: { ...verifierResult, improved, passedTarget },
 							finishedAt,
 						}
+						activeAttempt = attempt
 						await this.store.upsertAttempt(attempt)
+						this.throwIfRunCanceled(run.id)
 						run = await this.updateRun({
 							...run,
 							bestScore: verifierResult.score,
 							bestAttemptId: attempt.id,
 						})
+						this.throwIfRunCanceled(run.id)
 					} else {
 						await this.gitResetHard(job.workspace || getWorkspacePath(), checkpointRef)
+						this.throwIfRunCanceled(run.id)
 						attempt = {
 							...attempt,
 							status: "reverted",
@@ -289,34 +348,52 @@ export class GoalSeekService implements vscode.Disposable {
 							finishedAt,
 							summary: `Reverted: ${verifierResult.reason}`,
 						}
+						activeAttempt = attempt
 						await this.store.upsertAttempt(attempt)
+						this.throwIfRunCanceled(run.id)
 						run = await this.updateRun({ ...run, failedAttempts: run.failedAttempts + 1 })
+						this.throwIfRunCanceled(run.id)
 					}
 
 					feedback = verifierResult.nextInstructions || verifierResult.reason
 					if (passedTarget) {
+						this.throwIfRunCanceled(run.id)
 						await this.finishRun(job, {
 							...run,
 							status: "succeeded",
 							exitReason: "target_reached",
 							finishedAt: Date.now(),
 						})
+						this.throwIfRunCanceled(run.id)
 						return
 					}
+					activeCheckpointRef = undefined
+					activeAttempt = undefined
 				} catch (error) {
+					if (this.isRunCancellation(error, run.id)) {
+						throw new GoalSeekRunCanceledError()
+					}
 					await this.gitResetHard(job.workspace || getWorkspacePath(), checkpointRef)
+					this.throwIfRunCanceled(run.id)
 					const message = error instanceof Error ? error.message : String(error)
-					await this.store.upsertAttempt({
+					attempt = {
 						...attempt,
 						status: "failed",
 						error: message,
 						finishedAt: Date.now(),
-					})
+					}
+					activeAttempt = attempt
+					await this.store.upsertAttempt(attempt)
+					this.throwIfRunCanceled(run.id)
 					run = await this.updateRun({ ...run, failedAttempts: run.failedAttempts + 1 })
+					this.throwIfRunCanceled(run.id)
 					feedback = message
+					activeCheckpointRef = undefined
+					activeAttempt = undefined
 				}
 			}
 
+			this.throwIfRunCanceled(run.id)
 			await this.finishRun(job, {
 				...run,
 				status: "failed",
@@ -326,7 +403,12 @@ export class GoalSeekService implements vscode.Disposable {
 						: "max_attempts_reached",
 				finishedAt: Date.now(),
 			})
+			this.throwIfRunCanceled(run.id)
 		} catch (error) {
+			if (this.isRunCancellation(error, runId)) {
+				await this.finishCanceledExecution(job, runId, activeAttempt, activeCheckpointRef)
+				return
+			}
 			const latestRun = this.store.getRun(runId) ?? run
 			await this.finishRun(job, {
 				...latestRun,
@@ -336,6 +418,52 @@ export class GoalSeekService implements vscode.Disposable {
 				finishedAt: Date.now(),
 			})
 		}
+	}
+
+	private isRunCancellation(error: unknown, runId: string): boolean {
+		return error instanceof GoalSeekRunCanceledError || this.canceledRuns.has(runId) || this.disposed
+	}
+
+	private throwIfRunCanceled(runId: string): void {
+		if (this.canceledRuns.has(runId) || this.disposed) {
+			throw new GoalSeekRunCanceledError()
+		}
+	}
+
+	private async finishCanceledExecution(
+		job: GoalSeekJob,
+		runId: string,
+		attempt?: GoalSeekAttempt,
+		checkpointRef?: string,
+	): Promise<void> {
+		let rollbackError: unknown
+		if (checkpointRef) {
+			try {
+				await this.gitResetHard(job.workspace || getWorkspacePath(), checkpointRef)
+			} catch (error) {
+				rollbackError = error
+			}
+		}
+		const errorMessage = rollbackError instanceof Error ? rollbackError.message : undefined
+		if (attempt) {
+			await this.store.upsertAttempt({
+				...attempt,
+				status: "canceled",
+				finishedAt: Date.now(),
+				error: errorMessage,
+			})
+		}
+		const latestRun = this.store.getRun(runId)
+		if (!latestRun) {
+			return
+		}
+		await this.finishRun(job, {
+			...latestRun,
+			status: "canceled",
+			exitReason: "canceled",
+			finishedAt: Date.now(),
+			error: errorMessage,
+		})
 	}
 
 	private async generateCandidates(
@@ -348,6 +476,7 @@ export class GoalSeekService implements vscode.Disposable {
 			job.workspace,
 			job.mode,
 			false,
+			run.id,
 		)
 		const parsed = this.parseJsonFromText(result.result) as { candidates?: Partial<GoalSeekCandidate>[] }
 		const candidates = (parsed.candidates ?? []).slice(0, job.candidateCount).map((candidate) => {
@@ -381,7 +510,7 @@ export class GoalSeekService implements vscode.Disposable {
 		const outputs: string[] = []
 		let verifierTaskId: string | undefined
 		if (job.verifier.type === "command" || job.verifier.type === "promptAndCommand") {
-			outputs.push(await this.runCommandVerifier(job, job.verifier))
+			outputs.push(await this.runCommandVerifier(job, job.verifier, run.id))
 		}
 		if (job.verifier.type === "prompt" || job.verifier.type === "promptAndCommand") {
 			const result = await this.runAlphaTask(
@@ -389,6 +518,7 @@ export class GoalSeekService implements vscode.Disposable {
 				job.workspace,
 				job.mode,
 				false,
+				run.id,
 			)
 			verifierTaskId = result.taskId
 			outputs.push(result.result)
@@ -408,15 +538,28 @@ export class GoalSeekService implements vscode.Disposable {
 		)
 	}
 
-	private async runCommandVerifier(job: GoalSeekJob, verifier: Extract<GoalSeekVerifier, { command: string }>) {
-		const result = await execFileAsync(verifier.command, {
-			cwd: job.workspace || getWorkspacePath(),
-			timeout: verifier.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
-			maxBuffer: 2 * 1024 * 1024,
-			windowsHide: true,
-			shell: true,
-		})
-		return truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n"))
+	private async runCommandVerifier(
+		job: GoalSeekJob,
+		verifier: Extract<GoalSeekVerifier, { command: string }>,
+		runId: string,
+	) {
+		const controller = new AbortController()
+		this.commandAbortControllers.set(runId, controller)
+		try {
+			const result = await execFileAsync(verifier.command, {
+				cwd: job.workspace || getWorkspacePath(),
+				timeout: verifier.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
+				maxBuffer: 2 * 1024 * 1024,
+				windowsHide: true,
+				shell: true,
+				signal: controller.signal,
+			})
+			return truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n"))
+		} finally {
+			if (this.commandAbortControllers.get(runId) === controller) {
+				this.commandAbortControllers.delete(runId)
+			}
+		}
 	}
 
 	private async runAlphaTask(
@@ -424,6 +567,7 @@ export class GoalSeekService implements vscode.Disposable {
 		workspace: string | undefined,
 		mode: string | undefined,
 		writeCapable: boolean,
+		runId?: string,
 	): Promise<{ taskId: string; result: string }> {
 		const task = await this.provider.createTask(
 			prompt,
@@ -451,17 +595,27 @@ export class GoalSeekService implements vscode.Disposable {
 				deniedCommands: [],
 			},
 		)
-		const resultPromise = new Promise<string>((resolve, reject) => {
-			this.taskWaiters.set(task.taskId, { resolve, reject })
-		})
-		try {
-			task.start()
-		} catch (error) {
-			this.taskWaiters.delete(task.taskId)
-			throw error
+		if (runId) {
+			this.activeTasksByRun.set(runId, task)
+			if (this.canceledRuns.has(runId) || this.disposed) {
+				await Promise.allSettled([task.abortTask()])
+				this.activeTasksByRun.delete(runId)
+				throw new GoalSeekRunCanceledError()
+			}
 		}
-		const result = await resultPromise
-		return { taskId: task.taskId, result }
+		try {
+			const resultPromise = new Promise<string>((resolve, reject) => {
+				this.taskWaiters.set(task.taskId, { resolve, reject })
+			})
+			task.start()
+			const result = await resultPromise
+			return { taskId: task.taskId, result }
+		} finally {
+			this.taskWaiters.delete(task.taskId)
+			if (runId && this.activeTasksByRun.get(runId) === task) {
+				this.activeTasksByRun.delete(runId)
+			}
+		}
 	}
 
 	private buildCandidatePrompt(job: GoalSeekJob, run: GoalSeekRun, feedback: string): string {
