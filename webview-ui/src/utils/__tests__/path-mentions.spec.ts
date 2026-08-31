@@ -79,10 +79,9 @@ describe("Path Mentions Utilities", () => {
 			expect(convertToMentionPath(absPath, MOCK_CWD_POSIX)).toBe("@/src/normal.ts")
 		})
 
-		it("should add leading slash if missing after cwd removal", () => {
-			const absPath = "/Users/test/projectfile.txt" // Edge case: file directly in project root
-			const cwd = "/Users/test/project"
-			expect(convertToMentionPath(absPath, cwd)).toBe("@/file.txt") // Should still add '/'
+		it("does not treat a sibling path with the same prefix as a workspace child", () => {
+			const absPath = "/Users/test/projectfile.txt"
+			expect(convertToMentionPath(absPath, MOCK_CWD_POSIX)).toBe(absPath)
 		})
 
 		it("should handle cwd with trailing slash", () => {
@@ -91,11 +90,27 @@ describe("Path Mentions Utilities", () => {
 			expect(convertToMentionPath(absPath, cwdWithSlash)).toBe("@/src/file\\ with\\ spaces.ts")
 		})
 
-		it("should handle case-insensitive matching for cwd", () => {
-			const absPath = "/users/test/project/src/file with spaces.ts" // Lowercase path
-			expect(convertToMentionPath(absPath, MOCK_CWD_POSIX)).toBe("@/src/file\\ with\\ spaces.ts") // Should still match uppercase CWD
-			const absPathUpper = "/USERS/TEST/PROJECT/src/file.ts" // Uppercase path
-			expect(convertToMentionPath(absPathUpper, MOCK_CWD_POSIX.toLowerCase())).toBe("@/src/file.ts") // Should match lowercase CWD
+		it("uses platform-appropriate path casing", () => {
+			const posixPath = "/users/test/project/src/file.ts"
+			expect(convertToMentionPath(posixPath, MOCK_CWD_POSIX)).toBe(posixPath)
+
+			const windowsPath = "c:\\users\\TEST\\project\\src\\file.ts"
+			expect(convertToMentionPath(windowsPath, MOCK_CWD_WIN)).toBe("@/src/file.ts")
+		})
+
+		it("preserves the absolute path in remote workspace URIs", () => {
+			expect(
+				convertToMentionPath(
+					"vscode-remote://ssh-remote+host/Users/test/project/src/file%20name.ts",
+					MOCK_CWD_POSIX,
+				),
+			).toBe("@/src/file\\ name.ts")
+		})
+
+		it("normalizes UNC file URIs for workspace matching", () => {
+			expect(
+				convertToMentionPath("file://server/share/project/src/file.ts", "\\\\server\\share\\project"),
+			).toBe("@/src/file.ts")
 		})
 
 		it("should return original path if cwd is not provided", () => {
