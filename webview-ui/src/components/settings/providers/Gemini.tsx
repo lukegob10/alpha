@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Checkbox } from "vscrui"
 import { VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 
@@ -20,6 +20,10 @@ export const Gemini = ({ apiConfiguration, setApiConfigurationField }: GeminiPro
 	const [googleGeminiBaseUrlSelected, setGoogleGeminiBaseUrlSelected] = useState(
 		!!apiConfiguration?.googleGeminiBaseUrl,
 	)
+
+	useEffect(() => {
+		setGoogleGeminiBaseUrlSelected(!!apiConfiguration?.googleGeminiBaseUrl)
+	}, [apiConfiguration?.googleGeminiBaseUrl])
 
 	const handleInputChange = useCallback(
 		<K extends keyof ProviderSettings, E>(
