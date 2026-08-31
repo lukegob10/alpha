@@ -319,6 +319,17 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 	const [saveError, setSaveError] = useState<string | null>(null)
 	const [savedSecretStatus, setSavedSecretStatus] = useState<SavedSecretStatus>(emptySavedSecretStatus())
 
+	useEffect(() => {
+		if (saveStatus !== "error") return
+
+		const timeout = setTimeout(() => {
+			setSaveStatus("idle")
+			setSaveError(null)
+		}, 5_000)
+
+		return () => clearTimeout(timeout)
+	}, [saveError, saveStatus])
+
 	// Form validation state
 	const [formErrors, setFormErrors] = useState<Record<string, string>>({})
 
@@ -546,9 +557,6 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 				} else {
 					setSaveStatus("error")
 					setSaveError(event.data.error || t("settings:codeIndex.saveError"))
-					// Clear error message after 5 seconds
-					setSaveStatus("idle")
-					setSaveError(null)
 				}
 			}
 		}
