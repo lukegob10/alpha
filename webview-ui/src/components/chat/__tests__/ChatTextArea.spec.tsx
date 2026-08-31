@@ -91,7 +91,7 @@ describe("ChatTextArea", () => {
 			expect(screen.queryByText("/ask")).not.toBeInTheDocument()
 			expect(screen.queryByText("/debug")).not.toBeInTheDocument()
 			expect(screen.queryByText("/orchestrator")).not.toBeInTheDocument()
-			expect(screen.getByRole("listbox", { name: "addContext" })).toBeInTheDocument()
+			expect(screen.getByRole("listbox", { name: /add context/i })).toBeInTheDocument()
 			expect(textarea).toHaveAttribute("aria-expanded", "true")
 			expect(textarea).toHaveAttribute("aria-controls", screen.getByRole("listbox").id)
 		})
