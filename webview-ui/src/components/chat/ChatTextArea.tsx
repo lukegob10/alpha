@@ -111,8 +111,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [gitCommits, setGitCommits] = useState<any[]>([])
 		const [showDropdown, setShowDropdown] = useState(false)
 		const [fileSearchResults, setFileSearchResults] = useState<SearchResult[]>([])
-		const [searchLoading, setSearchLoading] = useState(false)
-		const [searchRequestId, setSearchRequestId] = useState<string>("")
+		const searchRequestIdRef = useRef("")
 
 		// Close dropdown when clicking outside.
 		useEffect(() => {
@@ -195,8 +194,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 					setGitCommits(commits)
 				} else if (message.type === "fileSearchResults") {
-					setSearchLoading(false)
-					if (message.requestId === searchRequestId) {
+					if (message.requestId === searchRequestIdRef.current) {
 						setFileSearchResults(message.results || [])
 					}
 				}
@@ -204,7 +202,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 			window.addEventListener("message", messageHandler)
 			return () => window.removeEventListener("message", messageHandler)
-		}, [setInputValue, searchRequestId, inputValue, isEnhancingPrompt])
+		}, [setInputValue, inputValue, isEnhancingPrompt])
 
 		const [isDraggingOver, setIsDraggingOver] = useState(false)
 		const [textAreaBaseHeight, setTextAreaBaseHeight] = useState<number | undefined>(undefined)
@@ -627,9 +625,22 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		// Ref to store the search timeout.
 		const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
+		const cancelPendingFileSearch = useCallback(() => {
+			if (searchTimeoutRef.current) {
+				clearTimeout(searchTimeoutRef.current)
+				searchTimeoutRef.current = null
+			}
+			searchRequestIdRef.current = ""
+		}, [])
+
+		useEffect(() => {
+			return () => cancelPendingFileSearch()
+		}, [cancelPendingFileSearch])
+
 		const handleInputChange = useCallback(
 			(e: React.ChangeEvent<HTMLTextAreaElement>) => {
 				const newValue = e.target.value
+				cancelPendingFileSearch()
 				setInputValue(newValue)
 
 				// Reset history navigation when user types
@@ -663,17 +674,12 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							// Don't clear results until we have new ones. This
 							// prevents flickering.
 
-							// Clear any existing timeout.
-							if (searchTimeoutRef.current) {
-								clearTimeout(searchTimeoutRef.current)
-							}
-
 							// Set a timeout to debounce the search requests.
 							searchTimeoutRef.current = setTimeout(() => {
 								// Generate a request ID for this search.
 								const reqId = Math.random().toString(36).substring(2, 9)
-								setSearchRequestId(reqId)
-								setSearchLoading(true)
+								searchTimeoutRef.current = null
+								searchRequestIdRef.current = reqId
 
 								// Send message to extension to search files.
 								vscode.postMessage({
@@ -692,14 +698,15 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					setFileSearchResults([]) // Clear file search results.
 				}
 			},
-			[setInputValue, setSearchRequestId, setFileSearchResults, setSearchLoading, resetOnInputChange],
+			[cancelPendingFileSearch, setInputValue, setFileSearchResults, resetOnInputChange],
 		)
 
 		useEffect(() => {
 			if (!showContextMenu) {
+				cancelPendingFileSearch()
 				setSelectedType(null)
 			}
-		}, [showContextMenu])
+		}, [cancelPendingFileSearch, showContextMenu])
 
 		const handleBlur = useCallback(() => {
 			// Only hide the context menu if the user didn't click on it.

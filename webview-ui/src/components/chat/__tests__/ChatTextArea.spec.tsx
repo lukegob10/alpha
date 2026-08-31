@@ -423,6 +423,25 @@ describe("ChatTextArea", () => {
 		})
 	})
 
+	describe("file search debounce", () => {
+		it("cancels a pending search when the mention is cleared", () => {
+			vi.useFakeTimers()
+			try {
+				const { container, rerender } = render(<ChatTextArea {...defaultProps} inputValue="" />)
+				const textarea = container.querySelector("textarea")!
+
+				fireEvent.change(textarea, { target: { value: "@query", selectionStart: 6 } })
+				rerender(<ChatTextArea {...defaultProps} inputValue="@query" />)
+				fireEvent.change(textarea, { target: { value: "", selectionStart: 0 } })
+				vi.advanceTimersByTime(250)
+
+				expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "searchFiles" }))
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+	})
+
 	describe("clipboard paste", () => {
 		const mockCwd = "/Users/test/project"
 
