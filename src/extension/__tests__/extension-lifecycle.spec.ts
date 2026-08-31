@@ -22,6 +22,10 @@ const mocks = vi.hoisted(() => {
 		shutdownTelemetry: vi.fn(),
 		cleanupTerminal: vi.fn(),
 		getContextProxy: vi.fn().mockResolvedValue(provider.contextProxy),
+		handleUri: vi.fn().mockResolvedValue(undefined),
+		registerUriHandler: vi.fn((_handler: { handleUri: (uri: unknown) => unknown }) => ({
+			dispose: vi.fn(),
+		})),
 	}
 })
 
@@ -29,7 +33,7 @@ vi.mock("vscode", () => ({
 	window: {
 		createOutputChannel: vi.fn(() => mocks.outputChannel),
 		registerWebviewViewProvider: vi.fn(() => ({ dispose: vi.fn() })),
-		registerUriHandler: vi.fn(() => ({ dispose: vi.fn() })),
+		registerUriHandler: mocks.registerUriHandler,
 	},
 	workspace: {
 		workspaceFolders: undefined,
@@ -97,7 +101,7 @@ vi.mock("../../activate", () => {
 	const CodeActionProvider = vi.fn()
 	Object.assign(CodeActionProvider, { providedCodeActionKinds: [] })
 	return {
-		handleUri: vi.fn(),
+		handleUri: mocks.handleUri,
 		registerCommands: vi.fn(),
 		registerCodeActions: vi.fn(),
 		registerTerminalActions: vi.fn(),
@@ -137,6 +141,27 @@ describe("extension lifecycle", () => {
 		finishGlobalStateUpdate()
 		await activating
 		expect(mocks.getContextProxy).toHaveBeenCalledWith(context)
+		await deactivate()
+	})
+
+	it("binds URI callbacks to the activation-owned sidebar provider", async () => {
+		const context = {
+			extensionPath: "/extension",
+			extensionUri: {},
+			globalStorageUri: { fsPath: "/storage" },
+			globalState: {
+				get: vi.fn((key: string) => (key === "allowedCommands" ? [] : undefined)),
+				update: vi.fn().mockResolvedValue(undefined),
+			},
+			subscriptions: [],
+		} as unknown as vscode.ExtensionContext
+		const callbackUri = { path: "/openrouter", query: "code=callback" } as vscode.Uri
+
+		await activate(context)
+		const uriHandler = mocks.registerUriHandler.mock.calls[0]![0]
+		await uriHandler.handleUri(callbackUri)
+
+		expect(mocks.handleUri).toHaveBeenCalledWith(callbackUri, mocks.provider)
 		await deactivate()
 	})
 
