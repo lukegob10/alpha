@@ -174,6 +174,10 @@ export class McpHub {
 		]).then(() => {})
 	}
 
+	public get disposed(): boolean {
+		return this.isDisposed
+	}
+
 	/**
 	 * Waits until all MCP servers have finished their initial connection attempts.
 	 * Each server individually handles its own timeout, so this will not block indefinitely.
@@ -376,7 +380,7 @@ export class McpHub {
 		}
 
 		const workspaceFolder = this.providerRef.deref()?.cwd ?? getWorkspacePath()
-		const projectMcpPattern = new vscode.RelativePattern(workspaceFolder, ".alpha/mcp.json")
+		const projectMcpPattern = new vscode.RelativePattern(workspaceFolder, ".roo/mcp.json")
 
 		// Create a file system watcher for the project MCP file pattern
 		this.projectMcpWatcher = vscode.workspace.createFileSystemWatcher(projectMcpPattern)
@@ -1073,7 +1077,7 @@ export class McpHub {
 
 	async deleteConnection(name: string, source?: "global" | "project"): Promise<void> {
 		// Clean up file watchers for this server
-		this.removeFileWatchersForServer(name)
+		this.removeFileWatchersForServer(name, source)
 
 		// If source is provided, only delete connections from that source
 		const connections = source
@@ -1114,7 +1118,6 @@ export class McpHub {
 		if (manageConnectingState) {
 			this.isConnecting = true
 		}
-		this.removeAllFileWatchers()
 		// Filter connections by source
 		const currentConnections = this.connections.filter(
 			(conn) => conn.server.source === source || (!conn.server.source && source === "global"),
@@ -1180,12 +1183,13 @@ export class McpHub {
 		config: z.infer<typeof ServerConfigSchema>,
 		source: "global" | "project" = "global",
 	) {
+		const watcherKey = `${source}:${name}`
 		// Initialize an empty array for this server if it doesn't exist
-		if (!this.fileWatchers.has(name)) {
-			this.fileWatchers.set(name, [])
+		if (!this.fileWatchers.has(watcherKey)) {
+			this.fileWatchers.set(watcherKey, [])
 		}
 
-		const watchers = this.fileWatchers.get(name) || []
+		const watchers = this.fileWatchers.get(watcherKey) || []
 
 		// Only stdio type has args
 		if (config.type === "stdio") {
@@ -1233,7 +1237,7 @@ export class McpHub {
 
 			// Update the fileWatchers map with all watchers for this server
 			if (watchers.length > 0) {
-				this.fileWatchers.set(name, watchers)
+				this.fileWatchers.set(watcherKey, watchers)
 			}
 		}
 	}
@@ -1243,11 +1247,14 @@ export class McpHub {
 		this.fileWatchers.clear()
 	}
 
-	private removeFileWatchersForServer(serverName: string) {
-		const watchers = this.fileWatchers.get(serverName)
-		if (watchers) {
-			watchers.forEach((watcher) => watcher.close())
-			this.fileWatchers.delete(serverName)
+	private removeFileWatchersForServer(serverName: string, source?: "global" | "project") {
+		const keys = source ? [`${source}:${serverName}`] : [`global:${serverName}`, `project:${serverName}`]
+		for (const key of keys) {
+			const watchers = this.fileWatchers.get(key)
+			if (watchers) {
+				watchers.forEach((watcher) => watcher.close())
+				this.fileWatchers.delete(key)
+			}
 		}
 	}
 
@@ -1451,7 +1458,7 @@ export class McpHub {
 					// If disabling a connected server, disconnect it
 					if (disabled && connection.server.status === "connected") {
 						// Clean up file watchers when disabling
-						this.removeFileWatchersForServer(serverName)
+						this.removeFileWatchersForServer(serverName, serverSource)
 						await this.deleteConnection(serverName, serverSource)
 						// Re-add as a disabled connection
 						// Re-read config from file to get updated disabled state

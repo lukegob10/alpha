@@ -21,6 +21,10 @@ export class McpServerManager {
 		// Register the provider
 		this.providers.add(provider)
 
+		if (this.instance?.disposed) {
+			this.instance = null
+		}
+
 		// If we already have an instance, return it
 		if (this.instance) {
 			return this.instance

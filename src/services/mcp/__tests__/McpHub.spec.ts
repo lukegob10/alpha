@@ -2,6 +2,7 @@ import fs from "fs/promises"
 
 import type { Mock } from "vitest"
 import type { ExtensionContext, Uri } from "vscode"
+import * as vscode from "vscode"
 
 import type { ClineProvider } from "../../../core/webview/ClineProvider"
 
@@ -50,6 +51,7 @@ vi.mock("../../../utils/safeWriteJson", () => ({
 }))
 
 vi.mock("vscode", () => ({
+	RelativePattern: vi.fn().mockImplementation((base, pattern) => ({ base, pattern })),
 	workspace: {
 		createFileSystemWatcher: vi.fn().mockReturnValue({
 			onDidChange: vi.fn(),
@@ -346,6 +348,56 @@ describe("McpHub", () => {
 	})
 
 	describe("File watcher cleanup", () => {
+		it("watches the canonical project MCP settings path", async () => {
+			const originalNodeEnv = process.env.NODE_ENV
+			process.env.NODE_ENV = "development"
+			;(vscode.workspace as any).workspaceFolders = [{ uri: { fsPath: "/test/workspace" } }]
+			;(mockProvider as any).cwd = "/test/workspace"
+			const watcher = {
+				onDidChange: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+				onDidCreate: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+				onDidDelete: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+				dispose: vi.fn(),
+			}
+			vi.mocked(vscode.workspace.createFileSystemWatcher).mockReturnValue(watcher as any)
+
+			try {
+				await (mcpHub as any).watchProjectMcpFile()
+
+				expect(vscode.RelativePattern).toHaveBeenCalledWith("/test/workspace", ".roo/mcp.json")
+				expect(vscode.workspace.createFileSystemWatcher).toHaveBeenCalled()
+			} finally {
+				process.env.NODE_ENV = originalNodeEnv
+				;(vscode.workspace as any).workspaceFolders = []
+			}
+		})
+
+		it("preserves global server watchers when project configuration changes", async () => {
+			await mcpHub.waitUntilReady()
+			const globalWatcher = { close: vi.fn() }
+			;(mcpHub as any).fileWatchers.clear()
+			;(mcpHub as any).fileWatchers.set("global:shared", [globalWatcher])
+
+			await mcpHub.updateServerConnections({}, "project")
+
+			expect(globalWatcher.close).not.toHaveBeenCalled()
+			expect((mcpHub as any).fileWatchers.get("global:shared")).toEqual([globalWatcher])
+		})
+
+		it("removes only the source-specific watcher for same-name servers", async () => {
+			await mcpHub.waitUntilReady()
+			const globalWatcher = { close: vi.fn() }
+			const projectWatcher = { close: vi.fn() }
+			;(mcpHub as any).fileWatchers.clear()
+			;(mcpHub as any).fileWatchers.set("global:shared", [globalWatcher])
+			;(mcpHub as any).fileWatchers.set("project:shared", [projectWatcher])
+
+			await mcpHub.deleteConnection("shared", "project")
+
+			expect(projectWatcher.close).toHaveBeenCalledOnce()
+			expect(globalWatcher.close).not.toHaveBeenCalled()
+		})
+
 		it("should clean up file watchers when server is disabled", async () => {
 			// Get the mocked chokidar
 			const chokidar = (await import("chokidar")).default
