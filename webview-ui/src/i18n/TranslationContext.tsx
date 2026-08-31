@@ -1,6 +1,6 @@
 import React, { createContext, useContext, ReactNode, useEffect, useCallback } from "react"
 import { useTranslation } from "react-i18next"
-import i18next, { loadTranslations } from "./setup"
+import i18next from "./setup"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 
 // Create context for translations
@@ -18,15 +18,6 @@ export const TranslationProvider: React.FC<{ children: ReactNode }> = ({ childre
 	const { i18n } = useTranslation()
 	// Get the extension state directly - it already contains all state properties
 	const extensionState = useExtensionState()
-
-	// Load translations once when the component mounts
-	useEffect(() => {
-		try {
-			loadTranslations()
-		} catch (error) {
-			console.error("Failed to load translations:", error)
-		}
-	}, [])
 
 	useEffect(() => {
 		i18n.changeLanguage(extensionState.language)
