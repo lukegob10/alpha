@@ -246,7 +246,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		vscode.workspace.registerTextDocumentContentProvider(DIFF_VIEW_URI_SCHEME, diffContentProvider),
 	)
 
-	context.subscriptions.push(vscode.window.registerUriHandler({ handleUri }))
+	context.subscriptions.push(vscode.window.registerUriHandler({ handleUri: (uri) => handleUri(uri, provider) }))
 
 	// Register code actions provider.
 	context.subscriptions.push(
