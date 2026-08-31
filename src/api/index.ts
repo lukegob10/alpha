@@ -1,7 +1,7 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 
-import { isRetiredProvider, type ProviderSettings, type ModelInfo } from "@alpha-code/types"
+import { isRetiredProvider, type ProviderSettings, type ModelInfo, vertexDefaultModelId } from "@alpha-code/types"
 
 import { ApiStream } from "./transform/stream"
 
@@ -12,6 +12,7 @@ import {
 	PoeHandler,
 	VertexHandler,
 	AnthropicVertexHandler,
+	VertexOpenAiHandler,
 	OpenAiHandler,
 	OpenAiCodexHandler,
 	LmStudioHandler,
@@ -125,10 +126,16 @@ export function buildApiHandler(configuration: ProviderSettings): ApiHandler {
 			return new OpenRouterHandler(options)
 		case "bedrock":
 			return new AwsBedrockHandler(options)
-		case "vertex":
-			return options.apiModelId?.startsWith("claude")
-				? new AnthropicVertexHandler(options)
-				: new VertexHandler(options)
+		case "vertex": {
+			const vertexModelId = (options.apiModelId?.trim() || vertexDefaultModelId).toLowerCase()
+			if (vertexModelId.includes("claude")) {
+				return new AnthropicVertexHandler(options)
+			}
+			if (vertexModelId.startsWith("gemini")) {
+				return new VertexHandler(options)
+			}
+			return new VertexOpenAiHandler(options)
+		}
 		case "openai":
 			return new OpenAiHandler(options)
 		case "ollama":

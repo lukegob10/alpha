@@ -74,6 +74,7 @@ describe("current provider model catalogs", () => {
 				"gemini-3.5-flash",
 				"gemini-3.5-flash-lite",
 				"gemini-3.1-flash-lite",
+				"xai/grok-4.6",
 				"claude-fable-5",
 				"claude-opus-5",
 				"claude-sonnet-5",
@@ -83,6 +84,18 @@ describe("current provider model catalogs", () => {
 				"claude-opus-4-7",
 			])
 			expect(vertexDefaultModelId).toBe("claude-sonnet-5")
+		})
+
+		it("models Grok 4.6 as a global OpenAI-compatible Vertex partner model", () => {
+			expect(vertexModels["xai/grok-4.6"]).toEqual(
+				expect.objectContaining({
+					contextWindow: 524_288,
+					maxTokens: 65_536,
+					supportsImages: true,
+					supportsStreaming: true,
+					supportsReasoningEffort: ["low", "medium", "high", "xhigh"],
+				}),
+			)
 		})
 
 		it("models the distinct Gemini 3.7 and 3.6 thinking-level support", () => {

@@ -133,6 +133,22 @@ export const vertexModels = {
 		outputPrice: 1.5,
 		cacheReadsPrice: 0.025,
 	},
+	"xai/grok-4.6": {
+		maxTokens: 65_536,
+		contextWindow: 524_288,
+		supportsImages: true,
+		supportsPromptCache: false,
+		supportsStreaming: true,
+		supportsTemperature: true,
+		defaultTemperature: 0,
+		supportsReasoningEffort: ["low", "medium", "high", "xhigh"],
+		inputPrice: 2.0,
+		outputPrice: 6.0,
+		description:
+			"Grok 4.6 on Vertex AI (Preview): xAI's model for coding, agentic tasks, and knowledge work; available through the global endpoint",
+		includedTools: ["search_replace"],
+		excludedTools: ["apply_diff"],
+	},
 	"claude-fable-5": {
 		maxTokens: 128_000,
 		contextWindow: 1_000_000,

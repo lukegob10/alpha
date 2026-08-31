@@ -6,14 +6,14 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.6 Preview
+## Welcome to Alpha v2.1.7 Preview
 
-Alpha v2.1.6 makes the VS Code Language Model provider match the models that GitHub Copilot actually exposes in the current VS Code window.
+Alpha v2.1.7 adds Grok 4.6 to GCP Vertex AI through the same corporate gateway configuration used by Gemini and Anthropic.
 
-- Only live, usable VS Code model selectors are clickable; stale catalog fallbacks no longer lead to runtime selection errors
-- Current GPT-5.3-Codex, GPT-5.5, GPT-5.6 Luna/Sol/Terra, Anthropic Claude, Gemini, MAI, Raptor, Kimi, and Grok names and aliases are recognized and deduplicated
-- Claude and GPT context controls use model-correct standard limits and appear only when the live model advertises the extended / 1M tier
-- Missing Copilot sign-in, unavailable saved models, and model refresh are handled directly in provider settings
+- `xai/grok-4.6` is available in the GCP Vertex provider for the global location
+- Grok requests use Vertex's OpenAI-compatible `/endpoints/openapi/chat/completions` route
+- Existing project, location, gateway URL, PEM CA bundle, Helix token, streaming, and per-model routing settings are reused
+- Vertex now routes Claude, Gemini, and Grok through their correct Anthropic, native Gemini, and OpenAI-compatible transports
 
 <details>
   <summary>🌐 Available languages</summary>

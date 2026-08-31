@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.7
+
+### Patch Changes
+
+- Add `xai/grok-4.6` to GCP Vertex AI through its OpenAI-compatible partner-model endpoint, with global-region metadata and Grok-specific capabilities.
+- Reuse the existing Vertex project, location, gateway URL, PEM CA bundle, Helix token refresh, streaming, and per-model routing settings while preserving the native Gemini and Anthropic transports.
+- Refresh an expired Helix credential once before a Grok stream starts, and cover endpoint construction, request shape, routing overrides, legacy settings, streaming, and non-streaming behavior.
+
 ## 2.1.6
 
 ### Patch Changes

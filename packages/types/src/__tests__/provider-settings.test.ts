@@ -63,6 +63,7 @@ describe("getApiProtocol", () => {
 			expect(getApiProtocol("vertex", "gpt-4")).toBe("openai")
 			expect(getApiProtocol("vertex", "gemini-pro")).toBe("openai")
 			expect(getApiProtocol("vertex", "llama-2")).toBe("openai")
+			expect(getApiProtocol("vertex", "xai/grok-4.6")).toBe("openai")
 		})
 
 		it("should return 'openai' for vertex provider without model", () => {
