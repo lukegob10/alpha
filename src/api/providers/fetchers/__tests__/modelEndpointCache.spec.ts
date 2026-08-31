@@ -1,12 +1,28 @@
 // npx vitest run api/providers/fetchers/__tests__/modelEndpointCache.spec.ts
 
 import { vi, describe, it, expect, beforeEach } from "vitest"
+import fs from "fs/promises"
 import { getModelEndpoints } from "../modelEndpointCache"
 import * as modelCache from "../modelCache"
 import * as openrouter from "../openrouter"
 
 vi.mock("../modelCache")
 vi.mock("../openrouter")
+vi.mock("fs/promises", () => ({
+	default: { readFile: vi.fn() },
+}))
+vi.mock("../../../../core/config/ContextProxy", () => ({
+	ContextProxy: { instance: { globalStorageUri: { fsPath: "/storage" } } },
+}))
+vi.mock("../../../../utils/storage", () => ({
+	getCacheDirectoryPath: vi.fn().mockResolvedValue("/storage/cache"),
+}))
+vi.mock("../../../../utils/fs", () => ({
+	fileExistsAtPath: vi.fn().mockResolvedValue(true),
+}))
+vi.mock("../../../../utils/safeWriteJson", () => ({
+	safeWriteJson: vi.fn(),
+}))
 
 describe("modelEndpointCache", () => {
 	beforeEach(() => {
@@ -157,6 +173,27 @@ describe("modelEndpointCache", () => {
 
 			expect(result1).toEqual({})
 			expect(result2).toEqual({})
+		})
+
+		it("should restore the model-specific disk cache when the API is unavailable", async () => {
+			const cachedEndpoints = {
+				cached: {
+					maxTokens: 4096,
+					contextWindow: 128000,
+					supportsPromptCache: false,
+				},
+			}
+			vi.spyOn(openrouter, "getOpenRouterModelEndpoints").mockResolvedValue({})
+			vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(cachedEndpoints))
+
+			const result = await getModelEndpoints({
+				router: "openrouter",
+				modelId: "disk-only/model",
+				endpoint: "cached",
+			})
+
+			expect(result).toEqual(cachedEndpoints)
+			expect(fs.readFile).toHaveBeenCalledWith(expect.stringContaining("openrouter_disk-onlymodel"), "utf8")
 		})
 	})
 })
