@@ -445,7 +445,7 @@ describe("safeWriteJson", () => {
 
 	// Test for rollback failure scenario
 	test("should log error and re-throw original if rollback fails", async () => {
-		const initialData = { message: "Initial, should be lost if rollback fails" }
+		const initialData = { message: "Initial content must remain recoverable" }
 		const newData = { message: "New content" }
 
 		await originalFsPromisesWriteFile(currentTestFilePath, JSON.stringify(initialData))
@@ -454,8 +454,12 @@ describe("safeWriteJson", () => {
 		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {}) // Suppress console.error
 
 		let renameCallCount = 0
+		let backupPath: string | undefined
 		renameSpy.mockImplementation(async (oldPath, newPath) => {
 			renameCallCount++
+			if (renameCallCount === 1) {
+				backupPath = newPath.toString()
+			}
 			if (renameCallCount === 2) {
 				// Second call: tempNewFilePath -> filePath (fail)
 				throw new Error("Primary rename failed")
@@ -474,6 +478,9 @@ describe("safeWriteJson", () => {
 			expect.stringContaining("Failed to restore backup"),
 			expect.objectContaining({ message: "Rollback rename failed" }),
 		)
+		expect(backupPath).toBeDefined()
+		expect(await readFileContent(backupPath!)).toEqual(initialData)
+		expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("Preserved backup for manual recovery"))
 
 		consoleErrorSpy.mockRestore()
 	})

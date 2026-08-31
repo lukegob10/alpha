@@ -181,16 +181,9 @@ async function safeWriteJson(filePath: string, data: any, options?: SafeWriteJso
 			}
 		}
 
-		// Cleanup the .bak file if it still needs to be (i.e., wasn't successfully restored)
+		// If rollback failed, the backup is the last known-good copy. Preserve it for recovery.
 		if (actualTempBackupFilePath) {
-			try {
-				await fs.unlink(actualTempBackupFilePath)
-			} catch (cleanupError) {
-				console.error(
-					`[Catch] Failed to clean up temporary backup file ${actualTempBackupFilePath}:`,
-					cleanupError,
-				)
-			}
+			console.error(`[Catch] Preserved backup for manual recovery: ${actualTempBackupFilePath}`)
 		}
 		throw originalError // This MUST be the error that rejects the promise.
 	} finally {
