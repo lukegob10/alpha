@@ -88,6 +88,9 @@ const mockClineProvider = {
 	createTaskWithHistoryItem: vi.fn(),
 	cancelTask: vi.fn(),
 	showTaskWithId: vi.fn(),
+	exportTaskWithId: vi.fn(),
+	condenseTaskContext: vi.fn(),
+	deleteTaskWithId: vi.fn(),
 	getSkillsManager: vi.fn(),
 	cwd: "/mock/workspace",
 } as unknown as ClineProvider
@@ -194,6 +197,55 @@ describe("webviewMessageHandler - showTaskWithId", () => {
 		expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
 			"This task is not available yet. If it is still launching, wait a moment and try again.",
 		)
+	})
+})
+
+describe("webviewMessageHandler - task history commands", () => {
+	beforeEach(() => {
+		vi.mocked(mockClineProvider.getCurrentTask).mockReset()
+		vi.mocked(mockClineProvider.exportTaskWithId).mockReset()
+		vi.mocked(mockClineProvider.condenseTaskContext).mockReset()
+		vi.mocked(mockClineProvider.deleteTaskWithId).mockReset()
+	})
+
+	it.each([
+		["exportTaskWithId", { type: "exportTaskWithId", text: "history-task" }],
+		["condenseTaskContext", { type: "condenseTaskContextRequest", text: "history-task" }],
+		["deleteTaskWithId", { type: "deleteTaskWithId", text: "history-task" }],
+	] as const)("awaits %s before accepting another webview command", async (method, message) => {
+		let finishOperation!: () => void
+		const operation = vi.mocked(mockClineProvider[method])
+		operation.mockImplementationOnce(() => new Promise<void>((resolve) => (finishOperation = resolve)))
+
+		let handled = false
+		const handling = webviewMessageHandler(mockClineProvider, message).then(() => {
+			handled = true
+		})
+		await vi.waitFor(() => expect(operation).toHaveBeenCalledWith("history-task"))
+		expect(handled).toBe(false)
+
+		finishOperation()
+		await handling
+		expect(handled).toBe(true)
+	})
+
+	it("awaits exportCurrentTask before accepting another webview command", async () => {
+		let finishExport!: () => void
+		vi.mocked(mockClineProvider.getCurrentTask).mockReturnValue({ taskId: "current-task" } as any)
+		vi.mocked(mockClineProvider.exportTaskWithId).mockImplementationOnce(
+			() => new Promise<void>((resolve) => (finishExport = resolve)),
+		)
+
+		let handled = false
+		const handling = webviewMessageHandler(mockClineProvider, { type: "exportCurrentTask" }).then(() => {
+			handled = true
+		})
+		await vi.waitFor(() => expect(mockClineProvider.exportTaskWithId).toHaveBeenCalledWith("current-task"))
+		expect(handled).toBe(false)
+
+		finishExport()
+		await handling
+		expect(handled).toBe(true)
 	})
 })
 

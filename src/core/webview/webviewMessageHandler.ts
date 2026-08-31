@@ -835,7 +835,7 @@ export const webviewMessageHandler = async (
 		case "exportCurrentTask":
 			const currentTaskId = getTaskForMessage(provider, message, { allowActiveFallback: true })?.taskId
 			if (currentTaskId) {
-				provider.exportTaskWithId(currentTaskId)
+				await provider.exportTaskWithId(currentTaskId)
 			}
 			break
 		case "showTaskWithId": {
@@ -859,10 +859,10 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "condenseTaskContextRequest":
-			provider.condenseTaskContext(message.text!)
+			await provider.condenseTaskContext(message.text!)
 			break
 		case "deleteTaskWithId":
-			provider.deleteTaskWithId(message.text!)
+			await provider.deleteTaskWithId(message.text!)
 			break
 		case "deleteMultipleTasksWithIds": {
 			const ids = message.ids
@@ -909,7 +909,7 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "exportTaskWithId":
-			provider.exportTaskWithId(message.text!)
+			await provider.exportTaskWithId(message.text!)
 			break
 		case "getTaskWithAggregatedCosts": {
 			try {
