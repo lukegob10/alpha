@@ -73,6 +73,27 @@ describe("ChatRow - inline diff stats and actions", () => {
 		mockPostMessage.mockClear()
 	})
 
+	it("exposes sent-message actions as native buttons", () => {
+		const message: ClineMessage = {
+			type: "say",
+			say: "user_feedback",
+			ts: 123,
+			text: "Please update the implementation",
+		}
+		renderChatRow(message)
+		const editButton = screen.getByRole("button", { name: "chat:queuedMessages.edit" })
+		const deleteButton = screen.getByRole("button", { name: "common:confirmation.deleteMessage" })
+		expect(editButton.tagName).toBe("BUTTON")
+		expect(deleteButton.tagName).toBe("BUTTON")
+		expect(deleteButton).toHaveAttribute("type", "button")
+
+		fireEvent.click(deleteButton)
+
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "deleteMessage", value: 123 }),
+		)
+	})
+
 	it("uses appliedDiff edit treatment (header/icon/diff stats)", () => {
 		const diff = "@@ -1,1 +1,1 @@\n-old\n+new\n"
 		const message = createToolAskMessage({

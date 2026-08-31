@@ -1326,17 +1326,21 @@ const ChatRowContentInner = ({
 											<Mention text={message.text} withShadow />
 										</div>
 										<div className="flex gap-2 pr-1">
-											<div
-												className="cursor-pointer shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+											<button
+												type="button"
+												aria-label={t("chat:queuedMessages.edit")}
+												className="cursor-pointer shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity bg-transparent border-0 p-0"
 												style={{ visibility: isStreaming ? "hidden" : "visible" }}
 												onClick={(e) => {
 													e.stopPropagation()
 													handleEditClick()
 												}}>
-												<Edit className="w-4 shrink-0" aria-label="Edit message icon" />
-											</div>
-											<div
-												className="cursor-pointer shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+												<Edit className="w-4 shrink-0" aria-hidden="true" />
+											</button>
+											<button
+												type="button"
+												aria-label={t("common:confirmation.deleteMessage")}
+												className="cursor-pointer shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity bg-transparent border-0 p-0"
 												style={{ visibility: isStreaming ? "hidden" : "visible" }}
 												onClick={(e) => {
 													e.stopPropagation()
@@ -1346,8 +1350,8 @@ const ChatRowContentInner = ({
 														taskId: currentTaskId,
 													})
 												}}>
-												<Trash2 className="w-4 shrink-0" aria-label="Delete message icon" />
-											</div>
+												<Trash2 className="w-4 shrink-0" aria-hidden="true" />
+											</button>
 										</div>
 									</div>
 								)}
