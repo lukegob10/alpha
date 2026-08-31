@@ -13,6 +13,7 @@ import {
 	type ProviderSettings,
 	type ProviderSettingsEntry,
 	type TaskEvent,
+	type TaskCommand,
 	type CreateTaskOptions,
 	RooCodeEventName,
 	TaskCommandName,
@@ -67,7 +68,7 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 			ipc.listen()
 			this.log(`[API] ipc server started: socketPath=${socketPath}, pid=${process.pid}, ppid=${process.ppid}`)
 
-			ipc.on(IpcMessageType.TaskCommand, async (clientId, command) => {
+			const handleTaskCommand = async (clientId: string, command: TaskCommand) => {
 				const sendResponse = (eventName: RooCodeEventName, payload: unknown[]) => {
 					ipc.send(clientId, {
 						type: IpcMessageType.TaskEvent,
@@ -156,6 +157,14 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 						}
 						break
 				}
+			}
+
+			ipc.on(IpcMessageType.TaskCommand, (clientId, command) => {
+				void handleTaskCommand(clientId, command).catch((error) => {
+					this.log(
+						`[API] ${command.commandName} failed: ${error instanceof Error ? error.message : String(error)}`,
+					)
+				})
 			})
 		}
 	}

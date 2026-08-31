@@ -5,8 +5,25 @@ import { API } from "../api"
 import { ClineProvider } from "../../core/webview/ClineProvider"
 import { TaskCommandName } from "@alpha-code/types"
 
+const ipcMock = vi.hoisted(() => ({
+	handler: undefined as undefined | ((clientId: string, command: any) => void),
+	listen: vi.fn(),
+	send: vi.fn(),
+	broadcast: vi.fn(),
+}))
+
 vi.mock("vscode")
 vi.mock("../../core/webview/ClineProvider")
+vi.mock("@alpha-code/ipc", () => ({
+	IpcServer: vi.fn().mockImplementation(() => ({
+		listen: ipcMock.listen,
+		send: ipcMock.send,
+		broadcast: ipcMock.broadcast,
+		on: vi.fn((_eventName, handler) => {
+			ipcMock.handler = handler
+		}),
+	})),
+}))
 
 describe("API - SendMessage Command", () => {
 	let api: API
@@ -16,6 +33,7 @@ describe("API - SendMessage Command", () => {
 	let mockLog: ReturnType<typeof vi.fn>
 
 	beforeEach(() => {
+		ipcMock.handler = undefined
 		// Setup mocks
 		mockOutputChannel = {
 			appendLine: vi.fn(),
@@ -152,5 +170,23 @@ describe("API - SendMessage Command", () => {
 			images,
 		})
 		expect(mockPostMessageToWebview).toHaveBeenCalledTimes(1)
+	})
+
+	it("contains rejected IPC commands instead of leaking an unhandled rejection", async () => {
+		const ipcApi = new API(mockOutputChannel, mockProvider, "test-socket", true)
+		const startNewTask = vi.spyOn(ipcApi, "startNewTask").mockRejectedValue(new Error("task start failed"))
+		const ipcLog = vi.fn()
+		;(ipcApi as any).log = ipcLog
+
+		expect(ipcMock.handler).toBeTypeOf("function")
+		ipcMock.handler!("client-1", {
+			commandName: TaskCommandName.StartNewTask,
+			data: { text: "start", configuration: {} },
+		})
+
+		await vi.waitFor(() => {
+			expect(startNewTask).toHaveBeenCalledOnce()
+			expect(ipcLog).toHaveBeenCalledWith(`[API] ${TaskCommandName.StartNewTask} failed: task start failed`)
+		})
 	})
 })
