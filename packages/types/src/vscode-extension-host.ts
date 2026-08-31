@@ -464,7 +464,7 @@ export interface ReorderQueuedMessagePayload {
 	toIndex: number
 }
 
-export interface WebviewMessage {
+interface WebviewMessageBase {
 	type:
 		| "updateTodoList"
 		| "deleteMultipleTasksWithIds"
@@ -786,6 +786,12 @@ export interface WebviewMessage {
 	worktreeNewWindow?: boolean
 	worktreeIncludeContent?: string
 }
+
+export type WebviewMessage =
+	| (Omit<WebviewMessageBase, "type" | "value"> & { type: "updateVSCodeSetting"; value?: number | boolean })
+	| (Omit<WebviewMessageBase, "type"> & {
+			type: Exclude<WebviewMessageBase["type"], "updateVSCodeSetting">
+	  })
 
 export interface RequestOpenAiCodexRateLimitsMessage {
 	type: "requestOpenAiCodexRateLimits"

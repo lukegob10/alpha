@@ -141,7 +141,7 @@ describe("CommandsAPI", () => {
 	})
 
 	describe("command overwriting", () => {
-		it("should allow registering same command multiple times", () => {
+		it("should allow registering same command multiple times", async () => {
 			const callback1 = vi.fn().mockReturnValue(1)
 			const callback2 = vi.fn().mockReturnValue(2)
 
@@ -151,7 +151,7 @@ describe("CommandsAPI", () => {
 			// Last registration wins
 			const result = commands.executeCommand("test.command")
 
-			expect(result).resolves.toBe(2)
+			await expect(result).resolves.toBe(2)
 		})
 	})
 })
