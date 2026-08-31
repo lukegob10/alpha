@@ -29,6 +29,7 @@ export class FileContextTracker {
 	private recentlyModifiedFiles = new Set<string>()
 	private recentlyEditedByRoo = new Set<string>()
 	private checkpointPossibleFiles = new Set<string>()
+	private metadataUpdateQueue: Promise<void> = Promise.resolve()
 
 	constructor(provider: ClineProvider, taskId: string) {
 		this.providerRef = new WeakRef(provider)
@@ -141,6 +142,12 @@ export class FileContextTracker {
 	// This handles the business logic of determining if the file is new, stale, or active.
 	// It also updates the metadata with the latest read/edit dates.
 	async addFileToFileContextTracker(taskId: string, filePath: string, source: RecordSource) {
+		const update = this.metadataUpdateQueue.then(() => this.updateFileContextMetadata(taskId, filePath, source))
+		this.metadataUpdateQueue = update.catch(() => {})
+		await update
+	}
+
+	private async updateFileContextMetadata(taskId: string, filePath: string, source: RecordSource) {
 		try {
 			const metadata = await this.getTaskMetadata(taskId)
 			const now = Date.now()
