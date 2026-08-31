@@ -166,6 +166,34 @@ describe("CodeIndexOrchestrator - error path cleanup gating", () => {
 		const lastCall = stateManager.setSystemState.mock.calls[stateManager.setSystemState.mock.calls.length - 1]
 		expect(lastCall[0]).toBe("Error")
 	})
+
+	it("preserves an existing index and reports incremental scan errors", async () => {
+		const incrementalError = new Error("incremental delete failed")
+		vectorStore.initialize.mockResolvedValue(false)
+		vectorStore.hasIndexedData.mockResolvedValue(true)
+		vectorStore.markIndexingIncomplete.mockResolvedValue(undefined)
+		scanner.scanDirectory.mockImplementation(async (_dir: string, onError: (error: Error) => void) => {
+			onError(incrementalError)
+			return { stats: { processed: 0, skipped: 0 }, totalBlockCount: 0 }
+		})
+		const orchestrator = new CodeIndexOrchestrator(
+			configManager,
+			stateManager,
+			workspacePath,
+			cacheManager,
+			vectorStore,
+			scanner,
+			fileWatcher,
+		)
+
+		await orchestrator.startIndexing()
+
+		expect(vectorStore.markIndexingComplete).not.toHaveBeenCalled()
+		expect(vectorStore.clearCollection).not.toHaveBeenCalled()
+		expect(cacheManager.clearCacheFile).not.toHaveBeenCalled()
+		expect(fileWatcher.initialize).not.toHaveBeenCalled()
+		expect(stateManager.state).toBe("Error")
+	})
 })
 
 describe("CodeIndexOrchestrator - stopIndexing", () => {
@@ -410,5 +438,44 @@ describe("CodeIndexOrchestrator - stopIndexing", () => {
 		await Promise.all([firstStart, secondStart])
 
 		expect(scanCallsBeforeRelease).toBe(1)
+	})
+
+	it("keeps a watcher batch with local file errors out of the Indexed state", async () => {
+		let progressHandler!: (progress: {
+			processedInBatch: number
+			totalInBatch: number
+			currentFile?: string
+		}) => void
+		let finishHandler!: (summary: {
+			processedFiles: Array<{ path: string; status: string; error?: Error }>
+			batchError?: Error
+		}) => void
+		fileWatcher.onBatchProgressUpdate.mockImplementation((handler: typeof progressHandler) => {
+			progressHandler = handler
+			return { dispose: vi.fn() }
+		})
+		fileWatcher.onDidFinishBatchProcessing.mockImplementation((handler: typeof finishHandler) => {
+			finishHandler = handler
+			return { dispose: vi.fn() }
+		})
+		scanner.scanDirectory.mockResolvedValue({ stats: { processed: 0, skipped: 0 }, totalBlockCount: 0 })
+		const orchestrator = new CodeIndexOrchestrator(
+			configManager,
+			stateManager,
+			workspacePath,
+			cacheManager,
+			vectorStore,
+			scanner,
+			fileWatcher,
+		)
+		await orchestrator.startIndexing()
+
+		progressHandler({ processedInBatch: 0, totalInBatch: 1, currentFile: "broken.ts" })
+		finishHandler({
+			processedFiles: [{ path: "broken.ts", status: "local_error", error: new Error("parse failed") }],
+		})
+		progressHandler({ processedInBatch: 1, totalInBatch: 1 })
+
+		expect(stateManager.state).toBe("Error")
 	})
 })

@@ -48,7 +48,7 @@ export class CodeIndexOrchestrator {
 			this._fileWatcherSubscriptions = [
 				this.fileWatcher.onDidStartBatchProcessing((filePaths: string[]) => {}),
 				this.fileWatcher.onBatchProgressUpdate(({ processedInBatch, totalInBatch, currentFile }) => {
-					if (totalInBatch > 0 && this.stateManager.state !== "Indexing") {
+					if (processedInBatch < totalInBatch && this.stateManager.state !== "Indexing") {
 						this.stateManager.setSystemState("Indexing", "Processing file changes...")
 					}
 					this.stateManager.reportFileQueueProgress(
@@ -56,29 +56,20 @@ export class CodeIndexOrchestrator {
 						totalInBatch,
 						currentFile ? path.basename(currentFile) : undefined,
 					)
-					if (processedInBatch === totalInBatch) {
-						// Covers (N/N) and (0/0)
-						if (totalInBatch > 0) {
-							// Batch with items completed
-							this.stateManager.setSystemState("Indexed", "File changes processed. Index up-to-date.")
-						} else {
-							if (this.stateManager.state === "Indexing") {
-								// Only transition if it was "Indexing"
-								this.stateManager.setSystemState("Indexed", "Index up-to-date. File queue empty.")
-							}
-						}
-					}
 				}),
 				this.fileWatcher.onDidFinishBatchProcessing((summary: BatchProcessingSummary) => {
-					if (summary.batchError) {
-						console.error(`[CodeIndexOrchestrator] Batch processing failed:`, summary.batchError)
+					const failedFiles = summary.processedFiles.filter(
+						(file) => file.status === "error" || file.status === "local_error",
+					)
+					const batchError = summary.batchError ?? failedFiles[0]?.error
+					if (batchError || failedFiles.length > 0) {
+						console.error("[CodeIndexOrchestrator] Batch processing failed:", batchError)
+						this.stateManager.setSystemState(
+							"Error",
+							batchError?.message ?? `${failedFiles.length} file change(s) failed to process.`,
+						)
 					} else {
-						const successCount = summary.processedFiles.filter(
-							(f: { status: string }) => f.status === "success",
-						).length
-						const errorCount = summary.processedFiles.filter(
-							(f: { status: string }) => f.status === "error" || f.status === "local_error",
-						).length
+						this.stateManager.setSystemState("Indexed", "File changes processed. Index up-to-date.")
 					}
 				}),
 			]
@@ -205,6 +196,12 @@ export class CodeIndexOrchestrator {
 
 				if (!result) {
 					throw new Error("Incremental scan failed, is scanner initialized?")
+				}
+
+				if (batchErrors.length > 0) {
+					const firstError = batchErrors[0]
+					this.stateManager.setSystemState("Error", `Incremental indexing failed: ${firstError.message}`)
+					return
 				}
 
 				// If new files were found and indexed, log the results
