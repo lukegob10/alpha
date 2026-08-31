@@ -111,6 +111,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [gitCommits, setGitCommits] = useState<any[]>([])
 		const [showDropdown, setShowDropdown] = useState(false)
 		const [fileSearchResults, setFileSearchResults] = useState<SearchResult[]>([])
+		const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false)
 		const searchRequestIdRef = useRef("")
 
 		// Close dropdown when clicking outside.
@@ -217,7 +218,6 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [justDeletedSpaceAfterMention, setJustDeletedSpaceAfterMention] = useState(false)
 		const [intendedCursorPosition, setIntendedCursorPosition] = useState<number | null>(null)
 		const contextMenuContainerRef = useRef<HTMLDivElement>(null)
-		const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false)
 		const contextMenuId = useId()
 		const [isFocused, setIsFocused] = useState(false)
 

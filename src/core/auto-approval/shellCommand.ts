@@ -240,7 +240,7 @@ function tokenizeShellCommandDetails(source: string): ShellTokenDetail[][] {
 			}
 		}
 
-		if (current.length === 0 && character === "$" && quote !== "single") {
+		if (current.length === 0 && character === "$") {
 			startsWithDynamicExpansion = true
 		}
 		current += character

@@ -176,20 +176,22 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				const diffStarted = deferred()
 				const releaseDiff = deferred()
 				const operations: string[] = []
-				const diffSummary = checkpointGit.diffSummary.bind(checkpointGit)
+				const diffSummary = checkpointGit.diffSummary.bind(checkpointGit) as (
+					...args: unknown[]
+				) => Promise<unknown>
 
-				vitest.spyOn(checkpointGit, "diffSummary").mockImplementationOnce(async (options) => {
+				vitest.spyOn(checkpointGit, "diffSummary").mockImplementationOnce((async (options: unknown) => {
 					operations.push("save-diff-start")
 					diffStarted.resolve()
 					await releaseDiff.promise
 					operations.push("save-diff-end")
 					return diffSummary(options)
-				})
-				vitest.spyOn(checkpointGit, "clean").mockImplementation(async () => {
+				}) as never)
+				vitest.spyOn(checkpointGit, "clean").mockImplementation((async () => {
 					operations.push("restore-clean")
 					return checkpointGit
-				})
-				vitest.spyOn(checkpointGit, "reset").mockResolvedValue(checkpointGit)
+				}) as never)
+				vitest.spyOn(checkpointGit, "reset").mockResolvedValue(checkpointGit as never)
 
 				await fs.writeFile(testFile, "Content to checkpoint")
 				const save = service.saveCheckpoint("Serialized save")
