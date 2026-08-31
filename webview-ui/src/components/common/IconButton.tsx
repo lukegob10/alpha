@@ -6,7 +6,7 @@ interface IconButtonProps {
 	onMouseDown?: (e: React.MouseEvent) => void
 	onMouseUp?: (e: React.MouseEvent) => void
 	onMouseLeave?: (e: React.MouseEvent) => void
-	title?: string
+	title: string
 	size?: "small" | "medium"
 	variant?: "default" | "transparent"
 }
@@ -35,6 +35,7 @@ export function IconButton({
 
 	const button = (
 		<button
+			type="button"
 			className={`${sizeClasses[size]} flex items-center justify-center border-none text-vscode-editor-foreground cursor-pointer rounded-[3px] ${variantClasses[variant]}`}
 			aria-label={title}
 			onClick={handleClick}
@@ -45,9 +46,5 @@ export function IconButton({
 		</button>
 	)
 
-	if (title) {
-		return <StandardTooltip content={title}>{button}</StandardTooltip>
-	}
-
-	return button
+	return <StandardTooltip content={title}>{button}</StandardTooltip>
 }

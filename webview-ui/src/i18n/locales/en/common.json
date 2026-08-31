@@ -30,6 +30,7 @@
 		"render_error": "Unable to Render Diagram",
 		"buttons": {
 			"zoom": "Zoom",
+			"open": "Open diagram",
 			"zoomIn": "Zoom In",
 			"zoomOut": "Zoom Out",
 			"copy": "Copy",
@@ -39,6 +40,7 @@
 			"close": "Close"
 		},
 		"modal": {
+			"title": "Mermaid diagram",
 			"codeTitle": "Mermaid Code"
 		},
 		"tabs": {

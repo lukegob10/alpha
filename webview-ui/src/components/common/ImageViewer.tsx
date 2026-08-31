@@ -7,7 +7,6 @@ import { Modal } from "./Modal"
 import { TabButton } from "./TabButton"
 import { IconButton } from "./IconButton"
 import { ZoomControls } from "./ZoomControls"
-import { StandardTooltip } from "@/components/ui"
 
 const MIN_ZOOM = 0.5
 const MAX_ZOOM = 20
@@ -30,7 +29,6 @@ export function ImageViewer({
 	const [showModal, setShowModal] = useState(false)
 	const [zoomLevel, setZoomLevel] = useState(1)
 	const [copyFeedback, setCopyFeedback] = useState(false)
-	const [isHovering, setIsHovering] = useState(false)
 	const [isDragging, setIsDragging] = useState(false)
 	const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 })
 	const [imageError, setImageError] = useState<string | null>(null)
@@ -128,20 +126,6 @@ export function ImageViewer({
 		adjustZoom(delta)
 	}, [])
 
-	/**
-	 * Handle mouse enter event for image container
-	 */
-	const handleMouseEnter = () => {
-		setIsHovering(true)
-	}
-
-	/**
-	 * Handle mouse leave event for image container
-	 */
-	const handleMouseLeave = () => {
-		setIsHovering(false)
-	}
-
 	const handleImageError = useCallback(() => {
 		setImageError("Failed to load image")
 	}, [])
@@ -187,10 +171,7 @@ export function ImageViewer({
 
 	return (
 		<>
-			<div
-				className={`relative w-full ${className}`}
-				onMouseEnter={handleMouseEnter}
-				onMouseLeave={handleMouseLeave}>
+			<div className={`group relative w-full ${className}`}>
 				{imageError ? (
 					<div
 						style={{
@@ -205,25 +186,29 @@ export function ImageViewer({
 						<span style={{ color: "var(--vscode-errorForeground)" }}>⚠️ {imageError}</span>
 					</div>
 				) : (
-					<img
-						src={imageUri}
-						alt={alt}
-						className="w-full h-auto rounded cursor-pointer"
-						onClick={handleOpenInEditor}
-						onError={handleImageError}
-						onLoad={handleImageLoad}
-						style={{
-							maxHeight: "400px",
-							objectFit: "contain",
-							backgroundColor: "var(--vscode-editor-background)",
-						}}
-					/>
+					<button
+						type="button"
+						className="block w-full cursor-pointer border-0 bg-transparent p-0"
+						onClick={handleOpenInEditor}>
+						<img
+							src={imageUri}
+							alt={alt}
+							className="w-full h-auto rounded"
+							onError={handleImageError}
+							onLoad={handleImageLoad}
+							style={{
+								maxHeight: "400px",
+								objectFit: "contain",
+								backgroundColor: "var(--vscode-editor-background)",
+							}}
+						/>
+					</button>
 				)}
 				{imagePath && (
 					<div className="mt-1 text-xs text-vscode-descriptionForeground">{formatDisplayPath(imagePath)}</div>
 				)}
-				{showControls && isHovering && (
-					<div className="absolute bottom-2 right-2 flex gap-1 bg-vscode-editor-background/90 rounded p-0.5 z-10 opacity-100 transition-opacity duration-200 ease-in-out">
+				{showControls && (
+					<div className="pointer-events-none absolute bottom-2 right-2 z-10 flex gap-1 rounded bg-vscode-editor-background/90 p-0.5 opacity-0 transition-opacity duration-200 ease-in-out group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
 						<MermaidActionButtons
 							onZoom={handleZoom}
 							onCopy={handleCopy}
@@ -235,7 +220,7 @@ export function ImageViewer({
 				)}
 			</div>
 
-			<Modal isOpen={showModal} onClose={() => setShowModal(false)}>
+			<Modal isOpen={showModal} onClose={() => setShowModal(false)} title={alt}>
 				<div className="flex justify-between items-center border-b border-vscode-editorGroup-border">
 					<div className="flex gap-0">
 						<TabButton
@@ -247,9 +232,11 @@ export function ImageViewer({
 					</div>
 
 					<div className="pr-3">
-						<StandardTooltip content={t("common:mermaid.buttons.close")}>
-							<IconButton icon="close" onClick={() => setShowModal(false)} />
-						</StandardTooltip>
+						<IconButton
+							icon="close"
+							title={t("common:mermaid.buttons.close")}
+							onClick={() => setShowModal(false)}
+						/>
 					</div>
 				</div>
 				<div
@@ -301,13 +288,13 @@ export function ImageViewer({
 						zoomOutStep={-0.2}
 					/>
 					{imagePath && (
-						<StandardTooltip content={t("common:mermaid.buttons.copy")}>
-							<IconButton icon={copyFeedback ? "check" : "copy"} onClick={handleCopy} />
-						</StandardTooltip>
+						<IconButton
+							icon={copyFeedback ? "check" : "copy"}
+							title={t("common:mermaid.buttons.copy")}
+							onClick={handleCopy}
+						/>
 					)}
-					<StandardTooltip content={t("common:mermaid.buttons.save")}>
-						<IconButton icon="save" onClick={handleSave} />
-					</StandardTooltip>
+					<IconButton icon="save" title={t("common:mermaid.buttons.save")} onClick={handleSave} />
 				</div>
 			</Modal>
 		</>

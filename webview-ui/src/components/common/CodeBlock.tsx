@@ -64,6 +64,12 @@ const CodeBlockButton = styled.button`
 		opacity: 1;
 	}
 
+	&:focus-visible {
+		opacity: 1;
+		outline: 1px solid var(--vscode-focusBorder);
+		outline-offset: 1px;
+	}
+
 	/* Style for Lucide icons to ensure consistent sizing and positioning */
 	svg {
 		display: block;
@@ -113,6 +119,11 @@ const CodeBlockContainer = styled.div`
 		opacity: 1;
 		pointer-events: all;
 		cursor: pointer;
+	}
+
+	&:focus-within ${CodeBlockButtonWrapper} {
+		opacity: 1;
+		pointer-events: all;
 	}
 `
 
@@ -535,6 +546,8 @@ const CodeBlock = memo(
 								content={t(`chat:codeblock.tooltips.${windowShade ? "expand" : "collapse"}`)}
 								side="top">
 								<CodeBlockButton
+									type="button"
+									aria-label={t(`chat:codeblock.tooltips.${windowShade ? "expand" : "collapse"}`)}
 									onClick={() => {
 										// Get the current code block element
 										const codeBlock = codeBlockRef.current // Capture ref early
@@ -569,7 +582,10 @@ const CodeBlock = memo(
 							</StandardTooltip>
 						)}
 						<StandardTooltip content={t("chat:codeblock.tooltips.copy_code")} side="top">
-							<CodeBlockButton onClick={handleCopy}>
+							<CodeBlockButton
+								type="button"
+								aria-label={t("chat:codeblock.tooltips.copy_code")}
+								onClick={handleCopy}>
 								{showCopyFeedback ? <Check size={16} /> : <Copy size={16} />}
 							</CodeBlockButton>
 						</StandardTooltip>

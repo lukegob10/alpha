@@ -7,13 +7,12 @@ import { Modal } from "./Modal"
 import { TabButton } from "./TabButton"
 import { IconButton } from "./IconButton"
 import { ZoomControls } from "./ZoomControls"
-import { StandardTooltip } from "@/components/ui"
 
 const MIN_ZOOM = 0.5
 const MAX_ZOOM = 20
 
 export interface MermaidButtonProps {
-	containerRef: React.RefObject<HTMLDivElement>
+	containerRef: React.RefObject<HTMLButtonElement>
 	code: string
 	isLoading: boolean
 	svgToPng: (svgEl: SVGElement) => Promise<string>
@@ -24,7 +23,6 @@ export function MermaidButton({ containerRef, code, isLoading, svgToPng, childre
 	const [showModal, setShowModal] = useState(false)
 	const [zoomLevel, setZoomLevel] = useState(1)
 	const [copyFeedback, setCopyFeedback] = useState(false)
-	const [isHovering, setIsHovering] = useState(false)
 	const [modalViewMode, setModalViewMode] = useState<"diagram" | "code">("diagram")
 	const [isDragging, setIsDragging] = useState(false)
 	const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 })
@@ -108,26 +106,12 @@ export function MermaidButton({ containerRef, code, isLoading, svgToPng, childre
 		adjustZoom(delta)
 	}, [])
 
-	/**
-	 * Handle mouse enter event for diagram container
-	 */
-	const handleMouseEnter = () => {
-		setIsHovering(true)
-	}
-
-	/**
-	 * Handle mouse leave event for diagram container
-	 */
-	const handleMouseLeave = () => {
-		setIsHovering(false)
-	}
-
 	return (
 		<>
-			<div className="relative w-full" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
+			<div className="group relative w-full">
 				{children}
-				{!isLoading && isHovering && (
-					<div className="absolute bottom-2 right-2 flex gap-1 bg-vscode-editor-background/90 rounded p-0.5 z-10 opacity-100 transition-opacity duration-200 ease-in-out">
+				{!isLoading && (
+					<div className="pointer-events-none absolute bottom-2 right-2 z-10 flex gap-1 rounded bg-vscode-editor-background/90 p-0.5 opacity-0 transition-opacity duration-200 ease-in-out group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
 						<MermaidActionButtons
 							onZoom={handleZoom}
 							onCopy={handleCopy}
@@ -143,7 +127,7 @@ export function MermaidButton({ containerRef, code, isLoading, svgToPng, childre
 				)}
 			</div>
 
-			<Modal isOpen={showModal} onClose={() => setShowModal(false)}>
+			<Modal isOpen={showModal} onClose={() => setShowModal(false)} title={t("common:mermaid.modal.title")}>
 				<div className="flex justify-between items-center border-b border-vscode-editorGroup-border">
 					<div className="flex gap-0">
 						<TabButton
@@ -161,9 +145,11 @@ export function MermaidButton({ containerRef, code, isLoading, svgToPng, childre
 					</div>
 
 					<div className="pr-3">
-						<StandardTooltip content={t("common:mermaid.buttons.close")}>
-							<IconButton icon="close" onClick={() => setShowModal(false)} />
-						</StandardTooltip>
+						<IconButton
+							icon="close"
+							title={t("common:mermaid.buttons.close")}
+							onClick={() => setShowModal(false)}
+						/>
 					</div>
 				</div>
 				<div
@@ -221,23 +207,22 @@ export function MermaidButton({ containerRef, code, isLoading, svgToPng, childre
 								zoomInStep={0.2}
 								zoomOutStep={-0.2}
 							/>
-							<StandardTooltip content={t("common:mermaid.buttons.copy")}>
-								<IconButton icon={copyFeedback ? "check" : "copy"} onClick={handleCopy} />
-							</StandardTooltip>
-							<StandardTooltip content={t("common:mermaid.buttons.save")}>
-								<IconButton icon="save" onClick={handleSave} />
-							</StandardTooltip>
-						</>
-					) : (
-						<StandardTooltip content={t("common:mermaid.buttons.copy")}>
 							<IconButton
 								icon={copyFeedback ? "check" : "copy"}
-								onClick={(e) => {
-									e.stopPropagation()
-									copyWithFeedback(code, e)
-								}}
+								title={t("common:mermaid.buttons.copy")}
+								onClick={handleCopy}
 							/>
-						</StandardTooltip>
+							<IconButton icon="save" title={t("common:mermaid.buttons.save")} onClick={handleSave} />
+						</>
+					) : (
+						<IconButton
+							icon={copyFeedback ? "check" : "copy"}
+							title={t("common:mermaid.buttons.copy")}
+							onClick={(e) => {
+								e.stopPropagation()
+								copyWithFeedback(code, e)
+							}}
+						/>
 					)}
 				</div>
 			</Modal>

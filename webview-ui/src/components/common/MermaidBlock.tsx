@@ -88,7 +88,7 @@ interface MermaidBlockProps {
 }
 
 export default function MermaidBlock({ code }: MermaidBlockProps) {
-	const containerRef = useRef<HTMLDivElement>(null)
+	const containerRef = useRef<HTMLButtonElement>(null)
 	const renderGeneration = useRef(0)
 	const [isLoading, setIsLoading] = useState(false)
 	const [error, setError] = useState<string | null>(null)
@@ -231,7 +231,13 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 				</div>
 			) : (
 				<MermaidButton containerRef={containerRef} code={code} isLoading={isLoading} svgToPng={svgToPng}>
-					<SvgContainer onClick={handleClick} ref={containerRef} $isLoading={isLoading}></SvgContainer>
+					<SvgContainer
+						type="button"
+						aria-label={t("common:mermaid.buttons.open")}
+						onClick={handleClick}
+						ref={containerRef}
+						$isLoading={isLoading}
+					/>
 				</MermaidButton>
 			)}
 		</MermaidBlockContainer>
@@ -328,11 +334,16 @@ interface SvgContainerProps {
 	$isLoading: boolean
 }
 
-const SvgContainer = styled.div<SvgContainerProps>`
+const SvgContainer = styled.button<SvgContainerProps>`
 	opacity: ${(props) => (props.$isLoading ? 0.3 : 1)};
+	width: 100%;
 	min-height: 20px;
 	transition: opacity 0.2s ease;
 	cursor: pointer;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: inherit;
 	display: flex;
 	justify-content: center;
 	max-height: 400px;

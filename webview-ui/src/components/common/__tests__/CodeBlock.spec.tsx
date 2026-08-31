@@ -296,4 +296,13 @@ describe("CodeBlock", () => {
 			})
 		}
 	})
+
+	it("exposes named keyboard-focusable controls", () => {
+		render(<CodeBlock source="const value = 1" language="typescript" />)
+
+		const copyButton = screen.getByRole("button", { name: "Copy code" })
+
+		expect(copyButton).toHaveAttribute("type", "button")
+		expect(copyButton).toHaveAccessibleName("Copy code")
+	})
 })
