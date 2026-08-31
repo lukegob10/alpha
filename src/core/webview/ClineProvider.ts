@@ -1045,7 +1045,7 @@ export class ClineProvider
 
 		// Initialize out-of-scope variables that need to receive persistent
 		// global state values.
-		this.getState().then(
+		void this.getState().then(
 			({
 				terminalShellIntegrationTimeout = Terminal.defaultShellIntegrationTimeout,
 				terminalShellIntegrationDisabled = false,
@@ -1068,6 +1068,11 @@ export class ClineProvider
 				Terminal.setTerminalZdotdir(terminalZdotdir)
 				setTtsEnabled(ttsEnabled ?? false)
 				setTtsSpeed(ttsSpeed ?? 1)
+			},
+			(error) => {
+				this.log(
+					`[resolveWebviewView] Failed to apply persisted terminal settings: ${error instanceof Error ? error.message : String(error)}`,
+				)
 			},
 		)
 

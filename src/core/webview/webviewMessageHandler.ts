@@ -579,20 +579,30 @@ export const webviewMessageHandler = async (
 			const customModes = await provider.customModesManager.getCustomModes()
 			await updateGlobalState("customModes", customModes)
 
-			provider.postStateToWebview()
-			provider.workspaceTracker?.initializeFilePaths() // Don't await.
+			await provider.postStateToWebview()
+			void provider.workspaceTracker?.initializeFilePaths().catch((error) => {
+				provider.log(
+					`[webviewDidLaunch] Failed to initialize workspace file paths: ${error instanceof Error ? error.message : String(error)}`,
+				)
+			})
 
-			getTheme().then((theme) => provider.postMessageToWebview({ type: "theme", text: JSON.stringify(theme) }))
+			void getTheme()
+				.then((theme) => provider.postMessageToWebview({ type: "theme", text: JSON.stringify(theme) }))
+				.catch((error) => {
+					provider.log(
+						`[webviewDidLaunch] Failed to load theme: ${error instanceof Error ? error.message : String(error)}`,
+					)
+				})
 
 			// If MCP Hub is already initialized, update the webview with
 			// current server list.
 			const mcpHub = provider.getMcpHub()
 
 			if (mcpHub) {
-				provider.postMessageToWebview({ type: "mcpServers", mcpServers: mcpHub.getAllServers() })
+				await provider.postMessageToWebview({ type: "mcpServers", mcpServers: mcpHub.getAllServers() })
 			}
 
-			provider.providerSettingsManager
+			void provider.providerSettingsManager
 				.listConfig()
 				.then(async (listApiConfig) => {
 					if (!listApiConfig) {
@@ -646,11 +656,18 @@ export const webviewMessageHandler = async (
 				)
 
 			// Enable telemetry by default (when unset) or when explicitly enabled
-			provider.getStateToPostToWebview().then((state) => {
-				const { telemetrySetting } = state
-				const isOptedIn = telemetrySetting !== "disabled"
-				TelemetryService.instance.updateTelemetryState(isOptedIn)
-			})
+			void provider
+				.getStateToPostToWebview()
+				.then((state) => {
+					const { telemetrySetting } = state
+					const isOptedIn = telemetrySetting !== "disabled"
+					TelemetryService.instance.updateTelemetryState(isOptedIn)
+				})
+				.catch((error) => {
+					provider.log(
+						`[webviewDidLaunch] Failed to initialize telemetry state: ${error instanceof Error ? error.message : String(error)}`,
+					)
+				})
 
 			provider.isViewLaunched = true
 			break

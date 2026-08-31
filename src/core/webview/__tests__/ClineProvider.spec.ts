@@ -228,7 +228,7 @@ vi.mock("../../prompts/system", () => ({
 vi.mock("../../../integrations/workspace/WorkspaceTracker", () => {
 	return {
 		default: vi.fn().mockImplementation(() => ({
-			initializeFilePaths: vi.fn(),
+			initializeFilePaths: vi.fn().mockResolvedValue(undefined),
 			dispose: vi.fn(),
 		})),
 	}
@@ -1103,6 +1103,50 @@ describe("ClineProvider", () => {
 
 		await disposeView()
 		expect(provider.viewLaunched).toBe(false)
+	})
+
+	test("does not report the webview ready before its initial state is delivered", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+		let finishInitialState!: () => void
+		const postInitialState = vi
+			.spyOn(provider, "postStateToWebview")
+			.mockImplementationOnce(() => new Promise<void>((resolve) => (finishInitialState = resolve)))
+
+		const launching = messageHandler({ type: "webviewDidLaunch" })
+		await vi.waitFor(() => expect(postInitialState).toHaveBeenCalledOnce())
+		expect(provider.viewLaunched).toBe(false)
+
+		finishInitialState()
+		await launching
+		expect(provider.viewLaunched).toBe(true)
+	})
+
+	test("contains background workspace initialization failures during webview launch", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+		vi.mocked(provider.workspaceTracker!.initializeFilePaths).mockRejectedValueOnce(
+			new Error("workspace scan failed"),
+		)
+
+		await messageHandler({ type: "webviewDidLaunch" })
+
+		await vi.waitFor(() =>
+			expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
+				expect.stringContaining("Failed to initialize workspace file paths: workspace scan failed"),
+			),
+		)
+	})
+
+	test("contains persisted terminal-setting hydration failures during view resolution", async () => {
+		vi.spyOn(provider, "getState").mockRejectedValueOnce(new Error("settings unavailable"))
+
+		await expect(provider.resolveWebviewView(mockWebviewView)).resolves.toBeUndefined()
+		await vi.waitFor(() =>
+			expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
+				expect.stringContaining("Failed to apply persisted terminal settings: settings unavailable"),
+			),
+		)
 	})
 
 	test("clearTask aborts current task", async () => {
