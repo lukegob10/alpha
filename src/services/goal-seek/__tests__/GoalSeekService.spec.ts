@@ -330,4 +330,54 @@ describe("GoalSeekService run lifecycle", () => {
 		expect(abortTask).toHaveBeenCalledTimes(1)
 		expect(store.getRun(run.id)?.status).toBe("canceled")
 	})
+
+	it("drains an active run before deleting its persisted state", async () => {
+		const workspace = process.cwd()
+		const { service, store } = createService([makeJob("job-a", workspace)])
+		const internals = service as unknown as {
+			assertCleanWorkspace(workspace: string): Promise<void>
+			generateCandidates(job: GoalSeekJob, run: GoalSeekRun, feedback: string): Promise<GoalSeekCandidate[]>
+			gitRevParse(workspace: string, ref: string): Promise<string>
+			runAlphaTask(
+				prompt: string,
+				workspace: string | undefined,
+				mode: string | undefined,
+				writeCapable: boolean,
+			): Promise<{ taskId: string; result: string }>
+			runVerifier(job: GoalSeekJob, run: GoalSeekRun, attempt: GoalSeekAttempt): Promise<GoalSeekVerifierResult>
+			commitAcceptedAttempt(
+				job: GoalSeekJob,
+				selected: GoalSeekCandidate,
+				attempt: GoalSeekAttempt,
+			): Promise<void>
+			gitResetHard(workspace: string, ref: string): Promise<void>
+			runExecutions: Map<string, Promise<void>>
+		}
+		const implementationStarted = deferred<void>()
+		const implementation = deferred<{ taskId: string; result: string }>()
+		vi.spyOn(internals, "assertCleanWorkspace").mockResolvedValue(undefined)
+		vi.spyOn(internals, "generateCandidates").mockResolvedValue([candidate])
+		vi.spyOn(internals, "gitRevParse").mockResolvedValue("checkpoint-a")
+		vi.spyOn(internals, "runAlphaTask").mockImplementation(async () => {
+			implementationStarted.resolve(undefined)
+			return implementation.promise
+		})
+		vi.spyOn(internals, "runVerifier").mockResolvedValue(passingVerifierResult)
+		const commit = vi.spyOn(internals, "commitAcceptedAttempt").mockResolvedValue(undefined)
+		const reset = vi.spyOn(internals, "gitResetHard").mockResolvedValue(undefined)
+
+		const run = await service.runJob("job-a")
+		const execution = internals.runExecutions.get(run.id)!
+		await implementationStarted.promise
+		const deletion = service.deleteJob("job-a")
+		await Promise.resolve()
+		implementation.resolve({ taskId: "implementation-task", result: "Implemented" })
+		await Promise.all([deletion, execution])
+
+		expect(commit).not.toHaveBeenCalled()
+		expect(reset).toHaveBeenCalledWith(workspace, "checkpoint-a")
+		expect(store.jobs.size).toBe(0)
+		expect(store.runs.size).toBe(0)
+		expect(store.attempts.size).toBe(0)
+	})
 })

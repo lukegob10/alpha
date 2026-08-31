@@ -145,6 +145,10 @@ export class GoalSeekService implements vscode.Disposable {
 	}
 
 	async deleteJob(jobId: string): Promise<void> {
+		const activeRuns = this.store.getState().runs.filter((run) => run.jobId === jobId && run.status === "running")
+		for (const run of activeRuns) {
+			await this.cancelRun(run.id)
+		}
 		await this.store.deleteJob(jobId)
 		await this.broadcast()
 	}
