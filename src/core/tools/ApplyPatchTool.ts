@@ -84,6 +84,19 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				return
 			}
 
+			// Validate the complete patch before reading any source file. In
+			// particular, an ignored later hunk must prevent reads of earlier hunks.
+			for (const hunk of parsedPatch.hunks) {
+				const paths = [hunk.path, hunk.type === "UpdateFile" ? hunk.movePath : undefined]
+				for (const candidatePath of paths) {
+					if (!candidatePath || task.rooIgnoreController?.validateAccess(candidatePath) !== false) continue
+
+					await task.say("rooignore_error", candidatePath)
+					pushToolResult(formatResponse.rooIgnoreError(candidatePath))
+					return
+				}
+			}
+
 			// Process each hunk
 			const readFile = async (filePath: string): Promise<string> => {
 				const absolutePath = path.resolve(task.cwd, filePath)
