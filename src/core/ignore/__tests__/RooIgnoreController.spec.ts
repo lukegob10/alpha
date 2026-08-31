@@ -310,6 +310,30 @@ describe("RooIgnoreController", () => {
 			// Symlink to ignored file should also be blocked
 			expect(controller.validateAccess("config.json")).toBe(false)
 		})
+
+		it("checks both the requested alias and the canonical target", () => {
+			const mockRealpathSync = vi.mocked(fsSync.realpathSync)
+			mockRealpathSync.mockImplementation((filePath) => {
+				if (filePath.toString().endsWith(path.join("secrets", "alias.json"))) {
+					return path.join(TEST_CWD, "src/public.json")
+				}
+				return filePath.toString()
+			})
+
+			expect(controller.validateAccess("secrets/alias.json")).toBe(false)
+		})
+
+		it("resolves the nearest existing symlink ancestor for new files", () => {
+			const mockRealpathSync = vi.mocked(fsSync.realpathSync)
+			mockRealpathSync.mockImplementation((filePath) => {
+				const candidate = filePath.toString()
+				if (candidate.endsWith(path.join("secret-alias", "new.json"))) throw new Error("ENOENT")
+				if (candidate.endsWith("secret-alias")) return path.join(TEST_CWD, "secrets")
+				return candidate
+			})
+
+			expect(controller.validateAccess("secret-alias/new.json")).toBe(false)
+		})
 	})
 
 	describe("validateCommand", () => {

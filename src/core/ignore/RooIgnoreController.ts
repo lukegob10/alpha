@@ -1,9 +1,10 @@
 import path from "path"
 import { fileExistsAtPath } from "../../utils/fs"
 import fs from "fs/promises"
-import fsSync from "fs"
 import ignore, { Ignore } from "ignore"
 import * as vscode from "vscode"
+
+import { getPathRelativeToRoot, resolvePathWithExistingAncestor } from "../tools/pathSafety"
 
 export const LOCK_TEXT_SYMBOL = "\u{1F512}"
 
@@ -98,22 +99,20 @@ export class RooIgnoreController {
 		}
 		try {
 			const absolutePath = path.resolve(this.cwd, filePath)
+			const lexicalRelativePath = getPathRelativeToRoot(this.cwd, absolutePath)
 
-			// Follow symlinks to get the real path
-			let realPath: string
-			try {
-				realPath = fsSync.realpathSync(absolutePath)
-			} catch {
-				// If realpath fails (file doesn't exist, broken symlink, etc.),
-				// use the original path
-				realPath = absolutePath
+			if (lexicalRelativePath !== undefined && this.ignoreInstance.ignores(lexicalRelativePath)) {
+				return false
 			}
 
-			// Convert real path to relative for .alphaignore checking
-			const relativePath = path.relative(this.cwd, realPath).toPosix()
+			// Follow symlinks and junctions, including for a not-yet-created file.
+			const realRoot = resolvePathWithExistingAncestor(this.cwd)
+			const realPath = resolvePathWithExistingAncestor(absolutePath)
+			const relativePath = getPathRelativeToRoot(realRoot, realPath)
 
-			// Check if the real path is ignored
-			return !this.ignoreInstance.ignores(relativePath)
+			// Ignore policy is workspace-relative. Outside targets are handled by the
+			// separate outside-workspace approval boundary.
+			return relativePath === undefined || !this.ignoreInstance.ignores(relativePath)
 		} catch (error) {
 			// Allow access to files outside cwd or on errors (backward compatibility)
 			return true
