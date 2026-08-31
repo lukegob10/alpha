@@ -33,6 +33,9 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		allowedCommands,
 		deniedCommands,
 		currentTaskAutoApprovalRestricted,
+		alwaysAllowReadOnlyOutsideWorkspace,
+		alwaysAllowWriteOutsideWorkspace,
+		alwaysAllowWriteProtected,
 		setAutoApprovalEnabled,
 		setAlwaysAllowReadOnly,
 		setAlwaysAllowReadOnlyOutsideWorkspace,
@@ -198,12 +201,18 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 	const hasFullAutoApproval = React.useMemo(
 		() =>
 			enabledCount === totalCount &&
+			alwaysAllowReadOnlyOutsideWorkspace &&
+			alwaysAllowWriteOutsideWorkspace &&
+			alwaysAllowWriteProtected &&
 			!currentTaskAutoApprovalRestricted &&
 			(!toggles.alwaysAllowExecute ||
 				(allowedCommands?.some((command) => command.trim() === "*") === true &&
 					deniedCommands?.some((command) => command.trim().length > 0) !== true)),
 		[
 			allowedCommands,
+			alwaysAllowReadOnlyOutsideWorkspace,
+			alwaysAllowWriteOutsideWorkspace,
+			alwaysAllowWriteProtected,
 			currentTaskAutoApprovalRestricted,
 			deniedCommands,
 			enabledCount,

@@ -187,6 +187,34 @@ describe("AutoApproveDropdown", () => {
 		expect(screen.getAllByText("8 auto-approved").length).toBeGreaterThan(0)
 	})
 
+	it.each([
+		"alwaysAllowReadOnlyOutsideWorkspace",
+		"alwaysAllowWriteOutsideWorkspace",
+		"alwaysAllowWriteProtected",
+	])("does not advertise All while nested permission %s is disabled", (permission) => {
+		mockState = {
+			...mockState,
+			autoApprovalEnabled: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowReadOnlyOutsideWorkspace: true,
+			alwaysAllowWrite: true,
+			alwaysAllowWriteOutsideWorkspace: true,
+			alwaysAllowWriteProtected: true,
+			alwaysAllowExecute: true,
+			alwaysAllowMcp: true,
+			alwaysAllowModeSwitch: true,
+			alwaysAllowSubtasks: true,
+			alwaysAllowSubagents: true,
+			alwaysAllowFollowupQuestions: true,
+			allowedCommands: ["*"],
+			[permission]: false,
+		}
+
+		render(<AutoApproveDropdown />)
+
+		expect(screen.queryAllByText("chat:autoApprove.triggerLabelAll")).toHaveLength(0)
+	})
+
 	it("does not advertise global All while the visible child has a frozen approval cap", () => {
 		mockState = {
 			...mockState,
