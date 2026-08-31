@@ -1,3 +1,5 @@
+import path from "path"
+
 import type { ToolName, ModeConfig, ExperimentId, GroupOptions, GroupEntry } from "@alpha-code/types"
 import { toolNames as validToolNames } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
@@ -100,11 +102,11 @@ const EDIT_OPERATION_PARAMS = [
 ] as const
 
 // Markers used in apply_patch format to identify file operations
-const PATCH_FILE_MARKERS = ["*** Add File: ", "*** Delete File: ", "*** Update File: "] as const
+const PATCH_FILE_MARKERS = ["*** Add File: ", "*** Delete File: ", "*** Update File: ", "*** Move to: "] as const
 
 /**
  * Extract file paths from apply_patch content.
- * The patch format uses markers like "*** Add File: path", "*** Delete File: path", "*** Update File: path"
+ * The patch format uses add, delete, update, and move markers followed by a file path.
  * @param patchContent The patch content string
  * @returns Array of file paths found in the patch
  */
@@ -139,6 +141,20 @@ function doesFileMatchRegex(filePath: string, pattern: string): boolean {
 		console.error(`Invalid regex pattern: ${pattern}`, error)
 		return false
 	}
+}
+
+function normalizeRestrictedFilePath(filePath: string): string | undefined {
+	const normalizedPath = path.posix.normalize(filePath.replace(/\\/g, "/"))
+	if (
+		path.posix.isAbsolute(normalizedPath) ||
+		/^[A-Za-z]:\//.test(normalizedPath) ||
+		normalizedPath === ".." ||
+		normalizedPath.startsWith("../")
+	) {
+		return undefined
+	}
+
+	return normalizedPath.replace(/^\.\//, "")
 }
 
 export function isToolAllowedForMode(
@@ -260,10 +276,18 @@ export function isToolAllowedForMode(
 		if (groupName === "edit" && options.fileRegex) {
 			const filePath = toolParams?.path || toolParams?.file_path
 			// Check if this is an actual edit operation (not just path-only for streaming)
-			const isEditOperation = EDIT_OPERATION_PARAMS.some((param) => toolParams?.[param])
+			const isEditOperation = EDIT_OPERATION_PARAMS.some(
+				(param) =>
+					Object.prototype.hasOwnProperty.call(toolParams ?? {}, param) && toolParams?.[param] !== undefined,
+			)
 
 			// Handle single file path validation
-			if (filePath && isEditOperation && !doesFileMatchRegex(filePath, options.fileRegex)) {
+			const normalizedFilePath = typeof filePath === "string" ? normalizeRestrictedFilePath(filePath) : undefined
+			if (
+				filePath &&
+				isEditOperation &&
+				(!normalizedFilePath || !doesFileMatchRegex(normalizedFilePath, options.fileRegex))
+			) {
 				throw new FileRestrictionError(mode.name, options.fileRegex, options.description, filePath, tool)
 			}
 
@@ -271,7 +295,8 @@ export function isToolAllowedForMode(
 			if (tool === "apply_patch" && typeof toolParams?.patch === "string") {
 				const patchFilePaths = extractFilePathsFromPatch(toolParams.patch)
 				for (const patchFilePath of patchFilePaths) {
-					if (!doesFileMatchRegex(patchFilePath, options.fileRegex)) {
+					const normalizedPatchPath = normalizeRestrictedFilePath(patchFilePath)
+					if (!normalizedPatchPath || !doesFileMatchRegex(normalizedPatchPath, options.fileRegex)) {
 						throw new FileRestrictionError(
 							mode.name,
 							options.fileRegex,

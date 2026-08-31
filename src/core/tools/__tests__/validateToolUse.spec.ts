@@ -125,6 +125,15 @@ describe("mode-validator", () => {
 		})
 
 		describe("custom modes", () => {
+			const sourceOnlyMode: ModeConfig[] = [
+				{
+					slug: "source-only",
+					name: "Source Only",
+					roleDefinition: "Edit source files only",
+					groups: [["edit", { fileRegex: "^src/" }]],
+				},
+			]
+
 			it("allows tools from custom mode configuration", () => {
 				const customModes: ModeConfig[] = [
 					{
@@ -187,6 +196,55 @@ describe("mode-validator", () => {
 
 				// Should allow other edit tools
 				expect(isToolAllowedForMode("write_to_file", "custom-mode", customModes, requirements)).toBe(true)
+			})
+
+			it("enforces file restrictions for empty-content writes", () => {
+				expect(
+					isToolAllowedForMode("write_to_file", "source-only", sourceOnlyMode, undefined, {
+						path: "src/empty.ts",
+						content: "",
+					}),
+				).toBe(true)
+				expect(() =>
+					isToolAllowedForMode("write_to_file", "source-only", sourceOnlyMode, undefined, {
+						path: "docs/empty.md",
+						content: "",
+					}),
+				).toThrow()
+			})
+
+			it.each(["src/../package.json", "../src/escape.ts", "C:/workspace/src/absolute.ts"])(
+				"checks normalized workspace-relative paths before applying fileRegex: %s",
+				(filePath) => {
+					expect(() =>
+						isToolAllowedForMode("write_to_file", "source-only", sourceOnlyMode, undefined, {
+							path: filePath,
+							content: "changed",
+						}),
+					).toThrow()
+				},
+			)
+
+			it("validates apply_patch move destinations as well as source paths", () => {
+				const patch = `*** Begin Patch
+*** Update File: src/allowed.ts
+*** Move to: docs/disallowed.ts
+@@
+-old
++new
+*** End Patch`
+
+				expect(() =>
+					isToolAllowedForMode(
+						"apply_patch",
+						"source-only",
+						sourceOnlyMode,
+						undefined,
+						{ patch },
+						undefined,
+						["apply_patch"],
+					),
+				).toThrow()
 			})
 		})
 
