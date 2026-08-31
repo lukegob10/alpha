@@ -23,3 +23,13 @@ src/i18n/locales/en/** linguist-generated=false
 webview-ui/src/i18n/locales/en/** linguist-generated=false
 
 # This approach uses gitattributes' last-match-wins rule to exclude English while including all other locales
+
+# Content-addressed eval fixtures must have platform-stable worktree bytes.
+evals/** text=auto eol=lf
+
+# New migrations use LF. Preserve the exact bytes of released CRLF migrations.
+packages/evals/src/db/migrations/*.sql text eol=lf
+packages/evals/src/db/migrations/0000_young_trauma.sql -text !eol
+packages/evals/src/db/migrations/0002_bouncy_blazing_skull.sql -text !eol
+packages/evals/src/db/migrations/0004_sloppy_black_knight.sql -text !eol
+packages/evals/src/db/migrations/0005_strong_skrulls.sql -text !eol

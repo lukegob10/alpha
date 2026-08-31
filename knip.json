@@ -3,6 +3,7 @@
 	"ignore": [
 		"**/__tests__/**",
 		"apps/vscode-e2e/**",
+		"evals/**",
 		"src/extension/api.ts",
 		"src/activate/**",
 		"src/workers/countTokens.ts",
