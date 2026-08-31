@@ -37,7 +37,6 @@ export const usePromptHistory = ({
 	// Prompt history navigation state
 	const [historyIndex, setHistoryIndex] = useState(-1)
 	const [tempInput, setTempInput] = useState("")
-	const [promptHistory, setPromptHistory] = useState<string[]>([])
 
 	// Initialize prompt history with hybrid approach: conversation messages if in task, otherwise task history
 	const filteredPromptHistory = useMemo(() => {
@@ -68,14 +67,15 @@ export const usePromptHistory = ({
 			.map((item) => item.task)
 			.slice(0, MAX_PROMPT_HISTORY_SIZE)
 	}, [clineMessages, taskHistory, cwd])
+	const filteredPromptHistoryKey = JSON.stringify(filteredPromptHistory)
 
-	// Update prompt history when filtered history changes and reset navigation
+	// Reset navigation only when the actual prompts change, not on unrelated streamed messages.
 	useEffect(() => {
-		setPromptHistory(filteredPromptHistory)
-		// Reset navigation state when switching between history sources
 		setHistoryIndex(-1)
 		setTempInput("")
-	}, [filteredPromptHistory])
+	}, [filteredPromptHistoryKey])
+
+	const promptHistory = filteredPromptHistory
 
 	// Reset history navigation when user types (but not when we're setting it programmatically)
 	const resetOnInputChange = useCallback(() => {
