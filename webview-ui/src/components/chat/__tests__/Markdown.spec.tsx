@@ -1,5 +1,5 @@
 import React from "react"
-import { render, screen } from "@testing-library/react"
+import { fireEvent, render, screen } from "@testing-library/react"
 
 import { Markdown } from "../Markdown"
 
@@ -7,8 +7,10 @@ vi.mock("../../common/MarkdownBlock", () => ({
 	default: ({ markdown }: { markdown: string }) => <div data-testid="markdown-content">{markdown}</div>,
 }))
 
+const copyWithFeedback = vi.hoisted(() => vi.fn())
+
 vi.mock("@src/utils/clipboard", () => ({
-	useCopyToClipboard: () => ({ copyWithFeedback: vi.fn() }),
+	useCopyToClipboard: () => ({ copyWithFeedback, showCopyFeedback: false }),
 }))
 
 vi.mock("@src/components/ui", () => ({
@@ -32,5 +34,14 @@ describe("Markdown proposed-plan rendering", () => {
 		rerender(<Markdown markdown="# Ordinary response" />)
 		expect(screen.queryByLabelText("Proposed plan")).not.toBeInTheDocument()
 		expect(screen.getByTestId("markdown-content")).toHaveTextContent("# Ordinary response")
+	})
+
+	it("keeps the markdown copy action keyboard-accessible without hover", () => {
+		render(<Markdown markdown="# Copy me" />)
+		const copyButton = screen.getByRole("button", { name: "Copy as markdown" })
+
+		fireEvent.click(copyButton)
+
+		expect(copyWithFeedback).toHaveBeenCalledWith("# Copy me")
 	})
 })
