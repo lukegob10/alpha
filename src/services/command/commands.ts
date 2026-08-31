@@ -149,6 +149,12 @@ export async function getCommands(cwd: string): Promise<Command[]> {
  * Priority order: project > global > built-in
  */
 export async function getCommand(cwd: string, name: string): Promise<Command | undefined> {
+	// Command names are file names, not paths. Reject separators before joining so
+	// callers cannot escape a command directory with values such as "../README".
+	if (!name || name === "." || name === ".." || name.includes("\0") || /[\\/]/.test(name)) {
+		return undefined
+	}
+
 	// Try to find the command directly without scanning all commands
 	const projectDir = path.join(getProjectRooDirectoryForCwd(cwd), "commands")
 	const globalDir = path.join(getGlobalRooDirectory(), "commands")
