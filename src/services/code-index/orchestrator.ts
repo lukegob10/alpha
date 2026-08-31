@@ -44,6 +44,7 @@ export class CodeIndexOrchestrator {
 
 		try {
 			await this.fileWatcher.initialize()
+			this.disposeWatcherSubscriptions()
 
 			this._fileWatcherSubscriptions = [
 				this.fileWatcher.onDidStartBatchProcessing((filePaths: string[]) => {}),

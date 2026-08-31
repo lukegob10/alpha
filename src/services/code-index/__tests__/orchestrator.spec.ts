@@ -559,4 +559,32 @@ describe("CodeIndexOrchestrator - stopIndexing", () => {
 		expect(fileWatcher.initialize).toHaveBeenCalledTimes(2)
 		expect(stateManager.state).toBe("Error")
 	})
+
+	it("replaces watcher subscriptions when start is repeated", async () => {
+		const { finishEvent } = attachTerminalWatcherEvents(fileWatcher)
+		scanner.scanDirectory.mockResolvedValue({ stats: { processed: 0, skipped: 0 }, totalBlockCount: 0 })
+		const orchestrator = new CodeIndexOrchestrator(
+			configManager,
+			stateManager,
+			workspacePath,
+			cacheManager,
+			vectorStore,
+			scanner,
+			fileWatcher,
+		)
+
+		await orchestrator.startIndexing()
+		await orchestrator.startIndexing()
+		const errorCallsBeforeBatch = stateManager.setSystemState.mock.calls.filter(
+			([state]: [string]) => state === "Error",
+		).length
+		finishEvent.fire({
+			processedFiles: [{ path: "broken.ts", status: "local_error", error: new Error("parse failed") }],
+		})
+		const errorCallsAfterBatch = stateManager.setSystemState.mock.calls.filter(
+			([state]: [string]) => state === "Error",
+		).length
+
+		expect(errorCallsAfterBatch - errorCallsBeforeBatch).toBe(1)
+	})
 })
