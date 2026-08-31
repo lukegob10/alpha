@@ -2526,6 +2526,9 @@ describe("ChatView - Context Condensing Indicator Tests", () => {
 
 		// First hydrate state with an active task
 		mockPostMessage({
+			currentTaskId: "active-task",
+			currentView: { type: "task", taskId: "active-task" },
+			currentTaskItem: { id: "active-task", task: "Initial task", ts: Date.now() - 2000 },
 			clineMessages: [
 				{
 					type: "say",
@@ -2552,13 +2555,23 @@ describe("ChatView - Context Condensing Indicator Tests", () => {
 			await new Promise((resolve) => setTimeout(resolve, 10))
 		})
 
-		// Dispatch a MessageEvent directly to trigger the message handler
-		// This simulates the VSCode extension sending a message to the webview
+		// A background task must not change the visible task's condensation state.
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "condenseTaskContextStarted", text: "background-task" },
+				}),
+			)
+			await new Promise((resolve) => setTimeout(resolve, 0))
+		})
+		expect(container.textContent).not.toContain('"say":"condense_context"')
+
+		// The task-scoped event for the visible task starts the indicator.
 		await act(async () => {
 			const event = new MessageEvent("message", {
 				data: {
 					type: "condenseTaskContextStarted",
-					text: "test-task-id",
+					text: "active-task",
 				},
 			})
 			window.dispatchEvent(event)
