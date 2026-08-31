@@ -64,6 +64,7 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 
 		if (socketPath) {
 			const ipc = (this.ipc = new IpcServer(socketPath, this.log))
+			this.context.subscriptions.push(ipc)
 
 			ipc.listen()
 			this.log(`[API] ipc server started: socketPath=${socketPath}, pid=${process.pid}, ppid=${process.ppid}`)

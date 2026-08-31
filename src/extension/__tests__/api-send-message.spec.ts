@@ -10,6 +10,7 @@ const ipcMock = vi.hoisted(() => ({
 	listen: vi.fn(),
 	send: vi.fn(),
 	broadcast: vi.fn(),
+	dispose: vi.fn(),
 }))
 
 vi.mock("vscode")
@@ -19,6 +20,7 @@ vi.mock("@alpha-code/ipc", () => ({
 		listen: ipcMock.listen,
 		send: ipcMock.send,
 		broadcast: ipcMock.broadcast,
+		dispose: ipcMock.dispose,
 		on: vi.fn((_eventName, handler) => {
 			ipcMock.handler = handler
 		}),
@@ -33,6 +35,7 @@ describe("API - SendMessage Command", () => {
 	let mockLog: ReturnType<typeof vi.fn>
 
 	beforeEach(() => {
+		ipcMock.listen.mockReset()
 		ipcMock.handler = undefined
 		// Setup mocks
 		mockOutputChannel = {
@@ -42,7 +45,7 @@ describe("API - SendMessage Command", () => {
 		mockPostMessageToWebview = vi.fn().mockResolvedValue(undefined)
 
 		mockProvider = {
-			context: {} as vscode.ExtensionContext,
+			context: { subscriptions: [] } as unknown as vscode.ExtensionContext,
 			postMessageToWebview: mockPostMessageToWebview,
 			on: vi.fn(),
 			getCurrentTaskStack: vi.fn().mockReturnValue([]),
@@ -170,6 +173,19 @@ describe("API - SendMessage Command", () => {
 			images,
 		})
 		expect(mockPostMessageToWebview).toHaveBeenCalledTimes(1)
+	})
+
+	it("registers the IPC server for context disposal before listening", () => {
+		const subscriptions = mockProvider.context.subscriptions
+		ipcMock.listen.mockImplementationOnce(() => {
+			expect(subscriptions).toHaveLength(1)
+		})
+
+		const ipcApi = new API(mockOutputChannel, mockProvider, "test-socket", true)
+		const ipc = (ipcApi as unknown as { ipc: object }).ipc
+
+		expect(subscriptions).toEqual([ipc])
+		expect(ipcMock.listen).toHaveBeenCalledOnce()
 	})
 
 	it("contains rejected IPC commands instead of leaking an unhandled rejection", async () => {
