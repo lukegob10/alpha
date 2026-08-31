@@ -4,6 +4,7 @@ import fs from "fs/promises"
 import ignore, { Ignore } from "ignore"
 import * as vscode from "vscode"
 
+import { analyzeShellCommands, tokenizeShellCommands } from "../auto-approval/shellCommand"
 import { getPathRelativeToRoot, resolvePathWithExistingAncestor } from "../tools/pathSafety"
 
 export const LOCK_TEXT_SYMBOL = "\u{1F512}"
@@ -130,10 +131,6 @@ export class RooIgnoreController {
 			return undefined
 		}
 
-		// Split command into parts and get the base command
-		const parts = command.trim().split(/\s+/)
-		const baseCommand = parts[0].toLowerCase()
-
 		// Commands that read file contents
 		const fileReadingCommands = [
 			// Unix commands
@@ -153,23 +150,23 @@ export class RooIgnoreController {
 			"sls",
 		]
 
-		if (fileReadingCommands.includes(baseCommand)) {
-			// Check each argument that could be a file path
-			for (let i = 1; i < parts.length; i++) {
-				const arg = parts[i]
-				// Skip command flags/options (both Unix and PowerShell style)
-				if (arg.startsWith("-") || arg.startsWith("/")) {
-					continue
-				}
-				// Ignore PowerShell parameter names
-				if (arg.includes(":")) {
-					continue
-				}
-				// Validate file access
-				if (!this.validateAccess(arg)) {
-					return arg
+		const shellAnalysis = analyzeShellCommands(command)
+		const commandSources = [command, ...shellAnalysis.commands]
+		for (const parts of commandSources.flatMap((source) => tokenizeShellCommands(source))) {
+			if (parts.length === 0 || !fileReadingCommands.includes(parts[0].toLowerCase())) continue
+
+			// Check each argument that could be a file path.
+			for (const argument of parts.slice(1)) {
+				const inlinePathParameter = argument.match(/^-(?:LiteralPath|Path):(.+)$/i)
+				if (argument.startsWith("-") && !inlinePathParameter) continue
+				const candidatePath = inlinePathParameter?.[1] ?? argument
+				if (!this.validateAccess(candidatePath)) {
+					return candidatePath
 				}
 			}
+		}
+		if (shellAnalysis.malformedSubstitution) {
+			return "malformed shell substitution"
 		}
 
 		return undefined

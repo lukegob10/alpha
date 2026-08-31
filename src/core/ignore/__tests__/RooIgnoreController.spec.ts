@@ -381,6 +381,31 @@ describe("RooIgnoreController", () => {
 			)
 		})
 
+		it("blocks quoted, chained, substituted, absolute, and colon-containing ignored paths", () => {
+			const absoluteIgnoredPath = path.join(TEST_CWD, "secrets/api-keys.json")
+
+			expect(controller.validateCommand('cat "secrets/api keys.json"')).toBe("secrets/api keys.json")
+			expect(controller.validateCommand("echo allowed; cat secrets/api-keys.json")).toBe("secrets/api-keys.json")
+			expect(controller.validateCommand('echo "$(cat secrets/api-keys.json)"')).toBe("secrets/api-keys.json")
+			expect(controller.validateCommand(`cat "${absoluteIgnoredPath}"`)).toBe(absoluteIgnoredPath)
+			expect(controller.validateCommand("cat secrets/key:copy")).toBe("secrets/key:copy")
+			expect(controller.validateCommand("Get-Content -Path:secrets/api-keys.json")).toBe("secrets/api-keys.json")
+		})
+
+		it("blocks ignored reads inside process substitution and fails closed when malformed", () => {
+			expect(controller.validateCommand("cat <(cat secrets/api-keys.json)")).toBe("secrets/api-keys.json")
+			expect(controller.validateCommand("cat >(Get-Content secrets/api-keys.json)")).toBe("secrets/api-keys.json")
+			expect(controller.validateCommand('cat <(echo "$(cat secrets/api-keys.json)")')).toBe(
+				"secrets/api-keys.json",
+			)
+			expect(controller.validateCommand("cat <(cat secrets/api-keys.json")).toBe("secrets/api-keys.json")
+			expect(controller.validateCommand("cat <(")).toBe("malformed shell substitution")
+		})
+
+		it("treats quoted process-substitution syntax as a literal path", () => {
+			expect(controller.validateCommand('cat "<(cat secrets/api-keys.json)"')).toBeUndefined()
+		})
+
 		/**
 		 * Tests validation of non-file-reading commands
 		 */
