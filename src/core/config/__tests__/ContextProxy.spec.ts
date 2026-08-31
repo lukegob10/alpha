@@ -342,6 +342,8 @@ describe("ContextProxy", () => {
 			// Set up initial API configuration values
 			await proxy.updateGlobalState("apiModelId", "old-model")
 			await proxy.updateGlobalState("openAiBaseUrl", "https://old-url.com")
+			await proxy.updateGlobalState("modelTemperature", 0)
+			await proxy.updateGlobalState("openAiUseAzure", false)
 
 			// Spy on setValues
 			const setValuesSpy = vi.spyOn(proxy, "setValues")
@@ -354,12 +356,16 @@ describe("ContextProxy", () => {
 				expect.objectContaining({
 					apiModelId: undefined,
 					openAiBaseUrl: undefined,
+					modelTemperature: undefined,
+					openAiUseAzure: undefined,
 				}),
 			)
 
 			// Verify the state cache has been cleared
 			expect(proxy.getGlobalState("apiModelId")).toBeUndefined()
 			expect(proxy.getGlobalState("openAiBaseUrl")).toBeUndefined()
+			expect(proxy.getGlobalState("modelTemperature")).toBeUndefined()
+			expect(proxy.getGlobalState("openAiUseAzure")).toBeUndefined()
 		})
 	})
 
