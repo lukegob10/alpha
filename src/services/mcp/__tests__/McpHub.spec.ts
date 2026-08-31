@@ -398,6 +398,73 @@ describe("McpHub", () => {
 			expect(globalWatcher.close).not.toHaveBeenCalled()
 		})
 
+		it("installs a changed server's watcher after removing the old watcher", async () => {
+			await mcpHub.waitUntilReady()
+			const chokidar = (await import("chokidar")).default
+			const oldWatcher = { close: vi.fn() }
+			const replacementWatcher = {
+				on: vi.fn().mockReturnThis(),
+				close: vi.fn(),
+			}
+			vi.mocked(chokidar.watch).mockClear()
+			vi.mocked(chokidar.watch).mockReturnValue(replacementWatcher as any)
+
+			const stdioModule = await import("@modelcontextprotocol/sdk/client/stdio.js")
+			const StdioClientTransport = stdioModule.StdioClientTransport as ReturnType<typeof vi.fn>
+			StdioClientTransport.mockImplementation(() => ({
+				start: vi.fn().mockResolvedValue(undefined),
+				close: vi.fn().mockResolvedValue(undefined),
+				stderr: { on: vi.fn() },
+				onerror: null,
+				onclose: null,
+			}))
+
+			const clientModule = await import("@modelcontextprotocol/sdk/client/index.js")
+			const Client = clientModule.Client as ReturnType<typeof vi.fn>
+			Client.mockImplementation(() => ({
+				connect: vi.fn().mockResolvedValue(undefined),
+				close: vi.fn().mockResolvedValue(undefined),
+				getInstructions: vi.fn().mockReturnValue("test instructions"),
+				request: vi.fn().mockResolvedValue({ tools: [], resources: [], resourceTemplates: [] }),
+			}))
+
+			const originalConfig = {
+				type: "stdio",
+				command: "node",
+				args: ["old.js"],
+				watchPaths: ["/old"],
+			}
+			const updatedConfig = {
+				type: "stdio",
+				command: "node",
+				args: ["new.js"],
+				watchPaths: ["/new"],
+			}
+			mcpHub.connections = [
+				{
+					type: "disconnected",
+					server: {
+						name: "watched-server",
+						config: JSON.stringify(originalConfig),
+						status: "disconnected",
+						source: "global",
+						errorHistory: [],
+					},
+					client: null,
+					transport: null,
+				},
+			]
+			;(mcpHub as any).fileWatchers.clear()
+			;(mcpHub as any).fileWatchers.set("global:watched-server", [oldWatcher])
+
+			await mcpHub.updateServerConnections({ "watched-server": updatedConfig }, "global")
+
+			expect(oldWatcher.close).toHaveBeenCalledOnce()
+			expect(replacementWatcher.close).not.toHaveBeenCalled()
+			expect(chokidar.watch).toHaveBeenCalledOnce()
+			expect((mcpHub as any).fileWatchers.get("global:watched-server")).toEqual([replacementWatcher])
+		})
+
 		it("should clean up file watchers when server is disabled", async () => {
 			// Get the mocked chokidar
 			const chokidar = (await import("chokidar")).default

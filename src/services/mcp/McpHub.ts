@@ -1160,10 +1160,6 @@ export class McpHub {
 			} else if (!deepEqual(JSON.parse(currentConnection.server.config), config)) {
 				// Existing server with changed config
 				try {
-					// Only setup file watcher for enabled servers
-					if (!validatedConfig.disabled) {
-						this.setupFileWatcher(name, validatedConfig, source)
-					}
 					await this.deleteConnection(name, source)
 					await this.connectToServer(name, validatedConfig, source)
 				} catch (error) {
