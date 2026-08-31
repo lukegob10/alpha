@@ -398,6 +398,43 @@ describe("McpHub", () => {
 			expect(globalWatcher.close).not.toHaveBeenCalled()
 		})
 
+		it("installs exactly one live watcher for a new server", async () => {
+			await mcpHub.waitUntilReady()
+			const chokidar = (await import("chokidar")).default
+			const watcher = {
+				on: vi.fn().mockReturnThis(),
+				close: vi.fn(),
+			}
+			vi.mocked(chokidar.watch).mockClear()
+			vi.mocked(chokidar.watch).mockReturnValue(watcher as any)
+			;(mcpHub as any).fileWatchers.clear()
+
+			const connectToServer = vi
+				.spyOn(mcpHub as any, "connectToServer")
+				.mockImplementation(async (...args: unknown[]) => {
+					const [name, config, source] = args as [string, Record<string, unknown>, "global" | "project"]
+					await mcpHub.deleteConnection(name, source)
+					;(mcpHub as any).setupFileWatcher(name, config, source)
+				})
+
+			await mcpHub.updateServerConnections(
+				{
+					"new-watched-server": {
+						type: "stdio",
+						command: "node",
+						args: ["server.js"],
+						watchPaths: ["/new"],
+					},
+				},
+				"global",
+			)
+
+			expect(connectToServer).toHaveBeenCalledOnce()
+			expect(chokidar.watch).toHaveBeenCalledOnce()
+			expect(watcher.close).not.toHaveBeenCalled()
+			expect((mcpHub as any).fileWatchers.get("global:new-watched-server")).toEqual([watcher])
+		})
+
 		it("installs a changed server's watcher after removing the old watcher", async () => {
 			await mcpHub.waitUntilReady()
 			const chokidar = (await import("chokidar")).default
