@@ -52,51 +52,51 @@ export const OpenAICompatible = ({
 		return Object.entries(headers)
 	})
 
+	useEffect(() => {
+		setAzureApiVersionSelected(!!apiConfiguration?.azureApiVersion)
+		setCustomHeaders(Object.entries(apiConfiguration?.openAiHeaders || {}))
+	}, [apiConfiguration?.azureApiVersion, apiConfiguration?.openAiHeaders])
+
+	const commitCustomHeaders = useCallback(
+		(headers: [string, string][]) => {
+			setCustomHeaders(headers)
+			setApiConfigurationField("openAiHeaders", convertHeadersToObject(headers))
+		},
+		[setApiConfigurationField],
+	)
+
 	const handleAddCustomHeader = useCallback(() => {
 		// Only update the local state to show the new row in the UI.
 		setCustomHeaders((prev) => [...prev, ["", ""]])
 		// Do not update the main configuration yet, wait for user input.
 	}, [])
 
-	const handleUpdateHeaderKey = useCallback((index: number, newKey: string) => {
-		setCustomHeaders((prev) => {
-			const updated = [...prev]
-
+	const handleUpdateHeaderKey = useCallback(
+		(index: number, newKey: string) => {
+			const updated = [...customHeaders]
 			if (updated[index]) {
 				updated[index] = [newKey, updated[index][1]]
+				commitCustomHeaders(updated)
 			}
+		},
+		[commitCustomHeaders, customHeaders],
+	)
 
-			return updated
-		})
-	}, [])
-
-	const handleUpdateHeaderValue = useCallback((index: number, newValue: string) => {
-		setCustomHeaders((prev) => {
-			const updated = [...prev]
-
+	const handleUpdateHeaderValue = useCallback(
+		(index: number, newValue: string) => {
+			const updated = [...customHeaders]
 			if (updated[index]) {
 				updated[index] = [updated[index][0], newValue]
+				commitCustomHeaders(updated)
 			}
+		},
+		[commitCustomHeaders, customHeaders],
+	)
 
-			return updated
-		})
-	}, [])
-
-	const handleRemoveCustomHeader = useCallback((index: number) => {
-		setCustomHeaders((prev) => prev.filter((_, i) => i !== index))
-	}, [])
-
-	// Helper to convert array of tuples to object
-
-	// Add effect to update the parent component's state when local headers change
-	useEffect(() => {
-		const timer = setTimeout(() => {
-			const headerObject = convertHeadersToObject(customHeaders)
-			setApiConfigurationField("openAiHeaders", headerObject, false)
-		}, 300)
-
-		return () => clearTimeout(timer)
-	}, [customHeaders, setApiConfigurationField])
+	const handleRemoveCustomHeader = useCallback(
+		(index: number) => commitCustomHeaders(customHeaders.filter((_, i) => i !== index)),
+		[commitCustomHeaders, customHeaders],
+	)
 
 	const handleInputChange = useCallback(
 		<K extends keyof ProviderSettings, E>(

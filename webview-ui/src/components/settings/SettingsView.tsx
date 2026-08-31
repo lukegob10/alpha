@@ -159,10 +159,12 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	const latestExtensionState = useRef(extensionState)
 	latestExtensionState.current = extensionState
 	const confirmDialogHandler = useRef<() => void>()
+	const terminalInheritEnvInitial = useRef<boolean>()
 
-	const [cachedState, setCachedState] = useState<SettingsCachedState>(() =>
-		withManagedAgentSettingsDefaults(extensionState),
-	)
+	const [cachedState, setCachedState] = useState<SettingsCachedState>(() => ({
+		...withManagedAgentSettingsDefaults(extensionState),
+		terminalInheritEnv: terminalInheritEnvInitial.current,
+	}))
 
 	const {
 		alwaysAllowReadOnly,
@@ -202,6 +204,8 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		terminalZshOhMy,
 		terminalZshP10k,
 		terminalZdotdir,
+		terminalInheritEnv,
+		showWorktreesInHomeScreen,
 		writeDelayMs,
 		showRooIgnoredFiles,
 		enableSubfolderRules,
@@ -249,7 +253,10 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			return
 		}
 
-		setCachedState(withManagedAgentSettingsDefaults(latestExtensionState.current))
+		setCachedState({
+			...withManagedAgentSettingsDefaults(latestExtensionState.current),
+			terminalInheritEnv: terminalInheritEnvInitial.current,
+		})
 		prevApiConfigName.current = latestExtensionState.current.currentApiConfigName
 		prevSettingsImportedAt.current = latestExtensionState.current.settingsImportedAt
 		initializedFromHydration.current = true
@@ -263,7 +270,10 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			return
 		}
 
-		setCachedState(withManagedAgentSettingsDefaults(latestExtensionState.current))
+		setCachedState({
+			...withManagedAgentSettingsDefaults(latestExtensionState.current),
+			terminalInheritEnv: terminalInheritEnvInitial.current,
+		})
 		prevApiConfigName.current = currentApiConfigName
 		setChangeDetected(false)
 	}, [currentApiConfigName])
@@ -275,7 +285,10 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		}
 
 		prevSettingsImportedAt.current = settingsImportedAt
-		setCachedState(withManagedAgentSettingsDefaults(latestExtensionState.current))
+		setCachedState({
+			...withManagedAgentSettingsDefaults(latestExtensionState.current),
+			terminalInheritEnv: terminalInheritEnvInitial.current,
+		})
 		setChangeDetected(false)
 	}, [settingsImportedAt])
 
@@ -292,6 +305,17 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		},
 		[],
 	)
+
+	const handleTerminalInheritEnvLoaded = useCallback((value: boolean) => {
+		if (terminalInheritEnvInitial.current !== undefined) {
+			return
+		}
+
+		terminalInheritEnvInitial.current = value
+		setCachedState((previous) =>
+			previous.terminalInheritEnv === undefined ? { ...previous, terminalInheritEnv: value } : previous,
+		)
+	}, [])
 
 	const setApiConfigurationField = useCallback(
 		<K extends keyof ProviderSettings>(field: K, value: ProviderSettings[K], isUserAction: boolean = true) => {
@@ -492,6 +516,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					includeCurrentTime: includeCurrentTime ?? true,
 					includeCurrentCost: includeCurrentCost ?? true,
 					maxGitStatusFiles: maxGitStatusFiles ?? 0,
+					showWorktreesInHomeScreen,
 					profileThresholds,
 					imageGenerationProvider,
 					openRouterImageApiKey,
@@ -509,6 +534,16 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			vscode.postMessage({ type: "upsertApiConfiguration", text: currentApiConfigName, apiConfiguration })
 			vscode.postMessage({ type: "telemetrySetting", text: telemetrySetting })
 			vscode.postMessage({ type: "debugSetting", bool: cachedState.debug })
+			if (terminalInheritEnv !== undefined && terminalInheritEnv !== terminalInheritEnvInitial.current) {
+				vscode.postMessage({
+					type: "updateVSCodeSetting",
+					setting: "terminal.integrated.inheritEnv",
+					// The shared message shape currently narrows `value` to number even though this
+					// allowlisted VS Code setting is boolean.
+					value: terminalInheritEnv as never,
+				})
+				terminalInheritEnvInitial.current = terminalInheritEnv
+			}
 
 			setChangeDetected(false)
 		}
@@ -532,7 +567,10 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		(confirm: boolean) => {
 			if (confirm) {
 				// Discard changes: Reset state and flag
-				setCachedState(withManagedAgentSettingsDefaults(extensionState)) // Revert to original state
+				setCachedState({
+					...withManagedAgentSettingsDefaults(extensionState),
+					terminalInheritEnv: terminalInheritEnvInitial.current,
+				}) // Revert to original state
 				setChangeDetected(false) // Reset change flag
 				confirmDialogHandler.current?.() // Execute the pending action (e.g., tab switch)
 			}
@@ -829,7 +867,12 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 											)
 										}
 										onDeleteConfig={(configName: string) =>
-											vscode.postMessage({ type: "deleteApiConfiguration", text: configName })
+											checkUnsaveChanges(() =>
+												vscode.postMessage({
+													type: "deleteApiConfiguration",
+													text: configName,
+												}),
+											)
 										}
 										onRenameConfig={(oldName: string, newName: string) => {
 											vscode.postMessage({
@@ -839,13 +882,18 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 											})
 											prevApiConfigName.current = newName
 										}}
-										onUpsertConfig={(configName: string) =>
-											vscode.postMessage({
-												type: "upsertApiConfiguration",
-												text: configName,
-												apiConfiguration,
-											})
-										}
+										onUpsertConfig={(configName: string) => {
+											const hadUnsavedChanges = isChangeDetected
+											checkUnsaveChanges(() =>
+												vscode.postMessage({
+													type: "upsertApiConfiguration",
+													text: configName,
+													apiConfiguration: hadUnsavedChanges
+														? (latestExtensionState.current.apiConfiguration ?? {})
+														: apiConfiguration,
+												}),
+											)
+										}}
 									/>
 									<ApiOptions
 										uriScheme={uriScheme}
@@ -965,6 +1013,8 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 								terminalZshOhMy={terminalZshOhMy}
 								terminalZshP10k={terminalZshP10k}
 								terminalZdotdir={terminalZdotdir}
+								terminalInheritEnv={terminalInheritEnv}
+								onTerminalInheritEnvLoaded={handleTerminalInheritEnvLoaded}
 								setCachedStateField={setCachedStateField}
 							/>
 						)}
@@ -980,7 +1030,12 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 						)}
 
 						{/* MCP Section */}
-						{renderTab === "mcp" && <McpView />}
+						{renderTab === "mcp" && (
+							<McpView
+								mcpEnabled={mcpEnabled}
+								onMcpEnabledChange={(value) => setCachedStateField("mcpEnabled", value)}
+							/>
+						)}
 
 						{/* GitHub Section */}
 						{renderTab === "github" && (
@@ -991,7 +1046,14 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 						)}
 
 						{/* Worktrees Section */}
-						{renderTab === "worktrees" && <WorktreesView />}
+						{renderTab === "worktrees" && (
+							<WorktreesView
+								showWorktreesInHomeScreen={showWorktreesInHomeScreen}
+								onShowWorktreesInHomeScreenChange={(value) =>
+									setCachedStateField("showWorktreesInHomeScreen", value)
+								}
+							/>
+						)}
 
 						{/* Prompts Section */}
 						{renderTab === "prompts" && (

@@ -3,7 +3,6 @@ import { useState, useEffect, useCallback } from "react"
 import type { Worktree, WorktreeListResponse, WorktreeIncludeStatus } from "@alpha-code/types"
 
 import { Badge, Button, StandardTooltip, ToggleSwitch } from "@/components/ui"
-import { useExtensionState } from "@/context/ExtensionStateContext"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { vscode } from "@/utils/vscode"
 
@@ -13,9 +12,13 @@ import { CreateWorktreeModal } from "./CreateWorktreeModal"
 import { DeleteWorktreeModal } from "./DeleteWorktreeModal"
 import { Folder, GitBranch, Lock, Plus, SquareArrowOutUpRight, Trash } from "lucide-react"
 
-export const WorktreesView = () => {
+type WorktreesViewProps = {
+	showWorktreesInHomeScreen: boolean
+	onShowWorktreesInHomeScreenChange: (value: boolean) => void
+}
+
+export const WorktreesView = ({ showWorktreesInHomeScreen, onShowWorktreesInHomeScreenChange }: WorktreesViewProps) => {
 	const { t } = useAppTranslation()
-	const { showWorktreesInHomeScreen, setShowWorktreesInHomeScreen } = useExtensionState()
 
 	// State
 	const [worktrees, setWorktrees] = useState<Worktree[]>([])
@@ -124,13 +127,8 @@ export const WorktreesView = () => {
 
 	// Handle toggle show in home screen
 	const handleToggleShowInHomeScreen = useCallback(() => {
-		const newValue = !showWorktreesInHomeScreen
-		setShowWorktreesInHomeScreen(newValue)
-		vscode.postMessage({
-			type: "updateSettings",
-			updatedSettings: { showWorktreesInHomeScreen: newValue },
-		})
-	}, [showWorktreesInHomeScreen, setShowWorktreesInHomeScreen])
+		onShowWorktreesInHomeScreenChange(!showWorktreesInHomeScreen)
+	}, [onShowWorktreesInHomeScreenChange, showWorktreesInHomeScreen])
 
 	// Render error states
 	if (!isGitRepo) {
@@ -182,12 +180,16 @@ export const WorktreesView = () => {
 					<p className="text-vscode-descriptionForeground text-sm m-0">{t("worktrees:description")}</p>
 
 					{/* Show in Home Screen toggle */}
-					<label
-						className="flex cursor-pointer items-center gap-2 text-sm text-vscode-descriptionForeground"
-						onClick={handleToggleShowInHomeScreen}>
-						<ToggleSwitch checked={showWorktreesInHomeScreen} onChange={handleToggleShowInHomeScreen} />
-						<span>{t("worktrees:showInHomeScreen")}</span>
-					</label>
+					<div className="flex items-center gap-2 text-sm text-vscode-descriptionForeground">
+						<ToggleSwitch
+							checked={showWorktreesInHomeScreen}
+							onChange={handleToggleShowInHomeScreen}
+							aria-label={t("worktrees:showInHomeScreen")}
+						/>
+						<span className="cursor-pointer" onClick={handleToggleShowInHomeScreen}>
+							{t("worktrees:showInHomeScreen")}
+						</span>
+					</div>
 
 					{/* New Worktree button */}
 					<Button variant="secondary" className="py-1" onClick={() => setShowCreateModal(true)}>

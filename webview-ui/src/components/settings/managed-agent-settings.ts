@@ -35,7 +35,11 @@ export interface ManagedAgentSettings {
 	subagentRootCostBudget: number | null
 }
 
-export type SettingsCachedState = ExtensionStateContextType & ManagedAgentSettings
+export type SettingsCachedState = ExtensionStateContextType &
+	ManagedAgentSettings & {
+		/** VS Code setting buffered locally so it follows the Settings Save/Discard contract. */
+		terminalInheritEnv?: boolean
+	}
 
 export type SetSettingsCachedStateField = <K extends keyof SettingsCachedState>(
 	field: K,

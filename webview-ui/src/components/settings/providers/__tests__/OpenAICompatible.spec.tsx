@@ -286,6 +286,48 @@ describe("OpenAICompatible Component - includeMaxTokens checkbox", () => {
 			checkboxInput = screen.getByTestId("checkbox-input-settings:includemaxoutputtokens")
 			expect(checkboxInput).not.toBeChecked()
 		})
+
+		it("replaces custom header rows when the active profile changes", () => {
+			const { rerender } = render(
+				<OpenAICompatible
+					apiConfiguration={{ openAiHeaders: { Authorization: "Bearer profile-a" } } as ProviderSettings}
+					setApiConfigurationField={mockSetApiConfigurationField}
+					organizationAllowList={mockOrganizationAllowList}
+				/>,
+			)
+
+			expect(screen.getByPlaceholderText("settings:providers.headerName")).toHaveValue("Authorization")
+			expect(screen.getByPlaceholderText("settings:providers.headerValue")).toHaveValue("Bearer profile-a")
+
+			rerender(
+				<OpenAICompatible
+					apiConfiguration={{ openAiHeaders: { "X-Profile": "profile-b" } } as ProviderSettings}
+					setApiConfigurationField={mockSetApiConfigurationField}
+					organizationAllowList={mockOrganizationAllowList}
+				/>,
+			)
+
+			expect(screen.getByPlaceholderText("settings:providers.headerName")).toHaveValue("X-Profile")
+			expect(screen.getByPlaceholderText("settings:providers.headerValue")).toHaveValue("profile-b")
+		})
+
+		it("commits custom header edits immediately as user actions", () => {
+			render(
+				<OpenAICompatible
+					apiConfiguration={{ openAiHeaders: { Authorization: "old" } } as ProviderSettings}
+					setApiConfigurationField={mockSetApiConfigurationField}
+					organizationAllowList={mockOrganizationAllowList}
+				/>,
+			)
+
+			fireEvent.change(screen.getByPlaceholderText("settings:providers.headerValue"), {
+				target: { value: "Bearer new" },
+			})
+
+			expect(mockSetApiConfigurationField).toHaveBeenCalledWith("openAiHeaders", {
+				Authorization: "Bearer new",
+			})
+		})
 	})
 
 	describe("UI Structure", () => {
