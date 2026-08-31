@@ -1085,7 +1085,9 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 
 				process.env.GIT_CONFIG_COUNT = "1"
 				process.env.GIT_CONFIG_KEY_0 = "core.autocrlf"
-				process.env.GIT_CONFIG_VALUE_0 = "false"
+				const secretConfigValue = "Authorization: Bearer checkpoint-secret"
+				process.env.GIT_CONFIG_VALUE_0 = secretConfigValue
+				const consoleLogSpy = vitest.spyOn(console, "log").mockImplementation(() => {})
 
 				try {
 					const testService = await klass.create({
@@ -1096,6 +1098,9 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 					})
 
 					await expect(testService.initShadowGit()).resolves.not.toThrow()
+					const logOutput = consoleLogSpy.mock.calls.flat().join(" ")
+					expect(logOutput).toContain("GIT_CONFIG_VALUE_0")
+					expect(logOutput).not.toContain(secretConfigValue)
 				} finally {
 					if (originalGitConfigCount !== undefined) {
 						process.env.GIT_CONFIG_COUNT = originalGitConfigCount

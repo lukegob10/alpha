@@ -56,7 +56,7 @@ function createSanitizedGit(baseDir: string): SimpleGit {
 			key === "GIT_CONFIG_PARAMETERS" ||
 			/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)
 		) {
-			removedVars.push(`${key}=${value}`)
+			removedVars.push(key)
 			continue
 		}
 
