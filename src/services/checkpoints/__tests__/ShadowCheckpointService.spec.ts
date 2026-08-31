@@ -5,7 +5,7 @@ import path from "path"
 import os from "os"
 import { EventEmitter } from "events"
 
-import { simpleGit, SimpleGit } from "simple-git"
+import { type DiffResult, simpleGit, SimpleGit } from "simple-git"
 
 import { fileExistsAtPath } from "../../../utils/fs"
 import * as fileSearch from "../../../services/search/file-search"
@@ -205,22 +205,19 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				const diffStarted = deferred()
 				const releaseDiff = deferred()
 				const operations: string[] = []
-				const diffSummary = checkpointGit.diffSummary.bind(checkpointGit) as (
-					...args: unknown[]
-				) => Promise<unknown>
+				const asyncGit = checkpointGit as unknown as {
+					diffSummary(options: string[]): Promise<DiffResult>
+				}
+				const diffSummary = asyncGit.diffSummary.bind(asyncGit)
 
-				vitest.spyOn(checkpointGit, "diffSummary").mockImplementationOnce((async (options: unknown) => {
+				vitest.spyOn(asyncGit, "diffSummary").mockImplementationOnce(async (options) => {
 					operations.push("save-diff-start")
 					diffStarted.resolve()
 					await releaseDiff.promise
 					operations.push("save-diff-end")
 					return diffSummary(options)
-				}) as never)
-				vitest.spyOn(checkpointGit, "clean").mockImplementation((async () => {
-					operations.push("restore-clean")
-					return checkpointGit
-				}) as never)
-				vitest.spyOn(checkpointGit, "reset").mockResolvedValue(checkpointGit as never)
+				})
+				const clean = vitest.spyOn(checkpointGit, "clean")
 
 				await fs.writeFile(testFile, "Content to checkpoint")
 				const save = service.saveCheckpoint("Serialized save")
@@ -229,12 +226,15 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				const restore = service.restoreCheckpoint(service.baseHash!)
 				await Promise.resolve()
 				const operationsBeforeRelease = [...operations]
+				const cleanCallsBeforeRelease = clean.mock.calls.length
 
 				releaseDiff.resolve()
 				await Promise.all([save, restore])
 
 				expect(operationsBeforeRelease).toEqual(["save-diff-start"])
-				expect(operations).toEqual(["save-diff-start", "save-diff-end", "restore-clean"])
+				expect(cleanCallsBeforeRelease).toBe(0)
+				expect(operations).toEqual(["save-diff-start", "save-diff-end"])
+				expect(clean).toHaveBeenCalledTimes(1)
 			})
 
 			it("continues checkpoint transactions after a save fails", async () => {
