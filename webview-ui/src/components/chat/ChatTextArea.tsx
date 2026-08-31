@@ -1,4 +1,4 @@
-import React, { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import React, { forwardRef, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useEvent } from "react-use"
 import DynamicTextArea from "react-textarea-autosize"
 import { VolumeX, Image, WandSparkles, SendHorizontal, X, ListEnd, Square } from "lucide-react"
@@ -210,7 +210,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [cursorPosition, setCursorPosition] = useState(0)
 		const [searchQuery, setSearchQuery] = useState("")
 		const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
-		const [isMouseDownOnMenu, setIsMouseDownOnMenu] = useState(false)
+		const isMouseDownOnMenuRef = useRef(false)
 		const highlightLayerRef = useRef<HTMLDivElement>(null)
 		const [selectedMenuIndex, setSelectedMenuIndex] = useState(-1)
 		const [selectedType, setSelectedType] = useState<ContextMenuOptionType | null>(null)
@@ -218,6 +218,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const [intendedCursorPosition, setIntendedCursorPosition] = useState<number | null>(null)
 		const contextMenuContainerRef = useRef<HTMLDivElement>(null)
 		const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false)
+		const contextMenuId = useId()
 		const [isFocused, setIsFocused] = useState(false)
 
 		// Use custom hook for prompt history navigation
@@ -296,6 +297,19 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			]
 		}, [filePaths, gitCommits, openedTabs])
 
+		const contextMenuOptions = useMemo(
+			() =>
+				getContextMenuOptions(
+					searchQuery,
+					selectedType,
+					queryItems,
+					fileSearchResults,
+					contextMenuModes,
+					commands,
+				),
+			[searchQuery, selectedType, queryItems, fileSearchResults, contextMenuModes, commands],
+		)
+
 		useEffect(() => {
 			const handleClickOutside = (event: MouseEvent) => {
 				if (
@@ -317,6 +331,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 		const handleMentionSelect = useCallback(
 			(type: ContextMenuOptionType, value?: string) => {
+				isMouseDownOnMenuRef.current = false
 				if (type === ContextMenuOptionType.NoResults) {
 					return
 				}
@@ -430,8 +445,15 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					}
 
 					if (event.key === "Escape") {
-						setSelectedType(null)
-						setSelectedMenuIndex(3) // File by default
+						event.preventDefault()
+						if (selectedType) {
+							setSelectedType(null)
+							setSearchQuery("")
+							setSelectedMenuIndex(3) // File by default
+						} else {
+							setShowContextMenu(false)
+							setSelectedMenuIndex(-1)
+						}
 						return
 					}
 
@@ -439,14 +461,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						event.preventDefault()
 						setSelectedMenuIndex((prevIndex) => {
 							const direction = event.key === "ArrowUp" ? -1 : 1
-							const options = getContextMenuOptions(
-								searchQuery,
-								selectedType,
-								queryItems,
-								fileSearchResults,
-								contextMenuModes,
-								commands,
-							)
+							const options = contextMenuOptions
 							const optionsLength = options.length
 
 							if (optionsLength === 0) return prevIndex
@@ -477,14 +492,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					}
 					if ((event.key === "Enter" || event.key === "Tab") && selectedMenuIndex !== -1) {
 						event.preventDefault()
-						const selectedOption = getContextMenuOptions(
-							searchQuery,
-							selectedType,
-							queryItems,
-							fileSearchResults,
-							contextMenuModes,
-							commands,
-						)[selectedMenuIndex]
+						const selectedOption = contextMenuOptions[selectedMenuIndex]
 						if (
 							selectedOption &&
 							selectedOption.type !== ContextMenuOptionType.URL &&
@@ -594,7 +602,6 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			[
 				onSend,
 				showContextMenu,
-				searchQuery,
 				selectedMenuIndex,
 				handleMentionSelect,
 				selectedType,
@@ -602,12 +609,9 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				cursorPosition,
 				setInputValue,
 				justDeletedSpaceAfterMention,
-				queryItems,
-				contextMenuModes,
-				fileSearchResults,
+				contextMenuOptions,
 				handleHistoryNavigation,
 				resetHistoryNavigation,
-				commands,
 				enterBehavior,
 				isEditMode,
 				modeSwitchDisabled,
@@ -710,12 +714,12 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 		const handleBlur = useCallback(() => {
 			// Only hide the context menu if the user didn't click on it.
-			if (!isMouseDownOnMenu) {
+			if (!isMouseDownOnMenuRef.current) {
 				setShowContextMenu(false)
 			}
 
 			setIsFocused(false)
-		}, [isMouseDownOnMenu])
+		}, [])
 
 		const insertTextAtSelection = useCallback(
 			(textarea: HTMLTextAreaElement, text: string, options: { addTrailingSpace?: boolean } = {}) => {
@@ -862,7 +866,11 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		)
 
 		const handleMenuMouseDown = useCallback(() => {
-			setIsMouseDownOnMenu(true)
+			isMouseDownOnMenuRef.current = true
+		}, [])
+
+		const handleMenuMouseUp = useCallback(() => {
+			isMouseDownOnMenuRef.current = false
 		}, [])
 
 		const updateHighlights = useCallback(() => {
@@ -1106,18 +1114,14 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									"drop-shadow-md",
 								)}>
 								<ContextMenu
+									id={contextMenuId}
 									onSelect={handleMentionSelect}
 									searchQuery={searchQuery}
-									inputValue={inputValue}
 									onMouseDown={handleMenuMouseDown}
+									onMouseUp={handleMenuMouseUp}
 									selectedIndex={selectedMenuIndex}
 									setSelectedIndex={setSelectedMenuIndex}
-									selectedType={selectedType}
-									queryItems={queryItems}
-									modes={contextMenuModes}
-									loading={searchLoading}
-									dynamicSearchResults={fileSearchResults}
-									commands={commands}
+									options={contextMenuOptions}
 								/>
 							</div>
 						)}
@@ -1135,6 +1139,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							<div
 								ref={highlightLayerRef}
 								data-testid="highlight-layer"
+								aria-hidden="true"
 								className={cn(
 									"absolute",
 									"inset-0",
@@ -1172,7 +1177,16 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									textAreaRef.current = el
 								}}
 								value={inputValue}
+								aria-label={placeholderText}
 								aria-keyshortcuts={modeSwitchDisabled ? undefined : "Shift+Tab"}
+								aria-autocomplete="list"
+								aria-controls={showContextMenu ? contextMenuId : undefined}
+								aria-expanded={showContextMenu}
+								aria-activedescendant={
+									showContextMenu && selectedMenuIndex >= 0
+										? `${contextMenuId}-option-${selectedMenuIndex}`
+										: undefined
+								}
 								onChange={(e) => {
 									handleInputChange(e)
 									updateHighlights()

@@ -91,6 +91,33 @@ describe("ChatTextArea", () => {
 			expect(screen.queryByText("/ask")).not.toBeInTheDocument()
 			expect(screen.queryByText("/debug")).not.toBeInTheDocument()
 			expect(screen.queryByText("/orchestrator")).not.toBeInTheDocument()
+			expect(screen.getByRole("listbox", { name: "addContext" })).toBeInTheDocument()
+			expect(textarea).toHaveAttribute("aria-expanded", "true")
+			expect(textarea).toHaveAttribute("aria-controls", screen.getByRole("listbox").id)
+		})
+
+		it("dismisses the root suggestions with Escape", () => {
+			const { container } = render(<ChatTextArea {...defaultProps} />)
+			const textarea = container.querySelector("textarea")!
+			fireEvent.change(textarea, { target: { value: "/", selectionStart: 1 } })
+
+			fireEvent.keyDown(textarea, { key: "Escape" })
+
+			expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+			expect(textarea).toHaveAttribute("aria-expanded", "false")
+		})
+
+		it("does not latch mouse interaction state after the menu pointer is released", () => {
+			const { container } = render(<ChatTextArea {...defaultProps} />)
+			const textarea = container.querySelector("textarea")!
+			fireEvent.change(textarea, { target: { value: "/", selectionStart: 1 } })
+			const menu = screen.getByRole("listbox")
+
+			fireEvent.mouseDown(menu)
+			fireEvent.mouseUp(menu)
+			fireEvent.blur(textarea)
+
+			expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
 		})
 
 		it.each([

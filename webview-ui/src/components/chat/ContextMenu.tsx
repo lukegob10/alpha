@@ -1,59 +1,44 @@
-import React, { useEffect, useMemo, useRef, useState } from "react"
+import React, { useEffect, useRef, useState } from "react"
 import { getIconForFilePath, getIconUrlByName, getIconForDirectoryPath } from "vscode-material-icons"
 import { Trans } from "react-i18next"
 import { t } from "i18next"
 import { Settings } from "lucide-react"
 
-import type { ModeConfig, Command } from "@alpha-code/types"
-
-import {
-	ContextMenuOptionType,
-	ContextMenuQueryItem,
-	getContextMenuOptions,
-	SearchResult,
-} from "@src/utils/context-mentions"
+import { ContextMenuOptionType, ContextMenuQueryItem } from "@src/utils/context-mentions"
 import { removeLeadingNonAlphanumeric } from "@src/utils/removeLeadingNonAlphanumeric"
 import { vscode } from "@src/utils/vscode"
 
 import { buildDocLink } from "@/utils/docLinks"
 
 interface ContextMenuProps {
+	id: string
 	onSelect: (type: ContextMenuOptionType, value?: string) => void
 	searchQuery: string
-	inputValue: string
 	onMouseDown: () => void
+	onMouseUp: () => void
 	selectedIndex: number
 	setSelectedIndex: (index: number) => void
-	selectedType: ContextMenuOptionType | null
-	queryItems: ContextMenuQueryItem[]
-	modes?: ModeConfig[]
-	loading?: boolean
-	dynamicSearchResults?: SearchResult[]
-	commands?: Command[]
+	options: ContextMenuQueryItem[]
 }
 
 const ContextMenu: React.FC<ContextMenuProps> = ({
+	id,
 	onSelect,
 	searchQuery,
 	onMouseDown,
+	onMouseUp,
 	selectedIndex,
 	setSelectedIndex,
-	selectedType,
-	queryItems,
-	modes,
-	dynamicSearchResults = [],
-	commands = [],
+	options,
 }) => {
 	const [materialIconsBaseUri, setMaterialIconsBaseUri] = useState("")
 	const menuRef = useRef<HTMLDivElement>(null)
 
-	const filteredOptions = useMemo(() => {
-		return getContextMenuOptions(searchQuery, selectedType, queryItems, dynamicSearchResults, modes, commands)
-	}, [searchQuery, selectedType, queryItems, dynamicSearchResults, modes, commands])
-
 	useEffect(() => {
 		if (menuRef.current) {
-			const selectedElement = menuRef.current.children[selectedIndex] as HTMLElement
+			const selectedElement = menuRef.current.querySelector<HTMLElement>(
+				`[data-option-index="${selectedIndex}"]`,
+			)
 			if (selectedElement) {
 				const menuRect = menuRef.current.getBoundingClientRect()
 				const selectedRect = selectedElement.getBoundingClientRect()
@@ -274,9 +259,13 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
 				right: 15,
 				overflowX: "hidden",
 			}}
-			onMouseDown={onMouseDown}>
+			onMouseDown={onMouseDown}
+			onMouseUp={onMouseUp}>
 			<div
+				id={id}
 				ref={menuRef}
+				role="listbox"
+				aria-label={t("chat:addContext")}
 				style={{
 					backgroundColor: "var(--vscode-dropdown-background)",
 					border: "1px solid var(--vscode-editorGroup-border)",
@@ -336,10 +325,14 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
 						</button>
 					</div>
 				)}
-				{filteredOptions && filteredOptions.length > 0 ? (
-					filteredOptions.map((option, index) => (
+				{options.length > 0 ? (
+					options.map((option, index) => (
 						<div
 							key={`${option.type}-${option.value || index}`}
+							id={`${id}-option-${index}`}
+							data-option-index={index}
+							role={isOptionSelectable(option) ? "option" : "presentation"}
+							aria-selected={isOptionSelectable(option) ? index === selectedIndex : undefined}
 							onClick={() => isOptionSelectable(option) && onSelect(option.type, option.value)}
 							style={{
 								padding:
@@ -381,7 +374,8 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
 									option.type === ContextMenuOptionType.OpenedFile) && (
 									<img
 										src={getMaterialIconForOption(option)}
-										alt="Mode"
+										alt=""
+										aria-hidden="true"
 										style={{
 											marginRight: "6px",
 											flexShrink: 0,
