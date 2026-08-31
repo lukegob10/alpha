@@ -1082,6 +1082,29 @@ describe("ClineProvider", () => {
 		expect(mockPostMessage).toHaveBeenCalled()
 	})
 
+	test("tracks sidebar readiness across replacement launch and disposal", async () => {
+		let disposeView!: () => Promise<void>
+		const webviewView = {
+			...mockWebviewView,
+			visible: true,
+			onDidDispose: vi.fn().mockImplementation((callback) => {
+				disposeView = callback
+				return { dispose: vi.fn() }
+			}),
+		} as unknown as vscode.WebviewView
+
+		provider.isViewLaunched = true
+		await provider.resolveWebviewView(webviewView)
+		expect(provider.viewLaunched).toBe(false)
+
+		const messageHandler = (webviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+		await messageHandler({ type: "webviewDidLaunch" })
+		expect(provider.viewLaunched).toBe(true)
+
+		await disposeView()
+		expect(provider.viewLaunched).toBe(false)
+	})
+
 	test("clearTask aborts current task", async () => {
 		// Setup Alpha instance with auto-mock from the top of the file
 		const mockCline = new Task(defaultTaskOptions) // Create a new mocked instance
