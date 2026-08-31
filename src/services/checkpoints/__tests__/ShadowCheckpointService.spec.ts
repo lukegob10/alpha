@@ -567,6 +567,20 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				await fs.rm(shadowDir, { recursive: true, force: true })
 				await fs.rm(workspaceDir, { recursive: true, force: true })
 			})
+
+			it("fails closed when nested repository detection cannot complete", async () => {
+				const shadowDir = path.join(tmpDir, `${prefix}-nested-scan-error-${Date.now()}`)
+				const workspaceDir = path.join(tmpDir, `workspace-nested-scan-error-${Date.now()}`)
+				await initWorkspaceRepo({ workspaceDir })
+				const scanError = new Error("ripgrep unavailable")
+				vitest.spyOn(fileSearch, "executeRipgrep").mockRejectedValue(scanError)
+				const testService = new klass(taskId, shadowDir, workspaceDir, () => {})
+
+				await expect(testService.initShadowGit()).rejects.toThrow(
+					"Unable to verify that the workspace contains no nested Git repositories",
+				)
+				expect(testService.isInitialized).toBe(false)
+			})
 		})
 
 		describe(`${klass.name}#events`, () => {

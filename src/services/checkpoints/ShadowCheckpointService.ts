@@ -352,8 +352,9 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 				`[${this.constructor.name}#getNestedGitRepository] failed to check for nested git repos: ${error instanceof Error ? error.message : String(error)}`,
 			)
 
-			// If we can't check, assume there are no nested repos to avoid blocking the feature.
-			return null
+			throw new Error("Unable to verify that the workspace contains no nested Git repositories", {
+				cause: error,
+			})
 		}
 	}
 
