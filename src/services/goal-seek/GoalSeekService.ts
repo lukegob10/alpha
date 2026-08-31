@@ -1,5 +1,7 @@
 import * as crypto from "crypto"
+import { realpathSync } from "fs"
 import * as fs from "fs/promises"
+import * as path from "path"
 import { execFile } from "child_process"
 import * as vscode from "vscode"
 import { promisify } from "util"
@@ -48,6 +50,8 @@ export class GoalSeekService implements vscode.Disposable {
 	private readonly store: GoalSeekStore
 	private readonly taskWaiters = new Map<string, TaskWaiter>()
 	private readonly canceledRuns = new Set<string>()
+	private readonly activeWorkspaceRuns = new Map<string, string>()
+	private readonly runExecutions = new Map<string, Promise<void>>()
 	private disposed = false
 
 	constructor(
@@ -141,7 +145,7 @@ export class GoalSeekService implements vscode.Disposable {
 
 	async runJob(jobId: string): Promise<GoalSeekRun> {
 		const job = this.requireJob(jobId)
-		await this.assertCleanWorkspace(job.workspace || getWorkspacePath())
+		const workspace = job.workspace || getWorkspacePath()
 		const run: GoalSeekRun = {
 			id: crypto.randomUUID(),
 			jobId: job.id,
@@ -150,13 +154,54 @@ export class GoalSeekService implements vscode.Disposable {
 			currentIteration: 0,
 			failedAttempts: 0,
 		}
-		await this.store.updateJobAndRun(
-			{ ...job, lastRunId: run.id, lastRunStatus: run.status, lastRunSummary: undefined, updatedAt: Date.now() },
-			run,
-		)
-		await this.broadcast()
-		void this.executeRun(job.id, run.id)
-		return run
+		const workspaceKey = this.getWorkspaceKey(workspace)
+		if (this.activeWorkspaceRuns.has(workspaceKey)) {
+			throw new Error(`Goal Seek workspace already has an active run: ${workspace}`)
+		}
+		this.activeWorkspaceRuns.set(workspaceKey, run.id)
+
+		try {
+			await this.assertCleanWorkspace(workspace)
+			await this.store.updateJobAndRun(
+				{
+					...job,
+					lastRunId: run.id,
+					lastRunStatus: run.status,
+					lastRunSummary: undefined,
+					updatedAt: Date.now(),
+				},
+				run,
+			)
+			await this.broadcast()
+			const execution = this.executeRun(job.id, run.id)
+			this.runExecutions.set(run.id, execution)
+			const releaseOwnership = () => {
+				if (this.runExecutions.get(run.id) === execution) {
+					this.runExecutions.delete(run.id)
+				}
+				if (this.activeWorkspaceRuns.get(workspaceKey) === run.id) {
+					this.activeWorkspaceRuns.delete(workspaceKey)
+				}
+			}
+			void execution.then(releaseOwnership, releaseOwnership)
+			return run
+		} catch (error) {
+			if (!this.runExecutions.has(run.id) && this.activeWorkspaceRuns.get(workspaceKey) === run.id) {
+				this.activeWorkspaceRuns.delete(workspaceKey)
+			}
+			throw error
+		}
+	}
+
+	private getWorkspaceKey(workspace: string): string {
+		const resolved = path.resolve(workspace)
+		let canonical = resolved
+		try {
+			canonical = realpathSync.native(resolved)
+		} catch {
+			// The cleanliness check reports inaccessible workspaces after the claim is established.
+		}
+		return process.platform === "win32" ? canonical.toLowerCase() : canonical
 	}
 
 	private async executeRun(jobId: string, runId: string): Promise<void> {
