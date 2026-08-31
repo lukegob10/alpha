@@ -143,8 +143,10 @@ export const FollowUpSuggest = ({
 							</div>
 						)}
 						<StandardTooltip content={t("chat:followUpSuggest.copyToInput")}>
-							<div
-								className="absolute cursor-pointer top-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-vscode-input-background px-0.5 rounded"
+							<button
+								type="button"
+								aria-label={t("chat:followUpSuggest.copyToInput")}
+								className="absolute cursor-pointer top-1.5 right-1.5 size-5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity bg-vscode-input-background border-0 p-0.5 rounded"
 								onClick={(e) => {
 									e.stopPropagation()
 									// Cancel the auto-approve timer when edit button is clicked
@@ -154,7 +156,7 @@ export const FollowUpSuggest = ({
 									onSuggestionClick?.(suggestion, { ...e, shiftKey: true })
 								}}>
 								<ClipboardCopy className="w-4" />
-							</div>
+							</button>
 						</StandardTooltip>
 					</div>
 				)

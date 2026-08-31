@@ -1,5 +1,5 @@
 import React, { createContext, useContext } from "react"
-import { render, screen, act } from "@testing-library/react"
+import { render, screen, act, fireEvent } from "@testing-library/react"
 import { TooltipProvider } from "@radix-ui/react-tooltip"
 
 import { FollowUpSuggest } from "../FollowUpSuggest"
@@ -97,6 +97,25 @@ describe("FollowUpSuggest", () => {
 		// Should countdown and mention
 		expect(screen.getByText(/3s/)).toBeInTheDocument()
 		expect(screen.getByText(/Selecting in 3s/)).toBeInTheDocument()
+	})
+
+	it("exposes copy-to-input as a named button", () => {
+		renderWithTestProviders(
+			<FollowUpSuggest
+				suggestions={mockSuggestions}
+				onSuggestionClick={mockOnSuggestionClick}
+				ts={123}
+				onCancelAutoApproval={mockOnCancelAutoApproval}
+			/>,
+			defaultTestState,
+		)
+
+		fireEvent.click(screen.getAllByRole("button", { name: "Copy to input" })[0])
+
+		expect(mockOnSuggestionClick).toHaveBeenCalledWith(
+			mockSuggestions[0],
+			expect.objectContaining({ shiftKey: true }),
+		)
 	})
 
 	it("should not display countdown timer when isAnswered is true", () => {
