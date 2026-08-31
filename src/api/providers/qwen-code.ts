@@ -9,6 +9,7 @@ import { type ModelInfo, type QwenCodeModelId, qwenCodeModels, qwenCodeDefaultMo
 import type { ApiHandlerOptions } from "../../shared/api"
 
 import { NativeToolCallParser } from "../../core/assistant-message/NativeToolCallParser"
+import { TagMatcher } from "../../utils/tag-matcher"
 
 import { convertToOpenAiMessages } from "../transform/openai-format"
 import { ApiStream } from "../transform/stream"
@@ -321,47 +322,22 @@ export class QwenCodeHandler extends BaseProvider implements SingleCompletionHan
 
 		const stream = await this.callApiWithRetry(() => client.chat.completions.create(requestOptions))
 
-		let fullContent = ""
+		const matcher = new TagMatcher(
+			"think",
+			(chunk) =>
+				({
+					type: chunk.matched ? "reasoning" : "text",
+					text: chunk.data,
+				}) as const,
+		)
 
 		for await (const apiChunk of stream) {
 			const delta = apiChunk.choices[0]?.delta ?? {}
 			const finishReason = apiChunk.choices[0]?.finish_reason
 
 			if (delta.content) {
-				let newText = delta.content
-				if (newText.startsWith(fullContent)) {
-					newText = newText.substring(fullContent.length)
-				}
-				fullContent = delta.content
-
-				if (newText) {
-					// Check for thinking blocks
-					if (newText.includes("<think>") || newText.includes("</think>")) {
-						// Simple parsing for thinking blocks
-						const parts = newText.split(/<\/?think>/g)
-						for (let i = 0; i < parts.length; i++) {
-							if (parts[i]) {
-								if (i % 2 === 0) {
-									// Outside thinking block
-									yield {
-										type: "text",
-										text: parts[i],
-									}
-								} else {
-									// Inside thinking block
-									yield {
-										type: "reasoning",
-										text: parts[i],
-									}
-								}
-							}
-						}
-					} else {
-						yield {
-							type: "text",
-							text: newText,
-						}
-					}
+				for (const processedChunk of matcher.update(delta.content)) {
+					yield processedChunk
 				}
 			}
 
@@ -400,6 +376,10 @@ export class QwenCodeHandler extends BaseProvider implements SingleCompletionHan
 					outputTokens: apiChunk.usage.completion_tokens || 0,
 				}
 			}
+		}
+
+		for (const processedChunk of matcher.final()) {
+			yield processedChunk
 		}
 	}
 
