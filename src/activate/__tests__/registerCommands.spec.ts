@@ -2,7 +2,7 @@ import type { Mock } from "vitest"
 import * as vscode from "vscode"
 import { ClineProvider } from "../../core/webview/ClineProvider"
 
-import { getVisibleProviderOrLog, registerCommands } from "../registerCommands"
+import { getPanel, getVisibleProviderOrLog, registerCommands, setPanel } from "../registerCommands"
 
 vi.mock("execa", () => ({
 	execa: vi.fn(),
@@ -74,6 +74,25 @@ describe("getVisibleProviderOrLog", () => {
 
 		expect(result).toBeUndefined()
 		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith("Cannot find any visible Alpha instances.")
+	})
+})
+
+describe("panel ownership", () => {
+	beforeEach(() => {
+		setPanel(undefined, "tab")
+		setPanel(undefined, "sidebar")
+	})
+
+	it("restores the existing sidebar as active when a tab panel closes", () => {
+		const sidebar = {} as vscode.WebviewView
+		const tab = {} as vscode.WebviewPanel
+
+		setPanel(sidebar, "sidebar")
+		setPanel(tab, "tab")
+		expect(getPanel()).toBe(tab)
+
+		setPanel(undefined, "tab")
+		expect(getPanel()).toBe(sidebar)
 	})
 })
 
