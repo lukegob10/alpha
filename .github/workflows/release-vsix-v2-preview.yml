@@ -66,14 +66,14 @@ jobs:
                   $notes = @"
                   Preview VSIX build from main-v2. This is not published to the VS Code Marketplace.
 
-                  Alpha v$version adds Grok 4.6 to GCP Vertex AI through the existing corporate gateway configuration.
+                  Alpha v$version fixes multi-turn tool calling for stateful GitHub Copilot models used through the VS Code Language Model API.
 
                   Highlights:
-                  - Adds the xai/grok-4.6 model to the GCP Vertex provider for the global location
-                  - Sends Grok requests through Vertex's OpenAI-compatible endpoints/openapi/chat/completions route
-                  - Reuses the existing project, location, gateway URL, PEM CA bundle, Helix token refresh, streaming, and per-model routing settings
-                  - Keeps Claude on the Anthropic Vertex transport and Gemini on the native Gemini Vertex transport
-                  - Refreshes an expired Helix credential once when authentication fails before response streaming begins
+                  - Preserves opaque stateful_marker response data on the exact assistant turn that emitted it
+                  - Replays persisted markers only through the vscode-lm provider
+                  - Lets Copilot associate function_call_output items with their original function calls
+                  - Resets response markers between requests so stale continuation state cannot leak into later turns
+                  - Leaves models that do not emit stateful markers on their existing request path
 
                   Commit: ${{ github.sha }}
 

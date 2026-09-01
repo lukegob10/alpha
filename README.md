@@ -6,14 +6,14 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.7 Preview
+## Welcome to Alpha v2.1.8 Preview
 
-Alpha v2.1.7 adds Grok 4.6 to GCP Vertex AI through the same corporate gateway configuration used by Gemini and Anthropic.
+Alpha v2.1.8 fixes multi-turn tool calling for stateful GitHub Copilot models used through the VS Code Language Model API.
 
-- `xai/grok-4.6` is available in the GCP Vertex provider for the global location
-- Grok requests use Vertex's OpenAI-compatible `/endpoints/openapi/chat/completions` route
-- Existing project, location, gateway URL, PEM CA bundle, Helix token, streaming, and per-model routing settings are reused
-- Vertex now routes Claude, Gemini, and Grok through their correct Anthropic, native Gemini, and OpenAI-compatible transports
+- Opaque `stateful_marker` response data is preserved on the exact assistant turn that emitted it
+- Subsequent tool outputs can be matched to their original Copilot function calls instead of failing with `invalid_request_body`
+- Persisted markers survive task reloads and are replayed only through the `vscode-lm` provider
+- Models that do not emit stateful markers keep their existing request behavior
 
 <details>
   <summary>🌐 Available languages</summary>

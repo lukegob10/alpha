@@ -541,6 +541,39 @@ describe("Alpha", () => {
 				expect(Object.keys(history[0])).toEqual(["role", "content"])
 			})
 
+			it("should persist VS Code LM stateful markers and only replay them to that provider", async () => {
+				const cline = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "test task",
+					startTask: false,
+				})
+				const statefulMarker = "bW9kZWxcXHJlc3BvbnNl"
+				;(cline.api as any).getStatefulMarker = () => statefulMarker
+				vi.spyOn(cline as any, "saveApiConversationHistory").mockResolvedValue(true)
+
+				await (cline as any).addToApiConversationHistory({
+					role: "assistant" as const,
+					content: [{ type: "tool_use" as const, id: "call-1", name: "read_file", input: { path: "a.ts" } }],
+				})
+				const markerMessage = cline.apiConversationHistory.at(-1)!
+				expect(markerMessage).toHaveProperty("vscodeLmStatefulMarker", statefulMarker)
+
+				const anthropicHistory = (cline as any).buildCleanConversationHistory([markerMessage])
+				expect(anthropicHistory[0]).not.toHaveProperty("vscodeLmStatefulMarker")
+
+				cline.apiConfiguration = {
+					...mockApiConfig,
+					apiProvider: "vscode-lm",
+				} as ProviderSettings
+				const vscodeLmHistory = (cline as any).buildCleanConversationHistory([markerMessage])
+
+				expect(vscodeLmHistory[0]).toMatchObject({
+					role: "assistant",
+					vscodeLmStatefulMarker: statefulMarker,
+				})
+			})
+
 			it("should handle image blocks based on model capabilities", () => {
 				// Create two configurations - one with image support, one without
 				const configWithImages = {

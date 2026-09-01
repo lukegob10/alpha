@@ -431,6 +431,7 @@ describe("VsCodeLmHandler", () => {
 		it("should use terminal VS Code LM usage metadata without re-tokenizing the response", async () => {
 			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined)
 			const responseText = "Text before metadata"
+			const statefulMarker = new TextEncoder().encode("gpt-5.6-sol\\resp_123")
 			const usage = {
 				prompt_tokens: 321,
 				completion_tokens: 45,
@@ -440,7 +441,7 @@ describe("VsCodeLmHandler", () => {
 			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
 				stream: (async function* () {
 					yield new vscode.LanguageModelTextPart(responseText)
-					yield { mimeType: "stateful_marker", data: new Uint8Array() }
+					yield { mimeType: "stateful_marker", data: statefulMarker }
 					yield { mimeType: "usage", data: new TextEncoder().encode(JSON.stringify(usage)) }
 				})(),
 			})
@@ -460,11 +461,70 @@ describe("VsCodeLmHandler", () => {
 				outputTokens: usage.completion_tokens,
 			})
 			expect(mockLanguageModelChat.countTokens).not.toHaveBeenCalledWith(responseText, expect.anything())
+			expect(handler.getStatefulMarker()).toBe(Buffer.from(statefulMarker).toString("base64"))
 			expect(warnSpy).not.toHaveBeenCalledWith(
 				"Alpha <Language Model API>: Unknown chunk type received:",
 				expect.anything(),
 			)
 			warnSpy.mockRestore()
+		})
+
+		it("should replay a persisted stateful marker on its assistant tool-call message", async () => {
+			const marker = new TextEncoder().encode("gpt-5.6-sol\\resp_123")
+			const messages = [
+				{
+					role: "assistant" as const,
+					content: [
+						{
+							type: "tool_use" as const,
+							id: "call-1",
+							name: "calculator",
+							input: { expression: "2+2" },
+						},
+					],
+					vscodeLmStatefulMarker: Buffer.from(marker).toString("base64"),
+				},
+			] as unknown as Anthropic.Messages.MessageParam[]
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System", messages)) {
+				// consume stream
+			}
+
+			const requestMessages = mockLanguageModelChat.sendRequest.mock.calls.at(-1)?.[0]
+			const assistantMessage = requestMessages?.find((message: any) => message.role === "assistant")
+			const markerPart = assistantMessage?.content.at(-1)
+
+			expect(assistantMessage?.content[0]).toMatchObject({ type: "tool_call", callId: "call-1" })
+			expect(markerPart).toMatchObject({ mimeType: "stateful_marker" })
+			expect(Array.from(markerPart.data)).toEqual(Array.from(marker))
+		})
+
+		it("should clear a prior stateful marker when the next response does not emit one", async () => {
+			const marker = new TextEncoder().encode("gpt-5.6-sol\\resp_123")
+			mockLanguageModelChat.sendRequest
+				.mockResolvedValueOnce({
+					stream: (async function* () {
+						yield { mimeType: "stateful_marker", data: marker }
+					})(),
+				})
+				.mockResolvedValueOnce({
+					stream: (async function* () {
+						yield new vscode.LanguageModelTextPart("Fresh response")
+					})(),
+				})
+
+			for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "First" }])) {
+				// consume stream
+			}
+			expect(handler.getStatefulMarker()).toBe(Buffer.from(marker).toString("base64"))
+
+			for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "Second" }])) {
+				// consume stream
+			}
+			expect(handler.getStatefulMarker()).toBeUndefined()
 		})
 
 		it("should finish immediately with estimated output usage when metadata is unavailable", async () => {

@@ -1372,6 +1372,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			getThoughtSignature?: () => string | undefined
 			getSummary?: () => any[] | undefined
 			getReasoningDetails?: () => any[] | undefined
+			getStatefulMarker?: () => string | undefined
 		}
 
 		if (message.role === "assistant") {
@@ -1380,6 +1381,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const thoughtSignature = handler.getThoughtSignature?.()
 			const reasoningSummary = handler.getSummary?.()
 			const reasoningDetails = handler.getReasoningDetails?.()
+			const vscodeLmStatefulMarker = handler.getStatefulMarker?.()
 
 			// Only Anthropic's API expects/validates the special `thinking` content block signature.
 			// Other providers (notably Gemini 3) use different signature semantics (e.g. `thoughtSignature`)
@@ -1396,6 +1398,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const messageWithTs: any = {
 				...message,
 				...(responseId ? { id: responseId } : {}),
+				...(vscodeLmStatefulMarker ? { vscodeLmStatefulMarker } : {}),
 				ts: Date.now(),
 			}
 
@@ -6976,6 +6979,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const cleanConversationHistory: (Anthropic.Messages.MessageParam | ReasoningItemForRequest)[] = []
 
 		for (const msg of messages) {
+			const persistedVscodeLmMarker = (msg as ApiMessage & { vscodeLmStatefulMarker?: unknown })
+				.vscodeLmStatefulMarker
+			const vscodeLmMetadata =
+				msg.role === "assistant" &&
+				this.apiConfiguration.apiProvider === "vscode-lm" &&
+				typeof persistedVscodeLmMarker === "string"
+					? { vscodeLmStatefulMarker: persistedVscodeLmMarker }
+					: {}
+
 			// Standalone reasoning: send encrypted, skip plain text
 			if (msg.type === "reasoning") {
 				if (msg.encrypted_content) {
@@ -7021,6 +7033,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					cleanConversationHistory.push({
 						role: "assistant",
 						content: assistantContent,
+						...vscodeLmMetadata,
 						reasoning_details: msgWithDetails.reasoning_details,
 					} as any)
 
@@ -7058,7 +7071,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					cleanConversationHistory.push({
 						role: "assistant",
 						content: assistantContent,
-					} satisfies Anthropic.Messages.MessageParam)
+						...vscodeLmMetadata,
+					} as Anthropic.Messages.MessageParam)
 
 					continue
 				} else if (hasPlainTextReasoning) {
@@ -7085,7 +7099,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					cleanConversationHistory.push({
 						role: "assistant",
 						content: assistantContent,
-					} satisfies Anthropic.Messages.MessageParam)
+						...vscodeLmMetadata,
+					} as Anthropic.Messages.MessageParam)
 
 					continue
 				}
@@ -7096,7 +7111,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				cleanConversationHistory.push({
 					role: msg.role,
 					content: msg.content as Anthropic.Messages.ContentBlockParam[] | string,
-				})
+					...vscodeLmMetadata,
+				} as Anthropic.Messages.MessageParam)
 			}
 		}
 

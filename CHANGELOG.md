@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.8
+
+### Patch Changes
+
+- Preserve VS Code LM stateful-response markers across tool turns so Copilot Responses models can match tool outputs to their original function calls.
+
 ## 2.1.7
 
 ### Patch Changes

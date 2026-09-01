@@ -52,6 +52,11 @@ type VsCodeLmModelConfiguration = {
 }
 
 const VSCODE_GPT_56_MIN_VERSION = "1.128.0"
+const VSCODE_LM_STATEFUL_MARKER_MIME_TYPE = "stateful_marker"
+
+type VsCodeLmPersistedMessage = Anthropic.Messages.MessageParam & {
+	vscodeLmStatefulMarker?: string
+}
 
 function isVersionBefore(version: string, minimum: string): boolean {
 	const parse = (value: string) =>
@@ -227,8 +232,55 @@ function estimateVsCodeLmInputTokens(
 	return estimateTokens([serializedMessages, serializedTools].filter(Boolean).join("\n"))
 }
 
-function isIgnorableVsCodeLmMetadataChunk(chunk: unknown): boolean {
-	return getVsCodeLmMetadataMimeType(chunk) === "stateful_marker"
+function isVsCodeLmStatefulMarkerChunk(chunk: unknown): boolean {
+	return getVsCodeLmMetadataMimeType(chunk) === VSCODE_LM_STATEFUL_MARKER_MIME_TYPE
+}
+
+function encodeVsCodeLmStatefulMarker(chunk: unknown): string | undefined {
+	if (getVsCodeLmMetadataMimeType(chunk) !== VSCODE_LM_STATEFUL_MARKER_MIME_TYPE) {
+		return undefined
+	}
+
+	const data = (chunk as { data?: unknown }).data
+	return data instanceof Uint8Array && data.length > 0 ? Buffer.from(data).toString("base64") : undefined
+}
+
+function decodeVsCodeLmStatefulMarker(value: unknown): Uint8Array | undefined {
+	if (typeof value !== "string" || value.length === 0) {
+		return undefined
+	}
+
+	try {
+		const decoded = Buffer.from(value, "base64")
+		const normalizedInput = value.replace(/=+$/, "")
+		const normalizedDecoded = decoded.toString("base64").replace(/=+$/, "")
+		return decoded.length > 0 && normalizedInput === normalizedDecoded ? decoded : undefined
+	} catch {
+		return undefined
+	}
+}
+
+function convertToStatefulVsCodeLmMessages(
+	messages: Anthropic.Messages.MessageParam[],
+): vscode.LanguageModelChatMessage[] {
+	return messages.flatMap((message) => {
+		const converted = convertToVsCodeLmMessages([message])
+		const marker = decodeVsCodeLmStatefulMarker((message as VsCodeLmPersistedMessage).vscodeLmStatefulMarker)
+
+		if (message.role !== "assistant" || !marker || converted.length !== 1) {
+			return converted
+		}
+		const assistantContent = converted[0].content as Array<
+			vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart | vscode.LanguageModelDataPart
+		>
+
+		return [
+			vscode.LanguageModelChatMessage.Assistant([
+				...assistantContent,
+				new vscode.LanguageModelDataPart(marker, VSCODE_LM_STATEFUL_MARKER_MIME_TYPE),
+			]),
+		]
+	})
 }
 
 function buildVsCodeLmModelInfo(
@@ -295,6 +347,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	private client: vscode.LanguageModelChat | null
 	private disposables: vscode.Disposable[]
 	private currentRequestCancellation: vscode.CancellationTokenSource | null
+	private currentResponseStatefulMarker: string | undefined
 
 	constructor(options: ApiHandlerOptions) {
 		super()
@@ -302,6 +355,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		this.client = null
 		this.disposables = []
 		this.currentRequestCancellation = null
+		this.currentResponseStatefulMarker = undefined
 
 		try {
 			// Listen for model changes and reset client
@@ -600,12 +654,13 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	): ApiStream {
 		// Ensure clean state before starting a new request
 		this.ensureCleanState()
+		this.currentResponseStatefulMarker = undefined
 		const client: vscode.LanguageModelChat = await this.getClient()
 
 		// Convert Anthropic messages to VS Code LM messages
 		const vsCodeLmMessages: vscode.LanguageModelChatMessage[] = [
 			vscode.LanguageModelChatMessage.User(systemPrompt),
-			...convertToVsCodeLmMessages(messages),
+			...convertToStatefulVsCodeLmMessages(messages),
 		]
 		const tools = convertToVsCodeLmTools(metadata?.tools ?? [])
 		const totalInputTokens = estimateVsCodeLmInputTokens(vsCodeLmMessages, tools)
@@ -722,11 +777,14 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 					} else {
 						console.debug("Alpha <Language Model API>: Ignoring malformed usage metadata chunk")
 					}
-				} else if (isIgnorableVsCodeLmMetadataChunk(chunk)) {
-					console.debug(
-						"Alpha <Language Model API>: Ignoring metadata chunk:",
-						getVsCodeLmMetadataMimeType(chunk),
-					)
+				} else if (isVsCodeLmStatefulMarkerChunk(chunk)) {
+					const marker = encodeVsCodeLmStatefulMarker(chunk)
+					if (marker) {
+						this.currentResponseStatefulMarker = marker
+						console.debug("Alpha <Language Model API>: Preserving stateful response marker")
+					} else {
+						console.debug("Alpha <Language Model API>: Ignoring malformed stateful response marker")
+					}
 				} else {
 					console.warn("Alpha <Language Model API>: Unknown chunk type received:", chunk)
 				}
@@ -770,6 +828,15 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		} finally {
 			this.ensureCleanState()
 		}
+	}
+
+	/**
+	 * Returns the opaque continuation marker emitted for the latest response.
+	 * Task persistence stores it on the matching assistant message so VS Code can
+	 * reconnect subsequent tool outputs to the server-side function calls.
+	 */
+	getStatefulMarker(): string | undefined {
+		return this.currentResponseStatefulMarker
 	}
 
 	// Return model information based on the current client state
@@ -856,11 +923,8 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 					result += chunk
 				} else if (isLanguageModelTextPartLike(chunk)) {
 					result += chunk.value
-				} else if (isIgnorableVsCodeLmMetadataChunk(chunk)) {
-					console.debug(
-						"Alpha <Language Model API>: Ignoring completion metadata chunk:",
-						getVsCodeLmMetadataMimeType(chunk),
-					)
+				} else if (isVsCodeLmStatefulMarkerChunk(chunk)) {
+					console.debug("Alpha <Language Model API>: Ignoring completion stateful response marker")
 				}
 			}
 			return result
