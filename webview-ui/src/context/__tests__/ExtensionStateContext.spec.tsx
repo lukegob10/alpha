@@ -1028,9 +1028,9 @@ describe("mergeExtensionState", () => {
 		})
 
 		expect(screen.getByTestId("lifecycle-snapshot-status")).toHaveTextContent("completed")
-		expect(screen.getByTestId("lifecycle-task-state")).toHaveTextContent("completed")
-		expect(screen.getByTestId("lifecycle-task-status")).toHaveTextContent("idle")
-		expect(screen.getByTestId("lifecycle-live-task-ids")).toBeEmptyDOMElement()
+		expect(screen.getByTestId("lifecycle-task-state")).toHaveTextContent("running")
+		expect(screen.getByTestId("lifecycle-task-status")).toHaveTextContent("running")
+		expect(screen.getByTestId("lifecycle-live-task-ids")).toHaveTextContent("lifecycle-task")
 
 		act(() => {
 			window.dispatchEvent(
@@ -1044,7 +1044,7 @@ describe("mergeExtensionState", () => {
 		})
 
 		expect(screen.getByTestId("lifecycle-snapshot-status")).toHaveTextContent("completed")
-		expect(screen.getByTestId("lifecycle-task-state")).toHaveTextContent("completed")
+		expect(screen.getByTestId("lifecycle-task-state")).toHaveTextContent("running")
 	})
 
 	it("falls back immediately on a degraded signal and restores canonical state after resync", () => {
@@ -1123,8 +1123,8 @@ describe("mergeExtensionState", () => {
 		})
 
 		expect(screen.getByTestId("lifecycle-degraded")).toHaveTextContent("false")
-		expect(screen.getByTestId("lifecycle-task-state")).toHaveTextContent("completed")
-		expect(screen.getByTestId("lifecycle-live-task-ids")).toBeEmptyDOMElement()
+		expect(screen.getByTestId("lifecycle-task-state")).toHaveTextContent("running")
+		expect(screen.getByTestId("lifecycle-live-task-ids")).toHaveTextContent("lifecycle-task")
 	})
 
 	it("ignores lifecycle envelopes whose aliases conflict", () => {

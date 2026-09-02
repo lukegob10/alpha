@@ -190,11 +190,9 @@ export class TaskSessionRegistry {
 		if (!session) {
 			return
 		}
-		// Once a canonical snapshot is attached, legacy Task events are only a
-		// compatibility signal. They must not overwrite an authoritative terminal
-		// state (or make a gap-resynced task appear active again).
-		if (session.lifecycleSnapshot && !this.lifecycleDegradedTaskIds.has(taskId)) return
 
+		// Canonical snapshots describe turns. Task events remain authoritative for
+		// the containing task's completion, failure, and follow-up boundaries.
 		session.lifecycle = lifecycle
 		session.lastActivityAt = Date.now()
 		session.waitingReason = waitingReason
@@ -226,13 +224,35 @@ export class TaskSessionRegistry {
 		const snapshot = this.lifecycleSnapshots.get(taskId)
 		if (!session || !snapshot) return
 
+		this.applyLifecycleSnapshotToSession(taskId, session, snapshot)
+	}
+
+	private applyLifecycleSnapshotToSession(
+		taskId: string,
+		session: TaskSession,
+		snapshot: AgentLifecycleSnapshot,
+	): void {
+		session.lifecycleSnapshot = snapshot
+		session.lastActivityAt = snapshot.terminalAt ?? Date.now()
+		if (this.lifecycleDegradedTaskIds.has(taskId)) return
+
+		// A turn snapshot may refine an active task, but it cannot overwrite a
+		// task-level terminal state or a review boundary published after the turn.
+		if (snapshot.status !== "in_progress") {
+			if (session.lifecycle === TaskLifecycleState.Initializing) {
+				session.lifecycle = TaskLifecycleState.Running
+				session.waitingReason = undefined
+			}
+			return
+		}
+		if (isTerminalLifecycle(session.lifecycle)) return
+
 		const projection = projectAgentLifecycleSnapshot(snapshot, {
 			taskAsk: session.task.taskAsk,
 			messages: session.task.clineMessages,
 		})
 		session.lifecycle = projection.lifecycle
 		session.waitingReason = projection.waitingReason
-		session.lastActivityAt = snapshot.terminalAt ?? Date.now()
 	}
 
 	clearAllLifecycleDegraded(): void {
@@ -250,16 +270,7 @@ export class TaskSessionRegistry {
 		const session = this.sessions.get(taskId)
 		if (!session) return
 
-		const projection = projectAgentLifecycleSnapshot(trustedSnapshot, {
-			taskAsk: session.task.taskAsk,
-			messages: session.task.clineMessages,
-		})
-		session.lifecycleSnapshot = trustedSnapshot
-		if (!this.lifecycleDegradedTaskIds.has(taskId)) {
-			session.lifecycle = projection.lifecycle
-			session.waitingReason = projection.waitingReason
-			session.lastActivityAt = trustedSnapshot.terminalAt ?? Date.now()
-		}
+		this.applyLifecycleSnapshotToSession(taskId, session, trustedSnapshot)
 	}
 
 	/** Compatibility alias for callers that call this operation `set`. */
@@ -300,14 +311,20 @@ export class TaskSessionRegistry {
 	}
 
 	private getEffectiveLifecycle(session: TaskSession): TaskLifecycleState {
-		if (session.lifecycleSnapshot && !this.lifecycleDegradedTaskIds.has(session.task.taskId)) {
+		if (isTerminalLifecycle(session.lifecycle)) {
+			return session.lifecycle
+		}
+		if (isTerminalAsk(session.task.taskAsk?.ask)) {
+			return TaskLifecycleState.Completed
+		}
+		if (
+			session.lifecycleSnapshot?.status === "in_progress" &&
+			!this.lifecycleDegradedTaskIds.has(session.task.taskId)
+		) {
 			return projectAgentLifecycleSnapshot(session.lifecycleSnapshot, {
 				taskAsk: session.task.taskAsk,
 				messages: session.task.clineMessages,
 			}).lifecycle
-		}
-		if (session.lifecycle === TaskLifecycleState.Waiting && isTerminalAsk(session.task.taskAsk?.ask)) {
-			return TaskLifecycleState.Completed
 		}
 
 		return session.lifecycle
@@ -345,25 +362,33 @@ export class TaskSessionRegistry {
 							taskAsk,
 							taskStatus: task.taskStatus,
 						})
+			const isWaitingForInput =
+				!isTerminal &&
+				(lifecycle === TaskLifecycleState.Waiting || projection.isWaitingForInput || Boolean(taskAsk))
+			const waitingReason = isTerminal
+				? undefined
+				: (session.waitingReason ?? projection.waitingReason ?? taskAsk?.ask)
+			const status = isTerminal
+				? TaskStatus.Idle
+				: isWaitingForInput
+					? waitingReason === "completion" || waitingReason === "completion_result"
+						? TaskStatus.Idle
+						: waitingReason === "resumable"
+							? TaskStatus.Resumable
+							: TaskStatus.Interactive
+					: session.lifecycleSnapshot
+						? TaskStatus.Running
+						: (task.taskStatus ?? TaskStatus.None)
 			const metadata: LiveTaskMetadata = {
 				id: task.taskId,
-				status: session.lifecycleSnapshot
-					? projection.isTerminal
-						? TaskStatus.Idle
-						: projection.isWaitingForInput
-							? TaskStatus.Interactive
-							: TaskStatus.Running
-					: (task.taskStatus ?? TaskStatus.None),
+				status,
 				lifecycle,
 				isActive: task.taskId === this.activeTaskId,
 				isStreaming: task.isStreaming,
-				isWaitingForInput:
-					!isTerminal && (session.lifecycleSnapshot ? projection.isWaitingForInput : Boolean(taskAsk)),
+				isWaitingForInput,
 				lastUpdatedAt:
 					session.lifecycleSnapshot?.terminalAt ?? task.clineMessages.at(-1)?.ts ?? session.lastActivityAt,
-				waitingReason: isTerminal
-					? undefined
-					: (session.waitingReason ?? projection.waitingReason ?? taskAsk?.ask),
+				waitingReason,
 				queueCount: task.messageQueueService?.messages?.length ?? task.queuedMessages?.length ?? 0,
 				tokensIn: tokenUsage?.totalTokensIn ?? 0,
 				tokensOut: tokenUsage?.totalTokensOut ?? 0,

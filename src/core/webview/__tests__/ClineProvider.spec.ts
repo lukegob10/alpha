@@ -15,6 +15,7 @@ import {
 	agentLifecycleSnapshotSchema,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	RooCodeEventName,
+	TaskLifecycleState,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
@@ -4395,6 +4396,41 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
 			vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
 		}
+
+		it("persists terminal history only from the task lifecycle, not a terminal turn snapshot", async () => {
+			const completedTurn = makeSnapshot({
+				status: "completed",
+				phase: "finalizing",
+				lastSequence: 2,
+				terminalEventId: "turn-terminal",
+				terminalAt: 2,
+				processedEvents: [
+					{ eventId: "turn-started", sequence: 1, fingerprint: "turn-started" },
+					{ eventId: "turn-terminal", sequence: 2, fingerprint: "turn-terminal" },
+				],
+			})
+			vi.spyOn(provider.taskHistoryStore, "get").mockReturnValue({
+				id: taskId,
+				number: 0,
+				task: "Lifecycle task",
+				ts: 1,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				status: "active",
+			})
+			const updateHistory = vi.spyOn(provider, "updateTaskHistory").mockResolvedValue([])
+			vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
+			;(provider as any).handleAgentLifecycleSnapshotUpdated(completedTurn)
+			await Promise.resolve()
+			expect(updateHistory).not.toHaveBeenCalled()
+			;(provider as any).markTaskLifecycle(taskId, TaskLifecycleState.Completed)
+			await vi.waitFor(() =>
+				expect(updateHistory).toHaveBeenCalledWith(
+					expect.objectContaining({ id: taskId, status: "completed" }),
+				),
+			)
+		})
 
 		it("signals degradation when a turn_started append is rejected", async () => {
 			const error = new Error("turn_started append failed")

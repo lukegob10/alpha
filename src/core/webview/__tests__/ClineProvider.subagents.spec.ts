@@ -104,6 +104,7 @@ const makeProviderHarness = (
 		agentControlStore,
 		agentControlStoreReady,
 		agentControlRootStatusWrites: new Map(),
+		taskLifecycleHistoryWrites: new Map(),
 		pendingManagedTaskCompletions: new Map(),
 		workspaceMutationGate: new WorkspaceMutationGate(),
 		boundedDelegationManager: { cancel: () => false },

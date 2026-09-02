@@ -314,28 +314,14 @@ export interface ProjectedLifecycleMetadata {
 }
 
 export function projectLifecycleMetadata(snapshot: AgentLifecycleSnapshot): ProjectedLifecycleMetadata {
-	if (snapshot.status === "completed") {
+	// Snapshot terminality belongs to a single model turn. The task remains
+	// live until the extension host publishes an explicit task terminal state.
+	if (snapshot.status !== "in_progress") {
 		return {
-			lifecycle: TaskLifecycleState.Completed,
-			status: TaskStatus.Idle,
+			lifecycle: TaskLifecycleState.Running,
+			status: TaskStatus.Running,
 			isWaitingForInput: false,
-			isTerminal: true,
-		}
-	}
-	if (snapshot.status === "failed") {
-		return {
-			lifecycle: TaskLifecycleState.Failed,
-			status: TaskStatus.Idle,
-			isWaitingForInput: false,
-			isTerminal: true,
-		}
-	}
-	if (snapshot.status === "interrupted") {
-		return {
-			lifecycle: TaskLifecycleState.Closed,
-			status: TaskStatus.Idle,
-			isWaitingForInput: false,
-			isTerminal: true,
+			isTerminal: false,
 		}
 	}
 
@@ -362,7 +348,15 @@ export function applyLifecycleSnapshotsToExtensionState(
 		if (state.agentLifecycleDegraded?.[snapshot.taskId]?.degraded) continue
 		const projection = projectLifecycleMetadata(snapshot)
 		const existing = liveTasksById?.[snapshot.taskId]
-		const nextMetadata = {
+		const existingIsTerminal =
+			existing?.lifecycle === TaskLifecycleState.Completed ||
+			existing?.lifecycle === TaskLifecycleState.Failed ||
+			existing?.lifecycle === TaskLifecycleState.Closed
+		// Host task terminality is authoritative and must not be resurrected by a
+		// delayed snapshot from that task's final model turn.
+		if (existingIsTerminal) continue
+
+		const projectedMetadata = {
 			id: snapshot.taskId,
 			status: projection.status,
 			lifecycle: projection.lifecycle,
@@ -376,6 +370,16 @@ export function applyLifecycleSnapshotsToExtensionState(
 			tokensOut: existing?.tokensOut ?? 0,
 			totalCost: existing?.totalCost ?? 0,
 		}
+		// A terminal turn must not erase a task-level completion review/waiting
+		// boundary that the host has already published.
+		const nextMetadata =
+			snapshot.status !== "in_progress" && existing
+				? {
+						...existing,
+						isStreaming: false,
+						lastUpdatedAt: snapshot.terminalAt ?? existing.lastUpdatedAt,
+					}
+				: projectedMetadata
 		if (!liveTasksById || liveTasksById[snapshot.taskId] !== nextMetadata) {
 			liveTasksById = { ...(liveTasksById ?? {}), [snapshot.taskId]: nextMetadata }
 		}

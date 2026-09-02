@@ -145,7 +145,7 @@ describe("AgentLifecycleProjector", () => {
 })
 
 describe("lifecycle status projection", () => {
-	it("projects canonical waiting and terminal states into legacy session/history values", () => {
+	it("projects active turn phases without promoting a terminal turn to terminal task state", () => {
 		const waiting = projectAgentLifecycleSnapshot(emptySnapshot({ phase: "awaiting_approval" }))
 		expect(waiting).toMatchObject({
 			source: "lifecycle",
@@ -164,9 +164,9 @@ describe("lifecycle status projection", () => {
 			}),
 		)
 		expect(completed).toMatchObject({
-			lifecycle: TaskLifecycleState.Completed,
-			historyStatus: "completed",
-			isTerminal: true,
+			lifecycle: TaskLifecycleState.Running,
+			historyStatus: "active",
+			isTerminal: false,
 			isWaitingForInput: false,
 		})
 	})

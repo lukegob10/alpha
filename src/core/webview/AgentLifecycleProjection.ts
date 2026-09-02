@@ -589,38 +589,22 @@ function legacyProjection(
 	}
 }
 
-/** Project canonical state into the legacy task/session and history domains. */
+/**
+ * Project an individual canonical turn into the legacy task/session surface.
+ * A terminal turn is not a terminal task: the task may still publish its
+ * completion review boundary, accept feedback, or start another turn.
+ */
 export function projectAgentLifecycleSnapshot(
 	snapshot: AgentLifecycleSnapshot,
 	options: { taskAsk?: ClineMessage; messages?: readonly ClineMessage[] } = {},
 ): ClineMessageStatusProjection {
-	if (snapshot.status === "completed") {
+	if (snapshot.status !== "in_progress") {
 		return {
 			source: "lifecycle",
-			lifecycle: TaskLifecycleState.Completed,
-			historyStatus: "completed",
+			lifecycle: TaskLifecycleState.Running,
+			historyStatus: "active",
 			status: snapshot.status,
-			isTerminal: true,
-			isWaitingForInput: false,
-		}
-	}
-	if (snapshot.status === "failed") {
-		return {
-			source: "lifecycle",
-			lifecycle: TaskLifecycleState.Failed,
-			historyStatus: "failed",
-			status: snapshot.status,
-			isTerminal: true,
-			isWaitingForInput: false,
-		}
-	}
-	if (snapshot.status === "interrupted") {
-		return {
-			source: "lifecycle",
-			lifecycle: TaskLifecycleState.Closed,
-			historyStatus: "interrupted",
-			status: snapshot.status,
-			isTerminal: true,
+			isTerminal: false,
 			isWaitingForInput: false,
 		}
 	}

@@ -2117,6 +2117,70 @@ describe("ChatView - Message Queueing Tests", () => {
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
 	})
 
+	it("keeps a follow-up in the current task when its model turn finishes before the completion ask appears", async () => {
+		const { getByTestId } = renderChatView()
+		const completedTurn = agentLifecycleSnapshotSchema.parse({
+			version: 1,
+			taskId: "task-1",
+			runId: "run-1",
+			turnId: "turn-1",
+			status: "completed",
+			phase: "finalizing",
+			lastSequence: 1,
+			terminalEventId: "event-1",
+			terminalAt: 3,
+			items: [],
+			steps: [],
+			acceptedToolCallIds: [],
+			terminalToolCallIds: [],
+			processedEvents: [{ eventId: "event-1", sequence: 1, fingerprint: "event-1" }],
+		})
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			liveTaskIds: ["task-1"],
+			liveTasksById: {
+				"task-1": {
+					id: "task-1",
+					status: "running",
+					lifecycle: "running",
+					isActive: true,
+					isStreaming: false,
+					isWaitingForInput: false,
+					lastUpdatedAt: 3,
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+			agentLifecycleSnapshots: { "task-1": completedTurn },
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Initial task" },
+				{ type: "say", say: "text", ts: 2, text: "Answer from the finished turn" },
+			],
+		})
+
+		const input = (await waitFor(() => getByTestId("chat-textarea").querySelector("input"))) as HTMLInputElement
+		await waitFor(() => expect(input).toHaveAttribute("data-sending-disabled", "false"))
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.change(input, { target: { value: "evaluate that answer" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+		await waitFor(() => {
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "askResponse",
+				askResponse: "messageResponse",
+				text: "evaluate that answer",
+				images: [],
+				taskId: "task-1",
+			})
+		})
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "newTask" }))
+	})
+
 	it("starts a new task instead of answering a stale follow-up on a completed live task", async () => {
 		const { getByTestId } = renderChatView()
 
@@ -2373,6 +2437,47 @@ describe("ChatView - Message Queueing Tests", () => {
 			)
 		},
 	)
+
+	it("keeps Start New Task enabled at an open completion review boundary", async () => {
+		const { getByRole } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			liveTasksById: {
+				"task-1": {
+					id: "task-1",
+					status: "idle",
+					lifecycle: "completed",
+					isActive: true,
+					isStreaming: false,
+					isWaitingForInput: false,
+					lastUpdatedAt: 101,
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+			clineMessages: [
+				{ type: "say", say: "task", ts: 100, text: "Initial task" },
+				{
+					type: "ask",
+					ask: "completion_result",
+					ts: 101,
+					text: "Task completed",
+					partial: false,
+				},
+			],
+		})
+
+		const startNewTaskButton = await waitFor(() => getByRole("button", { name: "chat:startNewTask.title" }))
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.click(startNewTaskButton)
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "startBlankTask" })
+	})
 
 	it("submits an existing draft when Start New Task is clicked", async () => {
 		const { getByTestId, getByRole, queryByTestId, queryByText } = renderChatView()

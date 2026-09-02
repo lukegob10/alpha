@@ -116,7 +116,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		soundVolume,
 		messageQueue = [],
 		liveTasksById,
-		agentLifecycleSnapshots,
 		agentLifecycleDegraded,
 		managedAgentTree,
 		showWorktreesInHomeScreen,
@@ -156,18 +155,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			? projectLegacyLiveTaskMetadata(extensionState, visibleCurrentTaskId, visibleLiveTask)
 			: undefined
 	const effectiveVisibleLiveTask = isVisibleTaskLifecycleDegraded ? legacyVisibleLiveTask : visibleLiveTask
-	const visibleLifecycleSnapshot =
-		visibleCurrentTaskId && !isVisibleTaskLifecycleDegraded
-			? agentLifecycleSnapshots?.[visibleCurrentTaskId]
-			: undefined
-	const isVisibleTaskCompleted =
-		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Completed ||
-		visibleLifecycleSnapshot?.status === "completed"
-	const isVisibleTaskTerminal =
-		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Completed ||
-		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Failed ||
-		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Closed ||
-		(visibleLifecycleSnapshot !== undefined && visibleLifecycleSnapshot.status !== "in_progress")
+	const isVisibleTaskCompleted = effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Completed
 	const visibleCurrentTaskItem = isDraftView ? undefined : currentTaskItem
 	const isManagedSubagent = visibleCurrentTaskItem?.taskKind === "subagent"
 	const managedAgentGroups = useMemo(
@@ -290,11 +278,18 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const [enableButtons, setEnableButtons] = useState<boolean>(false)
 	const [primaryButtonText, setPrimaryButtonText] = useState<string | undefined>(undefined)
 	const [secondaryButtonText, setSecondaryButtonText] = useState<string | undefined>(undefined)
+	const latestVisibleMessage = activeMessages.at(-1)
+	const hasOpenCompletedTaskResponseBoundary =
+		isCompletedTaskResponseAsk(clineAsk) ||
+		(latestVisibleMessage?.type === "ask" && isCompletedTaskResponseAsk(latestVisibleMessage.ask))
+	const isVisibleTaskTerminal =
+		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Failed ||
+		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Closed ||
+		(isVisibleTaskCompleted && !hasOpenCompletedTaskResponseBoundary)
 	useEffect(() => {
-		// A canonical terminal snapshot may have disabled the composer before the
-		// host reported that this task degraded. Clear only the canonical terminal
-		// controls; the transcript effect below will immediately restore any
-		// legacy ask/streaming controls that still apply.
+		// If fallback metadata recovers a task from stale terminal state, clear the
+		// disabled controls; the transcript effect below restores any ask/streaming
+		// controls that still apply.
 		if (isVisibleTaskLifecycleDegraded && !isVisibleTaskTerminal) {
 			setSendingDisabled(false)
 			setClineAsk(undefined)

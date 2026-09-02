@@ -235,7 +235,7 @@ describe("TaskSessionRegistry", () => {
 		})
 	})
 
-	it("projects canonical completion consistently even when the Task still reports running", () => {
+	it("keeps a task live when only its current canonical turn has completed", () => {
 		const registry = new TaskSessionRegistry(1)
 		registry.register(createTask("task-canonical-complete"))
 		registry.markLifecycleSnapshot(
@@ -250,12 +250,74 @@ describe("TaskSessionRegistry", () => {
 			}),
 		)
 
-		expect(registry.getLiveTaskIds()).toEqual([])
+		expect(registry.getLiveTaskIds()).toEqual(["task-canonical-complete"])
+		expect(registry.canAcceptInput("task-canonical-complete")).toBe(true)
 		expect(registry.getMetadata()["task-canonical-complete"]).toMatchObject({
-			status: TaskStatus.Idle,
-			lifecycle: TaskLifecycleState.Completed,
+			status: TaskStatus.Running,
+			lifecycle: TaskLifecycleState.Running,
 			isWaitingForInput: false,
 			waitingReason: undefined,
+		})
+
+		registry.markLifecycle("task-canonical-complete", TaskLifecycleState.Completed)
+		registry.markLifecycleSnapshot(
+			"task-canonical-complete",
+			createLifecycleSnapshot("task-canonical-complete", {
+				status: "completed",
+				phase: "finalizing",
+				lastSequence: 1,
+				terminalEventId: "complete-event",
+				terminalAt: 102,
+				processedEvents: [{ eventId: "complete-event", sequence: 1, fingerprint: "complete" }],
+			}),
+		)
+
+		expect(registry.getLiveTaskIds()).toEqual([])
+		expect(registry.getMetadata()["task-canonical-complete"].lifecycle).toBe(TaskLifecycleState.Completed)
+	})
+
+	it("accepts a completion follow-up when the transcript ask arrives after the turn terminal event", () => {
+		const registry = new TaskSessionRegistry(1)
+		const task = createTask("task-completion-race", {
+			isStreaming: false,
+			taskAsk: undefined,
+			clineMessages: [
+				{ ts: 100, type: "say", say: "text", text: "Answer" },
+				{ ts: 101, type: "ask", ask: "completion_result" },
+			],
+		} as Partial<Task>)
+		registry.register(task)
+		registry.markLifecycleSnapshot(
+			task.taskId,
+			createLifecycleSnapshot(task.taskId, {
+				status: "completed",
+				phase: "finalizing",
+				lastSequence: 1,
+				terminalEventId: "complete-event",
+				terminalAt: 101,
+				processedEvents: [{ eventId: "complete-event", sequence: 1, fingerprint: "complete" }],
+			}),
+		)
+
+		expect(registry.canAcceptInput(task.taskId)).toBe(true)
+		expect(registry.getLiveTaskIds()).toEqual([task.taskId])
+
+		registry.markLifecycle(task.taskId, TaskLifecycleState.Waiting, "completion")
+		registry.markLifecycleSnapshot(
+			task.taskId,
+			createLifecycleSnapshot(task.taskId, {
+				status: "completed",
+				phase: "finalizing",
+				lastSequence: 1,
+				terminalEventId: "complete-event",
+				terminalAt: 102,
+				processedEvents: [{ eventId: "complete-event", sequence: 1, fingerprint: "complete" }],
+			}),
+		)
+		expect(registry.getMetadata()[task.taskId]).toMatchObject({
+			lifecycle: TaskLifecycleState.Waiting,
+			isWaitingForInput: true,
+			waitingReason: "completion",
 		})
 	})
 
@@ -288,8 +350,8 @@ describe("TaskSessionRegistry", () => {
 
 		registry.clearLifecycleDegraded(task.taskId)
 		expect(registry.isLifecycleDegraded(task.taskId)).toBe(false)
-		expect(registry.getLiveTaskIds()).toEqual([])
-		expect(registry.getMetadata()[task.taskId].lifecycle).toBe(TaskLifecycleState.Completed)
+		expect(registry.getLiveTaskIds()).toEqual([task.taskId])
+		expect(registry.getMetadata()[task.taskId].lifecycle).toBe(TaskLifecycleState.Running)
 	})
 
 	it("can clear focus without removing background tasks", () => {

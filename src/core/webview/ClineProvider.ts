@@ -203,7 +203,6 @@ import { validateAndFixToolResultIds } from "../task/validateToolResultIds"
 import { normalizeMaxLiveTasks, TaskSessionRegistry } from "./TaskSessionRegistry"
 import {
 	AgentLifecycleProjector,
-	projectAgentLifecycleSnapshot,
 	type AgentLifecycleProjectionResult,
 	type AgentLifecycleSnapshotResyncRequest,
 } from "./AgentLifecycleProjection"
@@ -362,7 +361,8 @@ export class ClineProvider
 	private readonly agentLifecycleProjector: AgentLifecycleProjector
 	/** Durable journals are opened lazily for canonical lifecycle producers. */
 	private readonly agentLifecycleJournals = new Map<string, Promise<AgentLifecycleJournal>>()
-	private readonly agentLifecycleHistoryWrites = new Map<string, Promise<void>>()
+	/** Serialize task-level status writes without deriving them from turn snapshots. */
+	private readonly taskLifecycleHistoryWrites = new Map<string, Promise<void>>()
 	/** Tasks whose legacy transcript remains authoritative after a canonical failure. */
 	private readonly agentLifecycleDegradedSignals = new Map<string, AgentLifecycleDegradedSignal>()
 	private currentView: CurrentTaskView = { type: "newTaskDraft" }
@@ -456,7 +456,7 @@ export class ClineProvider
 		this.taskSessions = new TaskSessionRegistry(this.getConfiguredMaxConcurrentTasks())
 		this.agentLifecycleProjector = new AgentLifecycleProjector({
 			onSnapshotResyncRequired: (request) => this.handleAgentLifecycleSnapshotResync(request),
-			onSnapshotUpdated: (snapshot, previous) => this.handleAgentLifecycleSnapshotUpdated(snapshot, previous),
+			onSnapshotUpdated: (snapshot) => this.handleAgentLifecycleSnapshotUpdated(snapshot),
 		})
 		this.agentControlStore = AgentControlStore.forGlobalStorage(this.contextProxy.globalStorageUri.fsPath)
 		this.agentControlStoreReady = this.agentControlStore.initialize().then(() => {
@@ -2974,40 +2974,10 @@ export class ClineProvider
 		return delivery
 	}
 
-	private handleAgentLifecycleSnapshotUpdated(
-		snapshot: AgentLifecycleSnapshot,
-		previous?: AgentLifecycleSnapshot,
-	): void {
+	private handleAgentLifecycleSnapshotUpdated(snapshot: AgentLifecycleSnapshot): void {
 		this.taskSessions.markLifecycleSnapshot(snapshot.taskId, snapshot)
 		void this.postStateToWebviewWithoutTaskHistory().catch((error) => {
 			this.log(`Failed to refresh task state after lifecycle update: ${String(error)}`)
-		})
-
-		const previousStatus = previous?.status
-		if (previousStatus === snapshot.status && previous?.phase === snapshot.phase) return
-		this.queueAgentLifecycleHistoryStatus(snapshot)
-	}
-
-	private queueAgentLifecycleHistoryStatus(snapshot: AgentLifecycleSnapshot): void {
-		const previous = this.agentLifecycleHistoryWrites.get(snapshot.taskId) ?? Promise.resolve()
-		const write = previous
-			.catch(() => undefined)
-			.then(async () => {
-				await this.taskHistoryStoreReady
-				const current = this.taskHistoryStore.get(snapshot.taskId)
-				if (!current) return
-				const projected = projectAgentLifecycleSnapshot(snapshot)
-				if (current.status === projected.historyStatus) return
-				await this.updateTaskHistory({ ...current, status: projected.historyStatus })
-			})
-		const settled = write.catch((error) => {
-			this.log(`Failed to persist lifecycle status for ${snapshot.taskId}: ${String(error)}`)
-		})
-		this.agentLifecycleHistoryWrites.set(snapshot.taskId, settled)
-		void settled.then(() => {
-			if (this.agentLifecycleHistoryWrites.get(snapshot.taskId) === settled) {
-				this.agentLifecycleHistoryWrites.delete(snapshot.taskId)
-			}
 		})
 	}
 
@@ -4242,7 +4212,43 @@ export class ClineProvider
 	private markTaskLifecycle(taskId: string, lifecycle: TaskLifecycleState, waitingReason?: string): void {
 		this.taskSessions.markLifecycle(taskId, lifecycle, waitingReason)
 		this.log(`[task-session] ${taskId}: ${lifecycle}${waitingReason ? ` (${waitingReason})` : ""}`)
+		this.queueTaskLifecycleHistoryStatus(taskId, lifecycle, waitingReason)
 		void this.postStateToWebviewWithoutTaskHistory()
+	}
+
+	private queueTaskLifecycleHistoryStatus(
+		taskId: string,
+		lifecycle: TaskLifecycleState,
+		waitingReason?: string,
+	): void {
+		const historyStatus: NonNullable<HistoryItem["status"]> =
+			lifecycle === TaskLifecycleState.Completed
+				? "completed"
+				: lifecycle === TaskLifecycleState.Failed
+					? "failed"
+					: lifecycle === TaskLifecycleState.Closed
+						? "interrupted"
+						: lifecycle === TaskLifecycleState.Waiting && waitingReason === "resumable"
+							? "interrupted"
+							: "active"
+		const previous = this.taskLifecycleHistoryWrites.get(taskId) ?? Promise.resolve()
+		const write = previous
+			.catch(() => undefined)
+			.then(async () => {
+				await this.taskHistoryStoreReady
+				const current = this.taskHistoryStore.get(taskId)
+				if (!current || current.status === historyStatus) return
+				await this.updateTaskHistory({ ...current, status: historyStatus })
+			})
+		const settled = write.catch((error) => {
+			this.log(`Failed to persist task lifecycle status for ${taskId}: ${String(error)}`)
+		})
+		this.taskLifecycleHistoryWrites.set(taskId, settled)
+		void settled.then(() => {
+			if (this.taskLifecycleHistoryWrites.get(taskId) === settled) {
+				this.taskLifecycleHistoryWrites.delete(taskId)
+			}
+		})
 	}
 
 	/** Publish primary completion only after its orchestration root is durably terminal. */
