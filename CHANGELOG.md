@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.9
+
+### Patch Changes
+
+- Converge the extension agent loop on explicit turn, step, item, tool, retry, cancellation, and terminal lifecycle contracts.
+- Persist deterministic tool receipts and preserve truthful failed, incomplete, and cancelled outcomes across provider and task recovery paths.
+- Add joinable task cancellation with fail-closed checkpoint and Goal Seek rollback handling.
+
 ## 2.1.8
 
 ### Patch Changes
