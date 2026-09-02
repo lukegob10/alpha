@@ -290,6 +290,9 @@ describe("Alpha", () => {
 		mockProvider.updateTaskHistory = vi.fn().mockResolvedValue([])
 		mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
 		mockProvider.rollbackTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+		mockProvider.publishAgentLifecycleEvent = vi.fn().mockResolvedValue({ accepted: true })
+		mockProvider.replayAgentLifecycle = vi.fn().mockResolvedValue(undefined)
+		mockProvider.getAgentLifecycleSnapshot = vi.fn().mockReturnValue(undefined)
 		mockProvider.getTaskWithId = vi.fn().mockImplementation(async (id) => ({
 			historyItem: {
 				id,
@@ -781,6 +784,26 @@ describe("Alpha", () => {
 				// Verify error message content
 				const errorMessage = saySpy.mock.calls.find((call) => call[1]?.includes("<retry_timer>"))?.[1]
 				expect(errorMessage).toBe(`${mockError.message}\n<retry_timer>${baseDelay}</retry_timer>`)
+			})
+
+			it("should honor an explicit zero-second API retry delay", async () => {
+				const cline = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "test task",
+					startTask: false,
+				})
+				const mockDelay = vi.fn().mockResolvedValue(undefined)
+				vi.spyOn(await import("delay"), "default").mockImplementation(mockDelay)
+				const saySpy = vi.spyOn(cline, "say").mockResolvedValue(undefined)
+				mockProvider.getState = vi.fn().mockResolvedValue({
+					requestDelaySeconds: 0,
+				})
+
+				await (cline as any).backoffAndAnnounce(0, new Error("transient failure"))
+
+				expect(mockDelay).not.toHaveBeenCalled()
+				expect(saySpy).not.toHaveBeenCalledWith("api_req_retry_delayed", expect.anything())
 			})
 
 			it("should not apply retry delay twice", async () => {
@@ -2206,6 +2229,104 @@ describe("Alpha", () => {
 			expect((task as any).automaticMistakeRecoveryCount).toBe(0)
 		})
 
+		it("resumes a completed primary task with the same task identity", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			;(task as any).didComplete = true
+			const active = vi.fn()
+			task.on(RooCodeEventName.TaskActive, active)
+			const resume = vi
+				.spyOn(task as any, "resumeTaskFromHistory")
+				.mockImplementation(async (...args: unknown[]) => {
+					const onPersisted = args[1] as (() => Promise<void> | void) | undefined
+					await onPersisted?.()
+				})
+
+			await task.resumeCompletedTaskFollowup("evaluate the prior answer", ["image1.png"])
+
+			expect(task.taskId).toBeDefined()
+			expect(resume).toHaveBeenCalledWith("evaluate the prior answer", expect.any(Function), ["image1.png"], true)
+			expect((task as any).didComplete).toBe(false)
+			expect(active).toHaveBeenCalledWith(task.taskId)
+		})
+
+		it("keeps a completed task terminal when its follow-up fails before persistence", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			;(task as any).didComplete = true
+			;(task as any).didEmitTaskCompleted = true
+			const active = vi.fn()
+			const started = vi.fn()
+			task.on(RooCodeEventName.TaskActive, active)
+			task.on(RooCodeEventName.TaskStarted, started)
+			vi.spyOn(task as any, "resumeTaskFromHistory").mockRejectedValue(new Error("durable write failed"))
+
+			await expect(task.resumeCompletedTaskFollowup("retain this draft")).rejects.toThrow("durable write failed")
+
+			expect((task as any).didComplete).toBe(true)
+			expect((task as any).didEmitTaskCompleted).toBe(true)
+			expect((task as any).steerMessageAwaitingPersistence).toBe(false)
+			expect(active).not.toHaveBeenCalled()
+			expect(started).not.toHaveBeenCalled()
+		})
+
+		it("waits for the completed lifecycle to finish flushing before resuming", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			;(task as any).didComplete = true
+			;(task as any).isTaskLoopActive = true
+			let finishPriorLifecycle!: () => void
+			;(task as any).ownedLifecyclePromise = new Promise<void>((resolve) => {
+				finishPriorLifecycle = resolve
+			})
+			const resume = vi
+				.spyOn(task as any, "resumeTaskFromHistory")
+				.mockImplementation(async (...args: unknown[]) => {
+					const onPersisted = args[1] as (() => Promise<void> | void) | undefined
+					await onPersisted?.()
+				})
+
+			let accepted = false
+			const followup = task.resumeCompletedTaskFollowup("continue after the terminal flush").then(() => {
+				accepted = true
+			})
+			await Promise.resolve()
+
+			expect(accepted).toBe(false)
+			expect(resume).not.toHaveBeenCalled()
+			;(task as any).isTaskLoopActive = false
+			finishPriorLifecycle()
+			await followup
+
+			expect(resume).toHaveBeenCalledOnce()
+			expect(accepted).toBe(true)
+		})
+
+		it("rejects the completed-task resume route while the task is not completed", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "active task",
+				startTask: false,
+			})
+			const resume = vi.spyOn(task as any, "resumeTaskFromHistory")
+
+			await expect(task.resumeCompletedTaskFollowup("do not fork this task")).rejects.toThrow("has not completed")
+			expect(resume).not.toHaveBeenCalled()
+		})
+
 		it("retains steered content when the task loop is active before streaming starts", async () => {
 			const task = new Task({
 				provider: mockProvider,
@@ -2295,6 +2416,33 @@ describe("Alpha", () => {
 				text: "add this context",
 				images: [],
 			})
+		})
+
+		it("does not let a late request abort clear a newer operation controller", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "preserve newer cancellation owner",
+				startTask: false,
+			})
+
+			async function* neverRespondingStream(): AsyncGenerator<ApiStreamChunk> {
+				await new Promise<void>(() => {})
+				yield { type: "text", text: "unreachable" }
+			}
+
+			vi.spyOn(task.api, "createMessage").mockReturnValue(neverRespondingStream())
+			const nextChunk = task.attemptApiRequest(0).next()
+			await vi.waitFor(() => expect(task.currentRequestAbortController).toBeDefined())
+			const oldController = task.currentRequestAbortController!
+			const newerController = new AbortController()
+			task.currentRequestAbortController = newerController
+
+			oldController.abort()
+
+			await expect(nextChunk).rejects.toThrow("Request cancelled by user")
+			expect(task.currentRequestAbortController).toBe(newerController)
+			expect(newerController.signal.aborted).toBe(false)
 		})
 
 		it("merges steered content with the interrupted user turn", async () => {
@@ -3876,6 +4024,82 @@ describe("pushToolResultToUserContent", () => {
 		expect(task.userMessageContent[0].type).toBe("text")
 		expect(task.userMessageContent[1].type).toBe("image")
 		expect(task.userMessageContent[2]).toEqual(toolResult)
+	})
+
+	it("coalesces a burst of streaming preview requests to one trailing presentation", async () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "preview burst task",
+			startTask: false,
+		})
+		let releaseFirstPreview!: () => void
+		const firstPreviewBlocked = new Promise<void>((resolve) => {
+			releaseFirstPreview = resolve
+		})
+		const say = vi.spyOn(task, "say").mockImplementation(async (type, _text, _images, partial) => {
+			if (type === "text" && partial && say.mock.calls.length === 1) await firstPreviewBlocked
+			return undefined
+		})
+
+		task.assistantMessageContent = [{ type: "text", content: "streaming preview", partial: true }]
+		task.currentStreamingContentIndex = 0
+		;(task as any).scheduleStreamingPreview()
+		await vi.waitFor(() => expect(say).toHaveBeenCalledOnce())
+
+		for (let index = 0; index < 99; index += 1) {
+			;(task as any).scheduleStreamingPreview()
+		}
+		expect(say).toHaveBeenCalledOnce()
+
+		releaseFirstPreview()
+		await (task as any).streamingPreviewQueue
+
+		// One in-flight presentation plus one latest trailing presentation replaces
+		// the previous one-promise-per-delta backlog (100 presentations here).
+		expect(say).toHaveBeenCalledTimes(2)
+	})
+
+	it("releases a normal turn boundary when a streaming preview never settles", async () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "stalled preview task",
+			startTask: false,
+		})
+		let releasePreview!: () => void
+		const previewBlocked = new Promise<void>((resolve) => {
+			releasePreview = resolve
+		})
+		const say = vi.spyOn(task, "say").mockImplementation(async (type, _text, _images, partial) => {
+			if (type === "text" && partial) await previewBlocked
+			return undefined
+		})
+
+		task.assistantMessageContent = [{ type: "text", content: "stalled preview", partial: true }]
+		;(task as any).scheduleStreamingPreview()
+		await vi.waitFor(() => expect(say).toHaveBeenCalledOnce())
+		const initialEpoch = task.getStreamingPreviewEpoch()
+
+		vi.useFakeTimers()
+		try {
+			let drainSettled = false
+			const drain = (task as any).drainStreamingPreviews("test normal completion").then(() => {
+				drainSettled = true
+			})
+
+			await vi.advanceTimersByTimeAsync(999)
+			expect(drainSettled).toBe(false)
+			await vi.advanceTimersByTimeAsync(1)
+			await drain
+
+			expect(drainSettled).toBe(true)
+			expect(task.getStreamingPreviewEpoch()).toBe(initialEpoch + 1)
+			expect(task.presentAssistantMessageLocked).toBe(false)
+		} finally {
+			vi.useRealTimers()
+			releasePreview()
+		}
 	})
 
 	it("joins delayed streaming previews before replacing them with canonical response state", async () => {

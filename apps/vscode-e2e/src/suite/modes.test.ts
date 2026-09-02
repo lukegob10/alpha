@@ -11,19 +11,41 @@ type ScriptChunk =
 	| { type: "tool_call"; id: string; name: string; arguments: string }
 	| { type: "usage"; inputTokens: number; outputTokens: number; totalCost: number }
 
+interface ModeSwitchRuntime {
+	initialRequestGate: Promise<void>
+	releaseInitialRequest?: () => void
+	removeFromCache?: () => void
+}
+
+const modeSwitchRuntimes = new WeakMap<object, ModeSwitchRuntime>()
+
 class ModeSwitchScriptedAI {
 	readonly id = "mode-switch-e2e"
-	removeFromCache?: () => void
+	readonly dispatchedToolNames: string[] = []
 	readonly requestedTaskIds: string[] = []
 	private turn = 0
-	private releaseInitialRequest: (() => void) | undefined
-	private readonly initialRequestGate = new Promise<void>((resolve) => {
-		this.releaseInitialRequest = resolve
-	})
+
+	constructor() {
+		let releaseInitialRequest: (() => void) | undefined
+		const initialRequestGate = new Promise<void>((resolve) => {
+			releaseInitialRequest = resolve
+		})
+		modeSwitchRuntimes.set(this, { initialRequestGate, releaseInitialRequest })
+	}
+
+	get removeFromCache(): (() => void) | undefined {
+		return modeSwitchRuntimes.get(this)?.removeFromCache
+	}
+
+	set removeFromCache(value: (() => void) | undefined) {
+		const runtime = modeSwitchRuntimes.get(this)
+		if (runtime) runtime.removeFromCache = value
+	}
 
 	allowModeSwitches(): void {
-		this.releaseInitialRequest?.()
-		this.releaseInitialRequest = undefined
+		const runtime = modeSwitchRuntimes.get(this)
+		runtime?.releaseInitialRequest?.()
+		if (runtime) runtime.releaseInitialRequest = undefined
 	}
 
 	async *createMessage(
@@ -35,7 +57,7 @@ class ModeSwitchScriptedAI {
 		this.requestedTaskIds.push(metadata.taskId)
 
 		if (this.turn === 0) {
-			await this.initialRequestGate
+			await modeSwitchRuntimes.get(this)?.initialRequestGate
 		}
 
 		const calls = [
@@ -43,11 +65,18 @@ class ModeSwitchScriptedAI {
 				name: "switch_mode",
 				arguments: { mode_slug: "architect", reason: "Enter the canonical planning mode." },
 			},
-			{ name: "switch_mode", arguments: { mode_slug: "code", reason: "Return to implementation mode." } },
-			{ name: "attempt_completion", arguments: { result: "Mode switch verified." } },
+			{
+				name: "attempt_completion",
+				arguments: { result: "<proposed_plan>\nMode switch verified.\n</proposed_plan>" },
+			},
+			{
+				name: "attempt_completion",
+				arguments: { result: "Returned to Code and continued in the same task." },
+			},
 		]
 		const call = calls[this.turn++]
 		if (!call) throw new Error(`Unexpected scripted mode-switch turn ${this.turn}`)
+		this.dispatchedToolNames.push(call.name)
 
 		yield {
 			type: "tool_call",
@@ -87,10 +116,20 @@ interface ModeHostProvider {
 		| {
 				api: unknown
 				apiConfiguration: RooCodeSettings
+				abort?: boolean
+				clineMessages?: Array<{ ask?: string; say?: string; text?: string; partial?: boolean }>
+				didComplete?: boolean
+				isInitialized?: boolean
+				isStreaming?: boolean
+				isTaskLoopActive?: boolean
+				isWaitingForFirstChunk?: boolean
+				off(eventName: string | symbol, listener: (taskId: string, mode: string) => void): void
+				on(eventName: string | symbol, listener: (taskId: string, mode: string) => void): void
 				taskAsk?: { ask?: string }
 				approveAsk(): void
 				getTaskApiConfigName(): Promise<string | undefined>
 				getTaskMode(): Promise<string>
+				resumeCompletedTaskFollowup(text: string, images?: string[]): Promise<void>
 		  }
 		| undefined
 	setTaskMode(
@@ -99,6 +138,30 @@ interface ModeHostProvider {
 		options?: { postState?: boolean; applyModeProfile?: boolean },
 	): Promise<void>
 	getStateToPostToWebview(): Promise<{ currentTaskId?: string; mode?: string }>
+}
+
+const getTaskStartupDiagnostics = async (provider: ModeHostProvider, taskId: string) => {
+	const task = provider.getLiveTask(taskId)
+	const state = await provider.getStateToPostToWebview()
+
+	return {
+		taskId,
+		currentTaskId: state.currentTaskId,
+		mode: state.mode,
+		liveTaskFound: Boolean(task),
+		isInitialized: task?.isInitialized,
+		isTaskLoopActive: task?.isTaskLoopActive,
+		isWaitingForFirstChunk: task?.isWaitingForFirstChunk,
+		isStreaming: task?.isStreaming,
+		didComplete: task?.didComplete,
+		abort: task?.abort,
+		askAsk: task?.taskAsk?.ask,
+		transcriptTail: task?.clineMessages?.slice(-5).map(({ ask, say, text, partial }) => ({
+			askMessage: ask ?? say,
+			partial,
+			text: text?.slice(0, 500),
+		})),
+	}
 }
 
 const getHostProvider = (): ModeHostProvider => {
@@ -158,15 +221,20 @@ suite("Alpha Modes", function () {
 		}
 	})
 
-	test("switches Code to Plan and back in one task and provider configuration", async () => {
+	test("keeps one task and provider when the model plans and the user returns to Code", async () => {
 		const provider = getHostProvider()
-		const completedTaskIds = new Set<string>()
+		const completedTaskIds: string[] = []
 		const switchedModes: Array<{ taskId: string; mode: string }> = []
+		const localSwitchedModes: string[] = []
 		let taskId: string | undefined
+		let initialTask: ReturnType<ModeHostProvider["getLiveTask"]>
 		let scriptedAI: ModeSwitchScriptedAI | undefined
-		const onTaskCompleted = (completedTaskId: string) => completedTaskIds.add(completedTaskId)
+		const onTaskCompleted = (completedTaskId: string) => completedTaskIds.push(completedTaskId)
 		const onModeSwitched = (switchedTaskId: string, mode: string) => {
 			switchedModes.push({ taskId: switchedTaskId, mode })
+		}
+		const onLocalModeSwitched = (switchedTaskId: string, mode: string) => {
+			if (switchedTaskId === taskId) localSwitchedModes.push(mode)
 		}
 
 		globalThis.api.on(RooCodeEventName.TaskCompleted, onTaskCompleted)
@@ -188,12 +256,18 @@ suite("Alpha Modes", function () {
 
 			taskId = await globalThis.api.startNewTask({
 				configuration,
-				text: "Plan this task, return to Code, and complete without opening a new task.",
+				text: "Plan this task, let me return it to Code, and continue without opening a new task.",
 			})
 
-			await waitFor(() => scriptedAI!.requestedTaskIds.length === 1, { timeout: 30_000, interval: 25 })
-			const initialTask = provider.getLiveTask(taskId)
+			await waitFor(() => scriptedAI!.requestedTaskIds.length === 1, {
+				timeout: 30_000,
+				interval: 25,
+				description: "the first scripted provider request",
+				onTimeout: () => getTaskStartupDiagnostics(provider, taskId!),
+			})
+			initialTask = provider.getLiveTask(taskId)
 			assert.ok(initialTask, "The mode-switch task was not registered with the extension host")
+			initialTask.on(RooCodeEventName.TaskModeSwitched, onLocalModeSwitched)
 			const initialApi = initialTask.api
 			const initialApiConfiguration = initialTask.apiConfiguration
 			const initialApiConfigName = await initialTask.getTaskApiConfigName()
@@ -203,35 +277,96 @@ suite("Alpha Modes", function () {
 
 			scriptedAI.allowModeSwitches()
 
+			await waitFor(() => scriptedAI!.requestedTaskIds.length === 2, {
+				timeout: 30_000,
+				interval: 25,
+				description: "the Architect plan request",
+				onTimeout: () => getTaskStartupDiagnostics(provider, taskId!),
+			})
 			await waitFor(
 				() =>
-					completedTaskIds.has(taskId!) ||
+					completedTaskIds.filter((completedTaskId) => completedTaskId === taskId).length >= 1 ||
 					provider.getLiveTask(taskId!)?.taskAsk?.ask === "completion_result",
-				{ timeout: 30_000, interval: 25 },
+				{
+					timeout: 30_000,
+					interval: 25,
+					description: "the scripted mode-switch task to reach its completion boundary",
+					onTimeout: () => getTaskStartupDiagnostics(provider, taskId!),
+				},
 			)
-			if (!completedTaskIds.has(taskId)) {
+			assert.equal(await initialTask.getTaskMode(), "architect")
+			assert.deepStrictEqual(scriptedAI.dispatchedToolNames, ["switch_mode", "attempt_completion"])
+			if (completedTaskIds.filter((completedTaskId) => completedTaskId === taskId).length < 1) {
 				const task = provider.getLiveTask(taskId)
 				assert.ok(task, "The mode-switch task disappeared before completion could be accepted")
 				task.approveAsk()
 			}
-			await waitFor(() => completedTaskIds.has(taskId!), { timeout: 30_000, interval: 25 })
+			await waitFor(() => completedTaskIds.filter((completedTaskId) => completedTaskId === taskId).length >= 1, {
+				timeout: 30_000,
+				interval: 25,
+				description: "the accepted Architect plan to complete",
+				onTimeout: () => getTaskStartupDiagnostics(provider, taskId!),
+			})
 
-			assert.deepStrictEqual(
-				switchedModes.filter((event) => event.taskId === taskId).map((event) => event.mode),
-				["architect", "code"],
-			)
-			assert.deepStrictEqual(scriptedAI.requestedTaskIds, [taskId, taskId, taskId])
 			const completedTask = provider.getLiveTask(taskId)
+			assert.ok(completedTask, "The completed Architect task was not retained")
 			assert.strictEqual(completedTask, initialTask)
 			assert.strictEqual(completedTask.api, initialApi)
 			assert.strictEqual(completedTask.apiConfiguration, initialApiConfiguration)
 			assert.equal(await completedTask.getTaskApiConfigName(), initialApiConfigName)
+
+			// Plan mode deliberately cannot dispatch switch_mode. Returning to Code is
+			// an explicit host/user transition, after which the completed task resumes.
+			await provider.setTaskMode(taskId, "code", { applyModeProfile: false })
 			assert.equal(await completedTask.getTaskMode(), "code")
+			await completedTask.resumeCompletedTaskFollowup("Continue this retained task in Code.")
+			await waitFor(() => scriptedAI!.requestedTaskIds.length === 3, {
+				timeout: 30_000,
+				interval: 25,
+				description: "the same-task Code continuation request",
+				onTimeout: () => getTaskStartupDiagnostics(provider, taskId!),
+			})
+			await waitFor(
+				() =>
+					completedTaskIds.filter((completedTaskId) => completedTaskId === taskId).length >= 2 ||
+					provider.getLiveTask(taskId!)?.taskAsk?.ask === "completion_result",
+				{
+					timeout: 30_000,
+					interval: 25,
+					description: "the retained Code task completion boundary",
+					onTimeout: () => getTaskStartupDiagnostics(provider, taskId!),
+				},
+			)
+			if (completedTaskIds.filter((completedTaskId) => completedTaskId === taskId).length < 2) {
+				provider.getLiveTask(taskId)?.approveAsk()
+			}
+			await waitFor(() => completedTaskIds.filter((completedTaskId) => completedTaskId === taskId).length >= 2, {
+				timeout: 30_000,
+				interval: 25,
+				description: "the retained Code task to complete",
+				onTimeout: () => getTaskStartupDiagnostics(provider, taskId!),
+			})
+
+			assert.deepStrictEqual(scriptedAI.requestedTaskIds, [taskId, taskId, taskId])
+			assert.deepStrictEqual(scriptedAI.dispatchedToolNames, [
+				"switch_mode",
+				"attempt_completion",
+				"attempt_completion",
+			])
+			assert.deepStrictEqual(
+				switchedModes.filter((event) => event.taskId === taskId).map((event) => event.mode),
+				["architect", "code"],
+			)
+			assert.deepStrictEqual(localSwitchedModes, ["architect", "code"])
+			assert.strictEqual(provider.getLiveTask(taskId), initialTask)
+			assert.strictEqual(initialTask.api, initialApi)
+			assert.strictEqual(initialTask.apiConfiguration, initialApiConfiguration)
 			const state = await provider.getStateToPostToWebview()
 			assert.equal(state.currentTaskId, taskId)
 			assert.equal(state.mode, "code")
 		} finally {
 			scriptedAI?.allowModeSwitches()
+			initialTask?.off(RooCodeEventName.TaskModeSwitched, onLocalModeSwitched)
 			globalThis.api.off(RooCodeEventName.TaskCompleted, onTaskCompleted)
 			globalThis.api.off(RooCodeEventName.TaskModeSwitched, onModeSwitched)
 			await globalThis.api.clearCurrentTask().catch(() => undefined)

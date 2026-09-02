@@ -28,6 +28,9 @@ jobs:
             - name: Build workspace types
               run: pnpm --filter @alpha-code/types build
 
+            - name: Run exact VS Code 1.122.1 release gate
+              run: pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+
             - name: Package extension
               run: pnpm vsix
 
@@ -69,11 +72,11 @@ jobs:
                   Alpha v$version fixes task continuation races at model-turn completion boundaries.
 
                   Highlights:
-                  - Keeps a completed model turn distinct from an actually completed task
-                  - Preserves the active composer and controls while completion review is pending
-                  - Keeps follow-up prompts in the same task instead of opening a new task
-                  - Prevents submitted follow-ups from disappearing or leaving the UI disabled
-                  - Marks task history complete only after the authoritative task lifecycle does
+                  - Validates the extension and VS Code Language Model contract on exact VS Code 1.122.1
+                  - Keeps completed-task follow-ups in the same task and restores drafts after resume failures
+                  - Carries tool calls and results into the next VS Code LM request without lifecycle gaps
+                  - Stops Alpha's in-flight VS Code LM waits promptly and prevents stale streams from affecting follow-ups
+                  - Reduces avoidable provider round trips at response and completion boundaries
 
                   Commit: ${{ github.sha }}
 

@@ -2181,66 +2181,122 @@ describe("ChatView - Message Queueing Tests", () => {
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "newTask" }))
 	})
 
-	it("starts a new task instead of answering a stale follow-up on a completed live task", async () => {
-		const { getByTestId } = renderChatView()
+	it.each(["completion_result", "followup"] as const)(
+		"resumes a completed live task even when a stale %s ask remains in the transcript",
+		async (staleAsk) => {
+			const { getByTestId } = renderChatView()
 
-		mockPostMessage({
-			currentTaskId: "task-1",
-			liveTasksById: {
-				"task-1": {
-					id: "task-1",
-					status: "running",
-					lifecycle: "completed",
-					isActive: true,
-					isStreaming: false,
-					isWaitingForInput: false,
-					lastUpdatedAt: Date.now(),
-					queueCount: 0,
-					tokensIn: 0,
-					tokensOut: 0,
-					totalCost: 0,
+			mockPostMessage({
+				currentTaskId: "task-1",
+				liveTasksById: {
+					"task-1": {
+						id: "task-1",
+						status: "running",
+						lifecycle: "completed",
+						isActive: true,
+						isStreaming: false,
+						isWaitingForInput: false,
+						lastUpdatedAt: Date.now(),
+						queueCount: 0,
+						tokensIn: 0,
+						tokensOut: 0,
+						totalCost: 0,
+					},
 				},
-			},
-			clineMessages: [
-				{
-					type: "say",
-					say: "task",
-					ts: Date.now() - 2000,
-					text: "Initial task",
+				clineMessages: [
+					{
+						type: "say",
+						say: "task",
+						ts: Date.now() - 2000,
+						text: "Initial task",
+					},
+					{
+						type: "ask",
+						ask: staleAsk,
+						ts: Date.now(),
+						text:
+							staleAsk === "completion_result"
+								? "Accepted task completion"
+								: JSON.stringify({ question: "Stale question?", suggest: [] }),
+						partial: false,
+					},
+				],
+			})
+
+			await waitFor(() => {
+				expect(getByTestId("chat-textarea")).toBeInTheDocument()
+			})
+
+			vi.mocked(vscode.postMessage).mockClear()
+			const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+
+			await act(async () => {
+				fireEvent.change(input, { target: { value: "new work" } })
+				fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+			})
+
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "resumeCompletedTask",
+				taskId: "task-1",
+				text: "new work",
+				images: [],
+			})
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "newTask" }))
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "askResponse",
+				}),
+			)
+		},
+	)
+
+	it.each(["failed", "closed"] as const)(
+		"starts a new task with the submitted prompt when the visible task is %s",
+		async (lifecycle) => {
+			const { getByTestId } = renderChatView()
+
+			mockPostMessage({
+				currentTaskId: "task-1",
+				currentView: { type: "task", taskId: "task-1" },
+				liveTasksById: {
+					"task-1": {
+						id: "task-1",
+						status: "idle",
+						lifecycle,
+						isActive: false,
+						isStreaming: false,
+						isWaitingForInput: false,
+						lastUpdatedAt: 101,
+						queueCount: 0,
+						tokensIn: 0,
+						tokensOut: 0,
+						totalCost: 0,
+					},
 				},
-				{
-					type: "ask",
-					ask: "followup",
-					ts: Date.now(),
-					text: JSON.stringify({ question: "Stale question?", suggest: [] }),
-					partial: false,
-				},
-			],
-		})
+				clineMessages: [
+					{ type: "say", say: "task", ts: 100, text: "Initial task" },
+					{ type: "say", say: "error", ts: 101, text: `Task ${lifecycle}` },
+				],
+			})
 
-		await waitFor(() => {
-			expect(getByTestId("chat-textarea")).toBeInTheDocument()
-		})
+			const input = (await waitFor(() => getByTestId("chat-textarea").querySelector("input"))) as HTMLInputElement
+			await waitFor(() => expect(input).toHaveAttribute("data-sending-disabled", "true"))
+			vi.mocked(vscode.postMessage).mockClear()
 
-		vi.mocked(vscode.postMessage).mockClear()
-		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
-
-		await act(async () => {
-			fireEvent.change(input, { target: { value: "new work" } })
+			fireEvent.change(input, { target: { value: "continue with this prompt" } })
 			fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
-		})
 
-		expect(vscode.postMessage).toHaveBeenCalledWith({
-			type: "newTask",
-			text: "new work",
-			images: [],
-		})
-		expect(vscode.postMessage).not.toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "askResponse",
-			}),
-		)
-	})
+			await waitFor(() => {
+				expect(vscode.postMessage).toHaveBeenCalledWith({
+					type: "newTask",
+					text: "continue with this prompt",
+					images: [],
+				})
+			})
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "askResponse" }))
+		},
+	)
 
 	it.each(["completed", "failed", "closed"] as const)(
 		"clears stale approval controls when canonical lifecycle becomes %s after a say row",

@@ -1,5 +1,3 @@
-import delay from "delay"
-
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { getModeBySlug } from "../../shared/modes"
@@ -62,8 +60,6 @@ export class SwitchModeTool extends BaseTool<"switch_mode"> {
 					targetMode.name
 				} mode${reason ? ` because: ${reason}` : ""}.`,
 			)
-
-			await delay(500) // Delay to allow mode change to take effect before next tool is executed
 		} catch (error) {
 			await handleError("switching mode", error as Error)
 		}

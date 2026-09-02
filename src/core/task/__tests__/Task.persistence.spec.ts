@@ -946,6 +946,49 @@ describe("Task persistence", () => {
 			})
 		})
 
+		it("keeps long-running tool execution cancellable after the provider stream ends", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "steer a running tool",
+				startTask: false,
+			})
+			let toolSignal: AbortSignal | undefined
+			const execute = vi.fn(async ({ signal }: { signal?: AbortSignal }) => {
+				toolSignal = signal
+				await new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve(), { once: true }))
+			})
+			const surface = createReadFileSurface(execute as ToolDescriptor["execute"])
+			const call = {
+				type: "tool_call" as const,
+				id: "long-tool",
+				name: "read_file",
+				arguments: { path: "a.txt" },
+			}
+			const response = { items: [call], text: "", reasoning: "", toolCalls: [call] }
+			task.assistantMessageSavedToHistory = true
+			;(task as any).isTaskLoopActive = true
+			vi.spyOn(task as any, "assertCurrentProviderTranscriptBeforeEffects").mockResolvedValue(undefined)
+
+			const run = (task as any).executeCanonicalToolCallsForTurn(response, surface, "code", undefined)
+			await vi.waitFor(() => expect(toolSignal).toBeInstanceOf(AbortSignal))
+
+			await task.steerUserMessage("stop this tool and use the new direction")
+			const outcome = await run
+
+			expect(toolSignal?.aborted).toBe(true)
+			expect(outcome).toMatchObject({
+				status: "aborted",
+				results: [{ callId: "long-tool", status: "cancelled" }],
+			})
+			expect(task.currentRequestAbortController).toBeUndefined()
+			expect((task as any).currentRequestSignal).toBeUndefined()
+			expect((task as any).pendingSteerMessage).toMatchObject({
+				text: "stop this tool and use the new direction",
+			})
+			expect(task.abort).toBe(false)
+		})
+
 		it("stops the turn before effects when assistant history cannot be saved", async () => {
 			const task = new Task({
 				provider: mockProvider,

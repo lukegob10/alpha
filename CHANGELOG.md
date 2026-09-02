@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.11
+
+### Patch Changes
+
+- Validate the extension and VS Code Language Model contract on exact VS Code 1.122.1.
+- Keep completed-task follow-ups in the same task, restore drafts after resume failures, and prevent stale streams from interfering with later turns.
+- Reduce tool-call and completion latency by coalescing streaming persistence, removing fixed delays, and bounding provider-side waits.
+- Harden cancellation, lifecycle persistence, checkpoint execution, dependency security, and the release regression gate.
+
 ## 2.1.10
 
 ### Patch Changes

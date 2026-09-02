@@ -719,6 +719,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	presentAssistantMessageHasPendingUpdates = false
 	private streamingPreviewEpoch = 0
 	private streamingPreviewQueue: Promise<void> = Promise.resolve()
+	private streamingPreviewRequestVersion = 0
+	private streamingPreviewPumpOwner?: symbol
 	userMessageContent: (Anthropic.TextBlockParam | Anthropic.ImageBlockParam | Anthropic.ToolResultBlockParam)[] = []
 	userMessageContentReady = false
 
@@ -757,12 +759,29 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.streamingPreviewEpoch += 1
 	}
 
-	/** Serialize best-effort streaming text previews behind one tracked promise. */
+	/**
+	 * Coalesce best-effort streaming text previews behind one tracked pump.
+	 *
+	 * Providers can emit many small text deltas while one webview update is still
+	 * in flight. Chaining one presentation promise per delta turns that burst into
+	 * a serialized backlog at the tool boundary. The version counter retains only
+	 * one trailing presentation of the latest accumulated text.
+	 */
 	private scheduleStreamingPreview(): void {
 		const epoch = this.streamingPreviewEpoch
-		const queuedPreview = this.streamingPreviewQueue
-			.catch(() => undefined)
-			.then(async () => {
+		this.streamingPreviewRequestVersion += 1
+		if (this.streamingPreviewPumpOwner) return
+
+		const owner = Symbol("streamingPreviewPump")
+		this.streamingPreviewPumpOwner = owner
+		let presentedVersion = 0
+		const queuedPreview = (async () => {
+			while (
+				this.streamingPreviewPumpOwner === owner &&
+				this.isStreamingPreviewEpochCurrent(epoch) &&
+				presentedVersion !== this.streamingPreviewRequestVersion
+			) {
+				presentedVersion = this.streamingPreviewRequestVersion
 				if (!this.isStreamingPreviewEpochCurrent(epoch)) return
 				try {
 					await presentAssistantMessage(this, { executeTools: false, previewEpoch: epoch })
@@ -773,60 +792,32 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						console.error(`[Task#${this.taskId}] Failed to present streaming text preview:`, error)
 					}
 				}
-			})
+			}
+		})().finally(() => {
+			if (this.streamingPreviewPumpOwner !== owner) return
+			this.streamingPreviewPumpOwner = undefined
+			// A delta can arrive after the pump has decided it is caught up but
+			// before this finalizer releases ownership. Re-arm the pump so that
+			// narrow microtask window cannot drop the latest preview.
+			if (
+				this.isStreamingPreviewEpochCurrent(epoch) &&
+				presentedVersion !== this.streamingPreviewRequestVersion
+			) {
+				this.scheduleStreamingPreview()
+			}
+		})
 		this.streamingPreviewQueue = queuedPreview
 	}
 
 	/**
 	 * Join all previews currently queued before a turn boundary mutates shared
-	 * streaming state. Normal boundaries use a full join so an in-flight UI/save
-	 * operation cannot cross into canonical state. Task cancellation is the one
-	 * bounded detachment path; after its deadline the epoch fence makes any late
-	 * completion harmless and the queue is detached so a future preview cannot be
-	 * permanently chained behind a hung promise.
+	 * streaming state. Preview work is non-authoritative, so every boundary uses a
+	 * short deadline. After that deadline the epoch fence makes any late completion
+	 * harmless and the queue is detached so a provider turn cannot be permanently
+	 * chained behind a hung webview operation.
 	 */
 	private async drainStreamingPreviews(reason: string): Promise<void> {
 		const cancellationSignal = this.getTaskLifetimeCancellationSignal()
-		let bounded = this.abort || this.abandoned || cancellationSignal.aborted
-		let cancelCancellationWait: () => void = () => {}
-
-		if (!bounded) {
-			let cancellationSettled = false
-			let resolveCancellation!: () => void
-			const cancellation = new Promise<"cancelled">((resolve) => {
-				resolveCancellation = () => {
-					if (cancellationSettled) return
-					cancellationSettled = true
-					cancellationSignal.removeEventListener("abort", onAbort)
-					resolve("cancelled")
-				}
-				const onAbort = () => resolveCancellation()
-				cancelCancellationWait = () => {
-					if (cancellationSettled) return
-					cancellationSettled = true
-					cancellationSignal.removeEventListener("abort", onAbort)
-				}
-				cancellationSignal.addEventListener("abort", onAbort, { once: true })
-				if (cancellationSignal.aborted) onAbort()
-			})
-
-			while (true) {
-				const queue = this.streamingPreviewQueue
-				const result = await Promise.race([queue.then(() => "drained" as const), cancellation])
-				if (result === "cancelled") {
-					bounded = true
-					break
-				}
-				if (queue === this.streamingPreviewQueue) {
-					cancelCancellationWait()
-					return
-				}
-			}
-			cancelCancellationWait()
-		}
-
-		if (!bounded) return
-
 		let cancelDeadline: () => void = () => {}
 		const deadline = new Promise<"timed-out" | "cancelled">((resolve) => {
 			let settled = false
@@ -854,6 +845,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				if (result !== "drained") {
 					this.invalidateStreamingPreviewEpoch()
+					this.streamingPreviewPumpOwner = undefined
 					// Release the presentation lock before dropping the abandoned chain.
 					// The presenter records ownership by epoch, so its late finally block
 					// cannot clear a lock acquired by a resumed/new preview.
@@ -2405,6 +2397,52 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (response) await this.publishCanonicalLifecycleResponseItems(response, this.currentAgentStep)
 		await this.publishCanonicalLifecyclePendingToolResults(response, this.currentAgentStep)
 		return true
+	}
+
+	/** Execute only the complete, accumulator-authoritative calls from a persisted response. */
+	private async executeCanonicalToolCallsForTurn(
+		response: AgentResponse,
+		surface: TaskToolSurface | undefined,
+		mode: string,
+		state: TaskRequestState | undefined,
+	): Promise<ToolSchedulerOutcome> {
+		// The provider stream owns its request controller only until EOF. Tool
+		// execution happens after that boundary, so give the scheduler a fresh
+		// controller that remains reachable by steering and explicit cancellation.
+		// Otherwise currentRequestSignal still exists but there is no controller left
+		// to abort it while a long-running tool is active.
+		const controller = new AbortController()
+		const signal = controller.signal
+		const taskSignal = this.getTaskLifetimeCancellationSignal()
+		const abortFromTask = () => {
+			if (!signal.aborted) controller.abort(taskSignal.reason)
+		}
+
+		this.currentRequestAbortController = controller
+		this.currentRequestSignal = signal
+		if (taskSignal.aborted) {
+			abortFromTask()
+		} else {
+			taskSignal.addEventListener("abort", abortFromTask, { once: true })
+		}
+		// Steering can arrive after the provider reaches EOF but before this
+		// controller is installed. Fail closed before starting any tool effect in
+		// that race; the pending message is consumed by the next agent turn.
+		if (this.abort || this.pendingSteerMessage) {
+			controller.abort(new Error(this.abort ? "Task was aborted" : "Tool execution was interrupted by steering"))
+		}
+
+		try {
+			return await this.executeCanonicalToolCalls(response, surface, mode, state, signal)
+		} finally {
+			taskSignal.removeEventListener("abort", abortFromTask)
+			if (this.currentRequestAbortController === controller) {
+				this.currentRequestAbortController = undefined
+			}
+			if (this.currentRequestSignal === signal) {
+				this.currentRequestSignal = undefined
+			}
+		}
 	}
 
 	/** Execute only the complete, accumulator-authoritative calls from a persisted response. */
@@ -5499,9 +5537,89 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		await this.ownBackgroundLifecycle("resume", lifecycle)
 	}
 
+	/**
+	 * Continue a durably completed primary task without replacing its task ID or
+	 * conversation. This is the host counterpart to a composer submission made
+	 * after the completion review boundary has already closed.
+	 */
+	public async resumeCompletedTaskFollowup(text: string, images: string[] = []): Promise<void> {
+		const instruction = text.trim()
+		if (this.taskKind !== "primary") throw new Error("Only a primary task can be resumed from the composer")
+		if (!instruction && images.length === 0) throw new Error("A follow-up instruction or image is required")
+		if (!this.didComplete) {
+			if (this.isTaskLoopActive || this.isStreaming || this.isAgentTurnEngineActive) {
+				throw new Error("The task is still running")
+			}
+			throw new Error("The task has not completed")
+		}
+
+		// TaskCompleted is emitted before the old loop's terminal journal flush has
+		// necessarily returned. Join that owned lifecycle so the new turn cannot
+		// overlap the preceding terminal write.
+		await this.waitForOwnedLifecycle()
+		if (!this.didComplete) throw new Error("The task has not completed")
+		if (this.isTaskLoopActive || this.isStreaming || this.isAgentTurnEngineActive) {
+			throw new Error("The completed task is still finalizing")
+		}
+		await this.prepareForRetainedLifecycle()
+
+		this._started = true
+		this.didComplete = false
+		this.didEmitTaskCompleted = false
+		this.abort = false
+		this.abandoned = false
+		this.abortReason = undefined
+		this.didFinishAbortingStream = false
+		this.isWaitingForFirstChunk = false
+		this.pendingSteerMessage = undefined
+		this.steerMessageAwaitingPersistence = true
+
+		let followupPersisted = false
+		let resolvePersisted!: () => void
+		let rejectPersisted!: (error: unknown) => void
+		const persisted = new Promise<void>((resolve, reject) => {
+			resolvePersisted = resolve
+			rejectPersisted = reject
+		})
+		const lifecycle = this.resumeTaskFromHistory(
+			instruction,
+			() => {
+				// Do not expose a Running lifecycle until the continuation is
+				// durable. If preparation fails before this callback, the UI remains
+				// truthfully Completed and can restore the submitted draft.
+				this.emit(RooCodeEventName.TaskActive, this.taskId)
+				followupPersisted = true
+				resolvePersisted()
+			},
+			images,
+			true,
+		)
+		this.ownBackgroundLifecycle("resume", lifecycle)
+		void lifecycle.then(
+			() => {
+				if (!followupPersisted) rejectPersisted(new Error("The completed-task follow-up was not persisted"))
+			},
+			(error) => rejectPersisted(error),
+		)
+		try {
+			await persisted
+		} catch (error) {
+			if (!followupPersisted) {
+				// No provider request was admitted, so restore the terminal flags
+				// without publishing a duplicate TaskCompleted event.
+				this.markCompleted()
+				this.didEmitTaskCompleted = true
+				this.steerMessageAwaitingPersistence = false
+			}
+			throw error
+		}
+	}
+
 	private async resumeTaskFromHistory(
-		subagentFollowup?: string,
+		followupText?: string,
 		onSubagentSteeringPersisted?: () => Promise<void> | void,
+		followupImages?: string[],
+		deferTaskStartedUntilInitialUserContentPersisted = false,
 	) {
 		try {
 			// A resumed task may have a final legacy/sidecar write queued by the
@@ -5560,7 +5678,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// the task first.
 			this.apiConversationHistory = await this.getSavedApiConversationHistory()
 
-			if (this.taskKind === "subagent" && !subagentFollowup) {
+			const hasDirectFollowup = followupText !== undefined || Boolean(followupImages?.length)
+			if (this.taskKind === "subagent" && !hasDirectFollowup) {
 				this.isInitialized = true
 				await this.finalizeTaskCompletion()
 				await this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
@@ -5576,9 +5695,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			let responseText: string | undefined
 			let responseImages: string[] | undefined
-			if (subagentFollowup) {
-				responseText = subagentFollowup
-				await this.say("user_feedback", subagentFollowup)
+			if (hasDirectFollowup) {
+				responseText = followupText
+				responseImages = followupImages
+				if (followupImages === undefined) {
+					await this.say("user_feedback", followupText)
+				} else {
+					await this.say("user_feedback", followupText, followupImages)
+				}
 			} else {
 				const askType: ClineAsk =
 					lastClineMessage?.ask === "completion_result" ? "resume_completed_task" : "resume_task"
@@ -5737,7 +5861,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 
 			// Task resuming from history item.
-			await this.initiateTaskLoop(newUserContent, onSubagentSteeringPersisted)
+			if (deferTaskStartedUntilInitialUserContentPersisted) {
+				await this.initiateTaskLoop(newUserContent, onSubagentSteeringPersisted, {
+					deferTaskStartedUntilInitialUserContentPersisted: true,
+				})
+			} else {
+				await this.initiateTaskLoop(newUserContent, onSubagentSteeringPersisted)
+			}
 		} catch (error) {
 			// Resume and cancellation can race when users issue repeated cancels.
 			// Treat intentional abort/abandon flows as expected and avoid process-level crashes.
@@ -6079,11 +6209,26 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async initiateTaskLoop(
 		userContent: Anthropic.Messages.ContentBlockParam[],
 		onInitialUserContentPersisted?: () => Promise<void> | void,
+		options: { deferTaskStartedUntilInitialUserContentPersisted?: boolean } = {},
 	): Promise<void> {
 		// Kicks off the checkpoints initialization process in the background.
 		getCheckpointService(this)
 
-		this.emit(RooCodeEventName.TaskStarted)
+		let didEmitTaskStarted = false
+		const emitTaskStarted = () => {
+			if (didEmitTaskStarted) return
+			didEmitTaskStarted = true
+			this.emit(RooCodeEventName.TaskStarted)
+		}
+		if (!options.deferTaskStartedUntilInitialUserContentPersisted) {
+			emitTaskStarted()
+		}
+		const handleInitialUserContentPersisted = options.deferTaskStartedUntilInitialUserContentPersisted
+			? async () => {
+					await onInitialUserContentPersisted?.()
+					emitTaskStarted()
+				}
+			: onInitialUserContentPersisted
 
 		type TaskTurnInput = {
 			userContent: Anthropic.Messages.ContentBlockParam[]
@@ -6268,7 +6413,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let nextTurnInput: TaskTurnInput = {
 			userContent,
 			includeFileDetails: true,
-			onUserContentPersisted: onInitialUserContentPersisted,
+			onUserContentPersisted: handleInitialUserContentPersisted,
 		}
 		const continueAfterCompletionRejection = async (
 			decision: CompletionGateDecision,
@@ -7862,14 +8007,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						// only after the assistant history write above has completed.
 						if (hasToolUses && !mixedTerminalToolBatch) {
 							await this.publishCanonicalLifecyclePhase("executing")
-							const schedulerOutcome = await this.executeCanonicalToolCalls(
+							const schedulerOutcome = await this.executeCanonicalToolCallsForTurn(
 								canonicalResponse!,
 								this.currentTaskToolSurface,
 								currentMode,
 								state,
-								this.currentRequestSignal ?? this.getTaskCancellationSignal(),
 							)
 							if (schedulerOutcome.status === "aborted") {
+								const interruptedBySteering =
+									this.pendingSteerMessage !== undefined &&
+									!this.abort &&
+									!this.getTaskLifetimeCancellationSignal().aborted
 								// ToolScheduler preserves results for every canonical call when
 								// cancellation wins. Persist that complete receipt batch before
 								// returning; otherwise the assistant tool_use boundary would be
@@ -7900,11 +8048,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 										response: canonicalResponse,
 									}
 								}
-								return {
-									status: "aborted",
-									reason: "Tool execution was cancelled.",
-									response: canonicalResponse,
+								if (!interruptedBySteering) {
+									return {
+										status: "aborted",
+										reason: "Tool execution was cancelled.",
+										response: canonicalResponse,
+									}
 								}
+
+								// Steering is a turn interruption, not a task cancellation. The
+								// cancelled tool receipts are already durable; report this provider
+								// step as closed so AgentTurnEngine can consume the retained message.
+								this.userMessageContentReady = true
+								await this.appendAgentTurnEvent(
+									{ type: "response_terminal", status: "completed" },
+									this.currentAgentStep?.snapshot.context,
+								)
+								return { status: "completed", response: canonicalResponse }
 							}
 							if (schedulerOutcome.status === "failed") {
 								return {
@@ -8970,8 +9130,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		// Create an AbortController to allow cancelling the request mid-stream
-		this.currentRequestAbortController = new AbortController()
-		const abortSignal = this.currentRequestAbortController.signal
+		const requestController = new AbortController()
+		this.currentRequestAbortController = requestController
+		const abortSignal = requestController.signal
 		this.currentRequestSignal = abortSignal
 		this.currentTaskToolSurface = taskToolSurface
 		const requestId = this.currentAgentStep?.requestId ?? crypto.randomUUID()
@@ -9017,11 +9178,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		)
 		const iterator = stream[Symbol.asyncIterator]()
 
-		// Set up abort handling - when the signal is aborted, clean up the controller reference
-		abortSignal.addEventListener("abort", () => {
+		// Set up abort handling. Ownership is explicit because an old request can
+		// finish or be aborted after a retry/follow-up has installed a new controller.
+		// Late cleanup from the old request must never make the newer operation
+		// uncancellable.
+		const clearOwnedRequestController = () => {
 			console.log(`[Task#${this.taskId}.${this.instanceId}] AbortSignal triggered for current request`)
-			this.currentRequestAbortController = undefined
-		})
+			if (this.currentRequestAbortController === requestController) {
+				this.currentRequestAbortController = undefined
+			}
+		}
+		abortSignal.addEventListener("abort", clearOwnedRequestController, { once: true })
 
 		try {
 			// Awaiting first chunk to see if it will throw an error.
@@ -9051,13 +9218,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				Promise.race([firstChunkPromise, abortPromise]),
 				`API response stream for ${this.api.getModel().id}`,
 				getApiRequestTimeout(),
-				() => this.currentRequestAbortController?.abort(),
+				() => requestController.abort(),
 			)
 			yield firstChunk.value
 			this.isWaitingForFirstChunk = false
 		} catch (error) {
 			this.isWaitingForFirstChunk = false
-			this.currentRequestAbortController = undefined
+			abortSignal.removeEventListener("abort", clearOwnedRequestController)
+			if (this.currentRequestAbortController === requestController) {
+				this.currentRequestAbortController = undefined
+			}
 			if (error instanceof SteerRequestInterruptError) {
 				throw error
 			}
@@ -9135,7 +9305,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							compatibilityIterator.next(),
 							`API response stream for ${this.api.getModel().id}`,
 							requestTimeoutMs,
-							() => this.currentRequestAbortController?.abort(),
+							() => compatibilityController.abort(),
 						)
 						if (compatibilityFirstChunk.done) {
 							compatibilityError = new Error("Provider returned an empty response")
@@ -9150,7 +9320,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						compatibilityError = nextError
 						if (nextError instanceof SteerRequestInterruptError) throw nextError
 					} finally {
-						this.currentRequestAbortController = undefined
+						if (this.currentRequestAbortController === compatibilityController) {
+							this.currentRequestAbortController = undefined
+						}
+						if (this.currentRequestSignal === compatibilityController.signal) {
+							this.currentRequestSignal = undefined
+						}
 					}
 					compatibilityAttempt = decision.nextAttempt
 				}
@@ -9166,14 +9341,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// it's saying "yield all remaining values from this iterator". This
 		// effectively passes along all subsequent chunks from the original
 		// stream.
-		yield* iterator
+		try {
+			yield* iterator
+		} finally {
+			abortSignal.removeEventListener("abort", clearOwnedRequestController)
+			if (this.currentRequestAbortController === requestController) {
+				this.currentRequestAbortController = undefined
+			}
+		}
 	}
 
 	// Shared exponential backoff for retries (first-chunk and mid-stream)
 	private async backoffAndAnnounce(retryAttempt: number, error: any): Promise<void> {
 		try {
 			const state = await this.providerRef.deref()?.getState()
-			const baseDelay = state?.requestDelaySeconds || 5
+			// Zero explicitly disables the retry countdown. Using `||` here replaced
+			// that valid setting with the five-second default on every retry.
+			const baseDelay = state?.requestDelaySeconds ?? 5
 
 			let exponentialDelay = Math.min(
 				Math.ceil(baseDelay * Math.pow(2, retryAttempt)),

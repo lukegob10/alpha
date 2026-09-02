@@ -30,7 +30,7 @@ export async function run() {
 			openRouterApiKey,
 			openRouterModelId: "openai/gpt-4.1",
 		})
-	} else if (providerMode !== "scripted") {
+	} else if (providerMode !== "scripted" && providerMode !== "vscode-lm-fixture") {
 		throw new Error(`Unsupported E2E provider mode: ${providerMode}`)
 	}
 

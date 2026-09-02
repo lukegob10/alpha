@@ -1208,6 +1208,42 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 					await fs.rm(testWorkspaceDir, { recursive: true, force: true })
 				}
 			})
+
+			it("isolates checkpoint operations from inherited pager environment variables", async () => {
+				const testShadowDir = path.join(tmpDir, `shadow-git-pager-test-${Date.now()}`)
+				const testWorkspaceDir = path.join(tmpDir, `workspace-git-pager-test-${Date.now()}`)
+				await initWorkspaceRepo({ workspaceDir: testWorkspaceDir })
+
+				const originalGitPager = process.env.GIT_PAGER
+				const originalPager = process.env.PAGER
+				process.env.GIT_PAGER = "untrusted-pager --execute"
+				process.env.PAGER = "untrusted-pager --execute"
+
+				try {
+					const testService = await klass.create({
+						taskId: `test-git-pager-${Date.now()}`,
+						shadowDir: testShadowDir,
+						workspaceDir: testWorkspaceDir,
+						log: () => {},
+					})
+
+					await expect(testService.initShadowGit()).resolves.not.toThrow()
+				} finally {
+					if (originalGitPager !== undefined) {
+						process.env.GIT_PAGER = originalGitPager
+					} else {
+						delete process.env.GIT_PAGER
+					}
+					if (originalPager !== undefined) {
+						process.env.PAGER = originalPager
+					} else {
+						delete process.env.PAGER
+					}
+
+					await fs.rm(testShadowDir, { recursive: true, force: true })
+					await fs.rm(testWorkspaceDir, { recursive: true, force: true })
+				}
+			})
 		})
 	},
 )

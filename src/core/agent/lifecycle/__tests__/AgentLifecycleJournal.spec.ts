@@ -183,6 +183,55 @@ describe("AgentLifecycleJournal", () => {
 		await journal.close()
 	})
 
+	it("reuses validated state instead of rereading the full journal for sequential appends", async () => {
+		const journal = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+		const fullReplay = vi.spyOn(journal as any, "loadFromPaths")
+
+		const appends = Array.from({ length: 40 }, (_, index) => journal.append(phaseEvent(`event-${index + 1}`)))
+		await journal.flush()
+		const receipts = await Promise.all(appends)
+
+		expect(fullReplay).not.toHaveBeenCalled()
+		expect(receipts.map(({ sequence }) => sequence)).toEqual(Array.from({ length: 40 }, (_, index) => index + 1))
+		expect(journal.getSequence()).toBe(40)
+		await expect(journal.replay()).resolves.toMatchObject({ lastSequence: 40 })
+		expect(fullReplay).toHaveBeenCalledTimes(1)
+		await journal.close()
+	})
+
+	it("invalidates cached state when another journal instance appends", async () => {
+		const first = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+		const second = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+
+		expect((await first.append(phaseEvent("event-1"))).sequence).toBe(1)
+		expect((await second.append(phaseEvent("event-2"))).sequence).toBe(2)
+		expect((await first.append(phaseEvent("event-3"))).sequence).toBe(3)
+		expect((await readAgentLifecycleEvents(ids.taskId, storagePath)).map(({ sequence }) => sequence)).toEqual([
+			1, 2, 3,
+		])
+
+		await first.close()
+		await second.close()
+	})
+
+	it("detects same-size journal tampering after state was cached", async () => {
+		const original = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+		await original.append(phaseEvent("event-1"))
+		await original.close()
+
+		const restarted = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+		const eventsPath = await restarted.getEventsFilePath()
+		const contents = await fs.readFile(eventsPath, "utf8")
+		const tampered = contents.replace('"phase":"working"', '"phase":"waiting"')
+		expect(tampered).toHaveLength(contents.length)
+		await fs.writeFile(eventsPath, tampered, "utf8")
+
+		await expect(restarted.append(phaseEvent("event-2"))).rejects.toMatchObject({
+			code: "snapshot_mismatch",
+			taskId: ids.taskId,
+		} satisfies Partial<AgentLifecycleRecoveryError>)
+	})
+
 	it("partitions terminal turns in one task journal and resumes the latest partition after restart", async () => {
 		const journal = new AgentLifecycleJournal(ids.taskId, storagePath)
 		await journal.append(phaseEvent("turn-1-start"))

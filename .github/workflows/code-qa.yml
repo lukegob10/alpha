@@ -3,10 +3,10 @@ name: Code QA Alpha
 on:
     workflow_dispatch:
     push:
-        branches: [main]
+        branches: [main, main-v2]
     pull_request:
         types: [opened, reopened, ready_for_review, synchronize]
-        branches: [main]
+        branches: [main, main-v2]
 
 jobs:
     check-translations:
@@ -58,3 +58,14 @@ jobs:
               uses: ./.github/actions/setup-node-pnpm
             - name: Run unit tests
               run: pnpm test
+
+    vscode-1221-smoke:
+        name: VS Code 1.122.1 extension-host contract
+        runs-on: windows-latest
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+            - name: Setup Node.js and pnpm
+              uses: ./.github/actions/setup-node-pnpm
+            - name: Run exact VS Code 1.122.1 smoke and LM contract
+              run: pnpm --filter @alpha-code/vscode-e2e test:smoke:1221

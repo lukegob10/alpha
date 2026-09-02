@@ -703,6 +703,36 @@ export const webviewMessageHandler = async (
 				)
 			}
 			break
+		case "resumeCompletedTask":
+			{
+				const restoreDraft = async (reason: string) => {
+					// The composer optimistically clears after submit. Restore the exact
+					// draft whenever the host cannot durably accept the continuation.
+					await provider.postMessageToWebview({
+						type: "invoke",
+						invoke: "setChatBoxMessage",
+						text: message.text,
+						images: message.images,
+					})
+					vscode.window.showErrorMessage(`Failed to continue task: ${reason}`)
+				}
+				const task = getTaskForMessage(provider, message)
+				if (!task) {
+					provider.log("[webviewMessageHandler] Ignoring resumeCompletedTask: missing or unknown taskId")
+					await restoreDraft("the completed task is no longer available")
+					break
+				}
+				try {
+					const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
+					await task.resumeCompletedTaskFollowup(resolved.text ?? "", resolved.images ?? [])
+				} catch (error) {
+					provider.log(
+						`[webviewMessageHandler] Failed to resume completed task ${message.taskId}: ${error instanceof Error ? error.message : String(error)}`,
+					)
+					await restoreDraft(error instanceof Error ? error.message : String(error))
+				}
+			}
+			break
 		case "startBlankTask":
 			await provider.startBlankTask()
 			break

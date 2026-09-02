@@ -3,14 +3,14 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "2.1.10",
+	"version": "2.1.11",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
 		"theme": "dark"
 	},
 	"engines": {
-		"vscode": "^1.120.0",
+		"vscode": "^1.122.1",
 		"node": "20.19.2"
 	},
 	"author": {

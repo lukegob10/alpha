@@ -279,18 +279,24 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const [primaryButtonText, setPrimaryButtonText] = useState<string | undefined>(undefined)
 	const [secondaryButtonText, setSecondaryButtonText] = useState<string | undefined>(undefined)
 	const latestVisibleMessage = activeMessages.at(-1)
+	const completedTaskResponseAsk = isCompletedTaskResponseAsk(clineAsk)
+		? clineAsk
+		: latestVisibleMessage?.type === "ask" && isCompletedTaskResponseAsk(latestVisibleMessage.ask)
+			? latestVisibleMessage.ask
+			: undefined
 	const hasOpenCompletedTaskResponseBoundary =
-		isCompletedTaskResponseAsk(clineAsk) ||
-		(latestVisibleMessage?.type === "ask" && isCompletedTaskResponseAsk(latestVisibleMessage.ask))
-	const isVisibleTaskTerminal =
+		completedTaskResponseAsk === "resume_completed_task" ||
+		(completedTaskResponseAsk === "completion_result" && !isVisibleTaskCompleted)
+	const isVisibleTaskFailedOrClosed =
 		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Failed ||
-		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Closed ||
-		(isVisibleTaskCompleted && !hasOpenCompletedTaskResponseBoundary)
+		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Closed
+	const shouldClearTerminalControls =
+		isVisibleTaskFailedOrClosed || (isVisibleTaskCompleted && !hasOpenCompletedTaskResponseBoundary)
 	useEffect(() => {
 		// If fallback metadata recovers a task from stale terminal state, clear the
 		// disabled controls; the transcript effect below restores any ask/streaming
 		// controls that still apply.
-		if (isVisibleTaskLifecycleDegraded && !isVisibleTaskTerminal) {
+		if (isVisibleTaskLifecycleDegraded && !shouldClearTerminalControls) {
 			setSendingDisabled(false)
 			setClineAsk(undefined)
 			setEnableButtons(false)
@@ -298,13 +304,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			setSecondaryButtonText(undefined)
 			return
 		}
-		if (!isVisibleTaskTerminal) return
+		if (!shouldClearTerminalControls) return
 		setSendingDisabled(true)
 		setClineAsk(undefined)
 		setEnableButtons(false)
 		setPrimaryButtonText(undefined)
 		setSecondaryButtonText(undefined)
-	}, [isVisibleTaskLifecycleDegraded, isVisibleTaskTerminal, visibleCurrentTaskId])
+	}, [isVisibleTaskLifecycleDegraded, shouldClearTerminalControls, visibleCurrentTaskId])
 	const [_didClickCancel, setDidClickCancel] = useState(false)
 	const transcriptScrollerRef = useRef<HTMLDivElement | null>(null)
 	const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({})
@@ -877,12 +883,18 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				// so a rejected Plan transition can never leak this prompt into Code.
 			}
 
-			const lastMessage = messagesRef.current.at(-1)
-			const isAwaitingCompletedTaskResponse =
-				isCompletedTaskResponseAsk(clineAskRef.current) ||
-				(lastMessage?.type === "ask" && isCompletedTaskResponseAsk(lastMessage.ask))
+			if (isVisibleTaskCompleted && !hasOpenCompletedTaskResponseBoundary && visibleCurrentTaskId) {
+				vscode.postMessage({
+					type: "resumeCompletedTask",
+					taskId: visibleCurrentTaskId,
+					text,
+					images,
+				})
+				handleChatReset()
+				return
+			}
 
-			if (isVisibleTaskCompleted && !isAwaitingCompletedTaskResponse) {
+			if (isVisibleTaskFailedOrClosed) {
 				startNewTask(text, images)
 				return
 			}
@@ -941,7 +953,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			apiConfiguration?.apiProvider,
 			visibleTaskPayload,
 			editingQueuedMessage,
+			isVisibleTaskFailedOrClosed,
 			isVisibleTaskCompleted,
+			hasOpenCompletedTaskResponseBoundary,
 			isLastFollowUpAnswered,
 			postQueuedMessage,
 			startNewTask,
@@ -1012,7 +1026,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// extension.
 	const handlePrimaryButtonClick = useCallback(
 		(text?: string, images?: string[]) => {
-			if (isVisibleTaskTerminal) return
+			if (isVisibleTaskFailedOrClosed) return
 			// Mark that user has responded
 			userRespondedRef.current = true
 
@@ -1102,11 +1116,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			setPrimaryButtonText(undefined)
 			setSecondaryButtonText(undefined)
 		},
-		[clineAsk, visibleTaskPayload, startNewTask, visibleCurrentTaskItem?.parentTaskId, isVisibleTaskTerminal],
+		[clineAsk, visibleTaskPayload, startNewTask, visibleCurrentTaskItem?.parentTaskId, isVisibleTaskFailedOrClosed],
 	)
 
 	const handleSecondaryButtonClick = useCallback(() => {
-		if (isVisibleTaskTerminal) return
+		if (isVisibleTaskFailedOrClosed) return
 		// Mark that user has responded
 		userRespondedRef.current = true
 
@@ -1143,7 +1157,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setSendingDisabled(true)
 		setClineAsk(undefined)
 		setEnableButtons(false)
-	}, [clineAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel, isVisibleTaskTerminal])
+	}, [clineAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel, isVisibleTaskFailedOrClosed])
 
 	const { info: model } = useSelectedModel(apiConfiguration)
 	const chatRowEnvironment = useMemo<ChatRowEnvironment>(

@@ -127,6 +127,16 @@ interface LoadedJournal {
 	snapshot: AgentLifecycleSnapshot | undefined
 }
 
+interface JournalFileStamps {
+	events: string
+	snapshot: string
+}
+
+interface JournalCache {
+	eventsById: Map<string, AgentLifecycleEvent>
+	stamps: JournalFileStamps
+}
+
 /**
  * Durable JSONL journal for the provider-neutral lifecycle contract.
  *
@@ -147,6 +157,7 @@ export class AgentLifecycleJournal {
 	private state: JournalState = "open"
 	private paths: JournalPaths | undefined
 	private currentSnapshot: AgentLifecycleSnapshot | undefined
+	private cache: JournalCache | undefined
 	private lastSnapshotAt = 0
 	private initializationPromise: Promise<void> | undefined
 	private closePromise: Promise<void> | undefined
@@ -219,8 +230,7 @@ export class AgentLifecycleJournal {
 		return this.enqueueOrdered(async () => {
 			await this.initialize()
 			const paths = await this.ensurePaths()
-			const loaded = await withFileLock(paths.eventsPath, () => this.loadFromPaths(paths))
-			this.currentSnapshot = loaded.snapshot
+			await withFileLock(paths.eventsPath, () => this.loadAndCacheFromPaths(paths))
 			return this.getSnapshot()
 		})
 	}
@@ -239,14 +249,15 @@ export class AgentLifecycleJournal {
 			await this.initialize()
 			const paths = await this.ensurePaths()
 
-			// Re-read while holding the event lock. This keeps two journal objects
-			// in one host (or two extension processes) from assigning the same
-			// sequence after both observed the same previous state.
+			// Resolve the durable head while holding the event lock. This keeps two
+			// journal objects in one host (or two extension processes) from assigning
+			// the same sequence after both observed the same previous state. A file stamp
+			// lets the common single-writer path reuse its already-validated state;
+			// any external event or snapshot change invalidates that cache.
 			return withFileLock(paths.eventsPath, async () => {
-				const loaded = await this.loadFromPaths(paths)
-				this.currentSnapshot = loaded.snapshot
+				const loaded = await this.loadForAppend(paths)
 
-				const existingEvent = loaded.events.find((event) => event.eventId === input.eventId)
+				const existingEvent = loaded.eventsById.get(input.eventId)
 				const sameIdentity =
 					loaded.snapshot !== undefined &&
 					loaded.snapshot.runId === input.runId &&
@@ -321,6 +332,8 @@ export class AgentLifecycleJournal {
 
 				this.currentSnapshot = next
 				const snapshotWritten = await this.shouldWriteSnapshot(paths)
+				loaded.eventsById.set(event.eventId, event)
+				await this.refreshCache(paths, loaded.eventsById)
 				return {
 					event: cloneEvent(event),
 					snapshot: cloneSnapshot(next),
@@ -385,9 +398,51 @@ export class AgentLifecycleJournal {
 
 	private async initializeInternal(): Promise<void> {
 		const paths = await this.ensurePaths()
-		const loaded = await this.loadFromPaths(paths)
-		this.currentSnapshot = loaded.snapshot
+		await withFileLock(paths.eventsPath, () => this.loadAndCacheFromPaths(paths))
 		this.lastSnapshotAt = this.currentSnapshot ? this.now() : 0
+	}
+
+	/**
+	 * Return the in-memory reduction when neither durable file changed. File
+	 * stamps are checked only while the events lock is held, so cooperating
+	 * journal instances cannot append between validation and sequence assignment.
+	 */
+	private async loadForAppend(
+		paths: JournalPaths,
+	): Promise<{ eventsById: Map<string, AgentLifecycleEvent>; snapshot: AgentLifecycleSnapshot | undefined }> {
+		const stamps = await captureJournalFileStamps(paths)
+		if (stamps && this.cache && equivalentFileStamps(stamps, this.cache.stamps)) {
+			return { eventsById: this.cache.eventsById, snapshot: this.currentSnapshot }
+		}
+
+		const loaded = await this.loadAndCacheFromPaths(paths)
+		return {
+			eventsById: this.cache?.eventsById ?? indexEventsById(loaded.events),
+			snapshot: loaded.snapshot,
+		}
+	}
+
+	/** Full recovery remains the cache-miss path and the explicit replay path. */
+	private async loadAndCacheFromPaths(paths: JournalPaths): Promise<LoadedJournal> {
+		const before = await captureJournalFileStamps(paths)
+		const loaded = await this.loadFromPaths(paths)
+		const after = await captureJournalFileStamps(paths)
+		this.currentSnapshot = loaded.snapshot
+
+		// A non-cooperating writer can still change a snapshot while the event
+		// lock is held. Do not retain a cache unless both files stayed stable for
+		// the complete validation/replay window.
+		this.cache =
+			before && after && equivalentFileStamps(before, after)
+				? { eventsById: indexEventsById(loaded.events), stamps: after }
+				: undefined
+		return loaded
+	}
+
+	/** Cache refresh is an optimization; a failed stat must not turn a durable append into a reported failure. */
+	private async refreshCache(paths: JournalPaths, eventsById: Map<string, AgentLifecycleEvent>): Promise<void> {
+		const stamps = await captureJournalFileStamps(paths)
+		this.cache = stamps ? { eventsById, stamps } : undefined
 	}
 
 	private async ensurePaths(): Promise<JournalPaths> {
@@ -556,6 +611,35 @@ export async function readAgentLifecycleSnapshot(
 
 function normalizePositiveThreshold(value: number | undefined): number {
 	return value !== undefined && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
+}
+
+function indexEventsById(events: readonly AgentLifecycleEvent[]): Map<string, AgentLifecycleEvent> {
+	return new Map(events.map((event) => [event.eventId, event]))
+}
+
+async function captureJournalFileStamps(paths: JournalPaths): Promise<JournalFileStamps | undefined> {
+	try {
+		const [events, snapshot] = await Promise.all([fileStamp(paths.eventsPath), fileStamp(paths.snapshotPath)])
+		return { events, snapshot }
+	} catch {
+		// Stamps only decide whether the validated in-memory reduction is reusable.
+		// The normal read/replay path still reports any real filesystem failure.
+		return undefined
+	}
+}
+
+async function fileStamp(filePath: string): Promise<string> {
+	try {
+		const stats = await fs.stat(filePath, { bigint: true })
+		return [stats.dev, stats.ino, stats.size, stats.mtimeNs, stats.ctimeNs].join(":")
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing"
+		throw error
+	}
+}
+
+function equivalentFileStamps(left: JournalFileStamps, right: JournalFileStamps): boolean {
+	return left.events === right.events && left.snapshot === right.snapshot
 }
 
 function cloneEvent(event: AgentLifecycleEvent): AgentLifecycleEvent {

@@ -348,6 +348,70 @@ describe("webviewMessageHandler - image mentions", () => {
 		])
 	})
 
+	it("resumes a completed task with the submitted follow-up instead of creating a task", async () => {
+		const resumeCompletedTaskFollowup = vi.fn().mockResolvedValue(undefined)
+		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue({
+			cwd: "/mock/workspace",
+			rooIgnoreController: undefined,
+			resumeCompletedTaskFollowup,
+		} as any)
+
+		await webviewMessageHandler(mockClineProvider, {
+			type: "resumeCompletedTask",
+			text: "Evaluate @/img.png",
+			images: [],
+			taskId: "task-1",
+		})
+
+		expect(resumeCompletedTaskFollowup).toHaveBeenCalledWith("Evaluate @/img.png", [
+			"data:image/png;base64,from-mention",
+		])
+		expect(mockClineProvider.createTask).not.toHaveBeenCalled()
+	})
+
+	it("restores a completed-task draft when the host cannot resume it", async () => {
+		const resumeCompletedTaskFollowup = vi.fn().mockRejectedValue(new Error("terminal journal unavailable"))
+		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue({ resumeCompletedTaskFollowup } as any)
+
+		await webviewMessageHandler(mockClineProvider, {
+			type: "resumeCompletedTask",
+			text: "keep this prompt",
+			images: ["image1.png"],
+			taskId: "task-1",
+		})
+
+		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "invoke",
+			invoke: "setChatBoxMessage",
+			text: "keep this prompt",
+			images: ["image1.png"],
+		})
+		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+			"Failed to continue task: terminal journal unavailable",
+		)
+	})
+
+	it("restores a completed-task draft when its live task disappeared before dispatch", async () => {
+		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue(undefined)
+
+		await webviewMessageHandler(mockClineProvider, {
+			type: "resumeCompletedTask",
+			text: "do not lose this prompt",
+			images: ["image1.png"],
+			taskId: "missing-task",
+		})
+
+		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "invoke",
+			invoke: "setChatBoxMessage",
+			text: "do not lose this prompt",
+			images: ["image1.png"],
+		})
+		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+			"Failed to continue task: the completed task is no longer available",
+		)
+	})
+
 	it("does not route askResponse without a taskId to the active task", async () => {
 		const mockHandleWebviewAskResponse = vi.fn()
 		vi.mocked(mockClineProvider.getCurrentTask).mockReturnValue({

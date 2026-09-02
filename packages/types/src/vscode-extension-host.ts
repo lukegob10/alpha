@@ -706,6 +706,7 @@ interface WebviewMessageBase {
 		| "customInstructions"
 		| "webviewDidLaunch"
 		| "newTask"
+		| "resumeCompletedTask"
 		| "startBlankTask"
 		| "askResponse"
 		| "terminalOperation"

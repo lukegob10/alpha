@@ -52,6 +52,8 @@ function createSanitizedGit(baseDir: string): SimpleGit {
 			key === "GIT_ALTERNATE_OBJECT_DIRECTORIES" ||
 			key === "GIT_CEILING_DIRECTORIES" ||
 			key === "GIT_TEMPLATE_DIR" ||
+			key === "GIT_PAGER" ||
+			key === "PAGER" ||
 			key === "GIT_CONFIG_COUNT" ||
 			key === "GIT_CONFIG_PARAMETERS" ||
 			/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)

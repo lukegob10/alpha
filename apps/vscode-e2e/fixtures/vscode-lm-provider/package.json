@@ -1,0 +1,23 @@
+{
+	"name": "alpha-vscode-lm-e2e-fixture",
+	"displayName": "Alpha VS Code LM E2E Fixture",
+	"description": "Deterministic language model provider used only by Alpha extension-host tests.",
+	"version": "1.0.0",
+	"publisher": "alpha-code-e2e",
+	"private": true,
+	"engines": {
+		"vscode": "^1.122.1"
+	},
+	"activationEvents": [
+		"onLanguageModelChat:alpha-e2e"
+	],
+	"main": "./extension.js",
+	"contributes": {
+		"languageModelChatProviders": [
+			{
+				"vendor": "alpha-e2e",
+				"displayName": "Alpha E2E"
+			}
+		]
+	}
+}
