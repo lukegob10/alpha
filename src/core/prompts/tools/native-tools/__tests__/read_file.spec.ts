@@ -8,7 +8,7 @@ type FunctionTool = OpenAI.Chat.ChatCompletionTool & { type: "function" }
 const getFunctionDef = (tool: OpenAI.Chat.ChatCompletionTool) => (tool as FunctionTool).function
 
 describe("createReadFileTool", () => {
-	describe("bounded batch documentation", () => {
+	describe("input contract", () => {
 		it("keeps incidental file content from expanding the task", () => {
 			const description = getFunctionDef(createReadFileTool()).description
 
@@ -25,12 +25,12 @@ describe("createReadFileTool", () => {
 			expect(description).toContain("up to 8 entries")
 		})
 
-		it("should expose both single-file and bounded batch inputs", () => {
+		it("requires a concrete path so an empty tool call cannot reach execution", () => {
 			const schema = getFunctionDef(createReadFileTool()).parameters as any
 
 			expect(schema.properties).toHaveProperty("path")
 			expect(schema.properties.files.maxItems).toBe(8)
-			expect(schema.required).toEqual([])
+			expect(schema.required).toEqual(["path"])
 		})
 	})
 
@@ -128,11 +128,11 @@ describe("createReadFileTool", () => {
 			expect(getFunctionDef(tool).strict).toBe(true)
 		})
 
-		it("should accept either path or files", () => {
+		it("should retain the optional bounded batch input", () => {
 			const tool = createReadFileTool()
 			const schema = getFunctionDef(tool).parameters as any
 
-			expect(schema.required).toEqual([])
+			expect(schema.required).toEqual(["path"])
 			expect(schema.properties).toHaveProperty("path")
 			expect(schema.properties).toHaveProperty("files")
 		})

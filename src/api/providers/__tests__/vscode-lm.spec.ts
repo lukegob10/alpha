@@ -108,6 +108,7 @@ import type OpenAI from "openai"
 import { VsCodeLmHandler, getVsCodeLmModels } from "../vscode-lm"
 import type { ApiHandlerOptions } from "../../../shared/api"
 import type { Anthropic } from "@anthropic-ai/sdk"
+import { createReadFileTool } from "../../../core/prompts/tools/native-tools/read_file"
 
 const mockLanguageModelChat = {
 	id: "test-model",
@@ -855,6 +856,35 @@ describe("VsCodeLmHandler", () => {
 								additionalProperties: false,
 							},
 						},
+					],
+				}),
+				expect.anything(),
+			)
+		})
+
+		it("requires a read_file path in VS Code 1.122 request options", async () => {
+			mockVsCodeVersion.value = "1.122.1"
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Done")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "Read it" }], {
+				taskId: "test-task",
+				tools: [createReadFileTool()],
+			})) {
+				// consume stream
+			}
+
+			expect(mockLanguageModelChat.sendRequest).toHaveBeenCalledWith(
+				expect.any(Array),
+				expect.objectContaining({
+					tools: [
+						expect.objectContaining({
+							name: "read_file",
+							inputSchema: expect.objectContaining({ required: ["path"] }),
+						}),
 					],
 				}),
 				expect.anything(),

@@ -32,7 +32,7 @@ jobs:
               run: pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
 
             - name: Package extension
-              run: pnpm vsix
+              run: pnpm --dir src exec vsce package --no-dependencies --pre-release --out ../bin
 
             - name: Collect preview metadata
               id: release
@@ -69,14 +69,14 @@ jobs:
                   $notes = @"
                   Preview VSIX build from main-v2. This is not published to the VS Code Marketplace.
 
-                  Alpha v$version fixes task continuation races at model-turn completion boundaries.
+                  Alpha v$version fixes invalid read-file requests and completed-task follow-up feedback and latency.
 
                   Highlights:
+                  - Requires a path in read_file requests exposed to VS Code Language Models
+                  - Shows immediate progress and hides stale new-task controls while a completed task resumes
+                  - Prevents duplicate follow-up submissions and restores the draft if resume admission fails
+                  - Reuses retained task history instead of redundantly reloading and rewriting transcripts
                   - Validates the extension and VS Code Language Model contract on exact VS Code 1.122.1
-                  - Keeps completed-task follow-ups in the same task and restores drafts after resume failures
-                  - Carries tool calls and results into the next VS Code LM request without lifecycle gaps
-                  - Stops Alpha's in-flight VS Code LM waits promptly and prevents stale streams from affecting follow-ups
-                  - Reduces avoidable provider round trips at response and completion boundaries
 
                   Commit: ${{ github.sha }}
 

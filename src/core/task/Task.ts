@@ -5592,7 +5592,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				resolvePersisted()
 			},
 			images,
-			true,
+			{
+				deferTaskStartedUntilInitialUserContentPersisted: true,
+				reuseRetainedHistory: true,
+			},
 		)
 		this.ownBackgroundLifecycle("resume", lifecycle)
 		void lifecycle.then(
@@ -5619,14 +5622,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		followupText?: string,
 		onSubagentSteeringPersisted?: () => Promise<void> | void,
 		followupImages?: string[],
-		deferTaskStartedUntilInitialUserContentPersisted = false,
+		options: {
+			deferTaskStartedUntilInitialUserContentPersisted?: boolean
+			reuseRetainedHistory?: boolean
+		} = {},
 	) {
 		try {
+			const hasDirectFollowup = followupText !== undefined || Boolean(followupImages?.length)
+			const useRetainedHistory = options.reuseRetainedHistory === true && hasDirectFollowup
+
 			// A resumed task may have a final legacy/sidecar write queued by the
 			// preceding turn. Join it before reading and rewriting the transcript so
 			// resume cannot base its next request on an older snapshot.
 			await this.flushApiConversationHistoryPersistence()
-			const modifiedClineMessages = await this.getSavedClineMessages()
+			// A retained completed Task already owns the authoritative in-memory
+			// transcripts. Its prior lifecycle was joined before entering this method,
+			// so re-reading and rewriting both full histories only adds startup latency.
+			const modifiedClineMessages = useRetainedHistory
+				? structuredClone(this.clineMessages)
+				: await this.getSavedClineMessages()
 
 			// Remove any resume messages that may have been added before.
 			const lastRelevantMessageIndex = findLastIndex(
@@ -5666,9 +5680,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 			}
 
-			await this.overwriteClineMessages(modifiedClineMessages)
-			this.clineMessages = await this.getSavedClineMessages()
-			await this.reconcileInterruptedSubagentGroups()
+			if (useRetainedHistory) {
+				this.clineMessages = modifiedClineMessages
+				restoreTodoListForTask(this)
+			} else {
+				await this.overwriteClineMessages(modifiedClineMessages)
+				this.clineMessages = await this.getSavedClineMessages()
+				await this.reconcileInterruptedSubagentGroups()
+			}
 
 			// Now present the cline messages to the user and ask if they want to
 			// resume (NOTE: we ran into a bug before where the
@@ -5676,9 +5695,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// task, and it was because we were waiting for resume).
 			// This is important in case the user deletes messages without resuming
 			// the task first.
-			this.apiConversationHistory = await this.getSavedApiConversationHistory()
+			if (!useRetainedHistory) {
+				this.apiConversationHistory = await this.getSavedApiConversationHistory()
+			}
 
-			const hasDirectFollowup = followupText !== undefined || Boolean(followupImages?.length)
 			if (this.taskKind === "subagent" && !hasDirectFollowup) {
 				this.isInitialized = true
 				await this.finalizeTaskCompletion()
@@ -5717,7 +5737,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			// Make sure that the api conversation history can be resumed by the API,
 			// even if it goes out of sync with cline messages.
-			let existingApiConversationHistory: ApiMessage[] = await this.getSavedApiConversationHistory()
+			const existingApiConversationHistory: ApiMessage[] = this.apiConversationHistory
 
 			// Tool blocks are always preserved; native tool calling only.
 
@@ -5861,7 +5881,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 
 			// Task resuming from history item.
-			if (deferTaskStartedUntilInitialUserContentPersisted) {
+			if (options.deferTaskStartedUntilInitialUserContentPersisted) {
 				await this.initiateTaskLoop(newUserContent, onSubagentSteeringPersisted, {
 					deferTaskStartedUntilInitialUserContentPersisted: true,
 				})

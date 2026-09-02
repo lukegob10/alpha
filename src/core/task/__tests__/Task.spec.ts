@@ -2249,9 +2249,56 @@ describe("Alpha", () => {
 			await task.resumeCompletedTaskFollowup("evaluate the prior answer", ["image1.png"])
 
 			expect(task.taskId).toBeDefined()
-			expect(resume).toHaveBeenCalledWith("evaluate the prior answer", expect.any(Function), ["image1.png"], true)
+			expect(resume).toHaveBeenCalledWith("evaluate the prior answer", expect.any(Function), ["image1.png"], {
+				deferTaskStartedUntilInitialUserContentPersisted: true,
+				reuseRetainedHistory: true,
+			})
 			expect((task as any).didComplete).toBe(false)
 			expect(active).toHaveBeenCalledWith(task.taskId)
+		})
+
+		it("reuses retained completed-task history without redundant disk reloads", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			;(task as any).didComplete = true
+			task.clineMessages = [
+				{ ts: 1, type: "say", say: "text", text: "initial task" },
+				{ ts: 2, type: "say", say: "completion_result", text: "done" },
+			]
+			task.apiConversationHistory = [
+				{ role: "user", content: [{ type: "text", text: "initial task" }] },
+				{ role: "assistant", content: [{ type: "text", text: "done" }] },
+			] as any
+			const loadClineMessages = vi.spyOn(task as any, "getSavedClineMessages")
+			const loadApiHistory = vi.spyOn(task as any, "getSavedApiConversationHistory")
+			const overwriteClineMessages = vi.spyOn(task, "overwriteClineMessages")
+			const reconcileSubagents = vi.spyOn(task as any, "reconcileInterruptedSubagentGroups")
+			vi.spyOn(task as any, "flushApiConversationHistoryPersistence").mockResolvedValue(undefined)
+			vi.spyOn(task, "say").mockResolvedValue(undefined)
+			const overwriteApiHistory = vi.spyOn(task, "overwriteApiConversationHistory").mockResolvedValue(true)
+			const continueLoop = vi
+				.spyOn(task as any, "initiateTaskLoop")
+				.mockImplementation(async (...args: unknown[]) => {
+					const onPersisted = args[1] as (() => Promise<void> | void) | undefined
+					await onPersisted?.()
+				})
+
+			await task.resumeCompletedTaskFollowup("continue in place")
+
+			expect(loadClineMessages).not.toHaveBeenCalled()
+			expect(loadApiHistory).not.toHaveBeenCalled()
+			expect(overwriteClineMessages).not.toHaveBeenCalled()
+			expect(reconcileSubagents).not.toHaveBeenCalled()
+			expect(overwriteApiHistory).toHaveBeenCalledWith(task.apiConversationHistory)
+			expect(continueLoop).toHaveBeenCalledWith(
+				[{ type: "text", text: "<user_message>\ncontinue in place\n</user_message>" }],
+				expect.any(Function),
+				{ deferTaskStartedUntilInitialUserContentPersisted: true },
+			)
 		})
 
 		it("keeps a completed task terminal when its follow-up fails before persistence", async () => {
@@ -3572,7 +3619,9 @@ describe("Alpha", () => {
 			vi.spyOn(task as any, "getSavedClineMessages").mockResolvedValue(savedClineMessages)
 			vi.spyOn(task as any, "overwriteClineMessages").mockResolvedValue(true)
 			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
-			vi.spyOn(task as any, "getSavedApiConversationHistory").mockResolvedValue(savedApiHistory)
+			const loadApiHistory = vi
+				.spyOn(task as any, "getSavedApiConversationHistory")
+				.mockResolvedValue(savedApiHistory)
 			vi.spyOn(task as any, "overwriteApiConversationHistory").mockResolvedValue(true)
 			vi.spyOn(task, "say").mockResolvedValue(undefined)
 			vi.spyOn(task, "ask").mockResolvedValue({
@@ -3584,6 +3633,7 @@ describe("Alpha", () => {
 
 			await (task as any).resumeTaskFromHistory()
 
+			expect(loadApiHistory).toHaveBeenCalledOnce()
 			expect(continueLoop).toHaveBeenCalledWith(
 				[
 					{

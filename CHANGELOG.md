@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.12
+
+### Patch Changes
+
+- Require `read_file` calls to include a path in the tool schema exposed to VS Code Language Models, preventing empty calls and avoidable retries.
+- Show immediate progress when continuing a completed task, suppress stale new-task controls and duplicate submissions, and restore the draft if resume admission fails.
+- Reuse retained task history during completed-task follow-ups to remove redundant transcript reads and writes while preserving the lifecycle finalization boundary.
+
 ## 2.1.11
 
 ### Patch Changes

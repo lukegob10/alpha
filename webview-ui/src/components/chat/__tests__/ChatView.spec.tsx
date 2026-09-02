@@ -2182,9 +2182,9 @@ describe("ChatView - Message Queueing Tests", () => {
 	})
 
 	it.each(["completion_result", "followup"] as const)(
-		"resumes a completed live task even when a stale %s ask remains in the transcript",
+		"shows a pending state while resuming a completed live task with a stale %s ask",
 		async (staleAsk) => {
-			const { getByTestId } = renderChatView()
+			const { getByRole, getByTestId, queryByRole, queryByTestId } = renderChatView()
 
 			mockPostMessage({
 				currentTaskId: "task-1",
@@ -2226,6 +2226,11 @@ describe("ChatView - Message Queueing Tests", () => {
 			await waitFor(() => {
 				expect(getByTestId("chat-textarea")).toBeInTheDocument()
 			})
+			if (staleAsk === "completion_result") {
+				await waitFor(() =>
+					expect(getByRole("button", { name: "chat:startNewTask.title" })).toBeInTheDocument(),
+				)
+			}
 
 			vi.mocked(vscode.postMessage).mockClear()
 			const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
@@ -2247,6 +2252,44 @@ describe("ChatView - Message Queueing Tests", () => {
 					type: "askResponse",
 				}),
 			)
+			expect(getByTestId("completed-task-resume-pending")).toBeInTheDocument()
+			expect(queryByRole("button", { name: "chat:startNewTask.title" })).not.toBeInTheDocument()
+			expect(input).toHaveAttribute("data-sending-disabled", "true")
+
+			fireEvent.change(input, { target: { value: "do not submit twice" } })
+			fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+			expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+			expect(input).toHaveValue("do not submit twice")
+
+			await act(async () => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "invoke",
+							invoke: "setChatBoxMessage",
+							text: "new work",
+							images: [],
+						},
+					}),
+				)
+				await Promise.resolve()
+			})
+
+			await waitFor(() => {
+				expect(queryByTestId("completed-task-resume-pending")).not.toBeInTheDocument()
+				expect(getByRole("button", { name: "chat:startNewTask.title" })).toBeInTheDocument()
+				expect(input).toHaveAttribute("data-sending-disabled", "false")
+				expect(input).toHaveValue("do not submit twice new work")
+			})
+
+			vi.mocked(vscode.postMessage).mockClear()
+			fireEvent.click(getByRole("button", { name: "chat:startNewTask.title" }))
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "newTask",
+				text: "do not submit twice new work",
+				images: [],
+			})
 		},
 	)
 

@@ -278,6 +278,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const [enableButtons, setEnableButtons] = useState<boolean>(false)
 	const [primaryButtonText, setPrimaryButtonText] = useState<string | undefined>(undefined)
 	const [secondaryButtonText, setSecondaryButtonText] = useState<string | undefined>(undefined)
+	const pendingCompletedTaskResumeIdRef = useRef<string | undefined>(undefined)
+	const [pendingCompletedTaskResumeId, setPendingCompletedTaskResumeId] = useState<string | undefined>(undefined)
+	const isCompletedTaskResumePending = Boolean(
+		visibleCurrentTaskId && pendingCompletedTaskResumeId === visibleCurrentTaskId,
+	)
 	const latestVisibleMessage = activeMessages.at(-1)
 	const completedTaskResponseAsk = isCompletedTaskResponseAsk(clineAsk)
 		? clineAsk
@@ -311,6 +316,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setPrimaryButtonText(undefined)
 		setSecondaryButtonText(undefined)
 	}, [isVisibleTaskLifecycleDegraded, shouldClearTerminalControls, visibleCurrentTaskId])
+	useEffect(() => {
+		const pendingTaskId = pendingCompletedTaskResumeIdRef.current
+		if (!pendingTaskId) return
+		if (liveTasksById?.[pendingTaskId]?.lifecycle === TaskLifecycleState.Completed) return
+
+		pendingCompletedTaskResumeIdRef.current = undefined
+		setPendingCompletedTaskResumeId(undefined)
+	}, [liveTasksById])
 	const [_didClickCancel, setDidClickCancel] = useState(false)
 	const transcriptScrollerRef = useRef<HTMLDivElement | null>(null)
 	const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({})
@@ -823,6 +836,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			if (!text && images.length === 0) {
 				return
 			}
+			if (visibleCurrentTaskId && pendingCompletedTaskResumeIdRef.current === visibleCurrentTaskId) {
+				return
+			}
 
 			// Allow users to trigger the same operation as the context-condense
 			// button by explicitly asking for it in the chat input.
@@ -884,6 +900,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 
 			if (isVisibleTaskCompleted && !hasOpenCompletedTaskResponseBoundary && visibleCurrentTaskId) {
+				pendingCompletedTaskResumeIdRef.current = visibleCurrentTaskId
+				setPendingCompletedTaskResumeId(visibleCurrentTaskId)
 				vscode.postMessage({
 					type: "resumeCompletedTask",
 					taskId: visibleCurrentTaskId,
@@ -891,6 +909,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					images,
 				})
 				handleChatReset()
+				setPrimaryButtonText(undefined)
+				setSecondaryButtonText(undefined)
 				return
 			}
 
@@ -968,6 +988,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	const handleSetChatBoxMessage = useCallback(
 		(text: string, images: string[]) => {
+			const pendingTaskId = pendingCompletedTaskResumeIdRef.current
+			if (pendingTaskId === visibleCurrentTaskId) {
+				pendingCompletedTaskResumeIdRef.current = undefined
+				setPendingCompletedTaskResumeId(undefined)
+				setSendingDisabled(false)
+				setClineAsk("completion_result")
+				setEnableButtons(true)
+				setPrimaryButtonText(t("chat:startNewTask.title"))
+				setSecondaryButtonText(undefined)
+			}
+
 			// Avoid nested template literals by breaking down the logic
 			let newValue = text
 
@@ -978,7 +1009,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			setInputValue(newValue)
 			setSelectedImages([...selectedImages, ...images])
 		},
-		[inputValue, selectedImages],
+		[inputValue, selectedImages, t, visibleCurrentTaskId],
 	)
 
 	// Handle stop button click from textarea
@@ -1026,7 +1057,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// extension.
 	const handlePrimaryButtonClick = useCallback(
 		(text?: string, images?: string[]) => {
-			if (isVisibleTaskFailedOrClosed) return
+			if (
+				isVisibleTaskFailedOrClosed ||
+				(visibleCurrentTaskId && pendingCompletedTaskResumeIdRef.current === visibleCurrentTaskId)
+			) {
+				return
+			}
 			// Mark that user has responded
 			userRespondedRef.current = true
 
@@ -1116,7 +1152,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			setPrimaryButtonText(undefined)
 			setSecondaryButtonText(undefined)
 		},
-		[clineAsk, visibleTaskPayload, startNewTask, visibleCurrentTaskItem?.parentTaskId, isVisibleTaskFailedOrClosed],
+		[
+			clineAsk,
+			visibleTaskPayload,
+			startNewTask,
+			visibleCurrentTaskItem?.parentTaskId,
+			isVisibleTaskFailedOrClosed,
+			visibleCurrentTaskId,
+		],
 	)
 
 	const handleSecondaryButtonClick = useCallback(() => {
@@ -2042,7 +2085,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				{task && (
 					<>
 						<FileChangesPanel clineMessages={activeMessages} taskId={visibleCurrentTaskId} />
-						{areActionButtonsVisible && !isManagedSubagent && (
+						{isCompletedTaskResumePending && !isManagedSubagent && (
+							<div
+								data-testid="completed-task-resume-pending"
+								role="status"
+								aria-live="polite"
+								className="mb-1 flex h-9 shrink-0 items-center justify-center gap-2 px-[15px] text-vscode-descriptionForeground">
+								<span className="codicon codicon-loading codicon-modifier-spin" aria-hidden="true" />
+								<span>{t("chat:resumeTask.title")}…</span>
+							</div>
+						)}
+						{areActionButtonsVisible && !isManagedSubagent && !isCompletedTaskResumePending && (
 							<div
 								className={`mb-1 flex h-9 shrink-0 items-center px-[15px] ${enableButtons ? "opacity-100" : "opacity-50"}`}>
 								{primaryButtonText && (
