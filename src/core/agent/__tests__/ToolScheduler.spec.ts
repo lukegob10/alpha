@@ -344,6 +344,7 @@ describe("ToolScheduler", () => {
 			task,
 			registry,
 			mode: "code",
+			executionMode: "selective-parallel",
 			validateCall: () => {},
 		}).run(normalized)
 
@@ -404,6 +405,8 @@ describe("ToolScheduler", () => {
 			task,
 			registry,
 			mode: "code",
+			executionMode: "selective-parallel",
+			maxConcurrency: 6,
 			validateCall: () => {},
 		}).run(normalized)
 
@@ -432,7 +435,7 @@ describe("ToolScheduler", () => {
 		expect(task.userMessageContentReady).toBe(true)
 	})
 
-	it("runs six real read_file handlers concurrently and returns all contents", async () => {
+	it("serializes real read_file handlers when approval metadata is required", async () => {
 		const task = makeTask()
 		Object.assign(task, {
 			cwd: process.cwd(),
@@ -488,6 +491,7 @@ describe("ToolScheduler", () => {
 			task,
 			registry,
 			mode: "code",
+			executionMode: "selective-parallel",
 			validateCall: () => {},
 		}).run(
 			response(
@@ -499,7 +503,9 @@ describe("ToolScheduler", () => {
 			),
 		)
 
-		expect(peak).toBe(6)
+		expect(peak).toBe(1)
+		expect(outcome.parallelBatchCount).toBe(0)
+		expect(outcome.parallelToolCount).toBe(0)
 		expect(outcome.results).toHaveLength(6)
 		expect(outcome.results.every((result) => result.status === "success")).toBe(true)
 		// ReadFileTool does not request approval; registry approval capability is
@@ -591,6 +597,7 @@ describe("ToolScheduler", () => {
 			task,
 			registry,
 			mode: "code",
+			executionMode: "selective-parallel",
 			validateCall: () => {},
 		}).run(response({ id: "1", name: "read_one" }, { id: "2", name: "read_two" }))
 
@@ -798,7 +805,119 @@ describe("ToolScheduler", () => {
 
 		const outcome = await run
 		expect(outcome.status).toBe("aborted")
+		expect(outcome.results).toHaveLength(1)
+		expect(outcome.results[0].status).toBe("cancelled")
 		expect(resultIds(task)).toEqual([])
+	})
+
+	it("preserves deterministic receipts for every call when cancellation wins", async () => {
+		const task = makeTask()
+		const controller = new AbortController()
+		const events: any[] = []
+		let executions = 0
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(
+			descriptor("read", "serial", async ({ callbacks }) => {
+				executions += 1
+				await wait(10)
+				callbacks.pushToolResult("late")
+			}),
+		)
+
+		const run = new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+			signal: controller.signal,
+			preserveAbortedResults: true,
+			onEvent: (event) => {
+				events.push(event)
+			},
+		}).run(response({ id: "1", name: "read" }, { id: "2", name: "read" }))
+		setTimeout(() => controller.abort(), 2)
+
+		const outcome = await run
+		expect(outcome.status).toBe("aborted")
+		expect(executions).toBe(1)
+		expect(outcome.results.map((result) => result.status)).toEqual(["cancelled", "cancelled"])
+		expect(resultIds(task)).toEqual(["1", "2"])
+		expect(task.userMessageContentReady).toBe(true)
+		expect(events.filter((event) => event.type === "tool_result").map((event) => event.callId)).toEqual(["1", "2"])
+	})
+
+	it("fails closed when the transcript fence rejects before an effect", async () => {
+		const task = makeTask()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		let executions = 0
+		registry.register(
+			descriptor("mutation", "serial", async ({ callbacks }) => {
+				executions += 1
+				callbacks.pushToolResult("must not run")
+			}),
+		)
+
+		const outcome = await new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+			beforeEffect: async () => {
+				throw new Error("provider transcript receipt is stale")
+			},
+		}).run(response({ id: "stale", name: "mutation" }, { id: "unstarted", name: "mutation" }))
+
+		expect(outcome.status).toBe("failed")
+		expect(outcome.failure).toEqual({
+			kind: "effect_fence",
+			callId: "stale",
+			message: "provider transcript receipt is stale",
+		})
+		expect(outcome.results.map((result) => result.status)).toEqual(["error", "error"])
+		expect(executions).toBe(0)
+		expect(resultIds(task)).toEqual(["stale", "unstarted"])
+		expect(task.userMessageContentReady).toBe(true)
+	})
+
+	it("preserves completed effects when a later transcript fence rejects", async () => {
+		const task = makeTask()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		let executions = 0
+		let fenceChecks = 0
+		registry.register(
+			descriptor("mutation", "serial", async ({ callbacks }) => {
+				executions += 1
+				callbacks.pushToolResult(`completed-${executions}`)
+			}),
+		)
+
+		const outcome = await new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+			beforeEffect: async () => {
+				fenceChecks += 1
+				if (fenceChecks === 2) throw new Error("receipt invalidated after first effect")
+			},
+		}).run(
+			response(
+				{ id: "completed", name: "mutation" },
+				{ id: "blocked", name: "mutation" },
+				{ id: "unstarted", name: "mutation" },
+			),
+		)
+
+		expect(outcome.status).toBe("failed")
+		expect(outcome.failure).toEqual({
+			kind: "effect_fence",
+			callId: "blocked",
+			message: "receipt invalidated after first effect",
+		})
+		expect(executions).toBe(1)
+		expect(outcome.results.map((result) => result.status)).toEqual(["success", "error", "error"])
+		expect(outcome.results[0].content).toBe("completed-1")
+		expect(resultIds(task)).toEqual(["completed", "blocked", "unstarted"])
 	})
 
 	it("enforces policy visibility and bounds tool output", async () => {
@@ -878,6 +997,172 @@ describe("ToolScheduler", () => {
 
 		const outcome = await run
 		expect(outcome.status).toBe("aborted")
+		expect(resultIds(task)).toEqual([])
+	})
+
+	it("defaults to serial execution even when descriptors are parallel-safe", async () => {
+		const task = makeTask()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		let active = 0
+		let peak = 0
+		for (const name of ["first", "second"]) {
+			registry.register(
+				descriptor(name, "parallel", async ({ callbacks }) => {
+					active += 1
+					peak = Math.max(peak, active)
+					await wait(2)
+					callbacks.pushToolResult(name)
+					active -= 1
+				}),
+			)
+		}
+
+		const outcome = await new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(response({ id: "1", name: "first" }, { id: "2", name: "second" }))
+
+		expect(peak).toBe(1)
+		expect(outcome.parallelBatchCount).toBe(0)
+		expect(outcome.parallelToolCount).toBe(0)
+		expect(resultIds(task)).toEqual(["1", "2"])
+	})
+
+	it("bounds selective-parallel workers and keeps completion commits in model order", async () => {
+		const task = makeTask()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		let active = 0
+		let peak = 0
+		for (let index = 0; index < 7; index += 1) {
+			const name = `read-${index}`
+			registry.register(
+				descriptor(name, "parallel", async ({ callbacks }) => {
+					active += 1
+					peak = Math.max(peak, active)
+					await wait(index % 2 === 0 ? 5 : 1)
+					callbacks.pushToolResult(name)
+					active -= 1
+				}),
+			)
+		}
+
+		const outcome = await new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			executionMode: "selective-parallel",
+			maxConcurrency: 3,
+			validateCall: () => {},
+		}).run(response(...Array.from({ length: 7 }, (_, index) => ({ id: `${index}`, name: `read-${index}` }))))
+
+		expect(peak).toBeLessThanOrEqual(3)
+		expect(peak).toBeGreaterThan(1)
+		expect(outcome.parallelBatchCount).toBe(1)
+		expect(outcome.parallelToolCount).toBe(7)
+		expect(resultIds(task)).toEqual(["0", "1", "2", "3", "4", "5", "6"])
+		expect((task.userMessageContent as any[]).map((item) => item.content)).toEqual([
+			"read-0",
+			"read-1",
+			"read-2",
+			"read-3",
+			"read-4",
+			"read-5",
+			"read-6",
+		])
+	})
+
+	it("keeps a side-effecting descriptor serial even if it is incorrectly marked parallel", async () => {
+		const task = makeTask()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		let active = 0
+		let peak = 0
+		for (const name of ["mutation-one", "mutation-two"]) {
+			registry.register({
+				...descriptor(name, "parallel", async ({ callbacks }) => {
+					active += 1
+					peak = Math.max(peak, active)
+					await wait(2)
+					callbacks.pushToolResult(name)
+					active -= 1
+				}),
+				capabilities: {
+					concurrency: "parallel",
+					sideEffects: "workspace",
+					controlFlow: false,
+					requiresApproval: false,
+				},
+			})
+		}
+
+		const outcome = await new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			executionMode: "selective-parallel",
+			validateCall: () => {},
+		}).run(response({ id: "1", name: "mutation-one" }, { id: "2", name: "mutation-two" }))
+
+		expect(peak).toBe(1)
+		expect(outcome.parallelBatchCount).toBe(0)
+		expect(resultIds(task)).toEqual(["1", "2"])
+	})
+
+	it("accepts a narrow execution host without requiring a concrete Task", async () => {
+		const userMessageContent: any[] = []
+		const host = {
+			taskId: "host-only",
+			cwd: process.cwd(),
+			abort: false,
+			userMessageContent,
+			say: async () => {},
+			recordToolUsage: () => {},
+			pushToolResultToUserContent(result: any) {
+				userMessageContent.push(result)
+				return true
+			},
+		}
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(descriptor("host_read", "serial", async ({ callbacks }) => callbacks.pushToolResult("ok")))
+
+		const outcome = await new ToolScheduler({
+			executionHost: host,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(response({ id: "host-call", name: "host_read" }))
+
+		expect(outcome.status).toBe("completed")
+		expect(outcome.results[0].content).toBe("ok")
+		expect(userMessageContent.map((item) => item.tool_use_id)).toEqual(["host-call"])
+	})
+
+	it("releases an approval lane when cancellation arrives before the host responds", async () => {
+		const task = makeTask()
+		task.ask = async () => await new Promise<never>(() => {})
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(
+			descriptor("approval_read", "parallel", async ({ callbacks }) => {
+				if (await callbacks.askApproval("tool", "waiting")) {
+					callbacks.pushToolResult("unexpected")
+				}
+			}),
+		)
+		const controller = new AbortController()
+		const run = new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+			signal: controller.signal,
+		}).run(response({ id: "approval-cancel", name: "approval_read" }))
+		setTimeout(() => controller.abort(), 2)
+
+		const outcome = await run
+		expect(outcome.status).toBe("aborted")
+		expect(outcome.results).toHaveLength(1)
+		expect(outcome.results[0].status).toBe("cancelled")
 		expect(resultIds(task)).toEqual([])
 	})
 })

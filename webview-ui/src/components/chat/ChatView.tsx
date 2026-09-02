@@ -32,6 +32,7 @@ import { vscode } from "@src/utils/vscode"
 import { normalizeUserFacingSuggestionMode } from "@src/utils/modePresentation"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
+import { projectLegacyLiveTaskMetadata } from "@src/context/agentLifecycleState"
 import { useSelectedModel } from "@src/components/ui/hooks/useSelectedModel"
 import AlphaHero from "@src/components/welcome/AlphaHero"
 import AlphaTips from "@src/components/welcome/AlphaTips"
@@ -115,6 +116,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		soundVolume,
 		messageQueue = [],
 		liveTasksById,
+		agentLifecycleSnapshots,
+		agentLifecycleDegraded,
 		managedAgentTree,
 		showWorktreesInHomeScreen,
 		mcpServers,
@@ -145,7 +148,26 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[visibleCurrentTaskId],
 	)
 	const visibleLiveTask = visibleCurrentTaskId ? liveTasksById?.[visibleCurrentTaskId] : undefined
-	const isVisibleTaskCompleted = visibleLiveTask?.lifecycle === TaskLifecycleState.Completed
+	const isVisibleTaskLifecycleDegraded = Boolean(
+		visibleCurrentTaskId && agentLifecycleDegraded?.[visibleCurrentTaskId]?.degraded,
+	)
+	const legacyVisibleLiveTask =
+		visibleCurrentTaskId && isVisibleTaskLifecycleDegraded
+			? projectLegacyLiveTaskMetadata(extensionState, visibleCurrentTaskId, visibleLiveTask)
+			: undefined
+	const effectiveVisibleLiveTask = isVisibleTaskLifecycleDegraded ? legacyVisibleLiveTask : visibleLiveTask
+	const visibleLifecycleSnapshot =
+		visibleCurrentTaskId && !isVisibleTaskLifecycleDegraded
+			? agentLifecycleSnapshots?.[visibleCurrentTaskId]
+			: undefined
+	const isVisibleTaskCompleted =
+		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Completed ||
+		visibleLifecycleSnapshot?.status === "completed"
+	const isVisibleTaskTerminal =
+		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Completed ||
+		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Failed ||
+		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Closed ||
+		(visibleLifecycleSnapshot !== undefined && visibleLifecycleSnapshot.status !== "in_progress")
 	const visibleCurrentTaskItem = isDraftView ? undefined : currentTaskItem
 	const isManagedSubagent = visibleCurrentTaskItem?.taskKind === "subagent"
 	const managedAgentGroups = useMemo(
@@ -268,6 +290,26 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const [enableButtons, setEnableButtons] = useState<boolean>(false)
 	const [primaryButtonText, setPrimaryButtonText] = useState<string | undefined>(undefined)
 	const [secondaryButtonText, setSecondaryButtonText] = useState<string | undefined>(undefined)
+	useEffect(() => {
+		// A canonical terminal snapshot may have disabled the composer before the
+		// host reported that this task degraded. Clear only the canonical terminal
+		// controls; the transcript effect below will immediately restore any
+		// legacy ask/streaming controls that still apply.
+		if (isVisibleTaskLifecycleDegraded && !isVisibleTaskTerminal) {
+			setSendingDisabled(false)
+			setClineAsk(undefined)
+			setEnableButtons(false)
+			setPrimaryButtonText(undefined)
+			setSecondaryButtonText(undefined)
+			return
+		}
+		if (!isVisibleTaskTerminal) return
+		setSendingDisabled(true)
+		setClineAsk(undefined)
+		setEnableButtons(false)
+		setPrimaryButtonText(undefined)
+		setSecondaryButtonText(undefined)
+	}, [isVisibleTaskLifecycleDegraded, isVisibleTaskTerminal, visibleCurrentTaskId])
 	const [_didClickCancel, setDidClickCancel] = useState(false)
 	const transcriptScrollerRef = useRef<HTMLDivElement | null>(null)
 	const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({})
@@ -975,6 +1017,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// extension.
 	const handlePrimaryButtonClick = useCallback(
 		(text?: string, images?: string[]) => {
+			if (isVisibleTaskTerminal) return
 			// Mark that user has responded
 			userRespondedRef.current = true
 
@@ -1064,10 +1107,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			setPrimaryButtonText(undefined)
 			setSecondaryButtonText(undefined)
 		},
-		[clineAsk, visibleTaskPayload, startNewTask, visibleCurrentTaskItem?.parentTaskId],
+		[clineAsk, visibleTaskPayload, startNewTask, visibleCurrentTaskItem?.parentTaskId, isVisibleTaskTerminal],
 	)
 
 	const handleSecondaryButtonClick = useCallback(() => {
+		if (isVisibleTaskTerminal) return
 		// Mark that user has responded
 		userRespondedRef.current = true
 
@@ -1104,7 +1148,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setSendingDisabled(true)
 		setClineAsk(undefined)
 		setEnableButtons(false)
-	}, [clineAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel])
+	}, [clineAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel, isVisibleTaskTerminal])
 
 	const { info: model } = useSelectedModel(apiConfiguration)
 	const chatRowEnvironment = useMemo<ChatRowEnvironment>(

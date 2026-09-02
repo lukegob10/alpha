@@ -149,10 +149,13 @@ type GoalSeekServiceInternals = {
 		workspace: string | undefined,
 		mode: string | undefined,
 		writeCapable: boolean,
+		runId?: string,
 	): Promise<{ taskId: string; result: string }>
 	handleTaskCompleted(taskId: string): Promise<void>
 	getTaskCompletionText(taskId: string): Promise<string>
 	taskWaiters: Map<string, unknown>
+	canceledRuns: Set<string>
+	activeTasksByRun: Map<string, unknown>
 }
 
 describe("GoalSeekService task completion", () => {
@@ -186,6 +189,66 @@ describe("GoalSeekService task completion", () => {
 		expect(start).toHaveBeenCalledTimes(1)
 		expect(result).toEqual({ taskId, result: "Fast completion result" })
 		expect(internals.taskWaiters.size).toBe(0)
+	})
+
+	it("joins a task canceled before start before releasing it", async () => {
+		const { service, provider } = createService([])
+		const internals = service as unknown as GoalSeekServiceInternals
+		const runId = "run-canceled-before-start"
+		const termination = deferred<void>()
+		const order: string[] = []
+		const task = {
+			taskId: "never-started-task",
+			start: vi.fn(),
+			abortTask: vi.fn().mockImplementation(async () => {
+				order.push("abort")
+			}),
+			waitForTermination: vi.fn().mockImplementation(async () => {
+				order.push("wait-start")
+				await termination.promise
+				order.push("wait-complete")
+			}),
+		}
+		;(provider as unknown as { createTask: ReturnType<typeof vi.fn> }).createTask = vi.fn().mockResolvedValue(task)
+		internals.canceledRuns.add(runId)
+
+		const result = internals.runAlphaTask("Do the work", "test-workspace", "code", true, runId)
+		await vi.waitFor(() => expect(task.waitForTermination).toHaveBeenCalledTimes(1))
+		expect(order).toEqual(["abort", "wait-start"])
+		expect(task.start).not.toHaveBeenCalled()
+
+		termination.resolve(undefined)
+		await expect(result).rejects.toThrow("Goal Seek run was canceled")
+		expect(order).toEqual(["abort", "wait-start", "wait-complete"])
+		expect(internals.activeTasksByRun.has(runId)).toBe(false)
+	})
+
+	it("retains a pre-start task when its termination boundary fails", async () => {
+		const { service, provider } = createService([])
+		const internals = service as unknown as GoalSeekServiceInternals
+		const runId = "run-failed-before-start"
+		const task = {
+			taskId: "failed-never-started-task",
+			start: vi.fn(),
+			abortTask: vi.fn().mockResolvedValue(undefined),
+			waitForTermination: vi
+				.fn()
+				.mockRejectedValueOnce(new Error("termination persistence failed"))
+				.mockResolvedValue(undefined),
+		}
+		;(provider as unknown as { createTask: ReturnType<typeof vi.fn> }).createTask = vi.fn().mockResolvedValue(task)
+		internals.canceledRuns.add(runId)
+
+		await expect(internals.runAlphaTask("Do the work", "test-workspace", "code", true, runId)).rejects.toThrow(
+			"termination persistence failed",
+		)
+		expect(task.start).not.toHaveBeenCalled()
+		expect(internals.activeTasksByRun.has(runId)).toBe(true)
+
+		await expect(internals.runAlphaTask("Do the work", "test-workspace", "code", true, runId)).rejects.toThrow(
+			"Goal Seek run was canceled",
+		)
+		expect(internals.activeTasksByRun.has(runId)).toBe(false)
 	})
 })
 
@@ -312,22 +375,81 @@ describe("GoalSeekService run lifecycle", () => {
 			gitResetHard(workspace: string, ref: string): Promise<void>
 		}
 		const taskStarted = deferred<void>()
-		const abortTask = vi.fn().mockResolvedValue(undefined)
+		const termination = deferred<void>()
+		const order: string[] = []
+		const abortTask = vi.fn().mockImplementation(async () => {
+			order.push("abort")
+		})
+		const waitForTermination = vi.fn().mockImplementation(async () => {
+			order.push("wait-start")
+			await termination.promise
+			order.push("wait-complete")
+		})
 		;(provider as unknown as { createTask: ReturnType<typeof vi.fn> }).createTask = vi.fn().mockResolvedValue({
 			taskId: "implementation-task",
 			start: () => taskStarted.resolve(undefined),
 			abortTask,
+			waitForTermination,
 		})
 		vi.spyOn(internals, "assertCleanWorkspace").mockResolvedValue(undefined)
 		vi.spyOn(internals, "generateCandidates").mockResolvedValue([candidate])
 		vi.spyOn(internals, "gitRevParse").mockResolvedValue("checkpoint-a")
-		vi.spyOn(internals, "gitResetHard").mockResolvedValue(undefined)
+		vi.spyOn(internals, "gitResetHard").mockImplementation(async () => {
+			order.push("reset")
+		})
 
 		const run = await service.runJob("job-a")
 		await taskStarted.promise
-		await service.cancelRun(run.id)
+		const cancellation = service.cancelRun(run.id)
+		await vi.waitFor(() => expect(waitForTermination).toHaveBeenCalledTimes(1))
+		expect(order).toEqual(["abort", "wait-start"])
+		expect(internals.gitResetHard).not.toHaveBeenCalled()
+
+		termination.resolve(undefined)
+		await cancellation
 
 		expect(abortTask).toHaveBeenCalledTimes(1)
+		expect(order).toEqual(["abort", "wait-start", "wait-complete", "reset"])
+		expect(store.getRun(run.id)?.status).toBe("canceled")
+	})
+
+	it("fails closed when active task termination persistence rejects", async () => {
+		const workspace = process.cwd()
+		const { service, store, provider } = createService([makeJob("job-a", workspace)])
+		const internals = service as unknown as GoalSeekServiceInternals & {
+			assertCleanWorkspace(workspace: string): Promise<void>
+			generateCandidates(job: GoalSeekJob, run: GoalSeekRun, feedback: string): Promise<GoalSeekCandidate[]>
+			gitRevParse(workspace: string, ref: string): Promise<string>
+			gitResetHard(workspace: string, ref: string): Promise<void>
+		}
+		const taskStarted = deferred<void>()
+		const abortTask = vi.fn().mockResolvedValue(undefined)
+		const waitForTermination = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("termination persistence failed"))
+			.mockResolvedValue(undefined)
+		;(provider as unknown as { createTask: ReturnType<typeof vi.fn> }).createTask = vi.fn().mockResolvedValue({
+			taskId: "implementation-task",
+			start: () => taskStarted.resolve(undefined),
+			abortTask,
+			waitForTermination,
+		})
+		vi.spyOn(internals, "assertCleanWorkspace").mockResolvedValue(undefined)
+		vi.spyOn(internals, "generateCandidates").mockResolvedValue([candidate])
+		vi.spyOn(internals, "gitRevParse").mockResolvedValue("checkpoint-a")
+		const reset = vi.spyOn(internals, "gitResetHard").mockResolvedValue(undefined)
+
+		const run = await service.runJob("job-a")
+		await taskStarted.promise
+
+		await expect(service.cancelRun(run.id)).rejects.toThrow("termination persistence failed")
+		expect(reset).not.toHaveBeenCalled()
+		expect(store.getRun(run.id)?.status).toBe("running")
+		expect(internals.taskWaiters.has("implementation-task")).toBe(true)
+		expect(internals.activeTasksByRun.has(run.id)).toBe(true)
+
+		await service.cancelRun(run.id)
+		expect(reset).toHaveBeenCalledWith(workspace, "checkpoint-a")
 		expect(store.getRun(run.id)?.status).toBe("canceled")
 	})
 

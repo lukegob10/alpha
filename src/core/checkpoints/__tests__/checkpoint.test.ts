@@ -89,6 +89,9 @@ describe("Checkpoint functionality", () => {
 		// Create mock task
 		mockTask = {
 			taskId: "test-task-id",
+			abort: false,
+			abortTask: vi.fn().mockResolvedValue(undefined),
+			waitForTermination: vi.fn().mockResolvedValue(undefined),
 			enableCheckpoints: true,
 			checkpointService: mockCheckpointService,
 			checkpointServiceInitializing: false,
@@ -236,7 +239,9 @@ describe("Checkpoint functionality", () => {
 				{ ts: 1, role: "user", content: [{ type: "text", text: "Message 1" }] },
 			])
 			expect(mockTask.overwriteClineMessages).toHaveBeenCalledWith([{ ts: 1, say: "user", text: "Message 1" }])
-			expect(mockProvider.cancelTask).toHaveBeenCalled()
+			expect(mockProvider.cancelTask).not.toHaveBeenCalled()
+			expect(mockTask.abortTask).toHaveBeenCalledOnce()
+			expect(mockTask.waitForTermination).toHaveBeenCalledOnce()
 		})
 
 		it("should restore checkpoint for edit operation", async () => {
@@ -256,7 +261,7 @@ describe("Checkpoint functionality", () => {
 				{ ts: 1, say: "user", text: "Message 1" },
 				{ ts: 2, say: "assistant", text: "Message 2" },
 			])
-			expect(mockProvider.cancelTask).toHaveBeenCalled()
+			expect(mockProvider.cancelTask).not.toHaveBeenCalled()
 		})
 
 		it("should handle preview mode without modifying messages", async () => {
@@ -269,7 +274,47 @@ describe("Checkpoint functionality", () => {
 			expect(mockCheckpointService.restoreCheckpoint).toHaveBeenCalledWith("abc123")
 			expect(mockTask.overwriteApiConversationHistory).not.toHaveBeenCalled()
 			expect(mockTask.overwriteClineMessages).not.toHaveBeenCalled()
-			expect(mockProvider.cancelTask).toHaveBeenCalled()
+			expect(mockProvider.cancelTask).not.toHaveBeenCalled()
+		})
+
+		it("joins task termination before restoring the workspace or rewinding messages", async () => {
+			const order: string[] = []
+			let releaseTermination!: () => void
+			const termination = new Promise<void>((resolve) => {
+				releaseTermination = resolve
+			})
+			mockTask.abortTask.mockImplementation(async () => {
+				order.push("abort")
+			})
+			mockTask.waitForTermination.mockImplementation(async () => {
+				order.push("wait-start")
+				await termination
+				order.push("wait-complete")
+			})
+			mockCheckpointService.restoreCheckpoint.mockImplementation(async () => {
+				order.push("restore-workspace")
+			})
+			mockTask.messageManager.rewindToTimestamp = vi.fn().mockImplementation(async () => {
+				order.push("rewind-messages")
+			})
+
+			const restore = checkpointRestore(mockTask, {
+				ts: 2,
+				commitHash: "abc123",
+				mode: "restore",
+				operation: "delete",
+			})
+
+			await vi.waitFor(() => expect(mockTask.waitForTermination).toHaveBeenCalledOnce())
+			expect(order).toEqual(["abort", "wait-start"])
+			expect(mockCheckpointService.restoreCheckpoint).not.toHaveBeenCalled()
+			expect(mockTask.messageManager.rewindToTimestamp).not.toHaveBeenCalled()
+
+			releaseTermination()
+			await restore
+
+			expect(order).toEqual(["abort", "wait-start", "wait-complete", "restore-workspace", "rewind-messages"])
+			expect(mockProvider.cancelTask).not.toHaveBeenCalled()
 		})
 
 		it("should handle missing message gracefully", async () => {

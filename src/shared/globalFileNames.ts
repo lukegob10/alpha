@@ -7,6 +7,11 @@ export const GlobalFileNames = {
 	historyItem: "history_item.json",
 	historyIndex: "_index.json",
 	agentTurnEvents: "agent_turn_events.jsonl",
+	/** Provider-neutral lifecycle journal; legacy agentTurnEvents is retained. */
+	agentLifecycleEvents: "agent_lifecycle_events.jsonl",
+	agentLifecycleSnapshot: "agent_lifecycle_snapshot.json",
+	/** Versioned provider transcript; legacy apiConversationHistory is retained. */
+	providerTranscript: "provider_transcript.json",
 	subagentInstructionSnapshot: "subagent_instruction_snapshot.json",
 	agentControl: "agent_control.json",
 	scheduledTasks: "scheduled_tasks.json",

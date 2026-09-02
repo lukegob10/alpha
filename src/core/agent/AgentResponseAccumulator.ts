@@ -1,52 +1,88 @@
 import type { ApiStreamChunk } from "../../api/transform/stream"
-import type { AgentResponse, AgentResponseItem, AgentToolCall } from "./AgentResponse"
+import {
+	createAgentResponse,
+	type AgentResponse,
+	type AgentResponseItem,
+	type AgentResponseOutcome,
+} from "./AgentResponse"
 
 interface PendingToolCall {
 	id: string
 	name: string
 	arguments: string
+	/** Provider output index, when the stream supplied one. */
 	index?: number
+	/** Monotonic fallback for providers which do not expose an output index. */
+	order: number
+	/** True until a provider gives this call a stable non-empty ID. */
+	syntheticId: boolean
+	/** A `tool_call` chunk was seen for this call. */
+	hasCompletePayload: boolean
+	ended: boolean
 }
 
-function parseToolArguments(argumentsText: string): unknown {
+type ParsedArguments = { ok: true; value: unknown } | { ok: false }
+
+function parseToolArguments(argumentsText: string): ParsedArguments {
 	if (!argumentsText.trim()) {
-		return undefined
+		return { ok: false }
 	}
 
 	try {
-		return JSON.parse(argumentsText)
+		return { ok: true, value: JSON.parse(argumentsText) }
 	} catch {
-		return undefined
+		return { ok: false }
 	}
+}
+
+function asString(value: unknown): string {
+	return typeof value === "string" ? value : ""
 }
 
 /**
  * Accumulates the shared ApiStreamChunk transport into canonical response
- * items. Text-like items are emitted immediately; tool calls are held until
- * the provider stream completes. Keeping tool calls in their first-seen map
- * order also prevents out-of-order end markers from changing model order.
+ * items. Text-like items are emitted as they arrive; tool calls are held
+ * until the provider response is complete. A tool call is emitted at most
+ * once, even when a provider sends both partial and complete markers.
  */
 export class AgentResponseAccumulator {
 	private readonly items: AgentResponseItem[] = []
 	private readonly pendingTools = new Map<string, PendingToolCall>()
 	private readonly pendingToolIndexes = new Map<number, string>()
 	private readonly emittedToolIds = new Set<string>()
+	private lastReasoningIndex: number | undefined
+	private nextToolOrder = 0
+	private nextSyntheticId = 0
+	private finished = false
+	private finishPromise: Promise<AgentResponse> | undefined
+	private responseOutcome: AgentResponseOutcome | undefined
 
 	async add(chunk: ApiStreamChunk, onItem?: (item: AgentResponseItem) => Promise<void> | void): Promise<void> {
+		if (this.finished) {
+			throw new Error("Cannot add a response chunk after the accumulator has finished.")
+		}
+
 		switch (chunk.type) {
 			case "text":
 				return this.emit({ type: "text", text: chunk.text }, onItem)
 
-			case "reasoning":
-				return this.emit(
-					{ type: "reasoning", text: chunk.text, ...(chunk.signature ? { signature: chunk.signature } : {}) },
-					onItem,
-				)
+			case "reasoning": {
+				const item: Extract<AgentResponseItem, { type: "reasoning" }> = {
+					type: "reasoning",
+					text: chunk.text,
+					...(chunk.signature !== undefined ? { signature: chunk.signature } : {}),
+				}
+				this.lastReasoningIndex = this.items.length
+				return this.emit(item, onItem)
+			}
 
 			case "thinking_complete": {
-				const lastReasoning = [...this.items].reverse().find((item) => item.type === "reasoning")
-				if (lastReasoning?.type === "reasoning") {
-					lastReasoning.signature = chunk.signature
+				const reasoningIndex = this.lastReasoningIndex
+				const reasoning = reasoningIndex === undefined ? undefined : this.items[reasoningIndex]
+				if (reasoning?.type === "reasoning") {
+					// Keep an empty signature too: an explicitly supplied signature is
+					// different from a provider which did not report one.
+					reasoning.signature = chunk.signature
 				}
 				return
 			}
@@ -66,144 +102,297 @@ export class AgentResponseAccumulator {
 				)
 
 			case "grounding":
-				return this.emit({ type: "grounding", sources: chunk.sources }, onItem)
+				return this.emit(
+					{
+						type: "grounding",
+						sources: chunk.sources.map((source) => ({ ...source })),
+					},
+					onItem,
+				)
 
 			case "error":
-				return this.emit({ type: "error", message: chunk.message || chunk.error }, onItem)
+				this.responseOutcome ??= { status: "failed", reason: chunk.message || chunk.error || "Provider error" }
+				return this.emit(
+					{
+						type: "error",
+						message: chunk.message || chunk.error || "Provider returned an unspecified error.",
+					},
+					onItem,
+				)
+
+			case "outcome":
+				this.responseOutcome = {
+					status: chunk.status,
+					...(chunk.reason !== undefined ? { reason: chunk.reason } : {}),
+					...(chunk.retryable !== undefined ? { retryable: chunk.retryable } : {}),
+				}
+				return
 
 			case "tool_call": {
-				const pending = this.pendingTools.get(chunk.id)
-				if (pending) {
-					if (!pending.name) {
-						pending.name = chunk.name
-					}
-					if (!pending.arguments.trim()) {
-						pending.arguments = chunk.arguments
-					}
-					return
+				const id = asString(chunk.id)
+				let pending = id ? this.pendingTools.get(id) : undefined
+				if (!pending) {
+					pending = this.createPending(id || this.createSyntheticId(), chunk.name, undefined, !id)
+				} else if (!pending.name && chunk.name) {
+					pending.name = chunk.name
 				}
 
-				this.pendingTools.set(chunk.id, {
-					id: chunk.id,
-					name: chunk.name,
-					arguments: chunk.arguments,
-				})
+				const incomingArguments = asString(chunk.arguments)
+				const current = parseToolArguments(pending.arguments)
+				const incoming = parseToolArguments(incomingArguments)
+				// A complete marker is authoritative when it repairs an incomplete
+				// partial payload. Duplicate complete markers leave the first valid
+				// payload untouched, which makes duplicate handling deterministic.
+				if (
+					!pending.arguments.trim() ||
+					(!current.ok && incoming.ok) ||
+					(!pending.hasCompletePayload && incomingArguments.length > 0)
+				) {
+					pending.arguments = incomingArguments
+				}
+				pending.hasCompletePayload = true
 				return
 			}
 
 			case "tool_call_start": {
-				const pending = this.pendingTools.get(chunk.id)
-				if (pending) {
-					if (!pending.name) {
-						pending.name = chunk.name
-					}
-					return
+				const id = asString(chunk.id)
+				const pending =
+					(id ? this.pendingTools.get(id) : undefined) ??
+					this.createPending(id || this.createSyntheticId(), chunk.name, undefined, !id)
+				if (!pending.name && chunk.name) {
+					pending.name = chunk.name
 				}
-
-				this.pendingTools.set(chunk.id, { id: chunk.id, name: chunk.name, arguments: "" })
 				return
 			}
 
 			case "tool_call_delta": {
-				const pending = this.pendingTools.get(chunk.id) ?? {
-					id: chunk.id,
-					name: "",
-					arguments: "",
+				const id = asString(chunk.id)
+				const pending =
+					(id ? this.pendingTools.get(id) : undefined) ??
+					this.createPending(id || this.createSyntheticId(), "", undefined, !id)
+				const delta = asString(chunk.delta)
+				// Some providers repeat a complete payload as deltas. Do not corrupt
+				// a valid payload, but allow invalid/empty complete payloads to heal.
+				if (!pending.hasCompletePayload || !parseToolArguments(pending.arguments).ok) {
+					pending.arguments += delta
 				}
-				pending.arguments += chunk.delta
-				this.pendingTools.set(chunk.id, pending)
 				return
 			}
 
 			case "tool_call_end": {
+				const pending = this.pendingTools.get(asString(chunk.id))
+				if (pending) {
+					pending.ended = true
+				}
 				return
 			}
 
 			case "tool_call_partial": {
-				const indexedId = this.pendingToolIndexes.get(chunk.index)
-				let id = indexedId ?? chunk.id ?? `stream-tool-${chunk.index}`
-				let pending = this.pendingTools.get(id)
-
-				// Some Responses API streams emit argument deltas before the stable
-				// call ID. Migrate the index placeholder when that ID arrives.
-				if (pending && chunk.id && id !== chunk.id) {
-					this.pendingTools.delete(id)
-					pending.id = chunk.id
-					this.pendingTools.set(chunk.id, pending)
-					id = chunk.id
+				const idFromChunk = asString(chunk.id)
+				const idFromIndex = this.pendingToolIndexes.get(chunk.index)
+				let pending = idFromChunk ? this.pendingTools.get(idFromChunk) : undefined
+				if (!pending && idFromIndex) {
+					pending = this.pendingTools.get(idFromIndex)
 				}
 
-				pending ??= {
-					id,
-					name: chunk.name ?? "",
-					arguments: "",
-					index: chunk.index,
+				if (!pending) {
+					pending = this.createPending(
+						idFromChunk || this.createSyntheticId(chunk.index),
+						asString(chunk.name),
+						chunk.index,
+						!idFromChunk,
+					)
+				} else if (idFromChunk && pending.id !== idFromChunk) {
+					pending = this.migratePendingId(pending, idFromChunk)
 				}
 
+				if (pending.index === undefined) {
+					pending.index = chunk.index
+				} else {
+					pending.index = Math.min(pending.index, chunk.index)
+				}
 				if (chunk.name && !pending.name) {
 					pending.name = chunk.name
 				}
 				if (typeof chunk.arguments === "string" && chunk.arguments.length > 0) {
-					pending.arguments += chunk.arguments
+					if (!pending.hasCompletePayload || !parseToolArguments(pending.arguments).ok) {
+						pending.arguments += chunk.arguments
+					}
 				}
 
-				this.pendingTools.set(id, pending)
-				this.pendingToolIndexes.set(chunk.index, id)
+				this.pendingToolIndexes.set(chunk.index, pending.id)
 				return
 			}
 		}
 	}
 
-	async finish(onItem?: (item: AgentResponseItem) => Promise<void> | void): Promise<AgentResponse> {
-		for (const pending of this.pendingTools.values()) {
-			await this.emitToolCall(pending.id, pending.name, pending.arguments, onItem)
+	async finish(
+		onItem?: (item: AgentResponseItem) => Promise<void> | void,
+		outcome?: AgentResponseOutcome,
+	): Promise<AgentResponse> {
+		if (this.finishPromise) {
+			return this.finishPromise
+		}
+
+		this.finished = true
+		this.responseOutcome = outcome ?? this.responseOutcome
+		this.finishPromise = this.flushPendingTools(onItem)
+		return this.finishPromise
+	}
+
+	private async flushPendingTools(
+		onItem?: (item: AgentResponseItem) => Promise<void> | void,
+	): Promise<AgentResponse> {
+		const pendingTools = [...this.pendingTools.values()].sort((left, right) => {
+			if (left.index !== undefined && right.index !== undefined && left.index !== right.index) {
+				return left.index - right.index
+			}
+			if (left.index !== undefined && right.index === undefined) return -1
+			if (left.index === undefined && right.index !== undefined) return 1
+			return left.order - right.order
+		})
+
+		for (const pending of pendingTools) {
+			await this.emitToolCall(pending, onItem)
 		}
 
 		this.pendingTools.clear()
 		this.pendingToolIndexes.clear()
+		return createAgentResponse(this.items, this.responseOutcome)
+	}
 
-		return {
-			items: [...this.items],
-			text: this.items
-				.filter((item): item is Extract<AgentResponseItem, { type: "text" }> => item.type === "text")
-				.map((item) => item.text)
-				.join(""),
-			reasoning: this.items
-				.filter((item): item is Extract<AgentResponseItem, { type: "reasoning" }> => item.type === "reasoning")
-				.map((item) => item.text)
-				.join(""),
-			toolCalls: this.items.filter((item): item is AgentToolCall => item.type === "tool_call"),
+	private createPending(id: string, name: string, index?: number, syntheticId = false): PendingToolCall {
+		const existing = this.pendingTools.get(id)
+		if (existing) {
+			if (!existing.name && name) existing.name = name
+			if (index !== undefined) {
+				existing.index = existing.index === undefined ? index : Math.min(existing.index, index)
+				this.pendingToolIndexes.set(index, existing.id)
+			}
+			return existing
 		}
+
+		const pending: PendingToolCall = {
+			id,
+			name,
+			arguments: "",
+			index,
+			order: this.nextToolOrder++,
+			syntheticId,
+			hasCompletePayload: false,
+			ended: false,
+		}
+		this.pendingTools.set(id, pending)
+		if (index !== undefined) {
+			this.pendingToolIndexes.set(index, id)
+		}
+		return pending
+	}
+
+	private migratePendingId(pending: PendingToolCall, newId: string): PendingToolCall {
+		if (pending.id === newId) return pending
+
+		const existing = this.pendingTools.get(newId)
+		if (existing && existing !== pending) {
+			// A duplicate ID can be observed through two output indexes. Keep the
+			// earliest record and only fill missing identity/payload fields.
+			const pendingOldId = pending.id
+			const existingId = existing.id
+			const primary = existing.order <= pending.order ? existing : pending
+			const secondary = primary === existing ? pending : existing
+			if (!primary.name) primary.name = secondary.name
+			if (!primary.arguments.trim()) primary.arguments = secondary.arguments
+			primary.hasCompletePayload ||= secondary.hasCompletePayload
+			primary.ended ||= secondary.ended
+			if (secondary.index !== undefined) {
+				primary.index = primary.index === undefined ? secondary.index : Math.min(primary.index, secondary.index)
+			}
+			this.pendingTools.delete(secondary.id)
+			if (primary.id !== newId) {
+				const oldPrimaryId = primary.id
+				this.pendingTools.delete(oldPrimaryId)
+				primary.id = newId
+				primary.syntheticId = false
+				this.pendingTools.set(newId, primary)
+			}
+			for (const [index, mappedId] of this.pendingToolIndexes) {
+				if (mappedId === pendingOldId || mappedId === existingId || mappedId === secondary.id) {
+					this.pendingToolIndexes.set(index, primary.id)
+				}
+			}
+			return primary
+		}
+
+		const oldId = pending.id
+		this.pendingTools.delete(oldId)
+		pending.id = newId
+		pending.syntheticId = false
+		this.pendingTools.set(newId, pending)
+		for (const [index, mappedId] of this.pendingToolIndexes) {
+			if (mappedId === oldId) this.pendingToolIndexes.set(index, newId)
+		}
+		return pending
+	}
+
+	private createSyntheticId(index?: number): string {
+		const base = index === undefined ? `stream-tool-${this.nextSyntheticId}` : `stream-tool-${index}`
+		let candidate = base
+		while (this.pendingTools.has(candidate)) {
+			candidate = `${base}-${++this.nextSyntheticId}`
+		}
+		this.nextSyntheticId += 1
+		return candidate
 	}
 
 	private async emitToolCall(
-		id: string,
-		name: string,
-		argumentsText: string,
+		pending: PendingToolCall,
 		onItem?: (item: AgentResponseItem) => Promise<void> | void,
 	): Promise<void> {
-		if (this.emittedToolIds.has(id)) {
+		if (this.emittedToolIds.has(pending.id)) {
 			return
 		}
 
-		this.emittedToolIds.add(id)
-		const argumentsValue = parseToolArguments(argumentsText)
-		if (argumentsValue === undefined) {
+		this.emittedToolIds.add(pending.id)
+		const parsed = parseToolArguments(pending.arguments)
+		if (pending.syntheticId) {
 			await this.emit(
 				{
 					type: "error",
-					message: argumentsText.trim()
-						? `Unable to parse arguments for tool call "${name}" (${id}).`
-						: `Tool call "${name}" (${id}) did not provide complete arguments.`,
-					callId: id,
-					toolName: name,
+					message: `Tool call "${pending.name}" (${pending.id}) did not provide a stable call ID.`,
+					callId: pending.id,
+					toolName: pending.name,
+				},
+				onItem,
+			)
+			return
+		}
+		if (!pending.name.trim()) {
+			await this.emit(
+				{
+					type: "error",
+					message: `Tool call "${pending.id}" did not provide a tool name.`,
+					callId: pending.id,
+				},
+				onItem,
+			)
+			return
+		}
+		if (!parsed.ok) {
+			await this.emit(
+				{
+					type: "error",
+					message: pending.arguments.trim()
+						? `Unable to parse arguments for tool call "${pending.name}" (${pending.id}).`
+						: `Tool call "${pending.name}" (${pending.id}) did not provide complete arguments.`,
+					callId: pending.id,
+					toolName: pending.name,
 				},
 				onItem,
 			)
 			return
 		}
 
-		await this.emit({ type: "tool_call", id, name, arguments: argumentsValue }, onItem)
+		await this.emit({ type: "tool_call", id: pending.id, name: pending.name, arguments: parsed.value }, onItem)
 	}
 
 	private async emit(item: AgentResponseItem, onItem?: (item: AgentResponseItem) => Promise<void> | void) {

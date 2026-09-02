@@ -14,6 +14,8 @@ import { getApiMetrics } from "../../shared/getApiMetrics"
 
 import { DIFF_VIEW_URI_SCHEME } from "../../integrations/editor/DiffViewProvider"
 
+import { awaitTaskCancellationBoundary } from "../webview/TaskCancellationBoundary"
+
 import { CheckpointServiceOptions, RepoPerTaskCheckpointService } from "../../services/checkpoints"
 
 const WARNING_THRESHOLD_MS = 5000
@@ -253,6 +255,15 @@ export async function checkpointRestore(
 	const provider = task.providerRef.deref()
 
 	try {
+		// Workspace restoration and transcript rewind must not race the task that
+		// currently owns the workspace. Abort the active task first, then join its
+		// real termination/persistence boundary before replacing either resource.
+		let abortResult: unknown
+		if (!task.abort && typeof task.abortTask === "function") {
+			abortResult = await task.abortTask()
+		}
+		await awaitTaskCancellationBoundary(task, abortResult)
+
 		await service.restoreCheckpoint(commitHash)
 		TelemetryService.instance.captureCheckpointRestored(task.taskId)
 		await provider?.postMessageToWebview({ type: "currentCheckpointUpdated", text: commitHash })
@@ -283,18 +294,6 @@ export async function checkpointRestore(
 				} satisfies ClineApiReqInfo),
 			)
 		}
-
-		// The task is already cancelled by the provider beforehand, but we
-		// need to re-init to get the updated messages.
-		//
-		// This was taken from Alpha's implementation of the checkpoints
-		// feature. The task instance will hang if we don't cancel twice,
-		// so this is currently necessary, but it seems like a complicated
-		// and hacky solution to a problem that I don't fully understand.
-		// I'd like to revisit this in the future and try to improve the
-		// task flow and the communication between the webview and the
-		// `Task` instance.
-		provider?.cancelTask()
 	} catch (err) {
 		provider?.log("[checkpointRestore] disabling checkpoints for this task")
 		task.enableCheckpoints = false

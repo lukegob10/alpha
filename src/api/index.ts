@@ -3,7 +3,7 @@ import OpenAI from "openai"
 
 import { isRetiredProvider, type ProviderSettings, type ModelInfo, vertexDefaultModelId } from "@alpha-code/types"
 
-import { ApiStream } from "./transform/stream"
+import { ApiStream, type ApiStreamCapabilities, type ApiStreamRequestMetadata } from "./transform/stream"
 
 import {
 	AnthropicHandler,
@@ -42,7 +42,7 @@ export interface SingleCompletionHandler {
 	completePrompt(prompt: string): Promise<string>
 }
 
-export interface ApiHandlerCreateMessageMetadata {
+export interface ApiHandlerCreateMessageMetadata extends ApiStreamRequestMetadata {
 	/**
 	 * Task ID used for tracking and provider-specific features:
 	 * - Alpha: Sent as X-Alpha-Task-ID header
@@ -88,9 +88,18 @@ export interface ApiHandlerCreateMessageMetadata {
 	 * Only applies to providers that support function calling restrictions (e.g., Gemini).
 	 */
 	allowedFunctionNames?: string[]
+	/**
+	 * Optional provider capability override. Legacy callers/providers omit this
+	 * and retain the historical throw/no-terminal behavior; canonical adapters
+	 * advertise lifecycle and cancellation explicitly.
+	 */
+	streamCapabilities?: ApiStreamCapabilities
 }
 
 export interface ApiHandler {
+	/** Additive capability declaration; absent means legacy stream semantics. */
+	readonly streamCapabilities?: ApiStreamCapabilities
+
 	createMessage(
 		systemPrompt: string,
 		messages: Anthropic.Messages.MessageParam[],

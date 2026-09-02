@@ -1,6 +1,6 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
-import { convertToAiSdkMessages, convertToolsForAiSdk, processAiSdkStreamPart } from "../ai-sdk"
+import { convertToAiSdkMessages, convertToolsForAiSdk, processAiSdkStream, processAiSdkStreamPart } from "../ai-sdk"
 
 vitest.mock("ai", () => ({
 	tool: vitest.fn((t) => t),
@@ -487,6 +487,137 @@ describe("AI SDK conversion utilities", () => {
 				const chunks = [...processAiSdkStreamPart(event as any)]
 				expect(chunks).toHaveLength(0)
 			}
+		})
+	})
+
+	describe("processAiSdkStream lifecycle outcomes", () => {
+		it.each(["length", "max_tokens", "content-filter"])(
+			"classifies %s as incomplete for finish and finish-step",
+			async (finishReason) => {
+				for (const type of ["finish", "finish-step"] as const) {
+					const chunks = [...processAiSdkStreamPart({ type, finishReason } as any, { emitLifecycle: true })]
+					expect(chunks).toHaveLength(1)
+					expect(chunks[0]).toMatchObject({
+						type: "outcome",
+						status: "incomplete",
+						terminal: true,
+						reason: finishReason,
+					})
+				}
+			},
+		)
+
+		it("classifies finish-step failures the same as finish failures", () => {
+			for (const type of ["finish", "finish-step"] as const) {
+				const chunks = [
+					...processAiSdkStreamPart({ type, finishReason: "error" } as any, { emitLifecycle: true }),
+				]
+				expect(chunks[0]).toMatchObject({
+					type: "outcome",
+					status: "failed",
+					reason: "error",
+					retryable: true,
+				})
+			}
+		})
+
+		it("emits an incomplete outcome for terminal-less EOF", async () => {
+			async function* stream() {
+				yield { type: "text-delta" as const, id: "1", text: "partial" }
+			}
+
+			const chunks = []
+			for await (const chunk of processAiSdkStream(stream(), { emitLifecycle: true })) chunks.push(chunk)
+
+			expect(chunks.at(-1)).toMatchObject({
+				type: "outcome",
+				status: "incomplete",
+				terminal: false,
+				semanticOutputObserved: true,
+			})
+		})
+
+		it.each([
+			{
+				label: "completed finish followed by incomplete finish-step",
+				first: { type: "finish", finishReason: "stop" },
+				second: { type: "finish-step", finishReason: "length" },
+				expectedStatus: "completed",
+			},
+			{
+				label: "incomplete finish followed by completed finish-step",
+				first: { type: "finish", finishReason: "length" },
+				second: { type: "finish-step", finishReason: "stop" },
+				expectedStatus: "incomplete",
+			},
+		])("keeps the first terminal status for $label", async ({ first, second, expectedStatus }) => {
+			async function* stream() {
+				yield first as any
+				yield second as any
+			}
+
+			const chunks = []
+			for await (const chunk of processAiSdkStream(stream(), {
+				emitLifecycle: true,
+				requestId: "ai-sdk-terminal-request",
+				attemptId: "ai-sdk-terminal-attempt",
+			})) {
+				chunks.push(chunk)
+			}
+
+			const outcomes = chunks.filter((chunk) => chunk.type === "outcome")
+			expect(outcomes).toHaveLength(1)
+			expect(outcomes[0]).toMatchObject({
+				type: "outcome",
+				status: expectedStatus,
+				terminal: true,
+				requestId: "ai-sdk-terminal-request",
+				attemptId: "ai-sdk-terminal-attempt",
+			})
+		})
+
+		it("emits a failed outcome for an abrupt iterator failure", async () => {
+			async function* failedStream() {
+				yield { type: "text-delta" as const, id: "1", text: "partial" }
+				throw new Error("stream broke")
+			}
+
+			const chunks = []
+			for await (const chunk of processAiSdkStream(failedStream(), { emitLifecycle: true })) chunks.push(chunk)
+
+			expect(chunks.at(-2)).toMatchObject({ type: "error", message: "stream broke" })
+			expect(chunks.at(-1)).toMatchObject({
+				type: "outcome",
+				status: "failed",
+				terminal: true,
+				semanticOutputObserved: true,
+			})
+		})
+
+		it("preserves lifecycle metadata when throwOnError is requested", async () => {
+			async function* stream() {
+				yield {
+					type: "error" as const,
+					error: { message: "request rejected", status: 400, retryable: false },
+				}
+			}
+
+			const iterator = processAiSdkStream(stream(), {
+				emitLifecycle: true,
+				throwOnError: true,
+				requestId: "ai-sdk-request",
+				attemptId: "ai-sdk-attempt",
+			})
+			await expect(iterator.next()).resolves.toMatchObject({ value: { type: "error", retryable: false } })
+			await expect(iterator.next()).resolves.toMatchObject({ value: { type: "outcome", status: "failed" } })
+			await expect(iterator.next()).rejects.toMatchObject({
+				status: 400,
+				retryable: false,
+				reason: "request rejected",
+				requestId: "ai-sdk-request",
+				attemptId: "ai-sdk-attempt",
+				terminal: true,
+			})
 		})
 	})
 })

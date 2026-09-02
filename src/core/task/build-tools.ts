@@ -16,8 +16,11 @@ import {
 	filterMcpToolsForMode,
 	resolveToolAlias,
 } from "../prompts/tools/filter-tools-for-mode"
+import { buildTaskToolSurface as captureTaskToolSurface, type TaskToolSurface } from "../tools/TaskToolSurface"
+import { ToolRegistry } from "../tools/ToolRegistry"
+import type { ToolPolicySnapshot } from "../agent/ToolPolicy"
 
-interface BuildToolsOptions {
+export interface BuildToolsOptions {
 	provider: ClineProvider
 	cwd: string
 	mode: string | undefined
@@ -39,9 +42,12 @@ interface BuildToolsOptions {
 	taskKind?: "primary" | "subagent"
 	/** Stable primary-task lifecycle catalog; managed children remain allow-list constrained. */
 	enableAgentLifecycleTools?: boolean
+	/** Optional caller policy values used when exposing the unified surface. */
+	policy?: ToolPolicySnapshot
+	autoApprovalEnabled?: boolean
 }
 
-interface BuildToolsResult {
+export interface BuildToolsResult {
 	/**
 	 * The tools to pass to the model.
 	 * If includeAllToolsWithRestrictions is true, this includes ALL tools.
@@ -54,6 +60,12 @@ interface BuildToolsResult {
 	 * Use this with allowedFunctionNames in providers that support it.
 	 */
 	allowedFunctionNames?: string[]
+	/** Unified registry/policy snapshot retained for new callers. */
+	registry?: ToolRegistry
+	schemas?: OpenAI.Chat.ChatCompletionTool[]
+	policy?: ToolPolicySnapshot
+	digest?: string
+	surface?: TaskToolSurface
 }
 
 /**
@@ -99,7 +111,7 @@ export async function buildNativeToolsArray(options: BuildToolsOptions): Promise
  * @param options - Configuration options for building the tools
  * @returns BuildToolsResult with tools array and optional allowedFunctionNames
  */
-export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsOptions): Promise<BuildToolsResult> {
+async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsResult> {
 	const {
 		provider,
 		cwd,
@@ -107,13 +119,14 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 		customModes,
 		experiments,
 		apiConfiguration,
-		disabledTools,
+		disabledTools: requestedDisabledTools,
 		modelInfo,
 		includeAllToolsWithRestrictions,
 		allowedToolNames,
 		taskKind = "primary",
 		enableAgentLifecycleTools = taskKind === "primary",
 	} = options
+	const disabledTools = [...new Set([...(requestedDisabledTools ?? []), ...(options.policy?.disabledTools ?? [])])]
 
 	const mcpHub = provider.getMcpHub()
 
@@ -206,14 +219,100 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 		// to aliases in filteredTools but allTools contains the original canonical names.
 		const allowedFunctionNames = filteredTools.map((tool) => resolveToolAlias(getToolName(tool)))
 
+		const surface = createCapturedToolSurface({
+			options,
+			disabledTools,
+			registry: createToolRegistry(taskNativeTools, mcpTools, nativeCustomTools),
+			schemas: allTools,
+			allowedFunctionNames,
+			includeAllToolsWithRestrictions: true,
+		})
 		return {
 			tools: allTools,
 			allowedFunctionNames,
+			registry: surface.registry,
+			schemas: [...surface.schemas],
+			policy: surface.policy,
+			digest: surface.digest,
+			surface,
 		}
 	}
 
 	// Default behavior: return only filtered tools
+	const surface = createCapturedToolSurface({
+		options,
+		disabledTools,
+		registry: createToolRegistry(taskNativeTools, mcpTools, nativeCustomTools),
+		schemas: filteredTools,
+		allowedFunctionNames: filteredTools.map((tool) => resolveToolAlias(getToolName(tool))),
+		includeAllToolsWithRestrictions: false,
+	})
 	return {
 		tools: filteredTools,
+		registry: surface.registry,
+		schemas: [...surface.schemas],
+		policy: surface.policy,
+		digest: surface.digest,
+		surface,
 	}
+}
+
+function createToolRegistry(
+	nativeTools: readonly OpenAI.Chat.ChatCompletionTool[],
+	mcpTools: readonly OpenAI.Chat.ChatCompletionTool[],
+	nativeCustomTools: readonly OpenAI.Chat.ChatCompletionTool[],
+): ToolRegistry {
+	return new ToolRegistry({
+		nativeTools,
+		mcpTools,
+		// Custom schemas are loaded into the shared registry before capture. The
+		// registry reads the same serialized definitions used by the provider.
+		includeCustomTools: nativeCustomTools.length > 0,
+	})
+}
+
+function createCapturedToolSurface(input: {
+	options: BuildToolsOptions
+	disabledTools: readonly string[]
+	registry: ToolRegistry
+	schemas: readonly OpenAI.Chat.ChatCompletionTool[]
+	allowedFunctionNames: readonly string[]
+	includeAllToolsWithRestrictions: boolean
+}): TaskToolSurface {
+	const { options, disabledTools, registry, schemas, allowedFunctionNames, includeAllToolsWithRestrictions } = input
+	return captureTaskToolSurface({
+		registry,
+		schemas,
+		visibleToolNames: schemas
+			.filter((tool): tool is OpenAI.Chat.ChatCompletionFunctionTool => tool.type === "function")
+			.map((tool) => resolveToolAlias(tool.function.name)),
+		allowedToolNames: allowedFunctionNames,
+		disabledTools,
+		policy: options.policy,
+		autoApprovalEnabled: options.autoApprovalEnabled,
+		mode: options.mode,
+		cwd: options.cwd,
+		includeAllToolsWithRestrictions,
+		// `filterNativeToolsForMode` already applied legacy mode, task authority,
+		// lifecycle, and feature restrictions exactly once. The compatibility
+		// surface only captures that result and must not narrow it a second time.
+		applyProfile: false,
+	})
+}
+
+/** Build the unified registry/schema/policy capture for a provider request. */
+export async function buildTaskToolSurface(options: BuildToolsOptions): Promise<TaskToolSurface> {
+	const result = await buildToolCatalog(options)
+	if (!result.surface) {
+		throw new Error("Tool catalog did not produce a unified task surface.")
+	}
+	return result.surface
+}
+
+/**
+ * Backwards-compatible wrapper retaining the historical `{ tools, allowedFunctionNames }`
+ * shape while exposing the unified capture fields for newer callers.
+ */
+export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsOptions): Promise<BuildToolsResult> {
+	return buildToolCatalog(options)
 }

@@ -1,7 +1,7 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import { serializeError } from "serialize-error"
 
-import type { ModeConfig } from "@alpha-code/types"
+import type { ClineAsk, ClineAskResponse, ClineSay, ModeConfig, ToolProgressStatus } from "@alpha-code/types"
 
 import type { ToolResponse, ToolUse } from "../../shared/tools"
 import type { ToolCallbacks, ToolResultMetadata } from "../tools/BaseTool"
@@ -24,7 +24,12 @@ import {
 } from "./ToolPolicy"
 
 export interface ToolSchedulerOptions {
-	task: Task
+	/**
+	 * Legacy Task facade. New callers can provide `executionHost` instead and
+	 * keep scheduler orchestration independent from the concrete Task class.
+	 */
+	task?: Task
+	executionHost?: ToolExecutionHost
 	registry: ToolRegistry
 	mode: string
 	customModes?: ModeConfig[]
@@ -35,11 +40,72 @@ export interface ToolSchedulerOptions {
 	signal?: AbortSignal
 	/** Optional test/host override for mode and disabled-tool validation. */
 	validateCall?: (call: AgentToolCall, toolCall: ToolUse<any>) => void
+	/** Revalidate the persisted assistant boundary immediately before an effect. */
+	beforeEffect?: (call: AgentToolCall) => void | Promise<void>
+	/** Persist deterministic results for all calls when cancellation wins. */
+	preserveAbortedResults?: boolean
 	onEvent?: (event: AgentTurnEvent) => void | Promise<void>
+	/** Safe by default. Parallel work is opt-in at the scheduler boundary. */
+	executionMode?: ToolExecutionMode
+	/** Maximum number of calls in one contiguous selective-parallel group. */
+	maxConcurrency?: number
+}
+
+/** Scheduler-level execution policy. */
+export type ToolExecutionMode = "serial" | "selective-parallel"
+
+type ToolExecutionContent = Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam | Anthropic.ToolResultBlockParam>
+
+type ToolExecutionApproval = (
+	type: ClineAsk,
+	partialMessage?: string,
+	progressStatus?: ToolProgressStatus,
+	forceApproval?: boolean,
+) => Promise<{ response: ClineAskResponse; text?: string; images?: string[] }>
+
+type ToolExecutionSay = (type: ClineSay, text?: string, images?: string[]) => Promise<unknown>
+
+type ToolExecutionHostAsk = (
+	type: ClineAsk,
+	partialMessage?: string,
+	partial?: boolean,
+	progressStatus?: ToolProgressStatus,
+	isProtected?: boolean,
+) => Promise<{ response: ClineAskResponse; text?: string; images?: string[] }>
+
+/**
+ * The small state and callback surface the scheduler needs from its host.
+ *
+ * `taskFacade` is intentionally optional: existing registry executors still
+ * receive the legacy Task facade, while isolated hosts can use descriptors
+ * that only need the provider-neutral scheduler context.
+ */
+export interface ToolExecutionHost {
+	taskId: string
+	cwd?: string
+	abort?: boolean
+	didToolFailInCurrentTurn?: boolean
+	userMessageContent: ToolExecutionContent
+	userMessageContentReady?: boolean
+	ask?: ToolExecutionHostAsk
+	/** Alias kept explicit for host implementations that prefer an approval name. */
+	askApproval?: ToolExecutionApproval
+	say: ToolExecutionSay
+	recordToolUsage: (name: string) => void
+	pushToolResultToUserContent: (result: Anthropic.ToolResultBlockParam) => boolean
+	shouldStopRepeatedToolCall?: (name: string, args: unknown) => boolean
+	recordToolCallForStopping?: (
+		name: string,
+		args: unknown,
+		status: ToolSchedulerResult["status"],
+		commandCategory?: "test" | "build" | "lint" | "typecheck",
+	) => void
+	/** Rich facade for existing ToolRegistry handlers. */
+	taskFacade?: Task
 }
 
 export interface ToolSchedulerOutcome {
-	status: "completed" | "aborted"
+	status: "completed" | "aborted" | "failed"
 	results: ToolSchedulerResult[]
 	batchSize: number
 	parallelBatchCount: number
@@ -51,6 +117,14 @@ export interface ToolSchedulerOutcome {
 	supersededAskCount: number
 	completedToolResultCount: number
 	outputTruncatedCount: number
+	/** Present when host integrity checks prevented one or more effects. */
+	failure?: ToolSchedulerFailure
+}
+
+export interface ToolSchedulerFailure {
+	kind: "effect_fence"
+	callId: string
+	message: string
 }
 
 export interface ToolSchedulerResult {
@@ -64,6 +138,17 @@ export interface ToolSchedulerResult {
 	truncated?: boolean
 	timedOut?: boolean
 	durationMs: number
+}
+
+class ToolEffectFenceError extends Error {
+	readonly call: AgentToolCall
+
+	constructor(call: AgentToolCall, cause: unknown) {
+		const message = cause instanceof Error ? cause.message : String(cause)
+		super(message, { cause })
+		this.name = "ToolEffectFenceError"
+		this.call = call
+	}
 }
 
 type ToolResultStatus = NonNullable<ToolResultMetadata["status"]>
@@ -181,6 +266,10 @@ class ToolResultCollector {
 		return this.result ?? "(tool did not return anything)"
 	}
 
+	hasResult(): boolean {
+		return this.result !== undefined
+	}
+
 	isTruncated(): boolean {
 		return this.truncated
 	}
@@ -282,6 +371,45 @@ export class ToolScheduler {
 
 	constructor(private readonly options: ToolSchedulerOptions) {}
 
+	private get executionHost(): ToolExecutionHost {
+		const host = this.options.executionHost ?? (this.options.task as unknown as ToolExecutionHost | undefined)
+		if (!host) {
+			throw new Error("ToolScheduler requires an executionHost or legacy task facade.")
+		}
+		return host
+	}
+
+	private get toolTask(): Task {
+		return (
+			this.options.executionHost?.taskFacade ??
+			this.options.task ??
+			(this.options.executionHost as unknown as Task)
+		)
+	}
+
+	private get executionMode(): ToolExecutionMode {
+		return this.options.executionMode ?? "serial"
+	}
+
+	private get maxConcurrency(): number {
+		const requested = this.options.maxConcurrency
+		if (requested === undefined || !Number.isFinite(requested)) {
+			return 4
+		}
+		return Math.max(1, Math.floor(requested))
+	}
+
+	private isSelectableParallel(item: PreparedCall | undefined): boolean {
+		const capabilities = item?.descriptor?.capabilities
+		return (
+			this.executionMode === "selective-parallel" &&
+			capabilities?.concurrency === "parallel" &&
+			capabilities.sideEffects === "none" &&
+			!capabilities.controlFlow &&
+			!capabilities.requiresApproval
+		)
+	}
+
 	async run(response: AgentResponse | AgentToolCall[]): Promise<ToolSchedulerOutcome> {
 		this.approvalRequestCount = 0
 		this.approvalDeniedCount = 0
@@ -303,7 +431,8 @@ export class ToolScheduler {
 		await this.options.onEvent?.({ type: "tool_batch_started", batchSize: calls.length })
 
 		if (this.isCancelled()) {
-			return this.metrics("aborted", [], calls.length, 0, startedAt)
+			this.fillCancelledResults(results, calls)
+			return this.abortOutcome(results, calls, calls.length, 0, startedAt)
 		}
 
 		const barrier = prepared.find((item) => item.descriptor?.capabilities.concurrency === "barrier")
@@ -321,7 +450,8 @@ export class ToolScheduler {
 		let parallelBatchCount = 0
 		while (cursor < prepared.length) {
 			if (this.isCancelled()) {
-				return this.metrics("aborted", [], calls.length, parallelBatchCount, startedAt)
+				this.fillCancelledResults(results, calls, cursor)
+				return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
 			}
 
 			const item = prepared[cursor]
@@ -334,7 +464,7 @@ export class ToolScheduler {
 				continue
 			}
 
-			if (item.descriptor.capabilities.concurrency === "parallel") {
+			if (this.isSelectableParallel(item)) {
 				parallelBatchCount += 1
 				const parallelItems: PreparedCall[] = []
 				while (cursor < prepared.length) {
@@ -343,7 +473,7 @@ export class ToolScheduler {
 						candidate.validationError ||
 						!candidate.descriptor ||
 						!candidate.toolCall ||
-						candidate.descriptor.capabilities.concurrency !== "parallel"
+						!this.isSelectableParallel(candidate)
 					) {
 						break
 					}
@@ -352,25 +482,276 @@ export class ToolScheduler {
 				}
 				this.parallelToolCount += parallelItems.length
 
-				const settled = await Promise.allSettled(parallelItems.map((candidate) => this.executeCall(candidate)))
-				settled.forEach((outcome, offset) => {
-					const candidate = parallelItems[offset]
-					results[candidate.index] =
-						outcome.status === "fulfilled"
-							? outcome.value
-							: resultForError(
-									candidate.call,
-									`Tool execution failed: ${this.errorMessage(outcome.reason)}`,
-								)
+				const settled = await this.executeParallelBatch(parallelItems)
+				settled.results.forEach((result, offset) => {
+					if (result) results[parallelItems[offset].index] = result
 				})
+				if (settled.failure) {
+					return this.failedOutcome(
+						results,
+						calls,
+						settled.failure,
+						calls.length,
+						parallelBatchCount,
+						startedAt,
+					)
+				}
+				if (this.isCancelled()) {
+					this.fillCancelledResults(results, calls, cursor)
+					return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
+				}
 				continue
 			}
 
-			results[item.index] = await this.executeCall(item)
+			try {
+				results[item.index] = await this.executeCall(item)
+			} catch (error) {
+				if (!(error instanceof ToolEffectFenceError)) throw error
+				return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
+			}
 			cursor += 1
+			if (this.isCancelled()) {
+				this.fillCancelledResults(results, calls, cursor)
+				return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
+			}
+		}
+
+		if (this.isCancelled()) {
+			this.fillCancelledResults(results, calls)
+			return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
 		}
 
 		return this.commitResults(results, calls, calls.length, parallelBatchCount, startedAt)
+	}
+
+	private async executeParallelBatch(items: PreparedCall[]): Promise<{
+		results: Array<ToolSchedulerResult | undefined>
+		failure?: ToolEffectFenceError
+	}> {
+		const results = new Array<ToolSchedulerResult | undefined>(items.length)
+		let nextIndex = 0
+		let failure: ToolEffectFenceError | undefined
+		const workerCount = Math.min(this.maxConcurrency, items.length)
+
+		const worker = async (): Promise<void> => {
+			while (nextIndex < items.length) {
+				if (failure) return
+				const index = nextIndex
+				nextIndex += 1
+				const item = items[index]
+				if (this.isCancelled()) {
+					results[index] = this.cancelledResultFor(item.call)
+					continue
+				}
+
+				// executeCall converts ordinary tool failures into deterministic results.
+				// The only error it intentionally lets escape is the host's beforeEffect
+				// fence, which must fail the scheduler rather than become a tool result.
+				try {
+					results[index] = await this.executeCall(item)
+				} catch (error) {
+					if (!(error instanceof ToolEffectFenceError)) throw error
+					failure ??= error
+				}
+			}
+		}
+
+		await Promise.all(Array.from({ length: workerCount }, () => worker()))
+		return { results, ...(failure ? { failure } : {}) }
+	}
+
+	private cancelledResultFor(call: AgentToolCall): ToolSchedulerResult {
+		return {
+			callId: call.id,
+			name: call.name,
+			status: "cancelled",
+			content: formatResponse.toolError("Tool execution was cancelled."),
+			executionStatus: "cancelled",
+			durationMs: 0,
+		}
+	}
+
+	private fillCancelledResults(
+		results: Array<ToolSchedulerResult | undefined>,
+		calls: AgentToolCall[],
+		fromIndex = 0,
+	): void {
+		for (let index = Math.max(0, fromIndex); index < calls.length; index += 1) {
+			if (!results[index]) {
+				results[index] = this.cancelledResultFor(calls[index])
+			}
+		}
+	}
+
+	private async abortOutcome(
+		results: Array<ToolSchedulerResult | undefined>,
+		calls: AgentToolCall[],
+		batchSize: number,
+		parallelBatchCount: number,
+		startedAt: number,
+	): Promise<ToolSchedulerOutcome> {
+		const completeResults = calls.map((call, index) => results[index] ?? this.cancelledResultFor(call))
+		// Cancellation can win while a call is running or between calls. Hosts
+		// that own durable transcripts opt into preserving every result (including
+		// deterministic cancelled receipts) through the same boundary used by
+		// normal completion. `push...` is idempotent, so results already committed
+		// before cancellation are not duplicated.
+		if (this.options.preserveAbortedResults) {
+			for (const [index, result] of completeResults.entries()) {
+				const parts = getToolResultParts(result.content)
+				const added = this.executionHost.pushToolResultToUserContent({
+					type: "tool_result",
+					tool_use_id: sanitizeToolUseId(result.callId),
+					content: parts.text,
+					is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
+				})
+				if (added && parts.images.length > 0) this.executionHost.userMessageContent.push(...parts.images)
+				if (!added) continue
+				await this.options.onEvent?.({
+					type: "tool_result",
+					callId: result.callId,
+					name: result.name,
+					status: result.status,
+					output: result.content,
+					truncated: result.truncated,
+					timedOut: result.timedOut,
+				})
+				const commandCategory = getVerificationCategory(calls[index])
+				const verificationStatus =
+					result.executionStatus ?? (result.status === "success" ? undefined : result.status)
+				if (commandCategory && verificationStatus) {
+					await this.options.onEvent?.({
+						type: "verification_result",
+						commandCategory,
+						toolName: result.name,
+						status: verificationStatus,
+						durationMs: result.durationMs,
+						exitCode: result.exitCode,
+						output: getVerificationOutput(result.content),
+					})
+				}
+			}
+			this.executionHost.userMessageContentReady = true
+		}
+		const outcome = this.metrics("aborted", completeResults, batchSize, parallelBatchCount, startedAt)
+		await this.options.onEvent?.({
+			type: "tool_batch_finished",
+			status: outcome.status,
+			batchSize: outcome.batchSize,
+			parallelBatchCount: outcome.parallelBatchCount,
+			parallelToolCount: outcome.parallelToolCount,
+			durationMs: outcome.durationMs,
+			truncatedResultCount: outcome.outputTruncatedCount,
+		})
+		return outcome
+	}
+
+	private async failedOutcome(
+		results: Array<ToolSchedulerResult | undefined>,
+		calls: AgentToolCall[],
+		failure: ToolEffectFenceError,
+		batchSize: number,
+		parallelBatchCount: number,
+		startedAt: number,
+	): Promise<ToolSchedulerOutcome> {
+		const failedIndex = calls.indexOf(failure.call)
+		const cancelled = this.isCancelled()
+		const completeResults = calls.map((call, index) => {
+			const existing = results[index]
+			if (existing) return existing
+			if (cancelled) return this.cancelledResultFor(call)
+			return resultForError(
+				call,
+				index === failedIndex
+					? `Tool effect was blocked by the transcript persistence fence: ${failure.message}`
+					: `Tool call was not executed because the transcript persistence fence failed before it could start: ${failure.message}`,
+			)
+		})
+
+		// Unlike an exception, this path retains the scheduler's truthful local
+		// results. Stage all terminal receipts so the host can durably close every
+		// accepted call before returning the failed turn.
+		for (const [index, result] of completeResults.entries()) {
+			const parts = getToolResultParts(result.content)
+			const added = this.executionHost.pushToolResultToUserContent({
+				type: "tool_result",
+				tool_use_id: sanitizeToolUseId(result.callId),
+				content: parts.text,
+				is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
+			})
+			if (added && parts.images.length > 0) this.executionHost.userMessageContent.push(...parts.images)
+			if (added) {
+				await this.options.onEvent?.({
+					type: "tool_result",
+					callId: result.callId,
+					name: result.name,
+					status: result.status,
+					output: result.content,
+					truncated: result.truncated,
+					timedOut: result.timedOut,
+				})
+			}
+			this.executionHost.recordToolCallForStopping?.(
+				result.name,
+				calls[index].arguments,
+				result.status,
+				getVerificationCategory(calls[index]),
+			)
+		}
+		this.executionHost.userMessageContentReady = true
+
+		const outcome: ToolSchedulerOutcome = {
+			...this.metrics("failed", completeResults, batchSize, parallelBatchCount, startedAt),
+			failure: {
+				kind: "effect_fence",
+				callId: failure.call.id,
+				message: failure.message,
+			},
+		}
+		await this.options.onEvent?.({
+			type: "tool_batch_finished",
+			status: outcome.status,
+			batchSize: outcome.batchSize,
+			parallelBatchCount: outcome.parallelBatchCount,
+			parallelToolCount: outcome.parallelToolCount,
+			durationMs: outcome.durationMs,
+			truncatedResultCount: outcome.outputTruncatedCount,
+		})
+		return outcome
+	}
+
+	private async raceCancellation<T>(operation: () => Promise<T>): Promise<T | undefined> {
+		if (this.isCancelled()) {
+			return undefined
+		}
+
+		let interval: ReturnType<typeof setInterval> | undefined
+		let abortListener: (() => void) | undefined
+		const cancellation = new Promise<undefined>((resolve) => {
+			abortListener = () => resolve(undefined)
+			if (this.options.signal) {
+				this.options.signal.addEventListener("abort", abortListener, { once: true })
+			}
+			// Task.abort is a legacy boolean without an event source. Poll only
+			// while an interactive host callback is pending so cancellation can
+			// release the approval lane deterministically in that compatibility path.
+			interval = setInterval(() => {
+				if (this.isCancelled()) {
+					resolve(undefined)
+				}
+			}, 25)
+		})
+
+		try {
+			return await Promise.race([Promise.resolve().then(operation), cancellation])
+		} finally {
+			if (interval) {
+				clearInterval(interval)
+			}
+			if (abortListener && this.options.signal) {
+				this.options.signal.removeEventListener("abort", abortListener)
+			}
+		}
 	}
 
 	private prepareCall(call: AgentToolCall, index: number): PreparedCall {
@@ -406,7 +787,7 @@ export class ToolScheduler {
 			if (
 				typeof candidate === "string" &&
 				candidate &&
-				!isPathAllowed(this.options.policy, candidate, this.options.task.cwd)
+				!isPathAllowed(this.options.policy, candidate, this.executionHost.cwd ?? "")
 			) {
 				prepared.validationError = `Path argument "${candidate}" is outside the allowed workspace roots.`
 				prepared.descriptor = descriptor
@@ -472,13 +853,7 @@ export class ToolScheduler {
 	private async executeCall(prepared: PreparedCall): Promise<ToolSchedulerResult> {
 		const startedAt = performance.now()
 		if (this.isCancelled()) {
-			return {
-				callId: prepared.call.id,
-				name: prepared.call.name,
-				status: "cancelled",
-				content: formatResponse.toolError("Tool execution was cancelled."),
-				durationMs: 0,
-			}
+			return this.cancelledResultFor(prepared.call)
 		}
 
 		const collector = new ToolResultCollector(
@@ -493,7 +868,7 @@ export class ToolScheduler {
 			askApproval: async (...args: Parameters<ToolCallbacks["askApproval"]>) =>
 				this.approvalMutex.run(async () => {
 					const [type, partialMessage, progressStatus, forceApproval] = args
-					const requestId = `${this.options.task.taskId}:${prepared.call.id}`
+					const requestId = `${this.executionHost.taskId}:${prepared.call.id}`
 					this.approvalRequestCount += 1
 
 					if (this.isCancelled()) {
@@ -516,15 +891,28 @@ export class ToolScheduler {
 						toolName: prepared.call.name,
 					})
 
-					let approval: Awaited<ReturnType<Task["ask"]>>
+					let approval: Awaited<ReturnType<NonNullable<ToolExecutionHost["ask"]>>> | undefined
 					try {
-						approval = await this.options.task.ask(
-							type,
-							partialMessage,
-							false,
-							progressStatus,
-							forceApproval || false,
-						)
+						approval = await this.raceCancellation(async () => {
+							if (this.executionHost.askApproval) {
+								return this.executionHost.askApproval(
+									type,
+									partialMessage,
+									progressStatus,
+									forceApproval || false,
+								)
+							}
+							if (this.executionHost.ask) {
+								return this.executionHost.ask(
+									type,
+									partialMessage,
+									false,
+									progressStatus,
+									forceApproval || false,
+								)
+							}
+							throw new Error("Tool execution host does not provide an approval callback.")
+						})
 					} catch (error) {
 						if (error instanceof AskIgnoredError) {
 							this.supersededAskCount += 1
@@ -544,11 +932,24 @@ export class ToolScheduler {
 						throw error
 					}
 
+					if (!approval) {
+						this.approvalCancelledCount += 1
+						collector.setStatus("cancelled")
+						collector.push(formatResponse.toolError("Tool execution was cancelled."))
+						await this.options.onEvent?.({
+							type: "approval_result",
+							requestId,
+							decision: "cancelled",
+							reason: "Task aborted while waiting for approval",
+						})
+						return false
+					}
+
 					const { response, text, images } = approval
 
 					if (response !== "yesButtonClicked") {
 						if (text) {
-							await this.options.task.say("user_feedback", text, images)
+							await this.executionHost.say("user_feedback", text, images)
 							collector.push(
 								formatResponse.toolResult(formatResponse.toolDeniedWithFeedback(text), images),
 							)
@@ -572,7 +973,7 @@ export class ToolScheduler {
 					}
 
 					if (text) {
-						await this.options.task.say("user_feedback", text, images)
+						await this.executionHost.say("user_feedback", text, images)
 						approvalFeedback(text, images)
 					}
 					await this.options.onEvent?.({ type: "approval_result", requestId, decision: "approved" })
@@ -587,14 +988,14 @@ export class ToolScheduler {
 				}
 				const cancelled = this.isCancelled()
 				if (!cancelled) {
-					this.options.task.didToolFailInCurrentTurn = true
+					this.executionHost.didToolFailInCurrentTurn = true
 				}
 				collector.setStatus(cancelled ? "cancelled" : "error")
 				const errorString = `Error ${action}: ${JSON.stringify(serializeError(error))}`
 				if (cancelled) {
 					collector.push(formatResponse.toolError("Tool execution was cancelled."))
 				} else {
-					await this.options.task.say("error", `Error ${action}:\n${error.message}`)
+					await this.executionHost.say("error", `Error ${action}:\n${error.message}`)
 					collector.push(formatResponse.toolError(errorString))
 				}
 			},
@@ -606,9 +1007,10 @@ export class ToolScheduler {
 				resolveCommandTimeoutMs(this.options.policy, requestedTimeoutMs ?? 0, command),
 		}
 
+		let effectFencePending = false
 		try {
 			if (
-				this.options.task.shouldStopRepeatedToolCall?.(
+				this.executionHost.shouldStopRepeatedToolCall?.(
 					prepared.call.name,
 					prepared.toolCall?.nativeArgs ?? prepared.toolCall?.params,
 				)
@@ -632,14 +1034,23 @@ export class ToolScheduler {
 				callId: prepared.call.id,
 				text: `Running ${prepared.call.name}`,
 			})
-			this.options.task.recordToolUsage(prepared.call.name as never)
+			// A stale/bypassed transcript fence must abort the whole scheduler before
+			// any later call can run; it is not an ordinary tool error that can be
+			// converted into a result.
+			if (this.options.beforeEffect) {
+				effectFencePending = true
+				await this.options.beforeEffect(prepared.call)
+				effectFencePending = false
+			}
+			this.executionHost.recordToolUsage(prepared.call.name)
 			await prepared.descriptor!.execute({
-				task: this.options.task,
+				task: this.toolTask,
 				call: prepared.toolCall!,
 				signal: this.options.signal,
 				callbacks,
 			})
 		} catch (error) {
+			if (effectFencePending) throw new ToolEffectFenceError(prepared.call, error)
 			const cancelled = this.isCancelled()
 			collector.setStatus(cancelled ? "cancelled" : "error")
 			collector.push(
@@ -649,6 +1060,16 @@ export class ToolScheduler {
 						: `Error executing ${prepared.call.name}: ${this.errorMessage(error)}`,
 				),
 			)
+		}
+
+		// A handler may finish normally after its abort signal was observed. Keep
+		// the externally visible outcome deterministic: once cancellation wins,
+		// the call is cancelled even if a late handler callback reported success.
+		if (this.isCancelled()) {
+			collector.setMetadata({ status: "cancelled" })
+			if (!collector.hasResult()) {
+				collector.push(formatResponse.toolError("Tool execution was cancelled."))
+			}
 		}
 
 		if (collector.isTruncated()) {
@@ -676,25 +1097,27 @@ export class ToolScheduler {
 		startedAt: number,
 	): Promise<ToolSchedulerOutcome> {
 		if (this.isCancelled()) {
-			return this.metrics("aborted", [], batchSize, parallelBatchCount, startedAt)
+			this.fillCancelledResults(results, calls)
+			return this.abortOutcome(results, calls, batchSize, parallelBatchCount, startedAt)
 		}
 
 		const committed: ToolSchedulerResult[] = []
 		for (let index = 0; index < results.length; index += 1) {
 			if (this.isCancelled()) {
-				return this.metrics("aborted", committed, batchSize, parallelBatchCount, startedAt)
+				this.fillCancelledResults(results, calls, index)
+				return this.abortOutcome(results, calls, batchSize, parallelBatchCount, startedAt)
 			}
 
 			const result = results[index] ?? resultForError(calls[index], "Tool execution did not produce a result.")
 			const parts = getToolResultParts(result.content)
-			const added = this.options.task.pushToolResultToUserContent({
+			const added = this.executionHost.pushToolResultToUserContent({
 				type: "tool_result",
 				tool_use_id: sanitizeToolUseId(result.callId),
 				content: parts.text,
 				is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
 			})
 			if (added && parts.images.length > 0) {
-				this.options.task.userMessageContent.push(...parts.images)
+				this.executionHost.userMessageContent.push(...parts.images)
 			}
 			committed.push(result)
 			await this.options.onEvent?.({
@@ -707,7 +1130,7 @@ export class ToolScheduler {
 				timedOut: result.timedOut,
 			})
 			const commandCategory = getVerificationCategory(calls[index])
-			this.options.task.recordToolCallForStopping?.(
+			this.executionHost.recordToolCallForStopping?.(
 				result.name,
 				calls[index].arguments,
 				result.status,
@@ -728,7 +1151,12 @@ export class ToolScheduler {
 			}
 		}
 
-		this.options.task.userMessageContentReady = true
+		if (this.isCancelled()) {
+			this.fillCancelledResults(results, calls)
+			return this.abortOutcome(results, calls, batchSize, parallelBatchCount, startedAt)
+		}
+
+		this.executionHost.userMessageContentReady = true
 		const outcome = this.metrics("completed", committed, batchSize, parallelBatchCount, startedAt)
 		await this.options.onEvent?.({
 			type: "tool_batch_finished",
@@ -766,7 +1194,7 @@ export class ToolScheduler {
 	}
 
 	private isCancelled(): boolean {
-		return this.options.task.abort || this.options.signal?.aborted === true
+		return this.executionHost.abort === true || this.options.signal?.aborted === true
 	}
 
 	private errorMessage(error: unknown): string {

@@ -1,4 +1,16 @@
-import type { AgentResponse } from "./AgentResponse"
+import type { AgentResponse, AgentResponseStatus } from "./AgentResponse"
+
+/** States which may be observed at a response/turn boundary. */
+export type AgentTurnTerminalStatus = AgentResponseStatus | "aborted"
+
+/** Shared failure payload for turn and task terminal events. */
+export interface AgentTurnFailure {
+	reason?: string
+	message?: string
+	error?: string
+	code?: string
+	retryable?: boolean
+}
 
 /**
  * Internal lifecycle records for the harness. These are not UI messages,
@@ -6,6 +18,12 @@ import type { AgentResponse } from "./AgentResponse"
  */
 export type AgentTurnEvent =
 	| { type: "assistant_committed"; response: AgentResponse }
+	| {
+			type: "response_terminal"
+			status: AgentTurnTerminalStatus
+			reason?: string
+			retryable?: boolean
+	  }
 	| {
 			type: "tool_result"
 			callId: string
@@ -18,7 +36,7 @@ export type AgentTurnEvent =
 	| { type: "tool_batch_started"; batchSize: number }
 	| {
 			type: "tool_batch_finished"
-			status: "completed" | "aborted"
+			status: "completed" | "aborted" | "failed"
 			batchSize: number
 			parallelBatchCount: number
 			parallelToolCount: number
@@ -76,6 +94,16 @@ export type AgentTurnEvent =
 			status: "completed" | "aborted"
 			toolCallCount: number
 			retryCount: number
+	  }
+	| ({ type: "turn_failed" } & AgentTurnFailure)
+	| ({ type: "task_failed" } & AgentTurnFailure)
+	| {
+			type: "turn_incomplete"
+			reason?: string
+	  }
+	| {
+			type: "task_incomplete"
+			reason?: string
 	  }
 	| {
 			type: "compaction_completed"

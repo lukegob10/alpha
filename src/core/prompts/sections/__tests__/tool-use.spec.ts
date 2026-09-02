@@ -100,6 +100,21 @@ describe("getSharedToolUseSection", () => {
 		expect(section).toContain("does not require a token tool call")
 	})
 
+	it("allows a primary task to finish with an ordinary visible answer", () => {
+		const section = getSharedToolUseSection()
+
+		expect(section).toContain("Primary tasks may finish with a visible ordinary assistant answer")
+		expect(section).toContain("when no tool call or continuation is needed")
+		expect(section).toContain("Do not invent a tool call merely to force a completion format")
+	})
+
+	it("requires managed subagents to publish a durable completion result", () => {
+		const section = getSharedToolUseSection("review")
+
+		expect(section).toContain("Managed subagents must publish a durable result through attempt_completion")
+		expect(section).toContain("Ordinary assistant prose alone is not a terminal handoff")
+	})
+
 	it("does not let available tool surfaces expand a bounded primary or child request", () => {
 		for (const section of [getSharedToolUseSection(), getSharedToolUseSection("worker")]) {
 			expect(section).toContain("does not expand the task")

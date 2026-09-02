@@ -17,7 +17,23 @@ import { TelemetryService } from "@alpha-code/telemetry"
 import { Package } from "../../shared/package"
 import type { ApiHandlerOptions } from "../../shared/api"
 
-import { ApiStream, ApiStreamUsageChunk } from "../transform/stream"
+import {
+	ApiStream,
+	ApiStreamChunk,
+	ApiStreamUsageChunk,
+	createApiStreamError,
+	createApiStreamOutcome,
+	createLinkedAbortController,
+	getApiStreamErrorMessage,
+	isApiStreamAbortError,
+	isApiStreamSemanticChunk,
+	normalizeApiStreamErrorMetadata,
+	iterateApiStreamWithAbort,
+	raceApiStreamAbort,
+	type LinkedAbortController,
+	type ApiStreamError,
+} from "../transform/stream"
+import { getResponsesApiTerminal } from "../transform/responses-api-stream"
 import { getModelParams } from "../transform/model-params"
 
 import { BaseProvider } from "./base-provider"
@@ -33,6 +49,41 @@ type PendingToolCallIdentity = {
 	callId: string
 	name?: string
 	outputIndex: number
+}
+
+type ProviderTerminalError = Error &
+	Partial<ApiStreamError> & {
+		reason?: string
+		terminal?: boolean
+		errorCode?: string
+	}
+
+/** Keep canonical provider failure metadata on the Error crossing the stream boundary. */
+function withTerminalFailureMetadata(
+	error: Error,
+	terminal: ApiStreamError | undefined,
+	reason?: string,
+): ProviderTerminalError {
+	if (!terminal) return error as ProviderTerminalError
+
+	const enriched = error as ProviderTerminalError
+	Object.assign(enriched, {
+		terminal: true,
+		reason: reason ?? terminal.message,
+		errorCode: terminal.error,
+		...(terminal.code !== undefined ? { code: terminal.code } : {}),
+		...(terminal.status !== undefined ? { status: terminal.status } : {}),
+		...(terminal.statusCode !== undefined ? { statusCode: terminal.statusCode } : {}),
+		...(terminal.retryable !== undefined ? { retryable: terminal.retryable } : {}),
+		...(terminal.phase !== undefined ? { phase: terminal.phase } : {}),
+		...(terminal.requestId !== undefined ? { requestId: terminal.requestId } : {}),
+		...(terminal.attemptId !== undefined ? { attemptId: terminal.attemptId } : {}),
+		...(terminal.semanticOutputObserved !== undefined
+			? { semanticOutputObserved: terminal.semanticOutputObserved }
+			: {}),
+		...(terminal.metadata !== undefined ? { metadata: terminal.metadata } : {}),
+	})
+	return enriched
 }
 
 /**
@@ -52,6 +103,7 @@ const CODEX_API_BASE_URL = "https://chatgpt.com/backend-api/codex"
  * - Custom headers for Codex backend
  */
 export class OpenAiCodexHandler extends BaseProvider implements SingleCompletionHandler {
+	readonly streamCapabilities = { lifecycle: true, cancellation: true } as const
 	protected options: ApiHandlerOptions
 	private readonly providerName = "OpenAI Codex"
 	private client?: OpenAI
@@ -61,6 +113,15 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 	private lastResponseId: string | undefined
 	// Abort controller for cancelling ongoing requests
 	private abortController?: AbortController
+	private requestControl?: LinkedAbortController
+	private responseTerminalSeen = false
+	private semanticOutputObserved = false
+	private responseAccepted = false
+	private currentMetadata?: ApiHandlerCreateMessageMetadata
+	private terminalErrorMessage?: string
+	private terminalFailureReason?: string
+	private terminalFailureError?: ApiStreamError
+	private terminalFailureSurfaced = false
 	// Session ID for the Codex API (persists for the lifetime of the handler)
 	private readonly sessionId: string
 	/** Last observed identity is retained only for legacy streams without correlation fields. */
@@ -97,6 +158,10 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 		"response.function_call_arguments.delta",
 		"response.tool_call_arguments.done",
 		"response.function_call_arguments.done",
+		"response.failed",
+		"response.incomplete",
+		"response.error",
+		"error",
 	])
 
 	constructor(options: ApiHandlerOptions) {
@@ -223,6 +288,14 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 		this.sawTextOutputInCurrentResponse = false
 		this.sawTextDeltaInCurrentResponse = false
 		this.streamedToolCallIds.clear()
+		this.responseTerminalSeen = false
+		this.semanticOutputObserved = false
+		this.responseAccepted = false
+		this.currentMetadata = metadata
+		this.terminalErrorMessage = undefined
+		this.terminalFailureReason = undefined
+		this.terminalFailureError = undefined
+		this.terminalFailureSurfaced = false
 
 		// Get access token from OAuth manager
 		let accessToken = await openAiCodexOAuthManager.getAccessToken()
@@ -249,13 +322,19 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 		// Make the request with retry on auth failure
 		for (let attempt = 0; attempt < 2; attempt++) {
 			try {
-				yield* this.executeRequest(requestBody, model, accessToken, metadata?.taskId)
+				yield* this.executeRequest(requestBody, model, accessToken, metadata)
 				return
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error)
 				const isAuthFailure = /unauthorized|invalid token|not authenticated|authentication|401/i.test(message)
+				const retryable = (error as { retryable?: unknown })?.retryable
 
-				if (attempt === 0 && isAuthFailure) {
+				if (
+					attempt === 0 &&
+					isAuthFailure &&
+					retryable !== false &&
+					!isApiStreamAbortError(error, metadata?.signal)
+				) {
 					// Force refresh the token for retry
 					const refreshed = await openAiCodexOAuthManager.forceRefreshAccessToken()
 					if (!refreshed) {
@@ -369,16 +448,66 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 		return body
 	}
 
+	private observeStreamChunk(chunk: ApiStreamChunk): void {
+		if (isApiStreamSemanticChunk(chunk)) this.semanticOutputObserved = true
+	}
+
+	private createErrorChunk(
+		error: unknown,
+		metadata?: ApiHandlerCreateMessageMetadata,
+		phase = "request",
+		messageOverride?: string,
+	): ApiStreamError {
+		const normalized = normalizeApiStreamErrorMetadata(
+			error,
+			{ requestId: metadata?.requestId, attemptId: metadata?.attemptId },
+			{ phase, semanticOutputObserved: this.semanticOutputObserved },
+		)
+		return createApiStreamError({
+			message: messageOverride ?? getApiStreamErrorMessage(error),
+			error: normalized.code,
+			...normalized,
+			semanticOutputObserved: this.semanticOutputObserved,
+		})
+	}
+
+	private createTerminalFailureError(fallbackMessage?: string, cause?: unknown): ProviderTerminalError {
+		const message = this.terminalErrorMessage || fallbackMessage || "Codex API error"
+		const error = new Error(message, cause instanceof Error ? { cause } : undefined)
+		return withTerminalFailureMetadata(error, this.terminalFailureError, this.terminalFailureReason)
+	}
+
+	private async *emitCancelledOutcome(metadata?: ApiHandlerCreateMessageMetadata, phase = "request"): ApiStream {
+		if (this.responseTerminalSeen) return
+		this.responseTerminalSeen = true
+		yield createApiStreamOutcome({
+			status: "cancelled",
+			terminal: true,
+			semanticOutputObserved: this.semanticOutputObserved,
+			reason: getApiStreamErrorMessage(this.abortController?.signal.reason, "Request cancelled"),
+			retryable: false,
+			phase,
+			requestId: metadata?.requestId,
+			attemptId: metadata?.attemptId,
+		})
+	}
+
 	private async *executeRequest(
 		requestBody: any,
 		model: OpenAiCodexModel,
 		accessToken: string,
-		taskId?: string,
+		metadata?: ApiHandlerCreateMessageMetadata,
 	): ApiStream {
-		// Create AbortController for cancellation
-		this.abortController = new AbortController()
+		this.requestControl = createLinkedAbortController(metadata)
+		this.abortController = this.requestControl.controller
+		const taskId = metadata?.taskId
 
 		try {
+			if (this.abortController.signal.aborted) {
+				yield* this.emitCancelledOutcome(metadata, "request")
+				return
+			}
+
 			// Prefer OpenAI SDK streaming (same approach as openai-native) so event handling
 			// is consistent across providers.
 			try {
@@ -391,6 +520,8 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 					session_id: taskId || this.sessionId,
 					"User-Agent": `alpha-code/${Package.version} (${os.platform()} ${os.release()}; ${os.arch()}) node/${process.version.slice(1)}`,
 					...(accountId ? { "ChatGPT-Account-Id": accountId } : {}),
+					...(metadata?.requestId ? { "x-alpha-request-id": metadata.requestId } : {}),
+					...(metadata?.attemptId ? { "x-alpha-attempt-id": metadata.attemptId } : {}),
 				}
 
 				// Allow tests to inject a client. If none is injected, create one for this request.
@@ -413,25 +544,72 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 						"OpenAI SDK did not return an AsyncIterable for Responses API streaming. Falling back to SSE.",
 					)
 				}
+				this.responseAccepted = true
 
-				for await (const event of stream) {
+				for await (const event of iterateApiStreamWithAbort(stream, this.abortController.signal)) {
 					if (this.abortController.signal.aborted) {
 						break
 					}
 
 					for await (const outChunk of this.processEvent(event, model)) {
-						if (outChunk.type === "text") {
-							this.sawTextOutputInCurrentResponse = true
-						}
+						this.observeStreamChunk(outChunk)
 						yield outChunk
+						if (outChunk.type === "outcome" && outChunk.status === "failed") {
+							if (metadata?.streamCapabilities?.lifecycle === true) return
+							throw this.createTerminalFailureError(outChunk.reason)
+						}
 					}
 				}
-			} catch (_sdkErr) {
-				// Fallback to manual SSE via fetch (Codex backend).
-				yield* this.makeCodexRequest(requestBody, model, accessToken, taskId)
+
+				if (this.abortController.signal.aborted) {
+					yield* this.emitCancelledOutcome(metadata, "stream")
+				} else if (!this.responseTerminalSeen) {
+					yield createApiStreamOutcome({
+						status: "incomplete",
+						terminal: false,
+						semanticOutputObserved: this.semanticOutputObserved,
+						reason: "Responses API stream ended without a terminal event",
+						retryable: true,
+						phase: "stream",
+						requestId: metadata?.requestId,
+						attemptId: metadata?.attemptId,
+					})
+				}
+			} catch (sdkErr) {
+				if (isApiStreamAbortError(sdkErr, this.abortController.signal)) {
+					yield* this.emitCancelledOutcome(metadata, "request")
+					return
+				}
+				if (this.terminalFailureSurfaced) {
+					throw withTerminalFailureMetadata(
+						sdkErr instanceof Error ? sdkErr : new Error(String(sdkErr)),
+						this.terminalFailureError,
+						this.terminalFailureReason,
+					)
+				}
+				if (this.responseAccepted || this.semanticOutputObserved || this.responseTerminalSeen) {
+					const errorChunk = this.createErrorChunk(sdkErr, metadata, "stream")
+					yield errorChunk
+					yield createApiStreamOutcome({
+						status: "failed",
+						terminal: true,
+						semanticOutputObserved: this.semanticOutputObserved,
+						reason: errorChunk.message,
+						retryable: errorChunk.retryable,
+						phase: errorChunk.phase ?? "stream",
+						requestId: metadata?.requestId,
+						attemptId: metadata?.attemptId,
+					})
+					if (metadata?.streamCapabilities?.lifecycle === true) return
+					throw sdkErr
+				}
+				// Only a pre-acceptance SDK failure may replay through manual SSE.
+				yield* this.makeCodexRequest(requestBody, model, accessToken, metadata)
 			}
 		} finally {
 			this.abortController = undefined
+			this.requestControl?.dispose()
+			this.requestControl = undefined
 		}
 	}
 
@@ -520,7 +698,7 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 		requestBody: any,
 		model: OpenAiCodexModel,
 		accessToken: string,
-		taskId?: string,
+		metadata?: ApiHandlerCreateMessageMetadata,
 	): ApiStream {
 		// Per the implementation guide: route to Codex backend with Bearer token
 		const url = `${CODEX_API_BASE_URL}/responses`
@@ -533,8 +711,10 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 			"Content-Type": "application/json",
 			Authorization: `Bearer ${accessToken}`,
 			originator: "alpha-code",
-			session_id: taskId || this.sessionId,
+			session_id: metadata?.taskId || this.sessionId,
 			"User-Agent": `alpha-code/${Package.version} (${os.platform()} ${os.release()}; ${os.arch()}) node/${process.version.slice(1)}`,
+			...(metadata?.requestId ? { "x-alpha-request-id": metadata.requestId } : {}),
+			...(metadata?.attemptId ? { "x-alpha-attempt-id": metadata.attemptId } : {}),
 		}
 
 		// Add ChatGPT-Account-Id if available (required for organization subscriptions)
@@ -600,18 +780,54 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 					errorMessage += ` - ${errorDetails}`
 				}
 
-				throw new Error(errorMessage)
+				const requestError = new Error(errorMessage) as Error & {
+					status?: number
+					retryable?: boolean
+				}
+				requestError.status = response.status
+				requestError.retryable =
+					response.status === 408 ||
+					response.status === 409 ||
+					response.status === 425 ||
+					response.status === 429 ||
+					response.status >= 500
+				throw requestError
 			}
 
 			if (!response.body) {
 				throw new Error(t("common:errors.openAiCodex.noResponseBody"))
 			}
 
-			yield* this.handleStreamResponse(response.body, model)
+			this.responseAccepted = true
+			yield* this.handleStreamResponse(response.body, model, metadata)
 		} catch (error) {
+			if (isApiStreamAbortError(error, this.abortController?.signal)) {
+				yield* this.emitCancelledOutcome(metadata, "request")
+				return
+			}
 			const errorMessage = error instanceof Error ? error.message : String(error)
 			const apiError = new ApiProviderError(errorMessage, this.providerName, model.id, "createMessage")
 			TelemetryService.instance.captureException(apiError)
+			if (this.terminalFailureSurfaced) {
+				throw withTerminalFailureMetadata(
+					error instanceof Error ? error : new Error(errorMessage),
+					this.terminalFailureError,
+					this.terminalFailureReason,
+				)
+			}
+			const errorChunk = this.createErrorChunk(error, metadata, "request")
+			yield errorChunk
+			yield createApiStreamOutcome({
+				status: "failed",
+				terminal: true,
+				semanticOutputObserved: this.semanticOutputObserved,
+				reason: errorChunk.message,
+				retryable: errorChunk.retryable,
+				phase: "request",
+				requestId: metadata?.requestId,
+				attemptId: metadata?.attemptId,
+			})
+			if (metadata?.streamCapabilities?.lifecycle === true) return
 
 			if (error instanceof Error) {
 				if (error.message.includes("Codex API")) {
@@ -623,7 +839,11 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 		}
 	}
 
-	private async *handleStreamResponse(body: ReadableStream<Uint8Array>, model: OpenAiCodexModel): ApiStream {
+	private async *handleStreamResponse(
+		body: ReadableStream<Uint8Array>,
+		model: OpenAiCodexModel,
+		metadata?: ApiHandlerCreateMessageMetadata,
+	): ApiStream {
 		const reader = body.getReader()
 		const decoder = new TextDecoder()
 		let buffer = ""
@@ -635,7 +855,9 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 					break
 				}
 
-				const { done, value } = await reader.read()
+				const readResult = await raceApiStreamAbort(reader.read(), this.abortController?.signal)
+				if (!readResult) break
+				const { done, value } = readResult
 				if (done) break
 
 				buffer += decoder.decode(value, { stream: true })
@@ -690,6 +912,7 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 								}
 
 								for await (const outChunk of this.processEvent(parsed, model)) {
+									this.observeStreamChunk(outChunk)
 									if (outChunk.type === "text" || outChunk.type === "reasoning") {
 										hasContent = true
 										if (outChunk.type === "text") {
@@ -697,6 +920,10 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 										}
 									}
 									yield outChunk
+									if (outChunk.type === "outcome" && outChunk.status === "failed") {
+										if (metadata?.streamCapabilities?.lifecycle === true) return
+										throw this.createTerminalFailureError(outChunk.reason)
+									}
 								}
 								continue
 							}
@@ -885,10 +1112,53 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 					}
 				}
 			}
+
+			this.semanticOutputObserved ||= hasContent
+			if (this.abortController?.signal.aborted) {
+				yield* this.emitCancelledOutcome(metadata, "stream")
+			} else if (!this.responseTerminalSeen) {
+				yield createApiStreamOutcome({
+					status: "incomplete",
+					terminal: false,
+					semanticOutputObserved: this.semanticOutputObserved,
+					reason: "Responses API stream ended without a terminal event",
+					retryable: true,
+					phase: "stream",
+					requestId: metadata?.requestId,
+					attemptId: metadata?.attemptId,
+				})
+			}
 		} catch (error) {
+			if (isApiStreamAbortError(error, this.abortController?.signal)) {
+				yield* this.emitCancelledOutcome(metadata, "stream")
+				return
+			}
 			const errorMessage = error instanceof Error ? error.message : String(error)
 			const apiError = new ApiProviderError(errorMessage, this.providerName, model.id, "createMessage")
 			TelemetryService.instance.captureException(apiError)
+
+			if (this.terminalFailureSurfaced) {
+				throw withTerminalFailureMetadata(
+					error instanceof Error ? error : new Error(errorMessage),
+					this.terminalFailureError,
+					this.terminalFailureReason,
+				)
+			}
+			if (metadata?.streamCapabilities?.lifecycle === true) {
+				const errorChunk = this.createErrorChunk(error, metadata, "stream")
+				yield errorChunk
+				yield createApiStreamOutcome({
+					status: "failed",
+					terminal: true,
+					semanticOutputObserved: this.semanticOutputObserved,
+					reason: errorChunk.message,
+					retryable: errorChunk.retryable,
+					phase: errorChunk.phase ?? "stream",
+					requestId: metadata?.requestId,
+					attemptId: metadata?.attemptId,
+				})
+				return
+			}
 
 			if (error instanceof Error) {
 				throw new Error(t("common:errors.openAiCodex.streamProcessingError", { message: error.message }))
@@ -900,6 +1170,55 @@ export class OpenAiCodexHandler extends BaseProvider implements SingleCompletion
 	}
 
 	private async *processEvent(event: any, model: OpenAiCodexModel): ApiStream {
+		// The first terminal event owns this response. Ignore duplicate/late
+		// events so a repeated done marker cannot emit another outcome or upgrade
+		// a non-success response.
+		if (this.responseTerminalSeen) return
+
+		const terminal = getResponsesApiTerminal(event)
+		if (terminal?.status === "failed") {
+			this.responseTerminalSeen = true
+			this.terminalFailureSurfaced = true
+			this.terminalErrorMessage = `${terminal.eventType === "response.failed" ? "Response failed" : "Codex API error"}: ${terminal.reason || "Unknown error"}`
+			const errorChunk = this.createErrorChunk(
+				terminal.error && event && typeof event === "object"
+					? { ...event, ...(typeof terminal.error === "object" ? terminal.error : {}) }
+					: (terminal.error ?? event),
+				this.currentMetadata,
+				terminal.phase ?? "response",
+				terminal.reason,
+			)
+			this.terminalFailureReason = errorChunk.message
+			this.terminalFailureError = errorChunk
+			yield errorChunk
+			yield createApiStreamOutcome({
+				status: "failed",
+				terminal: true,
+				semanticOutputObserved: this.semanticOutputObserved,
+				reason: errorChunk.message,
+				retryable: errorChunk.retryable,
+				phase: errorChunk.phase ?? "response",
+				requestId: this.currentMetadata?.requestId,
+				attemptId: this.currentMetadata?.attemptId,
+			})
+			return
+		}
+		if (terminal) this.responseTerminalSeen = true
+		yield* this.processResponseEvent(event, model)
+		if (terminal) {
+			yield createApiStreamOutcome({
+				status: terminal.status,
+				terminal: true,
+				semanticOutputObserved: this.semanticOutputObserved,
+				reason: terminal.reason,
+				phase: terminal.phase ?? "response",
+				requestId: this.currentMetadata?.requestId,
+				attemptId: this.currentMetadata?.attemptId,
+			})
+		}
+	}
+
+	private async *processResponseEvent(event: any, model: OpenAiCodexModel): ApiStream {
 		if (event?.response?.output && Array.isArray(event.response.output)) {
 			this.lastResponseOutput = event.response.output
 		}

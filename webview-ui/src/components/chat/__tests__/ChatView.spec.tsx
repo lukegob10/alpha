@@ -3,6 +3,7 @@
 import React from "react"
 import { render, waitFor, act, fireEvent, within } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+import { agentLifecycleSnapshotSchema } from "@alpha-code/types"
 
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
 import { vscode } from "@src/utils/vscode"
@@ -2175,6 +2176,131 @@ describe("ChatView - Message Queueing Tests", () => {
 				type: "askResponse",
 			}),
 		)
+	})
+
+	it.each(["completed", "failed", "closed"] as const)(
+		"clears stale approval controls when canonical lifecycle becomes %s after a say row",
+		async (lifecycle) => {
+			const { getByTestId, getByRole, queryByRole } = renderChatView()
+			mockPostMessage({
+				currentTaskId: "task-1",
+				clineMessages: [
+					{ type: "ask", ask: "tool", ts: 100, text: JSON.stringify({ tool: "readFile" }), partial: false },
+				],
+			})
+			await waitFor(() => expect(getByRole("button", { name: "chat:approve.title" })).toBeInTheDocument())
+
+			mockPostMessage({
+				currentTaskId: "task-1",
+				liveTasksById: {
+					"task-1": {
+						id: "task-1",
+						status: "idle",
+						lifecycle,
+						isActive: false,
+						isStreaming: false,
+						isWaitingForInput: false,
+						lastUpdatedAt: 101,
+						queueCount: 0,
+						tokensIn: 0,
+						tokensOut: 0,
+						totalCost: 0,
+					},
+				},
+				clineMessages: [
+					{ type: "ask", ask: "tool", ts: 100, text: JSON.stringify({ tool: "readFile" }), partial: false },
+					{ type: "say", say: "error", ts: 101, text: "Terminal" },
+				],
+			})
+
+			await waitFor(() => expect(queryByRole("button", { name: "chat:approve.title" })).not.toBeInTheDocument())
+			const input = getByTestId("chat-textarea").querySelector("input")!
+			expect(input).toHaveAttribute("data-sending-disabled", "true")
+		},
+	)
+
+	it("ignores stale canonical terminal state immediately after lifecycle degradation", async () => {
+		const { getByTestId } = renderChatView()
+		const completedSnapshot = agentLifecycleSnapshotSchema.parse({
+			version: 1,
+			taskId: "task-1",
+			runId: "run-1",
+			turnId: "turn-1",
+			status: "completed",
+			phase: "finalizing",
+			lastSequence: 2,
+			terminalEventId: "event-2",
+			terminalAt: 2,
+			items: [],
+			steps: [],
+			acceptedToolCallIds: [],
+			terminalToolCallIds: [],
+			processedEvents: [
+				{ eventId: "event-1", sequence: 1, fingerprint: "event-1" },
+				{ eventId: "event-2", sequence: 2, fingerprint: "event-2" },
+			],
+		})
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			currentTaskItem: { id: "task-1", task: "Legacy task", ts: 1 },
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Legacy task" },
+				{ type: "say", say: "text", ts: 2, text: "Still running" },
+			],
+			liveTasksById: {
+				"task-1": {
+					id: "task-1",
+					status: "idle",
+					lifecycle: "completed",
+					isActive: false,
+					isStreaming: false,
+					isWaitingForInput: false,
+					lastUpdatedAt: 2,
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+			agentLifecycleSnapshots: { "task-1": completedSnapshot },
+		})
+
+		const input = (await waitFor(() => getByTestId("chat-textarea").querySelector("input"))) as HTMLInputElement
+		vi.mocked(vscode.postMessage).mockClear()
+
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "agentLifecycleDegraded",
+						taskId: "task-1",
+						payload: {
+							version: 1,
+							taskId: "task-1",
+							degraded: true,
+							reason: "append_rejected",
+							occurredAt: 3,
+						},
+					},
+				}),
+			)
+		})
+
+		fireEvent.change(input, { target: { value: "continue the legacy task" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+		await waitFor(() => {
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "askResponse",
+				askResponse: "messageResponse",
+				text: "continue the legacy task",
+				images: [],
+				taskId: "task-1",
+			})
+		})
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "newTask" }))
 	})
 
 	it.each([

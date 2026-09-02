@@ -11,6 +11,8 @@ import {
 	type ClineMessage,
 	type ExtensionMessage,
 	type ExtensionState,
+	agentLifecycleEventSchema,
+	agentLifecycleSnapshotSchema,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	RooCodeEventName,
 } from "@alpha-code/types"
@@ -4349,6 +4351,121 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				expect(mockCline.overwriteClineMessages).toHaveBeenCalled()
 				expect(mockCline.submitUserMessage).toHaveBeenCalled()
 			})
+		})
+	})
+
+	describe("canonical lifecycle degraded fallback", () => {
+		const taskId = "lifecycle-degraded-task"
+		const runId = "lifecycle-degraded-run"
+		const turnId = "lifecycle-degraded-turn"
+
+		const makeEvent = (eventId: string, sequence: number, type: "turn_started" | "turn_terminal") =>
+			agentLifecycleEventSchema.parse({
+				version: 1,
+				eventId,
+				sequence,
+				taskId,
+				runId,
+				turnId,
+				occurredAt: sequence,
+				type,
+				payload:
+					type === "turn_started" ? { phase: "starting" } : { status: "failed", reason: "append failed" },
+			})
+
+		const makeSnapshot = (overrides: Record<string, unknown> = {}) =>
+			agentLifecycleSnapshotSchema.parse({
+				version: 1,
+				taskId,
+				runId,
+				turnId,
+				status: "in_progress",
+				phase: "starting",
+				lastSequence: 1,
+				items: [],
+				steps: [],
+				acceptedToolCallIds: [],
+				terminalToolCallIds: [],
+				processedEvents: [{ eventId: "turn-started", sequence: 1, fingerprint: "turn-started" }],
+				...overrides,
+			})
+
+		const installJournal = (journal: object) => {
+			vi.spyOn(provider as any, "getAgentLifecycleJournal").mockResolvedValue(journal)
+			vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
+			vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
+		}
+
+		it("signals degradation when a turn_started append is rejected", async () => {
+			const error = new Error("turn_started append failed")
+			const journal = { append: vi.fn().mockRejectedValue(error) }
+			installJournal(journal)
+
+			const result = await provider.publishAgentLifecycleEvent(makeEvent("turn-started", 1, "turn_started"))
+
+			expect(result).toMatchObject({ kind: "invalid", accepted: false, taskId })
+			expect(provider.getAgentLifecycleDegraded()).toMatchObject({
+				[taskId]: {
+					degraded: true,
+					reason: "append_rejected",
+					error: error.message,
+				},
+			})
+			expect(provider.postMessageToWebview).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "agentLifecycleDegraded",
+					payload: expect.objectContaining({ taskId, degraded: true }),
+				}),
+			)
+		})
+
+		it("keeps terminal append failures degraded until a successful resync", async () => {
+			const startEvent = makeEvent("turn-started", 1, "turn_started")
+			const terminalEvent = makeEvent("turn-terminal", 2, "turn_terminal")
+			const error = new Error("turn_terminal append failed")
+			const journal = {
+				append: vi
+					.fn()
+					.mockResolvedValueOnce({
+						event: startEvent,
+						snapshot: makeSnapshot(),
+						sequence: 1,
+						snapshotWritten: false,
+						replayed: false,
+					})
+					.mockRejectedValueOnce(error),
+			}
+			installJournal(journal)
+
+			expect((await provider.publishAgentLifecycleEvent(startEvent)).accepted).toBe(true)
+			const failed = await provider.publishAgentLifecycleEvent(terminalEvent)
+			expect(failed).toMatchObject({ kind: "invalid", accepted: false, taskId })
+			expect(provider.isAgentLifecycleDegraded(taskId)).toBe(true)
+
+			const resynced = provider.ingestAgentLifecycleSnapshot(
+				makeSnapshot({
+					status: "completed",
+					phase: "finalizing",
+					lastSequence: 2,
+					terminalEventId: terminalEvent.eventId,
+					terminalAt: 2,
+					processedEvents: [
+						{ eventId: startEvent.eventId, sequence: 1, fingerprint: "turn-started" },
+						{ eventId: terminalEvent.eventId, sequence: 2, fingerprint: "turn-terminal" },
+					],
+				}),
+			)
+
+			expect(resynced.kind).toBe("snapshot_applied")
+			expect(provider.isAgentLifecycleDegraded(taskId)).toBe(false)
+			await vi.waitFor(() =>
+				expect(provider.postMessageToWebview).toHaveBeenCalledWith(
+					expect.objectContaining({
+						type: "agentLifecycleDegraded",
+						payload: expect.objectContaining({ taskId, degraded: false, reason: "resynced" }),
+					}),
+				),
+			)
 		})
 	})
 

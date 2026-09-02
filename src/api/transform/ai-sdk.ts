@@ -6,7 +6,20 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 import { tool as createTool, jsonSchema, type ModelMessage, type TextStreamPart } from "ai"
-import type { ApiStreamChunk } from "./stream"
+import type {
+	ApiStream,
+	ApiStreamChunk,
+	ApiStreamError,
+	ApiStreamRequestMetadata,
+	ApiStreamOutcomeChunk,
+} from "./stream"
+import {
+	createApiStreamOutcome,
+	getApiStreamErrorMessage,
+	iterateApiStreamWithAbort,
+	isApiStreamSemanticChunk,
+	normalizeApiStreamErrorMetadata,
+} from "./stream"
 
 /**
  * Convert Anthropic messages to AI SDK ModelMessage format.
@@ -183,7 +196,67 @@ export function convertToolsForAiSdk(
  * Extended stream part type that includes additional fullStream event types
  * that are emitted at runtime but not included in the AI SDK TextStreamPart type definitions.
  */
-type ExtendedStreamPart = TextStreamPart<any> | { type: "text"; text: string } | { type: "reasoning"; text: string }
+export type ExtendedStreamPart =
+	| TextStreamPart<any>
+	| { type: "text"; text: string }
+	| { type: "reasoning"; text: string }
+
+export interface ProcessAiSdkStreamOptions extends ApiStreamRequestMetadata {
+	/** Emit canonical outcome records for finish/error/abort events. */
+	emitLifecycle?: boolean
+	/** Throw after a failed outcome for callers preserving legacy error semantics. */
+	throwOnError?: boolean
+	/** Current semantic-output state when processing one part in isolation. */
+	semanticOutputObserved?: boolean
+	phase?: string
+}
+
+type AiSdkFinishOutcome = {
+	status: "completed" | "failed" | "incomplete"
+	reason?: string
+	retryable?: boolean
+}
+
+/** Normalize finish and finish-step reasons through one terminal-status contract. */
+function normalizeAiSdkFinishOutcome(reasonValue: unknown): AiSdkFinishOutcome & { finishReason: string } {
+	const finishReason = String(reasonValue ?? "stop")
+	const normalizedReason = finishReason.toLowerCase().replace(/_/g, "-")
+	const status =
+		normalizedReason === "error" || normalizedReason === "failed" || normalizedReason === "failure"
+			? "failed"
+			: normalizedReason === "length" ||
+				  normalizedReason === "max-tokens" ||
+				  normalizedReason === "content-filter" ||
+				  normalizedReason === "content-filtered"
+				? "incomplete"
+				: "completed"
+	return {
+		finishReason,
+		status,
+		reason: status === "completed" ? undefined : finishReason,
+		retryable: status === "failed" ? true : undefined,
+	}
+}
+
+function enrichThrownStreamError(error: unknown, chunk: ApiStreamError): Error {
+	const enriched = (error instanceof Error ? error : new Error(chunk.message)) as Error &
+		Partial<ApiStreamError> & { reason?: string; terminal?: boolean; errorCode?: string }
+	Object.assign(enriched, {
+		terminal: true,
+		reason: chunk.message,
+		errorCode: chunk.error,
+		...(chunk.code !== undefined ? { code: chunk.code } : {}),
+		...(chunk.status !== undefined ? { status: chunk.status } : {}),
+		...(chunk.statusCode !== undefined ? { statusCode: chunk.statusCode } : {}),
+		...(chunk.retryable !== undefined ? { retryable: chunk.retryable } : {}),
+		...(chunk.phase !== undefined ? { phase: chunk.phase } : {}),
+		...(chunk.requestId !== undefined ? { requestId: chunk.requestId } : {}),
+		...(chunk.attemptId !== undefined ? { attemptId: chunk.attemptId } : {}),
+		...(chunk.semanticOutputObserved !== undefined ? { semanticOutputObserved: chunk.semanticOutputObserved } : {}),
+		...(chunk.metadata !== undefined ? { metadata: chunk.metadata } : {}),
+	})
+	return enriched
+}
 
 /**
  * Process a single AI SDK stream part and yield the appropriate ApiStreamChunk(s).
@@ -193,7 +266,31 @@ type ExtendedStreamPart = TextStreamPart<any> | { type: "text"; text: string } |
  * @param part - The AI SDK TextStreamPart to process (including fullStream event types)
  * @yields ApiStreamChunk objects corresponding to the stream part
  */
-export function* processAiSdkStreamPart(part: ExtendedStreamPart): Generator<ApiStreamChunk> {
+export function* processAiSdkStreamPart(
+	part: ExtendedStreamPart,
+	options: ProcessAiSdkStreamOptions = {},
+): Generator<ApiStreamChunk> {
+	const emitLifecycle = options.emitLifecycle === true
+	const semanticOutputObserved = options.semanticOutputObserved === true
+	const yieldOutcome = (
+		status: "completed" | "failed" | "incomplete" | "cancelled",
+		terminal = true,
+		reason?: string,
+		retryable?: boolean,
+	) =>
+		emitLifecycle
+			? createApiStreamOutcome({
+					status,
+					terminal,
+					semanticOutputObserved,
+					reason,
+					retryable,
+					phase: options.phase ?? "stream",
+					requestId: options.requestId,
+					attemptId: options.attemptId,
+				})
+			: undefined
+
 	switch (part.type) {
 		case "text":
 		case "text-delta":
@@ -255,28 +352,163 @@ export function* processAiSdkStreamPart(part: ExtendedStreamPart): Generator<Api
 			break
 
 		case "error":
-			yield {
-				type: "error",
-				error: "StreamError",
-				message: part.error instanceof Error ? part.error.message : String(part.error),
+			{
+				const rawError = (part as any).error
+				const metadata = normalizeApiStreamErrorMetadata(
+					rawError,
+					{ requestId: options.requestId, attemptId: options.attemptId },
+					{ phase: options.phase ?? "stream", semanticOutputObserved },
+				)
+				const errorMessage = getApiStreamErrorMessage(rawError)
+				// Keep the historical low-level shape when no lifecycle metadata was
+				// requested. Native providers opt into the enriched shape so retry and
+				// cancellation decisions retain their correlation context.
+				const includeMetadata =
+					emitLifecycle ||
+					options.requestId !== undefined ||
+					options.attemptId !== undefined ||
+					options.phase !== undefined ||
+					Object.prototype.hasOwnProperty.call(options, "semanticOutputObserved")
+				const errorChunk: ApiStreamError = includeMetadata
+					? {
+							type: "error",
+							error: metadata.code ?? "StreamError",
+							message: errorMessage,
+							...(metadata.code !== undefined ? { code: metadata.code } : {}),
+							...(metadata.status !== undefined ? { status: metadata.status } : {}),
+							...(metadata.statusCode !== undefined ? { statusCode: metadata.statusCode } : {}),
+							...(metadata.retryable !== undefined ? { retryable: metadata.retryable } : {}),
+							...(metadata.phase !== undefined ? { phase: metadata.phase } : {}),
+							...(metadata.requestId !== undefined ? { requestId: metadata.requestId } : {}),
+							...(metadata.attemptId !== undefined ? { attemptId: metadata.attemptId } : {}),
+							semanticOutputObserved,
+							...(metadata.metadata !== undefined ? { metadata: metadata.metadata } : {}),
+						}
+					: { type: "error", error: "StreamError", message: errorMessage }
+				yield errorChunk
+				const outcome = yieldOutcome("failed", true, errorChunk.message, errorChunk.retryable)
+				if (outcome) yield outcome
+				if (emitLifecycle && (options.throwOnError ?? false)) {
+					throw enrichThrownStreamError(rawError, errorChunk)
+				}
 			}
 			break
 
-		// Ignore lifecycle events that don't need to yield chunks
-		case "text-start":
-		case "text-end":
-		case "reasoning-start":
-		case "reasoning-end":
-		case "start-step":
-		case "finish-step":
-		case "start":
-		case "finish":
-		case "abort":
-		case "file":
-		case "tool-result":
-		case "tool-error":
-		case "raw":
-			// These events don't need to be yielded
+		case "finish": {
+			const normalized = normalizeAiSdkFinishOutcome((part as any).finishReason ?? (part as any).reason)
+			const outcome = yieldOutcome(normalized.status, true, normalized.reason, normalized.retryable)
+			if (outcome) yield outcome
 			break
+		}
+
+		case "abort": {
+			const outcome = yieldOutcome(
+				"cancelled",
+				true,
+				getApiStreamErrorMessage((part as any).reason, "Request cancelled"),
+				false,
+			)
+			if (outcome) yield outcome
+			break
+		}
+
+		case "finish-step": {
+			// Some AI SDK versions only expose the terminal reason on finish-step.
+			if (emitLifecycle && ((part as any).finishReason !== undefined || (part as any).reason !== undefined)) {
+				const normalized = normalizeAiSdkFinishOutcome((part as any).finishReason ?? (part as any).reason)
+				const outcome = yieldOutcome(normalized.status, true, normalized.reason, normalized.retryable)
+				if (outcome) yield outcome
+			}
+			break
+		}
+
+		/*
+		 * Keep this branch next to the old error mapping so adding lifecycle
+		 * fields does not change legacy `processAiSdkStreamPart` output.
+		 */
+		/* istanbul ignore next */
+		default:
+			break
+	}
+}
+
+/** Normalize a complete AI SDK fullStream with terminal-less EOF detection. */
+export async function* processAiSdkStream(
+	stream: AsyncIterable<ExtendedStreamPart>,
+	options: ProcessAiSdkStreamOptions = {},
+): ApiStream {
+	let semanticOutputObserved = false
+	let terminalSeen = false
+	const emitLifecycle = options.emitLifecycle === true
+
+	try {
+		for await (const part of iterateApiStreamWithAbort(stream, options.signal)) {
+			// A fullStream may repeat finish/abort markers. Once one terminal
+			// outcome has been emitted, ignore all subsequent parts so the first
+			// terminal status remains authoritative.
+			if (terminalSeen) break
+
+			if (options.signal?.aborted) break
+			for (const chunk of processAiSdkStreamPart(part, { ...options, semanticOutputObserved })) {
+				if (isApiStreamSemanticChunk(chunk)) semanticOutputObserved = true
+				if (chunk.type === "outcome") terminalSeen = true
+				yield chunk
+			}
+			if (part.type === "finish" || part.type === "abort") terminalSeen = true
+		}
+	} catch (error) {
+		if (options.signal?.aborted) {
+			if (emitLifecycle && !terminalSeen) {
+				terminalSeen = true
+				yield createApiStreamOutcome({
+					status: "cancelled",
+					terminal: true,
+					semanticOutputObserved,
+					reason: getApiStreamErrorMessage(options.signal.reason, "Request cancelled"),
+					retryable: false,
+					phase: options.phase ?? "stream",
+					requestId: options.requestId,
+					attemptId: options.attemptId,
+				})
+				return
+			}
+			return
+		}
+		if (emitLifecycle && !terminalSeen) {
+			// Preserve an abrupt SDK iterator failure as a canonical failed outcome
+			// rather than silently classifying it as terminal-less EOF.
+			terminalSeen = true
+			const errorChunks = processAiSdkStreamPart({ type: "error", error } as ExtendedStreamPart, {
+				...options,
+				emitLifecycle: true,
+				throwOnError: false,
+				semanticOutputObserved,
+			})
+			let normalizedError: ApiStreamError | undefined
+			for (const chunk of errorChunks) {
+				if (chunk.type === "error") normalizedError = chunk
+				yield chunk
+			}
+			if (options.throwOnError) {
+				throw normalizedError ? enrichThrownStreamError(error, normalizedError) : error
+			}
+			return
+		}
+		throw error
+	} finally {
+		if (emitLifecycle && !terminalSeen) {
+			yield createApiStreamOutcome({
+				status: options.signal?.aborted ? "cancelled" : "incomplete",
+				terminal: options.signal?.aborted ? true : false,
+				semanticOutputObserved,
+				reason: options.signal?.aborted
+					? getApiStreamErrorMessage(options.signal.reason, "Request cancelled")
+					: "AI SDK stream ended without a terminal event",
+				retryable: options.signal?.aborted ? false : true,
+				phase: options.phase ?? "stream",
+				requestId: options.requestId,
+				attemptId: options.attemptId,
+			})
+		}
 	}
 }

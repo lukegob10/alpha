@@ -284,6 +284,63 @@ describe("ClineProvider flicker-free cancel", () => {
 		expect(rehydrate).toHaveBeenCalledOnce()
 	})
 
+	it("does not construct a replacement before a lifecycle join and persistence receipt settle", async () => {
+		const order: string[] = []
+		let resolveJoin!: () => void
+		let resolvePersistence!: () => void
+		const join = new Promise<void>((resolve) => {
+			resolveJoin = resolve
+		})
+		const persistence = new Promise<void>((resolve) => {
+			resolvePersistence = resolve
+		})
+
+		mockTask1.isStreaming = true
+		mockTask1.cancelCurrentRequest = vi.fn()
+		mockTask1.abortTask = vi.fn(async () => {
+			order.push("abort-complete")
+		})
+		mockTask1.lifecycleRuntime = {
+			join: vi.fn(async () => {
+				order.push("join-start")
+				await join
+				order.push("join-complete")
+			}),
+			waitForPersistence: vi.fn(async () => {
+				order.push("persistence-start")
+				await persistence
+				order.push("persistence-complete")
+			}),
+		}
+		;(provider as any).clineStack = [mockTask1]
+		;(provider as any).getLiveTask = vi.fn(() => mockTask1)
+		const rehydrate = vi.spyOn(provider, "createTaskWithHistoryItem").mockImplementation(async () => {
+			order.push("replacement-constructed")
+			return mockTask2 as any
+		})
+
+		const cancellation = provider.cancelTask("task-1", "webview_stop")
+		await vi.waitFor(() => expect(mockTask1.lifecycleRuntime.join).toHaveBeenCalledOnce())
+		expect(rehydrate).not.toHaveBeenCalled()
+
+		resolveJoin()
+		await new Promise<void>((resolve) => setTimeout(resolve, 0))
+		expect(rehydrate).not.toHaveBeenCalled()
+		expect(order).toEqual(["abort-complete", "join-start", "join-complete", "persistence-start"])
+
+		resolvePersistence()
+		await cancellation
+		expect(rehydrate).toHaveBeenCalledOnce()
+		expect(order).toEqual([
+			"abort-complete",
+			"join-start",
+			"join-complete",
+			"persistence-start",
+			"persistence-complete",
+			"replacement-constructed",
+		])
+	})
+
 	it("starts local cancellation even when lifecycle and history persistence fail", async () => {
 		mockTask1.isStreaming = false
 		mockTask1.cancelCurrentRequest = vi.fn()

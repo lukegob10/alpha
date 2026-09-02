@@ -6,6 +6,10 @@ import {
 	type ExtensionState,
 	type ClineMessage,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
+	agentLifecycleDegradedSignalSchema,
+	agentLifecycleEventSchema,
+	agentLifecycleSnapshotSchema,
+	type AgentLifecycleSnapshot,
 	TaskLifecycleState,
 	TaskStatus,
 } from "@alpha-code/types"
@@ -74,6 +78,62 @@ const WelcomeStateTestComponent = () => {
 const dispatchExtensionState = (state: Partial<ExtensionState>) => {
 	window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state } }))
 }
+
+const LifecycleStateTestComponent = () => {
+	const { agentLifecycleSnapshots, agentLifecycleDegraded, liveTasksById, liveTaskIds } = useExtensionState()
+	const snapshot = agentLifecycleSnapshots?.["lifecycle-task"]
+	const metadata = liveTasksById?.["lifecycle-task"]
+	return (
+		<>
+			<div data-testid="lifecycle-snapshot-status">{snapshot?.status ?? ""}</div>
+			<div data-testid="lifecycle-snapshot-phase">{snapshot?.phase ?? ""}</div>
+			<div data-testid="lifecycle-task-state">{metadata?.lifecycle ?? ""}</div>
+			<div data-testid="lifecycle-task-status">{metadata?.status ?? ""}</div>
+			<div data-testid="lifecycle-task-waiting">{String(metadata?.isWaitingForInput ?? false)}</div>
+			<div data-testid="lifecycle-degraded">{String(Boolean(agentLifecycleDegraded?.["lifecycle-task"]))}</div>
+			<div data-testid="lifecycle-live-task-ids">{(liveTaskIds ?? []).join(",")}</div>
+		</>
+	)
+}
+
+const makeLifecycleEvent = (eventId: string, sequence: number, phase: "working" | "waiting") =>
+	agentLifecycleEventSchema.parse({
+		version: 1,
+		eventId,
+		sequence,
+		taskId: "lifecycle-task",
+		runId: "lifecycle-run",
+		turnId: "lifecycle-turn",
+		occurredAt: sequence,
+		type: "phase_changed",
+		payload: { phase },
+	})
+
+const makeLifecycleSnapshot = (overrides: Partial<AgentLifecycleSnapshot> = {}) =>
+	agentLifecycleSnapshotSchema.parse({
+		version: 1,
+		taskId: "lifecycle-task",
+		runId: "lifecycle-run",
+		turnId: "lifecycle-turn",
+		status: "in_progress",
+		phase: "working",
+		lastSequence: 1,
+		items: [],
+		steps: [],
+		acceptedToolCallIds: [],
+		terminalToolCallIds: [],
+		processedEvents: [{ eventId: "event-1", sequence: 1, fingerprint: "event-1" }],
+		...overrides,
+	})
+
+const makeLifecycleDegradedSignal = (degraded: boolean) =>
+	agentLifecycleDegradedSignalSchema.parse({
+		version: 1,
+		taskId: "lifecycle-task",
+		degraded,
+		reason: degraded ? "append_rejected" : "resynced",
+		occurredAt: degraded ? 10 : 11,
+	})
 
 describe("ExtensionStateContext", () => {
 	afterEach(() => {
@@ -895,5 +955,199 @@ describe("mergeExtensionState", () => {
 			expect(result.messageQueueSeq).toBe(1)
 			expect(result.clineMessagesSeq).toBe(20)
 		})
+	})
+
+	it("consumes lifecycle events and projects their state into live task metadata", () => {
+		render(
+			<ExtensionStateContextProvider>
+				<LifecycleStateTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "agentLifecycleEvent",
+						taskId: "lifecycle-task",
+						payload: makeLifecycleEvent("event-1", 1, "working"),
+					},
+				}),
+			)
+		})
+
+		expect(screen.getByTestId("lifecycle-snapshot-status")).toHaveTextContent("in_progress")
+		expect(screen.getByTestId("lifecycle-task-state")).toHaveTextContent("running")
+		expect(screen.getByTestId("lifecycle-task-status")).toHaveTextContent("running")
+		expect(screen.getByTestId("lifecycle-live-task-ids")).toHaveTextContent("lifecycle-task")
+
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "agentLifecycleEvent",
+						taskId: "lifecycle-task",
+						payload: makeLifecycleEvent("event-2", 2, "waiting"),
+					},
+				}),
+			)
+		})
+
+		expect(screen.getByTestId("lifecycle-snapshot-phase")).toHaveTextContent("waiting")
+		expect(screen.getByTestId("lifecycle-task-state")).toHaveTextContent("waiting")
+		expect(screen.getByTestId("lifecycle-task-status")).toHaveTextContent("interactive")
+		expect(screen.getByTestId("lifecycle-task-waiting")).toHaveTextContent("true")
+	})
+
+	it("applies snapshot messages and ignores delayed snapshots that would roll state back", () => {
+		render(
+			<ExtensionStateContextProvider>
+				<LifecycleStateTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		const completed = makeLifecycleSnapshot({
+			status: "completed",
+			phase: "finalizing",
+			lastSequence: 3,
+			terminalEventId: "event-3",
+			terminalAt: 3,
+			processedEvents: [
+				{ eventId: "event-1", sequence: 1, fingerprint: "event-1" },
+				{ eventId: "event-2", sequence: 2, fingerprint: "event-2" },
+				{ eventId: "event-3", sequence: 3, fingerprint: "event-3" },
+			],
+		})
+
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "agentLifecycleSnapshot", taskId: "lifecycle-task", payload: completed },
+				}),
+			)
+		})
+
+		expect(screen.getByTestId("lifecycle-snapshot-status")).toHaveTextContent("completed")
+		expect(screen.getByTestId("lifecycle-task-state")).toHaveTextContent("completed")
+		expect(screen.getByTestId("lifecycle-task-status")).toHaveTextContent("idle")
+		expect(screen.getByTestId("lifecycle-live-task-ids")).toBeEmptyDOMElement()
+
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: { agentLifecycleSnapshots: { "lifecycle-task": makeLifecycleSnapshot() } },
+					},
+				}),
+			)
+		})
+
+		expect(screen.getByTestId("lifecycle-snapshot-status")).toHaveTextContent("completed")
+		expect(screen.getByTestId("lifecycle-task-state")).toHaveTextContent("completed")
+	})
+
+	it("falls back immediately on a degraded signal and restores canonical state after resync", () => {
+		render(
+			<ExtensionStateContextProvider>
+				<LifecycleStateTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		act(() => {
+			dispatchExtensionState({
+				currentTaskId: "lifecycle-task",
+				currentView: { type: "task", taskId: "lifecycle-task" },
+				clineMessages: [{ ts: 1, type: "say", say: "text", text: "legacy work" } as ClineMessage],
+				liveTaskIds: ["lifecycle-task"],
+				liveTasksById: {
+					"lifecycle-task": {
+						id: "lifecycle-task",
+						status: TaskStatus.Running,
+						lifecycle: TaskLifecycleState.Running,
+						isActive: true,
+						isStreaming: true,
+						isWaitingForInput: false,
+						lastUpdatedAt: 1,
+						queueCount: 0,
+						tokensIn: 0,
+						tokensOut: 0,
+						totalCost: 0,
+					},
+				},
+			})
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "agentLifecycleSnapshot",
+						taskId: "lifecycle-task",
+						payload: makeLifecycleSnapshot({
+							status: "completed",
+							phase: "finalizing",
+							terminalEventId: "event-2",
+							terminalAt: 2,
+							lastSequence: 2,
+							processedEvents: [
+								{ eventId: "event-1", sequence: 1, fingerprint: "event-1" },
+								{ eventId: "event-2", sequence: 2, fingerprint: "event-2" },
+							],
+						}),
+					},
+				}),
+			)
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "agentLifecycleDegraded",
+						taskId: "lifecycle-task",
+						payload: makeLifecycleDegradedSignal(true),
+					},
+				}),
+			)
+		})
+
+		expect(screen.getByTestId("lifecycle-degraded")).toHaveTextContent("true")
+		expect(screen.getByTestId("lifecycle-task-state")).toHaveTextContent("running")
+		expect(screen.getByTestId("lifecycle-live-task-ids")).toHaveTextContent("lifecycle-task")
+
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "agentLifecycleDegraded",
+						taskId: "lifecycle-task",
+						payload: makeLifecycleDegradedSignal(false),
+					},
+				}),
+			)
+		})
+
+		expect(screen.getByTestId("lifecycle-degraded")).toHaveTextContent("false")
+		expect(screen.getByTestId("lifecycle-task-state")).toHaveTextContent("completed")
+		expect(screen.getByTestId("lifecycle-live-task-ids")).toBeEmptyDOMElement()
+	})
+
+	it("ignores lifecycle envelopes whose aliases conflict", () => {
+		render(
+			<ExtensionStateContextProvider>
+				<LifecycleStateTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+		const working = makeLifecycleEvent("event-1", 1, "working")
+		const waiting = makeLifecycleEvent("event-1", 1, "waiting")
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "agentLifecycleEvent",
+						taskId: "lifecycle-task",
+						payload: working,
+						agentLifecycleEvent: waiting,
+					},
+				}),
+			)
+		})
+		expect(screen.getByTestId("lifecycle-snapshot-status")).toBeEmptyDOMElement()
+		expect(screen.getByTestId("lifecycle-live-task-ids")).toBeEmptyDOMElement()
 	})
 })

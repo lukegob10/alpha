@@ -18,6 +18,7 @@ import { ContextProxy } from "../../config/ContextProxy"
 import { processUserContentMentions } from "../../mentions/processUserContentMentions"
 import { MultiSearchReplaceDiffStrategy } from "../../diff/strategies/multi-search-replace"
 import { formatResponse } from "../../prompts/responses"
+import { createAgentResponse } from "../../agent/AgentResponse"
 
 // Mock delay before any imports that might use it
 vi.mock("delay", () => ({
@@ -2711,6 +2712,238 @@ describe("Alpha", () => {
 			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([[toolResult], false])
 		})
 
+		it("persists one deterministic error receipt for every unexecuted terminal tool call", async () => {
+			const task = createTask()
+			task.apiConversationHistory = [
+				{ role: "user", content: [{ type: "text", text: "start" }], ts: 1 },
+				{
+					role: "assistant",
+					content: [
+						{ type: "tool_use", id: "terminal-read", name: "read_file", input: { path: "a.ts" } },
+						{ type: "tool_use", id: "terminal-list", name: "list_files", input: {} },
+					],
+					ts: 2,
+				},
+			] as any
+			task.assistantMessageSavedToHistory = true
+			const saveHistory = vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			const response = createAgentResponse([
+				{ type: "tool_call", id: "terminal-read", name: "read_file", arguments: { path: "a.ts" } },
+				{ type: "tool_call", id: "terminal-list", name: "list_files", arguments: {} },
+			])
+
+			const repaired = await (task as any).persistUnexecutedTerminalToolResults(response, "cancelled")
+
+			expect(repaired).toBe(true)
+			expect(saveHistory).toHaveBeenCalledOnce()
+			expect(task.apiConversationHistory.at(-1)).toEqual({
+				role: "user",
+				content: [
+					{
+						type: "tool_result",
+						tool_use_id: "terminal-read",
+						content: "Tool call was not executed because the provider response was cancelled.",
+						is_error: true,
+					},
+					{
+						type: "tool_result",
+						tool_use_id: "terminal-list",
+						content: "Tool call was not executed because the provider response was cancelled.",
+						is_error: true,
+					},
+				],
+				ts: expect.any(Number),
+			})
+			expect(task.userMessageContent).toEqual([])
+
+			// A direct/empty continuation must be idempotent: the durable assistant
+			// boundary and its receipts are not duplicated on a second repair pass.
+			await expect((task as any).persistUnexecutedTerminalToolResults(response, "cancelled")).resolves.toBe(true)
+			expect(saveHistory).toHaveBeenCalledOnce()
+			expect(task.apiConversationHistory.filter((message) => message.role === "user")).toHaveLength(2)
+		})
+
+		it("retains terminal error receipts in memory when their history write fails", async () => {
+			const task = createTask()
+			task.apiConversationHistory = [
+				{ role: "user", content: [{ type: "text", text: "start" }], ts: 1 },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "failed-write", name: "read_file", input: {} }],
+					ts: 2,
+				},
+			] as any
+			task.assistantMessageSavedToHistory = true
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(false)
+
+			const repaired = await (task as any).persistUnexecutedTerminalToolResults(
+				createAgentResponse([{ type: "tool_call", id: "failed-write", name: "read_file", arguments: {} }]),
+				"incomplete",
+			)
+
+			expect(repaired).toBe(false)
+			expect(task.apiConversationHistory).toHaveLength(2)
+			expect(task.userMessageContent).toEqual([
+				{
+					type: "tool_result",
+					tool_use_id: "failed-write",
+					content: "Tool call was not executed because the provider response was incomplete.",
+					is_error: true,
+				},
+			])
+		})
+
+		it("fails closed without staging a tool result before the assistant boundary", async () => {
+			const task = createTask()
+			const saveHistory = vi.spyOn(task as any, "saveApiConversationHistory")
+
+			const repaired = await (task as any).persistUnexecutedTerminalToolResults(
+				createAgentResponse([{ type: "tool_call", id: "no-boundary", name: "read_file", arguments: {} }]),
+				"failed",
+			)
+
+			expect(repaired).toBe(false)
+			expect(task.userMessageContent).toEqual([])
+			expect(saveHistory).not.toHaveBeenCalled()
+		})
+
+		it.each([
+			["incomplete provider response", "incomplete", false, "failed"],
+			["provider-declared cancellation", "cancelled", false, "failed"],
+			["authoritative task cancellation", "cancelled", true, "aborted"],
+		] as const)(
+			"promotes terminal receipt persistence failure for %s to %s",
+			async (_label, providerStatus, taskCancelled, expectedStatus) => {
+				const task = createTask()
+				if (taskCancelled) {
+					;(task as any).taskCancellationController.abort(new Error("User cancelled the task."))
+				}
+				vi.spyOn(task as any, "persistAssistantResponseBeforeEffects").mockResolvedValue(true)
+				vi.spyOn(task as any, "persistUnexecutedTerminalToolResults").mockResolvedValue(false)
+				const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+				const response = createAgentResponse(
+					[{ type: "tool_call", id: `receipt-${providerStatus}`, name: "read_file", arguments: {} }],
+					{ status: providerStatus, reason: "Provider terminal outcome." },
+				)
+
+				const result = await (task as any).persistTerminalCanonicalResponse(
+					response,
+					providerStatus,
+					"Provider terminal outcome.",
+				)
+
+				expect(result).toMatchObject({
+					status: expectedStatus,
+					reason: expect.stringContaining("Terminal tool-result receipts could not be durably saved."),
+					error: expect.any(Error),
+				})
+				expect(appendEvent).toHaveBeenLastCalledWith(
+					expect.objectContaining({ type: "response_terminal", status: expectedStatus }),
+					undefined,
+				)
+			},
+		)
+
+		it("promotes an assistant-boundary persistence failure to failed", async () => {
+			const task = createTask()
+			vi.spyOn(task as any, "persistAssistantResponseBeforeEffects").mockResolvedValue(false)
+			const persistReceipts = vi.spyOn(task as any, "persistUnexecutedTerminalToolResults")
+			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			const response = createAgentResponse(
+				[{ type: "tool_call", id: "assistant-boundary", name: "read_file", arguments: {} }],
+				{ status: "incomplete", reason: "Stream ended." },
+			)
+
+			const result = await (task as any).persistTerminalCanonicalResponse(response, "incomplete", "Stream ended.")
+
+			expect(result).toMatchObject({
+				status: "failed",
+				reason: expect.stringContaining("The assistant response could not be durably saved."),
+				error: expect.any(Error),
+			})
+			expect(persistReceipts).not.toHaveBeenCalled()
+			expect(appendEvent).toHaveBeenLastCalledWith(
+				expect.objectContaining({ type: "response_terminal", status: "failed" }),
+				undefined,
+			)
+		})
+
+		it("persists the canonical tool boundary and an unexecuted receipt when a failed stream throws", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			const executeTools = vi.spyOn(task as any, "executeCanonicalToolCalls")
+			const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() => {
+				return (async function* (): AsyncGenerator<ApiStreamChunk> {
+					yield {
+						type: "tool_call",
+						id: "failed-stream-tool",
+						name: "read_file",
+						arguments: JSON.stringify({ path: "README.md" }),
+					}
+					yield {
+						type: "error",
+						error: "policy_rejected",
+						message: "Policy rejected",
+						retryable: false,
+						semanticOutputObserved: true,
+					}
+					yield {
+						type: "outcome",
+						status: "failed",
+						terminal: true,
+						semanticOutputObserved: true,
+						reason: "Policy rejected",
+						retryable: false,
+					}
+					throw Object.assign(new Error("Response failed: Policy rejected"), {
+						retryable: false,
+						semanticOutputObserved: true,
+					})
+				})()
+			})
+
+			const result = await task.recursivelyMakeClineRequests([{ type: "text", text: "start" }], false)
+
+			expect(result).toMatchObject({
+				status: "failed",
+				reason: "Policy rejected",
+				response: {
+					outcome: { status: "failed", retryable: false },
+					toolCalls: [
+						{
+							id: "failed-stream-tool",
+							name: "read_file",
+							arguments: { path: "README.md" },
+						},
+					],
+				},
+			})
+			expect(attempt).toHaveBeenCalledOnce()
+			expect(executeTools).not.toHaveBeenCalled()
+			const assistantBoundary = task.apiConversationHistory.find(
+				(message) =>
+					message.role === "assistant" &&
+					Array.isArray(message.content) &&
+					message.content.some((block) => block.type === "tool_use" && block.id === "failed-stream-tool"),
+			)
+			expect(assistantBoundary).toBeDefined()
+			expect(task.apiConversationHistory.at(-1)).toMatchObject({
+				role: "user",
+				content: [
+					{
+						type: "tool_result",
+						tool_use_id: "failed-stream-tool",
+						content: "Tool call was not executed because the provider response failed.",
+						is_error: true,
+					},
+				],
+			})
+		})
+
 		it("publishes a durable completion boundary for an ordinary primary response", async () => {
 			const task = createTask()
 			let streamedMessageTs: number | undefined
@@ -3348,6 +3581,7 @@ describe("Queued message processing after condense", () => {
 			task: "initial task",
 			startTask: false,
 		})
+		vi.spyOn(task as any, "overwriteApiConversationHistory").mockResolvedValue(true)
 
 		// Make condense fast + deterministic
 		vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("system")
@@ -3413,6 +3647,8 @@ describe("Queued message processing after condense", () => {
 			task: "task B",
 			startTask: false,
 		})
+		vi.spyOn(taskA as any, "overwriteApiConversationHistory").mockResolvedValue(true)
+		vi.spyOn(taskB as any, "overwriteApiConversationHistory").mockResolvedValue(true)
 
 		vi.spyOn(taskA as any, "getSystemPrompt").mockResolvedValue("system")
 		vi.spyOn(taskB as any, "getSystemPrompt").mockResolvedValue("system")
@@ -3640,5 +3876,129 @@ describe("pushToolResultToUserContent", () => {
 		expect(task.userMessageContent[0].type).toBe("text")
 		expect(task.userMessageContent[1].type).toBe("image")
 		expect(task.userMessageContent[2]).toEqual(toolResult)
+	})
+
+	it("joins delayed streaming previews before replacing them with canonical response state", async () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "preview race task",
+			startTask: false,
+		})
+		let releasePreview!: () => void
+		const previewBlocked = new Promise<void>((resolve) => {
+			releasePreview = resolve
+		})
+		const say = vi.spyOn(task, "say").mockImplementation(async (type, _text, _images, partial) => {
+			if (type === "text" && partial) await previewBlocked
+			return undefined
+		})
+
+		task.assistantMessageContent = [{ type: "text", content: "stale preview", partial: true }]
+		task.currentStreamingContentIndex = 0
+		;(task as any).scheduleStreamingPreview()
+		await vi.waitFor(() => expect(say).toHaveBeenCalled())
+
+		const canonicalResponse = createAgentResponse([
+			{ type: "text", text: "canonical response" },
+			{ type: "tool_call", id: "canonical-tool", name: "read_file", arguments: { path: "README.md" } },
+		])
+		let canonicalApplied = false
+		const canonicalReplacement = (async () => {
+			await (task as any).drainStreamingPreviews("test canonical replacement")
+			await (task as any).applyCanonicalAgentResponse(canonicalResponse)
+			canonicalApplied = true
+		})()
+
+		await Promise.resolve()
+		expect(canonicalApplied).toBe(false)
+		releasePreview()
+		await canonicalReplacement
+
+		expect(canonicalApplied).toBe(true)
+		expect(task.assistantMessageContent).toEqual([
+			{ type: "text", content: "canonical response", partial: false },
+			expect.objectContaining({ type: "tool_use", id: "canonical-tool", name: "read_file", partial: false }),
+		])
+		expect(task.userMessageContent).toEqual([])
+		expect(task.presentAssistantMessageLocked).toBe(false)
+	})
+
+	it("does not let a timed-out preview release a resumed preview lock", async () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "preview cancellation race",
+			startTask: false,
+		})
+		const releases = new Map<number, () => void>()
+		const say = vi
+			.spyOn(task, "say")
+			.mockImplementation(async (type, _text, _images, partial, _checkpoint, _progressStatus, options) => {
+				const previewEpoch = options?.previewEpoch
+				if (type === "text" && partial && previewEpoch !== undefined) {
+					const gate = new Promise<void>((resolve) => releases.set(previewEpoch, resolve))
+					await gate
+				}
+				return undefined
+			})
+
+		task.assistantMessageContent = [{ type: "text", content: "old preview", partial: true }]
+		;(task as any).scheduleStreamingPreview()
+		await vi.waitFor(() => expect(say).toHaveBeenCalledOnce())
+		const oldEpoch = task.getStreamingPreviewEpoch()
+
+		task.abort = true
+		vi.useFakeTimers()
+		try {
+			const drain = (task as any).drainStreamingPreviews("test cancellation")
+			await vi.advanceTimersByTimeAsync(1000)
+			await drain
+		} finally {
+			vi.useRealTimers()
+		}
+
+		task.abort = false
+		task.assistantMessageContent = [{ type: "text", content: "new preview", partial: true }]
+		task.currentStreamingContentIndex = 0
+		;(task as any).scheduleStreamingPreview()
+		await vi.waitFor(() => expect(say).toHaveBeenCalledTimes(2))
+		expect(task.presentAssistantMessageLocked).toBe(true)
+
+		releases.get(oldEpoch)?.()
+		await Promise.resolve()
+		expect(task.presentAssistantMessageLocked).toBe(true)
+
+		releases.get(task.getStreamingPreviewEpoch())?.()
+		await (task as any).streamingPreviewQueue
+		expect(task.presentAssistantMessageLocked).toBe(false)
+	})
+
+	it("interrupts a full preview join when task cancellation arrives", async () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "preview cancellation handoff",
+			startTask: false,
+		})
+		let releasePreview!: () => void
+		const previewBlocked = new Promise<void>((resolve) => {
+			releasePreview = resolve
+		})
+		const say = vi.spyOn(task, "say").mockImplementation(async (type, _text, _images, partial) => {
+			if (type === "text" && partial) await previewBlocked
+			return undefined
+		})
+
+		task.assistantMessageContent = [{ type: "text", content: "preview", partial: true }]
+		;(task as any).scheduleStreamingPreview()
+		await vi.waitFor(() => expect(say).toHaveBeenCalledOnce())
+
+		const drain = (task as any).drainStreamingPreviews("test cancellation handoff")
+		;(task as any).taskCancellationController.abort(new Error("cancelled"))
+		await expect(drain).resolves.toBeUndefined()
+
+		releasePreview()
+		await (task as any).streamingPreviewQueue
 	})
 })

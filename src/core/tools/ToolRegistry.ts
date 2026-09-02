@@ -6,7 +6,7 @@ import { browserToolNames } from "@alpha-code/types"
 import type { ToolUse } from "../../shared/tools"
 import { TOOL_ALIASES } from "../../shared/tools"
 import { normalizeMcpToolName, parseMcpToolName } from "../../utils/mcp-name"
-import { getNativeTools, getMcpServerTools } from "../prompts/tools/native-tools"
+import { getNativeTools } from "../prompts/tools/native-tools"
 import { formatResponse } from "../prompts/responses"
 import type { Task } from "../task/Task"
 
@@ -77,7 +77,8 @@ export interface ToolExecutionContext {
 
 export interface ToolDescriptor {
 	name: string
-	aliases: string[]
+	/** Alternate model-facing names. All entries resolve to `name`. */
+	aliases: readonly string[]
 	schema: OpenAI.Chat.ChatCompletionTool
 	capabilities: ToolCapabilities
 	/** Maximum text characters returned to the next model turn. */
@@ -88,20 +89,11 @@ export interface ToolDescriptor {
 export interface ToolRegistryOptions {
 	/** Set false for isolated registry/scheduler tests that register fixtures. */
 	includeBuiltIns?: boolean
-	nativeTools?: OpenAI.Chat.ChatCompletionTool[]
-	mcpTools?: OpenAI.Chat.ChatCompletionTool[]
+	nativeTools?: readonly OpenAI.Chat.ChatCompletionTool[]
+	mcpTools?: readonly OpenAI.Chat.ChatCompletionTool[]
 	includeCustomTools?: boolean
 	supportsImages?: boolean
 }
-
-const PARALLEL_READ_TOOLS = new Set([
-	"read_file",
-	"list_files",
-	"search_files",
-	"codebase_search",
-	"read_command_output",
-	"list_agents",
-])
 
 const BARRIER_TOOLS = new Set([
 	"new_task",
@@ -110,6 +102,18 @@ const BARRIER_TOOLS = new Set([
 	"attempt_completion",
 	"switch_mode",
 	"ask_followup_question",
+])
+
+// Only these read-only operations have an audited parallel contract. New
+// tools remain serial until their dependencies and cancellation behavior are
+// reviewed; mutation and lifecycle calls never enter this set.
+const PARALLEL_READ_TOOLS = new Set([
+	"read_file",
+	"list_files",
+	"search_files",
+	"codebase_search",
+	"read_command_output",
+	"list_agents",
 ])
 
 const WORKSPACE_TOOLS = new Set([
@@ -151,6 +155,61 @@ const TASK_TOOLS = new Set([
 ])
 
 const BROWSER_TOOLS = new Set<string>(browserToolNames)
+
+/**
+ * Canonicalize a model-facing name before it enters any policy or dispatch
+ * lookup. Keep this helper here rather than duplicating alias handling in the
+ * scheduler, prompt builder, and validators.
+ *
+ * MCP providers sometimes return `mcp__server__tool` while the provider
+ * schema uses `mcp--server--tool`. Both spellings are the same executable
+ * descriptor and are normalized before ordinary aliases are applied.
+ */
+export function canonicalizeToolName(name: string): string {
+	let current = name
+	const seen = new Set<string>()
+
+	while (!seen.has(current)) {
+		seen.add(current)
+		const normalized =
+			current.startsWith("mcp__") || current.startsWith("mcp--") ? normalizeMcpToolName(current) : current
+		const canonical = TOOL_ALIASES[normalized] ?? normalized
+		if (canonical === current) return canonical
+		current = canonical
+	}
+
+	// A malformed alias cycle should not make policy lookup recurse forever.
+	return current
+}
+
+/** Backwards-friendly spelling for callers that use “canonical name”. */
+export const canonicalToolName = canonicalizeToolName
+
+function canonicalizeSchema(schema: OpenAI.Chat.ChatCompletionTool): OpenAI.Chat.ChatCompletionTool {
+	if (schema.type !== "function") return schema
+	const canonical = canonicalizeToolName(schema.function.name)
+	if (canonical === schema.function.name) return schema
+	return {
+		...schema,
+		function: {
+			...schema.function,
+			name: canonical,
+		},
+	}
+}
+
+function freezeValue<T>(value: T, seen = new WeakSet<object>()): T {
+	if (!value || typeof value !== "object" || seen.has(value as object)) return value
+	seen.add(value as object)
+	for (const child of Object.values(value as Record<string, unknown>)) {
+		freezeValue(child, seen)
+	}
+	return Object.freeze(value)
+}
+
+function cloneAndFreeze<T>(value: T): T {
+	return freezeValue(structuredClone(value))
+}
 
 const TOOL_NAMES = [
 	"access_mcp_resource",
@@ -209,20 +268,39 @@ const legacyMcpSchema: OpenAI.Chat.ChatCompletionFunctionTool = {
 	},
 }
 
-function getSchemaMap(tools: OpenAI.Chat.ChatCompletionTool[]): Map<string, OpenAI.Chat.ChatCompletionTool> {
+function getSchemaMap(tools: readonly OpenAI.Chat.ChatCompletionTool[]): Map<string, OpenAI.Chat.ChatCompletionTool> {
 	const result = new Map<string, OpenAI.Chat.ChatCompletionTool>()
 	for (const tool of tools) {
 		if (tool.type === "function") {
-			result.set(tool.function.name, tool)
+			const canonical = canonicalizeToolName(tool.function.name)
+			const normalized = canonicalizeSchema(tool)
+			// Prefer a schema already named canonically over a legacy alias when a
+			// provider sends both variants.
+			if (!result.has(canonical) || tool.function.name === canonical) {
+				result.set(canonical, normalized)
+			}
 		}
 	}
 	return result
 }
 
-export function getToolCapabilities(name: string): ToolCapabilities {
+export interface ToolCapabilityOptions {
+	/**
+	 * Parallel execution is deliberately opt-in. The registry defaults to a
+	 * serial/barrier surface until a tool has an audited dependency contract.
+	 */
+	parallelExecutionEnabled?: boolean
+}
+
+/**
+ * Return conservative scheduler metadata for a tool. Callers may opt into
+ * parallel execution only after explicitly auditing the tool's dependencies;
+ * no production registry currently does so.
+ */
+export function getToolCapabilities(name: string, options: ToolCapabilityOptions = {}): ToolCapabilities {
 	const concurrency: ToolConcurrency = BARRIER_TOOLS.has(name)
 		? "barrier"
-		: PARALLEL_READ_TOOLS.has(name)
+		: PARALLEL_READ_TOOLS.has(name) && options.parallelExecutionEnabled !== false
 			? "parallel"
 			: "serial"
 
@@ -325,6 +403,7 @@ function executeBaseTool<TName extends BuiltInToolName>(tool: BaseTool<TName>, n
 export class ToolRegistry {
 	private readonly descriptors = new Map<string, ToolDescriptor>()
 	private readonly aliases = new Map<string, string>()
+	private sealed = false
 
 	constructor(options: ToolRegistryOptions = {}) {
 		const nativeTools = options.nativeTools ?? getNativeTools({ supportsImages: options.supportsImages })
@@ -389,25 +468,21 @@ export class ToolRegistry {
 		this.registerBuiltIn("write_to_file", writeToFileTool, schemas)
 
 		for (const [alias, canonical] of Object.entries(TOOL_ALIASES)) {
-			this.aliases.set(alias, canonical)
-			const descriptor = this.descriptors.get(canonical)
-			if (descriptor && !descriptor.aliases.includes(alias)) {
-				descriptor.aliases.push(alias)
-			}
+			this.addAlias(alias, canonical)
 		}
 
 		for (const schema of options.mcpTools ?? []) {
 			if (schema.type !== "function") {
 				continue
 			}
-			const name = schema.function.name
+			const name = canonicalizeToolName(schema.function.name)
 			if (this.descriptors.has(name)) {
 				continue
 			}
 			this.register({
 				name,
 				aliases: [],
-				schema,
+				schema: canonicalizeSchema(schema),
 				capabilities: getToolCapabilities(name),
 				execute: async ({ task, call, callbacks }) => {
 					const parsed = parseMcpToolName(name)
@@ -483,36 +558,72 @@ export class ToolRegistry {
 	): void {
 		const schema = schemas.get(name) ?? fallbackSchema
 		if (!schema) {
-			throw new Error(`No provider-facing schema registered for built-in tool "${name}".`)
+			// Provider catalogs can be intentionally narrowed (for example, a
+			// text-only browser catalog or a replay fixture). A missing schema is
+			// not an executable tool for this registry, so fail closed instead of
+			// inventing a model-visible contract.
+			return
 		}
 
 		this.register({
 			name,
 			aliases: [],
-			schema,
+			schema: canonicalizeSchema(schema),
 			capabilities: getToolCapabilities(name),
 			execute: customExecute ?? executeBaseTool(tool, name),
 		})
 	}
 
 	register(descriptor: ToolDescriptor): void {
-		if (this.descriptors.has(descriptor.name)) {
-			throw new Error(`Tool "${descriptor.name}" is already registered.`)
+		if (this.sealed) {
+			throw new Error("Tool registry is sealed and cannot be changed.")
 		}
-		this.descriptors.set(descriptor.name, descriptor)
-		for (const alias of descriptor.aliases) {
-			this.aliases.set(alias, descriptor.name)
+
+		const name = canonicalizeToolName(descriptor.name)
+		if (!name) {
+			throw new Error("Tool descriptor name must not be empty.")
+		}
+		const existingAliasTarget = this.aliases.get(name)
+		if (existingAliasTarget && existingAliasTarget !== name) {
+			throw new Error(`Tool name "${name}" is already an alias for "${existingAliasTarget}".`)
+		}
+		if (this.descriptors.has(name)) {
+			throw new Error(`Tool "${name}" is already registered.`)
+		}
+		if (descriptor.schema.type !== "function") {
+			throw new Error(`Tool "${name}" must have a function schema.`)
+		}
+		const schemaName = canonicalizeToolName(descriptor.schema.function.name)
+		if (schemaName !== name) {
+			throw new Error(
+				`Tool descriptor "${name}" schema resolves to "${schemaName}"; one descriptor must own both names.`,
+			)
+		}
+
+		const aliases = [
+			...new Set(descriptor.aliases.map((alias) => canonicalizeAlias(alias)).filter((alias) => alias !== name)),
+		]
+		const frozenDescriptor: ToolDescriptor = {
+			...descriptor,
+			name,
+			aliases: Object.freeze(aliases),
+			schema: cloneAndFreeze(canonicalizeSchema(descriptor.schema)),
+			capabilities: Object.freeze({ ...descriptor.capabilities }),
+		}
+		this.descriptors.set(name, frozenDescriptor)
+		for (const alias of aliases) {
+			this.addAlias(alias, name)
 		}
 	}
 
 	resolve(name: string): ToolDescriptor | undefined {
-		const normalizedName = name.startsWith("mcp__") ? normalizeMcpToolName(name) : name
-		return this.descriptors.get(this.aliases.get(normalizedName) ?? normalizedName)
+		const canonical = canonicalizeToolName(name)
+		return this.descriptors.get(this.aliases.get(canonical) ?? canonical)
 	}
 
 	canonicalName(name: string): string {
-		const normalizedName = name.startsWith("mcp__") ? normalizeMcpToolName(name) : name
-		return this.aliases.get(normalizedName) ?? normalizedName
+		const canonical = canonicalizeToolName(name)
+		return this.aliases.get(canonical) ?? canonical
 	}
 
 	has(name: string): boolean {
@@ -530,21 +641,55 @@ export class ToolRegistry {
 	getSchemas(): OpenAI.Chat.ChatCompletionTool[] {
 		return this.list().map((descriptor) => descriptor.schema)
 	}
+
+	/** Return a stable copy of the alias map for surface snapshots and telemetry. */
+	getAliases(): Readonly<Record<string, string>> {
+		return Object.freeze(Object.fromEntries(this.aliases.entries()))
+	}
+
+	/**
+	 * Prevent later registration from changing a captured surface. Existing
+	 * callers that build fixture registries can continue registering until they
+	 * explicitly seal the registry.
+	 */
+	seal(): this {
+		this.sealed = true
+		return this
+	}
+
+	isSealed(): boolean {
+		return this.sealed
+	}
+
+	private addAlias(alias: string, canonical: string): void {
+		const normalizedAlias = canonicalizeAlias(alias)
+		const normalizedCanonical = canonicalizeToolName(canonical)
+		if (!normalizedAlias || normalizedAlias === normalizedCanonical) return
+		const descriptorConflict = this.descriptors.has(normalizedAlias)
+		if (descriptorConflict && normalizedAlias !== normalizedCanonical) {
+			throw new Error(`Tool alias "${normalizedAlias}" conflicts with an executable descriptor of the same name.`)
+		}
+
+		const existing = this.aliases.get(normalizedAlias)
+		if (existing && existing !== normalizedCanonical) {
+			throw new Error(
+				`Tool alias "${normalizedAlias}" is already assigned to "${existing}" and cannot resolve to "${normalizedCanonical}".`,
+			)
+		}
+		this.aliases.set(normalizedAlias, normalizedCanonical)
+
+		const descriptor = this.descriptors.get(normalizedCanonical)
+		if (descriptor && !descriptor.aliases.includes(normalizedAlias)) {
+			// Descriptors are frozen after registration. Re-registering the small
+			// alias list keeps the public descriptor immutable while allowing the
+			// central alias catalog to be applied after built-ins are registered.
+			const aliases = Object.freeze([...descriptor.aliases, normalizedAlias])
+			const nextDescriptor = { ...descriptor, aliases }
+			this.descriptors.set(normalizedCanonical, nextDescriptor)
+		}
+	}
 }
 
-/**
- * Construct the runtime registry using the same provider-facing definitions
- * used to build the model request. This keeps execution and prompting aligned
- * while allowing the registry to be tested independently with fixture schemas.
- */
-export async function createTaskToolRegistry(task: Task): Promise<ToolRegistry> {
-	const provider = task.providerRef.deref()
-	const state = provider ? await provider.getState() : undefined
-	const model = task.api.getModel()
-
-	return new ToolRegistry({
-		nativeTools: getNativeTools({ supportsImages: model.info.supportsImages ?? false }),
-		mcpTools: getMcpServerTools(provider?.getMcpHub()),
-		includeCustomTools: state?.experiments?.customTools === true,
-	})
+function canonicalizeAlias(alias: string): string {
+	return canonicalizeToolName(alias)
 }

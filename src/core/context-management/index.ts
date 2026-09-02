@@ -4,11 +4,25 @@ import crypto from "crypto"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../api"
-import { MAX_CONDENSE_THRESHOLD, MIN_CONDENSE_THRESHOLD, summarizeConversation, SummarizeResponse } from "../condense"
+import {
+	MAX_CONDENSE_THRESHOLD,
+	MIN_CONDENSE_THRESHOLD,
+	getToolCallResultPairs,
+	summarizeConversation,
+	SummarizeResponse,
+} from "../condense"
 import { ApiMessage } from "../task-persistence/apiMessages"
 import { ANTHROPIC_DEFAULT_MAX_TOKENS } from "@alpha-code/types"
 import { RooIgnoreController } from "../ignore/RooIgnoreController"
 import { checkContextWindowExceededError } from "../context/context-management/context-error-handling"
+import {
+	DEFAULT_COMPACTION_TARGET_PERCENT,
+	DEFAULT_MIN_REDUCTION_PERCENT,
+	evaluateCompactionProgress,
+	getCompactionTargetTokens,
+} from "./recovery"
+import type { ContextRecoveryStatus } from "./recovery"
+export * from "./recovery"
 
 /**
  * Context Management
@@ -88,12 +102,14 @@ export function truncateConversation(messages: ApiMessage[], fracToRemove: numbe
 		}
 	})
 
-	// Calculate how many visible messages to truncate (excluding first visible message)
+	// Calculate how many visible messages to truncate (excluding first visible message).
+	// The even rounding is retained as the default for ordinary user/assistant
+	// turns, but tool call/result pairs are treated as indivisible units below.
 	const visibleCount = visibleIndices.length
 	const rawMessagesToRemove = Math.floor((visibleCount - 1) * fracToRemove)
-	const messagesToRemove = rawMessagesToRemove - (rawMessagesToRemove % 2)
+	const requestedMessagesToRemove = rawMessagesToRemove - (rawMessagesToRemove % 2)
 
-	if (messagesToRemove <= 0) {
+	if (requestedMessagesToRemove <= 0) {
 		// Nothing to truncate
 		return {
 			messages,
@@ -102,8 +118,45 @@ export function truncateConversation(messages: ApiMessage[], fracToRemove: numbe
 		}
 	}
 
-	// Get the indices of visible messages to truncate (skip first visible, take next N)
-	const indicesToTruncate = new Set(visibleIndices.slice(1, messagesToRemove + 1))
+	// Get the indices of visible messages to truncate (skip first visible, take
+	// the requested number), then remove any candidate that would split a
+	// tool_call/tool_result pair.  A pair whose two sides are both candidates is
+	// hidden together; an incomplete candidate is kept visible instead.
+	const candidateIndices = new Set(visibleIndices.slice(1, requestedMessagesToRemove + 1))
+	const indicesToTruncate = new Set(candidateIndices)
+	const visibleIndexSet = new Set(visibleIndices)
+	const firstVisibleIndex = visibleIndices[0]
+
+	for (const pair of getToolCallResultPairs(messages).values()) {
+		const pairIndices = new Set(
+			[...pair.callMessageIndexes, ...pair.resultMessageIndexes].filter((index) => visibleIndexSet.has(index)),
+		)
+		if (pairIndices.size === 0) continue
+
+		const intersectsCandidate = [...pairIndices].some((index) => candidateIndices.has(index))
+		if (!intersectsCandidate) continue
+
+		const canHideWholePair = [...pairIndices].every(
+			(index) => index !== firstVisibleIndex && candidateIndices.has(index),
+		)
+		if (canHideWholePair) {
+			for (const index of pairIndices) indicesToTruncate.add(index)
+		} else {
+			// Keep both sides visible when one side is outside the removable
+			// window (or is the first retained message).
+			for (const index of pairIndices) indicesToTruncate.delete(index)
+		}
+	}
+
+	if (indicesToTruncate.size === 0) {
+		return {
+			messages,
+			truncationId,
+			messagesRemoved: 0,
+		}
+	}
+
+	const messagesToRemove = indicesToTruncate.size
 
 	// Tag messages that are being "truncated" (hidden from API calls)
 	const taggedMessages = messages.map((msg, index) => {
@@ -113,10 +166,15 @@ export function truncateConversation(messages: ApiMessage[], fracToRemove: numbe
 		return msg
 	})
 
-	// Find the actual boundary - the index right after the last truncated message
-	const lastTruncatedVisibleIndex = visibleIndices[messagesToRemove] // Last visible message being truncated
+	// Find the actual boundary - the index right after the last truncated
+	// message.  Pair-safe selection can leave a candidate visible, so deriving
+	// the boundary from the selected indexes avoids placing the marker in the
+	// middle of a preserved pair.
+	const lastTruncatedVisibleIndex = Math.max(...indicesToTruncate)
 	// If all visible messages except the first are truncated, insert marker at the end
-	const firstKeptVisibleIndex = visibleIndices[messagesToRemove + 1] ?? taggedMessages.length
+	const firstKeptVisibleIndex =
+		visibleIndices.find((index) => index > lastTruncatedVisibleIndex && !indicesToTruncate.has(index)) ??
+		taggedMessages.length
 
 	// Insert truncation marker at the actual boundary (between last truncated and first kept)
 	const firstKeptTs = messages[firstKeptVisibleIndex]?.ts ?? Date.now()
@@ -246,6 +304,12 @@ export type ContextManagementResult = SummarizeResponse & {
 	truncationId?: string
 	messagesRemoved?: number
 	newContextTokensAfterTruncation?: number
+	/** Explicit terminal state for a bounded recovery attempt. */
+	status?: ContextRecoveryStatus
+	/** The target input budget used for compaction decisions. */
+	targetContextTokens?: number
+	/** Reduction measured against prevContextTokens, when available. */
+	reductionPercent?: number
 }
 
 /**
@@ -279,10 +343,15 @@ export async function manageContext({
 	let forceTruncation = false
 	// Calculate the maximum tokens reserved for response
 	const reservedTokens = maxTokens || ANTHROPIC_DEFAULT_MAX_TOKENS
+	const targetContextTokens = getCompactionTargetTokens({
+		contextWindow,
+		reservedTokens,
+		targetPercent: DEFAULT_COMPACTION_TARGET_PERCENT,
+	})
 
 	// Estimate tokens for the last message (which is always a user message)
 	const lastMessage = messages[messages.length - 1]
-	const lastMessageContent = lastMessage.content
+	const lastMessageContent = lastMessage?.content ?? ""
 	const lastMessageTokens = Array.isArray(lastMessageContent)
 		? await estimateTokenCount(lastMessageContent, apiHandler)
 		: await estimateTokenCount([{ type: "text", text: lastMessageContent as string }], apiHandler)
@@ -335,11 +404,36 @@ export async function manageContext({
 				error = result.error
 				errorDetails = result.errorDetails
 				cost = result.cost
-				forceTruncation = checkContextWindowExceededError(
+				// A failed compaction must not leave the caller retrying the same
+				// oversized input.  Truncation is the bounded fallback; the
+				// context-window check remains useful for preserving the original
+				// forced-recovery semantics and diagnostics.
+				const isContextWindowError = checkContextWindowExceededError(
 					new Error([result.error, result.errorDetails].filter(Boolean).join("\n\n")),
 				)
+				forceTruncation = isContextWindowError || Boolean(result.error)
 			} else {
-				return { ...result, prevContextTokens }
+				const progress = evaluateCompactionProgress({
+					beforeTokens: prevContextTokens,
+					afterTokens: result.newContextTokens,
+					targetTokens: targetContextTokens,
+					minReductionPercent: DEFAULT_MIN_REDUCTION_PERCENT,
+				})
+
+				if (progress.status === "reduced") {
+					return {
+						...result,
+						prevContextTokens,
+						status: progress.status,
+						targetContextTokens,
+						reductionPercent: progress.reductionPercent,
+					}
+				}
+
+				// A successful API call is not enough: if it did not produce a
+				// measurable reduction, continue to the one bounded truncation
+				// fallback below instead of silently accepting unchanged input.
+				forceTruncation = true
 			}
 		}
 	}
@@ -373,6 +467,15 @@ export async function manageContext({
 			}
 		}
 
+		const fallbackProgress = evaluateCompactionProgress({
+			beforeTokens: prevContextTokens,
+			afterTokens: newContextTokensAfterTruncation,
+			targetTokens: targetContextTokens,
+			minReductionPercent: DEFAULT_MIN_REDUCTION_PERCENT,
+		})
+		const status: ContextRecoveryStatus =
+			truncationResult.messagesRemoved > 0 ? fallbackProgress.status : "exhausted"
+
 		return {
 			messages: truncationResult.messages,
 			prevContextTokens,
@@ -383,6 +486,9 @@ export async function manageContext({
 			truncationId: truncationResult.truncationId,
 			messagesRemoved: truncationResult.messagesRemoved,
 			newContextTokensAfterTruncation,
+			status,
+			targetContextTokens,
+			reductionPercent: fallbackProgress.reductionPercent,
 		}
 	}
 	// No truncation or condensation needed

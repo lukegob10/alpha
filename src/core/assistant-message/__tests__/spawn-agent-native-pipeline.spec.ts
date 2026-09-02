@@ -239,6 +239,29 @@ describe("spawn_agent native streaming pipeline", () => {
 		)
 	})
 
+	it("keeps native tool previews side-effect-free when later text arrives", async () => {
+		const task = createPresentationTask("deferred-native-tool")
+		task.didCompleteReadingStream = false
+		task.assistantMessageContent = [
+			createToolUse("call_deferred", "spawn_agent", {
+				task_name: "reviewer",
+				fork_turns: "none",
+				objective: "Review the lifecycle.",
+				agent_kind: "review",
+				write_scope: null,
+				expected_output: ["findings"],
+			}),
+			{ type: "text", content: "The tool is being scheduled.", partial: true },
+		]
+
+		await presentAssistantMessage(task as never, { executeTools: false })
+
+		expect(spawnAgentHandle).not.toHaveBeenCalled()
+		expect(task.userMessageContent).toEqual([])
+		expect(task.say).toHaveBeenCalledWith("text", "The tool is being scheduled.", undefined, true)
+		expect(task.currentStreamingContentIndex).toBe(1)
+	})
+
 	it("treats a superseded spawn approval as a rejection and releases the presentation lock", async () => {
 		const task = createPresentationTask("superseded-approval-parent")
 		task.assistantMessageContent = [

@@ -4,6 +4,7 @@ import { saveTaskMessages } from "../task-persistence"
 import * as vscode from "vscode"
 import pWaitFor from "p-wait-for"
 import { t } from "../../i18n"
+import { awaitTaskCancellationBoundary } from "./TaskCancellationBoundary"
 
 export interface CheckpointRestoreConfig {
 	provider: ClineProvider
@@ -30,15 +31,9 @@ export async function handleCheckpointRestoreOperation(config: CheckpointRestore
 		// For delete operations, ensure the task is properly aborted to handle any pending ask operations
 		// This prevents "Current ask promise was ignored" errors
 		// For edit operations, we don't abort because the checkpoint restore will handle it
-		if (operation === "delete" && currentCline && !currentCline.abort) {
-			currentCline.abortTask()
-			// Wait a bit for the abort to complete
-			await pWaitFor(() => currentCline.abort === true, {
-				timeout: 1000,
-				interval: 50,
-			}).catch(() => {
-				// Continue even if timeout - the abort flag should be set
-			})
+		if (operation === "delete" && currentCline) {
+			const abortResult = currentCline.abort ? undefined : await currentCline.abortTask()
+			await awaitTaskCancellationBoundary(currentCline, abortResult)
 		}
 
 		// For edit operations, set up pending edit data before restoration

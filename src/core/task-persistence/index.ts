@@ -9,6 +9,23 @@ export {
 } from "./subagentInstructionSnapshot"
 export { TaskHistoryStore } from "./TaskHistoryStore"
 export {
+	ProviderTranscriptStore,
+	ProviderTranscriptStoreError,
+	ProviderTranscriptRevisionConflictError,
+	ProviderTranscriptDigestMismatchError,
+	assertCommitReceipt,
+	computeProviderTranscriptDigest,
+	digestProviderTranscript,
+	providerTranscriptEnvelopeSchema,
+} from "./ProviderTranscriptStore"
+export type {
+	ProviderTranscriptCommitInput,
+	ProviderTranscriptCommitReceipt,
+	ProviderTranscriptEnvelope,
+	ProviderTranscriptStoreErrorCode,
+	ProviderTranscriptStoreOptions,
+} from "./ProviderTranscriptStore"
+export {
 	compactTaskHistoryForGlobalState,
 	TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES,
 } from "./compactTaskHistoryForGlobalState"

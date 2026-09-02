@@ -1,5 +1,8 @@
 import type { ToolConcurrency, ToolSideEffects } from "../tools/ToolRegistry"
+import { canonicalizeToolName } from "../tools/ToolRegistry"
 import path from "path"
+
+import { digestValue } from "./StepContext"
 
 export const DEFAULT_TOOL_OUTPUT_LIMIT = 32_000
 
@@ -41,6 +44,7 @@ export interface ToolPolicySnapshot {
 	execution: ToolExecutionPolicy
 	/** Short, sanitized description safe to include in model instructions. */
 	summary: string
+	/** Digest of the normalized policy. This is always computed locally. */
 	digest: string
 }
 
@@ -57,20 +61,44 @@ export interface ToolPolicyInput {
 		command?: Partial<ToolCommandPolicy>
 		cancellation?: "abort-process"
 	}
-	digest: string
+	/**
+	 * Legacy compatibility field. It is deliberately ignored; callers cannot
+	 * choose the identity of a policy snapshot.
+	 */
+	digest?: string
+}
+
+/** Compute a policy digest from normalized snapshot content. */
+export function computeToolPolicyDigest(policy: Omit<ToolPolicySnapshot, "digest">): string {
+	return digestValue(policy)
 }
 
 function uniqueNames(names: readonly string[]): string[] {
-	return [...new Set(names)].sort()
+	return [...new Set(names.map((name) => canonicalizeToolName(name)))].sort()
+}
+
+function canonicalizeRecord<T>(record: Readonly<Record<string, T>> | undefined): Record<string, T> {
+	const result: Record<string, T> = {}
+	for (const [name, value] of Object.entries(record ?? {})) {
+		result[canonicalizeToolName(name)] = value
+	}
+	return result
 }
 
 export function createToolPolicySnapshot(input: ToolPolicyInput): ToolPolicySnapshot {
 	const visibleTools = uniqueNames(input.visibleTools)
 	const disabledTools = uniqueNames(input.disabledTools ?? [])
 	const disabled = new Set(disabledTools)
-	const allowedTools = uniqueNames(input.allowedTools ?? visibleTools).filter((name) => !disabled.has(name))
+	const visible = new Set(visibleTools)
+	const allowedTools = uniqueNames(input.allowedTools ?? visibleTools).filter(
+		(name) => visible.has(name) && !disabled.has(name),
+	)
+	const capabilities = canonicalizeRecord(input.capabilities)
 	const outputLimits = Object.fromEntries(
-		Object.entries(input.outputLimits ?? {}).map(([name, limit]) => [name, Math.max(1, Math.floor(limit))]),
+		Object.entries(canonicalizeRecord(input.outputLimits)).map(([name, limit]) => [
+			name,
+			Math.max(1, Math.floor(limit)),
+		]),
 	)
 	const executionInput = input.execution ?? {}
 	const commandInput = executionInput.command ?? {}
@@ -86,8 +114,7 @@ export function createToolPolicySnapshot(input: ToolPolicyInput): ToolPolicySnap
 		cancellation: "abort-process",
 	}
 	const summary = formatToolPolicySummary(execution, input.autoApprovalEnabled === true, outputLimits)
-
-	return Object.freeze({
+	const normalized = {
 		visibleTools: Object.freeze(visibleTools),
 		allowedTools: Object.freeze(allowedTools),
 		disabledTools: Object.freeze(disabledTools),
@@ -95,7 +122,11 @@ export function createToolPolicySnapshot(input: ToolPolicyInput): ToolPolicySnap
 			autoApprovalEnabled: input.autoApprovalEnabled === true,
 			liveRevalidation: true,
 		}),
-		capabilities: Object.freeze({ ...(input.capabilities ?? {}) }),
+		capabilities: Object.freeze(
+			Object.fromEntries(
+				Object.entries(capabilities).map(([name, capability]) => [name, Object.freeze({ ...capability })]),
+			),
+		),
 		outputLimits: Object.freeze(outputLimits),
 		execution: Object.freeze({
 			...execution,
@@ -108,7 +139,13 @@ export function createToolPolicySnapshot(input: ToolPolicyInput): ToolPolicySnap
 			}),
 		}),
 		summary,
-		digest: input.digest,
+	}
+
+	// Never use input.digest here. Older callers still pass it, but the
+	// normalized snapshot is the sole source of truth for policy identity.
+	return Object.freeze({
+		...normalized,
+		digest: computeToolPolicyDigest(normalized),
 	})
 }
 
@@ -117,13 +154,19 @@ export function isToolAllowed(policy: ToolPolicySnapshot | undefined, name: stri
 		return true
 	}
 
+	const canonical = canonicalizeToolName(name)
+	const names = canonical === name ? [canonical] : [canonical, name]
 	return (
-		policy.visibleTools.includes(name) && policy.allowedTools.includes(name) && !policy.disabledTools.includes(name)
+		names.some((candidate) => policy.visibleTools.includes(candidate)) &&
+		names.some((candidate) => policy.allowedTools.includes(candidate)) &&
+		!names.some((candidate) => policy.disabledTools.includes(candidate))
 	)
 }
 
 export function getToolOutputLimit(policy: ToolPolicySnapshot | undefined, name: string): number {
-	return policy?.outputLimits[name] ?? DEFAULT_TOOL_OUTPUT_LIMIT
+	if (!policy) return DEFAULT_TOOL_OUTPUT_LIMIT
+	const canonical = canonicalizeToolName(name)
+	return policy.outputLimits[canonical] ?? policy.outputLimits[name] ?? DEFAULT_TOOL_OUTPUT_LIMIT
 }
 
 export function isPathAllowed(policy: ToolPolicySnapshot | undefined, candidate: string, cwd?: string): boolean {

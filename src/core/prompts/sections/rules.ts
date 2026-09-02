@@ -105,7 +105,7 @@ RULES
 - Do not use the ~ character or $HOME to refer to the home directory.${workerRules}${frozenContextRules}
 - Treat tool results as evidence. Do not infer success from missing or incomplete output.
 - Stay within the assigned objective and authority.${delegationRules}
-- When finished, call attempt_completion once with a concise, self-contained result.${settings?.isStealthModel ? getVendorConfidentialitySection() : ""}`
+- When finished or blocked, call attempt_completion once with a concise, self-contained durable result. Do not end a managed sub-agent turn with ordinary assistant prose alone.${settings?.isStealthModel ? getVendorConfidentialitySection() : ""}`
 	}
 
 	if (isPlanMode) {
@@ -135,7 +135,7 @@ RULES
 - Be sure to consider the type of project (e.g. Python, JavaScript, web application) when determining the appropriate structure and files to include. Also consider what files may be most relevant to accomplishing the task, for example looking at a project's manifest file would help you understand the project's dependencies, which you could incorporate into any code you write.
   * For example, in architect mode trying to edit app.js would be rejected because architect mode can only edit files matching "\\.(md|html)$"
 - When making changes to code, always consider the context in which the code is being used. Ensure that your changes are compatible with the existing codebase and that they follow the project's coding standards and best practices.
-- Do not ask for more information than necessary. Use the tools provided to accomplish the user's request efficiently and effectively. When you've completed your task, you must use the attempt_completion tool to present the result to the user. The user may provide feedback, which you can use to make improvements and try again.
+- Do not ask for more information than necessary. Use the tools provided to accomplish the user's request efficiently and effectively. A primary task may finish with a visible ordinary assistant answer when no tool call or continuation is needed; do not call a tool merely to force a completion format. The user may provide feedback, which you can use to make improvements and try again.
 - You are only allowed to ask the user questions using the ask_followup_question tool. Use this tool only when you need additional details to complete a task, and be sure to use a clear and concise question that will help you move forward with the task. When you ask a question, provide the user with 2-4 suggested answers based on your question so they don't need to do so much typing. The suggestions should be specific, actionable, and directly related to the completed task. They should be ordered by priority or logical sequence. However if you can use the available tools to avoid having to ask the user questions, you should do so. For example, if the user mentions a file that may be in an outside directory like the Desktop, you should use the list_files tool to list the files in the Desktop and check if the file they are talking about is there, rather than asking the user to provide the file path themselves.
 - When command output is absent or incomplete, do not infer success if the result matters. Check the tool result, exit status, process state, or resulting artifacts with a bounded follow-up. Ask the user only if the environment cannot provide the required evidence.
 - The user may provide a file's contents directly in their message, in which case you shouldn't use the read_file tool to get the file contents again since you already have it.

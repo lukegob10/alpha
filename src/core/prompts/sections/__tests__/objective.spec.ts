@@ -26,10 +26,14 @@ describe("getObjectiveSection", () => {
 		expect(objective).not.toContain("one at a time")
 	})
 
-	it("completes without open-ended polishing", () => {
+	it("allows a visible primary answer without forcing a completion tool", () => {
 		const objective = getObjectiveSection()
 
-		expect(objective).toContain("use attempt_completion")
+		expect(objective).toContain("visible ordinary assistant answer")
+		expect(objective).toContain("when no tool call or continuation is needed")
+		expect(objective).toContain(
+			"Do not invent a tool call or attempt_completion solely to force a completion format",
+		)
 		expect(objective).toContain("without entering repetitive or open-ended improvement loops")
 	})
 
@@ -44,8 +48,8 @@ describe("getObjectiveSection", () => {
 	it("stops at the first satisfied completion boundary", () => {
 		const objective = getObjectiveSection()
 
-		expect(objective).toContain("Once evidence establishes a bounded requested outcome")
-		expect(objective).toContain("use attempt_completion next")
+		expect(objective).toContain("Once the requested outcome and any requested verification are complete")
+		expect(objective).not.toContain("use attempt_completion next")
 		expect(objective).toContain("Do not explore, configure, or improve adjacent state")
 	})
 

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest"
-import { TaskLifecycleState, TaskStatus } from "@alpha-code/types"
+import {
+	agentLifecycleSnapshotSchema,
+	type AgentLifecycleSnapshot,
+	TaskLifecycleState,
+	TaskStatus,
+} from "@alpha-code/types"
 
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
 import type { Task } from "../../task/Task"
@@ -19,6 +24,26 @@ const createTask = (taskId: string, overrides: Partial<Task> = {}): Task =>
 		},
 		...overrides,
 	}) as Task
+
+const createLifecycleSnapshot = (
+	taskId: string,
+	overrides: Partial<AgentLifecycleSnapshot> = {},
+): AgentLifecycleSnapshot =>
+	agentLifecycleSnapshotSchema.parse({
+		version: 1,
+		taskId,
+		runId: `run-${taskId}`,
+		turnId: `turn-${taskId}`,
+		status: "in_progress",
+		phase: "working",
+		lastSequence: 0,
+		items: [],
+		steps: [],
+		acceptedToolCallIds: [],
+		terminalToolCallIds: [],
+		processedEvents: [],
+		...overrides,
+	})
 
 describe("TaskSessionRegistry", () => {
 	it("tracks live tasks and explicit active focus", () => {
@@ -192,6 +217,79 @@ describe("TaskSessionRegistry", () => {
 			waitingReason: "interactive",
 			queueCount: 2,
 		})
+	})
+
+	it("projects canonical waiting status instead of retaining a stale running task status", () => {
+		const registry = new TaskSessionRegistry(1)
+		registry.register(createTask("task-canonical-waiting"))
+		registry.markLifecycleSnapshot(
+			"task-canonical-waiting",
+			createLifecycleSnapshot("task-canonical-waiting", { phase: "awaiting_approval" }),
+		)
+
+		expect(registry.getMetadata()["task-canonical-waiting"]).toMatchObject({
+			status: TaskStatus.Interactive,
+			lifecycle: TaskLifecycleState.Waiting,
+			isWaitingForInput: true,
+			waitingReason: "awaiting_approval",
+		})
+	})
+
+	it("projects canonical completion consistently even when the Task still reports running", () => {
+		const registry = new TaskSessionRegistry(1)
+		registry.register(createTask("task-canonical-complete"))
+		registry.markLifecycleSnapshot(
+			"task-canonical-complete",
+			createLifecycleSnapshot("task-canonical-complete", {
+				status: "completed",
+				phase: "finalizing",
+				lastSequence: 1,
+				terminalEventId: "complete-event",
+				terminalAt: 101,
+				processedEvents: [{ eventId: "complete-event", sequence: 1, fingerprint: "complete" }],
+			}),
+		)
+
+		expect(registry.getLiveTaskIds()).toEqual([])
+		expect(registry.getMetadata()["task-canonical-complete"]).toMatchObject({
+			status: TaskStatus.Idle,
+			lifecycle: TaskLifecycleState.Completed,
+			isWaitingForInput: false,
+			waitingReason: undefined,
+		})
+	})
+
+	it("falls back to legacy task status while lifecycle persistence is degraded", () => {
+		const registry = new TaskSessionRegistry(1)
+		const task = createTask("task-degraded")
+		const completed = createLifecycleSnapshot("task-degraded", {
+			status: "completed",
+			phase: "finalizing",
+			lastSequence: 1,
+			terminalEventId: "complete-event",
+			terminalAt: 101,
+			processedEvents: [{ eventId: "complete-event", sequence: 1, fingerprint: "complete" }],
+		})
+
+		registry.register(task)
+		registry.markLifecycleSnapshot(task.taskId, completed)
+		registry.markLifecycleDegraded(task.taskId)
+
+		expect(registry.isLifecycleDegraded(task.taskId)).toBe(true)
+		expect(registry.getLiveTaskIds()).toEqual([task.taskId])
+		expect(registry.getMetadata()[task.taskId]).toMatchObject({
+			status: TaskStatus.Running,
+			lifecycle: TaskLifecycleState.Running,
+			isWaitingForInput: false,
+		})
+		// Keep the canonical snapshot available for recovery, but do not let it
+		// override the legacy projection until an authoritative resync succeeds.
+		expect(registry.getLifecycleSnapshot(task.taskId)?.status).toBe("completed")
+
+		registry.clearLifecycleDegraded(task.taskId)
+		expect(registry.isLifecycleDegraded(task.taskId)).toBe(false)
+		expect(registry.getLiveTaskIds()).toEqual([])
+		expect(registry.getMetadata()[task.taskId].lifecycle).toBe(TaskLifecycleState.Completed)
 	})
 
 	it("can clear focus without removing background tasks", () => {

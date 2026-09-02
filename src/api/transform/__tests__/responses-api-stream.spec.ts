@@ -363,6 +363,102 @@ describe("processResponsesApiStream", () => {
 		})
 	})
 
+	describe("canonical lifecycle outcomes", () => {
+		it("emits one completed outcome with semantic-output state", async () => {
+			const chunks = await collectChunks(
+				processResponsesApiStream(
+					mockStream([
+						{ type: "response.output_text.delta", delta: "partial" },
+						{ type: "response.completed" },
+					]),
+					noopUsage,
+					{ emitLifecycle: true, requestId: "request-1", attemptId: "attempt-1" },
+				),
+			)
+
+			expect(chunks).toEqual([
+				{ type: "text", text: "partial" },
+				{
+					type: "outcome",
+					status: "completed",
+					terminal: true,
+					semanticOutputObserved: true,
+					phase: "stream",
+					requestId: "request-1",
+					attemptId: "attempt-1",
+				},
+			])
+		})
+
+		it("classifies an abrupt iterator failure as a failed outcome", async () => {
+			async function* failedStream() {
+				yield { type: "response.output_text.delta", delta: "partial" }
+				throw new Error("connection reset")
+			}
+
+			const chunks = await collectChunks(
+				processResponsesApiStream(failedStream(), noopUsage, { emitLifecycle: true }),
+			)
+
+			expect(chunks.at(-2)).toMatchObject({ type: "error", message: "connection reset" })
+			expect(chunks.at(-1)).toMatchObject({
+				type: "outcome",
+				status: "failed",
+				terminal: true,
+				semanticOutputObserved: true,
+			})
+		})
+
+		it("preserves terminal metadata when lifecycle callers request a throw", async () => {
+			const iterator = processResponsesApiStream(
+				mockStream([
+					{
+						type: "response.failed",
+						error: { message: "policy rejected", status: 400, retryable: false },
+					},
+				]),
+				noopUsage,
+				{
+					emitLifecycle: true,
+					throwOnError: true,
+					requestId: "responses-request",
+					attemptId: "responses-attempt",
+				},
+			)
+
+			await expect(iterator.next()).resolves.toMatchObject({ value: { type: "error", retryable: false } })
+			await expect(iterator.next()).resolves.toMatchObject({ value: { type: "outcome", status: "failed" } })
+			await expect(iterator.next()).rejects.toMatchObject({
+				status: 400,
+				retryable: false,
+				reason: "policy rejected",
+				requestId: "responses-request",
+				attemptId: "responses-attempt",
+				terminal: true,
+			})
+		})
+
+		it("preserves an explicit cancelled response status", async () => {
+			const chunks = await collectChunks(
+				processResponsesApiStream(
+					mockStream([{ type: "response.done", response: { status: "cancelled" } }]),
+					noopUsage,
+					{ emitLifecycle: true },
+				),
+			)
+
+			expect(chunks).toEqual([
+				{
+					type: "outcome",
+					status: "cancelled",
+					terminal: true,
+					semanticOutputObserved: false,
+					phase: "stream",
+				},
+			])
+		})
+	})
+
 	describe("full conversation stream", () => {
 		it("should handle a complete stream with reasoning, text, and usage", async () => {
 			const mockNormalize = (usage: any) => ({

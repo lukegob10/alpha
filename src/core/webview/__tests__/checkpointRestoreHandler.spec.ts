@@ -29,6 +29,7 @@ describe("checkpointRestoreHandler", () => {
 			abortTask: vi.fn(() => {
 				mockCline.abort = true
 			}),
+			waitForTermination: vi.fn(async () => undefined),
 			checkpointRestore: vi.fn(),
 			clineMessages: [
 				{ ts: 1, type: "user", say: "user", text: "First message" },
@@ -87,6 +88,29 @@ describe("checkpointRestoreHandler", () => {
 			const abortOrder = mockCline.abortTask.mock.invocationCallOrder[0]
 			const restoreOrder = mockCline.checkpointRestore.mock.invocationCallOrder[0]
 			expect(abortOrder).toBeLessThan(restoreOrder)
+		})
+
+		it("waits for task termination before restoring or rewriting delete history", async () => {
+			let releaseTermination!: () => void
+			const termination = new Promise<void>((resolve) => {
+				releaseTermination = resolve
+			})
+			mockCline.waitForTermination.mockImplementation(async () => termination)
+
+			const restore = handleCheckpointRestoreOperation({
+				provider: mockProvider,
+				currentCline: mockCline,
+				messageTs: 3,
+				messageIndex: 2,
+				checkpoint: { hash: "abc123" },
+				operation: "delete",
+			})
+			await vi.waitFor(() => expect(mockCline.waitForTermination).toHaveBeenCalledOnce())
+			expect(mockCline.checkpointRestore).not.toHaveBeenCalled()
+
+			releaseTermination()
+			await restore
+			expect(mockCline.checkpointRestore).toHaveBeenCalledOnce()
 		})
 
 		it("should not abort task if already aborted", async () => {

@@ -30,6 +30,13 @@ vi.mock("execa", () => ({
 	execa: vi.fn(),
 }))
 
+// Keep legacy history persistence isolated from the real filesystem too. The
+// fs/promises mock below is intentionally narrow and does not create the task
+// directory used by safeWriteJson.
+vi.mock("../../../utils/safeWriteJson", () => ({
+	safeWriteJson: vi.fn().mockResolvedValue(undefined),
+}))
+
 vi.mock("fs/promises", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, any>
 	const mockFunctions = {
@@ -46,6 +53,42 @@ vi.mock("fs/promises", async (importOriginal) => {
 		default: mockFunctions,
 	}
 })
+
+// This spec keeps the legacy API-history filesystem mocked. The provider
+// transcript sidecar has its own persistence suite; mock its receipt boundary
+// here so the blanket fs/promises read mock cannot turn a successful legacy
+// save into a false sidecar failure.
+vi.mock("../../task-persistence/ProviderTranscriptStore", () => ({
+	ProviderTranscriptStore: vi.fn().mockImplementation((taskId: string) => ({
+		read: vi.fn().mockResolvedValue({
+			version: 1,
+			taskId,
+			revision: 0,
+			digest: "0".repeat(64),
+			writtenAt: 0,
+			messages: [],
+		}),
+		getLastCommitReceipt: vi.fn(),
+		commit: vi.fn().mockResolvedValue({
+			version: 1,
+			taskId,
+			revision: 1,
+			digest: "1".repeat(64),
+			writtenAt: 1,
+		}),
+		verifyCommitReceipt: vi.fn().mockResolvedValue(undefined),
+		repairFromAuthoritativeTranscript: vi.fn(),
+	})),
+	ProviderTranscriptStoreError: class MockProviderTranscriptStoreError extends Error {
+		code = "write_failed"
+		taskId = "test-id"
+	},
+	ProviderTranscriptRevisionConflictError: class MockProviderTranscriptRevisionConflictError extends Error {
+		code = "revision_conflict"
+		taskId = "test-id"
+	},
+	digestProviderTranscript: vi.fn(() => "0".repeat(64)),
+}))
 
 vi.mock("p-wait-for", () => ({
 	default: vi.fn().mockImplementation(async () => Promise.resolve()),

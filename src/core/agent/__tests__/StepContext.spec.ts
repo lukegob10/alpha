@@ -35,7 +35,12 @@ function makeContext(overrides: Partial<{ systemPrompt: string; retryAttempt: nu
 			apiProtocol: "openai-responses",
 			modelId: "gpt-5.6-luna",
 			modelInfo,
-			options: { model: "gpt-5.6-luna", openAiApiKey: "do-not-store", temperature: 0 },
+			options: {
+				model: "gpt-5.6-luna",
+				openAiApiKey: "do-not-store",
+				temperature: 0,
+				reasoning: { signature: "provider-signature", state: "provider-state", apiKey: "nested-secret" },
+			},
 		},
 		instructions: {
 			systemPrompt,
@@ -116,6 +121,11 @@ describe("StepContext", () => {
 		expect(context.instructions.systemPrompt).toBe("system prompt")
 		expect(context.transcript.messages[0].content).toBe("Inspect README.md")
 		expect(context.provider.options.openAiApiKey).toBe("[redacted]")
+		expect(context.provider.options.reasoning).toEqual({
+			signature: "provider-signature",
+			state: "provider-state",
+			apiKey: "[redacted]",
+		})
 		expect(context.budget.inputTokens).toBe(1_000)
 		expect(Object.isFrozen(context)).toBe(true)
 		expect(Object.isFrozen(context.transcript)).toBe(true)

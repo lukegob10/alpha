@@ -28,6 +28,14 @@ import { experimentDefault } from "@alpha/experiments"
 
 import { vscode } from "@src/utils/vscode"
 import { convertTextMateToHljs } from "@src/utils/textMateToHljs"
+import {
+	applyLifecycleEventToExtensionState,
+	applyLifecycleDegradedToExtensionState,
+	applyLifecycleSnapshotToExtensionState,
+	applyLifecycleSnapshotsToExtensionState,
+	mergeAgentLifecycleDegradedSignals,
+	mergeAgentLifecycleSnapshots,
+} from "./agentLifecycleState"
 
 export interface ExtensionStateContextType extends ExtensionState {
 	historyPreviewCollapsed?: boolean // Add the new state property
@@ -153,6 +161,14 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 	const customModePrompts = { ...prevCustomModePrompts, ...(newCustomModePrompts ?? {}) }
 	const experiments = { ...prevExperiments, ...(newExperiments ?? {}) }
 	const rest = { ...prevRest, ...newRest }
+	const agentLifecycleSnapshots = mergeAgentLifecycleSnapshots(
+		prevState.agentLifecycleSnapshots,
+		newState.agentLifecycleSnapshots,
+	)
+	const agentLifecycleDegraded = mergeAgentLifecycleDegradedSignals(
+		prevState.agentLifecycleDegraded,
+		newState.agentLifecycleDegraded,
+	)
 
 	const hasDedicatedDomainSequence =
 		newState.taskStateSeq !== undefined ||
@@ -207,13 +223,17 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 
 	// Note that we completely replace the previous apiConfiguration and customSupportPrompts objects
 	// with new ones since the state that is broadcast is the entire objects so merging is not necessary.
-	return {
+	const mergedState = {
 		...rest,
 		apiConfiguration: apiConfiguration ?? prevState.apiConfiguration,
 		customModePrompts,
 		customSupportPrompts: customSupportPrompts ?? prevState.customSupportPrompts,
 		experiments,
+		agentLifecycleSnapshots,
+		agentLifecycleDegraded,
 	}
+
+	return applyLifecycleSnapshotsToExtensionState(mergedState, agentLifecycleSnapshots)
 }
 
 export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -230,6 +250,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		currentView: { type: "newTaskDraft" },
 		liveTaskIds: [],
 		liveTasksById: {},
+		agentLifecycleDegraded: {},
 		shouldShowAnnouncement: false,
 		allowedCommands: [],
 		deniedCommands: [],
@@ -452,6 +473,18 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		(event: MessageEvent) => {
 			const message: ExtensionMessage = event.data
 			switch (message.type) {
+				case "agentLifecycleEvent": {
+					setState((prevState) => applyLifecycleEventToExtensionState(prevState, message))
+					break
+				}
+				case "agentLifecycleSnapshot": {
+					setState((prevState) => applyLifecycleSnapshotToExtensionState(prevState, message))
+					break
+				}
+				case "agentLifecycleDegraded": {
+					setState((prevState) => applyLifecycleDegradedToExtensionState(prevState, message))
+					break
+				}
 				case "state": {
 					// Preserve event ordering: a newer state snapshot must not be followed by
 					// a previously queued partial update.

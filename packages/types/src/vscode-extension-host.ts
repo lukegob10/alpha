@@ -40,6 +40,220 @@ import type {
 	GoalSeekState,
 	UpdateGoalSeekJobPayload,
 } from "./goal-seek.js"
+import {
+	agentLifecycleEventSchema,
+	agentLifecycleDegradedSignalSchema,
+	agentLifecycleSnapshotSchema,
+	agentTaskIdSchema,
+	type AgentLifecycleEvent,
+	type AgentLifecycleDegradedSignal,
+	type AgentLifecycleSnapshot,
+	type AgentTaskId,
+} from "./agent-lifecycle.js"
+
+export type AgentLifecycleEventMessage =
+	| {
+			type: "agentLifecycleEvent"
+			taskId?: AgentTaskId
+			payload: AgentLifecycleEvent
+			event?: AgentLifecycleEvent
+			agentLifecycleEvent?: AgentLifecycleEvent
+			agentLifecycleSnapshot?: AgentLifecycleSnapshot
+	  }
+	| {
+			type: "agentLifecycleEvent"
+			taskId?: AgentTaskId
+			event: AgentLifecycleEvent
+			payload?: AgentLifecycleEvent
+			agentLifecycleEvent?: AgentLifecycleEvent
+			agentLifecycleSnapshot?: AgentLifecycleSnapshot
+	  }
+
+export type AgentLifecycleSnapshotMessage =
+	| {
+			type: "agentLifecycleSnapshot"
+			taskId?: AgentTaskId
+			payload: AgentLifecycleSnapshot
+			snapshot?: AgentLifecycleSnapshot
+			agentLifecycleSnapshot?: AgentLifecycleSnapshot
+	  }
+	| {
+			type: "agentLifecycleSnapshot"
+			taskId?: AgentTaskId
+			snapshot: AgentLifecycleSnapshot
+			payload?: AgentLifecycleSnapshot
+			agentLifecycleSnapshot?: AgentLifecycleSnapshot
+	  }
+
+export type AgentLifecycleDegradedMessage =
+	| {
+			type: "agentLifecycleDegraded"
+			taskId?: AgentTaskId
+			payload: AgentLifecycleDegradedSignal
+			signal?: AgentLifecycleDegradedSignal
+			agentLifecycleDegraded?: AgentLifecycleDegradedSignal
+	  }
+	| {
+			type: "agentLifecycleDegraded"
+			taskId?: AgentTaskId
+			signal: AgentLifecycleDegradedSignal
+			payload?: AgentLifecycleDegradedSignal
+			agentLifecycleDegraded?: AgentLifecycleDegradedSignal
+	  }
+
+export type ExtensionLifecycleMessage =
+	| AgentLifecycleEventMessage
+	| AgentLifecycleSnapshotMessage
+	| AgentLifecycleDegradedMessage
+
+const lifecycleEnvelopeValue = (value: AgentLifecycleEvent | AgentLifecycleSnapshot): string => JSON.stringify(value)
+const lifecycleDegradedEnvelopeValue = (value: AgentLifecycleDegradedSignal): string => JSON.stringify(value)
+
+/**
+ * Extension-side lifecycle messages use the existing `payload` convention.
+ * `event`/`snapshot` aliases are retained for hosts that adopted the contract
+ * before the message envelope was standardized.
+ */
+export const agentLifecycleEventMessageSchema: z.ZodType<AgentLifecycleEventMessage, z.ZodTypeDef, unknown> = z
+	.object({
+		type: z.literal("agentLifecycleEvent"),
+		taskId: agentTaskIdSchema.optional(),
+		payload: agentLifecycleEventSchema.optional(),
+		event: agentLifecycleEventSchema.optional(),
+		agentLifecycleEvent: agentLifecycleEventSchema.optional(),
+		agentLifecycleSnapshot: agentLifecycleSnapshotSchema.optional(),
+	})
+	.passthrough()
+	.superRefine((message, context) => {
+		const candidates = [message.payload, message.event, message.agentLifecycleEvent].filter(
+			(candidate): candidate is AgentLifecycleEvent => candidate !== undefined,
+		)
+		if (candidates.length === 0) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["payload"],
+				message: "agentLifecycleEvent messages require a validated lifecycle event payload",
+			})
+			return
+		}
+		const event = candidates[0]!
+		if (message.taskId !== undefined && message.taskId !== event.taskId) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["taskId"],
+				message: "agentLifecycleEvent taskId must match the lifecycle event taskId",
+			})
+		}
+		if (candidates.some((candidate) => lifecycleEnvelopeValue(candidate) !== lifecycleEnvelopeValue(event))) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["payload"],
+				message: "Lifecycle event aliases must describe the same event",
+			})
+		}
+		const snapshot = message.agentLifecycleSnapshot
+		if (
+			snapshot !== undefined &&
+			(snapshot.taskId !== event.taskId ||
+				snapshot.runId !== event.runId ||
+				snapshot.turnId !== event.turnId ||
+				snapshot.lastSequence < event.sequence ||
+				!snapshot.processedEvents.some(
+					(receipt) => receipt.eventId === event.eventId && receipt.sequence === event.sequence,
+				))
+		) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["agentLifecycleSnapshot"],
+				message: "Attached lifecycle snapshot must include the event for the same task, run, and turn",
+			})
+		}
+	}) as unknown as z.ZodType<AgentLifecycleEventMessage, z.ZodTypeDef, unknown>
+
+export const agentLifecycleSnapshotMessageSchema: z.ZodType<AgentLifecycleSnapshotMessage, z.ZodTypeDef, unknown> = z
+	.object({
+		type: z.literal("agentLifecycleSnapshot"),
+		taskId: agentTaskIdSchema.optional(),
+		payload: agentLifecycleSnapshotSchema.optional(),
+		snapshot: agentLifecycleSnapshotSchema.optional(),
+		agentLifecycleSnapshot: agentLifecycleSnapshotSchema.optional(),
+	})
+	.passthrough()
+	.superRefine((message, context) => {
+		const candidates = [message.payload, message.snapshot, message.agentLifecycleSnapshot].filter(
+			(candidate): candidate is AgentLifecycleSnapshot => candidate !== undefined,
+		)
+		if (candidates.length === 0) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["payload"],
+				message: "agentLifecycleSnapshot messages require a validated lifecycle snapshot payload",
+			})
+			return
+		}
+		const snapshot = candidates[0]!
+		if (message.taskId !== undefined && message.taskId !== snapshot.taskId) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["taskId"],
+				message: "agentLifecycleSnapshot taskId must match the lifecycle snapshot taskId",
+			})
+		}
+		if (candidates.some((candidate) => lifecycleEnvelopeValue(candidate) !== lifecycleEnvelopeValue(snapshot))) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["payload"],
+				message: "Lifecycle snapshot aliases must describe the same snapshot",
+			})
+		}
+	}) as unknown as z.ZodType<AgentLifecycleSnapshotMessage, z.ZodTypeDef, unknown>
+
+export const agentLifecycleDegradedMessageSchema: z.ZodType<AgentLifecycleDegradedMessage, z.ZodTypeDef, unknown> = z
+	.object({
+		type: z.literal("agentLifecycleDegraded"),
+		taskId: agentTaskIdSchema.optional(),
+		payload: agentLifecycleDegradedSignalSchema.optional(),
+		signal: agentLifecycleDegradedSignalSchema.optional(),
+		agentLifecycleDegraded: agentLifecycleDegradedSignalSchema.optional(),
+	})
+	.passthrough()
+	.superRefine((message, context) => {
+		const candidates = [message.payload, message.signal, message.agentLifecycleDegraded].filter(
+			(candidate): candidate is AgentLifecycleDegradedSignal => candidate !== undefined,
+		)
+		if (candidates.length === 0) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["payload"],
+				message: "agentLifecycleDegraded messages require a validated signal payload",
+			})
+			return
+		}
+		const signal = candidates[0]!
+		if (message.taskId !== undefined && message.taskId !== signal.taskId) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["taskId"],
+				message: "agentLifecycleDegraded taskId must match the signal taskId",
+			})
+		}
+		if (
+			candidates.some(
+				(candidate) => lifecycleDegradedEnvelopeValue(candidate) !== lifecycleDegradedEnvelopeValue(signal),
+			)
+		) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["payload"],
+				message: "Lifecycle degraded aliases must describe the same signal",
+			})
+		}
+	}) as unknown as z.ZodType<AgentLifecycleDegradedMessage, z.ZodTypeDef, unknown>
+
+// Explicit aliases make the schema names discoverable to extension callers.
+export const extensionAgentLifecycleEventMessageSchema = agentLifecycleEventMessageSchema
+export const extensionAgentLifecycleSnapshotMessageSchema = agentLifecycleSnapshotMessageSchema
+export const extensionAgentLifecycleDegradedMessageSchema = agentLifecycleDegradedMessageSchema
 
 /**
  * ExtensionMessage
@@ -49,6 +263,9 @@ export interface ExtensionMessage {
 	type:
 		| "action"
 		| "state"
+		| "agentLifecycleEvent"
+		| "agentLifecycleSnapshot"
+		| "agentLifecycleDegraded"
 		| "taskHistoryUpdated"
 		| "taskHistoryItemUpdated"
 		| "selectedImages"
@@ -136,6 +353,12 @@ export interface ExtensionMessage {
 	goalSeekRuns?: GoalSeekRun[]
 	goalSeekAttempts?: GoalSeekAttempt[]
 	goalSeekState?: GoalSeekState
+	/** Canonical lifecycle event payload for extension -> webview rollout. */
+	agentLifecycleEvent?: AgentLifecycleEvent
+	/** Canonical lifecycle snapshot payload for extension -> webview rollout. */
+	agentLifecycleSnapshot?: AgentLifecycleSnapshot
+	/** Per-task fallback signal when canonical lifecycle persistence is unavailable. */
+	agentLifecycleDegraded?: AgentLifecycleDegradedSignal
 	payload?: any // eslint-disable-line @typescript-eslint/no-explicit-any
 	checkpointWarning?: {
 		type: "WAIT_TIMEOUT" | "INIT_TIMEOUT"
@@ -364,6 +587,10 @@ export type ExtensionState = Pick<
 	activeTaskId?: string
 	liveTaskIds?: string[]
 	liveTasksById?: Record<string, LiveTaskMetadata>
+	/** Per-task canonical lifecycle state; omitted by legacy hosts. */
+	agentLifecycleSnapshots?: Record<string, AgentLifecycleSnapshot>
+	/** Tasks whose canonical lifecycle projection must defer to legacy state. */
+	agentLifecycleDegraded?: Record<string, AgentLifecycleDegradedSignal>
 	managedAgentTree?: ManagedAgentTreeProjection
 	apiConfiguration: ProviderSettings
 	uriScheme?: string

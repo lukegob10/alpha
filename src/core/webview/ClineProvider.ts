@@ -63,6 +63,9 @@ import {
 	type AgentRecord,
 	type AgentRuntimeSnapshot,
 	type AgentTerminalResultMetadata,
+	type AgentLifecycleSnapshot,
+	type AgentLifecycleDegradedSignal,
+	agentLifecycleEventSchema,
 	type ManagedAgentTreeProjection,
 	type ManagedAgentTreeNodeProjection,
 	type SubagentUsage,
@@ -148,6 +151,7 @@ import { WorkspaceMutationGate } from "../task/WorkspaceMutationGate"
 import { AsyncSubagentRunManager } from "../agent/AsyncSubagentRunManager"
 import { AgentControlStore } from "../agent/AgentControlStore"
 import { reconcileSubagentGroupAfterReload } from "../agent/SubagentGroupRecovery"
+import { AgentLifecycleJournal, type AgentLifecycleEventInput } from "../agent/lifecycle"
 import type { ParentCompletionDecision } from "../agent/ParentVerification"
 import {
 	BoundedDelegationManager,
@@ -197,6 +201,13 @@ import { getUri } from "./getUri"
 import { REQUESTY_BASE_URL } from "../../shared/utils/requesty"
 import { validateAndFixToolResultIds } from "../task/validateToolResultIds"
 import { normalizeMaxLiveTasks, TaskSessionRegistry } from "./TaskSessionRegistry"
+import {
+	AgentLifecycleProjector,
+	projectAgentLifecycleSnapshot,
+	type AgentLifecycleProjectionResult,
+	type AgentLifecycleSnapshotResyncRequest,
+} from "./AgentLifecycleProjection"
+import { awaitTaskCancellationBoundary, hasTaskCancellationBoundary } from "./TaskCancellationBoundary"
 import type { SkillCatalogEntry } from "../prompts/sections"
 import { getEffectiveApiHistory } from "../condense"
 import { createSubagentCommandApprovalPolicy } from "../auto-approval/commands"
@@ -310,6 +321,28 @@ function renderInheritedSkillCatalog(skills: readonly SkillCatalogEntry[]): stri
 		.join("\n")
 }
 
+/**
+ * Extract the canonical lifecycle envelope from either the direct runtime
+ * shape or the extension message aliases accepted by AgentLifecycleProjector.
+ * This intentionally does not adapt AgentTurnEvent records: those records are
+ * provider/runtime telemetry and lack the identity and item semantics required
+ * by the provider-neutral lifecycle reducer.
+ */
+function canonicalLifecycleEventCandidate(value: unknown): unknown {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return value
+	const record = value as Record<string, unknown>
+	if (
+		typeof record.version === "number" &&
+		typeof record.eventId === "string" &&
+		typeof record.taskId === "string" &&
+		typeof record.runId === "string" &&
+		typeof record.turnId === "string"
+	) {
+		return value
+	}
+	return record.event ?? record.agentLifecycleEvent ?? record.payload ?? value
+}
+
 export class ClineProvider
 	extends EventEmitter<TaskProviderEvents>
 	implements vscode.WebviewViewProvider, TelemetryPropertiesProvider, TaskProviderLike
@@ -325,6 +358,13 @@ export class ClineProvider
 	private view?: vscode.WebviewView | vscode.WebviewPanel
 	private clineStack: Task[] = []
 	private taskSessions: TaskSessionRegistry
+	/** Canonical lifecycle state is projected independently from ClineMessages. */
+	private readonly agentLifecycleProjector: AgentLifecycleProjector
+	/** Durable journals are opened lazily for canonical lifecycle producers. */
+	private readonly agentLifecycleJournals = new Map<string, Promise<AgentLifecycleJournal>>()
+	private readonly agentLifecycleHistoryWrites = new Map<string, Promise<void>>()
+	/** Tasks whose legacy transcript remains authoritative after a canonical failure. */
+	private readonly agentLifecycleDegradedSignals = new Map<string, AgentLifecycleDegradedSignal>()
 	private currentView: CurrentTaskView = { type: "newTaskDraft" }
 	private newTaskDraftMode: Mode = defaultModeSlug
 	private readonly workspaceMutationGate = new WorkspaceMutationGate()
@@ -387,6 +427,7 @@ export class ClineProvider
 	private globalStateWriteThroughTimer: ReturnType<typeof setTimeout> | null = null
 	private globalStateWriteThroughQueue: Promise<void> = Promise.resolve()
 	private webviewMessageQueue: Promise<void> = Promise.resolve()
+	private agentLifecycleMessageQueue: Promise<void> = Promise.resolve()
 	private modeSwitchQueue: Promise<void> = Promise.resolve()
 	private static readonly GLOBAL_STATE_WRITE_THROUGH_DEBOUNCE_MS = 5000 // 5 seconds
 	private pendingOperations: Map<string, PendingEditOperation> = new Map()
@@ -413,6 +454,10 @@ export class ClineProvider
 		super()
 		this.currentWorkspacePath = getWorkspacePath()
 		this.taskSessions = new TaskSessionRegistry(this.getConfiguredMaxConcurrentTasks())
+		this.agentLifecycleProjector = new AgentLifecycleProjector({
+			onSnapshotResyncRequired: (request) => this.handleAgentLifecycleSnapshotResync(request),
+			onSnapshotUpdated: (snapshot, previous) => this.handleAgentLifecycleSnapshotUpdated(snapshot, previous),
+		})
 		this.agentControlStore = AgentControlStore.forGlobalStorage(this.contextProxy.globalStorageUri.fsPath)
 		this.agentControlStoreReady = this.agentControlStore.initialize().then(() => {
 			this.agentControlStoreLoadedAt = Date.now()
@@ -701,7 +746,8 @@ export class ClineProvider
 			try {
 				// A Worker may own an OS process tree. Keep its live-session handle
 				// registered until cleanup succeeds so a failed termination can be retried.
-				await currentTask.abortTask(true)
+				const abortResult = await currentTask.abortTask(true)
+				await awaitTaskCancellationBoundary(currentTask, abortResult)
 			} catch (error) {
 				this.log(
 					`[ClineProvider#removeClineFromStack] refusing to remove Worker ${currentTask.taskId}.${currentTask.instanceId} after abortTask() failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -734,7 +780,8 @@ export class ClineProvider
 				if (!requiresConfirmedCleanup) {
 					// Abort the running task and set isAbandoned to true so
 					// all running promises will exit as well.
-					await task.abortTask(true)
+					const abortResult = await task.abortTask(true)
+					await awaitTaskCancellationBoundary(task, abortResult)
 				}
 			} catch (error) {
 				this.log(
@@ -899,6 +946,7 @@ export class ClineProvider
 		}
 
 		this.log("Cleared all tasks")
+		await this.closeAgentLifecycleJournals()
 
 		// Clear all pending edit operations to prevent memory leaks
 		this.clearAllPendingEditOperations()
@@ -1325,12 +1373,16 @@ export class ClineProvider
 			// starts reading history. Starting both instances concurrently lets the new
 			// resume path observe an empty/stale file and overwrite the visible transcript.
 			try {
-				await rehydratedOldTask.abortTask(true)
+				const abortResult = await rehydratedOldTask.abortTask(true)
+				await awaitTaskCancellationBoundary(rehydratedOldTask, abortResult)
 			} catch (error) {
 				this.log(
 					`[createTaskWithHistoryItem] abortTask() failed for old task ${rehydratedOldTask.taskId}.${rehydratedOldTask.instanceId}: ${error instanceof Error ? error.message : String(error)}`,
 				)
-				if (rehydratedOldTask.taskKind === "subagent" && rehydratedOldTask.subagentRole === "worker") {
+				if (
+					hasTaskCancellationBoundary(rehydratedOldTask) ||
+					(rehydratedOldTask.taskKind === "subagent" && rehydratedOldTask.subagentRole === "worker")
+				) {
 					throw error
 				}
 			}
@@ -2578,6 +2630,438 @@ export class ClineProvider
 	}
 
 	/**
+	 * Ingest one provider-neutral lifecycle event at the extension boundary.
+	 * The event is validated and reduced before it is forwarded to the webview;
+	 * a gap or conflicting duplicate leaves the last trusted snapshot intact and
+	 * triggers a runtime snapshot request. This synchronous compatibility path is
+	 * projection-only; callers that own canonical event production must use the
+	 * async publish/post methods below so the event is journaled before it is
+	 * projected.
+	 */
+	ingestAgentLifecycleEvent(value: unknown): AgentLifecycleProjectionResult {
+		const projection = this.agentLifecycleProjector.ingestEvent(value)
+		if (!projection.accepted && projection.taskId) {
+			this.markAgentLifecycleDegraded(
+				projection.taskId,
+				projection.error,
+				projection.resyncRequired ? "resync_required" : "append_rejected",
+			)
+		}
+		if (projection.kind === "applied" && projection.event && projection.taskId) {
+			this.enqueueAgentLifecycleMessage({
+				type: "agentLifecycleEvent",
+				taskId: projection.taskId,
+				payload: projection.event,
+				agentLifecycleSnapshot: projection.snapshot,
+			})
+		}
+		return projection
+	}
+
+	/** Open and replay one task's canonical lifecycle journal exactly once. */
+	private async getAgentLifecycleJournal(taskId: string): Promise<AgentLifecycleJournal> {
+		const existing = this.agentLifecycleJournals.get(taskId)
+		if (existing) return existing
+
+		const opening = AgentLifecycleJournal.open(taskId, this.contextProxy.globalStorageUri.fsPath)
+		this.agentLifecycleJournals.set(taskId, opening)
+		try {
+			const journal = await opening
+			const snapshot = journal.getSnapshot()
+			if (snapshot && !this.agentLifecycleProjector.getSnapshot(taskId)) {
+				this.agentLifecycleProjector.ingestSnapshot(snapshot)
+			}
+			return journal
+		} catch (error) {
+			if (this.agentLifecycleJournals.get(taskId) === opening) this.agentLifecycleJournals.delete(taskId)
+			throw error
+		}
+	}
+
+	private lifecyclePersistenceFailure(
+		taskId: string,
+		error: unknown,
+		reason: "append_rejected" | "replay_rejected" = "append_rejected",
+	): AgentLifecycleProjectionResult {
+		this.markAgentLifecycleDegraded(taskId, error, reason)
+		return {
+			kind: "invalid",
+			status: "invalid",
+			taskId,
+			error,
+			accepted: false,
+			applied: false,
+			replayed: false,
+			resyncRequired: false,
+		}
+	}
+
+	/**
+	 * Mark one task as lifecycle-degraded while leaving its legacy transcript
+	 * and TaskSessionRegistry state usable. The first failure wins until an
+	 * authoritative replay/resync succeeds, which avoids projection flicker.
+	 */
+	markAgentLifecycleDegraded(
+		taskId: string,
+		error?: unknown,
+		reason: "append_rejected" | "replay_rejected" | "resync_required" = "append_rejected",
+	): AgentLifecycleDegradedSignal {
+		const existing = this.agentLifecycleDegradedSignals.get(taskId)
+		if (existing) return { ...existing }
+
+		const signal: AgentLifecycleDegradedSignal = {
+			version: 1,
+			taskId,
+			degraded: true,
+			reason,
+			...(error !== undefined
+				? { error: error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000) }
+				: {}),
+			occurredAt: Date.now(),
+		}
+		this.agentLifecycleDegradedSignals.set(taskId, signal)
+		this.taskSessions.markLifecycleDegraded(taskId)
+		void this.enqueueAgentLifecycleMessage({
+			type: "agentLifecycleDegraded",
+			taskId,
+			payload: signal,
+			agentLifecycleDegraded: signal,
+		}).catch((deliveryError) => {
+			this.log(`Failed to publish lifecycle degraded signal for ${taskId}: ${String(deliveryError)}`)
+		})
+		void this.postStateToWebviewWithoutTaskHistory().catch((stateError) => {
+			this.log(`Failed to refresh degraded lifecycle state for ${taskId}: ${String(stateError)}`)
+		})
+		return { ...signal }
+	}
+
+	/** Clear degradation only after a full authoritative replay/resync succeeds. */
+	clearAgentLifecycleDegraded(taskId: string): void {
+		if (!this.agentLifecycleDegradedSignals.delete(taskId)) return
+		this.taskSessions.clearLifecycleDegraded(taskId)
+		const signal: AgentLifecycleDegradedSignal = {
+			version: 1,
+			taskId,
+			degraded: false,
+			reason: "resynced",
+			occurredAt: Date.now(),
+		}
+		void this.enqueueAgentLifecycleMessage({
+			type: "agentLifecycleDegraded",
+			taskId,
+			payload: signal,
+			agentLifecycleDegraded: signal,
+		}).catch((deliveryError) => {
+			this.log(`Failed to publish lifecycle recovery signal for ${taskId}: ${String(deliveryError)}`)
+		})
+		void this.postStateToWebviewWithoutTaskHistory().catch((stateError) => {
+			this.log(`Failed to refresh recovered lifecycle state for ${taskId}: ${String(stateError)}`)
+		})
+	}
+
+	isAgentLifecycleDegraded(taskId: string | undefined): boolean {
+		return taskId !== undefined && this.agentLifecycleDegradedSignals.has(taskId)
+	}
+
+	getAgentLifecycleDegraded(): Record<string, AgentLifecycleDegradedSignal> {
+		return Object.fromEntries(
+			Array.from(this.agentLifecycleDegradedSignals.entries()).map(([taskId, signal]) => [taskId, { ...signal }]),
+		)
+	}
+
+	/** Apply a full lifecycle snapshot received from a runtime or bridge. */
+	ingestAgentLifecycleSnapshot(value: unknown): AgentLifecycleProjectionResult {
+		const projection = this.agentLifecycleProjector.ingestSnapshot(value)
+		if (!projection.accepted && projection.taskId) {
+			this.markAgentLifecycleDegraded(projection.taskId, projection.error, "replay_rejected")
+		}
+		if (projection.kind === "snapshot_applied" && projection.snapshot && projection.taskId) {
+			this.enqueueAgentLifecycleMessage({
+				type: "agentLifecycleSnapshot",
+				taskId: projection.taskId,
+				payload: projection.snapshot,
+			})
+			this.clearAgentLifecycleDegraded(projection.taskId)
+		}
+		return projection
+	}
+
+	/** Async publishing variants await ordered delivery for runtime callers. */
+	async publishAgentLifecycleEvent(value: unknown): Promise<AgentLifecycleProjectionResult> {
+		const candidate = canonicalLifecycleEventCandidate(value)
+		let parsed = agentLifecycleEventSchema.safeParse(candidate)
+		let eventInput: AgentLifecycleEventInput
+		if (parsed.success) {
+			eventInput = parsed.data
+		} else {
+			// Runtime producers do not own the task journal's sequence. Accept a
+			// complete envelope with that field omitted, validate the remaining
+			// shape with a non-durable placeholder, then let append() assign the
+			// next sequence while holding the file lock.
+			if (
+				!candidate ||
+				typeof candidate !== "object" ||
+				Array.isArray(candidate) ||
+				Object.prototype.hasOwnProperty.call(candidate, "sequence")
+			) {
+				return this.ingestAgentLifecycleEvent(value)
+			}
+			const inputCandidate = { ...(candidate as Record<string, unknown>), sequence: 1 }
+			parsed = agentLifecycleEventSchema.safeParse(inputCandidate)
+			if (!parsed.success) return this.ingestAgentLifecycleEvent(value)
+			const { sequence: _sequence, ...withoutSequence } = parsed.data
+			eventInput = withoutSequence as AgentLifecycleEventInput
+		}
+		const envelopeTaskId =
+			value && typeof value === "object" && !Array.isArray(value)
+				? (value as Record<string, unknown>).taskId
+				: undefined
+		if (typeof envelopeTaskId === "string" && envelopeTaskId !== eventInput.taskId) {
+			return this.ingestAgentLifecycleEvent(value)
+		}
+
+		let projection: AgentLifecycleProjectionResult
+		try {
+			const journal = await this.getAgentLifecycleJournal(eventInput.taskId)
+			const receipt = await journal.append(eventInput)
+			projection = receipt.replayed
+				? this.agentLifecycleProjector.ingestSnapshot(receipt.snapshot)
+				: this.agentLifecycleProjector.ingestEvent(receipt.event)
+
+			// A synchronous compatibility caller may have advanced the in-memory
+			// projector independently of the journal. The journal is authoritative
+			// for this async production boundary, so recover its trusted snapshot
+			// rather than presenting a false incremental result.
+			if (projection.kind === "resync_required") {
+				const snapshot = journal.getSnapshot()
+				projection = snapshot ? this.agentLifecycleProjector.ingestSnapshot(snapshot) : projection
+			}
+		} catch (error) {
+			this.log(`Failed to persist canonical lifecycle event for ${eventInput.taskId}: ${String(error)}`)
+			return this.lifecyclePersistenceFailure(eventInput.taskId, error, "append_rejected")
+		}
+		if (!projection.accepted && projection.taskId) {
+			this.markAgentLifecycleDegraded(
+				projection.taskId,
+				projection.error,
+				projection.resyncRequired ? "resync_required" : "append_rejected",
+			)
+		}
+		if (projection.kind === "applied" && projection.event && projection.taskId) {
+			await this.enqueueAgentLifecycleMessage({
+				type: "agentLifecycleEvent",
+				taskId: projection.taskId,
+				payload: projection.event,
+				agentLifecycleSnapshot: projection.snapshot,
+			})
+		} else if (projection.kind === "snapshot_applied" && projection.snapshot && projection.taskId) {
+			await this.enqueueAgentLifecycleMessage({
+				type: "agentLifecycleSnapshot",
+				taskId: projection.taskId,
+				payload: projection.snapshot,
+			})
+		}
+		return projection
+	}
+
+	async publishAgentLifecycleSnapshot(value: unknown): Promise<AgentLifecycleProjectionResult> {
+		const record =
+			value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
+		const candidate = record?.snapshot ?? record?.agentLifecycleSnapshot ?? record?.payload ?? value
+		const taskId =
+			(typeof record?.taskId === "string" ? record.taskId : undefined) ??
+			(candidate && typeof candidate === "object" && !Array.isArray(candidate)
+				? ((candidate as Record<string, unknown>).taskId as string | undefined)
+				: undefined)
+
+		// A snapshot is a recovery input, not an append-only event. Open/replay
+		// first so a restarted host projects the journal's trusted state; only a
+		// task with no durable events may accept a caller-provided initial snapshot
+		// in memory, because the journal has no safe API for inventing an event.
+		if (taskId) {
+			try {
+				const journal = await this.getAgentLifecycleJournal(taskId)
+				if (journal.getSnapshot()) {
+					const projection = this.agentLifecycleProjector.ingestSnapshot(journal.getSnapshot())
+					if (projection.kind === "snapshot_applied" && projection.snapshot && projection.taskId) {
+						await this.enqueueAgentLifecycleMessage({
+							type: "agentLifecycleSnapshot",
+							taskId: projection.taskId,
+							payload: projection.snapshot,
+						})
+						this.clearAgentLifecycleDegraded(projection.taskId)
+					}
+					return projection
+				}
+			} catch (error) {
+				this.log(`Failed to replay canonical lifecycle snapshot for ${taskId}: ${String(error)}`)
+				return this.lifecyclePersistenceFailure(taskId, error, "replay_rejected")
+			}
+		}
+
+		const projection = this.agentLifecycleProjector.ingestSnapshot(value)
+		if (!projection.accepted && projection.taskId) {
+			this.markAgentLifecycleDegraded(projection.taskId, projection.error, "replay_rejected")
+		}
+		if (projection.kind === "snapshot_applied" && projection.snapshot && projection.taskId) {
+			await this.enqueueAgentLifecycleMessage({
+				type: "agentLifecycleSnapshot",
+				taskId: projection.taskId,
+				payload: projection.snapshot,
+			})
+		}
+		return projection
+	}
+
+	/** Replay durable canonical lifecycle state into the extension projector. */
+	async replayAgentLifecycle(taskId: string): Promise<AgentLifecycleSnapshot | undefined> {
+		try {
+			const journal = await this.getAgentLifecycleJournal(taskId)
+			const snapshot = await journal.replay()
+			if (snapshot) {
+				const projection = this.agentLifecycleProjector.ingestSnapshot(snapshot)
+				if (projection.kind === "snapshot_applied") {
+					await this.enqueueAgentLifecycleMessage({
+						type: "agentLifecycleSnapshot",
+						taskId,
+						payload: snapshot,
+					})
+					this.clearAgentLifecycleDegraded(taskId)
+				} else if (!projection.accepted) {
+					this.markAgentLifecycleDegraded(taskId, projection.error, "replay_rejected")
+				}
+			} else {
+				// An authoritative empty replay is also a successful recovery.
+				this.clearAgentLifecycleDegraded(taskId)
+			}
+			return snapshot
+		} catch (error) {
+			this.markAgentLifecycleDegraded(taskId, error, "replay_rejected")
+			throw error
+		}
+	}
+
+	/** Compatibility aliases for bridge implementations during rollout. */
+	applyAgentLifecycleEvent(value: unknown): AgentLifecycleProjectionResult {
+		return this.ingestAgentLifecycleEvent(value)
+	}
+
+	applyAgentLifecycleSnapshot(value: unknown): AgentLifecycleProjectionResult {
+		return this.ingestAgentLifecycleSnapshot(value)
+	}
+
+	postAgentLifecycleEvent(value: unknown): Promise<AgentLifecycleProjectionResult> {
+		return this.publishAgentLifecycleEvent(value)
+	}
+
+	postAgentLifecycleSnapshot(value: unknown): Promise<AgentLifecycleProjectionResult> {
+		return this.publishAgentLifecycleSnapshot(value)
+	}
+
+	getAgentLifecycleSnapshot(taskId: string | undefined): AgentLifecycleSnapshot | undefined {
+		return this.agentLifecycleProjector.getSnapshot(taskId ?? "")
+	}
+
+	getAgentLifecycleSnapshots(): Record<string, AgentLifecycleSnapshot> {
+		return this.agentLifecycleProjector.getSnapshots()
+	}
+
+	private enqueueAgentLifecycleMessage(message: ExtensionMessage): Promise<void> {
+		const delivery = this.agentLifecycleMessageQueue.then(() => this.postMessageToWebview(message))
+		this.agentLifecycleMessageQueue = delivery.catch((error) => {
+			this.log(`Failed to publish agent lifecycle message: ${String(error)}`)
+		})
+		return delivery
+	}
+
+	private handleAgentLifecycleSnapshotUpdated(
+		snapshot: AgentLifecycleSnapshot,
+		previous?: AgentLifecycleSnapshot,
+	): void {
+		this.taskSessions.markLifecycleSnapshot(snapshot.taskId, snapshot)
+		void this.postStateToWebviewWithoutTaskHistory().catch((error) => {
+			this.log(`Failed to refresh task state after lifecycle update: ${String(error)}`)
+		})
+
+		const previousStatus = previous?.status
+		if (previousStatus === snapshot.status && previous?.phase === snapshot.phase) return
+		this.queueAgentLifecycleHistoryStatus(snapshot)
+	}
+
+	private queueAgentLifecycleHistoryStatus(snapshot: AgentLifecycleSnapshot): void {
+		const previous = this.agentLifecycleHistoryWrites.get(snapshot.taskId) ?? Promise.resolve()
+		const write = previous
+			.catch(() => undefined)
+			.then(async () => {
+				await this.taskHistoryStoreReady
+				const current = this.taskHistoryStore.get(snapshot.taskId)
+				if (!current) return
+				const projected = projectAgentLifecycleSnapshot(snapshot)
+				if (current.status === projected.historyStatus) return
+				await this.updateTaskHistory({ ...current, status: projected.historyStatus })
+			})
+		const settled = write.catch((error) => {
+			this.log(`Failed to persist lifecycle status for ${snapshot.taskId}: ${String(error)}`)
+		})
+		this.agentLifecycleHistoryWrites.set(snapshot.taskId, settled)
+		void settled.then(() => {
+			if (this.agentLifecycleHistoryWrites.get(snapshot.taskId) === settled) {
+				this.agentLifecycleHistoryWrites.delete(snapshot.taskId)
+			}
+		})
+	}
+
+	private async handleAgentLifecycleSnapshotResync(request: AgentLifecycleSnapshotResyncRequest): Promise<void> {
+		const task = this.getLiveTask(request.taskId)
+		if (!task) {
+			this.log(`Lifecycle snapshot resync requested for non-live task ${request.taskId}`)
+			return
+		}
+
+		const runtimes: Array<Record<string, unknown>> = [task as unknown as Record<string, unknown>]
+		for (const key of ["lifecycleRuntime", "agentRuntime", "agentTurnEngine", "runtime"]) {
+			const nested = (task as unknown as Record<string, unknown>)[key]
+			if (nested && typeof nested === "object") runtimes.push(nested as Record<string, unknown>)
+		}
+		for (const runtime of runtimes) {
+			for (const methodName of [
+				"requestAgentLifecycleSnapshot",
+				"requestLifecycleSnapshot",
+				"getAgentLifecycleSnapshot",
+				"getLifecycleSnapshot",
+			]) {
+				const method = runtime[methodName]
+				if (typeof method !== "function") continue
+				const snapshot = await (method as (request?: AgentLifecycleSnapshotResyncRequest) => unknown).call(
+					runtime,
+					request,
+				)
+				if (snapshot !== undefined) this.ingestAgentLifecycleSnapshot(snapshot)
+				return
+			}
+		}
+		this.log(`Lifecycle runtime for ${request.taskId} does not expose snapshot resync`)
+	}
+
+	private async closeAgentLifecycleJournals(): Promise<void> {
+		const journals = await Promise.allSettled(this.agentLifecycleJournals.values())
+		await Promise.all(
+			journals.map(async (result) => {
+				if (result.status === "rejected") {
+					this.log(`Failed to open lifecycle journal during disposal: ${String(result.reason)}`)
+					return
+				}
+				try {
+					await result.value.close()
+				} catch (error) {
+					this.log(`Failed to close lifecycle journal during disposal: ${String(error)}`)
+				}
+			}),
+		)
+		this.agentLifecycleJournals.clear()
+	}
+
+	/**
 	 * Synchronous fast-path used while building model tools. Until durable agent
 	 * state has loaded, retain the controls conservatively; afterwards idle roots
 	 * can omit seven unused lifecycle schemas from every request.
@@ -2626,6 +3110,8 @@ export class ClineProvider
 			activeTaskId: this.getActiveTaskId(),
 			liveTaskIds: this.getLiveTaskIds(),
 			liveTasksById: this.getLiveTaskMetadata(),
+			agentLifecycleSnapshots: this.getAgentLifecycleSnapshots(),
+			agentLifecycleDegraded: this.getAgentLifecycleDegraded(),
 			clineMessages: currentTask?.clineMessages ?? [],
 			messageQueue: currentTask?.messageQueueService?.messages,
 			clineMessagesSeq,
@@ -3195,6 +3681,8 @@ export class ClineProvider
 			activeTaskId: this.getActiveTaskId(),
 			liveTaskIds: this.getLiveTaskIds(),
 			liveTasksById: this.getLiveTaskMetadata(),
+			agentLifecycleSnapshots: this.getAgentLifecycleSnapshots(),
+			agentLifecycleDegraded: this.getAgentLifecycleDegraded(),
 			managedAgentTree,
 			currentTaskItem: currentTask?.taskId ? this.taskHistoryStore.get(currentTask.taskId) : undefined,
 			clineMessages: currentTask?.clineMessages || [],
@@ -4302,6 +4790,7 @@ export class ClineProvider
 		// Immediately cancel the underlying HTTP request if one is in progress
 		// This ensures the stream fails quickly rather than waiting for network timeout
 		task.cancelCurrentRequest()
+		const hasLifecycleRuntime = hasTaskCancellationBoundary(task)
 
 		// Begin abort without delaying request cancellation, but retain the promise:
 		// rehydration must not start until the final transcript save has completed.
@@ -4335,29 +4824,53 @@ export class ClineProvider
 			this.log(`[cancelTask] task history unavailable for ${task.taskId}; skipping rehydrate: ${String(error)}`)
 		}
 
-		await pWaitFor(
-			() =>
-				this.getLiveTask(task.taskId) === undefined ||
-				task.isStreaming === false ||
-				task.didFinishAbortingStream ||
-				// If only the first chunk is processed, then there's no
-				// need to wait for graceful abort (closes edits, browser,
-				// etc).
-				task.isWaitingForFirstChunk,
-			{
-				timeout: 3_000,
-			},
-		).catch(() => {
-			console.error("Failed to abort task")
-		})
-		await abortPromise.catch((error) => {
+		// Runtime-backed tasks expose an explicit join/receipt boundary. Waiting on
+		// that boundary is authoritative, so bounded state polling would only add
+		// a race. Legacy tasks retain the old bounded wait as a compatibility path.
+		if (!hasLifecycleRuntime) {
+			await pWaitFor(
+				() =>
+					this.getLiveTask(task.taskId) === undefined ||
+					task.isStreaming === false ||
+					task.didFinishAbortingStream ||
+					// If only the first chunk is processed, then there's no
+					// need to wait for graceful abort (closes edits, browser,
+					// etc).
+					task.isWaitingForFirstChunk,
+				{
+					timeout: 3_000,
+				},
+			).catch(() => {
+				console.error("Failed to abort task")
+			})
+		}
+
+		let abortResult: unknown
+		await abortPromise
+			.then((result) => {
+				abortResult = result
+			})
+			.catch((error) => {
+				this.log(
+					`[cancelTask] abortTask() failed for ${task.taskId}.${task.instanceId}: ${error instanceof Error ? error.message : String(error)}`,
+				)
+				if (task.taskKind === "subagent" && task.subagentRole === "worker") {
+					throw error
+				}
+			})
+		try {
+			await awaitTaskCancellationBoundary(task, abortResult)
+		} catch (error) {
 			this.log(
-				`[cancelTask] abortTask() failed for ${task.taskId}.${task.instanceId}: ${error instanceof Error ? error.message : String(error)}`,
+				`[cancelTask] cancellation boundary failed for ${task.taskId}.${task.instanceId}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
 			)
-			if (task.taskKind === "subagent" && task.subagentRole === "worker") {
-				throw error
-			}
-		})
+			// A replacement must never be constructed while a runtime boundary is
+			// unresolved. Preserve the current task for a later retry.
+			if (task.taskKind === "subagent" && task.subagentRole === "worker") throw error
+			return
+		}
 
 		// Defensive safeguard: if current instance already changed, skip rehydrate
 		const current = this.getLiveTask(task.taskId)
@@ -7756,7 +8269,8 @@ export class ClineProvider
 							ancestry.rootTaskId,
 							`Managed descendants cancelled because agent ${child.taskId} stopped`,
 						)
-						await child.abortTask()
+						const abortResult = await child.abortTask()
+						await awaitTaskCancellationBoundary(child, abortResult)
 					}
 					void stopChild().then(
 						() => resolveResult(status, tokenUsage, summaryOverride, stopReason),
@@ -8829,6 +9343,7 @@ export class ClineProvider
 		let parentUiMessages: ClineMessage[] | undefined
 		let parentApiMessages: any[] | undefined
 		let transcriptsTouched = false
+		let apiTranscriptTouched = false
 		let parentHistoryCommitted = false
 		let parentInstance: Task | undefined
 		let childRemoved = false
@@ -8840,9 +9355,18 @@ export class ClineProvider
 		}
 		const restoreTranscripts = async (): Promise<void> => {
 			if (!originalUiMessages || !originalApiMessages) return
+			const apiRestore = !apiTranscriptTouched
+				? Promise.resolve()
+				: parentInstance instanceof Task
+					? parentInstance.overwriteApiConversationHistory(originalApiMessages as any).then((saved) => {
+							if (saved === false) {
+								throw new Error(`Unable to restore parent ${parentTaskId} API history`)
+							}
+						})
+					: saveApiMessages({ messages: originalApiMessages as any, taskId: parentTaskId, globalStoragePath })
 			const outcomes = await Promise.allSettled([
 				saveTaskMessages({ messages: originalUiMessages, taskId: parentTaskId, globalStoragePath }),
-				saveApiMessages({ messages: originalApiMessages as any, taskId: parentTaskId, globalStoragePath }),
+				apiRestore,
 			])
 			const failures = outcomes.flatMap((outcome) => (outcome.status === "rejected" ? [outcome.reason] : []))
 			if (failures.length > 0) {
@@ -8934,7 +9458,6 @@ export class ClineProvider
 				}
 				transcriptsTouched = true
 				await saveTaskMessages({ messages: parentUiMessages, taskId: parentTaskId, globalStoragePath })
-				await saveApiMessages({ messages: parentApiMessages as any, taskId: parentTaskId, globalStoragePath })
 
 				const updatedHistory: typeof historyItem = {
 					...historyItem,
@@ -8961,8 +9484,31 @@ export class ClineProvider
 					)
 				}
 				try {
-					await parentInstance.overwriteApiConversationHistory?.(parentApiMessages as any)
+					apiTranscriptTouched = true
+					if (parentInstance instanceof Task) {
+						// A live Task owns the serialized legacy+sidecar persistence
+						// boundary. Directly writing api_conversation_history.json here
+						// would bypass its receipt and could leave the replacement Task
+						// with a stale provider transcript if the sidecar write fails.
+						const saved = await parentInstance.overwriteApiConversationHistory(parentApiMessages as any)
+						if (saved === false) {
+							throw new Error(`Unable to persist delegated parent ${parentTaskId} API history`)
+						}
+					} else {
+						// Keep the narrow compatibility path for provider test doubles and
+						// legacy hosts that return a Task-shaped object rather than a Task.
+						await saveApiMessages({
+							messages: parentApiMessages as any,
+							taskId: parentTaskId,
+							globalStoragePath,
+						})
+						const legacyParent = parentInstance as unknown as {
+							overwriteApiConversationHistory?: (messages: unknown[]) => Promise<boolean | void>
+						}
+						await legacyParent.overwriteApiConversationHistory?.(parentApiMessages as any)
+					}
 				} catch (error) {
+					if (parentInstance instanceof Task) throw error
 					this.log?.(
 						`[reopenParentFromDelegation] Parent API refresh will recover from disk: ${String(error)}`,
 					)

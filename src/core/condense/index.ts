@@ -11,6 +11,7 @@ import { findLast } from "../../shared/array"
 import { supportPrompt } from "../../shared/support-prompt"
 import { RooIgnoreController } from "../ignore/RooIgnoreController"
 import { generateFoldedFileContext } from "./foldedFileContext"
+import type { ContextRecoveryStatus } from "../context-management/recovery"
 
 export type { FoldedFileContextResult, FoldedFileContextOptions } from "./foldedFileContext"
 
@@ -32,6 +33,16 @@ export function toolUseToText(block: Anthropic.Messages.ToolUseBlockParam): stri
 		input = String(block.input)
 	}
 	return `[Tool Use: ${block.name}]\n${input}`
+}
+
+/** Converts an OpenAI-style `tool_call` block to the same text form. */
+export function toolCallToText(block: Record<string, unknown>): string {
+	const nestedFunction = typeof block.function === "object" && block.function !== null ? block.function : undefined
+	const functionRecord = nestedFunction as { name?: unknown; arguments?: unknown } | undefined
+	const name = block.name ?? functionRecord?.name ?? "unknown"
+	const input = block.input ?? functionRecord?.arguments ?? ""
+	const renderedInput = typeof input === "object" && input !== null ? JSON.stringify(input, null, 2) : String(input)
+	return `[Tool Use: ${String(name)}]\n${renderedInput}`
 }
 
 /**
@@ -82,6 +93,12 @@ export function convertToolBlocksToText(
 				text: toolUseToText(block),
 			}
 		}
+		if ((block as unknown as { type?: unknown }).type === "tool_call") {
+			return {
+				type: "text" as const,
+				text: toolCallToText(block as unknown as Record<string, unknown>),
+			}
+		}
 		if (block.type === "tool_result") {
 			return {
 				type: "text" as const,
@@ -108,6 +125,116 @@ export function transformMessagesForCondensing<
 	}))
 }
 
+/**
+ * The API history normally uses Anthropic's `tool_use`/`tool_result` names,
+ * while a few OpenAI-compatible adapters persist `tool_call` blocks.  Keep the
+ * pair handling structural so context recovery works for both forms without
+ * widening the provider API types.
+ */
+export type ToolCallResultPair = {
+	id: string
+	callMessageIndexes: number[]
+	resultMessageIndexes: number[]
+}
+
+function getToolCallId(block: unknown): string | undefined {
+	if (!block || typeof block !== "object") return undefined
+	const candidate = block as { type?: unknown; id?: unknown; tool_call_id?: unknown }
+	if (candidate.type !== "tool_use" && candidate.type !== "tool_call") return undefined
+	if (typeof candidate.id === "string" && candidate.id.length > 0) return candidate.id
+	return typeof candidate.tool_call_id === "string" && candidate.tool_call_id.length > 0
+		? candidate.tool_call_id
+		: undefined
+}
+
+function getToolResultId(block: unknown): string | undefined {
+	if (!block || typeof block !== "object") return undefined
+	const candidate = block as { type?: unknown; tool_use_id?: unknown; tool_call_id?: unknown }
+	if (candidate.type !== "tool_result") return undefined
+	if (typeof candidate.tool_use_id === "string" && candidate.tool_use_id.length > 0) {
+		return candidate.tool_use_id
+	}
+	return typeof candidate.tool_call_id === "string" && candidate.tool_call_id.length > 0
+		? candidate.tool_call_id
+		: undefined
+}
+
+/**
+ * Collects the message indexes participating in each tool call/result pair.
+ * The returned map is useful to truncation policies: a pair can be hidden as
+ * one unit, so compaction never leaves an API-visible orphan.
+ */
+export function getToolCallResultPairs(messages: ApiMessage[]): Map<string, ToolCallResultPair> {
+	const pairs = new Map<string, ToolCallResultPair>()
+	const ensurePair = (id: string): ToolCallResultPair => {
+		const existing = pairs.get(id)
+		if (existing) return existing
+		const created: ToolCallResultPair = { id, callMessageIndexes: [], resultMessageIndexes: [] }
+		pairs.set(id, created)
+		return created
+	}
+
+	messages.forEach((message, messageIndex) => {
+		if (!Array.isArray(message.content)) return
+		for (const block of message.content) {
+			const callId = getToolCallId(block)
+			if (callId) {
+				const pair = ensurePair(callId)
+				if (!pair.callMessageIndexes.includes(messageIndex)) pair.callMessageIndexes.push(messageIndex)
+			}
+			const resultId = getToolResultId(block)
+			if (resultId) {
+				const pair = ensurePair(resultId)
+				if (!pair.resultMessageIndexes.includes(messageIndex)) pair.resultMessageIndexes.push(messageIndex)
+			}
+		}
+	})
+
+	return pairs
+}
+
+/**
+ * Reports whether every persisted tool call has a result and every result has
+ * a corresponding call.  This is intentionally pure and does not discard
+ * history; callers that need recovery can use `injectSyntheticToolResults`.
+ */
+export function hasToolCallResultIntegrity(messages: ApiMessage[]): boolean {
+	for (const pair of getToolCallResultPairs(messages).values()) {
+		if (pair.callMessageIndexes.length === 0 || pair.resultMessageIndexes.length === 0) return false
+	}
+	return true
+}
+
+/**
+ * Removes tool_result blocks that point at calls no longer visible in the
+ * supplied history.  Mixed user messages retain their ordinary text blocks;
+ * a message made entirely of orphan results is removed.  This is useful after
+ * truncation, where a call and result may have been hidden as a pair.
+ */
+export function filterOrphanToolResults(messages: ApiMessage[]): ApiMessage[] {
+	const callIds = new Set<string>()
+	for (const pair of getToolCallResultPairs(messages).values()) {
+		if (pair.callMessageIndexes.length > 0) callIds.add(pair.id)
+	}
+
+	let changed = false
+	const filtered = messages
+		.map((message) => {
+			if (!Array.isArray(message.content)) return message
+			const filteredContent = message.content.filter((block) => {
+				const resultId = getToolResultId(block)
+				return !resultId || callIds.has(resultId)
+			})
+			if (filteredContent.length === message.content.length) return message
+			changed = true
+			if (filteredContent.length === 0) return null
+			return { ...message, content: filteredContent }
+		})
+		.filter((message): message is ApiMessage => message !== null)
+
+	return changed ? filtered : messages
+}
+
 export const MIN_CONDENSE_THRESHOLD = 5 // Minimum percentage of context window to trigger condensing
 export const MAX_CONDENSE_THRESHOLD = 100 // Maximum percentage of context window to trigger condensing
 
@@ -132,30 +259,12 @@ The goal is for work to continue seamlessly after condensation - as if it never 
  * @returns The messages with synthetic tool_results appended if needed
  */
 export function injectSyntheticToolResults(messages: ApiMessage[]): ApiMessage[] {
-	// Find all tool_call IDs in assistant messages
-	const toolCallIds = new Set<string>()
-	// Find all tool_result IDs in user messages
-	const toolResultIds = new Set<string>()
-
-	for (const msg of messages) {
-		if (msg.role === "assistant" && Array.isArray(msg.content)) {
-			for (const block of msg.content) {
-				if (block.type === "tool_use") {
-					toolCallIds.add(block.id)
-				}
-			}
-		}
-		if (msg.role === "user" && Array.isArray(msg.content)) {
-			for (const block of msg.content) {
-				if (block.type === "tool_result") {
-					toolResultIds.add(block.tool_use_id)
-				}
-			}
-		}
-	}
-
-	// Find orphans (tool_calls without matching tool_results)
-	const orphanIds = [...toolCallIds].filter((id) => !toolResultIds.has(id))
+	// Find orphans (tool_calls without matching tool_results).  Pair discovery is
+	// shared with truncation so `tool_use` and `tool_call` histories follow the
+	// same integrity rules.
+	const orphanIds = [...getToolCallResultPairs(messages).values()]
+		.filter((pair) => pair.callMessageIndexes.length > 0 && pair.resultMessageIndexes.length === 0)
+		.map((pair) => pair.id)
 
 	if (orphanIds.length === 0) {
 		return messages
@@ -176,6 +285,18 @@ export function injectSyntheticToolResults(messages: ApiMessage[]): ApiMessage[]
 
 	return [...messages, syntheticMessage]
 }
+
+/**
+ * Produces an API-safe history by completing orphan calls and removing orphan
+ * results.  The operation is non-destructive and preserves the original array
+ * when no repair is required.
+ */
+export function ensureToolCallResultIntegrity(messages: ApiMessage[]): ApiMessage[] {
+	return filterOrphanToolResults(injectSyntheticToolResults(messages))
+}
+
+/** Alias used by context policies that describe repair as preservation. */
+export const preserveToolCallResultPairs = ensureToolCallResultIntegrity
 
 /**
  * Extracts <command> blocks from a message's content.
@@ -219,6 +340,8 @@ export type SummarizeResponse = {
 	error?: string // Populated iff the operation fails: error message shown to the user on failure (see Task.ts)
 	errorDetails?: string // Detailed error information including stack trace and API error info
 	condenseId?: string // The unique ID of the created Summary message, for linking to condense_context clineMessage
+	/** Explicit bounded outcome for callers that need to decide whether to fall back. */
+	status?: ContextRecoveryStatus
 }
 
 export type SummarizeConversationOptions = {
@@ -234,6 +357,34 @@ export type SummarizeConversationOptions = {
 	cwd?: string
 	rooIgnoreController?: RooIgnoreController
 }
+
+/**
+ * Returns metadata suitable for a summarization-only request.
+ *
+ * Condensing converts historical tool blocks to text, so carrying the active
+ * tool registry or a required/automatic tool choice into this request is both
+ * unnecessary and provider-dependent.  Keep tracing/request controls intact,
+ * but explicitly provide an empty tool list and disable tool selection.  The
+ * input object is never mutated.  `undefined` remains `undefined` for callers
+ * that did not provide metadata, preserving the historical API call shape.
+ */
+export function getToolFreeMetadata(
+	metadata?: ApiHandlerCreateMessageMetadata,
+): ApiHandlerCreateMessageMetadata | undefined {
+	if (!metadata) return undefined
+
+	return {
+		...metadata,
+		tools: [],
+		tool_choice: "none",
+		parallelToolCalls: false,
+		allowedFunctionNames: [],
+	}
+}
+
+/** Alias for consumers that prefer an imperative name. */
+export const createToolFreeMetadata = getToolFreeMetadata
+export const getToolFreeRequestMetadata = getToolFreeMetadata
 
 /**
  * Summarizes the conversation messages using an LLM call.
@@ -284,7 +435,7 @@ export async function summarizeConversation(options: SummarizeConversationOption
 			messages.length <= 1
 				? t("common:errors.condense_not_enough_messages")
 				: t("common:errors.condensed_recently")
-		return { ...response, error }
+		return { ...response, error, status: "exhausted" }
 	}
 
 	// Check if there's a recent summary in the messages (edge case)
@@ -292,7 +443,7 @@ export async function summarizeConversation(options: SummarizeConversationOption
 
 	if (recentSummaryExists && messagesToSummarize.length <= 2) {
 		const error = t("common:errors.condensed_recently")
-		return { ...response, error }
+		return { ...response, error, status: "exhausted" }
 	}
 
 	// Use custom prompt if provided and non-empty, otherwise use the default CONDENSE prompt
@@ -306,7 +457,7 @@ export async function summarizeConversation(options: SummarizeConversationOption
 
 	// Inject synthetic tool_results for orphan tool_calls to prevent API rejections
 	// (e.g., when user triggers condense after receiving attempt_completion but before responding)
-	const messagesWithToolResults = injectSyntheticToolResults(messagesToSummarize)
+	const messagesWithToolResults = ensureToolCallResultIntegrity(messagesToSummarize)
 
 	// Transform tool_use and tool_result blocks to text representations.
 	// This is necessary because some providers (like Bedrock via LiteLLM) require the `tools` parameter
@@ -325,7 +476,7 @@ export async function summarizeConversation(options: SummarizeConversationOption
 	if (!apiHandler || typeof apiHandler.createMessage !== "function") {
 		console.error("API handler is invalid for condensing. Cannot proceed.")
 		const error = t("common:errors.condense_handler_invalid")
-		return { ...response, error }
+		return { ...response, error, status: "no_progress" }
 	}
 
 	let summary = ""
@@ -333,7 +484,9 @@ export async function summarizeConversation(options: SummarizeConversationOption
 	let outputTokens = 0
 
 	try {
-		const stream = apiHandler.createMessage(promptToUse, requestMessages, metadata)
+		// Historical tool blocks were converted to text above.  Do not let the
+		// active task tool registry leak into this summarization-only request.
+		const stream = apiHandler.createMessage(promptToUse, requestMessages, getToolFreeMetadata(metadata))
 
 		for await (const chunk of stream) {
 			if (chunk.type === "text") {
@@ -383,6 +536,7 @@ export async function summarizeConversation(options: SummarizeConversationOption
 			cost,
 			error: t("common:errors.condense_api_failed", { message: errorMessage }),
 			errorDetails,
+			status: "no_progress",
 		}
 	}
 
@@ -390,7 +544,7 @@ export async function summarizeConversation(options: SummarizeConversationOption
 
 	if (summary.length === 0) {
 		const error = t("common:errors.condense_failed")
-		return { ...response, cost, error }
+		return { ...response, cost, error, status: "no_progress" }
 	}
 
 	// Extract command blocks from the first message (original task)
@@ -507,7 +661,7 @@ ${commandBlocks}
 	}
 
 	const newContextTokens = messageTokens + toolTokens
-	return { messages: newMessages, summary, cost, newContextTokens, condenseId }
+	return { messages: newMessages, summary, cost, newContextTokens, condenseId, status: "reduced" }
 }
 
 /**
@@ -553,42 +707,10 @@ export function getEffectiveApiHistory(messages: ApiMessage[]): ApiMessage[] {
 		const summaryIndex = messages.indexOf(lastSummary)
 		let messagesFromSummary = messages.slice(summaryIndex)
 
-		// Collect all tool_use IDs from assistant messages in the result
-		// This is needed to filter out orphan tool_result blocks that reference
-		// tool_use IDs from messages that were condensed away
-		const toolUseIds = new Set<string>()
-		for (const msg of messagesFromSummary) {
-			if (msg.role === "assistant" && Array.isArray(msg.content)) {
-				for (const block of msg.content) {
-					if (block.type === "tool_use" && (block as Anthropic.Messages.ToolUseBlockParam).id) {
-						toolUseIds.add((block as Anthropic.Messages.ToolUseBlockParam).id)
-					}
-				}
-			}
-		}
-
-		// Filter out orphan tool_result blocks from user messages
-		messagesFromSummary = messagesFromSummary
-			.map((msg) => {
-				if (msg.role === "user" && Array.isArray(msg.content)) {
-					const filteredContent = msg.content.filter((block) => {
-						if (block.type === "tool_result") {
-							return toolUseIds.has((block as Anthropic.Messages.ToolResultBlockParam).tool_use_id)
-						}
-						return true
-					})
-					// If all content was filtered out, mark for removal
-					if (filteredContent.length === 0) {
-						return null
-					}
-					// If some content was filtered, return updated message
-					if (filteredContent.length !== msg.content.length) {
-						return { ...msg, content: filteredContent }
-					}
-				}
-				return msg
-			})
-			.filter((msg): msg is ApiMessage => msg !== null)
+		// Filter orphan results against the active fresh-start history.  This is
+		// intentionally done before truncation filtering and again afterward: a
+		// truncation marker can hide the only matching call.
+		messagesFromSummary = filterOrphanToolResults(messagesFromSummary)
 
 		// Still need to filter out any truncated messages within this range
 		const existingTruncationIds = new Set<string>()
@@ -598,13 +720,15 @@ export function getEffectiveApiHistory(messages: ApiMessage[]): ApiMessage[] {
 			}
 		}
 
-		return messagesFromSummary.filter((msg) => {
-			// Filter out truncated messages if their truncation marker exists
-			if (msg.truncationParent && existingTruncationIds.has(msg.truncationParent)) {
-				return false
-			}
-			return true
-		})
+		return filterOrphanToolResults(
+			messagesFromSummary.filter((msg) => {
+				// Filter out truncated messages if their truncation marker exists
+				if (msg.truncationParent && existingTruncationIds.has(msg.truncationParent)) {
+					return false
+				}
+				return true
+			}),
+		)
 	}
 
 	// No summary - filter based on condenseParent and truncationParent as before
@@ -627,17 +751,19 @@ export function getEffectiveApiHistory(messages: ApiMessage[]): ApiMessage[] {
 	// Filter out messages whose condenseParent points to an existing summary
 	// or whose truncationParent points to an existing truncation marker.
 	// Messages with orphaned parents (summary/marker was deleted) are included.
-	return messages.filter((msg) => {
-		// Filter out condensed messages if their summary exists
-		if (msg.condenseParent && existingSummaryIds.has(msg.condenseParent)) {
-			return false
-		}
-		// Filter out truncated messages if their truncation marker exists
-		if (msg.truncationParent && existingTruncationIds.has(msg.truncationParent)) {
-			return false
-		}
-		return true
-	})
+	return filterOrphanToolResults(
+		messages.filter((msg) => {
+			// Filter out condensed messages if their summary exists
+			if (msg.condenseParent && existingSummaryIds.has(msg.condenseParent)) {
+				return false
+			}
+			// Filter out truncated messages if their truncation marker exists
+			if (msg.truncationParent && existingTruncationIds.has(msg.truncationParent)) {
+				return false
+			}
+			return true
+		}),
+	)
 }
 
 /**

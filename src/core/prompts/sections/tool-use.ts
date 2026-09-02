@@ -36,6 +36,8 @@ You have only ${authority}${delegationAuthority}. Use the provider-native tool-c
 
 ${scopeGuidance}
 
+Managed subagents must publish a durable result through attempt_completion when their assigned objective is completed or blocked, even when no further tool call is needed. Ordinary assistant prose alone is not a terminal handoff for a managed subagent.
+
 Batch independent reads and searches when their results do not affect one another. Serialize dependent actions, approvals, and${
 			subagentRole === "worker" ? " workspace mutations" : " final synthesis"
 		}, and inspect returned evidence before deciding the next action. Do not call capabilities outside this bounded child authority.${delegationGuidance}`
@@ -71,6 +73,8 @@ TOOL USE
 You have access to tools governed by the current execution and approval policy. Use the provider-native tool-calling mechanism. Do not include XML markup or examples. Use tools when they materially advance inspection, implementation, or verification; a response that can be completed from established context does not require a token tool call.
 
 ${scopeGuidance}
+
+Primary tasks may finish with a visible ordinary assistant answer when no tool call or continuation is needed. Do not invent a tool call merely to force a completion format.
 
 Batch independent reads, searches, and diagnostics when their results do not affect one another. Serialize dependent actions, workspace mutations, approvals, and control-flow operations, and inspect their results before deciding the next action. Do not maximize the number of calls in a batch. new_task and delegate_task are blocking delegation boundaries and must each be called alone, never batched with another tool. spawn_agent is nonblocking. Independent spawn_agent calls may be batched together.${rootDelegationGuidance}`
 }

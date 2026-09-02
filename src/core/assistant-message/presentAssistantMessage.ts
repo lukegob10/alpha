@@ -194,7 +194,30 @@ async function recoverUnexpectedToolPresentationError(cline: Task, error: unknow
  * as it becomes available.
  */
 
-export async function presentAssistantMessage(cline: Task) {
+export interface PresentAssistantMessageOptions {
+	/**
+	 * Native tool calls may be accumulated while text is still streaming. Keep
+	 * their presentation side-effect-free until the canonical response has been
+	 * persisted and the scheduler owns execution.
+	 */
+	executeTools?: boolean
+	/**
+	 * Identity of the streaming preview boundary. When it changes while a
+	 * webview update is pending, the presenter must stop before touching task
+	 * state from a later canonical response.
+	 */
+	previewEpoch?: number
+}
+
+function isCurrentStreamingPreview(cline: Task, options: PresentAssistantMessageOptions): boolean {
+	if (options.previewEpoch === undefined) return true
+	return cline.isStreamingPreviewEpochCurrent?.(options.previewEpoch) !== false
+}
+
+type PresentationLockState = Task & { presentAssistantMessageLockOwner?: unknown }
+
+export async function presentAssistantMessage(cline: Task, options: PresentAssistantMessageOptions = {}) {
+	if (!isCurrentStreamingPreview(cline, options)) return
 	if (cline.abort) {
 		throw new Error(`[Task#presentAssistantMessage] task ${cline.taskId}.${cline.instanceId} aborted`)
 	}
@@ -204,23 +227,32 @@ export async function presentAssistantMessage(cline: Task) {
 		return
 	}
 
+	const lockState = cline as PresentationLockState
+	const lockOwner = options.previewEpoch ?? Symbol("presentAssistantMessage")
 	cline.presentAssistantMessageLocked = true
+	lockState.presentAssistantMessageLockOwner = lockOwner
 	cline.presentAssistantMessageHasPendingUpdates = false
 	try {
 		do {
 			cline.presentAssistantMessageHasPendingUpdates = false
 			try {
-				await presentAssistantMessageContent(cline)
+				await presentAssistantMessageContent(cline, options)
+				if (!isCurrentStreamingPreview(cline, options)) return
 			} catch (error) {
+				if (!isCurrentStreamingPreview(cline, options)) return
 				if (!(await recoverUnexpectedToolPresentationError(cline, error))) throw error
 			}
 		} while (cline.presentAssistantMessageHasPendingUpdates)
 	} finally {
-		cline.presentAssistantMessageLocked = false
+		if (lockState.presentAssistantMessageLockOwner === lockOwner) {
+			delete lockState.presentAssistantMessageLockOwner
+			cline.presentAssistantMessageLocked = false
+		}
 	}
 }
 
-async function presentAssistantMessageContent(cline: Task) {
+async function presentAssistantMessageContent(cline: Task, options: PresentAssistantMessageOptions) {
+	if (!isCurrentStreamingPreview(cline, options)) return
 	if (cline.abort) {
 		throw new Error(`[Task#presentAssistantMessage] task ${cline.taskId}.${cline.instanceId} aborted`)
 	}
@@ -250,6 +282,20 @@ async function presentAssistantMessageContent(cline: Task) {
 			`Block content:`,
 			JSON.stringify(cline.assistantMessageContent[cline.currentStreamingContentIndex], null, 2),
 		)
+		return
+	}
+
+	if (options.executeTools === false && (block.type === "tool_use" || block.type === "mcp_tool_use")) {
+		// The streaming preview exists only to keep text responsive. Native tool
+		// effects are deferred until Task persists the canonical response and runs
+		// ToolScheduler, so a completed tool block cannot execute twice when a
+		// later text chunk triggers this presenter.
+		cline.currentStreamingContentIndex++
+		if (cline.currentStreamingContentIndex < cline.assistantMessageContent.length) {
+			await presentAssistantMessageContent(cline, options)
+		} else if (cline.didCompleteReadingStream) {
+			cline.userMessageContentReady = true
+		}
 		return
 	}
 
@@ -512,7 +558,14 @@ async function presentAssistantMessageContent(cline: Task) {
 				content = content.replace(/\s?<\/thinking>/g, "")
 			}
 
-			await cline.say("text", content, undefined, block.partial)
+			if (options.previewEpoch === undefined) {
+				await cline.say("text", content, undefined, block.partial)
+			} else {
+				await cline.say("text", content, undefined, block.partial, undefined, undefined, {
+					previewEpoch: options.previewEpoch,
+				})
+			}
+			if (!isCurrentStreamingPreview(cline, options)) return
 			break
 		}
 		case "tool_use": {
@@ -1360,7 +1413,7 @@ async function presentAssistantMessageContent(cline: Task) {
 			// so errors cannot escape as unhandled rejections and the presentation lock
 			// continues to serialize every content block.
 			cline.presentAssistantMessageHasPendingUpdates = false
-			await presentAssistantMessageContent(cline)
+			await presentAssistantMessageContent(cline, options)
 			return
 		} else {
 			// CRITICAL FIX: If we're out of bounds and the stream is complete, set userMessageContentReady
@@ -1374,7 +1427,7 @@ async function presentAssistantMessageContent(cline: Task) {
 	// Block is partial, but the read stream may have finished.
 	if (cline.presentAssistantMessageHasPendingUpdates) {
 		cline.presentAssistantMessageHasPendingUpdates = false
-		await presentAssistantMessageContent(cline)
+		await presentAssistantMessageContent(cline, options)
 	}
 }
 

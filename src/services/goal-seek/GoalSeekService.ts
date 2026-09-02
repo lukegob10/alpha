@@ -23,6 +23,7 @@ import {
 import { getLatestTaskCompletionText } from "../../core/task-persistence/completionText"
 import type { Task } from "../../core/task/Task"
 import type { ClineProvider } from "../../core/webview/ClineProvider"
+import { awaitTaskCancellationBoundary } from "../../core/webview/TaskCancellationBoundary"
 import { getWorkspacePath } from "../../utils/path"
 import { GoalSeekStore } from "./GoalSeekStore"
 import {
@@ -49,6 +50,11 @@ type PendingRunStart = {
 	resolveCompletion: () => void
 }
 
+type TaskTerminationJoin = {
+	promise: Promise<void>
+	failed: boolean
+}
+
 class GoalSeekRunCanceledError extends Error {
 	constructor() {
 		super("Goal Seek run was canceled.")
@@ -71,6 +77,8 @@ export class GoalSeekService implements vscode.Disposable {
 	private readonly deletingJobs = new Set<string>()
 	private readonly jobDeletionOperations = new Map<string, Promise<void>>()
 	private readonly activeTasksByRun = new Map<string, Task>()
+	private readonly taskTerminationJoins = new Map<string, TaskTerminationJoin>()
+	private readonly taskTerminationFailures = new Map<string, unknown>()
 	private readonly commandAbortControllers = new Map<string, AbortController>()
 	private disposed = false
 
@@ -107,6 +115,54 @@ export class GoalSeekService implements vscode.Disposable {
 			waiter.reject(new Error("Goal Seek service disposed."))
 		}
 		this.taskWaiters.clear()
+	}
+
+	private async abortAndJoinTask(task: Task): Promise<void> {
+		let abortResult: unknown
+		let abortFailure: unknown
+		try {
+			abortResult = await task.abortTask()
+		} catch (error) {
+			abortFailure = error
+		}
+		await awaitTaskCancellationBoundary(task, abortResult)
+		if (abortFailure !== undefined) throw abortFailure
+	}
+
+	private startTaskTerminationJoin(task: Task): TaskTerminationJoin {
+		const existing = this.taskTerminationJoins.get(task.taskId)
+		if (existing && !existing.failed) {
+			return existing
+		}
+
+		let join!: TaskTerminationJoin
+		const promise = this.abortAndJoinTask(task).then(
+			() => {
+				if (this.taskTerminationJoins.get(task.taskId) === join) {
+					this.taskTerminationJoins.delete(task.taskId)
+				}
+			},
+			(error) => {
+				join.failed = true
+				throw error
+			},
+		)
+		join = { promise, failed: false }
+		this.taskTerminationJoins.set(task.taskId, join)
+		return join
+	}
+
+	private async awaitPendingTaskTermination(taskId: string): Promise<boolean> {
+		const join = this.taskTerminationJoins.get(taskId)
+		if (!join) return true
+		try {
+			await join.promise
+			return true
+		} catch {
+			// A failed termination boundary must not release the Goal Seek waiter;
+			// doing so would let execution roll back while the task may still write.
+			return false
+		}
 	}
 
 	getState(): GoalSeekState {
@@ -202,17 +258,44 @@ export class GoalSeekService implements vscode.Disposable {
 		const activeTask = this.activeTasksByRun.get(runId)
 		if (activeTask) {
 			const waiter = this.taskWaiters.get(activeTask.taskId)
-			if (waiter) {
+			const join = this.startTaskTerminationJoin(activeTask)
+			try {
+				await join.promise
+			} catch (error) {
+				// Leave the waiter and task bookkeeping intact. A failed persistence
+				// boundary means rollback cannot be proven safe; callers can retry the
+				// cancellation after diagnosing the boundary failure.
+				this.taskTerminationFailures.set(runId, error)
+				throw error
+			}
+			this.taskTerminationFailures.delete(runId)
+			// Keep the execution suspended until the Task has flushed its terminal
+			// transcript. Rejecting the waiter first lets executeRun enter rollback
+			// while the Task still owns the workspace.
+			if (waiter && this.taskWaiters.get(activeTask.taskId) === waiter) {
 				this.taskWaiters.delete(activeTask.taskId)
 				waiter.reject(new GoalSeekRunCanceledError())
 			}
-			await Promise.allSettled([activeTask.abortTask()])
+		}
+		if (!activeTask && this.taskTerminationFailures.has(runId)) {
+			throw this.taskTerminationFailures.get(runId)
 		}
 
 		const execution = this.runExecutions.get(runId)
 		if (execution) {
-			await execution
-			return
+			try {
+				await execution
+				return
+			} finally {
+				if (activeTask) {
+					const join = this.taskTerminationJoins.get(activeTask.taskId)
+					if (join && !join.failed) this.taskTerminationJoins.delete(activeTask.taskId)
+				}
+			}
+		}
+
+		if (this.taskTerminationFailures.has(runId)) {
+			throw this.taskTerminationFailures.get(runId)
 		}
 
 		const job = this.store.getJob(run.jobId)
@@ -222,6 +305,11 @@ export class GoalSeekService implements vscode.Disposable {
 			}
 		} finally {
 			this.canceledRuns.delete(runId)
+			this.taskTerminationFailures.delete(runId)
+			if (activeTask) {
+				const join = this.taskTerminationJoins.get(activeTask.taskId)
+				if (join && !join.failed) this.taskTerminationJoins.delete(activeTask.taskId)
+			}
 		}
 	}
 
@@ -490,6 +578,22 @@ export class GoalSeekService implements vscode.Disposable {
 			this.throwIfRunCanceled(run.id)
 		} catch (error) {
 			if (this.isRunCancellation(error, runId)) {
+				if (this.taskTerminationFailures.has(runId)) {
+					// A cancellation boundary failure is intentionally non-terminal:
+					// do not reset the workspace or mark the run canceled until a later
+					// retry proves that the Task has finished persisting.
+					return
+				}
+				const activeTask = this.activeTasksByRun.get(runId)
+				if (activeTask) {
+					const join = this.startTaskTerminationJoin(activeTask)
+					try {
+						await join.promise
+					} catch (joinError) {
+						this.taskTerminationFailures.set(runId, joinError)
+						return
+					}
+				}
 				await this.finishCanceledExecution(job, runId, activeAttempt, activeCheckpointRef)
 				return
 			}
@@ -682,7 +786,20 @@ export class GoalSeekService implements vscode.Disposable {
 		if (runId) {
 			this.activeTasksByRun.set(runId, task)
 			if (this.canceledRuns.has(runId) || this.disposed) {
-				await Promise.allSettled([task.abortTask()])
+				const join = this.startTaskTerminationJoin(task)
+				try {
+					await join.promise
+				} catch (error) {
+					// Do not drop the task reference when its durable termination
+					// boundary fails. Keeping it allows a later cancel retry to prove
+					// the boundary before any workspace rollback/finalization.
+					this.taskTerminationFailures.set(runId, error)
+					throw error
+				}
+				this.taskTerminationFailures.delete(runId)
+				if (this.taskTerminationJoins.get(task.taskId) === join) {
+					this.taskTerminationJoins.delete(task.taskId)
+				}
 				this.activeTasksByRun.delete(runId)
 				throw new GoalSeekRunCanceledError()
 			}
@@ -696,7 +813,7 @@ export class GoalSeekService implements vscode.Disposable {
 			return { taskId: task.taskId, result }
 		} finally {
 			this.taskWaiters.delete(task.taskId)
-			if (runId && this.activeTasksByRun.get(runId) === task) {
+			if (runId && this.activeTasksByRun.get(runId) === task && !this.taskTerminationFailures.has(runId)) {
 				this.activeTasksByRun.delete(runId)
 			}
 		}
@@ -860,6 +977,9 @@ export class GoalSeekService implements vscode.Disposable {
 	}
 
 	private handleTaskCompleted = async (alphaTaskId: string): Promise<void> => {
+		if (!(await this.awaitPendingTaskTermination(alphaTaskId))) {
+			return
+		}
 		const waiter = this.taskWaiters.get(alphaTaskId)
 		if (!waiter) {
 			return
@@ -873,6 +993,9 @@ export class GoalSeekService implements vscode.Disposable {
 	}
 
 	private handleTaskAborted = async (alphaTaskId: string): Promise<void> => {
+		if (!(await this.awaitPendingTaskTermination(alphaTaskId))) {
+			return
+		}
 		const waiter = this.taskWaiters.get(alphaTaskId)
 		if (!waiter) {
 			return

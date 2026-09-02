@@ -77,7 +77,13 @@ import { TelemetryService } from "@alpha-code/telemetry"
 
 // api
 import { ApiHandler, ApiHandlerCreateMessageMetadata, buildApiHandler } from "../../api"
-import { ApiStream, GroundingSource } from "../../api/transform/stream"
+import {
+	ApiStream,
+	GroundingSource,
+	type ApiStreamOutcomeChunk,
+	isApiStreamAbortError,
+	isApiStreamSemanticChunk,
+} from "../../api/transform/stream"
 import { maybeRemoveImageBlocks } from "../../api/transform/image-cleaning"
 import { getApiRequestTimeout, withApiRequestTimeout } from "../../api/providers/utils/timeout-config"
 
@@ -126,6 +132,20 @@ import { RooIgnoreController } from "../ignore/RooIgnoreController"
 import { RooProtectedController } from "../protect/RooProtectedController"
 import { type AssistantMessageContent, presentAssistantMessage } from "../assistant-message"
 import { NativeToolCallParser, type ToolCallStreamEvent } from "../assistant-message/NativeToolCallParser"
+import { AgentResponseAccumulator } from "../agent/AgentResponseAccumulator"
+import {
+	AgentRetryPolicy,
+	delayWithAbort,
+	type AgentRetryCategory,
+	type AgentRetryDecision,
+} from "../agent/AgentRetryPolicy"
+import { AgentStepContextBuilder, type AgentStepSnapshot } from "../agent/AgentStepContextBuilder"
+import { AgentTurnEventLog } from "../agent/AgentTurnEventLog"
+import type { AgentLifecycleEventInput } from "../agent/lifecycle"
+import { ToolScheduler, type ToolSchedulerOutcome, type ToolSchedulerResult } from "../agent/ToolScheduler"
+import type { TaskToolSurface } from "../tools/TaskToolSurface"
+import type { AgentTurnEvent } from "../agent/AgentTurnEvents"
+import type { StepContext } from "../agent/StepContext"
 import { manageContext, willManageContext } from "../context-management"
 import { ClineProvider } from "../webview/ClineProvider"
 import { MultiSearchReplaceDiffStrategy } from "../diff/strategies/multi-search-replace"
@@ -140,6 +160,13 @@ import {
 	saveTaskMessages,
 	taskMetadata,
 } from "../task-persistence"
+import {
+	digestProviderTranscript,
+	ProviderTranscriptRevisionConflictError,
+	ProviderTranscriptStore,
+	ProviderTranscriptStoreError,
+	type ProviderTranscriptCommitReceipt,
+} from "../task-persistence/ProviderTranscriptStore"
 import { getEnvironmentDetails } from "../environment/getEnvironmentDetails"
 import { checkContextWindowExceededError } from "../context/context-management/context-error-handling"
 import {
@@ -163,7 +190,9 @@ import {
 	type AgentResponse,
 	type AgentResponseItem,
 	type AgentTurnHost,
+	type AgentTurnOutcome,
 } from "../agent/AgentTurnEngine"
+import { createAgentResponse } from "../agent/AgentResponse"
 import {
 	isValidSubagentContextManifest,
 	type SubagentContextInstructionSourceInput,
@@ -214,11 +243,37 @@ export interface RequestPacingMetrics {
 
 const MAX_EXPONENTIAL_BACKOFF_SECONDS = 600 // 10 minutes
 const DEFAULT_USAGE_COLLECTION_TIMEOUT_MS = 5000 // 5 seconds
+// A preview is best-effort UI work.  Never let a provider turn boundary wait
+// forever for a stale webview update; the preview epoch fence below makes the
+// timeout safe by preventing the abandoned promise from touching the next
+// turn's state.
+const STREAMING_PREVIEW_DRAIN_TIMEOUT_MS = 1000
 const FORCED_CONTEXT_REDUCTION_PERCENT = 75 // Keep 75% of context (remove 25%) on context window errors
 const MAX_CONTEXT_WINDOW_RETRIES = 3 // Maximum retries for context window errors
 const MAX_AUTOMATIC_MISTAKE_RECOVERIES = 1
 
 type TaskRequestState = Awaited<ReturnType<ClineProvider["getState"]>>
+
+/** Provider-neutral result returned by one Task model/tool step. */
+type TaskStepStatus = "completed" | "aborted" | "failed" | "incomplete" | "exhausted" | "awaiting-user"
+
+type TaskRetryAttempts = Partial<Record<AgentRetryCategory, number>>
+
+interface TaskStepExecutionResult {
+	status: TaskStepStatus
+	response?: AgentResponse
+	reason?: string
+	error?: unknown
+}
+
+interface CurrentAgentStep {
+	snapshot: AgentStepSnapshot<ApiHandler, unknown>
+	turnId: string
+	stepId: string
+	requestId: string
+	attemptId: string
+	surface?: TaskToolSurface
+}
 
 const LEGACY_FROZEN_INSTRUCTIONS_PREFIX = [
 	"## Frozen inherited instructions",
@@ -464,8 +519,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	providerRef: WeakRef<ClineProvider>
 	private readonly globalStoragePath: string
+	/**
+	 * The legacy API-history file remains the provider/runtime authority during
+	 * the strangler rollout. This versioned transcript is an integrity-checked
+	 * sidecar: a successful Task history save is reported only after both the
+	 * legacy write and a verified sidecar receipt have completed.
+	 */
+	private readonly providerTranscriptStore: ProviderTranscriptStore
+	private apiConversationHistorySaveQueue: Promise<void> = Promise.resolve()
+	private providerTranscriptCommitReceipt?: ProviderTranscriptCommitReceipt
+	private providerTranscriptSidecarFailure?: ProviderTranscriptStoreError
 	abort: boolean = false
 	private abortTaskPromise?: Promise<void>
+	private ownedLifecyclePromise?: Promise<void>
+	private taskTerminationPromise?: Promise<void>
 	currentRequestAbortController?: AbortController
 	private readonly taskCancellationController = new AbortController()
 	private agentWaitAbortController?: AbortController
@@ -497,6 +564,30 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private currentAssistantResponseMessageTs: number | undefined
 	skipPrevResponseIdOnce: boolean = false
 
+	/** Canonical response and captured execution surface for the active step. */
+	private currentAgentResponse?: AgentResponse
+	private currentAgentStep?: CurrentAgentStep
+	private currentTaskToolSurface?: TaskToolSurface
+	private currentRequestSignal?: AbortSignal
+	private readonly agentRetryPolicy = new AgentRetryPolicy()
+	private readonly agentStepContextBuilder = new AgentStepContextBuilder<ApiHandler, unknown>()
+	private readonly agentTurnEventLog: AgentTurnEventLog
+	/** Stable host run identity; a new engine run gets a new identity after terminality. */
+	private agentRunId?: string
+	private agentTurnId?: string
+	private agentTurnStep = 0
+	private readonly canonicalLifecycleStartedSteps = new Set<string>()
+	private canonicalLifecycleQueue: Promise<void> = Promise.resolve()
+	/**
+	 * Canonical lifecycle persistence is additive during the migration: the
+	 * journal/projector is authoritative whenever the provider accepts an event,
+	 * while the legacy loop remains operational when an older host has no
+	 * publisher or the journal is temporarily unavailable. Retain the first
+	 * failure explicitly so host diagnostics can distinguish degraded lifecycle
+	 * projection from a successful durable turn.
+	 */
+	private canonicalLifecyclePersistenceFailure?: { type: AgentLifecycleEventInput["type"]; error: Error }
+
 	// TaskStatus
 	idleAsk?: ClineMessage
 	resumableAsk?: ClineMessage
@@ -512,6 +603,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	apiConfiguration: ProviderSettings
 	api: ApiHandler
 	private static providerRateLimitLanes = new Map<string, ProviderRateLimitLane>()
+	/**
+	 * Transcript writes are shared by every live/re-hydrated Task instance for a
+	 * task ID. An instance-local queue cannot prevent an old instance from
+	 * writing its captured snapshot after a replacement has started.
+	 */
+	private static apiConversationHistorySaveQueues = new Map<string, Promise<void>>()
+	private static apiConversationHistoryOwnerGenerations = new Map<string, number>()
+	private readonly apiConversationHistoryPersistenceKey: string
+	private readonly apiConversationHistoryOwnerGeneration: number
 	private requestPacingWaitCount = 0
 	private requestPacingWaitMs = 0
 	private autoApprovalHandler: AutoApprovalHandler
@@ -535,7 +635,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	/** Add the just-completed pacing wait to the model-facing request already persisted for this turn. */
-	private async appendRequestPacingUpdateToLatestUserMessage(): Promise<void> {
+	private async appendRequestPacingUpdateToLatestUserMessage(): Promise<boolean> {
 		const metrics = this.getRequestPacingMetrics()
 		let latestUserMessage: ApiMessage | undefined
 		for (let index = this.apiConversationHistory.length - 1; index >= 0; index--) {
@@ -544,7 +644,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				break
 			}
 		}
-		if (!latestUserMessage) return
+		if (!latestUserMessage) return true
 
 		const update = {
 			type: "text" as const,
@@ -561,7 +661,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				)
 			: [{ type: "text" as const, text: latestUserMessage.content }]
 		latestUserMessage.content = [...currentContent, update]
-		await this.saveApiConversationHistory()
+		return this.saveApiConversationHistory()
 	}
 
 	toolRepetitionDetector: ToolRepetitionDetector
@@ -617,6 +717,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	assistantMessageContent: AssistantMessageContent[] = []
 	presentAssistantMessageLocked = false
 	presentAssistantMessageHasPendingUpdates = false
+	private streamingPreviewEpoch = 0
+	private streamingPreviewQueue: Promise<void> = Promise.resolve()
 	userMessageContent: (Anthropic.TextBlockParam | Anthropic.ImageBlockParam | Anthropic.ToolResultBlockParam)[] = []
 	userMessageContentReady = false
 
@@ -633,6 +735,145 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * Set to `true` after the assistant message is saved in `recursivelyMakeClineRequests`.
 	 */
 	assistantMessageSavedToHistory = false
+
+	/**
+	 * Return the identity of the currently mutable streaming-preview boundary.
+	 * The value is intentionally opaque to callers; it is only used to fence
+	 * asynchronous preview work from canonical response state.
+	 */
+	public getStreamingPreviewEpoch(): number {
+		return this.streamingPreviewEpoch
+	}
+
+	/**
+	 * Preview presenters call this after every await.  A stale presenter may
+	 * finish its webview request, but it must not continue into the next turn.
+	 */
+	public isStreamingPreviewEpochCurrent(epoch: number): boolean {
+		return epoch === this.streamingPreviewEpoch && !this.abort && !this.abandoned
+	}
+
+	private invalidateStreamingPreviewEpoch(): void {
+		this.streamingPreviewEpoch += 1
+	}
+
+	/** Serialize best-effort streaming text previews behind one tracked promise. */
+	private scheduleStreamingPreview(): void {
+		const epoch = this.streamingPreviewEpoch
+		const queuedPreview = this.streamingPreviewQueue
+			.catch(() => undefined)
+			.then(async () => {
+				if (!this.isStreamingPreviewEpochCurrent(epoch)) return
+				try {
+					await presentAssistantMessage(this, { executeTools: false, previewEpoch: epoch })
+				} catch (error) {
+					// Preview output is non-authoritative.  A provider turn must still be
+					// able to complete when a webview update rejects or is superseded.
+					if (this.isStreamingPreviewEpochCurrent(epoch)) {
+						console.error(`[Task#${this.taskId}] Failed to present streaming text preview:`, error)
+					}
+				}
+			})
+		this.streamingPreviewQueue = queuedPreview
+	}
+
+	/**
+	 * Join all previews currently queued before a turn boundary mutates shared
+	 * streaming state. Normal boundaries use a full join so an in-flight UI/save
+	 * operation cannot cross into canonical state. Task cancellation is the one
+	 * bounded detachment path; after its deadline the epoch fence makes any late
+	 * completion harmless and the queue is detached so a future preview cannot be
+	 * permanently chained behind a hung promise.
+	 */
+	private async drainStreamingPreviews(reason: string): Promise<void> {
+		const cancellationSignal = this.getTaskLifetimeCancellationSignal()
+		let bounded = this.abort || this.abandoned || cancellationSignal.aborted
+		let cancelCancellationWait: () => void = () => {}
+
+		if (!bounded) {
+			let cancellationSettled = false
+			let resolveCancellation!: () => void
+			const cancellation = new Promise<"cancelled">((resolve) => {
+				resolveCancellation = () => {
+					if (cancellationSettled) return
+					cancellationSettled = true
+					cancellationSignal.removeEventListener("abort", onAbort)
+					resolve("cancelled")
+				}
+				const onAbort = () => resolveCancellation()
+				cancelCancellationWait = () => {
+					if (cancellationSettled) return
+					cancellationSettled = true
+					cancellationSignal.removeEventListener("abort", onAbort)
+				}
+				cancellationSignal.addEventListener("abort", onAbort, { once: true })
+				if (cancellationSignal.aborted) onAbort()
+			})
+
+			while (true) {
+				const queue = this.streamingPreviewQueue
+				const result = await Promise.race([queue.then(() => "drained" as const), cancellation])
+				if (result === "cancelled") {
+					bounded = true
+					break
+				}
+				if (queue === this.streamingPreviewQueue) {
+					cancelCancellationWait()
+					return
+				}
+			}
+			cancelCancellationWait()
+		}
+
+		if (!bounded) return
+
+		let cancelDeadline: () => void = () => {}
+		const deadline = new Promise<"timed-out" | "cancelled">((resolve) => {
+			let settled = false
+			const timer = setTimeout(() => finish("timed-out"), STREAMING_PREVIEW_DRAIN_TIMEOUT_MS)
+			const onAbort = () => finish("cancelled")
+			const cleanup = () => {
+				clearTimeout(timer)
+				cancellationSignal.removeEventListener("abort", onAbort)
+			}
+			const finish = (result: "timed-out" | "cancelled") => {
+				if (settled) return
+				settled = true
+				cleanup()
+				resolve(result)
+			}
+			cancelDeadline = () => finish("cancelled")
+			cancellationSignal.addEventListener("abort", onAbort, { once: true })
+			if (cancellationSignal.aborted) onAbort()
+		})
+
+		try {
+			while (true) {
+				const queue = this.streamingPreviewQueue
+				const result = await Promise.race([queue.then(() => "drained" as const), deadline])
+
+				if (result !== "drained") {
+					this.invalidateStreamingPreviewEpoch()
+					// Release the presentation lock before dropping the abandoned chain.
+					// The presenter records ownership by epoch, so its late finally block
+					// cannot clear a lock acquired by a resumed/new preview.
+					this.presentAssistantMessageLocked = false
+					this.presentAssistantMessageHasPendingUpdates = false
+					delete (this as Task & { presentAssistantMessageLockOwner?: unknown })
+						.presentAssistantMessageLockOwner
+					// The old promise remains internally observed by its own rejection
+					// handler, and its epoch fence prevents late state mutation once it
+					// settles.
+					this.streamingPreviewQueue = Promise.resolve()
+					console.warn(`[Task#${this.taskId}] Streaming preview drain ${result} during ${reason}`)
+					return
+				}
+				if (queue === this.streamingPreviewQueue) return
+			}
+		} finally {
+			cancelDeadline()
+		}
+	}
 
 	/**
 	 * Push a tool_result block to userMessageContent, preventing duplicates.
@@ -998,6 +1239,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.consecutiveMistakeLimit = consecutiveMistakeLimit ?? DEFAULT_CONSECUTIVE_MISTAKE_LIMIT
 		this.providerRef = new WeakRef(provider)
 		this.globalStoragePath = provider.context.globalStorageUri.fsPath
+		this.apiConversationHistoryPersistenceKey = `${path.resolve(this.globalStoragePath)}\u0000${this.taskId}`
+		this.apiConversationHistoryOwnerGeneration =
+			(Task.apiConversationHistoryOwnerGenerations.get(this.apiConversationHistoryPersistenceKey) ?? 0) + 1
+		Task.apiConversationHistoryOwnerGenerations.set(
+			this.apiConversationHistoryPersistenceKey,
+			this.apiConversationHistoryOwnerGeneration,
+		)
+		this.providerTranscriptStore = new ProviderTranscriptStore(this.taskId, this.globalStoragePath)
+		this.agentTurnEventLog = new AgentTurnEventLog(this.taskId, this.globalStoragePath)
 		this.diffViewProvider = new DiffViewProvider(this.cwd, this)
 		this.enableCheckpoints = enableCheckpoints
 		this.checkpointTimeout = checkpointTimeout
@@ -1094,10 +1344,41 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
-	private ownBackgroundLifecycle(operation: "start" | "resume", lifecycle: Promise<void>): void {
+	private ownBackgroundLifecycle(operation: "start" | "resume", lifecycle: Promise<void>): Promise<void> {
+		this.ownedLifecyclePromise = lifecycle
 		void lifecycle.catch((error) => {
 			console.error(`[Task#${this.taskId}] Background ${operation} failed:`, error)
 		})
+		return lifecycle
+	}
+
+	/**
+	 * Join the Task-owned start/resume loop and, after cancellation, its durable
+	 * transcript and canonical lifecycle finalization. This boundary is external
+	 * by design: performAbortTask may be awaited by the loop it is cancelling, so
+	 * joining the loop from inside abort would deadlock.
+	 */
+	public async waitForTermination(): Promise<void> {
+		if (this.taskTerminationPromise) {
+			await this.taskTerminationPromise
+			return
+		}
+		await this.waitForOwnedLifecycle()
+	}
+
+	private async waitForOwnedLifecycle(): Promise<void> {
+		for (;;) {
+			const lifecycle = this.ownedLifecyclePromise
+			if (!lifecycle) return
+			await lifecycle
+			if (lifecycle === this.ownedLifecyclePromise) return
+		}
+	}
+
+	private async prepareForRetainedLifecycle(): Promise<void> {
+		if (this.taskTerminationPromise) await this.taskTerminationPromise
+		this.abortTaskPromise = undefined
+		this.taskTerminationPromise = undefined
 	}
 
 	/**
@@ -1344,23 +1625,49 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	static create(options: TaskOptions): [Task, Promise<void>] {
 		const instance = new Task({ ...options, startTask: false })
 		const { images, task, historyItem } = options
-		let promise
+		let promise: Promise<void>
+		let operation: "start" | "resume"
 
 		if (images || task) {
 			promise = instance.startTask(task, images)
+			operation = "start"
 		} else if (historyItem) {
 			promise = instance.resumeTaskFromHistory()
+			operation = "resume"
 		} else {
 			throw new Error("Either historyItem or task/images must be provided")
 		}
 
+		instance.ownBackgroundLifecycle(operation, promise)
 		return [instance, promise]
 	}
 
 	// API Messages
 
 	private async getSavedApiConversationHistory(): Promise<ApiMessage[]> {
-		return readApiMessages({ taskId: this.taskId, globalStoragePath: this.globalStoragePath })
+		const messages = await readApiMessages({ taskId: this.taskId, globalStoragePath: this.globalStoragePath })
+
+		// The legacy file is still authoritative for reads. Reconcile the new
+		// provider-facing sidecar only after the read succeeds, and do it behind
+		// the same queue used by writes. If this best-effort backfill fails, the
+		// task can still resume from the legacy transcript; the next save retries
+		// the sidecar and reports false until both durability boundaries succeed.
+		try {
+			await this.enqueueApiConversationHistoryPersistence(async () => {
+				// Re-read at queue execution time. A save may have been submitted while
+				// the first legacy read was in flight; never let that older snapshot
+				// overwrite the sidecar after the newer legacy write.
+				const latestMessages = await readApiMessages({
+					taskId: this.taskId,
+					globalStoragePath: this.globalStoragePath,
+				})
+				await this.reconcileProviderTranscriptSidecar(latestMessages, false)
+			})
+		} catch (error) {
+			this.recordProviderTranscriptSidecarFailure(error)
+		}
+
+		return messages
 	}
 
 	private async addToApiConversationHistory(message: Anthropic.MessageParam, reasoning?: string): Promise<boolean> {
@@ -1529,16 +1836,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return saved
 	}
 
-	private async restoreRemovedApiUserMessage(removedUserMessage: ApiMessage | undefined) {
+	private async restoreRemovedApiUserMessage(removedUserMessage: ApiMessage | undefined): Promise<boolean> {
 		if (!removedUserMessage) {
-			return
+			return true
 		}
 
 		const lastMessage = this.apiConversationHistory[this.apiConversationHistory.length - 1]
 		if (lastMessage !== removedUserMessage) {
 			this.apiConversationHistory.push(removedUserMessage)
-			await this.saveApiConversationHistory()
+			const saved = await this.saveApiConversationHistory()
+			if (!saved) throw new Error("Unable to restore the removed user message before continuing.")
 		}
+		return true
 	}
 
 	private buildUserMessageContent(text?: string, images?: string[]): Anthropic.Messages.ContentBlockParam[] {
@@ -1578,9 +1887,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	// For API requests, consecutive same-role messages are merged via mergeConsecutiveApiMessages()
 	// so rewind/edit behavior can still reference original message boundaries.
 
-	async overwriteApiConversationHistory(newHistory: ApiMessage[]) {
+	async overwriteApiConversationHistory(newHistory: ApiMessage[]): Promise<boolean> {
 		this.apiConversationHistory = newHistory
-		await this.saveApiConversationHistory()
+		return this.saveApiConversationHistory()
 	}
 
 	/**
@@ -1598,7 +1907,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * tools execute (added in recursivelyMakeClineRequests after streaming completes).
 	 * So we usually only need to flush the pending user message with tool_results.
 	 */
-	public async flushPendingToolResultsToHistory(): Promise<boolean> {
+	public async flushPendingToolResultsToHistory(options: { allowAborted?: boolean } = {}): Promise<boolean> {
 		// Only flush if there's actually pending content to save
 		if (this.userMessageContent.length === 0) {
 			return true
@@ -1632,8 +1941,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (!reachedAssistantBoundary) return false
 		}
 
-		// If task was aborted while waiting, don't flush
-		if (this.abort) {
+		// If task was aborted while waiting, don't flush unless this is the terminal
+		// response repair path. That path must close every persisted assistant
+		// tool_use with a deterministic error receipt even when cancellation has
+		// already set the task-wide abort flag.
+		if (this.abort && !options.allowAborted) {
 			return false
 		}
 
@@ -1680,18 +1992,366 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return saved
 	}
 
-	private async saveApiConversationHistory(): Promise<boolean> {
-		try {
-			await saveApiMessages({
-				messages: structuredClone(this.apiConversationHistory),
-				taskId: this.taskId,
-				globalStoragePath: this.globalStoragePath,
-			})
-			return true
-		} catch (error) {
-			console.error("Failed to save API conversation history:", error)
-			return false
+	/**
+	 * Close canonical tool calls when the provider ends a response before tool
+	 * execution can begin.
+	 *
+	 * The assistant boundary is persisted before this method is called. Results
+	 * are staged through the same deduplicating path used by real tool execution
+	 * and flushed as one user message, so a cancelled/failed provider response
+	 * cannot leave an unmatched tool_use in the durable transcript. No tool is
+	 * executed here.
+	 */
+	private async persistUnexecutedTerminalToolResults(
+		response: AgentResponse | undefined,
+		status: Exclude<AgentResponse["outcome"], undefined>["status"] | "failed",
+	): Promise<boolean> {
+		const toolCalls = response?.toolCalls ?? []
+		if (toolCalls.length === 0) return true
+
+		// A result must never be written before its assistant tool_use boundary. A
+		// missing boundary is an unrecoverable persistence failure for this step;
+		// returning false keeps the caller on an explicit non-success outcome.
+		if (!this.assistantMessageSavedToHistory) return false
+
+		const historyToolResultIds = new Set<string>()
+		for (const message of this.apiConversationHistory) {
+			if (message.role !== "user" || !Array.isArray(message.content)) continue
+			for (const block of message.content) {
+				if (block.type === "tool_result") {
+					historyToolResultIds.add(sanitizeToolUseId(block.tool_use_id))
+				}
+			}
 		}
+
+		const pendingToolResultIds = new Set(
+			this.userMessageContent
+				.filter((block): block is Anthropic.ToolResultBlockParam => block.type === "tool_result")
+				.map((block) => sanitizeToolUseId(block.tool_use_id)),
+		)
+		const normalizedToolUseIds = toolCalls.map((toolCall) => sanitizeToolUseId(toolCall.id))
+		if (normalizedToolUseIds.some((toolUseId) => !toolUseId)) return false
+		const receiptContent =
+			status === "cancelled"
+				? "Tool call was not executed because the provider response was cancelled."
+				: status === "failed"
+					? "Tool call was not executed because the provider response failed."
+					: "Tool call was not executed because the provider response was incomplete."
+		const expectedToolResultIds = new Set<string>()
+
+		for (const [index, toolCall] of toolCalls.entries()) {
+			const toolUseId = normalizedToolUseIds[index]!
+			if (historyToolResultIds.has(toolUseId) || pendingToolResultIds.has(toolUseId)) continue
+			expectedToolResultIds.add(toolUseId)
+			this.pushToolResultToUserContent({
+				type: "tool_result",
+				tool_use_id: toolUseId,
+				content: receiptContent,
+				is_error: true,
+			})
+		}
+
+		let transcriptPersisted = false
+		try {
+			transcriptPersisted = await this.flushPendingToolResultsToHistory({ allowAborted: true })
+		} catch (error) {
+			// The canonical lifecycle journal is an independent receipt ledger. A
+			// legacy transcript failure must be reported to the caller, but it must
+			// not prevent us from closing accepted calls in that ledger below.
+			console.error(`[Task#${this.taskId}] Failed to flush terminal tool receipts:`, error)
+		}
+
+		// Treat the persisted transcript, rather than only the in-memory dedupe
+		// set, as the durability check. This also makes the helper safe for direct
+		// continuation/retry callers that invoke it more than once.
+		const persistedIds = new Set<string>()
+		for (const message of this.apiConversationHistory) {
+			if (message.role !== "user" || !Array.isArray(message.content)) continue
+			for (const block of message.content) {
+				if (block.type === "tool_result") persistedIds.add(sanitizeToolUseId(block.tool_use_id))
+			}
+		}
+		const persisted =
+			transcriptPersisted && [...expectedToolResultIds].every((toolUseId) => persistedIds.has(toolUseId))
+		// Always close the canonical call set, even when the legacy transcript
+		// write failed. This keeps the lifecycle reducer terminally consistent;
+		// the false return still promotes the host/task result to a durability
+		// failure so callers cannot mistake the transcript for fully persisted.
+		const resultStatus = status === "cancelled" ? "cancelled" : "error"
+		for (const toolUseId of normalizedToolUseIds) {
+			await this.publishCanonicalLifecycleToolResult(
+				{
+					callId: toolUseId,
+					status: resultStatus,
+					content: receiptContent,
+				},
+				this.currentAgentStep,
+			)
+		}
+		return persisted
+	}
+
+	/** Build the provider-facing assistant boundary directly from accumulator-authoritative output. */
+	private buildCanonicalAssistantHistoryContent(
+		response: AgentResponse,
+	): Array<Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam> {
+		const content: Array<Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam> = []
+		if (response.text) content.push({ type: "text", text: response.text })
+
+		const seenToolUseIds = new Set<string>()
+		for (const toolCall of response.toolCalls) {
+			const id = sanitizeToolUseId(toolCall.id)
+			if (!id || seenToolUseIds.has(id)) continue
+			seenToolUseIds.add(id)
+			content.push({
+				type: "tool_use",
+				id,
+				name: toolCall.name,
+				input: toolCall.arguments,
+			})
+		}
+		return content
+	}
+
+	/**
+	 * Persist a non-success canonical response and close every unexecuted tool
+	 * call. This is shared by explicit provider outcomes and salvage of an
+	 * unexpected throw after semantic output; it never executes a tool.
+	 */
+	private async persistTerminalCanonicalResponse(
+		response: AgentResponse,
+		status: "failed" | "incomplete" | "cancelled",
+		reason: string,
+	): Promise<{
+		assistantPersisted: boolean
+		receiptsPersisted: boolean
+		status: "failed" | "incomplete" | "aborted"
+		reason: string
+		error?: Error
+	}> {
+		const assistantContent = this.buildCanonicalAssistantHistoryContent(response)
+		const hasAssistantBoundary = assistantContent.length > 0 || response.reasoning.length > 0
+		let assistantPersisted = !hasAssistantBoundary
+
+		if (hasAssistantBoundary) {
+			assistantPersisted = await this.persistAssistantResponseBeforeEffects(
+				{ role: "assistant", content: assistantContent },
+				response.reasoning || undefined,
+				response,
+			)
+			if (assistantPersisted) {
+				TelemetryService.instance.captureConversationMessage(this.taskId, "assistant")
+				await this.appendAgentTurnEvent(
+					{ type: "assistant_committed", response },
+					this.currentAgentStep?.snapshot.context,
+				)
+			}
+		}
+
+		const receiptsPersisted =
+			assistantPersisted && (await this.persistUnexecutedTerminalToolResults(response, status))
+		const persistenceFailures = [
+			!assistantPersisted ? "The assistant response could not be durably saved." : undefined,
+			response.toolCalls.length > 0 && !receiptsPersisted
+				? "Terminal tool-result receipts could not be durably saved."
+				: undefined,
+		].filter((message): message is string => Boolean(message))
+		const terminalReason = [reason, ...persistenceFailures].filter(Boolean).join(" ")
+		const persistenceFailed = persistenceFailures.length > 0
+		const taskWasCancelled = this.abort || this.getTaskLifetimeCancellationSignal().aborted
+		const terminalStatus = persistenceFailed
+			? taskWasCancelled
+				? "aborted"
+				: "failed"
+			: status === "cancelled"
+				? "aborted"
+				: status
+		const persistenceError = persistenceFailed ? new Error(persistenceFailures.join(" ")) : undefined
+
+		await this.appendAgentTurnEvent(
+			{
+				type: "response_terminal",
+				status: terminalStatus,
+				reason: terminalReason,
+				retryable: response.outcome?.retryable,
+			},
+			this.currentAgentStep?.snapshot.context,
+		)
+
+		return {
+			assistantPersisted,
+			receiptsPersisted,
+			status: terminalStatus,
+			reason: terminalReason,
+			...(persistenceError ? { error: persistenceError } : {}),
+		}
+	}
+
+	private async saveApiConversationHistory(): Promise<boolean> {
+		// Capture the intended legacy snapshot before entering the queue. Each
+		// caller therefore commits the history state it observed, while calls made
+		// after a later mutation remain ordered behind it and cannot race a write.
+		const messages = structuredClone(this.apiConversationHistory)
+
+		return this.enqueueApiConversationHistoryPersistence(async () => {
+			if (!this.isCurrentApiConversationHistoryOwner()) {
+				// A replacement Task has taken ownership of this task ID. The old
+				// instance must not write its captured snapshot after that handoff.
+				return false
+			}
+			try {
+				// Keep this write first: api_conversation_history.json remains the
+				// provider/runtime source of truth throughout the migration.
+				await saveApiMessages({
+					messages,
+					taskId: this.taskId,
+					globalStoragePath: this.globalStoragePath,
+				})
+			} catch (error) {
+				// Do not create or advance the sidecar when the authoritative write
+				// failed. Returning false keeps callers from executing effects or
+				// acknowledging a turn whose legacy history is not durable.
+				console.error("Failed to save API conversation history:", error)
+				return false
+			}
+
+			try {
+				const receipt = await this.reconcileProviderTranscriptSidecar(messages, true)
+				if (receipt) this.providerTranscriptCommitReceipt = receipt
+				this.providerTranscriptSidecarFailure = undefined
+				return true
+			} catch (error) {
+				// The legacy write succeeded, but a sidecar failure is still reported
+				// as a failed Task persistence boundary. This conservative result is
+				// intentional: callers must retry before exposing effects, while a
+				// later restart can safely backfill from the legacy file.
+				this.recordProviderTranscriptSidecarFailure(error)
+				return false
+			}
+		})
+	}
+
+	/**
+	 * Wait for every legacy/sidecar transcript transaction currently accepted for
+	 * this task ID. Provider replacement/cancellation paths call this before
+	 * exposing a new Task instance so an old snapshot cannot land afterward.
+	 */
+	public async flushApiConversationHistoryPersistence(): Promise<void> {
+		for (;;) {
+			const queued = Task.apiConversationHistorySaveQueues.get(this.apiConversationHistoryPersistenceKey)
+			if (!queued) return
+			await queued
+			if (Task.apiConversationHistorySaveQueues.get(this.apiConversationHistoryPersistenceKey) === queued) return
+		}
+	}
+
+	private isCurrentApiConversationHistoryOwner(): boolean {
+		return (
+			Task.apiConversationHistoryOwnerGenerations.get(this.apiConversationHistoryPersistenceKey) ===
+			this.apiConversationHistoryOwnerGeneration
+		)
+	}
+
+	/** Serialize every legacy/sidecar transcript transaction across Task instances. */
+	private enqueueApiConversationHistoryPersistence<T>(operation: () => Promise<T>): Promise<T> {
+		const previous =
+			Task.apiConversationHistorySaveQueues.get(this.apiConversationHistoryPersistenceKey) ?? Promise.resolve()
+		const queued = previous.then(operation)
+		const settled = queued.then(
+			() => undefined,
+			() => undefined,
+		)
+		Task.apiConversationHistorySaveQueues.set(this.apiConversationHistoryPersistenceKey, settled)
+		this.apiConversationHistorySaveQueue = settled
+		void settled.then(() => {
+			if (Task.apiConversationHistorySaveQueues.get(this.apiConversationHistoryPersistenceKey) === settled) {
+				Task.apiConversationHistorySaveQueues.delete(this.apiConversationHistoryPersistenceKey)
+			}
+		})
+		return queued
+	}
+
+	/**
+	 * Reconcile the sidecar against the legacy snapshot using CAS retries.
+	 * `forceCommit` is used by a real save so even an empty legacy transcript
+	 * receives a durable receipt; open/backfill treats a missing empty sidecar
+	 * as a harmless no-op.
+	 */
+	private async reconcileProviderTranscriptSidecar(
+		messages: ApiMessage[],
+		forceCommit: boolean,
+	): Promise<ProviderTranscriptCommitReceipt | undefined> {
+		const expectedDigest = digestProviderTranscript(messages)
+		let current: Awaited<ReturnType<ProviderTranscriptStore["read"]>>
+		try {
+			current = await this.providerTranscriptStore.read()
+		} catch (error) {
+			// A malformed or digest-invalid sidecar is recoverable because the
+			// legacy transcript is still authoritative. Quarantine the bad envelope
+			// and rebuild it before the next continuation can depend on a receipt.
+			if (
+				error instanceof ProviderTranscriptStoreError &&
+				(error.code === "invalid_envelope" ||
+					error.code === "invalid_messages" ||
+					error.code === "task_mismatch" ||
+					error.code === "digest_mismatch")
+			) {
+				const receipt = await this.providerTranscriptStore.repairFromAuthoritativeTranscript(messages)
+				await this.providerTranscriptStore.verifyCommitReceipt(receipt)
+				return receipt
+			}
+			throw error
+		}
+
+		for (let attempt = 0; attempt < 3; attempt++) {
+			if (!forceCommit && current.revision === 0 && messages.length === 0) return undefined
+
+			if (current.revision > 0 && current.digest === expectedDigest) {
+				const receipt = this.providerTranscriptStore.getLastCommitReceipt()
+				if (!receipt) {
+					throw new ProviderTranscriptStoreError(
+						"receipt_mismatch",
+						`Provider transcript task ${this.taskId} has no receipt for revision ${current.revision}`,
+						this.taskId,
+					)
+				}
+				await this.providerTranscriptStore.verifyCommitReceipt(receipt)
+				return receipt
+			}
+
+			try {
+				const receipt = await this.providerTranscriptStore.commit({
+					messages,
+					expectedRevision: current.revision,
+				})
+				await this.providerTranscriptStore.verifyCommitReceipt(receipt)
+				return receipt
+			} catch (error) {
+				if (!(error instanceof ProviderTranscriptRevisionConflictError) || attempt === 2) throw error
+				// Another Task instance committed the sidecar between read and CAS.
+				// Re-read under the store's verification path and compare again rather
+				// than overwriting a newer transcript blindly.
+				current = await this.providerTranscriptStore.read()
+			}
+		}
+
+		throw new ProviderTranscriptStoreError(
+			"revision_conflict",
+			`Provider transcript task ${this.taskId} could not be reconciled after concurrent commits`,
+			this.taskId,
+		)
+	}
+
+	private recordProviderTranscriptSidecarFailure(error: unknown): void {
+		this.providerTranscriptSidecarFailure =
+			error instanceof ProviderTranscriptStoreError
+				? error
+				: new ProviderTranscriptStoreError(
+						"write_failed",
+						`Provider transcript sidecar failed for task ${this.taskId}: ${error instanceof Error ? error.message : String(error)}`,
+						this.taskId,
+					)
+		console.error(`[Task#${this.taskId}] Failed to reconcile provider transcript sidecar:`, error)
 	}
 
 	/**
@@ -1722,7 +2382,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async persistAssistantResponseBeforeEffects(
 		message: Anthropic.MessageParam,
 		reasoning?: string,
+		response?: AgentResponse,
 	): Promise<boolean> {
+		if (response) {
+			const canonicalMessage = message as Anthropic.MessageParam & {
+				agentResponseItems?: AgentResponseItem[]
+				agentResponseOutcome?: AgentResponse["outcome"]
+			}
+			canonicalMessage.agentResponseItems = response.items.map((item) => ({ ...item }))
+			if (response.outcome) canonicalMessage.agentResponseOutcome = { ...response.outcome }
+		}
 		const saved = await this.addToApiConversationHistory(message, reasoning)
 		if (!saved && !(await this.retrySaveApiConversationHistory())) {
 			this.assistantMessageSavedToHistory = false
@@ -1733,7 +2402,845 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		this.assistantMessageSavedToHistory = true
+		if (response) await this.publishCanonicalLifecycleResponseItems(response, this.currentAgentStep)
+		await this.publishCanonicalLifecyclePendingToolResults(response, this.currentAgentStep)
 		return true
+	}
+
+	/** Execute only the complete, accumulator-authoritative calls from a persisted response. */
+	private async executeCanonicalToolCalls(
+		response: AgentResponse,
+		surface: TaskToolSurface | undefined,
+		mode: string,
+		state: TaskRequestState | undefined,
+		signal: AbortSignal,
+	): Promise<ToolSchedulerOutcome> {
+		if (response.toolCalls.length === 0) {
+			return {
+				status: "completed",
+				results: [],
+				batchSize: 0,
+				parallelBatchCount: 0,
+				parallelToolCount: 0,
+				durationMs: 0,
+				approvalRequestCount: 0,
+				approvalDeniedCount: 0,
+				approvalCancelledCount: 0,
+				supersededAskCount: 0,
+				completedToolResultCount: 0,
+				outputTruncatedCount: 0,
+			}
+		}
+		const failedBeforeScheduler = async (error: unknown): Promise<ToolSchedulerOutcome> => {
+			const message = error instanceof Error ? error.message : String(error)
+			const content = `Tool call was not executed because tool execution could not start: ${message}`
+			const results: ToolSchedulerResult[] = response.toolCalls.map((call) => ({
+				callId: call.id,
+				name: call.name,
+				status: "error",
+				content: formatResponse.toolError(content),
+				executionStatus: "error",
+				durationMs: 0,
+			}))
+			for (const result of results) {
+				this.pushToolResultToUserContent({
+					type: "tool_result",
+					tool_use_id: sanitizeToolUseId(result.callId),
+					content,
+					is_error: true,
+				})
+				await this.publishCanonicalLifecycleToolResult(
+					{ callId: result.callId, status: result.status, content: result.content },
+					this.currentAgentStep,
+				)
+			}
+			this.userMessageContentReady = true
+			const persisted = await this.flushPendingToolResultsToHistory({ allowAborted: true })
+			const failureMessage = persisted ? message : `${message} Tool-result receipts could not be durably saved.`
+			return {
+				status: "failed",
+				results,
+				batchSize: results.length,
+				parallelBatchCount: 0,
+				parallelToolCount: 0,
+				durationMs: 0,
+				approvalRequestCount: 0,
+				approvalDeniedCount: 0,
+				approvalCancelledCount: 0,
+				supersededAskCount: 0,
+				completedToolResultCount: results.length,
+				outputTruncatedCount: 0,
+				failure: { kind: "effect_fence", callId: response.toolCalls[0]!.id, message: failureMessage },
+			}
+		}
+		if (!surface) {
+			const error = new Error("A captured tool surface is required before executing provider tool calls.")
+			return failedBeforeScheduler(error)
+		}
+		try {
+			await this.assertCurrentProviderTranscriptBeforeEffects()
+		} catch (error) {
+			return failedBeforeScheduler(error)
+		}
+
+		const scheduler = new ToolScheduler({
+			task: this,
+			registry: surface.registry,
+			policy: surface.policy,
+			mode,
+			customModes: state?.customModes,
+			experiments: state?.experiments,
+			disabledTools: state?.disabledTools,
+			includedTools: this.getTaskAllowedToolNames() ? [...this.getTaskAllowedToolNames()!] : undefined,
+			signal,
+			executionMode: "serial",
+			preserveAbortedResults: true,
+			beforeEffect: async () => this.assertCurrentProviderTranscriptBeforeEffects(),
+			onEvent: async (event: AgentTurnEvent) => {
+				await this.appendAgentTurnEvent(event)
+				await this.publishCanonicalLifecycleSchedulerEvent(event)
+			},
+		})
+		try {
+			const outcome = await scheduler.run(response)
+			// abortOutcome fills deterministic cancelled results without invoking the
+			// scheduler event callback. Reconcile the complete result set here so every
+			// accepted canonical call has a terminal lifecycle receipt before the turn
+			// can close; the helper is idempotent for normal callback-delivered results.
+			const returnedCallIds = new Set<string>()
+			for (const result of outcome.results) {
+				const callId = sanitizeToolUseId(result.callId)
+				if (callId) returnedCallIds.add(callId)
+				await this.publishCanonicalLifecycleToolResult(
+					{ callId: result.callId, status: result.status, content: result.content },
+					this.currentAgentStep,
+				)
+			}
+			// A scheduler implementation must return one result per accepted call.
+			// Close any omitted calls before the turn-terminal event instead of
+			// allowing the reducer to strand the turn in progress.
+			for (const call of response.toolCalls) {
+				if (returnedCallIds.has(sanitizeToolUseId(call.id))) continue
+				await this.publishCanonicalLifecycleToolResult(
+					{
+						callId: call.id,
+						status: outcome.status === "aborted" ? "cancelled" : "error",
+						content:
+							outcome.status === "aborted"
+								? "Tool call was not executed because the task was cancelled."
+								: "Tool call did not produce a scheduler result.",
+					},
+					this.currentAgentStep,
+				)
+			}
+			if (outcome.status === "failed") {
+				// The scheduler stages its complete truthful result set (including
+				// successful earlier calls and deterministic failures for blocked calls).
+				// Persist that exact batch before the failed turn can terminate.
+				const persisted = await this.flushPendingToolResultsToHistory({ allowAborted: true })
+				if (!persisted && outcome.failure) {
+					outcome.failure.message = `${outcome.failure.message} Tool-result receipts could not be durably saved.`
+				}
+			}
+			return outcome
+		} catch (error) {
+			// Unexpected host failures still close the durable provider transcript;
+			// known per-call fence failures return a richer truthful failed outcome
+			// directly from ToolScheduler above.
+			return failedBeforeScheduler(error)
+		}
+	}
+
+	/**
+	 * The assistant history write and its provider sidecar receipt form the
+	 * effect fence. Verify both the receipt and the exact in-memory snapshot
+	 * immediately before the scheduler (and again before each tool) starts.
+	 */
+	private async assertCurrentProviderTranscriptBeforeEffects(): Promise<void> {
+		if (!this.assistantMessageSavedToHistory) {
+			throw new Error("Cannot execute tool effects before the assistant transcript is persisted.")
+		}
+		const receipt = this.providerTranscriptCommitReceipt
+		if (!receipt) {
+			throw new Error("Cannot execute tool effects without a provider transcript commit receipt.")
+		}
+		const expectedDigest = digestProviderTranscript(this.apiConversationHistory)
+		if (receipt.digest !== expectedDigest) {
+			throw new Error("Provider transcript receipt is stale relative to the current assistant history.")
+		}
+		const envelope = await this.providerTranscriptStore.verifyCommitReceipt(receipt)
+		if (envelope.digest !== expectedDigest) {
+			throw new Error("Provider transcript changed after the assistant persistence boundary.")
+		}
+	}
+
+	private async appendAgentTurnEvent(event: AgentTurnEvent, context?: StepContext): Promise<void> {
+		try {
+			await this.agentTurnEventLog.append(event, context ?? this.currentAgentStep?.snapshot.context)
+		} catch (error) {
+			// Event telemetry is additive to the legacy task contract. A telemetry
+			// write must not turn a successful provider/tool step into a task failure.
+			console.error(`[Task#${this.taskId}] Failed to append agent turn event:`, error)
+		}
+	}
+
+	/**
+	 * Publish an explicit provider-neutral lifecycle event at a real Task
+	 * boundary. AgentTurnEventLog remains additive telemetry; it is deliberately
+	 * not converted into canonical events because it lacks durable identity and
+	 * item/transition semantics.
+	 */
+	private enqueueCanonicalLifecycleEvent(
+		type: AgentLifecycleEventInput["type"],
+		payload: Record<string, unknown>,
+		stepId?: string,
+	): Promise<void> {
+		const operation = this.canonicalLifecycleQueue.then(async () => {
+			const provider = this.providerRef.deref() as
+				| (ClineProvider & {
+						publishAgentLifecycleEvent?: (
+							value: unknown,
+						) => Promise<{ accepted?: boolean; error?: unknown }>
+				  })
+				| undefined
+			if (!provider || !this.agentRunId || !this.agentTurnId) return
+			if (typeof provider.publishAgentLifecycleEvent !== "function") return
+			const current = this.getCanonicalLifecycleSnapshot()
+			if (
+				type !== "turn_started" &&
+				current?.runId === this.agentRunId &&
+				current.turnId === this.agentTurnId &&
+				current.status !== "in_progress"
+			)
+				return
+			const event = {
+				version: 1,
+				eventId: crypto.randomUUID(),
+				taskId: this.taskId,
+				runId: this.agentRunId,
+				turnId: this.agentTurnId,
+				occurredAt: Date.now(),
+				type,
+				...(stepId ? { stepId } : {}),
+				payload,
+			} as AgentLifecycleEventInput
+			const result = await provider.publishAgentLifecycleEvent(event)
+			if (!result.accepted) {
+				const error =
+					result.error instanceof Error
+						? result.error
+						: new Error(
+								result.error === undefined
+									? `Lifecycle event ${type} was not accepted.`
+									: String(result.error),
+							)
+				this.canonicalLifecyclePersistenceFailure ??= { type, error }
+				this.notifyCanonicalLifecyclePersistenceFailure()
+				console.error(`[Task#${this.taskId}] Canonical lifecycle event was not accepted: ${type}`, error)
+			}
+		})
+		this.canonicalLifecycleQueue = operation.catch((error) => {
+			const normalizedError = error instanceof Error ? error : new Error(String(error))
+			this.canonicalLifecyclePersistenceFailure ??= { type, error: normalizedError }
+			this.notifyCanonicalLifecyclePersistenceFailure()
+			console.error(`[Task#${this.taskId}] Failed to publish canonical lifecycle event:`, error)
+		})
+		return this.canonicalLifecycleQueue
+	}
+
+	/** Surface the additive canonical failure without changing legacy task flow. */
+	private notifyCanonicalLifecyclePersistenceFailure(): void {
+		const provider = this.providerRef.deref() as
+			| (Partial<ClineProvider> & {
+					markAgentLifecycleDegraded?: (taskId: string, error: Error, reason?: string) => unknown
+			  })
+			| undefined
+		const failure = this.canonicalLifecyclePersistenceFailure
+		if (!failure || typeof provider?.markAgentLifecycleDegraded !== "function") return
+		provider.markAgentLifecycleDegraded(this.taskId, failure.error, "append_rejected")
+	}
+
+	/**
+	 * Task tests and older host adapters may expose only the legacy provider
+	 * surface. Keep the canonical lifecycle additive at that boundary while the
+	 * production ClineProvider still supplies the full journal/projector API.
+	 */
+	private getCanonicalLifecycleSnapshot() {
+		const provider = this.providerRef.deref() as Partial<ClineProvider> | undefined
+		return typeof provider?.getAgentLifecycleSnapshot === "function"
+			? provider.getAgentLifecycleSnapshot(this.taskId)
+			: undefined
+	}
+
+	private async replayCanonicalLifecycle(): Promise<void> {
+		const provider = this.providerRef.deref() as Partial<ClineProvider> | undefined
+		if (typeof provider?.replayAgentLifecycle === "function") {
+			await provider.replayAgentLifecycle(this.taskId)
+		}
+	}
+
+	/**
+	 * Start one AgentTurnEngine run. On reload, replay first and continue an
+	 * existing in-progress identity; after terminality, allocate a fresh run and
+	 * turn so the task journal can begin a new local sequence at one.
+	 */
+	private async beginCanonicalLifecycleTurn(): Promise<void> {
+		try {
+			await this.replayCanonicalLifecycle()
+		} catch (error) {
+			// Lifecycle recovery is additive to the legacy loop. The publisher will
+			// report a durable failure if recovery is unavailable; do not prevent the
+			// existing Task from retaining its historical behavior.
+			const provider = this.providerRef.deref() as
+				| (Partial<ClineProvider> & {
+						markAgentLifecycleDegraded?: (taskId: string, error: Error, reason?: string) => unknown
+				  })
+				| undefined
+			if (typeof provider?.markAgentLifecycleDegraded === "function") {
+				provider.markAgentLifecycleDegraded(
+					this.taskId,
+					error instanceof Error ? error : new Error(String(error)),
+					"replay_rejected",
+				)
+			}
+			console.error(`[Task#${this.taskId}] Failed to replay canonical lifecycle:`, error)
+		}
+		const recovered = this.getCanonicalLifecycleSnapshot()
+		const resumeExistingTurn = recovered?.status === "in_progress"
+		this.agentRunId = resumeExistingTurn && recovered ? recovered.runId : crypto.randomUUID()
+		this.agentTurnId = resumeExistingTurn && recovered ? recovered.turnId : crypto.randomUUID()
+		this.agentTurnStep =
+			resumeExistingTurn && recovered
+				? recovered.steps.reduce((highest, step) => {
+						const prefix = `${recovered.turnId}:step-`
+						if (!step.stepId.startsWith(prefix)) return highest
+						const suffix = Number(step.stepId.slice(prefix.length))
+						return Number.isSafeInteger(suffix) && suffix > highest ? suffix : highest
+					}, recovered.steps.length)
+				: 0
+		this.canonicalLifecycleStartedSteps.clear()
+		// A restarted Task may be resuming an already-open canonical turn. Its
+		// durable turn_started event is already in the journal; emitting another
+		// event would add a meaningless transition and duplicate UI work.
+		if (!resumeExistingTurn) await this.enqueueCanonicalLifecycleEvent("turn_started", { phase: "starting" })
+	}
+
+	private async publishCanonicalLifecyclePhase(
+		phase: "working" | "executing" | "waiting" | "finalizing",
+	): Promise<void> {
+		await this.enqueueCanonicalLifecycleEvent("phase_changed", { phase })
+	}
+
+	private async ensureCanonicalLifecycleStepStarted(step: CurrentAgentStep): Promise<void> {
+		if (this.canonicalLifecycleStartedSteps.has(step.stepId)) return
+		const recovered = this.getCanonicalLifecycleSnapshot()
+		if (
+			recovered &&
+			recovered.runId === this.agentRunId &&
+			recovered.turnId === this.agentTurnId &&
+			recovered.steps.some((candidate) => candidate.stepId === step.stepId)
+		) {
+			this.canonicalLifecycleStartedSteps.add(step.stepId)
+			return
+		}
+		this.canonicalLifecycleStartedSteps.add(step.stepId)
+		await this.enqueueCanonicalLifecycleEvent("step_started", { phase: "working" }, step.stepId)
+	}
+
+	private async publishCanonicalLifecycleStepStatus(
+		step: CurrentAgentStep | undefined,
+		status: TaskStepStatus,
+		reason?: string,
+	): Promise<void> {
+		if (!step) return
+		const recovered = this.getCanonicalLifecycleSnapshot()
+		const previous = recovered?.steps.find((candidate) => candidate.stepId === step.stepId)
+		if (previous && previous.status !== "in_progress") return
+		const canonicalStatus =
+			status === "completed"
+				? "completed"
+				: status === "failed" || status === "exhausted"
+					? "failed"
+					: "interrupted"
+		await this.enqueueCanonicalLifecycleEvent(
+			"step_status_changed",
+			{
+				status: canonicalStatus,
+				...(reason ? { reason } : {}),
+			},
+			step.stepId,
+		)
+	}
+
+	private async publishCanonicalLifecycleResponseItems(
+		response: AgentResponse,
+		step: CurrentAgentStep | undefined,
+	): Promise<void> {
+		if (!step) return
+		for (const [index, responseItem] of response.items.entries()) {
+			const itemId = `${step.stepId}:item-${index}`
+			const recovered = this.getCanonicalLifecycleSnapshot()
+			if (
+				recovered &&
+				recovered.runId === this.agentRunId &&
+				recovered.turnId === this.agentTurnId &&
+				recovered.items.some((item) => item.itemId === itemId)
+			)
+				continue
+
+			switch (responseItem.type) {
+				case "text":
+					await this.enqueueCanonicalLifecycleEvent(
+						"item_added",
+						{ item: { itemId, stepId: step.stepId, type: "assistant_text", text: responseItem.text } },
+						step.stepId,
+					)
+					break
+				case "reasoning":
+					await this.enqueueCanonicalLifecycleEvent(
+						"item_added",
+						{ item: { itemId, stepId: step.stepId, type: "assistant_reasoning", text: responseItem.text } },
+						step.stepId,
+					)
+					break
+				case "tool_call": {
+					const toolCallId = sanitizeToolUseId(responseItem.id)
+					if (!toolCallId) break
+					await this.enqueueCanonicalLifecycleEvent(
+						"tool_call_accepted",
+						{
+							item: {
+								itemId,
+								stepId: step.stepId,
+								type: "tool_call",
+								toolCallId,
+								name: responseItem.name,
+								arguments: responseItem.arguments,
+								status: "accepted",
+								accepted: true,
+							},
+						},
+						step.stepId,
+					)
+					break
+				}
+				case "usage":
+					await this.enqueueCanonicalLifecycleEvent(
+						"item_added",
+						{
+							item: {
+								itemId,
+								stepId: step.stepId,
+								type: "usage",
+								inputTokens: responseItem.inputTokens,
+								outputTokens: responseItem.outputTokens,
+								...(responseItem.cacheReadTokens !== undefined
+									? { cacheReadTokens: responseItem.cacheReadTokens }
+									: {}),
+								...(responseItem.cacheWriteTokens !== undefined
+									? { cacheWriteTokens: responseItem.cacheWriteTokens }
+									: {}),
+								...(responseItem.reasoningTokens !== undefined
+									? { reasoningTokens: responseItem.reasoningTokens }
+									: {}),
+								...(responseItem.totalCost !== undefined ? { cost: responseItem.totalCost } : {}),
+							},
+						},
+						step.stepId,
+					)
+					break
+				case "error":
+					await this.enqueueCanonicalLifecycleEvent(
+						"item_added",
+						{
+							item: {
+								itemId,
+								stepId: step.stepId,
+								type: "error",
+								message: responseItem.message,
+								...(responseItem.code ? { code: responseItem.code } : {}),
+								...(responseItem.retryable !== undefined ? { retryable: responseItem.retryable } : {}),
+							},
+						},
+						step.stepId,
+					)
+					break
+				case "grounding":
+					// Grounding sources are provider metadata, not user-visible lifecycle
+					// items. They remain in the canonical response/transcript boundary.
+					break
+			}
+		}
+	}
+
+	private async publishCanonicalLifecycleToolResult(
+		result: { callId: string; status: string; content: unknown },
+		step: CurrentAgentStep | undefined,
+	): Promise<void> {
+		if (!step) return
+		const toolCallId = sanitizeToolUseId(result.callId)
+		if (!toolCallId) return
+		const itemId = `${step.stepId}:tool-result-${toolCallId}`
+		const recovered = this.getCanonicalLifecycleSnapshot()
+		if (
+			recovered &&
+			recovered.runId === this.agentRunId &&
+			recovered.turnId === this.agentTurnId &&
+			(recovered.terminalToolCallIds.includes(toolCallId) ||
+				recovered.items.some((item) => item.itemId === itemId))
+		)
+			return
+		const status = ["success", "error", "denied", "cancelled"].includes(result.status) ? result.status : "error"
+		await this.enqueueCanonicalLifecycleEvent(
+			"tool_result_recorded",
+			{
+				item: {
+					itemId,
+					stepId: step.stepId,
+					type: "tool_result",
+					toolCallId,
+					status,
+					output: result.content,
+				},
+			},
+			step.stepId,
+		)
+	}
+
+	/** Publish synthetic/manual receipts after the assistant boundary exists. */
+	private async publishCanonicalLifecyclePendingToolResults(
+		response: AgentResponse | undefined,
+		step: CurrentAgentStep | undefined,
+	): Promise<void> {
+		if (!step) return
+		const responseCallIds = response
+			? new Set(response.toolCalls.map((call) => sanitizeToolUseId(call.id)))
+			: undefined
+		for (const block of this.userMessageContent) {
+			if (block.type !== "tool_result") continue
+			const callId = sanitizeToolUseId(block.tool_use_id)
+			if (!callId || (responseCallIds && !responseCallIds.has(callId))) continue
+			await this.publishCanonicalLifecycleToolResult(
+				{
+					callId,
+					status: block.is_error ? "error" : "success",
+					content: block.content,
+				},
+				step,
+			)
+		}
+	}
+
+	private async finishCanonicalLifecycleCancellation(reason: string): Promise<void> {
+		if (!this.providerRef.deref()) return
+		// An accepted call can still be queued behind a delayed journal append when
+		// cancellation wins. Replay only after every Task-owned publication has
+		// settled so recovery sees the complete set that needs terminal receipts.
+		await this.canonicalLifecycleQueue
+		try {
+			await this.replayCanonicalLifecycle()
+		} catch (error) {
+			console.error(`[Task#${this.taskId}] Failed to replay lifecycle before cancellation:`, error)
+		}
+		const snapshot = this.getCanonicalLifecycleSnapshot()
+		if (!snapshot || snapshot.status !== "in_progress") return
+		this.agentRunId = snapshot.runId
+		this.agentTurnId = snapshot.turnId
+		for (const approval of snapshot.items) {
+			if (approval.type !== "approval" || approval.status !== "requested") continue
+			await this.enqueueCanonicalLifecycleEvent(
+				"approval_resolved",
+				{
+					item: {
+						...approval,
+						status: "cancelled",
+						reason,
+					},
+				},
+				approval.stepId,
+			)
+		}
+		for (const toolCallId of snapshot.acceptedToolCallIds) {
+			if (snapshot.terminalToolCallIds.includes(toolCallId)) continue
+			const callItem = snapshot.items.find((item) => item.type === "tool_call" && item.toolCallId === toolCallId)
+			if (!callItem || callItem.type !== "tool_call") continue
+			const stepId = callItem.stepId ?? `${snapshot.turnId}:recovery`
+			const itemId = `${stepId}:tool-result-${toolCallId}`
+			await this.enqueueCanonicalLifecycleEvent(
+				"tool_result_recorded",
+				{
+					item: {
+						itemId,
+						stepId,
+						type: "tool_result",
+						toolCallId,
+						status: "cancelled",
+						output: "Tool call was not executed because the task was cancelled.",
+					},
+				},
+				stepId,
+			)
+		}
+		await this.enqueueCanonicalLifecycleEvent("turn_terminal", { status: "interrupted", reason })
+	}
+
+	private async publishCanonicalLifecycleSchedulerEvent(event: AgentTurnEvent): Promise<void> {
+		const step = this.currentAgentStep
+		if (!step) return
+		if (event.type === "tool_result") {
+			await this.publishCanonicalLifecycleToolResult(
+				{ callId: event.callId, status: event.status, content: event.output },
+				step,
+			)
+			return
+		}
+		if (event.type === "approval_request") {
+			const approvalId = event.requestId
+			const itemId = `${step.stepId}:approval-${approvalId}`
+			const recovered = this.getCanonicalLifecycleSnapshot()
+			if (
+				recovered &&
+				recovered.runId === this.agentRunId &&
+				recovered.turnId === this.agentTurnId &&
+				recovered.items.some((item) => item.itemId === itemId)
+			)
+				return
+			await this.enqueueCanonicalLifecycleEvent(
+				"approval_requested",
+				{
+					item: {
+						itemId,
+						stepId: step.stepId,
+						type: "approval",
+						approvalId,
+						...(event.callId ? { toolCallId: sanitizeToolUseId(event.callId) } : {}),
+						status: "requested",
+					},
+				},
+				step.stepId,
+			)
+			return
+		}
+		if (event.type === "approval_result") {
+			const approvalId = event.requestId
+			const itemId = `${step.stepId}:approval-${approvalId}`
+			const recovered = this.getCanonicalLifecycleSnapshot()
+			const existing =
+				recovered && recovered.runId === this.agentRunId && recovered.turnId === this.agentTurnId
+					? recovered.items.find(
+							(item) =>
+								item.type === "approval" && item.itemId === itemId && item.approvalId === approvalId,
+						)
+					: undefined
+			if (existing?.type === "approval" && existing.status !== "requested") return
+			await this.enqueueCanonicalLifecycleEvent(
+				"approval_resolved",
+				{
+					item: {
+						itemId,
+						stepId: step.stepId,
+						type: "approval",
+						approvalId,
+						...(existing?.type === "approval" && existing.toolCallId
+							? { toolCallId: existing.toolCallId }
+							: {}),
+						status: event.decision,
+						...(event.reason ? { reason: event.reason } : {}),
+					},
+				},
+				step.stepId,
+			)
+		}
+	}
+
+	private async finishCanonicalLifecycleTurn(outcome: AgentTurnOutcome): Promise<void> {
+		const status =
+			outcome.status === "completed"
+				? "completed"
+				: outcome.status === "failed" || outcome.status === "exhausted"
+					? "failed"
+					: "interrupted"
+		await this.enqueueCanonicalLifecycleEvent("phase_changed", { phase: "finalizing" })
+		await this.enqueueCanonicalLifecycleEvent("turn_terminal", {
+			status,
+			...("reason" in outcome && outcome.reason ? { reason: outcome.reason } : {}),
+			...("error" in outcome && outcome.error !== undefined
+				? { error: outcome.error instanceof Error ? outcome.error.message : String(outcome.error) }
+				: {}),
+		})
+	}
+
+	/**
+	 * Capture the model-visible request boundary once all request inputs have been
+	 * assembled. Transport retries derive a retry snapshot so the context ID and
+	 * captured prompt/transcript/tool surface stay stable.
+	 */
+	private captureAgentStep(
+		retryAttempt: number,
+		systemPrompt: string,
+		cleanConversationHistory: readonly Anthropic.Messages.MessageParam[],
+		allTools: OpenAI.Chat.ChatCompletionTool[],
+		allowedFunctionNames: string[] | undefined,
+		metadata: ApiHandlerCreateMessageMetadata,
+		mode: string,
+		modelInfo: ModelInfo,
+		surface: TaskToolSurface | undefined,
+	): CurrentAgentStep {
+		if (!surface) {
+			throw new Error("A unified tool surface is required to capture an agent step.")
+		}
+
+		const turnId = this.agentTurnId ?? (this.agentTurnId = crypto.randomUUID())
+		const requestId = this.currentAgentStep?.requestId ?? metadata.requestId ?? crypto.randomUUID()
+		const attemptId = metadata.attemptId ?? crypto.randomUUID()
+
+		if (this.currentAgentStep) {
+			const retrySnapshot = this.agentStepContextBuilder.retry(this.currentAgentStep.snapshot, {
+				retryAttempt: Math.max(retryAttempt, this.currentAgentStep.snapshot.context.retryAttempt),
+			})
+			this.currentAgentStep = {
+				...this.currentAgentStep,
+				snapshot: retrySnapshot,
+				attemptId,
+			}
+			return this.currentAgentStep
+		}
+
+		this.agentTurnStep += 1
+		const { signal: _requestSignal, ...capturedMetadata } = metadata
+		const snapshot = this.agentStepContextBuilder.build(
+			{
+				kind: "agent",
+				retryAttempt,
+				task: {
+					taskId: this.taskId,
+					cwd: this.cwd,
+					...(this.rootTaskId ? { rootTaskId: this.rootTaskId } : {}),
+					...(this.parentTaskId ? { parentTaskId: this.parentTaskId } : {}),
+				},
+				mode: { slug: mode },
+				provider: {
+					apiProvider: this.apiConfiguration.apiProvider,
+					apiProtocol: getApiProtocol(
+						this.apiConfiguration.apiProvider && !isRetiredProvider(this.apiConfiguration.apiProvider)
+							? this.apiConfiguration.apiProvider
+							: undefined,
+						this.api.getModel().id,
+					),
+					modelId: this.api.getModel().id,
+					modelInfo,
+					options: (this.apiConfiguration ?? {}) as Record<string, unknown>,
+				},
+				instructions: {
+					systemPrompt,
+					sources: [],
+				},
+				environment: { roots: [this.cwd], capabilities: [] },
+				transcript: {
+					messages: structuredClone(cleanConversationHistory) as ApiMessage[],
+					boundary: {
+						startIndex: 0,
+						endIndex: cleanConversationHistory.length,
+						messageCount: cleanConversationHistory.length,
+						digest: "",
+					},
+				},
+				tools: {
+					schemas: structuredClone(surface.schemas) as OpenAI.Chat.ChatCompletionTool[],
+					...(allowedFunctionNames ? { allowedFunctionNames: [...allowedFunctionNames] } : {}),
+					toolChoice: metadata.tool_choice,
+					parallelToolCalls: metadata.parallelToolCalls ?? true,
+					digest: surface.digest,
+				},
+				policy: surface.policy,
+				budget: {
+					contextWindow: modelInfo.contextWindow,
+					maxOutputTokens: getModelMaxOutputTokens({
+						modelId: this.api.getModel().id,
+						model: modelInfo,
+						settings: this.apiConfiguration,
+					}),
+					compaction: { action: "none", attempted: false },
+				},
+				request: {
+					metadata: {
+						...capturedMetadata,
+						taskId: this.taskId,
+						mode,
+						requestId,
+						attemptId,
+					},
+				},
+			},
+			{ handler: this.api },
+		)
+
+		this.currentAgentStep = {
+			snapshot,
+			turnId,
+			stepId: `${turnId}:step-${this.agentTurnStep}`,
+			requestId,
+			attemptId,
+			surface,
+		}
+		return this.currentAgentStep
+	}
+
+	private async flushAgentTurnEvents(): Promise<void> {
+		try {
+			await this.agentTurnEventLog.flush()
+		} catch (error) {
+			console.error(`[Task#${this.taskId}] Failed to flush agent turn events:`, error)
+		}
+	}
+
+	private retryAfterMs(error: unknown): number | undefined {
+		const candidate = error as {
+			retryAfterMs?: unknown
+			errorDetails?: Array<{ [key: string]: unknown }>
+		}
+		if (typeof candidate?.retryAfterMs === "number") return candidate.retryAfterMs
+		const retryInfo = candidate?.errorDetails?.find(
+			(detail) => detail["@type"] === "type.googleapis.com/google.rpc.RetryInfo",
+		)
+		const retryDelay = retryInfo?.retryDelay
+		if (typeof retryDelay === "string") {
+			const match = retryDelay.match(/^(\d+(?:\.\d+)?)s$/)
+			if (match) return Math.ceil(Number(match[1]) * 1000)
+		}
+		return undefined
+	}
+
+	private retryCategoryForError(error: unknown, fallback: AgentRetryCategory = "transport"): AgentRetryCategory {
+		const candidate = error as { retryCategory?: unknown; status?: unknown; statusCode?: unknown }
+		if (
+			candidate?.retryCategory === "transport" ||
+			candidate?.retryCategory === "rate-limit" ||
+			candidate?.retryCategory === "context" ||
+			candidate?.retryCategory === "empty-response"
+		) {
+			return candidate.retryCategory
+		}
+		if (checkContextWindowExceededError(error)) return "context"
+		if (candidate?.status === 429 || candidate?.statusCode === 429) return "rate-limit"
+		return fallback
+	}
+
+	private async waitForRetryDecision(decision: AgentRetryDecision, error: unknown): Promise<void> {
+		const message = error instanceof Error ? error.message : String(error)
+		await this.appendAgentTurnEvent({
+			type: "retry",
+			attempt: decision.attempt,
+			reason: message,
+			delayMs: decision.delayMs,
+		})
+		if (decision.delayMs <= 0) return
+
+		const headerText = message ? `${message}\n` : ""
+		const seconds = Math.max(1, Math.ceil(decision.delayMs / 1000))
+		await this.say("api_req_retry_delayed", `${headerText}<retry_timer>${seconds}</retry_timer>`, undefined, true)
+		await delayWithAbort(decision.delayMs, this.getTaskLifetimeCancellationSignal())
+		await this.say("api_req_retry_delayed", headerText, undefined, false)
 	}
 
 	// Alpha Messages
@@ -3504,7 +5011,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	public async condenseContext(): Promise<void> {
 		// CRITICAL: Flush any pending tool results before condensing
 		// to ensure tool_use/tool_result pairs are complete in history
-		await this.flushPendingToolResultsToHistory()
+		if (!(await this.flushPendingToolResultsToHistory())) {
+			throw new Error("Unable to persist pending tool results before condensing context.")
+		}
 
 		// Get condensing configuration
 		const state = await this.providerRef.deref()?.getState()
@@ -3587,7 +5096,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			)
 			return
 		}
-		await this.overwriteApiConversationHistory(messages)
+		if (!(await this.overwriteApiConversationHistory(messages))) {
+			throw new Error("Unable to persist condensed conversation history before continuing.")
+		}
 
 		const contextCondense: ContextCondense = {
 			summary,
@@ -3621,10 +5132,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		options: {
 			isNonInteractive?: boolean
 			stateUpdate?: "full" | "task"
+			previewEpoch?: number
 		} = {},
 		contextCondense?: ContextCondense,
 		contextTruncation?: ContextTruncation,
 	): Promise<undefined> {
+		if (options.previewEpoch !== undefined && !this.isStreamingPreviewEpochCurrent(options.previewEpoch)) {
+			return undefined
+		}
 		if (this.abort) {
 			throw new Error(`[RooCode#say] task ${this.taskId}.${this.instanceId} aborted`)
 		}
@@ -3646,7 +5161,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					lastMessage.images = images
 					lastMessage.partial = partial
 					lastMessage.progressStatus = progressStatus
-					this.updateClineMessage(lastMessage)
+					await this.updateClineMessage(lastMessage).catch((error) => {
+						console.error(`[Task#${this.taskId}] Failed to update partial message:`, error)
+					})
 				} else {
 					// This is a new partial message, so add it with partial state.
 					const sayTs = Date.now()
@@ -3690,7 +5207,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					await this.saveClineMessages()
 
 					// More performant than an entire `postStateToWebview`.
-					this.updateClineMessage(lastMessage)
+					await this.updateClineMessage(lastMessage).catch((error) => {
+						console.error(`[Task#${this.taskId}] Failed to update completed message:`, error)
+					})
 				} else {
 					// This is a new and complete message, so add it like normal.
 					const sayTs = Date.now()
@@ -3961,6 +5480,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (this.taskKind !== "subagent") throw new Error("Only a managed sub-agent can accept a follow-up task")
 		if (!instruction) throw new Error("A follow-up instruction is required")
 		if (this.isTaskLoopActive || this.isStreaming) throw new Error("The sub-agent is still running")
+		await this.prepareForRetainedLifecycle()
 
 		this._started = true
 		this.didComplete = false
@@ -3975,7 +5495,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.skipPrevResponseIdOnce = true
 		this.emit(RooCodeEventName.TaskActive, this.taskId)
 
-		await this.resumeTaskFromHistory(instruction, onPersisted)
+		const lifecycle = this.resumeTaskFromHistory(instruction, onPersisted)
+		await this.ownBackgroundLifecycle("resume", lifecycle)
 	}
 
 	private async resumeTaskFromHistory(
@@ -3983,6 +5504,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		onSubagentSteeringPersisted?: () => Promise<void> | void,
 	) {
 		try {
+			// A resumed task may have a final legacy/sidecar write queued by the
+			// preceding turn. Join it before reading and rewriting the transcript so
+			// resume cannot base its next request on an older snapshot.
+			await this.flushApiConversationHistoryPersistence()
 			const modifiedClineMessages = await this.getSavedClineMessages()
 
 			// Remove any resume messages that may have been added before.
@@ -4207,7 +5732,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				})
 			}
 
-			await this.overwriteApiConversationHistory(modifiedApiConversationHistory)
+			if (!(await this.overwriteApiConversationHistory(modifiedApiConversationHistory))) {
+				throw new Error("Unable to persist resumed conversation history before continuing.")
+			}
 
 			// Task resuming from history item.
 			await this.initiateTaskLoop(newUserContent, onSubagentSteeringPersisted)
@@ -4253,6 +5780,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		const abortPromise = this.performAbortTask()
 		this.abortTaskPromise = abortPromise
+		const terminationPromise = this.finalizeTerminationAfterAbort(abortPromise)
+		this.taskTerminationPromise = terminationPromise
+		// The explicit waitForTermination boundary observes this promise. Attach a
+		// handler immediately as well so a caller that only requests cancellation
+		// cannot create an unhandled rejection while the host is unwinding.
+		void terminationPromise.catch(() => undefined)
 		// Coalesce one in-flight transition, but let an operator retry process
 		// cleanup after an observable failure instead of caching a rejection forever.
 		void abortPromise.catch(() => {
@@ -4261,10 +5794,68 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return abortPromise
 	}
 
+	private async finalizeTerminationAfterAbort(abortPromise: Promise<void>): Promise<void> {
+		let firstFailure: unknown
+		const captureFailure = (error: unknown) => {
+			firstFailure ??= error
+		}
+
+		try {
+			await abortPromise
+		} catch (error) {
+			captureFailure(error)
+		}
+		try {
+			await this.waitForOwnedLifecycle()
+		} catch (error) {
+			captureFailure(error)
+		}
+
+		// Tool results may be staged after the assistant tool_use is durable but
+		// before the next continuation writes its user message. Join the producer
+		// first, then publish and persist the complete staged batch before allowing a
+		// replacement Task to read history.
+		const hasPendingToolResults = this.userMessageContent.some((block) => block.type === "tool_result")
+		if (hasPendingToolResults) {
+			try {
+				await this.publishCanonicalLifecyclePendingToolResults(this.currentAgentResponse, this.currentAgentStep)
+				if (!(await this.flushPendingToolResultsToHistory({ allowAborted: true }))) {
+					throw new Error("Pending tool-result receipts could not be durably saved during task termination.")
+				}
+			} catch (error) {
+				captureFailure(error)
+			}
+		}
+
+		try {
+			await this.finishCanonicalLifecycleCancellation(this.abortReason ?? "user_cancelled")
+			await this.canonicalLifecycleQueue
+		} catch (error) {
+			captureFailure(error)
+		}
+		try {
+			await this.flushApiConversationHistoryPersistence()
+		} catch (error) {
+			captureFailure(error)
+		}
+
+		if (firstFailure !== undefined) throw firstFailure
+	}
+
 	private async performAbortTask(): Promise<void> {
 		// Will stop any autonomously running promises.
 
 		this.abort = true
+		this.agentWaitAbortController?.abort(new Error("Task was aborted"))
+		// Stop provider output before joining the transcript queue. Otherwise a
+		// late terminal callback could enqueue an old snapshot after replacement.
+		this.cancelCurrentRequest()
+		await this.flushApiConversationHistoryPersistence()
+		// Invalidate preview work before awaiting cleanup. A delayed webview
+		// response must not resume against state that abort cleanup is about to
+		// replace. The drain remains bounded for providers whose UI bridge hangs.
+		this.invalidateStreamingPreviewEpoch()
+		await this.drainStreamingPreviews("task abort")
 		this.releaseSubagentReviewBarrierIfSettled(true)
 		let cleanupError: unknown
 		try {
@@ -4296,6 +5887,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		} catch (error) {
 			console.error(`Error saving messages during abort for task ${this.taskId}.${this.instanceId}:`, error)
 		}
+		await this.appendAgentTurnEvent({ type: "cancelled", reason: this.abortReason ?? "user_cancelled" })
+		await this.flushAgentTurnEvents()
+		await this.flushApiConversationHistoryPersistence()
 
 		if (cleanupError) throw cleanupError
 	}
@@ -4303,6 +5897,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	public dispose(): void {
 		console.log(`[Task#dispose] disposing task ${this.taskId}.${this.instanceId}`)
 		this.releaseSubagentReviewBarrierIfSettled(true)
+		this.invalidateStreamingPreviewEpoch()
 		this.taskCancellationController.abort()
 
 		// Cancel any in-progress HTTP request
@@ -4405,6 +6000,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * - Immediately continues task loop without user interaction
 	 */
 	public async resumeAfterDelegation(): Promise<void> {
+		await this.prepareForRetainedLifecycle()
+		// The parent may have a final tool-result write in flight while the child
+		// handoff is committing. Do not start a new provider request until that
+		// serialized transcript boundary has settled.
+		await this.flushApiConversationHistoryPersistence()
+
 		// Clear any ask states that might have been set during history load
 		this.idleAsk = undefined
 		this.resumableAsk = undefined
@@ -4412,7 +6013,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		// Reset abort and streaming state to ensure clean continuation
 		this.abort = false
-		this.abortTaskPromise = undefined
 		this.abandoned = false
 		this.abortReason = undefined
 		this.didFinishAbortingStream = false
@@ -4461,12 +6061,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		}
 
-		// Save the updated history
-		await this.saveApiConversationHistory()
+		// Save the updated history. A false result is a host durability failure;
+		// continuing would let the provider observe a transcript different from
+		// the one that was just prepared in memory.
+		if (!(await this.saveApiConversationHistory())) {
+			throw new Error("Unable to persist delegated parent history before resuming.")
+		}
 
 		// Continue task loop - pass empty array to signal no new user content needed
 		// The initiateTaskLoop will handle this by skipping user message addition
-		await this.initiateTaskLoop([])
+		const lifecycle = this.initiateTaskLoop([])
+		await this.ownBackgroundLifecycle("resume", lifecycle)
 	}
 
 	// Task Loop
@@ -4497,23 +6102,45 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				)
 			},
 			runStep: async (input) => {
-				const didEndLoop = await this.recursivelyMakeClineRequests(
+				const rawStepResult = await this.recursivelyMakeClineRequests(
 					input.userContent,
 					input.includeFileDetails,
 					input.onUserContentPersisted,
 				)
-				const response = this.buildCurrentAgentResponse()
+				// A few legacy integrations still stub this public method with its
+				// historical boolean result. Normalize that boundary while keeping all
+				// production paths on explicit step statuses.
+				const legacyDidEndLoop = typeof rawStepResult === "boolean" && rawStepResult
+				const stepResult: TaskStepExecutionResult =
+					typeof rawStepResult === "boolean" ? { status: "completed" } : rawStepResult
+				const response = stepResult.response ?? this.currentAgentResponse ?? this.buildCurrentAgentResponse()
+				await this.publishCanonicalLifecycleStepStatus(
+					this.currentAgentStep,
+					stepResult.status,
+					stepResult.reason,
+				)
 				const suspensionReason = this.suspendAfterCurrentTurnReason
 				if (suspensionReason) {
 					this.suspendAfterCurrentTurnReason = undefined
 					const persisted = await this.flushPendingToolResultsToHistory()
+					const terminalReason = stepResult.reason ?? suspensionReason
+					const terminalStatus =
+						stepResult.status === "failed" || stepResult.status === "aborted"
+							? stepResult.status
+							: "incomplete"
 					await this.say(
 						"error",
 						persisted
-							? suspensionReason
-							: `${suspensionReason}\n\nThe completion error could not be persisted; the task was paused without another model request.`,
+							? terminalReason
+							: `${terminalReason}\n\nThe completion error could not be persisted; the task was paused without another model request.`,
 					)
-					return { response, nextInput: "complete" }
+					return {
+						response,
+						nextInput: "complete",
+						status: terminalStatus,
+						reason: terminalReason,
+						error: stepResult.error,
+					}
 				}
 				const hasVisiblePrimaryText =
 					this.taskKind === "primary" && response.toolCalls.length === 0 && response.text.trim().length > 0
@@ -4533,8 +6160,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.consecutiveNoAssistantMessagesCount = 0
 				}
 
-				if (didEndLoop || this.abort || this.didComplete) {
-					return { response, nextInput: "complete" }
+				if (legacyDidEndLoop || stepResult.status !== "completed" || this.abort || this.didComplete) {
+					return {
+						response,
+						nextInput: "complete",
+						status: stepResult.status,
+						reason: stepResult.reason,
+						error: stepResult.error,
+					}
 				}
 
 				let requiresContinuation = this.userMessageContent.length > 0 || this.pendingSteerMessage !== undefined
@@ -4580,10 +6213,56 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const wasAgentTurnEngineActive = this.isAgentTurnEngineActive
 			this.isAgentTurnEngineActive = true
 			try {
-				return await engine.run(input)
+				await this.beginCanonicalLifecycleTurn()
+				const outcome = await engine.run(input)
+				const toolCallCount = "response" in outcome && outcome.response ? outcome.response.toolCalls.length : 0
+				if (outcome.status === "completed" || outcome.status === "aborted") {
+					await this.appendAgentTurnEvent({
+						type: "turn_completed",
+						status: outcome.status,
+						toolCallCount,
+						retryCount: 0,
+					})
+				} else if (outcome.status === "failed" || outcome.status === "exhausted") {
+					await this.appendAgentTurnEvent({
+						type: "turn_failed",
+						reason: outcome.reason,
+						error: "error" in outcome && outcome.error instanceof Error ? outcome.error.message : undefined,
+					})
+				} else {
+					await this.appendAgentTurnEvent({ type: "turn_incomplete", reason: outcome.reason })
+				}
+				await this.finishCanonicalLifecycleTurn(outcome)
+				await this.flushAgentTurnEvents()
+				return outcome
 			} finally {
 				this.isAgentTurnEngineActive = wasAgentTurnEngineActive
 			}
+		}
+
+		const appendTaskTerminalEvent = async (
+			status: AgentTurnOutcome["status"],
+			reason?: string,
+			error?: unknown,
+			toolCallCount = 0,
+		): Promise<void> => {
+			if (status === "completed" || status === "aborted") {
+				await this.appendAgentTurnEvent({
+					type: "task_completed",
+					status,
+					toolCallCount,
+					retryCount: 0,
+				})
+			} else if (status === "failed" || status === "exhausted") {
+				await this.appendAgentTurnEvent({
+					type: "task_failed",
+					reason,
+					error: error instanceof Error ? error.message : error === undefined ? undefined : String(error),
+				})
+			} else {
+				await this.appendAgentTurnEvent({ type: "task_incomplete", reason })
+			}
+			await this.flushAgentTurnEvents()
 		}
 
 		let nextTurnInput: TaskTurnInput = {
@@ -4615,6 +6294,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.abort ||
 				this.didComplete
 			) {
+				const terminalStatus = this.abort ? "aborted" : outcome.status
+				await appendTaskTerminalEvent(
+					terminalStatus,
+					"reason" in outcome ? outcome.reason : undefined,
+					"error" in outcome ? outcome.error : undefined,
+					"response" in outcome && outcome.response ? outcome.response.toolCalls.length : 0,
+				)
 				return
 			}
 
@@ -4625,7 +6311,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const initialCompletionDecision = await this.getCompletionGateDecision()
 			if (!initialCompletionDecision.allowed) {
 				const continuation = await continueAfterCompletionRejection(initialCompletionDecision)
-				if (!continuation) return
+				if (!continuation) {
+					await appendTaskTerminalEvent("incomplete", initialCompletionDecision.message)
+					return
+				}
 				nextTurnInput = continuation
 				continue
 			}
@@ -4634,7 +6323,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// used by attempt_completion, then publish a hidden review/follow-up boundary.
 			await this.presentCompletionResult(outcome.response.text)
 			const { response, text, images } = await this.ask("completion_result", "", false)
-			if (this.abort || this.didComplete) return
+			if (this.abort || this.didComplete) {
+				await appendTaskTerminalEvent(
+					this.abort ? "aborted" : "completed",
+					undefined,
+					undefined,
+					outcome.response.toolCalls.length,
+				)
+				return
+			}
 
 			const queuedFollowup =
 				response === "yesButtonClicked" ? this.messageQueueService.dequeueMessage() : undefined
@@ -4651,7 +6348,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (!finalCompletionDecision.allowed) {
 					await this.retractCompletionResult()
 					const continuation = await continueAfterCompletionRejection(finalCompletionDecision)
-					if (!continuation) return
+					if (!continuation) {
+						await appendTaskTerminalEvent("incomplete", finalCompletionDecision.message)
+						return
+					}
 					nextTurnInput = continuation
 					continue
 				}
@@ -4668,7 +6368,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 
 				try {
-					if (await this.returnCompletionToLegacyParent(outcome.response.text)) return
+					if (await this.returnCompletionToLegacyParent(outcome.response.text)) {
+						await appendTaskTerminalEvent(
+							"completed",
+							undefined,
+							undefined,
+							outcome.response.toolCalls.length,
+						)
+						return
+					}
 				} catch (error) {
 					await this.retractCompletionResult()
 					const continuation = await continueAfterCompletionRejection({
@@ -4676,7 +6384,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						modelCanResolveRejection: false,
 						message: `Cannot finish the delegated child right now: ${error instanceof Error ? error.message : String(error)}`,
 					})
-					if (!continuation) return
+					if (!continuation) {
+						await appendTaskTerminalEvent(
+							"incomplete",
+							error instanceof Error ? error.message : String(error),
+							error,
+						)
+						return
+					}
 					nextTurnInput = continuation
 					continue
 				}
@@ -4697,6 +6412,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						continue
 					}
 				}
+				await appendTaskTerminalEvent(
+					finalized ? "completed" : "incomplete",
+					finalized ? undefined : "Task completion was not durably finalized.",
+					undefined,
+					outcome.response.toolCalls.length,
+				)
 				return
 			}
 
@@ -4707,17 +6428,26 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				includeFileDetails: false,
 			}
 		}
+
+		if (this.didComplete) {
+			await appendTaskTerminalEvent("completed")
+		} else if (this.abort) {
+			await appendTaskTerminalEvent("aborted")
+		}
 	}
 
 	public async recursivelyMakeClineRequests(
 		userContent: Anthropic.Messages.ContentBlockParam[],
 		includeFileDetails: boolean = false,
 		onInitialUserContentPersisted?: () => Promise<void> | void,
-	): Promise<boolean> {
+	): Promise<TaskStepExecutionResult | boolean> {
 		interface StackItem {
 			userContent: Anthropic.Messages.ContentBlockParam[]
 			includeFileDetails: boolean
 			retryAttempt?: number
+			retryCategory?: AgentRetryCategory
+			/** Category-local counters keep transport/context/empty retries independent. */
+			retryAttempts?: TaskRetryAttempts
 			userMessageWasRemoved?: boolean // Track if user message was removed due to empty response
 			steeringPersistence?: {
 				onPersisted?: () => Promise<void> | void
@@ -4736,11 +6466,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		]
 		const wasTaskLoopActive = this.isTaskLoopActive
 		this.isTaskLoopActive = true
+		const retrySequenceStartedAt = performance.now()
 
 		try {
 			while (stack.length > 0) {
 				if (this.didComplete) {
-					return true
+					return { status: "completed", response: this.currentAgentResponse }
 				}
 
 				const currentItem = stack.pop()!
@@ -4768,6 +6499,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						],
 						includeFileDetails: currentIncludeFileDetails,
 						retryAttempt: currentItem.retryAttempt,
+						retryAttempts: currentItem.retryAttempts,
 						userMessageWasRemoved: currentItem.userMessageWasRemoved,
 						steeringPersistence: { onPersisted: pendingSteer.onPersisted },
 					})
@@ -4942,7 +6674,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const pacingWaitCountBefore = this.requestPacingWaitCount
 				await this.maybeWaitForProviderRateLimit(currentItem.retryAttempt ?? 0, state)
 				if (this.requestPacingWaitCount > pacingWaitCountBefore) {
-					await this.appendRequestPacingUpdateToLatestUserMessage()
+					if (!(await this.appendRequestPacingUpdateToLatestUserMessage())) {
+						throw new Error("Unable to persist provider pacing metadata before continuing the request.")
+					}
 				}
 				if (this.abort) {
 					throw new Error(
@@ -5024,6 +6758,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						cancelReason: ClineApiReqCancelReason,
 						streamingFailedMessage?: string,
 					) => {
+						// Preview presenters share the streaming arrays with the provider
+						// loop. Join them before abort cleanup mutates partial messages.
+						await this.drainStreamingPreviews("stream abort")
+						this.invalidateStreamingPreviewEpoch()
 						if (this.diffViewProvider.isEditing) {
 							await this.diffViewProvider.revertChanges() // closes diff view
 						}
@@ -5048,9 +6786,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 
 					// Reset streaming state for each new API request
+					await this.drainStreamingPreviews("starting API request")
+					this.invalidateStreamingPreviewEpoch()
 					this.currentStreamingContentIndex = 0
 					this.currentStreamingDidCheckpoint = false
 					this.assistantMessageContent = []
+					this.currentAgentResponse = undefined
+					// Transport retries keep the immutable step/surface identity. A
+					// context or empty-response retry starts a fresh captured boundary.
+					const preserveTransportStep =
+						currentItem.retryCategory === "transport" || currentItem.retryCategory === "rate-limit"
+					if (!preserveTransportStep) {
+						this.currentAgentStep = undefined
+						this.currentTaskToolSurface = undefined
+					}
+					this.currentRequestSignal = undefined
 					this.currentAssistantResponseMessageTs = undefined
 					this.didCompleteReadingStream = false
 					this.userMessageContent = []
@@ -5084,10 +6834,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					const stream = this.attemptApiRequest(currentItem.retryAttempt ?? 0, {
 						skipProviderRateLimit: true,
 						state,
+						retryCategory: currentItem.retryCategory,
+						ownerHandlesRetry: true,
 					})
 					let assistantMessage = ""
 					let reasoningMessage = ""
 					let pendingGroundingSources: GroundingSource[] = []
+					const responseAccumulator = new AgentResponseAccumulator()
+					let providerOutcome: ApiStreamOutcomeChunk | undefined
+					let semanticOutputObserved = false
+					let providerErrorObserved = false
+					let providerErrorMessage: string | undefined
+					let canonicalResponse: AgentResponse | undefined
 					this.isStreaming = true
 
 					try {
@@ -5142,6 +6900,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								continue
 							}
 
+							// Normalize every provider chunk before the legacy parser/UI
+							// projection. The parser remains preview-only; the finished
+							// accumulator response below is authoritative for effects.
+							await responseAccumulator.add(chunk)
+							if (isApiStreamSemanticChunk(chunk)) semanticOutputObserved = true
+							if (chunk.type === "outcome") providerOutcome = chunk
+							if (chunk.type === "error") {
+								providerErrorObserved = true
+								providerErrorMessage = chunk.message || chunk.error
+							}
+
 							switch (chunk.type) {
 								case "reasoning": {
 									reasoningMessage += chunk.text
@@ -5165,6 +6934,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									cacheWriteTokens += chunk.cacheWriteTokens ?? 0
 									cacheReadTokens += chunk.cacheReadTokens ?? 0
 									totalCost = chunk.totalCost
+									await this.appendAgentTurnEvent({
+										type: "request_usage",
+										requestIndex: lastApiReqIndex,
+										retry: (currentItem.retryAttempt ?? 0) > 0,
+										inputTokens: chunk.inputTokens,
+										outputTokens: chunk.outputTokens,
+										cacheReadTokens: chunk.cacheReadTokens ?? 0,
+									})
 									break
 								case "grounding":
 									// Handle grounding sources separately from regular content
@@ -5240,7 +7017,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 										})
 										this.userMessageContentReady = false
 									}
-									presentAssistantMessage(this)
+									// Text is previewed while streaming, but native tool effects are
+									// deferred until the persisted canonical response reaches the
+									// serial ToolScheduler. Otherwise a text chunk after a completed
+									// tool block could execute that block through the legacy presenter.
+									this.scheduleStreamingPreview()
 									break
 								}
 							}
@@ -5494,44 +7275,196 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							// Clean up partial state
 							await abortStream(cancelReason, streamingFailedMessage)
 
-							if (this.abort) {
-								// User cancelled - abort the entire task
-								this.abortReason = cancelReason
-								await this.abortTask()
-							} else {
-								// Stream failed - log the error and retry with the same content
-								// The existing rate limiting will prevent rapid retries
-								console.error(
-									`[Task#${this.taskId}.${this.instanceId}] Stream failed, will retry: ${streamingFailedMessage}`,
+							const retryError = error instanceof Error ? error : new Error(String(error))
+							const retryMetadata = retryError as Error & {
+								firstChunkFailure?: boolean
+								retryCategory?: AgentRetryCategory
+								retryable?: boolean
+								semanticOutputObserved?: boolean
+							}
+							const timedOut = /timed out|deadline exceeded/i.test(retryError.message)
+							const activeRequestSignal = this.currentRequestSignal as AbortSignal | undefined
+							const requestWasCancelled =
+								!timedOut &&
+								(Boolean(activeRequestSignal && activeRequestSignal.aborted) ||
+									isApiStreamAbortError(retryError, activeRequestSignal))
+							const explicitNonSuccessOutcome =
+								providerOutcome !== undefined && providerOutcome.status !== "completed"
+							const shouldSalvageTerminalResponse =
+								semanticOutputObserved || providerErrorObserved || explicitNonSuccessOutcome
+
+							if (shouldSalvageTerminalResponse) {
+								const terminalStatus =
+									this.abort || this.taskCancellationController.signal.aborted || requestWasCancelled
+										? "cancelled"
+										: providerOutcome?.status && providerOutcome.status !== "completed"
+											? providerOutcome.status
+											: "failed"
+								const terminalReason =
+									providerErrorMessage ?? providerOutcome?.reason ?? retryError.message
+								const terminalRetryable =
+									terminalStatus === "cancelled"
+										? false
+										: (providerOutcome?.retryable ?? retryMetadata.retryable ?? false)
+
+								if (terminalStatus === "failed" && !providerErrorObserved) {
+									await responseAccumulator.add({
+										type: "error",
+										error: "StreamError",
+										message: terminalReason,
+										retryable: terminalRetryable,
+										semanticOutputObserved,
+										requestId: this.currentAgentStep?.requestId,
+										attemptId: this.currentAgentStep?.attemptId,
+									})
+								}
+
+								canonicalResponse = await responseAccumulator.finish(undefined, {
+									status: terminalStatus,
+									reason: terminalReason,
+									retryable: terminalRetryable,
+								})
+								await this.applyCanonicalAgentResponse(canonicalResponse)
+								const persistence = await this.persistTerminalCanonicalResponse(
+									canonicalResponse,
+									terminalStatus,
+									terminalReason,
 								)
 
-								// Apply exponential backoff similar to first-chunk errors when auto-resubmit is enabled
-								const stateForBackoff = await this.providerRef.deref()?.getState()
-								if (stateForBackoff?.autoApprovalEnabled) {
-									await this.backoffAndAnnounce(currentItem.retryAttempt ?? 0, error)
-
-									// Check if task was aborted during the backoff
-									if (this.abort) {
-										console.log(
-											`[Task#${this.taskId}.${this.instanceId}] Task aborted during mid-stream retry backoff`,
-										)
-										// Abort the entire task
+								if (persistence.status === "aborted") {
+									if (this.abort || this.getTaskLifetimeCancellationSignal().aborted) {
 										this.abortReason = "user_cancelled"
-										await this.abortTask()
-										break
+									}
+									if (this.abort) await this.abortTask()
+									return {
+										status: "aborted",
+										reason: persistence.reason,
+										...(persistence.error ? { error: persistence.error } : {}),
+										response: canonicalResponse,
 									}
 								}
 
-								// Push the same content back onto the stack to retry, incrementing the retry attempt counter
+								return {
+									status: persistence.status,
+									reason: persistence.reason,
+									error: persistence.error ?? retryError,
+									response: canonicalResponse,
+								}
+							}
+
+							if (this.abort || this.taskCancellationController.signal.aborted || requestWasCancelled) {
+								this.abortReason = "user_cancelled"
+								if (this.abort) await this.abortTask()
+								return {
+									status: "aborted",
+									reason: "The provider request was cancelled.",
+									response: canonicalResponse,
+								}
+							}
+
+							const firstChunkFailure = retryMetadata.firstChunkFailure === true
+							const category = this.retryCategoryForError(error)
+							const retryAttempts = currentItem.retryAttempts ?? {}
+							const attempt = (retryAttempts[category] ?? 0) + 1
+							const hasSemanticOutput =
+								semanticOutputObserved || retryMetadata.semanticOutputObserved === true
+							const decision = this.agentRetryPolicy.decide({
+								category,
+								attempt,
+								elapsedMs: performance.now() - retrySequenceStartedAt,
+								retryAfterMs: this.retryAfterMs(error),
+								hasSemanticOutput,
+							})
+
+							// A provider explicitly marking an error as non-retryable must not
+							// be replayed, even when the category budget remains.
+							if (retryMetadata.retryable === false) {
+								return {
+									status: "failed",
+									reason: retryError.message,
+									error: retryError,
+									response: canonicalResponse,
+								}
+							}
+
+							// Manual retry remains available for first-chunk failures. It is a
+							// user-selected retry, so it does not silently turn into completion
+							// when the automatic budget is exhausted.
+							if (firstChunkFailure && !state?.autoApprovalEnabled) {
+								const askResponse = await this.ask("api_req_failed", retryError.message)
+								if (askResponse.response !== "yesButtonClicked") {
+									await this.say("error", retryError.message)
+									return { status: "failed", reason: retryError.message, error: retryError }
+								}
+								await this.say("api_req_retried")
+								await this.appendAgentTurnEvent({ type: "retry", attempt, reason: retryError.message })
 								stack.push({
 									userContent: currentUserContent,
 									includeFileDetails: false,
 									retryAttempt: (currentItem.retryAttempt ?? 0) + 1,
+									retryCategory: category,
+									retryAttempts: { ...retryAttempts, [category]: attempt },
 								})
-
-								// Continue to retry the request
 								continue
 							}
+
+							if (!decision.shouldRetry) {
+								await this.appendAgentTurnEvent({
+									type: "response_terminal",
+									status: "failed",
+									reason: `Provider retry budget exhausted (${decision.reason ?? "attempts"}).`,
+								})
+								return {
+									status: "exhausted",
+									reason: `Provider retry budget exhausted (${decision.reason ?? "attempts"}).`,
+									error: retryError,
+									response: canonicalResponse,
+								}
+							}
+
+							if (category === "context") {
+								await this.handleContextWindowExceededError()
+								if (this.currentAgentStep) {
+									const compactionStep = this.agentStepContextBuilder.compaction(
+										this.currentAgentStep.snapshot,
+										{
+											action: "summary",
+										},
+									)
+									await this.appendAgentTurnEvent(
+										{
+											type: "compaction_completed",
+											action: "summary",
+										},
+										compactionStep.context,
+									)
+								}
+								this.currentAgentStep = undefined
+								this.currentTaskToolSurface = undefined
+							}
+
+							try {
+								await this.waitForRetryDecision(decision, retryError)
+							} catch (retryWaitError) {
+								return {
+									status: "aborted",
+									reason:
+										retryWaitError instanceof Error
+											? retryWaitError.message
+											: String(retryWaitError),
+									error: retryWaitError,
+									response: canonicalResponse,
+								}
+							}
+
+							stack.push({
+								userContent: currentUserContent,
+								includeFileDetails: false,
+								retryAttempt: (currentItem.retryAttempt ?? 0) + 1,
+								retryCategory: category,
+								retryAttempts: { ...retryAttempts, [category]: decision.nextAttempt - 1 },
+							})
+							continue
 						}
 					} finally {
 						this.isStreaming = false
@@ -5555,6 +7488,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// the case, `presentAssistantMessage` relies on these blocks either
 					// to be completed or the user to reject a block in order to proceed
 					// and eventually set userMessageContentReady to true.)
+
+					// The canonical response is the only source allowed to mutate effects.
+					// Drain the preview queue before finalizing/replacing its shared parser
+					// state, then close this preview epoch before persistence and scheduling.
+					await this.drainStreamingPreviews("stream completion")
+					this.invalidateStreamingPreviewEpoch()
 
 					// Finalize any remaining streaming tool calls that weren't explicitly ended
 					// This is critical for MCP tools which need tool_call_end events to be properly
@@ -5602,15 +7541,35 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						}
 					}
 
-					// IMPORTANT: Capture partialBlocks AFTER finalizeRawChunks() to avoid double-presentation.
-					// Tools finalized above are already presented, so we only want blocks still partial after finalization.
-					const partialBlocks = this.assistantMessageContent.filter((block) => block.partial)
-					partialBlocks.forEach((block) => (block.partial = false))
+					// The accumulator owns the completed provider response. The legacy
+					// NativeToolCallParser above is retained only for incremental UI
+					// preview; never use its repaired/partial state to decide effects.
+					const responseStatus = providerErrorObserved
+						? "failed"
+						: (providerOutcome?.status ?? (semanticOutputObserved ? "completed" : undefined))
+					const responseReason = providerErrorMessage ?? providerOutcome?.reason
+					canonicalResponse = await responseAccumulator.finish(
+						undefined,
+						responseStatus
+							? {
+									status: responseStatus,
+									...(responseReason ? { reason: responseReason } : {}),
+									...(providerOutcome?.retryable !== undefined
+										? { retryable: providerOutcome.retryable }
+										: {}),
+								}
+							: undefined,
+					)
+					await this.applyCanonicalAgentResponse(canonicalResponse)
+					assistantMessage = canonicalResponse.text
+					reasoningMessage = canonicalResponse.reasoning
+					pendingGroundingSources = canonicalResponse.items.flatMap((item) =>
+						item.type === "grounding" ? item.sources : [],
+					)
 
-					// Can't just do this b/c a tool could be in the middle of executing.
-					// this.assistantMessageContent.forEach((e) => (e.partial = false))
-
-					// No legacy streaming parser to finalize.
+					// The canonical projection above is already complete. The legacy parser
+					// remains useful for incremental preview only and must not be presented
+					// again here (doing so could execute a repaired/partial call).
 
 					// Note: updateApiReqMsg() is now called from within drainStreamInBackgroundToFindAllUsage
 					// to ensure usage data is captured even when the stream is interrupted. The background task
@@ -5640,12 +7599,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// the assistant message is already in history. Otherwise, tool_result blocks would appear
 					// BEFORE their corresponding tool_use blocks, causing API errors.
 
-					// Check if we have any content to process (text or tool uses)
+					// Check if we have any canonical content to process. Error items are
+					// intentionally considered output so malformed calls terminate as a
+					// failed step instead of entering the empty-response retry loop.
 					const hasTextContent = assistantMessage.length > 0
 
 					const hasToolUses = this.assistantMessageContent.some(
 						(block) => block.type === "tool_use" || block.type === "mcp_tool_use",
 					)
+					const hasCanonicalError = canonicalResponse?.items.some((item) => item.type === "error") ?? false
+					const responseOutcome = canonicalResponse?.outcome
+					const hasNonCompletedOutcome =
+						responseOutcome !== undefined && responseOutcome.status !== "completed"
+					let mixedTerminalToolBatch = false
 
 					if (hasTextContent || hasToolUses) {
 						// Reset counter when we get a successful response with content
@@ -5747,6 +7713,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							(block) => block.name === "new_task" || block.name === "attempt_completion",
 						)
 						const hasMixedTerminalToolBatch = assistantToolUses.length > 1 && terminalTool !== undefined
+						mixedTerminalToolBatch = hasMixedTerminalToolBatch
 
 						if (hasMixedTerminalToolBatch) {
 							const isolationError = `${terminalTool.name} must be called by itself in a message turn. No tools from this turn were executed. Retry by calling only ${terminalTool.name} after any required setup is complete.`
@@ -5772,33 +7739,105 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						const assistantResponsePersisted = await this.persistAssistantResponseBeforeEffects(
 							{ role: "assistant", content: assistantContent },
 							reasoningMessage || undefined,
+							canonicalResponse,
 						)
 						if (!assistantResponsePersisted) {
-							return true
+							const taskWasCancelled = this.abort || this.getTaskLifetimeCancellationSignal().aborted
+							const persistenceReason =
+								"The assistant response could not be durably persisted before tool execution."
+							const persistenceError = new Error(persistenceReason)
+							await this.appendAgentTurnEvent(
+								{
+									type: "response_terminal",
+									status: taskWasCancelled ? "aborted" : "failed",
+									reason: persistenceReason,
+									retryable: false,
+								},
+								this.currentAgentStep?.snapshot.context,
+							)
+							return {
+								status: taskWasCancelled ? "aborted" : "failed",
+								reason: persistenceReason,
+								error: persistenceError,
+								response: this.currentAgentResponse,
+							}
 						}
 
 						TelemetryService.instance.captureConversationMessage(this.taskId, "assistant")
+						await this.appendAgentTurnEvent(
+							{ type: "assistant_committed", response: canonicalResponse! },
+							this.currentAgentStep?.snapshot.context,
+						)
 					}
 
-					// Tool calls are intentionally presented only after the complete
-					// assistant response has been persisted. This preserves native
-					// tool_use/tool_result ordering and prevents a streaming tool call
-					// from interrupting the provider response.
-					if (hasToolUses) {
-						await presentAssistantMessage(this)
-					}
-
-					// Present any partial blocks that were just completed. This is a
-					// recovery path for malformed streams; normal tool calls are presented
-					// only after the complete assistant response is persisted above.
-					// NOTE: This MUST happen AFTER saving the assistant message to API history.
-					// When new_task is in the batch, it triggers delegation which calls flushPendingToolResultsToHistory().
-					// If the assistant message isn't saved yet, tool_results would appear before tool_use blocks.
-					if (partialBlocks.length > 0) {
-						// If there is content to update then it will complete and
-						// update `this.userMessageContentReady` to true, which we
-						// `pWaitFor` before making the next request.
-						presentAssistantMessage(this)
+					// A provider terminal status is authoritative. Persist any assistant
+					// content first, but never execute calls or ordinary-text-complete a
+					// failed, incomplete, or cancelled response.
+					if (hasNonCompletedOutcome || hasCanonicalError) {
+						this.userMessageContentReady = true
+						const terminalReceiptStatus =
+							responseOutcome?.status && responseOutcome.status !== "completed"
+								? responseOutcome.status
+								: "failed"
+						const terminalToolResultsPersisted = await this.persistUnexecutedTerminalToolResults(
+							canonicalResponse,
+							terminalReceiptStatus,
+						)
+						const terminalReceiptPersistenceFailed =
+							(canonicalResponse?.toolCalls.length ?? 0) > 0 && !terminalToolResultsPersisted
+						const terminalReceiptFailureReason = terminalReceiptPersistenceFailed
+							? "Terminal tool-result receipts could not be durably saved."
+							: undefined
+						const terminalReason = [
+							responseOutcome?.reason ?? (hasCanonicalError ? "Malformed tool call." : undefined),
+							terminalReceiptFailureReason,
+						]
+							.filter((reason): reason is string => Boolean(reason))
+							.join(" ")
+						const providerTerminalStatus =
+							responseOutcome?.status === "cancelled"
+								? "aborted"
+								: responseOutcome?.status && responseOutcome.status !== "completed"
+									? responseOutcome.status
+									: hasCanonicalError
+										? "failed"
+										: "incomplete"
+						const taskWasCancelled = this.abort || this.getTaskLifetimeCancellationSignal().aborted
+						const terminalStatus = terminalReceiptPersistenceFailed
+							? taskWasCancelled
+								? "aborted"
+								: "failed"
+							: providerTerminalStatus
+						const terminalPersistenceError = terminalReceiptPersistenceFailed
+							? new Error("Terminal tool-result receipts could not be durably saved.")
+							: undefined
+						await this.appendAgentTurnEvent(
+							{
+								type: "response_terminal",
+								status: terminalStatus,
+								reason: terminalReason || undefined,
+								retryable: responseOutcome?.retryable,
+							},
+							this.currentAgentStep?.snapshot.context,
+						)
+						if (terminalStatus === "aborted") {
+							return {
+								status: "aborted",
+								reason: terminalReason || "Provider cancelled the response.",
+								...(terminalPersistenceError ? { error: terminalPersistenceError } : {}),
+								response: canonicalResponse,
+							}
+						}
+						return {
+							status: terminalStatus,
+							reason:
+								terminalReason ||
+								(hasCanonicalError
+									? "The provider returned a malformed tool call."
+									: "The provider response was incomplete."),
+							...(terminalPersistenceError ? { error: terminalPersistenceError } : {}),
+							response: canonicalResponse,
+						}
 					}
 
 					if (hasTextContent || hasToolUses) {
@@ -5818,10 +7857,77 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						// 	this.userMessageContentReady = true
 						// }
 
-						await pWaitFor(() => this.userMessageContentReady)
+						// All canonical calls are complete and execution is now owned by the
+						// serial scheduler. It commits tool results to the next user message
+						// only after the assistant history write above has completed.
+						if (hasToolUses && !mixedTerminalToolBatch) {
+							await this.publishCanonicalLifecyclePhase("executing")
+							const schedulerOutcome = await this.executeCanonicalToolCalls(
+								canonicalResponse!,
+								this.currentTaskToolSurface,
+								currentMode,
+								state,
+								this.currentRequestSignal ?? this.getTaskCancellationSignal(),
+							)
+							if (schedulerOutcome.status === "aborted") {
+								// ToolScheduler preserves results for every canonical call when
+								// cancellation wins. Persist that complete receipt batch before
+								// returning; otherwise the assistant tool_use boundary would be
+								// left unmatched on disk.
+								const resultsPersisted = await this.flushPendingToolResultsToHistory({
+									allowAborted: true,
+								})
+								if (!resultsPersisted) {
+									const persistenceReason =
+										"Tool-result receipts could not be durably saved after cancellation."
+									const persistenceError = new Error(persistenceReason)
+									await this.appendAgentTurnEvent({
+										type: "response_terminal",
+										status:
+											this.abort || this.getTaskLifetimeCancellationSignal().aborted
+												? "aborted"
+												: "failed",
+										reason: persistenceReason,
+										retryable: false,
+									})
+									return {
+										status:
+											this.abort || this.getTaskLifetimeCancellationSignal().aborted
+												? "aborted"
+												: "failed",
+										reason: persistenceReason,
+										error: persistenceError,
+										response: canonicalResponse,
+									}
+								}
+								return {
+									status: "aborted",
+									reason: "Tool execution was cancelled.",
+									response: canonicalResponse,
+								}
+							}
+							if (schedulerOutcome.status === "failed") {
+								return {
+									status: "failed",
+									reason:
+										schedulerOutcome.failure?.message ??
+										"Tool execution failed before the batch completed.",
+									error: new Error(
+										schedulerOutcome.failure?.message ??
+											"Tool execution failed before the batch completed.",
+									),
+									response: canonicalResponse,
+								}
+							}
+						}
+						this.userMessageContentReady = true
+						await this.appendAgentTurnEvent(
+							{ type: "response_terminal", status: "completed" },
+							this.currentAgentStep?.snapshot.context,
+						)
 
 						if (this.didComplete) {
-							return true
+							return { status: "completed", response: this.currentAgentResponse }
 						}
 
 						// Primary tasks may end with ordinary assistant text. Managed children
@@ -5853,7 +7959,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						// Return after one complete model/tool turn. AgentTurnEngine owns
 						// continuation sequencing; keeping this method to one step makes
 						// the assistant-response/tool-result boundary explicit.
-						return false
+						return { status: "completed", response: this.currentAgentResponse }
 					} else {
 						// If there's no assistant_responses, that means we got no text
 						// or tool_use content blocks from API which we should assume is
@@ -5882,89 +7988,136 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							}
 						}
 
-						// Check if we should auto-retry or prompt the user
-						// Reuse the state variable from above
-						if (state?.autoApprovalEnabled) {
-							// Auto-retry with backoff - don't persist failure message when retrying
-							await this.backoffAndAnnounce(
-								currentItem.retryAttempt ?? 0,
-								new Error(
-									"Unexpected API Response: The language model did not provide any assistant messages. This may indicate an issue with the API or the model's output.",
-								),
-							)
+						const emptyResponseError = new Error(
+							"Unexpected API Response: The language model did not provide any assistant messages. This may indicate an issue with the API or the model's output.",
+						)
+						const retryAttempts = currentItem.retryAttempts ?? {}
 
-							// Check if task was aborted during the backoff
-							if (this.abort) {
-								console.log(
-									`[Task#${this.taskId}.${this.instanceId}] Task aborted during empty-assistant retry backoff`,
-								)
-								await this.restoreRemovedApiUserMessage(removedUserMessage)
-								break
+						// Reasoning/tool framing is semantic output too. Once the provider
+						// has emitted it, replaying the request could duplicate model work;
+						// report an explicit incomplete step instead of entering the empty
+						// response retry budget.
+						if (semanticOutputObserved) {
+							await this.restoreRemovedApiUserMessage(removedUserMessage)
+							await this.appendAgentTurnEvent({
+								type: "response_terminal",
+								status: "incomplete",
+								reason: "The provider emitted semantic output without a complete assistant response.",
+							})
+							return {
+								status: "incomplete",
+								reason: "The provider emitted semantic output without a complete assistant response.",
+								response: canonicalResponse,
 							}
+						}
 
-							// Push the same content back onto the stack to retry, incrementing the retry attempt counter
-							// Mark that user message was removed so it gets re-added on retry
+						const emptyAttempt = (retryAttempts["empty-response"] ?? 0) + 1
+						const emptyDecision = this.agentRetryPolicy.decide({
+							category: "empty-response",
+							attempt: emptyAttempt,
+							elapsedMs: performance.now() - retrySequenceStartedAt,
+						})
+
+						if (state?.autoApprovalEnabled && emptyDecision.shouldRetry) {
+							try {
+								await this.waitForRetryDecision(emptyDecision, emptyResponseError)
+							} catch (retryWaitError) {
+								await this.restoreRemovedApiUserMessage(removedUserMessage)
+								return {
+									status: "aborted",
+									reason:
+										retryWaitError instanceof Error
+											? retryWaitError.message
+											: String(retryWaitError),
+									error: retryWaitError,
+									response: canonicalResponse,
+								}
+							}
 							stack.push({
 								userContent: currentUserContent,
 								includeFileDetails: false,
 								retryAttempt: (currentItem.retryAttempt ?? 0) + 1,
+								retryCategory: "empty-response",
+								retryAttempts: { ...retryAttempts, "empty-response": emptyDecision.nextAttempt - 1 },
 								userMessageWasRemoved: Boolean(removedUserMessage),
 							})
-
-							// Continue to retry the request
 							continue
-						} else {
-							// Prompt the user for retry decision
-							let response: string
-							try {
-								const askResponse = await this.ask(
-									"api_req_failed",
-									"The model returned no assistant messages. This may indicate an issue with the API or the model's output.",
-								)
-								response = askResponse.response
-							} catch (error) {
-								await this.restoreRemovedApiUserMessage(removedUserMessage)
-								throw error
-							}
+						}
 
+						if (!state?.autoApprovalEnabled) {
+							const askResponse = await this.ask("api_req_failed", emptyResponseError.message)
 							if (this.abort) {
 								await this.restoreRemovedApiUserMessage(removedUserMessage)
-								break
+								return {
+									status: "aborted",
+									reason: "Retry was cancelled.",
+									response: canonicalResponse,
+								}
 							}
-
-							if (response === "yesButtonClicked") {
+							if (askResponse.response === "yesButtonClicked") {
 								await this.say("api_req_retried")
-
-								// Push the same content back to retry
+								await this.appendAgentTurnEvent({
+									type: "retry",
+									attempt: emptyAttempt,
+									reason: emptyResponseError.message,
+								})
 								stack.push({
 									userContent: currentUserContent,
 									includeFileDetails: false,
 									retryAttempt: (currentItem.retryAttempt ?? 0) + 1,
+									retryCategory: "empty-response",
+									retryAttempts: { ...retryAttempts, "empty-response": emptyAttempt },
 									userMessageWasRemoved: Boolean(removedUserMessage),
 								})
-
-								// Continue to retry the request
 								continue
-							} else {
-								// User declined to retry
-								// Re-add the exact user message we removed, including environment details.
-								await this.restoreRemovedApiUserMessage(removedUserMessage)
-
-								await this.say(
-									"error",
-									"Unexpected API Response: The language model did not provide any assistant messages. This may indicate an issue with the API or the model's output.",
-								)
-
-								await this.addToApiConversationHistory({
-									role: "assistant",
-									content: [{ type: "text", text: "Failure: I did not provide a response." }],
-								})
 							}
 						}
+
+						await this.restoreRemovedApiUserMessage(removedUserMessage)
+						if (emptyDecision.exhausted && state?.autoApprovalEnabled) {
+							await this.appendAgentTurnEvent({
+								type: "response_terminal",
+								status: "failed",
+								reason: "Empty-response retry budget exhausted.",
+							})
+							return {
+								status: "exhausted",
+								reason: "Empty-response retry budget exhausted.",
+								response: canonicalResponse,
+								error: emptyResponseError,
+							}
+						}
+
+						await this.say("error", emptyResponseError.message)
+						const failureHistoryPersisted = await this.addToApiConversationHistory({
+							role: "assistant",
+							content: [{ type: "text", text: "Failure: I did not provide a response." }],
+						})
+						if (!failureHistoryPersisted) {
+							const persistenceError = new Error(
+								"The fallback assistant failure response could not be durably saved.",
+							)
+							await this.appendAgentTurnEvent({
+								type: "response_terminal",
+								status: "failed",
+								reason: persistenceError.message,
+							})
+							return {
+								status: "failed",
+								reason: persistenceError.message,
+								response: canonicalResponse,
+								error: persistenceError,
+							}
+						}
+						return { status: "incomplete", reason: emptyResponseError.message, response: canonicalResponse }
 					}
 
 					// If we reach here without continuing, return false (will always be false for now)
-					return false
+					return {
+						status: "incomplete",
+						reason: "The model did not provide an assistant response.",
+						response: this.currentAgentResponse,
+					}
 				} catch (error) {
 					// This should never happen since the only thing that can throw an
 					// error is the attemptApiRequest, which is wrapped in a try catch
@@ -5972,16 +8125,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// task and destroy this instance. However to avoid unhandled
 					// promise rejection, we will end this loop which will end execution
 					// of this instance (see `startTask`).
-					return true // Needs to be true so parent loop knows to end task.
+					return {
+						status: this.abort ? "aborted" : "failed",
+						reason: error instanceof Error ? error.message : String(error),
+						error,
+						response: this.currentAgentResponse,
+					} // Explicit failure must not look like completion.
 				}
 			}
 
 			if (this.didComplete) {
-				return true
+				return { status: "completed", response: this.currentAgentResponse }
 			}
 
-			// If we exit the while loop normally (stack is empty), return false
-			return false
+			// If we exit the while loop normally (stack is empty), report an
+			// incomplete step rather than silently completing the task.
+			return { status: "incomplete", reason: "No task step was produced.", response: this.currentAgentResponse }
 		} finally {
 			this.isTaskLoopActive = wasTaskLoopActive
 		}
@@ -5993,6 +8152,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * view is only the control-flow boundary between Task and the engine.
 	 */
 	private buildCurrentAgentResponse(): AgentResponse {
+		if (this.currentAgentResponse) return this.currentAgentResponse
+
 		const items: AgentResponseItem[] = []
 
 		for (const block of this.assistantMessageContent) {
@@ -6026,17 +8187,38 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		}
 
-		return {
-			items,
-			text: items
-				.filter((item): item is Extract<AgentResponseItem, { type: "text" }> => item.type === "text")
-				.map((item) => item.text)
-				.join(""),
-			reasoning: "",
-			toolCalls: items.filter(
-				(item): item is Extract<AgentResponseItem, { type: "tool_call" }> => item.type === "tool_call",
-			),
+		return createAgentResponse(items)
+	}
+
+	/** Replace the parser's preview with the immutable provider-normalized output. */
+	private async applyCanonicalAgentResponse(response: AgentResponse): Promise<void> {
+		// Keep this boundary safe for future callers as well as the live stream
+		// path. A canonical response must never race a late preview presenter.
+		await this.drainStreamingPreviews("canonical response")
+		this.invalidateStreamingPreviewEpoch()
+		this.currentAgentResponse = response
+		this.assistantMessageContent = []
+
+		for (const item of response.items) {
+			if (item.type === "text") {
+				this.assistantMessageContent.push({ type: "text", content: item.text, partial: false })
+				continue
+			}
+			if (item.type !== "tool_call") continue
+
+			const toolUse: ToolUse = {
+				type: "tool_use",
+				id: item.id,
+				name: item.name as ToolName,
+				params: {},
+				partial: false,
+				nativeArgs: item.arguments as never,
+			}
+			this.assistantMessageContent.push(toolUse)
 		}
+
+		this.currentStreamingContentIndex = 0
+		this.userMessageContentReady = response.toolCalls.length === 0
 	}
 
 	private async getFrozenSubagentInstructions(): Promise<string | undefined> {
@@ -6343,7 +8525,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			})
 
 			if (truncateResult.messages !== this.apiConversationHistory) {
-				await this.overwriteApiConversationHistory(truncateResult.messages)
+				if (!(await this.overwriteApiConversationHistory(truncateResult.messages))) {
+					throw new Error("Unable to persist forced context truncation before continuing.")
+				}
 			}
 
 			if (truncateResult.summary) {
@@ -6485,7 +8669,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public async *attemptApiRequest(
 		retryAttempt: number = 0,
-		options: { skipProviderRateLimit?: boolean; state?: TaskRequestState } = {},
+		options: {
+			skipProviderRateLimit?: boolean
+			state?: TaskRequestState
+			retryCategory?: AgentRetryCategory
+			/** The live Task loop owns policy decisions; omit for legacy direct callers. */
+			ownerHandlesRetry?: boolean
+		} = {},
 	): ApiStream {
 		const state = options.state ?? (await this.providerRef.deref()?.getState())
 
@@ -6624,7 +8814,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					rooIgnoreController: this.rooIgnoreController,
 				})
 				if (truncateResult.messages !== this.apiConversationHistory) {
-					await this.overwriteApiConversationHistory(truncateResult.messages)
+					if (!(await this.overwriteApiConversationHistory(truncateResult.messages))) {
+						throw new Error("Unable to persist context recovery before continuing.")
+					}
 				}
 				if (truncateResult.error) {
 					await this.say("condense_context_error", truncateResult.error)
@@ -6713,6 +8905,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Only Gemini currently supports this - other providers filter tools normally.
 		let allTools: OpenAI.Chat.ChatCompletionTool[] = []
 		let allowedFunctionNames: string[] | undefined
+		let taskToolSurface: TaskToolSurface | undefined
 
 		// Gemini requires all tool definitions to be present for history compatibility,
 		// but uses allowedFunctionNames to restrict which tools can be called.
@@ -6722,7 +8915,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const supportsAllowedFunctionNames =
 			apiConfiguration?.apiProvider === "gemini" || apiConfiguration?.apiProvider === "vertex"
 
-		{
+		if (
+			(options.retryCategory === "transport" || options.retryCategory === "rate-limit") &&
+			this.currentAgentStep?.surface
+		) {
+			// Reuse the exact schemas/registry captured for the failed transport
+			// attempt. Rebuilding the dynamic MCP catalog here could pair a new
+			// provider schema with an old executable surface.
+			taskToolSurface = this.currentAgentStep.surface
+			allTools = [...taskToolSurface.schemas]
+			allowedFunctionNames = [...taskToolSurface.allowedFunctionNames]
+		} else {
 			const provider = this.providerRef.deref()
 			if (!provider) {
 				throw new Error("Provider reference lost during tool building")
@@ -6744,6 +8947,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			})
 			allTools = toolsResult.tools
 			allowedFunctionNames = toolsResult.allowedFunctionNames
+			taskToolSurface = toolsResult.surface
 		}
 
 		const shouldIncludeTools = allTools.length > 0
@@ -6768,14 +8972,48 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Create an AbortController to allow cancelling the request mid-stream
 		this.currentRequestAbortController = new AbortController()
 		const abortSignal = this.currentRequestAbortController.signal
+		this.currentRequestSignal = abortSignal
+		this.currentTaskToolSurface = taskToolSurface
+		const requestId = this.currentAgentStep?.requestId ?? crypto.randomUUID()
+		const attemptId = crypto.randomUUID()
+		const requestTimeoutMs = getApiRequestTimeout()
 		// Reset the flag after using it
 		this.skipPrevResponseIdOnce = false
+		const requestMetadata: ApiHandlerCreateMessageMetadata = {
+			...metadata,
+			requestId,
+			attemptId,
+			signal: abortSignal,
+			...(requestTimeoutMs !== undefined ? { deadline: Date.now() + requestTimeoutMs } : {}),
+			...(this.api.streamCapabilities ? { streamCapabilities: this.api.streamCapabilities } : {}),
+		}
+		const step = this.captureAgentStep(
+			retryAttempt,
+			systemPrompt,
+			cleanConversationHistory as Anthropic.Messages.MessageParam[],
+			allTools,
+			allowedFunctionNames,
+			requestMetadata,
+			mode,
+			modelInfo,
+			taskToolSurface,
+		)
+		await this.ensureCanonicalLifecycleStepStarted(step)
+		await this.publishCanonicalLifecyclePhase("working")
+		await this.appendAgentTurnEvent(
+			{ type: "model_request_started", attempt: retryAttempt + 1 },
+			step.snapshot.context,
+		)
+		await this.appendAgentTurnEvent(
+			{ type: "policy_snapshot", digest: taskToolSurface?.policy.digest ?? "", toolCount: allTools.length },
+			step.snapshot.context,
+		)
 
 		// The provider accepts reasoning items alongside standard messages; cast to the expected parameter type.
 		const stream = this.api.createMessage(
 			systemPrompt,
 			cleanConversationHistory as unknown as Anthropic.Messages.MessageParam[],
-			metadata,
+			requestMetadata,
 		)
 		const iterator = stream[Symbol.asyncIterator]()
 
@@ -6824,58 +9062,100 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				throw error
 			}
 
-			const isContextWindowExceededError = checkContextWindowExceededError(error)
-
-			// If it's a context window error and we haven't exceeded max retries for this error type
-			if (isContextWindowExceededError && retryAttempt < MAX_CONTEXT_WINDOW_RETRIES) {
-				console.warn(
-					`[Task#${this.taskId}] Context window exceeded for model ${this.api.getModel().id}. ` +
-						`Retry attempt ${retryAttempt + 1}/${MAX_CONTEXT_WINDOW_RETRIES}. ` +
-						`Attempting automatic truncation...`,
-				)
-				await this.handleContextWindowExceededError()
-				// Retry the request after handling the context window error
-				yield* this.attemptApiRequest(retryAttempt + 1)
-				return
+			// Retry policy and manual retry UX live in the owning Task loop. Mark
+			// this as a first-chunk failure so that loop can decide whether to ask
+			// the user or schedule a bounded automatic retry; this generator never
+			// recursively invokes itself.
+			const retryError = error instanceof Error ? error : new Error(String(error))
+			const retryMetadata = retryError as Error & {
+				firstChunkFailure?: boolean
+				retryCategory?: AgentRetryCategory
 			}
+			retryMetadata.firstChunkFailure = true
+			retryMetadata.retryCategory = this.retryCategoryForError(
+				error,
+				checkContextWindowExceededError(error) ? "context" : "transport",
+			)
 
-			// note that this api_req_failed ask is unique in that we only present this option if the api hasn't streamed any content yet (ie it fails on the first chunk due), as it would allow them to hit a retry button. However if the api failed mid-stream, it could be in any arbitrary state where some tools may have executed, so that error is handled differently and requires cancelling the task entirely.
-			if (autoApprovalEnabled) {
-				// Apply shared exponential backoff and countdown UX
-				await this.backoffAndAnnounce(retryAttempt, error)
+			// A few legacy integrations call this generator directly instead of
+			// running the owning Task loop. Keep that surface compatible with the
+			// historical first-chunk retry UX, but make it explicitly bounded and
+			// iterative. The production loop passes ownerHandlesRetry so it remains
+			// the sole policy owner and does not double-delay or replay a step here.
+			if (!options.ownerHandlesRetry && autoApprovalEnabled) {
+				let compatibilityAttempt = Math.max(1, retryAttempt + 1)
+				let compatibilityError: unknown = retryError
 
-				// CRITICAL: Check if task was aborted during the backoff countdown
-				// This prevents infinite loops when users cancel during auto-retry
-				// Without this check, the recursive call below would continue even after abort
-				if (this.abort) {
-					throw new Error(
-						`[Task#attemptApiRequest] task ${this.taskId}.${this.instanceId} aborted during retry`,
+				while (true) {
+					const category = this.retryCategoryForError(compatibilityError, retryMetadata.retryCategory)
+					const decision = this.agentRetryPolicy.decide({
+						category,
+						attempt: compatibilityAttempt,
+						retryAfterMs: this.retryAfterMs(compatibilityError),
+						hasSemanticOutput: false,
+					})
+					if (!decision.shouldRetry) break
+
+					// Preserve the legacy countdown shape for direct callers. The live
+					// Task loop uses waitForRetryDecision, which is abort-aware.
+					await this.backoffAndAnnounce(compatibilityAttempt - 1, compatibilityError)
+					if (this.abort) break
+
+					const compatibilityController = new AbortController()
+					this.currentRequestAbortController = compatibilityController
+					this.currentRequestSignal = compatibilityController.signal
+					const compatibilityAttemptId = crypto.randomUUID()
+					const compatibilityMetadata: ApiHandlerCreateMessageMetadata = {
+						...requestMetadata,
+						attemptId: compatibilityAttemptId,
+						signal: compatibilityController.signal,
+						...(requestTimeoutMs !== undefined ? { deadline: Date.now() + requestTimeoutMs } : {}),
+					}
+					this.captureAgentStep(
+						compatibilityAttempt - 1,
+						systemPrompt,
+						cleanConversationHistory as Anthropic.Messages.MessageParam[],
+						allTools,
+						allowedFunctionNames,
+						compatibilityMetadata,
+						mode,
+						modelInfo,
+						taskToolSurface,
 					)
+
+					try {
+						const compatibilityStream = this.api.createMessage(
+							systemPrompt,
+							cleanConversationHistory as unknown as Anthropic.Messages.MessageParam[],
+							compatibilityMetadata,
+						)
+						const compatibilityIterator = compatibilityStream[Symbol.asyncIterator]()
+						this.isWaitingForFirstChunk = true
+						const compatibilityFirstChunk = await withApiRequestTimeout(
+							compatibilityIterator.next(),
+							`API response stream for ${this.api.getModel().id}`,
+							requestTimeoutMs,
+							() => this.currentRequestAbortController?.abort(),
+						)
+						if (compatibilityFirstChunk.done) {
+							compatibilityError = new Error("Provider returned an empty response")
+							continue
+						}
+						this.isWaitingForFirstChunk = false
+						yield compatibilityFirstChunk.value
+						yield* compatibilityIterator
+						return
+					} catch (nextError) {
+						this.isWaitingForFirstChunk = false
+						compatibilityError = nextError
+						if (nextError instanceof SteerRequestInterruptError) throw nextError
+					} finally {
+						this.currentRequestAbortController = undefined
+					}
+					compatibilityAttempt = decision.nextAttempt
 				}
-
-				// Delegate generator output from the recursive call with
-				// incremented retry count.
-				yield* this.attemptApiRequest(retryAttempt + 1)
-
-				return
-			} else {
-				const { response } = await this.ask(
-					"api_req_failed",
-					error.message ?? JSON.stringify(serializeError(error), null, 2),
-				)
-
-				if (response !== "yesButtonClicked") {
-					// This will never happen since if noButtonClicked, we will
-					// clear current task, aborting this instance.
-					throw new Error("API request failed")
-				}
-
-				await this.say("api_req_retried")
-
-				// Delegate generator output from the recursive call.
-				yield* this.attemptApiRequest()
-				return
 			}
+			throw retryError
 		}
 
 		// No error, so we can continue to yield all remaining chunks.

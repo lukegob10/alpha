@@ -17,7 +17,7 @@ describe("Task retained sub-agent follow-up", () => {
 		const attemptId = "attempt-1"
 		const ask = vi.spyOn(Task.prototype, "ask")
 		const initiateTaskLoop = vi.fn(async () => undefined)
-		const overwriteApiConversationHistory = vi.fn(async () => undefined)
+		const overwriteApiConversationHistory = vi.fn(async () => true)
 		const task = Object.assign(Object.create(Task.prototype), {
 			taskId: "child-1",
 			taskKind: "subagent",
@@ -74,7 +74,7 @@ describe("Task retained sub-agent follow-up", () => {
 		const waitId = "wait-1"
 		const persistedSteering = "<user_message>\nPING_BEFORE_INTERRUPT=25428\n</user_message>"
 		const initiateTaskLoop = vi.fn(async () => undefined)
-		const overwriteApiConversationHistory = vi.fn(async () => undefined)
+		const overwriteApiConversationHistory = vi.fn(async () => true)
 		const onFollowupPersisted = vi.fn()
 		const initialUserMessage = { role: "user", content: [{ type: "text", text: "Initial task" }] }
 		const interruptedAssistantMessage = {

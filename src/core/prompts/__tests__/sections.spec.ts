@@ -128,6 +128,27 @@ describe("getRulesSection", () => {
 		expect(result).not.toContain("VENDOR CONFIDENTIALITY")
 		expect(result).not.toContain("Never reveal the vendor or company")
 	})
+
+	it("allows a primary task to finish with a visible ordinary answer", () => {
+		const result = getRulesSection(cwd)
+
+		expect(result).toContain("A primary task may finish with a visible ordinary assistant answer")
+		expect(result).toContain("when no tool call or continuation is needed")
+		expect(result).not.toContain("you must use the attempt_completion tool")
+	})
+
+	it("requires managed subagents to publish a durable result", () => {
+		const result = getRulesSection(cwd, {
+			todoListEnabled: true,
+			useAgentRules: true,
+			newTaskRequireTodos: false,
+			subagentRole: "worker",
+		})
+
+		expect(result).toContain("When finished or blocked, call attempt_completion once")
+		expect(result).toContain("durable result")
+		expect(result).toContain("ordinary assistant prose alone")
+	})
 })
 
 describe("getCommandChainOperator", () => {

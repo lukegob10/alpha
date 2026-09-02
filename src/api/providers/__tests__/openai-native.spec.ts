@@ -195,6 +195,99 @@ describe("OpenAiNativeHandler", () => {
 				]),
 			)
 		})
+
+		it("returns a metadata-rich failed outcome without throwing for lifecycle callers", async () => {
+			mockResponsesCreate.mockResolvedValue({
+				async *[Symbol.asyncIterator]() {
+					yield {
+						type: "response.failed",
+						error: {
+							message: "Policy rejected",
+							code: "policy_rejected",
+							status: 400,
+							retryable: false,
+						},
+					}
+				},
+			})
+
+			const stream = handler.createMessage(systemPrompt, messages, {
+				requestId: "request-terminal-1",
+				attemptId: "attempt-terminal-1",
+				streamCapabilities: { lifecycle: true },
+			} as any)
+			const chunks: any[] = []
+			let thrown: any
+			try {
+				for await (const chunk of stream) chunks.push(chunk)
+			} catch (error) {
+				thrown = error
+			}
+
+			expect(chunks).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						type: "error",
+						retryable: false,
+						status: 400,
+						requestId: "request-terminal-1",
+						attemptId: "attempt-terminal-1",
+					}),
+					expect.objectContaining({ type: "outcome", status: "failed", retryable: false }),
+				]),
+			)
+			expect(thrown).toBeUndefined()
+		})
+
+		it.each([
+			{
+				label: "completed followed by done",
+				first: { type: "response.completed" },
+				second: { type: "response.done" },
+				expectedStatus: "completed",
+			},
+			{
+				label: "incomplete followed by completed",
+				first: {
+					type: "response.incomplete",
+					response: { incomplete_details: { reason: "max_output_tokens" } },
+				},
+				second: { type: "response.completed" },
+				expectedStatus: "incomplete",
+			},
+			{
+				label: "cancelled followed by completed",
+				first: { type: "response.done", response: { status: "cancelled" } },
+				second: { type: "response.completed" },
+				expectedStatus: "cancelled",
+			},
+		])("emits only the first terminal outcome for $label", async ({ first, second, expectedStatus }) => {
+			mockResponsesCreate.mockResolvedValue({
+				async *[Symbol.asyncIterator]() {
+					yield first
+					yield second
+				},
+			})
+
+			const chunks: any[] = []
+			for await (const chunk of handler.createMessage(systemPrompt, messages, {
+				requestId: "native-terminal-request",
+				attemptId: "native-terminal-attempt",
+				streamCapabilities: { lifecycle: true },
+			} as any)) {
+				chunks.push(chunk)
+			}
+
+			const outcomes = chunks.filter((chunk) => chunk.type === "outcome")
+			expect(outcomes).toHaveLength(1)
+			expect(outcomes[0]).toMatchObject({
+				type: "outcome",
+				status: expectedStatus,
+				terminal: true,
+				requestId: "native-terminal-request",
+				attemptId: "native-terminal-attempt",
+			})
+		})
 	})
 
 	describe("completePrompt", () => {
