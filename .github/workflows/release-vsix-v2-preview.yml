@@ -66,14 +66,14 @@ jobs:
                   $notes = @"
                   Preview VSIX build from main-v2. This is not published to the VS Code Marketplace.
 
-                  Alpha v$version fixes multi-turn tool calling for stateful GitHub Copilot models used through the VS Code Language Model API.
+                  Alpha v$version fixes task continuation races at model-turn completion boundaries.
 
                   Highlights:
-                  - Preserves opaque stateful_marker response data on the exact assistant turn that emitted it
-                  - Replays persisted markers only through the vscode-lm provider
-                  - Lets Copilot associate function_call_output items with their original function calls
-                  - Resets response markers between requests so stale continuation state cannot leak into later turns
-                  - Leaves models that do not emit stateful markers on their existing request path
+                  - Keeps a completed model turn distinct from an actually completed task
+                  - Preserves the active composer and controls while completion review is pending
+                  - Keeps follow-up prompts in the same task instead of opening a new task
+                  - Prevents submitted follow-ups from disappearing or leaving the UI disabled
+                  - Marks task history complete only after the authoritative task lifecycle does
 
                   Commit: ${{ github.sha }}
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.10
+
+### Patch Changes
+
+- Keep completed model turns distinct from completed tasks so follow-up prompts continue in the current task.
+- Preserve the active composer and task controls while a completion review boundary is pending, preventing submitted follow-ups from disappearing or freezing the UI.
+- Mark task history complete only after the authoritative task lifecycle reports completion, including when delayed snapshots arrive out of order.
+
 ## 2.1.9
 
 ### Patch Changes
