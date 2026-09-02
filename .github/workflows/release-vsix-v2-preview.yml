@@ -32,7 +32,11 @@ jobs:
               run: pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
 
             - name: Package extension
-              run: pnpm --dir src exec vsce package --no-dependencies --pre-release --out ../bin
+              shell: pwsh
+              run: |
+                  $version = node -p "require('./src/package.json').version"
+                  New-Item -ItemType Directory -Force -Path bin | Out-Null
+                  pnpm --dir src exec vsce package --no-dependencies --pre-release --out "../bin/alpha-$version.vsix"
 
             - name: Collect preview metadata
               id: release
