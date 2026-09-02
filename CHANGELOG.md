@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.14
+
+### Patch Changes
+
+- Retry transient Windows failures while atomically promoting the managed-agent transaction lock, preventing a disappearing competing lock from blocking completion verification.
+
 ## 2.1.13
 
 ### Patch Changes

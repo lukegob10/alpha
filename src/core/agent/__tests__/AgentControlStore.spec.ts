@@ -954,6 +954,7 @@ describe("AgentControlStore", () => {
 	it("retries a transient Windows transaction-lock rename without losing ownership", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-release-retry-"))
 		const persistence = new FileAgentControlPersistence(directory)
+		const lockPath = `${persistence.filePath}.transaction.lock`
 		const internals = persistence as unknown as {
 			renameTransactionLock(source: string, destination: string): Promise<void>
 		}
@@ -961,15 +962,43 @@ describe("AgentControlStore", () => {
 		const transientError = Object.assign(new Error("temporarily locked by another Windows process"), {
 			code: "EPERM",
 		})
-		const rename = vi
-			.spyOn(internals, "renameTransactionLock")
-			.mockRejectedValueOnce(transientError)
-			.mockImplementation(originalRename)
+		let releaseFailures = 1
+		const rename = vi.spyOn(internals, "renameTransactionLock").mockImplementation(async (source, destination) => {
+			if (source === lockPath && releaseFailures-- > 0) throw transientError
+			await originalRename(source, destination)
+		})
 
 		try {
 			await expect(persistence.withTransaction(async () => undefined)).resolves.toBeUndefined()
-			expect(rename).toHaveBeenCalledTimes(2)
-			await expect(fs.stat(`${persistence.filePath}.transaction.lock`)).rejects.toMatchObject({ code: "ENOENT" })
+			expect(rename.mock.calls.filter(([source]) => source === lockPath)).toHaveLength(2)
+			await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" })
+		} finally {
+			rename.mockRestore()
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("retries a transient Windows failure while promoting a transaction-lock candidate", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-acquire-retry-"))
+		const persistence = new FileAgentControlPersistence(directory)
+		const lockPath = `${persistence.filePath}.transaction.lock`
+		const internals = persistence as unknown as {
+			renameTransactionLock(source: string, destination: string): Promise<void>
+		}
+		const originalRename = internals.renameTransactionLock.bind(persistence)
+		const transientError = Object.assign(new Error("competing Windows lock disappeared during promotion"), {
+			code: "EPERM",
+		})
+		let promotionFailures = 1
+		const rename = vi.spyOn(internals, "renameTransactionLock").mockImplementation(async (source, destination) => {
+			if (source.startsWith(`${lockPath}.candidate.`) && promotionFailures-- > 0) throw transientError
+			await originalRename(source, destination)
+		})
+
+		try {
+			await expect(persistence.withTransaction(async () => "acquired")).resolves.toBe("acquired")
+			expect(rename.mock.calls.filter(([source]) => source.startsWith(`${lockPath}.candidate.`))).toHaveLength(2)
+			await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" })
 		} finally {
 			rename.mockRestore()
 			await fs.rm(directory, { recursive: true, force: true })
@@ -979,6 +1008,7 @@ describe("AgentControlStore", () => {
 	it("recovers the next transaction after every immediate Windows release retry is exhausted", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-release-recovery-"))
 		const persistence = new FileAgentControlPersistence(directory)
+		const lockPath = `${persistence.filePath}.transaction.lock`
 		const internals = persistence as unknown as {
 			renameTransactionLock(source: string, destination: string): Promise<void>
 		}
@@ -986,9 +1016,11 @@ describe("AgentControlStore", () => {
 		const transientError = Object.assign(new Error("transaction directory is still held by Windows"), {
 			code: "EPERM",
 		})
-		const rename = vi.spyOn(internals, "renameTransactionLock")
-		for (let attempt = 0; attempt < 6; attempt++) rename.mockRejectedValueOnce(transientError)
-		rename.mockImplementation(originalRename)
+		let releaseFailures = 6
+		const rename = vi.spyOn(internals, "renameTransactionLock").mockImplementation(async (source, destination) => {
+			if (source === lockPath && releaseFailures-- > 0) throw transientError
+			await originalRename(source, destination)
+		})
 		const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined)
 
 		try {
@@ -1008,8 +1040,8 @@ describe("AgentControlStore", () => {
 				}),
 			).resolves.toBe("committed")
 			await expect(persistence.withTransaction(async () => "next transaction")).resolves.toBe("next transaction")
-			expect(rename).toHaveBeenCalledTimes(8)
-			await expect(fs.stat(`${persistence.filePath}.transaction.lock`)).rejects.toMatchObject({ code: "ENOENT" })
+			expect(rename.mock.calls.filter(([source]) => source === lockPath)).toHaveLength(8)
+			await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" })
 			const entries = await fs.readdir(directory)
 			expect(entries.some((entry) => entry.includes(".transaction.lock.released."))).toBe(true)
 		} finally {

@@ -73,14 +73,12 @@ jobs:
                   $notes = @"
                   Preview VSIX build from main-v2. This is not published to the VS Code Marketplace.
 
-                  Alpha v$version improves chat-switch responsiveness and completed-task follow-up admission.
+                  Alpha v$version fixes transient managed-agent completion verification failures on Windows.
 
                   Highlights:
-                  - Presents cached task state immediately and refreshes expensive global state in the background
-                  - Progressively mounts older messages so long chats become interactive sooner
-                  - Shows immediate task-opening and follow-up feedback while preventing duplicate submissions
-                  - Preserves lifecycle durability while eliminating redundant full-history writes
-                  - Reuses matching VS Code Language Model discovery and skips unnecessary token estimation
+                  - Retries transient Windows errors while atomically promoting the managed-agent transaction lock
+                  - Handles the race where another process releases the destination lock during candidate promotion
+                  - Preserves exclusive token ownership, bounded retries, and deterministic lock cleanup
                   - Validates the extension and VS Code Language Model contract on exact VS Code 1.122.1
 
                   Commit: ${{ github.sha }}

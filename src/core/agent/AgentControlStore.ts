@@ -42,8 +42,9 @@ const DEFAULT_OWNER_LEASE_STALE_MS = 60_000
 const DEFAULT_OWNER_LEASE_UPDATE_MS = 10_000
 const DEFAULT_RECOVERY_SCAN_INTERVAL_MS = 30_000
 const TRANSACTION_LOCK_RETRY_DELAYS_MS = [50, 100, 200, 400, 800, 1_000] as const
+const TRANSACTION_LOCK_PROMOTION_RETRY_DELAYS_MS = [10, 25, 50, 100, 200] as const
 const TRANSACTION_LOCK_RELEASE_RETRY_DELAYS_MS = [10, 25, 50, 100, 200] as const
-const TRANSIENT_LOCK_RELEASE_ERROR_CODES = new Set(["EACCES", "EBUSY", "EPERM"])
+const TRANSIENT_TRANSACTION_LOCK_RENAME_ERROR_CODES = new Set(["EACCES", "EBUSY", "EPERM"])
 
 const ALLOWED_TRANSITIONS: Record<AgentLifecycleStatus, ReadonlySet<AgentLifecycleStatus>> = {
 	pending: new Set([
@@ -346,18 +347,28 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		try {
 			await fs.mkdir(candidatePath)
 			await fs.writeFile(candidateOwnerPath, JSON.stringify(owner), { encoding: "utf8", flag: "wx" })
-			try {
-				await fs.rename(candidatePath, this.transactionLockPath)
-				acquired = true
-				return true
-			} catch (error) {
+			for (let attempt = 0; ; attempt++) {
 				try {
-					await fs.stat(this.transactionLockPath)
-					return false
-				} catch (statError) {
-					if ((statError as NodeJS.ErrnoException).code !== "ENOENT") throw statError
+					await this.renameTransactionLock(candidatePath, this.transactionLockPath)
+					acquired = true
+					return true
+				} catch (error) {
+					try {
+						await fs.stat(this.transactionLockPath)
+						return false
+					} catch (statError) {
+						if ((statError as NodeJS.ErrnoException).code !== "ENOENT") throw statError
+					}
+
+					const code = (error as NodeJS.ErrnoException).code ?? ""
+					const delayMs = TRANSACTION_LOCK_PROMOTION_RETRY_DELAYS_MS[attempt]
+					if (!TRANSIENT_TRANSACTION_LOCK_RENAME_ERROR_CODES.has(code) || delayMs === undefined) throw error
+
+					// On Windows, a contender can make rename fail with EPERM and then
+					// release the destination before the existence check completes. Keep
+					// the immutable candidate and retry its atomic promotion.
+					await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
 				}
-				throw error
 			}
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "EEXIST") return false
@@ -411,7 +422,7 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 				const code = (error as NodeJS.ErrnoException).code ?? ""
 				if (code === "ENOENT") return
 				const delayMs = TRANSACTION_LOCK_RELEASE_RETRY_DELAYS_MS[attempt]
-				if (!TRANSIENT_LOCK_RELEASE_ERROR_CODES.has(code)) throw error
+				if (!TRANSIENT_TRANSACTION_LOCK_RENAME_ERROR_CODES.has(code)) throw error
 				if (delayMs === undefined) {
 					// A committed write must remain successful, but the live owner may not
 					// permanently block the next transaction. Publish a durable release
@@ -474,7 +485,7 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 			}
 			try {
 				await fs.stat(this.transactionLockPath)
-				if (TRANSIENT_LOCK_RELEASE_ERROR_CODES.has((error as NodeJS.ErrnoException).code ?? "")) {
+				if (TRANSIENT_TRANSACTION_LOCK_RENAME_ERROR_CODES.has((error as NodeJS.ErrnoException).code ?? "")) {
 					return false
 				}
 				throw error
