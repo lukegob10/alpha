@@ -536,9 +536,11 @@ export class ClineProvider
 					this.pendingManagedTaskCompletions.set(taskId, { tokenUsage, toolUsage })
 					return
 				}
-				void this.completeTaskLifecycle(taskId, tokenUsage, toolUsage).catch((error) => {
-					this.log(`Failed to publish task ${taskId} completion: ${String(error)}`)
-				})
+				void this.completeTaskLifecycle(taskId, tokenUsage, toolUsage, { rootAlreadyPrepared: true }).catch(
+					(error) => {
+						this.log(`Failed to publish task ${taskId} completion: ${String(error)}`)
+					},
+				)
 			}
 			const onTaskAborted = () => {
 				const failed = instance.abortReason === "streaming_failed"
@@ -4252,8 +4254,16 @@ export class ClineProvider
 	}
 
 	/** Publish primary completion only after its orchestration root is durably terminal. */
-	private async completeTaskLifecycle(taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage): Promise<void> {
-		await this.prepareTaskCompletionLifecycle(taskId)
+	private async completeTaskLifecycle(
+		taskId: string,
+		tokenUsage: TokenUsage,
+		toolUsage: ToolUsage,
+		options: { rootAlreadyPrepared?: boolean } = {},
+	): Promise<void> {
+		// Task publishes its primary completion event only after this exact durable
+		// root transition has succeeded. Repeating it here adds a second full store
+		// transaction and lets that stale async completion race a new Running event.
+		if (!options.rootAlreadyPrepared) await this.prepareTaskCompletionLifecycle(taskId)
 		this.markTaskLifecycle(taskId, TaskLifecycleState.Completed)
 		this.emit(RooCodeEventName.TaskCompleted, taskId, tokenUsage, toolUsage)
 	}
@@ -4533,7 +4543,15 @@ export class ClineProvider
 		this.currentView = { type: "task", taskId: task.taskId }
 		this.newTaskDraftMode = defaultModeSlug
 		task.emit(RooCodeEventName.TaskFocused)
-		await this.postStateToWebview()
+		// A task switch must acknowledge the click from in-memory state. Building
+		// the full extension snapshot reads configuration and durable stores, which
+		// is especially noticeable when the selected transcript is large. Clear the
+		// previous task's managed tree in the fast snapshot, then reconcile the
+		// remaining settings in a sequenced background refresh.
+		await this.postTaskStateToWebview({ clearManagedAgentTree: true })
+		void this.postStateToWebviewWithoutClineMessages().catch((error) => {
+			this.log(`[focusTask] Background state refresh failed: ${String(error)}`)
+		})
 		return true
 	}
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.13
+
+### Patch Changes
+
+- Open long chats promptly by presenting cached task state immediately, progressively mounting older transcript rows, and moving the expensive global refresh off the focus critical path.
+- Show immediate busy feedback when opening a task and prevent duplicate task-opening requests while the selected chat loads.
+- Admit completed-task follow-ups before prior lifecycle durability settles, prevent duplicate submissions, preserve truthful lifecycle ordering, and avoid redundant full-history writes.
+- Share VS Code Language Model discovery across matching handlers and defer fallback token estimation until it is actually needed.
+
 ## 2.1.12
 
 ### Patch Changes

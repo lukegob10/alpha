@@ -1,10 +1,10 @@
 import { memo } from "react"
 import { ArrowRight, ChevronRight, CornerDownRight } from "lucide-react"
-import { vscode } from "@/utils/vscode"
 import { cn } from "@/lib/utils"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import type { SubtaskTreeNode } from "./types"
 import { countAllSubtasks } from "./types"
+import { useTaskOpeningFeedback } from "./useTaskOpeningFeedback"
 import { StandardTooltip } from "../ui"
 
 interface SubtaskRowProps {
@@ -26,13 +26,14 @@ interface SubtaskRowProps {
 const SubtaskRow = ({ node, depth, onToggleExpand, className }: SubtaskRowProps) => {
 	const { t } = useAppTranslation()
 	const { item, children, isExpanded } = node
+	const { isOpening, openTask } = useTaskOpeningFeedback(item.id)
 	const hasChildren = children.length > 0
 	const descendantCount = hasChildren ? countAllSubtasks(children) : 0
 	const childListId = `subtask-${item.id}-children`
 	const rowIndent = 12 + Math.max(0, depth - 1) * 16
 
 	const handleClick = () => {
-		vscode.postMessage({ type: "showTaskWithId", text: item.id })
+		openTask()
 	}
 
 	return (
@@ -52,11 +53,20 @@ const SubtaskRow = ({ node, depth, onToggleExpand, className }: SubtaskRowProps)
 					type="button"
 					className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md py-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--alpha-accent)]"
 					onClick={handleClick}
+					aria-busy={isOpening}
 					aria-label={`Open task: ${item.task}`}>
 					<StandardTooltip content={item.task} delay={600}>
 						<span className="min-w-0 flex-1 truncate text-sm">{item.task}</span>
 					</StandardTooltip>
-					<ArrowRight className="size-3 shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100" />
+					{isOpening ? (
+						<span
+							className="codicon codicon-loading codicon-modifier-spin size-3 shrink-0"
+							data-testid="subtask-opening-indicator"
+							aria-hidden="true"
+						/>
+					) : (
+						<ArrowRight className="size-3 shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100" />
+					)}
 				</button>
 
 				{hasChildren && (

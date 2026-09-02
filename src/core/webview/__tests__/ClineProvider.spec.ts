@@ -528,6 +528,39 @@ describe("ClineProvider", () => {
 		expect(providerCompletion).toHaveBeenCalledWith(child.taskId, tokenUsage, {})
 	})
 
+	test("does not let an already-prepared completion overwrite an immediate primary-task resume", async () => {
+		const primary = Object.assign(new EventEmitter(), {
+			taskId: "completed-primary",
+			taskKind: "primary" as const,
+		}) as Task
+		const lifecycleOrder: TaskLifecycleState[] = []
+		let releaseDuplicateCompletion!: () => void
+		const duplicateCompletion = new Promise<void>((resolve) => {
+			releaseDuplicateCompletion = resolve
+		})
+		const prepareRootCompletion = vi
+			.spyOn(provider, "prepareTaskCompletionLifecycle")
+			.mockReturnValue(duplicateCompletion)
+		;(provider as any).markTaskLifecycle = vi.fn((_taskId: string, lifecycle: TaskLifecycleState) => {
+			lifecycleOrder.push(lifecycle)
+		})
+		;(provider as any).updateAgentControlRootStatus = vi.fn().mockResolvedValue(undefined)
+		;(provider as any).taskCreationCallback(primary)
+		primary.emit(
+			RooCodeEventName.TaskCompleted,
+			primary.taskId,
+			{ totalTokensIn: 1, totalTokensOut: 0, totalCost: 0, contextTokens: 1 },
+			{},
+		)
+		primary.emit(RooCodeEventName.TaskActive, primary.taskId)
+		releaseDuplicateCompletion()
+		await duplicateCompletion
+		await Promise.resolve()
+
+		expect(prepareRootCompletion).not.toHaveBeenCalled()
+		expect(lifecycleOrder).toEqual([TaskLifecycleState.Completed, TaskLifecycleState.Running])
+	})
+
 	test("serializes a delayed running write before the root completion barrier", async () => {
 		const taskId = "serialized-root-completion"
 		const writes: string[] = []
@@ -748,6 +781,33 @@ describe("ClineProvider", () => {
 				managedAgentTree: undefined,
 			}),
 		})
+	})
+
+	test("acknowledges a live task switch before the full state refresh settles", async () => {
+		const firstTask = Object.assign(new Task(defaultTaskOptions), { taskId: "first-task" })
+		const secondTask = Object.assign(new Task(defaultTaskOptions), { taskId: "second-task" })
+		await provider.addClineToStack(firstTask)
+		await provider.addClineToStack(secondTask)
+
+		const postTaskState = vi.spyOn(provider, "postTaskStateToWebview").mockResolvedValue(undefined)
+		let releaseFullState!: () => void
+		const fullStatePending = new Promise<void>((resolve) => {
+			releaseFullState = resolve
+		})
+		const postTranscriptState = vi.spyOn(provider, "postStateToWebview")
+		const postBackgroundState = vi
+			.spyOn(provider, "postStateToWebviewWithoutClineMessages")
+			.mockReturnValue(fullStatePending)
+
+		await expect(provider.focusTask(firstTask.taskId)).resolves.toBe(true)
+
+		expect(provider.getActiveTask()).toBe(firstTask)
+		expect(postTaskState).toHaveBeenCalledWith({ clearManagedAgentTree: true })
+		expect(postBackgroundState).toHaveBeenCalledOnce()
+		expect(postTranscriptState).not.toHaveBeenCalled()
+
+		releaseFullState()
+		await fullStatePending
 	})
 
 	test("publishes incremental task messages and queues without building full extension state", async () => {

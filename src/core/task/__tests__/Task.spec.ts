@@ -2293,12 +2293,49 @@ describe("Alpha", () => {
 			expect(loadApiHistory).not.toHaveBeenCalled()
 			expect(overwriteClineMessages).not.toHaveBeenCalled()
 			expect(reconcileSubagents).not.toHaveBeenCalled()
-			expect(overwriteApiHistory).toHaveBeenCalledWith(task.apiConversationHistory)
+			expect(overwriteApiHistory).not.toHaveBeenCalled()
 			expect(continueLoop).toHaveBeenCalledWith(
 				[{ type: "text", text: "<user_message>\ncontinue in place\n</user_message>" }],
 				expect.any(Function),
 				{ deferTaskStartedUntilInitialUserContentPersisted: true },
 			)
+		})
+
+		it("restores retained API history when the atomic follow-up write fails", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			;(task as any).didComplete = true
+			;(task as any).didEmitTaskCompleted = true
+			task.clineMessages = [{ ts: 1, type: "say", say: "completion_result", text: "done" }]
+			const originalHistory = [
+				{ role: "user", content: [{ type: "text", text: "initial task" }] },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "completion-1", name: "attempt_completion", input: {} }],
+				},
+				{
+					role: "user",
+					content: [{ type: "tool_result", tool_use_id: "completion-1", content: "done" }],
+				},
+			] as any
+			task.apiConversationHistory = originalHistory
+			vi.spyOn(task as any, "flushApiConversationHistoryPersistence").mockResolvedValue(undefined)
+			vi.spyOn(task, "say").mockResolvedValue(undefined)
+			const overwriteApiHistory = vi.spyOn(task, "overwriteApiConversationHistory")
+			vi.spyOn(task as any, "initiateTaskLoop").mockRejectedValue(new Error("atomic history write failed"))
+
+			await expect(task.resumeCompletedTaskFollowup("retry this follow-up")).rejects.toThrow(
+				"atomic history write failed",
+			)
+
+			expect(overwriteApiHistory).not.toHaveBeenCalled()
+			expect(task.apiConversationHistory).toBe(originalHistory)
+			expect((task as any).didComplete).toBe(true)
+			expect((task as any).steerMessageAwaitingPersistence).toBe(false)
 		})
 
 		it("keeps a completed task terminal when its follow-up fails before persistence", async () => {
@@ -2325,7 +2362,7 @@ describe("Alpha", () => {
 			expect(started).not.toHaveBeenCalled()
 		})
 
-		it("waits for the completed lifecycle to finish flushing before resuming", async () => {
+		it("acknowledges a completed-task follow-up before waiting for the prior lifecycle flush", async () => {
 			const task = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
@@ -2338,12 +2375,15 @@ describe("Alpha", () => {
 			;(task as any).ownedLifecyclePromise = new Promise<void>((resolve) => {
 				finishPriorLifecycle = resolve
 			})
-			const resume = vi
-				.spyOn(task as any, "resumeTaskFromHistory")
-				.mockImplementation(async (...args: unknown[]) => {
-					const onPersisted = args[1] as (() => Promise<void> | void) | undefined
-					await onPersisted?.()
-				})
+			const publicationOrder: string[] = []
+			const resume = vi.spyOn(task as any, "resumeTaskFromHistory")
+			task.on(RooCodeEventName.TaskUserMessage, () => publicationOrder.push("admitted"))
+			task.on(RooCodeEventName.TaskActive, () => publicationOrder.push("active"))
+			resume.mockImplementation(async (...args: unknown[]) => {
+				publicationOrder.push("resume")
+				const onPersisted = args[1] as (() => Promise<void> | void) | undefined
+				await onPersisted?.()
+			})
 
 			let accepted = false
 			const followup = task.resumeCompletedTaskFollowup("continue after the terminal flush").then(() => {
@@ -2353,12 +2393,43 @@ describe("Alpha", () => {
 
 			expect(accepted).toBe(false)
 			expect(resume).not.toHaveBeenCalled()
+			expect(publicationOrder).toEqual(["admitted"])
 			;(task as any).isTaskLoopActive = false
 			finishPriorLifecycle()
 			await followup
 
 			expect(resume).toHaveBeenCalledOnce()
 			expect(accepted).toBe(true)
+			expect(publicationOrder).toEqual(["admitted", "resume", "active"])
+		})
+
+		it("rejects a second completed-task follow-up while the first admission is pending", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			;(task as any).didComplete = true
+			;(task as any).isTaskLoopActive = true
+			let finishPriorLifecycle!: () => void
+			;(task as any).ownedLifecyclePromise = new Promise<void>((resolve) => {
+				finishPriorLifecycle = resolve
+			})
+			vi.spyOn(task as any, "resumeTaskFromHistory").mockImplementation(async (...args: unknown[]) => {
+				const onPersisted = args[1] as (() => Promise<void> | void) | undefined
+				await onPersisted?.()
+			})
+
+			const firstFollowup = task.resumeCompletedTaskFollowup("first follow-up")
+			await Promise.resolve()
+
+			await expect(task.resumeCompletedTaskFollowup("duplicate follow-up")).rejects.toThrow(
+				"already being admitted",
+			)
+			;(task as any).isTaskLoopActive = false
+			finishPriorLifecycle()
+			await firstFollowup
 		})
 
 		it("rejects the completed-task resume route while the task is not completed", async () => {

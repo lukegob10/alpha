@@ -13,6 +13,8 @@ interface ExtensionStateMessage {
 	state: {
 		version: string
 		clineMessages: ClineMessage[]
+		currentTaskId?: string
+		currentTaskItem?: { id: string; number: number; task: string; ts: number }
 		taskHistory: unknown[]
 		shouldShowAnnouncement: boolean
 		allowedCommands: string[]
@@ -120,12 +122,23 @@ const buildMessagesWithCheckpoint = (baseTs: number): ClineMessage[] => [
 	{ type: "say", say: "text", ts: baseTs + 3, text: "row-2" },
 ]
 
-const postState = (clineMessages: ClineMessage[]) => {
+const postState = (clineMessages: ClineMessage[], taskId?: string) => {
 	const message: ExtensionStateMessage = {
 		type: "state",
 		state: {
 			version: "1.0.0",
 			clineMessages,
+			...(taskId
+				? {
+						currentTaskId: taskId,
+						currentTaskItem: {
+							id: taskId,
+							number: 1,
+							task: "Long persisted task",
+							ts: 1,
+						},
+					}
+				: {}),
 			taskHistory: [],
 			shouldShowAnnouncement: false,
 			allowedCommands: [],
@@ -196,6 +209,78 @@ const getScrollToBottomButton = (): HTMLButtonElement => {
 }
 
 describe("ChatView native scroll behavior", () => {
+	it("bounds the synchronous row mount cost for a long transcript", async () => {
+		const idleCallbacks: IdleRequestCallback[] = []
+		vi.stubGlobal(
+			"requestIdleCallback",
+			vi.fn((callback: IdleRequestCallback) => {
+				idleCallbacks.push(callback)
+				return idleCallbacks.length
+			}),
+		)
+		vi.stubGlobal("cancelIdleCallback", vi.fn())
+
+		try {
+			const baseTs = Date.now() - 10_000
+			const messages: ClineMessage[] = Array.from({ length: 1_001 }, (_, index) => ({
+				type: "say",
+				say: "text",
+				ts: baseTs + index,
+				text: index === 0 ? "task" : `row-${index}`,
+			}))
+
+			renderView()
+			await act(async () => postState(messages))
+
+			expect(document.querySelectorAll("[data-testid='chat-row']")).toHaveLength(80)
+			expect(idleCallbacks).toHaveLength(1)
+			expect(document.querySelector("[data-testid='chat-transcript-content']")).toHaveAttribute(
+				"data-count",
+				"1000",
+			)
+
+			const firstIdleBatch = idleCallbacks.shift()
+			expect(firstIdleBatch).toBeDefined()
+			await act(async () => firstIdleBatch?.({ didTimeout: false, timeRemaining: () => 50 }))
+
+			expect(document.querySelectorAll("[data-testid='chat-row']")).toHaveLength(180)
+			expect(idleCallbacks).toHaveLength(1)
+		} finally {
+			vi.unstubAllGlobals()
+		}
+	})
+
+	it("resets the render window when a pending task receives its persisted transcript", async () => {
+		const idleCallbacks: IdleRequestCallback[] = []
+		vi.stubGlobal(
+			"requestIdleCallback",
+			vi.fn((callback: IdleRequestCallback) => {
+				idleCallbacks.push(callback)
+				return idleCallbacks.length
+			}),
+		)
+		vi.stubGlobal("cancelIdleCallback", vi.fn())
+
+		try {
+			const baseTs = Date.now() - 10_000
+			const messages: ClineMessage[] = Array.from({ length: 1_001 }, (_, index) => ({
+				type: "say",
+				say: "text",
+				ts: baseTs + index,
+				text: index === 0 ? "task" : `row-${index}`,
+			}))
+
+			renderView()
+			await act(async () => postState([], "long-task"))
+			await act(async () => postState(messages, "long-task"))
+
+			expect(document.querySelectorAll("[data-testid='chat-row']")).toHaveLength(80)
+			expect(idleCallbacks).toHaveLength(1)
+		} finally {
+			vi.unstubAllGlobals()
+		}
+	})
+
 	it("uses a real bounded scroller with exact non-virtualized content", async () => {
 		await hydrate()
 		const scroller = getScrollable()

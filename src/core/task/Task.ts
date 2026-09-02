@@ -5552,66 +5552,82 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			throw new Error("The task has not completed")
 		}
-
-		// TaskCompleted is emitted before the old loop's terminal journal flush has
-		// necessarily returned. Join that owned lifecycle so the new turn cannot
-		// overlap the preceding terminal write.
-		await this.waitForOwnedLifecycle()
-		if (!this.didComplete) throw new Error("The task has not completed")
-		if (this.isTaskLoopActive || this.isStreaming || this.isAgentTurnEngineActive) {
-			throw new Error("The completed task is still finalizing")
+		if (this.steerMessageAwaitingPersistence) {
+			throw new Error("A completed-task follow-up is already being admitted")
 		}
-		await this.prepareForRetainedLifecycle()
 
-		this._started = true
-		this.didComplete = false
-		this.didEmitTaskCompleted = false
-		this.abort = false
-		this.abandoned = false
-		this.abortReason = undefined
-		this.didFinishAbortingStream = false
-		this.isWaitingForFirstChunk = false
-		this.pendingSteerMessage = undefined
+		// Claim the one pending admission synchronously and publish a receipt before
+		// joining the previous turn's durability fence. The task remains Completed
+		// until the new user content itself is durable, but callers no longer see a
+		// silent interval while terminal journal work drains.
 		this.steerMessageAwaitingPersistence = true
-
 		let followupPersisted = false
-		let resolvePersisted!: () => void
-		let rejectPersisted!: (error: unknown) => void
-		const persisted = new Promise<void>((resolve, reject) => {
-			resolvePersisted = resolve
-			rejectPersisted = reject
-		})
-		const lifecycle = this.resumeTaskFromHistory(
-			instruction,
-			() => {
-				// Do not expose a Running lifecycle until the continuation is
-				// durable. If preparation fails before this callback, the UI remains
-				// truthfully Completed and can restore the submitted draft.
-				this.emit(RooCodeEventName.TaskActive, this.taskId)
-				followupPersisted = true
-				resolvePersisted()
-			},
-			images,
-			{
-				deferTaskStartedUntilInitialUserContentPersisted: true,
-				reuseRetainedHistory: true,
-			},
-		)
-		this.ownBackgroundLifecycle("resume", lifecycle)
-		void lifecycle.then(
-			() => {
-				if (!followupPersisted) rejectPersisted(new Error("The completed-task follow-up was not persisted"))
-			},
-			(error) => rejectPersisted(error),
-		)
+		let completionStateReset = false
 		try {
+			this.emit(RooCodeEventName.TaskUserMessage, this.taskId)
+
+			// TaskCompleted is emitted before the old loop's terminal journal flush has
+			// necessarily returned. Join that owned lifecycle so the new turn cannot
+			// overlap the preceding terminal write.
+			await this.waitForOwnedLifecycle()
+			if (!this.didComplete) throw new Error("The task has not completed")
+			if (this.isTaskLoopActive || this.isStreaming || this.isAgentTurnEngineActive) {
+				throw new Error("The completed task is still finalizing")
+			}
+			await this.prepareForRetainedLifecycle()
+
+			completionStateReset = true
+			this._started = true
+			this.didComplete = false
+			this.didEmitTaskCompleted = false
+			this.abort = false
+			this.abandoned = false
+			this.abortReason = undefined
+			this.didFinishAbortingStream = false
+			this.isWaitingForFirstChunk = false
+			this.pendingSteerMessage = undefined
+
+			let resolvePersisted!: () => void
+			let rejectPersisted!: (error: unknown) => void
+			const persisted = new Promise<void>((resolve, reject) => {
+				resolvePersisted = resolve
+				rejectPersisted = reject
+			})
+			const lifecycle = this.resumeTaskFromHistory(
+				instruction,
+				() => {
+					// Do not expose a Running lifecycle until the continuation is
+					// durable. If preparation fails before this callback, the UI remains
+					// truthfully Completed and can restore the submitted draft.
+					followupPersisted = true
+					this.steerMessageAwaitingPersistence = false
+					this.emit(RooCodeEventName.TaskActive, this.taskId)
+					resolvePersisted()
+				},
+				images,
+				{
+					deferTaskStartedUntilInitialUserContentPersisted: true,
+					reuseRetainedHistory: true,
+				},
+			)
+			this.ownBackgroundLifecycle("resume", lifecycle)
+			void lifecycle.then(
+				() => {
+					if (!followupPersisted) {
+						rejectPersisted(new Error("The completed-task follow-up was not persisted"))
+					}
+				},
+				(error) => rejectPersisted(error),
+			)
 			await persisted
 		} catch (error) {
 			if (!followupPersisted) {
-				// No provider request was admitted, so restore the terminal flags
-				// without publishing a duplicate TaskCompleted event.
-				this.markCompleted()
-				this.didEmitTaskCompleted = true
+				if (completionStateReset) {
+					// No provider request was admitted, so restore the terminal flags
+					// without publishing a duplicate TaskCompleted event.
+					this.markCompleted()
+					this.didEmitTaskCompleted = true
+				}
 				this.steerMessageAwaitingPersistence = false
 			}
 			throw error
@@ -5876,17 +5892,35 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				})
 			}
 
-			if (!(await this.overwriteApiConversationHistory(modifiedApiConversationHistory))) {
+			let resumedUserContentPersisted = false
+			const onResumedUserContentPersisted = useRetainedHistory
+				? async () => {
+						resumedUserContentPersisted = true
+						await onSubagentSteeringPersisted?.()
+					}
+				: onSubagentSteeringPersisted
+			if (useRetainedHistory) {
+				// The next task-loop boundary persists this repaired prefix together
+				// with the follow-up. Avoid a redundant full-transcript write (and an
+				// interim assistant-tool-use without its user result) on long threads.
+				this.apiConversationHistory = modifiedApiConversationHistory
+			} else if (!(await this.overwriteApiConversationHistory(modifiedApiConversationHistory))) {
 				throw new Error("Unable to persist resumed conversation history before continuing.")
 			}
 
 			// Task resuming from history item.
-			if (options.deferTaskStartedUntilInitialUserContentPersisted) {
-				await this.initiateTaskLoop(newUserContent, onSubagentSteeringPersisted, {
-					deferTaskStartedUntilInitialUserContentPersisted: true,
-				})
-			} else {
-				await this.initiateTaskLoop(newUserContent, onSubagentSteeringPersisted)
+			try {
+				if (options.deferTaskStartedUntilInitialUserContentPersisted) {
+					await this.initiateTaskLoop(newUserContent, onResumedUserContentPersisted, {
+						deferTaskStartedUntilInitialUserContentPersisted: true,
+					})
+				} else {
+					await this.initiateTaskLoop(newUserContent, onResumedUserContentPersisted)
+				}
+			} finally {
+				if (useRetainedHistory && !resumedUserContentPersisted) {
+					this.apiConversationHistory = existingApiConversationHistory
+				}
 			}
 		} catch (error) {
 			// Resume and cancellation can race when users issue repeated cancels.

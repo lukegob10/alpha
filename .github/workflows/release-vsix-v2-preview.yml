@@ -73,13 +73,14 @@ jobs:
                   $notes = @"
                   Preview VSIX build from main-v2. This is not published to the VS Code Marketplace.
 
-                  Alpha v$version fixes invalid read-file requests and completed-task follow-up feedback and latency.
+                  Alpha v$version improves chat-switch responsiveness and completed-task follow-up admission.
 
                   Highlights:
-                  - Requires a path in read_file requests exposed to VS Code Language Models
-                  - Shows immediate progress and hides stale new-task controls while a completed task resumes
-                  - Prevents duplicate follow-up submissions and restores the draft if resume admission fails
-                  - Reuses retained task history instead of redundantly reloading and rewriting transcripts
+                  - Presents cached task state immediately and refreshes expensive global state in the background
+                  - Progressively mounts older messages so long chats become interactive sooner
+                  - Shows immediate task-opening and follow-up feedback while preventing duplicate submissions
+                  - Preserves lifecycle durability while eliminating redundant full-history writes
+                  - Reuses matching VS Code Language Model discovery and skips unnecessary token estimation
                   - Validates the extension and VS Code Language Model contract on exact VS Code 1.122.1
 
                   Commit: ${{ github.sha }}

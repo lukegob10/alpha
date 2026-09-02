@@ -116,11 +116,15 @@ describe("SubtaskRow", () => {
 
 			const row = screen.getByRole("button")
 			fireEvent.click(row)
+			fireEvent.click(row)
 
 			expect(vscode.postMessage).toHaveBeenCalledWith({
 				type: "showTaskWithId",
 				text: "task-42",
 			})
+			expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+			expect(row).toHaveAttribute("aria-busy", "true")
+			expect(screen.getByTestId("subtask-opening-indicator")).toBeInTheDocument()
 		})
 
 		it("calls onToggleExpand with correct task ID when collapsible row is clicked", () => {

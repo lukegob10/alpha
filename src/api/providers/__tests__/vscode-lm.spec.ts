@@ -168,6 +168,8 @@ describe("VsCodeLmHandler", () => {
 	})
 
 	afterEach(() => {
+		const modelChangeCallback = (vscode.lm.onDidChangeChatModels as Mock).mock.calls[0]?.[0]
+		modelChangeCallback?.()
 		handler.dispose()
 	})
 
@@ -281,6 +283,148 @@ describe("VsCodeLmHandler", () => {
 			await expect(
 				handler["createClient"]({ vendor: "copilot", family: "gpt-5.6-sol", id: "copilot-gpt-5.6-sol" }),
 			).resolves.toBe(liveModel)
+		})
+	})
+
+	describe("client resolution", () => {
+		it("shares one in-flight model selection across cold handlers with the same selector", async () => {
+			mockVsCodeVersion.value = "1.122.1"
+			let resolveModels: ((models: (typeof mockLanguageModelChat)[]) => void) | undefined
+			;(vscode.lm.selectChatModels as Mock).mockImplementationOnce(
+				() =>
+					new Promise<(typeof mockLanguageModelChat)[]>((resolve) => {
+						resolveModels = resolve
+					}),
+			)
+			mockLanguageModelChat.sendRequest.mockImplementation(async () => ({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Response")
+				})(),
+			}))
+			const firstHandler = new VsCodeLmHandler(defaultOptions)
+			const secondHandler = new VsCodeLmHandler(defaultOptions)
+
+			try {
+				const firstChunk = firstHandler.createMessage("System", [{ role: "user", content: "First" }]).next()
+				const secondChunk = secondHandler.createMessage("System", [{ role: "user", content: "Second" }]).next()
+
+				await vi.waitFor(() => expect(resolveModels).toBeTypeOf("function"))
+				expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(1)
+				expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
+
+				resolveModels?.([mockLanguageModelChat])
+				await expect(firstChunk).resolves.toMatchObject({ value: { type: "text", text: "Response" } })
+				await expect(secondChunk).resolves.toMatchObject({ value: { type: "text", text: "Response" } })
+				expect(mockLanguageModelChat.sendRequest).toHaveBeenCalledTimes(2)
+			} finally {
+				firstHandler.dispose()
+				secondHandler.dispose()
+			}
+		})
+
+		it("re-queries after the VS Code 1.122 model-change event invalidates retained clients", async () => {
+			mockVsCodeVersion.value = "1.122.1"
+			const createResponse = () => ({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Response")
+				})(),
+			})
+			const firstSendRequest = vi.fn(async () => createResponse())
+			const secondSendRequest = vi.fn(async () => createResponse())
+			const firstModel = { ...mockLanguageModelChat, id: "first-model", sendRequest: firstSendRequest }
+			const secondModel = { ...mockLanguageModelChat, id: "second-model", sendRequest: secondSendRequest }
+			;(vscode.lm.selectChatModels as Mock)
+				.mockReset()
+				.mockResolvedValueOnce([firstModel])
+				.mockResolvedValueOnce([secondModel])
+			const firstHandler = new VsCodeLmHandler(defaultOptions)
+			const secondHandler = new VsCodeLmHandler(defaultOptions)
+			let thirdHandler: VsCodeLmHandler | undefined
+
+			try {
+				await firstHandler.createMessage("System", [{ role: "user", content: "First" }]).next()
+				await secondHandler.createMessage("System", [{ role: "user", content: "Second" }]).next()
+
+				expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(1)
+				expect(firstSendRequest).toHaveBeenCalledTimes(2)
+
+				for (const [modelChangeCallback] of (vscode.lm.onDidChangeChatModels as Mock).mock.calls) {
+					modelChangeCallback()
+				}
+
+				thirdHandler = new VsCodeLmHandler(defaultOptions)
+				await thirdHandler.createMessage("System", [{ role: "user", content: "Third" }]).next()
+
+				expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(2)
+				expect(secondSendRequest).toHaveBeenCalledOnce()
+			} finally {
+				firstHandler.dispose()
+				secondHandler.dispose()
+				thirdHandler?.dispose()
+			}
+		})
+
+		it("discards an in-flight selection invalidated by the VS Code 1.122 model-change event", async () => {
+			mockVsCodeVersion.value = "1.122.1"
+			let resolveStaleModels: ((models: (typeof mockLanguageModelChat)[]) => void) | undefined
+			const staleModel = { ...mockLanguageModelChat, id: "stale-model" }
+			const freshModel = { ...mockLanguageModelChat, id: "fresh-model" }
+			;(vscode.lm.selectChatModels as Mock)
+				.mockReset()
+				.mockImplementationOnce(
+					() =>
+						new Promise<(typeof mockLanguageModelChat)[]>((resolve) => {
+							resolveStaleModels = resolve
+						}),
+				)
+				.mockResolvedValueOnce([freshModel])
+			const initializingHandler = new VsCodeLmHandler(defaultOptions)
+
+			try {
+				const initialization = initializingHandler.initializeClient()
+				await vi.waitFor(() => expect(resolveStaleModels).toBeTypeOf("function"))
+
+				for (const [modelChangeCallback] of (vscode.lm.onDidChangeChatModels as Mock).mock.calls) {
+					modelChangeCallback()
+				}
+				resolveStaleModels?.([staleModel])
+
+				await initialization
+
+				expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(2)
+				expect(initializingHandler["client"]).toBe(freshModel)
+			} finally {
+				initializingHandler.dispose()
+			}
+		})
+
+		it("evicts a failed selection so the next request can recover", async () => {
+			;(vscode.lm.selectChatModels as Mock)
+				.mockReset()
+				.mockRejectedValueOnce(new Error("Model catalog unavailable"))
+				.mockResolvedValueOnce([mockLanguageModelChat])
+			mockLanguageModelChat.sendRequest.mockImplementationOnce(async () => ({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Recovered")
+				})(),
+			}))
+			const firstHandler = new VsCodeLmHandler(defaultOptions)
+			const secondHandler = new VsCodeLmHandler(defaultOptions)
+
+			try {
+				await expect(
+					firstHandler.createMessage("System", [{ role: "user", content: "First" }]).next(),
+				).rejects.toThrow("Model catalog unavailable")
+				await expect(
+					secondHandler.createMessage("System", [{ role: "user", content: "Second" }]).next(),
+				).resolves.toMatchObject({ value: { type: "text", text: "Recovered" } })
+
+				expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(2)
+				expect(mockLanguageModelChat.sendRequest).toHaveBeenCalledOnce()
+			} finally {
+				firstHandler.dispose()
+				secondHandler.dispose()
+			}
 		})
 	})
 
@@ -510,6 +654,55 @@ describe("VsCodeLmHandler", () => {
 				expect.anything(),
 			)
 			warnSpy.mockRestore()
+		})
+
+		it("defers long-input fallback accounting until after sendRequest and skips it for host usage", async () => {
+			const sentinel = "long-history-sentinel"
+			const usage = { prompt_tokens: 321, completion_tokens: 45 }
+			const originalEncode = TextEncoder.prototype.encode
+			let requestStarted = false
+			let sentinelEncodesBeforeRequest = 0
+			let sentinelEncodeCount = 0
+			const encodeSpy = vi.spyOn(TextEncoder.prototype, "encode").mockImplementation(function (
+				this: TextEncoder,
+				input = "",
+			) {
+				if (input.includes(sentinel)) {
+					sentinelEncodeCount++
+					if (!requestStarted) {
+						sentinelEncodesBeforeRequest++
+					}
+				}
+				return originalEncode.call(this, input)
+			})
+			mockLanguageModelChat.sendRequest.mockImplementationOnce(async () => {
+				requestStarted = true
+				return {
+					stream: (async function* () {
+						yield new vscode.LanguageModelTextPart("Response")
+						yield { mimeType: "usage", data: new TextEncoder().encode(JSON.stringify(usage)) }
+					})(),
+				}
+			})
+
+			try {
+				const chunks = []
+				for await (const chunk of handler.createMessage(`System ${sentinel}`, [
+					{ role: "user", content: sentinel.repeat(10_000) },
+				])) {
+					chunks.push(chunk)
+				}
+
+				expect(chunks.at(-1)).toEqual({
+					type: "usage",
+					inputTokens: usage.prompt_tokens,
+					outputTokens: usage.completion_tokens,
+				})
+				expect(sentinelEncodesBeforeRequest).toBe(0)
+				expect(sentinelEncodeCount).toBe(0)
+			} finally {
+				encodeSpy.mockRestore()
+			}
 		})
 
 		it("should replay a persisted stateful marker on its assistant tool-call message", async () => {

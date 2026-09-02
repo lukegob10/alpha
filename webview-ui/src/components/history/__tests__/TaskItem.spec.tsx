@@ -1,9 +1,10 @@
-import { render, screen, fireEvent } from "@/utils/test-utils"
+import { act, render, screen, fireEvent } from "@/utils/test-utils"
 import { TaskLifecycleState, TaskStatus, type LiveTaskMetadata } from "@alpha-code/types"
 import { ExtensionStateContext } from "@/context/ExtensionStateContext"
 import { vscode } from "@/utils/vscode"
 
 import TaskItem from "../TaskItem"
+import { TASK_OPENING_FEEDBACK_TIMEOUT_MS } from "../useTaskOpeningFeedback"
 
 vi.mock("@/utils/vscode", () => ({
 	vscode: {
@@ -150,7 +151,8 @@ describe("TaskItem", () => {
 	})
 
 	it("opens the task when the row is clicked", () => {
-		render(
+		vi.useFakeTimers()
+		const { unmount } = render(
 			<TaskItem
 				item={mockTask}
 				variant="full"
@@ -160,9 +162,26 @@ describe("TaskItem", () => {
 			/>,
 		)
 
-		fireEvent.click(screen.getByTestId("task-item-1"))
+		try {
+			const taskItem = screen.getByTestId("task-item-1")
+			fireEvent.click(taskItem)
+			fireEvent.click(taskItem)
 
-		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "showTaskWithId", text: "1" })
+			expect(vscode.postMessage).toHaveBeenCalledWith({ type: "showTaskWithId", text: "1" })
+			expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+			expect(taskItem).toHaveAttribute("aria-busy", "true")
+			expect(screen.getByTestId("task-opening-indicator")).toBeInTheDocument()
+
+			act(() => vi.advanceTimersByTime(TASK_OPENING_FEEDBACK_TIMEOUT_MS))
+			expect(taskItem).toHaveAttribute("aria-busy", "false")
+			expect(screen.queryByTestId("task-opening-indicator")).not.toBeInTheDocument()
+
+			fireEvent.click(taskItem)
+			expect(vscode.postMessage).toHaveBeenCalledTimes(2)
+		} finally {
+			unmount()
+			vi.useRealTimers()
+		}
 	})
 
 	it("shows waiting live tasks as a static status dot", () => {

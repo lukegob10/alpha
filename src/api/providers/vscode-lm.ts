@@ -64,6 +64,60 @@ const VSCODE_GPT_56_MIN_VERSION = "1.128.0"
 const VSCODE_LM_STATEFUL_MARKER_MIME_TYPE = "stateful_marker"
 const VSCODE_LM_TOKEN_COUNT_TIMEOUT_MS = 5_000
 
+type VsCodeLmClientCacheEntry = {
+	generation: number
+	promise: Promise<vscode.LanguageModelChat>
+}
+
+const vsCodeLmClientCache = new Map<string, VsCodeLmClientCacheEntry>()
+let vsCodeLmClientCacheGeneration = 0
+
+function getVsCodeLmClientCacheKey(selector: vscode.LanguageModelChatSelector): string {
+	return JSON.stringify([
+		selector.vendor ?? null,
+		selector.family ?? null,
+		selector.version ?? null,
+		selector.id ?? null,
+	])
+}
+
+function invalidateVsCodeLmClientCache(): void {
+	vsCodeLmClientCacheGeneration++
+	vsCodeLmClientCache.clear()
+}
+
+function getCachedVsCodeLmClient(
+	selector: vscode.LanguageModelChatSelector,
+	resolve: () => Promise<vscode.LanguageModelChat>,
+): Promise<vscode.LanguageModelChat> {
+	const key = getVsCodeLmClientCacheKey(selector)
+	const cached = vsCodeLmClientCache.get(key)
+	if (cached?.generation === vsCodeLmClientCacheGeneration) {
+		return cached.promise
+	}
+
+	const generation = vsCodeLmClientCacheGeneration
+	let promise: Promise<vscode.LanguageModelChat>
+	promise = resolve().then(
+		(client) => {
+			// VS Code documents that retained clients remain valid until its model-change
+			// event. If that event races selection, re-query instead of caching a stale client.
+			if (generation !== vsCodeLmClientCacheGeneration) {
+				return getCachedVsCodeLmClient(selector, resolve)
+			}
+			return client
+		},
+		(error) => {
+			if (vsCodeLmClientCache.get(key)?.promise === promise) {
+				vsCodeLmClientCache.delete(key)
+			}
+			throw error
+		},
+	)
+	vsCodeLmClientCache.set(key, { generation, promise })
+	return promise
+}
+
 type VsCodeLmPersistedMessage = Anthropic.Messages.MessageParam & {
 	vscodeLmStatefulMarker?: string
 }
@@ -523,7 +577,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				return
 			}
 			// Create a new client instance
-			this.client = await this.createClient(this.options.vsCodeLmModelSelector || {})
+			this.client = await this.resolveConfiguredClient()
 			console.debug("Alpha <Language Model API>: Client initialized successfully")
 		} catch (error) {
 			// Handle errors during client initialization
@@ -754,6 +808,12 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 	private resetClient(): void {
 		this.client = null
+		invalidateVsCodeLmClientCache()
+	}
+
+	private resolveConfiguredClient(): Promise<vscode.LanguageModelChat> {
+		const selector = this.options.vsCodeLmModelSelector || {}
+		return getCachedVsCodeLmClient(selector, () => this.createClient(selector))
 	}
 
 	private finishRequest(
@@ -789,7 +849,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				// Use default empty selector if none provided to get all available models
 				const selector = this.options?.vsCodeLmModelSelector || {}
 				console.debug("Alpha <Language Model API>: Creating client with selector:", selector)
-				this.client = await this.createClient(selector)
+				this.client = await this.resolveConfiguredClient()
 			} catch (error) {
 				const message = error instanceof Error ? error.message : "Unknown error"
 				console.error("Alpha <Language Model API>: Client creation failed:", message)
@@ -819,8 +879,9 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		let responseStatefulMarker: string | undefined
 		let responseIterator: AsyncIterator<unknown> | undefined
 
-		// Keep a lightweight fallback estimate for providers that do not report usage metadata.
-		let accumulatedText: string = ""
+		// Keep response parts for providers that do not report terminal usage metadata.
+		// Joining once avoids quadratic concatenation during long streamed responses.
+		const accumulatedText: string[] = []
 		let reportedUsage: VsCodeLmUsage | undefined
 
 		try {
@@ -839,8 +900,6 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				...convertToStatefulVsCodeLmMessages(messages),
 			]
 			const tools = convertToVsCodeLmTools(metadata?.tools ?? [])
-			const totalInputTokens = estimateVsCodeLmInputTokens(vsCodeLmMessages, tools)
-
 			// Create the response stream with required options
 			const requestOptions: vscode.LanguageModelChatRequestOptions = {
 				justification: `Alpha would like to use '${client.name}' from '${client.vendor}', Click 'Allow' to proceed.`,
@@ -886,7 +945,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 				const chunk = nextChunk.value
 				if (typeof chunk === "string") {
-					accumulatedText += chunk
+					accumulatedText.push(chunk)
 					reportedUsage = undefined
 					yield {
 						type: "text",
@@ -898,7 +957,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 						continue
 					}
 
-					accumulatedText += thinkingText
+					accumulatedText.push(thinkingText)
 					reportedUsage = undefined
 					yield {
 						type: "reasoning",
@@ -911,7 +970,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 						continue
 					}
 
-					accumulatedText += chunk.value
+					accumulatedText.push(chunk.value)
 					reportedUsage = undefined
 					yield {
 						type: "text",
@@ -946,7 +1005,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 						// Yield native tool_call chunk when tools are provided
 						if (metadata?.tools?.length) {
 							const argumentsString = JSON.stringify(chunk.input)
-							accumulatedText += argumentsString
+							accumulatedText.push(argumentsString)
 							reportedUsage = undefined
 							yield {
 								type: "tool_call",
@@ -989,8 +1048,8 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			// can call the provider backend and otherwise delays the visible completion boundary.
 			yield {
 				type: "usage",
-				inputTokens: reportedUsage?.inputTokens ?? totalInputTokens,
-				outputTokens: reportedUsage?.outputTokens ?? estimateTokens(accumulatedText),
+				inputTokens: reportedUsage?.inputTokens ?? estimateVsCodeLmInputTokens(vsCodeLmMessages, tools),
+				outputTokens: reportedUsage?.outputTokens ?? estimateTokens(accumulatedText.join("")),
 			}
 		} catch (error: unknown) {
 			if (error instanceof vscode.CancellationError) {

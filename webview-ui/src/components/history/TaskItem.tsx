@@ -3,13 +3,13 @@ import { ArrowRight, Folder } from "lucide-react"
 import { TaskLifecycleState, TaskStatus, type LiveTaskMetadata } from "@alpha-code/types"
 import type { DisplayHistoryItem } from "./types"
 
-import { vscode } from "@/utils/vscode"
 import { cn } from "@/lib/utils"
 import { Checkbox } from "@/components/ui/checkbox"
 import { ExtensionStateContext } from "@/context/ExtensionStateContext"
 
 import TaskItemFooter from "./TaskItemFooter"
 import { StandardTooltip } from "../ui"
+import { useTaskOpeningFeedback } from "./useTaskOpeningFeedback"
 
 const formatStatusText = (value: string) =>
 	value.replace(/[_-]/g, " ").replace(/\b\w/g, (character) => character.toUpperCase())
@@ -71,6 +71,7 @@ const TaskItem = ({
 	onDelete,
 	className,
 }: TaskItemProps) => {
+	const { isOpening, openTask } = useTaskOpeningFeedback(item.id)
 	const extensionState = useContext(ExtensionStateContext)
 	const currentTaskId = extensionState?.currentTaskId
 	const liveTasksById = extensionState?.liveTasksById
@@ -88,9 +89,10 @@ const TaskItem = ({
 	const handleClick = () => {
 		if (isSelectionMode && onToggleSelection) {
 			onToggleSelection(item.id, !isSelected)
-		} else {
-			vscode.postMessage({ type: "showTaskWithId", text: item.id })
+			return
 		}
+
+		openTask()
 	}
 
 	const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -124,6 +126,7 @@ const TaskItem = ({
 			onKeyDown={handleKeyDown}
 			role="button"
 			tabIndex={0}
+			aria-busy={isOpening}
 			aria-current={isActive ? "page" : undefined}
 			aria-label={`Open task: ${item.task}`}>
 			<div className={cn("flex gap-3 px-4 py-3.5", !isCompact && isSelectionMode && "pb-3 pl-3")}>
@@ -185,7 +188,15 @@ const TaskItem = ({
 							</StandardTooltip>
 						)}
 						{/* Arrow icon that appears on hover */}
-						<ArrowRight className="size-4 shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100" />
+						{isOpening ? (
+							<span
+								className="codicon codicon-loading codicon-modifier-spin size-4 shrink-0"
+								data-testid="task-opening-indicator"
+								aria-hidden="true"
+							/>
+						) : (
+							<ArrowRight className="size-4 shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100" />
+						)}
 					</div>
 
 					{showWorkspace && item.workspace && (

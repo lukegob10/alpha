@@ -51,6 +51,7 @@ import { CheckpointWarning } from "./CheckpointWarning"
 import { QueuedMessages } from "./QueuedMessages"
 import { WorktreeSelector } from "./WorktreeSelector"
 import FileChangesPanel from "./FileChangesPanel"
+import { useProgressiveTranscript } from "./hooks/useProgressiveTranscript"
 import { useChatScrollController } from "@src/hooks/useChatScrollController"
 
 export interface ChatViewProps {
@@ -1634,6 +1635,16 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 		return result
 	}, [isCondensing, visibleMessages])
+	const transcriptRootMessageTs = activeMessages.at(0)?.ts
+	const transcriptIdentity = visibleCurrentTaskId ?? (task ? String(task.ts) : undefined)
+	const transcriptTaskKey = transcriptIdentity
+		? `${transcriptIdentity}:${transcriptRootMessageTs ?? "pending"}`
+		: undefined
+	const {
+		items: renderedGroupedMessages,
+		startIndex: transcriptStartIndex,
+		revealIndex: revealTranscriptIndex,
+	} = useProgressiveTranscript(groupedMessages, transcriptTaskKey, !isHidden)
 
 	const checkpointIndices = useMemo(() => {
 		const indices: number[] = []
@@ -1647,6 +1658,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	const hasLatestCheckpoint = checkpointIndices.length > 0
 	const checkpointJumpCursorRef = useRef<number | null>(null)
+	const pendingCheckpointIndexRef = useRef<number | null>(null)
 
 	useEffect(() => {
 		checkpointJumpCursorRef.current = null
@@ -1668,7 +1680,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		handleContentLoad,
 	} = useChatScrollController({
 		taskTs: task?.ts,
-		itemCount: groupedMessages.length,
+		itemCount: renderedGroupedMessages.length,
 	})
 
 	const bindTranscriptScroller = useCallback(
@@ -1830,8 +1842,29 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		const checkpoint = transcriptScrollerRef.current?.querySelector<HTMLElement>(
 			`[data-chat-message-index="${nextCheckpointIndex}"]`,
 		)
-		checkpoint?.scrollIntoView({ block: "center", behavior: "smooth" })
-	}, [checkpointIndices, releaseFollow])
+		if (checkpoint) {
+			checkpoint.scrollIntoView({ block: "center", behavior: "smooth" })
+			return
+		}
+
+		pendingCheckpointIndexRef.current = nextCheckpointIndex
+		revealTranscriptIndex(nextCheckpointIndex)
+	}, [checkpointIndices, releaseFollow, revealTranscriptIndex])
+
+	useEffect(() => {
+		const pendingCheckpointIndex = pendingCheckpointIndexRef.current
+		if (pendingCheckpointIndex === null || pendingCheckpointIndex < transcriptStartIndex) {
+			return
+		}
+
+		const checkpoint = transcriptScrollerRef.current?.querySelector<HTMLElement>(
+			`[data-chat-message-index="${pendingCheckpointIndex}"]`,
+		)
+		if (checkpoint) {
+			pendingCheckpointIndexRef.current = null
+			checkpoint.scrollIntoView({ block: "center", behavior: "smooth" })
+		}
+	}, [renderedGroupedMessages.length, transcriptStartIndex])
 
 	const itemContent = useCallback(
 		(index: number, messageOrGroup: ClineMessage) => {
@@ -2038,15 +2071,19 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						<div
 							ref={setContentRef}
 							data-testid="chat-transcript-content"
-							data-count={groupedMessages.length}>
-							{groupedMessages.map((message, index) => (
-								<div
-									key={computeChatItemKey(index, message)}
-									data-chat-message-index={index}
-									data-testid={`chat-message-${index}`}>
-									{itemContent(index, message)}
-								</div>
-							))}
+							data-count={groupedMessages.length}
+							data-rendered-count={renderedGroupedMessages.length}>
+							{renderedGroupedMessages.map((message, localIndex) => {
+								const index = transcriptStartIndex + localIndex
+								return (
+									<div
+										key={computeChatItemKey(index, message)}
+										data-chat-message-index={index}
+										data-testid={`chat-message-${index}`}>
+										{itemContent(index, message)}
+									</div>
+								)
+							})}
 						</div>
 					</div>
 					{showScrollToBottom && (
