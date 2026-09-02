@@ -1350,6 +1350,26 @@ describe("ChatTextArea", () => {
 		})
 
 		describe("enter key behavior", () => {
+			it("blocks keyboard submission while disabled", () => {
+				const onSend = vi.fn()
+				const { container } = render(
+					<ChatTextArea
+						{...defaultProps}
+						inputValue="pending admission"
+						sendingDisabled={true}
+						onSend={onSend}
+					/>,
+				)
+				const textarea = container.querySelector("textarea")!
+				const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })
+
+				fireEvent(textarea, event)
+
+				expect(event.defaultPrevented).toBe(true)
+				expect(onSend).not.toHaveBeenCalled()
+				expect(container.querySelector("button:has(.lucide-send-horizontal)")).toBeDisabled()
+			})
+
 			it("should send on Enter and allow newline on Shift+Enter in default mode", () => {
 				const onSend = vi.fn()
 

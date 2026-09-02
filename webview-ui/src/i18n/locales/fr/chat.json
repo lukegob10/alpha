@@ -456,8 +456,12 @@
 	},
 	"queuedMessages": {
 		"title": "Messages en file d'attente",
-		"clickToEdit": "Cliquez pour modifier le message"
+		"clickToEdit": "Cliquez pour modifier le message",
+		"steering": "Redirection…",
+		"queueFailed": "Le message n'a pas pu être mis en file d'attente. Votre brouillon reste dans l'éditeur.",
+		"steerFailed": "La redirection n'a pas pu démarrer. Le message reste disponible dans la file d'attente."
 	},
+	"stalledTurn": "Le modèle ne produit rien depuis un moment. Vous pouvez arrêter la tâche ou la rediriger avec un message en file d'attente.",
 	"slashCommand": {
 		"wantsToRun": "Alpha veut exécuter une commande slash",
 		"didRun": "Alpha a exécuté une commande slash"

@@ -255,6 +255,23 @@ export const extensionAgentLifecycleEventMessageSchema = agentLifecycleEventMess
 export const extensionAgentLifecycleSnapshotMessageSchema = agentLifecycleSnapshotMessageSchema
 export const extensionAgentLifecycleDegradedMessageSchema = agentLifecycleDegradedMessageSchema
 
+export type ChatCommand = "queueMessage" | "steerQueuedMessage"
+
+export type ChatCommandErrorCode =
+	| "task_unavailable"
+	| "message_not_found"
+	| "steer_pending"
+	| "image_resolution_failed"
+	| "unknown"
+
+export interface ChatCommandResult {
+	requestId: string
+	taskId?: string
+	command: ChatCommand
+	status: "accepted" | "rejected"
+	errorCode?: ChatCommandErrorCode
+}
+
 /**
  * ExtensionMessage
  * Extension -> Webview | CLI
@@ -266,6 +283,7 @@ export interface ExtensionMessage {
 		| "agentLifecycleEvent"
 		| "agentLifecycleSnapshot"
 		| "agentLifecycleDegraded"
+		| "chatCommandResult"
 		| "taskHistoryUpdated"
 		| "taskHistoryItemUpdated"
 		| "selectedImages"
@@ -412,6 +430,10 @@ export interface ExtensionMessage {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	values?: Record<string, any>
 	requestId?: string
+	/** Task-scoped queue/steer acceptance result. */
+	chatCommandResult?: ChatCommandResult
+	/** Fresh task activity metadata attached to incremental transcript messages. */
+	liveTask?: LiveTaskMetadata
 	promptText?: string
 	results?:
 		| { path: string; type: "file" | "folder"; label?: string }[]

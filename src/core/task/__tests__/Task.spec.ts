@@ -2465,6 +2465,54 @@ describe("Alpha", () => {
 			})
 		})
 
+		it("prevents an obsolete provider call when steering interrupts request preflight", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			let resolveState!: (state: Record<string, never>) => void
+			const getState = vi
+				.spyOn(mockProvider, "getState")
+				.mockImplementationOnce(
+					() => new Promise((resolve) => (resolveState = resolve as (state: Record<string, never>) => void)),
+				)
+			const createMessage = vi.spyOn(task.api, "createMessage")
+			const stepController = new AbortController()
+
+			;(task as any).isTaskLoopActive = true
+			;(task as any).stepInterruptionController = stepController
+			const nextChunk = task.attemptApiRequest(0, { interruptionSignal: stepController.signal }).next()
+
+			await vi.waitFor(() => expect(getState).toHaveBeenCalled())
+			await task.steerUserMessage("use this newer direction", [])
+			resolveState({})
+
+			await expect(nextChunk).rejects.toThrow("Request interrupted by steered user message")
+			expect(createMessage).not.toHaveBeenCalled()
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "use this newer direction",
+				images: [],
+			})
+		})
+
+		it("rejects steering during an independently owned manual compaction", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			;(task as any).contextCondenseAbortController = new AbortController()
+
+			expect(task.canAcceptSteerMessage()).toBe(false)
+			await expect(task.steerUserMessage("wait until compaction completes", [])).rejects.toThrow(
+				"Context compaction is in progress",
+			)
+			expect((task as any).pendingSteerMessage).toBeUndefined()
+		})
+
 		it("does not replace a steering message that is still pending persistence", async () => {
 			const task = new Task({
 				provider: mockProvider,

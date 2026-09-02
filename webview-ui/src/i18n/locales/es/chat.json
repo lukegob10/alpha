@@ -456,8 +456,12 @@
 	},
 	"queuedMessages": {
 		"title": "Mensajes en cola",
-		"clickToEdit": "Haz clic para editar el mensaje"
+		"clickToEdit": "Haz clic para editar el mensaje",
+		"steering": "Redirigiendo…",
+		"queueFailed": "No se pudo poner el mensaje en cola. El borrador sigue en el editor.",
+		"steerFailed": "No se pudo iniciar la redirección. El mensaje en cola sigue disponible."
 	},
+	"stalledTurn": "El modelo lleva un rato sin generar contenido. Puedes detener la tarea o redirigirla con un mensaje en cola.",
 	"slashCommand": {
 		"wantsToRun": "Alpha quiere ejecutar un comando slash",
 		"didRun": "Alpha ejecutó un comando slash"

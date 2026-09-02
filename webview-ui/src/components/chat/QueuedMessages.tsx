@@ -17,6 +17,7 @@ interface QueuedMessagesProps {
 	onEdit: (index: number) => void
 	onReorder: (fromIndex: number, toIndex: number) => void
 	editingMessageId?: string
+	steeringMessageId?: string
 }
 
 export const QueuedMessages = ({
@@ -26,6 +27,7 @@ export const QueuedMessages = ({
 	onEdit,
 	onReorder,
 	editingMessageId,
+	steeringMessageId,
 }: QueuedMessagesProps) => {
 	const { t } = useTranslation("chat")
 	const draggedIndexRef = useRef<number | null>(null)
@@ -41,13 +43,15 @@ export const QueuedMessages = ({
 			<div className="flex flex-col gap-2 max-h-[300px] overflow-y-auto pr-2">
 				{queue.map((message, index) => {
 					const isEditing = editingMessageId === message.id
+					const isSteering = steeringMessageId === message.id
+					const controlsDisabled = isEditing || steeringMessageId !== undefined
 
 					return (
 						<div
 							key={message.id}
 							data-testid={`queued-message-${message.id}`}
 							onDragOver={(e) => {
-								if (!isEditing) {
+								if (!controlsDisabled) {
 									e.preventDefault()
 									e.dataTransfer.dropEffect = "move"
 									setDragOverIndex(index)
@@ -55,6 +59,7 @@ export const QueuedMessages = ({
 							}}
 							onDrop={(e) => {
 								e.preventDefault()
+								if (controlsDisabled) return
 								const storedIndex = e.dataTransfer.getData("text/plain")
 								const fromIndex = storedIndex ? Number(storedIndex) : draggedIndexRef.current
 								draggedIndexRef.current = null
@@ -72,15 +77,17 @@ export const QueuedMessages = ({
 							<div className="flex items-center justify-between gap-1">
 								<button
 									type="button"
-									tabIndex={isEditing ? -1 : 0}
+									tabIndex={controlsDisabled ? -1 : 0}
 									aria-label={t("queuedMessages.dragHandle")}
 									title={t("queuedMessages.dragTooltip")}
-									draggable={!isEditing}
+									draggable={!controlsDisabled}
 									className={`inline-flex h-7 shrink-0 items-center justify-center px-1 text-vscode-descriptionForeground ${
-										isEditing ? "opacity-40 cursor-default" : "cursor-grab active:cursor-grabbing"
+										controlsDisabled
+											? "opacity-40 cursor-default"
+											: "cursor-grab active:cursor-grabbing"
 									} border-0 bg-transparent`}
 									onDragStart={(e) => {
-										if (isEditing) {
+										if (controlsDisabled) {
 											e.preventDefault()
 											return
 										}
@@ -93,7 +100,7 @@ export const QueuedMessages = ({
 										setDragOverIndex(null)
 									}}
 									onKeyDown={(e) => {
-										if (isEditing || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return
+										if (controlsDisabled || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return
 										const targetIndex = e.key === "ArrowUp" ? index - 1 : index + 1
 										if (targetIndex < 0 || targetIndex >= queue.length) return
 										e.preventDefault()
@@ -123,7 +130,7 @@ export const QueuedMessages = ({
 										className="shrink-0"
 										title={t("queuedMessages.editTooltip")}
 										aria-label={t("queuedMessages.editTooltip")}
-										disabled={isEditing}
+										disabled={controlsDisabled}
 										onClick={(e) => {
 											e.stopPropagation()
 											onEdit(index)
@@ -134,18 +141,18 @@ export const QueuedMessages = ({
 										variant="ghost"
 										className="shrink-0 px-2"
 										title={t("queuedMessages.steerTooltip")}
-										disabled={isEditing}
+										disabled={controlsDisabled}
 										onClick={(e) => {
 											e.stopPropagation()
 											onSteer(index)
 										}}>
-										{t("queuedMessages.steer")}
+										{isSteering ? t("queuedMessages.steering") : t("queuedMessages.steer")}
 									</Button>
 									<Button
 										variant="ghost"
 										size="icon"
 										className="shrink-0"
-										disabled={isEditing}
+										disabled={controlsDisabled}
 										aria-label={t("common:answers.remove")}
 										title={t("common:answers.remove")}
 										onClick={(e) => {

@@ -65,6 +65,16 @@ const MessagesTestComponent = () => {
 	)
 }
 
+const BackgroundActivityTestComponent = () => {
+	const { clineMessages, liveTasksById } = useExtensionState()
+	return (
+		<>
+			<div data-testid="foreground-message-count">{clineMessages.length}</div>
+			<div data-testid="background-activity">{liveTasksById?.["task-2"]?.lastUpdatedAt ?? 0}</div>
+		</>
+	)
+}
+
 const WelcomeStateTestComponent = () => {
 	const { showWelcome, currentTaskId } = useExtensionState()
 	return (
@@ -566,6 +576,49 @@ describe("ExtensionStateContext", () => {
 		})
 
 		expect(screen.getByTestId("latest-message")).toHaveTextContent("created")
+	})
+
+	it("updates background task activity without replacing the visible transcript", () => {
+		const foregroundMessage: ClineMessage = { ts: 1, type: "say", say: "text", text: "foreground" }
+		render(
+			<ExtensionStateContextProvider>
+				<BackgroundActivityTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		act(() => {
+			dispatchExtensionState({
+				currentTaskId: "task-1",
+				clineMessages: [foregroundMessage],
+			})
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "messageCreated",
+						taskId: "task-2",
+						clineMessage: { ts: 2, type: "say", say: "text", text: "background" },
+						liveTask: {
+							id: "task-2",
+							status: "running",
+							lifecycle: "running",
+							isActive: false,
+							isStreaming: true,
+							isTurnActive: true,
+							canInterrupt: true,
+							isWaitingForInput: false,
+							lastUpdatedAt: 20,
+							queueCount: 0,
+							tokensIn: 0,
+							tokensOut: 0,
+							totalCost: 0,
+						},
+					},
+				}),
+			)
+		})
+
+		expect(screen.getByTestId("foreground-message-count")).toHaveTextContent("1")
+		expect(screen.getByTestId("background-activity")).toHaveTextContent("20")
 	})
 
 	it("ignores stale incremental messages and replaces duplicate creations idempotently", () => {

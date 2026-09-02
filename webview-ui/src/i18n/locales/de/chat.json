@@ -456,8 +456,12 @@
 	},
 	"queuedMessages": {
 		"title": "Warteschlange Nachrichten",
-		"clickToEdit": "Klicken zum Bearbeiten der Nachricht"
+		"clickToEdit": "Klicken zum Bearbeiten der Nachricht",
+		"steering": "Wird gesteuert…",
+		"queueFailed": "Die Nachricht konnte nicht eingereiht werden. Ihr Entwurf bleibt im Eingabefeld.",
+		"steerFailed": "Die Steuerung konnte nicht gestartet werden. Die Nachricht bleibt in der Warteschlange."
 	},
+	"stalledTurn": "Seit einiger Zeit gibt es keine Modellausgabe. Sie können die Aufgabe stoppen oder sie mit einer Nachricht aus der Warteschlange steuern.",
 	"slashCommand": {
 		"wantsToRun": "Alpha möchte einen Slash-Befehl ausführen",
 		"didRun": "Alpha hat einen Slash-Befehl ausgeführt"

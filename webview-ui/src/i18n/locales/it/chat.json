@@ -456,8 +456,12 @@
 	},
 	"queuedMessages": {
 		"title": "Messaggi in coda",
-		"clickToEdit": "Clicca per modificare il messaggio"
+		"clickToEdit": "Clicca per modificare il messaggio",
+		"steering": "Reindirizzamento…",
+		"queueFailed": "Non è stato possibile mettere il messaggio in coda. La bozza è ancora nell'editor.",
+		"steerFailed": "Non è stato possibile avviare il reindirizzamento. Il messaggio in coda è ancora disponibile."
 	},
+	"stalledTurn": "Il modello non produce output da un po'. Puoi interrompere l'attività o reindirizzarla con un messaggio in coda.",
 	"slashCommand": {
 		"wantsToRun": "Alpha vuole eseguire un comando slash",
 		"didRun": "Alpha ha eseguito un comando slash"

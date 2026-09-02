@@ -198,6 +198,12 @@ export class TaskSessionRegistry {
 		session.waitingReason = waitingReason
 	}
 
+	markActivity(taskId: string, observedAt = Date.now()): void {
+		const session = this.sessions.get(taskId)
+		if (!session) return
+		session.lastActivityAt = Math.max(observedAt, session.lastActivityAt)
+	}
+
 	private readonly lifecycleSnapshots = new Map<string, AgentLifecycleSnapshot>()
 	private readonly lifecycleDegradedTaskIds = new Set<string>()
 
@@ -379,15 +385,30 @@ export class TaskSessionRegistry {
 					: session.lifecycleSnapshot
 						? TaskStatus.Running
 						: (task.taskStatus ?? TaskStatus.None)
+			const isTurnActive =
+				typeof task.isTurnActive === "function" ? task.isTurnActive() : Boolean(task.isStreaming)
+			const canInterrupt =
+				typeof task.canInterruptCurrentTurn === "function"
+					? task.canInterruptCurrentTurn()
+					: isTurnActive && !isWaitingForInput
+			const hasPendingSteer =
+				typeof task.hasPendingSteerMessage === "function" ? task.hasPendingSteerMessage() : false
 			const metadata: LiveTaskMetadata = {
 				id: task.taskId,
 				status,
 				lifecycle,
 				isActive: task.taskId === this.activeTaskId,
 				isStreaming: task.isStreaming,
+				isTurnActive,
+				canInterrupt,
+				activityPhase: session.lifecycleSnapshot?.phase,
+				hasPendingSteer,
 				isWaitingForInput,
-				lastUpdatedAt:
-					session.lifecycleSnapshot?.terminalAt ?? task.clineMessages.at(-1)?.ts ?? session.lastActivityAt,
+				lastUpdatedAt: Math.max(
+					session.lastActivityAt,
+					session.lifecycleSnapshot?.terminalAt ?? 0,
+					task.clineMessages.at(-1)?.ts ?? 0,
+				),
 				waitingReason,
 				queueCount: task.messageQueueService?.messages?.length ?? task.queuedMessages?.length ?? 0,
 				tokensIn: tokenUsage?.totalTokensIn ?? 0,

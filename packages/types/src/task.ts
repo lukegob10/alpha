@@ -10,6 +10,7 @@ import type { SubagentDelegationPolicy } from "./subagent-orchestration.js"
 import type { ToolUsage, ToolName } from "./tool.js"
 import type { StaticAppProperties, GitProperties, TelemetryProperties } from "./telemetry.js"
 import type { TodoItem } from "./todo.js"
+import type { AgentLifecyclePhase } from "./agent-lifecycle.js"
 
 /**
  * TaskProviderLike
@@ -181,6 +182,14 @@ export interface LiveTaskMetadata {
 	lifecycle: TaskLifecycleState
 	isActive: boolean
 	isStreaming: boolean
+	/** True while any model-step phase (including preflight/compaction) is still running. */
+	isTurnActive?: boolean
+	/** True when Stop/steer can interrupt the current turn immediately. */
+	canInterrupt?: boolean
+	/** Canonical phase used for task-scoped progress and stall diagnostics. */
+	activityPhase?: AgentLifecyclePhase
+	/** A durable steering message has been accepted and is awaiting consumption. */
+	hasPendingSteer?: boolean
 	isWaitingForInput: boolean
 	lastUpdatedAt: number
 	waitingReason?: string

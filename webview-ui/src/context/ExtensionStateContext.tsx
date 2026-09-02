@@ -11,6 +11,7 @@ import {
 	type ExtensionMessage,
 	type ExtensionState,
 	type ClineMessage,
+	type LiveTaskMetadata,
 	type MarketplaceInstalledMetadata,
 	type SkillMetadata,
 	type Command,
@@ -353,6 +354,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		taskId?: string
 		clineMessage: ClineMessage
 		clineMessagesSeq?: number
+		liveTask?: LiveTaskMetadata
 	}
 	const pendingMessageUpdatesRef = useRef(new Map<string, IncrementalMessage>())
 	const messageUpdateFrameRef = useRef<number | undefined>(undefined)
@@ -379,8 +381,13 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 			let nextMessages = prevState.clineMessages
 			let nextSequence = prevState.clineMessagesSeq
 			let didChange = false
+			let liveTasksById = prevState.liveTasksById
 
-			for (const { taskId, clineMessage, clineMessagesSeq } of updates) {
+			for (const { taskId, clineMessage, clineMessagesSeq, liveTask } of updates) {
+				const existingLiveTask = liveTask ? liveTasksById?.[liveTask.id] : undefined
+				if (liveTask && (!existingLiveTask || liveTask.lastUpdatedAt >= existingLiveTask.lastUpdatedAt)) {
+					liveTasksById = { ...(liveTasksById ?? {}), [liveTask.id]: liveTask }
+				}
 				if (taskId && taskId !== prevState.currentTaskId) continue
 				if (clineMessagesSeq !== undefined && nextSequence !== undefined && clineMessagesSeq <= nextSequence) {
 					continue
@@ -403,36 +410,52 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 				if (clineMessagesSeq !== undefined) nextSequence = clineMessagesSeq
 			}
 
-			return didChange ? { ...prevState, clineMessages: nextMessages, clineMessagesSeq: nextSequence } : prevState
+			return didChange || liveTasksById !== prevState.liveTasksById
+				? { ...prevState, clineMessages: nextMessages, clineMessagesSeq: nextSequence, liveTasksById }
+				: prevState
 		})
 	}, [])
 
-	const applyMessageCreation = useCallback(({ taskId, clineMessage, clineMessagesSeq }: IncrementalMessage) => {
-		setState((prevState) => {
-			if (taskId && taskId !== prevState.currentTaskId) return prevState
-			if (
-				clineMessagesSeq !== undefined &&
-				prevState.clineMessagesSeq !== undefined &&
-				clineMessagesSeq <= prevState.clineMessagesSeq
-			) {
-				return prevState
-			}
+	const applyMessageCreation = useCallback(
+		({ taskId, clineMessage, clineMessagesSeq, liveTask }: IncrementalMessage) => {
+			setState((prevState) => {
+				const existingLiveTask = liveTask ? prevState.liveTasksById?.[liveTask.id] : undefined
+				const liveTasksById =
+					liveTask && (!existingLiveTask || liveTask.lastUpdatedAt >= existingLiveTask.lastUpdatedAt)
+						? { ...(prevState.liveTasksById ?? {}), [liveTask.id]: liveTask }
+						: prevState.liveTasksById
+				if (taskId && taskId !== prevState.currentTaskId) {
+					return liveTasksById === prevState.liveTasksById ? prevState : { ...prevState, liveTasksById }
+				}
+				if (
+					clineMessagesSeq !== undefined &&
+					prevState.clineMessagesSeq !== undefined &&
+					clineMessagesSeq <= prevState.clineMessagesSeq
+				) {
+					return liveTasksById === prevState.liveTasksById ? prevState : { ...prevState, liveTasksById }
+				}
 
-			const existingIndex = findLastIndex(prevState.clineMessages, (message) => message.ts === clineMessage.ts)
-			const clineMessages = [...prevState.clineMessages]
-			if (existingIndex === -1) {
-				clineMessages.push(clineMessage)
-			} else {
-				clineMessages[existingIndex] = clineMessage
-			}
+				const existingIndex = findLastIndex(
+					prevState.clineMessages,
+					(message) => message.ts === clineMessage.ts,
+				)
+				const clineMessages = [...prevState.clineMessages]
+				if (existingIndex === -1) {
+					clineMessages.push(clineMessage)
+				} else {
+					clineMessages[existingIndex] = clineMessage
+				}
 
-			return {
-				...prevState,
-				clineMessages,
-				clineMessagesSeq: clineMessagesSeq ?? prevState.clineMessagesSeq,
-			}
-		})
-	}, [])
+				return {
+					...prevState,
+					clineMessages,
+					clineMessagesSeq: clineMessagesSeq ?? prevState.clineMessagesSeq,
+					liveTasksById,
+				}
+			})
+		},
+		[],
+	)
 
 	const takePendingMessageUpdates = useCallback(() => {
 		const updates = Array.from(pendingMessageUpdatesRef.current.values())
@@ -456,9 +479,14 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	}, [applyMessageUpdates, takePendingMessageUpdates])
 
 	const queuePartialMessageUpdate = useCallback(
-		(taskId: string | undefined, clineMessage: ClineMessage, clineMessagesSeq?: number) => {
+		(
+			taskId: string | undefined,
+			clineMessage: ClineMessage,
+			clineMessagesSeq?: number,
+			liveTask?: LiveTaskMetadata,
+		) => {
 			const key = `${taskId ?? ""}:${clineMessage.ts}`
-			pendingMessageUpdatesRef.current.set(key, { taskId, clineMessage, clineMessagesSeq })
+			pendingMessageUpdatesRef.current.set(key, { taskId, clineMessage, clineMessagesSeq, liveTask })
 
 			if (messageUpdateFrameRef.current !== undefined) return
 			messageUpdateFrameRef.current = requestAnimationFrame(() => {
@@ -594,14 +622,24 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					const key = `${message.taskId ?? ""}:${clineMessage.ts}`
 
 					if (clineMessage.partial) {
-						queuePartialMessageUpdate(message.taskId, clineMessage, message.clineMessagesSeq)
+						queuePartialMessageUpdate(
+							message.taskId,
+							clineMessage,
+							message.clineMessagesSeq,
+							message.liveTask,
+						)
 					} else {
 						// A terminal update supersedes any partial for the same message and is
 						// applied immediately so completion controls never lag behind the stream.
 						flushPendingMessageUpdates()
 						pendingMessageUpdatesRef.current.delete(key)
 						applyMessageUpdates([
-							{ taskId: message.taskId, clineMessage, clineMessagesSeq: message.clineMessagesSeq },
+							{
+								taskId: message.taskId,
+								clineMessage,
+								clineMessagesSeq: message.clineMessagesSeq,
+								liveTask: message.liveTask,
+							},
 						])
 					}
 					break
@@ -612,6 +650,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 						taskId: message.taskId,
 						clineMessage: message.clineMessage!,
 						clineMessagesSeq: message.clineMessagesSeq,
+						liveTask: message.liveTask,
 					})
 					break
 				}

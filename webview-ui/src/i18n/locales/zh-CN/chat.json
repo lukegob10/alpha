@@ -457,8 +457,12 @@
 	},
 	"queuedMessages": {
 		"title": "队列消息",
-		"clickToEdit": "点击编辑消息"
+		"clickToEdit": "点击编辑消息",
+		"steering": "正在转向…",
+		"queueFailed": "消息无法加入队列。草稿仍保留在输入框中。",
+		"steerFailed": "无法开始转向。队列中的消息仍然可用。"
 	},
+	"stalledTurn": "模型已有一段时间没有输出。你可以停止任务，或使用队列消息让其转向。",
 	"slashCommand": {
 		"wantsToRun": "Alpha 想要运行斜杠命令",
 		"didRun": "Alpha 运行了斜杠命令"

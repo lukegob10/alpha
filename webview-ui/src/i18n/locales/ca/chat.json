@@ -450,8 +450,12 @@
 	},
 	"queuedMessages": {
 		"title": "Missatges en cua",
-		"clickToEdit": "Feu clic per editar el missatge"
+		"clickToEdit": "Feu clic per editar el missatge",
+		"steering": "Redirigint…",
+		"queueFailed": "No s'ha pogut posar el missatge a la cua. L'esborrany continua al redactor.",
+		"steerFailed": "No s'ha pogut iniciar la redirecció. El missatge en cua continua disponible."
 	},
+	"stalledTurn": "Fa estona que no hi ha cap resposta del model. Podeu aturar la tasca o redirigir-la amb un missatge en cua.",
 	"slashCommand": {
 		"wantsToRun": "Alpha vol executar una comanda slash",
 		"didRun": "Alpha ha executat una comanda slash"

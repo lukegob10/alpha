@@ -457,8 +457,12 @@
 	},
 	"queuedMessages": {
 		"title": "Sıradaki Mesajlar",
-		"clickToEdit": "Mesajı düzenlemek için tıkla"
+		"clickToEdit": "Mesajı düzenlemek için tıkla",
+		"steering": "Yönlendiriliyor…",
+		"queueFailed": "Mesaj sıraya eklenemedi. Taslağınız yazma alanında duruyor.",
+		"steerFailed": "Yönlendirme başlatılamadı. Sıradaki mesaj hâlâ kullanılabilir."
 	},
+	"stalledTurn": "Bir süredir model çıktısı yok. Görevi durdurabilir veya sıradaki bir mesajla yönlendirebilirsiniz.",
 	"slashCommand": {
 		"wantsToRun": "Alpha bir slash komutu çalıştırmak istiyor",
 		"didRun": "Alpha bir slash komutu çalıştırdı"

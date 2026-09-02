@@ -479,8 +479,12 @@
 		"dragHandle": "Drag queued message",
 		"dragTooltip": "Drag to reorder this queued message",
 		"steer": "Steer",
-		"steerTooltip": "Send this queued message into the current turn"
+		"steerTooltip": "Send this queued message into the current turn",
+		"steering": "Steering…",
+		"queueFailed": "The message could not be queued. Your draft is still in the composer.",
+		"steerFailed": "Steering could not start. The queued message is still available."
 	},
+	"stalledTurn": "No model output for a while. You can stop the task or steer it with a queued message.",
 	"contextMenu": {
 		"noResults": "No results",
 		"problems": "Problems",

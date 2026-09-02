@@ -456,8 +456,12 @@
 	},
 	"queuedMessages": {
 		"title": "Wiadomości w kolejce",
-		"clickToEdit": "Kliknij, aby edytować wiadomość"
+		"clickToEdit": "Kliknij, aby edytować wiadomość",
+		"steering": "Przekierowywanie…",
+		"queueFailed": "Nie udało się dodać wiadomości do kolejki. Wersja robocza nadal jest w edytorze.",
+		"steerFailed": "Nie udało się rozpocząć przekierowania. Wiadomość w kolejce jest nadal dostępna."
 	},
+	"stalledTurn": "Model od pewnego czasu nie generuje odpowiedzi. Możesz zatrzymać zadanie lub przekierować je wiadomością z kolejki.",
 	"slashCommand": {
 		"wantsToRun": "Alpha chce uruchomić komendę slash",
 		"didRun": "Alpha uruchomił komendę slash"

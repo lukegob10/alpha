@@ -456,8 +456,12 @@
 	},
 	"queuedMessages": {
 		"title": "Mensagens na fila",
-		"clickToEdit": "Clique para editar a mensagem"
+		"clickToEdit": "Clique para editar a mensagem",
+		"steering": "Redirecionando…",
+		"queueFailed": "Não foi possível colocar a mensagem na fila. Seu rascunho continua no editor.",
+		"steerFailed": "Não foi possível iniciar o redirecionamento. A mensagem na fila continua disponível."
 	},
+	"stalledTurn": "O modelo não gera saída há algum tempo. Você pode parar a tarefa ou redirecioná-la com uma mensagem na fila.",
 	"slashCommand": {
 		"wantsToRun": "Alpha quer executar um comando slash",
 		"didRun": "Alpha executou um comando slash"

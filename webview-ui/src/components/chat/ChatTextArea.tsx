@@ -56,6 +56,7 @@ interface ChatTextAreaProps {
 	isStreaming?: boolean
 	onStop?: () => void
 	onEnqueueMessage?: () => void
+	enqueueDisabled?: boolean
 }
 
 export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
@@ -63,6 +64,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		{
 			inputValue,
 			setInputValue,
+			sendingDisabled,
 			selectApiConfigDisabled,
 			placeholderText,
 			selectedImages,
@@ -79,6 +81,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			isStreaming = false,
 			onStop,
 			onEnqueueMessage,
+			enqueueDisabled = false,
 		},
 		ref,
 	) => {
@@ -264,6 +267,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const hasInputContent = useMemo(() => {
 			return inputValue.trim().length > 0 || selectedImages.length > 0
 		}, [inputValue, selectedImages])
+		const sendDisabled = sendingDisabled && !isStreaming && !isEditMode
 
 		// Compute the key combination text for the send button tooltip based on enterBehavior
 		const sendKeyCombination = useMemo(() => {
@@ -530,6 +534,10 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 				// Handle Enter key based on enterBehavior setting
 				if (event.key === "Enter" && !isComposing) {
+					if (sendDisabled) {
+						event.preventDefault()
+						return
+					}
 					if (isEditMode && !event.shiftKey) {
 						event.preventDefault()
 						resetHistoryNavigation()
@@ -616,6 +624,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				isEditMode,
 				modeSwitchDisabled,
 				togglePrimaryMode,
+				sendDisabled,
 			],
 		)
 
@@ -1325,8 +1334,8 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									<StandardTooltip content={t("chat:enqueueMessage")}>
 										<button
 											aria-label={t("chat:enqueueMessage")}
-											disabled={false}
-											onClick={onEnqueueMessage}
+											disabled={enqueueDisabled}
+											onClick={enqueueDisabled ? undefined : onEnqueueMessage}
 											className={cn(
 												"relative inline-flex items-center justify-center",
 												"bg-transparent border-none p-1.5",
@@ -1359,8 +1368,16 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 													? t("chat:stop.title")
 													: t("chat:pressToSend", { keyCombination: sendKeyCombination })
 										}
-										disabled={false}
-										onClick={isEditMode ? onSend : isStreaming ? onStop : onSend}
+										disabled={sendDisabled}
+										onClick={
+											sendDisabled
+												? undefined
+												: isEditMode
+													? onSend
+													: isStreaming
+														? onStop
+														: onSend
+										}
 										className={cn(
 											"relative inline-flex items-center justify-center",
 											"border-none p-1.5",
@@ -1372,7 +1389,8 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 											(isEditMode || isStreaming || hasInputContent) &&
 												"bg-[var(--alpha-accent)] text-[var(--alpha-accent-contrast)] shadow-[var(--shadow-accent)] hover:bg-[var(--alpha-accent-hover)] active:scale-95",
 											"focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder",
-											(isEditMode || isStreaming || hasInputContent) && "cursor-pointer",
+											(isEditMode || isStreaming || hasInputContent) &&
+												(sendDisabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"),
 											!(isEditMode || isStreaming || hasInputContent) &&
 												"bg-transparent text-vscode-descriptionForeground",
 										)}>

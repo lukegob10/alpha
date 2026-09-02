@@ -357,11 +357,16 @@ export function applyLifecycleSnapshotsToExtensionState(
 		if (existingIsTerminal) continue
 
 		const projectedMetadata = {
+			...existing,
 			id: snapshot.taskId,
 			status: projection.status,
 			lifecycle: projection.lifecycle,
 			isActive: existing?.isActive ?? state.activeTaskId === snapshot.taskId,
 			isStreaming: existing?.isStreaming === true && !projection.isTerminal && !projection.isWaitingForInput,
+			isTurnActive: snapshot.status === "in_progress",
+			canInterrupt:
+				existing?.canInterrupt ?? (snapshot.status === "in_progress" && !projection.isWaitingForInput),
+			activityPhase: snapshot.phase,
 			isWaitingForInput: projection.isWaitingForInput,
 			lastUpdatedAt: snapshot.terminalAt ?? existing?.lastUpdatedAt ?? 0,
 			waitingReason: projection.waitingReason,
@@ -377,6 +382,9 @@ export function applyLifecycleSnapshotsToExtensionState(
 				? {
 						...existing,
 						isStreaming: false,
+						isTurnActive: false,
+						canInterrupt: false,
+						activityPhase: snapshot.phase,
 						lastUpdatedAt: snapshot.terminalAt ?? existing.lastUpdatedAt,
 					}
 				: projectedMetadata

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.15
+
+### Patch Changes
+
+- Make steering interrupt the entire active model step, including provider pacing, retry waits, request preflight, and automatic context compaction, so stale work cannot admit an obsolete model call.
+- Preserve composer drafts and queued messages until the extension acknowledges queue or steering admission, and keep Stop responsive while other webview operations are still running.
+- Drive chat controls from task-scoped live lifecycle metadata, tolerate malformed historical request records, and show recoverable feedback when an active turn has produced no output for a while.
+- Include the Windows managed-agent transaction-lock promotion retry from v2.1.14 for users upgrading from the affected v2.1.12 build.
+
 ## 2.1.14
 
 ### Patch Changes

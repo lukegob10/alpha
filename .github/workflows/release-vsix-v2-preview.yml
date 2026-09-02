@@ -73,12 +73,14 @@ jobs:
                   $notes = @"
                   Preview VSIX build from main-v2. This is not published to the VS Code Marketplace.
 
-                  Alpha v$version fixes transient managed-agent completion verification failures on Windows.
+                  Alpha v$version hardens long-running chat control and managed-agent completion verification.
 
                   Highlights:
-                  - Retries transient Windows errors while atomically promoting the managed-agent transaction lock
-                  - Handles the race where another process releases the destination lock during candidate promotion
-                  - Preserves exclusive token ownership, bounded retries, and deterministic lock cleanup
+                  - Interrupts provider preflight, pacing, retry waits, and automatic compaction when steering
+                  - Preserves drafts and queued messages until queue or steering admission is acknowledged
+                  - Keeps Stop responsive while long-running webview operations are still in progress
+                  - Uses authoritative task lifecycle state, tolerates malformed history, and surfaces stalled turns
+                  - Includes the bounded Windows transaction-lock promotion retry for managed-agent completion checks
                   - Validates the extension and VS Code Language Model contract on exact VS Code 1.122.1
 
                   Commit: ${{ github.sha }}

@@ -462,8 +462,12 @@
 	},
 	"queuedMessages": {
 		"title": "Pesan Antrian",
-		"clickToEdit": "Klik untuk mengedit pesan"
+		"clickToEdit": "Klik untuk mengedit pesan",
+		"steering": "Mengalihkan…",
+		"queueFailed": "Pesan tidak dapat dimasukkan ke antrean. Draf Anda tetap ada di penulis pesan.",
+		"steerFailed": "Pengalihan tidak dapat dimulai. Pesan dalam antrean masih tersedia."
 	},
+	"stalledTurn": "Sudah beberapa saat tidak ada keluaran model. Anda dapat menghentikan tugas atau mengalihkannya dengan pesan dalam antrean.",
 	"slashCommand": {
 		"wantsToRun": "Alpha ingin menjalankan perintah slash",
 		"didRun": "Alpha telah menjalankan perintah slash"

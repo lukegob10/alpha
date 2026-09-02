@@ -111,6 +111,7 @@ vi.mock("../QueuedMessages", () => ({
 		onEdit,
 		onReorder,
 		editingMessageId,
+		steeringMessageId,
 	}: {
 		queue?: Array<{ id: string; text: string; images?: string[] }>
 		onRemove?: (index: number) => void
@@ -118,6 +119,7 @@ vi.mock("../QueuedMessages", () => ({
 		onEdit?: (index: number) => void
 		onReorder?: (fromIndex: number, toIndex: number) => void
 		editingMessageId?: string
+		steeringMessageId?: string
 	}) {
 		if (!queue || queue.length === 0) {
 			return null
@@ -134,8 +136,11 @@ vi.mock("../QueuedMessages", () => ({
 						<button aria-label={`Edit ${msg.id}`} onClick={() => onEdit?.(index)}>
 							Edit
 						</button>
-						<button aria-label="Steer" onClick={() => onSteer?.(index)}>
-							Steer
+						<button
+							aria-label="Steer"
+							disabled={steeringMessageId !== undefined}
+							onClick={() => onSteer?.(index)}>
+							{steeringMessageId === msg.id ? "Steering" : "Steer"}
 						</button>
 						<button aria-label={`Move ${msg.id} to front`} onClick={() => onReorder?.(index, 0)}>
 							Move front
@@ -197,6 +202,10 @@ interface ChatTextAreaProps {
 	shouldDisableImages?: boolean
 	isEditMode?: boolean
 	onCancel?: () => void
+	isStreaming?: boolean
+	onStop?: () => void
+	onEnqueueMessage?: () => void
+	enqueueDisabled?: boolean
 }
 
 const mockInputRef = React.createRef<HTMLInputElement>()
@@ -240,7 +249,14 @@ vi.mock("../ChatTextArea", () => {
 						}
 					}}
 					data-sending-disabled={props.sendingDisabled}
+					data-is-streaming={props.isStreaming}
 				/>
+				<button data-testid="mock-stop" disabled={!props.isStreaming} onClick={props.onStop}>
+					Stop
+				</button>
+				<button data-testid="mock-enqueue" disabled={props.enqueueDisabled} onClick={props.onEnqueueMessage}>
+					Queue
+				</button>
 			</div>
 		)
 	})
@@ -415,7 +431,7 @@ describe("ChatView - Plan command", () => {
 		})
 
 		const input = await waitFor(() => getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
-		await waitFor(() => expect(input.getAttribute("data-sending-disabled")).toBe("true"))
+		await waitFor(() => expect(input.getAttribute("data-is-streaming")).toBe("true"))
 		vi.mocked(vscode.postMessage).mockClear()
 
 		fireEvent.change(input, { target: { value: "/plan inspect the provider flow" } })
@@ -1292,6 +1308,120 @@ describe("ChatView - Message Queueing Tests", () => {
 		vi.mocked(vscode.postMessage).mockClear()
 	})
 
+	it("uses live task metadata when a turn is active before an API transcript marker exists", async () => {
+		const { getByTestId } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			liveTasksById: {
+				"task-1": {
+					id: "task-1",
+					status: "running",
+					lifecycle: "running",
+					isActive: true,
+					isStreaming: false,
+					isTurnActive: true,
+					canInterrupt: true,
+					activityPhase: "thinking",
+					isWaitingForInput: false,
+					lastUpdatedAt: Date.now(),
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+			clineMessages: [{ type: "say", say: "task", ts: Date.now(), text: "Preparing the request" }],
+		})
+
+		const input = (await waitFor(() => getByTestId("chat-textarea").querySelector("input"))) as HTMLInputElement
+		await waitFor(() => expect(input).toHaveAttribute("data-is-streaming", "true"))
+		expect(getByTestId("mock-stop")).toBeEnabled()
+	})
+
+	it("ignores a stale API transcript marker when live task metadata says the turn is idle", async () => {
+		const { getByTestId } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			liveTasksById: {
+				"task-1": {
+					id: "task-1",
+					status: "idle",
+					lifecycle: "running",
+					isActive: true,
+					isStreaming: true,
+					isTurnActive: false,
+					canInterrupt: false,
+					isWaitingForInput: false,
+					lastUpdatedAt: Date.now(),
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Initial task" },
+				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
+			],
+		})
+
+		const input = (await waitFor(() => getByTestId("chat-textarea").querySelector("input"))) as HTMLInputElement
+		await waitFor(() => expect(input).toHaveAttribute("data-is-streaming", "false"))
+		expect(getByTestId("mock-stop")).toBeDisabled()
+	})
+
+	it("does not freeze the composer when historical API request metadata is malformed", async () => {
+		const { getByTestId } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Initial task" },
+				{ type: "say", say: "api_req_started", ts: 2, text: "{not valid JSON" },
+			],
+		})
+
+		const input = (await waitFor(() => getByTestId("chat-textarea").querySelector("input"))) as HTMLInputElement
+		expect(input).toHaveAttribute("data-is-streaming", "false")
+		expect(input).toHaveAttribute("data-sending-disabled", "false")
+	})
+
+	it("shows recoverable stalled-turn feedback while preserving the Stop control", async () => {
+		const { getByRole, getByTestId } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			currentView: { type: "task", taskId: "task-1" },
+			liveTasksById: {
+				"task-1": {
+					id: "task-1",
+					status: "running",
+					lifecycle: "running",
+					isActive: true,
+					isStreaming: true,
+					isTurnActive: true,
+					canInterrupt: true,
+					activityPhase: "thinking",
+					isWaitingForInput: false,
+					lastUpdatedAt: Date.now() - 31_000,
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+			clineMessages: [{ type: "say", say: "task", ts: 1, text: "Initial task" }],
+		})
+
+		await waitFor(() => expect(getByRole("status")).toHaveTextContent("chat:stalledTurn"))
+		expect(getByTestId("mock-stop")).toBeEnabled()
+	})
+
 	it("shows the task chat shell when a focused task exists before its first message arrives", async () => {
 		const { getByTestId, queryByTestId, queryByText } = renderChatView()
 
@@ -1569,11 +1699,11 @@ describe("ChatView - Message Queueing Tests", () => {
 			],
 		})
 
-		// Wait for state to be updated and check that sending is disabled
+		// Wait for state to be updated and check that the active turn exposes Stop/Queue controls.
 		await waitFor(() => {
 			const chatTextArea = getByTestId("chat-textarea")
 			const input = chatTextArea.querySelector("input")!
-			expect(input.getAttribute("data-sending-disabled")).toBe("true")
+			expect(input.getAttribute("data-is-streaming")).toBe("true")
 		})
 	})
 
@@ -1664,13 +1794,38 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		// Verify that the message was queued, not sent as askResponse
+		let queuedRequest: any
 		await waitFor(() => {
-			expect(vscode.postMessage).toHaveBeenCalledWith({
+			queuedRequest = vi
+				.mocked(vscode.postMessage)
+				.mock.calls.map(([message]) => message)
+				.find((message) => message.type === "queueMessage")
+			expect(queuedRequest).toEqual({
 				type: "queueMessage",
 				text: "follow-up question during spinner",
 				images: [],
 				taskId: "task-1",
+				requestId: expect.any(String),
 			})
+		})
+		expect(input.value).toBe("follow-up question during spinner")
+
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "chatCommandResult",
+						taskId: "task-1",
+						requestId: queuedRequest.requestId,
+						chatCommandResult: {
+							requestId: queuedRequest.requestId,
+							taskId: "task-1",
+							command: "queueMessage",
+							status: "accepted",
+						},
+					},
+				}),
+			)
 		})
 		await waitFor(() => {
 			expect(input.value).toBe("")
@@ -1722,6 +1877,55 @@ describe("ChatView - Message Queueing Tests", () => {
 		expect(input.value).toBe("keep this draft")
 	})
 
+	it("keeps a queued draft visible when the host rejects admission", async () => {
+		const { getByRole, getByTestId } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Initial task" },
+				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
+			],
+		})
+
+		const input = (await waitFor(() => getByTestId("chat-textarea").querySelector("input"))) as HTMLInputElement
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.change(input, { target: { value: "do not lose this draft" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+		const request = await waitFor(() => {
+			const posted = vi
+				.mocked(vscode.postMessage)
+				.mock.calls.map(([message]) => message)
+				.find((message) => message.type === "queueMessage") as any
+			expect(posted?.requestId).toEqual(expect.any(String))
+			return posted
+		})
+		expect(input).toHaveValue("do not lose this draft")
+
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "chatCommandResult",
+						taskId: "task-1",
+						requestId: request.requestId,
+						chatCommandResult: {
+							requestId: request.requestId,
+							taskId: "task-1",
+							command: "queueMessage",
+							status: "rejected",
+							errorCode: "task_unavailable",
+						},
+					},
+				}),
+			)
+		})
+
+		expect(input).toHaveValue("do not lose this draft")
+		expect(getByRole("alert")).toHaveTextContent("chat:queuedMessages.queueFailed")
+	})
+
 	it("renders a steer button for queued messages and posts steerQueuedMessage with the task id", async () => {
 		const { getByTestId, getByLabelText } = renderChatView()
 
@@ -1756,7 +1960,52 @@ describe("ChatView - Message Queueing Tests", () => {
 			type: "steerQueuedMessage",
 			text: "msg1",
 			taskId: "task-1",
+			requestId: expect.any(String),
 		})
+	})
+
+	it("keeps a queued message retryable when steering is rejected", async () => {
+		const { getByLabelText, getByRole, getByText } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Initial task" },
+				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
+			],
+			messageQueue: [{ id: "msg1", text: "keep this queued message", images: [] }],
+		})
+
+		const steer = await waitFor(() => getByLabelText("Steer"))
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(steer)
+		const request = vi.mocked(vscode.postMessage).mock.calls[0][0] as any
+		expect(request.requestId).toEqual(expect.any(String))
+		expect(getByText("keep this queued message")).toBeInTheDocument()
+		expect(steer).toBeDisabled()
+
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "chatCommandResult",
+						taskId: "task-1",
+						requestId: request.requestId,
+						chatCommandResult: {
+							requestId: request.requestId,
+							taskId: "task-1",
+							command: "steerQueuedMessage",
+							status: "rejected",
+							errorCode: "steer_pending",
+						},
+					},
+				}),
+			)
+		})
+
+		expect(getByText("keep this queued message")).toBeInTheDocument()
+		expect(getByRole("alert")).toHaveTextContent("chat:queuedMessages.steerFailed")
+		expect(steer).toBeEnabled()
 	})
 
 	it("edits a queued message from the composer and preserves the queued id", async () => {
@@ -1980,6 +2229,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			text: "run this after approval",
 			images: [],
 			taskId: "task-1",
+			requestId: expect.any(String),
 		})
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -2084,7 +2334,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
-		await waitFor(() => expect(input.getAttribute("data-sending-disabled")).toBe("true"))
+		await waitFor(() => expect(input.getAttribute("data-is-streaming")).toBe("true"))
 
 		mockPostMessage({
 			...taskState,
@@ -2323,7 +2573,10 @@ describe("ChatView - Message Queueing Tests", () => {
 			})
 
 			const input = (await waitFor(() => getByTestId("chat-textarea").querySelector("input"))) as HTMLInputElement
-			await waitFor(() => expect(input).toHaveAttribute("data-sending-disabled", "true"))
+			await waitFor(() => {
+				expect(input).toHaveAttribute("data-is-streaming", "false")
+				expect(input).toHaveAttribute("data-sending-disabled", "false")
+			})
 			vi.mocked(vscode.postMessage).mockClear()
 
 			fireEvent.change(input, { target: { value: "continue with this prompt" } })
@@ -2378,7 +2631,8 @@ describe("ChatView - Message Queueing Tests", () => {
 
 			await waitFor(() => expect(queryByRole("button", { name: "chat:approve.title" })).not.toBeInTheDocument())
 			const input = getByTestId("chat-textarea").querySelector("input")!
-			expect(input).toHaveAttribute("data-sending-disabled", "true")
+			expect(input).toHaveAttribute("data-is-streaming", "false")
+			expect(input).toHaveAttribute("data-sending-disabled", "false")
 		},
 	)
 
@@ -2708,6 +2962,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			text: "next message",
 			images: [],
 			taskId: "task-1",
+			requestId: expect.any(String),
 		})
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -2766,6 +3021,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				text: "message during queue drain",
 				images: [],
 				taskId: "task-1",
+				requestId: expect.any(String),
 			})
 		})
 
@@ -2831,6 +3087,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				text: "message during command execution",
 				images: [],
 				taskId: "task-1",
+				requestId: expect.any(String),
 			})
 		})
 

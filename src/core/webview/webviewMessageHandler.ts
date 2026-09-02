@@ -16,6 +16,8 @@ import {
 	type WebviewMessage,
 	type EditQueuedMessagePayload,
 	type ReorderQueuedMessagePayload,
+	type ChatCommand,
+	type ChatCommandErrorCode,
 	TelemetryEventName,
 	RooCodeSettings,
 	ExperimentId,
@@ -212,20 +214,40 @@ export const webviewMessageHandler = async (
 	 * Resolves image file mentions in incoming messages.
 	 * Matches read_file behavior: respects size limits and model capabilities.
 	 */
-	const resolveIncomingImages = async (payload: { text?: string; images?: string[] }) => {
+	const resolveIncomingImages = async (payload: { text?: string; images?: string[]; taskId?: string }) => {
 		const text = payload.text ?? ""
 		const images = payload.images
-		const currentTask = provider.getCurrentTask()
+		const currentTask = payload.taskId ? provider.getLiveTask(payload.taskId) : provider.getCurrentTask()
 		const state = await provider.getState()
 		const resolved = await resolveImageMentions({
 			text,
 			images,
-			cwd: getCurrentCwd(),
+			cwd: currentTask?.cwd ?? getCurrentCwd(),
 			rooIgnoreController: currentTask?.rooIgnoreController,
 			maxImageFileSize: state.maxImageFileSize,
 			maxTotalImageSize: state.maxTotalImageSize,
 		})
 		return resolved
+	}
+
+	const postChatCommandResult = async (
+		command: ChatCommand,
+		status: "accepted" | "rejected",
+		errorCode?: ChatCommandErrorCode,
+	) => {
+		if (!message.requestId) return
+		await provider.postMessageToWebview({
+			type: "chatCommandResult",
+			taskId: message.taskId,
+			requestId: message.requestId,
+			chatCommandResult: {
+				requestId: message.requestId,
+				taskId: message.taskId,
+				command,
+				status,
+				...(errorCode ? { errorCode } : {}),
+			},
+		})
 	}
 	/**
 	 * Shared utility to find message indices based on timestamp.
@@ -3364,10 +3386,27 @@ export const webviewMessageHandler = async (
 		 */
 
 		case "queueMessage": {
-			const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
+			let resolved: Awaited<ReturnType<typeof resolveIncomingImages>>
+			try {
+				resolved = await resolveIncomingImages({
+					text: message.text,
+					images: message.images,
+					taskId: message.taskId,
+				})
+			} catch (error) {
+				provider.log(
+					`[webviewMessageHandler] queueMessage image resolution failed: ${error instanceof Error ? error.message : String(error)}`,
+				)
+				await postChatCommandResult("queueMessage", "rejected", "image_resolution_failed")
+				break
+			}
+
 			if (!provider.queueMessageForTask(message.taskId, resolved.text, resolved.images)) {
 				provider.log(`[webviewMessageHandler] Ignoring queueMessage: missing, terminal, or unknown taskId`)
+				await postChatCommandResult("queueMessage", "rejected", "task_unavailable")
+				break
 			}
+			await postChatCommandResult("queueMessage", "accepted")
 			break
 		}
 		case "removeQueuedMessage": {
@@ -3379,6 +3418,7 @@ export const webviewMessageHandler = async (
 		case "steerQueuedMessage": {
 			const task = getRequiredTaskForMessage(provider, message, "steerQueuedMessage")
 			if (!task) {
+				await postChatCommandResult("steerQueuedMessage", "rejected", "task_unavailable")
 				break
 			}
 
@@ -3386,9 +3426,30 @@ export const webviewMessageHandler = async (
 			// races another steer or a terminal transition, the message remains retryable.
 			const queued = task.messageQueueService.getMessage(message.text ?? "")
 
-			if (queued) {
+			if (!queued) {
+				await postChatCommandResult("steerQueuedMessage", "rejected", "message_not_found")
+				break
+			}
+			if (typeof task.canAcceptSteerMessage === "function" && !task.canAcceptSteerMessage()) {
+				await postChatCommandResult("steerQueuedMessage", "rejected", "steer_pending")
+				break
+			}
+
+			try {
 				await task.steerUserMessage(queued.text, queued.images)
 				task.messageQueueService.removeMessage(queued.id)
+				await postChatCommandResult("steerQueuedMessage", "accepted")
+			} catch (error) {
+				provider.log(
+					`[webviewMessageHandler] steerQueuedMessage failed for task ${task.taskId}: ${error instanceof Error ? error.message : String(error)}`,
+				)
+				await postChatCommandResult(
+					"steerQueuedMessage",
+					"rejected",
+					typeof task.hasPendingSteerMessage === "function" && task.hasPendingSteerMessage()
+						? "steer_pending"
+						: "unknown",
+				)
 			}
 
 			break

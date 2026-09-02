@@ -456,8 +456,12 @@
 	},
 	"queuedMessages": {
 		"title": "대기열 메시지",
-		"clickToEdit": "클릭하여 메시지 편집"
+		"clickToEdit": "클릭하여 메시지 편집",
+		"steering": "방향 전환 중…",
+		"queueFailed": "메시지를 대기열에 추가하지 못했습니다. 초안은 작성기에 그대로 있습니다.",
+		"steerFailed": "방향 전환을 시작하지 못했습니다. 대기열 메시지는 계속 사용할 수 있습니다."
 	},
+	"stalledTurn": "한동안 모델 출력이 없습니다. 작업을 중지하거나 대기열 메시지로 방향을 전환할 수 있습니다.",
 	"slashCommand": {
 		"wantsToRun": "Alpha가 슬래시 명령어를 실행하려고 합니다",
 		"didRun": "Alpha가 슬래시 명령어를 실행했습니다"

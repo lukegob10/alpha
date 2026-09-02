@@ -457,8 +457,12 @@
 	},
 	"queuedMessages": {
 		"title": "Tin nhắn trong hàng đợi",
-		"clickToEdit": "Nhấp để chỉnh sửa tin nhắn"
+		"clickToEdit": "Nhấp để chỉnh sửa tin nhắn",
+		"steering": "Đang chuyển hướng…",
+		"queueFailed": "Không thể thêm tin nhắn vào hàng đợi. Bản nháp vẫn còn trong ô soạn thảo.",
+		"steerFailed": "Không thể bắt đầu chuyển hướng. Tin nhắn trong hàng đợi vẫn còn đó."
 	},
+	"stalledTurn": "Đã một lúc chưa có đầu ra từ mô hình. Bạn có thể dừng tác vụ hoặc chuyển hướng bằng tin nhắn trong hàng đợi.",
 	"slashCommand": {
 		"wantsToRun": "Alpha muốn chạy lệnh slash",
 		"didRun": "Alpha đã chạy lệnh slash"

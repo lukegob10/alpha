@@ -59,13 +59,7 @@ describe("QueuedMessages", () => {
 
 	it("gives the remove action an accessible name", () => {
 		render(
-			<QueuedMessages
-				queue={queue}
-				onRemove={vi.fn()}
-				onSteer={vi.fn()}
-				onEdit={vi.fn()}
-				onReorder={vi.fn()}
-			/>,
+			<QueuedMessages queue={queue} onRemove={vi.fn()} onSteer={vi.fn()} onEdit={vi.fn()} onReorder={vi.fn()} />,
 		)
 
 		expect(screen.getAllByRole("button", { name: "common:answers.remove" })).toHaveLength(2)
@@ -86,5 +80,31 @@ describe("QueuedMessages", () => {
 		expect(screen.getByText("queuedMessages.editing")).toBeInTheDocument()
 		expect(screen.getAllByTitle("queuedMessages.editTooltip")[0]).toBeDisabled()
 		expect(screen.getAllByTitle("queuedMessages.steerTooltip")[0]).toBeDisabled()
+	})
+
+	it("disables every queue mutation while a steering handoff is pending", () => {
+		const onReorder = vi.fn()
+		render(
+			<QueuedMessages
+				queue={queue}
+				steeringMessageId="msg1"
+				onRemove={vi.fn()}
+				onSteer={vi.fn()}
+				onEdit={vi.fn()}
+				onReorder={onReorder}
+			/>,
+		)
+
+		expect(screen.getByText("queuedMessages.steering")).toBeInTheDocument()
+		expect(
+			screen.getAllByTitle("queuedMessages.editTooltip").every((button) => button.hasAttribute("disabled")),
+		).toBe(true)
+		expect(
+			screen.getAllByTitle("queuedMessages.steerTooltip").every((button) => button.hasAttribute("disabled")),
+		).toBe(true)
+		expect(screen.getAllByLabelText("queuedMessages.dragHandle").every((handle) => !handle.draggable)).toBe(true)
+
+		fireEvent.keyDown(screen.getAllByLabelText("queuedMessages.dragHandle")[1], { key: "ArrowUp" })
+		expect(onReorder).not.toHaveBeenCalled()
 	})
 })

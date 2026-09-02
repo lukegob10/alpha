@@ -450,8 +450,12 @@
 	},
 	"queuedMessages": {
 		"title": "佇列中的訊息",
-		"clickToEdit": "點選以編輯訊息"
+		"clickToEdit": "點選以編輯訊息",
+		"steering": "正在轉向…",
+		"queueFailed": "訊息無法加入佇列。草稿仍保留在輸入框中。",
+		"steerFailed": "無法開始轉向。佇列中的訊息仍然可用。"
 	},
+	"stalledTurn": "模型已有一段時間沒有輸出。你可以停止任務，或使用佇列訊息讓其轉向。",
 	"contextMenu": {
 		"noResults": "找不到結果",
 		"problems": "問題",

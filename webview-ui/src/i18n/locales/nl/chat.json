@@ -456,8 +456,12 @@
 	},
 	"queuedMessages": {
 		"title": "Berichten in wachtrij",
-		"clickToEdit": "Klik om bericht te bewerken"
+		"clickToEdit": "Klik om bericht te bewerken",
+		"steering": "Bijsturen…",
+		"queueFailed": "Het bericht kon niet in de wachtrij worden geplaatst. Je concept staat nog in het invoerveld.",
+		"steerFailed": "Bijsturen kon niet worden gestart. Het bericht in de wachtrij blijft beschikbaar."
 	},
+	"stalledTurn": "Er is al een tijdje geen modeluitvoer. Je kunt de taak stoppen of bijsturen met een bericht uit de wachtrij.",
 	"slashCommand": {
 		"wantsToRun": "Alpha wil een slash commando uitvoeren",
 		"didRun": "Alpha heeft een slash commando uitgevoerd"

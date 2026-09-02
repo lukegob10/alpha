@@ -891,6 +891,26 @@ describe("ClineProvider", () => {
 		)
 	})
 
+	test("does not queue task cancellation behind a long-running global command", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+		let releaseCondense!: () => void
+		const condense = vi.spyOn(provider, "condenseTaskContext").mockReturnValue(
+			new Promise<void>((resolve) => {
+				releaseCondense = resolve
+			}),
+		)
+		const cancel = vi.spyOn(provider, "cancelTask").mockResolvedValue(undefined)
+
+		const condenseMessage = messageHandler({ type: "condenseTaskContextRequest", text: "task-1" })
+		await vi.waitFor(() => expect(condense).toHaveBeenCalledWith("task-1"))
+		const cancelMessage = messageHandler({ type: "cancelTask", taskId: "task-1" })
+		await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith("task-1", "webview_stop"))
+
+		releaseCondense()
+		await Promise.all([condenseMessage, cancelMessage])
+	})
+
 	test("waits for an accepted webview message before draining tasks during disposal", async () => {
 		let releaseMessage!: () => void
 		const task = new Task(defaultTaskOptions)
@@ -911,6 +931,25 @@ describe("ClineProvider", () => {
 
 		expect(task.abortTask).toHaveBeenCalled()
 		expect(provider.getTaskStackSize()).toBe(0)
+	})
+
+	test("waits for accepted task-control lanes during disposal", async () => {
+		let releaseControl!: () => void
+		const acceptedControl = new Promise<void>((resolve) => {
+			releaseControl = resolve
+		})
+		;(provider as any).taskControlMessageQueues.set("task-1", acceptedControl)
+
+		let disposed = false
+		const disposal = provider.dispose().then(() => {
+			disposed = true
+		})
+		await Promise.resolve()
+		expect(disposed).toBe(false)
+
+		releaseControl()
+		await disposal
+		expect(disposed).toBe(true)
 	})
 
 	test("does not cancel or close the active task for an unknown explicit task id", async () => {
@@ -3918,11 +3957,10 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			test("handles invalid message formats", async () => {
 				const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
 
-				// Test with null message - should throw error
-				await expect(messageHandler(null)).rejects.toThrow()
+				// Malformed webview input is untrusted and must not reject the listener queue.
+				await expect(messageHandler(null)).resolves.toBeUndefined()
 
-				// Test with undefined message - should throw error
-				await expect(messageHandler(undefined)).rejects.toThrow()
+				await expect(messageHandler(undefined)).resolves.toBeUndefined()
 
 				// Test with message missing type
 				await expect(
@@ -3932,7 +3970,6 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 					}),
 				).resolves.toBeUndefined()
 
-				// Should handle gracefully without errors
 				expect(vscode.window.showInformationMessage).not.toHaveBeenCalled()
 			})
 

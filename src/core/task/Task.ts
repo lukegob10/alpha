@@ -44,6 +44,7 @@ import {
 	type SubagentModelRouteState,
 	type SubagentRole,
 	type SubagentStopReason,
+	type AgentLifecyclePhase,
 	type ClineSay,
 	type ClineAsk,
 	type ToolProgressStatus,
@@ -534,6 +535,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private ownedLifecyclePromise?: Promise<void>
 	private taskTerminationPromise?: Promise<void>
 	currentRequestAbortController?: AbortController
+	/** Owns the whole model step, including preflight and automatic context compaction. */
+	private stepInterruptionController?: AbortController
+	/** Manual compaction is not part of AgentTurnEngine, but Stop must still reach it. */
+	private contextCondenseAbortController?: AbortController
 	private readonly taskCancellationController = new AbortController()
 	private agentWaitAbortController?: AbortController
 	private readonly subagentAuthority?: SubagentAuthorityGrant
@@ -2763,9 +2768,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (!resumeExistingTurn) await this.enqueueCanonicalLifecycleEvent("turn_started", { phase: "starting" })
 	}
 
-	private async publishCanonicalLifecyclePhase(
-		phase: "working" | "executing" | "waiting" | "finalizing",
-	): Promise<void> {
+	private async publishCanonicalLifecyclePhase(phase: AgentLifecyclePhase): Promise<void> {
 		await this.enqueueCanonicalLifecycleEvent("phase_changed", { phase })
 	}
 
@@ -3264,7 +3267,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return fallback
 	}
 
-	private async waitForRetryDecision(decision: AgentRetryDecision, error: unknown): Promise<void> {
+	private async waitForRetryDecision(
+		decision: AgentRetryDecision,
+		error: unknown,
+		interruptionSignal?: AbortSignal,
+	): Promise<void> {
 		const message = error instanceof Error ? error.message : String(error)
 		await this.appendAgentTurnEvent({
 			type: "retry",
@@ -3277,7 +3284,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const headerText = message ? `${message}\n` : ""
 		const seconds = Math.max(1, Math.ceil(decision.delayMs / 1000))
 		await this.say("api_req_retry_delayed", `${headerText}<retry_timer>${seconds}</retry_timer>`, undefined, true)
-		await delayWithAbort(decision.delayMs, this.getTaskLifetimeCancellationSignal())
+		await delayWithAbort(decision.delayMs, interruptionSignal ?? this.getTaskLifetimeCancellationSignal())
 		await this.say("api_req_retry_delayed", headerText, undefined, false)
 	}
 
@@ -4953,10 +4960,40 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			!this.abort &&
 			!this.didComplete &&
 			!this.activeAsk &&
+			!this.contextCondenseAbortController &&
 			!this.pendingSteerMessage &&
 			!this.steerMessageAwaitingPersistence &&
 			!managedChildIsIdle
 		)
+	}
+
+	public isTurnActive(): boolean {
+		return (
+			!this.abort &&
+			!this.didComplete &&
+			(this.isTaskLoopActive ||
+				this.isAgentTurnEngineActive ||
+				this.isStreaming ||
+				this.isWaitingForFirstChunk ||
+				this.contextCondenseAbortController !== undefined)
+		)
+	}
+
+	public canInterruptCurrentTurn(): boolean {
+		return (
+			this.isTurnActive() && !this.activeAsk && !this.pendingSteerMessage && !this.steerMessageAwaitingPersistence
+		)
+	}
+
+	public hasPendingSteerMessage(): boolean {
+		return this.pendingSteerMessage !== undefined || this.steerMessageAwaitingPersistence
+	}
+
+	private throwIfStepInterrupted(signal?: AbortSignal): void {
+		if (!signal?.aborted) return
+		if (this.pendingSteerMessage) throw new SteerRequestInterruptError()
+		const reason = signal.reason
+		throw reason instanceof Error ? reason : new Error("Request cancelled by user")
 	}
 
 	public canAcceptSubagentFollowup(): boolean {
@@ -4976,6 +5013,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		if (this.abort || this.didComplete) {
 			throw new Error("The task cannot accept a steering message")
+		}
+		if (this.contextCondenseAbortController) {
+			throw new Error("Context compaction is in progress")
 		}
 		if (
 			this.pendingSteerMessage ||
@@ -5014,7 +5054,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.cancelAutoApprovalTimeout()
 			retainForDurableRecovery()
 			this.agentWaitAbortController?.abort(new Error("Parent received a steering message"))
-			this.currentRequestAbortController?.abort()
+			const interrupt = new SteerRequestInterruptError()
+			this.stepInterruptionController?.abort(interrupt)
+			this.currentRequestAbortController?.abort(interrupt)
 			return
 		}
 
@@ -5047,6 +5089,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public async condenseContext(): Promise<void> {
+		if (this.contextCondenseAbortController) {
+			throw new Error("Context compaction is already in progress")
+		}
+		const controller = new AbortController()
+		const taskSignal = this.getTaskLifetimeCancellationSignal()
+		const abortFromTask = () => controller.abort(taskSignal.reason)
+		this.contextCondenseAbortController = controller
+		if (taskSignal.aborted) abortFromTask()
+		else taskSignal.addEventListener("abort", abortFromTask, { once: true })
+
+		try {
+			await this.condenseContextWithSignal(controller.signal)
+		} finally {
+			taskSignal.removeEventListener("abort", abortFromTask)
+			if (this.contextCondenseAbortController === controller) this.contextCondenseAbortController = undefined
+		}
+	}
+
+	private async condenseContextWithSignal(signal: AbortSignal): Promise<void> {
 		// CRITICAL: Flush any pending tool results before condensing
 		// to ensure tool_use/tool_result pairs are complete in history
 		if (!(await this.flushPendingToolResultsToHistory())) {
@@ -5085,9 +5146,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		// Build metadata with tools and taskId for the condensing API call
+		const requestTimeoutMs = getApiRequestTimeout()
 		const metadata: ApiHandlerCreateMessageMetadata = {
 			mode,
 			taskId: this.taskId,
+			signal,
+			...(requestTimeoutMs !== undefined ? { deadline: Date.now() + requestTimeoutMs } : {}),
 			...(allTools.length > 0
 				? {
 						tools: allTools,
@@ -5122,6 +5186,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			cwd: this.cwd,
 			rooIgnoreController: this.rooIgnoreController,
 		})
+		this.throwIfStepInterrupted(signal)
 		if (error) {
 			await this.say(
 				"condense_context_error",
@@ -5938,9 +6003,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 */
 	public cancelCurrentRequest(): void {
 		this.agentWaitAbortController?.abort(new Error("Current task request was cancelled"))
+		const cancellation = new Error("Current task request was cancelled")
+		this.stepInterruptionController?.abort(cancellation)
+		this.contextCondenseAbortController?.abort(cancellation)
 		if (this.currentRequestAbortController) {
 			console.log(`[Task#${this.taskId}.${this.instanceId}] Aborting current HTTP request`)
-			this.currentRequestAbortController.abort()
+			this.currentRequestAbortController.abort(cancellation)
 			this.currentRequestAbortController = undefined
 		}
 	}
@@ -6666,6 +6734,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const wasTaskLoopActive = this.isTaskLoopActive
 		this.isTaskLoopActive = true
 		const retrySequenceStartedAt = performance.now()
+		let activeStepInterruptionController: AbortController | undefined
 
 		try {
 			while (stack.length > 0) {
@@ -6704,6 +6773,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					})
 					continue
 				}
+
+				if (
+					activeStepInterruptionController &&
+					this.stepInterruptionController === activeStepInterruptionController
+				) {
+					this.stepInterruptionController = undefined
+				}
+				activeStepInterruptionController = new AbortController()
+				this.stepInterruptionController = activeStepInterruptionController
+				const stepInterruptionSignal = activeStepInterruptionController.signal
 
 				if (this.consecutiveMistakeLimit > 0 && this.consecutiveMistakeCount >= this.consecutiveMistakeLimit) {
 					await this.handleConsecutiveMistakeLimit(currentUserContent)
@@ -6871,7 +6950,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					)
 				}
 				const pacingWaitCountBefore = this.requestPacingWaitCount
-				await this.maybeWaitForProviderRateLimit(currentItem.retryAttempt ?? 0, state)
+				try {
+					this.throwIfStepInterrupted(stepInterruptionSignal)
+					await this.maybeWaitForProviderRateLimit(
+						currentItem.retryAttempt ?? 0,
+						state,
+						stepInterruptionSignal,
+					)
+					this.throwIfStepInterrupted(stepInterruptionSignal)
+				} catch (error) {
+					const pendingSteer = this.pendingSteerMessage
+					if (!pendingSteer) throw error
+
+					this.pendingSteerMessage = undefined
+					await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
+					this.resetMistakeRecoveryState()
+					stack.push({
+						userContent: [
+							...this.takeLastApiUserMessageContent(),
+							...this.buildUserMessageContent(pendingSteer.text, pendingSteer.images),
+						],
+						includeFileDetails: false,
+						steeringPersistence: { onPersisted: pendingSteer.onPersisted },
+					})
+					continue
+				}
 				if (this.requestPacingWaitCount > pacingWaitCountBefore) {
 					if (!(await this.appendRequestPacingUpdateToLatestUserMessage())) {
 						throw new Error("Unable to persist provider pacing metadata before continuing the request.")
@@ -7035,6 +7138,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						state,
 						retryCategory: currentItem.retryCategory,
 						ownerHandlesRetry: true,
+						interruptionSignal: stepInterruptionSignal,
 					})
 					let assistantMessage = ""
 					let reasoningMessage = ""
@@ -7062,7 +7166,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							const abortPromise = this.currentRequestAbortController
 								? new Promise<never>((_, reject) => {
 										const signal = this.currentRequestAbortController!.signal
-										const onAbort = () => reject(new Error("Request cancelled by user"))
+										const onAbort = () => {
+											if (this.pendingSteerMessage) {
+												reject(new SteerRequestInterruptError())
+												return
+											}
+											reject(
+												signal.reason instanceof Error
+													? signal.reason
+													: new Error("Request cancelled by user"),
+											)
+										}
 										if (signal.aborted) {
 											onAbort()
 										} else {
@@ -7643,8 +7757,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							}
 
 							try {
-								await this.waitForRetryDecision(decision, retryError)
+								await this.waitForRetryDecision(decision, retryError, stepInterruptionSignal)
 							} catch (retryWaitError) {
+								const pendingSteer = this.pendingSteerMessage
+								if (pendingSteer) {
+									this.pendingSteerMessage = undefined
+									await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
+									this.resetMistakeRecoveryState()
+									stack.push({
+										userContent: [
+											...this.takeLastApiUserMessageContent(),
+											...this.buildUserMessageContent(pendingSteer.text, pendingSteer.images),
+										],
+										includeFileDetails: false,
+										steeringPersistence: { onPersisted: pendingSteer.onPersisted },
+									})
+									continue
+								}
 								return {
 									status: "aborted",
 									reason:
@@ -7667,8 +7796,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						}
 					} finally {
 						this.isStreaming = false
-						// Clean up the abort controller when streaming completes
-						this.currentRequestAbortController = undefined
 					}
 
 					// Need to call here in case the stream was aborted.
@@ -8234,8 +8361,28 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 						if (state?.autoApprovalEnabled && emptyDecision.shouldRetry) {
 							try {
-								await this.waitForRetryDecision(emptyDecision, emptyResponseError)
+								await this.waitForRetryDecision(
+									emptyDecision,
+									emptyResponseError,
+									stepInterruptionSignal,
+								)
 							} catch (retryWaitError) {
+								const pendingSteer = this.pendingSteerMessage
+								if (pendingSteer) {
+									await this.restoreRemovedApiUserMessage(removedUserMessage)
+									this.pendingSteerMessage = undefined
+									await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
+									this.resetMistakeRecoveryState()
+									stack.push({
+										userContent: [
+											...this.takeLastApiUserMessageContent(),
+											...this.buildUserMessageContent(pendingSteer.text, pendingSteer.images),
+										],
+										includeFileDetails: false,
+										steeringPersistence: { onPersisted: pendingSteer.onPersisted },
+									})
+									continue
+								}
 								await this.restoreRemovedApiUserMessage(removedUserMessage)
 								return {
 									status: "aborted",
@@ -8356,6 +8503,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// incomplete step rather than silently completing the task.
 			return { status: "incomplete", reason: "No task step was produced.", response: this.currentAgentResponse }
 		} finally {
+			if (
+				activeStepInterruptionController &&
+				this.stepInterruptionController === activeStepInterruptionController
+			) {
+				this.stepInterruptionController = undefined
+			}
 			this.isTaskLoopActive = wasTaskLoopActive
 		}
 	}
@@ -8792,7 +8945,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * NOTE: This is intentionally treated as expected behavior and is surfaced via
 	 * the `api_req_rate_limit_wait` say type (not an error).
 	 */
-	private async maybeWaitForProviderRateLimit(retryAttempt: number, stateOverride?: TaskRequestState): Promise<void> {
+	private async maybeWaitForProviderRateLimit(
+		retryAttempt: number,
+		stateOverride?: TaskRequestState,
+		interruptionSignal?: AbortSignal,
+	): Promise<void> {
 		// A task owns a frozen provider profile. Background sub-agents may be
 		// routed differently from the foreground profile exposed by getState().
 		const rateLimitSeconds = this.apiConfiguration?.rateLimitSeconds ?? 0
@@ -8802,6 +8959,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		const laneKey = await this.getProviderRateLimitLaneKey(stateOverride)
+		this.throwIfStepInterrupted(interruptionSignal)
 		const existingLane = Task.providerRateLimitLanes.get(laneKey)
 		const lane = existingLane ?? { queue: Promise.resolve() }
 		if (!existingLane) {
@@ -8811,6 +8969,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Append the complete wait-and-reserve operation synchronously after resolving
 		// the lane key. This removes the check/wait/set race between concurrent tasks.
 		const reservation = lane.queue.then(async () => {
+			this.throwIfStepInterrupted(interruptionSignal)
 			const now = performance.now()
 			const timeSinceLastRequest = lane.lastRequestTime === undefined ? Infinity : now - lane.lastRequestTime
 			const remainingMs = Math.max(0, rateLimitSeconds * 1000 - timeSinceLastRequest)
@@ -8819,28 +8978,88 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (rateLimitDelay > 0) {
 				const plannedWaitMs = retryAttempt === 0 ? rateLimitDelay * 1000 : remainingMs
 				if (retryAttempt === 0) {
-					for (let i = rateLimitDelay; i > 0; i--) {
-						// Send structured JSON data for i18n-safe transport.
-						const delayMessage = JSON.stringify({ seconds: i })
-						await this.say("api_req_rate_limit_wait", delayMessage, undefined, true)
-						await delay(1000)
+					try {
+						for (let i = rateLimitDelay; i > 0; i--) {
+							// Send structured JSON data for i18n-safe transport.
+							const delayMessage = JSON.stringify({ seconds: i })
+							await this.say("api_req_rate_limit_wait", delayMessage, undefined, true)
+							await this.waitForProviderPacingDelay(1000, interruptionSignal)
+						}
+					} finally {
+						// Never leave the countdown looking active after cancellation or steering.
+						await this.say("api_req_rate_limit_wait", undefined, undefined, false)
 					}
-					// Finalize the partial message so the UI doesn't keep rendering an in-progress spinner.
-					await this.say("api_req_rate_limit_wait", undefined, undefined, false)
 				} else {
 					// Retry flows announce their own backoff. Still enforce any remainder
 					// introduced by another request on this lane without a second countdown.
-					await delay(remainingMs)
+					await this.waitForProviderPacingDelay(remainingMs, interruptionSignal)
 				}
 				this.requestPacingWaitCount++
 				this.requestPacingWaitMs += plannedWaitMs
 			}
 
+			this.throwIfStepInterrupted(interruptionSignal)
 			lane.lastRequestTime = performance.now()
 		})
 
 		lane.queue = reservation.catch(() => undefined)
-		await reservation
+		if (!interruptionSignal) {
+			await reservation
+			return
+		}
+
+		await new Promise<void>((resolve, reject) => {
+			const cleanup = () => interruptionSignal.removeEventListener("abort", onAbort)
+			const onAbort = () => {
+				cleanup()
+				reject(interruptionSignal.reason ?? new Error("Request cancelled by user"))
+			}
+			if (interruptionSignal.aborted) {
+				onAbort()
+				return
+			}
+			interruptionSignal.addEventListener("abort", onAbort, { once: true })
+			reservation.then(
+				() => {
+					cleanup()
+					resolve()
+				},
+				(error) => {
+					cleanup()
+					reject(error)
+				},
+			)
+		})
+	}
+
+	private async waitForProviderPacingDelay(delayMs: number, interruptionSignal?: AbortSignal): Promise<void> {
+		if (!interruptionSignal) {
+			await delay(delayMs)
+			return
+		}
+
+		await new Promise<void>((resolve, reject) => {
+			const cleanup = () => interruptionSignal.removeEventListener("abort", onAbort)
+			const onAbort = () => {
+				cleanup()
+				reject(interruptionSignal.reason ?? new Error("Request cancelled by user"))
+			}
+			if (interruptionSignal.aborted) {
+				onAbort()
+				return
+			}
+			interruptionSignal.addEventListener("abort", onAbort, { once: true })
+			delay(delayMs).then(
+				() => {
+					cleanup()
+					resolve()
+				},
+				(error) => {
+					cleanup()
+					reject(error)
+				},
+			)
+		})
 	}
 
 	private async getProviderRateLimitLaneKey(stateOverride?: TaskRequestState): Promise<string> {
@@ -8889,9 +9108,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			retryCategory?: AgentRetryCategory
 			/** The live Task loop owns policy decisions; omit for legacy direct callers. */
 			ownerHandlesRetry?: boolean
+			/** Interrupts preflight, compaction, provider admission, and retry waits for this logical step. */
+			interruptionSignal?: AbortSignal
 		} = {},
 	): ApiStream {
+		const stepInterruptionSignal = options.interruptionSignal
+		this.throwIfStepInterrupted(stepInterruptionSignal)
 		const state = options.state ?? (await this.providerRef.deref()?.getState())
+		this.throwIfStepInterrupted(stepInterruptionSignal)
 
 		const {
 			autoApprovalEnabled,
@@ -8907,9 +9131,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const customCondensingPrompt = state?.customSupportPrompts?.CONDENSE
 
 		if (!options.skipProviderRateLimit) {
-			await this.maybeWaitForProviderRateLimit(retryAttempt, state)
+			await this.maybeWaitForProviderRateLimit(retryAttempt, state, stepInterruptionSignal)
 		}
+		this.throwIfStepInterrupted(stepInterruptionSignal)
 		const systemPrompt = await this.getSystemPrompt(state)
+		this.throwIfStepInterrupted(stepInterruptionSignal)
 		const { contextTokens } = this.getTokenUsage()
 
 		if (contextTokens) {
@@ -8982,9 +9208,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 
 			// Build metadata with tools and taskId for the condensing API call
+			const contextManagementTimeoutMs = getApiRequestTimeout()
 			const contextMgmtMetadata: ApiHandlerCreateMessageMetadata = {
 				mode,
 				taskId: this.taskId,
+				...(stepInterruptionSignal ? { signal: stepInterruptionSignal } : {}),
+				...(contextManagementTimeoutMs !== undefined
+					? { deadline: Date.now() + contextManagementTimeoutMs }
+					: {}),
 				...(contextMgmtTools.length > 0
 					? {
 							tools: contextMgmtTools,
@@ -9008,6 +9239,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					: undefined
 
 			try {
+				if (contextManagementWillRun && autoCondenseContext) {
+					await this.publishCanonicalLifecyclePhase("compacting")
+				}
 				const truncateResult = await manageContext({
 					messages: this.apiConversationHistory,
 					totalTokens: contextTokens,
@@ -9027,6 +9261,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					cwd: this.cwd,
 					rooIgnoreController: this.rooIgnoreController,
 				})
+				this.throwIfStepInterrupted(stepInterruptionSignal)
 				if (truncateResult.messages !== this.apiConversationHistory) {
 					if (!(await this.overwriteApiConversationHistory(truncateResult.messages))) {
 						throw new Error("Unable to persist context recovery before continuing.")
@@ -9165,6 +9400,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		const shouldIncludeTools = allTools.length > 0
+		this.throwIfStepInterrupted(stepInterruptionSignal)
 
 		const metadata: ApiHandlerCreateMessageMetadata = {
 			mode: mode,
@@ -9185,6 +9421,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		// Create an AbortController to allow cancelling the request mid-stream
 		const requestController = new AbortController()
+		const abortFromStep = () => requestController.abort(stepInterruptionSignal?.reason)
+		if (stepInterruptionSignal?.aborted) abortFromStep()
+		else stepInterruptionSignal?.addEventListener("abort", abortFromStep, { once: true })
 		this.currentRequestAbortController = requestController
 		const abortSignal = requestController.signal
 		this.currentRequestSignal = abortSignal
@@ -9223,6 +9462,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			{ type: "policy_snapshot", digest: taskToolSurface?.policy.digest ?? "", toolCount: allTools.length },
 			step.snapshot.context,
 		)
+		if (abortSignal.aborted) {
+			stepInterruptionSignal?.removeEventListener("abort", abortFromStep)
+			if (this.currentRequestAbortController === requestController) {
+				this.currentRequestAbortController = undefined
+			}
+			if (this.pendingSteerMessage) throw new SteerRequestInterruptError()
+			this.throwIfStepInterrupted(stepInterruptionSignal)
+			throw new Error("Request cancelled by user")
+		}
 
 		// The provider accepts reasoning items alongside standard messages; cast to the expected parameter type.
 		const stream = this.api.createMessage(
@@ -9238,6 +9486,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// uncancellable.
 		const clearOwnedRequestController = () => {
 			console.log(`[Task#${this.taskId}.${this.instanceId}] AbortSignal triggered for current request`)
+			if (this.currentRequestAbortController === requestController) {
+				this.currentRequestAbortController = undefined
+			}
+		}
+		const clearRequestOwnership = () => {
+			stepInterruptionSignal?.removeEventListener("abort", abortFromStep)
+			abortSignal.removeEventListener("abort", clearOwnedRequestController)
 			if (this.currentRequestAbortController === requestController) {
 				this.currentRequestAbortController = undefined
 			}
@@ -9278,10 +9533,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.isWaitingForFirstChunk = false
 		} catch (error) {
 			this.isWaitingForFirstChunk = false
-			abortSignal.removeEventListener("abort", clearOwnedRequestController)
-			if (this.currentRequestAbortController === requestController) {
-				this.currentRequestAbortController = undefined
-			}
+			clearRequestOwnership()
 			if (error instanceof SteerRequestInterruptError) {
 				throw error
 			}
@@ -9398,10 +9650,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		try {
 			yield* iterator
 		} finally {
-			abortSignal.removeEventListener("abort", clearOwnedRequestController)
-			if (this.currentRequestAbortController === requestController) {
-				this.currentRequestAbortController = undefined
-			}
+			clearRequestOwnership()
 		}
 	}
 

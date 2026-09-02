@@ -75,6 +75,7 @@ const messageResponseAskTypes = new Set<ClineAsk>([
 ])
 const completedTaskResponseAskTypes = new Set<ClineAsk>(["completion_result", "resume_completed_task"])
 const approvalAskTypes = new Set<ClineAsk>(["tool", "command", "use_mcp_server"])
+const STALLED_TURN_THRESHOLD_MS = 30_000
 
 const computeChatItemKey = (index: number, message: ClineMessage) => `${message.ts}:${index}`
 
@@ -270,6 +271,21 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		priorText: string
 		priorImages: string[]
 	} | null>(null)
+	const [pendingQueueRequest, setPendingQueueRequest] = useState<{
+		requestId: string
+		taskId: string
+		text: string
+		images: string[]
+	} | null>(null)
+	const [pendingSteerRequest, setPendingSteerRequest] = useState<{
+		requestId: string
+		taskId: string
+		messageId: string
+	} | null>(null)
+	const pendingQueueRequestRef = useRef(pendingQueueRequest)
+	const pendingSteerRequestRef = useRef(pendingSteerRequest)
+	const [chatCommandError, setChatCommandError] = useState<string>()
+	const [activityClock, setActivityClock] = useState(() => Date.now())
 
 	// We need to hold on to the ask because useEffect > lastMessage will always
 	// let us know when an ask comes in and handle it, but by the time
@@ -696,7 +712,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 	}, [])
 
-	const isStreaming = useMemo(() => {
+	const legacyIsStreaming = useMemo(() => {
 		// Checking clineAsk isn't enough since messages effect may be called
 		// again for a tool for example, set clineAsk to its value, and if the
 		// next message is not an ask then it doesn't reset. This is likely due
@@ -729,7 +745,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				lastApiReqStarted.text !== undefined &&
 				lastApiReqStarted.say === "api_req_started"
 			) {
-				const cost = JSON.parse(lastApiReqStarted.text).cost
+				let cost: unknown
+				try {
+					cost = (JSON.parse(lastApiReqStarted.text) as { cost?: unknown }).cost
+				} catch {
+					// Corrupt or pre-migration transcript data must not crash the composer.
+					return false
+				}
 
 				if (cost === undefined) {
 					return true // API request has not finished yet.
@@ -739,6 +761,33 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 		return false
 	}, [modifiedMessages, clineAsk, enableButtons, primaryButtonText])
+	const isTurnActive =
+		effectiveVisibleLiveTask?.isTurnActive ?? effectiveVisibleLiveTask?.isStreaming ?? legacyIsStreaming
+	const isToolCurrentlyAsking =
+		Boolean(modifiedMessages.at(-1)?.ask) &&
+		clineAsk !== undefined &&
+		enableButtons &&
+		primaryButtonText !== undefined
+	const isStreaming = isTurnActive && !effectiveVisibleLiveTask?.isWaitingForInput && !isToolCurrentlyAsking
+	const isTurnStalled =
+		isStreaming &&
+		Boolean(effectiveVisibleLiveTask?.lastUpdatedAt) &&
+		activityClock - (effectiveVisibleLiveTask?.lastUpdatedAt ?? activityClock) >= STALLED_TURN_THRESHOLD_MS
+
+	useEffect(() => {
+		if (!isTurnActive) return
+		setActivityClock(Date.now())
+		const interval = setInterval(() => setActivityClock(Date.now()), 5_000)
+		return () => clearInterval(interval)
+	}, [isTurnActive, visibleCurrentTaskId])
+
+	useEffect(() => {
+		pendingQueueRequestRef.current = null
+		pendingSteerRequestRef.current = null
+		setPendingQueueRequest(null)
+		setPendingSteerRequest(null)
+		setChatCommandError(undefined)
+	}, [visibleCurrentTaskId])
 
 	const markFollowUpAsAnswered = useCallback(() => {
 		const lastFollowUpMessage = messagesRef.current.findLast((msg: ClineMessage) => msg.ask === "followup")
@@ -814,11 +863,21 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		(text: string, images: string[]) => {
 			// Queue messages are task-scoped on the extension side. Preserve the draft
 			// during transient view/task state instead of posting a request it will reject.
-			if (!visibleCurrentTaskId) {
+			if (!visibleCurrentTaskId || pendingQueueRequestRef.current) {
 				return false
 			}
 
-			vscode.postMessage({ type: "queueMessage", text, images, taskId: visibleCurrentTaskId })
+			const requestId = crypto.randomUUID()
+			const request = {
+				requestId,
+				taskId: visibleCurrentTaskId,
+				text,
+				images: [...images],
+			}
+			pendingQueueRequestRef.current = request
+			setPendingQueueRequest(request)
+			setChatCommandError(undefined)
+			vscode.postMessage({ type: "queueMessage", text, images, taskId: visibleCurrentTaskId, requestId })
 			return true
 		},
 		[visibleCurrentTaskId],
@@ -874,8 +933,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			if (planCommand) {
 				const isPlanCommandUnavailable =
-					sendingDisabled ||
-					isStreaming ||
+					isTurnActive ||
 					visibleMessageQueue.length > 0 ||
 					isLastFollowUpAnswered ||
 					clineAskRef.current === "command_output" ||
@@ -921,25 +979,18 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 
 			if (isLastFollowUpAnswered) {
-				if (postQueuedMessage(text, images)) {
-					setInputValue("")
-					setSelectedImages([])
-				}
+				postQueuedMessage(text, images)
 				return
 			}
 
 			const shouldQueueMessage =
-				sendingDisabled ||
-				isStreaming ||
+				isTurnActive ||
 				visibleMessageQueue.length > 0 ||
 				clineAskRef.current === "command_output" ||
 				(clineAskRef.current !== undefined && approvalAskTypes.has(clineAskRef.current))
 
 			if (shouldQueueMessage) {
-				if (postQueuedMessage(text, images)) {
-					setInputValue("")
-					setSelectedImages([])
-				}
+				postQueuedMessage(text, images)
 				return
 			}
 
@@ -968,8 +1019,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[
 			handleChatReset,
 			markFollowUpAsAnswered,
-			sendingDisabled,
-			isStreaming,
+			isTurnActive,
 			visibleMessageQueue.length,
 			apiConfiguration?.apiProvider,
 			visibleTaskPayload,
@@ -1022,10 +1072,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// Handle enqueue button click from textarea
 	const handleEnqueueCurrentMessage = useCallback(() => {
 		const text = inputValue.trim()
-		if ((text || selectedImages.length > 0) && postQueuedMessage(text, selectedImages)) {
-			setInputValue("")
-			setSelectedImages([])
-		}
+		if (text || selectedImages.length > 0) postQueuedMessage(text, selectedImages)
 	}, [inputValue, postQueuedMessage, selectedImages])
 
 	const startQueuedMessageEdit = useCallback(
@@ -1294,6 +1341,40 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						setIsCondensing(false)
 					}
 					break
+				case "chatCommandResult": {
+					const result = message.chatCommandResult
+					const queueRequest = pendingQueueRequestRef.current
+					if (!result) break
+
+					if (result.command === "queueMessage" && queueRequest?.requestId === result.requestId) {
+						pendingQueueRequestRef.current = null
+						setPendingQueueRequest(null)
+						if (result.status === "accepted") {
+							const imagesAreUnchanged =
+								selectedImagesRef.current.length === queueRequest.images.length &&
+								selectedImagesRef.current.every((image, index) => image === queueRequest.images[index])
+							if (inputValueRef.current.trim() === queueRequest.text && imagesAreUnchanged) {
+								setInputValue("")
+								setSelectedImages([])
+							}
+							setChatCommandError(undefined)
+						} else {
+							setChatCommandError(t("chat:queuedMessages.queueFailed"))
+						}
+					}
+
+					if (
+						result.command === "steerQueuedMessage" &&
+						pendingSteerRequestRef.current?.requestId === result.requestId
+					) {
+						pendingSteerRequestRef.current = null
+						setPendingSteerRequest(null)
+						setChatCommandError(
+							result.status === "accepted" ? undefined : t("chat:queuedMessages.steerFailed"),
+						)
+					}
+					break
+				}
 				case "checkpointInitWarning":
 					setCheckpointWarning(message.checkpointWarning)
 					break
@@ -1327,6 +1408,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			setCheckpointWarning,
 			playSound,
 			visibleCurrentTaskId,
+			t,
 		],
 	)
 
@@ -1942,10 +2024,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			// Special case: during command_output, queue the message instead of
 			// triggering the primary button action (which would lose the message)
 			if (clineAskRef.current === "command_output" && hasInput) {
-				if (postQueuedMessage(inputValue.trim(), selectedImages)) {
-					setInputValue("")
-					setSelectedImages([])
-				}
+				postQueuedMessage(inputValue.trim(), selectedImages)
 				return
 			}
 
@@ -2198,6 +2277,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					<QueuedMessages
 						queue={visibleMessageQueue}
 						editingMessageId={editingQueuedMessage?.id}
+						steeringMessageId={pendingSteerRequest?.messageId}
 						onRemove={(index) => {
 							if (visibleMessageQueue[index]) {
 								vscode.postMessage({
@@ -2208,11 +2288,21 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							}
 						}}
 						onSteer={(index) => {
-							if (visibleMessageQueue[index]) {
+							if (visibleMessageQueue[index] && visibleCurrentTaskId && !pendingSteerRequestRef.current) {
+								const requestId = crypto.randomUUID()
+								const request = {
+									requestId,
+									taskId: visibleCurrentTaskId,
+									messageId: visibleMessageQueue[index].id,
+								}
+								pendingSteerRequestRef.current = request
+								setPendingSteerRequest(request)
+								setChatCommandError(undefined)
 								vscode.postMessage({
 									type: "steerQueuedMessage",
 									text: visibleMessageQueue[index].id,
-									...visibleTaskPayload,
+									taskId: visibleCurrentTaskId,
+									requestId,
 								})
 							}
 						}}
@@ -2235,6 +2325,20 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						}}
 					/>
 				)}
+				{chatCommandError && (
+					<div
+						role="alert"
+						className="mx-[15px] mb-2 rounded-md border border-vscode-inputValidation-errorBorder bg-vscode-inputValidation-errorBackground px-3 py-2 text-sm text-vscode-inputValidation-errorForeground">
+						{chatCommandError}
+					</div>
+				)}
+				{isTurnStalled && (
+					<div
+						role="status"
+						className="mx-[15px] mb-2 rounded-md border border-vscode-inputValidation-warningBorder bg-vscode-inputValidation-warningBackground px-3 py-2 text-sm text-vscode-inputValidation-warningForeground">
+						{t("chat:stalledTurn")}
+					</div>
+				)}
 				{showRetiredProviderWarning && (
 					<div className="px-[15px] py-1">
 						<WarningRow
@@ -2250,8 +2354,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						ref={textAreaRef}
 						inputValue={inputValue}
 						setInputValue={setInputValue}
-						sendingDisabled={sendingDisabled || isProfileDisabled}
-						selectApiConfigDisabled={sendingDisabled && clineAsk !== "api_req_failed"}
+						sendingDisabled={
+							isProfileDisabled ||
+							isCompletedTaskResumePending ||
+							isCondensing ||
+							Boolean(pendingQueueRequest)
+						}
+						selectApiConfigDisabled={isTurnActive && clineAsk !== "api_req_failed"}
 						placeholderText={placeholderText}
 						selectedImages={selectedImages}
 						setSelectedImages={setSelectedImages}
@@ -2266,6 +2375,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						isStreaming={isStreaming}
 						onStop={handleStopTask}
 						onEnqueueMessage={handleEnqueueCurrentMessage}
+						enqueueDisabled={Boolean(pendingQueueRequest)}
 					/>
 				)}
 			</div>

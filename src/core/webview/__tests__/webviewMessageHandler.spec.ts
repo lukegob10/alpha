@@ -473,23 +473,37 @@ describe("webviewMessageHandler - queued message steering", () => {
 		const steerUserMessage = vi.fn().mockResolvedValue(undefined)
 
 		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue({
+			taskId: "task-1",
 			messageQueueService: {
 				getMessage,
 				removeMessage,
 			},
 			steerUserMessage,
+			canAcceptSteerMessage: vi.fn(() => true),
+			hasPendingSteerMessage: vi.fn(() => false),
 		} as any)
 
 		await webviewMessageHandler(mockClineProvider, {
 			type: "steerQueuedMessage",
 			text: "queued-1",
 			taskId: "task-1",
+			requestId: "steer-request-1",
 		})
 
 		expect(getMessage).toHaveBeenCalledWith("queued-1")
 		expect(steerUserMessage).toHaveBeenCalledWith("steer this now", ["img1.png"])
 		expect(removeMessage).toHaveBeenCalledWith("queued-1")
 		expect(steerUserMessage.mock.invocationCallOrder[0]).toBeLessThan(removeMessage.mock.invocationCallOrder[0])
+		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chatCommandResult",
+				chatCommandResult: expect.objectContaining({
+					requestId: "steer-request-1",
+					command: "steerQueuedMessage",
+					status: "accepted",
+				}),
+			}),
+		)
 	})
 
 	it("keeps the queued message when the task rejects the steering handoff", async () => {
@@ -504,23 +518,58 @@ describe("webviewMessageHandler - queued message steering", () => {
 		const steerUserMessage = vi.fn().mockRejectedValue(new Error("another steering message is pending"))
 
 		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue({
+			taskId: "task-1",
 			messageQueueService: {
 				getMessage,
 				removeMessage,
 			},
 			steerUserMessage,
+			canAcceptSteerMessage: vi.fn(() => true),
+			hasPendingSteerMessage: vi.fn(() => true),
 		} as any)
 
-		await expect(
-			webviewMessageHandler(mockClineProvider, {
-				type: "steerQueuedMessage",
-				text: "queued-1",
-				taskId: "task-1",
-			}),
-		).rejects.toThrow("another steering message is pending")
+		await webviewMessageHandler(mockClineProvider, {
+			type: "steerQueuedMessage",
+			text: "queued-1",
+			taskId: "task-1",
+			requestId: "steer-request-2",
+		})
 
 		expect(getMessage).toHaveBeenCalledWith("queued-1")
 		expect(removeMessage).not.toHaveBeenCalled()
+		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				chatCommandResult: expect.objectContaining({
+					requestId: "steer-request-2",
+					status: "rejected",
+					errorCode: "steer_pending",
+				}),
+			}),
+		)
+	})
+
+	it("acknowledges a queued message only after the task accepts it", async () => {
+		vi.mocked(mockClineProvider.queueMessageForTask).mockReturnValue(true)
+
+		await webviewMessageHandler(mockClineProvider, {
+			type: "queueMessage",
+			text: "keep this safe",
+			images: [],
+			taskId: "task-1",
+			requestId: "queue-request-1",
+		})
+
+		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "chatCommandResult",
+			taskId: "task-1",
+			requestId: "queue-request-1",
+			chatCommandResult: {
+				requestId: "queue-request-1",
+				taskId: "task-1",
+				command: "queueMessage",
+				status: "accepted",
+			},
+		})
 	})
 
 	it("does not queue or steer messages into terminal tasks", async () => {
@@ -528,6 +577,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 		const getMessage = vi.fn()
 		const steerUserMessage = vi.fn()
 		vi.mocked(mockClineProvider.canAcceptTaskInput).mockReturnValue(false)
+		vi.mocked(mockClineProvider.queueMessageForTask).mockReturnValue(false)
 		vi.mocked(mockClineProvider.getLiveTask).mockReturnValue({
 			messageQueueService: {
 				addMessage,

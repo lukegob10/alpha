@@ -427,6 +427,8 @@ export class ClineProvider
 	private globalStateWriteThroughTimer: ReturnType<typeof setTimeout> | null = null
 	private globalStateWriteThroughQueue: Promise<void> = Promise.resolve()
 	private webviewMessageQueue: Promise<void> = Promise.resolve()
+	private readonly taskControlMessageQueues = new Map<string, Promise<void>>()
+	private readonly immediateWebviewOperations = new Set<Promise<void>>()
 	private agentLifecycleMessageQueue: Promise<void> = Promise.resolve()
 	private modeSwitchQueue: Promise<void> = Promise.resolve()
 	private static readonly GLOBAL_STATE_WRITE_THROUGH_DEBOUNCE_MS = 5000 // 5 seconds
@@ -941,6 +943,7 @@ export class ClineProvider
 		// settle before removing tasks it may have created.
 		this.clearWebviewResources()
 		await this.webviewMessageQueue
+		await Promise.all([...this.taskControlMessageQueues.values(), ...this.immediateWebviewOperations])
 
 		// Clear all tasks from the stack.
 		while (this.clineStack.length > 0) {
@@ -1705,15 +1708,57 @@ export class ClineProvider
 	 * @param webview A reference to the extension webview
 	 */
 	private setWebviewMessageListener(webview: vscode.Webview) {
-		const onReceiveMessage = (message: WebviewMessage) => {
-			const processing = this.webviewMessageQueue.then(() =>
-				webviewMessageHandler(this, message, this.marketplaceManager),
+		const taskControlTypes = new Set<WebviewMessage["type"]>([
+			"queueMessage",
+			"steerQueuedMessage",
+			"removeQueuedMessage",
+			"editQueuedMessage",
+			"reorderQueuedMessage",
+			"askResponse",
+			"terminalOperation",
+			"cancelAutoApproval",
+			"resumeCompletedTask",
+		])
+		const immediateControlTypes = new Set<WebviewMessage["type"]>([
+			"cancelTask",
+			"cancelSubagent",
+			"cancelSubagentGroup",
+		])
+		const logFailure = (message: WebviewMessage, error: unknown) => {
+			this.log(
+				`[webviewMessageHandler] ${message?.type ?? "unknown"} failed: ${error instanceof Error ? error.message : String(error)}`,
 			)
-			this.webviewMessageQueue = processing.catch((error) => {
-				this.log(
-					`[webviewMessageHandler] ${message.type} failed: ${error instanceof Error ? error.message : String(error)}`,
-				)
-			})
+		}
+		const run = (message: WebviewMessage) => webviewMessageHandler(this, message, this.marketplaceManager)
+
+		const onReceiveMessage = (message: WebviewMessage) => {
+			const messageType = message && typeof message === "object" ? message.type : undefined
+			if (messageType && immediateControlTypes.has(messageType)) {
+				const processing = run(message)
+				const tracked = processing.catch((error) => logFailure(message, error))
+				this.immediateWebviewOperations.add(tracked)
+				void tracked.finally(() => this.immediateWebviewOperations.delete(tracked))
+				return tracked
+			}
+
+			if (messageType && taskControlTypes.has(messageType)) {
+				// Capture the active lane at receipt time; focus can change before this
+				// operation reaches the front of its task-scoped queue.
+				const laneKey = message.taskId ?? this.getActiveTaskId() ?? "legacy-active-task"
+				const previous = this.taskControlMessageQueues.get(laneKey) ?? Promise.resolve()
+				const processing = previous.then(() => run(message))
+				const tracked = processing.catch((error) => logFailure(message, error))
+				this.taskControlMessageQueues.set(laneKey, tracked)
+				void tracked.finally(() => {
+					if (this.taskControlMessageQueues.get(laneKey) === tracked) {
+						this.taskControlMessageQueues.delete(laneKey)
+					}
+				})
+				return tracked
+			}
+
+			const processing = this.webviewMessageQueue.then(() => run(message))
+			this.webviewMessageQueue = processing.catch((error) => logFailure(message, error))
 			return this.webviewMessageQueue
 		}
 
@@ -2605,8 +2650,10 @@ export class ClineProvider
 		taskId: string,
 		clineMessage: ClineMessage,
 	): Promise<void> {
+		this.taskSessions.markActivity(taskId)
 		const clineMessagesSeq = ++this.clineMessagesSeq
-		await this.postMessageToWebview({ type, taskId, clineMessage, clineMessagesSeq })
+		const liveTask = this.getLiveTaskMetadata()[taskId]
+		await this.postMessageToWebview({ type, taskId, clineMessage, clineMessagesSeq, liveTask })
 	}
 
 	/** Publish only the visible task's queue instead of rebuilding extension state. */
