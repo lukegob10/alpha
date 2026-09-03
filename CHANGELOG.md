@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.16
+
+### Patch Changes
+
+- Keep managed-agent completion verification available after system sleep, extension-host stalls, or transient owner-heartbeat failures by deferring stale-looking live leases for a confirmation scan.
+- Recover a compromised runtime lease with a fresh fencing token only when the durable agent tree and mailbox claims still match the current host, while continuing to reject a writer after another host has recovered or adopted its work.
+
 ## 2.1.15
 
 ### Patch Changes

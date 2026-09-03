@@ -89,6 +89,16 @@ interface ActiveTransaction {
 	committed: boolean
 }
 
+interface OwnerLeaseMetadata {
+	token: string
+	pid: number
+}
+
+interface OwnerLeaseHandle {
+	token: string
+	release: () => Promise<void>
+}
+
 interface PersistedAgentControlState {
 	state: AgentControlState
 	migrated: boolean
@@ -113,6 +123,7 @@ export interface AgentControlPersistence {
 		options: { staleMs: number; updateMs: number; onCompromised: (error: Error) => void },
 	): Promise<void>
 	isOwnerLeaseLive?(ownerId: AgentRuntimeOwnerId, staleMs: number): Promise<boolean>
+	isOwnerProcessLive?(ownerId: AgentRuntimeOwnerId): Promise<boolean | undefined>
 	tryRevokeOwnerLease?(ownerId: AgentRuntimeOwnerId, staleMs: number): Promise<boolean>
 	releaseOwnerLease?(ownerId: AgentRuntimeOwnerId): Promise<void>
 }
@@ -137,7 +148,7 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 	readonly filePath: string
 	private readonly transactionLockPath: string
 	private readonly ownerLeaseDirectory: string
-	private readonly ownerLeaseReleases = new Map<AgentRuntimeOwnerId, () => Promise<void>>()
+	private readonly ownerLeaseHandles = new Map<AgentRuntimeOwnerId, OwnerLeaseHandle>()
 	private readonly releasedTransactionTokens = new Set<string>()
 	private activeTransaction?: ActiveTransaction
 
@@ -154,23 +165,48 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		ownerId: AgentRuntimeOwnerId,
 		options: { staleMs: number; updateMs: number; onCompromised: (error: Error) => void },
 	): Promise<void> {
-		if (this.ownerLeaseReleases.has(ownerId)) return
+		if (this.ownerLeaseHandles.has(ownerId)) return
 		await fs.mkdir(this.ownerLeaseDirectory, { recursive: true })
+		const token = randomUUID()
 		const release = await lockfile.lock(this.ownerLeasePath(ownerId), {
 			stale: options.staleMs,
 			update: options.updateMs,
 			realpath: false,
 			retries: 0,
 			onCompromised: (error) => {
-				this.ownerLeaseReleases.delete(ownerId)
+				if (this.ownerLeaseHandles.get(ownerId)?.token === token) {
+					this.ownerLeaseHandles.delete(ownerId)
+				}
 				options.onCompromised(error)
 			},
 		})
-		this.ownerLeaseReleases.set(ownerId, release)
+		try {
+			await fs.writeFile(
+				this.ownerLeaseMetadataPath(ownerId),
+				JSON.stringify({ token, pid: process.pid }),
+				"utf8",
+			)
+		} catch (error) {
+			await release()
+			throw error
+		}
+		this.ownerLeaseHandles.set(ownerId, { token, release })
 	}
 
 	async isOwnerLeaseLive(ownerId: AgentRuntimeOwnerId, staleMs: number): Promise<boolean> {
 		return lockfile.check(this.ownerLeasePath(ownerId), { stale: staleMs, realpath: false })
+	}
+
+	async isOwnerProcessLive(ownerId: AgentRuntimeOwnerId): Promise<boolean | undefined> {
+		const metadata = await this.readOwnerLeaseMetadata(ownerId)
+		if (metadata) return this.isProcessLive(metadata.pid)
+		try {
+			await fs.stat(`${this.ownerLeasePath(ownerId)}.lock`)
+			return undefined
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+			throw error
+		}
 	}
 
 	async tryRevokeOwnerLease(ownerId: AgentRuntimeOwnerId, staleMs: number): Promise<boolean> {
@@ -188,24 +224,60 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 			throw error
 		}
 		await release()
+		await fs.rm(this.ownerLeaseMetadataPath(ownerId), { force: true })
 		return true
 	}
 
 	async releaseOwnerLease(ownerId: AgentRuntimeOwnerId): Promise<void> {
-		const release = this.ownerLeaseReleases.get(ownerId)
-		if (!release) return
-		this.ownerLeaseReleases.delete(ownerId)
+		const handle = this.ownerLeaseHandles.get(ownerId)
+		if (!handle) return
+		this.ownerLeaseHandles.delete(ownerId)
 		try {
-			await release()
+			await handle.release()
 		} catch (error) {
 			if (!new Set(["ENOENT", "ENOTACQUIRED", "ERELEASED"]).has((error as NodeJS.ErrnoException).code ?? "")) {
 				throw error
 			}
 		}
+		const metadata = await this.readOwnerLeaseMetadata(ownerId)
+		if (metadata?.token === handle.token) {
+			await fs.rm(this.ownerLeaseMetadataPath(ownerId), { force: true })
+		}
 	}
 
 	private ownerLeasePath(ownerId: AgentRuntimeOwnerId): string {
 		return path.join(this.ownerLeaseDirectory, ownerId)
+	}
+
+	private ownerLeaseMetadataPath(ownerId: AgentRuntimeOwnerId): string {
+		return path.join(this.ownerLeaseDirectory, `${ownerId}.json`)
+	}
+
+	private async readOwnerLeaseMetadata(ownerId: AgentRuntimeOwnerId): Promise<OwnerLeaseMetadata | undefined> {
+		let serialized: string
+		try {
+			serialized = await fs.readFile(this.ownerLeaseMetadataPath(ownerId), "utf8")
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+			throw error
+		}
+		let value: unknown
+		try {
+			value = JSON.parse(serialized)
+		} catch {
+			return undefined
+		}
+		if (
+			typeof value !== "object" ||
+			value === null ||
+			!("token" in value) ||
+			typeof value.token !== "string" ||
+			!("pid" in value) ||
+			!Number.isSafeInteger(value.pid) ||
+			(value.pid as number) <= 0
+		)
+			return undefined
+		return { token: value.token, pid: value.pid as number }
 	}
 
 	async withTransaction<T>(operation: () => Promise<T>): Promise<T> {
@@ -731,6 +803,14 @@ interface PendingMailboxClaimSettlement {
 	disposition: AgentMailboxClaimDisposition
 }
 
+interface OwnerLeaseRecovery {
+	readonly previousOwnerIds: Set<AgentRuntimeOwnerId>
+	readonly activeTaskIds: Set<string>
+	readonly mailboxEventIds: Set<string>
+	readonly causes: Error[]
+	targetOwnerId?: AgentRuntimeOwnerId
+}
+
 type AgentControlOwnerLeasePersistence = AgentControlPersistence &
 	Required<
 		Pick<
@@ -774,12 +854,15 @@ export class AgentControlStore {
 	private writeLock: Promise<void> = Promise.resolve()
 	private readonly listeners = new Set<AgentMailboxListener>()
 	private readonly pendingMailboxClaimSettlements = new Map<string, PendingMailboxClaimSettlement>()
-	private readonly runtimeOwnerId: AgentRuntimeOwnerId
+	private runtimeOwnerId: AgentRuntimeOwnerId
 	private readonly ownerLeaseStaleMs: number
 	private readonly ownerLeaseUpdateMs: number
 	private readonly recoveryScanIntervalMs: number
+	private ownerLeaseGeneration = 0
 	private ownerLeaseHeld = false
 	private ownerLeaseCompromisedError?: Error
+	private ownerLeaseRecovery?: OwnerLeaseRecovery
+	private readonly staleOwnerObservations = new Set<AgentRuntimeOwnerId>()
 	private recoveryScanTimer?: ReturnType<typeof setInterval>
 	private recoveryScanInFlight?: Promise<void>
 
@@ -914,13 +997,17 @@ export class AgentControlStore {
 			let recoveredState!: AgentControlState
 			let recoveredEvents: AgentMailboxEntry[] = []
 			let recoveredRecordCount = 0
+			let ownerLeaseRecovery: OwnerLeaseRecovery | undefined
 			await this.withPersistenceTransaction(async () => {
-				await this.assertCurrentOwnerLease()
+				ownerLeaseRecovery = await this.ensureCurrentOwnerLease()
 				const persisted = await this.readPersistedState()
 				const draft = persisted.state
+				const ownerLeaseChanged = ownerLeaseRecovery
+					? this.applyOwnerLeaseRecovery(draft, ownerLeaseRecovery)
+					: false
 				const recoveredAt = this.now()
 				const recovery = await this.recoverAbandonedState(draft, recoveredAt)
-				if (recovery.changed || persisted.migrated) {
+				if (ownerLeaseChanged || recovery.changed || persisted.migrated) {
 					draft.updatedAt = recoveredAt
 					agentControlStateSchema.parse(draft)
 					await this.assertCurrentOwnerLease()
@@ -932,6 +1019,7 @@ export class AgentControlStore {
 				recoveredRecordCount = recovery.recordCount
 			})
 			this.state = recoveredState
+			this.completeOwnerLeaseRecovery(ownerLeaseRecovery)
 			this.publish(recoveredEvents)
 			return recoveredRecordCount
 		})
@@ -1968,12 +2056,14 @@ export class AgentControlStore {
 			let committedState!: AgentControlState
 			let publishedEntries: AgentMailboxEntry[] = []
 			let value!: T
+			let ownerLeaseRecovery: OwnerLeaseRecovery | undefined
 			await this.withPersistenceTransaction(async () => {
-				await this.assertCurrentOwnerLease()
+				ownerLeaseRecovery = await this.ensureCurrentOwnerLease()
 				const reloadDurableState = this.persistence.withTransaction !== undefined
 				const persisted = reloadDurableState ? await this.readPersistedState() : undefined
 				const base = persisted?.state ?? this.state
 				const draft = clone(base)
+				if (ownerLeaseRecovery) this.applyOwnerLeaseRecovery(draft, ownerLeaseRecovery)
 				const previousMailboxLength = draft.mailbox.length
 				value = mutate(draft)
 
@@ -1994,6 +2084,7 @@ export class AgentControlStore {
 				publishedEntries = draft.mailbox.slice(previousMailboxLength)
 			})
 			this.state = committedState
+			this.completeOwnerLeaseRecovery(ownerLeaseRecovery)
 			this.publish(publishedEntries)
 			return value
 		})
@@ -2007,28 +2098,164 @@ export class AgentControlStore {
 		return this.ownerLeasePersistence() !== undefined
 	}
 
-	private async acquireOwnerLease(): Promise<boolean> {
+	private async acquireOwnerLease(ownerId = this.runtimeOwnerId): Promise<boolean> {
 		const persistence = this.ownerLeasePersistence()
 		if (!persistence || this.ownerLeaseHeld) return false
-		this.ownerLeaseCompromisedError = undefined
-		await persistence.acquireOwnerLease(this.runtimeOwnerId, {
+		const generation = ++this.ownerLeaseGeneration
+		let compromisedDuringAcquire: Error | undefined
+		await persistence.acquireOwnerLease(ownerId, {
 			staleMs: this.ownerLeaseStaleMs,
 			updateMs: this.ownerLeaseUpdateMs,
 			onCompromised: (error) => {
+				if (generation !== this.ownerLeaseGeneration) return
+				compromisedDuringAcquire = error
 				this.ownerLeaseHeld = false
 				this.ownerLeaseCompromisedError = error
-				console.error(`[AgentControlStore] Runtime owner lease ${this.runtimeOwnerId} was compromised`, error)
+				this.recordOwnerLeaseCompromise(ownerId, error)
+				console.error(`[AgentControlStore] Runtime owner lease ${ownerId} was compromised`, error)
 			},
 		})
+		if (generation !== this.ownerLeaseGeneration || compromisedDuringAcquire) {
+			throw new Error(`Agent runtime owner lease ${ownerId} was compromised while it was being acquired`, {
+				cause: compromisedDuringAcquire,
+			})
+		}
+		this.runtimeOwnerId = ownerId
 		this.ownerLeaseHeld = true
+		this.ownerLeaseCompromisedError = undefined
 		return true
 	}
 
 	private async releaseOwnerLease(): Promise<void> {
 		const persistence = this.ownerLeasePersistence()
 		if (!persistence) return
+		const ownerId = this.runtimeOwnerId
+		this.ownerLeaseGeneration++
 		this.ownerLeaseHeld = false
-		await persistence.releaseOwnerLease(this.runtimeOwnerId)
+		await persistence.releaseOwnerLease(ownerId)
+	}
+
+	private recordOwnerLeaseCompromise(ownerId: AgentRuntimeOwnerId, error: Error): OwnerLeaseRecovery {
+		const recovery =
+			this.ownerLeaseRecovery ??
+			({
+				previousOwnerIds: new Set<AgentRuntimeOwnerId>(),
+				activeTaskIds: new Set<string>(),
+				mailboxEventIds: new Set<string>(),
+				causes: [],
+			} satisfies OwnerLeaseRecovery)
+		recovery.previousOwnerIds.add(ownerId)
+		recovery.causes.push(error)
+		for (const record of this.state.agents) {
+			if (ACTIVE_STATUSES.has(record.status) && record.runtimeOwnerId === ownerId) {
+				recovery.activeTaskIds.add(record.taskId)
+			}
+		}
+		for (const entry of this.state.mailbox) {
+			if (entry.claimId && entry.acknowledgedAt === undefined && entry.claimOwnerId === ownerId) {
+				recovery.mailboxEventIds.add(entry.eventId)
+			}
+		}
+		this.ownerLeaseRecovery = recovery
+		return recovery
+	}
+
+	private async ensureCurrentOwnerLease(): Promise<OwnerLeaseRecovery | undefined> {
+		const persistence = this.ownerLeasePersistence()
+		if (!persistence) return undefined
+		if (this.ownerLeaseHeld && !this.ownerLeaseCompromisedError) {
+			if (await persistence.isOwnerLeaseLive(this.runtimeOwnerId, this.ownerLeaseStaleMs)) {
+				return this.ownerLeaseRecovery
+			}
+			const expired = new Error(`Agent runtime owner lease ${this.runtimeOwnerId} expired`)
+			this.ownerLeaseCompromisedError = expired
+			this.recordOwnerLeaseCompromise(this.runtimeOwnerId, expired)
+			await this.releaseOwnerLease()
+		}
+
+		if (!this.ownerLeaseRecovery) {
+			throw new Error(`Agent runtime owner lease ${this.runtimeOwnerId} is not held`, {
+				cause: this.ownerLeaseCompromisedError,
+			})
+		}
+
+		const nextOwnerId = agentRuntimeOwnerIdSchema.parse(randomUUID())
+		await this.acquireOwnerLease(nextOwnerId)
+		this.ownerLeaseRecovery.targetOwnerId = nextOwnerId
+		return this.ownerLeaseRecovery
+	}
+
+	private applyOwnerLeaseRecovery(draft: AgentControlState, recovery: OwnerLeaseRecovery): boolean {
+		const acceptedOwnerIds = new Set(recovery.previousOwnerIds)
+		acceptedOwnerIds.add(this.runtimeOwnerId)
+		const changedTaskIds = [...recovery.activeTaskIds].filter((taskId) => {
+			const record = draft.agents.find((candidate) => candidate.taskId === taskId)
+			return (
+				!record ||
+				!ACTIVE_STATUSES.has(record.status) ||
+				!record.runtimeOwnerId ||
+				!acceptedOwnerIds.has(record.runtimeOwnerId)
+			)
+		})
+		const changedMailboxEventIds = [...recovery.mailboxEventIds].filter((eventId) => {
+			const entry = draft.mailbox.find((candidate) => candidate.eventId === eventId)
+			return (
+				!entry ||
+				!entry.claimId ||
+				entry.acknowledgedAt !== undefined ||
+				!entry.claimOwnerId ||
+				!acceptedOwnerIds.has(entry.claimOwnerId)
+			)
+		})
+		if (changedTaskIds.length > 0 || changedMailboxEventIds.length > 0) {
+			const changedOwnership = [
+				changedTaskIds.length > 0 ? `tasks: ${changedTaskIds.join(", ")}` : undefined,
+				changedMailboxEventIds.length > 0 ? `mailbox events: ${changedMailboxEventIds.join(", ")}` : undefined,
+			]
+				.filter(Boolean)
+				.join("; ")
+			throw new Error(
+				`Agent runtime ownership changed after its lease was compromised (${changedOwnership}). Reload the task before continuing.`,
+				{ cause: recovery.causes.at(-1) },
+			)
+		}
+
+		let changed = false
+		for (const record of draft.agents) {
+			if (
+				ACTIVE_STATUSES.has(record.status) &&
+				record.runtimeOwnerId &&
+				recovery.previousOwnerIds.has(record.runtimeOwnerId)
+			) {
+				record.runtimeOwnerId = this.runtimeOwnerId
+				changed = true
+			}
+		}
+		for (const entry of draft.mailbox) {
+			if (
+				entry.claimId &&
+				entry.acknowledgedAt === undefined &&
+				entry.claimOwnerId &&
+				recovery.previousOwnerIds.has(entry.claimOwnerId)
+			) {
+				entry.claimOwnerId = this.runtimeOwnerId
+				changed = true
+			}
+		}
+		recovery.targetOwnerId = this.runtimeOwnerId
+		return changed
+	}
+
+	private completeOwnerLeaseRecovery(recovery: OwnerLeaseRecovery | undefined): void {
+		if (
+			!recovery ||
+			this.ownerLeaseRecovery !== recovery ||
+			!this.ownerLeaseHeld ||
+			this.ownerLeaseCompromisedError ||
+			recovery.targetOwnerId !== this.runtimeOwnerId
+		)
+			return
+		this.ownerLeaseRecovery = undefined
 	}
 
 	private async assertCurrentOwnerLease(): Promise<void> {
@@ -2041,8 +2268,11 @@ export class AgentControlStore {
 		}
 		if (!this.ownerLeaseHeld) throw new Error(`Agent runtime owner lease ${this.runtimeOwnerId} is not held`)
 		if (!(await persistence.isOwnerLeaseLive(this.runtimeOwnerId, this.ownerLeaseStaleMs))) {
+			const expired = new Error(`Agent runtime owner lease ${this.runtimeOwnerId} expired`)
+			this.ownerLeaseCompromisedError = expired
+			this.recordOwnerLeaseCompromise(this.runtimeOwnerId, expired)
 			await this.releaseOwnerLease()
-			throw new Error(`Agent runtime owner lease ${this.runtimeOwnerId} expired`)
+			throw expired
 		}
 	}
 
@@ -2058,14 +2288,28 @@ export class AgentControlStore {
 				ownerIds.add(entry.claimOwnerId)
 			}
 		}
+		for (const observedOwnerId of this.staleOwnerObservations) {
+			if (!ownerIds.has(observedOwnerId)) this.staleOwnerObservations.delete(observedOwnerId)
+		}
 
 		const liveOwnerIds = new Set<AgentRuntimeOwnerId>()
 		for (const ownerId of ownerIds) {
 			const live = await persistence.isOwnerLeaseLive(ownerId, this.ownerLeaseStaleMs)
 			if (live) {
+				this.staleOwnerObservations.delete(ownerId)
 				liveOwnerIds.add(ownerId)
 				continue
 			}
+			const ownerProcessLive = await persistence.isOwnerProcessLive?.(ownerId)
+			if (ownerProcessLive !== false && !this.staleOwnerObservations.has(ownerId)) {
+				// Wall-clock lease age jumps across system sleep. Give a live or legacy
+				// owner one complete recovery scan to refresh before revoking it; a
+				// confirmed dead process can be fenced immediately.
+				this.staleOwnerObservations.add(ownerId)
+				liveOwnerIds.add(ownerId)
+				continue
+			}
+			this.staleOwnerObservations.delete(ownerId)
 			// Acquiring a stale owner's lock while the state transaction is held
 			// is the fencing step: a concurrent renewal wins with ELOCKED; a
 			// successful acquire/release compromises the suspended old handle.

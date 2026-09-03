@@ -1268,6 +1268,137 @@ describe("AgentControlStore", () => {
 		}
 	})
 
+	it("rotates a compromised owner lease without abandoning still-owned durable state", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-owner-rotation-"))
+		const persistence = new FileAgentControlPersistence(directory)
+		const originalAcquireOwnerLease = persistence.acquireOwnerLease.bind(persistence)
+		const acquiredOwnerIds: string[] = []
+		const compromiseCallbacks = new Map<string, (error: Error) => void>()
+		const acquireOwnerLease = vi
+			.spyOn(persistence, "acquireOwnerLease")
+			.mockImplementation(async (ownerId, options) => {
+				acquiredOwnerIds.push(ownerId)
+				compromiseCallbacks.set(ownerId, options.onCompromised)
+				await originalAcquireOwnerLease(ownerId, options)
+			})
+		const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined)
+		const store = new AgentControlStore(persistence, clock(95_000), { ownerId: "recovering-host" })
+
+		try {
+			await store.initialize()
+			await store.ensureRoot({ taskId: "recovering-root", status: "running" })
+			await store.createAgent({
+				taskId: "recovering-child",
+				parentTaskId: "recovering-root",
+				nickname: "Worker",
+				role: "worker",
+				objective: "Keep running after a transient lease failure",
+				status: "running",
+			})
+			await store.appendEvent({
+				eventId: "recovering-result",
+				sender: "recovering-child",
+				recipient: "recovering-root",
+				kind: "result",
+				name: "recovering_result",
+			})
+			await store.claimMailbox("recovering-root", {
+				channel: "wait",
+				claimId: "recovering-claim",
+				kinds: ["result"],
+			})
+
+			compromiseCallbacks.get("recovering-host")?.(
+				Object.assign(new Error("Unable to update lock within the stale threshold"), {
+					code: "ECOMPROMISED",
+				}),
+			)
+
+			await expect(
+				store.updateAgentSnapshot("recovering-root", { phase: "completion-verification" }),
+			).resolves.toMatchObject({ snapshot: { phase: "completion-verification" } })
+
+			expect(acquiredOwnerIds).toHaveLength(2)
+			const rotatedOwnerId = acquiredOwnerIds[1]
+			expect(rotatedOwnerId).not.toBe("recovering-host")
+			const persisted = JSON.parse(await fs.readFile(persistence.filePath, "utf8"))
+			expect(
+				persisted.agents
+					.filter(({ status }: { status: string }) => ["pending", "running", "cancelling"].includes(status))
+					.map(({ runtimeOwnerId }: { runtimeOwnerId?: string }) => runtimeOwnerId),
+			).toEqual([rotatedOwnerId, rotatedOwnerId])
+			expect(
+				persisted.mailbox.find(({ eventId }: { eventId: string }) => eventId === "recovering-result")
+					?.claimOwnerId,
+			).toBe(rotatedOwnerId)
+
+			// A delayed callback from the superseded handle cannot poison the new lease.
+			compromiseCallbacks.get("recovering-host")?.(new Error("late callback from the old lease"))
+			await expect(
+				store.updateAgentSnapshot("recovering-child", { phase: "still-running" }),
+			).resolves.toMatchObject({ snapshot: { phase: "still-running" } })
+			expect(acquiredOwnerIds).toHaveLength(2)
+		} finally {
+			await store.shutdown()
+			await Promise.all(acquiredOwnerIds.map((ownerId) => persistence.releaseOwnerLease(ownerId)))
+			acquireOwnerLease.mockRestore()
+			errorLog.mockRestore()
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("does not revoke a stale-looking lease before a live owner can refresh after system resume", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-owner-resume-"))
+		const firstPersistence = new FileAgentControlPersistence(directory)
+		const secondPersistence = new FileAgentControlPersistence(directory)
+		const first = new AgentControlStore(firstPersistence, clock(96_000), { ownerId: "resuming-host" })
+		const second = new AgentControlStore(secondPersistence, clock(97_000), { ownerId: "observing-host" })
+		const stores = [first, second]
+
+		try {
+			await first.initialize()
+			await expect(firstPersistence.isOwnerProcessLive("resuming-host")).resolves.toBe(true)
+			await first.ensureRoot({ taskId: "resuming-root", status: "running" })
+			await second.initialize()
+
+			const originalLeaseCheck = secondPersistence.isOwnerLeaseLive.bind(secondPersistence)
+			const leaseCheck = vi
+				.spyOn(secondPersistence, "isOwnerLeaseLive")
+				.mockImplementation((ownerId, staleMs) =>
+					ownerId === "resuming-host" ? Promise.resolve(false) : originalLeaseCheck(ownerId, staleMs),
+				)
+			const originalProcessCheck = secondPersistence.isOwnerProcessLive.bind(secondPersistence)
+			const processCheck = vi
+				.spyOn(secondPersistence, "isOwnerProcessLive")
+				.mockImplementation((ownerId) =>
+					ownerId === "resuming-host" ? Promise.resolve(true) : originalProcessCheck(ownerId),
+				)
+			const revoke = vi.spyOn(secondPersistence, "tryRevokeOwnerLease")
+
+			try {
+				await expect(second.recoverAbandonedOwners()).resolves.toBe(0)
+				expect(revoke).not.toHaveBeenCalledWith("resuming-host", expect.any(Number))
+				expect(second.getAgent("resuming-root")).toMatchObject({
+					status: "running",
+					runtimeOwnerId: "resuming-host",
+				})
+
+				leaseCheck.mockImplementation((ownerId, staleMs) => originalLeaseCheck(ownerId, staleMs))
+				await expect(second.recoverAbandonedOwners()).resolves.toBe(0)
+				await expect(
+					first.updateAgentSnapshot("resuming-root", { phase: "completion-verification" }),
+				).resolves.toMatchObject({ snapshot: { phase: "completion-verification" } })
+			} finally {
+				leaseCheck.mockRestore()
+				processCheck.mockRestore()
+				revoke.mockRestore()
+			}
+		} finally {
+			await Promise.all(stores.map((store) => store.shutdown()))
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
 	// This integration path intentionally performs many separately fenced real-filesystem
 	// transactions. Keep unit tests on the default timeout, but allow Windows CI scheduling
 	// headroom when this spec runs beside the rest of the disk-heavy extension suite.
@@ -1416,6 +1547,11 @@ describe("AgentControlStore", () => {
 			await firstPersistence.releaseOwnerLease("host-a")
 			const staleOwnerLock = path.join(`${firstPersistence.filePath}.owners`, "host-a.lock")
 			await fs.mkdir(staleOwnerLock, { recursive: true })
+			await fs.writeFile(
+				path.join(`${firstPersistence.filePath}.owners`, "host-a.json"),
+				JSON.stringify({ token: "abandoned-host-a", pid: 2_147_483_647 }),
+				"utf8",
+			)
 			const staleMtime = new Date(Date.now() - 2 * 60_000)
 			await fs.utimes(staleOwnerLock, staleMtime, staleMtime)
 			await expect(second.recoverAbandonedOwners()).resolves.toBe(2)
@@ -1440,7 +1576,7 @@ describe("AgentControlStore", () => {
 				taskId: "owned-completed-child",
 			})
 			await expect(first.updateAgentSnapshot("owned-child", { stopReason: "interrupted" })).rejects.toThrow(
-				/runtime owner lease host-a expired/,
+				/runtime ownership changed after its lease was compromised/,
 			)
 
 			await second.shutdown()
