@@ -1,4 +1,5 @@
 import type { ModelInfo, ProviderSettings } from "@alpha-code/types"
+import { TelemetryService } from "@alpha-code/telemetry"
 
 import type { ApiHandler } from "../../../api"
 import { FakeAIHandler } from "../../../api/providers/fake-ai"
@@ -6,6 +7,7 @@ import type { ApiStream } from "../../../api/transform/stream"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../../agent/AgentStepContextBuilder"
 import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
 import type { AgentTurnOutcome } from "../../agent/AgentTurnEngine"
+import { getEffectiveApiHistory, summarizeConversation } from "../../condense"
 import { manageContext, willManageContext } from "../../context-management"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
@@ -30,7 +32,7 @@ function surface(name: string) {
 			function: { name, description: `${name} schema`, parameters: { type: "object", properties: {} } },
 		},
 		capabilities: { concurrency: "serial", sideEffects: "none", controlFlow: false, requiresApproval: false },
-		execute: async () => {},
+		execute: vi.fn(async () => {}),
 	})
 	return createTaskToolSurface({ registry, applyProfile: false })
 }
@@ -349,6 +351,138 @@ describe("Task retained retry wire inputs", () => {
 					allowedFunctionNames: ["list_files"],
 				}),
 			)
+		},
+	)
+
+	it.each(["openai-native", "gemini", "vscode-lm"] as const)(
+		"retains recent %s provider state through real compaction and a transport retry",
+		async (apiProvider) => {
+			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
+			const { task, live, originalHandler } = harness()
+			task.apiConfiguration = { apiProvider, apiModelId: "original-model" }
+			const execute = live.surface.registry.resolve("read_file")!.execute
+			const toolCall = {
+				type: "tool_use" as const,
+				id: "recent-read",
+				name: "read_file",
+				input: { path: "recent.ts", password: "literal retained fixture" },
+			}
+			const toolResult = {
+				type: "tool_result" as const,
+				tool_use_id: toolCall.id,
+				content: "recent exact read result",
+				is_error: false,
+			}
+			const encryptedReasoning = {
+				type: "reasoning" as const,
+				id: "recent-reasoning-id",
+				encrypted_content: "opaque encrypted continuation",
+				summary: [{ type: "summary_text", text: "recent reasoning summary" }],
+			}
+			const assistant = {
+				role: "assistant" as const,
+				content: [toolCall],
+				...(apiProvider === "gemini"
+					? {
+							reasoning_details: [
+								{
+									type: "reasoning.encrypted",
+									data: "opaque Gemini state",
+									continuation_token: "opaque cursor",
+								},
+							],
+						}
+					: {}),
+				...(apiProvider === "vscode-lm"
+					? { vscodeLmStatefulMarker: Buffer.from("opaque VS Code state").toString("base64") }
+					: {}),
+			}
+			const result = { role: "user" as const, content: [toolResult] }
+			const summaryHandler = {
+				...handler("summary-model"),
+				countTokens: vi.fn<ApiHandler["countTokens"]>(async (content) =>
+					Math.ceil(Buffer.byteLength(JSON.stringify(content), "utf8") / 4),
+				),
+			}
+			summaryHandler.createMessage.mockImplementation(async function* () {
+				yield { type: "text", text: "Older work is complete. Continue from the recent read." }
+			})
+			// Keep the recent transaction small; either older message alone exceeds the tail budget.
+			const messages: ApiMessage[] = [
+				{ role: "user", content: "superseded request ".repeat(512) },
+				{ role: "assistant", content: "obsolete investigation ".repeat(512) },
+				{ role: "user", content: "Use the recent read and preserve my correction." },
+				...(apiProvider === "openai-native"
+					? [{ role: "assistant" as const, content: [], ...encryptedReasoning }]
+					: []),
+				assistant,
+				result,
+			]
+			const options = {
+				messages,
+				apiHandler: summaryHandler,
+				systemPrompt: live.prompt,
+				taskId: task.taskId,
+				recentTailTokenBudget: 1_024,
+				maxContextTokens: 2_048,
+				metadata: { taskId: task.taskId, tools: [...live.surface.schemas] },
+			}
+			const compacted = await summarizeConversation(options)
+			expect(compacted.error).toBeUndefined()
+			task.apiConversationHistory = compacted.messages
+			live.contextTokens = compacted.newContextTokens!
+			originalHandler.createMessage.mockImplementationOnce(() =>
+				failBeforeFirstChunk(new Error("post-compaction transport failure")),
+			)
+			await expect(
+				task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true }).next(),
+			).rejects.toThrow("post-compaction transport failure")
+			const firstStep = capturedStep(task)
+			const firstCall = originalHandler.createMessage.mock.calls[0]
+			const expectedRequest = logicalRequest(firstCall)
+			const wireTail = [...(apiProvider === "openai-native" ? [encryptedReasoning] : []), assistant, result]
+			expect(expectedRequest.messages.slice(-wireTail.length)).toEqual(wireTail)
+			expect(getEffectiveApiHistory(compacted.messages)).toContainEqual(assistant)
+			expect(JSON.stringify(expectedRequest.messages)).not.toContain("obsolete investigation")
+			const blocks = expectedRequest.messages.flatMap((message) =>
+				Array.isArray(message.content) ? message.content : [],
+			)
+			expect(blocks.filter((block) => block.type === "tool_use")).toEqual([toolCall])
+			expect(blocks.filter((block) => block.type === "tool_result")).toEqual([toolResult])
+			// The new logical step captures schemas for context budgeting and dispatch.
+			// A retained transport retry must not rebuild either captured surface.
+			const toolBuildsBeforeRetry = vi.mocked(buildNativeToolsArrayWithRestrictions).mock.calls.length
+			expect(toolBuildsBeforeRetry).toBe(2)
+
+			firstCall[1].at(-2)!.content = "adapter-mutated recent turn"
+			task.apiConversationHistory = [{ role: "user", content: "changed live history" }]
+			live.contextTokens = 120_000
+			live.prompt = "changed live prompt"
+			live.mode = "architect"
+			live.surface = surface("list_files")
+			const replacementHandler = handler("replacement-model")
+			task.api = replacementHandler
+			task.apiConfiguration = { apiProvider: "anthropic", apiModelId: "replacement-model" }
+			const retry = task.attemptApiRequest(1, {
+				skipProviderRateLimit: true,
+				ownerHandlesRetry: true,
+				retryCategory: "transport",
+			})
+			await expect(retry.next()).resolves.toMatchObject({ value: { type: "text", text: "response" } })
+			await expect(retry.next()).resolves.toEqual({ value: undefined, done: true })
+			const secondCall = originalHandler.createMessage.mock.calls[1]
+			expect(logicalRequest(secondCall)).toEqual(expectedRequest)
+			expect(secondCall[2]!.requestId).toBe(firstCall[2]!.requestId)
+			expect(secondCall[2]!.attemptId).not.toBe(firstCall[2]!.attemptId)
+			expect(secondCall[2]!.signal).not.toBe(firstCall[2]!.signal)
+			expect(capturedStep(task).snapshot.context.contextId).toBe(firstStep.snapshot.context.contextId)
+			expect(originalHandler.createMessage).toHaveBeenCalledTimes(2)
+			expect(replacementHandler.createMessage).not.toHaveBeenCalled()
+			expect(buildNativeToolsArrayWithRestrictions).toHaveBeenCalledTimes(toolBuildsBeforeRetry)
+			expect(manageContext).toHaveBeenCalledOnce()
+			expect(summaryHandler.createMessage).toHaveBeenCalledOnce()
+			expect(summaryHandler.createMessage.mock.calls[0][2]).toMatchObject({ tools: [], tool_choice: "none" })
+			expect(execute).not.toHaveBeenCalled()
 		},
 	)
 

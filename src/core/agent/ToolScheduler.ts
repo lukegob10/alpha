@@ -336,6 +336,12 @@ function scopesOverlap(left: string, right: string): boolean {
 	return contains(left, right) || contains(right, left)
 }
 
+function formatFailureResult(message: string, status: Exclude<ToolResultStatus, "success">): string {
+	// Scheduler-generated receipts use the same status/message envelope as tool
+	// denial and discovery cancellation. toolError is reserved for actual failures.
+	return status === "error" ? formatResponse.toolError(message) : JSON.stringify({ status, message })
+}
+
 function resultForError(
 	call: AgentToolCall,
 	message: string,
@@ -345,7 +351,7 @@ function resultForError(
 		callId: call.id,
 		name: call.name,
 		status,
-		content: formatResponse.toolError(message),
+		content: formatFailureResult(message, status),
 		durationMs: 0,
 	}
 }
@@ -525,10 +531,11 @@ export class ToolScheduler {
 		} catch (error) {
 			if (this.isCancelled()) return this.cancelledResultFor(item.call)
 			if (!(error instanceof ToolReadDeniedError)) this.executionHost.didToolFailInCurrentTurn = true
+			const status = error instanceof ToolReadDeniedError ? "denied" : "error"
 			return {
 				...result,
-				status: error instanceof ToolReadDeniedError ? "denied" : "error",
-				content: formatResponse.toolError(this.errorMessage(error)),
+				status,
+				content: formatFailureResult(this.errorMessage(error), status),
 			}
 		}
 	}
@@ -727,7 +734,7 @@ export class ToolScheduler {
 			callId: call.id,
 			name: call.name,
 			status: "cancelled",
-			content: formatResponse.toolError("Tool execution was cancelled."),
+			content: formatFailureResult("Tool execution was cancelled.", "cancelled"),
 			executionStatus: "cancelled",
 			durationMs: 0,
 		}
@@ -1041,7 +1048,7 @@ export class ToolScheduler {
 					if (this.isCancelled()) {
 						this.approvalCancelledCount += 1
 						collector.setStatus("cancelled")
-						collector.push(formatResponse.toolError("Tool execution was cancelled."))
+						collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
 						await this.options.onEvent?.({
 							type: "approval_result",
 							requestId,
@@ -1084,9 +1091,10 @@ export class ToolScheduler {
 						if (error instanceof AskIgnoredError) {
 							this.supersededAskCount += 1
 							this.approvalCancelledCount += 1
-							collector.setStatus(this.isCancelled() ? "cancelled" : "error")
+							const status = this.isCancelled() ? "cancelled" : "error"
+							collector.setStatus(status)
 							collector.push(
-								formatResponse.toolError(`Approval request was superseded: ${error.message}`),
+								formatFailureResult(`Approval request was superseded: ${error.message}`, status),
 							)
 							await this.options.onEvent?.({
 								type: "approval_result",
@@ -1102,7 +1110,7 @@ export class ToolScheduler {
 					if (!approval) {
 						this.approvalCancelledCount += 1
 						collector.setStatus("cancelled")
-						collector.push(formatResponse.toolError("Tool execution was cancelled."))
+						collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
 						await this.options.onEvent?.({
 							type: "approval_result",
 							requestId,
@@ -1115,16 +1123,18 @@ export class ToolScheduler {
 					const { response, text, images } = approval
 
 					if (response !== "yesButtonClicked") {
+						const decision = response === "noButtonClicked" || text ? "denied" : "cancelled"
 						if (text) {
 							await this.executionHost.say("user_feedback", text, images)
 							collector.push(
 								formatResponse.toolResult(formatResponse.toolDeniedWithFeedback(text), images),
 							)
-						} else {
+						} else if (decision === "denied") {
 							collector.push(formatResponse.toolDenied())
+						} else {
+							collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
 						}
-						const decision = response === "noButtonClicked" || text ? "denied" : "cancelled"
-						collector.setStatus(decision === "denied" ? "denied" : "cancelled")
+						collector.setStatus(decision)
 						if (decision === "denied") {
 							this.approvalDeniedCount += 1
 						} else {
@@ -1149,8 +1159,9 @@ export class ToolScheduler {
 			handleError: async (action: string, error: Error) => {
 				if (error instanceof AskIgnoredError) {
 					this.supersededAskCount += 1
-					collector.setStatus(this.isCancelled() ? "cancelled" : "error")
-					collector.push(formatResponse.toolError(`Tool approval was superseded: ${error.message}`))
+					const status = this.isCancelled() ? "cancelled" : "error"
+					collector.setStatus(status)
+					collector.push(formatFailureResult(`Tool approval was superseded: ${error.message}`, status))
 					return
 				}
 				const cancelled = this.isCancelled()
@@ -1160,7 +1171,7 @@ export class ToolScheduler {
 				collector.setStatus(cancelled ? "cancelled" : "error")
 				const errorString = `Error ${action}: ${JSON.stringify(serializeError(error))}`
 				if (cancelled) {
-					collector.push(formatResponse.toolError("Tool execution was cancelled."))
+					collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
 				} else {
 					await this.executionHost.say("error", `Error ${action}:\n${error.message}`)
 					collector.push(formatResponse.toolError(errorString))
@@ -1223,15 +1234,17 @@ export class ToolScheduler {
 		} catch (error) {
 			if (error instanceof ToolEffectFenceError) throw error
 			const cancelled = this.isCancelled()
-			collector.setStatus(cancelled ? "cancelled" : error instanceof ToolReadDeniedError ? "denied" : "error")
+			const status = cancelled ? "cancelled" : error instanceof ToolReadDeniedError ? "denied" : "error"
+			collector.setStatus(status)
 			if (prepared.read && error instanceof Error && "timedOut" in error && error.timedOut === true) {
 				collector.setMetadata({ status: "error", timedOut: true })
 			}
 			collector.push(
-				formatResponse.toolError(
+				formatFailureResult(
 					cancelled
 						? "Tool execution was cancelled."
 						: `Error executing ${prepared.call.name}: ${this.errorMessage(error)}`,
+					status,
 				),
 			)
 		}
@@ -1242,7 +1255,7 @@ export class ToolScheduler {
 		if (this.isCancelled()) {
 			collector.setMetadata({ status: "cancelled" })
 			if (!collector.hasResult()) {
-				collector.push(formatResponse.toolError("Tool execution was cancelled."))
+				collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
 			}
 		}
 

@@ -3964,6 +3964,12 @@ describe("Alpha", () => {
 
 		it("resumes a delegated parent from its persisted new_task child result", async () => {
 			const task = createTask()
+			const capture = {
+				details: "<environment_details>refreshed after delegation</environment_details>",
+				commit: vi.fn(),
+				release: vi.fn(),
+			}
+			vi.mocked(captureEnvironmentDetails).mockResolvedValueOnce(capture)
 			const childResult: Anthropic.ToolResultBlockParam = {
 				type: "tool_result",
 				tool_use_id: "new-task-1",
@@ -3982,7 +3988,8 @@ describe("Alpha", () => {
 					],
 				},
 				{ role: "user", content: [childResult] },
-			] as any
+			]
+			const persistedChildMessage = task.apiConversationHistory[1]
 			Object.assign(task, {
 				abort: true,
 				abandoned: true,
@@ -3996,9 +4003,15 @@ describe("Alpha", () => {
 			await task.resumeAfterDelegation()
 
 			expect(ask).not.toHaveBeenCalled()
-			expect(task.apiConversationHistory).toHaveLength(2)
-			expect(task.apiConversationHistory[1]?.content).toEqual([childResult, { type: "text", text: "" }])
+			expect(task.apiConversationHistory).toHaveLength(3)
+			expect(task.apiConversationHistory[1]).toBe(persistedChildMessage)
+			expect(persistedChildMessage.content).toEqual([childResult])
+			expect(task.apiConversationHistory[2]).toMatchObject({
+				role: "user",
+				content: [{ type: "text", text: capture.details }],
+			})
 			expect(saveHistory).toHaveBeenCalledOnce()
+			expect(capture.commit).toHaveBeenCalledOnce()
 			expect(continueLoop).toHaveBeenCalledWith([])
 			expect(task.skipPrevResponseIdOnce).toBe(true)
 			expect(task.abort).toBe(false)

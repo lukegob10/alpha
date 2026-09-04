@@ -8,9 +8,11 @@ import { AskIgnoredError } from "../../task/AskIgnoredError"
 import { formatResponse } from "../../prompts/responses"
 import { ApplyPatchTool } from "../../tools/ApplyPatchTool"
 import { readFileTool } from "../../tools/ReadFileTool"
+import { ToolReadDeniedError } from "../../tools/BaseTool"
 import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
 import { collectAgentResponse } from "../AgentResponseAccumulator"
 import { AgentTurnEventLog, readAgentTurnEvents } from "../AgentTurnEventLog"
+import type { AgentTurnEvent } from "../AgentTurnEvents"
 import { ToolScheduler } from "../ToolScheduler"
 import { createToolPolicySnapshot } from "../ToolPolicy"
 
@@ -167,9 +169,54 @@ describe("ToolScheduler", () => {
 			validateCall: () => {},
 		}).run(response({ id: "one", name: "read" }, { id: "two", name: "read" }))
 		expect(outcome.results.map((result) => result.status)).toEqual(["denied", "denied"])
+		expect(outcome.results.map((result) => JSON.parse(String(result.content)).status)).toEqual(["denied", "denied"])
 		expect(ask).not.toHaveBeenCalled()
 		expect(effects).toBe(0)
 	})
+
+	it.each(["prepare", "run", "finalize"] as const)(
+		"publishes a denied receipt when read %s revokes approval",
+		async (phase) => {
+			const task = makeTask()
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			const deny = (): never => {
+				throw new ToolReadDeniedError("Captured read approval was revoked.")
+			}
+			const execute = vi.fn(async () => {})
+			registry.register({
+				...descriptor("read", "parallel", execute),
+				prepareParallelRead: async () => {
+					if (phase === "prepare") deny()
+					return {
+						scope: path.resolve(tmpdir(), "denied-read"),
+						run: async () => {
+							if (phase === "run") deny()
+							return async () => deny()
+						},
+					}
+				},
+			})
+			const outcome = await new ToolScheduler({
+				task,
+				registry,
+				mode: "code",
+				executionMode: "selective-parallel",
+				validateCall: () => {},
+				policy: createToolPolicySnapshot({ visibleTools: ["read"], autoApprovalEnabled: true }),
+				readGrant: { enabled: true, workspaceRoot: tmpdir(), showIgnoredFiles: false },
+			}).run(response({ id: "revoked", name: "read" }))
+
+			expect(execute).not.toHaveBeenCalled()
+			expect(outcome.results[0].status).toBe("denied")
+			const published = task.userMessageContent.filter((item) => item.type === "tool_result")
+			expect(published).toHaveLength(1)
+			expect(published[0]).toMatchObject({ tool_use_id: "revoked", is_error: true })
+			expect(JSON.parse(String(published[0].content))).toMatchObject({
+				status: "denied",
+				message: expect.stringContaining("Captured read approval was revoked."),
+			})
+		},
+	)
 
 	it("rechecks cancellation after an awaited durability fence before dispatch", async () => {
 		const task = makeTask()
@@ -343,6 +390,11 @@ describe("ToolScheduler", () => {
 
 		expect(deniedEvents.find((event) => event.type === "verification_result").status).toBe("denied")
 		expect(cancelledEvents.find((event) => event.type === "verification_result").status).toBe("cancelled")
+		expect(
+			cancelledTask.userMessageContent
+				.filter((item) => item.type === "tool_result")
+				.map((item) => JSON.parse(String(item.content)).status),
+		).toEqual(["cancelled"])
 	})
 
 	it("emits error telemetry for a stale apply_patch mismatch", async () => {
@@ -976,6 +1028,72 @@ describe("ToolScheduler", () => {
 		expect(outcome.results).toHaveLength(1)
 		expect(outcome.results[0].status).toBe("cancelled")
 		expect(resultIds(task)).toEqual([])
+	})
+
+	it("publishes cancelled running and pending receipts without changing earlier completed receipts", async () => {
+		const task = makeTask()
+		const controller = new AbortController()
+		const events: AgentTurnEvent[] = []
+		const executions: string[] = []
+		let release!: () => void
+		const pending = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		let markStarted!: () => void
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve
+		})
+		const completedContent = JSON.stringify({ status: "success", message: "Durably completed earlier effect." })
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(
+			descriptor("mutation", "serial", async ({ callbacks }) => {
+				callbacks.pushToolResult(completedContent)
+			}),
+		)
+		registry.register(
+			descriptor("read", "parallel", async ({ call, callbacks }) => {
+				executions.push(call.id!)
+				if (executions.length === 2) markStarted()
+				await pending
+				callbacks.pushToolResult(JSON.stringify({ status: "success", message: "Late read result." }))
+			}),
+		)
+		const run = new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			executionMode: "selective-parallel",
+			maxConcurrency: 2,
+			validateCall: () => {},
+			signal: controller.signal,
+			preserveAbortedResults: true,
+			onEvent: (event) => {
+				events.push(event)
+			},
+		}).run(
+			response(
+				{ id: "completed", name: "mutation" },
+				{ id: "running-a", name: "read" },
+				{ id: "running-b", name: "read" },
+				{ id: "pending", name: "read" },
+			),
+		)
+
+		await started
+		controller.abort()
+		release()
+		const outcome = await run
+		const statuses = ["success", "cancelled", "cancelled", "cancelled"]
+		const published = task.userMessageContent.filter((item) => item.type === "tool_result")
+		expect(outcome.status).toBe("aborted")
+		expect(executions).toEqual(["running-a", "running-b"])
+		expect(outcome.results.map((result) => result.status)).toEqual(statuses)
+		expect(outcome.results.map((result) => JSON.parse(String(result.content)).status)).toEqual(statuses)
+		expect(published.map((result) => JSON.parse(String(result.content)).status)).toEqual(statuses)
+		expect(published.map((result) => result.is_error)).toEqual([false, true, true, true])
+		expect(resultIds(task)).toEqual(["completed", "running-a", "running-b", "pending"])
+		expect(published[0].content).toBe(completedContent)
+		expect(events.filter((event) => event.type === "tool_result").map((event) => event.status)).toEqual(statuses)
 	})
 
 	it("preserves deterministic receipts for every call when cancellation wins", async () => {
