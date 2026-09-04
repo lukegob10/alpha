@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.18
+
+### Patch Changes
+
+- Add Claude Fable 5.1 to the Anthropic setup and expose Low, Medium, High, XHigh, and Max reasoning for Fable 5.1, Fable 5, Opus 5, Sonnet 5, Opus 4.8, and Opus 4.7.
+- Send the selected effort with adaptive thinking for chat and single completions, defaulting unsupported saved settings to High.
+- Use Sonnet 5 for new Claude setups and hide retired Claude models from new selections while retaining their saved model IDs.
+- Enable Fable 5.1's thinking binding compatibility control so history edits and context compaction can discard invalidated thinking instead of failing the request.
+
 ## 2.1.17
 
 ### Patch Changes

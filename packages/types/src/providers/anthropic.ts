@@ -1,12 +1,28 @@
 import type { ModelInfo } from "../model.js"
 
-// https://docs.anthropic.com/en/docs/about-claude/models
+// https://platform.claude.com/docs/en/models/overview
 // https://platform.claude.com/docs/en/about-claude/pricing
+// Effort capabilities verified 2026-09-04: https://platform.claude.com/docs/en/build-with-claude/effort
 
 export type AnthropicModelId = keyof typeof anthropicModels
-export const anthropicDefaultModelId: AnthropicModelId = "claude-sonnet-4-5"
+export const anthropicDefaultModelId: AnthropicModelId = "claude-sonnet-5"
 
 export const anthropicModels = {
+	"claude-fable-5-1": {
+		maxTokens: 128_000,
+		contextWindow: 1_000_000,
+		supportsImages: true,
+		supportsPromptCache: true,
+		inputPrice: 10.0,
+		outputPrice: 50.0,
+		cacheWritesPrice: 12.5,
+		cacheReadsPrice: 0.25,
+		supportsTemperature: false,
+		supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
+		requiredReasoningEffort: true,
+		reasoningEffort: "high",
+		description: "Claude Fable 5.1: Anthropic's latest model for demanding reasoning and long-horizon agentic work",
+	},
 	"claude-fable-5": {
 		maxTokens: 128_000,
 		contextWindow: 1_000_000,
@@ -17,7 +33,10 @@ export const anthropicModels = {
 		cacheWritesPrice: 12.5,
 		cacheReadsPrice: 1.0,
 		supportsTemperature: false,
-		description: "Claude Fable 5: Anthropic's most capable widely released long-horizon agent model",
+		supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
+		requiredReasoningEffort: true,
+		reasoningEffort: "high",
+		description: "Claude Fable 5: Frontier reasoning for long-horizon agentic work",
 	},
 	"claude-opus-5": {
 		maxTokens: 128_000,
@@ -30,6 +49,9 @@ export const anthropicModels = {
 		cacheReadsPrice: 0.5,
 		supportsTemperature: false,
 		description: "Claude Opus 5: Advanced model for complex agentic coding and enterprise work",
+		supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
+		requiredReasoningEffort: true,
+		reasoningEffort: "high",
 	},
 	"claude-sonnet-5": {
 		maxTokens: 128_000,
@@ -42,6 +64,9 @@ export const anthropicModels = {
 		cacheReadsPrice: 0.2,
 		supportsTemperature: false,
 		description: "Claude Sonnet 5: Fast model balancing frontier intelligence and cost",
+		supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
+		requiredReasoningEffort: true,
+		reasoningEffort: "high",
 	},
 	"claude-opus-4-8": {
 		maxTokens: 128_000,
@@ -54,6 +79,9 @@ export const anthropicModels = {
 		cacheReadsPrice: 0.5,
 		supportsTemperature: false,
 		description: "Claude Opus 4.8: Advanced reasoning model with adaptive thinking",
+		supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
+		requiredReasoningEffort: true,
+		reasoningEffort: "high",
 	},
 	"claude-opus-4-7": {
 		maxTokens: 128_000,
@@ -66,6 +94,9 @@ export const anthropicModels = {
 		cacheReadsPrice: 0.5,
 		supportsTemperature: false,
 		description: "Claude Opus 4.7: Advanced reasoning model with adaptive thinking",
+		supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
+		requiredReasoningEffort: true,
+		reasoningEffort: "high",
 	},
 	"claude-sonnet-4-6": {
 		maxTokens: 64_000, // Overridden to 8k if `enableReasoningEffort` is false.
@@ -110,6 +141,7 @@ export const anthropicModels = {
 		],
 	},
 	"claude-sonnet-4-20250514": {
+		deprecated: true,
 		maxTokens: 64_000, // Overridden to 8k if `enableReasoningEffort` is false.
 		contextWindow: 200_000, // Default 200K, extendable to 1M with beta flag 'context-1m-2025-08-07'
 		supportsImages: true,
@@ -163,6 +195,7 @@ export const anthropicModels = {
 		supportsReasoningBudget: true,
 	},
 	"claude-opus-4-1-20250805": {
+		deprecated: true,
 		maxTokens: 32_000, // Overridden to 8k if `enableReasoningEffort` is false.
 		contextWindow: 200_000,
 		supportsImages: true,
@@ -174,6 +207,7 @@ export const anthropicModels = {
 		supportsReasoningBudget: true,
 	},
 	"claude-opus-4-20250514": {
+		deprecated: true,
 		maxTokens: 32_000, // Overridden to 8k if `enableReasoningEffort` is false.
 		contextWindow: 200_000,
 		supportsImages: true,
@@ -185,6 +219,7 @@ export const anthropicModels = {
 		supportsReasoningBudget: true,
 	},
 	"claude-3-7-sonnet-20250219:thinking": {
+		deprecated: true,
 		maxTokens: 128_000, // Unlocked by passing `beta` flag to the model. Otherwise, it's 64k.
 		contextWindow: 200_000,
 		supportsImages: true,
@@ -197,6 +232,7 @@ export const anthropicModels = {
 		requiredReasoningBudget: true,
 	},
 	"claude-3-7-sonnet-20250219": {
+		deprecated: true,
 		maxTokens: 8192, // Since we already have a `:thinking` virtual model we aren't setting `supportsReasoningBudget: true` here.
 		contextWindow: 200_000,
 		supportsImages: true,
@@ -207,6 +243,7 @@ export const anthropicModels = {
 		cacheReadsPrice: 0.3, // $0.30 per million tokens
 	},
 	"claude-3-5-sonnet-20241022": {
+		deprecated: true,
 		maxTokens: 8192,
 		contextWindow: 200_000,
 		supportsImages: true,
@@ -217,6 +254,7 @@ export const anthropicModels = {
 		cacheReadsPrice: 0.3, // $0.30 per million tokens
 	},
 	"claude-3-5-haiku-20241022": {
+		deprecated: true,
 		maxTokens: 8192,
 		contextWindow: 200_000,
 		supportsImages: false,
@@ -227,6 +265,7 @@ export const anthropicModels = {
 		cacheReadsPrice: 0.1,
 	},
 	"claude-3-opus-20240229": {
+		deprecated: true,
 		maxTokens: 4096,
 		contextWindow: 200_000,
 		supportsImages: true,
@@ -237,6 +276,7 @@ export const anthropicModels = {
 		cacheReadsPrice: 1.5,
 	},
 	"claude-3-haiku-20240307": {
+		deprecated: true,
 		maxTokens: 4096,
 		contextWindow: 200_000,
 		supportsImages: true,

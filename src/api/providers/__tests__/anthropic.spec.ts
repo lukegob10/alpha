@@ -235,18 +235,106 @@ describe("AnthropicHandler", () => {
 		})
 	})
 
+	describe("frontier reasoning", () => {
+		const modelIds = [
+			"claude-fable-5-1",
+			"claude-fable-5",
+			"claude-opus-5",
+			"claude-sonnet-5",
+			"claude-opus-4-8",
+			"claude-opus-4-7",
+		] as const
+		const efforts = ["low", "medium", "high", "xhigh", "max"] as const
+
+		it.each(modelIds)("sends every supported effort with adaptive thinking for %s", async (apiModelId) => {
+			for (const reasoningEffort of efforts) {
+				const frontierHandler = new AnthropicHandler({
+					apiKey: "test-api-key",
+					apiModelId,
+					reasoningEffort,
+					enableReasoningEffort: false,
+					modelTemperature: 0.7,
+					modelMaxThinkingTokens: 1024,
+				})
+				for await (const _chunk of frontierHandler.createMessage("System", [
+					{ role: "user", content: "Hello" },
+				])) {
+					// Consume the stream to capture the outgoing request.
+				}
+				const [request] = mockCreate.mock.calls.at(-1)!
+				expect(request).toMatchObject({
+					model: apiModelId,
+					max_tokens: 128_000,
+					output_config: { effort: reasoningEffort },
+					thinking: { type: "adaptive", display: "summarized" },
+					temperature: undefined,
+					system: [expect.objectContaining({ cache_control: { type: "ephemeral" } })],
+				})
+				expect(request.thinking).not.toHaveProperty("budget_tokens")
+			}
+		})
+
+		it.each([undefined, "disable", "none", "minimal"] as const)(
+			"defaults unsupported saved effort %s to High",
+			async (reasoningEffort) => {
+				const frontierHandler = new AnthropicHandler({
+					apiKey: "test-api-key",
+					apiModelId: "claude-fable-5-1",
+					reasoningEffort,
+				})
+				await frontierHandler.completePrompt("Hello")
+				expect(mockCreate.mock.calls.at(-1)?.[0]).toMatchObject({
+					output_config: { effort: "high" },
+					thinking: { type: "adaptive" },
+				})
+			},
+		)
+
+		it("uses Fable 5.1's history binding control and preserves incoming thinking blocks", async () => {
+			const frontierHandler = new AnthropicHandler({ apiKey: "test-api-key", apiModelId: "claude-fable-5-1" })
+			const thinkingBlock: Anthropic.ThinkingBlockParam = { type: "thinking", thinking: "Plan", signature: "sig" }
+			for await (const _chunk of frontierHandler.createMessage("Updated system", [
+				{ role: "user", content: "Hello" },
+				{ role: "assistant", content: [thinkingBlock, { type: "text", text: "Hello" }] },
+				{ role: "user", content: "Continue" },
+			])) {
+				// Consume stream.
+			}
+			const [request, options] = mockCreate.mock.calls.at(-1)!
+			expect(request.thinking.block_binding).toEqual({ prefix_mismatch_behavior: "drop_block" })
+			expect(options.headers["anthropic-beta"]).toContain("thinking-binding-controls-2026-08-01")
+			expect(request.messages[1].content[0]).toEqual(thinkingBlock)
+		})
+
+		it.each(efforts)("uses %s effort for single completions too", async (reasoningEffort) => {
+			const frontierHandler = new AnthropicHandler({
+				apiKey: "test-api-key",
+				apiModelId: "claude-sonnet-5",
+				reasoningEffort,
+			})
+			expect(await frontierHandler.completePrompt("Hello")).toBe("Test response")
+			expect(mockCreate.mock.calls.at(-1)?.[0]).toMatchObject({
+				output_config: { effort: reasoningEffort },
+				thinking: { type: "adaptive", display: "summarized" },
+			})
+		})
+	})
+
 	describe("completePrompt", () => {
 		it("should complete prompt successfully", async () => {
 			const result = await handler.completePrompt("Test prompt")
 			expect(result).toBe("Test response")
-			expect(mockCreate).toHaveBeenCalledWith({
-				model: mockOptions.apiModelId,
-				messages: [{ role: "user", content: "Test prompt" }],
-				max_tokens: 8192,
-				temperature: 0,
-				thinking: undefined,
-				stream: false,
-			})
+			expect(mockCreate).toHaveBeenCalledWith(
+				{
+					model: mockOptions.apiModelId,
+					messages: [{ role: "user", content: "Test prompt" }],
+					max_tokens: 8192,
+					temperature: 0,
+					thinking: undefined,
+					stream: false,
+				},
+				undefined,
+			)
 		})
 
 		it("should handle API errors", async () => {

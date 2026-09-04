@@ -5,6 +5,7 @@ import OpenAI from "openai"
 
 import {
 	type ModelInfo,
+	type ReasoningEffortExtended,
 	type AnthropicModelId,
 	anthropicDefaultModelId,
 	anthropicModels,
@@ -27,6 +28,12 @@ import {
 	convertOpenAIToolsToAnthropic,
 	convertOpenAIToolChoiceToAnthropic,
 } from "../../core/prompts/tools/native-tools/converters"
+
+type AdaptiveThinking = {
+	type: "adaptive"
+	display: "summarized"
+	block_binding?: { prefix_mismatch_behavior: "drop_block" }
+}
 
 export class AnthropicHandler extends BaseProvider implements SingleCompletionHandler {
 	private options: ApiHandlerOptions
@@ -59,7 +66,10 @@ export class AnthropicHandler extends BaseProvider implements SingleCompletionHa
 			maxTokens,
 			temperature,
 			reasoning: thinking,
+			outputConfig,
 		} = this.getModel()
+		// SDK 0.37 serializes the current API fields unchanged but predates adaptive thinking's types.
+		const sdkThinking = thinking as Anthropic.Messages.ThinkingConfigParam | undefined
 
 		// Filter out non-Anthropic blocks (reasoning, thoughtSignature, etc.) before sending to the API
 		const sanitizedMessages = filterNonAnthropicBlocks(messages)
@@ -81,6 +91,7 @@ export class AnthropicHandler extends BaseProvider implements SingleCompletionHa
 		}
 
 		switch (modelId) {
+			case "claude-fable-5-1":
 			case "claude-fable-5":
 			case "claude-opus-5":
 			case "claude-sonnet-5":
@@ -123,7 +134,8 @@ export class AnthropicHandler extends BaseProvider implements SingleCompletionHa
 							model: modelId,
 							max_tokens: maxTokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS,
 							temperature,
-							thinking,
+							thinking: sdkThinking,
+							...(outputConfig ? { output_config: outputConfig } : {}),
 							// Setting cache breakpoint for system prompt so new tasks can reuse it.
 							system: [{ text: systemPrompt, type: "text", cache_control: cacheControl }],
 							messages: sanitizedMessages.map((message, index) => {
@@ -152,6 +164,7 @@ export class AnthropicHandler extends BaseProvider implements SingleCompletionHa
 
 							// Then check for models that support prompt caching
 							switch (modelId) {
+								case "claude-fable-5-1":
 								case "claude-fable-5":
 								case "claude-opus-5":
 								case "claude-sonnet-5":
@@ -196,6 +209,8 @@ export class AnthropicHandler extends BaseProvider implements SingleCompletionHa
 						model: modelId,
 						max_tokens: maxTokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS,
 						temperature,
+						thinking: sdkThinking,
+						...(outputConfig ? { output_config: outputConfig } : {}),
 						system: [{ text: systemPrompt, type: "text" }],
 						messages: sanitizedMessages,
 						stream: true,
@@ -376,6 +391,26 @@ export class AnthropicHandler extends BaseProvider implements SingleCompletionHa
 			settings: this.options,
 			defaultTemperature: 0,
 		})
+		let reasoning: Anthropic.Messages.ThinkingConfigParam | AdaptiveThinking | undefined = params.reasoning
+		let reasoningEffort = params.reasoningEffort
+		let outputConfig: { effort: ReasoningEffortExtended } | undefined
+		if (Array.isArray(info.supportsReasoningEffort) && info.requiredReasoningEffort) {
+			// Old profiles may carry a disabled flag or an effort from another provider.
+			const selected = this.options.reasoningEffort
+			const effort = selected && info.supportsReasoningEffort.includes(selected) ? selected : info.reasoningEffort
+			if (effort && effort !== "disable") {
+				reasoningEffort = effort
+				outputConfig = { effort }
+				reasoning = {
+					type: "adaptive",
+					display: "summarized",
+					// Compaction, mode changes, and edits can invalidate Fable 5.1's bound thinking.
+					...(id === "claude-fable-5-1"
+						? { block_binding: { prefix_mismatch_behavior: "drop_block" as const } }
+						: {}),
+				}
+			}
+		}
 
 		// The `:thinking` suffix indicates that the model is a "Hybrid"
 		// reasoning model and that reasoning is required to be enabled.
@@ -384,24 +419,36 @@ export class AnthropicHandler extends BaseProvider implements SingleCompletionHa
 		return {
 			id: id === "claude-3-7-sonnet-20250219:thinking" ? "claude-3-7-sonnet-20250219" : id,
 			info,
-			betas: id === "claude-3-7-sonnet-20250219:thinking" ? ["output-128k-2025-02-19"] : undefined,
+			betas:
+				id === "claude-3-7-sonnet-20250219:thinking"
+					? ["output-128k-2025-02-19"]
+					: id === "claude-fable-5-1"
+						? ["fine-grained-tool-streaming-2025-05-14", "thinking-binding-controls-2026-08-01"]
+						: undefined,
 			...params,
+			reasoning,
+			reasoningEffort,
+			outputConfig,
 		}
 	}
 
 	async completePrompt(prompt: string) {
-		let { id: model, temperature } = this.getModel()
+		const { id: model, temperature, reasoning, outputConfig, betas } = this.getModel()
 
 		let message
 		try {
-			message = await this.client.messages.create({
-				model,
-				max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
-				thinking: undefined,
-				temperature,
-				messages: [{ role: "user", content: prompt }],
-				stream: false,
-			})
+			message = await this.client.messages.create(
+				{
+					model,
+					max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
+					thinking: outputConfig ? (reasoning as Anthropic.Messages.ThinkingConfigParam) : undefined,
+					...(outputConfig ? { output_config: outputConfig } : {}),
+					temperature,
+					messages: [{ role: "user", content: prompt }],
+					stream: false,
+				},
+				betas ? { headers: { "anthropic-beta": betas.join(",") } } : undefined,
+			)
 		} catch (error) {
 			TelemetryService.instance.captureException(
 				new ApiProviderError(

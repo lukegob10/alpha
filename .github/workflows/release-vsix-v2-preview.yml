@@ -73,12 +73,14 @@ jobs:
                   $notes = @"
                   Preview VSIX build from main-v2. This is not published to the VS Code Marketplace.
 
-                  Alpha v$version adds GPT-6 Astra and Gemini 3.8 Flash to their native provider setups.
+                  Alpha v$version updates the Claude setup through Fable 5.1 with selectable reasoning effort.
 
                   Highlights:
-                  - Adds GPT-6 Astra under OpenAI with Low, Medium, High, XHigh, and Max reasoning
-                  - Adds Gemini 3.8 Flash under Gemini with Low, Medium, and High thinking
-                  - Defaults both models to Medium and handles unsupported saved Astra reasoning settings
+                  - Adds Claude Fable 5.1 under Anthropic with its published limits and pricing
+                  - Exposes Low, Medium, High, XHigh, and Max reasoning for Fable 5.1, Fable 5, Opus 5, Sonnet 5, Opus 4.8, and Opus 4.7
+                  - Sends effort with adaptive thinking for chat and single completions, with High as the default
+                  - Defaults new Claude setups to Sonnet 5 and hides retired models from new selections
+                  - Handles Fable 5.1 thinking invalidated by history edits or context compaction
                   - Validates the extension and VS Code Language Model contract on exact VS Code 1.122.1
 
                   Commit: ${{ github.sha }}
