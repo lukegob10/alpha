@@ -188,15 +188,37 @@ handoff and their inputs are unchanged by that integration. Historical Stage 3 r
 | Touched-file Prettier and final `git diff --check`                                                                            | Passed; Markdown line-ending formatting normalized without changing content                                  |
 
 Expected skip counts remain explicit; the opt-in measurement was separately executed and passed. The exact-host command
-also ran `pnpm bundle` and rebuilt the webview. Managed-agent certification and final packaging/publication remain pending.
+also ran `pnpm bundle` and rebuilt the webview.
+
+`pnpm certify:managed-agents:automated` passed. Its strict deterministic phase ran 1,395 tests with zero failures/skips,
+passing all 26 automated matrix rows in 142.016 s. The evidence file at
+`artifacts/certification/managed-agent-milestone-evidence.json` records source stability at commit
+`09cbb5e3f5dd57ae67e91cda1e47adcc974c9d1e`, source digest
+`9af492f99696adf0467ab427748dbb3a19e1878fc509d9ec4fe84ee80ad6787e`; only the preserved user guide differs materially
+from that commit. Eight explicit live/multi-process integration rows remain pending, not claimed as certified.
+The subsequent rebuilt VS Code managed-agent host scenario passed in 23.025 s, covering nested Apply, discard,
+verification, projection, navigation, and terminal cleanup. This focused host result does not clear all eight live rows.
+
+`pnpm vsix` passed (five tasks, four cached, 19.69 s). The normal local package is a validation artifact only; the
+publication candidate was separately built with
+`pnpm --dir src exec vsce package --no-dependencies --pre-release --out "../bin/alpha-2.1.19-prerelease.vsix"`.
+Both local archives passed `node scripts/verify-vsix-contents.mjs`: 1,783 entries, required assets present, no `.env`
+files. The prerelease's actual `extension/package.json` and `extension.vsixmanifest` confirm version 2.1.19,
+`AlphaInc.alpha`, `engines.vscode: ^1.122.1`, and `Microsoft.VisualStudio.Code.PreRelease=true`.
+The local prerelease is 82,939,988 bytes, SHA-256
+`c8d8e34c3b14900fc1837b99641fb35ac5472fc772d3cc089b50938b39b28eac`.
+The independently built GitHub artifact must be downloaded and checked separately; ZIP build timestamps can differ.
+Existing older artifacts are retained and no extension is installed.
 
 ## Closure ledger
 
 - Integrated owner commit `93ef5f9e9e1a9376cbc26efcc4afe26f490acd1a` as `2e30642`, with independent root integration
   coverage and 2.1.19 release metadata. The user guide remains unchanged and excluded.
 - Verified in the implementation worktree: 21 focused files / 197 tests passed, one opt-in benchmark skipped; the
-  separate calibrated benchmark passed all four cases. Source typecheck passed. Root integration gates remain pending.
+  separate calibrated benchmark passed all four cases. Source typecheck passed.
 - Verified in the integration branch: focused and broad core/provider suites, shared/webview consumers, repository
-  lint/typecheck, and the exact VS Code 1.122.1 smoke gate.
-- Not yet verified: managed-agent certification, packaged prerelease metadata, and published artifact.
+  lint/typecheck, the exact VS Code 1.122.1 smoke gate, automated managed-agent certification, and normal VSIX packaging.
+- Verified before publication: prerelease archive contents, version, extension identity, host baseline, flag, and checksum.
+- This commit is the prepublication checkpoint. Publication confirmation belongs in NOR-29 with the exact GitHub
+  release URL, target commit, workflow result, downloaded artifact size, and SHA-256; no publication is claimed here.
 - Out of scope: CLI/shim, Marketplace/stable release, installation, dependency upgrades, and unrelated architecture work.
