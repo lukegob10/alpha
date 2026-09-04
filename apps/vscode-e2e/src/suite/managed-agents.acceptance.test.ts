@@ -716,12 +716,13 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			assert.ok(completed.has(nestedTaskId), "Nested Worker never reached a terminal completion")
 			assert.ok(completed.has(discardTaskId), "Discard Worker never reached a terminal completion")
 
+			// Workspace file writes may use host-native CRLF; normalize only EOL before the exact module comparison.
 			assert.equal(
-				await fs.readFile(path.join(workspace, OUTER_PATH), "utf8"),
+				(await fs.readFile(path.join(workspace, OUTER_PATH), "utf8")).replace(/\r\n/g, "\n"),
 				stateModuleText("outer_worker", true),
 			)
 			assert.equal(
-				await fs.readFile(path.join(workspace, NESTED_PATH), "utf8"),
+				(await fs.readFile(path.join(workspace, NESTED_PATH), "utf8")).replace(/\r\n/g, "\n"),
 				stateModuleText("nested_writer", true),
 			)
 			assert.deepEqual(JSON.parse(await fs.readFile(path.join(workspace, DISCARD_PATH), "utf8")), {
