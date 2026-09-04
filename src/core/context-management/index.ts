@@ -7,7 +7,12 @@ import { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../api"
 import {
 	MAX_CONDENSE_THRESHOLD,
 	MIN_CONDENSE_THRESHOLD,
+	countContextTokens,
+	getEffectiveApiHistory,
+	getLogicalStepStarts,
 	getToolCallResultPairs,
+	hasToolCallResultIntegrity,
+	selectRecentTail,
 	summarizeConversation,
 	SummarizeResponse,
 } from "../condense"
@@ -203,6 +208,60 @@ export function truncateConversation(messages: ApiMessage[], fracToRemove: numbe
 }
 
 /**
+ * Bounded fallback when summarization fails or is disabled. Keep the first
+ * complete step (instruction provenance) and an exact recent suffix. If even
+ * that minimum cannot fit, report exhaustion without changing saved history.
+ */
+async function truncateToTokenBudget(
+	messages: ApiMessage[],
+	apiHandler: ApiHandler,
+	systemPrompt: string,
+	maxContextTokens: number,
+	taskId: string,
+	metadata?: ApiHandlerCreateMessageMetadata,
+): Promise<TruncationResult & { tokens: number; status: ContextRecoveryStatus }> {
+	const signal = metadata?.signal
+	signal?.throwIfAborted()
+	const active = getEffectiveApiHistory(messages)
+	const truncationId = crypto.randomUUID()
+	const unchanged = { messages, truncationId, messagesRemoved: 0, tokens: 0, status: "exhausted" as const }
+	const storedMessages = new Set(messages)
+	if (!hasToolCallResultIntegrity(active) || active.some((message) => !storedMessages.has(message))) return unchanged
+	const starts = getLogicalStepStarts(active)
+	if (starts.length < 2) return unchanged
+	const firstStepEnd = starts[1]
+	const firstStep = active.slice(0, firstStepEnd)
+	const marker: ApiMessage = {
+		role: "user",
+		content:
+			"[Sliding window truncation: older complete steps hidden to fit the context budget. Original records remain in saved history.]",
+		ts: messages.reduce((latest, message) => Math.max(latest, message.ts ?? 0), Date.now()) + 1,
+		isTruncationMarker: true,
+		truncationId,
+	}
+	const fixedTokens = await countContextTokens([...firstStep, marker], apiHandler, systemPrompt, metadata)
+	// A provider may have rejected this request despite a lower local estimate.
+	// Still make one real reduction, then tighten further if the budget requires it.
+	const requestedStart = firstStepEnd + Math.max(1, Math.floor((active.length - firstStepEnd) / 2))
+	const eligibleStarts = starts.filter((start) => start > firstStepEnd)
+	const minimumTailStart =
+		eligibleStarts.filter((start) => start <= requestedStart).at(-1) ?? eligibleStarts[0] ?? active.length
+	const tail = await selectRecentTail(active, apiHandler, maxContextTokens - fixedTokens, minimumTailStart, signal)
+	if (tail.startIndex === active.length || tail.startIndex <= firstStepEnd) return unchanged
+	const hidden = new Set(active.slice(firstStepEnd, tail.startIndex))
+	const insertIndex = messages.indexOf(active[tail.startIndex])
+	const tagged = messages.map((message) =>
+		hidden.has(message) ? { ...message, truncationParent: truncationId } : message,
+	)
+	tagged.splice(insertIndex, 0, marker)
+	const tokens = await countContextTokens(getEffectiveApiHistory(tagged), apiHandler, systemPrompt, metadata)
+	signal?.throwIfAborted()
+	if (!Number.isFinite(tokens) || tokens > maxContextTokens) return { ...unchanged, tokens }
+	TelemetryService.instance.captureSlidingWindowTruncation(taskId)
+	return { messages: tagged, truncationId, messagesRemoved: hidden.size, tokens, status: "reduced" }
+}
+
+/**
  * Options for checking if context management will likely run.
  * A subset of ContextManagementOptions with only the fields needed for threshold calculation.
  */
@@ -297,6 +356,9 @@ export type ContextManagementOptions = {
 	cwd?: string
 	/** Optional controller for file access validation */
 	rooIgnoreController?: RooIgnoreController
+	recentTailTokenBudget?: number
+	/** The provider rejected this input even if the local token estimate is lower. */
+	forceCompaction?: boolean
 }
 
 export type ContextManagementResult = SummarizeResponse & {
@@ -336,11 +398,14 @@ export async function manageContext({
 	filesReadByRoo,
 	cwd,
 	rooIgnoreController,
+	recentTailTokenBudget,
+	forceCompaction = false,
 }: ContextManagementOptions): Promise<ContextManagementResult> {
+	metadata?.signal?.throwIfAborted()
 	let error: string | undefined
 	let errorDetails: string | undefined
 	let cost = 0
-	let forceTruncation = false
+	let forceTruncation = forceCompaction
 	// Calculate the maximum tokens reserved for response
 	const reservedTokens = maxTokens || ANTHROPIC_DEFAULT_MAX_TOKENS
 	const targetContextTokens = getCompactionTargetTokens({
@@ -385,7 +450,7 @@ export async function manageContext({
 
 	if (autoCondenseContext) {
 		const contextPercent = (100 * prevContextTokens) / contextWindow
-		if (contextPercent >= effectiveThreshold || prevContextTokens > allowedTokens) {
+		if (forceCompaction || contextPercent >= effectiveThreshold || prevContextTokens > allowedTokens) {
 			// Attempt to intelligently condense the context
 			const result = await summarizeConversation({
 				messages,
@@ -399,7 +464,10 @@ export async function manageContext({
 				filesReadByRoo,
 				cwd,
 				rooIgnoreController,
+				maxContextTokens: targetContextTokens,
+				recentTailTokenBudget,
 			})
+			metadata?.signal?.throwIfAborted()
 			if (result.error) {
 				error = result.error
 				errorDetails = result.errorDetails
@@ -420,7 +488,7 @@ export async function manageContext({
 					minReductionPercent: DEFAULT_MIN_REDUCTION_PERCENT,
 				})
 
-				if (progress.status === "reduced") {
+				if (progress.status === "reduced" && progress.targetReached) {
 					return {
 						...result,
 						prevContextTokens,
@@ -440,32 +508,19 @@ export async function manageContext({
 
 	// Fall back to sliding window truncation if needed
 	if (prevContextTokens > allowedTokens || forceTruncation) {
-		const truncationResult = truncateConversation(messages, 0.5, taskId)
-
-		// Calculate new context tokens after truncation by counting non-truncated messages
-		// Messages with truncationParent are hidden, so we count only those without it
-		const effectiveMessages = truncationResult.messages.filter(
-			(msg) => !msg.truncationParent && !msg.isTruncationMarker,
-		)
-
-		// Include system prompt tokens so this value matches what we send to the API.
-		// Note: `prevContextTokens` is computed locally here (totalTokens + lastMessageTokens).
-		let newContextTokensAfterTruncation = await estimateTokenCount(
-			[{ type: "text", text: systemPrompt }],
+		const truncationResult = await truncateToTokenBudget(
+			messages,
 			apiHandler,
+			systemPrompt,
+			targetContextTokens,
+			taskId,
+			metadata,
 		)
-
-		for (const msg of effectiveMessages) {
-			const content = msg.content
-			if (Array.isArray(content)) {
-				newContextTokensAfterTruncation += await estimateTokenCount(content, apiHandler)
-			} else if (typeof content === "string") {
-				newContextTokensAfterTruncation += await estimateTokenCount(
-					[{ type: "text", text: content }],
-					apiHandler,
-				)
-			}
-		}
+		metadata?.signal?.throwIfAborted()
+		const newContextTokensAfterTruncation =
+			truncationResult.messagesRemoved > 0
+				? truncationResult.tokens
+				: await countContextTokens(getEffectiveApiHistory(messages), apiHandler, systemPrompt, metadata)
 
 		const fallbackProgress = evaluateCompactionProgress({
 			beforeTokens: prevContextTokens,
@@ -473,8 +528,7 @@ export async function manageContext({
 			targetTokens: targetContextTokens,
 			minReductionPercent: DEFAULT_MIN_REDUCTION_PERCENT,
 		})
-		const status: ContextRecoveryStatus =
-			truncationResult.messagesRemoved > 0 ? fallbackProgress.status : "exhausted"
+		const status = truncationResult.status
 
 		return {
 			messages: truncationResult.messages,
@@ -483,7 +537,7 @@ export async function manageContext({
 			cost,
 			error,
 			errorDetails,
-			truncationId: truncationResult.truncationId,
+			truncationId: truncationResult.messagesRemoved > 0 ? truncationResult.truncationId : undefined,
 			messagesRemoved: truncationResult.messagesRemoved,
 			newContextTokensAfterTruncation,
 			status,

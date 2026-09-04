@@ -15,6 +15,16 @@ class SteerRequestInterruptError extends Error {
 	}
 }
 
+class ContextRecoveryExhaustedError extends Error {
+	readonly retryable = false
+	readonly retryCategory = "context"
+
+	constructor(message?: string) {
+		super(message || t("common:errors.condense_failed"))
+		this.name = "ContextRecoveryExhaustedError"
+	}
+}
+
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 import debounce from "lodash.debounce"
@@ -174,7 +184,7 @@ import {
 	ProviderTranscriptStoreError,
 	type ProviderTranscriptCommitReceipt,
 } from "../task-persistence/ProviderTranscriptStore"
-import { getEnvironmentDetails, captureEnvironmentDetails } from "../environment/getEnvironmentDetails"
+import { captureEnvironmentDetails } from "../environment/getEnvironmentDetails"
 import { EnvironmentContext, type EnvironmentCapture } from "../environment/EnvironmentContext"
 import { checkContextWindowExceededError } from "../context/context-management/context-error-handling"
 import {
@@ -187,7 +197,12 @@ import {
 } from "../checkpoints"
 
 import { processUserContentMentions } from "../mentions/processUserContentMentions"
-import { getMessagesSinceLastSummary, summarizeConversation, getEffectiveApiHistory } from "../condense"
+import {
+	countContextTokens,
+	getMessagesSinceLastSummary,
+	summarizeConversation,
+	getEffectiveApiHistory,
+} from "../condense"
 import { MessageQueueService } from "../message-queue/MessageQueueService"
 import { AutoApprovalHandler, checkAutoApprovalWithInheritedPolicy } from "../auto-approval"
 import { MessageManager } from "../message-manager"
@@ -4786,6 +4801,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				reason: `The parent is already ${this.externalMutationLease.label}.`,
 			}
 		}
+		if (this.contextCondenseAbortController) {
+			return { allowed: false, state: "busy", reason: "Context compaction is in progress." }
+		}
 		if (this.isWaitingForFirstChunk) {
 			return {
 				allowed: false,
@@ -5197,9 +5215,42 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	private async measureCompactedContext(
+		apiHandler: ApiHandler,
+		systemPrompt: string,
+		metadata: ApiHandlerCreateMessageMetadata,
+		targetContextTokens: number | undefined,
+	): Promise<number> {
+		this.throwIfStepInterrupted(metadata.signal)
+		const tokens = await countContextTokens(
+			getEffectiveApiHistory(this.apiConversationHistory),
+			apiHandler,
+			systemPrompt,
+			metadata,
+		)
+		this.throwIfStepInterrupted(metadata.signal)
+		if (!Number.isFinite(tokens) || (targetContextTokens !== undefined && tokens > targetContextTokens)) {
+			throw new ContextRecoveryExhaustedError()
+		}
+		return tokens
+	}
+
 	public async condenseContext(): Promise<void> {
 		if (this.contextCondenseAbortController) {
 			throw new Error("Context compaction is already in progress")
+		}
+		if (this.abort || this.abandoned) {
+			throw new Error("The task cannot condense context after it has stopped")
+		}
+		if (
+			this.isTaskLoopActive ||
+			this.isAgentTurnEngineActive ||
+			this.isStreaming ||
+			this.isWaitingForFirstChunk ||
+			this.externalMutationLease
+		) {
+			// A flushed partial result batch does not close the active scheduler transaction.
+			throw new Error("Task work is in progress; wait for it to finish before condensing context")
 		}
 		const controller = new AbortController()
 		const taskSignal = this.getTaskLifetimeCancellationSignal()
@@ -5214,29 +5265,37 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			taskSignal.removeEventListener("abort", abortFromTask)
 			if (this.contextCondenseAbortController === controller) this.contextCondenseAbortController = undefined
 		}
+		this.processQueuedMessages()
 	}
 
 	private async condenseContextWithSignal(signal: AbortSignal): Promise<void> {
+		this.throwIfStepInterrupted(signal)
 		// CRITICAL: Flush any pending tool results before condensing
 		// to ensure tool_use/tool_result pairs are complete in history
 		if (!(await this.flushPendingToolResultsToHistory())) {
 			throw new Error("Unable to persist pending tool results before condensing context.")
 		}
+		this.throwIfStepInterrupted(signal)
+		const history = this.apiConversationHistory
+		const historyDigest = digestProviderTranscript(history)
+		const apiHandler = this.api
+		const apiConfiguration = this.apiConfiguration
 
 		// Get condensing configuration
 		const state = await this.providerRef.deref()?.getState()
+		this.throwIfStepInterrupted(signal)
 		const systemPrompt = await this.getSystemPrompt(state)
 		const customCondensingPrompt = state?.customSupportPrompts?.CONDENSE
 		const mode = await this.getTaskMode()
-		const apiConfiguration = this.apiConfiguration
 
 		const { contextTokens: prevContextTokens } = this.getTokenUsage()
 
 		// Build tools for condensing metadata (same tools used for normal API calls)
 		const provider = this.providerRef.deref()
 		let allTools: import("openai").default.Chat.ChatCompletionTool[] = []
+		let allowedFunctionNames: string[] | undefined
 		if (provider) {
-			const modelInfo = this.api.getModel().info
+			const modelInfo = apiHandler.getModel().info
 			const toolsResult = await buildNativeToolsArrayWithRestrictions({
 				provider,
 				cwd: this.cwd,
@@ -5246,12 +5305,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				apiConfiguration,
 				disabledTools: state?.disabledTools,
 				modelInfo,
-				includeAllToolsWithRestrictions: false,
+				includeAllToolsWithRestrictions:
+					apiConfiguration.apiProvider === "gemini" || apiConfiguration.apiProvider === "vertex",
+				catalogCache: this.toolCatalogCache,
+				discoveryHistory: history,
+				signal,
 				allowedToolNames: this.getTaskAllowedToolNames(),
 				taskKind: this.taskKind,
 				enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
 			})
 			allTools = toolsResult.tools
+			allowedFunctionNames = toolsResult.allowedFunctionNames
 		}
 
 		// Build metadata with tools and taskId for the condensing API call
@@ -5266,36 +5330,30 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						tools: allTools,
 						tool_choice: "auto",
 						parallelToolCalls: true,
+						...(allowedFunctionNames ? { allowedFunctionNames } : {}),
 					}
 				: {}),
 		}
-		// Generate environment details to include in the condensed summary
-		const environmentDetails = await getEnvironmentDetails(this, true, state, { signal, includeTransient: false })
-
 		const filesReadByRoo = await this.getFilesReadByRooSafely("condenseContext")
+		this.throwIfStepInterrupted(signal)
 
-		const {
-			messages,
-			summary,
-			cost,
-			newContextTokens = 0,
-			error,
-			errorDetails,
-			condenseId,
-		} = await summarizeConversation({
-			messages: this.apiConversationHistory,
-			apiHandler: this.api,
+		const { messages, summary, cost, error, condenseId, targetContextTokens } = await summarizeConversation({
+			messages: history,
+			apiHandler,
 			systemPrompt,
 			taskId: this.taskId,
 			isAutomaticTrigger: false,
 			customCondensingPrompt,
 			metadata,
-			environmentDetails,
 			filesReadByRoo,
 			cwd: this.cwd,
 			rooIgnoreController: this.rooIgnoreController,
 		})
 		this.throwIfStepInterrupted(signal)
+		// Rewind/edit can replace the transcript while the summarizer is awaiting its provider.
+		if (digestProviderTranscript(this.apiConversationHistory) !== historyDigest) {
+			throw new Error("Conversation history changed during context compaction; retry with the current history")
+		}
 		if (error) {
 			await this.say(
 				"condense_context_error",
@@ -5313,6 +5371,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		this.environmentContext.reset()
 		await this.refreshEnvironmentContext(state, signal)
+		const newContextTokens = await this.measureCompactedContext(
+			apiHandler,
+			systemPrompt,
+			metadata,
+			targetContextTokens,
+		)
 
 		const contextCondense: ContextCondense = {
 			summary,
@@ -5331,9 +5395,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			{ isNonInteractive: true } /* options */,
 			contextCondense,
 		)
-
-		// Process any queued messages after condensing completes
-		this.processQueuedMessages()
 	}
 
 	async say(
@@ -6554,6 +6615,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		const engine = new AgentTurnEngine(host)
 		const runAgentTurn = async (input: TaskTurnInput) => {
+			if (this.contextCondenseAbortController) {
+				throw new Error("Context compaction is in progress")
+			}
 			const wasAgentTurnEngineActive = this.isAgentTurnEngineActive
 			this.isAgentTurnEngineActive = true
 			try {
@@ -6785,6 +6849,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		includeFileDetails: boolean = false,
 		onInitialUserContentPersisted?: () => Promise<void> | void,
 	): Promise<TaskStepExecutionResult | boolean> {
+		if (this.contextCondenseAbortController) {
+			throw new Error("Context compaction is in progress")
+		}
 		interface StackItem {
 			userContent: Anthropic.Messages.ContentBlockParam[]
 			includeFileDetails: boolean
@@ -8844,19 +8911,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private async handleContextWindowExceededError(): Promise<void> {
-		const signal = this.stepInterruptionController?.signal
+		const signal = this.stepInterruptionController?.signal ?? this.getTaskLifetimeCancellationSignal()
+		this.throwIfStepInterrupted(signal)
+		const apiHandler = this.api
+		const apiConfiguration = this.apiConfiguration
 		const state = await this.providerRef.deref()?.getState()
 		const { profileThresholds = {} } = state ?? {}
 		const mode = await this.getTaskMode()
-		const apiConfiguration = this.apiConfiguration
 
 		const { contextTokens } = this.getTokenUsage()
-		const modelInfo = this.api.getModel().info
+		const modelInfo = apiHandler.getModel().info
 
 		const maxTokens = getModelMaxOutputTokens({
-			modelId: this.api.getModel().id,
+			modelId: apiHandler.getModel().id,
 			model: modelInfo,
-			settings: this.apiConfiguration,
+			settings: apiConfiguration,
 		})
 
 		const contextWindow = modelInfo.contextWindow
@@ -8866,7 +8935,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		// Log the context window error for debugging
 		console.warn(
-			`[Task#${this.taskId}] Context window exceeded for model ${this.api.getModel().id}. ` +
+			`[Task#${this.taskId}] Context window exceeded for model ${apiHandler.getModel().id}. ` +
 				`Current tokens: ${contextTokens}, Context window: ${contextWindow}. ` +
 				`Forcing truncation to ${FORCED_CONTEXT_REDUCTION_PERCENT}% of current context.`,
 		)
@@ -8876,6 +8945,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Build tools for condensing metadata (same tools used for normal API calls)
 		const provider = this.providerRef.deref()
 		let allTools: import("openai").default.Chat.ChatCompletionTool[] = []
+		let allowedFunctionNames: string[] | undefined
 		if (provider) {
 			const toolsResult = await buildNativeToolsArrayWithRestrictions({
 				provider,
@@ -8886,12 +8956,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				apiConfiguration,
 				disabledTools: state?.disabledTools,
 				modelInfo,
-				includeAllToolsWithRestrictions: false,
+				includeAllToolsWithRestrictions:
+					apiConfiguration.apiProvider === "gemini" || apiConfiguration.apiProvider === "vertex",
+				catalogCache: this.toolCatalogCache,
+				discoveryHistory: this.apiConversationHistory,
+				signal,
 				allowedToolNames: this.getTaskAllowedToolNames(),
 				taskKind: this.taskKind,
 				enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
 			})
 			allTools = toolsResult.tools
+			allowedFunctionNames = toolsResult.allowedFunctionNames
 		}
 
 		// Build metadata with tools and taskId for the condensing API call
@@ -8904,46 +8979,59 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						tools: allTools,
 						tool_choice: "auto",
 						parallelToolCalls: true,
+						...(allowedFunctionNames ? { allowedFunctionNames } : {}),
 					}
 				: {}),
 		}
 
 		try {
-			// Generate environment details to include in the condensed summary
-			const environmentDetails = await getEnvironmentDetails(this, true, state, {
-				signal,
-				includeTransient: false,
-			})
-
+			const systemPrompt = await this.getSystemPrompt(state)
 			// Force aggressive truncation by keeping only 75% of the conversation history
 			const truncateResult = await manageContext({
 				messages: this.apiConversationHistory,
 				totalTokens: contextTokens || 0,
 				maxTokens,
 				contextWindow,
-				apiHandler: this.api,
+				apiHandler,
 				autoCondenseContext: true,
 				autoCondenseContextPercent: FORCED_CONTEXT_REDUCTION_PERCENT,
-				systemPrompt: await this.getSystemPrompt(state),
+				forceCompaction: true,
+				systemPrompt,
 				taskId: this.taskId,
 				profileThresholds,
 				currentProfileId,
 				metadata,
-				environmentDetails,
 			})
 
 			this.throwIfStepInterrupted(signal)
+			if (truncateResult.status === "exhausted" || truncateResult.status === "no_progress") {
+				throw new ContextRecoveryExhaustedError(truncateResult.error)
+			}
 			if (truncateResult.messages !== this.apiConversationHistory) {
 				if (!(await this.overwriteApiConversationHistory(truncateResult.messages))) {
 					throw new Error("Unable to persist forced context truncation before continuing.")
 				}
 				this.environmentContext.reset()
 				await this.refreshEnvironmentContext(state, signal)
+				const tokens = await this.measureCompactedContext(
+					apiHandler,
+					systemPrompt,
+					metadata,
+					truncateResult.targetContextTokens,
+				)
+				truncateResult.newContextTokens = tokens
+				truncateResult.newContextTokensAfterTruncation = tokens
 			}
 
 			if (truncateResult.summary) {
-				const { summary, cost, prevContextTokens, newContextTokens = 0 } = truncateResult
-				const contextCondense: ContextCondense = { summary, cost, newContextTokens, prevContextTokens }
+				const { summary, cost, prevContextTokens, newContextTokens = 0, condenseId } = truncateResult
+				const contextCondense: ContextCondense = {
+					summary,
+					cost,
+					newContextTokens,
+					prevContextTokens,
+					condenseId,
+				}
 				await this.say(
 					"condense_context",
 					undefined /* text */,
@@ -9190,12 +9278,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// A retained transport attempt must not compact or reinterpret a different
 		// live transcript under the old logical identity. Recovery captures a new step.
 		if (contextTokens && !retainedStep) {
-			const modelInfo = this.api.getModel().info
+			const apiHandler = this.api
+			const modelInfo = apiHandler.getModel().info
 
 			const maxTokens = getModelMaxOutputTokens({
-				modelId: this.api.getModel().id,
+				modelId: apiHandler.getModel().id,
 				model: modelInfo,
-				settings: this.apiConfiguration,
+				settings: apiConfiguration,
 			})
 
 			const contextWindow = modelInfo.contextWindow
@@ -9210,8 +9299,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			let lastMessageTokens = 0
 			if (lastMessageContent) {
 				lastMessageTokens = Array.isArray(lastMessageContent)
-					? await this.api.countTokens(lastMessageContent)
-					: await this.api.countTokens([{ type: "text", text: lastMessageContent as string }])
+					? await apiHandler.countTokens(lastMessageContent)
+					: await apiHandler.countTokens([{ type: "text", text: lastMessageContent as string }])
 			}
 
 			const contextManagementWillRun = willManageContext({
@@ -9237,6 +9326,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// Build tools for condensing metadata (same tools used for normal API calls)
 			// This ensures the condensing API call includes tool definitions for providers that need them
 			let contextMgmtTools: import("openai").default.Chat.ChatCompletionTool[] = []
+			let contextMgmtAllowedFunctionNames: string[] | undefined
 			{
 				const provider = this.providerRef.deref()
 				if (provider) {
@@ -9249,12 +9339,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						apiConfiguration,
 						disabledTools: state?.disabledTools,
 						modelInfo,
-						includeAllToolsWithRestrictions: false,
+						includeAllToolsWithRestrictions:
+							apiConfiguration.apiProvider === "gemini" || apiConfiguration.apiProvider === "vertex",
+						catalogCache: this.toolCatalogCache,
+						discoveryHistory: this.apiConversationHistory,
+						signal: stepInterruptionSignal,
 						allowedToolNames: this.getTaskAllowedToolNames(),
 						taskKind: this.taskKind,
 						enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
 					})
 					contextMgmtTools = toolsResult.tools
+					contextMgmtAllowedFunctionNames = toolsResult.allowedFunctionNames
 				}
 			}
 
@@ -9272,19 +9367,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							tools: contextMgmtTools,
 							tool_choice: "auto",
 							parallelToolCalls: true,
+							...(contextMgmtAllowedFunctionNames
+								? { allowedFunctionNames: contextMgmtAllowedFunctionNames }
+								: {}),
 						}
 					: {}),
 			}
-
-			// Only generate environment details when context management will actually run.
-			// getEnvironmentDetails(this, true) triggers a recursive workspace listing which
-			// adds overhead - avoid this for the common case where context is below threshold.
-			const contextMgmtEnvironmentDetails = contextManagementWillRun
-				? await getEnvironmentDetails(this, true, state, {
-						signal: stepInterruptionSignal,
-						includeTransient: false,
-					})
-				: undefined
 
 			// Get files read by Alpha for code folding - only when context management will run
 			const contextMgmtFilesReadByRoo =
@@ -9301,7 +9389,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					totalTokens: contextTokens,
 					maxTokens,
 					contextWindow,
-					apiHandler: this.api,
+					apiHandler,
 					autoCondenseContext,
 					autoCondenseContextPercent,
 					systemPrompt,
@@ -9310,18 +9398,28 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					profileThresholds,
 					currentProfileId,
 					metadata: contextMgmtMetadata,
-					environmentDetails: contextMgmtEnvironmentDetails,
 					filesReadByRoo: contextMgmtFilesReadByRoo,
 					cwd: this.cwd,
 					rooIgnoreController: this.rooIgnoreController,
 				})
 				this.throwIfStepInterrupted(stepInterruptionSignal)
+				if (truncateResult.status === "exhausted" || truncateResult.status === "no_progress") {
+					throw new ContextRecoveryExhaustedError(truncateResult.error)
+				}
 				if (truncateResult.messages !== this.apiConversationHistory) {
 					if (!(await this.overwriteApiConversationHistory(truncateResult.messages))) {
 						throw new Error("Unable to persist context recovery before continuing.")
 					}
 					this.environmentContext.reset()
 					await this.refreshEnvironmentContext(state, stepInterruptionSignal)
+					const tokens = await this.measureCompactedContext(
+						apiHandler,
+						systemPrompt,
+						contextMgmtMetadata,
+						truncateResult.targetContextTokens,
+					)
+					truncateResult.newContextTokens = tokens
+					truncateResult.newContextTokensAfterTruncation = tokens
 				}
 				if (truncateResult.error) {
 					await this.say("condense_context_error", truncateResult.error)

@@ -728,7 +728,7 @@ describe("summarizeConversation", () => {
 		expect(mockApiHandler.createMessage).not.toHaveBeenCalled()
 	})
 
-	it("should create summary with user role (fresh start model)", async () => {
+	it("should create summary before the exact recent suffix", async () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "Hello", ts: 1 },
 			{ role: "assistant", content: "Hi there", ts: 2 },
@@ -750,16 +750,22 @@ describe("summarizeConversation", () => {
 		expect(mockApiHandler.createMessage).toHaveBeenCalled()
 		expect(maybeRemoveImageBlocks).toHaveBeenCalled()
 
-		// Result contains all original messages (tagged) plus summary at end
+		// The summary is inserted before the retained recent steps.
 		expect(result.messages.length).toBe(messages.length + 1)
 
-		// All original messages should be tagged with condenseParent
 		const summaryMessage = result.messages.find((m) => m.isSummary)
 		expect(summaryMessage).toBeDefined()
 		const condenseId = summaryMessage!.condenseId
 		expect(condenseId).toBeDefined()
-		for (const msg of result.messages.filter((m) => !m.isSummary)) {
+		const summaryIndex = result.messages.findIndex((m) => m.isSummary)
+		expect(summaryIndex).toBe(2)
+		expect(result.messages.slice(summaryIndex + 1)).toEqual(messages.slice(2))
+		expect(result.retainedTailMessages).toBe(5)
+		for (const msg of result.messages.slice(0, summaryIndex)) {
 			expect(msg.condenseParent).toBe(condenseId)
+		}
+		for (const msg of result.messages.slice(summaryIndex + 1)) {
+			expect(msg.condenseParent).toBeUndefined()
 		}
 
 		// Summary message is a user message with just text (fresh start model)
@@ -771,17 +777,17 @@ describe("summarizeConversation", () => {
 		expect(content[0].text).toContain("## Conversation Summary")
 		expect(content[0].text).toContain("This is a summary")
 
-		// Fresh start: effective API history should contain only the summary
+		// Effective history contains the summary followed by the exact suffix.
 		const effectiveHistory = getEffectiveApiHistory(result.messages)
-		expect(effectiveHistory).toHaveLength(1)
+		expect(effectiveHistory).toHaveLength(6)
 		expect(effectiveHistory[0].isSummary).toBe(true)
 		expect(effectiveHistory[0].role).toBe("user")
+		expect(effectiveHistory.slice(1)).toEqual(messages.slice(2))
 
-		// Check the cost and token counts
+		// Each history message includes its content plus the role/opaque-state envelope.
 		expect(result.cost).toBe(0.05)
 		expect(result.summary).toBe("This is a summary")
-		// newContextTokens = countTokens(systemPrompt + summaryMessage) - counts actual content, not outputTokens
-		expect(result.newContextTokens).toBe(100) // countTokens mock returns 100
+		expect(result.newContextTokens).toBe(700)
 		expect(result.error).toBeUndefined()
 	})
 
@@ -803,7 +809,7 @@ describe("summarizeConversation", () => {
 			{ role: "user", content: "Visible follow-up", ts: 6 },
 		]
 
-		await summarizeConversation({
+		const result = await summarizeConversation({
 			messages,
 			apiHandler: mockApiHandler,
 			systemPrompt: defaultSystemPrompt,
@@ -812,8 +818,14 @@ describe("summarizeConversation", () => {
 
 		const requestMessages = vi.mocked(mockApiHandler.createMessage).mock.calls[0][1]
 		const serializedRequest = JSON.stringify(requestMessages)
-		expect(serializedRequest).toContain("Visible follow-up")
+		expect(serializedRequest).toContain("Visible response")
 		expect(serializedRequest).not.toContain(hiddenContent)
+		expect(serializedRequest).not.toContain("Visible follow-up")
+
+		const effectiveHistory = getEffectiveApiHistory(result.messages)
+		expect(effectiveHistory).toHaveLength(2)
+		expect(effectiveHistory[0].isSummary).toBe(true)
+		expect(effectiveHistory[1]).toEqual(messages[5])
 	})
 
 	it("should preserve command blocks from first message in summary", async () => {
@@ -1012,11 +1024,11 @@ describe("summarizeConversation", () => {
 			taskId,
 		})
 
-		// Verify that countTokens was called with system prompt + summary message
+		// Verify that token accounting covers the system prompt, summary, and retained suffix.
 		expect(mockApiHandler.countTokens).toHaveBeenCalled()
 
-		// newContextTokens = countTokens(systemPrompt + summaryMessage) - counts actual content
-		expect(result.newContextTokens).toBe(100) // countTokens mock returns 100
+		// Each history message includes its content plus the role/opaque-state envelope.
+		expect(result.newContextTokens).toBe(700)
 		expect(result.cost).toBe(0.06)
 		expect(result.summary).toBe("This is a summary with system prompt")
 		expect(result.error).toBeUndefined()
@@ -1055,16 +1067,17 @@ describe("summarizeConversation", () => {
 		// Result contains all messages plus summary
 		expect(result.messages.length).toBe(messages.length + 1)
 
-		// Fresh start: effective history should contain only the summary
+		// Effective history contains the summary followed by the exact suffix.
 		const effectiveHistory = getEffectiveApiHistory(result.messages)
-		expect(effectiveHistory.length).toBe(1)
+		expect(effectiveHistory).toHaveLength(6)
 		expect(effectiveHistory[0].isSummary).toBe(true)
+		expect(effectiveHistory.slice(1)).toEqual(messages.slice(2))
 
 		expect(result.cost).toBe(0.03)
 		expect(result.summary).toBe("Concise summary")
 		expect(result.error).toBeUndefined()
-		// newContextTokens = countTokens(systemPrompt + summaryMessage) - counts actual content
-		expect(result.newContextTokens).toBe(30) // countTokens mock returns 30
+		// Count includes one system prompt block plus the summary and five retained messages.
+		expect(result.newContextTokens).toBe(210)
 	})
 
 	it("should return error when API handler is invalid", async () => {
@@ -1081,14 +1094,12 @@ describe("summarizeConversation", () => {
 		// Create invalid handler (missing createMessage)
 		const invalidHandler = {
 			countTokens: vi.fn(),
-			getModel: vi.fn(),
+			getModel: vi.fn().mockReturnValue({
+				id: "invalid-model",
+				info: { contextWindow: 8000, maxTokens: 4000 },
+			}),
 			// createMessage is missing
 		} as unknown as ApiHandler
-
-		// Mock console.error to verify error message
-		const originalError = console.error
-		const mockError = vi.fn()
-		console.error = mockError
 
 		const result = await summarizeConversation({
 			messages,
@@ -1104,14 +1115,11 @@ describe("summarizeConversation", () => {
 		expect(result.error).toBeTruthy() // Error should be set
 		expect(result.newContextTokens).toBeUndefined()
 
-		// Verify error was logged
-		expect(mockError).toHaveBeenCalledWith(expect.stringContaining("API handler is invalid for condensing"))
-
-		// Restore console.error
-		console.error = originalError
+		expect(result.status).toBe("no_progress")
+		expect(invalidHandler.getModel).not.toHaveBeenCalled()
 	})
 
-	it("should tag all messages with condenseParent (fresh start model)", async () => {
+	it("should tag only the summarized prefix with condenseParent", async () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "Hello", ts: 1 },
 			{ role: "assistant", content: "Hi there", ts: 2 },
@@ -1131,32 +1139,40 @@ describe("summarizeConversation", () => {
 		expect(summaryMessage).toBeDefined()
 		const condenseId = summaryMessage!.condenseId
 
-		// ALL original messages should be tagged (fresh start model tags everything)
-		for (const msg of result.messages.filter((m) => !m.isSummary)) {
+		const summaryIndex = result.messages.findIndex((m) => m.isSummary)
+		expect(summaryIndex).toBe(2)
+		expect(result.messages.slice(summaryIndex + 1)).toEqual(messages.slice(2))
+		for (const msg of result.messages.slice(0, summaryIndex)) {
 			expect(msg.condenseParent).toBe(condenseId)
+		}
+		for (const msg of result.messages.slice(summaryIndex + 1)) {
+			expect(msg.condenseParent).toBeUndefined()
 		}
 	})
 
-	it("should place summary message at end of messages array", async () => {
+	it("should place summary before the retained suffix with a latest timestamp", async () => {
 		const messages: ApiMessage[] = [
-			{ role: "user", content: "Hello", ts: 1 },
-			{ role: "assistant", content: "Hi there", ts: 2 },
-			{ role: "user", content: "How are you?", ts: 3 },
-			{ role: "assistant", content: "I'm good", ts: 4 },
-			{ role: "user", content: "Thanks", ts: 5 },
+			{ role: "user", content: "Hello", ts: 100 },
+			{ role: "assistant", content: "Hi there", ts: 500 },
+			{ role: "user", content: "How are you?", ts: 300 },
+			{ role: "assistant", content: "I'm good", ts: 900 },
+			{ role: "user", content: "Thanks", ts: 700 },
 		]
 
+		const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(100)
 		const result = await summarizeConversation({
 			messages,
 			apiHandler: mockApiHandler,
 			systemPrompt: defaultSystemPrompt,
 			taskId,
 		})
+		dateNowSpy.mockRestore()
 
-		// Summary should be the last message
-		const lastMessage = result.messages[result.messages.length - 1]
-		expect(lastMessage.isSummary).toBe(true)
-		expect(lastMessage.role).toBe("user")
+		const summaryIndex = result.messages.findIndex((message) => message.isSummary)
+		expect(summaryIndex).toBe(2)
+		expect(result.messages[summaryIndex].role).toBe("user")
+		expect(result.messages[summaryIndex].ts).toBe(901)
+		expect(result.messages.slice(summaryIndex + 1)).toEqual(messages.slice(2))
 	})
 })
 

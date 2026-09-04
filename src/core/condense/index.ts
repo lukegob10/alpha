@@ -12,6 +12,8 @@ import { supportPrompt } from "../../shared/support-prompt"
 import { RooIgnoreController } from "../ignore/RooIgnoreController"
 import { generateFoldedFileContext } from "./foldedFileContext"
 import type { ContextRecoveryStatus } from "../context-management/recovery"
+import { getCompactionTargetTokens } from "../context-management/recovery"
+import { ANTHROPIC_DEFAULT_MAX_TOKENS } from "@alpha-code/types"
 
 export type { FoldedFileContextResult, FoldedFileContextOptions } from "./foldedFileContext"
 
@@ -205,6 +207,123 @@ export function hasToolCallResultIntegrity(messages: ApiMessage[]): boolean {
 	return true
 }
 
+export const DEFAULT_RECENT_TAIL_TOKENS = 16_384
+
+const HISTORY_BOOKKEEPING_KEYS = new Set([
+	"content",
+	"ts",
+	"isSummary",
+	"condenseId",
+	"condenseParent",
+	"isTruncationMarker",
+	"truncationId",
+	"truncationParent",
+])
+
+/** Count provider content and opaque state, excluding local history bookkeeping. */
+export async function countHistoryTokens(messages: ApiMessage[], apiHandler: ApiHandler): Promise<number> {
+	let tokens = 0
+	for (const message of messages) {
+		const content =
+			typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content
+		// The common tokenizer ignores nonstandard reasoning/signature blocks. Count
+		// their serialized form for budgeting only; the retained message is untouched.
+		const blocks = content.map((block) =>
+			["text", "image", "tool_use", "tool_result"].includes(block.type)
+				? block
+				: { type: "text" as const, text: JSON.stringify(block) },
+		)
+		const envelope = Object.fromEntries(
+			Object.entries(message).filter(([key]) => !HISTORY_BOOKKEEPING_KEYS.has(key)),
+		)
+		blocks.push({ type: "text", text: JSON.stringify(envelope) })
+		tokens += await apiHandler.countTokens(blocks)
+	}
+	return tokens
+}
+
+/**
+ * Legal boundaries keep a prompt, its assistant response (including separate
+ * reasoning records), and all terminal results together. A tool continuation
+ * may start a new step only after the preceding transaction is complete.
+ */
+export function getLogicalStepStarts(messages: ApiMessage[]): number[] {
+	if (messages.length === 0) return []
+	const pairs = getToolCallResultPairs(messages)
+	const boundaryDeltas = new Array<number>(messages.length + 1).fill(0)
+	for (const pair of pairs.values()) {
+		const indexes = [...pair.callMessageIndexes, ...pair.resultMessageIndexes]
+		const first = Math.min(...indexes)
+		const last = Math.max(...indexes)
+		boundaryDeltas[first + 1]++
+		boundaryDeltas[last + 1]--
+	}
+	const hasResult = (message: ApiMessage) =>
+		Array.isArray(message.content) && message.content.some((block) => getToolResultId(block) !== undefined)
+	const starts = [0]
+	let crossingPairs = 0
+	for (let index = 1; index < messages.length; index++) {
+		crossingPairs += boundaryDeltas[index]
+		const current = messages[index]
+		const previous = messages[index - 1]
+		if (crossingPairs > 0 || hasResult(current)) continue
+		if (
+			current.isSummary ||
+			previous.isSummary ||
+			(current.role === "user" && previous.role === "assistant") ||
+			(current.role === "assistant" && hasResult(previous))
+		)
+			starts.push(index)
+	}
+	return starts
+}
+
+export type RecentTailSelection = {
+	startIndex: number
+	tokens: number
+	/** A whole newest step is summarized instead of retaining a partial transaction. */
+	newestStepTooLarge: boolean
+}
+
+/** Select a contiguous suffix, never skipping an oversized newer step. */
+export async function selectRecentTail(
+	messages: ApiMessage[],
+	apiHandler: ApiHandler,
+	tokenBudget: number,
+	minimumStartIndex = 1,
+	signal?: AbortSignal,
+): Promise<RecentTailSelection> {
+	const starts = getLogicalStepStarts(messages)
+	let startIndex = messages.length
+	let tokens = 0
+	let newestStepTooLarge = false
+	for (let index = starts.length - 1; index >= 0; index--) {
+		const start = starts[index]
+		if (start < minimumStartIndex || messages[start].isSummary) break
+		signal?.throwIfAborted()
+		const stepTokens = await countHistoryTokens(messages.slice(start, startIndex), apiHandler)
+		signal?.throwIfAborted()
+		if (tokens + stepTokens > tokenBudget) {
+			newestStepTooLarge = startIndex === messages.length
+			break
+		}
+		tokens += stepTokens
+		startIndex = start
+	}
+	return { startIndex, tokens, newestStepTooLarge }
+}
+
+export async function countContextTokens(
+	messages: ApiMessage[],
+	apiHandler: ApiHandler,
+	systemPrompt: string,
+	metadata?: ApiHandlerCreateMessageMetadata,
+): Promise<number> {
+	const overhead: Anthropic.Messages.ContentBlockParam[] = [{ type: "text", text: systemPrompt }]
+	if (metadata?.tools?.length) overhead.push({ type: "text", text: JSON.stringify(metadata.tools) })
+	return (await apiHandler.countTokens(overhead)) + (await countHistoryTokens(messages, apiHandler))
+}
+
 /**
  * Removes tool_result blocks that point at calls no longer visible in the
  * supplied history.  Mixed user messages retain their ordinary text blocks;
@@ -342,6 +461,10 @@ export type SummarizeResponse = {
 	condenseId?: string // The unique ID of the created Summary message, for linking to condense_context clineMessage
 	/** Explicit bounded outcome for callers that need to decide whether to fall back. */
 	status?: ContextRecoveryStatus
+	retainedTailTokens?: number
+	retainedTailMessages?: number
+	tailFallback?: "newest_step_exceeds_budget"
+	targetContextTokens?: number
 }
 
 export type SummarizeConversationOptions = {
@@ -356,6 +479,10 @@ export type SummarizeConversationOptions = {
 	filesReadByRoo?: string[]
 	cwd?: string
 	rooIgnoreController?: RooIgnoreController
+	/** Hard input budget, including system prompt, tools, summary and exact tail. */
+	maxContextTokens?: number
+	/** Exact recent working set; clamped to the available input budget. */
+	recentTailTokenBudget?: number
 }
 
 /**
@@ -389,10 +516,10 @@ export const getToolFreeRequestMetadata = getToolFreeMetadata
 /**
  * Summarizes the conversation messages using an LLM call.
  *
- * This implements the "fresh start" model where:
+ * The older active prefix is summarized while a bounded recent suffix stays exact:
  * - The summary becomes a user message (not assistant)
- * - Post-condense, the model sees only the summary (true fresh start)
- * - All messages are still stored but tagged with condenseParent
+ * - Post-condense, the model sees the summary followed by complete recent steps
+ * - Older messages stay stored and are tagged with condenseParent for rewind
  * - <command> blocks from the original task are preserved across condensings
  * - File context (folded code definitions) can be preserved for continuity
  *
@@ -418,6 +545,8 @@ export async function summarizeConversation(options: SummarizeConversationOption
 		cwd,
 		rooIgnoreController,
 	} = options
+	const signal = metadata?.signal
+	signal?.throwIfAborted()
 	TelemetryService.instance.captureContextCondensed(
 		taskId,
 		isAutomaticTrigger ?? false,
@@ -428,9 +557,9 @@ export async function summarizeConversation(options: SummarizeConversationOption
 
 	// Summarize only the history that would be sent to the model. The stored history
 	// also contains messages hidden by prior truncation and condensation markers.
-	const messagesToSummarize = getMessagesSinceLastSummary(getEffectiveApiHistory(messages))
+	const activeMessages = getMessagesSinceLastSummary(getEffectiveApiHistory(messages))
 
-	if (messagesToSummarize.length <= 1) {
+	if (activeMessages.length <= 1) {
 		const error =
 			messages.length <= 1
 				? t("common:errors.condense_not_enough_messages")
@@ -439,11 +568,43 @@ export async function summarizeConversation(options: SummarizeConversationOption
 	}
 
 	// Check if there's a recent summary in the messages (edge case)
-	const recentSummaryExists = messagesToSummarize.some((message: ApiMessage) => message.isSummary)
+	const recentSummaryExists = activeMessages.some((message: ApiMessage) => message.isSummary)
 
-	if (recentSummaryExists && messagesToSummarize.length <= 2) {
+	if (recentSummaryExists && activeMessages.length <= 2) {
 		const error = t("common:errors.condensed_recently")
 		return { ...response, error, status: "exhausted" }
+	}
+	// Do not manufacture terminal results for a live or incomplete transaction.
+	// Legacy repair helpers remain available to explicit history recovery callers.
+	const storedMessages = new Set(messages)
+	if (!hasToolCallResultIntegrity(activeMessages) || activeMessages.some((message) => !storedMessages.has(message))) {
+		return { ...response, error: t("common:errors.condense_failed"), status: "exhausted" }
+	}
+	if (!apiHandler || typeof apiHandler.createMessage !== "function") {
+		return { ...response, error: t("common:errors.condense_handler_invalid"), status: "no_progress" }
+	}
+	const modelInfo = apiHandler.getModel().info
+	const requestedTarget =
+		options.maxContextTokens ??
+		getCompactionTargetTokens({
+			contextWindow: modelInfo.contextWindow,
+			reservedTokens: modelInfo.maxTokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS,
+		})
+	const maxContextTokens = Number.isFinite(requestedTarget) ? Math.max(0, requestedTarget) : 0
+	const requestedTailBudget =
+		options.recentTailTokenBudget ?? Math.min(DEFAULT_RECENT_TAIL_TOKENS, maxContextTokens / 4)
+	const tailBudget = Number.isFinite(requestedTailBudget)
+		? Math.max(0, Math.min(requestedTailBudget, maxContextTokens))
+		: 0
+	const minimumTailStart = getLogicalStepStarts(activeMessages).length === 1 ? 0 : 1
+	const tail = await selectRecentTail(activeMessages, apiHandler, tailBudget, minimumTailStart, signal)
+	const messagesToSummarize = activeMessages.slice(0, tail.startIndex)
+	const retainedMessages = activeMessages.slice(tail.startIndex)
+	if (messagesToSummarize.length === 0) {
+		return { ...response, error: t("common:errors.condense_not_enough_messages"), status: "exhausted" }
+	}
+	if (messagesToSummarize.length === 1 && messagesToSummarize[0].isSummary) {
+		return { ...response, error: t("common:errors.condensed_recently"), status: "exhausted" }
 	}
 
 	// Use custom prompt if provided and non-empty, otherwise use the default CONDENSE prompt
@@ -455,16 +616,12 @@ export async function summarizeConversation(options: SummarizeConversationOption
 		content: condenseInstructions,
 	}
 
-	// Inject synthetic tool_results for orphan tool_calls to prevent API rejections
-	// (e.g., when user triggers condense after receiving attempt_completion but before responding)
-	const messagesWithToolResults = ensureToolCallResultIntegrity(messagesToSummarize)
-
 	// Transform tool_use and tool_result blocks to text representations.
 	// This is necessary because some providers (like Bedrock via LiteLLM) require the `tools` parameter
 	// when tool blocks are present. By converting them to text, we can send the conversation for
 	// summarization without needing to pass the tools parameter.
 	const messagesWithTextToolBlocks = transformMessagesForCondensing(
-		maybeRemoveImageBlocks([...messagesWithToolResults, finalRequestMessage], apiHandler),
+		maybeRemoveImageBlocks([...messagesToSummarize, finalRequestMessage], apiHandler),
 	)
 
 	const requestMessages = messagesWithTextToolBlocks.map(({ role, content }) => ({ role, content }))
@@ -472,16 +629,8 @@ export async function summarizeConversation(options: SummarizeConversationOption
 	// Note: this doesn't need to be a stream, consider using something like apiHandler.completePrompt
 	const promptToUse = SUMMARY_PROMPT
 
-	// Validate that the API handler supports message creation
-	if (!apiHandler || typeof apiHandler.createMessage !== "function") {
-		console.error("API handler is invalid for condensing. Cannot proceed.")
-		const error = t("common:errors.condense_handler_invalid")
-		return { ...response, error, status: "no_progress" }
-	}
-
 	let summary = ""
 	let cost = 0
-	let outputTokens = 0
 
 	try {
 		// Historical tool blocks were converted to text above.  Do not let the
@@ -489,15 +638,17 @@ export async function summarizeConversation(options: SummarizeConversationOption
 		const stream = apiHandler.createMessage(promptToUse, requestMessages, getToolFreeMetadata(metadata))
 
 		for await (const chunk of stream) {
+			signal?.throwIfAborted()
 			if (chunk.type === "text") {
 				summary += chunk.text
 			} else if (chunk.type === "usage") {
 				// Record final usage chunk only
 				cost = chunk.totalCost ?? 0
-				outputTokens = chunk.outputTokens ?? 0
 			}
 		}
 	} catch (error) {
+		signal?.throwIfAborted()
+		if (error instanceof Error && error.name === "AbortError") throw error
 		console.error("Error during condensing API call:", error)
 		const errorMessage = error instanceof Error ? error.message : String(error)
 
@@ -539,6 +690,7 @@ export async function summarizeConversation(options: SummarizeConversationOption
 			status: "no_progress",
 		}
 	}
+	signal?.throwIfAborted()
 
 	summary = summary.trim()
 
@@ -556,6 +708,12 @@ export async function summarizeConversation(options: SummarizeConversationOption
 	const summaryContent: Anthropic.Messages.ContentBlockParam[] = [
 		{ type: "text", text: `## Conversation Summary\n${summary}` },
 	]
+	if (tail.newestStepTooLarge) {
+		summaryContent.push({
+			type: "text",
+			text: "[Recent context: the newest complete step exceeded the exact-tail token budget and was summarized in full. Original records remain in saved history.]",
+		})
+	}
 
 	// Add command blocks (active workflows) in their own system-reminder block if present
 	if (commandBlocks) {
@@ -606,62 +764,48 @@ ${commandBlocks}
 	// Generate a unique condenseId for this summary
 	const condenseId = crypto.randomUUID()
 
-	// Use the last message's timestamp + 1 to ensure unique timestamp for summary.
-	// The summary goes at the end of all messages.
-	const lastMsgTs = messages[messages.length - 1]?.ts ?? Date.now()
+	// Creation time stays newer than every original record even though the summary
+	// is inserted before the tail. Timestamp-based rewind then restores the prefix.
+	const lastMsgTs = messages.reduce((latest, message) => Math.max(latest, message.ts ?? 0), Date.now())
 
 	const summaryMessage: ApiMessage = {
-		role: "user", // Fresh start model: summary is a user message
+		role: "user",
 		content: summaryContent,
 		ts: lastMsgTs + 1, // Unique timestamp after last message
 		isSummary: true,
 		condenseId, // Unique ID for this summary, used to track which messages it replaces
 	}
 
-	// NON-DESTRUCTIVE CONDENSE:
-	// Tag ALL existing messages with condenseParent so they are filtered out when
-	// the effective history is computed. The summary message is the only message
-	// that will be visible to the API after condensing (fresh start model).
-	//
-	// Storage structure after condense:
-	// [msg1(parent=X), msg2(parent=X), ..., msgN(parent=X), summary(id=X)]
-	//
-	// Effective for API (filtered by getEffectiveApiHistory):
-	// [summary]  ← Fresh start!
-
-	// Tag ALL messages with condenseParent
-	const newMessages = messages.map((msg) => {
-		// If message already has a condenseParent, we leave it - nested condense is handled by filtering
-		if (!msg.condenseParent) {
-			return { ...msg, condenseParent: condenseId }
-		}
-		return msg
-	})
-
-	// Append the summary message at the end
-	newMessages.push(summaryMessage)
-
-	// Count the tokens in the context for the next API request
-	// After condense, the context will contain: system prompt + summary + tool definitions
-	const systemPromptMessage: ApiMessage = { role: "user", content: systemPrompt }
-
-	// Count actual summaryMessage content directly instead of using outputTokens as a proxy
-	// This ensures we account for wrapper text (## Conversation Summary, <system-reminder>, <environment_details>)
-	const contextBlocks = [systemPromptMessage, summaryMessage].flatMap((message) =>
-		typeof message.content === "string" ? [{ text: message.content, type: "text" as const }] : message.content,
+	const newContextTokens = await countContextTokens(
+		[summaryMessage, ...retainedMessages],
+		apiHandler,
+		systemPrompt,
+		metadata,
 	)
-
-	const messageTokens = await apiHandler.countTokens(contextBlocks)
-
-	// Count tool definition tokens if tools are provided
-	let toolTokens = 0
-	if (metadata?.tools && metadata.tools.length > 0) {
-		const toolsText = JSON.stringify(metadata.tools)
-		toolTokens = await apiHandler.countTokens([{ text: toolsText, type: "text" }])
+	signal?.throwIfAborted()
+	if (!Number.isFinite(newContextTokens) || newContextTokens > maxContextTokens) {
+		// The tail was excluded from the summary request, so silently dropping it
+		// now would lose unsummarized evidence. Leave history unchanged for fallback.
+		return { ...response, cost, error: t("common:errors.condense_failed"), status: "no_progress" }
 	}
-
-	const newContextTokens = messageTokens + toolTokens
-	return { messages: newMessages, summary, cost, newContextTokens, condenseId, status: "reduced" }
+	const prefix = new Set(messagesToSummarize)
+	const insertIndex = retainedMessages.length ? messages.indexOf(retainedMessages[0]) : messages.length
+	const newMessages = messages.map((msg) =>
+		prefix.has(msg) && !msg.condenseParent ? { ...msg, condenseParent: condenseId } : msg,
+	)
+	newMessages.splice(insertIndex, 0, summaryMessage)
+	return {
+		messages: newMessages,
+		summary,
+		cost,
+		newContextTokens,
+		condenseId,
+		status: "reduced",
+		targetContextTokens: maxContextTokens,
+		retainedTailTokens: tail.tokens,
+		retainedTailMessages: retainedMessages.length,
+		...(tail.newestStepTooLarge ? { tailFallback: "newest_step_exceeds_budget" as const } : {}),
+	}
 }
 
 /**

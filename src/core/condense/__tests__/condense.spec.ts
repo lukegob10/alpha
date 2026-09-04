@@ -154,14 +154,27 @@ Line 2
 			// Should NOT have reasoning blocks (no longer needed for user messages)
 			expect(contentArray.some((b) => b.type === "reasoning")).toBe(false)
 
-			// Fresh start model: effective history should only contain the summary
+			// The summary is followed by the exact recent suffix.
 			const effectiveHistory = getEffectiveApiHistory(result.messages)
-			expect(effectiveHistory.length).toBe(1)
+			expect(effectiveHistory).toHaveLength(8)
 			expect(effectiveHistory[0].isSummary).toBe(true)
 			expect(effectiveHistory[0].role).toBe("user")
+			expect(effectiveHistory.slice(1)).toEqual(messages.slice(2))
+			expect(result.retainedTailMessages).toBe(7)
+
+			const summaryIndex = result.messages.findIndex((msg) => msg.isSummary)
+			expect(summaryIndex).toBe(2)
+			const condenseId = result.messages[summaryIndex].condenseId
+			expect(condenseId).toBeDefined()
+			for (const message of result.messages.slice(0, summaryIndex)) {
+				expect(message.condenseParent).toBe(condenseId)
+			}
+			for (const message of result.messages.slice(summaryIndex + 1)) {
+				expect(message.condenseParent).toBeUndefined()
+			}
 		})
 
-		it("should tag ALL messages with condenseParent", async () => {
+		it("should tag only the summarized prefix with condenseParent", async () => {
 			const messages: ApiMessage[] = [
 				{ role: "user", content: "First message with /prr command content" },
 				{ role: "assistant", content: "Second message" },
@@ -178,11 +191,16 @@ Line 2
 				isAutomaticTrigger: false,
 			})
 
-			// All original messages should be tagged with condenseParent
-			const taggedMessages = result.messages.filter((msg) => !msg.isSummary)
-			expect(taggedMessages.length).toBe(messages.length)
-			for (const msg of taggedMessages) {
-				expect(msg.condenseParent).toBeDefined()
+			const summaryIndex = result.messages.findIndex((msg) => msg.isSummary)
+			expect(summaryIndex).toBe(2)
+			const condenseId = result.messages[summaryIndex].condenseId
+			expect(condenseId).toBeDefined()
+			expect(result.messages.slice(summaryIndex + 1)).toEqual(messages.slice(2))
+			for (const message of result.messages.slice(0, summaryIndex)) {
+				expect(message.condenseParent).toBe(condenseId)
+			}
+			for (const message of result.messages.slice(summaryIndex + 1)) {
+				expect(message.condenseParent).toBeUndefined()
 			}
 		})
 
@@ -253,11 +271,12 @@ Line 2
 				isAutomaticTrigger: false,
 			})
 
-			// Effective history should contain only the summary (fresh start)
+			// The summary is followed by the exact recent suffix.
 			const effectiveHistory = getEffectiveApiHistory(result.messages)
-			expect(effectiveHistory).toHaveLength(1)
+			expect(effectiveHistory).toHaveLength(8)
 			expect(effectiveHistory[0].isSummary).toBe(true)
 			expect(effectiveHistory[0].role).toBe("user")
+			expect(effectiveHistory.slice(1)).toEqual(messages.slice(2))
 		})
 
 		it("should return error when not enough messages to summarize", async () => {

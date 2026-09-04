@@ -613,6 +613,7 @@ describe("Context Management", () => {
 
 			// Verify summarizeConversation was called with the right parameters
 			expect(summarizeSpy).toHaveBeenCalledWith({
+				maxContextTokens: 52500,
 				messages: messagesWithSmallContent,
 				apiHandler: mockApiHandler,
 				systemPrompt: "System prompt",
@@ -785,6 +786,7 @@ describe("Context Management", () => {
 
 			// Verify summarizeConversation was called with the right parameters
 			expect(summarizeSpy).toHaveBeenCalledWith({
+				maxContextTokens: 52500,
 				messages: messagesWithSmallContent,
 				apiHandler: mockApiHandler,
 				systemPrompt: "System prompt",
@@ -955,6 +957,7 @@ describe("Context Management", () => {
 
 			// Verify summarizeConversation was called with filesReadByRoo, cwd, and rooIgnoreController
 			expect(summarizeSpy).toHaveBeenCalledWith({
+				maxContextTokens: 52500,
 				messages: messagesWithSmallContent,
 				apiHandler: mockApiHandler,
 				systemPrompt: "System prompt",
@@ -1020,6 +1023,7 @@ describe("Context Management", () => {
 
 			// Verify summarizeConversation was called with undefined parameters
 			expect(summarizeSpy).toHaveBeenCalledWith({
+				maxContextTokens: 52500,
 				messages: messagesWithSmallContent,
 				apiHandler: mockApiHandler,
 				systemPrompt: "System prompt",
@@ -1081,6 +1085,7 @@ describe("Context Management", () => {
 
 			// Verify summarizeConversation was called with empty array
 			expect(summarizeSpy).toHaveBeenCalledWith({
+				maxContextTokens: 52500,
 				messages: messagesWithSmallContent,
 				apiHandler: mockApiHandler,
 				systemPrompt: "System prompt",
