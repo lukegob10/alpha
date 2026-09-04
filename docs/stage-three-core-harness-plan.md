@@ -121,12 +121,87 @@ New handoffs now require the live child; matching already-committed historical r
 The self-join exception is limited to primary children with a committing handoff buffer and delegation repair disabled.
 Existing background-child fixtures now supply an explicit live child/gate rather than silently accepting a missing child.
 
-These are bounded correctness checks, not a claim that the unintegrated implementation already passes them.
+### Integrated implementation and independent review
+
+The owner's clean implementation commit `b80f29336ccff32fa36163cda84a100797fb7e18` was cherry-picked as
+`39a4366` after the orchestrator's legacy handoff fix `b20d77e`. Its independent affected run passed 530 tests
+across 23 files. Supported command/configuration forms, observation bounds, recovery limits, and the matched
+before/after stagnation workloads are recorded in [the implementation record](nor-25-implementation.md).
+
+The final integration audit reproduced two further text-only loops using real persisted descendant/mailbox state:
+completion was rejected with no file-verification obligations, so the verification-only retry counter never advanced.
+Both regressions hit a deterministic twenty-step guard before the correction. The shared completion decision now
+bounds every unchanged rejection, including active descendants and unconsumed results, without changing polling rules.
+All eighteen independent completion cases pass after the fix. The four compaction/recovery cases and six real
+command-outcome cases also pass. Command fixtures use bounded temporary workspaces and actual Task receipt state.
+
+The legacy live-child requirement and narrow self-join exception remain protected by twelve independent regressions.
+Ordinary no-debt text completion, terminal outcome truthfulness, cancellation, late exit callbacks, persistence races,
+current evidence after reload, and stale evidence after history/content rewind are covered explicitly.
+
+Important limits: arbitrary shell writes to previously unknown ignored files or outside the workspace are not audited.
+Explicit file tools cover their named targets, and tracked assume-unchanged/skip-worktree files are observed. Imported,
+dynamic, or unsupported verifier configuration (including Alpha's current Vitest configuration) receives no durable
+verification credit; the agent must report explicit incomplete/unverified status. There is no automatic repair for an
+unresolved write-ahead mutation reservation. These limits are intentional conservative boundaries, not proof of broad
+live-model quality or complete filesystem mutation tracking.
+
+The final integration correction is committed as `3afaa13`. Managed host acceptance first exposed a Windows
+short/long workspace-path mismatch at command admission, hidden behind an old generic shell-integration error.
+Canonical cwd and persisted workspace identity now agree; only the trusted root spelling is normalized, and real
+containment still rejects escaping junctions and traversal. Unknown-scope debt survives a removed workspace.
+Non-shell-integration admission errors now retain their actual cause and cannot trigger a fallback execution.
+Real junction/short-name, primary/Worker evidence, disappearing-root, and command-admission regressions cover these fixes.
+
+The managed host fixture now uses real Vitest assertions over the edited ESM modules, with inert configurations and
+separate nested/root verification scopes. Its former arbitrary `node verify.mjs` command is intentionally unsupported
+by the evidence resolver. Existing Apply/discard, completion rejection, ownership, terminal, and navigation assertions
+are retained. The test uses the installed repository Vitest binary and restores its temporary host PATH change.
+The rebuilt host reached successful root completion but exposed a final fixture assertion comparing Windows CRLF
+against LF. Commit `df4df9f` makes the module-content assertions line-ending-neutral while retaining exact body checks.
+
+Certification also reproduced one outdated primary-tool assertion: NOR-25 intentionally exposes the optional blocked
+completion outcome. The assertion now requires that field, while catalog-stability checks remain intact; all six
+focused catalog tests pass. The final bounded clean-code review found no additional must-fix issue.
+
+Combined post-integration validation on 2026-09-04:
+
+- Shared types: 21 files / 272 tests passed.
+- Provider/transform: 87 files / 1,575 tests passed, two skipped.
+- Webview chat/agent consumers: 44 files / 507 tests passed.
+- Root lint: 12 tasks passed; root typecheck: 13 tasks passed on the final production changes. The later catalog-only
+  assertion correction also passed extension typecheck. Touched-file Prettier and `git diff --check` passed.
+- Broader core: 162 files / 2,354 tests passed, eleven skipped. Four older fixture failures were reproduced and fixed
+  by supplying actual Task receipt/detector state or the explicit provider progress seam; original persistence,
+  parallel-read, and compaction assertions remain, and compaction now also asserts successful scheduler completion.
+- Exact VS Code 1.122.1 smoke: the full command passed all eight checks again after the Windows correction
+  (activation/commands, modes, LM transactions, cancellation/recovery).
+- Strict managed-agent deterministic certification: all ten tracks / 1,395 tests passed with no skipped/todo tests;
+  all 26 automated matrix rows passed. The final source remained stable for the run at commit `df4df9f`, with only
+  the preserved user guide and these integration documents dirty.
+- The complete `pnpm certify:managed-agents:automated` command exited zero after that deterministic run and a rebuilt
+  exact VS Code 1.122.1 managed host acceptance test. The host scenario passed in 22.36 seconds, covering nested Apply,
+  discard, actual verification commands, completion rejection/success, projection, and exact-child navigation.
+  This does not satisfy the eight separately listed broader manual/live certification scenarios.
+
+Representative combined commands:
+
+```sh
+pnpm --dir src exec vitest run core/agent core/task core/task-persistence core/tools core/context-management core/condense core/environment core/webview __tests__/history-resume-delegation.spec.ts __tests__/nested-delegation-resume.spec.ts --maxWorkers=2
+pnpm --dir src exec vitest run api/providers api/transform --maxWorkers=2
+pnpm --dir packages/types exec vitest run
+pnpm --dir webview-ui exec vitest run src/components/chat src/components/agents --maxWorkers=2
+pnpm check-types
+pnpm lint
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+pnpm certify:managed-agents:automated
+```
 
 ## Closure ledger
 
-- Fixed now: implementation in progress; no Stage 3 completion claim yet.
+- Fixed now: Stage 3 / NOR-25 is complete on `codex/stage-three-core-harness`: primary verification debt, current scoped
+  evidence, bounded progress, completion/handoff races, and Windows workspace identity. Required automated gates pass.
 - Flagged for follow-up: NOR-29 remains Stage 4.
-- Not verified: final Stage 3 behavior, combined post-change gates, live-model quality/speed, and the eight broader
-  manual/live managed-agent certification scenarios already distinguished from Stage 2 automated coverage.
+- Not verified: live-model quality/speed and the eight broader manual/live managed-agent certification scenarios
+  already distinguished from Stage 2 automated coverage.
 - Out of scope: CLI/shim, releases/publishing/installation, dependency upgrades, and unrelated architecture cleanup.

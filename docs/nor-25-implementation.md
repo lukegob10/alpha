@@ -8,6 +8,8 @@ Primary file tools record actual before/after disk content, including creates, d
 
 The primary task uses `primary-change:<taskId>` in the existing ledger. Applied Worker change-set IDs retain their existing explicit scope. Ancestor configuration fingerprints are stored separately from actual changed paths, so configuration freshness does not invent file edits or move a package's changes into its parent directory. Content changes, including A → B → A, advance the revision and invalidate previous checks. Editing an applied Worker's paths also invalidates its evidence.
 
+Integration canonicalizes the actual command cwd and persisted workspace identity so Windows short paths and trusted workspace junction aliases refer to the same change scope. Real path containment still rejects escaping descendants. Unknown-scope debt retains its reserved identity if the workspace disappears. Admission failures preserve their actual error; only a real shell-integration failure can trigger the existing fallback.
+
 Required check kinds come from the nearest bounded package manifest: `test`/`test:*`, `check-types`/`typecheck`, and `lint`. Code/configuration edits require all declared kinds; a lint pass alone cannot satisfy a package that also declares tests and types. Prose and static assets do not inherit unrelated code suites. With no declared kind, at least one supported check must cover each changed file. This is a deliberately small manifest contract, not an interpreter for natural-language instructions or arbitrary CI policy. Configuration and AGENTS.md bytes participate in freshness even though their prose is not interpreted as executable policy.
 
 Checks accumulate by file and kind for the current revision. The store retains the latest receipt and the current coverage facts; stale receipts cannot restore old coverage after an edit. New runtime command receipts cannot use the compatibility reader for unversioned Worker records. Historical records remain readable, and a supported admitted verifier upgrades their scope.
@@ -36,7 +38,7 @@ A durable mutation reservation is written before an admitted primary effect. Its
 
 Verification debt lives in `AgentControlStore`, independently of compacted provider history. Reload, rewind, and pre-completion reconciliation rehash known current content/configuration before crediting receipts. Compaction does not clear the progress window or verification debt.
 
-Explicit completion and ordinary text completion share the existing completion decision. The final lifecycle commit rereads that decision after persistence, inside the existing workspace mutation boundary, and rolls back candidate completion if debt or guidance arrived. Active commands block completion. Three rejected completion attempts against unchanged debt/running receipts end the current attempt as incomplete and unverified. The optional `attempt_completion.outcome = "blocked"` reports missing evidence without publishing successful completion.
+Explicit completion and ordinary text completion share the existing completion decision. The final lifecycle commit rereads that decision after persistence, inside the existing workspace mutation boundary, and rolls back candidate completion if debt or guidance arrived. Active commands block completion. Three rejected completion attempts against unchanged debt, running receipts, active descendants, or unconsumed child results end the current attempt as incomplete and unverified. Actual waiting and polling do not count as rejected completion claims. The optional `attempt_completion.outcome = "blocked"` reports missing evidence without publishing successful completion.
 
 ## Outcome-aware progress
 
@@ -61,7 +63,7 @@ The reference was the [Pi agent loop pinned at `6aedd1066e540642165aa30fa7b4a1b8
 
 The three productive fixtures complete under both policies; each stagnant fixture emits one strategy-change instruction before stopping. These are repeatable control-flow measurements, not live-model success rates or wall-clock performance claims.
 
-Final validation on 2026-09-04:
+Owner-worktree validation on 2026-09-04 (before the additional integration corrections):
 
 - The affected Vitest run passed **519 tests across 22 files**: ledger, requirements/scope, scheduler/progress, Task, external mutation boundaries, command/completion tools, tool registry, completion persistence, native completion schema, Provider, and environment projection. It includes the 87 scope cases and the deterministic stagnation comparison above.
 - The existing `AgentTurnEngine.spec.ts` suite passed **11 additional tests**, for **530 tests across 23 files** overall.
@@ -75,4 +77,4 @@ The new regression suites can be rerun with:
 pnpm --dir src exec vitest run core/agent/__tests__/AgentControlStore.primary-verification.spec.ts core/agent/__tests__/ToolScheduler.progress.spec.ts core/agent/__tests__/VerificationRequirements.spec.ts core/agent/__tests__/VerificationScope.spec.ts core/tools/__tests__/ToolRepetitionDetector.progress.spec.ts core/tools/__tests__/ToolRepetitionDetector.stagnation.spec.ts core/webview/__tests__/ClineProvider.primary-verification.spec.ts core/environment/__tests__/getEnvironmentDetails.verification.spec.ts
 ```
 
-Root integration owns the combined managed-agent and exact VS Code 1.122.1 host gates. This implementation does not claim those gates have passed, and does not change dependencies, lockfiles, release metadata, CLI, or vscode-shim.
+Root integration owns the combined managed-agent and exact VS Code 1.122.1 host gates; see the [integration record](stage-three-core-harness-plan.md) for their final results. This owner-worktree run does not establish those results and does not change dependencies, lockfiles, release metadata, CLI, or vscode-shim.
