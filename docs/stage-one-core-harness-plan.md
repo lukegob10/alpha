@@ -72,6 +72,20 @@ The independent Sol Max audit additionally calls for actual-wire retry tests, fa
 preflight cancellation tests, discovery/alias/generic policy-negative cases, context-reset and historical-schema cases,
 and cross-task mode/cache isolation. These are affected-contract integration checks, not authorization for later stages.
 
+Review refinements:
+
+- An invalid mixed-barrier batch is staged before assistant persistence, but still reaches the canonical scheduler after
+  durability so structured results are published exactly once. Cancellation retains those already-staged per-call error
+  receipts while the enclosing outcome is aborted. Valid batches keep normal cancellation precedence.
+- Environment acknowledgement occurs at successful history persistence, before unrelated wait-result claim settlement.
+  A later settlement failure must not cause already-durable terminal output to be delivered again. Failed-save rollback
+  targets only the exact newly staged message, preserving unrelated messages.
+- Deferred discovery promotes schemas only from a successful, validated paired call/result transaction at a subsequent
+  step. Canonical MCP names and underscore aliases must pass the same captured policy. Connection/schema changes are
+  checked again before execution and after approval.
+- Retained retry response metadata, not just its request, must come from the captured provider handler/protocol. Provider
+  continuity includes reasoning signatures/details, encrypted reasoning, response IDs, and VS Code opaque state.
+
 ## Explicitly out of scope
 
 - NOR-26 selective parallel execution, NOR-24 compaction-policy redesign, NOR-25 primary verification/progress redesign,
@@ -101,6 +115,22 @@ The reported run duration was 11.60 seconds; this is correctness baseline eviden
 Additional pre-change baseline: `pnpm --dir src check-types` and `pnpm --dir src lint` passed. The complete
 `pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` gate passed on exact VS Code 1.122.1: 2 extension, 2 mode, and 4
 VS Code LM contract tests. These are baseline results and must be rerun on integrated changes.
+
+Intermediate retry validation: the original code failed deterministic cases for a changed live handler/prompt/history on
+transport/rate-limit retry and for compaction during a retained retry. Five additional provider-persistence cases wrote the
+replacement provider's response ID instead of the captured provider's ID. The targeted fixes pass 15 dedicated tests;
+four subsequent direct-caller regressions close an unbounded empty compatibility-response loop and preserve the latest
+failure on loop exit, bringing the dedicated suite to 19 tests. The orchestrator also ran 179 adjacent retry,
+step-context, and persistence tests successfully. These are intermediate results, not evidence that all Stage 1 changes
+have passed integration.
+
+Final retry-only validation passed 176 tests across the dedicated suite plus Task, Task persistence, and graceful retry
+coverage, as well as `src` lint/typecheck and touched-file formatting. Typecheck first exposed a private-method test
+assertion; the fixture was corrected without changing production behavior and the check reran successfully.
+
+Pre-existing follow-up outside this bounded patch: some outer-loop model/cost accounting still reads live provider
+settings. A mid-retry provider switch can therefore label accounting differently from the now-stable actual request.
+No live cost/cache or generalized speed claim relies on that accounting in this stage's fixture evidence.
 
 Integration gates:
 

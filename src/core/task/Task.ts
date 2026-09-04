@@ -269,6 +269,13 @@ interface TaskStepExecutionResult {
 
 interface CurrentAgentStep {
 	snapshot: AgentStepSnapshot<ApiHandler, unknown>
+	/** Fresh wire copies from the private, unsanitized logical capture; never persisted or logged. */
+	getRequest: () => {
+		systemPrompt: string
+		messages: Anthropic.Messages.MessageParam[]
+		metadata: Omit<ApiHandlerCreateMessageMetadata, "signal" | "deadline" | "streamCapabilities">
+	}
+	releaseRequest: () => void
 	turnId: string
 	stepId: string
 	requestId: string
@@ -1670,7 +1677,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async addToApiConversationHistory(message: Anthropic.MessageParam, reasoning?: string): Promise<boolean> {
 		// Capture the encrypted_content / thought signatures from the provider (e.g., OpenAI Responses API, Google GenAI) if present.
 		// We only persist data reported by the current response body.
-		const handler = this.api as ApiHandler & {
+		const responseStep = message.role === "assistant" ? this.currentAgentStep : undefined
+		const handler = (responseStep?.snapshot.runtime.getHandler() ?? this.api) as ApiHandler & {
 			getResponseId?: () => string | undefined
 			getEncryptedContent?: () => { encrypted_content: string; id?: string } | undefined
 			getThoughtSignature?: () => string | undefined
@@ -1692,10 +1700,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// and require round-tripping the signature in their own format.
 			const modelId = getModelId(this.apiConfiguration)
 			const apiProvider = this.apiConfiguration.apiProvider
-			const apiProtocol = getApiProtocol(
-				apiProvider && !isRetiredProvider(apiProvider) ? apiProvider : undefined,
-				modelId,
-			)
+			const apiProtocol =
+				responseStep?.snapshot.context.provider.apiProtocol ??
+				getApiProtocol(apiProvider && !isRetiredProvider(apiProvider) ? apiProvider : undefined, modelId)
 			const isAnthropicProtocol = apiProtocol === "anthropic"
 
 			// Start from the original assistant message
@@ -3095,20 +3102,27 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private async finishCanonicalLifecycleTurn(outcome: AgentTurnOutcome): Promise<void> {
+		const step = this.currentAgentStep
 		const status =
 			outcome.status === "completed"
 				? "completed"
 				: outcome.status === "failed" || outcome.status === "exhausted"
 					? "failed"
 					: "interrupted"
-		await this.enqueueCanonicalLifecycleEvent("phase_changed", { phase: "finalizing" })
-		await this.enqueueCanonicalLifecycleEvent("turn_terminal", {
-			status,
-			...("reason" in outcome && outcome.reason ? { reason: outcome.reason } : {}),
-			...("error" in outcome && outcome.error !== undefined
-				? { error: outcome.error instanceof Error ? outcome.error.message : String(outcome.error) }
-				: {}),
-		})
+		try {
+			await this.enqueueCanonicalLifecycleEvent("phase_changed", { phase: "finalizing" })
+			await this.enqueueCanonicalLifecycleEvent("turn_terminal", {
+				status,
+				...("reason" in outcome && outcome.reason ? { reason: outcome.reason } : {}),
+				...("error" in outcome && outcome.error !== undefined
+					? { error: outcome.error instanceof Error ? outcome.error.message : String(outcome.error) }
+					: {}),
+			})
+		} finally {
+			// Keep the diagnostic snapshot available after finalization, but release
+			// raw retry inputs even if publishing the terminal lifecycle event fails.
+			step?.releaseRequest?.()
+		}
 	}
 
 	/**
@@ -3126,21 +3140,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		mode: string,
 		modelInfo: ModelInfo,
 		surface: TaskToolSurface | undefined,
+		retainedStep?: CurrentAgentStep,
 	): CurrentAgentStep {
 		if (!surface) {
 			throw new Error("A unified tool surface is required to capture an agent step.")
 		}
 
 		const turnId = this.agentTurnId ?? (this.agentTurnId = crypto.randomUUID())
-		const requestId = this.currentAgentStep?.requestId ?? metadata.requestId ?? crypto.randomUUID()
+		const requestId = retainedStep?.requestId ?? metadata.requestId ?? crypto.randomUUID()
 		const attemptId = metadata.attemptId ?? crypto.randomUUID()
 
-		if (this.currentAgentStep) {
-			const retrySnapshot = this.agentStepContextBuilder.retry(this.currentAgentStep.snapshot, {
-				retryAttempt: Math.max(retryAttempt, this.currentAgentStep.snapshot.context.retryAttempt),
+		if (retainedStep) {
+			const retrySnapshot = this.agentStepContextBuilder.retry(retainedStep.snapshot, {
+				retryAttempt: Math.max(retryAttempt, retainedStep.snapshot.context.retryAttempt),
 			})
 			this.currentAgentStep = {
-				...this.currentAgentStep,
+				...retainedStep,
 				snapshot: retrySnapshot,
 				attemptId,
 			}
@@ -3148,7 +3163,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		this.agentTurnStep += 1
-		const { signal: _requestSignal, ...capturedMetadata } = metadata
+		const {
+			signal: _requestSignal,
+			deadline: _requestDeadline,
+			streamCapabilities: _streamCapabilities,
+			...capturedMetadata
+		} = metadata
+		// StepContext is a sanitized diagnostic snapshot. Its recursive redaction
+		// must not alter legitimate tool arguments, schemas, or opaque provider state
+		// on the wire. Keep the raw capture inside a process-local closure and give
+		// each adapter a fresh copy so adapter mutation cannot corrupt a later retry.
+		let capturedRequest: ReturnType<CurrentAgentStep["getRequest"]> | undefined = structuredClone({
+			systemPrompt,
+			messages: [...cleanConversationHistory],
+			metadata: { ...capturedMetadata, taskId: this.taskId, mode, requestId, attemptId },
+		})
 		const snapshot = this.agentStepContextBuilder.build(
 			{
 				kind: "agent",
@@ -3216,8 +3245,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			{ handler: this.api },
 		)
 
+		this.currentAgentStep?.releaseRequest?.()
 		this.currentAgentStep = {
 			snapshot,
+			getRequest: () => {
+				if (!capturedRequest) throw new Error("The captured provider request has been released.")
+				return structuredClone(capturedRequest)
+			},
+			releaseRequest: () => {
+				capturedRequest = undefined
+			},
 			turnId,
 			stepId: `${turnId}:step-${this.agentTurnStep}`,
 			requestId,
@@ -9114,6 +9151,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	): ApiStream {
 		const stepInterruptionSignal = options.interruptionSignal
 		this.throwIfStepInterrupted(stepInterruptionSignal)
+		const retainedStep =
+			options.retryCategory === "transport" || options.retryCategory === "rate-limit"
+				? this.currentAgentStep
+				: undefined
+		const retainedRequest = retainedStep?.getRequest()
 		const state = options.state ?? (await this.providerRef.deref()?.getState())
 		this.throwIfStepInterrupted(stepInterruptionSignal)
 
@@ -9124,7 +9166,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			autoCondenseContextPercent = 100,
 			profileThresholds = {},
 		} = state ?? {}
-		const mode = await this.getTaskMode()
+		const mode = retainedStep?.snapshot.context.mode.slug ?? (await this.getTaskMode())
 		const apiConfiguration = this.apiConfiguration
 
 		// Get condensing configuration for automatic triggers.
@@ -9134,11 +9176,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await this.maybeWaitForProviderRateLimit(retryAttempt, state, stepInterruptionSignal)
 		}
 		this.throwIfStepInterrupted(stepInterruptionSignal)
-		const systemPrompt = await this.getSystemPrompt(state)
+		const systemPrompt = retainedRequest?.systemPrompt ?? (await this.getSystemPrompt(state))
 		this.throwIfStepInterrupted(stepInterruptionSignal)
 		const { contextTokens } = this.getTokenUsage()
 
-		if (contextTokens) {
+		// A retained transport attempt must not compact or reinterpret a different
+		// live transcript under the old logical identity. Recovery captures a new step.
+		if (contextTokens && !retainedStep) {
 			const modelInfo = this.api.getModel().info
 
 			const maxTokens = getModelMaxOutputTokens({
@@ -9324,13 +9368,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Get the effective API history by filtering out condensed messages
 		// This allows non-destructive condensing where messages are tagged but not deleted,
 		// enabling accurate rewind operations while still sending condensed history to the API.
-		const effectiveHistory = getEffectiveApiHistory(this.apiConversationHistory)
-		const messagesSinceLastSummary = getMessagesSinceLastSummary(effectiveHistory)
-		// For API only: merge consecutive user messages (excludes summary messages per
-		// mergeConsecutiveApiMessages implementation) without mutating stored history.
-		const mergedForApi = mergeConsecutiveApiMessages(messagesSinceLastSummary, { roles: ["user"] })
-		const messagesWithoutImages = maybeRemoveImageBlocks(mergedForApi, this.api)
-		const cleanConversationHistory = this.buildCleanConversationHistory(messagesWithoutImages as ApiMessage[])
+		let cleanConversationHistory: ReturnType<Task["buildCleanConversationHistory"]>
+		if (retainedRequest) {
+			cleanConversationHistory = retainedRequest.messages
+		} else {
+			const effectiveHistory = getEffectiveApiHistory(this.apiConversationHistory)
+			const messagesSinceLastSummary = getMessagesSinceLastSummary(effectiveHistory)
+			// For API only: merge consecutive user messages without mutating stored history.
+			const mergedForApi = mergeConsecutiveApiMessages(messagesSinceLastSummary, { roles: ["user"] })
+			const messagesWithoutImages = maybeRemoveImageBlocks(mergedForApi, this.api)
+			cleanConversationHistory = this.buildCleanConversationHistory(messagesWithoutImages as ApiMessage[])
+		}
 
 		// Check auto-approval limits
 		const approvalResult = await this.autoApprovalHandler.checkAutoApprovalLimits(
@@ -9401,6 +9449,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		const shouldIncludeTools = allTools.length > 0
 		this.throwIfStepInterrupted(stepInterruptionSignal)
+		const requestHandler = retainedStep ? retainedStep.snapshot.runtime.getHandler() : this.api
+		if (!requestHandler) {
+			throw new Error("A captured provider handler is required to retry an agent step.")
+		}
 
 		const metadata: ApiHandlerCreateMessageMetadata = {
 			mode: mode,
@@ -9428,18 +9480,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const abortSignal = requestController.signal
 		this.currentRequestSignal = abortSignal
 		this.currentTaskToolSurface = taskToolSurface
-		const requestId = this.currentAgentStep?.requestId ?? crypto.randomUUID()
+		const requestId = retainedStep?.requestId ?? crypto.randomUUID()
 		const attemptId = crypto.randomUUID()
 		const requestTimeoutMs = getApiRequestTimeout()
-		// Reset the flag after using it
-		this.skipPrevResponseIdOnce = false
-		const requestMetadata: ApiHandlerCreateMessageMetadata = {
-			...metadata,
+		// A retry reuses its original suppression decision; a newly requested reset
+		// belongs to the next logical step and must not be consumed here.
+		if (!retainedStep) this.skipPrevResponseIdOnce = false
+		const attemptMetadata = {
 			requestId,
 			attemptId,
 			signal: abortSignal,
 			...(requestTimeoutMs !== undefined ? { deadline: Date.now() + requestTimeoutMs } : {}),
-			...(this.api.streamCapabilities ? { streamCapabilities: this.api.streamCapabilities } : {}),
+			...(requestHandler.streamCapabilities ? { streamCapabilities: requestHandler.streamCapabilities } : {}),
 		}
 		const step = this.captureAgentStep(
 			retryAttempt,
@@ -9447,11 +9499,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			cleanConversationHistory as Anthropic.Messages.MessageParam[],
 			allTools,
 			allowedFunctionNames,
-			requestMetadata,
+			{ ...metadata, ...attemptMetadata },
 			mode,
 			modelInfo,
 			taskToolSurface,
+			retainedStep,
 		)
+		const request = retainedRequest ?? step.getRequest()
+		const requestMetadata: ApiHandlerCreateMessageMetadata = { ...request.metadata, ...attemptMetadata }
 		await this.ensureCanonicalLifecycleStepStarted(step)
 		await this.publishCanonicalLifecyclePhase("working")
 		await this.appendAgentTurnEvent(
@@ -9472,12 +9527,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			throw new Error("Request cancelled by user")
 		}
 
-		// The provider accepts reasoning items alongside standard messages; cast to the expected parameter type.
-		const stream = this.api.createMessage(
-			systemPrompt,
-			cleanConversationHistory as unknown as Anthropic.Messages.MessageParam[],
-			requestMetadata,
-		)
+		const stream = requestHandler.createMessage(request.systemPrompt, request.messages, requestMetadata)
 		const iterator = stream[Symbol.asyncIterator]()
 
 		// Set up abort handling. Ownership is explicit because an old request can
@@ -9525,7 +9575,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			const firstChunk = await withApiRequestTimeout(
 				Promise.race([firstChunkPromise, abortPromise]),
-				`API response stream for ${this.api.getModel().id}`,
+				`API response stream for ${step.snapshot.context.provider.modelId}`,
 				getApiRequestTimeout(),
 				() => requestController.abort(),
 			)
@@ -9564,6 +9614,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				while (true) {
 					const category = this.retryCategoryForError(compatibilityError, retryMetadata.retryCategory)
+					// Context/empty-response recovery needs a new logical boundary owned
+					// by the caller, not another replay of this retained wire request.
+					if (category !== "transport" && category !== "rate-limit") break
 					const decision = this.agentRetryPolicy.decide({
 						category,
 						attempt: compatibilityAttempt,
@@ -9581,14 +9634,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.currentRequestAbortController = compatibilityController
 					this.currentRequestSignal = compatibilityController.signal
 					const compatibilityAttemptId = crypto.randomUUID()
+					const compatibilityRequest = step.getRequest()
 					const compatibilityMetadata: ApiHandlerCreateMessageMetadata = {
-						...requestMetadata,
+						...compatibilityRequest.metadata,
 						attemptId: compatibilityAttemptId,
 						signal: compatibilityController.signal,
 						...(requestTimeoutMs !== undefined ? { deadline: Date.now() + requestTimeoutMs } : {}),
+						...(requestHandler.streamCapabilities
+							? { streamCapabilities: requestHandler.streamCapabilities }
+							: {}),
 					}
 					this.captureAgentStep(
-						compatibilityAttempt - 1,
+						compatibilityAttempt,
 						systemPrompt,
 						cleanConversationHistory as Anthropic.Messages.MessageParam[],
 						allTools,
@@ -9597,25 +9654,28 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						mode,
 						modelInfo,
 						taskToolSurface,
+						step,
 					)
 
 					try {
-						const compatibilityStream = this.api.createMessage(
-							systemPrompt,
-							cleanConversationHistory as unknown as Anthropic.Messages.MessageParam[],
+						const compatibilityStream = requestHandler.createMessage(
+							compatibilityRequest.systemPrompt,
+							compatibilityRequest.messages,
 							compatibilityMetadata,
 						)
 						const compatibilityIterator = compatibilityStream[Symbol.asyncIterator]()
 						this.isWaitingForFirstChunk = true
 						const compatibilityFirstChunk = await withApiRequestTimeout(
 							compatibilityIterator.next(),
-							`API response stream for ${this.api.getModel().id}`,
+							`API response stream for ${step.snapshot.context.provider.modelId}`,
 							requestTimeoutMs,
 							() => compatibilityController.abort(),
 						)
 						if (compatibilityFirstChunk.done) {
-							compatibilityError = new Error("Provider returned an empty response")
-							continue
+							throw Object.assign(new Error("Provider returned an empty response"), {
+								firstChunkFailure: true,
+								retryCategory: "empty-response",
+							})
 						}
 						this.isWaitingForFirstChunk = false
 						yield compatibilityFirstChunk.value
@@ -9635,6 +9695,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 					compatibilityAttempt = decision.nextAttempt
 				}
+				throw compatibilityError
 			}
 			throw retryError
 		}
