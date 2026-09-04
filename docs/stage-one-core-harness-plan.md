@@ -191,6 +191,13 @@ core/agent/__tests__ core/assistant-message/__tests__ core/tools/__tests__ core/
   `Task.ask` intentionally reserves queued input for the next turn. This routing also predates Stage 1. A bounded UI
   correction must prioritize the current complete, unanswered follow-up without draining next-turn messages or bypassing
   the host/API path. Host timeouts and acceptance assertions remain unchanged.
+- The reply correction uses the latest semantic input boundary (ask, provider request, or user response), not delayed
+  waiting metadata. This admits fast answers and answers with queued next-turn work, while rejecting stale/answered/
+  partial questions and preserving explicit Queue and approval paths. The first candidate's waiting-state guard failed
+  six additional lagged-metadata regressions and could re-answer two stale-question cases; the revised implementation
+  passes all 94 ChatView tests, including 21 new reply and control cases. The broader chat run passed all 484 tests in
+  39 files (42.73 seconds); repository typecheck passed all 13 tasks and webview lint/format checks passed. Final host
+  gates remain pending.
 - Out of scope: later-stage tickets and protected CLI/shim surfaces.
 
 Tickets remain In Progress until their acceptance criteria and integration evidence are reviewed. Finishing a child task

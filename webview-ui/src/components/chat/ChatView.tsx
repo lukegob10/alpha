@@ -983,11 +983,30 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				return
 			}
 
+			const currentInputBoundary =
+				clineAskRef.current === "followup"
+					? messagesRef.current.findLast(
+							(message) =>
+								message.type === "ask" ||
+								(message.type === "say" &&
+									(message.say === "api_req_started" || message.say === "user_feedback")),
+						)
+					: undefined
+			const isCurrentFollowUpResponse =
+				currentInputBoundary?.ask === "followup" &&
+				currentInputBoundary.partial !== true &&
+				currentInputBoundary.isAnswered !== true
+
+			// A follow-up answer unblocks the current turn, which remains active while
+			// waiting. Existing queued instructions belong to later turns, not this ask.
+			// Waiting metadata can lag the complete ask; use conversation boundaries
+			// instead so an immediate reply works without re-answering a stale question.
 			const shouldQueueMessage =
-				isTurnActive ||
-				visibleMessageQueue.length > 0 ||
-				clineAskRef.current === "command_output" ||
-				(clineAskRef.current !== undefined && approvalAskTypes.has(clineAskRef.current))
+				!isCurrentFollowUpResponse &&
+				(isTurnActive ||
+					visibleMessageQueue.length > 0 ||
+					clineAskRef.current === "command_output" ||
+					(clineAskRef.current !== undefined && approvalAskTypes.has(clineAskRef.current)))
 
 			if (shouldQueueMessage) {
 				postQueuedMessage(text, images)

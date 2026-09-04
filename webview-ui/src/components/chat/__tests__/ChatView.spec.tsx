@@ -1308,6 +1308,253 @@ describe("ChatView - Message Queueing Tests", () => {
 		vi.mocked(vscode.postMessage).mockClear()
 	})
 
+	describe("active follow-up replies", () => {
+		const queuedMessages = [
+			{ id: "first", text: "First next-turn instruction", images: [] },
+			{ id: "second", text: "Second next-turn instruction", images: [] },
+		]
+		const followUp: ClineMessage = {
+			type: "ask",
+			ask: "followup",
+			ts: 101,
+			text: JSON.stringify({ question: "Choose an answer", suggest: [] }),
+			partial: false,
+			isAnswered: false,
+		}
+		const taskMessage: ClineMessage = { type: "say", say: "task", ts: 100, text: "Test follow-up" }
+		const waitingTask = {
+			id: "task-with-followup",
+			status: "interactive",
+			lifecycle: "waiting",
+			isActive: true,
+			isStreaming: false,
+			isTurnActive: true,
+			canInterrupt: false,
+			isWaitingForInput: true,
+			waitingReason: "followup",
+			lastUpdatedAt: 101,
+			queueCount: queuedMessages.length,
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+		}
+		const waitingState = {
+			currentTaskId: waitingTask.id,
+			currentView: { type: "task", taskId: waitingTask.id },
+			liveTasksById: { [waitingTask.id]: waitingTask },
+			clineMessages: [taskMessage, followUp],
+			messageQueue: queuedMessages,
+		}
+
+		it.each(
+			[
+				{ method: "keyboard", hasQueuedWork: false },
+				{ method: "keyboard", hasQueuedWork: true },
+				{ method: "invoke", hasQueuedWork: false },
+				{ method: "invoke", hasQueuedWork: true },
+				{ method: "suggestion", hasQueuedWork: true },
+			].flatMap((testCase) => [true, false].map((isWaitingForInput) => ({ ...testCase, isWaitingForInput }))),
+		)(
+			"answers the current follow-up via $method with queued work=$hasQueuedWork and waiting metadata=$isWaitingForInput",
+			async ({ method, hasQueuedWork, isWaitingForInput }) => {
+				const { getByTestId, queryByTestId } = renderChatView()
+				mockPostMessage({
+					...waitingState,
+					liveTasksById: {
+						[waitingTask.id]: {
+							...waitingTask,
+							status: isWaitingForInput ? "interactive" : "running",
+							lifecycle: isWaitingForInput ? "waiting" : "running",
+							isWaitingForInput,
+							lastUpdatedAt: followUp.ts + 10,
+							queueCount: hasQueuedWork ? 2 : 0,
+						},
+					},
+					messageQueue: hasQueuedWork ? queuedMessages : [],
+				})
+				const suggestion = await waitFor(() => getByTestId("copy-mode-suggestion"))
+				const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+				expect(input).toHaveAttribute("data-sending-disabled", "false")
+				expect(input).toHaveAttribute("data-is-streaming", String(!isWaitingForInput))
+				const queuedText = queryByTestId("queued-messages")?.textContent
+				const images = method === "suggestion" ? [] : ["data:image/png;base64,answer-image"]
+				const text = method === "suggestion" ? "Draft plan" : "Use the first option"
+				vi.mocked(vscode.postMessage).mockClear()
+
+				if (method === "invoke") {
+					await act(async () => {
+						window.dispatchEvent(
+							new MessageEvent("message", {
+								data: { type: "invoke", invoke: "sendMessage", text, images },
+							}),
+						)
+					})
+				} else if (method === "suggestion") {
+					fireEvent.click(suggestion)
+				} else {
+					await act(async () => {
+						window.dispatchEvent(new MessageEvent("message", { data: { type: "selectedImages", images } }))
+					})
+					fireEvent.change(input, { target: { value: text } })
+					fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+				}
+
+				const submissions = vi
+					.mocked(vscode.postMessage)
+					.mock.calls.map(([message]) => message)
+					.filter((message) => ["askResponse", "queueMessage", "newTask"].includes(message.type))
+				expect(submissions).toEqual([
+					{ type: "askResponse", askResponse: "messageResponse", text, images, taskId: waitingTask.id },
+				])
+				expect(queryByTestId("queued-messages")?.textContent).toBe(queuedText)
+				expect(input).toHaveValue("")
+			},
+		)
+
+		it.each([true, false])(
+			"answers a current follow-up after a status message with waiting metadata=%s",
+			async (isWaitingForInput) => {
+				const { getByTestId, getByText } = renderChatView()
+				mockPostMessage(waitingState)
+				await waitFor(() => getByTestId("copy-mode-suggestion"))
+				mockPostMessage({
+					...waitingState,
+					liveTasksById: { [waitingTask.id]: { ...waitingTask, isWaitingForInput, lastUpdatedAt: 103 } },
+					clineMessages: [
+						...waitingState.clineMessages,
+						{ type: "say", say: "text", ts: 102, text: "Still awaiting your answer" },
+					],
+				})
+				await waitFor(() => getByText(/Still awaiting your answer/))
+				vi.mocked(vscode.postMessage).mockClear()
+
+				await act(async () => {
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: { type: "invoke", invoke: "sendMessage", text: "My answer" },
+						}),
+					)
+				})
+
+				expect(vscode.postMessage).toHaveBeenCalledWith({
+					type: "askResponse",
+					askResponse: "messageResponse",
+					text: "My answer",
+					images: [],
+					taskId: waitingTask.id,
+				})
+				expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
+			},
+		)
+
+		it.each([
+			{ boundary: "partial follow-up", currentAsk: { ...followUp, partial: true }, isWaitingForInput: true },
+			{ boundary: "answered follow-up", currentAsk: { ...followUp, isAnswered: true }, isWaitingForInput: true },
+			...(["tool", "command", "use_mcp_server", "command_output"] as const).map((ask) => ({
+				boundary: ask,
+				currentAsk: { ...followUp, ts: 102, ask, text: "{}" },
+				isWaitingForInput: true,
+			})),
+		])("preserves queue routing at $boundary", async ({ currentAsk, isWaitingForInput }) => {
+			const { getByTestId, getAllByTestId, getByRole } = renderChatView()
+			mockPostMessage(waitingState)
+			await waitFor(() => getByTestId("copy-mode-suggestion"))
+			mockPostMessage({
+				...waitingState,
+				liveTasksById: { [waitingTask.id]: { ...waitingTask, isWaitingForInput } },
+				clineMessages: [waitingState.clineMessages[0], currentAsk],
+			})
+			await waitFor(() => {
+				if (currentAsk.ask === "command_output") {
+					expect(getByRole("button", { name: "chat:proceedWhileRunning.title" })).toBeInTheDocument()
+				} else {
+					expect(getAllByTestId("chat-row").at(-1)).toHaveTextContent(JSON.stringify(currentAsk))
+				}
+				expect(getByTestId("chat-textarea").querySelector("input")).toHaveAttribute(
+					"data-is-streaming",
+					String(!isWaitingForInput),
+				)
+			})
+			vi.mocked(vscode.postMessage).mockClear()
+
+			await act(async () => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: { type: "invoke", invoke: "sendMessage", text: "Next instruction" },
+					}),
+				)
+			})
+
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "queueMessage",
+				text: "Next instruction",
+				images: [],
+				taskId: waitingTask.id,
+				requestId: expect.any(String),
+			})
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "askResponse" }))
+		})
+
+		it.each(["api_req_started", "user_feedback"])(
+			"does not re-answer a stale follow-up after a newer %s boundary",
+			async (say) => {
+				const { getByTestId, getByText } = renderChatView()
+				mockPostMessage(waitingState)
+				await waitFor(() => getByTestId("copy-mode-suggestion"))
+				// A batched refresh can skip rendering the intermediate request/response
+				// boundary, while both the old ask and waiting metadata remain visible.
+				mockPostMessage({
+					...waitingState,
+					clineMessages: [
+						...waitingState.clineMessages,
+						{ type: "say", say, ts: 102, text: "{}" },
+						{ type: "say", say: "text", ts: 103, text: "Continued after the previous question" },
+					],
+				})
+				await waitFor(() => getByText(/Continued after the previous question/))
+				vi.mocked(vscode.postMessage).mockClear()
+
+				await act(async () => {
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: { type: "invoke", invoke: "sendMessage", text: "Next instruction" },
+						}),
+					)
+				})
+
+				expect(vscode.postMessage).toHaveBeenCalledWith({
+					type: "queueMessage",
+					text: "Next instruction",
+					images: [],
+					taskId: waitingTask.id,
+					requestId: expect.any(String),
+				})
+				expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "askResponse" }))
+			},
+		)
+
+		it("keeps explicit Queue as next-turn work while a follow-up waits", async () => {
+			const { getByTestId } = renderChatView()
+			mockPostMessage(waitingState)
+			await waitFor(() => getByTestId("copy-mode-suggestion"))
+			const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+			vi.mocked(vscode.postMessage).mockClear()
+
+			fireEvent.change(input, { target: { value: "Save this for the next turn" } })
+			fireEvent.click(getByTestId("mock-enqueue"))
+
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "queueMessage",
+				text: "Save this for the next turn",
+				images: [],
+				taskId: waitingTask.id,
+				requestId: expect.any(String),
+			})
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "askResponse" }))
+			expect(input).toHaveValue("Save this for the next turn")
+		})
+	})
+
 	it("uses live task metadata when a turn is active before an API transcript marker exists", async () => {
 		const { getByTestId } = renderChatView()
 

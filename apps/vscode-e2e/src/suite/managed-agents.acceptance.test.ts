@@ -8,6 +8,7 @@ import {
 	managedAgentTreeProjectionSchema,
 	RooCodeEventName,
 	type ClineMessage,
+	type LiveTaskMetadata,
 	type ManagedAgentTreeProjection,
 	type RooCodeAPI,
 	type RooCodeSettings,
@@ -300,6 +301,7 @@ class ManagedAgentScriptedAI {
 interface ManagedAgentHostProvider {
 	getStateToPostToWebview(): Promise<{
 		currentTaskId?: string
+		liveTasksById?: Record<string, LiveTaskMetadata>
 		managedAgentTree?: ManagedAgentTreeProjection
 	}>
 	getSubagentChangeSetActionCapability(
@@ -669,11 +671,15 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				timeout: 60_000,
 				interval: 50,
 				description: "root completion prompt after answering its follow-up",
-				onTimeout: async () => ({
-					currentTaskId: (await provider.getStateToPostToWebview()).currentTaskId,
-					webviewReady: api.isReady(),
-					...getTaskDiagnostics(provider, rootTaskId!),
-				}),
+				onTimeout: async () => {
+					const state = await provider.getStateToPostToWebview()
+					return {
+						currentTaskId: state.currentTaskId,
+						liveTask: state.liveTasksById?.[rootTaskId!],
+						webviewReady: api.isReady(),
+						...getTaskDiagnostics(provider, rootTaskId!),
+					}
+				},
 			})
 			await waitFor(
 				() =>
