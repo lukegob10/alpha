@@ -266,4 +266,19 @@ The focused post-fix run passed 229 tests across ChatView (101 tests) and four a
 typecheck, focused ESLint, and touched-file formatting passed. Repository-wide `pnpm check-types` then passed all
 13 tasks (11 cached; 25.802 s), followed by `pnpm lint` passing all 12 tasks (10 cached; 19.13 s). The complete webview
 suite (`pnpm --dir webview-ui exec vitest run --maxWorkers=2 --retry=0`) passed all 150 files: 1,554 tests passed,
-two skipped, in 161.65 s. Rebuilt exact-host checks are being rerun for 2.1.20 and will be recorded before publication.
+two skipped, in 161.65 s. The rebuilt `pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` passed again for 2.1.20:
+extension (two tests), modes (two tests), and VS Code LM contracts (four tests, 17 s), all on exact VS Code 1.122.1;
+all three host processes exited zero. This command also passed `pnpm bundle` and rebuilt the production webview.
+The subsequent `pnpm --filter @alpha-code/vscode-e2e test:managed-agents:run` used that rebuilt bundle on VS Code
+1.122.1 and passed the nested Apply/discard/verification/projection/navigation scenario in 22.697 s; the host exited zero.
+The kernel and managed-agent contracts did not change after the earlier full deterministic certification.
+
+The corrective source is committed as `63c3c0a945782ad24693df0f4da6afe2cc863c1c`. `pnpm vsix` passed (five tasks,
+four cached; 18.504 s), then explicit `vsce package --no-dependencies --pre-release` produced
+`bin/alpha-2.1.20-prerelease.vsix`. Both normal and prerelease archives passed the contents verifier with 1,783 entries
+and no `.env` files. The actual packaged JSON/XML confirm 2.1.20, `AlphaInc.alpha`, `engines.vscode: ^1.122.1`, and
+the prerelease flag. The local prerelease is 82,940,618 bytes with SHA-256
+`741b70742ec2a1761c81afe7bc6726baa4fe4606a92b2ed68a5d1a80124800f3`.
+The final documentation checkpoint is the publication candidate; GitHub publication and its independently built
+artifact remain subject to separate verification and will be recorded in NOR-29. No local extension installation,
+Marketplace publication, existing artifact overwrite, or localization repair is part of this correction.
