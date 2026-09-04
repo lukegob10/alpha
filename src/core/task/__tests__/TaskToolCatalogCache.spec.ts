@@ -14,6 +14,7 @@ import { ToolScheduler, type ToolExecutionHost } from "../../agent/ToolScheduler
 import { createToolPolicySnapshot } from "../../agent/ToolPolicy"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import type { TaskToolSurface } from "../../tools/TaskToolSurface"
+import { getEffectiveApiHistory } from "../../condense"
 import { useMcpToolTool } from "../../tools/UseMcpToolTool"
 import { McpHub } from "../../../services/mcp/McpHub"
 import type { Task } from "../Task"
@@ -590,6 +591,43 @@ describe("TaskToolCatalogCache", () => {
 		})
 		expect(independent.isCallable(target)).toBe(false)
 	})
+
+	it.each(["success", "error", "cancelled"] as const)(
+		"restores only successful %s discovery from a compacted prefix after restart",
+		async (status) => {
+			const { options } = fixture()
+			const initial = await capture(options)
+			const history = await discover(initial)
+			const content = history[1].content
+			if (!Array.isArray(content) || content[0].type !== "tool_result") {
+				throw new Error("Discovery fixture must contain a structured result")
+			}
+			if (status === "error") content[0].is_error = true
+			if (status === "cancelled") content[0].content = JSON.stringify({ status: "cancelled" })
+			const storedHistory: ApiMessage[] = [
+				...history.map((message) => ({ ...message, condenseParent: "archived-discovery" })),
+				{
+					role: "user",
+					content: "Older work was summarized; continue with the recent evidence.",
+					isSummary: true,
+					condenseId: "archived-discovery",
+				},
+				{ role: "assistant", content: "Recent investigation" },
+				{ role: "user", content: "Continue without redoing discovery" },
+			]
+			expect(getEffectiveApiHistory(storedHistory)).toEqual(storedHistory.slice(2))
+
+			const reloaded = await capture({
+				...options,
+				catalogCache: new TaskToolCatalogCache(),
+				discoveryHistory: structuredClone(storedHistory),
+			})
+
+			expect(reloaded.isCallable(target)).toBe(status === "success")
+			// Selection restores visibility only; the MCP effect still requires approval.
+			expect(reloaded.registry.resolve(target)?.capabilities.requiresApproval).toBe(true)
+		},
+	)
 
 	it.each([
 		"unpaired",

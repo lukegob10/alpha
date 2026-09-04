@@ -1896,38 +1896,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async refreshEnvironmentContext(state?: TaskRequestState, signal?: AbortSignal): Promise<void> {
 		if (!this.environmentContext.needsFullSnapshot) return
 		const capture = await captureEnvironmentDetails(this, true, state, { context: this.environmentContext, signal })
-		let previous: ApiMessage | undefined
-		for (let index = this.apiConversationHistory.length - 1; index >= 0; index--) {
-			const message = this.apiConversationHistory[index]
-			if (message.role === "user" && !message.truncationParent) {
-				previous = message
-				break
-			}
-		}
-		if (!previous) {
-			await this.persistUserContentWithEnvironment([{ type: "text", text: capture.details }], capture, signal)
-			return
-		}
-		const content = Array.isArray(previous.content)
-			? previous.content
-			: [{ type: "text" as const, text: previous.content }]
-		const replacement: ApiMessage = { ...previous, content: [...content, { type: "text", text: capture.details }] }
-		let persisted = false
-		try {
-			this.throwIfStepInterrupted(signal)
-			const index = this.apiConversationHistory.indexOf(previous)
-			if (index < 0) throw new Error("Environment context changed before it could be committed")
-			this.apiConversationHistory[index] = replacement
-			persisted = await this.saveApiConversationHistory()
-			if (!persisted) throw new Error("Unable to persist refreshed environment context before continuing")
-			capture.commit()
-		} finally {
-			if (!persisted) {
-				const index = this.apiConversationHistory.indexOf(replacement)
-				if (index >= 0) this.apiConversationHistory[index] = previous
-			}
-			capture.release()
-		}
+		// A separate boundary preserves the exact retained user/tool-result records.
+		// Consecutive user messages are merged only in the provider request projection.
+		await this.persistUserContentWithEnvironment([{ type: "text", text: capture.details }], capture, signal)
 	}
 
 	private async restoreRemovedApiUserMessage(removedUserMessage: ApiMessage | undefined): Promise<boolean> {
@@ -1985,6 +1956,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	async overwriteApiConversationHistory(newHistory: ApiMessage[]): Promise<boolean> {
 		this.apiConversationHistory = newHistory
+		// Rewind/recovery may remove the acknowledged baseline. Invalidate when the
+		// in-memory view changes, even if persistence fails and keeps it for retry.
+		this.environmentContext.reset()
 		return this.saveApiConversationHistory()
 	}
 

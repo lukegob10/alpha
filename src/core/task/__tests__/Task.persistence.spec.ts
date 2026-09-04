@@ -454,7 +454,7 @@ describe("Task persistence", () => {
 			expect(task.apiConversationHistory.at(-1)?.content).toEqual(content)
 		})
 
-		it("preserves acknowledged events while appending a reset baseline, and rolls back a failed refresh", async () => {
+		it("preserves the exact retained message when adding a baseline, and rolls back a failed refresh", async () => {
 			const { task, internal, capture } = createEnvironmentTask()
 			const previous = {
 				role: "user" as const,
@@ -464,17 +464,87 @@ describe("Task persistence", () => {
 			task.apiConversationHistory = [previous]
 			vi.mocked(captureEnvironmentDetails).mockResolvedValueOnce(capture)
 			const save = vi.spyOn(internal, "saveApiConversationHistory").mockResolvedValue(false)
-			await expect(internal.refreshEnvironmentContext()).rejects.toThrow("Unable to persist refreshed")
+			vi.spyOn(task, "retrySaveApiConversationHistory").mockResolvedValue(false)
+			await expect(internal.refreshEnvironmentContext()).rejects.toThrow("persist")
 			expect(task.apiConversationHistory[0]).toBe(previous)
+			expect(task.apiConversationHistory).toHaveLength(1)
 			expect(capture.commit).not.toHaveBeenCalled()
 			vi.mocked(captureEnvironmentDetails).mockResolvedValueOnce(capture)
 			save.mockResolvedValue(true)
 			await internal.refreshEnvironmentContext()
 			expect(capture.commit).toHaveBeenCalledOnce()
-			expect(task.apiConversationHistory[0].content).toEqual([
-				...previous.content,
-				{ type: "text", text: capture.details },
-			])
+			expect(task.apiConversationHistory[0]).toBe(previous)
+			expect(task.apiConversationHistory[0].content).toEqual(previous.content)
+			expect(task.apiConversationHistory).toHaveLength(2)
+			expect(task.apiConversationHistory[1]).toMatchObject({
+				role: "user",
+				content: [{ type: "text", text: capture.details }],
+			})
+		})
+
+		it("requires a full environment snapshot after same-instance rewind removes its baseline", async () => {
+			const { task, internal } = createEnvironmentTask()
+			const fields = [{ name: "Workspace", value: "original workspace facts" }]
+			const baseline = internal.environmentContext.prepare("same-task", fields, "", [])
+			baseline.commit()
+			task.apiConversationHistory = [
+				{ role: "user", content: "original task", ts: 1 },
+				{ role: "assistant", content: "investigation", ts: 2 },
+				{ role: "user", content: baseline.details, ts: 3 },
+			]
+			task.clineMessages = [
+				{ type: "say", say: "text", text: "original task", ts: 1 },
+				{ type: "say", say: "user_feedback", text: "edit this turn", ts: 3 },
+			]
+			vi.spyOn(internal, "saveApiConversationHistory").mockResolvedValue(true)
+			expect(internal.environmentContext.prepare("same-task", fields, "", []).details).toBe("")
+
+			await task.messageManager.rewindToTimestamp(3, { skipCleanup: true })
+
+			expect(task.apiConversationHistory.map((message) => message.ts)).toEqual([1, 2])
+			const nextCapture = internal.environmentContext.prepare("same-task", fields, "", [])
+			expect(nextCapture.details).toContain("# Environment Snapshot")
+			expect(nextCapture.details).toContain("original workspace facts")
+			nextCapture.release()
+		})
+
+		it.each([true, false])("invalidates rewritten history before its save settles (saved: %s)", async (saved) => {
+			const { task, internal } = createEnvironmentTask()
+			const fields = [{ name: "Workspace", value: "original facts" }]
+			const cursor = { terminalId: 7, processIndex: 2 }
+			internal.environmentContext.prepare("same-task", fields, "", [], [], cursor).commit()
+			const staleCapture = internal.environmentContext.prepare("same-task", fields, "", [])
+			const rewritten = [{ role: "user" as const, content: "rewound task", ts: 1 }]
+			let finishSave!: (value: boolean) => void
+			vi.spyOn(internal, "saveApiConversationHistory").mockImplementation(
+				() => new Promise<boolean>((resolve) => (finishSave = resolve)),
+			)
+
+			const rewriting = task.overwriteApiConversationHistory(rewritten)
+			expect(internal.environmentContext.needsFullSnapshot).toBe(true)
+			staleCapture.commit()
+			expect(internal.environmentContext.needsFullSnapshot).toBe(true)
+			expect(internal.environmentContext.terminalOutputCursor).toEqual(cursor)
+			finishSave(saved)
+			await expect(rewriting).resolves.toBe(saved)
+			expect(task.apiConversationHistory).toBe(rewritten)
+			expect(internal.environmentContext.prepare("same-task", fields, "", []).details).toContain(
+				"# Environment Snapshot",
+			)
+		})
+
+		it("retains the full-snapshot requirement when a rewritten history save rejects", async () => {
+			const { task, internal } = createEnvironmentTask()
+			const fields = [{ name: "Workspace", value: "original facts" }]
+			internal.environmentContext.prepare("same-task", fields, "", []).commit()
+			vi.spyOn(internal, "saveApiConversationHistory").mockRejectedValue(new Error("save failed"))
+
+			await expect(task.overwriteApiConversationHistory([])).rejects.toThrow("save failed")
+
+			expect(task.apiConversationHistory).toEqual([])
+			expect(internal.environmentContext.prepare("same-task", fields, "", []).details).toContain(
+				"# Environment Snapshot",
+			)
 		})
 	})
 

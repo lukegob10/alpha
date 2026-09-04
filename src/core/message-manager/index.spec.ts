@@ -775,6 +775,74 @@ describe("MessageManager", () => {
 			expect(apiCall[1].role).toBe("assistant")
 		})
 
+		it("should ignore a future-dated Summary when selecting the race-condition cutoff", async () => {
+			mockTask.clineMessages = [
+				{ ts: 50, say: "user", text: "Initial request" },
+				{ ts: 100, say: "user_feedback", text: "Feedback" },
+			]
+
+			// NOR24 can insert the new summary before the verbatim original tail and
+			// give it a timestamp newer than every original message.
+			mockTask.apiConversationHistory = [
+				{ ts: 50, role: "user", content: [{ type: "text", text: "Initial request" }] },
+				{ ts: 201, role: "user", content: "Summary", isSummary: true, condenseId: "summary-1" },
+				{
+					ts: 150,
+					role: "assistant",
+					content: [{ type: "tool_use", id: "tool_1", name: "attempt_completion", input: {} }],
+				},
+				{
+					ts: 200,
+					role: "user",
+					content: [{ type: "tool_result", tool_use_id: "tool_1", content: "Feedback" }],
+				},
+			]
+
+			await manager.rewindToTimestamp(100)
+
+			// The UI cutoff has no exact API timestamp. The original user tail is the
+			// boundary; preserve the preceding assistant/tool-call context only.
+			const apiCall = mockTask.overwriteApiConversationHistory.mock.calls[0][0]
+			expect(apiCall.map((message: any) => message.ts)).toEqual([50, 150])
+			expect(apiCall.some((message: any) => message.isSummary)).toBe(false)
+		})
+
+		it("should ignore a future-dated truncation marker when selecting the race-condition cutoff", async () => {
+			mockTask.clineMessages = [
+				{ ts: 50, say: "user", text: "Initial request" },
+				{ ts: 100, say: "user_feedback", text: "Feedback" },
+			]
+
+			// Truncation markers may also be user-role entries. Model the same
+			// future-dated synthetic entry before the original assistant/user tail.
+			mockTask.apiConversationHistory = [
+				{ ts: 50, role: "user", content: [{ type: "text", text: "Initial request" }] },
+				{
+					ts: 201,
+					role: "user",
+					content: "[Sliding window truncation]",
+					isTruncationMarker: true,
+					truncationId: "truncation-1",
+				},
+				{
+					ts: 150,
+					role: "assistant",
+					content: [{ type: "tool_use", id: "tool_1", name: "attempt_completion", input: {} }],
+				},
+				{
+					ts: 200,
+					role: "user",
+					content: [{ type: "tool_result", tool_use_id: "tool_1", content: "Feedback" }],
+				},
+			]
+
+			await manager.rewindToTimestamp(100)
+
+			const apiCall = mockTask.overwriteApiConversationHistory.mock.calls[0][0]
+			expect(apiCall.map((message: any) => message.ts)).toEqual([50, 150])
+			expect(apiCall.some((message: any) => message.isTruncationMarker)).toBe(false)
+		})
+
 		it("should handle normal case where timestamps are properly ordered", async () => {
 			// Normal case: clineMessage timestamp aligns with API message timestamp
 			mockTask.clineMessages = [
