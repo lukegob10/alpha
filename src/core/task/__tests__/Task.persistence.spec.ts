@@ -573,15 +573,25 @@ describe("Task persistence", () => {
 					}
 					Object.assign(task, { providerRef: { deref: () => lifecycleProvider } })
 					await (task as any).beginCanonicalLifecycleTurn()
-					const step = { stepId: "barrier-step" }
-					Object.assign(task, { currentAgentStep: step })
+					const surface = createTaskToolSurface({ registry: new ToolRegistry(), mode: "code" })
+					// Capture the same provider/runtime boundary used by production persistence.
+					const step = (task as any).captureAgentStep(
+						0,
+						"Barrier persistence fixture",
+						[],
+						surface.schemas,
+						undefined,
+						{ taskId: task.taskId },
+						"code",
+						task.api.getModel().info,
+						surface,
+					)
 					await (task as any).ensureCanonicalLifecycleStepStarted(step)
 					const calls = [
 						{ type: "tool_call" as const, id: "read", name: "read_file", arguments: {} },
 						{ type: "tool_call" as const, id: "barrier", name: barrier, arguments: {} },
 					]
 					const response = createAgentResponse(calls)
-					const surface = createTaskToolSurface({ registry: new ToolRegistry(), mode: "code" })
 					const error = getToolBatchIsolationError(
 						surface.registry,
 						calls.map((call) => call.name),

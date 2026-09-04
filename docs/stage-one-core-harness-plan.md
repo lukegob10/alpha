@@ -146,9 +146,14 @@ coverage; it must not be reported as passed.
 
 ## Closure ledger
 
-- In progress: three implementation tasks with agreed interface plans, plus the orchestrator-owned retry consistency fix.
-- Verified: combined pre-change focused, lint, typecheck, and exact-host baselines above; independent integration-risk audit.
-- Pending: implementation commits, code review, performance evidence, combined regression/lint/typecheck, exact-host gate.
+- Integrated: retry consistency `787fa8c`; NOR-30 `cee6d5c` from reviewed source commit
+  `d49f38f075b80b0709b553fde23bcc47209d7745`.
+- In progress: NOR-27 and NOR-28 implementation and independent integration review.
+- Verified: combined pre-change baselines above; exact NOR-30 commit cleared by independent Sol Max review; 251 combined
+  retry/presenter/scheduler/Task/persistence tests and extension typecheck passed after integration. The persistence
+  fixture now captures a real step rather than fabricating an incomplete `{ stepId }` object.
+- Pending: remaining implementation commits, performance evidence review, combined regression/lint/typecheck,
+  managed-agent certification, and exact-host gate.
 - Out of scope: later-stage tickets and protected CLI/shim surfaces.
 
 Tickets remain In Progress until their acceptance criteria and integration evidence are reviewed. Finishing a child task
