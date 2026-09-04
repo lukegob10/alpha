@@ -137,6 +137,9 @@ describe("runSlashCommandTool", () => {
 Description: Skill-generated command
 Provided arguments: target flow
 Source: project
+Skill file: /mock/.alpha/skills/skill-only/SKILL.md
+Base directory: /mock/.alpha/skills/skill-only
+Resolve relative file references against this directory unless the skill explicitly specifies another base. Use absolute paths in file tools; do not guess a workspace-relative skills/ path.
 
 --- Skill Instructions ---
 

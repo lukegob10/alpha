@@ -1,3 +1,5 @@
+import path from "path"
+
 import type { SkillContent } from "../../shared/skills"
 
 export interface SkillLookup {
@@ -16,7 +18,7 @@ export async function resolveSkillContentForMode(
 	return skillsManager.getSkillContent(skillName, currentMode)
 }
 
-type SkillContentForFormatting = Pick<SkillContent, "source" | "description" | "instructions">
+type SkillContentForFormatting = Pick<SkillContent, "source" | "description" | "path" | "instructions">
 
 export function buildSkillApprovalMessage(
 	skillName: string,
@@ -48,6 +50,13 @@ export function buildSkillResult(
 	}
 
 	result += `\nSource: ${skillContent.source}`
+	// Keep the selected location (including mode overrides and symlinks) rather than reconstructing it from the name.
+	const skillPath = skillContent.path
+	const pathApi = path.win32.isAbsolute(skillPath) && !path.posix.isAbsolute(skillPath) ? path.win32 : path.posix
+	result += `\nSkill file: ${skillPath}`
+	result += `\nBase directory: ${pathApi.dirname(skillPath)}`
+	result +=
+		"\nResolve relative file references against this directory unless the skill explicitly specifies another base. Use absolute paths in file tools; do not guess a workspace-relative skills/ path."
 	result += `\n\n--- Skill Instructions ---\n\n${skillContent.instructions}`
 
 	return result

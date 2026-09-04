@@ -185,6 +185,8 @@ describe("Command Mentions", () => {
 			expect(result.slashCommandHelp).toContain("Skill: skill-only")
 			expect(result.slashCommandHelp).toContain("Description: Skill-generated command")
 			expect(result.slashCommandHelp).toContain("Source: project")
+			expect(result.slashCommandHelp).toContain("Skill file: /mock/.alpha/skills/skill-only/SKILL.md")
+			expect(result.slashCommandHelp).toContain("Base directory: /mock/.alpha/skills/skill-only")
 			expect(result.slashCommandHelp).toContain("--- Skill Instructions ---")
 			expect(result.slashCommandHelp).toContain("Use skill workflow")
 		})

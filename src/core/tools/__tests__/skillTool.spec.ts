@@ -115,6 +115,7 @@ describe("skillTool", () => {
 		const mockSkillContent = {
 			name: "create-mcp-server",
 			description: "Instructions for creating MCP servers",
+			path: "/home/user/.alpha/skills/create-mcp-server/SKILL.md",
 			source: "global",
 			instructions: "Step 1: Create the server...",
 		}
@@ -138,6 +139,9 @@ describe("skillTool", () => {
 			`Skill: create-mcp-server
 Description: Instructions for creating MCP servers
 Source: global
+Skill file: /home/user/.alpha/skills/create-mcp-server/SKILL.md
+Base directory: /home/user/.alpha/skills/create-mcp-server
+Resolve relative file references against this directory unless the skill explicitly specifies another base. Use absolute paths in file tools; do not guess a workspace-relative skills/ path.
 
 --- Skill Instructions ---
 
@@ -160,6 +164,7 @@ Step 1: Create the server...`,
 		const mockSkillContent = {
 			name: "create-mcp-server",
 			description: "Instructions for creating MCP servers",
+			path: "/home/user/.alpha/skills/create-mcp-server/SKILL.md",
 			source: "global",
 			instructions: "Step 1: Create the server...",
 		}
@@ -173,6 +178,9 @@ Step 1: Create the server...`,
 Description: Instructions for creating MCP servers
 Provided arguments: weather API server
 Source: global
+Skill file: /home/user/.alpha/skills/create-mcp-server/SKILL.md
+Base directory: /home/user/.alpha/skills/create-mcp-server
+Resolve relative file references against this directory unless the skill explicitly specifies another base. Use absolute paths in file tools; do not guess a workspace-relative skills/ path.
 
 --- Skill Instructions ---
 
@@ -194,6 +202,7 @@ Step 1: Create the server...`,
 		mockSkillsManager.getSkillContent.mockResolvedValue({
 			name: "create-mcp-server",
 			description: "Test",
+			path: "/home/user/.alpha/skills/create-mcp-server/SKILL.md",
 			source: "global",
 			instructions: "Test instructions",
 		})
@@ -266,6 +275,7 @@ Step 1: Create the server...`,
 		const mockSkillContent = {
 			name: "create-mcp-server",
 			description: "Test",
+			path: "/home/user/.alpha/skills/create-mcp-server/SKILL.md",
 			source: "global",
 			instructions: "Test instructions",
 		}
@@ -315,6 +325,7 @@ Step 1: Create the server...`,
 		const mockSkillContent = {
 			name: "my-project-skill",
 			description: "A custom project skill",
+			path: "/project/.agents/skills/my-project-skill/SKILL.md",
 			source: "project",
 			instructions: "Follow these project-specific instructions...",
 		}
@@ -338,6 +349,9 @@ Step 1: Create the server...`,
 			`Skill: my-project-skill
 Description: A custom project skill
 Source: project
+Skill file: /project/.agents/skills/my-project-skill/SKILL.md
+Base directory: /project/.agents/skills/my-project-skill
+Resolve relative file references against this directory unless the skill explicitly specifies another base. Use absolute paths in file tools; do not guess a workspace-relative skills/ path.
 
 --- Skill Instructions ---
 
@@ -379,6 +393,9 @@ Follow these project-specific instructions...`,
 
 		expect(mockCallbacks.askApproval).toHaveBeenCalledOnce()
 		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining(instructions))
+		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(
+			expect.stringContaining(`Skill file: ${inherited.path}`),
+		)
 	})
 
 	it.each([
@@ -466,6 +483,9 @@ Follow these project-specific instructions...`,
 		expect(mockSkillsManager.getSkillContentByPath).toHaveBeenCalledWith(inherited.name, inherited.path)
 		expect(mockSkillsManager.getSkillContent).not.toHaveBeenCalled()
 		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining(capturedInstructions))
+		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(
+			expect.stringContaining("Base directory: F:/workspace/.alpha/skills-architect/design-review"),
+		)
 		expect(mockCallbacks.pushToolResult).not.toHaveBeenCalledWith(
 			expect.stringContaining("Wrong code-mode instructions"),
 		)

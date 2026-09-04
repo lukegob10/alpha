@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.21
+
+### Patch Changes
+
+- Include the exact skill file and base directory when loading skills, including slash commands and inherited mode-specific skills, so linked references can be resolved without guessing a workspace-relative path.
+- Clarify skill-relative file handling while preserving file-read approvals, ignore rules, and the selected skill's instructions.
+
 ## 2.1.20
 
 ### Patch Changes
