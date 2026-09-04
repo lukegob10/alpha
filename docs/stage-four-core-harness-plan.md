@@ -93,6 +93,35 @@ passed, while three intended regressions failed. Equal-size legacy-only in-place
 old fence, and a second serial tool executed after tampering. Passing controls cover opaque metadata/result reload,
 sidecar failure after the legacy write, stale replacement instances, and termination joining late result producers.
 The initial focused test took 541 ms (10.42 seconds including setup); this is regression evidence, not a speed metric.
+Stricter finalization added an eighth abort-cleanup case and explicit typed flush-failure assertions. The expanded
+unchanged-code run has three passing controls and five expected failures; all eight pass in the owner's v2 worktree.
+
+The accepted real Stage 3 performance baseline uses frozen benchmark blob
+`03a9d2ebb1cba9030a3cb221c496eb0c48c46f5f`, with one warmup and three measured repetitions per workload on Windows,
+Node 20.19.2. Three calibration tests cover all active SHA-256 work through both import styles and Buffer/chunk updates,
+instrumentation restoration, and missing-sample handling. Earlier provisional runs with incomplete counters are excluded.
+The long fixture has 36 growing snapshots ending at 108 messages / 756,135 legacy bytes. Mean flush/fence latencies are
+57.898448 / 11.062681 ms; serialized/read/written/hash-input bytes are 292,224,824 / 55,973,991 / 27,980,721 / 97,154,122.
+These are fixture measurements, including instrumentation overhead, not a general responsiveness guarantee.
+
+### Recovery review refinements
+
+The final integration fixture adds exact preservation of the detected external transcript bytes after error-result
+persistence, malformed/missing v2-authority reload refusal, and stale Claude fallback refusal (eleven cases total).
+All eleven passed in the implementation worktree. Detected conflicts use recovery-only
+`api_conversation_history.json.conflict_<digest>.json` evidence, with a four-file cap and no automatic deletion/rotation.
+Preservation verifies bounded-copy bytes and file identity, syncs the evidence, and still rejects the original effect.
+The review reproduced Windows `EPERM` from syncing a read-only handle; existing evidence now uses a nontruncating
+writable handle when verifying durability. Failed capture blocks subsequent legacy writes, including queued work.
+
+Fallback migration now admits only a legacy-compatible sidecar under the sidecar lock, rechecks primary-file absence
+inside the legacy lock, and uses the guarded strict writer. Missing v2 authority cannot silently migrate an older
+`claude_messages.json`; read/admission failure preserves both files and fails the Task's finalization boundary.
+
+An unresolved capture failure is intentionally not cleared by ordinary save retries. After safeguarding evidence,
+operators may need to restore permissions/capacity or a valid legacy snapshot, restart the host, and reopen the task.
+No claim is made that the current failed Task's UI guarantees automatic recapture. A crash after an external effect but
+before its result is durably written remains ambiguous; recovery must not rerun it automatically or invent success.
 
 Required gates before publication:
 
@@ -123,8 +152,24 @@ missing-version checks without executing publication. Publish only the validated
 fast-forward-safe operation; never force-push or overwrite an existing published artifact. Confirm the published
 release is marked prerelease and its version, commit, VSIX name, and downloadable artifact match the intended build.
 
+## Accepted benchmark outcome
+
+The matching implementation run uses the same frozen fixture, runtime, warmup and three measured samples per workload.
+Raw samples and counter calibration are retained in `docs/nor-29-benchmark-baseline.json`,
+`docs/nor-29-benchmark-incremental.json`, and the full interpretation in `docs/nor-29-implementation.md`.
+Long-history mean save latency decreased from 57.898 to 34.065 ms, effect fences from 11.063 to 5.752 ms, and bytes
+written per repetition from 27,980,721 to 13,995,626. These are approximately 41%, 48%, and 50% reductions respectively.
+The implementation still writes complete legacy snapshots; only the sidecar is an incremental metadata receipt.
+
+Short fences increased from 2.381 to 3.393 ms. The unchanged-save short control increased from 16.459 to 20.168 ms per
+save and 2.604 to 3.805 ms per fence. Stronger real-authority verification and explicit legacy sync remain enabled;
+there is no claim of universal speedup or meaningful event-loop p99 improvement. Logical saves are counted, not fsync
+syscalls. Earlier incomplete-hash measurements are excluded from all conclusions.
+
 ## Closure ledger
 
 - In progress: NOR-29 production implementation, independent integration tests, measured optimization, and release gates.
-- Not yet verified: post-change performance, full combined tests, exact-host compatibility, and published artifact.
+- Verified in the implementation worktree: 20 focused files / 192 tests passed, one opt-in benchmark skipped; the
+  separate calibrated benchmark passed all four cases. Source typecheck passed. Root integration gates remain pending.
+- Not yet verified: full combined tests, exact-host compatibility, and published artifact.
 - Out of scope: CLI/shim, Marketplace/stable release, installation, dependency upgrades, and unrelated architecture work.

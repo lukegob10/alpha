@@ -16,7 +16,7 @@ import { createTaskToolSurface, type TaskToolSurface } from "../../tools/TaskToo
 import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 import { readApiMessages, type ApiMessage } from "../apiMessages"
-import { ProviderTranscriptStore } from "../ProviderTranscriptStore"
+import { ProviderTranscriptStore, ProviderTranscriptStoreError } from "../ProviderTranscriptStore"
 
 const TASK_ID = "stage-four-transcript"
 const ORIGINAL_TEXT = "LEGACY-VALUE-A"
@@ -98,6 +98,7 @@ async function createHarness() {
 	const persistenceKey = `${path.resolve(storagePath)}\u0000${TASK_ID}`
 	const ownerGenerations = Reflect.get(Task, "apiConversationHistoryOwnerGenerations") as Map<string, number>
 	const tasks: Task[] = []
+	const expectedDrainFailures = new WeakMap<Task, unknown>()
 	const provider = {}
 
 	const makeTask = () => {
@@ -116,6 +117,7 @@ async function createHarness() {
 			apiConfiguration: { apiProvider: "openai-native", apiModelId: "gpt-4.1" },
 			apiConversationHistory: [],
 			apiConversationHistorySaveQueue: Promise.resolve(),
+			apiConversationHistoryFailureGeneration: 0,
 			apiConversationHistoryPersistenceKey: persistenceKey,
 			apiConversationHistoryOwnerGeneration: generation,
 			providerTranscriptStore: new ProviderTranscriptStore(TASK_ID, storagePath),
@@ -130,6 +132,8 @@ async function createHarness() {
 			commandExecutionEvidence: new Map(),
 			pendingCommandVerification: Promise.resolve(),
 			canonicalLifecycleQueue: Promise.resolve(),
+			streamingPreviewQueue: Promise.resolve(),
+			streamingPreviewEpoch: 0,
 			taskCancellationController: new AbortController(),
 			messageQueueService: new MessageQueueService(),
 			environmentContext: new EnvironmentContext(),
@@ -150,11 +154,41 @@ async function createHarness() {
 		sidecarPath,
 		makeTask,
 		readLegacy: () => readApiMessages({ taskId: TASK_ID, globalStoragePath: storagePath }),
+		async expectFlushFailure(task: Task, code: ProviderTranscriptStoreError["code"] = "write_failed") {
+			const flush = task.flushApiConversationHistoryPersistence()
+			await expect(flush).rejects.toBeInstanceOf(ProviderTranscriptStoreError)
+			await expect(flush).rejects.toMatchObject({ code })
+			const result = await observe(flush)
+			if (result.status !== "rejected") throw new Error("Expected the recorded Task persistence failure")
+			// Only the exact failure asserted by this test may repeat at teardown.
+			// A later, different failure remains an unexpected cleanup failure.
+			expectedDrainFailures.set(task, result.error)
+			return result.error
+		},
 		async dispose() {
-			await Promise.all(tasks.map((task) => task.flushApiConversationHistoryPersistence()))
-			for (const task of tasks) task.messageQueueService.removeAllListeners()
+			const drains = await Promise.allSettled(tasks.map((task) => task.flushApiConversationHistoryPersistence()))
+			const failures: unknown[] = []
+			for (const [index, result] of drains.entries()) {
+				const task = tasks[index]!
+				if (
+					result.status === "rejected" &&
+					(!expectedDrainFailures.has(task) || expectedDrainFailures.get(task) !== result.reason)
+				) {
+					failures.push(result.reason)
+				}
+				try {
+					task.messageQueueService.removeAllListeners()
+				} catch (error) {
+					failures.push(error)
+				}
+			}
 			ownerGenerations.delete(persistenceKey)
-			await fs.rm(directory, { recursive: true, force: true })
+			try {
+				await fs.rm(directory, { recursive: true, force: true })
+			} catch (error) {
+				failures.push(error)
+			}
+			if (failures.length > 0) throw new AggregateError(failures, "Stage Four transcript fixture cleanup failed")
 		},
 	}
 }
@@ -305,6 +339,51 @@ describe("Stage Four real Task transcript persistence", () => {
 		expect((await new ProviderTranscriptStore(TASK_ID, harness.storagePath).read()).messages).toEqual(committed)
 	})
 
+	it.each(["malformed", "missing"] as const)(
+		"rejects a %s v2 authority on reload without replacing it",
+		async (mode) => {
+			const harness = await setup()
+			const task = await seedTask(harness)
+			await persistAssistant(task)
+			const committedSidecar = await fs.readFile(harness.sidecarPath, "utf8")
+			const invalidContents = '{"interrupted":'
+			if (mode === "malformed") await fs.writeFile(harness.legacyPath, invalidContents, "utf8")
+			else await fs.unlink(harness.legacyPath)
+
+			const restarted = harness.makeTask()
+			const failureCode = mode === "malformed" ? "digest_mismatch" : "read_failed"
+			await expect(boundaries(restarted).getSavedApiConversationHistory()).rejects.toMatchObject({
+				code: failureCode,
+			})
+			await harness.expectFlushFailure(restarted, failureCode)
+			expect(await fs.readFile(harness.sidecarPath, "utf8")).toBe(committedSidecar)
+			if (mode === "malformed") expect(await fs.readFile(harness.legacyPath, "utf8")).toBe(invalidContents)
+			else await expect(fs.stat(harness.legacyPath)).rejects.toMatchObject({ code: "ENOENT" })
+		},
+	)
+
+	it("does not migrate a stale Claude fallback over a missing v2 authority", async () => {
+		const harness = await setup()
+		const task = await seedTask(harness)
+		await persistAssistant(task)
+		const committedSidecar = await fs.readFile(harness.sidecarPath, "utf8")
+		const fallbackPath = path.join(path.dirname(harness.legacyPath), "claude_messages.json")
+		const fallbackContents = JSON.stringify([
+			{ role: "user", content: "stale fallback before the committed tool call" },
+		])
+		await fs.writeFile(fallbackPath, fallbackContents, "utf8")
+		await fs.unlink(harness.legacyPath)
+
+		const restarted = harness.makeTask()
+		await expect(boundaries(restarted).getSavedApiConversationHistory()).rejects.toMatchObject({
+			code: "read_failed",
+		})
+		await harness.expectFlushFailure(restarted, "read_failed")
+		expect(await fs.readFile(harness.sidecarPath, "utf8")).toBe(committedSidecar)
+		expect(await fs.readFile(fallbackPath, "utf8")).toBe(fallbackContents)
+		await expect(fs.stat(harness.legacyPath)).rejects.toMatchObject({ code: "ENOENT" })
+	})
+
 	it.each(["in-place", "replacement"] as const)(
 		"rejects an equal-size legacy-only %s edit after warming the receipt",
 		async (mode) => {
@@ -339,6 +418,7 @@ describe("Stage Four real Task transcript persistence", () => {
 		} finally {
 			io.beforeRename = undefined
 		}
+		await harness.expectFlushFailure(task)
 
 		const durableLegacy = await harness.readLegacy()
 		const restarted = harness.makeTask()
@@ -346,6 +426,64 @@ describe("Stage Four real Task transcript persistence", () => {
 		expect((await new ProviderTranscriptStore(TASK_ID, harness.storagePath).read()).messages).toEqual(durableLegacy)
 		expect(await restarted.overwriteApiConversationHistory(durableLegacy)).toBe(true)
 		expect(toolResults(await harness.readLegacy())).toHaveLength(1)
+	})
+
+	it("runs abort cleanup before reporting a real failed transcript commit", async () => {
+		const harness = await setup()
+		const task = await seedTask(harness)
+		await persistAssistant(task)
+		io.beforeRename = async (_source, destination) => {
+			if (String(destination) === harness.sidecarPath) {
+				throw Object.assign(new Error("Injected abort-sidecar failure"), { code: "EIO" })
+			}
+		}
+		try {
+			expect(
+				await task.overwriteApiConversationHistory([
+					...task.apiConversationHistory,
+					{ role: "user", content: "Pending cancellation", ts: 2 },
+				]),
+			).toBe(false)
+		} finally {
+			io.beforeRename = undefined
+		}
+		const failure = await harness.expectFlushFailure(task)
+		const cleanup: string[] = []
+		task.messageQueueService.on("stateChanged", () => undefined)
+		// The Task abort/finalization and transcript drain remain real. This
+		// constructor-free fixture substitutes only resource/UI cleanup endpoints.
+		Reflect.set(
+			task,
+			"stopActiveWorkerCommand",
+			vi.fn(async () => {
+				cleanup.push("stop process")
+			}),
+		)
+		vi.spyOn(task, "dispose").mockImplementation(() => {
+			cleanup.push("dispose")
+			task.messageQueueService.removeAllListeners()
+		})
+		Reflect.set(task, "emitFinalTokenUsageUpdate", vi.fn())
+		Reflect.set(
+			task,
+			"saveClineMessages",
+			vi.fn(async () => {
+				cleanup.push("save UI")
+				return true
+			}),
+		)
+		Reflect.set(
+			task,
+			"flushAgentTurnEvents",
+			vi.fn(async () => undefined),
+		)
+
+		await expect(task.abortTask()).rejects.toBe(failure)
+		await expect(task.waitForTermination()).rejects.toBe(failure)
+		expect(task.abort).toBe(true)
+		expect(cleanup).toEqual(["stop process", "dispose", "save UI"])
+		expect(task.messageQueueService.listenerCount("stateChanged")).toBe(0)
+		expect((await harness.readLegacy()).at(-1)).toMatchObject({ content: "Pending cancellation" })
 	})
 
 	it("drains the old transaction before replacement and rejects a later stale-instance snapshot", async () => {
@@ -448,10 +586,11 @@ describe("Stage Four real Task transcript persistence", () => {
 		const task = await seedTask(harness)
 		const response = await persistAssistant(task, responseWithCalls(2))
 		const executed: string[] = []
+		let conflictingContents: string | undefined
 		const surface = serialReadSurface(async ({ call, callbacks }) => {
 			executed.push(call.id!)
 			callbacks.pushToolResult(`completed:${call.id}`)
-			if (call.id === "read-1") await tamperLegacy(harness, "in-place")
+			if (call.id === "read-1") conflictingContents = await tamperLegacy(harness, "in-place")
 		})
 		const outcome = await boundaries(task).executeCanonicalToolCalls(
 			response,
@@ -461,6 +600,14 @@ describe("Stage Four real Task transcript persistence", () => {
 			new AbortController().signal,
 		)
 		expect(executed).toEqual(["read-1"])
+		const evidenceNames = (await fs.readdir(path.dirname(harness.legacyPath))).filter((name) =>
+			name.startsWith(`${GlobalFileNames.apiConversationHistory}.conflict_`),
+		)
+		expect(evidenceNames).toHaveLength(1)
+		expect(conflictingContents).toContain(EXTERNAL_TEXT)
+		expect(await fs.readFile(path.join(path.dirname(harness.legacyPath), evidenceNames[0]!), "utf8")).toBe(
+			conflictingContents,
+		)
 		expect(outcome).toMatchObject({
 			status: "failed",
 			failure: { kind: "effect_fence", callId: "read-2" },

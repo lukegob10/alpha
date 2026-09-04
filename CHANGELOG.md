@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.1.19
+
+### Patch Changes
+
+- Make assistant-message presentation preview-only so the canonical tool registry and scheduler own execution.
+- Stabilize captured policy-scoped tool catalogs and defer discovery of large MCP tool collections.
+- Reuse bounded task-scoped environment snapshots and deltas while cancelling obsolete request preflight work.
+- Run eligible, automatically approved nonrecursive directory reads in bounded parallel batches, preserving policy checks, cancellation, and ordered results.
+- Retain recent complete working steps during safe context compaction, including tool transactions and opaque provider state.
+- Require current change-scoped verification for applicable edits and bound stagnant completion attempts while preserving ordinary answers and reviews.
+- Replace duplicate full-history sidecar writes with compact durable receipts, fresh authoritative-file integrity checks, bounded persistence queues, and cleanup that still completes after a failed save.
+
 ## 2.1.18
 
 ### Patch Changes
