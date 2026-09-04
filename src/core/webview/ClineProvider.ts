@@ -734,6 +734,8 @@ export class ClineProvider
 		skipDelegationRepair?: boolean
 		taskId?: string
 		requireAbortSuccess?: boolean
+		/** Only the child-owned, already-persisted legacy handoff may defer joining itself. */
+		ownedDelegationHandoff?: boolean
 	}) {
 		const clineStack = this.clineStack ?? []
 		const currentTask = options?.taskId
@@ -743,7 +745,17 @@ export class ClineProvider
 			return
 		}
 
+		const ownedDelegationHandoff = options?.ownedDelegationHandoff === true
+		if (
+			ownedDelegationHandoff &&
+			(currentTask.taskKind !== "primary" ||
+				!options?.skipDelegationRepair ||
+				this.legacyHandoffInputBuffers.get(currentTask.taskId)?.phase !== "committing")
+		) {
+			throw new Error("Only a committing delegated-child handoff may defer its own lifecycle join")
+		}
 		const requiresConfirmedCleanup =
+			ownedDelegationHandoff ||
 			options?.requireAbortSuccess === true ||
 			(currentTask.taskKind === "subagent" && currentTask.subagentRole === "worker")
 		if (requiresConfirmedCleanup) {
@@ -751,7 +763,11 @@ export class ClineProvider
 				// A Worker may own an OS process tree. Keep its live-session handle
 				// registered until cleanup succeeds so a failed termination can be retried.
 				const abortResult = await currentTask.abortTask(true)
-				await awaitTaskCancellationBoundary(currentTask, abortResult)
+				// The child calls the handoff from its own completion loop after its
+				// terminal transcript receipt is durable. Abort/persistence must settle,
+				// but joining that loop here would wait for this method to return.
+				// External cancellation and replacement still join the full boundary.
+				if (!ownedDelegationHandoff) await awaitTaskCancellationBoundary(currentTask, abortResult)
 			} catch (error) {
 				this.log(
 					`[ClineProvider#removeClineFromStack] refusing to remove Worker ${currentTask.taskId}.${currentTask.instanceId} after abortTask() failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -9411,6 +9427,9 @@ export class ClineProvider
 				: this.getCurrentTask()?.taskId === childTaskId
 					? this.getCurrentTask()
 					: undefined
+		if (!liveChild && !isMatchingCommittedRetry) {
+			throw new Error(`Cannot verify a new delegated handoff without live child ${childTaskId}`)
+		}
 		const handoffBuffers: Map<string, LegacyHandoffInputBuffer> = ((this as any).legacyHandoffInputBuffers ??=
 			new Map<string, LegacyHandoffInputBuffer>())
 		if (handoffBuffers.has(childTaskId)) {
@@ -9606,19 +9625,39 @@ export class ClineProvider
 						`[reopenParentFromDelegation] Parent API refresh will recover from disk: ${String(error)}`,
 					)
 				}
-				if (hasPrecommitGuidance()) {
-					throw new Error("Queued user guidance arrived before the delegated child handoff committed")
-				}
+				const commitChildRemoval = async () => {
+					if (liveChild) {
+						const decision = await liveChild.getCompletionGateDecision()
+						if (liveChild.abort || !decision.allowed) {
+							const message = decision.message ?? "Delegated child completion is no longer verified."
+							if (!decision.modelCanResolveRejection) liveChild.suspendAfterCurrentTurn(message)
+							throw new Error(message)
+						}
+					}
+					if (hasPrecommitGuidance()) {
+						throw new Error("Queued user guidance arrived before the delegated child handoff committed")
+					}
 
-				handoff.phase = "committing"
-				if (liveChild) {
-					await this.removeClineFromStack({
-						taskId: childTaskId,
-						skipDelegationRepair: true,
-						requireAbortSuccess: true,
-					})
+					// This final gate and synchronous entry into child abort share the
+					// workspace reservation. No tool mutation can enter between them.
+					handoff.phase = "committing"
+					if (liveChild) {
+						await this.removeClineFromStack({
+							taskId: childTaskId,
+							skipDelegationRepair: true,
+							requireAbortSuccess: true,
+							ownedDelegationHandoff: true,
+						})
+					}
+					childRemoved = true
 				}
-				childRemoved = true
+				if (liveChild) {
+					await this.runWorkspaceMutation(liveChild, "commit delegated child completion", commitChildRemoval)
+				} else {
+					// A matching durable retry repairs the already-accepted parent
+					// result; it does not accept a new completion without a live gate.
+					await commitChildRemoval()
+				}
 			} catch (error) {
 				const rollbackErrors: unknown[] = []
 				if (parentInstance) {

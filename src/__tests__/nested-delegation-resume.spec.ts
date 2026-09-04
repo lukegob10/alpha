@@ -159,6 +159,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 				return true
 			}),
 			getParentCompletionDecision: vi.fn(async () => ({ allowed: true })),
+			runWorkspaceMutation: vi.fn(async (_task: unknown, _label: string, run: () => Promise<unknown>) => run()),
 			removeClineFromStack,
 			createTaskWithHistoryItem,
 			updateTaskHistory,
@@ -189,6 +190,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 			consecutiveMistakeCount: 0,
 			emitFinalTokenUsageUpdate: vi.fn(),
 			finalizeTaskCompletion: vi.fn(),
+			abort: false,
 			getCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
 			messageQueueService: {
 				isEmpty: vi.fn(() => true),
@@ -254,6 +256,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 			consecutiveMistakeCount: 0,
 			emitFinalTokenUsageUpdate: vi.fn(),
 			finalizeTaskCompletion: vi.fn(),
+			abort: false,
 			getCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
 			messageQueueService: {
 				isEmpty: vi.fn(() => true),

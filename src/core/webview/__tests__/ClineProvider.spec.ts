@@ -1008,6 +1008,9 @@ describe("ClineProvider", () => {
 		} as any
 		const liveChild = {
 			taskId: childTaskId,
+			abort: false,
+			getCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
+			suspendAfterCurrentTurn: vi.fn(),
 			messageQueueService: {
 				on: vi.fn(),
 				off: vi.fn(),

@@ -46,6 +46,12 @@ Source was rechecked at the Stage 2 baseline, not assumed from the ticket's olde
 - Shared persisted schemas live in `packages/types`. New readers must remain compatible with existing saved records;
   missing legacy evidence must not be fabricated as fresh evidence.
 
+Primary-source comparison was checked on 2026-09-04 against
+[Pi agent-loop.ts at `6aedd1066e540642165aa30fa7b4a1b863778aa7`](https://github.com/earendil-works/pi/blob/6aedd1066e540642165aa30fa7b4a1b863778aa7/packages/agent/src/agent-loop.ts).
+Its shared loop gathers completed tool results before a turn-level stopping hook and prepares the next turn from an
+explicit completed-turn snapshot. This supports keeping progress/stop decisions at the canonical settled-turn boundary;
+it is not a verification policy to copy, nor proof that Alpha's primary changes have been tested.
+
 ## Implementation and integration contracts
 
 1. Define mutation applicability from task/repository requirements, with a narrow explicit contract. No applicable
@@ -89,6 +95,33 @@ Required completion checks:
 - Final diff inspection, explicit audit exclusions and residual risks, no unrelated or user-authored files in commits.
 
 The orchestrator runs host gates sequentially to avoid competing extension-host test instances.
+
+### Independent regressions established before integration
+
+- Completion fixture: real Task loop/gate/finalizer, engine, scheduler, completion tool and file-backed ledger. The
+  original ten cases reproduced four failures (unbounded text/tool completion claims and obligations arriving during
+  final persistence) with six no-debt/guidance/cancellation controls passing. Primary-obligation and running-command
+  variants extend this to sixteen cases; baseline has ten expected failures and six passing controls.
+- Recovery fixture: real transcript compaction/atomic persistence and file-backed ledger. The no-debt control passes;
+  three primary revision/evidence cases require the owner's new API before integration. The fixture retains the exact
+  recent complete transaction and verifies archived edit records remain available in saved history.
+- Legacy handoff review found a separate completion route after parent staging. Its final child gate and removal must
+  share the existing workspace mutation reservation; rejection must restore the staged parent. The child-owned handoff
+  awaits abort/persistence but cannot join its own calling loop. External cancellation/replacement keeps the full join.
+- Command-result regressions exercise the real scheduler/registry/command tool against controlled terminal callbacks,
+  distinguishing process exit, denial, background execution, and late completion after cancellation.
+
+The orchestrator's legacy handoff fix passed **four files / 147 tests, six skipped** in 14.49 seconds:
+
+```sh
+pnpm --dir src exec vitest run core/webview/__tests__/stageThreeLegacyHandoff.integration.spec.ts __tests__/history-resume-delegation.spec.ts __tests__/nested-delegation-resume.spec.ts core/webview/__tests__/ClineProvider.spec.ts --maxWorkers=2
+```
+
+New handoffs now require the live child; matching already-committed historical retries remain repairable without it.
+The self-join exception is limited to primary children with a committing handoff buffer and delegation repair disabled.
+Existing background-child fixtures now supply an explicit live child/gate rather than silently accepting a missing child.
+
+These are bounded correctness checks, not a claim that the unintegrated implementation already passes them.
 
 ## Closure ledger
 
