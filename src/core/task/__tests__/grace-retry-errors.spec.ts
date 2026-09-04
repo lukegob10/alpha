@@ -166,6 +166,9 @@ vi.mock("../../../integrations/misc/extract-text", () => ({
 
 vi.mock("../../environment/getEnvironmentDetails", () => ({
 	getEnvironmentDetails: vi.fn().mockResolvedValue(""),
+	captureEnvironmentDetails: vi
+		.fn()
+		.mockImplementation(async () => ({ details: "", commit: vi.fn(), release: vi.fn() })),
 }))
 
 vi.mock("../../ignore/RooIgnoreController")

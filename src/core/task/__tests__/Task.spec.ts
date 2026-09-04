@@ -22,6 +22,9 @@ import { createAgentResponse } from "../../agent/AgentResponse"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
 import { ToolRegistry } from "../../tools/ToolRegistry"
 import type { AgentTurnEvent } from "../../agent/AgentTurnEvents"
+import { captureEnvironmentDetails } from "../../environment/getEnvironmentDetails"
+import * as contextManagement from "../../context-management"
+import type { ApiMessage } from "../../task-persistence/apiMessages"
 
 // Mock delay before any imports that might use it
 vi.mock("delay", () => ({
@@ -159,6 +162,9 @@ vi.mock("../../../integrations/misc/extract-text", () => ({
 
 vi.mock("../../environment/getEnvironmentDetails", () => ({
 	getEnvironmentDetails: vi.fn().mockResolvedValue(""),
+	captureEnvironmentDetails: vi
+		.fn()
+		.mockImplementation(async () => ({ details: "", commit: vi.fn(), release: vi.fn() })),
 }))
 
 vi.mock("../../ignore/RooIgnoreController")
@@ -1154,6 +1160,165 @@ describe("Alpha", () => {
 				expect(retry).toHaveBeenCalledOnce()
 				expect(onPersisted).not.toHaveBeenCalled()
 			})
+
+			it.each([
+				{ recovery: "none", manual: false, restore: "ok" },
+				{ recovery: "summary", manual: false, restore: "ok" },
+				{ recovery: "summary", manual: true, restore: "ok" },
+				{ recovery: "truncation", manual: false, restore: "ok" },
+				{ recovery: "truncation", manual: true, restore: "ok" },
+				{ recovery: "summary", manual: false, restore: "failed" },
+				{ recovery: "summary", manual: false, restore: "cancelled" },
+				{ recovery: "summary", manual: false, restore: "steered" },
+			])(
+				"preserves acknowledged context across empty retry ($recovery, manual=$manual, restore=$restore)",
+				async ({ recovery, manual, restore }) => {
+					mockProvider.getState.mockResolvedValue({
+						apiConfiguration: mockApiConfig,
+						autoApprovalEnabled: !manual,
+						mcpEnabled: false,
+					})
+					const task = new Task({
+						provider: mockProvider,
+						apiConfiguration: mockApiConfig,
+						task: "retry environment",
+						startTask: false,
+					})
+					const capture = {
+						details: "<environment_details>terminal A</environment_details>",
+						commit: vi.fn(),
+						release: vi.fn(),
+					}
+					const refreshed = {
+						details: "<environment_details>terminal B</environment_details>",
+						commit: vi.fn(),
+						release: vi.fn(),
+					}
+					vi.mocked(captureEnvironmentDetails).mockResolvedValueOnce(capture)
+					const requests: Anthropic.Messages.MessageParam[][] = []
+					vi.spyOn(task as any, "saveApiConversationHistory").mockImplementation(async () => {
+						if (requests.length === 1 && restore === "cancelled") {
+							;(task as any).stepInterruptionController.abort(new Error("restore cancelled"))
+						}
+						return !(requests.length === 1 && restore === "failed")
+					})
+					vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("fixed system prompt")
+					vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(true)
+					vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+					vi.spyOn(task as any, "maybeWaitForProviderRateLimit").mockResolvedValue(undefined)
+					vi.spyOn(task as any, "waitForRetryDecision").mockImplementation(async () => {
+						if (restore === "steered") {
+							;(task as any).pendingSteerMessage = { text: "new user steer" }
+							throw new Error("steered during retry wait")
+						}
+					})
+					vi.spyOn(task, "say").mockResolvedValue(undefined)
+					vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+					vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+					let compacted = false
+					if (recovery !== "none") {
+						task.apiConversationHistory = [
+							{ role: "user", content: "hidden old user" },
+							{ role: "assistant", content: "hidden old assistant" },
+							{ role: "user", content: "inspect file" },
+							{
+								role: "assistant",
+								content: [
+									{ type: "tool_use", id: "read-1", name: "read_file", input: { path: "file.ts" } },
+								],
+							},
+						]
+						vi.mocked(captureEnvironmentDetails).mockResolvedValueOnce(refreshed)
+						vi.spyOn(task, "getTokenUsage").mockReturnValue({ ...task.getTokenUsage(), contextTokens: 100 })
+						vi.spyOn(task.api, "getModel").mockReturnValue({
+							id: "claude-3-5-sonnet-20241022",
+							info: { contextWindow: 200_000, maxTokens: 8192, supportsPromptCache: false },
+						})
+						vi.spyOn(task as any, "getFilesReadByRooSafely").mockResolvedValue([])
+						vi.spyOn(contextManagement, "willManageContext").mockImplementation(() => !compacted)
+						vi.spyOn(contextManagement, "manageContext").mockImplementation(async ({ messages }) => {
+							if (compacted) return { messages, summary: "", cost: 0, prevContextTokens: 100 }
+							compacted = true
+							const id = "recovery-1"
+							const next: ApiMessage[] =
+								recovery === "summary"
+									? [
+											...messages.map((message) => ({ ...message, condenseParent: id })),
+											{
+												role: "user",
+												content: "compacted summary",
+												isSummary: true,
+												condenseId: id,
+											},
+										]
+									: [
+											...messages
+												.slice(0, 2)
+												.map((message) => ({ ...message, truncationParent: id })),
+											{
+												role: "user",
+												content: "truncated prefix",
+												isTruncationMarker: true,
+												truncationId: id,
+											},
+											...messages.slice(2),
+										]
+							return {
+								messages: next,
+								summary: recovery === "summary" ? "compacted summary" : "",
+								cost: 0,
+								prevContextTokens: 100,
+								...(recovery === "truncation" ? { truncationId: id, messagesRemoved: 2 } : {}),
+							}
+						})
+					}
+					let attempts = 0
+					vi.spyOn(task.api, "createMessage").mockImplementation(async function* (_system, messages) {
+						requests.push(structuredClone(messages))
+						if (recovery !== "none") expect(refreshed.commit).toHaveBeenCalledOnce()
+						if (attempts++ > 0) yield { type: "text", text: "Done." } as ApiStreamChunk
+					})
+					const content: Anthropic.Messages.ContentBlockParam[] =
+						recovery === "none"
+							? [{ type: "text", text: "continue" }]
+							: [{ type: "tool_result", tool_use_id: "read-1", content: "file result" }]
+					const result = await task
+						.recursivelyMakeClineRequests(content, true)
+						.catch((error: Error) => ({ status: "thrown", error }))
+					if (restore === "failed" || restore === "cancelled") {
+						expect(requests).toHaveLength(1)
+						expect(result).not.toMatchObject({ status: "completed" })
+						expect(JSON.stringify(task.apiConversationHistory)).toContain("terminal B")
+						return
+					}
+					expect(result).toMatchObject({ status: "completed" })
+					expect(requests).toHaveLength(2)
+					if (restore === "steered") {
+						const beforeSteer = requests[0][0].content as Anthropic.Messages.ContentBlockParam[]
+						const afterSteer = requests[1][0].content as Anthropic.Messages.ContentBlockParam[]
+						expect(afterSteer.slice(0, beforeSteer.length)).toEqual(beforeSteer)
+						expect(JSON.stringify(requests[1])).toContain("new user steer")
+					} else expect(requests[1]).toEqual(requests[0])
+					const serialized = JSON.stringify(requests[1])
+					expect(serialized.match(recovery === "none" ? /terminal A/g : /terminal B/g)).toHaveLength(1)
+					expect(serialized).not.toContain("hidden old")
+					if (recovery === "summary")
+						expect(task.apiConversationHistory.some((message) => message.isSummary)).toBe(true)
+					if (recovery === "truncation") {
+						const blocks = requests[1].flatMap((message) =>
+							Array.isArray(message.content) ? message.content : [],
+						)
+						expect(blocks.filter((block) => block.type === "tool_use")).toMatchObject([{ id: "read-1" }])
+						expect(blocks.filter((block) => block.type === "tool_result")).toMatchObject([
+							{ tool_use_id: "read-1" },
+						])
+					}
+					expect(captureEnvironmentDetails).toHaveBeenCalledTimes(
+						recovery === "none" ? 1 : restore === "steered" ? 3 : 2,
+					)
+					expect(capture.commit).toHaveBeenCalledOnce()
+				},
+			)
 
 			it("acknowledges a native wait claim only after its matching tool result is durably saved", async () => {
 				const task = new Task({
@@ -3981,6 +4146,7 @@ describe("Queued message processing after condense", () => {
 			startTask: false,
 		})
 		vi.spyOn(task as any, "overwriteApiConversationHistory").mockResolvedValue(true)
+		vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
 
 		// Make condense fast + deterministic
 		vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("system")
@@ -4048,6 +4214,8 @@ describe("Queued message processing after condense", () => {
 		})
 		vi.spyOn(taskA as any, "overwriteApiConversationHistory").mockResolvedValue(true)
 		vi.spyOn(taskB as any, "overwriteApiConversationHistory").mockResolvedValue(true)
+		vi.spyOn(taskA as any, "saveApiConversationHistory").mockResolvedValue(true)
+		vi.spyOn(taskB as any, "saveApiConversationHistory").mockResolvedValue(true)
 
 		vi.spyOn(taskA as any, "getSystemPrompt").mockResolvedValue("system")
 		vi.spyOn(taskB as any, "getSystemPrompt").mockResolvedValue("system")

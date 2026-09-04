@@ -23,6 +23,9 @@ import { createTaskToolSurface } from "../../tools/TaskToolSurface"
 import { createAgentResponse } from "../../agent/AgentResponse"
 import { getToolBatchIsolationError } from "../../agent/ToolScheduler"
 import { formatResponse } from "../../prompts/responses"
+import { captureEnvironmentDetails } from "../../environment/getEnvironmentDetails"
+import { EnvironmentContext, type EnvironmentCapture } from "../../environment/EnvironmentContext"
+import type { Anthropic } from "@anthropic-ai/sdk"
 
 // ─── Hoisted mocks ───────────────────────────────────────────────────────────
 
@@ -223,6 +226,9 @@ vi.mock("../../../integrations/misc/extract-text", () => ({
 
 vi.mock("../../environment/getEnvironmentDetails", () => ({
 	getEnvironmentDetails: vi.fn().mockResolvedValue(""),
+	captureEnvironmentDetails: vi
+		.fn()
+		.mockImplementation(async () => ({ details: "", commit: vi.fn(), release: vi.fn() })),
 }))
 
 vi.mock("../../ignore/RooIgnoreController")
@@ -351,6 +357,126 @@ describe("Task persistence", () => {
 	})
 
 	// ── saveApiConversationHistory (via retrySaveApiConversationHistory) ──
+	describe("environment delivery fence", () => {
+		function createEnvironmentTask() {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "environment",
+				startTask: false,
+			})
+			const internal = task as unknown as {
+				persistUserContentWithEnvironment(
+					content: Anthropic.Messages.ContentBlockParam[],
+					capture: EnvironmentCapture,
+					signal?: AbortSignal,
+				): Promise<void>
+				refreshEnvironmentContext(state?: undefined, signal?: AbortSignal): Promise<void>
+				saveApiConversationHistory(): Promise<boolean>
+				settleAllPersistedWaitAgentResultClaims(): Promise<void>
+				environmentContext: EnvironmentContext
+			}
+			const capture = {
+				details: "<environment_details>A</environment_details>",
+				commit: vi.fn(),
+				release: vi.fn(),
+			}
+			return { task, internal, capture, content: [{ type: "text" as const, text: capture.details }] }
+		}
+
+		it.each([false, true])(
+			"acknowledges a durable event before later mailbox failure (save retry: %s)",
+			async (retry) => {
+				const { task, internal, capture, content } = createEnvironmentTask()
+				const save = vi.spyOn(internal, "saveApiConversationHistory").mockResolvedValue(true)
+				if (retry) save.mockResolvedValueOnce(false)
+				vi.spyOn(internal, "settleAllPersistedWaitAgentResultClaims").mockRejectedValue(
+					new Error("mailbox failed"),
+				)
+				await expect(internal.persistUserContentWithEnvironment(content, capture)).rejects.toThrow(
+					"mailbox failed",
+				)
+				expect(capture.commit).toHaveBeenCalledOnce()
+				expect(task.apiConversationHistory.at(-1)?.content).toEqual(content)
+			},
+		)
+
+		it("rolls back only the staged identity on failed save and leaves events unread", async () => {
+			const { task, internal, capture, content } = createEnvironmentTask()
+			const before = { role: "user" as const, content: "before", ts: 1 }
+			const later = { role: "user" as const, content: "unrelated later message", ts: 3 }
+			task.apiConversationHistory = [before]
+			let finishSave!: (saved: boolean) => void
+			vi.spyOn(internal, "saveApiConversationHistory").mockImplementation(
+				() =>
+					new Promise((resolve) => {
+						finishSave = resolve
+					}),
+			)
+			vi.spyOn(task, "retrySaveApiConversationHistory").mockResolvedValue(false)
+			const saving = internal.persistUserContentWithEnvironment(content, capture)
+			task.apiConversationHistory.push(later)
+			finishSave(false)
+			await expect(saving).rejects.toThrow("Failed to persist")
+			expect(task.apiConversationHistory).toEqual([before, later])
+			expect(capture.commit).not.toHaveBeenCalled()
+			expect(capture.release).toHaveBeenCalledOnce()
+		})
+
+		it("releases a cancelled capture before any save begins", async () => {
+			const { internal, capture, content } = createEnvironmentTask()
+			const save = vi.spyOn(internal, "saveApiConversationHistory")
+			const controller = new AbortController()
+			controller.abort(new Error("cancelled"))
+			await expect(
+				internal.persistUserContentWithEnvironment(content, capture, controller.signal),
+			).rejects.toThrow("cancelled")
+			expect(save).not.toHaveBeenCalled()
+			expect(capture.commit).not.toHaveBeenCalled()
+			expect(capture.release).toHaveBeenCalledOnce()
+		})
+
+		it("acknowledges a save that becomes durable during cancellation", async () => {
+			const { task, internal, capture, content } = createEnvironmentTask()
+			const controller = new AbortController()
+			let finishSave!: (saved: boolean) => void
+			vi.spyOn(internal, "saveApiConversationHistory").mockImplementation(
+				() =>
+					new Promise((resolve) => {
+						finishSave = resolve
+					}),
+			)
+			const saving = internal.persistUserContentWithEnvironment(content, capture, controller.signal)
+			controller.abort()
+			finishSave(true)
+			await saving
+			expect(capture.commit).toHaveBeenCalledOnce()
+			expect(task.apiConversationHistory.at(-1)?.content).toEqual(content)
+		})
+
+		it("preserves acknowledged events while appending a reset baseline, and rolls back a failed refresh", async () => {
+			const { task, internal, capture } = createEnvironmentTask()
+			const previous = {
+				role: "user" as const,
+				content: [{ type: "text" as const, text: "previous terminal output" }],
+				ts: 1,
+			}
+			task.apiConversationHistory = [previous]
+			vi.mocked(captureEnvironmentDetails).mockResolvedValueOnce(capture)
+			const save = vi.spyOn(internal, "saveApiConversationHistory").mockResolvedValue(false)
+			await expect(internal.refreshEnvironmentContext()).rejects.toThrow("Unable to persist refreshed")
+			expect(task.apiConversationHistory[0]).toBe(previous)
+			expect(capture.commit).not.toHaveBeenCalled()
+			vi.mocked(captureEnvironmentDetails).mockResolvedValueOnce(capture)
+			save.mockResolvedValue(true)
+			await internal.refreshEnvironmentContext()
+			expect(capture.commit).toHaveBeenCalledOnce()
+			expect(task.apiConversationHistory[0].content).toEqual([
+				...previous.content,
+				{ type: "text", text: capture.details },
+			])
+		})
+	})
 
 	describe("saveApiConversationHistory", () => {
 		it("returns true on success", async () => {

@@ -174,7 +174,8 @@ import {
 	ProviderTranscriptStoreError,
 	type ProviderTranscriptCommitReceipt,
 } from "../task-persistence/ProviderTranscriptStore"
-import { getEnvironmentDetails } from "../environment/getEnvironmentDetails"
+import { getEnvironmentDetails, captureEnvironmentDetails } from "../environment/getEnvironmentDetails"
+import { EnvironmentContext, type EnvironmentCapture } from "../environment/EnvironmentContext"
 import { checkContextWindowExceededError } from "../context/context-management/context-error-handling"
 import {
 	type CheckpointDiffOptions,
@@ -687,6 +688,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	rooIgnoreController?: RooIgnoreController
 	rooProtectedController?: RooProtectedController
 	fileContextTracker: FileContextTracker
+	private readonly environmentContext = new EnvironmentContext()
 	terminalProcess?: RooTerminalProcess
 
 	// Editing
@@ -1680,7 +1682,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return messages
 	}
 
-	private async addToApiConversationHistory(message: Anthropic.MessageParam, reasoning?: string): Promise<boolean> {
+	private async addToApiConversationHistory(
+		message: Anthropic.MessageParam,
+		reasoning?: string,
+		onPersisted?: () => void,
+	): Promise<boolean> {
 		// Capture the encrypted_content / thought signatures from the provider (e.g., OpenAI Responses API, Google GenAI) if present.
 		// We only persist data reported by the current response body.
 		const responseStep = message.role === "assistant" ? this.currentAgentStep : undefined
@@ -1842,8 +1848,86 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		const saved = await this.saveApiConversationHistory()
-		if (saved) await this.settleAllPersistedWaitAgentResultClaims()
+		if (saved) {
+			// Environment receipts acknowledge the durable history before unrelated
+			// mailbox settlement can fail. This callback is synchronous and idempotent.
+			onPersisted?.()
+			await this.settleAllPersistedWaitAgentResultClaims()
+		}
 		return saved
+	}
+
+	private async persistUserContentWithEnvironment(
+		content: Anthropic.Messages.ContentBlockParam[],
+		capture: EnvironmentCapture | undefined,
+		signal: AbortSignal | undefined,
+		onPersisted?: () => void,
+	): Promise<void> {
+		let persisted = false
+		let stagedMessage: ApiMessage | undefined
+		const acknowledge = () => {
+			if (persisted) return
+			persisted = true
+			onPersisted?.()
+			capture?.commit()
+		}
+		try {
+			this.throwIfStepInterrupted(signal)
+			const previousMessage = this.apiConversationHistory.at(-1)
+			// addToApiConversationHistory stages its user message synchronously before
+			// awaiting the save. Keep that exact identity for rollback, not an index.
+			const save = this.addToApiConversationHistory({ role: "user", content }, undefined, acknowledge)
+			const latest = this.apiConversationHistory.at(-1)
+			if (latest !== previousMessage) stagedMessage = latest
+			if ((await save) || (await this.retrySaveApiConversationHistory(acknowledge, signal))) acknowledge()
+			if (!persisted) throw new Error("Failed to persist the user turn before starting the provider request")
+		} catch (error) {
+			if (!persisted && stagedMessage) {
+				const index = this.apiConversationHistory.indexOf(stagedMessage)
+				if (index >= 0) this.apiConversationHistory.splice(index, 1)
+			}
+			throw error
+		} finally {
+			capture?.release()
+		}
+	}
+
+	/** Add a fresh baseline to the next request without removing already acknowledged transient events. */
+	private async refreshEnvironmentContext(state?: TaskRequestState, signal?: AbortSignal): Promise<void> {
+		if (!this.environmentContext.needsFullSnapshot) return
+		const capture = await captureEnvironmentDetails(this, true, state, { context: this.environmentContext, signal })
+		let previous: ApiMessage | undefined
+		for (let index = this.apiConversationHistory.length - 1; index >= 0; index--) {
+			const message = this.apiConversationHistory[index]
+			if (message.role === "user" && !message.truncationParent) {
+				previous = message
+				break
+			}
+		}
+		if (!previous) {
+			await this.persistUserContentWithEnvironment([{ type: "text", text: capture.details }], capture, signal)
+			return
+		}
+		const content = Array.isArray(previous.content)
+			? previous.content
+			: [{ type: "text" as const, text: previous.content }]
+		const replacement: ApiMessage = { ...previous, content: [...content, { type: "text", text: capture.details }] }
+		let persisted = false
+		try {
+			this.throwIfStepInterrupted(signal)
+			const index = this.apiConversationHistory.indexOf(previous)
+			if (index < 0) throw new Error("Environment context changed before it could be committed")
+			this.apiConversationHistory[index] = replacement
+			persisted = await this.saveApiConversationHistory()
+			if (!persisted) throw new Error("Unable to persist refreshed environment context before continuing")
+			capture.commit()
+		} finally {
+			if (!persisted) {
+				const index = this.apiConversationHistory.indexOf(replacement)
+				if (index >= 0) this.apiConversationHistory[index] = previous
+			}
+			capture.release()
+		}
 	}
 
 	private async restoreRemovedApiUserMessage(removedUserMessage: ApiMessage | undefined): Promise<boolean> {
@@ -1880,7 +1964,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private takeLastApiUserMessageContent(): Anthropic.Messages.ContentBlockParam[] {
 		const lastMessage = this.apiConversationHistory.at(-1)
 
-		if (lastMessage?.role !== "user") {
+		// Steering starts a new user boundary after a summary or truncation marker.
+		// Extracting just its content would erase the metadata that hides old history.
+		if (lastMessage?.role !== "user" || lastMessage.isSummary || lastMessage.isTruncationMarker) {
 			return []
 		}
 
@@ -2369,11 +2455,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * Uses exponential backoff: up to 3 attempts with delays of 100 ms, 500 ms, 1500 ms.
 	 * Used by delegation flow when flushPendingToolResultsToHistory reports failure.
 	 */
-	public async retrySaveApiConversationHistory(): Promise<boolean> {
+	public async retrySaveApiConversationHistory(onPersisted?: () => void, signal?: AbortSignal): Promise<boolean> {
 		const delays = [100, 500, 1500]
 
 		for (let attempt = 0; attempt < delays.length; attempt++) {
-			await new Promise<void>((resolve) => setTimeout(resolve, delays[attempt]))
+			await delayWithAbort(delays[attempt], signal)
 			console.warn(
 				`[Task#${this.taskId}] retrySaveApiConversationHistory: retry attempt ${attempt + 1}/${delays.length}`,
 			)
@@ -2381,6 +2467,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const success = await this.saveApiConversationHistory()
 
 			if (success) {
+				onPersisted?.()
 				await this.settleAllPersistedWaitAgentResultClaims()
 				return true
 			}
@@ -4476,7 +4563,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		pendingResults: PendingSpawnedSubagentResult[]
 	} {
 		return {
-			content: [...content, { type: "text", text: environmentDetails }],
+			content: environmentDetails ? [...content, { type: "text", text: environmentDetails }] : [...content],
 			pendingResults: [],
 		}
 	}
@@ -5204,7 +5291,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				: {}),
 		}
 		// Generate environment details to include in the condensed summary
-		const environmentDetails = await getEnvironmentDetails(this, true, state)
+		const environmentDetails = await getEnvironmentDetails(this, true, state, { signal, includeTransient: false })
 
 		const filesReadByRoo = await this.getFilesReadByRooSafely("condenseContext")
 
@@ -5245,6 +5332,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (!(await this.overwriteApiConversationHistory(messages))) {
 			throw new Error("Unable to persist condensed conversation history before continuing.")
 		}
+		this.environmentContext.reset()
+		await this.refreshEnvironmentContext(state, signal)
 
 		const contextCondense: ContextCondense = {
 			summary,
@@ -6326,42 +6415,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.apiConversationHistory = await this.getSavedApiConversationHistory()
 		}
 
-		// Add environment details to the existing last user message (which contains the tool_result)
-		// This avoids creating a new user message which would cause consecutive user messages
-		const environmentDetails = await getEnvironmentDetails(this, true)
-		let lastUserMsgIndex = -1
-		for (let i = this.apiConversationHistory.length - 1; i >= 0; i--) {
-			if (this.apiConversationHistory[i].role === "user") {
-				lastUserMsgIndex = i
-				break
-			}
-		}
-		if (lastUserMsgIndex >= 0) {
-			const lastUserMsg = this.apiConversationHistory[lastUserMsgIndex]
-			if (Array.isArray(lastUserMsg.content)) {
-				// Remove any existing environment_details blocks before adding fresh ones
-				const contentWithoutEnvDetails = lastUserMsg.content.filter(
-					(block: Anthropic.Messages.ContentBlockParam) => {
-						if (block.type === "text" && typeof block.text === "string") {
-							const isEnvironmentDetailsBlock =
-								block.text.trim().startsWith("<environment_details>") &&
-								block.text.trim().endsWith("</environment_details>")
-							return !isEnvironmentDetailsBlock
-						}
-						return true
-					},
-				)
-				// Add fresh environment details
-				lastUserMsg.content = [...contentWithoutEnvDetails, { type: "text" as const, text: environmentDetails }]
-			}
-		}
-
-		// Save the updated history. A false result is a host durability failure;
-		// continuing would let the provider observe a transcript different from
-		// the one that was just prepared in memory.
-		if (!(await this.saveApiConversationHistory())) {
-			throw new Error("Unable to persist delegated parent history before resuming.")
-		}
+		this.environmentContext.reset()
+		await this.refreshEnvironmentContext(undefined, this.getTaskLifetimeCancellationSignal())
 
 		// Continue task loop - pass empty array to signal no new user content needed
 		// The initiateTaskLoop will handle this by skipping user message addition
@@ -6868,24 +6923,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 				}
 
-				const environmentDetails = await getEnvironmentDetails(this, currentIncludeFileDetails, state)
-
-				// Remove any existing environment_details blocks before adding fresh ones.
-				// This prevents duplicate environment details when resuming tasks,
-				// where the old user message content may already contain environment details from the previous session.
-				// We check for both opening and closing tags to ensure we're matching complete environment detail blocks,
-				// not just mentions of the tag in regular content.
-				const contentWithoutEnvDetails = parsedUserContent.filter((block) => {
-					if (block.type === "text" && typeof block.text === "string") {
-						// Check if this text block is a complete environment_details block
-						// by verifying it starts with the opening tag and ends with the closing tag
-						const isEnvironmentDetailsBlock =
-							block.text.trim().startsWith("<environment_details>") &&
-							block.text.trim().endsWith("</environment_details>")
-						return !isEnvironmentDetailsBlock
-					}
-					return true
-				})
+				// Requeued committed content can contain acknowledged terminal/file events.
+				// Keep those blocks intact; only a new logical step captures fresh events.
 
 				// Add environment details as its own text block, separate from tool
 				// results.
@@ -6902,11 +6941,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						: undefined
 				const claimedTaskIds = automaticResultClaim ? new Set(automaticResultClaim.taskIds) : undefined
 				const { content: finalUserContent, pendingResults: pendingSpawnedSubagentResults } =
-					this.buildUserContentWithPendingSpawnedSubagentResults(
-						contentWithoutEnvDetails,
-						environmentDetails,
-						claimedTaskIds,
-					)
+					this.buildUserContentWithPendingSpawnedSubagentResults(parsedUserContent, "", claimedTaskIds)
 				// Only add user message to conversation history if:
 				// 1. This is the first attempt (retryAttempt === 0), AND
 				// 2. The original userContent was not empty (empty signals delegation resume where
@@ -6919,14 +6954,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (shouldAddUserMessage) {
 					let historyPersisted = false
 					try {
-						historyPersisted = await this.addToApiConversationHistory({
-							role: "user",
-							content: finalUserContent,
-						})
-						if (!historyPersisted) historyPersisted = await this.retrySaveApiConversationHistory()
-						if (!historyPersisted) {
-							throw new Error("Failed to persist the user turn before starting the provider request")
-						}
+						const capture =
+							(currentItem.retryAttempt ?? 0) === 0
+								? await captureEnvironmentDetails(this, currentIncludeFileDetails, state, {
+										context: this.environmentContext,
+										signal: stepInterruptionSignal,
+									})
+								: undefined
+						if (capture?.details) finalUserContent.push({ type: "text", text: capture.details })
+						await this.persistUserContentWithEnvironment(
+							finalUserContent,
+							capture,
+							stepInterruptionSignal,
+							() => {
+								historyPersisted = true
+							},
+						)
 						if (currentItem.steeringPersistence) {
 							await currentItem.steeringPersistence.onPersisted?.()
 							this.steerMessageAwaitingPersistence = false
@@ -8401,13 +8444,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									response: canonicalResponse,
 								}
 							}
+							// Context recovery may have replaced this turn with a summary and
+							// acknowledged new environment events. Preserve its complete saved
+							// message, including summary/truncation metadata, for the retry.
+							await this.restoreRemovedApiUserMessage(removedUserMessage)
+							this.throwIfStepInterrupted(stepInterruptionSignal)
 							stack.push({
-								userContent: currentUserContent,
+								userContent: [],
 								includeFileDetails: false,
 								retryAttempt: (currentItem.retryAttempt ?? 0) + 1,
 								retryCategory: "empty-response",
 								retryAttempts: { ...retryAttempts, "empty-response": emptyDecision.nextAttempt - 1 },
-								userMessageWasRemoved: Boolean(removedUserMessage),
+								userMessageWasRemoved: false,
 							})
 							continue
 						}
@@ -8429,13 +8477,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									attempt: emptyAttempt,
 									reason: emptyResponseError.message,
 								})
+								await this.restoreRemovedApiUserMessage(removedUserMessage)
+								this.throwIfStepInterrupted(stepInterruptionSignal)
 								stack.push({
-									userContent: currentUserContent,
+									userContent: [],
 									includeFileDetails: false,
 									retryAttempt: (currentItem.retryAttempt ?? 0) + 1,
 									retryCategory: "empty-response",
 									retryAttempts: { ...retryAttempts, "empty-response": emptyAttempt },
-									userMessageWasRemoved: Boolean(removedUserMessage),
+									userMessageWasRemoved: false,
 								})
 								continue
 							}
@@ -8815,6 +8865,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private async handleContextWindowExceededError(): Promise<void> {
+		const signal = this.stepInterruptionController?.signal
 		const state = await this.providerRef.deref()?.getState()
 		const { profileThresholds = {} } = state ?? {}
 		const mode = await this.getTaskMode()
@@ -8868,6 +8919,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const metadata: ApiHandlerCreateMessageMetadata = {
 			mode,
 			taskId: this.taskId,
+			...(signal ? { signal } : {}),
 			...(allTools.length > 0
 				? {
 						tools: allTools,
@@ -8879,7 +8931,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		try {
 			// Generate environment details to include in the condensed summary
-			const environmentDetails = await getEnvironmentDetails(this, true, state)
+			const environmentDetails = await getEnvironmentDetails(this, true, state, {
+				signal,
+				includeTransient: false,
+			})
 
 			// Force aggressive truncation by keeping only 75% of the conversation history
 			const truncateResult = await manageContext({
@@ -8898,10 +8953,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				environmentDetails,
 			})
 
+			this.throwIfStepInterrupted(signal)
 			if (truncateResult.messages !== this.apiConversationHistory) {
 				if (!(await this.overwriteApiConversationHistory(truncateResult.messages))) {
 					throw new Error("Unable to persist forced context truncation before continuing.")
 				}
+				this.environmentContext.reset()
+				await this.refreshEnvironmentContext(state, signal)
 			}
 
 			if (truncateResult.summary) {
@@ -9243,7 +9301,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// getEnvironmentDetails(this, true) triggers a recursive workspace listing which
 			// adds overhead - avoid this for the common case where context is below threshold.
 			const contextMgmtEnvironmentDetails = contextManagementWillRun
-				? await getEnvironmentDetails(this, true, state)
+				? await getEnvironmentDetails(this, true, state, {
+						signal: stepInterruptionSignal,
+						includeTransient: false,
+					})
 				: undefined
 
 			// Get files read by Alpha for code folding - only when context management will run
@@ -9280,6 +9341,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					if (!(await this.overwriteApiConversationHistory(truncateResult.messages))) {
 						throw new Error("Unable to persist context recovery before continuing.")
 					}
+					this.environmentContext.reset()
+					await this.refreshEnvironmentContext(state, stepInterruptionSignal)
 				}
 				if (truncateResult.error) {
 					await this.say("condense_context_error", truncateResult.error)

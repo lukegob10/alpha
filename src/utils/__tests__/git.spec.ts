@@ -1036,4 +1036,76 @@ M  src/file1.ts
 		const result = await getGitStatus(cwd)
 		expect(result).toBeNull()
 	})
+
+	it("passes an optional signal through the direct git executable calls", async () => {
+		const controller = new AbortController()
+		const mockOutput = "## main\nM  src/file.ts"
+		const responses = new Map([
+			["git --version", { stdout: "git version 2.39.2", stderr: "" }],
+			["git rev-parse --git-dir", { stdout: ".git", stderr: "" }],
+			["git status --porcelain=v1 --branch", { stdout: mockOutput, stderr: "" }],
+		])
+
+		vitest.mocked(execFile).mockImplementation(((file: string, args: string[], _options: any, callback: any) => {
+			const response = responses.get(renderLegacyGitCommand(file, args))
+			if (!response) {
+				callback(new Error("Unexpected command"))
+				return {} as any
+			}
+			callback(null, response)
+			return {} as any
+		}) as any)
+
+		const result = await getGitStatus(cwd, 20, controller.signal)
+
+		expect(result).toBe(mockOutput)
+		expect(exec).not.toHaveBeenCalled()
+		expect(execFile).toHaveBeenCalledTimes(3)
+		expect(vitest.mocked(execFile).mock.calls[0][0]).toBe("git")
+		expect(vitest.mocked(execFile).mock.calls[0][1]).toEqual(["--version"])
+		expect(vitest.mocked(execFile).mock.calls[0][2]).toEqual({ signal: controller.signal })
+		expect(vitest.mocked(execFile).mock.calls[1][0]).toBe("git")
+		expect(vitest.mocked(execFile).mock.calls[1][1]).toEqual(["rev-parse", "--git-dir"])
+		expect(vitest.mocked(execFile).mock.calls[1][2]).toEqual({ cwd, signal: controller.signal })
+		expect(vitest.mocked(execFile).mock.calls[2][0]).toBe("git")
+		expect(vitest.mocked(execFile).mock.calls[2][1]).toEqual(["status", "--porcelain=v1", "--branch"])
+		expect(vitest.mocked(execFile).mock.calls[2][2]).toEqual({ cwd, signal: controller.signal })
+	})
+
+	it("propagates an already-aborted signal instead of returning null", async () => {
+		const controller = new AbortController()
+		const reason = new Error("git status cancelled before start")
+		controller.abort(reason)
+
+		await expect(getGitStatus(cwd, 20, controller.signal)).rejects.toBe(reason)
+		expect(execFile).not.toHaveBeenCalled()
+		expect(exec).not.toHaveBeenCalled()
+	})
+
+	it("propagates an abort from the status command instead of returning null", async () => {
+		const controller = new AbortController()
+		const reason = new Error("git status cancelled")
+		const responses = new Map([
+			["git --version", { stdout: "git version 2.39.2", stderr: "" }],
+			["git rev-parse --git-dir", { stdout: ".git", stderr: "" }],
+		])
+
+		vitest.mocked(execFile).mockImplementation(((file: string, args: string[], _options: any, callback: any) => {
+			const command = renderLegacyGitCommand(file, args)
+			const response = responses.get(command)
+			if (response) {
+				callback(null, response)
+			} else {
+				controller.abort(reason)
+				callback(reason)
+			}
+			return {} as any
+		}) as any)
+
+		await expect(getGitStatus(cwd, 20, controller.signal)).rejects.toBe(reason)
+		expect(execFile).toHaveBeenCalledTimes(3)
+		expect(vitest.mocked(execFile).mock.calls[2][1]).toEqual(["status", "--porcelain=v1", "--branch"])
+		expect(vitest.mocked(execFile).mock.calls[2][2]).toEqual({ cwd, signal: controller.signal })
+		expect(exec).not.toHaveBeenCalled()
+	})
 })

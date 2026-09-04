@@ -192,11 +192,14 @@ export async function getWorkspaceGitInfo(): Promise<GitRepositoryInfo> {
 	return getGitRepositoryInfo(workspaceRoot)
 }
 
-async function checkGitRepo(cwd: string): Promise<boolean> {
+async function checkGitRepo(cwd: string, signal?: AbortSignal): Promise<boolean> {
 	try {
-		await execAsync("git rev-parse --git-dir", { cwd })
+		signal?.throwIfAborted()
+		if (signal) await execFileAsync("git", ["rev-parse", "--git-dir"], { cwd, signal })
+		else await execAsync("git rev-parse --git-dir", { cwd })
 		return true
 	} catch (error) {
+		signal?.throwIfAborted()
 		return false
 	}
 }
@@ -210,11 +213,14 @@ async function checkGitRepo(cwd: string): Promise<boolean> {
  *   console.log("Git is not installed");
  * }
  */
-export async function checkGitInstalled(): Promise<boolean> {
+export async function checkGitInstalled(signal?: AbortSignal): Promise<boolean> {
 	try {
-		await execAsync("git --version")
+		signal?.throwIfAborted()
+		if (signal) await execFileAsync("git", ["--version"], { signal })
+		else await execAsync("git --version")
 		return true
 	} catch (error) {
+		signal?.throwIfAborted()
 		return false
 	}
 }
@@ -369,20 +375,23 @@ export async function getWorkingState(cwd: string): Promise<string> {
  * @param maxFiles Maximum number of file entries to include (0 = disabled)
  * @returns Git status string or null if not a git repository
  */
-export async function getGitStatus(cwd: string, maxFiles: number = 20): Promise<string | null> {
+export async function getGitStatus(cwd: string, maxFiles: number = 20, signal?: AbortSignal): Promise<string | null> {
 	try {
-		const isInstalled = await checkGitInstalled()
+		const isInstalled = await checkGitInstalled(signal)
 		if (!isInstalled) {
 			return null
 		}
 
-		const isRepo = await checkGitRepo(cwd)
+		const isRepo = await checkGitRepo(cwd, signal)
 		if (!isRepo) {
 			return null
 		}
 
 		// Use porcelain v1 format with branch info
-		const { stdout } = await execAsync("git status --porcelain=v1 --branch", { cwd })
+		signal?.throwIfAborted()
+		const { stdout } = signal
+			? await execFileAsync("git", ["status", "--porcelain=v1", "--branch"], { cwd, signal })
+			: await execAsync("git status --porcelain=v1 --branch", { cwd })
 
 		if (!stdout.trim()) {
 			return null
@@ -409,6 +418,7 @@ export async function getGitStatus(cwd: string, maxFiles: number = 20): Promise<
 
 		return output.join("\n")
 	} catch (error) {
+		signal?.throwIfAborted()
 		console.error("Error getting git status:", error)
 		return null
 	}

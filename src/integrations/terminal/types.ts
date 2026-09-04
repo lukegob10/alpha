@@ -2,6 +2,16 @@ import EventEmitter from "events"
 
 export type RooTerminalProvider = "vscode" | "execa"
 
+export const DEFAULT_TERMINAL_OUTPUT_RECEIPT_MAX_CHARACTERS = 50_000
+/** Maximum cleanup prefix carried into a later receipt's rendered output. */
+export const MAX_TERMINAL_OUTPUT_RECEIPT_CARRY_CHARACTERS = 32
+
+export interface TerminalOutputReceipt {
+	readonly output: string
+	commit(): void
+	release(): void
+}
+
 export interface RooTerminal {
 	provider: RooTerminalProvider
 	id: number
@@ -38,6 +48,12 @@ export interface RooTerminalProcess extends EventEmitter<RooTerminalProcessEvent
 	abort: () => void | Promise<void>
 	hasUnretrievedOutput: () => boolean
 	getUnretrievedOutput: () => string
+	/**
+	 * Captures at most maxCharacters raw characters without consuming them.
+	 * Cleanup may emit up to MAX_TERMINAL_OUTPUT_RECEIPT_CARRY_CHARACTERS
+	 * additional deferred ESC/CSI prefix characters in a later receipt.
+	 */
+	captureUnretrievedOutput(maxCharacters?: number): TerminalOutputReceipt
 	trimRetrievedOutput: () => void
 }
 

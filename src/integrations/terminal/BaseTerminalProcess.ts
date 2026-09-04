@@ -1,6 +1,25 @@
 import { EventEmitter } from "events"
 
-import type { RooTerminalProcess, RooTerminalProcessEvents, ExitCodeDetails } from "./types"
+import type { RooTerminalProcess, RooTerminalProcessEvents, ExitCodeDetails, TerminalOutputReceipt } from "./types"
+import { DEFAULT_TERMINAL_OUTPUT_RECEIPT_MAX_CHARACTERS } from "./types"
+
+type UnretrievedOutputRange = {
+	endIndex: number
+	output: string
+	onCommit?: () => void
+}
+
+type OutputReceiptReservation = {
+	generation: number
+	startIndex: number
+	endIndex: number
+}
+
+const EMPTY_TERMINAL_OUTPUT_RECEIPT: TerminalOutputReceipt = Object.freeze({
+	output: "",
+	commit: () => undefined,
+	release: () => undefined,
+})
 
 export abstract class BaseTerminalProcess extends EventEmitter<RooTerminalProcessEvents> implements RooTerminalProcess {
 	public command: string = ""
@@ -13,6 +32,8 @@ export abstract class BaseTerminalProcess extends EventEmitter<RooTerminalProces
 	protected lastEmitTime_ms: number = 0
 	protected fullOutput: string = ""
 	protected lastRetrievedIndex: number = 0
+	private outputBufferGeneration = 0
+	private activeOutputReceipt?: OutputReceiptReservation
 
 	protected constructor() {
 		super()
@@ -138,11 +159,102 @@ export abstract class BaseTerminalProcess extends EventEmitter<RooTerminalProces
 	abstract hasUnretrievedOutput(): boolean
 
 	/**
-	 * Returns complete lines with their carriage returns.
-	 * The final line may lack a carriage return if the program didn't send one.
-	 * @returns The unretrieved output
+	 * Returns the next provider-specific raw range and its cleaned output without advancing the cursor.
+	 * The range must be no larger than maxCharacters raw characters.
+	 * Cleanup may carry a bounded ESC/CSI prefix into the next range, so the
+	 * rendered output can be slightly larger than the raw range.
+	 * @param includeTrailingOutput Receipts may include a completed final line;
+	 * legacy line consumers keep their existing complete-line behavior.
 	 */
-	abstract getUnretrievedOutput(): string
+	protected abstract getUnretrievedOutputRange(
+		maxCharacters: number,
+		includeTrailingOutput: boolean,
+	): UnretrievedOutputRange
+
+	/**
+	 * Resets provider-specific cleanup state along with the raw output buffer.
+	 */
+	protected onOutputBufferReset(): void {}
+
+	/**
+	 * Captures a bounded output receipt without advancing the unread cursor.
+	 *
+	 * One receipt may reserve a process at a time. A concurrent capture receives
+	 * an empty receipt and can retry after the active receipt is committed or
+	 * released.
+	 */
+	public captureUnretrievedOutput(maxCharacters?: number): TerminalOutputReceipt {
+		const limit = this.normalizeReceiptLimit(maxCharacters)
+
+		if (limit === 0 || this.activeOutputReceipt) {
+			return EMPTY_TERMINAL_OUTPUT_RECEIPT
+		}
+
+		const startIndex = this.clampRetrievedIndex()
+		const range = this.getUnretrievedOutputRange(limit, true)
+		const maxEndIndex = Math.min(this.fullOutput.length, startIndex + limit)
+		const endIndex = Math.min(maxEndIndex, Math.max(startIndex, range.endIndex))
+
+		if (endIndex <= startIndex) {
+			return EMPTY_TERMINAL_OUTPUT_RECEIPT
+		}
+
+		const reservation: OutputReceiptReservation = {
+			generation: this.outputBufferGeneration,
+			startIndex,
+			endIndex,
+		}
+		this.activeOutputReceipt = reservation
+
+		let state: "active" | "committed" | "released" = "active"
+		const finish = (commit: boolean): void => {
+			if (state !== "active") return
+
+			state = commit ? "committed" : "released"
+
+			// Buffer reset/trim or a legacy consumer invalidated this receipt.
+			if (this.activeOutputReceipt !== reservation) return
+			this.activeOutputReceipt = undefined
+
+			if (!commit) return
+			if (this.outputBufferGeneration !== reservation.generation) return
+			if (this.lastRetrievedIndex !== reservation.startIndex) return
+			if (this.fullOutput.length < reservation.endIndex) return
+
+			this.lastRetrievedIndex = reservation.endIndex
+			range.onCommit?.()
+		}
+
+		return Object.freeze({
+			output: range.output,
+			commit: () => finish(true),
+			release: () => finish(false),
+		})
+	}
+
+	/**
+	 * Returns the next provider-specific output and advances the unread cursor.
+	 * Existing listeners use this consuming API; receipts use the range hook above.
+	 */
+	public getUnretrievedOutput(): string {
+		const startIndex = this.clampRetrievedIndex()
+		const range = this.getUnretrievedOutputRange(Number.POSITIVE_INFINITY, false)
+
+		if (range.endIndex <= startIndex) {
+			return range.output
+		}
+
+		this.lastRetrievedIndex = Math.min(this.fullOutput.length, range.endIndex)
+		range.onCommit?.()
+
+		// A legacy consumer took output reserved by a receipt. Do not let a later
+		// receipt commit advance beyond the range that was actually consumed.
+		if (this.activeOutputReceipt && this.lastRetrievedIndex !== this.activeOutputReceipt.startIndex) {
+			this.activeOutputReceipt = undefined
+		}
+
+		return range.output
+	}
 
 	/**
 	 * Clears the internal output buffer when all content has been retrieved.
@@ -155,10 +267,39 @@ export abstract class BaseTerminalProcess extends EventEmitter<RooTerminalProces
 	 * set to `fullOutput.length` to indicate all output has been processed.
 	 */
 	public trimRetrievedOutput(): void {
-		if (this.lastRetrievedIndex >= this.fullOutput.length && this.fullOutput.length > 0) {
-			this.fullOutput = ""
-			this.lastRetrievedIndex = 0
+		if (
+			this.lastRetrievedIndex >= this.fullOutput.length &&
+			(this.fullOutput.length > 0 || this.activeOutputReceipt !== undefined)
+		) {
+			this.resetOutputBuffer()
 		}
+	}
+
+	/**
+	 * Starts a new output buffer. Receipts from the previous buffer become stale
+	 * and cannot consume output written to the new buffer.
+	 */
+	protected resetOutputBuffer(): void {
+		this.fullOutput = ""
+		this.lastRetrievedIndex = 0
+		this.outputBufferGeneration += 1
+		this.activeOutputReceipt = undefined
+		this.onOutputBufferReset()
+	}
+
+	private normalizeReceiptLimit(maxCharacters?: number): number {
+		if (maxCharacters === undefined || Number.isNaN(maxCharacters)) {
+			return DEFAULT_TERMINAL_OUTPUT_RECEIPT_MAX_CHARACTERS
+		}
+
+		if (maxCharacters <= 0) return 0
+		if (!Number.isFinite(maxCharacters)) return DEFAULT_TERMINAL_OUTPUT_RECEIPT_MAX_CHARACTERS
+
+		return Math.floor(maxCharacters)
+	}
+
+	private clampRetrievedIndex(): number {
+		return Math.min(Math.max(0, this.lastRetrievedIndex), this.fullOutput.length)
 	}
 
 	protected startHotTimer(data: string) {

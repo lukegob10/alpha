@@ -7,12 +7,15 @@ import delay from "delay"
 import type { Mock } from "vitest"
 import * as vscode from "vscode"
 
-import { getEnvironmentDetails } from "../getEnvironmentDetails"
+import { getEnvironmentDetails, captureEnvironmentDetails } from "../getEnvironmentDetails"
+import { EnvironmentContext } from "../EnvironmentContext"
 import { isToolAllowedForMode } from "../../tools/validateToolUse"
 import { getApiMetrics } from "../../../shared/getApiMetrics"
 import { listFiles } from "../../../services/glob/list-files"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 import { Terminal } from "../../../integrations/terminal/Terminal"
+import { ExecaTerminalProcess } from "../../../integrations/terminal/ExecaTerminalProcess"
+import type { RooTerminalProcess } from "../../../integrations/terminal/types"
 import { arePathsEqual } from "../../../utils/path"
 import { FileContextTracker } from "../../context-tracking/FileContextTracker"
 import { ApiHandler } from "../../../api/index"
@@ -33,6 +36,7 @@ vi.mock("vscode", () => ({
 	env: {
 		language: "en-US",
 	},
+	workspace: { workspaceFolders: [] },
 }))
 
 vi.mock("p-wait-for", () => ({
@@ -62,6 +66,8 @@ describe("getEnvironmentDetails", () => {
 
 	type MockTerminal = {
 		id: string
+		busy?: boolean
+		process?: unknown
 		getLastCommand: Mock
 		getProcessesWithOutput: Mock
 		cleanCompletedProcessQueue?: Mock
@@ -96,9 +102,10 @@ describe("getEnvironmentDetails", () => {
 		mockCline = {
 			cwd: mockCwd,
 			taskId: mockTaskId,
+			getTaskMode: vi.fn().mockResolvedValue("code"),
 			didEditFile: false,
 			fileContextTracker: {
-				getAndClearRecentlyModifiedFiles: vi.fn().mockReturnValue([]),
+				captureRecentlyModifiedFiles: vi.fn().mockReturnValue({ files: [], commit: vi.fn() }),
 			} as unknown as FileContextTracker,
 			rooIgnoreController: {
 				filterPaths: vi.fn((paths: string[]) => paths.join("\n")),
@@ -202,7 +209,7 @@ describe("getEnvironmentDetails", () => {
 		expect(result).toContain("# Current Workspace Directory")
 		expect(result).toContain("Files")
 
-		expect(listFiles).toHaveBeenCalledWith(mockCwd, true, 50)
+		expect(listFiles).toHaveBeenCalledWith(mockCwd, true, 50, undefined)
 
 		expect(formatResponse.formatFilesList).toHaveBeenCalledWith(
 			mockCwd,
@@ -246,8 +253,15 @@ describe("getEnvironmentDetails", () => {
 		expect(result).toContain("had waited 2 times for 20s total")
 	})
 
-	it("should not include file details when includeFileDetails is false", async () => {
-		await getEnvironmentDetails(mockCline as Task, false)
+	it("does not re-list unchanged workspace facts after committing a baseline", async () => {
+		const context = new EnvironmentContext()
+		const first = await captureEnvironmentDetails(mockCline as Task, true, mockState, { context })
+		first.commit()
+		vi.mocked(listFiles).mockClear()
+		vi.mocked(formatResponse.formatFilesList).mockClear()
+		const next = await captureEnvironmentDetails(mockCline as Task, false, mockState, { context })
+		expect(next.details).toBe("")
+		next.release()
 		expect(listFiles).not.toHaveBeenCalled()
 		expect(formatResponse.formatFilesList).not.toHaveBeenCalled()
 	})
@@ -273,10 +287,10 @@ describe("getEnvironmentDetails", () => {
 	})
 
 	it("should include recently modified files if any", async () => {
-		;(mockCline.fileContextTracker!.getAndClearRecentlyModifiedFiles as Mock).mockReturnValue([
-			"modified1.ts",
-			"modified2.ts",
-		])
+		;(mockCline.fileContextTracker!.captureRecentlyModifiedFiles as Mock).mockReturnValue({
+			files: ["modified1.ts", "modified2.ts"],
+			commit: vi.fn(),
+		})
 
 		const result = await getEnvironmentDetails(mockCline as Task)
 
@@ -301,10 +315,10 @@ describe("getEnvironmentDetails", () => {
 				{ input: new (vscode.TabInputText as any)({ fsPath: privateChangeSet }) },
 			],
 		})
-		;(mockCline.fileContextTracker!.getAndClearRecentlyModifiedFiles as Mock).mockReturnValue([
-			privateChangeSet,
-			"src/recent.ts",
-		])
+		;(mockCline.fileContextTracker!.captureRecentlyModifiedFiles as Mock).mockReturnValue({
+			files: [privateChangeSet, "src/recent.ts"],
+			commit: vi.fn(),
+		})
 
 		const privateActiveTerminal = {
 			id: "private-active",
@@ -341,6 +355,12 @@ describe("getEnvironmentDetails", () => {
 	it("should include active terminal information", async () => {
 		const mockActiveTerminal = {
 			id: "terminal-1",
+			busy: true,
+			process: {
+				command: "npm test",
+				hasUnretrievedOutput: () => true,
+				captureUnretrievedOutput: () => ({ output: "Test output", commit: vi.fn(), release: vi.fn() }),
+			},
 			getLastCommand: vi.fn().mockReturnValue("npm test"),
 			getProcessesWithOutput: vi.fn().mockReturnValue([]),
 			getCurrentWorkingDirectory: vi.fn().mockReturnValue("/test/path/src"),
@@ -351,23 +371,26 @@ describe("getEnvironmentDetails", () => {
 
 		const result = await getEnvironmentDetails(mockCline as Task)
 
-		expect(result).toContain("# Actively Running Terminals")
-		expect(result).toContain("## Terminal terminal-1 (Active)")
-		expect(result).toContain("### Working Directory: `/test/path/src`")
-		expect(result).toContain("### Original command: `npm test`")
+		expect(result).toContain("# Terminals")
+		expect(result).toContain("Terminal terminal-1 (Active)")
+		expect(result).toContain("Working Directory: `/test/path/src`")
+		expect(result).toContain("Original command: `npm test`")
 		expect(result).toContain("Test output")
 
 		mockCline.didEditFile = true
 		await getEnvironmentDetails(mockCline as Task)
-		expect(vi.mocked(delay)).toHaveBeenCalledWith(300)
+		expect(vi.mocked(delay)).not.toHaveBeenCalled()
 
-		expect(vi.mocked(pWaitFor)).toHaveBeenCalled()
+		expect(vi.mocked(pWaitFor)).not.toHaveBeenCalled()
 	})
 
 	it("should include inactive terminals with output", async () => {
 		const mockProcess = {
 			command: "npm build",
-			getUnretrievedOutput: vi.fn().mockReturnValue("Build output"),
+			captureUnretrievedOutput: vi
+				.fn()
+				.mockReturnValue({ output: "Build output", commit: vi.fn(), release: vi.fn() }),
+			hasUnretrievedOutput: () => true,
 		}
 
 		const mockInactiveTerminal = {
@@ -384,18 +407,19 @@ describe("getEnvironmentDetails", () => {
 
 		const result = await getEnvironmentDetails(mockCline as Task)
 
-		expect(result).toContain("# Inactive Terminals with Completed Process Output")
-		expect(result).toContain("## Terminal terminal-2 (Inactive)")
-		expect(result).toContain("### Working Directory: `/test/path/build`")
+		expect(result).toContain("# Terminal terminal-2 New Output")
+		expect(result).toContain("Terminal terminal-2 (Inactive)")
+		expect(result).toContain("Working Directory: `/test/path/build`")
 		expect(result).toContain("Command: `npm build`")
 		expect(result).toContain("Build output")
 
-		expect(mockInactiveTerminal.cleanCompletedProcessQueue).toHaveBeenCalled()
+		expect(mockInactiveTerminal.cleanCompletedProcessQueue).not.toHaveBeenCalled()
 	})
 
 	it("should include working directory for terminals", async () => {
 		const mockActiveTerminal = {
 			id: "terminal-1",
+			busy: true,
 			getLastCommand: vi.fn().mockReturnValue("cd /some/path && npm start"),
 			getProcessesWithOutput: vi.fn().mockReturnValue([]),
 			getCurrentWorkingDirectory: vi.fn().mockReturnValue("/some/path"),
@@ -403,7 +427,10 @@ describe("getEnvironmentDetails", () => {
 
 		const mockProcess = {
 			command: "npm test",
-			getUnretrievedOutput: vi.fn().mockReturnValue("Test completed"),
+			captureUnretrievedOutput: vi
+				.fn()
+				.mockReturnValue({ output: "Test completed", commit: vi.fn(), release: vi.fn() }),
+			hasUnretrievedOutput: () => true,
 		}
 
 		const mockInactiveTerminal = {
@@ -422,13 +449,13 @@ describe("getEnvironmentDetails", () => {
 		const result = await getEnvironmentDetails(mockCline as Task)
 
 		// Check active terminal working directory
-		expect(result).toContain("## Terminal terminal-1 (Active)")
-		expect(result).toContain("### Working Directory: `/some/path`")
-		expect(result).toContain("### Original command: `cd /some/path && npm start`")
+		expect(result).toContain("Terminal terminal-1 (Active)")
+		expect(result).toContain("Working Directory: `/some/path`")
+		expect(result).toContain("Original command: `cd /some/path && npm start`")
 
 		// Check inactive terminal working directory
-		expect(result).toContain("## Terminal terminal-2 (Inactive)")
-		expect(result).toContain("### Working Directory: `/another/path`")
+		expect(result).toContain("Terminal terminal-2 (Inactive)")
+		expect(result).toContain("Working Directory: `/another/path`")
 
 		// Verify the methods were called
 		expect(mockActiveTerminal.getCurrentWorkingDirectory).toHaveBeenCalled()
@@ -469,7 +496,10 @@ describe("getEnvironmentDetails", () => {
 
 		;(TerminalRegistry.getTerminals as Mock).mockReturnValue([mockErrorTerminal])
 		;(TerminalRegistry.getBackgroundTerminals as Mock).mockReturnValue([])
-		;(mockCline.fileContextTracker!.getAndClearRecentlyModifiedFiles as Mock).mockReturnValue([])
+		;(mockCline.fileContextTracker!.captureRecentlyModifiedFiles as Mock).mockReturnValue({
+			files: [],
+			commit: vi.fn(),
+		})
 
 		await expect(getEnvironmentDetails(mockCline as Task)).resolves.not.toThrow()
 	})
@@ -513,7 +543,7 @@ describe("getEnvironmentDetails", () => {
 
 		expect(result).toContain("# Git Status")
 		expect(result).toContain("## main")
-		expect(getGitStatus).toHaveBeenCalledWith(mockCwd, 10)
+		expect(getGitStatus).toHaveBeenCalledWith(mockCwd, 10, undefined)
 	})
 
 	it("should NOT include git status when maxGitStatusFiles is 0", async () => {
@@ -550,7 +580,7 @@ describe("getEnvironmentDetails", () => {
 		const result = await getEnvironmentDetails(mockCline as Task)
 
 		expect(result).not.toContain("# Git Status")
-		expect(getGitStatus).toHaveBeenCalledWith(mockCwd, 10)
+		expect(getGitStatus).toHaveBeenCalledWith(mockCwd, 10, undefined)
 	})
 
 	it("should pass maxFiles parameter to getGitStatus", async () => {
@@ -562,6 +592,138 @@ describe("getEnvironmentDetails", () => {
 
 		await getEnvironmentDetails(mockCline as Task)
 
-		expect(getGitStatus).toHaveBeenCalledWith(mockCwd, 5)
+		expect(getGitStatus).toHaveBeenCalledWith(mockCwd, 5, undefined)
+	})
+
+	it("uses the owning task mode even while another task is foreground", async () => {
+		mockState.mode = "architect"
+		const result = await getEnvironmentDetails(mockCline as Task, true, mockState)
+		expect(result).toContain("<slug>code</slug>")
+		expect(result).not.toContain("<slug>architect</slug>")
+	})
+
+	it("emits editor removals, setting removals, mode changes and a full baseline for changed roots", async () => {
+		const context = new EnvironmentContext()
+		const editors = vscode.window.visibleTextEditors as unknown as Array<{ document: { uri: { fsPath: string } } }>
+		editors.push({ document: { uri: { fsPath: path.join(mockCwd, "active.ts") } } })
+		;(await captureEnvironmentDetails(mockCline as Task, true, mockState, { context })).commit()
+		editors.splice(0)
+		mockState.includeCurrentCost = false
+		vi.mocked(mockCline.getTaskMode!).mockResolvedValue("architect")
+		const changed = await captureEnvironmentDetails(mockCline as Task, false, mockState, { context })
+		expect(changed.details).toContain("Environment Changes")
+		expect(changed.details).toContain("# VSCode Visible Files\n(none)")
+		expect(changed.details).toContain("# Current Cost\n(none; previous value no longer applies)")
+		expect(changed.details).toContain("<slug>architect</slug>")
+		expect(changed.details).not.toContain("Workspace Files")
+		changed.commit()
+		const movedTask = { ...mockCline, cwd: "/different/workspace" } as Task
+		const reset = await captureEnvironmentDetails(movedTask, false, mockState, { context })
+		expect(reset.details).toContain("Environment Snapshot")
+		expect(reset.details).toContain("Workspace Files")
+		reset.release()
+	})
+
+	it("summary snapshots never reserve or acknowledge transient events", async () => {
+		const process = { command: "build", captureUnretrievedOutput: vi.fn() }
+		const terminal = {
+			id: 1,
+			busy: false,
+			process,
+			getCurrentWorkingDirectory: () => mockCwd,
+			getLastCommand: () => "build",
+			getProcessesWithOutput: vi.fn(() => [process]),
+			cleanCompletedProcessQueue: vi.fn(),
+		}
+		vi.mocked(TerminalRegistry.getTerminals).mockReturnValue([terminal as never])
+		const result = await getEnvironmentDetails(mockCline as Task, true, mockState, { includeTransient: false })
+		expect(result).toContain("build")
+		expect(process.captureUnretrievedOutput).not.toHaveBeenCalled()
+		expect(terminal.getProcessesWithOutput).not.toHaveBeenCalled()
+		expect(mockCline.fileContextTracker!.captureRecentlyModifiedFiles).not.toHaveBeenCalled()
+	})
+
+	it("releases reserved output when a later synchronous capture fails", async () => {
+		const receipt = { output: "A", commit: vi.fn(), release: vi.fn() }
+		const terminal = {
+			id: 1,
+			busy: true,
+			process: { command: "build", hasUnretrievedOutput: () => true, captureUnretrievedOutput: () => receipt },
+			getCurrentWorkingDirectory: () => mockCwd,
+			getLastCommand: () => "build",
+			getProcessesWithOutput: () => [],
+			cleanCompletedProcessQueue: vi.fn(),
+		}
+		vi.mocked(TerminalRegistry.getTerminals).mockReturnValue([terminal as never])
+		vi.mocked(mockCline.fileContextTracker!.captureRecentlyModifiedFiles).mockImplementation(() => {
+			throw new Error("capture failed")
+		})
+		await expect(captureEnvironmentDetails(mockCline as Task)).rejects.toThrow("capture failed")
+		expect(receipt.commit).not.toHaveBeenCalled()
+		expect(receipt.release).toHaveBeenCalledOnce()
+	})
+
+	it.each([
+		{ continuing: false, resetEvery: 0 },
+		{ continuing: true, resetEvery: 0 },
+		{ continuing: true, resetEvery: 8 },
+		{ continuing: true, resetEvery: 1 },
+	])(
+		"delivers beyond the metadata cap without starvation (continuing=$continuing, resetEvery=$resetEvery)",
+		async ({ continuing, resetEvery }) => {
+			const context = new EnvironmentContext()
+			const terminals = Array.from({ length: 33 }, (_, index) => {
+				const terminal = {
+					id: index + 1,
+					busy: false,
+					process: undefined as RooTerminalProcess | undefined,
+					getCurrentWorkingDirectory: () => (index === 32 ? "/other-project" : mockCwd),
+					getLastCommand: () => "build",
+					getProcessesWithOutput: () => [],
+					cleanCompletedProcessQueue: vi.fn(),
+				}
+				const process = new ExecaTerminalProcess(terminal as never)
+				process.command = "build"
+				process.emit("completed")
+				;(process as any).fullOutput =
+					index === 32 ? "important build failure\n" : continuing ? "n".repeat(32_000) : ""
+				terminal.process = process
+				return terminal
+			})
+			vi.mocked(TerminalRegistry.getBackgroundTerminals).mockReturnValue(terminals as never)
+			let delivered = false
+			for (let step = 0; step < (continuing ? 33 : 1); step++) {
+				if (resetEvery > 0 && step % resetEvery === 0) context.reset()
+				const capture = await captureEnvironmentDetails(mockCline as Task, false, mockState, { context })
+				if (capture.details.includes("important build failure")) {
+					expect(capture.details).toContain("# Terminal 33 New Output\nWorking Directory: `/other-project`")
+				}
+				delivered ||= capture.details.includes("important build failure")
+				capture.commit()
+				if (continuing) {
+					for (const terminal of terminals.slice(0, 32))
+						(terminal.process as any).fullOutput += "n".repeat(32_000)
+				}
+			}
+			expect(delivered).toBe(true)
+			expect(terminals[32].process!.hasUnretrievedOutput()).toBe(false)
+		},
+	)
+
+	it("keeps essential identity and time meaningful when bulk fields exhaust their budgets", async () => {
+		mockState.maxWorkspaceFiles = 200
+		const editors = vscode.window.visibleTextEditors as unknown as Array<{ document: { uri: { fsPath: string } } }>
+		editors.push(
+			...Array.from({ length: 200 }, (_, i) => ({
+				document: { uri: { fsPath: path.join(mockCwd, `${i}-${"long".repeat(200)}.ts`) } },
+			})),
+		)
+		vi.mocked(formatResponse.formatFilesList).mockReturnValue("entry.ts\n".repeat(10000))
+		const result = await getEnvironmentDetails(mockCline as Task, true, mockState)
+		expect(result).toContain(`<slug>code</slug>`)
+		expect(result).toContain(`<model>test-model</model>`)
+		expect(result).toContain(`# Current Workspace Directory\n${mockCwd}`)
+		expect(result).toContain("Current time in ISO 8601 UTC format:")
+		expect(result.length).toBeLessThan(50_000)
 	})
 })

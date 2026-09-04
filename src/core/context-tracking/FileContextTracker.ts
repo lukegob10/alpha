@@ -9,6 +9,11 @@ import { ContextProxy } from "../config/ContextProxy"
 import type { FileMetadataEntry, RecordSource, TaskMetadata } from "./FileContextTrackerTypes"
 import { ClineProvider } from "../webview/ClineProvider"
 
+export interface RecentlyModifiedFilesReceipt {
+	readonly files: readonly string[]
+	commit(): void
+}
+
 // This class is responsible for tracking file operations that may result in stale context.
 // If a user modifies a file outside of Alpha, the context may become stale and need to be updated.
 // We do not want Alpha to reload the context every time a file is modified, so we use this class merely
@@ -26,7 +31,8 @@ export class FileContextTracker {
 
 	// File tracking and watching
 	private fileWatchers = new Map<string, vscode.FileSystemWatcher>()
-	private recentlyModifiedFiles = new Set<string>()
+	private recentlyModifiedFiles = new Map<string, number>()
+	private recentlyModifiedFilesVersion = 0
 	private recentlyEditedByRoo = new Set<string>()
 	private checkpointPossibleFiles = new Set<string>()
 	private metadataUpdateQueue: Promise<void> = Promise.resolve()
@@ -68,7 +74,7 @@ export class FileContextTracker {
 			if (this.recentlyEditedByRoo.has(filePath)) {
 				this.recentlyEditedByRoo.delete(filePath) // This was an edit by Alpha, no need to inform Alpha
 			} else {
-				this.recentlyModifiedFiles.add(filePath) // This was a user edit, we will inform Alpha
+				this.markRecentlyModifiedFile(filePath) // This was a user edit, we will inform Alpha
 				this.trackFileContext(filePath, "user_edited") // Update the task metadata with file tracking
 			}
 		})
@@ -181,7 +187,7 @@ export class FileContextTracker {
 				// user_edited: The user has edited the file
 				case "user_edited":
 					newEntry.user_edit_date = now
-					this.recentlyModifiedFiles.add(filePath)
+					this.markRecentlyModifiedFile(filePath)
 					break
 
 				// roo_edited: Alpha has edited the file
@@ -206,11 +212,58 @@ export class FileContextTracker {
 		}
 	}
 
-	// Returns (and then clears) the set of recently modified files
+	private markRecentlyModifiedFile(filePath: string): void {
+		this.recentlyModifiedFiles.set(filePath, ++this.recentlyModifiedFilesVersion)
+	}
+
+	/**
+	 * Captures a bounded snapshot of pending user modifications.
+	 *
+	 * The receipt only clears the versions it captured, so a later modification
+	 * to a captured path remains pending when the receipt is committed.
+	 * Paths that do not fit the character budget remain pending and are not
+	 * acknowledged; later fitting paths can still be captured.
+	 *
+	 * @param limit Maximum number of file paths to capture.
+	 * @param maxCharacters Maximum length of the captured paths joined with newlines.
+	 */
+	captureRecentlyModifiedFiles(limit = 200, maxCharacters = Number.MAX_SAFE_INTEGER): RecentlyModifiedFilesReceipt {
+		const captureLimit = normalizeCaptureLimit(limit)
+		const characterLimit = normalizeCharacterLimit(maxCharacters)
+		const capturedEntries: Array<[string, number]> = []
+		let capturedCharacters = 0
+
+		for (const entry of this.recentlyModifiedFiles.entries()) {
+			if (capturedEntries.length >= captureLimit) break
+
+			const [filePath] = entry
+			const candidateCharacters = capturedCharacters + filePath.length + (capturedEntries.length > 0 ? 1 : 0)
+			if (candidateCharacters > characterLimit) continue
+
+			capturedEntries.push(entry)
+			capturedCharacters = candidateCharacters
+		}
+
+		const capturedVersions = new Map(capturedEntries)
+		const files = Object.freeze(capturedEntries.map(([filePath]) => filePath))
+
+		return {
+			files,
+			commit: () => {
+				for (const [filePath, version] of capturedVersions) {
+					if (this.recentlyModifiedFiles.get(filePath) === version) {
+						this.recentlyModifiedFiles.delete(filePath)
+					}
+				}
+			},
+		}
+	}
+
+	// Returns (and then clears) all pending modified files for legacy callers.
 	getAndClearRecentlyModifiedFiles(): string[] {
-		const files = Array.from(this.recentlyModifiedFiles)
-		this.recentlyModifiedFiles.clear()
-		return files
+		const receipt = this.captureRecentlyModifiedFiles(this.recentlyModifiedFiles.size)
+		receipt.commit()
+		return [...receipt.files]
 	}
 
 	/**
@@ -284,4 +337,15 @@ export class FileContextTracker {
 		}
 		this.fileWatchers.clear()
 	}
+}
+
+function normalizeCaptureLimit(limit: number): number {
+	if (!Number.isFinite(limit)) return 0
+	return Math.max(0, Math.floor(limit))
+}
+
+function normalizeCharacterLimit(limit: number): number {
+	if (limit === Number.POSITIVE_INFINITY) return Number.MAX_SAFE_INTEGER
+	if (!Number.isFinite(limit)) return 0
+	return Math.max(0, Math.floor(limit))
 }

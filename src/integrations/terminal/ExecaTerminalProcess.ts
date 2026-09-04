@@ -304,23 +304,33 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 		return this.lastRetrievedIndex < this.fullOutput.length
 	}
 
-	public override getUnretrievedOutput() {
-		let output = this.fullOutput.slice(this.lastRetrievedIndex)
-		let index = output.lastIndexOf("\n")
+	protected override getUnretrievedOutputRange(
+		maxCharacters: number,
+		includeTrailingOutput: boolean,
+	): { endIndex: number; output: string } {
+		const startIndex = Math.min(Math.max(0, this.lastRetrievedIndex), this.fullOutput.length)
+		let endIndex = this.fullOutput.length
 
-		if (index === -1) {
-			return ""
+		// While the subprocess is active, retain the existing complete-line
+		// behavior. Once completed, include a final line even when it has no
+		// trailing newline so output is not silently lost.
+		if (!this.isSettled || !includeTrailingOutput) {
+			const newlineIndex = this.fullOutput.lastIndexOf("\n", this.fullOutput.length - 1)
+			if (newlineIndex < startIndex) {
+				return { endIndex: startIndex, output: "" }
+			}
+			endIndex = newlineIndex + 1
 		}
 
-		index++
-		this.lastRetrievedIndex += index
+		endIndex = Math.min(endIndex, startIndex + maxCharacters)
+		if (endIndex <= startIndex) {
+			return { endIndex: startIndex, output: "" }
+		}
 
-		// console.log(
-		// 	`[ExecaTerminalProcess#getUnretrievedOutput] fullOutput.length=${this.fullOutput.length} lastRetrievedIndex=${this.lastRetrievedIndex}`,
-		// 	output.slice(0, index),
-		// )
-
-		return output.slice(0, index)
+		return {
+			endIndex,
+			output: this.fullOutput.slice(startIndex, endIndex),
+		}
 	}
 
 	private emitRemainingBufferIfListening() {
