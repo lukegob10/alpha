@@ -2499,8 +2499,30 @@ export class ClineProvider
 		if (!task) {
 			throw new Error(`Task with id ${taskId} not found in stack`)
 		}
-		await task.condenseContext()
-		await this.postMessageToWebview({ type: "condenseTaskContextResponse", text: taskId })
+
+		let condenseFailed = false
+		let completionNotificationFailed = false
+		let completionNotificationError: unknown
+		try {
+			await task.condenseContext()
+		} catch (error) {
+			condenseFailed = true
+			throw error
+		} finally {
+			try {
+				// The UI uses this response to clear its busy state, including after an abort or failure.
+				await this.postMessageToWebview({ type: "condenseTaskContextResponse", text: taskId })
+			} catch (notificationError) {
+				// postMessageToWebview normally absorbs delivery failures. If an alternate implementation rejects while
+				// condensing failed, preserve the original task error instead of replacing it with a notification error.
+				if (!condenseFailed) {
+					completionNotificationFailed = true
+					completionNotificationError = notificationError
+				}
+			}
+		}
+
+		if (completionNotificationFailed) throw completionNotificationError
 	}
 
 	// this function deletes a task from task history, and deletes its checkpoints and delete the task folder
