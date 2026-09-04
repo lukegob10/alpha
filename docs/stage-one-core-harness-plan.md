@@ -1,5 +1,9 @@
 # Stage 1 core harness implementation
 
+Status: implementation and automated acceptance complete locally on `codex/stage-one-core-harness`.
+The final tested code commit is `f9aefe1b82b27fb7f375673f84443daa78831d6a`; subsequent closure edits are documentation only.
+No remote push, PR, release, or later-stage implementation is included.
+
 ## Scope and execution model
 
 Implement NOR-30, NOR-27, and NOR-28 in parallel, then integrate and validate their combined behavior.
@@ -173,8 +177,8 @@ core/agent/__tests__ core/assistant-message/__tests__ core/tools/__tests__ core/
   2,948 tests passed / 18 skipped (75.03 seconds). Coverage includes all Task, agent, assistant-message, tools,
   task-persistence, environment, context-tracking, terminal, glob, Git, provider, and provider-transform suites.
   Integrated repository-wide typecheck passed all 13 tasks; lint passed all 12 tasks.
-- Pending: managed-agent certification and exact-host gate. Per-ticket deterministic performance evidence is recorded
-  in the implementation documents; the combined regression run includes both measurement fixtures.
+- Per-ticket deterministic performance evidence is recorded in the implementation documents; the combined regression
+  run includes both measurement fixtures. These are scoped payload/preflight improvements, not live-model speed claims.
 - First combined managed-agent certification: all 1,230 deterministic tests and 26 matrix rows passed, with the eight
   expected live/manual rows still pending. The subsequent 1.122.1 managed-agent host case failed before its first child
   spawn. A diagnostic rerun confirmed `DataCloneError` from the scripted provider's runtime-only `fakeAi.removeFromCache`
@@ -196,9 +200,22 @@ core/agent/__tests__ core/assistant-message/__tests__ core/tools/__tests__ core/
   partial questions and preserving explicit Queue and approval paths. The first candidate's waiting-state guard failed
   six additional lagged-metadata regressions and could re-answer two stale-question cases; the revised implementation
   passes all 94 ChatView tests, including 21 new reply and control cases. The broader chat run passed all 484 tests in
-  39 files (42.73 seconds); repository typecheck passed all 13 tasks and webview lint/format checks passed. Final host
-  gates remain pending.
+  39 files (42.73 seconds); repository typecheck passed all 13 tasks and repository lint passed all 12 tasks.
+- Final automated managed-agent certification passed on `f9aefe1b82b27fb7f375673f84443daa78831d6a`: all 1,251 deterministic
+  tests and 26 automated matrix rows passed, followed by the complete scripted managed-agent acceptance case on exact
+  VS Code 1.122.1 (16.672 seconds). The previously blocked reply reached verification, completion, and navigation.
+  The deterministic evidence records `stableDuringRun: true`; the sole working-tree modification was the preserved
+  user `AGENTS.md`. Its eight live/manual integration rows remain pending: this automated host scenario does not replace
+  live-provider, crash/restart, multi-window, or billable-budget validation. Generated evidence remains ignored under
+  `artifacts/certification/managed-agent-milestone-evidence.json`.
+- Final `pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` passed on the same code: 2 extension, 2 mode, and 4 VS Code
+  LM contract tests. This includes native tool/result continuity, completed-task follow-up, late cancellation/recovery,
+  and provider-error retry. No acceptance assertion or timeout was weakened to obtain these results.
+- Integration repairs: captured retry request/provider continuity `787fa8c`; real-step persistence fixture `f127686`;
+  runtime-only FakeAI diagnostic exclusion and canonical-MCP coverage `8f1fb48`; current follow-up reply routing and
+  bounded host diagnostics `f9aefe1`. User `AGENTS.md` edits and protected CLI/shim surfaces were preserved.
 - Out of scope: later-stage tickets and protected CLI/shim surfaces.
 
-Tickets remain In Progress until their acceptance criteria and integration evidence are reviewed. Finishing a child task
-does not by itself complete Stage 1.
+All three ticket acceptance reviews and required automated integration gates are complete. NOR-30, NOR-27, and NOR-28
+are Done in Linear with per-ticket closure evidence; the separate source worktrees and implementation notes remain
+available for review.
