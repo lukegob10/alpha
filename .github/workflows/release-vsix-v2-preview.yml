@@ -73,12 +73,12 @@ jobs:
                   $notes = @"
                   Preview VSIX build from main-v2. This is not published to the VS Code Marketplace.
 
-                  Alpha v$version hardens managed-agent runtime leasing and completion verification.
+                  Alpha v$version adds GPT-6 Astra and Gemini 3.8 Flash to their native provider setups.
 
                   Highlights:
-                  - Gives stale-looking live leases a confirmation scan after system sleep or extension-host stalls
-                  - Rotates compromised owner leases and atomically transfers still-owned agent and mailbox state
-                  - Refuses recovery when another extension host has already recovered or adopted the durable task
+                  - Adds GPT-6 Astra under OpenAI with Low, Medium, High, XHigh, and Max reasoning
+                  - Adds Gemini 3.8 Flash under Gemini with Low, Medium, and High thinking
+                  - Defaults both models to Medium and handles unsupported saved Astra reasoning settings
                   - Validates the extension and VS Code Language Model contract on exact VS Code 1.122.1
 
                   Commit: ${{ github.sha }}

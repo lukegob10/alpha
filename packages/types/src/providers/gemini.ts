@@ -6,6 +6,22 @@ export type GeminiModelId = keyof typeof geminiModels
 export const geminiDefaultModelId: GeminiModelId = "gemini-3.1-pro-preview"
 
 export const geminiModels = {
+	// Verified 2026-09-03: https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash
+	// Introductory pricing through 2026-12-31: https://ai.google.dev/gemini-api/docs/pricing
+	"gemini-3.8-flash": {
+		maxTokens: 65_536,
+		contextWindow: 1_048_576,
+		supportsImages: true,
+		supportsPromptCache: true,
+		supportsReasoningEffort: ["low", "medium", "high"],
+		requiredReasoningEffort: true,
+		reasoningEffort: "medium",
+		supportsTemperature: false,
+		inputPrice: 0.75,
+		outputPrice: 3.75,
+		cacheReadsPrice: 0.075,
+		description: "Gemini 3.8 Flash",
+	},
 	"gemini-3.7-flash": {
 		maxTokens: 65_536,
 		contextWindow: 1_048_576,

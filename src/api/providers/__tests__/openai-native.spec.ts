@@ -64,6 +64,70 @@ describe("OpenAiNativeHandler", () => {
 		}
 	})
 
+	describe("GPT-6 Astra", () => {
+		it.each([
+			[undefined, "medium"],
+			["low", "low"],
+			["medium", "medium"],
+			["high", "high"],
+			["xhigh", "xhigh"],
+			["max", "max"],
+			["none", "medium"],
+			["minimal", "medium"],
+			["disable", "medium"],
+		] as const)("sends reasoning %s as %s through Responses", async (reasoningEffort, expectedEffort) => {
+			mockResponsesCreate.mockResolvedValue({
+				async *[Symbol.asyncIterator]() {
+					yield { type: "response.output_text.delta", delta: "Ready" }
+				},
+			})
+			const astra = new OpenAiNativeHandler({
+				...mockOptions,
+				apiModelId: "gpt-6-astra",
+				reasoningEffort,
+				modelTemperature: 0.2,
+			})
+			const chunks = []
+			for await (const chunk of astra.createMessage(systemPrompt, messages, {
+				taskId: "astra-reasoning-test",
+				tools: [{ type: "function", function: { name: "read_file", parameters: { type: "object" } } }],
+			})) {
+				chunks.push(chunk)
+			}
+
+			expect(chunks).toContainEqual({ type: "text", text: "Ready" })
+			const request = mockResponsesCreate.mock.calls[0][0]
+			expect(request).toMatchObject({
+				model: "gpt-6-astra",
+				stream: true,
+				store: false,
+				reasoning: { effort: expectedEffort },
+				include: ["reasoning.encrypted_content"],
+				tools: [expect.objectContaining({ type: "function", name: "read_file" })],
+			})
+			expect(request).not.toHaveProperty("temperature")
+			expect(request).not.toHaveProperty("prompt_cache_retention")
+		})
+
+		it("preserves Max reasoning for prompt completions", async () => {
+			mockResponsesCreate.mockResolvedValue({
+				output: [{ type: "message", content: [{ type: "output_text", text: "Ready" }] }],
+			})
+			const astra = new OpenAiNativeHandler({
+				...mockOptions,
+				apiModelId: "gpt-6-astra",
+				reasoningEffort: "max",
+			})
+
+			await expect(astra.completePrompt("Hello")).resolves.toBe("Ready")
+			expect(mockResponsesCreate.mock.calls[0][0]).toMatchObject({
+				model: "gpt-6-astra",
+				stream: false,
+				reasoning: { effort: "max" },
+			})
+		})
+	})
+
 	describe("constructor", () => {
 		it("should initialize with provided options", () => {
 			expect(handler).toBeInstanceOf(OpenAiNativeHandler)

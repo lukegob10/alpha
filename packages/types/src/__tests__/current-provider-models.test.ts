@@ -12,6 +12,31 @@ import {
 
 describe("current provider model catalogs", () => {
 	describe("OpenAI", () => {
+		it("exposes GPT-6 Astra with its supported reasoning levels and published pricing", () => {
+			expect(openAiNativeModels).toHaveProperty(
+				"gpt-6-astra",
+				expect.objectContaining({
+					contextWindow: 1_050_000,
+					maxTokens: 128_000,
+					supportsImages: true,
+					supportsPromptCache: true,
+					supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
+					requiredReasoningEffort: true,
+					reasoningEffort: "medium",
+					supportsTemperature: false,
+					inputPrice: 10,
+					outputPrice: 50,
+					cacheReadsPrice: 1,
+					cacheWritesPrice: 12.5,
+					longContextPricing: {
+						thresholdTokens: 272_000,
+						inputPriceMultiplier: 2,
+						outputPriceMultiplier: 1.5,
+					},
+				}),
+			)
+		})
+
 		it("includes the current GPT and pro model IDs", () => {
 			expect(Object.keys(openAiNativeModels)).toEqual(
 				expect.arrayContaining([
@@ -50,6 +75,25 @@ describe("current provider model catalogs", () => {
 	})
 
 	describe("Gemini", () => {
+		it("exposes Gemini 3.8 Flash under Gemini with supported thinking levels and introductory pricing", () => {
+			expect(geminiModels).toHaveProperty(
+				"gemini-3.8-flash",
+				expect.objectContaining({
+					contextWindow: 1_048_576,
+					maxTokens: 65_536,
+					supportsImages: true,
+					supportsPromptCache: true,
+					supportsReasoningEffort: ["low", "medium", "high"],
+					requiredReasoningEffort: true,
+					reasoningEffort: "medium",
+					supportsTemperature: false,
+					inputPrice: 0.75,
+					outputPrice: 3.75,
+					cacheReadsPrice: 0.075,
+				}),
+			)
+		})
+
 		it("includes every current conversational Gemini model in the Gemini API catalog", () => {
 			expect(Object.keys(geminiModels)).toEqual(
 				expect.arrayContaining([

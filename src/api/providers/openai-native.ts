@@ -1792,9 +1792,17 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 	}
 
 	private getReasoningEffort(model: OpenAiNativeModel): ReasoningEffortExtended | undefined {
-		// Single source of truth: user setting overrides, else model default (from types).
-		const selected = (this.options.reasoningEffort as any) ?? (model.info.reasoningEffort as any)
-		return selected && selected !== "disable" ? (selected as any) : undefined
+		const selected = this.options.reasoningEffort ?? model.info.reasoningEffort
+		const supported = model.info.supportsReasoningEffort
+		// Required-reasoning models must not inherit unsupported efforts from saved settings.
+		if (
+			model.info.requiredReasoningEffort &&
+			Array.isArray(supported) &&
+			(!selected || !supported.includes(selected))
+		) {
+			return model.info.reasoningEffort
+		}
+		return selected && selected !== "disable" ? selected : undefined
 	}
 
 	/**

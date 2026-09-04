@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.17
+
+### Patch Changes
+
+- Add GPT-6 Astra to the OpenAI provider with selectable Low, Medium, High, XHigh, and Max reasoning levels.
+- Add Gemini 3.8 Flash to the Gemini provider with selectable Low, Medium, and High thinking levels.
+- Initialize both models with Medium reasoning, omit unsupported sampling parameters, and replace unsupported saved Astra reasoning settings with its default.
+
 ## 2.1.16
 
 ### Patch Changes

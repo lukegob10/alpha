@@ -20,6 +20,40 @@ import { GeminiHandler } from "../gemini"
 const GEMINI_MODEL_NAME = geminiDefaultModelId
 
 describe("GeminiHandler", () => {
+	it.each([
+		[undefined, "medium"],
+		["low", "low"],
+		["medium", "medium"],
+		["high", "high"],
+		["minimal", "medium"],
+	] as const)("sends Gemini 3.8 reasoning %s as %s", async (reasoningEffort, thinkingLevel) => {
+		const gemini38 = new GeminiHandler({
+			apiModelId: "gemini-3.8-flash",
+			geminiApiKey: "test-key",
+			reasoningEffort,
+			modelTemperature: 0.2,
+		})
+		const generateContentStream = vi.fn().mockReturnValue(
+			(async function* () {
+				yield { candidates: [{ content: { parts: [{ text: "Ready" }] } }] }
+			})(),
+		)
+		gemini38["client"].models.generateContentStream = generateContentStream
+		const chunks = []
+		for await (const chunk of gemini38.createMessage("Instructions", [{ role: "user", content: "Hello" }])) {
+			chunks.push(chunk)
+		}
+
+		expect(chunks).toContainEqual({ type: "text", text: "Ready" })
+		expect(generateContentStream.mock.calls[0][0]).toMatchObject({
+			model: "gemini-3.8-flash",
+			config: { thinkingConfig: { thinkingLevel, includeThoughts: true } },
+		})
+		const config = generateContentStream.mock.calls[0][0].config
+		expect(config.temperature).toBeUndefined()
+		expect(config.thinkingConfig).not.toHaveProperty("thinkingBudget")
+	})
+
 	let handler: GeminiHandler
 
 	beforeEach(() => {
