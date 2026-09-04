@@ -473,9 +473,14 @@ export async function executeCommandInTerminal(
 				if (mutationBaseline) {
 					const after = await captureWorkspaceMutationState(task.cwd)
 					const changes = await compareWorkspaceMutationState(task.cwd, mutationBaseline, after)
-					if (changes.changedPaths.length > 0)
-						await task.providerRef.deref()?.recordPrimaryMutation(task, changes.files)
-					await task.providerRef.deref()?.releasePrimaryMutation(task, physicalExecutionId)
+					const receiptSettled =
+						changes.changedPaths.length > 0
+							? await task.providerRef
+									.deref()
+									?.recordPrimaryMutation(task, changes.files, false, physicalExecutionId)
+							: false
+					if (!receiptSettled)
+						await task.providerRef.deref()?.releasePrimaryMutation(task, physicalExecutionId)
 				}
 				if (toolCallId) task.completeCommandExecution?.(toolCallId, details, physicalExecutionId)
 			})().catch(async () => {
@@ -653,9 +658,13 @@ export async function executeCommandInTerminal(
 		if (mutationBaseline) {
 			const after = await captureWorkspaceMutationState(task.cwd)
 			const changes = await compareWorkspaceMutationState(task.cwd, mutationBaseline, after)
-			if (changes.changedPaths.length > 0)
-				await task.providerRef.deref()?.recordPrimaryMutation(task, changes.files)
-			await task.providerRef.deref()?.releasePrimaryMutation(task, physicalExecutionId)
+			const receiptSettled =
+				changes.changedPaths.length > 0
+					? await task.providerRef
+							.deref()
+							?.recordPrimaryMutation(task, changes.files, false, physicalExecutionId)
+					: false
+			if (!receiptSettled) await task.providerRef.deref()?.releasePrimaryMutation(task, physicalExecutionId)
 		}
 		if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
 		throw new ShellIntegrationError(shellIntegrationError)

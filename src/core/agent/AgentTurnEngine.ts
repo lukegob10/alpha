@@ -65,7 +65,7 @@ function outcomeStatus(response: AgentResponse): AgentTurnStepStatus | undefined
 		case "cancelled":
 			return "aborted"
 		default:
-			return undefined
+			return response.items.some((item) => item.type === "error") ? "failed" : undefined
 	}
 }
 
@@ -76,7 +76,8 @@ function terminalOutcome(
 	reason?: string,
 	error?: unknown,
 ): AgentTurnOutcome {
-	const resolvedReason = reason ?? response?.outcome?.reason
+	const resolvedReason =
+		reason ?? response?.outcome?.reason ?? response?.items.find((item) => item.type === "error")?.message
 	if (status === "aborted") {
 		return {
 			status,

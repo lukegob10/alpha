@@ -425,7 +425,23 @@ function executeBaseTool<TName extends BuiltInToolName>(tool: BaseTool<TName>, n
 		const run = () => tool.handle(task, call as ToolUse<TName>, callbacks)
 		if (WORKSPACE_TOOLS.has(name) || name === "new_task") {
 			await runWorkspaceMutation(task, name === "new_task" ? "new_task_checkpoint" : name, async () => {
-				if (task.abort || (task.canMutateWorkspace && !task.canMutateWorkspace())) return
+				if (task.abort) {
+					callbacks.setResultMetadata?.({ status: "cancelled" })
+					callbacks.pushToolResult(
+						JSON.stringify({ status: "cancelled", message: "Tool execution was cancelled." }),
+					)
+					return
+				}
+				if (task.canMutateWorkspace && !task.canMutateWorkspace()) {
+					callbacks.setResultMetadata?.({ status: "denied" })
+					callbacks.pushToolResult(
+						JSON.stringify({
+							status: "denied",
+							message: "The task is no longer accepting workspace mutations.",
+						}),
+					)
+					return
+				}
 				if (CHECKPOINT_TOOLS.has(name) || name === "new_task") {
 					await checkpointBeforeMutation(task)
 				}
@@ -463,9 +479,11 @@ function executeBaseTool<TName extends BuiltInToolName>(tool: BaseTool<TName>, n
 						const changes = Object.fromEntries(
 							Object.entries(after).filter(([file, version]) => before[file] !== version),
 						)
-						if (Object.keys(changes).length > 0)
-							await task.providerRef.deref()?.recordPrimaryMutation(task, changes)
-						await mutationOwner!.releasePrimaryMutation(task, reservation)
+						const receiptSettled =
+							Object.keys(changes).length > 0
+								? await mutationOwner!.recordPrimaryMutation(task, changes, false, reservation)
+								: false
+						if (!receiptSettled) await mutationOwner!.releasePrimaryMutation(task, reservation)
 					}
 				} catch (error) {
 					if (executionFailed)
@@ -571,11 +589,9 @@ export class ToolRegistry {
 			this.addAlias(alias, canonical)
 		}
 
-		for (const schema of options.mcpTools ?? []) {
-			if (schema.type !== "function") {
-				continue
-			}
-			const name = canonicalizeToolName(schema.function.name)
+		for (const schema of getSchemaMap(options.mcpTools ?? []).values()) {
+			const name = schema.type === "function" ? schema.function.name : ""
+			if (!name) continue
 			const capturedTarget = options.mcpToolTargets?.get(name)
 			if (this.descriptors.has(name)) {
 				continue

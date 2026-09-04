@@ -68,6 +68,12 @@ describe("AgentResponseAccumulator", () => {
 			message: 'Unable to parse arguments for tool call "read_file" (call-1).',
 			callId: "call-1",
 			toolName: "read_file",
+			retryable: false,
+		})
+		expect(response.outcome).toEqual({
+			status: "failed",
+			reason: 'Unable to parse arguments for tool call "read_file" (call-1).',
+			retryable: false,
 		})
 	})
 })
@@ -115,6 +121,32 @@ describe("AgentTurnEngine", () => {
 			response: emptyResponse(),
 		})
 		expect(host.runStep).toHaveBeenNthCalledWith(2, "explicit-completion-required")
+	})
+
+	it("never completes a response that contains a canonical error item", async () => {
+		const response: AgentResponse = {
+			items: [
+				{ type: "text", text: "Partial answer." },
+				{ type: "error", message: "Provider stream failed." },
+			],
+			text: "Partial answer.",
+			reasoning: "",
+			toolCalls: [],
+			outcome: { status: "completed" },
+		}
+		const host: AgentTurnHost<string> = {
+			shouldAbort: () => false,
+			runStep: vi.fn(async () => ({ response, nextInput: "complete" as const })),
+		}
+
+		const result = await new AgentTurnEngine(host).run("first")
+
+		expect(result).toEqual({
+			status: "failed",
+			steps: 1,
+			reason: "Provider stream failed.",
+			response,
+		})
 	})
 
 	it.each([

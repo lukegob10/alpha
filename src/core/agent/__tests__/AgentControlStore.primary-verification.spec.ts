@@ -487,6 +487,46 @@ describe("AgentControlStore primary verification", () => {
 		expect(store.getParentCompletionDecision("root-1").allowed).toBe(false)
 	})
 
+	it("records a final receipt and settles its reservation in one transaction", async () => {
+		const { store, persistence } = await setup()
+
+		await store.reservePrimaryMutation("root-1", "root-1", workspacePath, "mutation-1")
+		const primary = await store.recordPrimaryMutation({
+			rootTaskId: "root-1",
+			parentTaskId: "root-1",
+			workspacePath,
+			fileVersions: { "src/changed.ts": "version-1" },
+			reservationToken: "mutation-1",
+			at: 2_000,
+		})
+
+		expect(primary).toMatchObject({
+			changedFiles: ["src/changed.ts"],
+			mutationReservations: [],
+			status: "pending",
+		})
+		expect(store.getParentCompletionDecision("root-1").allowed).toBe(false)
+
+		const reloaded = new AgentControlStore(persistence)
+		await reloaded.initialize()
+		expect(reloaded.getVerificationObligations()[0]?.mutationReservations).toEqual([])
+	})
+
+	it("does not infer a safe repair for a non-atomic reserved receipt after reload", async () => {
+		const { store, persistence } = await setup()
+
+		await store.reservePrimaryMutation("root-1", "root-1", workspacePath, "legacy-mutation")
+		await recordPrimary(store, { "src/changed.ts": "version-1" })
+
+		const reloaded = new AgentControlStore(persistence)
+		await reloaded.initialize()
+		expect(reloaded.getVerificationObligations()[0]).toMatchObject({
+			changedFiles: ["src/changed.ts"],
+			mutationReservations: ["legacy-mutation"],
+		})
+		expect(reloaded.getParentCompletionDecision("root-1").allowed).toBe(false)
+	})
+
 	it("restores a satisfied snapshot after a proven no-op reservation release", async () => {
 		const { store } = await setup()
 		const primary = (await recordPrimary(store, { "src/unchanged.ts": "version-1" }))!

@@ -386,7 +386,9 @@ export async function getBinPath(vscodeAppRoot?: string): Promise<string | undef
 	return (await resolveRipgrepBinary({ appRoot: vscodeAppRoot ?? vscode.env.appRoot }))?.path
 }
 
-async function execRipgrep(bin: string, args: string[]): Promise<string> {
+async function execRipgrep(bin: string, args: string[], signal?: AbortSignal): Promise<string> {
+	signal?.throwIfAborted()
+
 	return new Promise((resolve, reject) => {
 		const rgProcess = childProcess.spawn(bin, args)
 		// cross-platform alternative to head, which is ripgrep author's recommendation for limiting output.
@@ -398,31 +400,80 @@ async function execRipgrep(bin: string, args: string[]): Promise<string> {
 		let output = ""
 		let lineCount = 0
 		const maxLines = MAX_RESULTS * 5 // limiting ripgrep output with max lines since there's no other way to limit results. it's okay that we're outputting as json, since we're parsing it line by line and ignore anything that's not part of a match. This assumes each result is at most 5 lines.
+		let stoppedForLimit = false
+		let aborted = false
+		let settled = false
+		let errorOutput = ""
+
+		const cleanup = () => {
+			signal?.removeEventListener("abort", onAbort)
+			rl.close()
+		}
+		const finish = (error?: Error) => {
+			if (settled) return
+			settled = true
+			cleanup()
+			if (error) reject(error)
+			else resolve(output)
+		}
+		const stop = (forLimit: boolean) => {
+			if (stoppedForLimit || settled) return
+			stoppedForLimit = forLimit
+			try {
+				rgProcess.kill()
+			} catch (error) {
+				finish(error instanceof Error ? error : new Error(String(error)))
+			}
+		}
+		const onAbort = () => {
+			aborted = true
+			stop(false)
+		}
 
 		rl.on("line", (line) => {
+			if (settled || aborted) return
 			if (lineCount < maxLines) {
 				output += line + "\n"
 				lineCount++
 			} else {
-				rl.close()
-				rgProcess.kill()
+				stop(true)
 			}
 		})
 
-		let errorOutput = ""
 		rgProcess.stderr.on("data", (data) => {
-			errorOutput += data.toString()
-		})
-		rl.on("close", () => {
-			if (errorOutput) {
-				reject(new Error(`ripgrep process error: ${errorOutput}`))
-			} else {
-				resolve(output)
+			// Keep diagnostics bounded; malformed paths and permissions errors should
+			// not be able to retain unbounded process output in the extension host.
+			if (errorOutput.length < 8_192) {
+				errorOutput += data.toString().slice(0, 8_192 - errorOutput.length)
 			}
 		})
-		rgProcess.on("error", (error) => {
-			reject(new Error(`ripgrep process error: ${error.message}`))
+
+		rgProcess.on("close", (code, exitSignal) => {
+			if (settled) return
+			if (aborted) {
+				const reason = signal?.reason
+				finish(reason instanceof Error ? reason : new Error("Ripgrep search cancelled"))
+				return
+			}
+			if (errorOutput) {
+				finish(new Error(`ripgrep process error: ${errorOutput}`))
+				return
+			}
+			// ripgrep uses exit code 1 for a valid search with no matches. Any other
+			// non-zero exit is an actual execution failure unless we stopped at our
+			// bounded output budget.
+			if (!stoppedForLimit && code !== 0 && code !== 1) {
+				finish(new Error(`ripgrep process exited with ${exitSignal ? `signal ${exitSignal}` : `code ${code}`}`))
+				return
+			}
+			finish()
 		})
+		rgProcess.on("error", (error) => {
+			finish(new Error(`ripgrep process error: ${error.message}`))
+		})
+
+		signal?.addEventListener("abort", onAbort, { once: true })
+		if (signal?.aborted) onAbort()
 	})
 }
 
@@ -432,7 +483,9 @@ export async function regexSearchFiles(
 	regex: string,
 	filePattern?: string,
 	rooIgnoreController?: RooIgnoreController,
+	signal?: AbortSignal,
 ): Promise<string> {
+	signal?.throwIfAborted()
 	const rgPath = await getBinPath()
 
 	if (!rgPath) {
@@ -447,15 +500,9 @@ export async function regexSearchFiles(
 		args.push("--glob", filePattern)
 	}
 
-	args.push("--context", "1", "--no-messages", directoryPath)
+	args.push("--context", "1", "--no-messages", "--", directoryPath)
 
-	let output: string
-	try {
-		output = await execRipgrep(rgPath, args)
-	} catch (error) {
-		console.error("Error executing ripgrep:", error)
-		return "No results found"
-	}
+	const output = await execRipgrep(rgPath, args, signal)
 
 	const results: SearchFileResult[] = []
 	let currentFile: SearchFileResult | null = null
@@ -465,13 +512,19 @@ export async function regexSearchFiles(
 			try {
 				const parsed = JSON.parse(line)
 				if (parsed.type === "begin") {
+					if (currentFile) results.push(currentFile)
+					const filePath = parsed.data?.path?.text
+					if (typeof filePath !== "string") {
+						currentFile = null
+						return
+					}
 					currentFile = {
-						file: parsed.data.path.text.toString(),
+						file: filePath,
 						searchResults: [],
 					}
 				} else if (parsed.type === "end") {
 					// Reset the current result when a new file is encountered
-					results.push(currentFile as SearchFileResult)
+					if (currentFile) results.push(currentFile)
 					currentFile = null
 				} else if ((parsed.type === "match" || parsed.type === "context") && currentFile) {
 					const line = {
@@ -506,6 +559,7 @@ export async function regexSearchFiles(
 			}
 		}
 	})
+	if (currentFile) results.push(currentFile)
 
 	// console.log(results)
 
@@ -518,7 +572,7 @@ export async function regexSearchFiles(
 }
 
 function formatResults(fileResults: SearchFileResult[], cwd: string): string {
-	const groupedResults: { [key: string]: SearchResult[] } = {}
+	const groupedResults = new Map<string, SearchResult[]>()
 
 	let totalResults = fileResults.reduce((sum, file) => sum + file.searchResults.length, 0)
 	let output = ""
@@ -531,14 +585,12 @@ function formatResults(fileResults: SearchFileResult[], cwd: string): string {
 	// Group results by file name
 	fileResults.slice(0, MAX_RESULTS).forEach((file) => {
 		const relativeFilePath = path.relative(cwd, file.file)
-		if (!groupedResults[relativeFilePath]) {
-			groupedResults[relativeFilePath] = []
-
-			groupedResults[relativeFilePath].push(...file.searchResults)
-		}
+		const existingResults = groupedResults.get(relativeFilePath) ?? []
+		existingResults.push(...file.searchResults)
+		groupedResults.set(relativeFilePath, existingResults)
 	})
 
-	for (const [filePath, fileResults] of Object.entries(groupedResults)) {
+	for (const [filePath, fileResults] of groupedResults) {
 		output += `# ${filePath.toPosix()}\n`
 
 		fileResults.forEach((result) => {

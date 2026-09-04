@@ -176,6 +176,7 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 		task.consecutiveMistakeCount = 0
 
 		try {
+			callbacks.signal?.throwIfAborted()
 			const results = await Promise.all(
 				queries.map(async (query) => {
 					const absolutePath = path.resolve(task.cwd, query.path)
@@ -186,6 +187,7 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 						query.regex,
 						filePattern,
 						task.rooIgnoreController,
+						callbacks.signal,
 					)
 
 					return {

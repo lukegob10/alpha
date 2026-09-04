@@ -151,6 +151,140 @@ describe("ToolScheduler", () => {
 		}
 	})
 
+	it.each([
+		[
+			"a serial descriptor",
+			{
+				concurrency: "serial" as const,
+				sideEffects: "none" as const,
+				controlFlow: false,
+				requiresApproval: true,
+			},
+			undefined,
+		],
+		[
+			"a captured serial policy",
+			{
+				concurrency: "parallel" as const,
+				sideEffects: "none" as const,
+				controlFlow: false,
+				requiresApproval: true,
+			},
+			{
+				concurrency: "serial" as const,
+				sideEffects: "none" as const,
+				controlFlow: false,
+				requiresApproval: true,
+			},
+		],
+	] as const)(
+		"does not bypass %s with an audited parallel-read executor",
+		async (_description, capabilities, policyCapabilities) => {
+			const task = makeTask()
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			const execute = vi.fn(async ({ callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
+				callbacks.pushToolResult("legacy")
+			})
+			const prepareParallelRead = vi.fn(async () => ({
+				scope: path.resolve(tmpdir(), "audited-read"),
+				run: async () => async () => "prepared",
+			}))
+			registry.register({
+				...descriptor("read", "parallel", execute),
+				capabilities,
+				prepareParallelRead,
+			})
+			const outcome = await new ToolScheduler({
+				task,
+				registry,
+				mode: "code",
+				executionMode: "selective-parallel",
+				validateCall: () => {},
+				policy: createToolPolicySnapshot({
+					visibleTools: ["read"],
+					autoApprovalEnabled: true,
+					capabilities: policyCapabilities ? { read: policyCapabilities } : undefined,
+				}),
+				readGrant: { enabled: true, workspaceRoot: tmpdir(), showIgnoredFiles: false },
+			}).run(response({ id: "read", name: "read" }))
+
+			expect(prepareParallelRead).not.toHaveBeenCalled()
+			expect(execute).toHaveBeenCalledOnce()
+			expect(outcome.results[0]).toMatchObject({ status: "success", content: "legacy" })
+		},
+	)
+
+	it("closes a lifecycle-rejected workspace mutation as denied", async () => {
+		const task = makeTask()
+		Object.assign(task, { canMutateWorkspace: () => false, providerRef: { deref: () => undefined } })
+		const outcome = await new ToolScheduler({
+			task,
+			registry: new ToolRegistry(),
+			mode: "code",
+			validateCall: () => {},
+			policy: createToolPolicySnapshot({ visibleTools: ["write_to_file"] }),
+		}).run(
+			response({
+				id: "late-write",
+				name: "write_to_file",
+				arguments: { path: "fixture.txt", content: "must not write" },
+			}),
+		)
+
+		expect(outcome.results[0].status).toBe("denied")
+		expect(JSON.parse(String(outcome.results[0].content))).toMatchObject({ status: "denied" })
+		expect(resultIds(task)).toEqual(["late-write"])
+	})
+
+	it.each([
+		{ id: 42, name: "read" },
+		{ id: "malformed-name", name: 42 },
+	] as const)("turns malformed runtime call fields into one terminal error", async (call) => {
+		const task = makeTask()
+		const execute = vi.fn(async ({ callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
+			callbacks.pushToolResult("must not execute")
+		})
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(descriptor("read", "serial", execute))
+		const outcome = await new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run([call as never])
+
+		expect(outcome.results[0].status).toBe("error")
+		expect(execute).not.toHaveBeenCalled()
+		expect(resultIds(task)).toHaveLength(1)
+	})
+
+	it.each([
+		["read_file", { path: "inside.txt", files: [{ path: "../outside.txt" }] }],
+		["search_files", { queries: [{ path: "../outside", regex: "secret" }] }],
+		["generate_image", { prompt: "fixture", path: "inside.png", image: "../outside.png" }],
+	] as const)("rejects an out-of-policy nested path in %s before dispatch", async (name, argumentsValue) => {
+		const task = makeTask()
+		const execute = vi.fn(async ({ callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
+			callbacks.pushToolResult("must not execute")
+		})
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(descriptor(name, "serial", execute))
+		const outcome = await new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+			policy: createToolPolicySnapshot({
+				visibleTools: [name],
+				execution: { workspaceRoots: [process.cwd()] },
+			}),
+		}).run(response({ id: `nested-${name}`, name, arguments: argumentsValue }))
+
+		expect(outcome.results[0].status).toBe("error")
+		expect(String(outcome.results[0].content)).toContain("outside the allowed workspace roots")
+		expect(execute).not.toHaveBeenCalled()
+	})
+
 	it("rejects an unexpected approval without entering Task.ask from a parallel worker", async () => {
 		const task = makeTask()
 		const ask = vi.spyOn(task, "ask")
@@ -395,6 +529,42 @@ describe("ToolScheduler", () => {
 				.filter((item) => item.type === "tool_result")
 				.map((item) => JSON.parse(String(item.content)).status),
 		).toEqual(["cancelled"])
+	})
+
+	it("preserves structured approval payloads without replacing the tool result", async () => {
+		const task = makeTask()
+		task.ask = async () =>
+			({
+				response: "objectResponse",
+				text: JSON.stringify({ "first.ts": true, "second.ts": false }),
+			}) as any
+		const events: AgentTurnEvent[] = []
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(
+			descriptor("read_file", "serial", async ({ callbacks }) => {
+				const approval = await callbacks.askApprovalResponse?.("tool", "batch")
+				callbacks.pushToolResult(JSON.stringify(approval))
+			}),
+		)
+
+		const outcome = await new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+			onEvent: (event) => {
+				events.push(event)
+			},
+		}).run(response({ id: "batch-read", name: "read_file" }))
+
+		expect(outcome.results[0]).toMatchObject({ status: "denied" })
+		expect(JSON.parse(String(outcome.results[0].content))).toEqual({
+			response: "objectResponse",
+			text: JSON.stringify({ "first.ts": true, "second.ts": false }),
+		})
+		expect(outcome.approvalRequestCount).toBe(1)
+		expect(outcome.approvalDeniedCount).toBe(1)
+		expect(events).toContainEqual(expect.objectContaining({ type: "approval_result", decision: "denied" }))
 	})
 
 	it("emits error telemetry for a stale apply_patch mismatch", async () => {
@@ -657,8 +827,9 @@ describe("ToolScheduler", () => {
 
 	it("serializes real read_file handlers when approval metadata is required", async () => {
 		const task = makeTask()
+		const workspaceRoot = path.resolve(__dirname, "../../../..")
 		Object.assign(task, {
-			cwd: process.cwd(),
+			cwd: workspaceRoot,
 			api: { getModel: () => ({ info: { supportsImages: false } }) },
 			consecutiveMistakeCount: 0,
 			rooIgnoreController: { validateAccess: () => true },
@@ -728,9 +899,8 @@ describe("ToolScheduler", () => {
 		expect(outcome.parallelToolCount).toBe(0)
 		expect(outcome.results).toHaveLength(6)
 		expect(outcome.results.every((result) => result.status === "success")).toBe(true)
-		// ReadFileTool does not request approval; registry approval capability is
-		// scheduling metadata and must not create duplicate scheduler prompts.
-		expect(outcome.approvalRequestCount).toBe(0)
+		// ReadFileTool routes interactive prompts through the scheduler-owned mutex.
+		expect(outcome.approvalRequestCount).toBe(6)
 		expect(outcome.supersededAskCount).toBe(0)
 		expect(outcome.completedToolResultCount).toBe(6)
 		expect(outcome.results.map((result) => (typeof result.content === "string" ? result.content : ""))).toEqual(

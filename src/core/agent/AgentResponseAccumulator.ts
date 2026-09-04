@@ -1,4 +1,5 @@
 import type { ApiStreamChunk } from "../../api/transform/stream"
+import { sanitizeToolUseId } from "../../utils/tool-id"
 import {
 	createAgentResponse,
 	type AgentResponse,
@@ -50,6 +51,7 @@ export class AgentResponseAccumulator {
 	private readonly pendingTools = new Map<string, PendingToolCall>()
 	private readonly pendingToolIndexes = new Map<number, string>()
 	private readonly emittedToolIds = new Set<string>()
+	private readonly emittedNormalizedToolIds = new Map<string, string>()
 	private lastReasoningIndex: number | undefined
 	private nextToolOrder = 0
 	private nextSyntheticId = 0
@@ -111,21 +113,27 @@ export class AgentResponseAccumulator {
 				)
 
 			case "error":
-				this.responseOutcome ??= { status: "failed", reason: chunk.message || chunk.error || "Provider error" }
+				this.recordOutcome({
+					status: "failed",
+					reason: chunk.message || chunk.error || "Provider error",
+					...(chunk.retryable !== undefined ? { retryable: chunk.retryable } : {}),
+				})
 				return this.emit(
 					{
 						type: "error",
 						message: chunk.message || chunk.error || "Provider returned an unspecified error.",
+						...(chunk.code !== undefined ? { code: chunk.code } : {}),
+						...(chunk.retryable !== undefined ? { retryable: chunk.retryable } : {}),
 					},
 					onItem,
 				)
 
 			case "outcome":
-				this.responseOutcome = {
+				this.recordOutcome({
 					status: chunk.status,
 					...(chunk.reason !== undefined ? { reason: chunk.reason } : {}),
 					...(chunk.retryable !== undefined ? { retryable: chunk.retryable } : {}),
-				}
+				})
 				return
 
 			case "tool_call": {
@@ -235,9 +243,19 @@ export class AgentResponseAccumulator {
 		}
 
 		this.finished = true
-		this.responseOutcome = outcome ?? this.responseOutcome
+		if (outcome) this.recordOutcome(outcome)
 		this.finishPromise = this.flushPendingTools(onItem)
 		return this.finishPromise
+	}
+
+	private recordOutcome(outcome: AgentResponseOutcome): void {
+		// Error chunks are semantic terminal evidence. Some provider adapters can
+		// still surface a trailing finish marker; never let that nominal success
+		// erase an already-observed failure, cancellation, or incomplete response.
+		if (outcome.status === "completed" && this.responseOutcome && this.responseOutcome.status !== "completed") {
+			return
+		}
+		this.responseOutcome = outcome
 	}
 
 	private async flushPendingTools(
@@ -355,42 +373,72 @@ export class AgentResponseAccumulator {
 		this.emittedToolIds.add(pending.id)
 		const parsed = parseToolArguments(pending.arguments)
 		if (pending.syntheticId) {
+			const message = `Tool call "${pending.name}" (${pending.id}) did not provide a stable call ID.`
+			this.recordOutcome({ status: "failed", reason: message, retryable: false })
 			await this.emit(
 				{
 					type: "error",
-					message: `Tool call "${pending.name}" (${pending.id}) did not provide a stable call ID.`,
+					message,
 					callId: pending.id,
 					toolName: pending.name,
+					retryable: false,
 				},
 				onItem,
 			)
 			return
 		}
 		if (!pending.name.trim()) {
+			const message = `Tool call "${pending.id}" did not provide a tool name.`
+			this.recordOutcome({ status: "failed", reason: message, retryable: false })
 			await this.emit(
 				{
 					type: "error",
-					message: `Tool call "${pending.id}" did not provide a tool name.`,
+					message,
 					callId: pending.id,
+					retryable: false,
 				},
 				onItem,
 			)
 			return
 		}
 		if (!parsed.ok) {
+			const message = pending.arguments.trim()
+				? `Unable to parse arguments for tool call "${pending.name}" (${pending.id}).`
+				: `Tool call "${pending.name}" (${pending.id}) did not provide complete arguments.`
+			this.recordOutcome({ status: "failed", reason: message, retryable: false })
 			await this.emit(
 				{
 					type: "error",
-					message: pending.arguments.trim()
-						? `Unable to parse arguments for tool call "${pending.name}" (${pending.id}).`
-						: `Tool call "${pending.name}" (${pending.id}) did not provide complete arguments.`,
+					message,
 					callId: pending.id,
 					toolName: pending.name,
+					retryable: false,
 				},
 				onItem,
 			)
 			return
 		}
+
+		const normalizedId = sanitizeToolUseId(pending.id)
+		const conflictingId = this.emittedNormalizedToolIds.get(normalizedId)
+		if (conflictingId && conflictingId !== pending.id) {
+			const message =
+				`Tool call IDs "${conflictingId}" and "${pending.id}" normalize to the same persisted ID ` +
+				`"${normalizedId}".`
+			this.recordOutcome({ status: "failed", reason: message, retryable: false })
+			await this.emit(
+				{
+					type: "error",
+					message,
+					callId: pending.id,
+					toolName: pending.name,
+					retryable: false,
+				},
+				onItem,
+			)
+			return
+		}
+		this.emittedNormalizedToolIds.set(normalizedId, pending.id)
 
 		await this.emit({ type: "tool_call", id: pending.id, name: pending.name, arguments: parsed.value }, onItem)
 	}

@@ -68,14 +68,57 @@ describe("AgentResponseAccumulator", () => {
 			message: 'Unable to parse arguments for tool call "second" (bad).',
 			callId: "bad",
 			toolName: "second",
+			retryable: false,
+		})
+		expect(result.outcome).toEqual({
+			status: "failed",
+			reason: 'Unable to parse arguments for tool call "second" (bad).',
+			retryable: false,
 		})
 	})
 
 	it("marks provider error responses as failed rather than completed", async () => {
 		const accumulator = new AgentResponseAccumulator()
-		await accumulator.add({ type: "error", error: "transport failed", message: "transport failed" })
+		await accumulator.add({
+			type: "error",
+			error: "transport failed",
+			message: "transport failed",
+			code: "EPIPE",
+			retryable: true,
+		})
 
-		expect((await accumulator.finish()).outcome).toEqual({ status: "failed", reason: "transport failed" })
+		expect(await accumulator.finish(undefined, { status: "completed" })).toMatchObject({
+			items: [
+				{
+					type: "error",
+					message: "transport failed",
+					code: "EPIPE",
+					retryable: true,
+				},
+			],
+			outcome: { status: "failed", reason: "transport failed", retryable: true },
+		})
+	})
+
+	it("fails colliding persisted tool-call IDs before either call can be dispatched together", async () => {
+		const accumulator = new AgentResponseAccumulator()
+		await accumulator.add({ type: "tool_call", id: "call/a", name: "read_file", arguments: '{"path":"a.ts"}' })
+		await accumulator.add({ type: "tool_call", id: "call:a", name: "read_file", arguments: '{"path":"b.ts"}' })
+
+		const result = await accumulator.finish()
+
+		expect(result.toolCalls).toEqual([
+			{ type: "tool_call", id: "call/a", name: "read_file", arguments: { path: "a.ts" } },
+		])
+		expect(result.items.at(-1)).toMatchObject({
+			type: "error",
+			callId: "call:a",
+			retryable: false,
+		})
+		expect(result.outcome).toMatchObject({
+			status: "failed",
+			retryable: false,
+		})
 	})
 
 	it("retains an explicit provider terminal outcome", async () => {

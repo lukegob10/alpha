@@ -4,7 +4,7 @@ import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
 
-import { clearRipgrepPathCache, resolveRipgrepBinary, truncateLine } from "../index"
+import { clearRipgrepPathCache, regexSearchFiles, resolveRipgrepBinary, truncateLine } from "../index"
 
 describe("Ripgrep line truncation", () => {
 	// The default MAX_LINE_LENGTH is 500 in the implementation
@@ -206,5 +206,41 @@ describe("Ripgrep binary resolution", () => {
 		expect(logger.warn).toHaveBeenCalledWith(
 			"[ripgrep] No ripgrep binary found in bundled dependencies, PATH, or VS Code internal fallbacks",
 		)
+	})
+})
+
+describe("Ripgrep content search", () => {
+	let tempDir: string
+
+	beforeEach(async () => {
+		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-rg-search-"))
+	})
+
+	afterEach(async () => {
+		await fs.rm(tempDir, { recursive: true, force: true })
+		clearRipgrepPathCache()
+	})
+
+	it("propagates ripgrep errors instead of reporting a false empty search", async () => {
+		await expect(regexSearchFiles(tempDir, tempDir, "[")).rejects.toThrow(/ripgrep process error/)
+	})
+
+	it("honors an already-aborted search signal before starting ripgrep", async () => {
+		const controller = new AbortController()
+		const reason = new Error("cancelled by test")
+		controller.abort(reason)
+
+		await expect(
+			regexSearchFiles(tempDir, tempDir, "needle", undefined, undefined, controller.signal),
+		).rejects.toBe(reason)
+	})
+
+	it("formats a match from a file named __proto__ without crashing", async () => {
+		await fs.writeFile(path.join(tempDir, "__proto__"), "needle\n")
+
+		const output = await regexSearchFiles(tempDir, tempDir, "needle")
+
+		expect(output).toContain("# __proto__")
+		expect(output).toContain("needle")
 	})
 })

@@ -90,6 +90,19 @@ describe("ToolRegistry", () => {
 		})
 	})
 
+	it("prefers the canonical dynamic MCP schema when an alias appears first", () => {
+		const alias = schema("mcp__filesystem__read_file")
+		alias.function.description = "legacy MCP alias schema"
+		const canonical = schema("mcp--filesystem--read_file")
+		canonical.function.description = "canonical MCP schema"
+
+		const registry = new ToolRegistry({ nativeTools: [], mcpTools: [alias, canonical] })
+
+		expect(registry.resolve("mcp--filesystem--read_file")?.schema).toMatchObject({
+			function: { name: "mcp--filesystem--read_file", description: "canonical MCP schema" },
+		})
+	})
+
 	it("supports fixture descriptors without changing the built-in registry", () => {
 		const registry = new ToolRegistry({ includeBuiltIns: false })
 		registry.register({

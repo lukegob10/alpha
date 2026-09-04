@@ -6347,8 +6347,9 @@ export class ClineProvider
 	private async publishParentVerificationTransition(
 		parent: Task,
 		obligation: ReturnType<AgentControlStore["getVerificationObligations"]>[number],
+		rootTaskId?: string,
 	): Promise<void> {
-		const root = await this.ensureAgentControlRoot(parent)
+		const effectiveRootTaskId = rootTaskId ?? (await this.ensureAgentControlRoot(parent)).rootTaskId
 		if (obligation.parentTaskId !== parent.taskId) {
 			throw new Error(`Verification transition owner mismatch for ${obligation.id}`)
 		}
@@ -6357,22 +6358,28 @@ export class ClineProvider
 			obligation.appliedAt ??
 			obligation.supersededByChangeSetId ??
 			obligation.updatedAt
-		await this.agentControlStore.appendEvent({
-			eventId: `parent-verification:${obligation.id}:${obligation.contentVersion ?? "legacy"}:${obligation.status}:${marker}`,
-			rootTaskId: root.rootTaskId,
-			sender: obligation.parentTaskId,
-			recipient: obligation.parentTaskId,
-			kind: "lifecycle",
-			name: `parent_verification_${obligation.status}`,
-			payload: {
-				obligationId: obligation.id,
-				changeSetId: obligation.changeSetId,
-				workerTaskId: obligation.workerTaskId,
-				workerPath: obligation.workerPath,
-				status: obligation.status,
-			},
-			createdAt: obligation.updatedAt,
-		})
+		try {
+			await this.agentControlStore.appendEvent({
+				eventId: `parent-verification:${obligation.id}:${obligation.contentVersion ?? "legacy"}:${obligation.status}:${marker}`,
+				rootTaskId: effectiveRootTaskId,
+				sender: obligation.parentTaskId,
+				recipient: obligation.parentTaskId,
+				kind: "lifecycle",
+				name: `parent_verification_${obligation.status}`,
+				payload: {
+					obligationId: obligation.id,
+					changeSetId: obligation.changeSetId,
+					workerTaskId: obligation.workerTaskId,
+					workerPath: obligation.workerPath,
+					status: obligation.status,
+				},
+				createdAt: obligation.updatedAt,
+			})
+		} catch (error) {
+			// The ledger is authoritative; a transient mailbox projection failure
+			// must not turn a durable content receipt into mutation debt.
+			console.error("[ClineProvider] Failed to publish parent verification transition", error)
+		}
 	}
 
 	private async recordWorkerVerificationObligation(
@@ -6485,8 +6492,9 @@ export class ClineProvider
 		parent: Task,
 		fileVersions: Record<string, string>,
 		scopeUnresolved = false,
-	): Promise<void> {
-		if (parent.taskKind !== "primary" || Object.keys(fileVersions).length === 0) return
+		reservationToken?: string,
+	): Promise<boolean> {
+		if (parent.taskKind !== "primary" || Object.keys(fileVersions).length === 0) return false
 		const root = await this.ensureAgentControlRoot(parent)
 		// Unknown-scope debt must survive a command removing its workspace. Prefer
 		// the admitted reservation identity; unresolved obligations cannot earn credit.
@@ -6510,8 +6518,10 @@ export class ClineProvider
 			scopeUnresolved,
 			verificationRequirements,
 			dependencyVersions,
+			reservationToken: scopeUnresolved ? undefined : reservationToken,
 		})
-		if (obligation) await this.publishParentVerificationTransition(parent, obligation)
+		if (obligation) await this.publishParentVerificationTransition(parent, obligation, root.rootTaskId)
+		return Boolean(obligation && !scopeUnresolved && reservationToken)
 	}
 
 	public async getParentVerificationContext(parent: Task): Promise<string | undefined> {

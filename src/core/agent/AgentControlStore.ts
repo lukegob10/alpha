@@ -729,6 +729,8 @@ export interface RecordPrimaryMutationInput {
 	parentTaskId: string
 	workspacePath: string
 	fileVersions: Record<string, string>
+	/** Settle this admitted mutation together with the final content receipt. */
+	reservationToken?: string
 	dependencyVersions?: Record<string, string>
 	scopeUnresolved?: boolean
 	verificationRequirements?: Record<string, Array<"test" | "types" | "lint">>
@@ -1471,27 +1473,11 @@ export class AgentControlStore {
 	async releasePrimaryMutation(parentTaskId: string, rootTaskId: string, token: string): Promise<void> {
 		await this.transact((draft) => {
 			this.assertParentMutationOwned(draft, parentTaskId, rootTaskId, "settle primary mutation")
-			const obligation = draft.verificationObligations.find(
-				(item) => item.id === `primary-change:${parentTaskId}`,
-			)
-			if (!obligation?.mutationReservations?.includes(token)) return
-			obligation.mutationReservations = obligation.mutationReservations.filter((item) => item !== token)
-			if (obligation.mutationReservations.length > 0) return
-			if (obligation.changedFiles.length === 0 && !obligation.scopeUnresolved) {
-				draft.verificationObligations = draft.verificationObligations.filter((item) => item !== obligation)
-				return
-			}
-			obligation.status = obligation.scopeUnresolved
-				? "pending"
-				: obligation.verification?.status === "passed" && hasVerificationCoverage(obligation)
-					? "satisfied"
-					: obligation.verification?.status === "failed"
-						? "failed"
-						: "pending"
-			obligation.updatedAt = this.now()
+			this.settlePrimaryMutationReservation(draft, parentTaskId, token)
 		})
 	}
 
+	/** Record a final content receipt, optionally settling its reservation atomically. */
 	async recordPrimaryMutation(input: RecordPrimaryMutationInput): Promise<ParentVerificationObligation | undefined> {
 		if (Object.keys(input.fileVersions).length === 0) return undefined
 		return this.transact((draft) => {
@@ -1558,8 +1544,34 @@ export class AgentControlStore {
 				delete worker.verification
 				delete worker.verifiedChecks
 			}
+			// A final content receipt and its admitted reservation must share one
+			// durable transaction. Otherwise a projection failure after this write can
+			// strand a reservation even though the receipt is already complete.
+			if (input.reservationToken && !input.scopeUnresolved) {
+				this.settlePrimaryMutationReservation(draft, input.parentTaskId, input.reservationToken)
+			}
 			return clone(obligation)
 		})
+	}
+
+	/** Settle one reservation after its final receipt has been added to the draft. */
+	private settlePrimaryMutationReservation(draft: AgentControlState, parentTaskId: string, token: string): void {
+		const obligation = draft.verificationObligations.find((item) => item.id === `primary-change:${parentTaskId}`)
+		if (!obligation?.mutationReservations?.includes(token)) return
+		obligation.mutationReservations = obligation.mutationReservations.filter((item) => item !== token)
+		if (obligation.mutationReservations.length > 0) return
+		if (obligation.changedFiles.length === 0 && !obligation.scopeUnresolved) {
+			draft.verificationObligations = draft.verificationObligations.filter((item) => item !== obligation)
+			return
+		}
+		obligation.status = obligation.scopeUnresolved
+			? "pending"
+			: obligation.verification?.status === "passed" && hasVerificationCoverage(obligation)
+				? "satisfied"
+				: obligation.verification?.status === "failed"
+					? "failed"
+					: "pending"
+		obligation.updatedAt = this.now()
 	}
 
 	/** Revalidate persisted content after reload, rewind, external edits, and before crediting a command. */

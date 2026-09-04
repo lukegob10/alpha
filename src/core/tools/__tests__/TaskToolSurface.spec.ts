@@ -74,6 +74,23 @@ describe("TaskToolSurface", () => {
 		expect(surface.policy.disabledTools).toEqual(["write_to_file"])
 	})
 
+	it("prefers a canonical schema when an alias appears first", () => {
+		const alias = schema("write_file")
+		alias.function.description = "legacy alias schema"
+		const canonical = schema("write_to_file")
+		canonical.function.description = "canonical schema"
+
+		const surface = createTaskToolSurface({
+			registry: registry(),
+			schemas: [alias, canonical],
+		})
+
+		expect(surface.schemas).toHaveLength(1)
+		expect(surface.schemas[0]).toMatchObject({
+			function: { name: "write_to_file", description: "canonical schema" },
+		})
+	})
+
 	it.each([
 		["work", ["read_file", "write_to_file"]],
 		["plan", ["read_file"]],

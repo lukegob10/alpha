@@ -19,7 +19,12 @@ import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
 import { extractTextFromFile, addLineNumbers, getSupportedBinaryFormats } from "../../integrations/misc/extract-text"
-import { readWithIndentation, readWithSlice } from "../../integrations/misc/indentation-reader"
+import {
+	formatWithLineNumbers,
+	parseLines,
+	readWithIndentation,
+	readWithSlice,
+} from "../../integrations/misc/indentation-reader"
 import { DEFAULT_LINE_LIMIT } from "../prompts/tools/native-tools/read_file"
 import type { ToolUse, PushToolResult } from "../../shared/tools"
 
@@ -31,7 +36,7 @@ import {
 	processImageFile,
 	ImageMemoryTracker,
 } from "./helpers/imageHelpers"
-import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { BaseTool, ToolCallbacks, type ToolApprovalResponse } from "./BaseTool"
 import { getTaskDisplayPath, getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -65,12 +70,26 @@ interface FileResult {
 	entry?: InternalFileEntry
 }
 
+function decodeTextBuffer(buffer: Buffer): string {
+	if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+		return buffer.subarray(3).toString("utf8")
+	}
+	return buffer.toString("utf8")
+}
+
 // ─── Tool Implementation ──────────────────────────────────────────────────────
 
 export class ReadFileTool extends BaseTool<"read_file"> {
 	readonly name = "read_file" as const
 
 	async execute(params: ReadFileToolParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
+		if (!params || typeof params !== "object" || Array.isArray(params)) {
+			task.didToolFailInCurrentTurn = true
+			callbacks.setResultMetadata?.({ status: "error" })
+			callbacks.pushToolResult("Error: read_file arguments must be an object.")
+			return
+		}
+
 		// Dispatch to legacy or new execution path based on format
 		if (isLegacyReadFileParams(params)) {
 			return this.executeLegacy(params.files, task, callbacks)
@@ -88,9 +107,11 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		const filePath = params.path
 
 		// Validate input
-		if (!filePath) {
+		if (typeof filePath !== "string" || filePath.trim() === "") {
 			task.consecutiveMistakeCount++
 			task.recordToolError("read_file")
+			task.didToolFailInCurrentTurn = true
+			callbacks.setResultMetadata?.({ status: "error" })
 			const errorMsg = await task.sayAndCreateMissingParamError("read_file", "path")
 			pushToolResult(`Error: ${errorMsg}`)
 			return
@@ -99,15 +120,11 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		const supportsImages = modelInfo.supportsImages ?? false
 
 		// Initialize file results tracking
-		// Validate line number parameters (must be 1-indexed positive integers)
-		if (params.offset !== undefined && params.offset < 1) {
-			const errorMsg = `offset must be a 1-indexed line number (got ${params.offset}). Line numbers start at 1.`
-			pushToolResult(`Error: ${errorMsg}`)
-			return
-		}
-		if (params.indentation?.anchor_line !== undefined && params.indentation.anchor_line < 1) {
-			const errorMsg = `anchor_line must be a 1-indexed line number (got ${params.indentation.anchor_line}). Line numbers start at 1.`
-			pushToolResult(`Error: ${errorMsg}`)
+		const validationError = this.validateNewParams(params)
+		if (validationError) {
+			task.didToolFailInCurrentTurn = true
+			callbacks.setResultMetadata?.({ status: "error" })
+			pushToolResult(`Error: ${validationError}`)
 			return
 		}
 
@@ -147,7 +164,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 
 				// RooIgnore validation
 				const accessAllowed = task.rooIgnoreController?.validateAccess(relPath)
-				if (!accessAllowed) {
+				if (accessAllowed === false) {
 					await task.say("rooignore_error", relPath)
 					const errorMsg = formatResponse.rooIgnoreError(relPath)
 					updateFileResult(relPath, {
@@ -155,6 +172,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 						error: errorMsg,
 						nativeContent: `File: ${relPath}\nError: ${errorMsg}`,
 					})
+					callbacks.setResultMetadata?.({ status: "denied" })
 					continue
 				}
 
@@ -162,7 +180,13 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 			}
 
 			// Phase 2: Request user approval
-			await this.requestApproval(task, filesToApprove, updateFileResult)
+			const approvalResolved = await this.requestApproval(task, filesToApprove, updateFileResult, callbacks)
+			if (!approvalResolved || this.isCancelled(task, callbacks)) {
+				if (this.isCancelled(task, callbacks)) {
+					callbacks.setResultMetadata?.({ status: "cancelled" })
+				}
+				return
+			}
 
 			// Phase 3: Process approved files
 			const imageMemoryTracker = new ImageMemoryTracker()
@@ -174,6 +198,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 
 			for (const fileResult of fileResults) {
 				if (fileResult.status !== "approved") continue
+				callbacks.signal?.throwIfAborted()
 
 				const relPath = fileResult.path
 				const fullPath = path.resolve(task.cwd, relPath)
@@ -182,6 +207,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				try {
 					// Check if path is a directory
 					const stats = await fs.stat(fullPath)
+					callbacks.signal?.throwIfAborted()
 					if (stats.isDirectory()) {
 						const errorMsg = `Cannot read '${relPath}' because it is a directory. Use list_files tool instead.`
 						updateFileResult(relPath, {
@@ -189,12 +215,14 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 							error: errorMsg,
 							nativeContent: `File: ${relPath}\nError: ${errorMsg}`,
 						})
+						callbacks.setResultMetadata?.({ status: "error" })
 						await task.say("error", `Error reading file ${relPath}: ${errorMsg}`)
 						continue
 					}
 
 					// Check for binary file
 					const isBinary = await isBinaryFile(fullPath)
+					callbacks.signal?.throwIfAborted()
 
 					if (isBinary) {
 						await this.handleBinaryFile(
@@ -206,6 +234,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 							maxTotalImageSize,
 							imageMemoryTracker,
 							updateFileResult,
+							callbacks,
 						)
 						continue
 					}
@@ -213,8 +242,11 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 					// Read text file content with lossy UTF-8 conversion
 					// Reading as Buffer first allows graceful handling of non-UTF8 bytes
 					// (they become U+FFFD replacement characters instead of throwing)
-					const buffer = await fs.readFile(fullPath)
-					const fileContent = buffer.toString("utf-8")
+					const buffer = callbacks.signal
+						? await fs.readFile(fullPath, { signal: callbacks.signal })
+						: await fs.readFile(fullPath)
+					callbacks.signal?.throwIfAborted()
+					const fileContent = decodeTextBuffer(buffer)
 					const result = this.processTextFile(fileContent, entry)
 
 					await task.fileContextTracker.trackFileContext(relPath, "read_tool" as RecordSource)
@@ -223,12 +255,14 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 						nativeContent: `File: ${relPath}\n${result}`,
 					})
 				} catch (error) {
+					if (this.isCancelled(task, callbacks)) throw error
 					const errorMsg = error instanceof Error ? error.message : String(error)
 					updateFileResult(relPath, {
 						status: "error",
 						error: `Error reading file: ${errorMsg}`,
 						nativeContent: `File: ${relPath}\nError: ${errorMsg}`,
 					})
+					callbacks.setResultMetadata?.({ status: "error" })
 					await task.say("error", `Error reading file ${relPath}: ${errorMsg}`)
 				}
 			}
@@ -241,6 +275,10 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 
 			this.buildAndPushResult(task, fileResults, pushToolResult)
 		} catch (error) {
+			if (this.isCancelled(task, callbacks)) {
+				callbacks.setResultMetadata?.({ status: "cancelled" })
+				return
+			}
 			const relPath = filePath || "unknown"
 			const errorMsg = error instanceof Error ? error.message : String(error)
 
@@ -252,6 +290,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 
 			await task.say("error", `Error reading file ${relPath}: ${errorMsg}`)
 			task.didToolFailInCurrentTurn = true
+			callbacks.setResultMetadata?.({ status: "error" })
 
 			const errorResult = fileResults
 				.filter((r) => r.nativeContent)
@@ -262,10 +301,74 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		}
 	}
 
+	private validateNewParams(params: ReadFileParams): string | undefined {
+		if (params.mode !== undefined && params.mode !== "slice" && params.mode !== "indentation") {
+			return `mode must be either 'slice' or 'indentation' (got ${String(params.mode)}).`
+		}
+
+		const validateInteger = (value: unknown, name: string, minimum: number, description: string) => {
+			if (value === undefined) return undefined
+			if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum) {
+				return `${name} must be ${description} (got ${String(value)}).`
+			}
+			return undefined
+		}
+
+		const offsetError = validateInteger(params.offset, "offset", 1, "a 1-indexed line number")
+		if (offsetError) return `${offsetError} Line numbers start at 1.`
+
+		const limitError = validateInteger(params.limit, "limit", 1, "a positive integer")
+		if (limitError) return limitError
+
+		if (
+			params.indentation !== undefined &&
+			(typeof params.indentation !== "object" || params.indentation === null)
+		) {
+			return "indentation must be an object."
+		}
+
+		const indentation = params.indentation
+		if (!indentation) return undefined
+
+		const anchorError = validateInteger(indentation.anchor_line, "anchor_line", 1, "a 1-indexed line number")
+		if (anchorError) return `${anchorError} Line numbers start at 1.`
+
+		const maxLevelsError = validateInteger(indentation.max_levels, "max_levels", 0, "a non-negative integer")
+		if (maxLevelsError) return maxLevelsError
+
+		const maxLinesError = validateInteger(indentation.max_lines, "max_lines", 1, "a positive integer")
+		if (maxLinesError) return maxLinesError
+
+		if (
+			(indentation.include_siblings !== undefined && typeof indentation.include_siblings !== "boolean") ||
+			(indentation.include_header !== undefined && typeof indentation.include_header !== "boolean")
+		) {
+			return "indentation.include_siblings and indentation.include_header must be booleans."
+		}
+
+		return undefined
+	}
+
+	private isCancelled(task: Task, callbacks: ToolCallbacks): boolean {
+		return task.abort === true || callbacks.signal?.aborted === true
+	}
+
+	private askForApproval(
+		task: Task,
+		callbacks: ToolCallbacks,
+		message: string,
+	): Promise<ToolApprovalResponse | undefined> {
+		return callbacks.askApprovalResponse
+			? callbacks.askApprovalResponse("tool", message)
+			: task.ask("tool", message, false)
+	}
+
 	/**
 	 * Process a text file according to the requested mode.
 	 */
 	private processTextFile(content: string, entry: InternalFileEntry): string {
+		if (content.length === 0) return "Note: File is empty"
+
 		const mode = entry.mode || "slice"
 
 		if (mode === "indentation") {
@@ -340,6 +443,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		maxTotalImageSize: number,
 		imageMemoryTracker: ImageMemoryTracker,
 		updateFileResult: (path: string, updates: Partial<FileResult>) => void,
+		callbacks: ToolCallbacks,
 	): Promise<void> {
 		const fileExtension = path.extname(relPath).toLowerCase()
 		const supportedBinaryFormats = getSupportedBinaryFormats()
@@ -373,12 +477,14 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				})
 				return
 			} catch (error) {
+				if (this.isCancelled(task, callbacks)) throw error
 				const errorMsg = error instanceof Error ? error.message : String(error)
 				updateFileResult(relPath, {
 					status: "error",
 					error: `Error reading image file: ${errorMsg}`,
 					nativeContent: `File: ${relPath}\nError: ${errorMsg}`,
 				})
+				callbacks.setResultMetadata?.({ status: "error" })
 				await task.say("error", `Error reading image file ${relPath}: ${errorMsg}`)
 				return
 			}
@@ -401,12 +507,14 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				})
 				return
 			} catch (error) {
+				if (this.isCancelled(task, callbacks)) throw error
 				const errorMsg = error instanceof Error ? error.message : String(error)
 				updateFileResult(relPath, {
 					status: "error",
 					error: `Error extracting text: ${errorMsg}`,
 					nativeContent: `File: ${relPath}\nError: ${errorMsg}`,
 				})
+				callbacks.setResultMetadata?.({ status: "error" })
 				await task.say("error", `Error extracting text from ${relPath}: ${errorMsg}`)
 				return
 			}
@@ -427,8 +535,9 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		task: Task,
 		filesToApprove: FileResult[],
 		updateFileResult: (path: string, updates: Partial<FileResult>) => void,
-	): Promise<void> {
-		if (filesToApprove.length === 0) return
+		callbacks: ToolCallbacks,
+	): Promise<boolean> {
+		if (filesToApprove.length === 0) return true
 
 		if (filesToApprove.length > 1) {
 			// Batch approval
@@ -451,33 +560,53 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 			})
 
 			const completeMessage = JSON.stringify({ tool: "readFile", batchFiles } satisfies ClineSayTool)
-			const { response, text, images } = await task.ask("tool", completeMessage, false)
+			// BatchFilePermission can return an objectResponse containing an
+			// independent decision for each displayed file. The normal approval
+			// callback intentionally reduces responses to a boolean, so use the
+			// optional rich channel when the scheduler provides it. Keep the
+			// Task.ask fallback for older hosts that do not expose that channel.
+			const approval = await this.askForApproval(task, callbacks, completeMessage)
 
-			if (response === "yesButtonClicked") {
-				if (text) await task.say("user_feedback", text, images)
-				filesToApprove.forEach((fr) => {
-					updateFileResult(fr.path, { status: "approved", feedbackText: text, feedbackImages: images })
-				})
-			} else if (response === "noButtonClicked") {
-				if (text) await task.say("user_feedback", text, images)
+			if (!approval || this.isCancelled(task, callbacks)) return false
+			if (
+				approval.text &&
+				(approval.response === "yesButtonClicked" || approval.response === "noButtonClicked")
+			) {
+				await task.say("user_feedback", approval.text, approval.images)
+			}
+
+			if (approval.response === "yesButtonClicked") {
+				filesToApprove.forEach((fr) =>
+					updateFileResult(fr.path, {
+						status: "approved",
+						...(approval.text ? { feedbackText: approval.text, feedbackImages: approval.images } : {}),
+					}),
+				)
+			} else if (approval.response === "noButtonClicked") {
 				task.didRejectTool = true
+				callbacks.setResultMetadata?.({ status: "denied" })
 				filesToApprove.forEach((fr) => {
 					updateFileResult(fr.path, {
 						status: "denied",
 						nativeContent: `File: ${fr.path}\nStatus: Denied by user`,
-						feedbackText: text,
-						feedbackImages: images,
+						...(approval.text ? { feedbackText: approval.text, feedbackImages: approval.images } : {}),
 					})
 				})
-			} else {
-				// Individual permissions
+			} else if (approval.response === "objectResponse") {
 				try {
-					const individualPermissions = JSON.parse(text || "{}")
-					let hasAnyDenial = false
+					const individualPermissions = JSON.parse(approval.text || "{}")
+					if (
+						!individualPermissions ||
+						typeof individualPermissions !== "object" ||
+						Array.isArray(individualPermissions)
+					) {
+						throw new Error("Batch permission response must be an object.")
+					}
 
+					let hasAnyDenial = false
 					batchFiles.forEach((batchFile, index) => {
 						const fileResult = filesToApprove[index]
-						const approved = individualPermissions[batchFile.key] === true
+						const approved = (individualPermissions as Record<string, unknown>)[batchFile.key] === true
 
 						if (approved) {
 							updateFileResult(fileResult.path, { status: "approved" })
@@ -490,9 +619,13 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 						}
 					})
 
-					if (hasAnyDenial) task.didRejectTool = true
+					if (hasAnyDenial) {
+						task.didRejectTool = true
+						callbacks.setResultMetadata?.({ status: "denied" })
+					}
 				} catch {
 					task.didRejectTool = true
+					callbacks.setResultMetadata?.({ status: "denied" })
 					filesToApprove.forEach((fr) => {
 						updateFileResult(fr.path, {
 							status: "denied",
@@ -500,7 +633,18 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 						})
 					})
 				}
+			} else {
+				// A free-form response cannot safely grant any file permission.
+				task.didRejectTool = true
+				callbacks.setResultMetadata?.({ status: "denied" })
+				filesToApprove.forEach((fr) => {
+					updateFileResult(fr.path, {
+						status: "denied",
+						nativeContent: `File: ${fr.path}\nStatus: Denied by user`,
+					})
+				})
 			}
+			return true
 		} else {
 			// Single file approval
 			const fileResult = filesToApprove[0]
@@ -520,21 +664,25 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				startLine,
 			} satisfies ClineSayTool)
 
-			const { response, text, images } = await task.ask("tool", completeMessage, false)
+			const approval = await this.askForApproval(task, callbacks, completeMessage)
+			if (!approval || this.isCancelled(task, callbacks)) return false
+			if (approval.text) await task.say("user_feedback", approval.text, approval.images)
 
-			if (response !== "yesButtonClicked") {
-				if (text) await task.say("user_feedback", text, images)
+			if (approval.response !== "yesButtonClicked") {
 				task.didRejectTool = true
+				callbacks.setResultMetadata?.({ status: "denied" })
 				updateFileResult(relPath, {
 					status: "denied",
 					nativeContent: `File: ${relPath}\nStatus: Denied by user`,
-					feedbackText: text,
-					feedbackImages: images,
+					...(approval.text ? { feedbackText: approval.text, feedbackImages: approval.images } : {}),
 				})
 			} else {
-				if (text) await task.say("user_feedback", text, images)
-				updateFileResult(relPath, { status: "approved", feedbackText: text, feedbackImages: images })
+				updateFileResult(relPath, {
+					status: "approved",
+					...(approval.text ? { feedbackText: approval.text, feedbackImages: approval.images } : {}),
+				})
 			}
+			return true
 		}
 	}
 
@@ -668,31 +816,72 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 	/** Execute the bounded multi-file format. */
 	private async executeLegacy(fileEntries: FileEntry[], task: Task, callbacks: ToolCallbacks): Promise<void> {
 		const { pushToolResult } = callbacks
-		const modelInfo = task.api.getModel().info
 
-		if (!fileEntries || fileEntries.length === 0) {
+		if (!Array.isArray(fileEntries) || fileEntries.length === 0) {
 			task.consecutiveMistakeCount++
 			task.recordToolError("read_file")
+			task.didToolFailInCurrentTurn = true
+			callbacks.setResultMetadata?.({ status: "error" })
 			const errorMsg = await task.sayAndCreateMissingParamError("read_file", "files")
 			pushToolResult(`Error: ${errorMsg}`)
 			return
 		}
 
-		const supportsImages = modelInfo.supportsImages ?? false
+		if (fileEntries.length > 8) {
+			task.didToolFailInCurrentTurn = true
+			callbacks.setResultMetadata?.({ status: "error" })
+			pushToolResult("Error: read_file supports at most 8 files per request.")
+			return
+		}
+
+		if (this.isCancelled(task, callbacks)) {
+			callbacks.setResultMetadata?.({ status: "cancelled" })
+			return
+		}
+
+		let supportsImages = false
+		try {
+			supportsImages = task.api.getModel().info.supportsImages ?? false
+		} catch (error) {
+			const errorMsg = error instanceof Error ? error.message : String(error)
+			task.didToolFailInCurrentTurn = true
+			callbacks.setResultMetadata?.({ status: "error" })
+			pushToolResult(`Error reading file: ${errorMsg}`)
+			return
+		}
 
 		// Process each file sequentially (legacy behavior)
 		const results: string[] = []
 
-		for (const entry of fileEntries) {
-			const relPath = entry.path
+		for (const rawEntry of fileEntries as unknown[]) {
+			if (this.isCancelled(task, callbacks)) {
+				callbacks.setResultMetadata?.({ status: "cancelled" })
+				return
+			}
+
+			const entryError = this.validateLegacyEntry(rawEntry)
+			const relPath =
+				rawEntry && typeof rawEntry === "object" && typeof (rawEntry as { path?: unknown }).path === "string"
+					? (rawEntry as { path: string }).path
+					: "<missing path>"
+			if (entryError) {
+				task.didToolFailInCurrentTurn = true
+				callbacks.setResultMetadata?.({ status: "error" })
+				results.push(`File: ${relPath}\nError: ${entryError}`)
+				continue
+			}
+
+			const entry = rawEntry as FileEntry
 			const fullPath = path.resolve(task.cwd, relPath)
 
 			// RooIgnore validation
 			const accessAllowed = task.rooIgnoreController?.validateAccess(relPath)
-			if (!accessAllowed) {
+			if (accessAllowed === false) {
 				await task.say("rooignore_error", relPath)
 				const errorMsg = formatResponse.rooIgnoreError(relPath)
 				results.push(`File: ${relPath}\nError: ${errorMsg}`)
+				task.didToolFailInCurrentTurn = true
+				callbacks.setResultMetadata?.({ status: "denied" })
 				continue
 			}
 
@@ -712,28 +901,40 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				reason: lineSnippet || undefined,
 			} satisfies ClineSayTool)
 
-			const { response, text, images } = await task.ask("tool", completeMessage, false)
+			const approval = await this.askForApproval(task, callbacks, completeMessage)
+			if (!approval || this.isCancelled(task, callbacks)) {
+				if (this.isCancelled(task, callbacks)) {
+					callbacks.setResultMetadata?.({ status: "cancelled" })
+				}
+				return
+			}
+			if (approval.text && approval.response !== "objectResponse") {
+				await task.say("user_feedback", approval.text, approval.images)
+			}
 
-			if (response !== "yesButtonClicked") {
-				if (text) await task.say("user_feedback", text, images)
+			if (approval.response !== "yesButtonClicked") {
 				task.didRejectTool = true
+				callbacks.setResultMetadata?.({ status: "denied" })
 				results.push(`File: ${relPath}\nStatus: Denied by user`)
 				continue
 			}
 
-			if (text) await task.say("user_feedback", text, images)
-
 			try {
+				callbacks.signal?.throwIfAborted()
 				// Check if the path is a directory
 				const stats = await fs.stat(fullPath)
+				callbacks.signal?.throwIfAborted()
 				if (stats.isDirectory()) {
 					const errorMsg = `Cannot read '${relPath}' because it is a directory.`
 					results.push(`File: ${relPath}\nError: ${errorMsg}`)
+					task.didToolFailInCurrentTurn = true
+					callbacks.setResultMetadata?.({ status: "error" })
 					await task.say("error", `Error reading file ${relPath}: ${errorMsg}`)
 					continue
 				}
 
-				const isBinary = await isBinaryFile(fullPath).catch(() => false)
+				const isBinary = await isBinaryFile(fullPath)
+				callbacks.signal?.throwIfAborted()
 
 				if (isBinary) {
 					// Handle binary files (images)
@@ -761,18 +962,29 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 						}
 					} else {
 						results.push(`File: ${relPath}\nError: Cannot read binary file`)
+						task.didToolFailInCurrentTurn = true
+						callbacks.setResultMetadata?.({ status: "error" })
 					}
 					continue
 				}
 
 				// Read text file
-				const rawContent = await fs.readFile(fullPath, "utf8")
+				const buffer = callbacks.signal
+					? await fs.readFile(fullPath, { signal: callbacks.signal })
+					: await fs.readFile(fullPath)
+				callbacks.signal?.throwIfAborted()
+				const rawContent = decodeTextBuffer(buffer)
 
 				// Handle line ranges if specified
 				let content: string
 				if (entry.lineRanges && entry.lineRanges.length > 0) {
-					const lines = rawContent.split("\n")
-					const selectedLines: string[] = []
+					// Keep source line numbers on every selected record. Passing bare
+					// strings to formatWithLineNumbers would renumber disjoint ranges
+					// from one, making the result unsafe for follow-up edits.
+					const lines = parseLines(rawContent).map((line) =>
+						line.content.endsWith("\r") ? { ...line, content: line.content.slice(0, -1) } : line,
+					)
+					const selectedLines = []
 
 					for (const range of entry.lineRanges) {
 						// Convert to 0-based index, ranges are 1-based inclusive
@@ -780,17 +992,26 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 						const endIdx = Math.min(lines.length - 1, range.end - 1)
 
 						for (let i = startIdx; i <= endIdx; i++) {
-							selectedLines.push(`${i + 1} | ${lines[i]}`)
+							selectedLines.push(lines[i])
 						}
 					}
-					content = selectedLines.join("\n")
+					content =
+						selectedLines.length > 0
+							? formatWithLineNumbers(selectedLines)
+							: "Note: No lines matched the requested ranges"
 				} else {
 					// Read with default limits using slice mode
-					const result = readWithSlice(rawContent, 0, DEFAULT_LINE_LIMIT)
-					content = result.content
-					if (result.wasTruncated) {
-						content += `\n\n[File truncated: showing ${result.returnedLines} of ${result.totalLines} total lines]`
-					}
+					content =
+						rawContent.length === 0
+							? "Note: File is empty"
+							: (() => {
+									const result = readWithSlice(rawContent, 0, DEFAULT_LINE_LIMIT)
+									let output = result.content
+									if (result.wasTruncated) {
+										output += `\n\n[File truncated: showing ${result.returnedLines} of ${result.totalLines} total lines]`
+									}
+									return output
+								})()
 				}
 
 				results.push(`File: ${relPath}\n${content}`)
@@ -798,14 +1019,50 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				// Track file in context
 				await task.fileContextTracker.trackFileContext(relPath, "read_tool")
 			} catch (error) {
+				if (this.isCancelled(task, callbacks)) {
+					callbacks.setResultMetadata?.({ status: "cancelled" })
+					return
+				}
 				const errorMsg = error instanceof Error ? error.message : String(error)
 				results.push(`File: ${relPath}\nError: ${errorMsg}`)
+				task.didToolFailInCurrentTurn = true
+				callbacks.setResultMetadata?.({ status: "error" })
 				await task.say("error", `Error reading file ${relPath}: ${errorMsg}`)
 			}
 		}
 
 		// Push combined results
 		pushToolResult(results.join("\n\n---\n\n"))
+	}
+
+	private validateLegacyEntry(value: unknown): string | undefined {
+		if (!value || typeof value !== "object" || Array.isArray(value)) {
+			return "Each files entry must be an object with a non-empty path."
+		}
+
+		const entry = value as { path?: unknown; lineRanges?: unknown }
+		if (typeof entry.path !== "string" || entry.path.trim() === "") {
+			return "Each files entry must include a non-empty path."
+		}
+
+		if (entry.lineRanges === undefined) return undefined
+		if (!Array.isArray(entry.lineRanges)) return "lineRanges must be an array."
+
+		for (const range of entry.lineRanges) {
+			if (
+				!range ||
+				typeof range !== "object" ||
+				Array.isArray(range) ||
+				!Number.isSafeInteger((range as LineRange).start) ||
+				!Number.isSafeInteger((range as LineRange).end) ||
+				(range as LineRange).start < 1 ||
+				(range as LineRange).end < (range as LineRange).start
+			) {
+				return "lineRanges must contain 1-based inclusive ranges with start <= end."
+			}
+		}
+
+		return undefined
 	}
 }
 

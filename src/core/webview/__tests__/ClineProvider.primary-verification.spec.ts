@@ -229,6 +229,36 @@ describe("ClineProvider primary verification", () => {
 		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(false)
 	})
 
+	it("does not strand a receipt when its mailbox projection fails", async () => {
+		const token = "workspace-command"
+		await provider.reservePrimaryMutation(parent, token)
+		await fs.writeFile(path.join(workspace, "src", "a.ts"), "export const value = 2\n")
+		const fileVersions = await captureVerificationContent(workspace, ["src/a.ts"])
+		const projectionError = new Error("verification projection unavailable")
+		const appendEvent = vi.spyOn(store, "appendEvent").mockRejectedValue(projectionError)
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+		const publish = vi.fn(async (...args: [any, any]) => {
+			await (ClineProvider.prototype as any).publishParentVerificationTransition.apply(provider, args)
+		})
+		Object.assign(provider, { publishParentVerificationTransition: publish })
+
+		try {
+			await expect(provider.recordPrimaryMutation(parent, fileVersions, false, token)).resolves.toBe(true)
+			expect(appendEvent).toHaveBeenCalledOnce()
+		} finally {
+			errorSpy.mockRestore()
+			appendEvent.mockRestore()
+		}
+
+		expect(publish).toHaveBeenCalledOnce()
+		expect(primaryObligation()).toMatchObject({
+			changedFiles: ["src/a.ts"],
+			mutationReservations: [],
+			status: "pending",
+		})
+		expect(store.getParentCompletionDecision(parent.taskId).blockingObligations).toHaveLength(1)
+	})
+
 	it("invalidates a passing verification after source and package manifest edits", async () => {
 		await recordPrimaryMutation()
 		const firstVersions = await captureCurrentVerification()

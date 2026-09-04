@@ -5,7 +5,7 @@ import path from "path"
 import type { ClineAsk, ClineAskResponse, ClineSay, ModeConfig, ToolProgressStatus } from "@alpha-code/types"
 
 import type { ToolResponse, ToolUse } from "../../shared/tools"
-import type { ToolCallbacks, ToolResultMetadata } from "../tools/BaseTool"
+import type { ToolApprovalResponse, ToolCallbacks, ToolResultMetadata } from "../tools/BaseTool"
 import { ToolReadDeniedError } from "../tools/BaseTool"
 import { formatResponse } from "../prompts/responses"
 import { getModeBySlug } from "../../shared/modes"
@@ -394,6 +394,34 @@ function getToolResultParts(content: ToolResponse): {
 	}
 }
 
+function normalizeAgentToolCall(value: unknown): AgentToolCall {
+	const record = value && typeof value === "object" ? (value as Record<string, unknown>) : undefined
+	return {
+		type: "tool_call",
+		id: typeof record?.id === "string" ? record.id : "",
+		name: typeof record?.name === "string" ? record.name : "",
+		arguments: record?.arguments,
+	}
+}
+
+function getPathArguments(toolName: string, argumentsValue: Record<string, unknown>): unknown[] {
+	const candidates = ["path", "file_path", "cwd", "directory"].map((key) => argumentsValue[key])
+	if (toolName === "generate_image") candidates.push(argumentsValue.image)
+
+	if (toolName === "read_file" && Array.isArray(argumentsValue.files)) {
+		candidates.push(
+			...argumentsValue.files.map((entry) => (entry && typeof entry === "object" ? entry.path : undefined)),
+		)
+	}
+	if (toolName === "search_files" && Array.isArray(argumentsValue.queries)) {
+		candidates.push(
+			...argumentsValue.queries.map((entry) => (entry && typeof entry === "object" ? entry.path : undefined)),
+		)
+	}
+
+	return candidates
+}
+
 const VERIFICATION_OUTPUT_LIMIT = 8_000
 const SENSITIVE_OUTPUT_PATTERN =
 	/(\b(?:api[_-]?key|secret|password|credential|authorization|private[_-]?key|bearer|token)\s*[:=]\s*)(["']?)([^\s"',}\n]+)(\2)/gi
@@ -469,6 +497,25 @@ export class ToolScheduler {
 		)
 	}
 
+	private hasAuditedParallelReadCapability(item: PreparedCall): boolean {
+		const descriptor = item.descriptor
+		if (!descriptor) return false
+		const capabilities = descriptor.capabilities
+		if (
+			!capabilities ||
+			capabilities.concurrency !== "parallel" ||
+			capabilities.sideEffects !== "none" ||
+			capabilities.controlFlow
+		)
+			return false
+
+		const captured = this.options.policy?.capabilities[descriptor.name]
+		return (
+			!captured ||
+			(captured.concurrency === "parallel" && captured.sideEffects === "none" && !captured.controlFlow)
+		)
+	}
+
 	private async checkEffectFence(call: AgentToolCall): Promise<void> {
 		if (this.effectFenceFailure) throw this.effectFenceFailure
 		try {
@@ -513,7 +560,12 @@ export class ToolScheduler {
 		if (item.readPrepared || item.validationError || !item.toolCall || !item.descriptor) return
 		item.readPrepared = true
 		const { readGrant, policy } = this.options
-		if (readGrant?.enabled && policy && item.descriptor.prepareParallelRead) {
+		if (
+			readGrant?.enabled &&
+			policy &&
+			item.descriptor.prepareParallelRead &&
+			this.hasAuditedParallelReadCapability(item)
+		) {
 			// Canonical path preflight itself performs filesystem reads. Keep it
 			// behind the same per-call durability boundary as the eventual handler.
 			await this.checkEffectFence(item.call)
@@ -589,9 +641,13 @@ export class ToolScheduler {
 			? AbortSignal.any([this.options.signal, this.batchController.signal])
 			: this.batchController.signal
 		const startedAt = performance.now()
-		const calls = Array.isArray(response)
-			? response
-			: response.items.filter((item): item is AgentToolCall => item.type === "tool_call")
+		const calls = (
+			Array.isArray(response)
+				? response
+				: response && typeof response === "object" && Array.isArray(response.items)
+					? response.items.filter((item) => item?.type === "tool_call")
+					: []
+		).map(normalizeAgentToolCall)
 		const prepared = calls.map((call, index) => this.prepareCall(call, index))
 		const results = new Array<ToolSchedulerResult | undefined>(prepared.length)
 
@@ -605,7 +661,7 @@ export class ToolScheduler {
 		// Cancellation aborts the batch without changing an invalid call's error receipt.
 		const isolationError = getToolBatchIsolationError(
 			this.options.registry,
-			calls.map((call) => call.name),
+			calls.map((call) => (typeof call?.name === "string" ? call.name : "")),
 		)
 		if (isolationError) {
 			for (const item of prepared) {
@@ -628,6 +684,15 @@ export class ToolScheduler {
 			}
 
 			const item = prepared[cursor]
+			if (item.validationError || !item.descriptor || !item.toolCall) {
+				results[item.index] = resultForError(
+					item.call,
+					item.validationError ?? "Tool call could not be prepared.",
+					item.preparationDenied ? "denied" : "error",
+				)
+				cursor += 1
+				continue
+			}
 			if (
 				this.executionHost.shouldStopRepeatedToolCall?.(
 					item.call.name,
@@ -641,16 +706,6 @@ export class ToolScheduler {
 				cursor += 1
 				continue
 			}
-			if (item.validationError || !item.descriptor || !item.toolCall) {
-				results[item.index] = resultForError(
-					item.call,
-					item.validationError ?? "Tool call could not be prepared.",
-					item.preparationDenied ? "denied" : "error",
-				)
-				cursor += 1
-				continue
-			}
-
 			try {
 				await this.prepareRead(item)
 			} catch (error) {
@@ -980,7 +1035,7 @@ export class ToolScheduler {
 	private prepareCall(call: AgentToolCall, index: number): PreparedCall {
 		const prepared: PreparedCall = { index, call }
 
-		if (!call.id || !call.name) {
+		if (typeof call.id !== "string" || typeof call.name !== "string" || !call.id || !call.name) {
 			prepared.validationError = "Tool call is missing a valid ID or name."
 			return prepared
 		}
@@ -1005,8 +1060,7 @@ export class ToolScheduler {
 			return prepared
 		}
 
-		for (const key of ["path", "file_path", "cwd", "directory"]) {
-			const candidate = (argumentsValue as Record<string, unknown>)[key]
+		for (const candidate of getPathArguments(canonicalName, argumentsValue as Record<string, unknown>)) {
 			if (
 				typeof candidate === "string" &&
 				candidate &&
@@ -1086,130 +1140,165 @@ export class ToolScheduler {
 			),
 		)
 		const approvalFeedback = (text: string, images?: string[]) => collector.setApprovalFeedback({ text, images })
+		const requestApproval = async (
+			args: Parameters<ToolCallbacks["askApproval"]>,
+			responseMode: "boolean" | "structured",
+		): Promise<ToolApprovalResponse | undefined> =>
+			this.approvalMutex.run(async () => {
+				if (this.isSelectableParallel(prepared)) {
+					throw new ToolReadDeniedError("An approval request cannot run in an approval-free parallel lane.")
+				}
+				const [type, partialMessage, progressStatus, forceApproval] = args
+				const requestId = `${this.executionHost.taskId}:${prepared.call.id}`
+				this.approvalRequestCount += 1
+
+				if (this.isCancelled()) {
+					this.approvalCancelledCount += 1
+					collector.setStatus("cancelled")
+					collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
+					await this.options.onEvent?.({
+						type: "approval_result",
+						requestId,
+						decision: "cancelled",
+						reason: "Task aborted before approval",
+					})
+					return undefined
+				}
+
+				await this.options.onEvent?.({
+					type: "approval_request",
+					requestId,
+					callId: prepared.call.id,
+					toolName: prepared.call.name,
+				})
+
+				let approval: ToolApprovalResponse | undefined
+				try {
+					approval = await this.raceCancellation(async () => {
+						if (this.executionHost.askApproval) {
+							return this.executionHost.askApproval(
+								type,
+								partialMessage,
+								progressStatus,
+								forceApproval || false,
+							)
+						}
+						if (this.executionHost.ask) {
+							return this.executionHost.ask(
+								type,
+								partialMessage,
+								false,
+								progressStatus,
+								forceApproval || false,
+							)
+						}
+						throw new Error("Tool execution host does not provide an approval callback.")
+					})
+				} catch (error) {
+					if (error instanceof AskIgnoredError) {
+						this.supersededAskCount += 1
+						this.approvalCancelledCount += 1
+						const status = this.isCancelled() ? "cancelled" : "error"
+						collector.setStatus(status)
+						collector.push(formatFailureResult(`Approval request was superseded: ${error.message}`, status))
+						await this.options.onEvent?.({
+							type: "approval_result",
+							requestId,
+							decision: "cancelled",
+							reason: error.message,
+						})
+						return undefined
+					}
+					throw error
+				}
+
+				if (!approval) {
+					this.approvalCancelledCount += 1
+					collector.setStatus("cancelled")
+					collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
+					await this.options.onEvent?.({
+						type: "approval_result",
+						requestId,
+						decision: "cancelled",
+						reason: "Task aborted while waiting for approval",
+					})
+					return undefined
+				}
+
+				const { response, text, images } = approval
+				if (responseMode === "structured") {
+					let decision: "approved" | "denied" | "cancelled"
+					if (response === "yesButtonClicked") {
+						decision = "approved"
+					} else if (response === "objectResponse") {
+						try {
+							const parsed: unknown = JSON.parse(text || "{}")
+							const values =
+								parsed && typeof parsed === "object" && !Array.isArray(parsed)
+									? Object.values(parsed as Record<string, unknown>)
+									: []
+							decision =
+								values.length > 0 && values.every((value) => value === true) ? "approved" : "denied"
+						} catch {
+							decision = "denied"
+						}
+					} else {
+						decision = response === "noButtonClicked" || text ? "denied" : "cancelled"
+					}
+
+					if (decision !== "approved") {
+						collector.setStatus(decision)
+						if (decision === "denied") this.approvalDeniedCount += 1
+						else this.approvalCancelledCount += 1
+					}
+					await this.options.onEvent?.({
+						type: "approval_result",
+						requestId,
+						decision,
+						...(response !== "objectResponse" && text ? { reason: text } : {}),
+					})
+					if (decision === "cancelled") {
+						collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
+						return undefined
+					}
+					return approval
+				}
+
+				if (response !== "yesButtonClicked") {
+					const decision = response === "noButtonClicked" || text ? "denied" : "cancelled"
+					if (text) {
+						await this.executionHost.say("user_feedback", text, images)
+						collector.push(formatResponse.toolResult(formatResponse.toolDeniedWithFeedback(text), images))
+					} else if (decision === "denied") {
+						collector.push(formatResponse.toolDenied())
+					} else {
+						collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
+					}
+					collector.setStatus(decision)
+					if (decision === "denied") this.approvalDeniedCount += 1
+					else this.approvalCancelledCount += 1
+					await this.options.onEvent?.({
+						type: "approval_result",
+						requestId,
+						decision,
+						reason: text,
+					})
+					return undefined
+				}
+
+				if (text) {
+					await this.executionHost.say("user_feedback", text, images)
+					approvalFeedback(text, images)
+				}
+				await this.options.onEvent?.({ type: "approval_result", requestId, decision: "approved" })
+				return approval
+			})
 
 		const callbacks: ToolCallbacks = {
 			askApproval: async (...args: Parameters<ToolCallbacks["askApproval"]>) =>
-				this.approvalMutex.run(async () => {
-					if (this.isSelectableParallel(prepared)) {
-						throw new ToolReadDeniedError(
-							"An approval request cannot run in an approval-free parallel lane.",
-						)
-					}
-					const [type, partialMessage, progressStatus, forceApproval] = args
-					const requestId = `${this.executionHost.taskId}:${prepared.call.id}`
-					this.approvalRequestCount += 1
-
-					if (this.isCancelled()) {
-						this.approvalCancelledCount += 1
-						collector.setStatus("cancelled")
-						collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
-						await this.options.onEvent?.({
-							type: "approval_result",
-							requestId,
-							decision: "cancelled",
-							reason: "Task aborted before approval",
-						})
-						return false
-					}
-
-					await this.options.onEvent?.({
-						type: "approval_request",
-						requestId,
-						callId: prepared.call.id,
-						toolName: prepared.call.name,
-					})
-
-					let approval: Awaited<ReturnType<NonNullable<ToolExecutionHost["ask"]>>> | undefined
-					try {
-						approval = await this.raceCancellation(async () => {
-							if (this.executionHost.askApproval) {
-								return this.executionHost.askApproval(
-									type,
-									partialMessage,
-									progressStatus,
-									forceApproval || false,
-								)
-							}
-							if (this.executionHost.ask) {
-								return this.executionHost.ask(
-									type,
-									partialMessage,
-									false,
-									progressStatus,
-									forceApproval || false,
-								)
-							}
-							throw new Error("Tool execution host does not provide an approval callback.")
-						})
-					} catch (error) {
-						if (error instanceof AskIgnoredError) {
-							this.supersededAskCount += 1
-							this.approvalCancelledCount += 1
-							const status = this.isCancelled() ? "cancelled" : "error"
-							collector.setStatus(status)
-							collector.push(
-								formatFailureResult(`Approval request was superseded: ${error.message}`, status),
-							)
-							await this.options.onEvent?.({
-								type: "approval_result",
-								requestId,
-								decision: "cancelled",
-								reason: error.message,
-							})
-							return false
-						}
-						throw error
-					}
-
-					if (!approval) {
-						this.approvalCancelledCount += 1
-						collector.setStatus("cancelled")
-						collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
-						await this.options.onEvent?.({
-							type: "approval_result",
-							requestId,
-							decision: "cancelled",
-							reason: "Task aborted while waiting for approval",
-						})
-						return false
-					}
-
-					const { response, text, images } = approval
-
-					if (response !== "yesButtonClicked") {
-						const decision = response === "noButtonClicked" || text ? "denied" : "cancelled"
-						if (text) {
-							await this.executionHost.say("user_feedback", text, images)
-							collector.push(
-								formatResponse.toolResult(formatResponse.toolDeniedWithFeedback(text), images),
-							)
-						} else if (decision === "denied") {
-							collector.push(formatResponse.toolDenied())
-						} else {
-							collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
-						}
-						collector.setStatus(decision)
-						if (decision === "denied") {
-							this.approvalDeniedCount += 1
-						} else {
-							this.approvalCancelledCount += 1
-						}
-						await this.options.onEvent?.({
-							type: "approval_result",
-							requestId,
-							decision,
-							reason: text,
-						})
-						return false
-					}
-
-					if (text) {
-						await this.executionHost.say("user_feedback", text, images)
-						approvalFeedback(text, images)
-					}
-					await this.options.onEvent?.({ type: "approval_result", requestId, decision: "approved" })
-					return true
-				}),
+				(await requestApproval(args, "boolean"))?.response === "yesButtonClicked",
+			askApprovalResponse: async (...args: Parameters<NonNullable<ToolCallbacks["askApprovalResponse"]>>) =>
+				requestApproval(args, "structured"),
 			handleError: async (action: string, error: Error) => {
 				if (error instanceof AskIgnoredError) {
 					this.supersededAskCount += 1

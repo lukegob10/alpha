@@ -160,7 +160,7 @@ function normalizeSchemas(
 	allowedNames?: ReadonlySet<string>,
 ): TaskToolSchema[] {
 	const result: TaskToolSchema[] = []
-	const seen = new Set<string>()
+	const indexes = new Map<string, number>()
 	for (const source of schemas) {
 		const schema = canonicalSchema(source)
 		if (schema.type !== "function") {
@@ -169,9 +169,17 @@ function normalizeSchemas(
 		}
 
 		const name = schema.function.name
-		if (seen.has(name) || !registry.resolve(name)) continue
+		if (!registry.resolve(name)) continue
 		if (!includeAllToolsWithRestrictions && allowedNames && !allowedNames.has(name)) continue
-		seen.add(name)
+		const existingIndex = indexes.get(name)
+		if (existingIndex !== undefined) {
+			// Keep schema selection aligned with ToolRegistry.getSchemaMap: when a
+			// provider sends both an alias and its canonical spelling, the canonical
+			// definition is authoritative even if it appears later in the catalog.
+			if (source.type === "function" && source.function.name === name) result[existingIndex] = schema
+			continue
+		}
+		indexes.set(name, result.length)
 		result.push(schema)
 	}
 	return result

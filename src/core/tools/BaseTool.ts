@@ -1,10 +1,28 @@
-import type { ToolName } from "@alpha-code/types"
+import type { ClineAsk, ClineAskResponse, ToolName, ToolProgressStatus } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import type { ToolUse, HandleError, PushToolResult, AskApproval, NativeToolArgs } from "../../shared/tools"
 
 /** A captured read grant was revoked; never turn this into an interactive parallel ask. */
 export class ToolReadDeniedError extends Error {}
+
+/**
+ * Full approval response for tools whose UI supports structured decisions.
+ * Most tools only need the boolean askApproval callback; batch file reads also
+ * support objectResponse payloads keyed by each displayed file.
+ */
+export interface ToolApprovalResponse {
+	response: ClineAskResponse
+	text?: string
+	images?: string[]
+}
+
+export type AskApprovalResponse = (
+	type: ClineAsk,
+	partialMessage?: string,
+	progressStatus?: ToolProgressStatus,
+	forceApproval?: boolean,
+) => Promise<ToolApprovalResponse | undefined>
 
 /**
  * Callbacks passed to tool execution
@@ -18,6 +36,8 @@ export interface ToolResultMetadata {
 
 export interface ToolCallbacks {
 	askApproval: AskApproval
+	/** Optional rich approval channel for structured UI responses (for example, batch file permissions). */
+	askApprovalResponse?: AskApprovalResponse
 	handleError: HandleError
 	pushToolResult: PushToolResult
 	setResultMetadata?: (metadata: ToolResultMetadata) => void
