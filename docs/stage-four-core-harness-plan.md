@@ -117,6 +117,9 @@ writable handle when verifying durability. Failed capture blocks subsequent lega
 Fallback migration now admits only a legacy-compatible sidecar under the sidecar lock, rechecks primary-file absence
 inside the legacy lock, and uses the guarded strict writer. Missing v2 authority cannot silently migrate an older
 `claude_messages.json`; read/admission failure preserves both files and fails the Task's finalization boundary.
+An independent review also caught two simultaneous legacy-only readers: the second now rejects with a typed reload
+requirement if the first already migrated, rather than returning an obsolete empty history. A controlled rename barrier
+reproduces the race. Both migration findings are resolved in the final bounded review.
 
 An unresolved capture failure is intentionally not cleared by ordinary save retries. After safeguarding evidence,
 operators may need to restore permissions/capacity or a valid legacy snapshot, restart the host, and reopen the task.
@@ -157,19 +160,43 @@ release is marked prerelease and its version, commit, VSIX name, and downloadabl
 The matching implementation run uses the same frozen fixture, runtime, warmup and three measured samples per workload.
 Raw samples and counter calibration are retained in `docs/nor-29-benchmark-baseline.json`,
 `docs/nor-29-benchmark-incremental.json`, and the full interpretation in `docs/nor-29-implementation.md`.
-Long-history mean save latency decreased from 57.898 to 34.065 ms, effect fences from 11.063 to 5.752 ms, and bytes
-written per repetition from 27,980,721 to 13,995,626. These are approximately 41%, 48%, and 50% reductions respectively.
+The final confirmation run on settled production code was recorded at 2026-09-04 15:40:29 UTC. Long-history mean save
+latency decreased from 57.898 to 33.209 ms, effect fences from 11.063 to 5.634 ms, and bytes written per repetition from
+27,980,721 to 13,995,626. These are approximately 43%, 49%, and 50% reductions respectively.
 The implementation still writes complete legacy snapshots; only the sidecar is an incremental metadata receipt.
 
-Short fences increased from 2.381 to 3.393 ms. The unchanged-save short control increased from 16.459 to 20.168 ms per
-save and 2.604 to 3.805 ms per fence. Stronger real-authority verification and explicit legacy sync remain enabled;
+Short fences increased from 2.381 to 3.427 ms. The unchanged-save short control increased from 16.459 to 19.722 ms per
+save and 2.604 to 3.653 ms per fence. Stronger real-authority verification and explicit legacy sync remain enabled;
 there is no claim of universal speedup or meaningful event-loop p99 improvement. Logical saves are counted, not fsync
 syscalls. Earlier incomplete-hash measurements are excluded from all conclusions.
 
+## Combined validation on the integration branch
+
+The following checks ran on September 4, 2026 after integrating NOR-29; shared types and webview consumers ran during
+handoff and their inputs are unchanged by that integration. Historical Stage 3 runs are not substituted for these checks.
+
+| Check                                                                                                                         | Actual result                                                                                                |
+| ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Focused persistence, Task flush/retry and delegation suite, `--maxWorkers=2`                                                  | 21 files; 197 passed, one opt-in benchmark skipped; 24.61 s                                                  |
+| Core agent/task/persistence/tools/context/condense/environment/webview and history/nested-delegation suites, `--maxWorkers=2` | 167 files; 2,402 passed, 12 skipped; 164.29 s                                                                |
+| `pnpm --dir src exec vitest run api/providers api/transform --maxWorkers=2`                                                   | 87 files; 1,575 passed, two skipped; 28.52 s                                                                 |
+| `pnpm --dir packages/types exec vitest run`                                                                                   | 21 files; 272 passed; 2.08 s                                                                                 |
+| `pnpm --dir webview-ui exec vitest run src/components/chat src/components/agents --maxWorkers=2`                              | 44 files; 507 passed; 62.93 s                                                                                |
+| `pnpm check-types`                                                                                                            | 13 successful tasks, 11 cached; 21.715 s                                                                     |
+| `pnpm lint`                                                                                                                   | 12 successful tasks, 11 cached; 18.062 s                                                                     |
+| `pnpm --filter @alpha-code/vscode-e2e test:smoke:1221`                                                                        | Passed: exact 1.122.1 extension, modes, and VS Code LM contract suites; all three host processes exited zero |
+| Touched-file Prettier and final `git diff --check`                                                                            | Passed; Markdown line-ending formatting normalized without changing content                                  |
+
+Expected skip counts remain explicit; the opt-in measurement was separately executed and passed. The exact-host command
+also ran `pnpm bundle` and rebuilt the webview. Managed-agent certification and final packaging/publication remain pending.
+
 ## Closure ledger
 
-- In progress: NOR-29 production implementation, independent integration tests, measured optimization, and release gates.
-- Verified in the implementation worktree: 20 focused files / 192 tests passed, one opt-in benchmark skipped; the
+- Integrated owner commit `93ef5f9e9e1a9376cbc26efcc4afe26f490acd1a` as `2e30642`, with independent root integration
+  coverage and 2.1.19 release metadata. The user guide remains unchanged and excluded.
+- Verified in the implementation worktree: 21 focused files / 197 tests passed, one opt-in benchmark skipped; the
   separate calibrated benchmark passed all four cases. Source typecheck passed. Root integration gates remain pending.
-- Not yet verified: full combined tests, exact-host compatibility, and published artifact.
+- Verified in the integration branch: focused and broad core/provider suites, shared/webview consumers, repository
+  lint/typecheck, and the exact VS Code 1.122.1 smoke gate.
+- Not yet verified: managed-agent certification, packaged prerelease metadata, and published artifact.
 - Out of scope: CLI/shim, Marketplace/stable release, installation, dependency upgrades, and unrelated architecture work.
