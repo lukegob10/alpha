@@ -1,10 +1,12 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import { serializeError } from "serialize-error"
+import path from "path"
 
 import type { ClineAsk, ClineAskResponse, ClineSay, ModeConfig, ToolProgressStatus } from "@alpha-code/types"
 
 import type { ToolResponse, ToolUse } from "../../shared/tools"
 import type { ToolCallbacks, ToolResultMetadata } from "../tools/BaseTool"
+import { ToolReadDeniedError } from "../tools/BaseTool"
 import { formatResponse } from "../prompts/responses"
 import { getModeBySlug } from "../../shared/modes"
 import { sanitizeToolUseId } from "../../utils/tool-id"
@@ -13,7 +15,7 @@ import type { Task } from "../task/Task"
 import { validateToolUse } from "../tools/validateToolUse"
 import type { AgentResponse, AgentToolCall } from "./AgentResponse"
 import type { AgentTurnEvent } from "./AgentTurnEvents"
-import type { ToolDescriptor, ToolRegistry } from "../tools/ToolRegistry"
+import type { PreparedToolRead, TaskReadGrant, ToolDescriptor, ToolRegistry } from "../tools/ToolRegistry"
 import {
 	getToolOutputLimit,
 	isCommandDeniedByPolicy,
@@ -37,6 +39,7 @@ export interface ToolSchedulerOptions {
 	disabledTools?: string[]
 	includedTools?: string[]
 	policy?: ToolPolicySnapshot
+	readGrant?: TaskReadGrant
 	signal?: AbortSignal
 	/** Optional test/host override for mode and disabled-tool validation. */
 	validateCall?: (call: AgentToolCall, toolCall: ToolUse<any>) => void
@@ -47,7 +50,7 @@ export interface ToolSchedulerOptions {
 	onEvent?: (event: AgentTurnEvent) => void | Promise<void>
 	/** Safe by default. Parallel work is opt-in at the scheduler boundary. */
 	executionMode?: ToolExecutionMode
-	/** Maximum number of calls in one contiguous selective-parallel group. */
+	/** Maximum active calls and prepared calls in one window (hard capped at 16). */
 	maxConcurrency?: number
 }
 
@@ -315,13 +318,33 @@ interface PreparedCall {
 	toolCall?: ToolUse<any>
 	descriptor?: ToolDescriptor
 	validationError?: string
+	preparationDenied?: boolean
+	readPrepared?: boolean
+	read?: PreparedToolRead
+	scope?: string
+	finalizeRead?: () => Promise<ToolResponse>
 }
 
-function resultForError(call: AgentToolCall, message: string): ToolSchedulerResult {
+function scopesOverlap(left: string, right: string): boolean {
+	const contains = (root: string, candidate: string) => {
+		const relative = path.relative(root, candidate)
+		return (
+			relative === "" ||
+			(relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+		)
+	}
+	return contains(left, right) || contains(right, left)
+}
+
+function resultForError(
+	call: AgentToolCall,
+	message: string,
+	status: "error" | "denied" = "error",
+): ToolSchedulerResult {
 	return {
 		callId: call.id,
 		name: call.name,
-		status: "error",
+		status,
 		content: formatResponse.toolError(message),
 		durationMs: 0,
 	}
@@ -375,6 +398,10 @@ function getVerificationOutput(content: ToolResponse): string {
 
 export class ToolScheduler {
 	private readonly approvalMutex = new AsyncMutex()
+	private readonly admissionMutex = new AsyncMutex()
+	private effectFenceFailure?: ToolEffectFenceError
+	private batchController = new AbortController()
+	private executionSignal?: AbortSignal
 	private approvalRequestCount = 0
 	private approvalDeniedCount = 0
 	private approvalCancelledCount = 0
@@ -409,18 +436,101 @@ export class ToolScheduler {
 		if (requested === undefined || !Number.isFinite(requested)) {
 			return 4
 		}
-		return Math.max(1, Math.floor(requested))
+		return Math.min(16, Math.max(1, Math.floor(requested)))
 	}
 
 	private isSelectableParallel(item: PreparedCall | undefined): boolean {
 		const capabilities = item?.descriptor?.capabilities
+		const captured = item?.descriptor && this.options.policy?.capabilities[item.descriptor.name]
 		return (
 			this.executionMode === "selective-parallel" &&
 			capabilities?.concurrency === "parallel" &&
 			capabilities.sideEffects === "none" &&
 			!capabilities.controlFlow &&
-			!capabilities.requiresApproval
+			!!item?.scope &&
+			(!captured ||
+				(captured.concurrency === "parallel" &&
+					captured.sideEffects === "none" &&
+					!captured.controlFlow &&
+					(!captured.requiresApproval || !!item.read))) &&
+			(!capabilities.requiresApproval || !!item.read)
 		)
+	}
+
+	private async checkEffectFence(call: AgentToolCall): Promise<void> {
+		if (this.effectFenceFailure) throw this.effectFenceFailure
+		try {
+			await this.options.beforeEffect?.(call)
+		} catch (error) {
+			this.effectFenceFailure ??= new ToolEffectFenceError(call, error)
+			this.batchController.abort(this.effectFenceFailure)
+			throw this.effectFenceFailure
+		}
+	}
+
+	private async prepareRead(item: PreparedCall): Promise<void> {
+		if (item.readPrepared || item.validationError || !item.toolCall || !item.descriptor) return
+		item.readPrepared = true
+		const { readGrant, policy } = this.options
+		if (readGrant?.enabled && policy && item.descriptor.prepareParallelRead) {
+			// Canonical path preflight itself performs filesystem reads. Keep it
+			// behind the same per-call durability boundary as the eventual handler.
+			await this.checkEffectFence(item.call)
+			if (this.isCancelled()) return
+			try {
+				item.read = await item.descriptor.prepareParallelRead(
+					this.toolTask,
+					item.toolCall,
+					readGrant,
+					policy,
+					this.executionSignal,
+				)
+			} catch (error) {
+				if (!this.isCancelled())
+					item.validationError = `Unable to prepare ${item.call.name}: ${this.errorMessage(error)}`
+				item.preparationDenied = error instanceof ToolReadDeniedError
+				return
+			}
+		}
+		try {
+			item.scope =
+				item.read?.scope ?? item.descriptor.getConcurrencyScope?.(item.toolCall, this.executionHost.cwd ?? "")
+		} catch (error) {
+			item.validationError = `Unable to resolve ${item.call.name} scope: ${this.errorMessage(error)}`
+		}
+		if (!item.scope || !path.isAbsolute(item.scope)) item.scope = undefined
+	}
+
+	private async finalizeRead(item: PreparedCall, result: ToolSchedulerResult): Promise<ToolSchedulerResult> {
+		const finalize = item.finalizeRead
+		item.finalizeRead = undefined
+		if (item.read && result.status === "error") this.executionHost.didToolFailInCurrentTurn = true
+		if (!finalize || this.isCancelled()) return this.isCancelled() ? this.cancelledResultFor(item.call) : result
+		const startedAt = performance.now()
+		try {
+			const output = limitToolResponse(
+				await finalize(),
+				Math.min(
+					item.descriptor?.maxOutputChars ?? Number.MAX_SAFE_INTEGER,
+					getToolOutputLimit(this.options.policy, item.call.name),
+				),
+			)
+			if (output.truncated) this.outputTruncatedCount++
+			return {
+				...result,
+				content: output.content,
+				truncated: output.truncated,
+				durationMs: result.durationMs + Math.max(0, performance.now() - startedAt),
+			}
+		} catch (error) {
+			if (this.isCancelled()) return this.cancelledResultFor(item.call)
+			if (!(error instanceof ToolReadDeniedError)) this.executionHost.didToolFailInCurrentTurn = true
+			return {
+				...result,
+				status: error instanceof ToolReadDeniedError ? "denied" : "error",
+				content: formatResponse.toolError(this.errorMessage(error)),
+			}
+		}
 	}
 
 	async run(response: AgentResponse | AgentToolCall[]): Promise<ToolSchedulerOutcome> {
@@ -430,6 +540,11 @@ export class ToolScheduler {
 		this.supersededAskCount = 0
 		this.parallelToolCount = 0
 		this.outputTruncatedCount = 0
+		this.effectFenceFailure = undefined
+		this.batchController = new AbortController()
+		this.executionSignal = this.options.signal
+			? AbortSignal.any([this.options.signal, this.batchController.signal])
+			: this.batchController.signal
 		const startedAt = performance.now()
 		const calls = Array.isArray(response)
 			? response
@@ -474,33 +589,62 @@ export class ToolScheduler {
 				results[item.index] = resultForError(
 					item.call,
 					item.validationError ?? "Tool call could not be prepared.",
+					item.preparationDenied ? "denied" : "error",
 				)
 				cursor += 1
 				continue
 			}
 
+			try {
+				await this.prepareRead(item)
+			} catch (error) {
+				if (!(error instanceof ToolEffectFenceError)) throw error
+				return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
+			}
+			if (item.validationError) {
+				results[item.index] = resultForError(
+					item.call,
+					item.validationError,
+					item.preparationDenied ? "denied" : "error",
+				)
+				cursor++
+				continue
+			}
 			if (this.isSelectableParallel(item)) {
-				parallelBatchCount += 1
 				const parallelItems: PreparedCall[] = []
-				while (cursor < prepared.length) {
+				while (cursor < prepared.length && parallelItems.length < this.maxConcurrency) {
 					const candidate = prepared[cursor]
+					try {
+						await this.prepareRead(candidate)
+					} catch (error) {
+						if (!(error instanceof ToolEffectFenceError)) throw error
+						return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
+					}
 					if (
 						candidate.validationError ||
 						!candidate.descriptor ||
 						!candidate.toolCall ||
-						!this.isSelectableParallel(candidate)
+						!this.isSelectableParallel(candidate) ||
+						parallelItems.some((active) => scopesOverlap(active.scope!, candidate.scope!))
 					) {
 						break
 					}
 					parallelItems.push(candidate)
 					cursor += 1
 				}
+				parallelBatchCount += 1
 				this.parallelToolCount += parallelItems.length
 
 				const settled = await this.executeParallelBatch(parallelItems)
 				settled.results.forEach((result, offset) => {
 					if (result) results[parallelItems[offset].index] = result
 				})
+				// No worker is live here, including workers that ignored cancellation.
+				// Publish UI and shared Task state in model-call order.
+				for (const readItem of parallelItems) {
+					const result = results[readItem.index]
+					if (result) results[readItem.index] = await this.finalizeRead(readItem, result)
+				}
 				if (settled.failure) {
 					return this.failedOutcome(
 						results,
@@ -520,6 +664,7 @@ export class ToolScheduler {
 
 			try {
 				results[item.index] = await this.executeCall(item)
+				results[item.index] = await this.finalizeRead(item, results[item.index]!)
 			} catch (error) {
 				if (!(error instanceof ToolEffectFenceError)) throw error
 				return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
@@ -571,7 +716,9 @@ export class ToolScheduler {
 			}
 		}
 
-		await Promise.all(Array.from({ length: workerCount }, () => worker()))
+		const workers = await Promise.allSettled(Array.from({ length: workerCount }, () => worker()))
+		const rejected = workers.find((result) => result.status === "rejected")
+		if (rejected?.status === "rejected") throw rejected.reason
 		return { results, ...(failure ? { failure } : {}) }
 	}
 
@@ -882,6 +1029,11 @@ export class ToolScheduler {
 		const callbacks: ToolCallbacks = {
 			askApproval: async (...args: Parameters<ToolCallbacks["askApproval"]>) =>
 				this.approvalMutex.run(async () => {
+					if (this.isSelectableParallel(prepared)) {
+						throw new ToolReadDeniedError(
+							"An approval request cannot run in an approval-free parallel lane.",
+						)
+					}
 					const [type, partialMessage, progressStatus, forceApproval] = args
 					const requestId = `${this.executionHost.taskId}:${prepared.call.id}`
 					this.approvalRequestCount += 1
@@ -1017,12 +1169,11 @@ export class ToolScheduler {
 			pushToolResult: (content: ToolResponse) => collector.push(content),
 			setResultMetadata: (metadata: ToolResultMetadata) => collector.setMetadata(metadata),
 			toolCallId: prepared.call.id,
-			signal: this.options.signal,
+			signal: this.executionSignal,
 			resolveCommandTimeoutMs: (requestedTimeoutMs, command) =>
 				resolveCommandTimeoutMs(this.options.policy, requestedTimeoutMs ?? 0, command),
 		}
 
-		let effectFencePending = false
 		try {
 			if (
 				this.executionHost.shouldStopRepeatedToolCall?.(
@@ -1044,30 +1195,38 @@ export class ToolScheduler {
 					durationMs: Math.max(0, performance.now() - startedAt),
 				}
 			}
-			await this.options.onEvent?.({
-				type: "progress",
-				callId: prepared.call.id,
-				text: `Running ${prepared.call.name}`,
+			let execution: Promise<void> | undefined
+			await this.admissionMutex.run(async () => {
+				if (this.isCancelled()) return
+				await this.options.onEvent?.({
+					type: "progress",
+					callId: prepared.call.id,
+					text: `Running ${prepared.call.name}`,
+				})
+				await this.checkEffectFence(prepared.call)
+				if (this.isCancelled()) return
+				this.executionHost.recordToolUsage(prepared.call.name)
+				execution = prepared.read
+					? prepared.read.run(this.executionSignal).then((finalize) => {
+							prepared.finalizeRead = finalize
+						})
+					: prepared.descriptor!.execute({
+							task: this.toolTask,
+							call: prepared.toolCall!,
+							signal: this.executionSignal,
+							callbacks,
+						})
+				// Observe an immediate rejection while the admission mutex releases.
+				void execution.catch(() => {})
 			})
-			// A stale/bypassed transcript fence must abort the whole scheduler before
-			// any later call can run; it is not an ordinary tool error that can be
-			// converted into a result.
-			if (this.options.beforeEffect) {
-				effectFencePending = true
-				await this.options.beforeEffect(prepared.call)
-				effectFencePending = false
-			}
-			this.executionHost.recordToolUsage(prepared.call.name)
-			await prepared.descriptor!.execute({
-				task: this.toolTask,
-				call: prepared.toolCall!,
-				signal: this.options.signal,
-				callbacks,
-			})
+			await execution
 		} catch (error) {
-			if (effectFencePending) throw new ToolEffectFenceError(prepared.call, error)
+			if (error instanceof ToolEffectFenceError) throw error
 			const cancelled = this.isCancelled()
-			collector.setStatus(cancelled ? "cancelled" : "error")
+			collector.setStatus(cancelled ? "cancelled" : error instanceof ToolReadDeniedError ? "denied" : "error")
+			if (prepared.read && error instanceof Error && "timedOut" in error && error.timedOut === true) {
+				collector.setMetadata({ status: "error", timedOut: true })
+			}
 			collector.push(
 				formatResponse.toolError(
 					cancelled

@@ -21,6 +21,27 @@ interface ScanContext {
 	ignoreInstance: ReturnType<typeof ignore>
 }
 
+export interface ListFilesOptions {
+	/** Existing callers follow links; scoped parallel reads explicitly disable traversal. */
+	followSymlinks?: boolean
+	/** Reject incomplete scans instead of returning the legacy partial result. */
+	rejectOnError?: boolean
+	/** Captured boundary for strict ignore loading; defaults to the requested directory. */
+	workspaceRoot?: string
+}
+
+const STRICT_IGNORE_BYTE_LIMIT = 64 * 1024
+const STRICT_IGNORE_DIRECTORY_LIMIT = 64
+
+export class FileListingTimeoutError extends Error {
+	readonly timedOut = true
+
+	constructor() {
+		super("File listing timed out after 10000 ms.")
+		this.name = "FileListingTimeoutError"
+	}
+}
+
 /**
  * List files in a directory, with optional recursive traversal
  *
@@ -34,11 +55,33 @@ export async function listFiles(
 	recursive: boolean,
 	limit: number,
 	signal?: AbortSignal,
+	options: ListFilesOptions = {},
+): Promise<[string[], boolean]> {
+	if (!options.rejectOnError) return listFilesWithinBudget(dirPath, recursive, limit, signal, options)
+	const deadline = new AbortController()
+	const executionSignal = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal
+	const timer = setTimeout(() => deadline.abort(new FileListingTimeoutError()), 10_000)
+	try {
+		return await listFilesWithinBudget(dirPath, recursive, limit, executionSignal, options)
+	} finally {
+		clearTimeout(timer)
+	}
+}
+
+async function listFilesWithinBudget(
+	dirPath: string,
+	recursive: boolean,
+	limit: number,
+	signal: AbortSignal | undefined,
+	options: ListFilesOptions,
 ): Promise<[string[], boolean]> {
 	signal?.throwIfAborted()
 	// Early return for limit of 0 - no need to scan anything
 	if (limit === 0) {
 		return [[], false]
+	}
+	if (options.rejectOnError && recursive) {
+		throw new Error("Strict file listings support only nonrecursive directories.")
 	}
 
 	// Handle special directories
@@ -48,6 +91,9 @@ export async function listFiles(
 	if (specialResult) {
 		return specialResult
 	}
+	const strictIgnore = options.rejectOnError
+		? await createStrictIgnoreInstance(dirPath, options.workspaceRoot ?? dirPath, signal)
+		: undefined
 
 	// Get ripgrep path
 	const rgPath = await getRipgrepPath()
@@ -55,21 +101,28 @@ export async function listFiles(
 
 	if (!recursive) {
 		// For non-recursive, use the existing approach
-		const files = await listFilesWithRipgrep(rgPath, dirPath, false, limit, signal)
-		const ignoreInstance = await createIgnoreInstance(dirPath, signal)
+		const files = await listFilesWithRipgrep(rgPath, dirPath, false, limit, signal, options)
+		const ignoreInstance = strictIgnore ?? (await createIgnoreInstance(dirPath, signal, options))
 		// Calculate remaining limit for directories
 		const remainingLimit = Math.max(0, limit - files.length)
-		const directories = await listFilteredDirectories(dirPath, false, ignoreInstance, remainingLimit, signal)
+		const directories = await listFilteredDirectories(
+			dirPath,
+			false,
+			ignoreInstance,
+			remainingLimit,
+			signal,
+			options,
+		)
 		signal?.throwIfAborted()
 		return formatAndCombineResults(files, directories, limit)
 	}
 
 	// For recursive mode, use the original approach but ensure first-level directories are included
-	const files = await listFilesWithRipgrep(rgPath, dirPath, true, limit, signal)
-	const ignoreInstance = await createIgnoreInstance(dirPath, signal)
+	const files = await listFilesWithRipgrep(rgPath, dirPath, true, limit, signal, options)
+	const ignoreInstance = await createIgnoreInstance(dirPath, signal, options)
 	// Calculate remaining limit for directories
 	const remainingLimit = Math.max(0, limit - files.length)
-	const directories = await listFilteredDirectories(dirPath, true, ignoreInstance, remainingLimit, signal)
+	const directories = await listFilteredDirectories(dirPath, true, ignoreInstance, remainingLimit, signal, options)
 	signal?.throwIfAborted()
 
 	// Combine and check if we hit the limits
@@ -77,7 +130,7 @@ export async function listFiles(
 
 	// If we hit the limit, ensure all first-level directories are included
 	if (limitReached) {
-		const firstLevelDirs = await getFirstLevelDirectories(dirPath, ignoreInstance, signal)
+		const firstLevelDirs = await getFirstLevelDirectories(dirPath, ignoreInstance, signal, options)
 		signal?.throwIfAborted()
 		return ensureFirstLevelDirectoriesIncluded(results, firstLevelDirs, limit)
 	}
@@ -92,6 +145,7 @@ async function getFirstLevelDirectories(
 	dirPath: string,
 	ignoreInstance: ReturnType<typeof ignore>,
 	signal?: AbortSignal,
+	options: ListFilesOptions = {},
 ): Promise<string[]> {
 	signal?.throwIfAborted()
 	const absolutePath = path.resolve(dirPath)
@@ -119,6 +173,7 @@ async function getFirstLevelDirectories(
 		}
 	} catch (err) {
 		signal?.throwIfAborted()
+		if (options.rejectOnError) throw err
 		console.warn(`Could not read directory ${absolutePath}: ${err}`)
 	}
 
@@ -220,10 +275,17 @@ async function listFilesWithRipgrep(
 	recursive: boolean,
 	limit: number,
 	signal?: AbortSignal,
+	options: ListFilesOptions = {},
 ): Promise<string[]> {
-	const rgArgs = buildRipgrepArgs(dirPath, recursive)
+	const rgArgs = buildRipgrepArgs(dirPath, recursive, options.followSymlinks)
+	if (options.rejectOnError) {
+		// The top-level -g * include already overrides ignore rules for files.
+		// Keep rg from independently reading unbounded ignore or config files;
+		// directory filtering uses the bounded workspace rules loaded above.
+		rgArgs.unshift("--no-config", "--no-ignore")
+	}
 
-	const relativePaths = await execRipgrep(rgPath, rgArgs, limit, signal)
+	const relativePaths = await execRipgrep(rgPath, rgArgs, limit, signal, options)
 
 	// Convert relative paths from ripgrep to absolute paths
 	// Resolve dirPath once here for the mapping operation
@@ -234,9 +296,9 @@ async function listFilesWithRipgrep(
 /**
  * Build appropriate ripgrep arguments based on whether we're doing a recursive search
  */
-function buildRipgrepArgs(dirPath: string, recursive: boolean): string[] {
+function buildRipgrepArgs(dirPath: string, recursive: boolean, followSymlinks = true): string[] {
 	// Base arguments to list files
-	const args = ["--files", "--hidden", "--follow"]
+	const args = ["--files", "--hidden", followSymlinks ? "--follow" : "--no-follow"]
 
 	if (recursive) {
 		return [...args, ...buildRecursiveArgs(dirPath), dirPath]
@@ -341,17 +403,138 @@ function buildNonRecursiveArgs(): string[] {
 	return args
 }
 
+/** Strict reads never consult ignore files above their captured workspace. */
+async function createStrictIgnoreInstance(
+	dirPath: string,
+	workspaceRoot: string,
+	signal?: AbortSignal,
+): Promise<ReturnType<typeof ignore>> {
+	signal?.throwIfAborted()
+	const root = await fs.promises.realpath(workspaceRoot)
+	signal?.throwIfAborted()
+	const target = await fs.promises.realpath(dirPath)
+	signal?.throwIfAborted()
+	const relative = path.relative(root, target)
+	if (
+		path.relative(path.resolve(workspaceRoot), root) !== "" ||
+		path.relative(path.resolve(dirPath), target) !== "" ||
+		relative === ".." ||
+		relative.startsWith(`..${path.sep}`) ||
+		path.isAbsolute(relative)
+	) {
+		throw new Error("Strict file listing cannot follow a directory alias or leave the captured workspace.")
+	}
+
+	const directories: string[] = []
+	for (let current = target; ; current = path.dirname(current)) {
+		if (directories.length === STRICT_IGNORE_DIRECTORY_LIMIT) {
+			throw new Error("Strict file listing exceeded the ignore-directory traversal limit.")
+		}
+		directories.push(current)
+		if (path.relative(root, current) === "") break
+	}
+
+	const ignoreInstance = ignore()
+	let remainingBytes = STRICT_IGNORE_BYTE_LIMIT
+	for (const directory of directories.reverse()) {
+		signal?.throwIfAborted()
+		const ignorePath = path.join(directory, ".gitignore")
+		let stat: fs.Stats
+		try {
+			stat = await fs.promises.lstat(ignorePath)
+		} catch (error) {
+			signal?.throwIfAborted()
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
+			throw error
+		}
+		signal?.throwIfAborted()
+		if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
+			throw new Error(`Strict file listing cannot load a linked or nonregular .gitignore: ${ignorePath}`)
+		}
+		const canonical = await fs.promises.realpath(ignorePath)
+		signal?.throwIfAborted()
+		if (path.relative(ignorePath, canonical) !== "") {
+			throw new Error(`Strict file listing cannot follow a .gitignore alias: ${ignorePath}`)
+		}
+		const content = await readStrictIgnoreFile(ignorePath, stat, remainingBytes, signal)
+		signal?.throwIfAborted()
+		remainingBytes -= content.length
+		ignoreInstance.add(content.toString("utf8"))
+	}
+	ignoreInstance.add(".gitignore")
+	return ignoreInstance
+}
+
+/** Read at most the remaining budget plus one overflow byte, and always join handle close. */
+async function readStrictIgnoreFile(
+	ignorePath: string,
+	expected: fs.Stats,
+	remainingBytes: number,
+	signal?: AbortSignal,
+): Promise<Buffer> {
+	if (expected.size > remainingBytes) {
+		throw new Error(`Strict file listing exceeded the 64 KiB ignore-file budget: ${ignorePath}`)
+	}
+	signal?.throwIfAborted()
+	const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0)
+	const handle = await fs.promises.open(ignorePath, flags)
+	try {
+		signal?.throwIfAborted()
+		const opened = await handle.stat()
+		signal?.throwIfAborted()
+		if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== expected.dev || opened.ino !== expected.ino) {
+			throw new Error(`Strict file listing .gitignore changed before it could be read: ${ignorePath}`)
+		}
+		if (opened.size > remainingBytes) {
+			throw new Error(`Strict file listing exceeded the 64 KiB ignore-file budget: ${ignorePath}`)
+		}
+		const content = Buffer.allocUnsafe(remainingBytes + 1)
+		let offset = 0
+		while (offset < content.length) {
+			signal?.throwIfAborted()
+			const { bytesRead } = await handle.read(
+				content,
+				offset,
+				Math.min(8 * 1024, content.length - offset),
+				offset,
+			)
+			signal?.throwIfAborted()
+			if (bytesRead === 0) break
+			offset += bytesRead
+			if (offset > remainingBytes) {
+				throw new Error(`Strict file listing exceeded the 64 KiB ignore-file budget: ${ignorePath}`)
+			}
+		}
+		const finished = await handle.stat()
+		signal?.throwIfAborted()
+		if (
+			finished.size !== opened.size ||
+			finished.mtimeMs !== opened.mtimeMs ||
+			finished.ctimeMs !== opened.ctimeMs
+		) {
+			throw new Error(`Strict file listing .gitignore changed while being read: ${ignorePath}`)
+		}
+		return content.subarray(0, offset)
+	} finally {
+		await handle.close()
+	}
+}
+
 /**
  * Create an ignore instance that handles .gitignore files properly
  * This replaces the custom gitignore parsing with the proper ignore library
  */
-async function createIgnoreInstance(dirPath: string, signal?: AbortSignal): Promise<ReturnType<typeof ignore>> {
+async function createIgnoreInstance(
+	dirPath: string,
+	signal?: AbortSignal,
+	options: ListFilesOptions = {},
+): Promise<ReturnType<typeof ignore>> {
 	signal?.throwIfAborted()
 	const ignoreInstance = ignore()
 	const absolutePath = path.resolve(dirPath)
 
 	// Find all .gitignore files from the target directory up to the root
-	const gitignoreFiles = await findGitignoreFiles(absolutePath, signal)
+	const gitignoreFiles = await findGitignoreFiles(absolutePath, signal, options)
 
 	// Add patterns from all .gitignore files
 	for (const gitignoreFile of gitignoreFiles) {
@@ -361,6 +544,7 @@ async function createIgnoreInstance(dirPath: string, signal?: AbortSignal): Prom
 			ignoreInstance.add(content)
 		} catch (err) {
 			signal?.throwIfAborted()
+			if (options.rejectOnError) throw err
 			// Continue if we can't read a .gitignore file
 			console.warn(`Could not read .gitignore at ${gitignoreFile}: ${err}`)
 		}
@@ -375,7 +559,11 @@ async function createIgnoreInstance(dirPath: string, signal?: AbortSignal): Prom
 /**
  * Find all .gitignore files from the given directory up to the workspace root
  */
-async function findGitignoreFiles(startPath: string, signal?: AbortSignal): Promise<string[]> {
+async function findGitignoreFiles(
+	startPath: string,
+	signal?: AbortSignal,
+	options: ListFilesOptions = {},
+): Promise<string[]> {
 	const gitignoreFiles: string[] = []
 	let currentPath = startPath
 
@@ -387,7 +575,9 @@ async function findGitignoreFiles(startPath: string, signal?: AbortSignal): Prom
 		try {
 			await fs.promises.access(gitignorePath)
 			gitignoreFiles.push(gitignorePath)
-		} catch {
+		} catch (error) {
+			signal?.throwIfAborted()
+			if (options.rejectOnError && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error
 			// .gitignore doesn't exist at this level, continue
 		}
 
@@ -412,6 +602,7 @@ async function listFilteredDirectories(
 	ignoreInstance: ReturnType<typeof ignore>,
 	limit?: number,
 	signal?: AbortSignal,
+	options: ListFilesOptions = {},
 ): Promise<string[]> {
 	const absolutePath = path.resolve(dirPath)
 	const directories: string[] = []
@@ -453,6 +644,16 @@ async function listFilteredDirectories(
 				if (entry.isDirectory() && !entry.isSymbolicLink()) {
 					const dirName = entry.name
 					const fullDirPath = path.join(currentPath, dirName)
+					if (options.rejectOnError) {
+						// Windows directory entries can label junctions as plain directories.
+						const stat = await fs.promises.lstat(fullDirPath)
+						signal?.throwIfAborted()
+						if (stat.isSymbolicLink() || !stat.isDirectory()) {
+							throw new Error(
+								`Strict file listing cannot include a linked or changed directory: ${fullDirPath}`,
+							)
+						}
+					}
 
 					// Create context for subdirectory checks
 					// Subdirectories found during scanning are never target directories themselves
@@ -518,6 +719,7 @@ async function listFilteredDirectories(
 			}
 		} catch (err) {
 			signal?.throwIfAborted()
+			if (options.rejectOnError) throw err
 			// Continue if we can't read a directory
 			console.warn(`Could not read directory ${currentPath}: ${err}`)
 		}
@@ -672,42 +874,96 @@ function formatAndCombineResults(files: string[], directories: string[], limit: 
 /**
  * Execute ripgrep command and return list of files
  */
-async function execRipgrep(rgPath: string, args: string[], limit: number, signal?: AbortSignal): Promise<string[]> {
+async function execRipgrep(
+	rgPath: string,
+	args: string[],
+	limit: number,
+	signal?: AbortSignal,
+	options: ListFilesOptions = {},
+): Promise<string[]> {
 	signal?.throwIfAborted()
 	return new Promise((resolve, reject) => {
-		// Extract the directory path from args (it's the last argument)
-		const searchDir = args[args.length - 1]
-
 		const rgProcess = childProcess.spawn(rgPath, args)
 		let output = ""
-		let results: string[] = []
-		const onAbort = () => {
+		const results: string[] = []
+		let stopped = false
+		let settled = false
+		let timedOut = false
+		let reachedLimit = false
+		let processError: Error | undefined
+		let timeoutId: ReturnType<typeof setTimeout> | undefined
+		const cleanup = () => {
 			clearTimeout(timeoutId)
 			signal?.removeEventListener("abort", onAbort)
-			reject(signal?.reason ?? new Error("File listing cancelled"))
+		}
+		const stop = () => {
+			if (stopped || settled) return
+			stopped = true
+			clearTimeout(timeoutId)
 			rgProcess.kill()
 		}
+		const onAbort = () => stop()
 
-		// Set timeout to avoid hanging
-		const timeoutId = setTimeout(() => {
-			signal?.removeEventListener("abort", onAbort)
-			rgProcess.kill()
-			console.warn("ripgrep timed out, returning partial results")
+		// A kill request does not mean the child or its pipes have closed. Keep
+		// the scheduler slot occupied until close, including abort and timeout.
+		rgProcess.on("close", (code, exitSignal) => {
+			if (settled) return
+			settled = true
+			cleanup()
+			if (signal?.aborted) {
+				reject(signal.reason ?? new Error("File listing cancelled"))
+				return
+			}
+			if (timedOut) {
+				if (options.rejectOnError) {
+					reject(new FileListingTimeoutError())
+				} else {
+					console.warn("ripgrep timed out, returning partial results")
+					resolve(results.slice(0, limit))
+				}
+				return
+			}
+			if (processError) {
+				reject(processError)
+				return
+			}
+
+			processRipgrepOutput(true)
+			// Exit 1 means no files matched. A signal is expected only when this
+			// invocation deliberately stopped at its output limit.
+			const expectedExit = code === 0 || code === 1 || (reachedLimit && (code === null || code === 143))
+			if (options.rejectOnError && !expectedExit) {
+				reject(new Error(`ripgrep process exited with ${exitSignal ? `signal ${exitSignal}` : `code ${code}`}`))
+				return
+			}
+			if (code !== 0 && code !== null && code !== 143 /* SIGTERM */) {
+				console.warn(`ripgrep process exited with code ${code}, returning partial results`)
+			}
 			resolve(results.slice(0, limit))
-		}, 10_000)
-		signal?.addEventListener("abort", onAbort, { once: true })
-		if (signal?.aborted) onAbort()
+		})
+
+		rgProcess.on("error", (error) => {
+			if (settled) return
+			processError = new Error(`ripgrep process error: ${error.message}`)
+			if (options.rejectOnError || signal?.aborted || timedOut) {
+				stop()
+				return
+			}
+			settled = true
+			cleanup()
+			reject(processError)
+		})
 
 		// Process stdout data as it comes in
 		rgProcess.stdout.on("data", (data) => {
-			if (signal?.aborted) return
+			if (stopped || settled || signal?.aborted) return
 			output += data.toString()
 			processRipgrepOutput()
 
 			// Kill the process if we've reached the limit
 			if (results.length >= limit) {
-				rgProcess.kill()
-				clearTimeout(timeoutId) // Clear the timeout when we kill the process due to reaching the limit
+				reachedLimit = true
+				stop()
 			}
 		})
 
@@ -716,31 +972,16 @@ async function execRipgrep(rgPath: string, args: string[], limit: number, signal
 			console.error(`ripgrep stderr: ${data}`)
 		})
 
-		// Handle process completion
-		rgProcess.on("close", (code) => {
-			signal?.removeEventListener("abort", onAbort)
-			// Clear the timeout to avoid memory leaks
-			clearTimeout(timeoutId)
-			if (signal?.aborted) return
-
-			// Process any remaining output
-			processRipgrepOutput(true)
-
-			// Log non-zero exit codes but don't fail
-			if (code !== 0 && code !== null && code !== 143 /* SIGTERM */) {
-				console.warn(`ripgrep process exited with code ${code}, returning partial results`)
+		if (!settled) {
+			if (!stopped) {
+				timeoutId = setTimeout(() => {
+					timedOut = true
+					stop()
+				}, 10_000)
 			}
-
-			resolve(results.slice(0, limit))
-		})
-
-		// Handle process errors
-		rgProcess.on("error", (error) => {
-			signal?.removeEventListener("abort", onAbort)
-			// Clear the timeout to avoid memory leaks
-			clearTimeout(timeoutId)
-			reject(signal?.aborted ? signal.reason : new Error(`ripgrep process error: ${error.message}`))
-		})
+			signal?.addEventListener("abort", onAbort, { once: true })
+			if (signal?.aborted) onAbort()
+		}
 
 		// Helper function to process output buffer
 		function processRipgrepOutput(isFinal = false) {

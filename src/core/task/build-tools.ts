@@ -19,7 +19,7 @@ import {
 	resolveToolAlias,
 } from "../prompts/tools/filter-tools-for-mode"
 import { buildTaskToolSurface as captureTaskToolSurface, type TaskToolSurface } from "../tools/TaskToolSurface"
-import { canonicalizeToolName, ToolRegistry, type ToolRegistryOptions } from "../tools/ToolRegistry"
+import { canonicalizeToolName, ToolRegistry, type ToolRegistryOptions, type TaskReadGrant } from "../tools/ToolRegistry"
 import type { ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { digestValue } from "../agent/StepContext"
 import type { ApiMessage } from "../task-persistence/apiMessages"
@@ -52,6 +52,7 @@ export interface BuildToolsOptions {
 	/** Optional caller policy values used when exposing the unified surface. */
 	policy?: ToolPolicySnapshot
 	autoApprovalEnabled?: boolean
+	readGrant?: TaskReadGrant
 	/** Task-owned cache, used only at a real new step boundary (never during a transport retry). */
 	catalogCache?: TaskToolCatalogCache
 	/** Existing persisted call/result transactions; text alone cannot promote a deferred tool. */
@@ -314,6 +315,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 					excludedTools: orderedNames(modelInfo?.excludedTools),
 				},
 				autoApprovalEnabled: options.autoApprovalEnabled,
+				readGrant: options.readGrant,
 				policy: options.policy,
 				availableBrowserToolNames,
 				codeIndex: [
@@ -469,6 +471,7 @@ function createCapturedToolSurface(input: {
 		disabledTools,
 		policy: options.policy,
 		autoApprovalEnabled: options.autoApprovalEnabled,
+		readGrant: options.readGrant,
 		mode: options.mode,
 		cwd: options.cwd,
 		includeAllToolsWithRestrictions,

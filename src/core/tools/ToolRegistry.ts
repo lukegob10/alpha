@@ -8,7 +8,8 @@ import {
 	type DiscoverToolsParams,
 } from "@alpha-code/types"
 
-import type { ToolUse } from "../../shared/tools"
+import type { ToolResponse, ToolUse } from "../../shared/tools"
+import type { ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { TOOL_ALIASES } from "../../shared/tools"
 import { normalizeMcpToolName, parseMcpToolName } from "../../utils/mcp-name"
 import { getNativeTools } from "../prompts/tools/native-tools"
@@ -81,6 +82,18 @@ export interface ToolExecutionContext {
 	callbacks: ToolCallbacks
 }
 
+export interface TaskReadGrant {
+	readonly enabled: boolean
+	readonly workspaceRoot: string
+	readonly showIgnoredFiles: boolean
+}
+
+/** Only the read runs concurrently. Presentation and Task state updates are joined and ordered. */
+export interface PreparedToolRead {
+	readonly scope: string
+	run(signal?: AbortSignal): Promise<() => Promise<ToolResponse>>
+}
+
 export interface ToolDescriptor {
 	name: string
 	/** Alternate model-facing names. All entries resolve to `name`. */
@@ -89,6 +102,16 @@ export interface ToolDescriptor {
 	capabilities: ToolCapabilities
 	/** Maximum text characters returned to the next model turn. */
 	maxOutputChars?: number
+	/** Explicit independent resource scope for approval-free kernel executors. Unknown scope is serial. */
+	getConcurrencyScope?: (call: ToolUse, cwd: string) => string | undefined
+	/** Audited alternative to the legacy approval/UI path, authorized by a captured step grant. */
+	prepareParallelRead?: (
+		task: Task,
+		call: ToolUse,
+		grant: TaskReadGrant,
+		policy: ToolPolicySnapshot,
+		signal?: AbortSignal,
+	) => Promise<PreparedToolRead | undefined>
 	execute(context: ToolExecutionContext): Promise<void>
 }
 
@@ -117,9 +140,8 @@ const BARRIER_TOOLS = new Set([
 	"ask_followup_question",
 ])
 
-// Only these read-only operations have an audited parallel contract. New
-// tools remain serial until their dependencies and cancellation behavior are
-// reviewed; mutation and lifecycle calls never enter this set.
+// Read-like metadata alone never grants parallel execution. The scheduler also
+// requires an explicit independent scope and an approval-free execution path.
 const PARALLEL_READ_TOOLS = new Set([
 	"read_file",
 	"list_files",
@@ -306,9 +328,8 @@ export interface ToolCapabilityOptions {
 }
 
 /**
- * Return conservative scheduler metadata for a tool. Callers may opt into
- * parallel execution only after explicitly auditing the tool's dependencies;
- * no production registry currently does so.
+ * Return conservative scheduler metadata for a tool. Approval metadata describes
+ * the legacy handler; audited read admission is a separate captured contract.
  */
 export function getToolCapabilities(name: string, options: ToolCapabilityOptions = {}): ToolCapabilities {
 	const concurrency: ToolConcurrency = BARRIER_TOOLS.has(name)
@@ -625,6 +646,9 @@ export class ToolRegistry {
 			aliases: [],
 			schema: canonicalizeSchema(schema),
 			capabilities: getToolCapabilities(name),
+			...(name === "list_files"
+				? { prepareParallelRead: listFilesTool.prepareParallelRead.bind(listFilesTool) }
+				: {}),
 			execute: customExecute ?? executeBaseTool(tool, name),
 		})
 	}

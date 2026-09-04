@@ -36,6 +36,10 @@ const {
 	mockReadTaskMessages,
 	mockTaskMetadata,
 	mockPWaitFor,
+	mockRealpath,
+	mockLstat,
+	mockOpendir,
+	mockListFiles,
 	MockProviderTranscriptStore,
 	MockProviderTranscriptStoreError,
 	MockProviderTranscriptRevisionConflictError,
@@ -56,6 +60,10 @@ const {
 		},
 	}),
 	mockPWaitFor: vi.fn().mockResolvedValue(undefined),
+	mockRealpath: vi.fn(),
+	mockLstat: vi.fn(),
+	mockOpendir: vi.fn(),
+	mockListFiles: vi.fn(),
 	MockProviderTranscriptStoreError: class MockProviderTranscriptStoreError extends Error {
 		code = "write_failed"
 		taskId = "test-id"
@@ -103,6 +111,11 @@ vi.mock("execa", () => ({
 	execa: vi.fn(),
 }))
 
+vi.mock("../../../services/glob/list-files", async (importOriginal) => ({
+	...(await importOriginal()),
+	listFiles: mockListFiles,
+}))
+
 vi.mock("fs/promises", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, any>
 	return {
@@ -112,12 +125,18 @@ vi.mock("fs/promises", async (importOriginal) => {
 		readFile: vi.fn().mockResolvedValue("[]"),
 		unlink: vi.fn().mockResolvedValue(undefined),
 		rmdir: vi.fn().mockResolvedValue(undefined),
+		realpath: mockRealpath,
+		lstat: mockLstat,
+		opendir: mockOpendir,
 		default: {
 			mkdir: vi.fn().mockResolvedValue(undefined),
 			writeFile: vi.fn().mockResolvedValue(undefined),
 			readFile: vi.fn().mockResolvedValue("[]"),
 			unlink: vi.fn().mockResolvedValue(undefined),
 			rmdir: vi.fn().mockResolvedValue(undefined),
+			realpath: mockRealpath,
+			lstat: mockLstat,
+			opendir: mockOpendir,
 		},
 	}
 })
@@ -1609,6 +1628,312 @@ describe("Task persistence", () => {
 			expect(saved).toBe(true)
 			// userMessageContent should be cleared on success
 			expect(task.userMessageContent).toEqual([])
+		})
+	})
+
+	describe("list_files parallel-read Task integration", () => {
+		const cwd = path.resolve(os.tmpdir(), "alpha-code-list-files-integration")
+		const originalWorkspaceFolders = vscode.workspace.workspaceFolders
+
+		type TranscriptStoreFixture = {
+			commit: ReturnType<typeof vi.fn>
+			getLastCommitReceipt: ReturnType<typeof vi.fn>
+			verifyCommitReceipt: ReturnType<typeof vi.fn>
+		}
+
+		const configureWorkspace = () => {
+			;(vscode.workspace as any).workspaceFolders = [
+				{
+					uri: { fsPath: cwd },
+					name: "parallel-read-workspace",
+					index: 0,
+				},
+			]
+		}
+
+		const createListFilesTask = () => {
+			configureWorkspace()
+			mockProvider.getValues = vi.fn().mockReturnValue({
+				autoApprovalEnabled: true,
+				alwaysAllowReadOnly: true,
+				alwaysAllowReadOnlyOutsideWorkspace: false,
+				showRooIgnoredFiles: false,
+				workspaceFolders: [{ uri: { fsPath: cwd }, name: "parallel-read-workspace", index: 0 }],
+			})
+
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "list files integration",
+				taskMode: "code",
+				taskKind: "primary",
+				workspacePath: cwd,
+				startTask: false,
+			})
+			task.rooIgnoreController = { validateAccess: vi.fn().mockReturnValue(true) } as any
+			task.rooProtectedController = { isWriteProtected: vi.fn().mockReturnValue(false) } as any
+
+			const store = MockProviderTranscriptStore.mock.results.at(-1)?.value as TranscriptStoreFixture
+			store.commit.mockImplementation(async ({ expectedRevision }: { expectedRevision: number }) => {
+				const receipt = {
+					version: 1,
+					taskId: task.taskId,
+					revision: expectedRevision + 1,
+					digest: "0".repeat(64),
+					writtenAt: 1,
+				}
+				store.getLastCommitReceipt.mockReturnValue(receipt)
+				return receipt
+			})
+			store.verifyCommitReceipt.mockImplementation(async (receipt: unknown) => receipt)
+
+			return { task, store }
+		}
+
+		const createListFilesSurface = (readGrantEnabled: boolean) =>
+			createTaskToolSurface({
+				registry: new ToolRegistry(),
+				mode: "code",
+				cwd,
+				autoApprovalEnabled: true,
+				readGrant: {
+					enabled: readGrantEnabled,
+					workspaceRoot: cwd,
+					showIgnoredFiles: false,
+				},
+			})
+
+		const listFilesCall = (id: string, relativePath: string) => ({
+			type: "tool_call" as const,
+			id,
+			name: "list_files" as const,
+			arguments: { path: relativePath, recursive: false },
+		})
+
+		const persistAssistantResponse = async (task: Task, response: ReturnType<typeof createAgentResponse>) => {
+			const saved = await (task as any).persistAssistantResponseBeforeEffects(
+				{
+					role: "assistant",
+					content: response.toolCalls.map((call) => ({
+						type: "tool_use" as const,
+						id: call.id,
+						name: call.name,
+						input: call.arguments,
+					})),
+				},
+				undefined,
+				response,
+			)
+			expect(saved).toBe(true)
+		}
+
+		beforeEach(() => {
+			configureWorkspace()
+			mockSaveApiMessages.mockReset().mockResolvedValue(undefined)
+			mockRealpath.mockReset().mockImplementation(async (value: string) => value)
+			mockLstat.mockReset().mockImplementation(async (value: string) => {
+				if (path.basename(value) === ".gitignore") {
+					throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+				}
+				return { isDirectory: () => true }
+			})
+			mockOpendir.mockReset().mockResolvedValue({
+				async *[Symbol.asyncIterator]() {},
+			})
+			mockListFiles.mockReset()
+		})
+
+		afterEach(() => {
+			;(vscode.workspace as any).workspaceFolders = originalWorkspaceFolders
+		})
+
+		it("overlaps independent reads, finalizes them in call order, and persists one ordered result batch", async () => {
+			const { task } = createListFilesTask()
+			const firstDirectory = path.resolve(cwd, "first")
+			const secondDirectory = path.resolve(cwd, "second")
+			const calls = [listFilesCall("list-first", "first"), listFilesCall("list-second", "second")]
+			const response = createAgentResponse(calls)
+			await persistAssistantResponse(task, response)
+			const say = vi.spyOn(task, "say").mockResolvedValue(undefined)
+
+			const pending = new Map<string, (result: [string[], boolean]) => void>()
+			mockListFiles.mockImplementation((absolutePath: string) => {
+				return new Promise<[string[], boolean]>((resolve) => {
+					pending.set(absolutePath, resolve)
+				})
+			})
+
+			const run = (task as any).executeCanonicalToolCallsForTurn(
+				response,
+				createListFilesSurface(true),
+				"code",
+				undefined,
+			)
+			await vi.waitFor(() => expect(mockListFiles).toHaveBeenCalledTimes(2))
+			expect(mockListFiles.mock.calls.map(([absolutePath]) => absolutePath).sort()).toEqual(
+				[firstDirectory, secondDirectory].sort(),
+			)
+			for (const [, , , , options] of mockListFiles.mock.calls) {
+				expect(options).toEqual({ followSymlinks: false, rejectOnError: true, workspaceRoot: cwd })
+			}
+
+			pending.get(secondDirectory)?.([[path.join(secondDirectory, "second.ts")], false])
+			expect(say).not.toHaveBeenCalled()
+			pending.get(firstDirectory)?.([[path.join(firstDirectory, "first.ts")], false])
+
+			const outcome = await run
+			expect(outcome).toMatchObject({
+				status: "completed",
+				parallelBatchCount: 1,
+				parallelToolCount: 2,
+				results: [
+					{ callId: "list-first", status: "success" },
+					{ callId: "list-second", status: "success" },
+				],
+			})
+			expect(say.mock.calls.map(([type]) => type)).toEqual(["tool", "tool"])
+			expect(
+				task.userMessageContent
+					.filter((block): block is Anthropic.Messages.ToolResultBlockParam => block.type === "tool_result")
+					.map((block) => block.tool_use_id),
+			).toEqual(["list-first", "list-second"])
+
+			expect(await task.flushPendingToolResultsToHistory({ allowAborted: true })).toBe(true)
+			expect(mockSaveApiMessages).toHaveBeenCalledTimes(2)
+			expect(
+				(
+					mockSaveApiMessages.mock.calls.at(-1)?.[0].messages.at(-1)
+						?.content as Anthropic.ToolResultBlockParam[]
+				).map((block) => block.tool_use_id),
+			).toEqual(["list-first", "list-second"])
+			await task.flushPendingToolResultsToHistory({ allowAborted: true })
+			expect(mockSaveApiMessages).toHaveBeenCalledTimes(2)
+		})
+
+		it("joins an ignored-signal read before cancellation and does not start a follow-on listing", async () => {
+			const { task } = createListFilesTask()
+			const calls = [listFilesCall("cancel-first", "same"), listFilesCall("cancel-second", "same")]
+			const response = createAgentResponse(calls)
+			await persistAssistantResponse(task, response)
+			let observedSignal: AbortSignal | undefined
+			let release!: (result: [string[], boolean]) => void
+			mockListFiles.mockImplementation(
+				(_absolutePath: string, _recursive: boolean, _limit: number, signal?: AbortSignal) => {
+					observedSignal = signal
+					return new Promise<[string[], boolean]>((resolve) => {
+						release = resolve
+					})
+				},
+			)
+
+			const run = (task as any).executeCanonicalToolCallsForTurn(
+				response,
+				createListFilesSurface(true),
+				"code",
+				undefined,
+			)
+			await vi.waitFor(() => expect(mockListFiles).toHaveBeenCalledTimes(1))
+			const abort = task.abortTask()
+			await vi.waitFor(() => expect(observedSignal?.aborted).toBe(true))
+			let settled = false
+			void run.then(() => {
+				settled = true
+			})
+			await Promise.resolve()
+			expect(settled).toBe(false)
+			expect(mockListFiles).toHaveBeenCalledTimes(1)
+
+			release([[], false])
+			const [outcome] = await Promise.all([run, abort])
+			expect(outcome).toMatchObject({
+				status: "aborted",
+				results: [
+					{ callId: "cancel-first", status: "cancelled" },
+					{ callId: "cancel-second", status: "cancelled" },
+				],
+			})
+			expect(mockListFiles).toHaveBeenCalledTimes(1)
+
+			expect(await task.flushPendingToolResultsToHistory({ allowAborted: true })).toBe(true)
+			expect(task.userMessageContent).toEqual([])
+			expect(mockSaveApiMessages).toHaveBeenCalledTimes(2)
+			expect(mockSaveApiMessages.mock.calls.at(-1)?.[0].messages.at(-1)).toMatchObject({
+				role: "user",
+				content: [
+					{ type: "tool_result", tool_use_id: "cancel-first", is_error: true },
+					{ type: "tool_result", tool_use_id: "cancel-second", is_error: true },
+				],
+			})
+		})
+
+		it("does not broaden a disabled captured read grant when live settings enable reads", async () => {
+			const { task } = createListFilesTask()
+			const response = createAgentResponse([listFilesCall("serial-denied", "serial")])
+			await persistAssistantResponse(task, response)
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" } as any)
+			mockListFiles.mockResolvedValue([[path.resolve(cwd, "serial", "entry.ts")], false])
+
+			const outcome = await (task as any).executeCanonicalToolCallsForTurn(
+				response,
+				createListFilesSurface(false),
+				"code",
+				undefined,
+			)
+			expect(outcome).toMatchObject({
+				status: "completed",
+				parallelBatchCount: 0,
+				parallelToolCount: 0,
+				results: [{ callId: "serial-denied", status: "denied" }],
+			})
+			expect(ask).toHaveBeenCalledOnce()
+			expect(mockListFiles).toHaveBeenCalledOnce()
+			expect(mockListFiles.mock.calls[0][4]).toBeUndefined()
+			expect(mockRealpath).not.toHaveBeenCalled()
+			expect(await task.flushPendingToolResultsToHistory({ allowAborted: true })).toBe(true)
+			expect(mockSaveApiMessages.mock.calls.at(-1)?.[0].messages.at(-1)).toMatchObject({
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "serial-denied", is_error: true }],
+			})
+		})
+
+		it("blocks physical read preparation when a per-call persistence fence fails", async () => {
+			const { task, store } = createListFilesTask()
+			const calls = [listFilesCall("fence-first", "first"), listFilesCall("fence-second", "second")]
+			const response = createAgentResponse(calls)
+			await persistAssistantResponse(task, response)
+			store.verifyCommitReceipt.mockClear()
+			let verifyCalls = 0
+			store.verifyCommitReceipt.mockImplementation(async (receipt: unknown) => {
+				verifyCalls += 1
+				if (verifyCalls === 2) throw new Error("per-call fence failed")
+				return receipt
+			})
+
+			const outcome = await (task as any).executeCanonicalToolCallsForTurn(
+				response,
+				createListFilesSurface(true),
+				"code",
+				undefined,
+			)
+			expect(outcome).toMatchObject({
+				status: "failed",
+				results: [
+					{ callId: "fence-first", status: "error" },
+					{ callId: "fence-second", status: "error" },
+				],
+				failure: { kind: "effect_fence", callId: "fence-first", message: "per-call fence failed" },
+			})
+			expect(verifyCalls).toBeGreaterThanOrEqual(2)
+			expect(mockRealpath).not.toHaveBeenCalled()
+			expect(mockListFiles).not.toHaveBeenCalled()
+			expect(task.userMessageContent).toEqual([])
+			expect(mockSaveApiMessages.mock.calls.at(-1)?.[0].messages.at(-1)).toMatchObject({
+				role: "user",
+				content: [
+					{ type: "tool_result", tool_use_id: "fence-first", is_error: true },
+					{ type: "tool_result", tool_use_id: "fence-second", is_error: true },
+				],
+			})
 		})
 	})
 })

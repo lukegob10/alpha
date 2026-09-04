@@ -431,10 +431,18 @@ const ChatRowContentInner = ({
 		wordBreak: "break-word",
 	}
 
-	const tool = useMemo(
-		() => (message.ask === "tool" ? safeJsonParse<ClineSayTool>(message.text) : null),
-		[message.ask, message.text],
-	)
+	const tool = useMemo(() => {
+		if (message.ask === "tool") {
+			return safeJsonParse<ClineSayTool>(message.text)
+		}
+
+		if (message.type === "say" && message.say === "tool") {
+			const sayTool = safeJsonParse<ClineSayTool>(message.text)
+			return sayTool?.tool === "listFilesTopLevel" ? sayTool : null
+		}
+
+		return null
+	}, [message.type, message.ask, message.say, message.text])
 
 	// Unified diff content (provided by backend when relevant)
 	const unifiedDiff = useMemo(() => {

@@ -3,6 +3,9 @@ import type { ToolName } from "@alpha-code/types"
 import { Task } from "../task/Task"
 import type { ToolUse, HandleError, PushToolResult, AskApproval, NativeToolArgs } from "../../shared/tools"
 
+/** A captured read grant was revoked; never turn this into an interactive parallel ask. */
+export class ToolReadDeniedError extends Error {}
+
 /**
  * Callbacks passed to tool execution
  */

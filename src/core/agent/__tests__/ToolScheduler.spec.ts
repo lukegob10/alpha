@@ -12,6 +12,7 @@ import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
 import { collectAgentResponse } from "../AgentResponseAccumulator"
 import { AgentTurnEventLog, readAgentTurnEvents } from "../AgentTurnEventLog"
 import { ToolScheduler } from "../ToolScheduler"
+import { createToolPolicySnapshot } from "../ToolPolicy"
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
@@ -65,6 +66,7 @@ function descriptor(
 			controlFlow: concurrency === "barrier",
 			requiresApproval: false,
 		},
+		getConcurrencyScope: (call) => path.resolve(tmpdir(), "scheduler-fixture", call.id ?? name),
 		execute,
 	}
 }
@@ -85,6 +87,183 @@ function resultIds(task: Task): string[] {
 }
 
 describe("ToolScheduler", () => {
+	it("retains earlier truthful receipts when a later read preflight rejects", async () => {
+		const task = makeTask()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const effects: string[] = []
+		registry.register(
+			descriptor("mutation", "serial", async ({ callbacks }) => {
+				effects.push("mutation")
+				callbacks.pushToolResult("already completed")
+			}),
+		)
+		registry.register({
+			...descriptor("read", "parallel", async () => {
+				effects.push("unexpected")
+			}),
+			prepareParallelRead: async () => {
+				throw new Error("state unavailable")
+			},
+		})
+		const outcome = await new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+			executionMode: "selective-parallel",
+			policy: createToolPolicySnapshot({ visibleTools: ["mutation", "read"] }),
+			readGrant: { enabled: true, workspaceRoot: tmpdir(), showIgnoredFiles: false },
+		}).run(response({ id: "one", name: "mutation" }, { id: "two", name: "read" }))
+		expect(effects).toEqual(["mutation"])
+		expect(outcome.results.map(({ status, content }) => [status, content])).toEqual([
+			["success", "already completed"],
+			["error", expect.stringContaining("state unavailable")],
+		])
+		expect(resultIds(task)).toEqual(["one", "two"])
+	})
+
+	it("serializes overlapping and unknown scopes even when metadata claims parallel safety", async () => {
+		for (const scope of [undefined, path.resolve(tmpdir(), "shared-scope")]) {
+			const task = makeTask()
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			let active = 0
+			let peak = 0
+			registry.register({
+				...descriptor("read", "parallel", async ({ callbacks }) => {
+					active++
+					peak = Math.max(peak, active)
+					await Promise.resolve()
+					callbacks.pushToolResult("read")
+					active--
+				}),
+				getConcurrencyScope: () => scope,
+			})
+			await new ToolScheduler({
+				task,
+				registry,
+				mode: "code",
+				executionMode: "selective-parallel",
+				validateCall: () => {},
+			}).run(response({ id: "one", name: "read" }, { id: "two", name: "read" }))
+			expect(peak).toBe(1)
+		}
+	})
+
+	it("rejects an unexpected approval without entering Task.ask from a parallel worker", async () => {
+		const task = makeTask()
+		const ask = vi.spyOn(task, "ask")
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		let effects = 0
+		registry.register(
+			descriptor("read", "parallel", async ({ callbacks }) => {
+				if (await callbacks.askApproval("tool", "unexpected")) effects++
+			}),
+		)
+		const outcome = await new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			executionMode: "selective-parallel",
+			validateCall: () => {},
+		}).run(response({ id: "one", name: "read" }, { id: "two", name: "read" }))
+		expect(outcome.results.map((result) => result.status)).toEqual(["denied", "denied"])
+		expect(ask).not.toHaveBeenCalled()
+		expect(effects).toBe(0)
+	})
+
+	it("rechecks cancellation after an awaited durability fence before dispatch", async () => {
+		const task = makeTask()
+		const controller = new AbortController()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const execute = vi.fn(async () => {})
+		registry.register(descriptor("read", "serial", execute))
+		let release!: () => void
+		let entered!: () => void
+		const atFence = new Promise<void>((resolve) => {
+			entered = resolve
+		})
+		const fence = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const run = new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			signal: controller.signal,
+			preserveAbortedResults: true,
+			validateCall: () => {},
+			beforeEffect: async () => {
+				entered()
+				await fence
+			},
+		}).run(response({ id: "one", name: "read" }))
+		await atFence
+		controller.abort()
+		release()
+		expect((await run).results[0].status).toBe("cancelled")
+		expect(execute).not.toHaveBeenCalled()
+		expect(resultIds(task)).toEqual(["one"])
+	})
+
+	it("drains an ignored-signal worker after a sibling fence failure and prevents queued effects", async () => {
+		const task = makeTask()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		let release!: () => void
+		let firstStarted!: () => void
+		let fenceFailed!: () => void
+		const started = new Promise<void>((resolve) => {
+			firstStarted = resolve
+		})
+		const failed = new Promise<void>((resolve) => {
+			fenceFailed = resolve
+		})
+		const pending = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const effects: string[] = []
+		let firstSignal: AbortSignal | undefined
+		registry.register(
+			descriptor("read", "parallel", async ({ call, callbacks, signal }) => {
+				effects.push(call.id!)
+				firstSignal = signal
+				firstStarted()
+				await pending
+				callbacks.pushToolResult("joined")
+			}),
+		)
+		let finished = false
+		const run = new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			executionMode: "selective-parallel",
+			maxConcurrency: 3,
+			validateCall: () => {},
+			beforeEffect: async (call) => {
+				if (call.id === "two") {
+					await started
+					fenceFailed()
+					throw new Error("fence failed")
+				}
+			},
+		})
+			.run(response({ id: "one", name: "read" }, { id: "two", name: "read" }, { id: "three", name: "read" }))
+			.then((outcome) => {
+				finished = true
+				return outcome
+			})
+		await failed
+		await Promise.resolve()
+		expect(finished).toBe(false)
+		expect(firstSignal?.aborted).toBe(true)
+		release()
+		const outcome = await run
+		expect(effects).toEqual(["one"])
+		expect(outcome.status).toBe("failed")
+		expect(outcome.results.map((result) => result.status)).toEqual(["success", "error", "error"])
+		expect(resultIds(task)).toEqual(["one", "two", "three"])
+	})
+
 	it("reports command exit status and bounded redacted verification output", async () => {
 		const task = makeTask()
 		const events: any[] = []
@@ -376,22 +555,12 @@ describe("ToolScheduler", () => {
 		const registry = new ToolRegistry({ includeBuiltIns: false })
 		let active = 0
 		let peak = 0
-		let approvalsInFlight = 0
-		let peakApprovals = 0
 		let releaseHandlers!: () => void
 		const allHandlersStarted = new Promise<void>((resolve) => {
 			releaseHandlers = resolve
 		})
-		task.ask = async () => {
-			approvalsInFlight += 1
-			peakApprovals = Math.max(peakApprovals, approvalsInFlight)
-			await Promise.resolve()
-			approvalsInFlight -= 1
-			return { response: "yesButtonClicked" } as any
-		}
 		registry.register(
 			descriptor("read_file", "parallel", async ({ call, callbacks }) => {
-				expect(await callbacks.askApproval("tool", "read file")).toBe(true)
 				active += 1
 				peak = Math.max(peak, active)
 				if (active === 6) releaseHandlers()
@@ -415,8 +584,7 @@ describe("ToolScheduler", () => {
 		expect(outcome.parallelBatchCount).toBe(1)
 		expect(outcome.parallelToolCount).toBe(6)
 		expect(peak).toBe(6)
-		expect(peakApprovals).toBe(1)
-		expect(outcome.approvalRequestCount).toBe(6)
+		expect(outcome.approvalRequestCount).toBe(0)
 		expect(outcome.approvalDeniedCount).toBe(0)
 		expect(outcome.approvalCancelledCount).toBe(0)
 		expect(outcome.supersededAskCount).toBe(0)
@@ -1030,7 +1198,7 @@ describe("ToolScheduler", () => {
 		expect(resultIds(task)).toEqual(["1", "2"])
 	})
 
-	it("bounds selective-parallel workers and keeps completion commits in model order", async () => {
+	it("bounds selective-parallel windows and keeps completion commits in model order", async () => {
 		const task = makeTask()
 		const registry = new ToolRegistry({ includeBuiltIns: false })
 		let active = 0
@@ -1059,7 +1227,7 @@ describe("ToolScheduler", () => {
 
 		expect(peak).toBeLessThanOrEqual(3)
 		expect(peak).toBeGreaterThan(1)
-		expect(outcome.parallelBatchCount).toBe(1)
+		expect(outcome.parallelBatchCount).toBe(3)
 		expect(outcome.parallelToolCount).toBe(7)
 		expect(resultIds(task)).toEqual(["0", "1", "2", "3", "4", "5", "6"])
 		expect((task.userMessageContent as any[]).map((item) => item.content)).toEqual([

@@ -2633,6 +2633,40 @@ describe("Alpha", () => {
 			})
 		})
 
+		it.each([true, false])(
+			"captures the read grant in an ordinary provider request (enabled=%s)",
+			async (alwaysAllowReadOnly) => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "capture exploration policy",
+					startTask: false,
+				})
+				vi.spyOn(mockProvider, "getState").mockResolvedValue({
+					mode: "code",
+					autoApprovalEnabled: true,
+					alwaysAllowReadOnly,
+					showRooIgnoredFiles: false,
+				} as any)
+				vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("test instructions")
+				vi.spyOn(task.api, "createMessage").mockImplementation(async function* () {
+					yield { type: "text", text: "Ordinary answer." } as const
+				})
+				for await (const _chunk of task.attemptApiRequest(0)) {
+					/* Consume the real request boundary. */
+				}
+				const surface = (task as any).currentTaskToolSurface
+				expect(surface?.readGrant).toEqual({
+					enabled: alwaysAllowReadOnly,
+					workspaceRoot: task.cwd,
+					showIgnoredFiles: false,
+				})
+				expect(Object.isFrozen(surface.readGrant)).toBe(true)
+				expect(surface.policy.approval.autoApprovalEnabled).toBe(true)
+				expect(surface.resolve("list_files")?.prepareParallelRead).toBeTypeOf("function")
+			},
+		)
+
 		it("prevents an obsolete provider call when steering interrupts request preflight", async () => {
 			const task = new Task({
 				provider: mockProvider,

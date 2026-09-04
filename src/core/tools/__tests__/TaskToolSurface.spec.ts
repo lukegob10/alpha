@@ -132,6 +132,71 @@ describe("TaskToolSurface", () => {
 		expect(first.digest).toBe(second.digest)
 	})
 
+	it("captures a frozen read grant without changing descriptor approval metadata", () => {
+		const source = new ToolRegistry()
+		const listFiles = source.resolve("list_files")
+		expect(listFiles).toBeDefined()
+		const liveGrant = {
+			enabled: true,
+			workspaceRoot: "C:\\workspace",
+			showIgnoredFiles: false,
+		}
+		const surface = createTaskToolSurface({
+			registry: source,
+			schemas: [listFiles!.schema],
+			visibleToolNames: ["list_files"],
+			allowedToolNames: ["list_files"],
+			autoApprovalEnabled: true,
+			readGrant: liveGrant,
+			applyProfile: false,
+		})
+
+		expect(surface.readGrant).toEqual(liveGrant)
+		expect(surface.readGrant).not.toBe(liveGrant)
+		expect(Object.isFrozen(surface.readGrant)).toBe(true)
+		expect(surface.registry.resolve("list_files")?.capabilities.requiresApproval).toBe(true)
+		expect(() => Object.assign(surface.readGrant!, { enabled: false })).toThrow()
+
+		liveGrant.enabled = false
+		liveGrant.workspaceRoot = "C:\\other-workspace"
+		liveGrant.showIgnoredFiles = true
+		expect(surface.readGrant).toEqual({
+			enabled: true,
+			workspaceRoot: "C:\\workspace",
+			showIgnoredFiles: false,
+		})
+	})
+
+	it("disables an omitted or non-auto-approved read grant", () => {
+		const source = new ToolRegistry()
+		const listFiles = source.resolve("list_files")
+		expect(listFiles).toBeDefined()
+		const input = {
+			registry: source,
+			schemas: [listFiles!.schema],
+			visibleToolNames: ["list_files"],
+			allowedToolNames: ["list_files"],
+			applyProfile: false,
+		}
+
+		expect(createTaskToolSurface(input).readGrant).toBeUndefined()
+		const disabled = createTaskToolSurface({
+			...input,
+			autoApprovalEnabled: false,
+			readGrant: {
+				enabled: true,
+				workspaceRoot: "C:\\workspace",
+				showIgnoredFiles: true,
+			},
+		})
+		expect(disabled.policy.approval.autoApprovalEnabled).toBe(false)
+		expect(disabled.readGrant).toEqual({
+			enabled: false,
+			workspaceRoot: "C:\\workspace",
+			showIgnoredFiles: true,
+		})
+	})
+
 	it("normalizes dynamic MCP names while preserving one descriptor", () => {
 		const mcpRegistry = new ToolRegistry({
 			nativeTools: [],

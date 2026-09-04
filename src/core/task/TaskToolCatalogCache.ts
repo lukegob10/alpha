@@ -111,6 +111,7 @@ export class TaskToolCatalogCache {
 			registry: entry.full.registry,
 			schemas,
 			policy: entry.full.policy,
+			readGrant: entry.full.readGrant,
 			profile: entry.full.profile,
 			includeAllToolsWithRestrictions: entry.full.includeAllToolsWithRestrictions,
 			applyProfile: false,

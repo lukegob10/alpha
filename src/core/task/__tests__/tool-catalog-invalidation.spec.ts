@@ -23,7 +23,7 @@ vi.mock("../../../services/code-index/manager", () => ({
 }))
 
 import type { ToolCallbacks } from "../../tools/BaseTool"
-import type { ToolDescriptor, ToolExecutionContext } from "../../tools/ToolRegistry"
+import type { TaskReadGrant, ToolDescriptor, ToolExecutionContext } from "../../tools/ToolRegistry"
 import type { ClineProvider } from "../../webview/ClineProvider"
 import type { Task } from "../Task"
 import { buildNativeToolsArrayWithRestrictions, type BuildToolsOptions } from "../build-tools"
@@ -324,4 +324,37 @@ describe("TaskToolCatalogCache effective input invalidation", () => {
 		expect(second.digest).not.toBe(first.digest)
 		expect(functionNames(second)).not.toContain("write_to_file")
 	})
+})
+
+describe("TaskReadGrant cache identity", () => {
+	function grant(overrides: Partial<TaskReadGrant> = {}): TaskReadGrant {
+		return {
+			enabled: true,
+			workspaceRoot: "C:\\nor28-cache-fixture",
+			showIgnoredFiles: false,
+			...overrides,
+		}
+	}
+
+	it.each([
+		["enabled", grant({ enabled: false }), grant({ enabled: true })],
+		[
+			"workspaceRoot",
+			grant({ workspaceRoot: "C:\\nor28-cache-fixture-a" }),
+			grant({ workspaceRoot: "C:\\nor28-cache-fixture-b" }),
+		],
+		["showIgnoredFiles", grant({ showIgnoredFiles: false }), grant({ showIgnoredFiles: true })],
+	] as const)(
+		"invalidates the captured surface when read grant %s changes",
+		async (_field, firstGrant, nextGrant) => {
+			const { options } = createFixture()
+			const first = await capture({ ...options, autoApprovalEnabled: true, readGrant: firstGrant })
+			const next = await capture({ ...options, autoApprovalEnabled: true, readGrant: nextGrant })
+
+			expect(next).not.toBe(first)
+			expect(next.digest).not.toBe(first.digest)
+			expect(first.readGrant).toEqual(firstGrant)
+			expect(next.readGrant).toEqual(nextGrant)
+		},
+	)
 })

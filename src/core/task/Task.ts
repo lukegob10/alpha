@@ -2604,13 +2604,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			task: this,
 			registry: surface.registry,
 			policy: surface.policy,
+			readGrant: surface.readGrant,
 			mode,
 			customModes: state?.customModes,
 			experiments: state?.experiments,
 			disabledTools: state?.disabledTools,
 			includedTools: this.getTaskAllowedToolNames() ? [...this.getTaskAllowedToolNames()!] : undefined,
 			signal,
-			executionMode: "serial",
+			executionMode: "selective-parallel",
+			maxConcurrency: 4,
 			preserveAbortedResults: true,
 			beforeEffect: async () => this.assertCurrentProviderTranscriptBeforeEffects(),
 			onEvent: async (event: AgentTurnEvent) => {
@@ -9451,6 +9453,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				catalogCache: this.toolCatalogCache,
 				discoveryHistory: this.apiConversationHistory,
 				signal: stepInterruptionSignal,
+				autoApprovalEnabled: state?.autoApprovalEnabled,
+				readGrant: {
+					enabled:
+						this.taskKind === "primary" &&
+						state?.autoApprovalEnabled === true &&
+						state?.alwaysAllowReadOnly === true,
+					workspaceRoot: this.cwd,
+					showIgnoredFiles: state?.showRooIgnoredFiles === true,
+				},
 				allowedToolNames: this.getTaskAllowedToolNames(),
 				taskKind: this.taskKind,
 				enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),

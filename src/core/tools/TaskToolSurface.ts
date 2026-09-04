@@ -8,7 +8,13 @@ import {
 	type UserExecutionProfile,
 	type UserExecutionProfileId,
 } from "../agent/ExecutionProfile"
-import { canonicalizeToolName, ToolRegistry, type ToolCapabilities, type ToolDescriptor } from "./ToolRegistry"
+import {
+	canonicalizeToolName,
+	ToolRegistry,
+	type ToolCapabilities,
+	type ToolDescriptor,
+	type TaskReadGrant,
+} from "./ToolRegistry"
 import {
 	createToolPolicySnapshot,
 	isToolAllowed,
@@ -55,6 +61,8 @@ export interface TaskToolSurfaceInput {
 	/** The mode filter may already have applied legacy restrictions. */
 	applyProfile?: boolean
 	autoApprovalEnabled?: boolean
+	/** Captured primary-task read settings. Omission keeps legacy approval execution. */
+	readGrant?: TaskReadGrant
 	capabilities?: Readonly<Record<string, ToolCapabilities>>
 	outputLimits?: Readonly<Record<string, number>>
 	execution?: ToolPolicyInput["execution"]
@@ -70,6 +78,7 @@ export interface TaskToolSurface {
 	readonly allowedFunctionNames: readonly string[]
 	/** Immutable policy governing visibility and execution. */
 	readonly policy: ToolPolicySnapshot
+	readonly readGrant?: TaskReadGrant
 	/** Digest of the complete captured surface, computed locally. */
 	readonly digest: string
 	/** Resolved profile included for callers that need telemetry metadata. */
@@ -217,6 +226,7 @@ function fingerprintRegistry(registry: ToolRegistry): unknown {
 			schema: descriptor.schema,
 			capabilities: descriptor.capabilities,
 			maxOutputChars: descriptor.maxOutputChars,
+			auditedParallelRead: !!descriptor.prepareParallelRead,
 		}))
 		.sort((left, right) => left.name.localeCompare(right.name))
 }
@@ -335,11 +345,19 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		execution: basePolicy.execution,
 	})
 
+	const readGrant = input.readGrant
+		? Object.freeze({
+				enabled: input.readGrant.enabled === true && finalPolicy.approval.autoApprovalEnabled,
+				workspaceRoot: input.readGrant.workspaceRoot,
+				showIgnoredFiles: input.readGrant.showIgnoredFiles === true,
+			})
+		: undefined
 	const digest = digestValue({
 		registry: fingerprintRegistry(registry),
 		schemas: modelSchemas,
 		allowedFunctionNames,
 		policy: finalPolicy,
+		readGrant,
 		profile: { id: profile.id, digest: executionProfileDigest(profile) },
 		includeAllToolsWithRestrictions,
 	})
@@ -351,6 +369,7 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		schemas: frozenSchemas,
 		allowedFunctionNames: frozenAllowedNames,
 		policy: finalPolicy,
+		readGrant,
 		digest,
 		profile,
 		includeAllToolsWithRestrictions,
