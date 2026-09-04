@@ -8,6 +8,7 @@ import { type Mode, FileRestrictionError, getModeBySlug, getGroupName, planModeS
 import { EXPERIMENT_IDS } from "../../shared/experiments"
 import { isPlanCommandAllowed, isPlanCommandCwdAllowed } from "../../shared/plan-command"
 import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS, TOOL_ALIASES } from "../../shared/tools"
+import { parseMcpToolName } from "../../utils/mcp-name"
 
 const executableNativeToolNames = validToolNames
 
@@ -48,7 +49,7 @@ export function isValidToolName(toolName: string, experiments?: Record<string, b
 	}
 
 	// Check if it's a dynamic MCP tool (mcp_serverName_toolName format).
-	if (toolName.startsWith("mcp_")) {
+	if (toolName.startsWith("mcp_") || parseMcpToolName(toolName)) {
 		return true
 	}
 
@@ -228,7 +229,7 @@ export function isToolAllowedForMode(
 
 	// Check if this is a dynamic MCP tool (mcp_serverName_toolName)
 	// These should be allowed if the mcp group is allowed for the mode
-	const isDynamicMcpTool = tool.startsWith("mcp_")
+	const isDynamicMcpTool = tool.startsWith("mcp_") || !!parseMcpToolName(tool)
 
 	if (experiments && Object.values(EXPERIMENT_IDS).includes(tool as ExperimentId)) {
 		if (!experiments[tool]) {

@@ -19,6 +19,10 @@ export interface ToolCallbacks {
 	setResultMetadata?: (metadata: ToolResultMetadata) => void
 	toolCallId?: string
 	signal?: AbortSignal
+	/** Recheck the captured MCP contract after approval/UI waits, immediately before dispatch. */
+	beforeMcpDispatch?: (serverName: string, toolName: string, source?: "global" | "project") => void
+	/** Host-captured server scope for a dynamic descriptor; never read from model arguments. */
+	mcpSource?: "global" | "project"
 	resolveCommandTimeoutMs?: (requestedTimeoutMs: number | null | undefined, command: string) => number
 }
 

@@ -1,12 +1,18 @@
 import type OpenAI from "openai"
 
 import { customToolRegistry, formatNative } from "@alpha-code/core"
-import { browserToolNames } from "@alpha-code/types"
+import {
+	browserToolNames,
+	discoverToolsParamsSchema,
+	type CustomToolDefinition,
+	type DiscoverToolsParams,
+} from "@alpha-code/types"
 
 import type { ToolUse } from "../../shared/tools"
 import { TOOL_ALIASES } from "../../shared/tools"
 import { normalizeMcpToolName, parseMcpToolName } from "../../utils/mcp-name"
 import { getNativeTools } from "../prompts/tools/native-tools"
+import { discoverTools } from "../prompts/tools/native-tools/discover_tools"
 import { formatResponse } from "../prompts/responses"
 import type { Task } from "../task/Task"
 
@@ -91,7 +97,14 @@ export interface ToolRegistryOptions {
 	includeBuiltIns?: boolean
 	nativeTools?: readonly OpenAI.Chat.ChatCompletionTool[]
 	mcpTools?: readonly OpenAI.Chat.ChatCompletionTool[]
+	/** Original targets owned by the same captured schemas, including sanitized-name collisions. */
+	mcpToolTargets?: ReadonlyMap<string, { serverName: string; toolName: string; source?: "global" | "project" }>
 	includeCustomTools?: boolean
+	/** Captured custom definitions and schemas from one catalog boundary. */
+	customTools?: readonly { definition: CustomToolDefinition; schema: OpenAI.Chat.ChatCompletionTool }[]
+	discovery?: { execute: (params: DiscoverToolsParams, signal?: AbortSignal) => string; maxOutputChars: number }
+	/** Fail closed if the original target, source, connection or schema changes before dispatch. */
+	isMcpToolCurrent?: (name: string, serverName?: string, toolName?: string, source?: "global" | "project") => boolean
 	supportsImages?: boolean
 }
 
@@ -466,6 +479,23 @@ export class ToolRegistry {
 		this.registerBuiltIn("update_todo_list", updateTodoListTool, schemas)
 		this.registerBuiltIn("use_mcp_tool", useMcpToolTool, schemas, undefined, legacyMcpSchema)
 		this.registerBuiltIn("write_to_file", writeToFileTool, schemas)
+		if (schemas.has("discover_tools")) {
+			const discovery = options.discovery
+			this.register({
+				name: "discover_tools",
+				aliases: [],
+				schema: discoverTools,
+				capabilities: getToolCapabilities("discover_tools"),
+				maxOutputChars: discovery?.maxOutputChars,
+				execute: async ({ call, signal, callbacks }) => {
+					signal?.throwIfAborted()
+					if (!discovery) throw new Error("Tool discovery is unavailable for this catalog.")
+					const parsed = discoverToolsParamsSchema.safeParse(call.nativeArgs)
+					if (!parsed.success) throw new Error("Invalid tool discovery arguments.")
+					callbacks.pushToolResult(discovery.execute(parsed.data, signal))
+				},
+			})
+		}
 
 		for (const [alias, canonical] of Object.entries(TOOL_ALIASES)) {
 			this.addAlias(alias, canonical)
@@ -476,6 +506,7 @@ export class ToolRegistry {
 				continue
 			}
 			const name = canonicalizeToolName(schema.function.name)
+			const capturedTarget = options.mcpToolTargets?.get(name)
 			if (this.descriptors.has(name)) {
 				continue
 			}
@@ -484,8 +515,17 @@ export class ToolRegistry {
 				aliases: [],
 				schema: canonicalizeSchema(schema),
 				capabilities: getToolCapabilities(name),
-				execute: async ({ task, call, callbacks }) => {
-					const parsed = parseMcpToolName(name)
+				execute: async ({ task, call, callbacks, signal }) => {
+					const assertCurrent = (serverName?: string, toolName?: string, source?: "global" | "project") => {
+						signal?.throwIfAborted()
+						if (options.isMcpToolCurrent && !options.isMcpToolCurrent(name, serverName, toolName, source)) {
+							throw new Error(
+								`MCP tool "${name}" is no longer available with the captured connection and schema.`,
+							)
+						}
+					}
+					assertCurrent()
+					const parsed = capturedTarget ?? parseMcpToolName(name)
 					if (!parsed) {
 						callbacks.pushToolResult(formatResponse.toolError(`Invalid MCP tool name "${name}".`))
 						return
@@ -506,7 +546,16 @@ export class ToolRegistry {
 									: undefined,
 						},
 					}
-					await useMcpToolTool.handle(task, mcpCall, callbacks)
+					await useMcpToolTool.handle(task, mcpCall, {
+						...callbacks,
+						beforeMcpDispatch: assertCurrent,
+						mcpSource: capturedTarget?.source,
+						askApproval: async (...args) => {
+							const approved = await callbacks.askApproval(...args)
+							if (approved) assertCurrent()
+							return approved
+						},
+					})
 				},
 			})
 		}
@@ -515,23 +564,29 @@ export class ToolRegistry {
 	}
 
 	private registerCustomTools(options: ToolRegistryOptions): void {
-		if (options.includeCustomTools) {
-			const serializedTools = customToolRegistry.getAllSerialized()
-			for (const customTool of customToolRegistry.getAll()) {
-				const serialized = serializedTools.find((tool) => tool.name === customTool.name)
-				if (!serialized || this.descriptors.has(customTool.name)) {
+		if (options.customTools || options.includeCustomTools) {
+			const serializedTools = options.customTools ? [] : customToolRegistry.getAllSerialized()
+			const captured =
+				options.customTools ??
+				customToolRegistry.getAll().flatMap((definition) => {
+					const serialized = serializedTools.find((tool) => tool.name === definition.name)
+					return serialized ? [{ definition, schema: formatNative(serialized) }] : []
+				})
+			for (const { definition: customTool, schema } of captured) {
+				if (this.descriptors.has(customTool.name)) {
 					continue
 				}
+				const { execute, parameters } = customTool
 
 				this.register({
 					name: customTool.name,
 					aliases: [],
-					schema: formatNative(serialized),
+					schema,
 					capabilities: getToolCapabilities("custom_tool"),
 					execute: async ({ task, call, callbacks }) => {
 						try {
-							const args = customTool.parameters?.parse(call.nativeArgs ?? {}) ?? call.nativeArgs ?? {}
-							const result = await customTool.execute(args, {
+							const args = parameters?.parse(call.nativeArgs ?? {}) ?? call.nativeArgs ?? {}
+							const result = await execute(args, {
 								mode: await task.getTaskMode(),
 								task,
 							})
@@ -610,7 +665,7 @@ export class ToolRegistry {
 			schema: cloneAndFreeze(canonicalizeSchema(descriptor.schema)),
 			capabilities: Object.freeze({ ...descriptor.capabilities }),
 		}
-		this.descriptors.set(name, frozenDescriptor)
+		this.descriptors.set(name, Object.freeze(frozenDescriptor))
 		for (const alias of aliases) {
 			this.addAlias(alias, name)
 		}
@@ -684,7 +739,7 @@ export class ToolRegistry {
 			// alias list keeps the public descriptor immutable while allowing the
 			// central alias catalog to be applied after built-ins are registered.
 			const aliases = Object.freeze([...descriptor.aliases, normalizedAlias])
-			const nextDescriptor = { ...descriptor, aliases }
+			const nextDescriptor = Object.freeze({ ...descriptor, aliases })
 			this.descriptors.set(normalizedCanonical, nextDescriptor)
 		}
 	}

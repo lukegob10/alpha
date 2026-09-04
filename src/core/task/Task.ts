@@ -123,6 +123,7 @@ import { formatResponse } from "../prompts/responses"
 import { SYSTEM_PROMPT, getPromptComponent } from "../prompts/system"
 import { addCustomInstructions, loadApplicableAgentInstructionSources } from "../prompts/sections"
 import { buildNativeToolsArrayWithRestrictions } from "./build-tools"
+import { TaskToolCatalogCache } from "./TaskToolCatalogCache"
 
 // core modules
 import { ToolRepetitionDetector } from "../tools/ToolRepetitionDetector"
@@ -585,6 +586,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private currentAgentResponse?: AgentResponse
 	private currentAgentStep?: CurrentAgentStep
 	private currentTaskToolSurface?: TaskToolSurface
+	private readonly toolCatalogCache = new TaskToolCatalogCache()
 	private currentRequestSignal?: AbortSignal
 	private readonly agentRetryPolicy = new AgentRetryPolicy()
 	private readonly agentStepContextBuilder = new AgentStepContextBuilder<ApiHandler, unknown>()
@@ -9406,6 +9408,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				disabledTools: state?.disabledTools,
 				modelInfo,
 				includeAllToolsWithRestrictions: supportsAllowedFunctionNames,
+				catalogCache: this.toolCatalogCache,
+				discoveryHistory: this.apiConversationHistory,
+				signal: stepInterruptionSignal,
 				allowedToolNames: this.getTaskAllowedToolNames(),
 				taskKind: this.taskKind,
 				enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),

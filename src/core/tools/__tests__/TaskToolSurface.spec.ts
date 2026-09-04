@@ -46,6 +46,17 @@ function registry() {
 }
 
 describe("TaskToolSurface", () => {
+	it("keeps an explicitly empty projection empty even when the sealed registry has descriptors", () => {
+		const source = registry()
+		const surface = createTaskToolSurface({ registry: source, schemas: [] })
+		expect(source.has("read_file")).toBe(true)
+		expect(source.isSealed()).toBe(true)
+		expect(surface.schemas).toEqual([])
+		expect(surface.allowedFunctionNames).toEqual([])
+		expect(surface.isCallable("read_file")).toBe(false)
+		expect(surface.resolve("read_file")).toBeUndefined()
+	})
+
 	it("keeps visible schemas and executable descriptors in one canonical namespace", () => {
 		const surface = createTaskToolSurface({
 			registry: registry(),

@@ -39,7 +39,13 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 			const { serverName, toolName, parsedArguments } = validation
 
 			// Validate that the tool exists on the server
-			const toolValidation = await this.validateToolExists(task, serverName, toolName, pushToolResult)
+			const toolValidation = await this.validateToolExists(
+				task,
+				serverName,
+				toolName,
+				pushToolResult,
+				callbacks.mcpSource,
+			)
 			if (!toolValidation.isValid) {
 				return
 			}
@@ -74,6 +80,8 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 				parsedArguments,
 				executionId,
 				pushToolResult,
+				callbacks.beforeMcpDispatch,
+				callbacks.mcpSource,
 			)
 		} catch (error) {
 			await handleError("executing MCP tool", error as Error)
@@ -142,6 +150,7 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 		serverName: string,
 		toolName: string,
 		pushToolResult: (content: string) => void,
+		source?: "global" | "project",
 	): Promise<{ isValid: boolean; availableTools?: string[]; resolvedToolName?: string }> {
 		try {
 			// Get the MCP hub to access server information
@@ -155,7 +164,7 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 
 			// Get all servers to find the specific one
 			const servers = mcpHub.getAllServers()
-			const server = servers.find((s) => s.name === serverName)
+			const server = servers.find((s) => s.name === serverName && (source === undefined || s.source === source))
 
 			if (!server) {
 				// Fail fast when server is unknown
@@ -192,7 +201,9 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 			}
 
 			// Check if the requested tool exists (using fuzzy matching to handle model mangling of hyphens)
-			const tool = server.tools.find((t) => toolNamesMatch(t.name, toolName))
+			const tool =
+				server.tools.find((t) => t.name === toolName) ??
+				server.tools.find((t) => toolNamesMatch(t.name, toolName))
 
 			if (!tool) {
 				// Tool not found - provide list of available tools
@@ -297,6 +308,8 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 		parsedArguments: Record<string, unknown> | undefined,
 		executionId: string,
 		pushToolResult: (content: string | Array<any>) => void,
+		beforeMcpDispatch?: ToolCallbacks["beforeMcpDispatch"],
+		source?: "global" | "project",
 	): Promise<void> {
 		await task.say("mcp_server_request_started")
 
@@ -308,7 +321,13 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 			toolName,
 		})
 
-		const toolResult = await task.providerRef.deref()?.getMcpHub()?.callTool(serverName, toolName, parsedArguments)
+		// McpHub selects its connection and starts client.request synchronously. Keep this guard
+		// after every UI/status await, with no await between validation and that dispatch.
+		beforeMcpDispatch?.(serverName, toolName, source)
+		const mcpHub = task.providerRef.deref()?.getMcpHub()
+		const toolResult = await (source === undefined
+			? mcpHub?.callTool(serverName, toolName, parsedArguments)
+			: mcpHub?.callTool(serverName, toolName, parsedArguments, source))
 
 		let toolResultPretty = "(No response)"
 		let images: string[] = []

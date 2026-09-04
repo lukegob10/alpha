@@ -16,6 +16,7 @@ import type {
 	CloseAgentParams,
 	SubagentForkTurns,
 	BrowserToolArgs,
+	DiscoverToolsParams,
 } from "@alpha-code/types"
 
 export type ToolResponse = string | Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam>
@@ -157,6 +158,7 @@ export type ToolParamName = (typeof toolParamNames)[number]
  */
 export type NativeToolArgs = BrowserToolArgs & {
 	access_mcp_resource: { server_name: string; uri: string }
+	discover_tools: DiscoverToolsParams
 	read_file: import("@alpha-code/types").ReadFileToolParams
 	read_command_output: { artifact_id: string; search?: string; offset?: number; limit?: number }
 	attempt_completion: { result: string; outcome?: "completed" | "blocked" }
@@ -462,6 +464,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	list_files: "list files",
 	use_mcp_tool: "use mcp tools",
 	access_mcp_resource: "access mcp resources",
+	discover_tools: "discover optional MCP tools",
 	ask_followup_question: "ask questions",
 	attempt_completion: "complete tasks",
 	switch_mode: "switch modes",
@@ -509,7 +512,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 		tools: ["execute_command", "read_command_output"],
 	},
 	mcp: {
-		tools: ["use_mcp_tool", "access_mcp_resource"],
+		tools: ["use_mcp_tool", "access_mcp_resource", "discover_tools"],
 	},
 	github: {
 		tools: ["github_api"],

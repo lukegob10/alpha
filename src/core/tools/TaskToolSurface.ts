@@ -251,10 +251,11 @@ function executionInput(
  * for the asynchronous provider/catalog step.
  */
 export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToolSurface {
-	const capturedSchemas = [...(input.schemas ?? input.providerSchemas ?? input.tools ?? [])]
+	const providedSchemas = input.schemas ?? input.providerSchemas ?? input.tools
+	const capturedSchemas = [...(providedSchemas ?? [])]
 	const registry =
 		input.registry ?? new ToolRegistry(capturedSchemas.length > 0 ? { nativeTools: capturedSchemas } : {})
-	const providerSchemas = capturedSchemas.length > 0 ? capturedSchemas : registry.getSchemas()
+	const providerSchemas = providedSchemas !== undefined ? capturedSchemas : registry.getSchemas()
 	const source = asPolicySource(input.policy)
 	const includeAllToolsWithRestrictions = input.includeAllToolsWithRestrictions === true
 	const profile = resolveProfile(input)

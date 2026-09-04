@@ -7,6 +7,7 @@ import {
 	type ToolName,
 	toolNames,
 	type FileEntry,
+	discoverToolsParamsSchema,
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 
@@ -1397,6 +1398,14 @@ export class NativeToolCallParser {
 						} as NativeArgsFor<TName>
 					}
 					break
+
+				case "discover_tools": {
+					const parsed = discoverToolsParamsSchema.safeParse(args)
+					if (parsed.success) {
+						nativeArgs = parsed.data as NativeArgsFor<TName>
+					}
+					break
+				}
 
 				case "apply_patch":
 					if (args.patch !== undefined) {
