@@ -1347,6 +1347,165 @@ describe("ChatView - Message Queueing Tests", () => {
 		}
 
 		it.each(
+			(["invoke", "suggestion"] as const).flatMap((method) =>
+				[false, true].map((switchTask) => ({ method, switchTask })),
+			),
+		)(
+			"answers a fast $method immediately after the follow-up DOM commits (switch task=$switchTask)",
+			async ({ method, switchTask }) => {
+				const { container, getByTestId, queryByTestId } = renderChatView()
+				const initialTaskId = switchTask ? "previous-task" : waitingTask.id
+				mockPostMessage({
+					...waitingState,
+					currentTaskId: initialTaskId,
+					currentView: { type: "task", taskId: initialTaskId },
+					liveTasksById: { [initialTaskId]: { ...waitingTask, id: initialTaskId } },
+					clineMessages: [taskMessage],
+				})
+				await waitFor(() => expect(getByTestId("queued-messages")).toBeInTheDocument())
+				await act(async () => {})
+				const queuedText = getByTestId("queued-messages").textContent
+				const text = method === "suggestion" ? "Draft plan" : "Immediate answer"
+				vi.mocked(vscode.postMessage).mockClear()
+
+				// Mutation delivery observes the committed row before passive ask-control
+				// effects settle. Do not insert a wait or input event before submitting.
+				const observer = new MutationObserver(() => {
+					const suggestion = queryByTestId("copy-mode-suggestion")
+					if (!suggestion) return
+					observer.disconnect()
+					if (method === "suggestion") suggestion.click()
+					else {
+						window.dispatchEvent(
+							new MessageEvent("message", {
+								data: { type: "invoke", invoke: "sendMessage", text },
+							}),
+						)
+					}
+				})
+				observer.observe(container, { childList: true, subtree: true })
+				try {
+					mockPostMessage(waitingState)
+					await waitFor(() => {
+						const submissions = vi
+							.mocked(vscode.postMessage)
+							.mock.calls.map(([message]) => message)
+							.filter((message) => ["askResponse", "queueMessage", "newTask"].includes(message.type))
+						expect(submissions).toEqual([
+							{
+								type: "askResponse",
+								askResponse: "messageResponse",
+								text,
+								images: [],
+								taskId: waitingTask.id,
+							},
+						])
+					})
+					expect(getByTestId("queued-messages").textContent).toBe(queuedText)
+				} finally {
+					observer.disconnect()
+				}
+			},
+		)
+
+		it("queues a second submission before the first follow-up answer is acknowledged", async () => {
+			const { getByTestId } = renderChatView()
+			mockPostMessage(waitingState)
+			await waitFor(() => getByTestId("copy-mode-suggestion"))
+			vi.mocked(vscode.postMessage).mockClear()
+
+			await act(async () => {
+				for (const text of ["My answer", "Next instruction"]) {
+					window.dispatchEvent(
+						new MessageEvent("message", { data: { type: "invoke", invoke: "sendMessage", text } }),
+					)
+				}
+			})
+			const submissions = vi
+				.mocked(vscode.postMessage)
+				.mock.calls.map(([message]) => message)
+				.filter((message) => ["askResponse", "queueMessage", "newTask"].includes(message.type))
+			expect(submissions).toEqual([
+				{
+					type: "askResponse",
+					askResponse: "messageResponse",
+					text: "My answer",
+					images: [],
+					taskId: waitingTask.id,
+				},
+				{
+					type: "queueMessage",
+					text: "Next instruction",
+					images: [],
+					taskId: waitingTask.id,
+					requestId: expect.any(String),
+				},
+			])
+			// The local answer guard must survive a render while the host still
+			// publishes the same unanswered question; the queue admission is in flight.
+			await act(async () => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: { type: "invoke", invoke: "sendMessage", text: "Third input" },
+					}),
+				)
+			})
+			expect(
+				vi.mocked(vscode.postMessage).mock.calls.filter(([message]) => message.type === "askResponse"),
+			).toHaveLength(1)
+			expect(
+				vi.mocked(vscode.postMessage).mock.calls.filter(([message]) => message.type === "queueMessage"),
+			).toHaveLength(1)
+		})
+
+		it.each(["new question", "different task"] as const)(
+			"allows a %s after a locally submitted follow-up",
+			async (nextBoundary) => {
+				const { getByTestId, getByText } = renderChatView()
+				const invokeAnswer = () =>
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: { type: "invoke", invoke: "sendMessage", text: "My answer" },
+						}),
+					)
+				mockPostMessage(waitingState)
+				await waitFor(() => getByTestId("copy-mode-suggestion"))
+				await act(async () => {
+					invokeAnswer()
+				})
+				vi.mocked(vscode.postMessage).mockClear()
+
+				const taskId = nextBoundary === "different task" ? "next-task" : waitingTask.id
+				mockPostMessage({
+					...waitingState,
+					currentTaskId: taskId,
+					currentView: { type: "task", taskId },
+					liveTasksById: { [taskId]: { ...waitingTask, id: taskId } },
+					clineMessages: [
+						taskMessage,
+						{
+							...followUp,
+							ts: nextBoundary === "different task" ? followUp.ts : followUp.ts + 1,
+							text: "Another follow-up question",
+						},
+					],
+				})
+				await waitFor(() => getByText(/Another follow-up question/))
+				await act(async () => {
+					invokeAnswer()
+				})
+				expect(vscode.postMessage).toHaveBeenCalledWith({
+					type: "askResponse",
+					askResponse: "messageResponse",
+					text: "My answer",
+					images: [],
+					taskId,
+				})
+				expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
+			},
+		)
+
+		it.each(
 			[
 				{ method: "keyboard", hasQueuedWork: false },
 				{ method: "keyboard", hasQueuedWork: true },

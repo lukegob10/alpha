@@ -8,6 +8,7 @@ import type { Mock } from "vitest"
 import {
 	ProviderSettings,
 	ModelInfo,
+	anthropicDefaultModelId,
 	BEDROCK_1M_CONTEXT_MODEL_IDS,
 	litellmDefaultModelInfo,
 	openAiModelInfoSaneDefaults,
@@ -399,7 +400,7 @@ describe("useSelectedModel", () => {
 			const { result } = renderHook(() => useSelectedModel(), { wrapper })
 
 			expect(result.current.provider).toBe("anthropic")
-			expect(result.current.id).toBe("claude-sonnet-4-5")
+			expect(result.current.id).toBe(anthropicDefaultModelId)
 			expect(result.current.info).toBeUndefined()
 		})
 	})

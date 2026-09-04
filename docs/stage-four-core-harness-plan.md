@@ -222,3 +222,48 @@ Existing older artifacts are retained and no extension is installed.
 - This commit is the prepublication checkpoint. Publication confirmation belongs in NOR-29 with the exact GitHub
   release URL, target commit, workflow result, downloaded artifact size, and SHA-256; no publication is claimed here.
 - Out of scope: CLI/shim, Marketplace/stable release, installation, dependency upgrades, and unrelated architecture work.
+
+## Published 2.1.19 checkpoint and corrective preview
+
+The [preview workflow](https://github.com/lukegob10/alpha/actions/runs/33892003484) completed successfully in 7m27s
+and published [2.1.19](https://github.com/lukegob10/alpha/releases/tag/vsix-v2-preview-2.1.19-8261051) from
+`82610510cd3afd221cd3be93306ccf2147b029eb` on September 4, 2026 at 16:00:01 UTC. The downloaded
+`bin/alpha-2.1.19-github.vsix` passed archive/identity/version/host/prerelease checks and matched GitHub's digest:
+82,938,051 bytes; SHA-256 `aa0915d07390acedb21bda1f8930edbfe75b98bfdeea729af56ed9427c0318fe`.
+
+The separate [general QA run](https://github.com/lukegob10/alpha/actions/runs/33892003519) passed compile, knip,
+and exact-host checks, but Ubuntu tests exposed five fast follow-up reply failures in earlier-stage ChatView work.
+The displayed follow-up can precede two passive-effect steps that update `clineAsk` and then `clineAskRef`. An immediate
+invoke or suggestion can therefore take the active-turn queue branch even though it answers the visible question.
+The same file passed all 94 tests locally twice (including a CI-mode shuffled run); extra waiting would conceal the
+ordering problem. A bounded Sol Max review owns a deterministic regression and correction in ChatView and its tests.
+The Stage 4 kernel and its performance/recovery implementation are unchanged. A corrected **2.1.20** prerelease is planned;
+the already-published artifact is retained without overwrite, and its notes disclose the timing caveat.
+
+Two other general-QA failures were confirmed against 2.1.18: missing translations (checker and every locale input
+unchanged), and a stale UI assertion expecting `claude-sonnet-4-5` although the existing shared default is
+`claude-sonnet-5`. The latter was reproduced locally (22 passed, one failed), then corrected to assert
+`anthropicDefaultModelId` from the shared contract (23 passed). This changes no provider behavior or catalog.
+Localization debt remains explicitly outside this focused correction. The cancelled Windows unit job is not counted
+as a pass. Corrected-preview validation and publication will be recorded after the routing fix is verified.
+
+The regression uses a `MutationObserver` to submit immediately after the follow-up row commits, without an intervening
+wait or keyboard event. Before the fix, the fast host-invoke case failed locally with `queueMessage` instead of
+`askResponse`; its suggestion control passed (one failed, one passed, 94 not selected). This establishes a real
+event-ordering failure independently of CI load. [React's Effect caveats](https://react.dev/reference/react/useEffect)
+and [layout-effect contract](https://react.dev/reference/react/useLayoutEffect), inspected September 4, 2026, explain
+why visible DOM does not imply that passive-effect state and refs have caught up. The correction publishes only bounded
+committed references in layout effects; it does not move transcript processing or blocking work into layout.
+
+The completed correction derives the follow-up boundary from the committed transcript instead of waiting for
+presentation state. A synchronous task-ID/question-timestamp claim prevents duplicate answers before a render or host
+acknowledgement, while the native invoke listener dispatches through the latest committed task callback. Suggestions
+mark a question answered only after the canonical send path admits the reply. Existing approval, queue, and shift-copy
+behavior remains covered. Seven new tests exercise immediate invokes/suggestions, task switches, duplicate submission,
+new questions, and identical question timestamps across different tasks.
+
+The focused post-fix run passed 229 tests across ChatView (101 tests) and four adjacent suites in 9.75 s. Webview
+typecheck, focused ESLint, and touched-file formatting passed. Repository-wide `pnpm check-types` then passed all
+13 tasks (11 cached; 25.802 s), followed by `pnpm lint` passing all 12 tasks (10 cached; 19.13 s). The complete webview
+suite (`pnpm --dir webview-ui exec vitest run --maxWorkers=2 --retry=0`) passed all 150 files: 1,554 tests passed,
+two skipped, in 161.65 s. Rebuilt exact-host checks are being rerun for 2.1.20 and will be recorded before publication.

@@ -1,4 +1,13 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react"
+import React, {
+	forwardRef,
+	useCallback,
+	useEffect,
+	useImperativeHandle,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react"
 import { useDeepCompareEffect, useEvent } from "react-use"
 import removeMd from "remove-markdown"
 import useSound from "use-sound"
@@ -182,7 +191,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const isBlankTaskPendingRef = useRef(false)
 	const getClineMessages = useCallback(() => messagesRef.current, [])
 
-	useEffect(() => {
+	// Interaction routing must observe the transcript that committed with the
+	// visible row, before passive ask-control effects can update their state.
+	useLayoutEffect(() => {
 		messagesRef.current = activeMessages
 	}, [activeMessages])
 
@@ -361,6 +372,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const autoApproveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 	const userRespondedRef = useRef<boolean>(false)
 	const [currentFollowUpTs, setCurrentFollowUpTs] = useState<number | null>(null)
+	const submittedFollowUpRef = useRef<{ taskId: string | undefined; ts: number }>()
 	const [aggregatedCostsMap, setAggregatedCostsMap] = useState<
 		Map<
 			string,
@@ -978,20 +990,20 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				return
 			}
 
-			if (isLastFollowUpAnswered) {
+			const currentInputBoundary = messagesRef.current.findLast(
+				(message) =>
+					message.type === "ask" ||
+					(message.type === "say" && (message.say === "api_req_started" || message.say === "user_feedback")),
+			)
+			const isFollowUpLocallyAnswered =
+				currentInputBoundary?.ask === "followup" &&
+				submittedFollowUpRef.current?.taskId === visibleCurrentTaskId &&
+				submittedFollowUpRef.current?.ts === currentInputBoundary.ts
+			if (isLastFollowUpAnswered || isFollowUpLocallyAnswered) {
 				postQueuedMessage(text, images)
 				return
 			}
 
-			const currentInputBoundary =
-				clineAskRef.current === "followup"
-					? messagesRef.current.findLast(
-							(message) =>
-								message.type === "ask" ||
-								(message.type === "say" &&
-									(message.say === "api_req_started" || message.say === "user_feedback")),
-						)
-					: undefined
 			const isCurrentFollowUpResponse =
 				currentInputBoundary?.ask === "followup" &&
 				currentInputBoundary.partial !== true &&
@@ -1019,8 +1031,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			if (isBlankTaskPendingRef.current || messagesRef.current.length === 0) {
 				isBlankTaskPendingRef.current = false
 				vscode.postMessage({ type: "newTask", text, images })
-			} else if (!clineAskRef.current || messageResponseAskTypes.has(clineAskRef.current)) {
-				if (clineAskRef.current === "followup") {
+			} else if (
+				isCurrentFollowUpResponse ||
+				!clineAskRef.current ||
+				messageResponseAskTypes.has(clineAskRef.current)
+			) {
+				if (isCurrentFollowUpResponse) {
+					// Claim synchronously: another invoke/click can precede the render or
+					// host acknowledgement that marks this question answered.
+					submittedFollowUpRef.current = { taskId: visibleCurrentTaskId, ts: currentInputBoundary.ts }
 					markFollowUpAsAnswered()
 				}
 
@@ -1055,6 +1074,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			setMode,
 		], // messagesRef and clineAskRef are stable
 	)
+	const committedSendMessageRef = useRef(handleSendMessage)
+	useLayoutEffect(() => {
+		committedSendMessageRef.current = handleSendMessage
+	}, [handleSendMessage])
 
 	const handleSetChatBoxMessage = useCallback(
 		(text: string, images: string[]) => {
@@ -1331,7 +1354,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							enterBlankTaskView()
 							break
 						case "sendMessage":
-							handleSendMessage(message.text ?? "", message.images ?? [])
+							// The window listener refreshes passively; route an immediate host
+							// invoke through the callback from the latest committed task view.
+							committedSendMessageRef.current(message.text ?? "", message.images ?? [])
 							break
 						case "setChatBoxMessage":
 							handleSetChatBoxMessage(message.text ?? "", message.images ?? [])
@@ -1420,7 +1445,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			sendingDisabled,
 			enableButtons,
 			enterBlankTaskView,
-			handleSendMessage,
 			handleSetChatBoxMessage,
 			handlePrimaryButtonClick,
 			handleSecondaryButtonClick,
@@ -1868,11 +1892,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				userRespondedRef.current = true
 			}
 
-			// Mark the current follow-up question as answered when a suggestion is clicked
-			if (clineAsk === "followup" && !event?.shiftKey) {
-				markFollowUpAsAnswered()
-			}
-
 			// Suggestions may contain legacy mode hints. Keep the visible workflow
 			// within Plan/Code and ignore unknown custom-mode hints.
 			const suggestedMode = normalizeUserFacingSuggestionMode(suggestion.mode)
@@ -1899,7 +1918,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				setInputValue(preservedInput)
 			}
 		},
-		[handleSendMessage, setInputValue, switchToMode, alwaysAllowModeSwitch, clineAsk, markFollowUpAsAnswered],
+		[handleSendMessage, setInputValue, switchToMode, alwaysAllowModeSwitch],
 	)
 
 	const handleBatchFileResponse = useCallback(

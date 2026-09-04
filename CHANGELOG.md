@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.20
+
+### Patch Changes
+
+- Route immediate follow-up answers using the current transcript boundary, including fast suggestion clicks and host-invoked replies before presentation effects settle.
+- Retain all agent-harness and incremental-persistence improvements from 2.1.19.
+- Align the default-model UI test with the existing shared Anthropic default contract; provider defaults are unchanged.
+
 ## 2.1.19
 
 ### Patch Changes
