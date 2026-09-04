@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { promisify } from "node:util"
 
 import type { Anthropic } from "@anthropic-ai/sdk"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -389,6 +391,65 @@ function resultIds(harness: TaskHarness): string[] {
 }
 
 describe("Stage Three command outcome integration", () => {
+	it.each([false, true])(
+		"settles a Git commit without unobserved mutation debt (background: %s)",
+		async (background) => {
+			await withTaskHarness(async (harness) => {
+				const git = (args: string[]) =>
+					promisify(execFile)(
+						"git",
+						[
+							"-c",
+							"user.name=Command Fixture",
+							"-c",
+							"user.email=fixture@example.invalid",
+							"-c",
+							"commit.gpgsign=false",
+							"-c",
+							`core.hooksPath=${path.join(harness.workspacePath, ".no-hooks")}`,
+							...args,
+						],
+						{ cwd: harness.workspacePath, windowsHide: true },
+					)
+				await git(["init", "--quiet"])
+				await git(["add", "."])
+				const events: AgentTurnEvent[] = []
+				const terminal = controlledTerminal(harness.workspacePath)
+				installTerminal(terminal)
+				const settled = completionGate()
+				const complete = harness.task.completeCommandExecution.bind(harness.task)
+				vi.spyOn(harness.task, "completeCommandExecution").mockImplementation((...args) => {
+					complete(...args)
+					settled.resolve()
+				})
+				const suspend = vi
+					.spyOn(harness.task, "suspendAfterCurrentTurn")
+					.mockImplementation(() => settled.resolve())
+				const run = createScheduler(harness, events).run(response("git-commit", 'git commit -m "fixture"'))
+				await terminal.runStarted.promise
+				if (background) {
+					terminal.processForTest!.continue()
+					await run
+				}
+				await git(["commit", "--quiet", "-m", "fixture"])
+				await terminal.processForTest!.complete({ exitCode: 0 })
+				await settled.promise
+				await run
+
+				expect(suspend).not.toHaveBeenCalled()
+				expect(harness.provider.recordPrimaryMutation).not.toHaveBeenCalled()
+				expect(harness.provider.releasePrimaryMutation).toHaveBeenCalledExactlyOnceWith(
+					harness.task,
+					expect.any(String),
+				)
+				expect(harness.task.getCommandExecutionEvidence()).toEqual([
+					expect.objectContaining({ toolCallId: "git-commit", status: "succeeded", exitCode: 0 }),
+				])
+				expect(resultIds(harness)).toEqual(["git-commit"])
+			})
+		},
+	)
+
 	it("reports exit 0 as canonical success through the real registry tool", async () => {
 		await withTaskHarness(async (harness) => {
 			const events: AgentTurnEvent[] = []

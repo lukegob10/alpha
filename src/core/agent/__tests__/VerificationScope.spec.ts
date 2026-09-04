@@ -481,7 +481,7 @@ describe("verification scope observations", () => {
 		expect((await captureGitMutationState(root)).files).toEqual({ "tracked.ts": "missing" })
 	})
 
-	it("does not call staging alone a content change and fails closed across commits or unavailable Git state", async () => {
+	it("does not call staging or the initial commit a content change", async () => {
 		await expect(captureGitMutationState(root)).rejects.toThrow()
 		await git(["init", "--quiet"])
 		await write("file.ts", "created\n")
@@ -491,8 +491,73 @@ describe("verification scope observations", () => {
 		const staged = await captureGitMutationState(root)
 		expect(await compareGitMutationState(root, before, staged)).toEqual({ changedPaths: [], files: {} })
 		await git(["commit", "--quiet", "-m", "fixture"])
-		await expect(compareGitMutationState(root, staged, await captureGitMutationState(root))).rejects.toThrow(
-			"HEAD changed",
+		expect(await compareGitMutationState(root, staged, await captureGitMutationState(root))).toEqual({
+			changedPaths: [],
+			files: {},
+		})
+	})
+
+	it("preserves current verification when committing already-observed edits and deletions", async () => {
+		await git(["init", "--quiet"])
+		await write("edited.ts", "original\n")
+		await write("deleted.ts", "original\n")
+		await git(["add", "."])
+		await git(["commit", "--quiet", "-m", "baseline"])
+		await write("edited.ts", "updated\n")
+		await fs.unlink(path.join(root, "deleted.ts"))
+		const before = await captureGitMutationState(root)
+		await git(["add", "-A"])
+		await git(["commit", "--quiet", "-m", "observed changes"])
+
+		expect(await compareGitMutationState(root, before, await captureGitMutationState(root))).toEqual({
+			changedPaths: [],
+			files: {},
+		})
+	})
+
+	it("observes edits, additions, and deletions made and committed within one command", async () => {
+		await git(["init", "--quiet"])
+		await write("edited.ts", "original\n")
+		await write("deleted.ts", "original\n")
+		await write("unchanged.ts", "original\n")
+		await git(["add", "."])
+		await git(["commit", "--quiet", "-m", "baseline"])
+		const before = await captureGitMutationState(root)
+		await write("edited.ts", "updated\n")
+		await write("added.ts", "new\n")
+		await fs.unlink(path.join(root, "deleted.ts"))
+		await git(["add", "-A"])
+		await git(["commit", "--quiet", "-m", "new changes"])
+		const after = await captureGitMutationState(root)
+		expect(after.files).toEqual({})
+
+		expect(await compareGitMutationState(root, before, after)).toEqual({
+			changedPaths: ["added.ts", "deleted.ts", "edited.ts"],
+			files: {
+				"added.ts": fingerprintContent("new\n"),
+				"deleted.ts": "missing",
+				"edited.ts": fingerprintContent("updated\n"),
+			},
+		})
+	})
+
+	it("rejects stale HEAD snapshots and committed changes beyond the observation bound", async () => {
+		await git(["init", "--quiet"])
+		await write("file.ts", "original\n")
+		await git(["add", "."])
+		await git(["commit", "--quiet", "-m", "baseline"])
+		const before = await captureGitMutationState(root)
+		await write("file.ts", "updated\n")
+		await git(["commit", "--quiet", "-am", "update"])
+		const after = await captureGitMutationState(root)
+		await git(["commit", "--quiet", "--allow-empty", "-m", "later commit"])
+		await expect(compareGitMutationState(root, before, after)).rejects.toThrow("HEAD changed while comparing")
+
+		for (let index = 0; index < 257; index++) await write(`added-${index}.ts`, "new\n")
+		await git(["add", "."])
+		await git(["commit", "--quiet", "-m", "large change"])
+		await expect(compareGitMutationState(root, before, await captureGitMutationState(root))).rejects.toThrow(
+			"path count exceeds the bound",
 		)
 	})
 

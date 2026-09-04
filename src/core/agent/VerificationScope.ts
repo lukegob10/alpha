@@ -877,19 +877,34 @@ export async function captureGitMutationState(workspaceRoot: string): Promise<Gi
 	return { head, files, digest: fingerprintContent(JSON.stringify([head, files])) }
 }
 
-/** Refresh files that became clean, since their content is absent from the second dirty-file map. */
+async function changedGitHeadPaths(cwd: string, before: string | null, after: string | null): Promise<string[]> {
+	if (before === after) return []
+	const output = await gitObservation(
+		cwd,
+		before && after
+			? ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "--no-renames", "-z", before, after, "--"]
+			: ["ls-tree", "-r", "--name-only", "-z", (before ?? after)!],
+	)
+	return boundedPaths(output.split("\0").filter(Boolean))
+}
+
+/** Refresh files that became clean, including changes committed during the command. */
 export async function compareGitMutationState(
 	workspaceRoot: string,
 	before: GitMutationState,
 	after: GitMutationState,
 ): Promise<{ changedPaths: string[]; files: VerificationContent }> {
-	if (before.head !== after.head)
-		throw new VerificationScopeError("Git HEAD changed; the command change scope is unknown")
-	const candidates = boundedPaths([...new Set([...Object.keys(before.files), ...Object.keys(after.files)])])
+	const committedPaths = await changedGitHeadPaths(workspaceRoot, before.head, after.head)
+	const candidates = boundedPaths([
+		...new Set([...Object.keys(before.files), ...Object.keys(after.files), ...committedPaths]),
+	])
 	const refreshed = await captureVerificationContent(workspaceRoot, candidates)
 	if ((await readGitHead(workspaceRoot)) !== after.head) {
 		throw new VerificationScopeError("Git HEAD changed while comparing command changes")
 	}
+	// A commit alone preserves the captured working bytes. Paths that were clean
+	// before a HEAD transition have no byte snapshot and conservatively require
+	// validation; the tree diff keeps edit-and-commit commands observable.
 	const changedPaths = candidates.filter((candidate) => before.files[candidate] !== refreshed[candidate])
 	return {
 		changedPaths,

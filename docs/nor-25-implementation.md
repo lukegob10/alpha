@@ -30,6 +30,8 @@ The supported subset checks explicit file types and structural coverage, rather 
 
 **Command mutation observation is bounded and Git-visible, not a complete filesystem audit.** A Git workspace observes dirty/unignored untracked files and HEAD changes. A bounded `git ls-files -v -z` observation also hashes tracked paths marked assume-unchanged or skip-worktree; a real Git regression covers edits invisible to ordinary status. Explicit file tools observe their exact ignored targets. Arbitrary shell edits to previously unknown ignored files, files outside the workspace, or excluded filesystem surfaces are outside this guarantee. Unsaved editor buffers are not disk evidence. In non-Git workspaces a bounded file walk is used, excluding `.git` and `node_modules`.
 
+As of preview 2.1.22, a HEAD transition uses a bounded, NUL-delimited tree diff with renames, external diff drivers, and text conversion disabled. Transitions to or from an unborn HEAD use the existing commit's tree listing. These paths join the before/after dirty-file paths before current bytes are captured. Committing already-observed bytes does not create fresh verification debt. Previously clean paths changed between commit trees conservatively require current validation because the initial dirty-file snapshot did not capture their bytes. A HEAD change after the final snapshot still rejects the observation.
+
 Bounds are 256 observed paths, 4 MiB per file, 16 MiB total, 4,096 characters per path/command, 256 KiB per parsed manifest/config, 32 ancestor levels, and 512 non-Git directory entries. Git observations have a 1 MiB output bound and a five-second process timeout. Missing known configuration paths are fingerprinted, so adding one invalidates previous evidence. Their entries share the 256-path bound: sufficiently scattered edits can exhaust it. An unknown observation never silently becomes an empty change set. Before a command starts, unavailable mutation observation permits only the existing inspection subset; other commands are refused with an actionable unverified outcome.
 
 ## Write-ahead recovery and final completion
@@ -78,3 +80,26 @@ pnpm --dir src exec vitest run core/agent/__tests__/AgentControlStore.primary-ve
 ```
 
 Root integration owns the combined managed-agent and exact VS Code 1.122.1 host gates; see the [integration record](stage-three-core-harness-plan.md) for their final results. This owner-worktree run does not establish those results and does not change dependencies, lockfiles, release metadata, CLI, or vscode-shim.
+
+## Preview 2.1.22 command-observation correction
+
+The 2026-09-04 report from 2.1.20 displayed “Task remains incomplete and unverified because command mutations could not be fully observed.” Three real-Git cases also failed on the latest 2.1.21 source: an initial commit, committing previously observed edits/deletions, and editing files then committing them within one command. `compareGitMutationState` rejected every HEAD transition before comparing file content. `ExecuteCommandTool` consequently persisted unresolved mutation debt and suspended the task.
+
+The bounded tree comparison above corrects this path. Regression coverage includes foreground/background command receipt settlement, edit/add/delete detection after a clean commit, stale HEAD snapshots, and more than 256 committed paths. Existing unknown-scope and interrupted mutation reservations remain fail-closed; this change does not retroactively remove debt from earlier failed observations.
+
+The separate 2.1.16 report about missing approved-review/application metadata was reproduced with deliberately incomplete worker records, but no valid current lifecycle was found that creates those records. The remote computer's persisted state was unavailable. Worker approval validation remains enforced; primary-edit records introduced in 2.1.19 are accepted by the current schema. The command-observation correction does not establish the cause of that older report.
+
+Validation commands for this correction:
+
+```powershell
+pnpm --dir src test -- core/agent/__tests__/VerificationScope.spec.ts core/task/__tests__/stageThreeCommandOutcome.integration.spec.ts
+pnpm --dir src check-types
+pnpm --dir src lint
+pnpm certify:managed-agents:automated
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+pnpm bundle
+pnpm vsix
+node scripts/verify-vsix-contents.mjs bin/alpha-2.1.22.vsix
+```
+
+Local validation passed 189 focused tests, extension typechecking/linting, all 1,405 deterministic certification tests and 26 automated contract rows, all eight exact-host smoke checks, bundling, packaging, and the 1,783-entry VSIX content check. The combined certification command's first host acceptance run failed on a Windows `EPERM` while atomically replacing unrelated Worker artifact metadata. The unchanged `pnpm --filter @alpha-code/vscode-e2e test:managed-agents:run` rerun passed the full scenario in 23.38 seconds. That intermittent artifact replacement failure is not attributed to this Git-observation fix.

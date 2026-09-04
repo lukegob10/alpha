@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.22
+
+### Patch Changes
+
+- Fix tasks incorrectly stopping as unverified after committing already-observed workspace changes, including initial commits and commands that finish in the background.
+- Detect edits, additions, and deletions committed during a command through bounded Git tree comparisons, while retaining stale-snapshot checks and observation limits.
+
 ## 2.1.21
 
 ### Patch Changes
