@@ -20,6 +20,9 @@ import { ContextProxy } from "../../config/ContextProxy"
 import { createAgentLifecycleSnapshot, reduceAgentLifecycleEvent } from "../../agent/lifecycle/reducer"
 import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
+import { createAgentResponse } from "../../agent/AgentResponse"
+import { getToolBatchIsolationError } from "../../agent/ToolScheduler"
+import { formatResponse } from "../../prompts/responses"
 
 // ─── Hoisted mocks ───────────────────────────────────────────────────────────
 
@@ -530,6 +533,147 @@ describe("Task persistence", () => {
 	})
 
 	describe("assistant response persistence boundary", () => {
+		describe("mixed barrier receipts", () => {
+			afterEach(() => {
+				mockSaveApiMessages.mockReset().mockResolvedValue(undefined)
+				mockReadApiMessages.mockReset().mockResolvedValue([])
+			})
+
+			it.each(
+				["wait_agent", "switch_mode", "ask_followup_question"].flatMap((barrier) =>
+					[false, true].map((cancelled) => ({ barrier, cancelled })),
+				),
+			)(
+				"retains one $barrier rejection across persistence and replay (cancelled=$cancelled)",
+				async ({ barrier, cancelled }) => {
+					const task = new Task({
+						provider: mockProvider,
+						apiConfiguration: mockApiConfig,
+						task: "mixed barrier lifecycle",
+						startTask: false,
+					})
+					let snapshot: AgentLifecycleSnapshot | undefined
+					const published: AgentLifecycleEvent[] = []
+					const lifecycleProvider = {
+						replayAgentLifecycle: vi.fn(async () => snapshot),
+						getAgentLifecycleSnapshot: vi.fn(() => snapshot),
+						publishAgentLifecycleEvent: vi.fn(async (input: Record<string, unknown>) => {
+							const base =
+								snapshot ??
+								createAgentLifecycleSnapshot({
+									taskId: String(input.taskId),
+									runId: String(input.runId),
+									turnId: String(input.turnId),
+								})
+							const event = agentLifecycleEventSchema.parse({ ...input, sequence: base.lastSequence + 1 })
+							snapshot = reduceAgentLifecycleEvent(base, event)
+							published.push(event)
+							return { accepted: true }
+						}),
+					}
+					Object.assign(task, { providerRef: { deref: () => lifecycleProvider } })
+					await (task as any).beginCanonicalLifecycleTurn()
+					const step = { stepId: "barrier-step" }
+					Object.assign(task, { currentAgentStep: step })
+					await (task as any).ensureCanonicalLifecycleStepStarted(step)
+					const calls = [
+						{ type: "tool_call" as const, id: "read", name: "read_file", arguments: {} },
+						{ type: "tool_call" as const, id: "barrier", name: barrier, arguments: {} },
+					]
+					const response = createAgentResponse(calls)
+					const surface = createTaskToolSurface({ registry: new ToolRegistry(), mode: "code" })
+					const error = getToolBatchIsolationError(
+						surface.registry,
+						calls.map((call) => call.name),
+					)
+					expect(error).toBeDefined()
+					for (const call of calls)
+						task.pushToolResultToUserContent({
+							type: "tool_result",
+							tool_use_id: call.id,
+							content: formatResponse.toolError(error!),
+							is_error: true,
+						})
+					const earlyReceipts = [...task.userMessageContent]
+					const writes: Task["apiConversationHistory"][] = []
+					mockSaveApiMessages.mockImplementation(async ({ messages }) => {
+						writes.push(structuredClone(messages))
+						if (cancelled && writes.length === 1) task.abort = true
+					})
+					const fence = vi
+						.spyOn(task as any, "assertCurrentProviderTranscriptBeforeEffects")
+						.mockResolvedValue(undefined)
+					const usage = vi.spyOn(task, "recordToolUsage")
+					const persisted = await (task as any).persistAssistantResponseBeforeEffects(
+						{
+							role: "assistant",
+							content: calls.map((call) => ({
+								type: "tool_use",
+								id: call.id,
+								name: call.name,
+								input: call.arguments,
+							})),
+						},
+						undefined,
+						response,
+					)
+					expect(persisted).toBe(true)
+					expect(writes[0]).toHaveLength(1)
+					expect(writes[0][0].role).toBe("assistant")
+					expect(published.filter((event) => event.type === "tool_result_recorded")).toHaveLength(2)
+
+					const outcome = await (task as any).executeCanonicalToolCallsForTurn(
+						response,
+						surface,
+						"code",
+						undefined,
+					)
+					expect(outcome).toMatchObject({
+						status: cancelled ? "aborted" : "completed",
+						results: [
+							{ callId: "read", status: "error" },
+							{ callId: "barrier", status: "error" },
+						],
+					})
+					expect(usage).not.toHaveBeenCalled()
+					expect(fence).toHaveBeenCalledOnce()
+					expect(task.userMessageContent).toEqual(earlyReceipts)
+					await expect(task.flushPendingToolResultsToHistory({ allowAborted: true })).resolves.toBe(true)
+					await expect(task.flushPendingToolResultsToHistory({ allowAborted: true })).resolves.toBe(true)
+					expect(writes.at(-1)?.map((message) => message.role)).toEqual(["assistant", "user"])
+					expect(writes.at(-1)?.[1].content).toEqual(earlyReceipts)
+					for (const receipt of earlyReceipts) {
+						if (receipt.type === "tool_result")
+							expect(task.pushToolResultToUserContent(receipt)).toBe(false)
+					}
+
+					const replacement = new Task({
+						provider: mockProvider,
+						apiConfiguration: mockApiConfig,
+						taskId: task.taskId,
+						startTask: false,
+					})
+					Object.assign(replacement, { providerRef: { deref: () => lifecycleProvider } })
+					mockReadApiMessages.mockResolvedValue(writes.at(-1))
+					const loaded = await (replacement as any).getSavedApiConversationHistory()
+					expect(loaded.map((message: { role: string }) => message.role)).toEqual(["assistant", "user"])
+					expect(loaded[1].content).toEqual(earlyReceipts)
+					await (replacement as any).replayCanonicalLifecycle()
+					await (replacement as any).publishCanonicalLifecyclePendingToolResults(response, step)
+					for (const receipt of outcome.results) {
+						await (replacement as any).publishCanonicalLifecycleToolResult(receipt, step)
+					}
+					const terminalEvents = published.filter((event) => event.type === "tool_result_recorded")
+					expect(terminalEvents).toHaveLength(2)
+					expect(terminalEvents.map((event) => event.payload.item.status)).toEqual(["error", "error"])
+					expect(snapshot).toMatchObject({
+						acceptedToolCallIds: ["read", "barrier"],
+						terminalToolCallIds: ["read", "barrier"],
+					})
+				},
+			)
+		})
+
 		it("wires Task boundaries through the canonical publisher with one terminal receipt", async () => {
 			const task = new Task({
 				provider: mockProvider,

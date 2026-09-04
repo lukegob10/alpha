@@ -327,6 +327,19 @@ function resultForError(call: AgentToolCall, message: string): ToolSchedulerResu
 	}
 }
 
+/** Shared preflight for the host's persistence boundary and the scheduler's effect boundary. */
+export function getToolBatchIsolationError(registry: ToolRegistry, toolNames: readonly string[]): string | undefined {
+	if (toolNames.length <= 1) return undefined
+
+	const barrier = toolNames.find((name) => registry.resolve(name)?.capabilities.concurrency === "barrier")
+	if (!barrier) return undefined
+
+	return (
+		`${barrier} must be called by itself in a message turn. ` +
+		"No tools from this turn were executed. Retry with the control-flow tool alone."
+	)
+}
+
 function getToolResultParts(content: ToolResponse): {
 	text: string
 	images: Anthropic.ImageBlockParam[]
@@ -430,20 +443,22 @@ export class ToolScheduler {
 
 		await this.options.onEvent?.({ type: "tool_batch_started", batchSize: calls.length })
 
+		// The host may already have staged these rejections before persistence.
+		// Cancellation aborts the batch without changing an invalid call's error receipt.
+		const isolationError = getToolBatchIsolationError(
+			this.options.registry,
+			calls.map((call) => call.name),
+		)
+		if (isolationError) {
+			for (const item of prepared) {
+				results[item.index] = resultForError(item.call, isolationError)
+			}
+			return this.commitResults(results, calls, calls.length, 0, startedAt)
+		}
+
 		if (this.isCancelled()) {
 			this.fillCancelledResults(results, calls)
 			return this.abortOutcome(results, calls, calls.length, 0, startedAt)
-		}
-
-		const barrier = prepared.find((item) => item.descriptor?.capabilities.concurrency === "barrier")
-		if (barrier && prepared.length > 1) {
-			const message =
-				`${barrier.call.name} must be called by itself in a message turn. ` +
-				"No tools from this turn were executed. Retry with the control-flow tool alone."
-			for (const item of prepared) {
-				results[item.index] = resultForError(item.call, message)
-			}
-			return this.commitResults(results, calls, calls.length, 0, startedAt)
 		}
 
 		let cursor = 0

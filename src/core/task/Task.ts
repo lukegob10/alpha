@@ -143,7 +143,12 @@ import {
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../agent/AgentStepContextBuilder"
 import { AgentTurnEventLog } from "../agent/AgentTurnEventLog"
 import type { AgentLifecycleEventInput } from "../agent/lifecycle"
-import { ToolScheduler, type ToolSchedulerOutcome, type ToolSchedulerResult } from "../agent/ToolScheduler"
+import {
+	getToolBatchIsolationError,
+	ToolScheduler,
+	type ToolSchedulerOutcome,
+	type ToolSchedulerResult,
+} from "../agent/ToolScheduler"
 import type { TaskToolSurface } from "../tools/TaskToolSurface"
 import type { AgentTurnEvent } from "../agent/AgentTurnEvents"
 import type { StepContext } from "../agent/StepContext"
@@ -796,7 +801,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				presentedVersion = this.streamingPreviewRequestVersion
 				if (!this.isStreamingPreviewEpochCurrent(epoch)) return
 				try {
-					await presentAssistantMessage(this, { executeTools: false, previewEpoch: epoch })
+					await presentAssistantMessage(this, { previewEpoch: epoch })
 				} catch (error) {
 					// Preview output is non-authoritative.  A provider turn must still be
 					// able to complete when a webview update rejects or is superseded.
@@ -1064,8 +1069,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.userMessageContentReady = false
 				} else if (toolUseIndex !== undefined) {
 					// finalizeStreamingToolCall returned null (malformed JSON or missing args)
-					// Mark the tool as non-partial so it's presented as complete, but execution
-					// will be short-circuited in presentAssistantMessage with a structured tool_result.
+					// Mark the preview complete. The canonical accumulator and scheduler
+					// independently validate tool calls before any execution.
 					const existingToolUse = this.assistantMessageContent[toolUseIndex]
 					if (existingToolUse && existingToolUse.type === "tool_use") {
 						existingToolUse.partial = false
@@ -1084,7 +1089,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	didRejectTool = false
-	didAlreadyUseTool = false
 	didToolFailInCurrentTurn = false
 	didCompleteReadingStream = false
 	private _started = false
@@ -7145,7 +7149,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.userMessageContent = []
 					this.userMessageContentReady = false
 					this.didRejectTool = false
-					this.didAlreadyUseTool = false
 					this.assistantMessageSavedToHistory = false
 					// Reset tool failure flag for each new assistant turn - this ensures that tool failures
 					// only prevent attempt_completion within the same assistant message, not across turns
@@ -7367,10 +7370,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 										})
 										this.userMessageContentReady = false
 									}
-									// Text is previewed while streaming, but native tool effects are
-									// deferred until the persisted canonical response reaches the
-									// serial ToolScheduler. Otherwise a text chunk after a completed
-									// tool block could execute that block through the legacy presenter.
+									// Presentation only previews text; the persisted canonical response
+									// reaches the serial ToolScheduler after streaming completes.
 									this.scheduleStreamingPreview()
 									break
 								}
@@ -7398,12 +7399,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								// present iterator to finish and set
 								// userMessageContentReady when its ready.
 								// this.userMessageContentReady = true
-								break
-							}
-
-							if (this.didAlreadyUseTool) {
-								assistantMessage +=
-									"\n\n[Response interrupted by a tool use result. Only one tool may be used at a time and should be placed at the end of the message.]"
 								break
 							}
 
@@ -7844,14 +7839,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 					this.didCompleteReadingStream = true
 
-					// Set any blocks to be complete to allow `presentAssistantMessage`
-					// to finish and set `userMessageContentReady` to true.
-					// (Could be a text block that had no subsequent tool uses, or a
-					// text block at the very end, or an invalid tool use, etc. Whatever
-					// the case, `presentAssistantMessage` relies on these blocks either
-					// to be completed or the user to reject a block in order to proceed
-					// and eventually set userMessageContentReady to true.)
-
 					// The canonical response is the only source allowed to mutate effects.
 					// Drain the preview queue before finalizing/replacing its shared parser
 					// state, then close this preview epoch before persistence and scheduling.
@@ -7930,9 +7917,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						item.type === "grounding" ? item.sources : [],
 					)
 
-					// The canonical projection above is already complete. The legacy parser
-					// remains useful for incremental preview only and must not be presented
-					// again here (doing so could execute a repaired/partial call).
+					// The canonical projection above is complete. Incremental previews
+					// have already drained and must not be presented again here.
 
 					// Note: updateApiReqMsg() is now called from within drainStreamInBackgroundToFindAllUsage
 					// to ensure usage data is captured even when the stream is interrupted. The background task
@@ -7974,7 +7960,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					const responseOutcome = canonicalResponse?.outcome
 					const hasNonCompletedOutcome =
 						responseOutcome !== undefined && responseOutcome.status !== "completed"
-					let mixedTerminalToolBatch = false
 
 					if (hasTextContent || hasToolUses) {
 						// Reset counter when we get a successful response with content
@@ -8066,26 +8051,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							}
 						}
 
-						// Enforce terminal-tool isolation before any tools execute. Delegation and
-						// completion both close or suspend the current turn, so mixing either with
-						// another tool would leave results racing a terminal transition.
+						// Reject lifecycle barriers before persistence as well as before effects.
+						// Use the same captured registry as the scheduler so native/MCP aliases
+						// and hidden or invalid barrier calls cannot let a preceding effect run.
 						const assistantToolUses = assistantContent.filter(
 							(block): block is Anthropic.ToolUseBlockParam => block.type === "tool_use",
 						)
-						const terminalTool = assistantToolUses.find(
-							(block) => block.name === "new_task" || block.name === "attempt_completion",
-						)
-						const hasMixedTerminalToolBatch = assistantToolUses.length > 1 && terminalTool !== undefined
-						mixedTerminalToolBatch = hasMixedTerminalToolBatch
+						const isolationError = this.currentTaskToolSurface
+							? getToolBatchIsolationError(
+									this.currentTaskToolSurface.registry,
+									assistantToolUses.map((tool) => tool.name),
+								)
+							: undefined
 
-						if (hasMixedTerminalToolBatch) {
-							const isolationError = `${terminalTool.name} must be called by itself in a message turn. No tools from this turn were executed. Retry by calling only ${terminalTool.name} after any required setup is complete.`
-
+						if (isolationError) {
 							for (const tool of assistantToolUses) {
 								this.pushToolResultToUserContent({
 									type: "tool_result",
 									tool_use_id: tool.id,
-									content: isolationError,
+									content: formatResponse.toolError(isolationError),
 									is_error: true,
 								})
 							}
@@ -8204,26 +8188,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 
 					if (hasTextContent || hasToolUses) {
-						// NOTE: This comment is here for future reference - this was a
-						// workaround for `userMessageContent` not getting set to true.
-						// It was due to it not recursively calling for partial blocks
-						// when `didRejectTool`, so it would get stuck waiting for a
-						// partial block to complete before it could continue.
-						// In case the content blocks finished it may be the api stream
-						// finished after the last parsed content block was executed, so
-						// we are able to detect out of bounds and set
-						// `userMessageContentReady` to true (note you should not call
-						// `presentAssistantMessage` since if the last block i
-						//  completed it will be presented again).
-						// const completeBlocks = this.assistantMessageContent.filter((block) => !block.partial) // If there are any partial blocks after the stream ended we can consider them invalid.
-						// if (this.currentStreamingContentIndex >= completeBlocks.length) {
-						// 	this.userMessageContentReady = true
-						// }
-
 						// All canonical calls are complete and execution is now owned by the
 						// serial scheduler. It commits tool results to the next user message
 						// only after the assistant history write above has completed.
-						if (hasToolUses && !mixedTerminalToolBatch) {
+						if (hasToolUses) {
 							await this.publishCanonicalLifecyclePhase("executing")
 							const schedulerOutcome = await this.executeCanonicalToolCallsForTurn(
 								canonicalResponse!,
