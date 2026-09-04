@@ -4421,13 +4421,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		try {
 			await this.pendingCommandVerification
 			const decision = await provider.getParentCompletionDecision(this)
-			if (!decision.allowed && decision.blockingObligations?.length > 0) {
-				const key = decision.blockingObligations
-					.map((item) =>
-						JSON.stringify([item.id, item.contentVersion ?? item.appliedAt, item.verifiedChecks]),
-					)
-					.sort()
-					.join("|")
+			if (!decision.allowed) {
+				// Child activity and unconsumed results can reject completion without
+				// file debt. Count those unchanged completion claims, not ordinary polls.
+				const key = decision.blockingObligations?.length
+					? decision.blockingObligations
+							.map((item) =>
+								JSON.stringify([item.id, item.contentVersion ?? item.appliedAt, item.verifiedChecks]),
+							)
+							.sort()
+							.join("|")
+					: `completion:${decision.message ?? "unresolved"}`
 				if (key !== this.verificationRejectionKey) {
 					this.verificationRejectionKey = key
 					this.verificationRejectionCount = 0
@@ -4502,9 +4506,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		cwd: string,
 		verificationChangeSetIds?: readonly string[],
 	): Promise<void> {
+		const commandCwd = await fsSync.promises.realpath(cwd)
 		const verificationVersions = await this.providerRef
 			?.deref()
-			?.captureCommandVerification?.(this, command, cwd, verificationChangeSetIds)
+			?.captureCommandVerification?.(this, command, commandCwd, verificationChangeSetIds)
 		if (this.abort) throw new Error("Command admission was cancelled")
 		this.commandExecutionEvidence.delete(toolCallId)
 		if (this.commandExecutionEvidence.size >= 128) {
@@ -4516,7 +4521,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		this.beginCommandExecution(toolCallId, executionId, command, verificationChangeSetIds)
 		const evidence = this.commandExecutionEvidence.get(toolCallId)!
-		evidence.cwd = cwd
+		evidence.cwd = commandCwd
 		evidence.verificationVersions = structuredClone(verificationVersions)
 	}
 

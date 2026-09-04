@@ -6471,7 +6471,8 @@ export class ClineProvider
 	public async reservePrimaryMutation(parent: Task, token: string): Promise<void> {
 		if (parent.taskKind !== "primary") return
 		const root = await this.ensureAgentControlRoot(parent)
-		await this.agentControlStore.reservePrimaryMutation(parent.taskId, root.rootTaskId, parent.cwd, token)
+		const workspacePath = await fs.realpath(parent.cwd)
+		await this.agentControlStore.reservePrimaryMutation(parent.taskId, root.rootTaskId, workspacePath, token)
 	}
 
 	public async releasePrimaryMutation(parent: Task, token: string): Promise<void> {
@@ -6487,17 +6488,24 @@ export class ClineProvider
 	): Promise<void> {
 		if (parent.taskKind !== "primary" || Object.keys(fileVersions).length === 0) return
 		const root = await this.ensureAgentControlRoot(parent)
+		// Unknown-scope debt must survive a command removing its workspace. Prefer
+		// the admitted reservation identity; unresolved obligations cannot earn credit.
+		const workspacePath = scopeUnresolved
+			? (this.agentControlStore
+					.getVerificationObligations({ parentTaskId: parent.taskId, rootTaskId: root.rootTaskId })
+					.find((item) => item.origin === "primary")?.workspacePath ?? parent.cwd)
+			: await fs.realpath(parent.cwd)
 		const actualFiles = Object.keys(fileVersions)
 		const verificationRequirements = scopeUnresolved
 			? undefined
-			: await resolveVerificationRequirements(parent.cwd, actualFiles)
+			: await resolveVerificationRequirements(workspacePath, actualFiles)
 		const dependencyVersions = scopeUnresolved
 			? undefined
-			: await captureVerificationDependencies(parent.cwd, actualFiles)
+			: await captureVerificationDependencies(workspacePath, actualFiles)
 		const obligation = await this.agentControlStore.recordPrimaryMutation({
 			rootTaskId: root.rootTaskId,
 			parentTaskId: parent.taskId,
-			workspacePath: parent.cwd,
+			workspacePath,
 			fileVersions,
 			scopeUnresolved,
 			verificationRequirements,
@@ -6539,23 +6547,25 @@ export class ClineProvider
 
 	private async reconcilePrimaryVerification(parent: Task): Promise<void> {
 		const rootTaskId = this.getAgentControlRootTaskId(parent)
+		let workspacePath: string | undefined
 		for (const obligation of this.agentControlStore.getVerificationObligations({
 			parentTaskId: parent.taskId,
 			rootTaskId,
 		})) {
 			if (obligation.contentVersion === undefined || obligation.appliedAt === undefined) continue
 			if (obligation.scopeUnresolved || obligation.mutationReservations?.length) continue
+			workspacePath ??= await fs.realpath(parent.cwd)
 			const files = await captureVerificationContent(
-				parent.cwd,
+				workspacePath,
 				Object.keys(
 					obligation.fileVersions ?? Object.fromEntries(obligation.changedFiles.map((file) => [file, ""])),
 				),
 			)
-			const requirements = await resolveVerificationRequirements(parent.cwd, obligation.changedFiles)
+			const requirements = await resolveVerificationRequirements(workspacePath, obligation.changedFiles)
 			await this.agentControlStore.reconcileVerificationContent(
 				parent.taskId,
 				obligation.changeSetId,
-				parent.cwd,
+				workspacePath,
 				files,
 				rootTaskId,
 				requirements,
@@ -6571,6 +6581,7 @@ export class ClineProvider
 		changeSetIds: readonly string[] = [],
 	): Promise<ParentCommandVerificationEvidence["verificationVersions"]> {
 		if (changeSetIds.length === 0) return undefined
+		const workspacePath = await fs.realpath(parent.cwd)
 		const commandScope = await resolveCommandVerification({ workspaceRoot: parent.cwd, cwd, command })
 		const root = await this.ensureAgentControlRoot(parent)
 		await this.synchronizeParentVerificationObligations(parent)
@@ -6582,7 +6593,7 @@ export class ClineProvider
 			if (!changeSetIds.includes(obligation.changeSetId) || obligation.appliedAt === undefined) continue
 			const matchedFiles = commandScope
 				? obligation.changedFiles.filter((file) => {
-						const relative = path.relative(commandScope.scopePath, path.resolve(parent.cwd, file))
+						const relative = path.relative(commandScope.scopePath, path.resolve(workspacePath, file))
 						return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
 					})
 				: obligation.changedFiles
@@ -6594,18 +6605,18 @@ export class ClineProvider
 				changedFiles: matchedFiles,
 			})
 			if (!verifier) continue
-			const files = await captureVerificationContent(parent.cwd, [
+			const files = await captureVerificationContent(workspacePath, [
 				...new Set([
 					...obligation.changedFiles,
 					...Object.keys(obligation.fileVersions ?? {}),
 					...Object.keys(verifier.repositoryFiles),
 				]),
 			])
-			const requirements = await resolveVerificationRequirements(parent.cwd, obligation.changedFiles)
+			const requirements = await resolveVerificationRequirements(workspacePath, obligation.changedFiles)
 			const current = await this.agentControlStore.reconcileVerificationContent(
 				parent.taskId,
 				obligation.changeSetId,
-				parent.cwd,
+				workspacePath,
 				files,
 				root.rootTaskId,
 				requirements,

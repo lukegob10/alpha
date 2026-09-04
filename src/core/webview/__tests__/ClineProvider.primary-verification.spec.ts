@@ -9,6 +9,7 @@ import {
 	type ParentCommandVerificationEvidence,
 } from "../../agent/AgentControlStore"
 import { captureVerificationContent } from "../../agent/VerificationScope"
+import { Task } from "../../task/Task"
 import { ClineProvider } from "../ClineProvider"
 
 const VALID_COMMAND = "pnpm --dir src exec tsc --noEmit"
@@ -142,6 +143,90 @@ describe("ClineProvider primary verification", () => {
 
 		const satisfied = await recordCurrentEvidence(verificationVersions)
 		expect(satisfied).toMatchObject({ status: "satisfied", verification: { status: "passed" } })
+	})
+
+	it.each(["primary", "worker"] as const)(
+		"credits a real %s Task admission through a workspace alias",
+		async (kind) => {
+			const alias = path.join(outside, "workspace-alias")
+			await fs.symlink(workspace, alias, "junction")
+			parent.cwd = alias
+			const rootTaskId = parent.taskId
+			if (kind === "worker") {
+				const worker = await store.createAgent({
+					taskId: "outer-worker",
+					parentTaskId: rootTaskId,
+					rootTaskId,
+					nickname: "outer",
+					role: "worker",
+					objective: "Integrate nested work",
+					status: "running",
+				})
+				parent.taskId = worker.taskId
+				parent.taskKind = "subagent"
+				parent.subagentRole = "worker"
+				parent.subagentContextManifest = { runtimePolicy: { role: "worker" } }
+				Object.assign(provider, { getAgentControlRootTaskId: vi.fn(() => rootTaskId) })
+				await store.recordWorkerChangeSet({
+					rootTaskId,
+					parentTaskId: worker.taskId,
+					workerTaskId: "nested-worker",
+					workerPath: `${worker.path}/nested`,
+					workerNickname: "nested",
+					groupId: "nested-group",
+					changeSet: {
+						id: "nested-change",
+						status: "applied",
+						changedFiles: ["src/a.ts"],
+						createdAt: Date.now(),
+						updatedAt: Date.now(),
+					},
+					reviewSource: "apply",
+				})
+			} else {
+				await recordPrimaryMutation()
+			}
+			const before = primaryObligation()
+			const task = Object.assign(Object.create(Task.prototype), {
+				taskId: parent.taskId,
+				taskKind: parent.taskKind,
+				subagentRole: parent.subagentRole,
+				subagentContextManifest: parent.subagentContextManifest,
+				workspacePath: alias,
+				clineMessages: [],
+				providerRef: new WeakRef(provider),
+				commandExecutionEvidence: new Map(),
+				abort: false,
+			}) as Task
+			await task.admitCommandExecution("verify-alias", "execution-alias", VALID_COMMAND, alias, [
+				before.changeSetId,
+			])
+			const admitted = task.getCommandExecutionEvidence()[0]!
+			expect(admitted).toMatchObject({
+				cwd: workspace,
+				verificationVersions: {
+					[before.changeSetId]: { scopePath: path.join(workspace, "src"), matchedFiles: ["src/a.ts"] },
+				},
+			})
+			expect(primaryObligation().workspacePath).toBe(workspace)
+			commandEvidence = [{ ...admitted, status: "succeeded", exitCode: 0, completedAt: admitted.startedAt + 1 }]
+			await provider.recordParentVerificationEvidence(parent)
+			expect(primaryObligation()).toMatchObject({ status: "satisfied", verification: { status: "passed" } })
+			expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(true)
+		},
+	)
+
+	it("retains canonical reserved debt if an aliased workspace disappears during a command", async () => {
+		const alias = path.join(outside, "workspace-alias")
+		await fs.symlink(workspace, alias, "junction")
+		parent.cwd = alias
+		await provider.reservePrimaryMutation(parent, "workspace-command")
+		expect(primaryObligation().workspacePath).toBe(workspace)
+		await fs.rename(workspace, path.join(outside, "moved-workspace"))
+		await provider.recordPrimaryMutation(parent, { "unknown-command-scope": "unknown" }, true)
+		await provider.releasePrimaryMutation(parent, "workspace-command")
+		expect(primaryObligation()).toMatchObject({ workspacePath: workspace, scopeUnresolved: true })
+		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(false)
 	})
 
 	it("invalidates a passing verification after source and package manifest edits", async () => {

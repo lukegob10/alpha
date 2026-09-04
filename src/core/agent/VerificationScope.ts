@@ -39,13 +39,20 @@ function containsPath(root: string, candidate: string): boolean {
 	return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
 }
 
-function resolveContainedPath(root: string, candidate: string): string {
+function resolveContainedPath(root: string, candidate: string, workspaceRoot = root): string {
 	if (!candidate || candidate.length > MAX_PATH_LENGTH || /[\0\r\n]/.test(candidate)) {
 		throw new VerificationScopeError("Invalid verification path")
 	}
-	const absolute = path.resolve(root, candidate)
-	if (!containsPath(root, absolute)) throw new VerificationScopeError("Verification path is outside the workspace")
-	return absolute
+	const originalRoot = path.resolve(workspaceRoot)
+	const absolute = path.resolve(originalRoot, candidate)
+	const withinOriginal = containsPath(originalRoot, absolute)
+	if (!path.isAbsolute(candidate) && !withinOriginal)
+		throw new VerificationScopeError("Verification path is outside the workspace")
+	if (containsPath(root, absolute)) return absolute
+	if (!withinOriginal) throw new VerificationScopeError("Verification path is outside the workspace")
+	// A trusted workspace may use a Windows short name or a junction alias. Map
+	// only that root spelling; realContainedPath still rejects escaping descendants.
+	return path.resolve(root, path.relative(originalRoot, absolute))
 }
 
 async function realContainedPath(root: string, absolute: string): Promise<string | undefined> {
@@ -116,7 +123,7 @@ export async function captureVerificationContent(
 	const content: VerificationContent = Object.create(null)
 	let totalBytes = 0
 	for (const candidate of boundedPaths(paths)) {
-		const absolute = resolveContainedPath(root, candidate)
+		const absolute = resolveContainedPath(root, candidate, workspaceRoot)
 		const relative = path.relative(root, absolute).split(path.sep).join("/")
 		const bytes = await readBoundedFile(root, absolute, Math.min(MAX_FILE_BYTES, MAX_TOTAL_BYTES - totalBytes))
 		totalBytes += bytes?.length ?? 0
@@ -688,7 +695,9 @@ export async function captureVerificationDependencies(
 	changedFiles: readonly string[],
 ): Promise<VerificationContent> {
 	const root = await fs.realpath(workspaceRoot)
-	const directories = boundedPaths(changedFiles).map((file) => path.dirname(resolveContainedPath(root, file)))
+	const directories = boundedPaths(changedFiles).map((file) =>
+		path.dirname(resolveContainedPath(root, file, workspaceRoot)),
+	)
 	return captureVerificationContent(root, ancestorRequirementPaths(root, directories))
 }
 
@@ -707,14 +716,17 @@ export async function resolveCommandVerification(input: {
 	let tokens = commandTokens(input.command)
 	if (!tokens) return undefined
 	const root = await fs.realpath(input.workspaceRoot)
-	let cwd = await realContainedPath(root, resolveContainedPath(root, input.cwd))
+	let cwd = await realContainedPath(root, resolveContainedPath(root, input.cwd, input.workspaceRoot))
 	if (!cwd || !(await fs.stat(cwd)).isDirectory()) throw new VerificationScopeError("Verification cwd is unavailable")
 	if (executableName(tokens[0]) === "pnpm") {
 		let index = 1
 		if (tokens[index] === "--dir") {
 			const directory = tokens[++index]
 			if (!directory) return undefined
-			cwd = await realContainedPath(root, resolveContainedPath(root, path.resolve(cwd, directory)))
+			cwd = await realContainedPath(
+				root,
+				resolveContainedPath(root, path.resolve(cwd, directory), input.workspaceRoot),
+			)
 			if (!cwd || !(await fs.stat(cwd)).isDirectory()) {
 				throw new VerificationScopeError("Verification cwd is unavailable")
 			}
@@ -743,6 +755,13 @@ export async function resolveCommandVerification(input: {
 	const kind = wholeScopeKind ?? targeted?.kind
 	if (!kind) return undefined
 	const changedFiles = input.changedFiles
+		? boundedPaths(input.changedFiles).map((file) =>
+				path
+					.relative(root, resolveContainedPath(root, file, input.workspaceRoot))
+					.split(path.sep)
+					.join("/"),
+			)
+		: undefined
 	if (targeted && (!changedFiles || changedFiles.length === 0)) return undefined
 	if (changedFiles) {
 		const changedPaths = boundedPaths(changedFiles).map((file) => resolveContainedPath(root, file))

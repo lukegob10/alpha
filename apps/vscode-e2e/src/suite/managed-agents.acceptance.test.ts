@@ -22,10 +22,31 @@ import { waitFor } from "./utils"
 const execFile = promisify(execFileCallback)
 
 const FIXTURE_ROOT = "managed-agent-e2e"
-const OUTER_PATH = `${FIXTURE_ROOT}/worker/outer.json`
-const NESTED_PATH = `${FIXTURE_ROOT}/worker/nested.json`
-const DISCARD_PATH = `${FIXTURE_ROOT}/worker/discard.json`
-const VERIFY_PATH = `${FIXTURE_ROOT}/verify.mjs`
+const WORKER_DIR = `${FIXTURE_ROOT}/worker`
+const OUTER_PATH = `${WORKER_DIR}/outer/state.mjs`
+const NESTED_PATH = `${WORKER_DIR}/nested/state.mjs`
+const OUTER_TEST_PATH = `${WORKER_DIR}/outer/state.test.mjs`
+const NESTED_TEST_PATH = `${WORKER_DIR}/nested/state.test.mjs`
+const DISCARD_PATH = `${WORKER_DIR}/discard.json`
+const ROOT_VERIFY_CWD = WORKER_DIR
+const OUTER_VERIFY_CWD = `${WORKER_DIR}/nested`
+const REPOSITORY_NODE_BIN = path.resolve(__dirname, "../../../../src/node_modules/.bin")
+const REPOSITORY_VITEST_BINARY = path.join(REPOSITORY_NODE_BIN, process.platform === "win32" ? "vitest.cmd" : "vitest")
+const VITEST_CONFIG = 'export default {"test":{"globals":true}}\n'
+
+const stateModuleText = (owner: string, verified: boolean): string =>
+	`export default ${JSON.stringify({ owner, verified })}\n`
+
+const stateTestText = (owner: string): string =>
+	[
+		'import state from "./state.mjs"',
+		'import assert from "node:assert/strict"',
+		"",
+		`test("validates ${owner} state", () => {`,
+		`\tassert.deepEqual(state, ${JSON.stringify({ owner, verified: true })})`,
+		"})",
+		"",
+	].join("\n")
 
 const OUTER_OBJECTIVE = "Produce the outer Worker change after reviewing the nested Worker proposal."
 const NESTED_OBJECTIVE = "Produce the nested Worker change for immediate-parent review."
@@ -196,8 +217,8 @@ class ManagedAgentScriptedAI {
 				{
 					name: "execute_command",
 					arguments: {
-						command: `node ${VERIFY_PATH} ${OUTER_PATH} ${NESTED_PATH}`,
-						cwd: null,
+						command: "vitest run --maxWorkers=2",
+						cwd: ROOT_VERIFY_CWD,
 						timeout: 30,
 					},
 				},
@@ -231,8 +252,8 @@ class ManagedAgentScriptedAI {
 				{
 					name: "execute_command",
 					arguments: {
-						command: `node ${VERIFY_PATH} ${NESTED_PATH}`,
-						cwd: null,
+						command: "vitest run --maxWorkers=2",
+						cwd: OUTER_VERIFY_CWD,
 						timeout: 30,
 					},
 				},
@@ -240,7 +261,7 @@ class ManagedAgentScriptedAI {
 					name: "write_to_file",
 					arguments: {
 						path: OUTER_PATH,
-						content: '{"owner":"outer_worker","verified":true}\n',
+						content: stateModuleText("outer_worker", true),
 					},
 				},
 				{
@@ -255,7 +276,7 @@ class ManagedAgentScriptedAI {
 					name: "write_to_file",
 					arguments: {
 						path: NESTED_PATH,
-						content: '{"owner":"nested_writer","verified":true}\n',
+						content: stateModuleText("nested_writer", true),
 					},
 				},
 				{
@@ -436,35 +457,21 @@ const waitForAvailableCapability = async (
 const initializeFixtureRepository = async (workspace: string): Promise<void> => {
 	const workerDir = path.join(workspace, FIXTURE_ROOT, "worker")
 	await fs.mkdir(workerDir, { recursive: true })
-	const baseline = '{"owner":"baseline","verified":false}\n'
 	await Promise.all([
-		fs.writeFile(path.join(workspace, OUTER_PATH), baseline, "utf8"),
-		fs.writeFile(path.join(workspace, NESTED_PATH), baseline, "utf8"),
-		fs.writeFile(path.join(workspace, DISCARD_PATH), baseline, "utf8"),
-		fs.writeFile(
-			path.join(workspace, VERIFY_PATH),
-			[
-				'import { readFile } from "node:fs/promises"',
-				"",
-				"const expected = new Map([",
-				`  [${JSON.stringify(OUTER_PATH)}, { owner: "outer_worker", verified: true }],`,
-				`  [${JSON.stringify(NESTED_PATH)}, { owner: "nested_writer", verified: true }],`,
-				"])",
-				"const paths = process.argv.slice(2)",
-				"if (paths.length === 0 || paths.some((filePath) => !expected.has(filePath))) process.exit(1)",
-				"for (const filePath of paths) {",
-				"  let actual",
-				"  try {",
-				"    actual = JSON.parse(await readFile(filePath, 'utf8'))",
-				"  } catch {",
-				"    process.exit(1)",
-				"  }",
-				"  if (JSON.stringify(actual) !== JSON.stringify(expected.get(filePath))) process.exit(1)",
-				"}",
-				"",
-			].join("\n"),
-			"utf8",
-		),
+		fs.mkdir(path.dirname(path.join(workspace, OUTER_PATH)), { recursive: true }),
+		fs.mkdir(path.dirname(path.join(workspace, NESTED_PATH)), { recursive: true }),
+	])
+	const baselineState = stateModuleText("baseline", false)
+	const baselineDiscard = '{"owner":"baseline","verified":false}\n'
+	await Promise.all([
+		fs.writeFile(path.join(workspace, OUTER_PATH), baselineState, "utf8"),
+		fs.writeFile(path.join(workspace, NESTED_PATH), baselineState, "utf8"),
+		fs.writeFile(path.join(workspace, DISCARD_PATH), baselineDiscard, "utf8"),
+		fs.writeFile(path.join(workerDir, "vitest.config.mjs"), VITEST_CONFIG, "utf8"),
+		fs.writeFile(path.join(workerDir, ".gitignore"), "node_modules/\n", "utf8"),
+		fs.writeFile(path.join(workspace, OUTER_TEST_PATH), stateTestText("outer_worker"), "utf8"),
+		fs.writeFile(path.join(workspace, NESTED_TEST_PATH), stateTestText("nested_writer"), "utf8"),
+		fs.writeFile(path.join(workspace, OUTER_VERIFY_CWD, "vitest.config.mjs"), VITEST_CONFIG, "utf8"),
 	])
 
 	await execFile("git", ["init"], { cwd: workspace, windowsHide: true })
@@ -493,6 +500,13 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace, "ALPHA_E2E_WORKSPACE was not provided by the isolated test runner")
 		await initializeFixtureRepository(workspace)
+		try {
+			await fs.access(REPOSITORY_VITEST_BINARY)
+		} catch {
+			throw new Error(
+				`Managed-agent acceptance requires the existing Vitest binary at ${REPOSITORY_VITEST_BINARY}`,
+			)
+		}
 
 		const scriptedAI = new ManagedAgentScriptedAI()
 		const configuration: RooCodeSettings = {
@@ -506,7 +520,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			alwaysAllowExecute: true,
 			alwaysAllowSubagents: true,
 			alwaysAllowFollowupQuestions: false,
-			allowedCommands: ["node"],
+			allowedCommands: ["vitest"],
 			deniedCommands: [],
 			requestDelaySeconds: 0,
 			writeDelayMs: 0,
@@ -581,7 +595,11 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 		api.on(RooCodeEventName.TaskToolFailed, onToolFailed)
 
 		let rootTaskId: string | undefined
+		const previousPath = process.env.PATH
 		try {
+			process.env.PATH = [REPOSITORY_NODE_BIN, previousPath]
+				.filter((entry): entry is string => entry !== undefined && entry.length > 0)
+				.join(path.delimiter)
 			await api.setConfiguration(configuration)
 			rootTaskId = await api.startNewTask({
 				configuration,
@@ -698,14 +716,14 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			assert.ok(completed.has(nestedTaskId), "Nested Worker never reached a terminal completion")
 			assert.ok(completed.has(discardTaskId), "Discard Worker never reached a terminal completion")
 
-			assert.deepEqual(JSON.parse(await fs.readFile(path.join(workspace, OUTER_PATH), "utf8")), {
-				owner: "outer_worker",
-				verified: true,
-			})
-			assert.deepEqual(JSON.parse(await fs.readFile(path.join(workspace, NESTED_PATH), "utf8")), {
-				owner: "nested_writer",
-				verified: true,
-			})
+			assert.equal(
+				await fs.readFile(path.join(workspace, OUTER_PATH), "utf8"),
+				stateModuleText("outer_worker", true),
+			)
+			assert.equal(
+				await fs.readFile(path.join(workspace, NESTED_PATH), "utf8"),
+				stateModuleText("nested_writer", true),
+			)
 			assert.deepEqual(JSON.parse(await fs.readFile(path.join(workspace, DISCARD_PATH), "utf8")), {
 				owner: "baseline",
 				verified: false,
@@ -737,6 +755,8 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			}
 			await api.clearCurrentTask().catch(() => undefined)
 			scriptedAI.removeFromCache?.()
+			if (previousPath === undefined) delete process.env.PATH
+			else process.env.PATH = previousPath
 		}
 	})
 })

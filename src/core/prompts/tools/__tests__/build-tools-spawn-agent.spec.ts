@@ -101,7 +101,7 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		})
 
 		const completionTool = nativeTools.find((tool) => tool.function?.name === "attempt_completion")
-		expect(completionTool?.function?.parameters?.properties).not.toHaveProperty("outcome")
+		expect(completionTool?.function?.parameters?.properties).toHaveProperty("outcome")
 		expect(completionTool?.function?.description).not.toContain("sub-agents only")
 		const waitTool = (result.tools as any[]).find((tool) => tool.function?.name === "wait_agent")
 		expect(waitTool?.function?.description).toContain("sender task/path provenance")

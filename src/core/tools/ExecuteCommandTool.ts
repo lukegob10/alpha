@@ -170,6 +170,8 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 
 				pushToolResult(result)
 			} catch (error: unknown) {
+				if (!(error instanceof ShellIntegrationError)) throw error
+
 				const status: CommandExecutionStatus = { executionId, status: "fallback" }
 				provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
 				await task.say("shell_integration_warning")
@@ -177,21 +179,16 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				// Invalidate pending ask from first execution to prevent race condition
 				task.supersedePendingAsk()
 
-				if (error instanceof ShellIntegrationError) {
-					const [rejected, result] = await executeCommandInTerminal(task, {
-						...options,
-						terminalShellIntegrationDisabled: true,
-					})
+				const [rejected, result] = await executeCommandInTerminal(task, {
+					...options,
+					terminalShellIntegrationDisabled: true,
+				})
 
-					if (rejected) {
-						task.didRejectTool = true
-					}
-
-					pushToolResult(result)
-				} else {
-					task.failCommandExecution?.(commandEvidenceId)
-					pushToolResult(`Command failed to execute in terminal due to a shell integration error.`)
+				if (rejected) {
+					task.didRejectTool = true
 				}
+
+				pushToolResult(result)
 			}
 
 			return

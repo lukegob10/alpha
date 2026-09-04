@@ -373,6 +373,9 @@ describe("Task persistence", () => {
 		mockProvider.postStateToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebviewWithoutTaskHistory = vi.fn().mockResolvedValue(undefined)
 		mockProvider.updateTaskHistory = vi.fn().mockResolvedValue(undefined)
+		// Canonical tool progress only needs the provider's captured verification
+		// state at this unit boundary; the real ledger is covered by its own suite.
+		mockProvider.getVerificationProgressState = vi.fn(() => ({ stateFingerprint: "task-persistence-fixture" }))
 	})
 
 	// ── saveApiConversationHistory (via retrySaveApiConversationHistory) ──

@@ -12,6 +12,7 @@ import { SYSTEM_PROMPT } from "../../prompts/system"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
 import { ToolRegistry } from "../../tools/ToolRegistry"
+import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 import { buildNativeToolsArrayWithRestrictions } from "../build-tools"
 import { Task } from "../Task"
 import { TaskToolCatalogCache } from "../TaskToolCatalogCache"
@@ -84,6 +85,10 @@ function harness() {
 		isStreaming: false,
 		isWaitingForFirstChunk: false,
 		taskCancellationController: new AbortController(),
+		pendingCommandVerification: Promise.resolve(),
+		pendingWaitAgentResultClaims: new Map<string, string>(),
+		persistedToolResultIds: new Set<string>(),
+		toolRepetitionDetector: new ToolRepetitionDetector(3),
 		api,
 		apiConfiguration: { apiProvider: "anthropic" } satisfies ProviderSettings,
 		providerRef: { deref: () => provider },
@@ -227,7 +232,10 @@ describe("Task manual compaction boundary", () => {
 			finish.resolve()
 		}
 		const outcome = await run
-		expect(outcome.results).toMatchObject([{ callId: call.id, status: "success", content: "Actual file content" }])
+		expect(outcome).toMatchObject({
+			status: "completed",
+			results: [{ callId: call.id, status: "success", content: "Actual file content" }],
+		})
 		expect(task.userMessageContent).toEqual([
 			{ type: "tool_result", tool_use_id: call.id, content: "Actual file content", is_error: false },
 		])

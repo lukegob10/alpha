@@ -93,6 +93,59 @@ describe("verification scope observations", () => {
 		await expect(resolve("vitest run", path.join(root, "escape"))).rejects.toThrow("outside")
 	})
 
+	it("resolves workspace junction aliases without changing content keys or admitted command scope", async () => {
+		await write("src/source.ts", "export const value = 1")
+		const alias = path.join(outside, "workspace-alias")
+		await fs.symlink(root, alias, "junction")
+		for (const cwd of [path.join(alias, "src"), path.join(root, "src")]) {
+			await expect(
+				resolveCommandVerification({
+					workspaceRoot: alias,
+					cwd,
+					command: "vitest run",
+					changedFiles: ["src/source.ts"],
+				}),
+			).resolves.toMatchObject({ scopePath: path.join(root, "src"), kind: "test" })
+		}
+		await expect(captureVerificationContent(alias, [path.join(alias, "src/source.ts")])).resolves.toEqual({
+			"src/source.ts": fingerprintContent("export const value = 1"),
+		})
+		await expect(
+			captureVerificationDependencies(alias, [path.join(alias, "src/source.ts")]),
+		).resolves.toMatchObject({ "src/package.json": "missing", "package.json": "missing" })
+	})
+
+	it("still rejects traversal and outward junctions through a workspace alias", async () => {
+		const alias = path.join(outside, "workspace-alias")
+		await fs.symlink(root, alias, "junction")
+		await fs.symlink(outside, path.join(root, "escape"), "junction")
+		await expect(
+			resolveCommandVerification({ workspaceRoot: alias, cwd: "..", command: "vitest run" }),
+		).rejects.toThrow("outside")
+		await expect(
+			resolveCommandVerification({
+				workspaceRoot: alias,
+				cwd: path.join(alias, "escape"),
+				command: "vitest run",
+			}),
+		).rejects.toThrow("outside")
+		await expect(captureVerificationContent(alias, [path.join(alias, "escape/missing.ts")])).rejects.toThrow(
+			"outside",
+		)
+	})
+
+	it.skipIf(process.platform !== "win32")(
+		"admits the actual Windows temporary-directory short alias",
+		async (context) => {
+			const alias = path.join(tmpdir(), path.basename(root))
+			if (alias === root) context.skip("This host does not expose a short temporary-directory alias")
+			expect(await fs.realpath(alias)).toBe(root)
+			await expect(
+				resolveCommandVerification({ workspaceRoot: alias, cwd: alias, command: "vitest run" }),
+			).resolves.toMatchObject({ scopePath: root })
+		},
+	)
+
 	it("does not treat directories, excessive files, or oversized content as an empty observation", async () => {
 		await write("large.ts", "")
 		await fs.truncate(path.join(root, "large.ts"), 4 * 1_024 * 1_024 + 1)
