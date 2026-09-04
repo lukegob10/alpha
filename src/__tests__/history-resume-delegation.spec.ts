@@ -844,7 +844,13 @@ describe("History resume delegation - parent metadata transitions", () => {
 			{ role: "user", content: [{ type: "text", text: "before" }], ts: 1 },
 		] as any)
 		vi.mocked(saveTaskMessages).mockResolvedValue(undefined)
-		vi.mocked(saveApiMessages).mockResolvedValue(undefined)
+		vi.mocked(saveApiMessages).mockResolvedValue({
+			taskId: parentTaskId,
+			filePath: "/storage/api_conversation_history.json",
+			digest: "0".repeat(64),
+			byteLength: 2,
+			commitId: "11111111-1111-4111-8111-111111111111",
+		})
 
 		await expect(
 			(ClineProvider.prototype as any).reopenParentFromDelegation.call(provider, {
@@ -971,7 +977,13 @@ describe("History resume delegation - parent metadata transitions", () => {
 		vi.mocked(readTaskMessages).mockResolvedValue([])
 		vi.mocked(readApiMessages).mockResolvedValue([])
 		vi.mocked(saveTaskMessages).mockResolvedValue(undefined)
-		vi.mocked(saveApiMessages).mockResolvedValue(undefined)
+		vi.mocked(saveApiMessages).mockResolvedValue({
+			taskId: parentTaskId,
+			filePath: "/storage/api_conversation_history.json",
+			digest: "0".repeat(64),
+			byteLength: 2,
+			commitId: "11111111-1111-4111-8111-111111111111",
+		})
 
 		const handoffPromise = (ClineProvider.prototype as any).reopenParentFromDelegation.call(provider, {
 			parentTaskId,

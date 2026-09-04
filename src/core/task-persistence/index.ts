@@ -1,4 +1,4 @@
-export { type ApiMessage, readApiMessages, saveApiMessages } from "./apiMessages"
+export { type ApiMessage, type ApiMessagesCommitReceipt, readApiMessages, saveApiMessages } from "./apiMessages"
 export { getLatestTaskCompletionText } from "./completionText"
 export { readTaskMessages, saveTaskMessages } from "./taskMessages"
 export { taskMetadata } from "./taskMetadata"
@@ -17,6 +17,7 @@ export {
 	computeProviderTranscriptDigest,
 	digestProviderTranscript,
 	providerTranscriptEnvelopeSchema,
+	providerTranscriptReceiptSchema,
 } from "./ProviderTranscriptStore"
 export type {
 	ProviderTranscriptCommitInput,

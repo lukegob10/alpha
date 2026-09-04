@@ -564,6 +564,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private apiConversationHistorySaveQueue: Promise<void> = Promise.resolve()
 	private providerTranscriptCommitReceipt?: ProviderTranscriptCommitReceipt
 	private providerTranscriptSidecarFailure?: ProviderTranscriptStoreError
+	private apiConversationHistoryFailureGeneration = 0
 	abort: boolean = false
 	private abortTaskPromise?: Promise<void>
 	private ownedLifecyclePromise?: Promise<void>
@@ -652,6 +653,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * writing its captured snapshot after a replacement has started.
 	 */
 	private static apiConversationHistorySaveQueues = new Map<string, Promise<void>>()
+	private static apiConversationHistoryPendingCounts = new Map<string, number>()
+	private static readonly MAX_PENDING_TRANSCRIPT_SAVES = 8
 	private static apiConversationHistoryOwnerGenerations = new Map<string, number>()
 	private readonly apiConversationHistoryPersistenceKey: string
 	private readonly apiConversationHistoryOwnerGeneration: number
@@ -1680,13 +1683,33 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	// API Messages
 
 	private async getSavedApiConversationHistory(): Promise<ApiMessage[]> {
-		const messages = await readApiMessages({ taskId: this.taskId, globalStoragePath: this.globalStoragePath })
+		let messages: ApiMessage[]
+		try {
+			messages = await readApiMessages({ taskId: this.taskId, globalStoragePath: this.globalStoragePath })
+		} catch (error) {
+			this.recordProviderTranscriptSidecarFailure(error)
+			throw error
+		}
+		// The compatibility reader returns [] for missing/invalid JSON as well as
+		// real empty history. A v2 receipt can distinguish those states: require
+		// its authoritative bytes to validate before resuming from an empty array.
+		if (messages.length === 0) {
+			try {
+				const verified = await this.providerTranscriptStore.read()
+				if (verified.version === 2) messages = verified.messages
+			} catch (error) {
+				this.recordProviderTranscriptSidecarFailure(error)
+				throw error
+			}
+			return messages
+		}
 
 		// The legacy file is still authoritative for reads. Reconcile the new
 		// provider-facing sidecar only after the read succeeds, and do it behind
 		// the same queue used by writes. If this best-effort backfill fails, the
 		// task can still resume from the legacy transcript; the next save retries
 		// the sidecar and reports false until both durability boundaries succeed.
+		let legacyReadFailed = false
 		try {
 			await this.enqueueApiConversationHistoryPersistence(async () => {
 				// Re-read at queue execution time. A save may have been submitted while
@@ -1695,11 +1718,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const latestMessages = await readApiMessages({
 					taskId: this.taskId,
 					globalStoragePath: this.globalStoragePath,
+				}).catch((error) => {
+					legacyReadFailed = true
+					throw error
 				})
-				await this.reconcileProviderTranscriptSidecar(latestMessages, false)
+				messages = latestMessages
+				if (latestMessages.length === 0) {
+					const verified = await this.providerTranscriptStore.read()
+					if (verified.version === 2) messages = verified.messages
+					return
+				}
+				await this.reconcileProviderTranscriptSidecar(latestMessages)
 			})
 		} catch (error) {
 			this.recordProviderTranscriptSidecarFailure(error)
+			// The second legacy read may have discovered corruption after the
+			// initial nonempty read. Do not continue with its tolerant [] fallback.
+			if (legacyReadFailed || messages.length === 0) throw error
 		}
 
 		return messages
@@ -2281,10 +2316,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private async saveApiConversationHistory(): Promise<boolean> {
+		if (
+			(Task.apiConversationHistoryPendingCounts.get(this.apiConversationHistoryPersistenceKey) ?? 0) >=
+			Task.MAX_PENDING_TRANSCRIPT_SAVES
+		) {
+			this.recordProviderTranscriptSidecarFailure(
+				new ProviderTranscriptStoreError("queue_full", "Transcript persistence queue is full", this.taskId),
+			)
+			return false
+		}
 		// Capture the intended legacy snapshot before entering the queue. Each
 		// caller therefore commits the history state it observed, while calls made
 		// after a later mutation remain ordered behind it and cannot race a write.
 		const messages = structuredClone(this.apiConversationHistory)
+		const failureGeneration = this.apiConversationHistoryFailureGeneration
 
 		return this.enqueueApiConversationHistoryPersistence(async () => {
 			if (!this.isCurrentApiConversationHistoryOwner()) {
@@ -2292,10 +2337,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// instance must not write its captured snapshot after that handoff.
 				return false
 			}
+			let legacyReceipt: Awaited<ReturnType<typeof saveApiMessages>>
 			try {
 				// Keep this write first: api_conversation_history.json remains the
 				// provider/runtime source of truth throughout the migration.
-				await saveApiMessages({
+				legacyReceipt = await saveApiMessages({
 					messages,
 					taskId: this.taskId,
 					globalStoragePath: this.globalStoragePath,
@@ -2305,12 +2351,29 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// failed. Returning false keeps callers from executing effects or
 				// acknowledging a turn whose legacy history is not durable.
 				console.error("Failed to save API conversation history:", error)
+				this.recordProviderTranscriptSidecarFailure(error)
 				return false
 			}
 
 			try {
-				const receipt = await this.reconcileProviderTranscriptSidecar(messages, true)
-				if (receipt) this.providerTranscriptCommitReceipt = receipt
+				let receipt: ProviderTranscriptCommitReceipt
+				try {
+					receipt = await this.providerTranscriptStore.commitAuthoritativeTranscript(legacyReceipt)
+				} catch (error) {
+					if (
+						!(error instanceof ProviderTranscriptStoreError) ||
+						!["invalid_envelope", "invalid_messages", "task_mismatch", "digest_mismatch"].includes(
+							error.code,
+						)
+					)
+						throw error
+					receipt = await this.providerTranscriptStore.repairAuthoritativeTranscript(legacyReceipt)
+				}
+				await this.providerTranscriptStore.assertCommitReceipt(receipt)
+				// An admission/write failure that occurred after this snapshot was
+				// accepted cannot be acknowledged away by that older queued save.
+				if (failureGeneration !== this.apiConversationHistoryFailureGeneration) return false
+				this.providerTranscriptCommitReceipt = receipt
 				this.providerTranscriptSidecarFailure = undefined
 				return true
 			} catch (error) {
@@ -2332,10 +2395,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	public async flushApiConversationHistoryPersistence(): Promise<void> {
 		for (;;) {
 			const queued = Task.apiConversationHistorySaveQueues.get(this.apiConversationHistoryPersistenceKey)
-			if (!queued) return
+			if (!queued) break
 			await queued
-			if (Task.apiConversationHistorySaveQueues.get(this.apiConversationHistoryPersistenceKey) === queued) return
+			if (Task.apiConversationHistorySaveQueues.get(this.apiConversationHistoryPersistenceKey) === queued) break
 		}
+		if (this.providerTranscriptSidecarFailure) throw this.providerTranscriptSidecarFailure
 	}
 
 	private isCurrentApiConversationHistoryOwner(): boolean {
@@ -2347,6 +2411,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	/** Serialize every legacy/sidecar transcript transaction across Task instances. */
 	private enqueueApiConversationHistoryPersistence<T>(operation: () => Promise<T>): Promise<T> {
+		const pending = Task.apiConversationHistoryPendingCounts.get(this.apiConversationHistoryPersistenceKey) ?? 0
+		if (pending >= Task.MAX_PENDING_TRANSCRIPT_SAVES) {
+			return Promise.reject(
+				new ProviderTranscriptStoreError("queue_full", "Transcript persistence queue is full", this.taskId),
+			)
+		}
+		Task.apiConversationHistoryPendingCounts.set(this.apiConversationHistoryPersistenceKey, pending + 1)
 		const previous =
 			Task.apiConversationHistorySaveQueues.get(this.apiConversationHistoryPersistenceKey) ?? Promise.resolve()
 		const queued = previous.then(operation)
@@ -2357,6 +2428,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		Task.apiConversationHistorySaveQueues.set(this.apiConversationHistoryPersistenceKey, settled)
 		this.apiConversationHistorySaveQueue = settled
 		void settled.then(() => {
+			const remaining =
+				(Task.apiConversationHistoryPendingCounts.get(this.apiConversationHistoryPersistenceKey) ?? 1) - 1
+			if (remaining === 0)
+				Task.apiConversationHistoryPendingCounts.delete(this.apiConversationHistoryPersistenceKey)
+			else Task.apiConversationHistoryPendingCounts.set(this.apiConversationHistoryPersistenceKey, remaining)
 			if (Task.apiConversationHistorySaveQueues.get(this.apiConversationHistoryPersistenceKey) === settled) {
 				Task.apiConversationHistorySaveQueues.delete(this.apiConversationHistoryPersistenceKey)
 			}
@@ -2365,14 +2441,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	/**
-	 * Reconcile the sidecar against the legacy snapshot using CAS retries.
-	 * `forceCommit` is used by a real save so even an empty legacy transcript
-	 * receives a durable receipt; open/backfill treats a missing empty sidecar
-	 * as a harmless no-op.
+	 * Backfill older/mixed sidecars against a successfully read legacy snapshot.
+	 * Real saves use compact v2 receipts; this compatibility path retains v1
+	 * recovery and CAS retries without interpreting unreadable history as empty.
 	 */
 	private async reconcileProviderTranscriptSidecar(
 		messages: ApiMessage[],
-		forceCommit: boolean,
 	): Promise<ProviderTranscriptCommitReceipt | undefined> {
 		const expectedDigest = digestProviderTranscript(messages)
 		let current: Awaited<ReturnType<ProviderTranscriptStore["read"]>>
@@ -2397,7 +2471,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		for (let attempt = 0; attempt < 3; attempt++) {
-			if (!forceCommit && current.revision === 0 && messages.length === 0) return undefined
+			if (current.revision === 0 && messages.length === 0) return undefined
 
 			if (current.revision > 0 && current.digest === expectedDigest) {
 				const receipt = this.providerTranscriptStore.getLastCommitReceipt()
@@ -2436,6 +2510,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private recordProviderTranscriptSidecarFailure(error: unknown): void {
+		this.apiConversationHistoryFailureGeneration++
+		this.providerTranscriptCommitReceipt = undefined
 		this.providerTranscriptSidecarFailure =
 			error instanceof ProviderTranscriptStoreError
 				? error
@@ -2710,10 +2786,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (receipt.digest !== expectedDigest) {
 			throw new Error("Provider transcript receipt is stale relative to the current assistant history.")
 		}
-		const envelope = await this.providerTranscriptStore.verifyCommitReceipt(receipt)
-		if (envelope.digest !== expectedDigest) {
-			throw new Error("Provider transcript changed after the assistant persistence boundary.")
-		}
+		await this.providerTranscriptStore.assertCommitReceipt(receipt)
 	}
 
 	private async appendAgentTurnEvent(event: AgentTurnEvent, context?: StepContext): Promise<void> {
@@ -4332,10 +4405,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (!(await this.flushPendingToolResultsToHistory())) {
 				throw new Error("Unable to persist pending tool results before task completion.")
 			}
+			await this.flushApiConversationHistoryPersistence()
 			const finalDecision = await this.getCompletionGateDecision()
 			if (!finalDecision.allowed || this.abort) {
 				verificationRejection = finalDecision.message ?? "Task completion was interrupted."
 				throw new Error(verificationRejection)
+			}
+			// The verification decision remains the last asynchronous gate. A save
+			// admitted while it was pending requires a fresh completion attempt,
+			// not another await that could stale the Stage 3 verification decision.
+			if (this.providerTranscriptSidecarFailure) throw this.providerTranscriptSidecarFailure
+			if ((Task.apiConversationHistoryPendingCounts.get(this.apiConversationHistoryPersistenceKey) ?? 0) > 0) {
+				throw new Error("Transcript persistence is still pending at task completion.")
 			}
 
 			// User guidance wins any race with the asynchronous persistence barriers
@@ -6393,18 +6474,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Stop provider output before joining the transcript queue. Otherwise a
 		// late terminal callback could enqueue an old snapshot after replacement.
 		this.cancelCurrentRequest()
-		await this.flushApiConversationHistoryPersistence()
+		let cleanupError: unknown
+		try {
+			await this.flushApiConversationHistoryPersistence()
+		} catch (error) {
+			cleanupError = error
+		}
 		// Invalidate preview work before awaiting cleanup. A delayed webview
 		// response must not resume against state that abort cleanup is about to
 		// replace. The drain remains bounded for providers whose UI bridge hangs.
 		this.invalidateStreamingPreviewEpoch()
 		await this.drainStreamingPreviews("task abort")
 		this.releaseSubagentReviewBarrierIfSettled(true)
-		let cleanupError: unknown
 		try {
 			await this.stopActiveWorkerCommand()
 		} catch (error) {
-			cleanupError = error
+			cleanupError ??= error
 		}
 
 		// Reset consecutive error counters on abort (manual intervention)
@@ -6432,7 +6517,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		await this.appendAgentTurnEvent({ type: "cancelled", reason: this.abortReason ?? "user_cancelled" })
 		await this.flushAgentTurnEvents()
-		await this.flushApiConversationHistoryPersistence()
+		try {
+			await this.flushApiConversationHistoryPersistence()
+		} catch (error) {
+			cleanupError ??= error
+		}
 
 		if (cleanupError) throw cleanupError
 	}

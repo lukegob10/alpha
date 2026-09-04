@@ -65,8 +65,12 @@ const {
 	mockOpendir: vi.fn(),
 	mockListFiles: vi.fn(),
 	MockProviderTranscriptStoreError: class MockProviderTranscriptStoreError extends Error {
-		code = "write_failed"
+		code: string
 		taskId = "test-id"
+		constructor(code: string, message?: string) {
+			super(message ?? code)
+			this.code = message ? code : "write_failed"
+		}
 	},
 	MockProviderTranscriptRevisionConflictError: class MockProviderTranscriptRevisionConflictError extends Error {
 		code = "revision_conflict"
@@ -82,14 +86,15 @@ const {
 			messages: [],
 		}),
 		getLastCommitReceipt: vi.fn(),
-		commit: vi.fn().mockResolvedValue({
+		commitAuthoritativeTranscript: vi.fn().mockResolvedValue({
 			version: 1,
 			taskId,
 			revision: 1,
-			digest: "1".repeat(64),
+			digest: "0".repeat(64),
 			writtenAt: 1,
 		}),
 		verifyCommitReceipt: vi.fn().mockResolvedValue(undefined),
+		assertCommitReceipt: vi.fn().mockResolvedValue(undefined),
 		repairFromAuthoritativeTranscript: vi.fn().mockResolvedValue({
 			version: 1,
 			taskId,
@@ -600,13 +605,15 @@ describe("Task persistence", () => {
 				task: "test task",
 				startTask: false,
 			})
-			const store = MockProviderTranscriptStore.mock.results.at(-1)?.value as { commit: ReturnType<typeof vi.fn> }
+			const store = MockProviderTranscriptStore.mock.results.at(-1)?.value as {
+				commitAuthoritativeTranscript: ReturnType<typeof vi.fn>
+			}
 
 			const promise = task.retrySaveApiConversationHistory()
 			await vi.runAllTimersAsync()
 
 			expect(await promise).toBe(false)
-			expect(store.commit).not.toHaveBeenCalled()
+			expect(store.commitAuthoritativeTranscript).not.toHaveBeenCalled()
 			vi.useRealTimers()
 		})
 
@@ -620,15 +627,19 @@ describe("Task persistence", () => {
 				task: "test task",
 				startTask: false,
 			})
-			const store = MockProviderTranscriptStore.mock.results.at(-1)?.value as { commit: ReturnType<typeof vi.fn> }
-			store.commit.mockRejectedValue(new MockProviderTranscriptStoreError("sidecar unavailable"))
+			const store = MockProviderTranscriptStore.mock.results.at(-1)?.value as {
+				commitAuthoritativeTranscript: ReturnType<typeof vi.fn>
+			}
+			store.commitAuthoritativeTranscript.mockRejectedValue(
+				new MockProviderTranscriptStoreError("sidecar unavailable"),
+			)
 
 			const promise = task.retrySaveApiConversationHistory()
 			await vi.runAllTimersAsync()
 
 			expect(await promise).toBe(false)
 			expect(mockSaveApiMessages).toHaveBeenCalledTimes(3)
-			expect(store.commit).toHaveBeenCalledTimes(3)
+			expect(store.commitAuthoritativeTranscript).toHaveBeenCalledTimes(3)
 			vi.useRealTimers()
 		})
 
@@ -747,6 +758,129 @@ describe("Task persistence", () => {
 			expect(persistedSnapshots).toHaveLength(2)
 			expect(persistedSnapshots[0]).toEqual([{ role: "user", content: "old snapshot" }])
 			expect(persistedSnapshots[1]).toEqual([{ role: "user", content: "replacement snapshot" }])
+		})
+	})
+
+	describe("bounded transcript finalization", () => {
+		const createTask = () =>
+			new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "bounded persistence",
+				startTask: false,
+			})
+
+		it.each(["initial", "queued"])(
+			"returns verified v2 history when the %s legacy read was stale-empty",
+			async (phase) => {
+				const task = createTask()
+				const verifiedMessages = [{ role: "user", content: "concurrent durable snapshot" }]
+				if (phase === "queued")
+					mockReadApiMessages.mockResolvedValueOnce([{ role: "user", content: "older snapshot" }])
+				mockReadApiMessages.mockResolvedValueOnce([])
+				const store = (task as any).providerTranscriptStore
+				store.read.mockResolvedValueOnce({ version: 2, taskId: task.taskId, messages: verifiedMessages })
+				expect(await (task as any).getSavedApiConversationHistory()).toEqual(verifiedMessages)
+				expect(mockSaveApiMessages).not.toHaveBeenCalled()
+			},
+		)
+
+		it.each(["initial", "queued"])(
+			"propagates a %s legacy read refusal instead of returning an older prefix",
+			async (phase) => {
+				const task = createTask()
+				const failure = new MockProviderTranscriptStoreError("read_failed", "Missing v2 authority")
+				if (phase === "queued")
+					mockReadApiMessages.mockResolvedValueOnce([{ role: "user", content: "older snapshot" }])
+				mockReadApiMessages.mockRejectedValueOnce(failure)
+				await expect((task as any).getSavedApiConversationHistory()).rejects.toBe(failure)
+				await expect(task.flushApiConversationHistoryPersistence()).rejects.toBe(failure)
+				expect(mockSaveApiMessages).not.toHaveBeenCalled()
+			},
+		)
+
+		it("rejects saturation before copying, drains accepted snapshots, and only a later retry clears failure", async () => {
+			const task = createTask()
+			task.apiConversationHistory = [{ role: "user", content: "snapshot" }]
+			expect(await (task as any).saveApiConversationHistory()).toBe(true)
+			task.assistantMessageSavedToHistory = true
+			mockSaveApiMessages.mockClear()
+			let release!: () => void
+			const blocked = new Promise<void>((resolve) => {
+				release = resolve
+			})
+			mockSaveApiMessages.mockImplementationOnce(() => blocked)
+			const accepted = Array.from({ length: 8 }, () => (task as any).saveApiConversationHistory())
+			await vi.waitFor(() => expect(mockSaveApiMessages).toHaveBeenCalledOnce())
+			const clone = vi.spyOn(globalThis, "structuredClone")
+			expect(await (task as any).saveApiConversationHistory()).toBe(false)
+			expect(clone).not.toHaveBeenCalled()
+			clone.mockRestore()
+			await expect((task as any).assertCurrentProviderTranscriptBeforeEffects()).rejects.toThrow("receipt")
+			let drained = false
+			const drain = task.flushApiConversationHistoryPersistence().finally(() => {
+				drained = true
+			})
+			const failure = expect(drain).rejects.toMatchObject({ code: "queue_full" })
+			await Promise.resolve()
+			expect(drained).toBe(false)
+			release()
+			expect(await Promise.all(accepted)).toEqual(Array(8).fill(false))
+			await failure
+			expect(mockSaveApiMessages).toHaveBeenCalledTimes(8)
+			expect(await (task as any).saveApiConversationHistory()).toBe(true)
+			await expect(task.flushApiConversationHistoryPersistence()).resolves.toBeUndefined()
+			await expect((task as any).assertCurrentProviderTranscriptBeforeEffects()).resolves.toBeUndefined()
+		})
+
+		it("aborts workers and disposes cancellation resources before reporting persistence failure", async () => {
+			const task = createTask()
+			mockSaveApiMessages.mockRejectedValueOnce(new Error("disk unavailable"))
+			expect(await (task as any).saveApiConversationHistory()).toBe(false)
+			const stop = vi.spyOn(task as any, "stopActiveWorkerCommand").mockResolvedValue(undefined)
+			const dispose = vi.spyOn(task, "dispose")
+			const signal = (task as any).getTaskLifetimeCancellationSignal() as AbortSignal
+			await expect(task.abortTask()).rejects.toThrow("disk unavailable")
+			expect(stop).toHaveBeenCalledOnce()
+			expect(dispose).toHaveBeenCalledOnce()
+			expect(signal.aborted).toBe(true)
+			await expect(task.flushApiConversationHistoryPersistence()).rejects.toThrow("disk unavailable")
+		})
+
+		it("does not finalize an empty result buffer over an unresolved persistence failure", async () => {
+			const task = createTask()
+			mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+			mockProvider.rollbackTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+			vi.spyOn(task, "getCompletionGateDecision").mockResolvedValue({ allowed: true } as any)
+			const completed = vi.spyOn(task, "markCompleted")
+			mockSaveApiMessages.mockRejectedValueOnce(new Error("completion disk failure"))
+			expect(await (task as any).saveApiConversationHistory()).toBe(false)
+			expect(task.userMessageContent).toEqual([])
+			await expect(task.finalizeTaskCompletion()).rejects.toThrow("completion disk failure")
+			expect(completed).not.toHaveBeenCalled()
+			expect(mockProvider.rollbackTaskCompletionLifecycle).toHaveBeenCalledOnce()
+		})
+
+		it("rejects a save admitted during the final verification gate without marking completed", async () => {
+			const task = createTask()
+			mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+			mockProvider.rollbackTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+			let release!: () => void
+			const blocked = new Promise<void>((resolve) => {
+				release = resolve
+			})
+			mockSaveApiMessages.mockImplementationOnce(() => blocked)
+			let save!: Promise<boolean>
+			vi.spyOn(task, "getCompletionGateDecision").mockImplementation(async () => {
+				save = (task as any).saveApiConversationHistory()
+				return { allowed: true } as any
+			})
+			const completed = vi.spyOn(task, "markCompleted")
+			await expect(task.finalizeTaskCompletion()).rejects.toThrow("still pending")
+			expect(completed).not.toHaveBeenCalled()
+			release()
+			expect(await save).toBe(true)
+			await task.flushApiConversationHistoryPersistence()
 		})
 	})
 
@@ -1639,9 +1773,9 @@ describe("Task persistence", () => {
 		const originalWorkspaceFolders = vscode.workspace.workspaceFolders
 
 		type TranscriptStoreFixture = {
-			commit: ReturnType<typeof vi.fn>
+			commitAuthoritativeTranscript: ReturnType<typeof vi.fn>
 			getLastCommitReceipt: ReturnType<typeof vi.fn>
-			verifyCommitReceipt: ReturnType<typeof vi.fn>
+			assertCommitReceipt: ReturnType<typeof vi.fn>
 		}
 
 		const configureWorkspace = () => {
@@ -1677,18 +1811,19 @@ describe("Task persistence", () => {
 			task.rooProtectedController = { isWriteProtected: vi.fn().mockReturnValue(false) } as any
 
 			const store = MockProviderTranscriptStore.mock.results.at(-1)?.value as TranscriptStoreFixture
-			store.commit.mockImplementation(async ({ expectedRevision }: { expectedRevision: number }) => {
+			let revision = 0
+			store.commitAuthoritativeTranscript.mockImplementation(async () => {
 				const receipt = {
 					version: 1,
 					taskId: task.taskId,
-					revision: expectedRevision + 1,
+					revision: ++revision,
 					digest: "0".repeat(64),
 					writtenAt: 1,
 				}
 				store.getLastCommitReceipt.mockReturnValue(receipt)
 				return receipt
 			})
-			store.verifyCommitReceipt.mockImplementation(async (receipt: unknown) => receipt)
+			store.assertCommitReceipt.mockImplementation(async (receipt: unknown) => receipt)
 
 			return { task, store }
 		}
@@ -1904,9 +2039,9 @@ describe("Task persistence", () => {
 			const calls = [listFilesCall("fence-first", "first"), listFilesCall("fence-second", "second")]
 			const response = createAgentResponse(calls)
 			await persistAssistantResponse(task, response)
-			store.verifyCommitReceipt.mockClear()
+			store.assertCommitReceipt.mockClear()
 			let verifyCalls = 0
-			store.verifyCommitReceipt.mockImplementation(async (receipt: unknown) => {
+			store.assertCommitReceipt.mockImplementation(async (receipt: unknown) => {
 				verifyCalls += 1
 				if (verifyCalls === 2) throw new Error("per-call fence failed")
 				return receipt

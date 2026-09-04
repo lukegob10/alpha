@@ -79,8 +79,9 @@ const { MockProviderTranscriptStore, MockProviderTranscriptStoreError, MockProvi
 				messages: [],
 			}),
 			getLastCommitReceipt: vi.fn().mockReturnValue({ ...receipt, taskId }),
-			commit: vi.fn().mockResolvedValue({ ...receipt, taskId }),
+			commitAuthoritativeTranscript: vi.fn().mockResolvedValue({ ...receipt, taskId }),
 			verifyCommitReceipt: vi.fn().mockResolvedValue(undefined),
+			assertCommitReceipt: vi.fn().mockResolvedValue(undefined),
 			repairFromAuthoritativeTranscript: vi.fn().mockResolvedValue({ ...receipt, taskId }),
 		}))
 
@@ -96,6 +97,14 @@ vi.mock("../../task-persistence/ProviderTranscriptStore", () => ({
 	ProviderTranscriptStoreError: MockProviderTranscriptStoreError,
 	ProviderTranscriptRevisionConflictError: MockProviderTranscriptRevisionConflictError,
 	digestProviderTranscript: vi.fn(() => "0".repeat(64)),
+	serializeProviderTranscript: (messages: unknown) => JSON.stringify(messages),
+	assertAuthoritativeTranscriptReplacementAllowed: vi.fn(),
+	withLegacyTranscriptMigration: (_path: string, _taskId: string, operation: () => Promise<unknown>) => operation(),
+}))
+
+vi.mock("../../task-persistence/atomicWrite", () => ({
+	atomicWriteText: vi.fn().mockResolvedValue(undefined),
+	withFileLock: vi.fn(async (_path: string, operation: () => Promise<unknown>) => operation()),
 }))
 
 vi.mock("p-wait-for", () => ({

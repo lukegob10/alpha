@@ -1,0 +1,453 @@
+{
+	"format": "nor-29-benchmark-v2",
+	"hashMeasurement": "all-active-sha256",
+	"mode": "baseline",
+	"generatedAt": "2026-09-04T15:22:14.933Z",
+	"node": "v20.19.2",
+	"platform": "win32",
+	"repetitions": 3,
+	"warmup": 1,
+	"workloads": [
+		{
+			"definition": {
+				"name": "short",
+				"turns": 6,
+				"payloadBytes": 192,
+				"noOpSaves": 0
+			},
+			"samples": [
+				{
+					"workload": "short",
+					"repetition": 0,
+					"turns": 6,
+					"payloadBytes": 192,
+					"finalMessageCount": 18,
+					"finalHistoryBytes": 8859,
+					"finalLegacyBytes": 8859,
+					"finalSidecarBytes": 9036,
+					"flushCount": 6,
+					"legacyWriteCount": 6,
+					"sidecarReadCount": 25,
+					"sidecarCommitCount": 6,
+					"fenceCount": 6,
+					"bytesSerialized": 634262,
+					"bytesRead": 128055,
+					"bytesWritten": 63054,
+					"fullHistoryHashCalls": 43,
+					"fullHistoryHashUpdates": 43,
+					"fullHistoryHashBytes": 208117,
+					"flushLatencyMs": {
+						"count": 6,
+						"mean": 19.591366666666698,
+						"median": 18.637300000000323,
+						"p95": 22.56230000000005,
+						"max": 22.56230000000005
+					},
+					"fenceLatencyMs": {
+						"count": 6,
+						"mean": 2.325999999999946,
+						"median": 2.251499999999851,
+						"p95": 2.5768000000002758,
+						"max": 2.5768000000002758
+					},
+					"eventLoopDelayMs": {
+						"mean": 1.2105225225225227,
+						"p99": 6.053887,
+						"max": 7.417855,
+						"timerMax": 6.408500000000004
+					},
+					"elapsedMs": 135.41530000000012
+				},
+				{
+					"workload": "short",
+					"repetition": 1,
+					"turns": 6,
+					"payloadBytes": 192,
+					"finalMessageCount": 18,
+					"finalHistoryBytes": 8859,
+					"finalLegacyBytes": 8859,
+					"finalSidecarBytes": 9036,
+					"flushCount": 6,
+					"legacyWriteCount": 6,
+					"sidecarReadCount": 25,
+					"sidecarCommitCount": 6,
+					"fenceCount": 6,
+					"bytesSerialized": 634262,
+					"bytesRead": 128055,
+					"bytesWritten": 63054,
+					"fullHistoryHashCalls": 43,
+					"fullHistoryHashUpdates": 43,
+					"fullHistoryHashBytes": 208117,
+					"flushLatencyMs": {
+						"count": 6,
+						"mean": 18.723416666666555,
+						"median": 18.064600000000155,
+						"p95": 21.016999999999825,
+						"max": 21.016999999999825
+					},
+					"fenceLatencyMs": {
+						"count": 6,
+						"mean": 2.3963333333334353,
+						"median": 2.3034999999999854,
+						"p95": 2.6929000000000087,
+						"max": 2.6929000000000087
+					},
+					"eventLoopDelayMs": {
+						"mean": 1.1874571743119267,
+						"p99": 5.283839,
+						"max": 5.738495,
+						"timerMax": 4.73720000000003
+					},
+					"elapsedMs": 130.7817
+				},
+				{
+					"workload": "short",
+					"repetition": 2,
+					"turns": 6,
+					"payloadBytes": 192,
+					"finalMessageCount": 18,
+					"finalHistoryBytes": 8859,
+					"finalLegacyBytes": 8859,
+					"finalSidecarBytes": 9036,
+					"flushCount": 6,
+					"legacyWriteCount": 6,
+					"sidecarReadCount": 25,
+					"sidecarCommitCount": 6,
+					"fenceCount": 6,
+					"bytesSerialized": 634262,
+					"bytesRead": 128055,
+					"bytesWritten": 63054,
+					"fullHistoryHashCalls": 43,
+					"fullHistoryHashUpdates": 43,
+					"fullHistoryHashBytes": 208117,
+					"flushLatencyMs": {
+						"count": 6,
+						"mean": 19.874150000000025,
+						"median": 18.45569999999998,
+						"p95": 23.32400000000007,
+						"max": 23.32400000000007
+					},
+					"fenceLatencyMs": {
+						"count": 6,
+						"mean": 2.420816666666724,
+						"median": 2.284400000000005,
+						"p95": 2.7164999999999964,
+						"max": 2.7164999999999964
+					},
+					"eventLoopDelayMs": {
+						"mean": 1.2357422545454546,
+						"p99": 5.988351,
+						"max": 6.582271,
+						"timerMax": 5.57549999999992
+					},
+					"elapsedMs": 137.97879999999986
+				}
+			],
+			"means": {
+				"flushLatencyMs": 19.396311111111093,
+				"fenceLatencyMs": 2.381050000000035,
+				"bytesSerialized": 634262,
+				"bytesRead": 128055,
+				"bytesWritten": 63054,
+				"fullHistoryHashCalls": 43,
+				"fullHistoryHashUpdates": 43,
+				"fullHistoryHashBytes": 208117,
+				"eventLoopDelayP99Ms": 5.775358999999999
+			}
+		},
+		{
+			"definition": {
+				"name": "short-control",
+				"turns": 6,
+				"payloadBytes": 192,
+				"noOpSaves": 3
+			},
+			"samples": [
+				{
+					"workload": "short-control",
+					"repetition": 0,
+					"turns": 6,
+					"payloadBytes": 192,
+					"finalMessageCount": 18,
+					"finalHistoryBytes": 8859,
+					"finalLegacyBytes": 8859,
+					"finalSidecarBytes": 9044,
+					"flushCount": 9,
+					"legacyWriteCount": 9,
+					"sidecarReadCount": 34,
+					"sidecarCommitCount": 6,
+					"fenceCount": 9,
+					"bytesSerialized": 1032965,
+					"bytesRead": 209635,
+					"bytesWritten": 89679,
+					"fullHistoryHashCalls": 58,
+					"fullHistoryHashUpdates": 58,
+					"fullHistoryHashBytes": 341002,
+					"flushLatencyMs": {
+						"count": 9,
+						"mean": 17.01488888888889,
+						"median": 19.057800000000043,
+						"p95": 23.0308,
+						"max": 23.0308
+					},
+					"fenceLatencyMs": {
+						"count": 9,
+						"mean": 2.866377777777719,
+						"median": 2.41800000000012,
+						"p95": 5.809399999999641,
+						"max": 5.809399999999641
+					},
+					"eventLoopDelayMs": {
+						"mean": 1.1739136000000001,
+						"p99": 5.554175,
+						"max": 6.164479,
+						"timerMax": 5.156600000000253
+					},
+					"elapsedMs": 183.20929999999998
+				},
+				{
+					"workload": "short-control",
+					"repetition": 1,
+					"turns": 6,
+					"payloadBytes": 192,
+					"finalMessageCount": 18,
+					"finalHistoryBytes": 8859,
+					"finalLegacyBytes": 8859,
+					"finalSidecarBytes": 9044,
+					"flushCount": 9,
+					"legacyWriteCount": 9,
+					"sidecarReadCount": 34,
+					"sidecarCommitCount": 6,
+					"fenceCount": 9,
+					"bytesSerialized": 1032965,
+					"bytesRead": 209635,
+					"bytesWritten": 89679,
+					"fullHistoryHashCalls": 58,
+					"fullHistoryHashUpdates": 58,
+					"fullHistoryHashBytes": 341002,
+					"flushLatencyMs": {
+						"count": 9,
+						"mean": 16.21376666666659,
+						"median": 18.26189999999997,
+						"p95": 21.942599999999857,
+						"max": 21.942599999999857
+					},
+					"fenceLatencyMs": {
+						"count": 9,
+						"mean": 2.476733333333262,
+						"median": 2.5592999999998938,
+						"p95": 2.779199999999946,
+						"max": 2.779199999999946
+					},
+					"eventLoopDelayMs": {
+						"mean": 1.1388279466666669,
+						"p99": 4.607999,
+						"max": 4.636671,
+						"timerMax": 3.6307999999999083
+					},
+					"elapsedMs": 172.2774999999997
+				},
+				{
+					"workload": "short-control",
+					"repetition": 2,
+					"turns": 6,
+					"payloadBytes": 192,
+					"finalMessageCount": 18,
+					"finalHistoryBytes": 8859,
+					"finalLegacyBytes": 8859,
+					"finalSidecarBytes": 9044,
+					"flushCount": 9,
+					"legacyWriteCount": 9,
+					"sidecarReadCount": 34,
+					"sidecarCommitCount": 6,
+					"fenceCount": 9,
+					"bytesSerialized": 1032965,
+					"bytesRead": 209635,
+					"bytesWritten": 89679,
+					"fullHistoryHashCalls": 58,
+					"fullHistoryHashUpdates": 58,
+					"fullHistoryHashBytes": 341002,
+					"flushLatencyMs": {
+						"count": 9,
+						"mean": 16.149422222222103,
+						"median": 18.59180000000015,
+						"p95": 20.459399999999732,
+						"max": 20.459399999999732
+					},
+					"fenceLatencyMs": {
+						"count": 9,
+						"mean": 2.470377777777685,
+						"median": 2.408900000000358,
+						"p95": 3.186200000000099,
+						"max": 3.186200000000099
+					},
+					"eventLoopDelayMs": {
+						"mean": 1.1408383999999998,
+						"p99": 5.545983,
+						"max": 5.828607,
+						"timerMax": 4.824999999999818
+					},
+					"elapsedMs": 171.64639999999963
+				}
+			],
+			"means": {
+				"flushLatencyMs": 16.45935925925919,
+				"fenceLatencyMs": 2.604496296296222,
+				"bytesSerialized": 1032965,
+				"bytesRead": 209635,
+				"bytesWritten": 89679,
+				"fullHistoryHashCalls": 58,
+				"fullHistoryHashUpdates": 58,
+				"fullHistoryHashBytes": 341002,
+				"eventLoopDelayP99Ms": 5.236052333333333
+			}
+		},
+		{
+			"definition": {
+				"name": "long",
+				"turns": 36,
+				"payloadBytes": 4096,
+				"noOpSaves": 0
+			},
+			"samples": [
+				{
+					"workload": "long",
+					"repetition": 0,
+					"turns": 36,
+					"payloadBytes": 4096,
+					"finalMessageCount": 108,
+					"finalHistoryBytes": 756135,
+					"finalLegacyBytes": 756135,
+					"finalSidecarBytes": 756312,
+					"flushCount": 36,
+					"legacyWriteCount": 36,
+					"sidecarReadCount": 145,
+					"sidecarCommitCount": 36,
+					"fenceCount": 36,
+					"bytesSerialized": 292224824,
+					"bytesRead": 55973991,
+					"bytesWritten": 27980721,
+					"fullHistoryHashCalls": 253,
+					"fullHistoryHashUpdates": 253,
+					"fullHistoryHashBytes": 97154122,
+					"flushLatencyMs": {
+						"count": 36,
+						"mean": 55.687322222222214,
+						"median": 56.831099999999424,
+						"p95": 71.02210000000014,
+						"max": 73.54449999999997
+					},
+					"fenceLatencyMs": {
+						"count": 36,
+						"mean": 10.594722222222167,
+						"median": 10.176499999999578,
+						"p95": 19.059000000000196,
+						"max": 21.27770000000055
+					},
+					"eventLoopDelayMs": {
+						"mean": 2.0937235161009573,
+						"p99": 13.656063,
+						"max": 16.334847,
+						"timerMax": 15.316899999999805
+					},
+					"elapsedMs": 2406.8
+				},
+				{
+					"workload": "long",
+					"repetition": 1,
+					"turns": 36,
+					"payloadBytes": 4096,
+					"finalMessageCount": 108,
+					"finalHistoryBytes": 756135,
+					"finalLegacyBytes": 756135,
+					"finalSidecarBytes": 756312,
+					"flushCount": 36,
+					"legacyWriteCount": 36,
+					"sidecarReadCount": 145,
+					"sidecarCommitCount": 36,
+					"fenceCount": 36,
+					"bytesSerialized": 292224824,
+					"bytesRead": 55973991,
+					"bytesWritten": 27980721,
+					"fullHistoryHashCalls": 253,
+					"fullHistoryHashUpdates": 253,
+					"fullHistoryHashBytes": 97154122,
+					"flushLatencyMs": {
+						"count": 36,
+						"mean": 58.14195,
+						"median": 60.32930000000124,
+						"p95": 79.89979999999923,
+						"max": 80.66749999999956
+					},
+					"fenceLatencyMs": {
+						"count": 36,
+						"mean": 11.190555555555598,
+						"median": 10.830299999999625,
+						"p95": 19.211299999999028,
+						"max": 26.16939999999886
+					},
+					"eventLoopDelayMs": {
+						"mean": 2.1373805403568396,
+						"p99": 14.958591,
+						"max": 17.498111,
+						"timerMax": 16.47479999999996
+					},
+					"elapsedMs": 2516.5617
+				},
+				{
+					"workload": "long",
+					"repetition": 2,
+					"turns": 36,
+					"payloadBytes": 4096,
+					"finalMessageCount": 108,
+					"finalHistoryBytes": 756135,
+					"finalLegacyBytes": 756135,
+					"finalSidecarBytes": 756312,
+					"flushCount": 36,
+					"legacyWriteCount": 36,
+					"sidecarReadCount": 145,
+					"sidecarCommitCount": 36,
+					"fenceCount": 36,
+					"bytesSerialized": 292224824,
+					"bytesRead": 55973991,
+					"bytesWritten": 27980721,
+					"fullHistoryHashCalls": 253,
+					"fullHistoryHashUpdates": 253,
+					"fullHistoryHashBytes": 97154122,
+					"flushLatencyMs": {
+						"count": 36,
+						"mean": 59.86607222222236,
+						"median": 62.26889999999912,
+						"p95": 79.27499999999964,
+						"max": 79.55119999999988
+					},
+					"fenceLatencyMs": {
+						"count": 36,
+						"mean": 11.402766666666544,
+						"median": 11.310099999998783,
+						"p95": 19.165099999998347,
+						"max": 19.218800000000556
+					},
+					"eventLoopDelayMs": {
+						"mean": 2.1499497123857023,
+						"p99": 14.278655,
+						"max": 16.490495,
+						"timerMax": 15.47990000000027
+					},
+					"elapsedMs": 2588.1612999999998
+				}
+			],
+			"means": {
+				"flushLatencyMs": 57.89844814814819,
+				"fenceLatencyMs": 11.062681481481436,
+				"bytesSerialized": 292224824,
+				"bytesRead": 55973991,
+				"bytesWritten": 27980721,
+				"fullHistoryHashCalls": 253,
+				"fullHistoryHashUpdates": 253,
+				"fullHistoryHashBytes": 97154122,
+				"eventLoopDelayP99Ms": 14.297769666666667
+			}
+		}
+	]
+}

@@ -69,7 +69,7 @@ vi.mock("../../task-persistence/ProviderTranscriptStore", () => ({
 			messages: [],
 		}),
 		getLastCommitReceipt: vi.fn(),
-		commit: vi.fn().mockResolvedValue({
+		commitAuthoritativeTranscript: vi.fn().mockResolvedValue({
 			version: 1,
 			taskId,
 			revision: 1,
@@ -77,6 +77,7 @@ vi.mock("../../task-persistence/ProviderTranscriptStore", () => ({
 			writtenAt: 1,
 		}),
 		verifyCommitReceipt: vi.fn().mockResolvedValue(undefined),
+		assertCommitReceipt: vi.fn().mockResolvedValue(undefined),
 		repairFromAuthoritativeTranscript: vi.fn(),
 	})),
 	ProviderTranscriptStoreError: class MockProviderTranscriptStoreError extends Error {
@@ -88,6 +89,14 @@ vi.mock("../../task-persistence/ProviderTranscriptStore", () => ({
 		taskId = "test-id"
 	},
 	digestProviderTranscript: vi.fn(() => "0".repeat(64)),
+	serializeProviderTranscript: (messages: unknown) => JSON.stringify(messages),
+	assertAuthoritativeTranscriptReplacementAllowed: vi.fn(),
+	withLegacyTranscriptMigration: (_path: string, _taskId: string, operation: () => Promise<unknown>) => operation(),
+}))
+
+vi.mock("../../task-persistence/atomicWrite", () => ({
+	atomicWriteText: vi.fn().mockResolvedValue(undefined),
+	withFileLock: vi.fn(async (_path: string, operation: () => Promise<unknown>) => operation()),
 }))
 
 vi.mock("p-wait-for", () => ({

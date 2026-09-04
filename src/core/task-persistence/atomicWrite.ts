@@ -5,9 +5,9 @@ import * as lockfile from "proper-lockfile"
 /**
  * Execute a file operation while holding an advisory lock for that file.
  *
- * The lock is deliberately kept in this small persistence module rather than
- * shared with the legacy history writers. New stores need to hold the lock
- * across a read/compare/write transaction, which `safeWriteJson` cannot do.
+ * The authoritative history writer and receipt verifier share this lock.
+ * Stores also hold it across read/compare/write transactions, which
+ * `safeWriteJson` cannot do.
  */
 export async function withFileLock<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
 	const absolutePath = path.resolve(filePath)
@@ -37,7 +37,11 @@ export async function withFileLock<T>(filePath: string, operation: () => Promise
  * The caller owns any desired lock; this function intentionally does not
  * acquire one so it can be used inside a read/compare/write transaction.
  */
-export async function atomicWriteText(filePath: string, contents: string): Promise<void> {
+export async function atomicWriteText(
+	filePath: string,
+	contents: string,
+	options: { requireAtomicReplace?: boolean } = {},
+): Promise<void> {
 	const absolutePath = path.resolve(filePath)
 	const directory = path.dirname(absolutePath)
 	await fs.mkdir(directory, { recursive: true })
@@ -59,6 +63,9 @@ export async function atomicWriteText(filePath: string, contents: string): Promi
 		try {
 			await fs.rename(temporaryPath, absolutePath)
 		} catch (error) {
+			// The sole authoritative transcript must retain its previous durable
+			// snapshot if the platform cannot replace it atomically.
+			if (options.requireAtomicReplace) throw error
 			// POSIX replaces an existing destination with rename. Windows can
 			// reject that operation, so make the narrow compatibility fallback
 			// only when the destination is present. The temp file is still fully
@@ -73,6 +80,10 @@ export async function atomicWriteText(filePath: string, contents: string): Promi
 	}
 }
 
-export async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
-	await atomicWriteText(filePath, `${JSON.stringify(value)}\n`)
+export async function atomicWriteJson(
+	filePath: string,
+	value: unknown,
+	options: { requireAtomicReplace?: boolean } = {},
+): Promise<void> {
+	await atomicWriteText(filePath, `${JSON.stringify(value)}\n`, options)
 }
