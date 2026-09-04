@@ -11,6 +11,7 @@ export class ToolReadDeniedError extends Error {}
  */
 export interface ToolResultMetadata {
 	status?: "success" | "error" | "denied" | "cancelled"
+	executionStatus?: "running" | "success" | "error" | "denied" | "cancelled"
 	exitCode?: number
 	timedOut?: boolean
 }

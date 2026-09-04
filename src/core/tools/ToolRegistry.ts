@@ -1,4 +1,5 @@
 import type OpenAI from "openai"
+import { randomUUID } from "crypto"
 
 import { customToolRegistry, formatNative } from "@alpha-code/core"
 import {
@@ -10,6 +11,7 @@ import {
 
 import type { ToolResponse, ToolUse } from "../../shared/tools"
 import type { ToolPolicySnapshot } from "../agent/ToolPolicy"
+import { captureVerificationContent, extractMutationPaths } from "../agent/VerificationScope"
 import { TOOL_ALIASES } from "../../shared/tools"
 import { normalizeMcpToolName, parseMcpToolName } from "../../utils/mcp-name"
 import { getNativeTools } from "../prompts/tools/native-tools"
@@ -423,10 +425,57 @@ function executeBaseTool<TName extends BuiltInToolName>(tool: BaseTool<TName>, n
 		const run = () => tool.handle(task, call as ToolUse<TName>, callbacks)
 		if (WORKSPACE_TOOLS.has(name) || name === "new_task") {
 			await runWorkspaceMutation(task, name === "new_task" ? "new_task_checkpoint" : name, async () => {
+				if (task.abort || (task.canMutateWorkspace && !task.canMutateWorkspace())) return
 				if (CHECKPOINT_TOOLS.has(name) || name === "new_task") {
 					await checkpointBeforeMutation(task)
 				}
-				await run()
+				const paths = task.taskKind === "primary" ? extractMutationPaths(call) : undefined
+				const before = paths ? await captureVerificationContent(task.cwd, paths) : undefined
+				const mutationOwner = task.providerRef.deref()
+				const reservation = callbacks.toolCallId ?? randomUUID()
+				if (before) {
+					if (!mutationOwner) throw new Error("Primary mutation ledger is unavailable")
+					await mutationOwner.reservePrimaryMutation(task, reservation)
+				}
+				let executionFailed = false
+				let executionError: unknown
+				try {
+					await run()
+				} catch (error) {
+					executionFailed = true
+					executionError = error
+				}
+				try {
+					if (before && paths) {
+						let after: Record<string, string>
+						try {
+							after = await captureVerificationContent(task.cwd, paths)
+						} catch (error) {
+							await task.providerRef
+								.deref()
+								?.recordPrimaryMutation(
+									task,
+									Object.fromEntries(Object.keys(before).map((file) => [file, "unavailable"])),
+									true,
+								)
+							throw error
+						}
+						const changes = Object.fromEntries(
+							Object.entries(after).filter(([file, version]) => before[file] !== version),
+						)
+						if (Object.keys(changes).length > 0)
+							await task.providerRef.deref()?.recordPrimaryMutation(task, changes)
+						await mutationOwner!.releasePrimaryMutation(task, reservation)
+					}
+				} catch (error) {
+					if (executionFailed)
+						throw new AggregateError(
+							[executionError, error],
+							"Tool execution and mutation observation failed",
+						)
+					throw error
+				}
+				if (executionFailed) throw executionError
 			})
 			return
 		}

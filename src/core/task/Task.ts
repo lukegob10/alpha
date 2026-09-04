@@ -137,6 +137,7 @@ import { TaskToolCatalogCache } from "./TaskToolCatalogCache"
 
 // core modules
 import { ToolRepetitionDetector } from "../tools/ToolRepetitionDetector"
+import type { ParentCommandVerificationEvidence } from "../agent/AgentControlStore"
 import { redactTaskPrivatePaths } from "../tools/taskPathPresentation"
 import { restoreTodoListForTask } from "../tools/UpdateTodoListTool"
 import { FileContextTracker } from "../context-tracking/FileContextTracker"
@@ -237,6 +238,8 @@ export interface CommandExecutionEvidence {
 	command?: string
 	/** Explicit applied change sets this command was requested to verify. */
 	verificationChangeSetIds?: string[]
+	cwd?: string
+	verificationVersions?: ParentCommandVerificationEvidence["verificationVersions"]
 }
 
 export interface CompletionGateDecision {
@@ -576,6 +579,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private readonly subagentResearchDeadlineAt?: number
 	private readonly childTasksRequiringVerification = new Set<string>()
 	private readonly commandExecutionEvidence = new Map<string, CommandExecutionEvidence>()
+	private pendingCommandVerification: Promise<void> = Promise.resolve()
+	private verificationRejectionKey?: string
+	private verificationRejectionCount = 0
 	private pendingSteerMessage?: {
 		text: string
 		images: string[]
@@ -4224,6 +4230,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.userMessageContentReady = true
 	}
 
+	public canMutateWorkspace(): boolean {
+		return !this.abort && !this.didComplete && !this.didEmitTaskCompleted
+	}
+
+	public hasToolResultForCall(callId: string): boolean {
+		const id = sanitizeToolUseId(callId)
+		return (
+			this.persistedToolResultIds.has(id) ||
+			this.userMessageContent.some(
+				(item) => item.type === "tool_result" && sanitizeToolUseId(item.tool_use_id) === id,
+			)
+		)
+	}
+
 	/** Stop after the current tool protocol boundary instead of spending another model turn. */
 	public suspendAfterCurrentTurn(reason: string): void {
 		this.suspendAfterCurrentTurnReason = reason
@@ -4284,12 +4304,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * converge here so lifecycle state, final usage, and telemetry cannot drift.
 	 */
 	public async finalizeTaskCompletion(stagedToolCallId?: string): Promise<boolean> {
+		const provider = this.providerRef?.deref()
+		return provider?.runWorkspaceMutation
+			? provider.runWorkspaceMutation(this, "finalize task completion", () =>
+					this.commitTaskCompletion(stagedToolCallId),
+				)
+			: this.commitTaskCompletion(stagedToolCallId)
+	}
+
+	private async commitTaskCompletion(stagedToolCallId?: string): Promise<boolean> {
 		if (this.didEmitTaskCompleted) return false
 
 		// Reserve the transition before awaiting the persistence barrier so concurrent
 		// acceptance paths cannot publish the same completion twice.
 		this.didEmitTaskCompleted = true
 		let preparedPrimaryLifecycle = false
+		let verificationRejection: string | undefined
 		try {
 			if (this.taskKind === "primary") {
 				const provider = this.providerRef.deref()
@@ -4301,6 +4331,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			if (!(await this.flushPendingToolResultsToHistory())) {
 				throw new Error("Unable to persist pending tool results before task completion.")
+			}
+			const finalDecision = await this.getCompletionGateDecision()
+			if (!finalDecision.allowed || this.abort) {
+				verificationRejection = finalDecision.message ?? "Task completion was interrupted."
+				throw new Error(verificationRejection)
 			}
 
 			// User guidance wins any race with the asynchronous persistence barriers
@@ -4343,6 +4378,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 			}
 			this.didEmitTaskCompleted = false
+			if (verificationRejection) {
+				await this.retractCompletionResult()
+				this.suspendAfterCurrentTurn(`Task remains incomplete and unverified. ${verificationRejection}`)
+				return false
+			}
 			throw error
 		}
 	}
@@ -4353,6 +4393,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * Completion always fails closed when the provider or its ledger is unavailable.
 	 */
 	public async getCompletionGateDecision(): Promise<CompletionGateDecision> {
+		if (this.hasActiveCommandExecutions()) {
+			const key = `running:${this.getCommandExecutionEvidence()
+				.filter((item) => item.status === "running")
+				.map((item) => item.executionId)
+				.join("|")}`
+			this.verificationRejectionCount =
+				key === this.verificationRejectionKey ? (this.verificationRejectionCount ?? 0) + 1 : 1
+			this.verificationRejectionKey = key
+			return {
+				allowed: false,
+				modelCanResolveRejection: this.verificationRejectionCount < 3,
+				message:
+					"Task remains unverified while a command or its mutation receipt is running. Wait for the actual terminal outcome before completion.",
+			}
+		}
 		const provider = this.providerRef?.deref()
 		if (!provider || typeof provider.getParentCompletionDecision !== "function") {
 			return {
@@ -4364,7 +4419,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		try {
+			await this.pendingCommandVerification
 			const decision = await provider.getParentCompletionDecision(this)
+			if (!decision.allowed && decision.blockingObligations?.length > 0) {
+				const key = decision.blockingObligations
+					.map((item) =>
+						JSON.stringify([item.id, item.contentVersion ?? item.appliedAt, item.verifiedChecks]),
+					)
+					.sort()
+					.join("|")
+				if (key !== this.verificationRejectionKey) {
+					this.verificationRejectionKey = key
+					this.verificationRejectionCount = 0
+				}
+				this.verificationRejectionCount = (this.verificationRejectionCount ?? 0) + 1
+				if (this.verificationRejectionCount >= 3) {
+					return {
+						...decision,
+						modelCanResolveRejection: false,
+						message: `Task remains incomplete and unverified. ${decision.message}`,
+					}
+				}
+			} else if (decision.allowed) {
+				this.verificationRejectionKey = undefined
+				this.verificationRejectionCount = 0
+			}
 			return { ...decision, modelCanResolveRejection: true }
 		} catch (error) {
 			return {
@@ -4416,10 +4495,43 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		})
 	}
 
-	public completeCommandExecution(toolCallId: string, details: { exitCode?: number; signalName?: string }): void {
+	public async admitCommandExecution(
+		toolCallId: string,
+		executionId: string,
+		command: string,
+		cwd: string,
+		verificationChangeSetIds?: readonly string[],
+	): Promise<void> {
+		const verificationVersions = await this.providerRef
+			?.deref()
+			?.captureCommandVerification?.(this, command, cwd, verificationChangeSetIds)
+		if (this.abort) throw new Error("Command admission was cancelled")
+		this.commandExecutionEvidence.delete(toolCallId)
+		if (this.commandExecutionEvidence.size >= 128) {
+			await this.pendingCommandVerification
+			for (const [id, evidence] of this.commandExecutionEvidence) {
+				if (evidence.status !== "running") this.commandExecutionEvidence.delete(id)
+				if (this.commandExecutionEvidence.size < 128) break
+			}
+		}
+		this.beginCommandExecution(toolCallId, executionId, command, verificationChangeSetIds)
+		const evidence = this.commandExecutionEvidence.get(toolCallId)!
+		evidence.cwd = cwd
+		evidence.verificationVersions = structuredClone(verificationVersions)
+	}
+
+	public completeCommandExecution(
+		toolCallId: string,
+		details: { exitCode?: number; signalName?: string },
+		executionId?: string,
+	): void {
 		const evidence = this.commandExecutionEvidence.get(toolCallId)
-		if (!evidence || evidence.status !== "running") return
-		evidence.status = details.exitCode === 0 && !details.signalName ? "succeeded" : "failed"
+		if (!evidence || evidence.status !== "running" || (executionId && evidence.executionId !== executionId)) return
+		evidence.status = this.abort
+			? "cancelled"
+			: details.exitCode === 0 && !details.signalName
+				? "succeeded"
+				: "failed"
 		evidence.exitCode = details.exitCode
 		evidence.signalName = details.signalName
 		evidence.completedAt = Date.now()
@@ -4429,9 +4541,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	public failCommandExecution(
 		toolCallId: string,
 		status: Exclude<CommandExecutionEvidenceStatus, "running" | "succeeded"> = "failed",
+		executionId?: string,
 	): void {
 		const evidence = this.commandExecutionEvidence.get(toolCallId)
-		if (!evidence || evidence.status !== "running") return
+		if (!evidence || evidence.status !== "running" || (executionId && evidence.executionId !== executionId)) return
 		evidence.status = status
 		evidence.completedAt = Date.now()
 		this.publishParentVerificationEvidence()
@@ -4439,23 +4552,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private publishParentVerificationEvidence(): void {
 		if (this.taskKind === "subagent") return
-		void this.providerRef
-			.deref()
-			?.recordParentVerificationEvidence(this)
-			.catch((error) => console.error(`[Task] Failed to persist parent verification evidence: ${String(error)}`))
+		const provider = this.providerRef.deref()
+		if (!provider) return
+		this.pendingCommandVerification = (this.pendingCommandVerification ?? Promise.resolve())
+			.catch(() => undefined)
+			.then(() => provider.recordParentVerificationEvidence(this))
+		void this.pendingCommandVerification.catch((error) =>
+			console.error(`[Task] Failed to persist parent verification evidence: ${String(error)}`),
+		)
 	}
 
 	public getCommandExecutionEvidence(): CommandExecutionEvidence[] {
-		return [...this.commandExecutionEvidence.values()].map((evidence) => ({
-			...evidence,
-			...(evidence.verificationChangeSetIds
-				? { verificationChangeSetIds: [...evidence.verificationChangeSetIds] }
-				: {}),
-		}))
+		return structuredClone([...this.commandExecutionEvidence.values()])
 	}
 
 	public hasActiveCommandExecutions(): boolean {
-		return [...this.commandExecutionEvidence.values()].some((evidence) => evidence.status === "running")
+		return [...(this.commandExecutionEvidence?.values() ?? [])].some((evidence) => evidence.status === "running")
 	}
 
 	/** A mode transition must not cross an unresolved approval boundary. */
@@ -6271,6 +6383,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Will stop any autonomously running promises.
 
 		this.abort = true
+		this.failActiveCommandExecutions("cancelled")
 		this.agentWaitAbortController?.abort(new Error("Task was aborted"))
 		// Stop provider output before joining the transcript queue. Otherwise a
 		// late terminal callback could enqueue an old snapshot after replacement.
@@ -6473,6 +6586,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		options: { deferTaskStartedUntilInitialUserContentPersisted?: boolean } = {},
 	): Promise<void> {
 		// Kicks off the checkpoints initialization process in the background.
+		if (userContent.length > 0) {
+			this.toolRepetitionDetector?.resetProgress()
+			this.verificationRejectionKey = undefined
+			this.verificationRejectionCount = 0
+		}
 		getCheckpointService(this)
 
 		let didEmitTaskStarted = false
@@ -10188,25 +10306,51 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public shouldStopRepeatedToolCall(name: string, args: unknown): boolean {
-		const block = {
-			type: "tool_use",
-			name,
-			params: {},
-			nativeArgs: args,
-			partial: false,
-		} as ToolUse
-		return !this.toolRepetitionDetector.check(block).allowExecution
+		void name
+		void args
+		return this.suspendAfterCurrentTurnReason !== undefined
 	}
 
-	public recordToolCallForStopping(
-		_name: string,
-		_args: unknown,
-		_status: "success" | "error" | "denied" | "cancelled",
+	public async recordToolCallForStopping(
+		name: string,
+		args: unknown,
+		status: "success" | "error" | "denied" | "cancelled",
 		_commandCategory?: string,
-	): void {
-		// Repetition is recorded before execution by shouldStopRepeatedToolCall.
-		// This post-execution hook keeps the scheduler contract stable for future
-		// outcome-aware stopping policies without counting a call twice.
+		result?: import("../agent/ToolScheduler").ToolSchedulerResult,
+	): Promise<void> {
+		await this.pendingCommandVerification
+		void result
+		const artifactId = args && typeof args === "object" && "artifact_id" in args ? args.artifact_id : undefined
+		const polling =
+			name === "wait_agent" ||
+			(name === "read_command_output" &&
+				typeof artifactId === "string" &&
+				[...this.commandExecutionEvidence.values()].some(
+					(item) => item.status === "running" && artifactId === `cmd-${item.executionId.split(":")[0]}.txt`,
+				))
+		const read = ["read_file", "list_files", "search_files", "codebase_search", "read_command_output"].includes(
+			name,
+		)
+		const state = this.providerRef?.deref()?.getVerificationProgressState?.(this)
+		const decision = this.toolRepetitionDetector.recordOutcome({
+			toolName: name,
+			args,
+			status,
+			kind: polling ? "poll" : read ? "read" : name === "execute_command" ? "check" : "other",
+			scope: this.cwd,
+			stateFingerprint: state?.stateFingerprint,
+			evidenceFingerprint: state?.evidenceFingerprint,
+		})
+		if (decision.action === "stop") {
+			this.suspendAfterCurrentTurn(
+				"Task remains incomplete: repeated tool outcomes produced no new state or verification evidence. Resume with a different approach or the missing validation.",
+			)
+		} else if (decision.action === "change-strategy") {
+			this.userMessageContent.push({
+				type: "text",
+				text: "Repeated tool outcomes produced no new state or verification evidence. Change strategy now: use existing evidence, resolve the missing validation, or report an explicit blocked/unverified outcome.",
+			})
+		}
 	}
 
 	// Getters

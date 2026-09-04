@@ -96,13 +96,18 @@ export interface ToolExecutionHost {
 	say: ToolExecutionSay
 	recordToolUsage: (name: string) => void
 	pushToolResultToUserContent: (result: Anthropic.ToolResultBlockParam) => boolean
+	/** Query existing persisted/staged receipts without mutating the result transaction. */
+	hasToolResultForCall?: (callId: string) => boolean
+	/** Pure gate; checked before read preparation and immediately before execution. */
 	shouldStopRepeatedToolCall?: (name: string, args: unknown) => boolean
+	/** Observe terminal effects in model order before admitting the next effect. */
 	recordToolCallForStopping?: (
 		name: string,
 		args: unknown,
 		status: ToolSchedulerResult["status"],
 		commandCategory?: "test" | "build" | "lint" | "typecheck",
-	) => void
+		result?: ToolSchedulerResult,
+	) => void | Promise<void>
 	/** Rich facade for existing ToolRegistry handlers. */
 	taskFacade?: Task
 }
@@ -136,7 +141,7 @@ export interface ToolSchedulerResult {
 	status: "success" | "error" | "denied" | "cancelled"
 	content: ToolResponse
 	/** Actual process outcome, when the tool reports one separately from handler completion. */
-	executionStatus?: ToolResultMetadata["status"]
+	executionStatus?: ToolResultMetadata["executionStatus"]
 	exitCode?: number
 	truncated?: boolean
 	timedOut?: boolean
@@ -414,6 +419,7 @@ export class ToolScheduler {
 	private supersededAskCount = 0
 	private parallelToolCount = 0
 	private outputTruncatedCount = 0
+	private readonly observedToolCallIds = new Set<string>()
 
 	constructor(private readonly options: ToolSchedulerOptions) {}
 
@@ -468,6 +474,35 @@ export class ToolScheduler {
 		try {
 			await this.options.beforeEffect?.(call)
 		} catch (error) {
+			this.effectFenceFailure ??= new ToolEffectFenceError(call, error)
+			this.batchController.abort(this.effectFenceFailure)
+			throw this.effectFenceFailure
+		}
+	}
+
+	private async observeToolResult(result: ToolSchedulerResult, call: AgentToolCall): Promise<void> {
+		if (!this.executionHost.recordToolCallForStopping) return
+		const callId = sanitizeToolUseId(result.callId)
+		try {
+			if (
+				this.observedToolCallIds.has(callId) ||
+				this.executionHost.hasToolResultForCall?.(callId) ||
+				this.executionHost.userMessageContent.some(
+					(item) => item.type === "tool_result" && sanitizeToolUseId(item.tool_use_id) === callId,
+				)
+			)
+				return
+			this.observedToolCallIds.add(callId)
+			await this.executionHost.recordToolCallForStopping(
+				result.name,
+				call.arguments,
+				result.status,
+				getVerificationCategory(call),
+				result,
+			)
+		} catch (error) {
+			// A failed evidence observation must preserve the already completed effect
+			// and close remaining receipts through the existing failed-batch boundary.
 			this.effectFenceFailure ??= new ToolEffectFenceError(call, error)
 			this.batchController.abort(this.effectFenceFailure)
 			throw this.effectFenceFailure
@@ -547,6 +582,7 @@ export class ToolScheduler {
 		this.supersededAskCount = 0
 		this.parallelToolCount = 0
 		this.outputTruncatedCount = 0
+		this.observedToolCallIds.clear()
 		this.effectFenceFailure = undefined
 		this.batchController = new AbortController()
 		this.executionSignal = this.options.signal
@@ -592,6 +628,19 @@ export class ToolScheduler {
 			}
 
 			const item = prepared[cursor]
+			if (
+				this.executionHost.shouldStopRepeatedToolCall?.(
+					item.call.name,
+					item.toolCall?.nativeArgs ?? item.call.arguments,
+				)
+			) {
+				results[item.index] = resultForError(
+					item.call,
+					`Stopping repeated ${item.call.name} call; use existing evidence or change the approach.`,
+				)
+				cursor += 1
+				continue
+			}
 			if (item.validationError || !item.descriptor || !item.toolCall) {
 				results[item.index] = resultForError(
 					item.call,
@@ -666,12 +715,23 @@ export class ToolScheduler {
 					this.fillCancelledResults(results, calls, cursor)
 					return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
 				}
+				try {
+					// All workers and finalizers are settled. Only this bounded read
+					// window can overshoot a stop; later windows have not been admitted.
+					for (const readItem of parallelItems) {
+						await this.observeToolResult(results[readItem.index]!, readItem.call)
+					}
+				} catch (error) {
+					if (!(error instanceof ToolEffectFenceError)) throw error
+					return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
+				}
 				continue
 			}
 
 			try {
 				results[item.index] = await this.executeCall(item)
 				results[item.index] = await this.finalizeRead(item, results[item.index]!)
+				if (!this.isCancelled()) await this.observeToolResult(results[item.index]!, item.call)
 			} catch (error) {
 				if (!(error instanceof ToolEffectFenceError)) throw error
 				return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
@@ -788,7 +848,7 @@ export class ToolScheduler {
 				const commandCategory = getVerificationCategory(calls[index])
 				const verificationStatus =
 					result.executionStatus ?? (result.status === "success" ? undefined : result.status)
-				if (commandCategory && verificationStatus) {
+				if (commandCategory && verificationStatus && verificationStatus !== "running") {
 					await this.options.onEvent?.({
 						type: "verification_result",
 						commandCategory,
@@ -860,12 +920,6 @@ export class ToolScheduler {
 					timedOut: result.timedOut,
 				})
 			}
-			this.executionHost.recordToolCallForStopping?.(
-				result.name,
-				calls[index].arguments,
-				result.status,
-				getVerificationCategory(calls[index]),
-			)
 		}
 		this.executionHost.userMessageContentReady = true
 
@@ -1268,7 +1322,7 @@ export class ToolScheduler {
 			name: prepared.call.name,
 			status: collector.getStatus(),
 			content: collector.getContent(),
-			executionStatus: collector.getMetadata().status,
+			executionStatus: collector.getMetadata().executionStatus ?? collector.getMetadata().status,
 			exitCode: collector.getMetadata().exitCode,
 			truncated: collector.isTruncated(),
 			timedOut: collector.getMetadata().timedOut,
@@ -1296,6 +1350,14 @@ export class ToolScheduler {
 			}
 
 			const result = results[index] ?? resultForError(calls[index], "Tool execution did not produce a result.")
+			try {
+				// Effects were observed before the next admission. This fallback
+				// handles only previously unobserved preflight/error receipts.
+				await this.observeToolResult(result, calls[index])
+			} catch (error) {
+				if (!(error instanceof ToolEffectFenceError)) throw error
+				return this.failedOutcome(results, calls, error, batchSize, parallelBatchCount, startedAt)
+			}
 			const parts = getToolResultParts(result.content)
 			const added = this.executionHost.pushToolResultToUserContent({
 				type: "tool_result",
@@ -1317,15 +1379,9 @@ export class ToolScheduler {
 				timedOut: result.timedOut,
 			})
 			const commandCategory = getVerificationCategory(calls[index])
-			this.executionHost.recordToolCallForStopping?.(
-				result.name,
-				calls[index].arguments,
-				result.status,
-				commandCategory,
-			)
 			const verificationStatus =
 				result.executionStatus ?? (result.status === "success" ? undefined : result.status)
-			if (commandCategory && verificationStatus) {
+			if (commandCategory && verificationStatus && verificationStatus !== "running") {
 				await this.options.onEvent?.({
 					type: "verification_result",
 					commandCategory,

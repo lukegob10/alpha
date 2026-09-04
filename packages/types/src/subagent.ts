@@ -124,6 +124,14 @@ export const parentVerificationEvidenceSchema = z.object({
 	signalName: z.string().optional(),
 	/** Credential-free applied paths covered by the explicit verification scope. */
 	matchedFiles: z.array(z.string().min(1)).min(1).optional(),
+	/** Host-captured revision and admitted verifier identity, absent in legacy records. */
+	contentVersion: z.number().int().positive().optional(),
+	contentFingerprint: z.string().min(1).optional(),
+	cwd: z.string().min(1).optional(),
+	scopePath: z.string().min(1).optional(),
+	commandDigest: z.string().min(1).optional(),
+	repositoryDigest: z.string().min(1).optional(),
+	kind: z.enum(["test", "types", "lint", "format"]).optional(),
 })
 export type ParentVerificationEvidence = z.infer<typeof parentVerificationEvidenceSchema>
 
@@ -137,7 +145,16 @@ export const parentVerificationObligationSchema = z
 		workerNickname: z.string().min(1),
 		groupId: z.string().min(1),
 		changeSetId: z.string().min(1),
-		changedFiles: z.array(z.string().min(1)).min(1),
+		origin: z.enum(["worker", "primary"]).optional(),
+		workspacePath: z.string().min(1).optional(),
+		contentVersion: z.number().int().positive().optional(),
+		contentFingerprint: z.string().min(1).optional(),
+		fileVersions: z.record(z.string()).optional(),
+		scopeUnresolved: z.boolean().optional(),
+		mutationReservations: z.array(z.string().min(1)).max(128).optional(),
+		verificationRequirements: z.record(z.array(z.enum(["test", "types", "lint"]))).optional(),
+		verifiedChecks: z.record(z.array(z.string())).optional(),
+		changedFiles: z.array(z.string().min(1)),
 		status: parentVerificationStatusSchema,
 		createdAt: z.number().int().nonnegative(),
 		updatedAt: z.number().int().nonnegative(),
@@ -148,8 +165,22 @@ export const parentVerificationObligationSchema = z
 		reason: z.string().min(1).optional(),
 	})
 	.superRefine((obligation, context) => {
+		if (
+			obligation.changedFiles.length === 0 &&
+			!(obligation.origin === "primary" && obligation.mutationReservations?.length)
+		) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				message: "Empty change sets require an unresolved primary mutation reservation",
+				path: ["changedFiles"],
+			})
+		}
 		const applied = ["pending", "satisfied", "failed"].includes(obligation.status)
-		if (applied && (obligation.review?.decision !== "approved" || obligation.appliedAt === undefined)) {
+		if (
+			applied &&
+			((obligation.origin !== "primary" && obligation.review?.decision !== "approved") ||
+				obligation.appliedAt === undefined)
+		) {
 			context.addIssue({
 				code: z.ZodIssueCode.custom,
 				message: "Applied verification obligations require an approved review and appliedAt",

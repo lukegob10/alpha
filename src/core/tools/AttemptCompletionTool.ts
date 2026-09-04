@@ -40,6 +40,14 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 		const { result, outcome } = params
 		const { handleError, pushToolResult, askFinishSubTaskApproval, toolCallId } = callbacks
 
+		if (task.taskKind === "primary" && outcome === "blocked" && result?.trim()) {
+			const decision = await task.getCompletionGateDecision()
+			const message = `Task remains incomplete and unverified. ${result}${decision.message ? `\n\nMissing evidence: ${decision.message}` : ""}`
+			task.suspendAfterCurrentTurn(message)
+			pushToolResult(formatResponse.toolError(message))
+			return
+		}
+
 		// Prevent attempt_completion if any tool failed in the current turn
 		if (task.didToolFailInCurrentTurn) {
 			const errorMsg = t("common:errors.attempt_completion_tool_failed")
@@ -303,6 +311,8 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 					)
 					return false
 				}
+				pushToolResult(formatResponse.toolError("Task completion was not verified and remains incomplete."))
+				return false
 			}
 			pushToolResult("")
 			return true

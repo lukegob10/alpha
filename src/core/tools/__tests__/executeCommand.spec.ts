@@ -470,7 +470,11 @@ describe("executeCommand", () => {
 
 				await vitest.advanceTimersByTimeAsync(900)
 				expect(backgroundProcess.abort).toHaveBeenCalledOnce()
-				expect(mockTask.failCommandExecution).toHaveBeenCalledWith("hard-timeout-call", "timed_out")
+				expect(mockTask.failCommandExecution).toHaveBeenCalledWith(
+					"hard-timeout-call",
+					"timed_out",
+					expect.stringMatching(/^managed-worker-hard-timeout:/),
+				)
 			} finally {
 				if (!backgroundProcess.isSettled) await backgroundProcess.abort()
 				vitest.useRealTimers()
@@ -520,10 +524,11 @@ describe("executeCommand", () => {
 				terminalShellIntegrationDisabled: false,
 			})
 
-			expect(mockTask.completeCommandExecution).toHaveBeenCalledWith("evidence-call", {
-				exitCode: 0,
-				signalName: undefined,
-			})
+			expect(mockTask.completeCommandExecution).toHaveBeenCalledWith(
+				"evidence-call",
+				{ exitCode: 0 },
+				expect.stringMatching(/^evidence-execution:[\da-f-]+$/),
+			)
 		})
 
 		it("should handle completed command with non-zero exit code", async () => {

@@ -24,6 +24,12 @@ import { getTaskDirectoryPath } from "../../utils/storage"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import { isToolAllowedForMode } from "./validateToolUse"
 import { redactTaskPrivatePaths } from "./taskPathPresentation"
+import {
+	captureWorkspaceMutationState,
+	compareWorkspaceMutationState,
+	type WorkspaceMutationState,
+} from "../agent/VerificationScope"
+import { classifyPlanCommand } from "../../shared/plan-command"
 
 class ShellIntegrationError extends Error {}
 
@@ -149,6 +155,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				toolCallId: commandEvidenceId,
 				command: canonicalCommand,
 				customCwd,
+				verificationChangeSetIds: verification?.change_set_ids,
 				terminalShellIntegrationDisabled,
 				commandExecutionTimeout,
 				agentTimeout,
@@ -192,6 +199,21 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			if (commandEvidenceId) task.failCommandExecution?.(commandEvidenceId)
 			await handleError("executing command", error as Error)
 			return
+		} finally {
+			const evidence = task.getCommandExecutionEvidence?.().find((item) => item.toolCallId === commandEvidenceId)
+			if (evidence) {
+				callbacks.setResultMetadata?.({
+					executionStatus: evidence.status === "running" ? "running" : undefined,
+					status:
+						evidence.status === "succeeded" || evidence.status === "running"
+							? "success"
+							: evidence.status === "denied" || evidence.status === "cancelled"
+								? evidence.status
+								: "error",
+					exitCode: evidence.exitCode,
+					timedOut: evidence.status === "timed_out",
+				})
+			}
 		}
 	}
 
@@ -206,6 +228,7 @@ export type ExecuteCommandOptions = {
 	toolCallId?: string
 	command: string
 	customCwd?: string
+	verificationChangeSetIds?: readonly string[]
 	terminalShellIntegrationDisabled?: boolean
 	commandExecutionTimeout?: number
 	agentTimeout?: number
@@ -218,6 +241,7 @@ export async function executeCommandInTerminal(
 		toolCallId,
 		command,
 		customCwd,
+		verificationChangeSetIds,
 		terminalShellIntegrationDisabled = true,
 		commandExecutionTimeout = 0,
 		agentTimeout = 0,
@@ -226,6 +250,9 @@ export async function executeCommandInTerminal(
 	// Convert milliseconds back to seconds for display purposes.
 	const commandExecutionTimeoutSeconds = commandExecutionTimeout / 1000
 	let workingDir: string
+	const physicalExecutionId = `${executionId}:${randomUUID()}`
+	let mutationBaseline: WorkspaceMutationState | undefined
+	let commandMutationCompletion = Promise.resolve()
 
 	const isManagedWorker = task.taskKind === "subagent" && task.subagentRole === "worker"
 	const executionMode = typeof task.getTaskMode === "function" ? await task.getTaskMode() : defaultModeSlug
@@ -445,12 +472,25 @@ export async function executeCommandInTerminal(
 			const status: CommandExecutionStatus = { executionId, status: "exited", exitCode: details.exitCode }
 			provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
 			exitDetails = details
-			if (toolCallId) {
-				task.completeCommandExecution?.(toolCallId, {
-					exitCode: details.exitCode,
-					signalName: details.signalName,
-				})
-			}
+			commandMutationCompletion = (async () => {
+				if (mutationBaseline) {
+					const after = await captureWorkspaceMutationState(task.cwd)
+					const changes = await compareWorkspaceMutationState(task.cwd, mutationBaseline, after)
+					if (changes.changedPaths.length > 0)
+						await task.providerRef.deref()?.recordPrimaryMutation(task, changes.files)
+					await task.providerRef.deref()?.releasePrimaryMutation(task, physicalExecutionId)
+				}
+				if (toolCallId) task.completeCommandExecution?.(toolCallId, details, physicalExecutionId)
+			})().catch(async () => {
+				await task.providerRef
+					.deref()
+					?.recordPrimaryMutation(task, { __unobserved_command_scope__: physicalExecutionId }, true)
+				if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+				task.suspendAfterCurrentTurn(
+					"Task remains incomplete and unverified because command mutations could not be fully observed.",
+				)
+			})
+			void commandMutationCompletion.catch(() => undefined)
 		},
 	}
 
@@ -474,6 +514,44 @@ export async function executeCommandInTerminal(
 		workingDir = terminal.getCurrentWorkingDirectory()
 	}
 
+	if (task.taskKind === "primary") {
+		try {
+			mutationBaseline = await captureWorkspaceMutationState(task.cwd)
+		} catch {
+			// Observation unavailability is not itself a mutation. Only the existing
+			// conservative inspection subset can run without a bounded receipt.
+			const classification = classifyPlanCommand(command)
+			if (!classification.allowed || classification.category !== "inspection") {
+				if (toolCallId) task.failCommandExecution?.(toolCallId)
+				return [
+					false,
+					"Command was not started because its workspace mutation scope cannot be observed within the bounds. Use explicit file tools or a supported inspection command.",
+				]
+			}
+		}
+	}
+	if (mutationBaseline) {
+		const owner = task.providerRef.deref()
+		if (!owner) throw new Error("Primary mutation ledger is unavailable")
+		await owner.reservePrimaryMutation(task, physicalExecutionId)
+	}
+	try {
+		if (toolCallId)
+			await task.admitCommandExecution?.(
+				toolCallId,
+				physicalExecutionId,
+				command,
+				workingDir,
+				verificationChangeSetIds,
+			)
+		if (taskWasCancelled()) {
+			if (mutationBaseline) await task.providerRef.deref()?.releasePrimaryMutation(task, physicalExecutionId)
+			return cancellationResult()
+		}
+	} catch (error) {
+		if (mutationBaseline) await task.providerRef.deref()?.releasePrimaryMutation(task, physicalExecutionId)
+		throw error
+	}
 	const process = terminal.runCommand(command, callbacks)
 	task.terminalProcess = process
 
@@ -509,7 +587,7 @@ export async function executeCommandInTerminal(
 				new Promise<void>((_, reject) => {
 					userTimeoutId = setTimeout(() => {
 						isUserTimedOut = true
-						if (toolCallId) task.failCommandExecution?.(toolCallId, "timed_out")
+						if (toolCallId) task.failCommandExecution?.(toolCallId, "timed_out", physicalExecutionId)
 						const status: CommandExecutionStatus = { executionId, status: "timeout" }
 						provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
 						if (runInBackground) {
@@ -575,6 +653,14 @@ export async function executeCommandInTerminal(
 	}
 
 	if (shellIntegrationError) {
+		if (mutationBaseline) {
+			const after = await captureWorkspaceMutationState(task.cwd)
+			const changes = await compareWorkspaceMutationState(task.cwd, mutationBaseline, after)
+			if (changes.changedPaths.length > 0)
+				await task.providerRef.deref()?.recordPrimaryMutation(task, changes.files)
+			await task.providerRef.deref()?.releasePrimaryMutation(task, physicalExecutionId)
+		}
+		if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
 		throw new ShellIntegrationError(shellIntegrationError)
 	}
 
@@ -590,6 +676,7 @@ export async function executeCommandInTerminal(
 	// condition where exitDetails is set (sync) before the async onCompleted finishes.
 	if (exitDetails && onCompletedPromise) {
 		await onCompletedPromise
+		await commandMutationCompletion
 	}
 
 	const displayOutput = result || latestCompressedOutput || ""

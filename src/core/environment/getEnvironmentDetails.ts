@@ -102,6 +102,11 @@ export async function captureEnvironmentDetails(
 		remainingFacts -= text.length
 		fields.push({ name, value: text, comparison })
 	}
+	const verification = await awaitEnvironmentRead(
+		Promise.resolve(provider?.getParentVerificationContext?.(cline)),
+		signal,
+	)
+	if (verification) add("Workspace Verification", verification)
 	const pacing = cline.getRequestPacingMetrics?.()
 	if (pacing && pacing.configuredIntervalSeconds > 0) {
 		add(

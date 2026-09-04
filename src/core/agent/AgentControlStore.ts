@@ -1,7 +1,7 @@
 import * as fs from "fs/promises"
 import * as fsSync from "fs"
 import * as path from "path"
-import { randomUUID } from "crypto"
+import { createHash, randomUUID } from "crypto"
 import { isDeepStrictEqual } from "util"
 import * as lockfile from "proper-lockfile"
 
@@ -708,6 +708,48 @@ export interface ParentCommandVerificationEvidence {
 	command?: string
 	/** Applied Worker change sets this command explicitly verifies. */
 	verificationChangeSetIds?: readonly string[]
+	cwd?: string
+	/** Captured by the host at physical process admission, never supplied by the model. */
+	verificationVersions?: Record<
+		string,
+		{
+			contentVersion: number
+			contentFingerprint: string
+			scopePath: string
+			commandDigest: string
+			repositoryDigest: string
+			kind?: "test" | "types" | "lint" | "format"
+			matchedFiles?: string[]
+		}
+	>
+}
+
+export interface RecordPrimaryMutationInput {
+	rootTaskId: string
+	parentTaskId: string
+	workspacePath: string
+	fileVersions: Record<string, string>
+	dependencyVersions?: Record<string, string>
+	scopeUnresolved?: boolean
+	verificationRequirements?: Record<string, Array<"test" | "types" | "lint">>
+	at?: number
+}
+
+function verificationFingerprint(files: Record<string, string>): string {
+	return createHash("sha256")
+		.update(JSON.stringify(Object.entries(files).sort(([a], [b]) => a.localeCompare(b))))
+		.digest("hex")
+}
+
+function hasVerificationCoverage(obligation: ParentVerificationObligation): boolean {
+	return (
+		obligation.contentVersion === undefined ||
+		obligation.changedFiles.every((file) => {
+			const required = obligation.verificationRequirements?.[file] ?? []
+			const checks = obligation.verifiedChecks?.[file] ?? []
+			return required.length ? required.every((kind) => checks.includes(kind)) : checks.length > 0
+		})
+	)
 }
 
 export interface RecordWorkerChangeSetResult {
@@ -1384,6 +1426,202 @@ export class AgentControlStore {
 		return decideParentCompletion(this.getVerificationObligations({ rootTaskId, parentTaskId }))
 	}
 
+	/** Actual primary file changes extend the existing ledger, independently of provider history. */
+	async reservePrimaryMutation(
+		parentTaskId: string,
+		rootTaskId: string,
+		workspacePath: string,
+		token: string,
+	): Promise<void> {
+		await this.transact((draft) => {
+			this.assertParentMutationOwned(draft, parentTaskId, rootTaskId, "reserve primary mutation")
+			const id = `primary-change:${parentTaskId}`
+			const at = this.now()
+			let obligation = draft.verificationObligations.find((item) => item.id === id)
+			if (!obligation) {
+				obligation = {
+					id,
+					changeSetId: id,
+					origin: "primary",
+					rootTaskId,
+					parentTaskId,
+					workspacePath,
+					workerTaskId: parentTaskId,
+					workerNickname: "Primary agent",
+					groupId: id,
+					changedFiles: [],
+					status: "pending",
+					createdAt: at,
+					updatedAt: at,
+					appliedAt: at,
+					fileVersions: {},
+					contentVersion: 1,
+					contentFingerprint: verificationFingerprint({}),
+				}
+				draft.verificationObligations.push(obligation)
+			}
+			obligation.mutationReservations = [...new Set([...(obligation.mutationReservations ?? []), token])]
+			obligation.status = "pending"
+			obligation.updatedAt = at
+			obligation.reason = "An admitted workspace mutation has not published its final content receipt."
+		})
+	}
+
+	/** Release only after the final content receipt is durable (including proven no-ops/denials). */
+	async releasePrimaryMutation(parentTaskId: string, rootTaskId: string, token: string): Promise<void> {
+		await this.transact((draft) => {
+			this.assertParentMutationOwned(draft, parentTaskId, rootTaskId, "settle primary mutation")
+			const obligation = draft.verificationObligations.find(
+				(item) => item.id === `primary-change:${parentTaskId}`,
+			)
+			if (!obligation?.mutationReservations?.includes(token)) return
+			obligation.mutationReservations = obligation.mutationReservations.filter((item) => item !== token)
+			if (obligation.mutationReservations.length > 0) return
+			if (obligation.changedFiles.length === 0 && !obligation.scopeUnresolved) {
+				draft.verificationObligations = draft.verificationObligations.filter((item) => item !== obligation)
+				return
+			}
+			obligation.status = obligation.scopeUnresolved
+				? "pending"
+				: obligation.verification?.status === "passed" && hasVerificationCoverage(obligation)
+					? "satisfied"
+					: obligation.verification?.status === "failed"
+						? "failed"
+						: "pending"
+			obligation.updatedAt = this.now()
+		})
+	}
+
+	async recordPrimaryMutation(input: RecordPrimaryMutationInput): Promise<ParentVerificationObligation | undefined> {
+		if (Object.keys(input.fileVersions).length === 0) return undefined
+		return this.transact((draft) => {
+			this.assertParentMutationOwned(draft, input.parentTaskId, input.rootTaskId, "record primary changes")
+			const id = `primary-change:${input.parentTaskId}`
+			const at = input.at ?? this.now()
+			let obligation = draft.verificationObligations.find((item) => item.id === id)
+			if (!obligation) {
+				obligation = {
+					id,
+					changeSetId: id,
+					origin: "primary",
+					rootTaskId: input.rootTaskId,
+					parentTaskId: input.parentTaskId,
+					workerTaskId: input.parentTaskId,
+					workerNickname: "Primary agent",
+					groupId: id,
+					changedFiles: [],
+					status: "pending",
+					createdAt: at,
+					updatedAt: at,
+					appliedAt: at,
+				}
+				draft.verificationObligations.push(obligation)
+			}
+			const requirements = input.verificationRequirements
+				? { ...obligation.verificationRequirements, ...input.verificationRequirements }
+				: obligation.verificationRequirements
+			this.updateVerificationContent(
+				obligation,
+				input.workspacePath,
+				{
+					...obligation.fileVersions,
+					...input.dependencyVersions,
+					...input.fileVersions,
+				},
+				at,
+				requirements,
+			)
+			obligation.changedFiles = [
+				...new Set([...obligation.changedFiles, ...Object.keys(input.fileVersions)]),
+			].sort()
+			if (input.scopeUnresolved) {
+				obligation.scopeUnresolved = true
+				obligation.status = "pending"
+				obligation.reason = "Mutation scope could not be fully observed; completion remains unverified."
+				delete obligation.verification
+				delete obligation.verifiedChecks
+			}
+			// Parent edits also invalidate previously verified applied Worker changes.
+			for (const worker of draft.verificationObligations) {
+				if (
+					worker === obligation ||
+					worker.parentTaskId !== input.parentTaskId ||
+					worker.appliedAt === undefined
+				)
+					continue
+				if (!worker.changedFiles.some((file) => Object.hasOwn(input.fileVersions, file))) continue
+				worker.status = "pending"
+				worker.contentVersion = (worker.contentVersion ?? 0) + 1
+				worker.appliedAt = at
+				worker.updatedAt = at
+				worker.reason = "Parent edits changed this applied change set; current validation is required."
+				delete worker.verification
+				delete worker.verifiedChecks
+			}
+			return clone(obligation)
+		})
+	}
+
+	/** Revalidate persisted content after reload, rewind, external edits, and before crediting a command. */
+	async reconcileVerificationContent(
+		parentTaskId: string,
+		changeSetId: string,
+		workspacePath: string,
+		fileVersions: Record<string, string>,
+		rootTaskId?: string,
+		verificationRequirements?: ParentVerificationObligation["verificationRequirements"],
+	): Promise<ParentVerificationObligation | undefined> {
+		return this.transact((draft) => {
+			this.assertParentMutationOwned(draft, parentTaskId, rootTaskId, "reconcile verification content")
+			const obligation = draft.verificationObligations.find(
+				(item) =>
+					item.parentTaskId === parentTaskId &&
+					item.changeSetId === changeSetId &&
+					(!rootTaskId || item.rootTaskId === rootTaskId),
+			)
+			if (!obligation || obligation.appliedAt === undefined) return undefined
+			if (obligation.changedFiles.some((file) => !Object.hasOwn(fileVersions, file))) {
+				throw new Error("Verification content snapshot does not cover every changed file")
+			}
+			this.updateVerificationContent(
+				obligation,
+				workspacePath,
+				fileVersions,
+				this.now(),
+				verificationRequirements,
+			)
+			return clone(obligation)
+		})
+	}
+
+	private updateVerificationContent(
+		obligation: ParentVerificationObligation,
+		workspacePath: string,
+		files: Record<string, string>,
+		at: number,
+		verificationRequirements = obligation.verificationRequirements,
+	): void {
+		if (Object.keys(files).length > 256) throw new Error("Verification change scope exceeds 256 files")
+		const fingerprint = verificationFingerprint(files)
+		if (
+			obligation.contentFingerprint === fingerprint &&
+			obligation.workspacePath === workspacePath &&
+			isDeepStrictEqual(obligation.verificationRequirements, verificationRequirements)
+		)
+			return
+		obligation.workspacePath = workspacePath
+		obligation.fileVersions = { ...files }
+		obligation.contentFingerprint = fingerprint
+		obligation.contentVersion = (obligation.contentVersion ?? 0) + 1
+		obligation.verificationRequirements = clone(verificationRequirements)
+		obligation.status = "pending"
+		obligation.appliedAt = at
+		obligation.updatedAt = at
+		obligation.reason = "Current workspace changes require a successful scoped verification command."
+		delete obligation.verification
+		delete obligation.verifiedChecks
+	}
+
 	hasUnappliedWorkerVerification(workerTaskId: string, rootTaskId?: string): boolean {
 		return this.getVerificationObligations({ rootTaskId, workerTaskId }).some(
 			(obligation) => obligation.status === "required",
@@ -1484,7 +1722,9 @@ export class AgentControlStore {
 				(item) =>
 					item.parentTaskId === parentTaskId &&
 					(!rootTaskId || item.rootTaskId === rootTaskId) &&
-					(item.status === "pending" || item.status === "failed") &&
+					(item.status === "pending" ||
+						item.status === "failed" ||
+						(item.status === "satisfied" && item.contentVersion !== undefined)) &&
 					item.appliedAt !== undefined,
 			)
 			const wouldChange = candidates.some((item) => {
@@ -1493,7 +1733,8 @@ export class AgentControlStore {
 				const status = selected.evidence.status === "succeeded" ? "passed" : "failed"
 				return (
 					item.verification?.executionId !== selected.evidence.executionId ||
-					item.verification.status !== status
+					item.verification.status !== status ||
+					!isDeepStrictEqual(item.verifiedChecks, selected.verifiedChecks)
 				)
 			})
 			if (!wouldChange) return []
@@ -1506,7 +1747,9 @@ export class AgentControlStore {
 				if (
 					obligation.parentTaskId !== parentTaskId ||
 					(rootTaskId && obligation.rootTaskId !== rootTaskId) ||
-					(obligation.status !== "pending" && obligation.status !== "failed")
+					(obligation.status !== "pending" &&
+						obligation.status !== "failed" &&
+						!(obligation.status === "satisfied" && obligation.contentVersion !== undefined))
 				)
 					continue
 
@@ -1515,10 +1758,13 @@ export class AgentControlStore {
 				const status = selected.evidence.status === "succeeded" ? "passed" : "failed"
 				if (
 					obligation.verification?.executionId === selected.evidence.executionId &&
-					obligation.verification.status === status
+					obligation.verification.status === status &&
+					isDeepStrictEqual(obligation.verifiedChecks, selected.verifiedChecks)
 				)
 					continue
 
+				const captured = selected.evidence.verificationVersions?.[obligation.changeSetId]
+				obligation.verifiedChecks = selected.verifiedChecks
 				obligation.verification = {
 					status,
 					toolCallId: selected.evidence.toolCallId,
@@ -1528,11 +1774,16 @@ export class AgentControlStore {
 					exitCode: selected.evidence.exitCode,
 					signalName: selected.evidence.signalName,
 					matchedFiles: selected.matchedFiles,
+					...captured,
+					cwd: selected.evidence.cwd,
 				}
-				obligation.status = status === "passed" ? "satisfied" : "failed"
+				const covered = hasVerificationCoverage(obligation)
+				obligation.status = status === "failed" ? "failed" : covered ? "satisfied" : "pending"
 				obligation.reason =
 					status === "passed"
-						? "An explicitly scoped parent verification command completed successfully after application."
+						? covered
+							? "Current scoped commands satisfy the required verification checks."
+							: "A current scoped check passed; additional required checks or changed files remain unverified."
 						: "The latest explicitly scoped parent verification command did not complete successfully."
 				obligation.updatedAt = selected.evidence.completedAt
 				changed.push(clone(obligation))
@@ -1641,16 +1892,73 @@ export class AgentControlStore {
 		| {
 				evidence: ParentCommandVerificationEvidence & { completedAt: number }
 				matchedFiles: string[]
+				verifiedChecks?: Record<string, string[]>
 		  }
 		| undefined {
 		if (obligation.appliedAt === undefined) return undefined
+		if (obligation.scopeUnresolved) return undefined
+		if (obligation.mutationReservations?.length) return undefined
 		const relevant = evidence.flatMap((item) => {
 			if (item.startedAt < obligation.appliedAt!) return []
 			if (!item.verificationChangeSetIds?.includes(obligation.changeSetId)) return []
-			return [{ evidence: item, matchedFiles: [...obligation.changedFiles] }]
+			if (item.completedAt < item.startedAt) return []
+			// Historical receipts retain their legacy reader. Newly admitted commands
+			// always carry cwd and must upgrade an obligation through the scoped verifier.
+			if (obligation.contentVersion === undefined && item.cwd) return []
+			if (obligation.contentVersion !== undefined) {
+				const captured = item.verificationVersions?.[obligation.changeSetId]
+				if (
+					!captured ||
+					!item.cwd ||
+					captured.contentVersion !== obligation.contentVersion ||
+					captured.contentFingerprint !== obligation.contentFingerprint
+				)
+					return []
+				if (!obligation.workspacePath || !path.isAbsolute(item.cwd) || !path.isAbsolute(captured.scopePath))
+					return []
+				const within = (root: string, candidate: string) => {
+					const relative = path.relative(root, candidate)
+					return !path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`)
+				}
+				const matchedFiles = captured.matchedFiles ?? obligation.changedFiles
+				if (
+					matchedFiles.length === 0 ||
+					!within(obligation.workspacePath, item.cwd) ||
+					!within(obligation.workspacePath, captured.scopePath) ||
+					!matchedFiles.every(
+						(file) =>
+							obligation.changedFiles.includes(file) &&
+							within(captured.scopePath, path.resolve(obligation.workspacePath!, file)),
+					)
+				)
+					return []
+				if (item.status === "succeeded" && (item.exitCode !== 0 || item.signalName)) return []
+				if (obligation.verification && item.completedAt < obligation.verification.completedAt) return []
+			}
+			return [
+				{
+					evidence: item,
+					matchedFiles: [
+						...(item.verificationVersions?.[obligation.changeSetId]?.matchedFiles ??
+							obligation.changedFiles),
+					],
+				},
+			]
 		})
 		if (relevant.length === 0) return undefined
-		return relevant.find((item) => item.evidence.status === "succeeded") ?? relevant.at(-1)
+		if (obligation.contentVersion === undefined)
+			return relevant.find((item) => item.evidence.status === "succeeded") ?? relevant.at(-1)
+		const verifiedChecks = clone(obligation.verifiedChecks ?? {})
+		for (const entry of relevant) {
+			const kind = entry.evidence.verificationVersions?.[obligation.changeSetId]?.kind ?? "check"
+			for (const file of entry.matchedFiles) {
+				const checks = new Set(verifiedChecks[file] ?? [])
+				if (entry.evidence.status === "succeeded") checks.add(kind)
+				else checks.delete(kind)
+				verifiedChecks[file] = [...checks].sort()
+			}
+		}
+		return { ...relevant.at(-1)!, verifiedChecks }
 	}
 
 	private assertVerificationIdentity(

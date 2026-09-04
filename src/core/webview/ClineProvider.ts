@@ -149,10 +149,16 @@ import { CustomModesManager } from "../config/CustomModesManager"
 import { Task, getSubagentAllowedToolNames } from "../task/Task"
 import { WorkspaceMutationGate } from "../task/WorkspaceMutationGate"
 import { AsyncSubagentRunManager } from "../agent/AsyncSubagentRunManager"
-import { AgentControlStore } from "../agent/AgentControlStore"
+import { AgentControlStore, type ParentCommandVerificationEvidence } from "../agent/AgentControlStore"
+import {
+	captureVerificationContent,
+	captureVerificationDependencies,
+	resolveCommandVerification,
+} from "../agent/VerificationScope"
+import { resolveVerificationRequirements } from "../agent/VerificationRequirements"
 import { reconcileSubagentGroupAfterReload } from "../agent/SubagentGroupRecovery"
 import { AgentLifecycleJournal, type AgentLifecycleEventInput } from "../agent/lifecycle"
-import type { ParentCompletionDecision } from "../agent/ParentVerification"
+import { formatParentVerificationContext, type ParentCompletionDecision } from "../agent/ParentVerification"
 import {
 	BoundedDelegationManager,
 	InternalTaskCancellationError,
@@ -6352,7 +6358,7 @@ export class ClineProvider
 			obligation.supersededByChangeSetId ??
 			obligation.updatedAt
 		await this.agentControlStore.appendEvent({
-			eventId: `parent-verification:${obligation.id}:${obligation.status}:${marker}`,
+			eventId: `parent-verification:${obligation.id}:${obligation.contentVersion ?? "legacy"}:${obligation.status}:${marker}`,
 			rootTaskId: root.rootTaskId,
 			sender: obligation.parentTaskId,
 			recipient: obligation.parentTaskId,
@@ -6462,6 +6468,163 @@ export class ClineProvider
 	}
 
 	/** Persist parent command outcomes and project resulting verification transitions. */
+	public async reservePrimaryMutation(parent: Task, token: string): Promise<void> {
+		if (parent.taskKind !== "primary") return
+		const root = await this.ensureAgentControlRoot(parent)
+		await this.agentControlStore.reservePrimaryMutation(parent.taskId, root.rootTaskId, parent.cwd, token)
+	}
+
+	public async releasePrimaryMutation(parent: Task, token: string): Promise<void> {
+		if (parent.taskKind !== "primary") return
+		const root = await this.ensureAgentControlRoot(parent)
+		await this.agentControlStore.releasePrimaryMutation(parent.taskId, root.rootTaskId, token)
+	}
+
+	public async recordPrimaryMutation(
+		parent: Task,
+		fileVersions: Record<string, string>,
+		scopeUnresolved = false,
+	): Promise<void> {
+		if (parent.taskKind !== "primary" || Object.keys(fileVersions).length === 0) return
+		const root = await this.ensureAgentControlRoot(parent)
+		const actualFiles = Object.keys(fileVersions)
+		const verificationRequirements = scopeUnresolved
+			? undefined
+			: await resolveVerificationRequirements(parent.cwd, actualFiles)
+		const dependencyVersions = scopeUnresolved
+			? undefined
+			: await captureVerificationDependencies(parent.cwd, actualFiles)
+		const obligation = await this.agentControlStore.recordPrimaryMutation({
+			rootTaskId: root.rootTaskId,
+			parentTaskId: parent.taskId,
+			workspacePath: parent.cwd,
+			fileVersions,
+			scopeUnresolved,
+			verificationRequirements,
+			dependencyVersions,
+		})
+		if (obligation) await this.publishParentVerificationTransition(parent, obligation)
+	}
+
+	public async getParentVerificationContext(parent: Task): Promise<string | undefined> {
+		await this.agentControlStoreReady
+		return formatParentVerificationContext(
+			this.agentControlStore.getVerificationObligations({ parentTaskId: parent.taskId }),
+		)
+	}
+
+	public getVerificationProgressState(parent: Task): { stateFingerprint: string; evidenceFingerprint?: string } {
+		const obligations = this.agentControlStore
+			.getVerificationObligations({ parentTaskId: parent.taskId })
+			.filter((item) => item.changedFiles.length > 0)
+		const evidenced = obligations.filter(
+			(item) =>
+				Object.values(item.verifiedChecks ?? {}).some((checks) => checks.length > 0) ||
+				(item.contentVersion === undefined && item.status === "satisfied"),
+		)
+		return {
+			stateFingerprint: JSON.stringify(obligations.map((item) => [item.changeSetId, item.contentFingerprint])),
+			evidenceFingerprint:
+				evidenced.length > 0
+					? JSON.stringify(
+							evidenced.map((item) => [
+								item.changeSetId,
+								item.contentFingerprint,
+								item.verifiedChecks ?? item.verification?.matchedFiles,
+							]),
+						)
+					: undefined,
+		}
+	}
+
+	private async reconcilePrimaryVerification(parent: Task): Promise<void> {
+		const rootTaskId = this.getAgentControlRootTaskId(parent)
+		for (const obligation of this.agentControlStore.getVerificationObligations({
+			parentTaskId: parent.taskId,
+			rootTaskId,
+		})) {
+			if (obligation.contentVersion === undefined || obligation.appliedAt === undefined) continue
+			if (obligation.scopeUnresolved || obligation.mutationReservations?.length) continue
+			const files = await captureVerificationContent(
+				parent.cwd,
+				Object.keys(
+					obligation.fileVersions ?? Object.fromEntries(obligation.changedFiles.map((file) => [file, ""])),
+				),
+			)
+			const requirements = await resolveVerificationRequirements(parent.cwd, obligation.changedFiles)
+			await this.agentControlStore.reconcileVerificationContent(
+				parent.taskId,
+				obligation.changeSetId,
+				parent.cwd,
+				files,
+				rootTaskId,
+				requirements,
+			)
+		}
+	}
+
+	/** Capture evidence only after approval, at the actual terminal admission boundary. */
+	public async captureCommandVerification(
+		parent: Task,
+		command: string,
+		cwd: string,
+		changeSetIds: readonly string[] = [],
+	): Promise<ParentCommandVerificationEvidence["verificationVersions"]> {
+		if (changeSetIds.length === 0) return undefined
+		const commandScope = await resolveCommandVerification({ workspaceRoot: parent.cwd, cwd, command })
+		const root = await this.ensureAgentControlRoot(parent)
+		await this.synchronizeParentVerificationObligations(parent)
+		const versions: NonNullable<ParentCommandVerificationEvidence["verificationVersions"]> = {}
+		for (const obligation of this.agentControlStore.getVerificationObligations({
+			parentTaskId: parent.taskId,
+			rootTaskId: root.rootTaskId,
+		})) {
+			if (!changeSetIds.includes(obligation.changeSetId) || obligation.appliedAt === undefined) continue
+			const matchedFiles = commandScope
+				? obligation.changedFiles.filter((file) => {
+						const relative = path.relative(commandScope.scopePath, path.resolve(parent.cwd, file))
+						return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+					})
+				: obligation.changedFiles
+			if (!matchedFiles.length) continue
+			const verifier = await resolveCommandVerification({
+				workspaceRoot: parent.cwd,
+				cwd,
+				command,
+				changedFiles: matchedFiles,
+			})
+			if (!verifier) continue
+			const files = await captureVerificationContent(parent.cwd, [
+				...new Set([
+					...obligation.changedFiles,
+					...Object.keys(obligation.fileVersions ?? {}),
+					...Object.keys(verifier.repositoryFiles),
+				]),
+			])
+			const requirements = await resolveVerificationRequirements(parent.cwd, obligation.changedFiles)
+			const current = await this.agentControlStore.reconcileVerificationContent(
+				parent.taskId,
+				obligation.changeSetId,
+				parent.cwd,
+				files,
+				root.rootTaskId,
+				requirements,
+			)
+			if (current?.contentVersion && current.contentFingerprint) {
+				versions[obligation.changeSetId] = {
+					contentVersion: current.contentVersion,
+					contentFingerprint: current.contentFingerprint,
+					scopePath: verifier.scopePath,
+					commandDigest: verifier.commandDigest,
+					repositoryDigest: verifier.repositoryDigest,
+					kind: verifier.kind,
+					matchedFiles,
+				}
+			}
+		}
+		return versions
+	}
+
 	public async recordParentVerificationEvidence(parent: Task): Promise<void> {
 		if (
 			parent.taskKind === "subagent" &&
@@ -6473,6 +6636,7 @@ export class ClineProvider
 		// ordinary roots and legacy blocking-handoff children have a valid owner.
 		const root = await this.ensureAgentControlRoot(parent)
 		await this.synchronizeParentVerificationObligations(parent)
+		await this.reconcilePrimaryVerification(parent)
 		const changed = await this.agentControlStore.recordParentVerificationEvidence(
 			parent.taskId,
 			parent.getCommandExecutionEvidence(),

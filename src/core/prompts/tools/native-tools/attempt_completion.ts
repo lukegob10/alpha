@@ -8,6 +8,7 @@ const PRIMARY_DESCRIPTION = `${BASE_DESCRIPTION}
 
 Parameters:
 - result: (required) The result of the task. Formulate this result in a way that is final and does not require further input from the user. Don't end your result with questions or offers for further assistance.
+- outcome: Use blocked to hand off an explicitly incomplete or unverified result when required validation cannot run. This does not mark the task completed.
 
 Example: Completing after updating CSS
 { "result": "I've updated the CSS to use flexbox layout for better responsiveness" }`
@@ -32,6 +33,11 @@ const primaryAttemptCompletion = {
 				result: {
 					type: "string",
 					description: RESULT_PARAMETER_DESCRIPTION,
+				},
+				outcome: {
+					type: "string",
+					enum: ["completed", "blocked"],
+					description: "Use blocked for an incomplete or unverified handoff with the missing evidence.",
 				},
 			},
 			required: ["result"],
