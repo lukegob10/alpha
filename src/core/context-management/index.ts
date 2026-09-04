@@ -219,6 +219,7 @@ async function truncateToTokenBudget(
 	maxContextTokens: number,
 	taskId: string,
 	metadata?: ApiHandlerCreateMessageMetadata,
+	forcedRecoveryTokens?: number,
 ): Promise<TruncationResult & { tokens: number; status: ContextRecoveryStatus }> {
 	const signal = metadata?.signal
 	signal?.throwIfAborted()
@@ -256,7 +257,13 @@ async function truncateToTokenBudget(
 	tagged.splice(insertIndex, 0, marker)
 	const tokens = await countContextTokens(getEffectiveApiHistory(tagged), apiHandler, systemPrompt, metadata)
 	signal?.throwIfAborted()
-	if (!Number.isFinite(tokens) || tokens > maxContextTokens) return { ...unchanged, tokens }
+	if (
+		!Number.isFinite(tokens) ||
+		tokens > maxContextTokens ||
+		(forcedRecoveryTokens !== undefined &&
+			(!Number.isFinite(forcedRecoveryTokens) || tokens >= forcedRecoveryTokens))
+	)
+		return { ...unchanged, tokens }
 	TelemetryService.instance.captureSlidingWindowTruncation(taskId)
 	return { messages: tagged, truncationId, messagesRemoved: hidden.size, tokens, status: "reduced" }
 }
@@ -421,8 +428,12 @@ export async function manageContext({
 		? await estimateTokenCount(lastMessageContent, apiHandler)
 		: await estimateTokenCount([{ type: "text", text: lastMessageContent as string }], apiHandler)
 
-	// Calculate total effective tokens (totalTokens never includes the last message)
-	const prevContextTokens = totalTokens + lastMessageTokens
+	// Provider rejection invalidates the historical estimate. Forced recovery
+	// must reduce active input using the same counter as the resulting candidate.
+	const prevContextTokens = forceCompaction
+		? await countContextTokens(getEffectiveApiHistory(messages), apiHandler, systemPrompt, metadata)
+		: totalTokens + lastMessageTokens
+	metadata?.signal?.throwIfAborted()
 
 	// Calculate available tokens for conversation history
 	// Truncate if we're within TOKEN_BUFFER_PERCENTAGE of the context window
@@ -468,10 +479,10 @@ export async function manageContext({
 				recentTailTokenBudget,
 			})
 			metadata?.signal?.throwIfAborted()
+			cost = result.cost
 			if (result.error) {
 				error = result.error
 				errorDetails = result.errorDetails
-				cost = result.cost
 				// A failed compaction must not leave the caller retrying the same
 				// oversized input.  Truncation is the bounded fallback; the
 				// context-window check remains useful for preserving the original
@@ -488,7 +499,11 @@ export async function manageContext({
 					minReductionPercent: DEFAULT_MIN_REDUCTION_PERCENT,
 				})
 
-				if (progress.status === "reduced" && progress.targetReached) {
+				if (
+					progress.status === "reduced" &&
+					progress.targetReached &&
+					(!forceCompaction || (Number.isFinite(prevContextTokens) && progress.reductionTokens > 0))
+				) {
 					return {
 						...result,
 						prevContextTokens,
@@ -515,12 +530,14 @@ export async function manageContext({
 			targetContextTokens,
 			taskId,
 			metadata,
+			forceCompaction ? prevContextTokens : undefined,
 		)
 		metadata?.signal?.throwIfAborted()
 		const newContextTokensAfterTruncation =
 			truncationResult.messagesRemoved > 0
 				? truncationResult.tokens
 				: await countContextTokens(getEffectiveApiHistory(messages), apiHandler, systemPrompt, metadata)
+		metadata?.signal?.throwIfAborted()
 
 		const fallbackProgress = evaluateCompactionProgress({
 			beforeTokens: prevContextTokens,

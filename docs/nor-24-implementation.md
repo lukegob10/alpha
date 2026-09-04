@@ -20,14 +20,16 @@ unfinished tool transaction and stale summary writeback after history changed.
 
 - The recent tail is a contiguous suffix of complete logical steps. A user prompt stays with its assistant response and
   terminal tool results; assistant continuation steps can begin after completed tool results. Multiple calls, separate
-  result messages, and consecutive assistant reasoning records cannot be cut apart.
+  result messages, and consecutive assistant reasoning records cannot be cut apart. A fresh `<user_message>` correction
+  carried in a tool-result record stays with the following response rather than becoming a cut point.
 - `recentTailTokenBudget` configures the module policy. Its default is the smaller of 16,384 tokens and 25% of the input
   target. `maxContextTokens` is the full input target, including system text, tools, summary and retained messages.
   The default target is the existing 75% of usable model context after the output reservation.
   This is a conservative policy default, not a benchmark-derived optimum.
 - Token estimates include opaque content blocks, top-level provider state, reasoning signatures and message role
-  envelopes. Bookkeeping timestamps, summary IDs and hiding tags are excluded. Provider-native wire overhead may differ;
-  the configured counters and provider error recovery remain the accounting contract.
+  envelopes, including standalone encrypted reasoning items without a role or content field in final provider input.
+  Bookkeeping timestamps, summary IDs and hiding tags are excluded. Provider-native wire overhead may differ; the
+  configured counters and provider error recovery remain the accounting contract.
 - Only the older active prefix is sent for summarization. Its tool blocks become text in the summarization request, with
   tool selection disabled. Retained records keep their roles, contents, IDs, ordering and arbitrary provider fields.
 - The new summary is inserted before the retained original tail. Summarized records remain in their original order and
@@ -45,8 +47,10 @@ unfinished tool transaction and stale summary writeback after history changed.
   Automatic recovery makes one bounded truncation attempt: preserve the first complete step and a recent complete
   suffix, hiding older complete steps until the input target is met. An impossible minimum returns `exhausted` without
   hiding or slicing the oversized newest step. Task recovery treats exhaustion as non-retryable.
-- Forced provider-overflow recovery bypasses local trigger estimates explicitly. It must produce a changed bounded
-  history or exhaustion, including when the local tokenizer underestimated a provider's rejected request.
+- Forced provider-overflow recovery bypasses local trigger estimates explicitly. It must strictly reduce active input
+  measured with the same counter before and after recovery, including system text and tool definitions. A longer summary
+  or truncation marker cannot qualify merely because the result fits the local target. Post-refresh environment input
+  must also preserve that decrease; otherwise recovery ends non-retryably.
 - Incomplete transactions are not compacted and do not receive synthetic successful results. Existing explicit legacy
   repair helpers retain their compatibility behavior. Cancellation propagates instead of falling through to truncation;
   candidates are constructed without mutating original histories.
@@ -56,6 +60,11 @@ unfinished tool transaction and stale summary writeback after history changed.
 - Successful Task compaction persists before resetting/refilling the environment baseline. The orchestrator owns the
   environment-refresh change to append a new user record and the history-rewrite invalidation change for rewind.
   Final Task accounting includes the refreshed record and rejects an over-budget request before provider admission.
+- The request retains the measured handler and provider configuration through prompt generation, history conversion,
+  final tool selection, step capture and dispatch. Transport retries reuse that capture without recounting. For an
+  automatically compacted step, the final converted messages and actual tool catalog are recounted against the target
+  immediately before capture, so catalog growth cannot admit a larger unmeasured request. Ordinary requests add no new
+  token-counting pass.
 
 ## Primary-source comparison
 
@@ -112,16 +121,19 @@ pnpm --dir src test core/condense/__tests__/recent-tail-benchmark.spec.ts --maxW
 
 Final local validation:
 
-- Combined focused regression run: **20 files / 541 tests passed** with `--maxWorkers=2`.
-- Condense and context-management suites: 10 files / 206 tests, including the new complete-tail, budget,
+- Combined focused regression run: **20 files / 552 tests passed** with `--maxWorkers=2`.
+- Condense and context-management suites: 10 files / 211 tests, including the new complete-tail, budget,
   repeated-condensation, reload, rewind, prior-summary truncation, cancellation, sole-step and forced-recovery cases.
 - Anthropic, Gemini, OpenAI, Responses and VS Code LM transform suites: 5 files / 106 tests passed.
 - Task safety tests reproduce scheduler-in-flight, stale-writeback, admission, cancellation and post-refresh budget
-  failures using controlled promises and actual scheduler integration: 5 files / 229 tests passed. These include
+  failures using controlled promises and actual scheduler integration: 5 files / 235 tests passed. These include
   `Task.spec`, `Task.persistence`, `Task.retry-wire`, `Task.external-mutation`, and `Task.compaction-safety`.
 - `pnpm --dir src lint` passed; `pnpm --dir src check-types` passed.
-- Independent Sol/Max review of the main modules found no remaining blockers after the sole-step, forced-low-estimate
-  and nonfinite-token fixes. The owner reviewed the delegated Task and test changes before the combined run.
+- Independent Sol/Max review prompted the sole-step, forced-low-estimate, nonfinite-token, mixed-instruction and provider
+  pinning fixes. Follow-up regressions cover single/separate result records carrying corrections, strict forced summary
+  and truncation reductions, post-refresh growth, final catalog growth, standalone encrypted reasoning, and provider
+  changes across prompt generation, history conversion, dispatch and transport retries. The owner reviewed the
+  delegated Task and test changes before the combined run.
 
 The orchestrator owns the combined exact VS Code 1.122.1 smoke gate and cross-ticket persisted scheduler/provider-wire
 tests. That host gate is not claimed as passed by this individual worktree. CLI, VS Code shim, versions, changelogs,

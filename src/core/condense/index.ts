@@ -220,12 +220,20 @@ const HISTORY_BOOKKEEPING_KEYS = new Set([
 	"truncationParent",
 ])
 
+/** Provider input can contain standalone encrypted reasoning without role/content. */
+export type CountableHistoryMessage =
+	| Anthropic.MessageParam
+	| { type: "reasoning"; encrypted_content: string; id?: string; summary?: unknown[] }
+
 /** Count provider content and opaque state, excluding local history bookkeeping. */
-export async function countHistoryTokens(messages: ApiMessage[], apiHandler: ApiHandler): Promise<number> {
+export async function countHistoryTokens(
+	messages: readonly CountableHistoryMessage[],
+	apiHandler: ApiHandler,
+): Promise<number> {
 	let tokens = 0
 	for (const message of messages) {
-		const content =
-			typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content
+		const rawContent = "content" in message ? message.content : []
+		const content = typeof rawContent === "string" ? [{ type: "text" as const, text: rawContent }] : rawContent
 		// The common tokenizer ignores nonstandard reasoning/signature blocks. Count
 		// their serialized form for budgeting only; the retained message is untouched.
 		const blocks = content.map((block) =>
@@ -260,20 +268,29 @@ export function getLogicalStepStarts(messages: ApiMessage[]): number[] {
 	}
 	const hasResult = (message: ApiMessage) =>
 		Array.isArray(message.content) && message.content.some((block) => getToolResultId(block) !== undefined)
+	const hasUserInstruction = (message: ApiMessage) =>
+		message.role === "user" &&
+		Array.isArray(message.content) &&
+		message.content.some((block) => block.type === "text" && block.text.includes("<user_message>"))
 	const starts = [0]
 	let crossingPairs = 0
+	let pendingUserInstruction = false
 	for (let index = 1; index < messages.length; index++) {
 		crossingPairs += boundaryDeltas[index]
 		const current = messages[index]
 		const previous = messages[index - 1]
+		pendingUserInstruction ||= hasUserInstruction(previous)
 		if (crossingPairs > 0 || hasResult(current)) continue
 		if (
 			current.isSummary ||
 			previous.isSummary ||
 			(current.role === "user" && previous.role === "assistant") ||
-			(current.role === "assistant" && hasResult(previous))
+			// A correction can accompany any of several result records. Keep it
+			// through transaction completion and the assistant response it guides.
+			(current.role === "assistant" && hasResult(previous) && !pendingUserInstruction)
 		)
 			starts.push(index)
+		if (current.role === "assistant") pendingUserInstruction = false
 	}
 	return starts
 }
@@ -314,7 +331,7 @@ export async function selectRecentTail(
 }
 
 export async function countContextTokens(
-	messages: ApiMessage[],
+	messages: readonly CountableHistoryMessage[],
 	apiHandler: ApiHandler,
 	systemPrompt: string,
 	metadata?: ApiHandlerCreateMessageMetadata,

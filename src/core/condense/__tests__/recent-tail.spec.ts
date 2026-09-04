@@ -8,6 +8,7 @@ import {
 	cleanupAfterTruncation,
 	countContextTokens,
 	countHistoryTokens,
+	type CountableHistoryMessage,
 	getEffectiveApiHistory,
 	getLogicalStepStarts,
 	hasToolCallResultIntegrity,
@@ -130,6 +131,21 @@ describe("exact recent working set", () => {
 		expect(tail).toMatchObject({ startIndex: messages.length, tokens: 0, newestStepTooLarge: true })
 	})
 
+	it("counts the full envelope of standalone reasoning in final provider input", async () => {
+		const provider = new SummaryProvider()
+		const reasoning = {
+			type: "reasoning" as const,
+			id: "reasoning-1",
+			encrypted_content: "opaque-provider-state".repeat(100),
+			summary: [{ type: "summary_text", text: "A concise reasoning summary" }],
+		}
+		const messages: CountableHistoryMessage[] = [reasoning]
+		expect(await countHistoryTokens(messages, provider)).toBe(
+			await provider.countTokens([{ type: "text", text: JSON.stringify(reasoning) }]),
+		)
+		expect(messages[0]).toBe(reasoning)
+	})
+
 	it("uses the same complete-step boundary for nonadjacent results and reasoning records", () => {
 		const messages = history()
 		messages.splice(4, 0, {
@@ -142,6 +158,53 @@ describe("exact recent working set", () => {
 		expect(getLogicalStepStarts(messages)).toEqual([0, 2])
 		expect(hasToolCallResultIntegrity(messages)).toBe(true)
 	})
+
+	it.each([false, true])(
+		"keeps a result-carried correction with its response (separate results=%s)",
+		async (separateResults) => {
+			const messages: ApiMessage[] = [
+				{ role: "user", content: "Investigate the service.", ts: 1 },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "read-a", name: "read_file", input: { path: "a.ts" } }],
+					ts: 2,
+				},
+				{
+					role: "user",
+					content: [
+						{ type: "tool_result", tool_use_id: "read-a", content: "Large earlier result. ".repeat(1000) },
+						{ type: "text", text: "<user_message>Do not alter API X.</user_message>" },
+					],
+					ts: 3,
+				},
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "read-b", name: "read_file", input: { path: "b.ts" } }],
+					ts: 4,
+				},
+				{ role: "user", content: [{ type: "tool_result", tool_use_id: "read-b", content: "API X" }], ts: 5 },
+			]
+			if (separateResults) {
+				messages[1].content = [
+					...(messages[1].content as Anthropic.Messages.ContentBlockParam[]),
+					{ type: "tool_use", id: "read-a2", name: "read_file", input: { path: "a2.ts" } },
+				]
+				messages.splice(3, 0, {
+					role: "user",
+					content: [{ type: "tool_result", tool_use_id: "read-a2", content: "Other result" }],
+					ts: 3.5,
+				})
+			}
+			const provider = new SummaryProvider()
+			const recentTailTokenBudget = await countHistoryTokens(messages.slice(-2), provider)
+			expect(getLogicalStepStarts(messages)).toEqual([0])
+			const result = await summarizeConversation({ ...options(messages, provider), recentTailTokenBudget })
+			expect(result.tailFallback).toBe("newest_step_exceeds_budget")
+			expect(result.retainedTailMessages).toBe(0)
+			expect(JSON.stringify(provider.requests[0])).toContain("<user_message>Do not alter API X.</user_message>")
+			expect(hasToolCallResultIntegrity(getEffectiveApiHistory(result.messages))).toBe(true)
+		},
+	)
 
 	it("summarizes an oversized newest transaction as a whole with an explicit fallback notice", async () => {
 		const messages = history()
@@ -235,6 +298,69 @@ describe("budgeted truncation and cancellation", () => {
 		expect(result.messages).not.toBe(messages)
 		expect(provider.requests).toHaveLength(1)
 		expect(getEffectiveApiHistory(result.messages).slice(1)).toEqual(messages.slice(2))
+		expect(result.newContextTokens).toBeLessThan(
+			await countContextTokens(messages, provider, options(messages).systemPrompt),
+		)
+	})
+
+	it("rejects a larger summary during forced recovery even when both inputs fit the local target", async () => {
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "old", ts: 1 },
+			{ role: "assistant", content: "ok", ts: 2 },
+			{ role: "user", content: "new", ts: 3 },
+		]
+		const provider = new SummaryProvider()
+		vi.spyOn(provider, "createMessage").mockImplementation(async function* () {
+			yield { type: "text", text: "A much longer summary. ".repeat(200) }
+		})
+		const result = await manageContext({
+			...options(messages, provider),
+			totalTokens: 10,
+			contextWindow: 20000,
+			maxTokens: 1000,
+			autoCondenseContext: true,
+			autoCondenseContextPercent: 75,
+			profileThresholds: {},
+			currentProfileId: "test",
+			forceCompaction: true,
+		})
+		expect(provider.createMessage).toHaveBeenCalledTimes(1)
+		expect(result.status).toBe("exhausted")
+		expect(result.messages).toBe(messages)
+		expect(result.condenseId).toBeUndefined()
+		expect(result.truncationId).toBeUndefined()
+		expect(result.newContextTokensAfterTruncation).toBe(
+			await countContextTokens(messages, provider, options(messages).systemPrompt),
+		)
+	})
+
+	it("rejects forced truncation when its marker costs more tokens than the removed steps", async () => {
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "initial", ts: 1 },
+			{ role: "assistant", content: "ok", ts: 2 },
+			{ role: "user", content: "old", ts: 3 },
+			{ role: "assistant", content: "ok", ts: 4 },
+			{ role: "user", content: "new", ts: 5 },
+		]
+		const provider = new SummaryProvider()
+		const result = await manageContext({
+			...options(messages, provider),
+			totalTokens: 10,
+			contextWindow: 20000,
+			maxTokens: 1000,
+			autoCondenseContext: false,
+			autoCondenseContextPercent: 75,
+			profileThresholds: {},
+			currentProfileId: "test",
+			forceCompaction: true,
+		})
+		expect(result.status).toBe("exhausted")
+		expect(result.messages).toBe(messages)
+		expect(result.messagesRemoved).toBe(0)
+		expect(result.truncationId).toBeUndefined()
+		expect(result.newContextTokensAfterTruncation).toBe(
+			await countContextTokens(messages, provider, options(messages).systemPrompt),
+		)
 	})
 
 	it("truncates after a prior summary without charging its hidden original history", async () => {

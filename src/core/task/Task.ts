@@ -202,6 +202,7 @@ import {
 	getMessagesSinceLastSummary,
 	summarizeConversation,
 	getEffectiveApiHistory,
+	type CountableHistoryMessage,
 } from "../condense"
 import { MessageQueueService } from "../message-queue/MessageQueueService"
 import { AutoApprovalHandler, checkAutoApprovalWithInheritedPolicy } from "../auto-approval"
@@ -276,6 +277,7 @@ const MAX_CONTEXT_WINDOW_RETRIES = 3 // Maximum retries for context window error
 const MAX_AUTOMATIC_MISTAKE_RECOVERIES = 1
 
 type TaskRequestState = Awaited<ReturnType<ClineProvider["getState"]>>
+type CapturedTaskProvider = { apiHandler: ApiHandler; apiConfiguration: ProviderSettings }
 
 /** Provider-neutral result returned by one Task model/tool step. */
 type TaskStepStatus = "completed" | "aborted" | "failed" | "incomplete" | "exhausted" | "awaiting-user"
@@ -3225,6 +3227,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		modelInfo: ModelInfo,
 		surface: TaskToolSurface | undefined,
 		retainedStep?: CurrentAgentStep,
+		capturedProvider?: CapturedTaskProvider,
 	): CurrentAgentStep {
 		if (!surface) {
 			throw new Error("A unified tool surface is required to capture an agent step.")
@@ -3246,6 +3249,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			return this.currentAgentStep
 		}
 
+		const apiHandler = capturedProvider?.apiHandler ?? this.api
+		const apiConfiguration = capturedProvider?.apiConfiguration ?? this.apiConfiguration
 		this.agentTurnStep += 1
 		const {
 			signal: _requestSignal,
@@ -3264,7 +3269,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		})
 		// FakeAI is an in-process executable, not serializable provider configuration.
 		// Retain it through the runtime handler without copying callbacks into diagnostics.
-		const { fakeAi: _fakeAi, ...diagnosticProviderOptions } = this.apiConfiguration ?? {}
+		const { fakeAi: _fakeAi, ...diagnosticProviderOptions } = apiConfiguration ?? {}
 		const snapshot = this.agentStepContextBuilder.build(
 			{
 				kind: "agent",
@@ -3277,14 +3282,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				},
 				mode: { slug: mode },
 				provider: {
-					apiProvider: this.apiConfiguration.apiProvider,
+					apiProvider: apiConfiguration.apiProvider,
 					apiProtocol: getApiProtocol(
-						this.apiConfiguration.apiProvider && !isRetiredProvider(this.apiConfiguration.apiProvider)
-							? this.apiConfiguration.apiProvider
+						apiConfiguration.apiProvider && !isRetiredProvider(apiConfiguration.apiProvider)
+							? apiConfiguration.apiProvider
 							: undefined,
-						this.api.getModel().id,
+						apiHandler.getModel().id,
 					),
-					modelId: this.api.getModel().id,
+					modelId: apiHandler.getModel().id,
 					modelInfo,
 					options: diagnosticProviderOptions,
 				},
@@ -3313,9 +3318,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				budget: {
 					contextWindow: modelInfo.contextWindow,
 					maxOutputTokens: getModelMaxOutputTokens({
-						modelId: this.api.getModel().id,
+						modelId: apiHandler.getModel().id,
 						model: modelInfo,
-						settings: this.apiConfiguration,
+						settings: apiConfiguration,
 					}),
 					compaction: { action: "none", attempted: false },
 				},
@@ -3329,7 +3334,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					},
 				},
 			},
-			{ handler: this.api },
+			{ handler: apiHandler },
 		)
 
 		this.currentAgentStep?.releaseRequest?.()
@@ -5220,14 +5225,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		systemPrompt: string,
 		metadata: ApiHandlerCreateMessageMetadata,
 		targetContextTokens: number | undefined,
+		messages: readonly CountableHistoryMessage[] = getEffectiveApiHistory(this.apiConversationHistory),
 	): Promise<number> {
 		this.throwIfStepInterrupted(metadata.signal)
-		const tokens = await countContextTokens(
-			getEffectiveApiHistory(this.apiConversationHistory),
-			apiHandler,
-			systemPrompt,
-			metadata,
-		)
+		const tokens = await countContextTokens(messages, apiHandler, systemPrompt, metadata)
 		this.throwIfStepInterrupted(metadata.signal)
 		if (!Number.isFinite(tokens) || (targetContextTokens !== undefined && tokens > targetContextTokens)) {
 			throw new ContextRecoveryExhaustedError()
@@ -5284,7 +5285,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Get condensing configuration
 		const state = await this.providerRef.deref()?.getState()
 		this.throwIfStepInterrupted(signal)
-		const systemPrompt = await this.getSystemPrompt(state)
+		const systemPrompt = await this.getSystemPrompt(state, { apiHandler, apiConfiguration })
 		const customCondensingPrompt = state?.customSupportPrompts?.CONDENSE
 		const mode = await this.getTaskMode()
 
@@ -8808,7 +8809,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return { effectiveText, sources }
 	}
 
-	private async getSystemPrompt(stateOverride?: TaskRequestState): Promise<string> {
+	private async getSystemPrompt(
+		stateOverride?: TaskRequestState,
+		capturedProvider?: CapturedTaskProvider,
+	): Promise<string> {
+		const apiHandler = capturedProvider?.apiHandler ?? this.api
+		const apiConfiguration = capturedProvider?.apiConfiguration ?? this.apiConfiguration
 		const state = stateOverride ?? (await this.providerRef.deref()?.getState())
 		const { mcpEnabled } = state ?? {}
 		const isSubagent = this.taskKind === "subagent"
@@ -8831,7 +8837,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const { customModes, customModePrompts, customInstructions, experiments, language, enableSubfolderRules } =
 			state ?? {}
 		const mode = await this.getTaskMode()
-		const apiConfiguration = this.apiConfiguration
 		const subagentAncestry = this.subagentContextManifest?.orchestration?.ancestry
 		const effectiveSubagentDelegationPolicy = resolveSubagentDelegationPolicy({
 			settingsPolicy: state?.subagentDelegationPolicy,
@@ -8859,7 +8864,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				throw new Error("Provider not available")
 			}
 
-			const modelInfo = this.api.getModel().info
+			const modelInfo = apiHandler.getModel().info
 
 			return SYSTEM_PROMPT(
 				provider.context,
@@ -8893,7 +8898,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					subagentDelegationPolicy: effectiveSubagentDelegationPolicy,
 				},
 				undefined, // todoList
-				this.api.getModel().id,
+				apiHandler.getModel().id,
 				isSubagent ? undefined : provider.getSkillsManager(),
 			)
 		})()
@@ -8985,7 +8990,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		try {
-			const systemPrompt = await this.getSystemPrompt(state)
+			const systemPrompt = await this.getSystemPrompt(state, { apiHandler, apiConfiguration })
 			// Force aggressive truncation by keeping only 75% of the conversation history
 			const truncateResult = await manageContext({
 				messages: this.apiConversationHistory,
@@ -9019,6 +9024,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					metadata,
 					truncateResult.targetContextTokens,
 				)
+				if (tokens >= truncateResult.prevContextTokens) {
+					throw new ContextRecoveryExhaustedError()
+				}
 				truncateResult.newContextTokens = tokens
 				truncateResult.newContextTokensAfterTruncation = tokens
 			}
@@ -9263,6 +9271,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		} = state ?? {}
 		const mode = retainedStep?.snapshot.context.mode.slug ?? (await this.getTaskMode())
 		const apiConfiguration = this.apiConfiguration
+		// Preflight can await compaction or approval while the selected profile changes.
+		// Dispatch and capture the same handler whose capabilities and budget we measured.
+		const requestHandler = retainedStep ? retainedStep.snapshot.runtime.getHandler() : this.api
+		if (!requestHandler) {
+			throw new Error("A captured provider handler is required to retry an agent step.")
+		}
 
 		// Get condensing configuration for automatic triggers.
 		const customCondensingPrompt = state?.customSupportPrompts?.CONDENSE
@@ -9271,14 +9285,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await this.maybeWaitForProviderRateLimit(retryAttempt, state, stepInterruptionSignal)
 		}
 		this.throwIfStepInterrupted(stepInterruptionSignal)
-		const systemPrompt = retainedRequest?.systemPrompt ?? (await this.getSystemPrompt(state))
+		const systemPrompt =
+			retainedRequest?.systemPrompt ??
+			(await this.getSystemPrompt(state, { apiHandler: requestHandler, apiConfiguration }))
 		this.throwIfStepInterrupted(stepInterruptionSignal)
 		const { contextTokens } = this.getTokenUsage()
+		let compactedContextTarget: number | undefined
 
 		// A retained transport attempt must not compact or reinterpret a different
 		// live transcript under the old logical identity. Recovery captures a new step.
 		if (contextTokens && !retainedStep) {
-			const apiHandler = this.api
+			const apiHandler = requestHandler
 			const modelInfo = apiHandler.getModel().info
 
 			const maxTokens = getModelMaxOutputTokens({
@@ -9420,6 +9437,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					)
 					truncateResult.newContextTokens = tokens
 					truncateResult.newContextTokensAfterTruncation = tokens
+					compactedContextTarget = truncateResult.targetContextTokens
 				}
 				if (truncateResult.error) {
 					await this.say("condense_context_error", truncateResult.error)
@@ -9486,8 +9504,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const messagesSinceLastSummary = getMessagesSinceLastSummary(effectiveHistory)
 			// For API only: merge consecutive user messages without mutating stored history.
 			const mergedForApi = mergeConsecutiveApiMessages(messagesSinceLastSummary, { roles: ["user"] })
-			const messagesWithoutImages = maybeRemoveImageBlocks(mergedForApi, this.api)
-			cleanConversationHistory = this.buildCleanConversationHistory(messagesWithoutImages as ApiMessage[])
+			const messagesWithoutImages = maybeRemoveImageBlocks(mergedForApi, requestHandler)
+			cleanConversationHistory = this.buildCleanConversationHistory(messagesWithoutImages as ApiMessage[], {
+				apiHandler: requestHandler,
+				apiConfiguration,
+			})
 		}
 
 		// Check auto-approval limits
@@ -9503,7 +9524,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		// Whether we include tools is determined by whether we have any tools to send.
-		const modelInfo = this.api.getModel().info
+		const modelInfo = requestHandler.getModel().info
 
 		// Build complete tools array: native tools + dynamic MCP tools
 		// When includeAllToolsWithRestrictions is true, returns all tools but provides
@@ -9571,10 +9592,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		const shouldIncludeTools = allTools.length > 0
 		this.throwIfStepInterrupted(stepInterruptionSignal)
-		const requestHandler = retainedStep ? retainedStep.snapshot.runtime.getHandler() : this.api
-		if (!requestHandler) {
-			throw new Error("A captured provider handler is required to retry an agent step.")
-		}
 
 		const metadata: ApiHandlerCreateMessageMetadata = {
 			mode: mode,
@@ -9591,6 +9608,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						...(allowedFunctionNames ? { allowedFunctionNames } : {}),
 					}
 				: {}),
+		}
+
+		if (compactedContextTarget !== undefined) {
+			// Final schemas and provider conversion can differ from the compaction input.
+			// Gate the actual new request before capturing it or admitting the provider.
+			await this.measureCompactedContext(
+				requestHandler,
+				systemPrompt,
+				{ ...metadata, signal: stepInterruptionSignal },
+				compactedContextTarget,
+				cleanConversationHistory,
+			)
 		}
 
 		// Create an AbortController to allow cancelling the request mid-stream
@@ -9626,6 +9655,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			modelInfo,
 			taskToolSurface,
 			retainedStep,
+			{ apiHandler: requestHandler, apiConfiguration },
 		)
 		const request = retainedRequest ?? step.getRequest()
 		const requestMetadata: ApiHandlerCreateMessageMetadata = { ...request.metadata, ...attemptMetadata }
@@ -9916,9 +9946,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private buildCleanConversationHistory(
 		messages: ApiMessage[],
+		capturedProvider?: CapturedTaskProvider,
 	): Array<
 		Anthropic.Messages.MessageParam | { type: "reasoning"; encrypted_content: string; id?: string; summary?: any[] }
 	> {
+		const apiHandler = capturedProvider?.apiHandler ?? this.api
+		const apiConfiguration = capturedProvider?.apiConfiguration ?? this.apiConfiguration
 		type ReasoningItemForRequest = {
 			type: "reasoning"
 			encrypted_content: string
@@ -9933,7 +9966,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				.vscodeLmStatefulMarker
 			const vscodeLmMetadata =
 				msg.role === "assistant" &&
-				this.apiConfiguration.apiProvider === "vscode-lm" &&
+				apiConfiguration.apiProvider === "vscode-lm" &&
 				typeof persistedVscodeLmMarker === "string"
 					? { vscodeLmStatefulMarker: persistedVscodeLmMarker }
 					: {}
@@ -10029,7 +10062,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// Check if the model's preserveReasoning flag is set
 					// If true, include the reasoning block in API requests
 					// If false/undefined, strip it out (stored for history only, not sent back to API)
-					const shouldPreserveForApi = this.api.getModel().info.preserveReasoning === true
+					const shouldPreserveForApi = apiHandler.getModel().info.preserveReasoning === true
 					let assistantContent: Anthropic.Messages.MessageParam["content"]
 
 					if (shouldPreserveForApi) {
