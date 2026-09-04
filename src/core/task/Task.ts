@@ -3271,6 +3271,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			messages: [...cleanConversationHistory],
 			metadata: { ...capturedMetadata, taskId: this.taskId, mode, requestId, attemptId },
 		})
+		// FakeAI is an in-process executable, not serializable provider configuration.
+		// Retain it through the runtime handler without copying callbacks into diagnostics.
+		const { fakeAi: _fakeAi, ...diagnosticProviderOptions } = this.apiConfiguration ?? {}
 		const snapshot = this.agentStepContextBuilder.build(
 			{
 				kind: "agent",
@@ -3292,7 +3295,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					),
 					modelId: this.api.getModel().id,
 					modelInfo,
-					options: (this.apiConfiguration ?? {}) as Record<string, unknown>,
+					options: diagnosticProviderOptions,
 				},
 				instructions: {
 					systemPrompt,

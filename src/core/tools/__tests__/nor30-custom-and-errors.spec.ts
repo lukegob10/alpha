@@ -18,6 +18,7 @@ import { ToolRegistry } from "../ToolRegistry"
 import type { ToolDescriptor } from "../ToolRegistry"
 
 const cleanups: Array<() => void> = []
+const mcpToolNames = ["mcp--nor30-server--nor30-tool", "mcp__nor30-server__nor30-tool"]
 
 afterEach(() => {
 	for (const cleanup of cleanups.splice(0).reverse()) cleanup()
@@ -173,8 +174,7 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 		expect(toolResults(harness)).toHaveLength(1)
 	})
 
-	it("dispatches the provider MCP alias through the default validator with typed arguments and one result", async () => {
-		const name = "mcp__nor30-server__nor30-tool"
+	it.each(mcpToolNames)("dispatches %s through default validation with typed arguments", async (name) => {
 		const callTool = vi.fn().mockResolvedValue({
 			content: [
 				{ type: "text", text: "dynamic MCP result" },
@@ -235,8 +235,7 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 		])
 	})
 
-	it("rejects an approval-denied provider MCP alias without invoking its leaf", async () => {
-		const name = "mcp__nor30-server__nor30-tool"
+	it.each(mcpToolNames)("rejects approval-denied %s without invoking its leaf", async (name) => {
 		const callTool = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "must not run" }] })
 		const mcpHub = {
 			getAllServers: () => [{ name: "nor30-server", tools: [{ name: "nor30-tool" }] }],

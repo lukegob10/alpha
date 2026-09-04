@@ -85,6 +85,12 @@ Review refinements:
   checked again before execution and after approval.
 - Retained retry response metadata, not just its request, must come from the captured provider handler/protocol. Provider
   continuity includes reasoning signatures/details, encrypted reasoning, response IDs, and VS Code opaque state.
+- Empty-response retry after context recovery must restore the complete committed message, including summary/truncation
+  metadata and newly acknowledged events. Steering must not strip that metadata or reveal previously hidden history.
+- Bounded terminal receipts must make fair progress across processes and preserve terminal-marker cleanup at chunk
+  boundaries. Captured file-change receipts may acknowledge only paths actually represented in the outgoing context.
+- MCP dispatch retains host-owned original target/source metadata and checks it after all approval/UI waits. Switching to
+  an eager provider must preserve historical discovery declarations without making discovery callable there.
 
 ## Explicitly out of scope
 
@@ -147,13 +153,44 @@ coverage; it must not be reported as passed.
 ## Closure ledger
 
 - Integrated: retry consistency `787fa8c`; NOR-30 `cee6d5c` from reviewed source commit
-  `d49f38f075b80b0709b553fde23bcc47209d7745`.
-- In progress: NOR-27 and NOR-28 implementation and independent integration review.
+  `d49f38f075b80b0709b553fde23bcc47209d7745`; NOR-28 `f633e11` from source commit
+  `8193e55489b7c49e921dd40bc7dfee0840c6599c`; NOR-27 `bd43a7c` from source commit
+  `3b58d1fe5aae9162078b8f13dd66953d3633d0a3`.
+- NOR-27 integration required combining additive imports in two Task test files. Production Task changes auto-merged;
+  captured retry inputs/provider metadata, environment durability acknowledgements, and catalog capture remain intact.
+- Independent Sol Max review cleared all three exact source commits; no material findings remain from those reviews.
 - Verified: combined pre-change baselines above; exact NOR-30 commit cleared by independent Sol Max review; 251 combined
   retry/presenter/scheduler/Task/persistence tests and extension typecheck passed after integration. The persistence
   fixture now captures a real step rather than fabricating an incomplete `{ stepId }` object.
-- Pending: remaining implementation commits, performance evidence review, combined regression/lint/typecheck,
-  managed-agent certification, and exact-host gate.
+- Broader intermediate validation on `f127686`: 98 files, 1,287 passing tests and 5 skipped across Task, agent,
+  assistant-message, tools, and task-persistence suites (`pnpm --dir src exec vitest run core/task/__tests__
+core/agent/__tests__ core/assistant-message/__tests__ core/tools/__tests__ core/task-persistence/__tests__ --maxWorkers=3`).
+  These results precede NOR-27/NOR-28 integration and do not replace the final combined gates.
+- NOR-28 integration: 99 retry/catalog/parser/canonical-MCP tests passed across 5 files, plus all 272 shared-type tests
+  across 21 files. Two new real-registry/scheduler canonical-name cases failed before NOR-28 and pass after integration;
+  their existing underscore-alias controls still pass. No validator bypass was added.
+- Combined validation on `bd43a7c` plus the canonical-MCP test parameterization: 190 files passed / 1 skipped;
+  2,948 tests passed / 18 skipped (75.03 seconds). Coverage includes all Task, agent, assistant-message, tools,
+  task-persistence, environment, context-tracking, terminal, glob, Git, provider, and provider-transform suites.
+  Integrated repository-wide typecheck passed all 13 tasks; lint passed all 12 tasks.
+- Pending: managed-agent certification and exact-host gate. Per-ticket deterministic performance evidence is recorded
+  in the implementation documents; the combined regression run includes both measurement fixtures.
+- First combined managed-agent certification: all 1,230 deterministic tests and 26 matrix rows passed, with the eight
+  expected live/manual rows still pending. The subsequent 1.122.1 managed-agent host case failed before its first child
+  spawn. A diagnostic rerun confirmed `DataCloneError` from the scripted provider's runtime-only `fakeAi.removeFromCache`
+  callback entering `StepContext.provider.options`; this source path also exists at the baseline. The integration fix
+  excludes the executable fixture object from diagnostic options without changing the captured handler or raw wire
+  request. The real FakeAI handler regression reproduced the failure before the fix; the retry-wire/provider suites
+  then passed all 23 tests, alongside extension typecheck, touched-file lint, and formatting.
+- After the FakeAI boundary fix, the entire combined core/provider command above passed again: 190 files passed /
+  1 skipped; 2,949 tests passed / 18 skipped (70.81 seconds). Host-test diagnostics also passed the E2E package's lint
+  and typecheck. These checks do not substitute for the pending final host gates.
+- The next managed-agent host run completed child execution, nested Apply, discard, outer Apply, and tree projection,
+  then stalled while answering the root follow-up. A diagnostic rerun confirmed an active `followup`, no answer, and a
+  nonempty message queue with the webview ready. `ChatView` automatically queued all input during an active turn while
+  `Task.ask` intentionally reserves queued input for the next turn. This routing also predates Stage 1. A bounded UI
+  correction must prioritize the current complete, unanswered follow-up without draining next-turn messages or bypassing
+  the host/API path. Host timeouts and acceptance assertions remain unchanged.
 - Out of scope: later-stage tickets and protected CLI/shim surfaces.
 
 Tickets remain In Progress until their acceptance criteria and integration evidence are reviewed. Finishing a child task

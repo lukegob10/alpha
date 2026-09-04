@@ -321,6 +321,15 @@ interface ManagedAgentHostProvider {
 	getLiveTask(taskId: string):
 		| {
 				taskAsk?: ClineMessage
+				isInitialized?: boolean
+				isTaskLoopActive?: boolean
+				isWaitingForFirstChunk?: boolean
+				isStreaming?: boolean
+				currentAgentStep?: { stepId: string }
+				activeAsk?: { type: string; ts: number }
+				askResponse?: string
+				messageQueueService?: { isEmpty(): boolean }
+				clineMessages?: ClineMessage[]
 				approveAsk(): void
 		  }
 		| undefined
@@ -350,12 +359,38 @@ const findAgent = (
 	return undefined
 }
 
+const getTaskDiagnostics = (provider: ManagedAgentHostProvider, taskId: string) => {
+	const task = provider.getLiveTask(taskId)
+	return {
+		isInitialized: task?.isInitialized,
+		isTaskLoopActive: task?.isTaskLoopActive,
+		isWaitingForFirstChunk: task?.isWaitingForFirstChunk,
+		isStreaming: task?.isStreaming,
+		stepId: task?.currentAgentStep?.stepId,
+		taskAsk: task?.taskAsk?.ask,
+		activeAsk: task?.activeAsk,
+		askResponse: task?.askResponse,
+		queueEmpty: task?.messageQueueService?.isEmpty(),
+		transcriptTail: task?.clineMessages?.slice(-6).map(({ ask, say, text, partial }) => ({
+			message: ask ?? say,
+			partial,
+			text: text?.slice(0, 500),
+		})),
+	}
+}
+
 const waitForAgent = async (
+	provider: ManagedAgentHostProvider,
 	groups: ReadonlyMap<string, SubagentGroupState>,
 	parentTaskId: string,
 	objective: string,
 ): Promise<AgentTarget> => {
-	await waitFor(() => findAgent(groups, parentTaskId, objective) !== undefined, { timeout: 60_000, interval: 50 })
+	await waitFor(() => findAgent(groups, parentTaskId, objective) !== undefined, {
+		timeout: 60_000,
+		interval: 50,
+		description: `managed child of ${parentTaskId}: ${objective}`,
+		onTimeout: () => getTaskDiagnostics(provider, parentTaskId),
+	})
 	return findAgent(groups, parentTaskId, objective)!
 }
 
@@ -552,12 +587,12 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			})
 
 			const [outerTarget, discardTarget] = await Promise.all([
-				waitForAgent(groups, rootTaskId, OUTER_OBJECTIVE),
-				waitForAgent(groups, rootTaskId, DISCARD_OBJECTIVE),
+				waitForAgent(provider, groups, rootTaskId, OUTER_OBJECTIVE),
+				waitForAgent(provider, groups, rootTaskId, DISCARD_OBJECTIVE),
 			])
 			const outerTaskId = outerTarget.agent.taskId
 			const discardTaskId = discardTarget.agent.taskId
-			const nestedTarget = await waitForAgent(groups, outerTaskId, NESTED_OBJECTIVE)
+			const nestedTarget = await waitForAgent(provider, groups, outerTaskId, NESTED_OBJECTIVE)
 			const nestedTaskId = nestedTarget.agent.taskId
 
 			await Promise.all(
@@ -630,7 +665,16 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			await api.sendMessage(
 				"Both root-owned Worker proposals were reviewed; verify the applied files and finish.",
 			)
-			await waitFor(() => completionPromptTasks.has(rootTaskId!), { timeout: 60_000, interval: 50 })
+			await waitFor(() => completionPromptTasks.has(rootTaskId!), {
+				timeout: 60_000,
+				interval: 50,
+				description: "root completion prompt after answering its follow-up",
+				onTimeout: async () => ({
+					currentTaskId: (await provider.getStateToPostToWebview()).currentTaskId,
+					webviewReady: api.isReady(),
+					...getTaskDiagnostics(provider, rootTaskId!),
+				}),
+			})
 			await waitFor(
 				() =>
 					completed.has(rootTaskId!) ||

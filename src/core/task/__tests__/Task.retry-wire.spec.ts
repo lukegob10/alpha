@@ -1,6 +1,7 @@
 import type { ModelInfo, ProviderSettings } from "@alpha-code/types"
 
 import type { ApiHandler } from "../../../api"
+import { FakeAIHandler } from "../../../api/providers/fake-ai"
 import type { ApiStream } from "../../../api/transform/stream"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../../agent/AgentStepContextBuilder"
 import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
@@ -146,6 +147,62 @@ function logicalRequest(call: Parameters<ApiHandler["createMessage"]>) {
 describe("Task retained retry wire inputs", () => {
 	beforeEach(() => vi.clearAllMocks())
 	afterEach(() => vi.restoreAllMocks())
+
+	it("keeps the runtime FakeAI implementation out of diagnostic options without changing dispatch or retry", async () => {
+		const { task } = harness()
+		const scripted = handler("scripted-model")
+		class ScriptedAI {
+			readonly id = "retry-wire-scripted-provider"
+			removeFromCache?: () => void
+			createMessage(...args: Parameters<ApiHandler["createMessage"]>) {
+				return scripted.createMessage(...args)
+			}
+			getModel() {
+				return scripted.getModel()
+			}
+			countTokens() {
+				return scripted.countTokens()
+			}
+			async completePrompt() {
+				return ""
+			}
+		}
+		const fakeAi = new ScriptedAI()
+		task.apiConfiguration = { apiProvider: "fake-ai", fakeAi, apiKey: "diagnostic credential fixture" }
+		task.api = new FakeAIHandler(task.apiConfiguration)
+		const runtimeHandler = task.api
+		scripted.createMessage.mockImplementationOnce(() =>
+			failBeforeFirstChunk(new Error("scripted first-chunk failure")),
+		)
+		try {
+			expect(typeof fakeAi.removeFromCache).toBe("function")
+			await expect(
+				task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true }).next(),
+			).rejects.toThrow("scripted first-chunk failure")
+			const first = capturedStep(task)
+			expect(first.snapshot.runtime.getHandler()).toBe(runtimeHandler)
+			expect(first.snapshot.context.provider.options).not.toHaveProperty("fakeAi")
+			expect(first.snapshot.context.provider.options?.apiKey).toBe("[redacted]")
+			expect(task.apiConfiguration.fakeAi).toBe(fakeAi)
+			const firstCall = scripted.createMessage.mock.calls[0]
+			expect(firstCall[2]).toMatchObject({ taskId: task.taskId, mode: "code" })
+			expect(JSON.stringify(firstCall[1])).toContain("literal fixture")
+			expect(JSON.stringify(firstCall[1])).toContain("opaque provider state")
+			const retry = task.attemptApiRequest(1, {
+				skipProviderRateLimit: true,
+				ownerHandlesRetry: true,
+				retryCategory: "transport",
+			})
+			expect(await retry.next()).toEqual({ done: false, value: { type: "text", text: "response" } })
+			expect(await retry.next()).toEqual({ done: true, value: undefined })
+			expect(scripted.createMessage).toHaveBeenCalledTimes(2)
+			expect(logicalRequest(scripted.createMessage.mock.calls[1])).toEqual(logicalRequest(firstCall))
+			expect(capturedStep(task).snapshot.context.contextId).toBe(first.snapshot.context.contextId)
+			expect(capturedStep(task).snapshot.runtime.getHandler()).toBe(runtimeHandler)
+		} finally {
+			fakeAi.removeFromCache?.()
+		}
+	})
 
 	it.each(["transport", "rate-limit"] as const)(
 		"retains the actual logical request and handler across a %s retry, with fresh attempt cancellation",
