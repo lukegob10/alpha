@@ -704,6 +704,29 @@ describe("ReadFileTool", () => {
 			expect(mockedFsReadFile).not.toHaveBeenCalled()
 		})
 
+		it("should return legacy missing-file drift to the model without showing an extension error", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+			const missingError = Object.assign(
+				new Error("ENOENT: no such file or directory, stat 'C:\\private\\workspace\\missing.ts'"),
+				{ code: "ENOENT", path: "C:\\private\\workspace\\missing.ts" },
+			)
+			mockedFsStat.mockRejectedValue(missingError)
+
+			await readFileTool.execute(
+				{ _legacyFormat: true, files: [{ path: "missing.ts" }] } as any,
+				mockTask as any,
+				callbacks,
+			)
+
+			expect(mockTask.say).not.toHaveBeenCalledWith("error", expect.anything())
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(
+				expect.stringContaining("may have been moved or deleted"),
+			)
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.not.stringContaining("C:\\private"))
+			expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+		})
+
 		it("should use the scheduler rich approval callback for legacy files", async () => {
 			const mockTask = createMockTask()
 			const callbacks = createMockCallbacks()
@@ -904,15 +927,35 @@ describe("ReadFileTool", () => {
 	})
 
 	describe("error handling", () => {
-		it("should handle file read errors gracefully", async () => {
+		it("should show extension diagnostics for unexpected file read errors", async () => {
 			const mockTask = createMockTask()
 			const callbacks = createMockCallbacks()
 
-			mockedFsReadFile.mockRejectedValue(new Error("ENOENT: no such file or directory"))
+			mockedFsReadFile.mockRejectedValue(Object.assign(new Error("EIO: input/output error"), { code: "EIO" }))
 
 			await readFileTool.execute({ path: "nonexistent.ts" }, mockTask as any, callbacks)
 
 			expect(mockTask.say).toHaveBeenCalledWith("error", expect.stringContaining("Error reading file"))
+			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+		})
+
+		it("should return missing-file drift to the model without showing an extension error", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+			const missingError = Object.assign(
+				new Error("ENOENT: no such file or directory, stat 'C:\\private\\workspace\\missing.ts'"),
+				{ code: "ENOENT", path: "C:\\private\\workspace\\missing.ts" },
+			)
+			mockedFsStat.mockRejectedValue(missingError)
+
+			await readFileTool.execute({ path: "missing.ts" }, mockTask as any, callbacks)
+
+			expect(mockTask.say).not.toHaveBeenCalledWith("error", expect.anything())
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(
+				expect.stringContaining("may have been moved or deleted"),
+			)
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.not.stringContaining("C:\\private"))
+			expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
 			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
 		})
 

@@ -77,6 +77,31 @@ function decodeTextBuffer(buffer: Buffer): string {
 	return buffer.toString("utf8")
 }
 
+interface FileReadFailure {
+	message: string
+	shouldShowDiagnostic: boolean
+}
+
+function describeFileReadFailure(error: unknown): FileReadFailure {
+	const rawMessage = error instanceof Error ? error.message : String(error)
+	const code =
+		error && typeof error === "object" && "code" in error && typeof error.code === "string"
+			? error.code.toUpperCase()
+			: undefined
+	const pathIsUnavailable = code === "ENOENT" || code === "ENOTDIR" || /\b(?:ENOENT|ENOTDIR)\b/i.test(rawMessage)
+
+	if (pathIsUnavailable) {
+		return {
+			message:
+				"File not found at the requested path. It may have been moved or deleted since it was discovered. " +
+				"Use list_files or search_files to find its current path before retrying.",
+			shouldShowDiagnostic: false,
+		}
+	}
+
+	return { message: rawMessage, shouldShowDiagnostic: true }
+}
+
 // ─── Tool Implementation ──────────────────────────────────────────────────────
 
 export class ReadFileTool extends BaseTool<"read_file"> {
@@ -256,14 +281,16 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 					})
 				} catch (error) {
 					if (this.isCancelled(task, callbacks)) throw error
-					const errorMsg = error instanceof Error ? error.message : String(error)
+					const failure = describeFileReadFailure(error)
 					updateFileResult(relPath, {
 						status: "error",
-						error: `Error reading file: ${errorMsg}`,
-						nativeContent: `File: ${relPath}\nError: ${errorMsg}`,
+						error: `Error reading file: ${failure.message}`,
+						nativeContent: `File: ${relPath}\nError: ${failure.message}`,
 					})
 					callbacks.setResultMetadata?.({ status: "error" })
-					await task.say("error", `Error reading file ${relPath}: ${errorMsg}`)
+					if (failure.shouldShowDiagnostic) {
+						await task.say("error", `Error reading file ${relPath}: ${failure.message}`)
+					}
 				}
 			}
 
@@ -280,15 +307,17 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				return
 			}
 			const relPath = filePath || "unknown"
-			const errorMsg = error instanceof Error ? error.message : String(error)
+			const failure = describeFileReadFailure(error)
 
 			updateFileResult(relPath, {
 				status: "error",
-				error: `Error reading file: ${errorMsg}`,
-				nativeContent: `File: ${relPath}\nError: ${errorMsg}`,
+				error: `Error reading file: ${failure.message}`,
+				nativeContent: `File: ${relPath}\nError: ${failure.message}`,
 			})
 
-			await task.say("error", `Error reading file ${relPath}: ${errorMsg}`)
+			if (failure.shouldShowDiagnostic) {
+				await task.say("error", `Error reading file ${relPath}: ${failure.message}`)
+			}
 			task.didToolFailInCurrentTurn = true
 			callbacks.setResultMetadata?.({ status: "error" })
 
@@ -297,7 +326,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				.map((r) => r.nativeContent)
 				.join("\n\n---\n\n")
 
-			pushToolResult(errorResult || `Error: ${errorMsg}`)
+			pushToolResult(errorResult || `Error: ${failure.message}`)
 		}
 	}
 
@@ -478,14 +507,16 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				return
 			} catch (error) {
 				if (this.isCancelled(task, callbacks)) throw error
-				const errorMsg = error instanceof Error ? error.message : String(error)
+				const failure = describeFileReadFailure(error)
 				updateFileResult(relPath, {
 					status: "error",
-					error: `Error reading image file: ${errorMsg}`,
-					nativeContent: `File: ${relPath}\nError: ${errorMsg}`,
+					error: `Error reading image file: ${failure.message}`,
+					nativeContent: `File: ${relPath}\nError: ${failure.message}`,
 				})
 				callbacks.setResultMetadata?.({ status: "error" })
-				await task.say("error", `Error reading image file ${relPath}: ${errorMsg}`)
+				if (failure.shouldShowDiagnostic) {
+					await task.say("error", `Error reading image file ${relPath}: ${failure.message}`)
+				}
 				return
 			}
 		}
@@ -508,14 +539,16 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				return
 			} catch (error) {
 				if (this.isCancelled(task, callbacks)) throw error
-				const errorMsg = error instanceof Error ? error.message : String(error)
+				const failure = describeFileReadFailure(error)
 				updateFileResult(relPath, {
 					status: "error",
-					error: `Error extracting text: ${errorMsg}`,
-					nativeContent: `File: ${relPath}\nError: ${errorMsg}`,
+					error: `Error extracting text: ${failure.message}`,
+					nativeContent: `File: ${relPath}\nError: ${failure.message}`,
 				})
 				callbacks.setResultMetadata?.({ status: "error" })
-				await task.say("error", `Error extracting text from ${relPath}: ${errorMsg}`)
+				if (failure.shouldShowDiagnostic) {
+					await task.say("error", `Error extracting text from ${relPath}: ${failure.message}`)
+				}
 				return
 			}
 		}
@@ -1023,11 +1056,13 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 					callbacks.setResultMetadata?.({ status: "cancelled" })
 					return
 				}
-				const errorMsg = error instanceof Error ? error.message : String(error)
-				results.push(`File: ${relPath}\nError: ${errorMsg}`)
+				const failure = describeFileReadFailure(error)
+				results.push(`File: ${relPath}\nError: ${failure.message}`)
 				task.didToolFailInCurrentTurn = true
 				callbacks.setResultMetadata?.({ status: "error" })
-				await task.say("error", `Error reading file ${relPath}: ${errorMsg}`)
+				if (failure.shouldShowDiagnostic) {
+					await task.say("error", `Error reading file ${relPath}: ${failure.message}`)
+				}
 			}
 		}
 
