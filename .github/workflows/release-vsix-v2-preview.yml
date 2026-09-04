@@ -37,6 +37,9 @@ jobs:
                   $version = node -p "require('./src/package.json').version"
                   New-Item -ItemType Directory -Force -Path bin | Out-Null
                   pnpm --dir src exec vsce package --no-dependencies --pre-release --out "../bin/alpha-$version.vsix"
+                  if ($LASTEXITCODE -ne 0) {
+                    throw "Preview VSIX packaging failed."
+                  }
 
             - name: Collect preview metadata
               id: release
@@ -45,11 +48,7 @@ jobs:
                   $version = node -p "require('./src/package.json').version"
                   $shortSha = "${{ github.sha }}".Substring(0, 7)
                   $tag = "vsix-v2-preview-$version-$shortSha"
-                  $vsix = Get-ChildItem -Path bin -Filter "*.vsix" | Select-Object -First 1
-
-                  if (-not $vsix) {
-                    throw "No VSIX package found in bin."
-                  }
+                  $vsix = Get-Item -LiteralPath "bin/alpha-$version.vsix" -ErrorAction Stop
 
                   "version=$version" >> $env:GITHUB_OUTPUT
                   "short_sha=$shortSha" >> $env:GITHUB_OUTPUT
@@ -70,18 +69,17 @@ jobs:
                   $shortSha = "${{ steps.release.outputs.short_sha }}"
                   $vsix = "${{ steps.release.outputs.vsix_path }}"
                   $releaseTitle = "Alpha V2 Preview v$version ($shortSha)"
+                  $changelog = Get-Content -LiteralPath src/CHANGELOG.md -Raw
+                  $versionHeading = [regex]::Escape("## $version")
+                  $entry = [regex]::Match($changelog, "(?ms)^$versionHeading\r?\n(?<body>.*?)(?=^## |\z)")
+                  if (-not $entry.Success -or [string]::IsNullOrWhiteSpace($entry.Groups["body"].Value)) {
+                    throw "No changelog entry found for preview version $version."
+                  }
+                  $highlights = $entry.Groups["body"].Value.Trim()
                   $notes = @"
                   Preview VSIX build from main-v2. This is not published to the VS Code Marketplace.
 
-                  Alpha v$version updates the Claude setup through Fable 5.1 with selectable reasoning effort.
-
-                  Highlights:
-                  - Adds Claude Fable 5.1 under Anthropic with its published limits and pricing
-                  - Exposes Low, Medium, High, XHigh, and Max reasoning for Fable 5.1, Fable 5, Opus 5, Sonnet 5, Opus 4.8, and Opus 4.7
-                  - Sends effort with adaptive thinking for chat and single completions, with High as the default
-                  - Defaults new Claude setups to Sonnet 5 and hides retired models from new selections
-                  - Handles Fable 5.1 thinking invalidated by history edits or context compaction
-                  - Validates the extension and VS Code Language Model contract on exact VS Code 1.122.1
+                  $highlights
 
                   Commit: ${{ github.sha }}
 
@@ -92,8 +90,11 @@ jobs:
                   Install command: code --install-extension ${{ steps.release.outputs.vsix_name }} --force
                   "@
 
-                  if (gh release view "$tag" 2>$null) {
-                    gh release upload "$tag" "$vsix" --clobber
-                  } else {
-                    gh release create "$tag" "$vsix" --prerelease --title "$releaseTitle" --notes "$notes" --target "${{ github.sha }}"
+                  gh release view "$tag" --json tagName 2>$null
+                  if ($LASTEXITCODE -eq 0) {
+                    throw "Preview release $tag already exists; refusing to overwrite its published artifact."
+                  }
+                  gh release create "$tag" "$vsix" --prerelease --latest=false --title "$releaseTitle" --notes "$notes" --target "${{ github.sha }}"
+                  if ($LASTEXITCODE -ne 0) {
+                    throw "Preview release creation failed."
                   }
