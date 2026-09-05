@@ -158,6 +158,7 @@ interface ContextHostProvider {
 				abort?: boolean
 				taskAsk?: { ask?: string }
 				approveAsk(): void
+				waitForTermination(): Promise<void>
 				clineMessages?: Array<{ say?: string; text?: string; partial?: boolean }>
 		  }
 		| undefined
@@ -228,6 +229,15 @@ suite("Alpha proportional context request measurements", function () {
 									ask: provider.getLiveTask(taskId)?.taskAsk?.ask,
 								}),
 							},
+						)
+						const completedTask = provider.getLiveTask(taskId)
+						assert.ok(completedTask)
+						await waitFor(
+							async () => {
+								await completedTask.waitForTermination()
+								return true
+							},
+							{ timeout: 30_000, description: `${scenario} Task-owned lifecycle settlement` },
 						)
 						assert.equal(runtime.requests.length, scenario === "conversation" ? 1 : 2)
 						assert.deepStrictEqual(

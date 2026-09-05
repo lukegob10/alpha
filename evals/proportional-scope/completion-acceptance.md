@@ -71,6 +71,11 @@ Flush transcript persistence before inspecting final evidence. For the no-op cas
 confirm empty changed-file scope and removal of the exact reservation, rather than treating reservation release as a
 successful verification result.
 
+The Task completion event precedes the owning loop's terminal journal flush. After the event, await the public
+`Task.waitForTermination()` boundary with a 30-second fixture deadline before flushing transcript persistence and reading
+final state. Preserve the assertion that the AgentControlStore root is completed; a completed event alone cannot satisfy
+the durable quality oracle.
+
 ## Quality oracle and declared cost threshold
 
 Every admitted sample must satisfy all of these conditions:
@@ -139,3 +144,11 @@ and existing managed-agent/mode E2E tests established the missing user-adapter a
 omitted the canonical promoted completion row. These samples are **fixture integration failures**, not evidence of a
 baseline correctness regression, request savings, or latency. The correction applies to both roles and the minimal context
 fixtures. Matching corrected fixture/helper/policy digests and new paired runs are required before any accepted result.
+
+The next central reference attempt reached Task completion but observed a `running` AgentControlStore root. The
+documented source contract in `prepareTaskCompletionLifecycle` requires that root to be durably completed before the
+primary event. Source tracing found that the final completion gate invokes `ensureAgentControlRoot` after root preparation;
+that method reopens non-running roots, while event forwarding uses `rootAlreadyPrepared: true`. This is a production
+lifecycle concern referred to NOR-37, not permission to discard the durable assertion. The added Task-owned join rules out
+event/journal timing without mutating or repairing the measured state. No equal-quality cost result is admitted while
+this root-state check fails.

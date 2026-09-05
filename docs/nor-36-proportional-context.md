@@ -126,6 +126,12 @@ the acknowledgment guard, unrelated/recovery asks, settled/cancelled tasks, and 
 The simulated user action has its own counter; provider behavior and settlement schedules remain unchanged. Corrected
 paired host execution is pending central coordination.
 
+The corrected reference attempt exposed a `running` control root after the Task completion event. The source contract
+requires that root to be durably completed; source tracing found the final completion-gate reconciliation can reopen the
+prepared root. NOR-37 owns the production investigation/fix. The fixture retains its root assertion and now joins
+`Task.waitForTermination()` before final reads because the event precedes the terminal journal flush. Failed durable
+samples remain excluded from equal-quality cost comparisons.
+
 ## Validation and handoff
 
 - Before the slice change: one intended operation-count regression failed, 50 tests passed.

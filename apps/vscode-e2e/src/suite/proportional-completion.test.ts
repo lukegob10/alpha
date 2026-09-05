@@ -67,6 +67,7 @@ interface CompletionTask {
 	completeCommandExecution(callId: string, details: { exitCode: number }, executionId: string): void
 	getCommandExecutionEvidence(): Array<{ toolCallId: string; executionId: string; status: string; exitCode?: number }>
 	flushApiConversationHistoryPersistence(): Promise<void>
+	waitForTermination(): Promise<void>
 }
 interface CompletionProvider {
 	getLiveTask(taskId: string): CompletionTask | undefined
@@ -374,13 +375,38 @@ suite("Alpha proportional completion settlement measurements", function () {
 						)
 						observation.assertHealthy()
 						const task = observation.task!
+						await waitFor(
+							async () => {
+								await task.waitForTermination()
+								return true
+							},
+							{
+								timeout: 30_000,
+								description: `${scenario} Task-owned lifecycle settlement`,
+								onTimeout: () => ({
+									didComplete: task.didComplete,
+									abort: task.abort,
+									completionEvents: observation.completedEvents,
+								}),
+							},
+						)
 						await task.flushApiConversationHistoryPersistence()
 						assert.equal(task.didComplete, true)
 						assert.equal(task.abort, false)
 						assert.equal(observation.completedEvents, 1)
 						assert.equal(observation.allowedGateObserved, true)
 						assert.ok(observation.firstGateAt !== undefined && observation.settledAt !== undefined)
-						assert.equal(provider.agentControlStore.getAgent(task.taskId, task.taskId)?.status, "completed")
+						assert.equal(
+							provider.agentControlStore.getAgent(task.taskId, task.taskId)?.status,
+							"completed",
+							JSON.stringify({
+								stage: "durable root after Task-owned lifecycle join",
+								modelRequests: observation.requests.length,
+								completionEvents: observation.completedEvents,
+								completionReviewAcknowledgements: observation.completionReviewAcknowledgements,
+								durableSettlementObserved: observation.settledAt !== undefined,
+							}),
+						)
 						assert.ok(
 							task.clineMessages.some(
 								(message) =>
