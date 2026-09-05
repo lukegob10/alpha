@@ -227,7 +227,10 @@ function findHeaderEnd(lines: LineRecord[]): number {
 /**
  * Format lines with line numbers, applying truncation to long lines.
  */
-export function formatWithLineNumbers(lines: LineRecord[], maxLineLength: number = MAX_LINE_LENGTH): string {
+export function formatWithLineNumbers(
+	lines: Pick<LineRecord, "lineNumber" | "content">[],
+	maxLineLength: number = MAX_LINE_LENGTH,
+): string {
 	if (lines.length === 0) return ""
 	const maxLineNumWidth = String(lines[lines.length - 1]?.lineNumber || 1).length
 
@@ -436,7 +439,8 @@ export function readWithSlice(
 	offset: number = 0,
 	limit: number = DEFAULT_LINE_LIMIT,
 ): IndentationReadResult {
-	const lines = parseLines(content)
+	// Slice mode needs source positions, not indentation or block analysis for the whole file.
+	const lines = content.split("\n")
 	const totalLines = lines.length
 
 	// Validate offset
@@ -453,7 +457,10 @@ export function readWithSlice(
 
 	// Slice lines
 	const endIdx = Math.min(offset + limit, totalLines)
-	const selectedLines = lines.slice(offset, endIdx)
+	const selectedLines = lines.slice(offset, endIdx).map((content, index) => ({
+		lineNumber: Math.trunc(offset) + index + 1,
+		content,
+	}))
 	const wasTruncated = endIdx < totalLines
 
 	// Format output
