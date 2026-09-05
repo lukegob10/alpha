@@ -1,4 +1,4 @@
-import type { RooTerminalCallbacks, RooTerminalProcessResultPromise } from "./types"
+import type { RooTerminalCallbacks, RooTerminalProcessResultPromise, TerminalExecutionOptions } from "./types"
 import { BaseTerminal } from "./BaseTerminal"
 import { ExecaTerminalProcess } from "./ExecaTerminalProcess"
 import { mergePromise } from "./mergePromise"
@@ -15,7 +15,11 @@ export class ExecaTerminal extends BaseTerminal {
 		return false
 	}
 
-	public override runCommand(command: string, callbacks: RooTerminalCallbacks): RooTerminalProcessResultPromise {
+	public override runCommand(
+		command: string,
+		callbacks: RooTerminalCallbacks,
+		options?: TerminalExecutionOptions,
+	): RooTerminalProcessResultPromise {
 		this.busy = true
 
 		const process = new ExecaTerminalProcess(this)
@@ -30,7 +34,7 @@ export class ExecaTerminal extends BaseTerminal {
 		const promise = new Promise<void>((resolve, reject) => {
 			process.once("continue", () => resolve())
 			process.once("error", (error) => reject(error))
-			process.run(command)
+			process.run(command, options, callbacks.onVerificationUnavailable)
 		})
 
 		return mergePromise(process, promise)

@@ -69,6 +69,42 @@ describe("ExecaTerminalProcess", () => {
 	})
 
 	describe("UTF-8 encoding fix", () => {
+		it("runs the original command and environment when optional pytest instrumentation cannot be represented", async () => {
+			process.env.PYTHONPATH = "original python path"
+			process.env.PYTEST_PLUGINS = "existing_plugin"
+			process.env.PYTEST_ADDOPTS = "--ignore=tests/unit"
+			const unavailable = vitest.fn()
+			const outcome = vitest.fn()
+			terminalProcess.on("shell_execution_complete", outcome)
+			await terminalProcess.run(
+				"python -m pytest",
+				{
+					pytestVerification: {
+						executionId: "environment-unavailable",
+						moduleName: "observer",
+						moduleDirectory: "relative-path-is-not-a-host-descriptor",
+						reportPath: "relative-report.json",
+					},
+				},
+				unavailable,
+			)
+			expect(unavailable).toHaveBeenCalledExactlyOnceWith(
+				expect.stringContaining("without verification evidence"),
+			)
+			expect(execa).toHaveBeenCalledTimes(1)
+			expect(execa).toHaveBeenCalledWith(
+				expect.objectContaining({
+					env: expect.objectContaining({
+						PYTHONPATH: "original python path",
+						PYTEST_PLUGINS: "existing_plugin",
+						PYTEST_ADDOPTS: "--ignore=tests/unit",
+					}),
+				}),
+			)
+			expect(terminalProcess.command).toBe("python -m pytest")
+			expect(outcome).toHaveBeenCalledWith({ exitCode: 0 })
+		})
+
 		it("should set LANG and LC_ALL to en_US.UTF-8", async () => {
 			await terminalProcess.run("echo test")
 			const execaMock = vitest.mocked(execa)

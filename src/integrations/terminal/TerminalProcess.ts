@@ -1,8 +1,10 @@
 import * as vscode from "vscode"
 import { inspect } from "util"
+import fs from "fs/promises"
 
 import { MAX_TERMINAL_OUTPUT_RECEIPT_CARRY_CHARACTERS } from "./types"
-import type { ExitCodeDetails } from "./types"
+import type { ExitCodeDetails, TerminalExecutionOptions } from "./types"
+import { buildPytestVerificationTerminalLaunch } from "./PytestVerificationLauncher"
 import { BaseTerminalProcess } from "./BaseTerminalProcess"
 import { Terminal } from "./Terminal"
 
@@ -21,6 +23,8 @@ const MAX_CSI_PREFIX_CHARACTERS = MAX_TERMINAL_OUTPUT_RECEIPT_CARRY_CHARACTERS
 
 export class TerminalProcess extends BaseTerminalProcess {
 	private terminalRef: WeakRef<Terminal>
+	private aborted = false
+	private commandSubmitted = false
 	private outputCleanupState: TerminalOutputCleanupState = INITIAL_TERMINAL_OUTPUT_CLEANUP_STATE
 
 	constructor(terminal: Terminal) {
@@ -30,6 +34,10 @@ export class TerminalProcess extends BaseTerminalProcess {
 
 		this.once("completed", () => {
 			this.terminal.busy = false
+		})
+		this.once("error", () => {
+			this.stopHotTimer()
+			this.isHot = false
 		})
 
 		this.once("no_shell_integration", () => {
@@ -50,14 +58,20 @@ export class TerminalProcess extends BaseTerminalProcess {
 		return terminal
 	}
 
-	public override async run(command: string) {
+	public override async run(
+		command: string,
+		options?: TerminalExecutionOptions,
+		onVerificationUnavailable?: (reason: string) => void,
+	) {
 		this.command = command
+		if (this.completeCancellationBeforeLaunch()) return
 
 		const terminal = this.terminal.terminal
 
 		const isShellIntegrationAvailable = terminal.shellIntegration && terminal.shellIntegration.executeCommand
 
 		if (!isShellIntegrationAvailable) {
+			this.commandSubmitted = true
 			terminal.sendText(command, true)
 
 			console.warn(
@@ -77,10 +91,34 @@ export class TerminalProcess extends BaseTerminalProcess {
 			this.emit("continue")
 			return
 		}
+		let observedCommand = command
+		if (options?.pytestVerification) {
+			const launch = buildPytestVerificationTerminalLaunch(
+				command,
+				options.pytestVerification,
+				terminal.state?.shell,
+			)
+			if (launch.available) {
+				try {
+					if (launch.helper)
+						await fs.writeFile(launch.helper.path, launch.helper.content, { flag: "wx", mode: 0o600 })
+					observedCommand = launch.commandToExecute
+				} catch {
+					onVerificationUnavailable?.(
+						"The pytest observer could not be prepared for this terminal; the command ran without verification evidence.",
+					)
+				}
+			} else onVerificationUnavailable?.(launch.reason)
+		}
+		// Preparing a PowerShell helper yields control. Cancellation must remain latched
+		// until preparation settles, so cleanup cannot race an outstanding helper write.
+		if (this.completeCancellationBeforeLaunch()) return
 
 		// Create a promise that resolves when the stream becomes available
+		let streamTimeoutId: NodeJS.Timeout | undefined
+		let onStreamAvailable: ((stream: AsyncIterable<string>) => void) | undefined
 		const streamAvailable = new Promise<AsyncIterable<string>>((resolve, reject) => {
-			const timeoutId = setTimeout(() => {
+			streamTimeoutId = setTimeout(() => {
 				// Remove event listener to prevent memory leaks
 				this.removeAllListeners("stream_available")
 
@@ -99,15 +137,18 @@ export class TerminalProcess extends BaseTerminalProcess {
 			}, Terminal.getShellIntegrationTimeout())
 
 			// Clean up timeout if stream becomes available
-			this.once("stream_available", (stream: AsyncIterable<string>) => {
-				clearTimeout(timeoutId)
+			onStreamAvailable = (stream: AsyncIterable<string>) => {
+				clearTimeout(streamTimeoutId)
 				resolve(stream)
-			})
+			}
+			this.once("stream_available", onStreamAvailable)
 		})
 
 		// Create promise that resolves when shell execution completes for this terminal
+		let onShellExecutionComplete: ((details: ExitCodeDetails) => void) | undefined
 		const shellExecutionComplete = new Promise<ExitCodeDetails>((resolve) => {
-			this.once("shell_execution_complete", (details: ExitCodeDetails) => resolve(details))
+			onShellExecutionComplete = resolve
+			this.once("shell_execution_complete", onShellExecutionComplete)
 		})
 
 		// Execute command
@@ -120,22 +161,34 @@ export class TerminalProcess extends BaseTerminalProcess {
 			(defaultWindowsShellProfile === null ||
 				(defaultWindowsShellProfile as string)?.toLowerCase().includes("powershell"))
 
-		if (isPowerShell) {
-			let commandToExecute = command
+		try {
+			this.commandSubmitted = true
+			if (options?.pytestVerification) {
+				// Instrumented launches own their exit-preserving wrapper. Appended prompt
+				// workarounds must not replace the observed native command status.
+				terminal.shellIntegration.executeCommand(observedCommand)
+			} else if (isPowerShell) {
+				let commandToExecute = command
 
-			// Only add the PowerShell counter workaround if enabled
-			if (Terminal.getPowershellCounter()) {
-				commandToExecute += ` ; "(Alpha/PS Workaround: ${this.terminal.cmdCounter++})" > $null`
+				// Only add the PowerShell counter workaround if enabled
+				if (Terminal.getPowershellCounter()) {
+					commandToExecute += ` ; "(Alpha/PS Workaround: ${this.terminal.cmdCounter++})" > $null`
+				}
+
+				// Only add the sleep command if the command delay is greater than 0
+				if (Terminal.getCommandDelay() > 0) {
+					commandToExecute += ` ; start-sleep -milliseconds ${Terminal.getCommandDelay()}`
+				}
+
+				terminal.shellIntegration.executeCommand(commandToExecute)
+			} else {
+				terminal.shellIntegration.executeCommand(command)
 			}
-
-			// Only add the sleep command if the command delay is greater than 0
-			if (Terminal.getCommandDelay() > 0) {
-				commandToExecute += ` ; start-sleep -milliseconds ${Terminal.getCommandDelay()}`
-			}
-
-			terminal.shellIntegration.executeCommand(commandToExecute)
-		} else {
-			terminal.shellIntegration.executeCommand(command)
+		} catch (error) {
+			clearTimeout(streamTimeoutId)
+			if (onStreamAvailable) this.removeListener("stream_available", onStreamAvailable)
+			if (onShellExecutionComplete) this.removeListener("shell_execution_complete", onShellExecutionComplete)
+			throw error
 		}
 
 		this.isHot = true
@@ -271,10 +324,21 @@ export class TerminalProcess extends BaseTerminalProcess {
 	}
 
 	public override abort() {
-		if (this.isListening) {
+		// A failed output reader settles its promise while the shell can still run.
+		if (this.aborted || (this.isSettled && !this.terminal.running)) return
+		this.aborted = true
+		if (this.commandSubmitted && this.isListening) {
 			// Send SIGINT using CTRL+C
 			this.terminal.terminal.sendText("\x03")
 		}
+	}
+
+	private completeCancellationBeforeLaunch(): boolean {
+		if (!this.aborted || this.commandSubmitted) return false
+		this.emit("shell_execution_complete", { exitCode: 130, signalName: "SIGINT" })
+		this.emit("completed", "")
+		this.emit("continue")
+		return true
 	}
 
 	public override hasUnretrievedOutput(): boolean {

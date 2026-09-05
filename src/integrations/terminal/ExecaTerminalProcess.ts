@@ -3,7 +3,8 @@ import psTree from "ps-tree"
 import process from "process"
 import { execFile, type ExecFileException } from "node:child_process"
 
-import type { RooTerminal } from "./types"
+import type { RooTerminal, TerminalExecutionOptions } from "./types"
+import { createPytestVerificationEnvironment } from "./PytestVerificationLauncher"
 import { BaseTerminal } from "./BaseTerminal"
 import { BaseTerminalProcess } from "./BaseTerminalProcess"
 
@@ -38,11 +39,25 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 		return terminal
 	}
 
-	public override async run(command: string) {
+	public override async run(
+		command: string,
+		options?: TerminalExecutionOptions,
+		onVerificationUnavailable?: (reason: string) => void,
+	) {
 		this.command = command
 
 		try {
 			this.isHot = true
+			let environment: Readonly<NodeJS.ProcessEnv> = process.env
+			if (options?.pytestVerification) {
+				try {
+					environment = createPytestVerificationEnvironment(options.pytestVerification, process.env)
+				} catch {
+					onVerificationUnavailable?.(
+						"The pytest observer environment could not be prepared; the command ran without verification evidence.",
+					)
+				}
+			}
 
 			this.subprocess = execa({
 				shell: BaseTerminal.getExecaShellPath() || true,
@@ -51,7 +66,7 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				// Ignore stdin to ensure non-interactive mode and prevent hanging
 				stdin: "ignore",
 				env: {
-					...process.env,
+					...environment,
 					// Ensure UTF-8 encoding for Ruby, CocoaPods, etc.
 					LANG: "en_US.UTF-8",
 					LC_ALL: "en_US.UTF-8",

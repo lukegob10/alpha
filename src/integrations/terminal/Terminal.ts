@@ -1,7 +1,7 @@
 import * as vscode from "vscode"
 import pWaitFor from "p-wait-for"
 
-import type { RooTerminalCallbacks, RooTerminalProcessResultPromise } from "./types"
+import type { RooTerminalCallbacks, RooTerminalProcessResultPromise, TerminalExecutionOptions } from "./types"
 import { BaseTerminal } from "./BaseTerminal"
 import { TerminalProcess } from "./TerminalProcess"
 import { ShellIntegrationManager } from "./ShellIntegrationManager"
@@ -40,7 +40,11 @@ export class Terminal extends BaseTerminal {
 		return this.terminal.exitStatus !== undefined
 	}
 
-	public override runCommand(command: string, callbacks: RooTerminalCallbacks): RooTerminalProcessResultPromise {
+	public override runCommand(
+		command: string,
+		callbacks: RooTerminalCallbacks,
+		options?: TerminalExecutionOptions,
+	): RooTerminalProcessResultPromise {
 		// We set busy before the command is running because the terminal may be
 		// waiting on terminal integration, and we must prevent another instance
 		// from selecting the terminal for use during that time.
@@ -71,23 +75,32 @@ export class Terminal extends BaseTerminal {
 			pWaitFor(() => this.terminal.shellIntegration !== undefined, {
 				timeout: Terminal.getShellIntegrationTimeout(),
 			})
-				.then(() => {
-					// Clean up temporary directory if shell integration is available, zsh did its job:
-					ShellIntegrationManager.zshCleanupTmpDir(this.id)
+				.then(
+					() => {
+						// Clean up temporary directory if shell integration is available, zsh did its job:
+						ShellIntegrationManager.zshCleanupTmpDir(this.id)
 
-					// Run the command in the terminal
-					process.run(command)
-				})
-				.catch(() => {
-					console.log(`[Terminal ${this.id}] Shell integration not available. Command execution aborted.`)
+						// Run the command in the terminal
+						return process.run(command, options, callbacks.onVerificationUnavailable)
+					},
+					() => {
+						console.log(`[Terminal ${this.id}] Shell integration not available. Command execution aborted.`)
 
-					// Clean up temporary directory if shell integration is not available
-					ShellIntegrationManager.zshCleanupTmpDir(this.id)
+						// Clean up temporary directory if shell integration is not available
+						ShellIntegrationManager.zshCleanupTmpDir(this.id)
 
-					process.emit(
-						"no_shell_integration",
-						`Shell integration initialization sequence '\\x1b]633;A' was not received within ${Terminal.getShellIntegrationTimeout() / 1000}s. Shell integration has been disabled for this terminal instance. Increase the timeout in the settings if necessary.`,
-					)
+						process.emit(
+							"no_shell_integration",
+							`Shell integration initialization sequence '\\x1b]633;A' was not received within ${Terminal.getShellIntegrationTimeout() / 1000}s. Shell integration has been disabled for this terminal instance. Increase the timeout in the settings if necessary.`,
+						)
+					},
+				)
+				.catch((error: unknown) => {
+					// A stream failure does not prove the shell command stopped. Keep a
+					// running terminal reserved until its physical end event arrives.
+					if (!this.running) this.busy = false
+					this.setActiveStream(undefined)
+					process.emit("error", error instanceof Error ? error : new Error(String(error)))
 				})
 		})
 

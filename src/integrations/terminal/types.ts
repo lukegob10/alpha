@@ -1,4 +1,10 @@
 import EventEmitter from "events"
+import type { PytestVerificationLaunch } from "./PytestVerificationLauncher"
+
+/** Host-owned observation attached to one approved physical command. */
+export interface TerminalExecutionOptions {
+	pytestVerification?: PytestVerificationLaunch
+}
 
 export type RooTerminalProvider = "vscode" | "execa"
 
@@ -21,7 +27,11 @@ export interface RooTerminal {
 	process?: RooTerminalProcess
 	getCurrentWorkingDirectory(): string
 	isClosed: () => boolean
-	runCommand: (command: string, callbacks: RooTerminalCallbacks) => RooTerminalProcessResultPromise
+	runCommand: (
+		command: string,
+		callbacks: RooTerminalCallbacks,
+		options?: TerminalExecutionOptions,
+	) => RooTerminalProcessResultPromise
 	setActiveStream(stream: AsyncIterable<string> | undefined, pid?: number): void
 	shellExecutionComplete(exitDetails: ExitCodeDetails): void
 	getProcessesWithOutput(): RooTerminalProcess[]
@@ -36,6 +46,7 @@ export interface RooTerminalCallbacks {
 	onShellExecutionStarted: (pid: number | undefined, process: RooTerminalProcess) => void
 	onShellExecutionComplete: (details: ExitCodeDetails, process: RooTerminalProcess) => void
 	onNoShellIntegration?: (message: string, process: RooTerminalProcess) => void
+	onVerificationUnavailable?: (reason: string) => void
 }
 
 export interface RooTerminalProcess extends EventEmitter<RooTerminalProcessEvents> {

@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process"
+import { execFile, spawnSync } from "node:child_process"
 import { EventEmitter } from "node:events"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { access, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
@@ -19,8 +19,19 @@ import type {
 	RooTerminalCallbacks,
 	RooTerminalProcess,
 	RooTerminalProcessResultPromise,
+	TerminalExecutionOptions,
 } from "../../../integrations/terminal/types"
 import { executeCommandInTerminal } from "../../tools/ExecuteCommandTool"
+import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
+import { captureVerificationContent } from "../../agent/VerificationScope"
+import { ClineProvider } from "../../webview/ClineProvider"
+import { createPytestVerificationEnvironment } from "../../../integrations/terminal/PytestVerificationLauncher"
+
+const pythonRuntime = ["python", "python3"].find(
+	(executable) =>
+		spawnSync(executable, ["-c", "import pytest"], { timeout: 5_000, windowsHide: true, stdio: "ignore" })
+			.status === 0,
+)
 
 const mutationObservationSuspension = "errors.command_mutation_observation_incomplete"
 const mutationReceiptSuspension = "errors.command_mutation_receipt_incomplete"
@@ -248,6 +259,7 @@ class ControlledProcess extends EventEmitter {
 
 type ControlledTerminal = Omit<RooTerminal, "runCommand"> & {
 	processForTest?: ControlledProcess
+	optionsForTest?: TerminalExecutionOptions
 	runStarted: CompletionGate
 	runCommand: ReturnType<typeof vi.fn>
 }
@@ -271,9 +283,10 @@ function controlledTerminal(
 		getLastCommand: vi.fn(() => ""),
 		cleanCompletedProcessQueue: vi.fn(),
 		runStarted,
-		runCommand: vi.fn((command: string, callbacks: RooTerminalCallbacks) => {
+		runCommand: vi.fn((command: string, callbacks: RooTerminalCallbacks, options?: TerminalExecutionOptions) => {
 			const process = new ControlledProcess(command, callbacks)
 			terminal.processForTest = process
+			terminal.optionsForTest = options
 			terminal.busy = true
 			terminal.running = true
 			callbacks.onShellExecutionStarted(1234, process as unknown as RooTerminalProcess)
@@ -440,6 +453,173 @@ function resultIds(harness: TaskHarness): string[] {
 }
 
 describe("Stage Three command outcome integration", () => {
+	it.skipIf(!pythonRuntime).each([
+		{ scenario: "ordinary conftest", validating: true, background: false },
+		{ scenario: "background completion", validating: true, background: true },
+		{ scenario: "all skipped", validating: false, background: false },
+		{ scenario: "inherited ignore", validating: false, background: false },
+		{ scenario: "custom deselection", validating: false, background: false },
+	])(
+		"connects physical pytest execution to durable evidence: $scenario",
+		async ({ scenario, validating, background }) => {
+			await withTaskHarness(async (harness) => {
+				const store = new AgentControlStore(new InMemoryAgentControlPersistence())
+				await store.initialize()
+				const root = await store.ensureRoot({
+					taskId: harness.task.taskId,
+					objective: "Verify Python",
+					status: "running",
+				})
+				const owner = Object.assign(Object.create(ClineProvider.prototype), {
+					agentControlStore: store,
+					agentControlStoreReady: Promise.resolve(),
+					getAgentControlRootTaskId: () => harness.task.taskId,
+					ensureAgentControlRoot: async () => root,
+					synchronizeParentVerificationObligations: async () => undefined,
+					publishParentVerificationTransition: async () => undefined,
+					refreshParentVerificationProjections: async () => undefined,
+					postStateToWebviewWithoutTaskHistory: async () => undefined,
+				}) as ClineProvider
+				await writeFile(path.join(harness.workspacePath, "app.py"), "answer = 42\n")
+				await mkdir(path.join(harness.workspacePath, "tests"))
+				await writeFile(
+					path.join(harness.workspacePath, "conftest.py"),
+					"import pytest\n@pytest.fixture\ndef answer():\n    return 42\n" +
+						(scenario === "custom deselection"
+							? "def pytest_collection_modifyitems(items):\n    items.pop()\n"
+							: ""),
+				)
+				await writeFile(
+					path.join(harness.workspacePath, "tests/test_app.py"),
+					scenario === "all skipped"
+						? "import pytest\n@pytest.mark.skip(reason='fixture')\ndef test_answer(): pass\n"
+						: "def test_answer(answer):\n    assert answer == 42\n",
+				)
+				if (scenario === "inherited ignore" || scenario === "custom deselection")
+					await writeFile(
+						path.join(harness.workspacePath, "tests/test_ignored.py"),
+						"def test_ignored(): pass\n",
+					)
+				await owner.recordPrimaryMutation(
+					harness.task,
+					await captureVerificationContent(harness.workspacePath, ["app.py"]),
+				)
+				const changeSetId = store.getVerificationObligations()[0].changeSetId
+				harness.provider.captureCommandVerification.mockImplementation(
+					owner.captureCommandVerification.bind(owner),
+				)
+				const published = completionGate()
+				harness.provider.recordParentVerificationEvidence.mockImplementation(async (task: Task) => {
+					await owner.recordParentVerificationEvidence(task)
+					published.resolve()
+				})
+				const terminal = controlledTerminal(harness.workspacePath)
+				installTerminal(terminal)
+				const run = createScheduler(harness, []).run(
+					response("pytest-full-path", `${pythonRuntime} -m pytest tests`, [changeSetId]),
+				)
+				await terminal.runStarted.promise
+				const launch = terminal.optionsForTest?.pytestVerification
+				expect(launch).toBeDefined()
+				if (background) {
+					terminal.processForTest!.continue()
+					await run
+					await access(launch!.moduleDirectory)
+				}
+				const outcome = await promisify(execFile)(pythonRuntime!, ["-m", "pytest", "tests"], {
+					cwd: harness.workspacePath,
+					windowsHide: true,
+					timeout: 20_000,
+					env: createPytestVerificationEnvironment(launch!, {
+						...process.env,
+						PYTHONPATH: "",
+						PYTEST_PLUGINS: "",
+						PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1",
+						PYTHONDONTWRITEBYTECODE: "1",
+						PYTEST_ADDOPTS: scenario === "inherited ignore" ? "--ignore=tests/test_ignored.py" : "",
+					}),
+				})
+				await terminal.processForTest!.completeShellFirst({ exitCode: 0 }, outcome.stdout)
+				await run
+				await published.promise
+				expect(
+					harness.task.getCommandExecutionEvidence()[0],
+					JSON.stringify(harness.task.getCommandExecutionEvidence()[0].verificationDiagnostics),
+				).toMatchObject({
+					status: "succeeded",
+					testValidation: validating,
+				})
+				expect(store.getParentCompletionDecision(harness.task.taskId).allowed).toBe(validating)
+				if (!validating)
+					expect(harness.task.getCommandExecutionEvidence()[0].verificationDiagnostics).toContainEqual(
+						expect.objectContaining({ code: "runtime_scope_unavailable" }),
+					)
+				await vi.waitFor(async () =>
+					expect(access(launch!.moduleDirectory)).rejects.toMatchObject({ code: "ENOENT" }),
+				)
+			})
+		},
+		30_000,
+	)
+
+	it.each([
+		"2 passed in 0.12s",
+		"2 skipped in 0.12s",
+		"no tests ran in 0.12s",
+		"1 failed in 0.12s\n1 passed in 0.12s",
+	])("does not grant verification from terminal summary text without a receipt: %s", async (output) => {
+		await withTaskHarness(async (harness) => {
+			const terminal = controlledTerminal(harness.workspacePath)
+			installTerminal(terminal)
+			const complete = vi.spyOn(harness.task, "completeCommandExecution")
+			const run = createScheduler(harness, []).run(response("pytest-receipt", "python3.13 -m pytest tests"))
+			await terminal.runStarted.promise
+			await terminal.processForTest!.completeShellFirst({ exitCode: 0 }, output)
+			await run
+			expect(complete).toHaveBeenCalledExactlyOnceWith("pytest-receipt", { exitCode: 0 }, expect.any(String))
+		})
+	})
+
+	it.each(["process rejection", "missing output callback"])("cleans pytest observation after %s", async (failure) => {
+		await withTaskHarness(async (harness) => {
+			const workspace = await realpath(harness.workspacePath)
+			const testFile = path.join(workspace, "test_app.py")
+			await writeFile(testFile, "def test_answer(): pass\n")
+			harness.provider.captureCommandVerification.mockResolvedValue({
+				"pytest-change": {
+					contentVersion: 1,
+					contentFingerprint: "fixture",
+					scopePath: workspace,
+					commandDigest: "command",
+					repositoryDigest: "repository",
+					runner: "pytest",
+					pytestExpectedFiles: [testFile],
+					pytestConfigFiles: [],
+				},
+			})
+			const terminal = controlledTerminal(harness.workspacePath)
+			installTerminal(terminal)
+			vi.spyOn(harness.task, "suspendAfterCurrentTurn").mockImplementation(() => undefined)
+			const errors = vi.spyOn(console, "error").mockImplementation(() => undefined)
+			try {
+				const run = createScheduler(harness, []).run(response("pytest-cleanup", "python -m pytest"))
+				await terminal.runStarted.promise
+				const launch = terminal.optionsForTest?.pytestVerification
+				expect(launch).toBeDefined()
+				if (failure === "process rejection") terminal.processForTest!.fail(new Error("process failed"))
+				else terminal.processForTest!.completeWithoutOutputCallback({ exitCode: 0 })
+				const outcome = await run
+				expect(outcome.results[0].status).toBe("error")
+				expect(harness.task.getCommandExecutionEvidence()[0].testValidation).not.toBe(true)
+				await vi.waitFor(async () =>
+					expect(access(launch!.moduleDirectory)).rejects.toMatchObject({ code: "ENOENT" }),
+				)
+			} finally {
+				errors.mockRestore()
+			}
+		})
+	})
+
 	it.each([false, true])(
 		"settles repository initialization without suspending the task (background: %s)",
 		async (background) => {

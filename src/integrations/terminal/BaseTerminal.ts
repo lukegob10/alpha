@@ -7,6 +7,7 @@ import type {
 	RooTerminalProcess,
 	RooTerminalProcessResultPromise,
 	ExitCodeDetails,
+	TerminalExecutionOptions,
 } from "./types"
 
 export abstract class BaseTerminal implements RooTerminal {
@@ -37,7 +38,11 @@ export abstract class BaseTerminal implements RooTerminal {
 
 	abstract isClosed(): boolean
 
-	abstract runCommand(command: string, callbacks: RooTerminalCallbacks): RooTerminalProcessResultPromise
+	abstract runCommand(
+		command: string,
+		callbacks: RooTerminalCallbacks,
+		options?: TerminalExecutionOptions,
+	): RooTerminalProcessResultPromise
 
 	/**
 	 * Sets the active stream for this terminal and notifies the process
