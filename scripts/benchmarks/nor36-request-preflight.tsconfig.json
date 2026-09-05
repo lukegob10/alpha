@@ -1,0 +1,5 @@
+{
+	"extends": "../../src/tsconfig.json",
+	"compilerOptions": { "typeRoots": ["../../src/node_modules/@types", "../../src/node_modules"] },
+	"include": ["../../src", "nor36-request-preflight.spec.ts", "nor36-request-preflight.config.ts"]
+}
