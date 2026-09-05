@@ -1027,10 +1027,10 @@ describe("Task retained retry wire inputs", () => {
 			)
 			expect(blocks.filter((block) => block.type === "tool_use")).toEqual([toolCall])
 			expect(blocks.filter((block) => block.type === "tool_result")).toEqual([toolResult])
-			// The new logical step captures schemas for context budgeting and dispatch.
-			// A retained transport retry must not rebuild either captured surface.
+			// The already compacted step captures only its dispatch surface.
+			// A retained transport retry must not rebuild that captured surface.
 			const toolBuildsBeforeRetry = vi.mocked(buildNativeToolsArrayWithRestrictions).mock.calls.length
-			expect(toolBuildsBeforeRetry).toBe(2)
+			expect(toolBuildsBeforeRetry).toBe(1)
 
 			firstCall[1].at(-2)!.content = "adapter-mutated recent turn"
 			task.apiConversationHistory = [{ role: "user", content: "changed live history" }]

@@ -385,6 +385,10 @@ export type ContextManagementOptions = {
 	currentProfileId: string
 	/** Optional metadata to pass through to the condensing API call (tools, taskId, etc.) */
 	metadata?: ApiHandlerCreateMessageMetadata
+	/** Resolve tool overhead only after compaction is required; control metadata stays eager. */
+	prepareTools?: () => Promise<
+		Pick<ApiHandlerCreateMessageMetadata, "tools" | "tool_choice" | "parallelToolCalls" | "allowedFunctionNames">
+	>
 	/** Optional environment details string to include in the condensed summary */
 	environmentDetails?: string
 	/** Optional array of file paths read by Alpha during the task (will be folded via tree-sitter) */
@@ -433,6 +437,7 @@ export async function manageContext({
 	profileThresholds,
 	currentProfileId,
 	metadata,
+	prepareTools,
 	environmentDetails,
 	filesReadByRoo,
 	cwd,
@@ -449,6 +454,17 @@ export async function manageContext({
 			remoteDeadline: metadata?.deadline,
 		})
 	operation.signal?.throwIfAborted()
+	const prepareToolMetadata = async () => {
+		if (!prepareTools) return
+		metadata?.signal?.throwIfAborted()
+		operation.signal?.throwIfAborted()
+		const { tools, tool_choice, parallelToolCalls, allowedFunctionNames } = await prepareTools()
+		metadata?.signal?.throwIfAborted()
+		operation.signal?.throwIfAborted()
+		// Select only tool fields: deferred work cannot replace cancellation or request authority.
+		metadata = { taskId, ...metadata, tools, tool_choice, parallelToolCalls, allowedFunctionNames }
+		prepareTools = undefined
+	}
 	let error: string | undefined
 	let errorDetails: string | undefined
 	let cost = 0
@@ -467,6 +483,7 @@ export async function manageContext({
 	// issuing a duplicate standalone tokenizer request for it.
 	let prevContextTokens: number
 	if (forceCompaction) {
+		if (prepareTools) await prepareToolMetadata()
 		prevContextTokens = await countContextTokens(
 			getEffectiveApiHistory(messages),
 			apiHandler,
@@ -521,6 +538,7 @@ export async function manageContext({
 	if (autoCondenseContext) {
 		const contextPercent = (100 * prevContextTokens) / contextWindow
 		if (forceCompaction || contextPercent >= effectiveThreshold || prevContextTokens > allowedTokens) {
+			if (prepareTools) await prepareToolMetadata()
 			// Attempt to intelligently condense the context
 			const result = await summarizeConversation({
 				messages,
@@ -583,6 +601,7 @@ export async function manageContext({
 
 	// Fall back to sliding window truncation if needed
 	if (prevContextTokens > allowedTokens || forceTruncation) {
+		if (prepareTools) await prepareToolMetadata()
 		const truncationResult = await truncateToTokenBudget(
 			messages,
 			apiHandler,
