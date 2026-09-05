@@ -14,6 +14,7 @@ import {
 	createTransactionDiagnostic,
 	logTransactionDiagnostic,
 	throwIfTransactionCancelled,
+	transactionReleaseFailureCode,
 	waitForTransactionRetry,
 	type AgentControlOperation,
 	type AgentControlTransactionDiagnostic,
@@ -68,6 +69,7 @@ const DEFAULT_RECOVERY_SCAN_INTERVAL_MS = 30_000
 const TRANSACTION_LOCK_RETRY_DELAYS_MS = [50, 100, 200, 400] as const
 const TRANSACTION_LOCK_RELEASE_RETRY_DELAYS_MS = [10, 25, 50, 100, 200] as const
 const TRANSIENT_RENAME_ERROR_CODES = new Set(["EACCES", "EBUSY", "EPERM"])
+const TRANSIENT_RELEASE_CLEANUP_ERROR_CODES = new Set(["EACCES", "EBUSY", "EPERM", "ENOTEMPTY"])
 const TRANSACTION_FILE_REPLACE_RETRY_DELAYS_MS = [10, 25, 50, 100, 200] as const
 
 const ALLOWED_TRANSITIONS: Record<AgentLifecycleStatus, ReadonlySet<AgentLifecycleStatus>> = {
@@ -413,10 +415,13 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		let releaseFailed = false
 		let releaseError: unknown
 		try {
-			await this.releaseTransactionLock(transaction.token)
+			await this.releaseTransactionLock(transaction.token, diagnostic)
+			delete diagnostic.releaseFailurePhase
 		} catch (error) {
 			releaseFailed = true
 			releaseError = error
+			diagnostic.releaseFailurePhase ??= "unknown"
+			diagnostic.releaseFailureCode = transactionReleaseFailureCode(error)
 			// Publish local proof only after every release/marker attempt settled.
 			// The instance queue and finished fence forbid any later write by this
 			// owner, even when the durable marker could not be written.
@@ -699,11 +704,16 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		return true
 	}
 
-	private async releaseTransactionLock(transactionToken: string): Promise<void> {
+	private async releaseTransactionLock(
+		transactionToken: string,
+		diagnostic: AgentControlTransactionDiagnostic,
+	): Promise<void> {
+		diagnostic.releaseFailurePhase = "owner-read"
 		const observed = await this.readTransactionLock(this.transactionLockPath)
 		if (!observed || observed.token !== transactionToken) return
 		const releasePath = `${this.transactionLockPath}.release.${transactionToken}`
 		for (let attempt = 0; ; attempt++) {
+			diagnostic.releaseFailurePhase = "rename"
 			try {
 				await this.renameTransactionLock(this.transactionLockPath, releasePath)
 				break
@@ -715,18 +725,56 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 					// A committed write must remain successful, but the live owner may not
 					// permanently block the next transaction. Publish a durable release
 					// marker that any store instance can safely quarantine by exact token.
+					diagnostic.releaseFailurePhase = "release-marker"
 					await this.markTransactionLockReleased(transactionToken)
+					diagnostic.releaseFailurePhase = "rename"
 					throw error
 				}
 
 				await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
 				// A transient Windows file lock can clear between attempts. Recheck the
 				// token so a delayed retry can never move a successor's lock.
+				diagnostic.releaseFailurePhase = "owner-read"
 				const current = await this.readTransactionLock(this.transactionLockPath)
 				if (!current || current.token !== transactionToken) return
 			}
 		}
-		await this.removeTransactionLockDirectory(releasePath, false)
+		await this.removeReleasedTransactionLockDirectory(releasePath, diagnostic)
+	}
+
+	private async removeReleasedTransactionLockDirectory(
+		releasePath: string,
+		diagnostic: AgentControlTransactionDiagnostic,
+	): Promise<void> {
+		// Only the renamed, token-specific directory is eligible for these retries.
+		// A successor may already own the canonical lock while cleanup is pending.
+		const removals = [
+			{ phase: "cleanup-owner", remove: () => fs.unlink(this.transactionLockOwnerPath(releasePath)) },
+			{ phase: "cleanup-directory", remove: () => fs.rmdir(releasePath) },
+		] as const
+		for (const { phase, remove } of removals) {
+			diagnostic.releaseFailurePhase = phase
+			for (let attempt = 0; ; attempt++) {
+				try {
+					await remove()
+					break
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code ?? ""
+					if (code === "ENOENT") break
+					const delayMs = TRANSACTION_LOCK_RELEASE_RETRY_DELAYS_MS[attempt]
+					if (
+						process.platform !== "win32" ||
+						!TRANSIENT_RELEASE_CLEANUP_ERROR_CODES.has(code) ||
+						delayMs === undefined
+					) {
+						throw error
+					}
+					// Windows may defer unlink until another read handle closes. Finish
+					// cleanup despite transaction cancellation; never remove unknown children.
+					await waitForTransactionRetry(delayMs)
+				}
+			}
+		}
 	}
 
 	private transactionLockReleasedMarkerPath(lockPath: string): string {

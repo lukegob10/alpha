@@ -3,7 +3,7 @@ import * as os from "os"
 import * as path from "path"
 import type { AgentControlState } from "@alpha-code/types"
 
-import { FileAgentControlPersistence } from "../AgentControlStore"
+import { FileAgentControlPersistence, type AgentControlTransactionDiagnostic } from "../AgentControlStore"
 
 type TransactionOwner = { token: string; pid: number }
 type Reaper = "tryReapTransactionLock" | "tryReapReleasedTransactionLock"
@@ -67,16 +67,18 @@ describe("FileAgentControlPersistence recovery races", () => {
 	it("rejects an escaped callback after its body finished while release is still pending", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-release-phase-write-"))
 		const persistence = new FileAgentControlPersistence(directory)
-		const internals = persistence as unknown as { releaseTransactionLock(token: string): Promise<void> }
+		const internals = persistence as unknown as {
+			releaseTransactionLock(token: string, diagnostic: AgentControlTransactionDiagnostic): Promise<void>
+		}
 		const originalRelease = internals.releaseTransactionLock.bind(persistence)
 		const releasing = deferred()
 		const finishRelease = deferred()
 		const resume = deferred()
 		let escaped!: Promise<void>
-		const release = vi.spyOn(internals, "releaseTransactionLock").mockImplementation(async (token) => {
+		const release = vi.spyOn(internals, "releaseTransactionLock").mockImplementation(async (token, diagnostic) => {
 			releasing.resolve()
 			await finishRelease.promise
-			return originalRelease(token)
+			return originalRelease(token, diagnostic)
 		})
 		const holder = persistence.withTransaction(async () => {
 			await persistence.write(state(1))

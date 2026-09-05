@@ -27,6 +27,21 @@ const emptyState = (): AgentControlState => ({
 	verificationObligations: [],
 })
 
+const useRetryDrivenClock = () => {
+	const schedule = globalThis.setTimeout
+	let elapsedMs = 0
+	vi.spyOn(performance, "now").mockImplementation(() => elapsedMs)
+	vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
+		if (typeof delay !== "number" || delay > 400) return schedule(callback, delay, ...args)
+		// Classification must finish before the deadline advances; real filesystem
+		// latency does not consume the controlled acquisition budget.
+		return schedule(() => {
+			elapsedMs += delay
+			callback(...args)
+		}, 0)
+	})
+}
+
 describe("Agent control transaction contention", () => {
 	let directory: string
 
@@ -288,6 +303,7 @@ describe("Agent control transaction contention", () => {
 		await fs.writeFile(path.join(directory, "sentinel"), "preserve external content", "utf8")
 		const contentsBefore = await fs.readdir(directory)
 		const operation = vi.fn(async () => "must not run")
+		useRetryDrivenClock()
 
 		await expect(persistence.withTransaction(operation)).rejects.toMatchObject({
 			code: "ELOCKOWNER",
@@ -306,6 +322,7 @@ describe("Agent control transaction contention", () => {
 		const persistence = new FileAgentControlPersistence(directory, { transactionWaitTimeoutMs: 30 })
 		const lockPath = `${persistence.filePath}.transaction.lock`
 		await fs.mkdir(lockPath)
+		useRetryDrivenClock()
 
 		await expect(persistence.withTransaction(async () => "must not run")).rejects.toMatchObject({
 			code: "ELOCKLEGACY",
@@ -324,6 +341,7 @@ describe("Agent control transaction contention", () => {
 		await fs.mkdir(lockPath)
 		const owner = { token: "external-owner", pid: process.pid, operation: "secret command text" }
 		await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify(owner), "utf8")
+		useRetryDrivenClock()
 
 		await expect(persistence.withTransaction(async () => "must not run")).rejects.toMatchObject({ code: "ELOCKED" })
 		expect(diagnostic).toHaveBeenCalledWith(expect.objectContaining({ ownerState: "live", ownerPid: process.pid }))

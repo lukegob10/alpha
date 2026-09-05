@@ -34,8 +34,9 @@ after process execution remains durable and independent of acquisition cancellat
 
 `FileAgentControlPersistence` optionally accepts `transactionWaitTimeoutMs`, `maxPendingTransactions`, and
 `onTransactionDiagnostic`. One final callback reports `operation`, `outcome`, `queueWaitMs`, `acquisitionWaitMs`, `holdMs`,
-`releaseMs`, `attempts`, `ownerState`, optional `ownerPid`/`ownerOperation`, `committed`, and `releaseFailed`. Acquisition
-errors carry the same snapshot. Slow acquisition, failure, and release failure log this closed shape. Callback exceptions
+`releaseMs`, `attempts`, `ownerState`, optional `ownerPid`/`ownerOperation`, `committed`, and `releaseFailed`. Failed releases
+also include the optional closed phase/code metadata described below. Acquisition errors carry the same snapshot.
+Slow acquisition, failure, and release failure log this closed shape. Callback exceptions
 cannot change transaction outcomes. Timings distinguish actual body work from waiting and cleanup; they are not a model
 or command-process performance measurement. NOR-35 consumes this seam for transaction-body measurements.
 
@@ -67,6 +68,29 @@ Windows release renames retain bounded transient retries. If exhausted, a durabl
 to recover. If marker publication also fails, the original instance retains one inactive token after cleanup settles and
 can recover it through the same quarantine boundary. Another instance needs a durable marker or definitive process death.
 Committed data remains successful even when cleanup fails; diagnostics explicitly preserve both outcomes.
+
+After the canonical directory has been renamed to its unique `.release.T` path, Windows cleanup retries unlinking
+`owner.json` and removing that released directory separately. Each primitive permits 10, 25, 50, 100 and 200 ms of
+scheduled backoff for `EACCES`, `EBUSY`, `EPERM` or `ENOTEMPTY`; successful steps are not repeated and `ENOENT` is
+idempotent. Cleanup does not consult the cancelled transaction signal. These retries never target a successor at the
+canonical path, never remove unknown children recursively, and do not alter failed-owner-publication cleanup or permanent
+reaper tombstones. Permanent and exhausted failures remain visible as `releaseFailed`.
+
+A native Node 20.19.2 regression holds an `owner.json` read descriptor after the directory is renamed: unlink succeeds,
+but Windows reports `ENOTEMPTY` for rmdir until that descriptor closes. The former release rejected immediately; bounded
+cleanup waits for that condition to clear. NOR-35's preserved `docs/benchmarks/nor35-baseline-failed-release.json` records
+three committed-success/release-failure transactions among 720 successful writes at `e04f34d`, with release durations
+around 2.6 ms. Those records do not contain error stage or errno, so they cannot establish that this reproduced cleanup
+condition caused those three failures. Stage-specific evidence is required for that attribution.
+
+Failed release diagnostics now optionally include a closed `releaseFailurePhase` (`owner-read`, `rename`,
+`release-marker`, `cleanup-owner`, `cleanup-directory`, or `unknown`) and `releaseFailureCode` (one of `EACCES`, `EBUSY`,
+`EPERM`, `ENOTEMPTY`, `ENOENT`, `EIO`, `ENOSPC`, `EEXIST`, or `unknown`). These optional fields preserve old readers and
+records. Successful releases omit both fields; no raw error, message, path, or token is added, and counters are unchanged.
+
+Primary Windows sources retrieved September 5, 2026:
+[DeleteFileW deferred deletion](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-deletefilew) and
+[RemoveDirectoryW requirements](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-removedirectoryw).
 
 An async transaction context prevents an unrelated standalone write from borrowing another caller's lock. The context
 is fenced as finished as soon as its body settles, so escaped callbacks cannot write during cleanup or after replacement.

@@ -29,6 +29,30 @@ export interface AgentControlTransactionDiagnostic {
 	ownerOperation?: AgentControlOperation
 	committed: boolean
 	releaseFailed: boolean
+	releaseFailurePhase?: "owner-read" | "rename" | "release-marker" | "cleanup-owner" | "cleanup-directory" | "unknown"
+	releaseFailureCode?: "EACCES" | "EBUSY" | "EPERM" | "ENOTEMPTY" | "ENOENT" | "EIO" | "ENOSPC" | "EEXIST" | "unknown"
+}
+
+/** Failure metadata is closed and cannot expose a filesystem path or arbitrary error payload. */
+export function transactionReleaseFailureCode(error: unknown): AgentControlTransactionDiagnostic["releaseFailureCode"] {
+	try {
+		const code = error && typeof error === "object" ? (error as NodeJS.ErrnoException).code : undefined
+		switch (code) {
+			case "EACCES":
+			case "EBUSY":
+			case "EPERM":
+			case "ENOTEMPTY":
+			case "ENOENT":
+			case "EIO":
+			case "ENOSPC":
+			case "EEXIST":
+				return code
+			default:
+				return "unknown"
+		}
+	} catch {
+		return "unknown"
+	}
 }
 
 export interface FileAgentControlPersistenceOptions {
@@ -173,7 +197,7 @@ export class AgentControlTransactionQueue {
 	}
 }
 
-/** Cancel only an uncommitted retry wait, without exposing an arbitrary abort reason. */
+/** Callers may cancel uncommitted retries; cleanup waits omit the signal. */
 export async function waitForTransactionRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
 	throwIfTransactionCancelled(signal)
 	await new Promise<void>((resolve, reject) => {
