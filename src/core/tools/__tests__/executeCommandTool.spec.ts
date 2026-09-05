@@ -151,6 +151,42 @@ describe("executeCommandTool", () => {
 
 	// Now we can run these tests
 	describe("Basic functionality", () => {
+		it("emits trusted exploration metadata only after a supported command exits successfully", async () => {
+			mockToolUse.params.command = "rg --files"
+			mockToolUse.nativeArgs = { command: "rg --files" }
+			mockCline.getCommandExecutionEvidence = vitest.fn(() => [
+				{
+					toolCallId: "inspection-call",
+					executionId: "inspection-execution",
+					status: "succeeded",
+					exitCode: 0,
+					startedAt: 1,
+					command: "rg --files",
+					cwd: mockCline.cwd,
+				},
+			])
+			const setResultMetadata = vitest.fn()
+
+			await executeCommandTool.handle(mockCline as unknown as Task, mockToolUse, {
+				askApproval: mockAskApproval as unknown as AskApproval,
+				handleError: mockHandleError as unknown as HandleError,
+				pushToolResult: mockPushToolResult as unknown as PushToolResult,
+				setResultMetadata,
+				toolCallId: "inspection-call",
+			})
+
+			expect(setResultMetadata).toHaveBeenCalledWith({
+				executionStatus: undefined,
+				status: "success",
+				exitCode: 0,
+				timedOut: false,
+				trustedExploration: {
+					scope: expect.any(String),
+					semanticFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+				},
+			})
+		})
+
 		it("should execute a command normally", async () => {
 			// Setup
 			mockToolUse.params.command = "echo test"

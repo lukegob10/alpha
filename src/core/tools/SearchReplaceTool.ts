@@ -91,11 +91,9 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 				return
 			}
 
-			let fileContent: string
+			let originalFileContent: string
 			try {
-				fileContent = await fs.readFile(absolutePath, "utf8")
-				// Normalize line endings to LF for consistent matching
-				fileContent = fileContent.replace(/\r\n/g, "\n")
+				originalFileContent = await fs.readFile(absolutePath, "utf8")
 			} catch (error) {
 				task.consecutiveMistakeCount++
 				task.recordToolError("search_replace")
@@ -104,6 +102,10 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 				pushToolResult(formatResponse.toolError(errorMessage))
 				return
 			}
+
+			// Normalize only the matching projection. The raw content remains the
+			// baseline used to reject edits made while approval was pending.
+			const fileContent = originalFileContent.replace(/\r\n/g, "\n")
 
 			// Normalize line endings in search/replace strings to match file content
 			const normalizedOldString = old_string.replace(/\r\n/g, "\n")
@@ -147,7 +149,7 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 
 			// Initialize diff view
 			task.diffViewProvider.editType = "modify"
-			task.diffViewProvider.originalContent = fileContent
+			task.diffViewProvider.originalContent = originalFileContent
 
 			// Generate and validate diff
 			const diff = formatResponse.createPrettyPatch(relPath, fileContent, newContent)
@@ -207,7 +209,10 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 			// Save the changes
 			if (isPreventFocusDisruptionEnabled) {
 				// Direct file write without diff view or opening the file
-				await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs)
+				await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs, {
+					exists: true,
+					content: originalFileContent,
+				})
 			} else {
 				// Call saveChanges to update the DiffViewProvider properties
 				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)

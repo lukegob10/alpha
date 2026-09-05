@@ -1,10 +1,7 @@
-import * as vscode from "vscode"
-
 import type { HistoryItem } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
-import { Package } from "../../shared/package"
 import type { ToolUse } from "../../shared/tools"
 import { t } from "../../i18n"
 
@@ -57,21 +54,12 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			return
 		}
 
-		const preventCompletionWithOpenTodos = vscode.workspace
-			.getConfiguration(Package.name)
-			.get<boolean>("preventCompletionWithOpenTodos", false)
-
-		const hasIncompleteTodos = task.todoList && task.todoList.some((todo) => todo.status !== "completed")
-
-		if (preventCompletionWithOpenTodos && hasIncompleteTodos) {
+		const todoDecision = task.getOpenTodoCompletionDecision()
+		if (todoDecision) {
 			task.consecutiveMistakeCount++
 			task.recordToolError("attempt_completion")
 
-			pushToolResult(
-				formatResponse.toolError(
-					"Cannot complete task while there are incomplete todos. Please finish all todos before attempting completion.",
-				),
-			)
+			pushToolResult(formatResponse.toolError(todoDecision.message))
 
 			return
 		}

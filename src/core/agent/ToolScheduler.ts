@@ -145,6 +145,8 @@ export interface ToolSchedulerResult {
 	exitCode?: number
 	truncated?: boolean
 	timedOut?: boolean
+	/** Trusted progress-only observation; never verification evidence. */
+	trustedExploration?: ToolResultMetadata["trustedExploration"]
 	durationMs: number
 }
 
@@ -330,15 +332,42 @@ interface PreparedCall {
 	finalizeRead?: () => Promise<ToolResponse>
 }
 
+function scopeContains(root: string, candidate: string): boolean {
+	const relative = path.relative(root, candidate)
+	return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+}
+
 function scopesOverlap(left: string, right: string): boolean {
-	const contains = (root: string, candidate: string) => {
-		const relative = path.relative(root, candidate)
-		return (
-			relative === "" ||
-			(relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
-		)
+	return scopeContains(left, right) || scopeContains(right, left)
+}
+
+function trustedExplorationForResult(
+	metadata: ToolResultMetadata,
+	status: ToolSchedulerResult["status"],
+	toolName: string,
+	workspaceRoot?: string,
+): ToolResultMetadata["trustedExploration"] | undefined {
+	const observation = metadata.trustedExploration
+	const executionStatus = metadata.executionStatus ?? metadata.status
+	if (
+		toolName !== "execute_command" ||
+		status !== "success" ||
+		executionStatus !== "success" ||
+		metadata.exitCode !== 0 ||
+		!observation ||
+		!path.isAbsolute(observation.scope) ||
+		observation.scope.length > 4_096 ||
+		path.normalize(observation.scope) !== observation.scope ||
+		(workspaceRoot !== undefined &&
+			(!path.isAbsolute(workspaceRoot) || !scopeContains(path.normalize(workspaceRoot), observation.scope))) ||
+		!/^[a-f0-9]{64}$/.test(observation.semanticFingerprint)
+	) {
+		return undefined
 	}
-	return contains(left, right) || contains(right, left)
+	return {
+		scope: observation.scope,
+		semanticFingerprint: observation.semanticFingerprint,
+	}
 }
 
 function formatFailureResult(message: string, status: Exclude<ToolResultStatus, "success">): string {
@@ -1406,15 +1435,25 @@ export class ToolScheduler {
 			this.outputTruncatedCount += 1
 		}
 
+		const status = collector.getStatus()
+		const metadata = collector.getMetadata()
+		const executionStatus = metadata.executionStatus ?? metadata.status
+		const trustedExploration = trustedExplorationForResult(
+			metadata,
+			status,
+			prepared.call.name,
+			this.executionHost.cwd,
+		)
 		return {
 			callId: prepared.call.id,
 			name: prepared.call.name,
-			status: collector.getStatus(),
+			status,
 			content: collector.getContent(),
-			executionStatus: collector.getMetadata().executionStatus ?? collector.getMetadata().status,
-			exitCode: collector.getMetadata().exitCode,
+			executionStatus,
+			exitCode: metadata.exitCode,
 			truncated: collector.isTruncated(),
-			timedOut: collector.getMetadata().timedOut,
+			timedOut: metadata.timedOut,
+			...(trustedExploration ? { trustedExploration } : {}),
 			durationMs: Math.max(0, performance.now() - startedAt),
 		}
 	}

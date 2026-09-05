@@ -1,12 +1,17 @@
+import { createHash } from "crypto"
 import path from "path"
 import { tmpdir } from "os"
 
 import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 import type { AgentToolCall } from "../AgentResponse"
-import { ToolScheduler, type ToolExecutionHost } from "../ToolScheduler"
+import { ToolScheduler, type ToolExecutionHost, type ToolSchedulerResult } from "../ToolScheduler"
 
 const workspace = path.join(tmpdir(), "scheduler-progress-fixture")
+
+function fingerprint(value: string): string {
+	return createHash("sha256").update(value).digest("hex")
+}
 
 function deferred() {
 	let resolve!: () => void
@@ -72,6 +77,179 @@ function receiptIds(host: ToolExecutionHost): string[] {
 }
 
 describe("ToolScheduler progress observation", () => {
+	it("carries trusted exploration metadata through the scheduler result and stopping callback", async () => {
+		const host = makeHost()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const trustedExploration = {
+			scope: path.normalize(workspace),
+			semanticFingerprint: fingerprint("rg --files src"),
+		}
+		let observedResult: ToolSchedulerResult | undefined
+		host.recordToolCallForStopping = (_name, _args, _status, _category, result) => {
+			observedResult = result
+		}
+		registry.register(
+			descriptor("execute_command", async ({ callbacks }) => {
+				callbacks.setResultMetadata?.({
+					status: "success",
+					executionStatus: "success",
+					exitCode: 0,
+					trustedExploration,
+				})
+				callbacks.pushToolResult("inspected")
+			}),
+		)
+
+		const outcome = await new ToolScheduler({
+			executionHost: host,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(calls("execute_command", 1))
+
+		expect(outcome.results[0]).toMatchObject({ trustedExploration })
+		expect(observedResult).toMatchObject({ trustedExploration })
+	})
+
+	it.each([
+		{ status: "error" as const, executionStatus: "error" as const, exitCode: 1 },
+		{ status: "success" as const, executionStatus: "running" as const, exitCode: 0 },
+		{ status: "success" as const, executionStatus: "success" as const, exitCode: 1 },
+	])(
+		"drops trusted exploration unless the process actually exits successfully: $executionStatus/$exitCode",
+		async (metadata) => {
+			const host = makeHost()
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			registry.register(
+				descriptor("execute_command", async ({ callbacks }) => {
+					callbacks.setResultMetadata?.({
+						...metadata,
+						trustedExploration: {
+							scope: path.normalize(workspace),
+							semanticFingerprint: fingerprint("unsupported outcome"),
+						},
+					})
+					callbacks.pushToolResult("not a completed inspection")
+				}),
+			)
+
+			const outcome = await new ToolScheduler({
+				executionHost: host,
+				registry,
+				mode: "code",
+				validateCall: () => {},
+			}).run(calls("execute_command", 1))
+
+			expect(outcome.results[0].trustedExploration).toBeUndefined()
+		},
+	)
+
+	it("drops forged exploration metadata from non-command tools", async () => {
+		const host = makeHost()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(
+			descriptor("read", async ({ callbacks }) => {
+				callbacks.setResultMetadata?.({
+					status: "success",
+					executionStatus: "success",
+					exitCode: 0,
+					trustedExploration: {
+						scope: path.normalize(workspace),
+						semanticFingerprint: fingerprint("forged by read"),
+					},
+				})
+				callbacks.pushToolResult("read")
+			}),
+		)
+
+		const outcome = await new ToolScheduler({
+			executionHost: host,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(calls("read", 1))
+
+		expect(outcome.results[0].trustedExploration).toBeUndefined()
+	})
+
+	it("drops command exploration metadata outside the execution host workspace", async () => {
+		const host = makeHost()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(
+			descriptor("execute_command", async ({ callbacks }) => {
+				callbacks.setResultMetadata?.({
+					status: "success",
+					executionStatus: "success",
+					exitCode: 0,
+					trustedExploration: {
+						scope: path.normalize(path.join(workspace, "..", "outside-workspace")),
+						semanticFingerprint: fingerprint("forged outside scope"),
+					},
+				})
+				callbacks.pushToolResult("inspected")
+			}),
+		)
+
+		const outcome = await new ToolScheduler({
+			executionHost: host,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(calls("execute_command", 1))
+
+		expect(outcome.results[0].trustedExploration).toBeUndefined()
+	})
+
+	it("lets forty distinct trusted command inspections pass the same detector path as reads", async () => {
+		const host = makeHost()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
+		let stopped = false
+		host.shouldStopRepeatedToolCall = () => stopped
+		host.recordToolCallForStopping = (toolName, args, status, _category, result) => {
+			const exploration = result?.trustedExploration
+			stopped =
+				detector.recordOutcome({
+					toolName,
+					args,
+					status,
+					kind: exploration ? "read" : "check",
+					scope: exploration?.scope ?? workspace,
+					explorationFingerprint: exploration?.semanticFingerprint,
+				}).action === "stop"
+		}
+		registry.register(
+			descriptor("execute_command", async ({ call, callbacks }) => {
+				const index = Number((call.nativeArgs as { index: number }).index)
+				callbacks.setResultMetadata?.({
+					status: "success",
+					executionStatus: "success",
+					exitCode: 0,
+					trustedExploration: {
+						scope: path.normalize(workspace),
+						semanticFingerprint: fingerprint(`inspection-${index}`),
+					},
+				})
+				callbacks.pushToolResult(`inspected ${index}`)
+			}),
+		)
+
+		const outcome = await new ToolScheduler({
+			executionHost: host,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(calls("execute_command", 40))
+
+		expect(outcome.results).toHaveLength(40)
+		expect(
+			outcome.results.flatMap((result, index) =>
+				result.trustedExploration ? [] : [{ index, status: result.status, content: result.content }],
+			),
+		).toEqual([])
+		expect(stopped).toBe(false)
+	})
+
 	it("observes every changing serial effect before the next effect without committing receipts early", async () => {
 		const host = makeHost()
 		const registry = new ToolRegistry({ includeBuiltIns: false })

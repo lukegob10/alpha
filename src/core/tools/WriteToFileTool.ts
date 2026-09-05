@@ -8,11 +8,10 @@ import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
 import { fileExistsAtPath, createDirectoriesForFile } from "../../utils/fs"
-import { stripLineNumbers, everyLineHasLineNumbers } from "../../integrations/misc/extract-text"
-import { unescapeHtmlEntities } from "../../utils/text-normalization"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { convertNewFileToUnifiedDiff, computeDiffStats, sanitizeUnifiedDiff } from "../diff/stats"
 import type { ToolUse } from "../../shared/tools"
+import type { ExpectedFileState } from "../../integrations/editor/DiffViewProvider"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
@@ -72,18 +71,6 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 			await createDirectoriesForFile(absolutePath)
 		}
 
-		if (newContent.startsWith("```")) {
-			newContent = newContent.split("\n").slice(1).join("\n")
-		}
-
-		if (newContent.endsWith("```")) {
-			newContent = newContent.split("\n").slice(0, -1).join("\n")
-		}
-
-		if (!task.api.getModel().id.includes("claude")) {
-			newContent = unescapeHtmlEntities(newContent)
-		}
-
 		const fullPath = relPath ? path.resolve(task.cwd, relPath) : ""
 		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, fullPath)
 
@@ -109,11 +96,15 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 
 			if (isPreventFocusDisruptionEnabled) {
 				task.diffViewProvider.editType = fileExists ? "modify" : "create"
+				let expectedFileState: ExpectedFileState
 				if (fileExists) {
 					const absolutePath = path.resolve(task.cwd, relPath)
-					task.diffViewProvider.originalContent = await fs.readFile(absolutePath, "utf-8")
+					const originalContent = await fs.readFile(absolutePath, "utf-8")
+					task.diffViewProvider.originalContent = originalContent
+					expectedFileState = { exists: true, content: originalContent }
 				} else {
 					task.diffViewProvider.originalContent = ""
+					expectedFileState = { exists: false }
 				}
 
 				let unified = fileExists
@@ -129,10 +120,19 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 				const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
 
 				if (!didApprove) {
+					await task.diffViewProvider.reset()
+					this.resetPartialState()
 					return
 				}
 
-				await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs)
+				await task.diffViewProvider.saveDirectly(
+					relPath,
+					newContent,
+					false,
+					diagnosticsEnabled,
+					writeDelayMs,
+					expectedFileState,
+				)
 			} else {
 				if (!task.diffViewProvider.isEditing) {
 					const partialMessage = JSON.stringify(sharedMessageProps)
@@ -140,10 +140,7 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 					await task.diffViewProvider.open(relPath)
 				}
 
-				await task.diffViewProvider.update(
-					everyLineHasLineNumbers(newContent) ? stripLineNumbers(newContent) : newContent,
-					true,
-				)
+				await task.diffViewProvider.update(newContent, true)
 
 				await delay(300)
 				task.diffViewProvider.scrollToFirstDiff()
@@ -162,6 +159,8 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 
 				if (!didApprove) {
 					await task.diffViewProvider.revertChanges()
+					await task.diffViewProvider.reset()
+					this.resetPartialState()
 					return
 				}
 
@@ -243,15 +242,12 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 		const partialMessage = JSON.stringify(sharedMessageProps)
 		await task.ask("tool", partialMessage, block.partial).catch(() => {})
 
-		if (newContent) {
+		if (newContent !== undefined) {
 			if (!task.diffViewProvider.isEditing) {
 				await task.diffViewProvider.open(relPath!)
 			}
 
-			await task.diffViewProvider.update(
-				everyLineHasLineNumbers(newContent) ? stripLineNumbers(newContent) : newContent,
-				false,
-			)
+			await task.diffViewProvider.update(newContent, false)
 		}
 	}
 }

@@ -15,7 +15,13 @@ import type { ApiHandlerOptions } from "../../shared/api"
 import { SELECTOR_SEPARATOR, stringifyVsCodeLmModelSelector } from "../../shared/vsCodeSelectorUtils"
 import { normalizeToolSchema } from "../../utils/json-schema"
 
-import { ApiStream, raceApiStreamAbort } from "../transform/stream"
+import {
+	ApiStream,
+	ApiStreamDeadlineError,
+	createLinkedAbortController,
+	raceApiStreamAbort,
+	type LinkedAbortController,
+} from "../transform/stream"
 import {
 	convertToVsCodeLmMessages,
 	extractTextCountFromMessage,
@@ -25,7 +31,7 @@ import {
 
 import { BaseProvider } from "./base-provider"
 import { getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
-import type { SingleCompletionHandler, ApiHandlerCreateMessageMetadata } from "../index"
+import type { SingleCompletionHandler, ApiHandlerCountTokensMetadata, ApiHandlerCreateMessageMetadata } from "../index"
 
 /**
  * Converts OpenAI-format tools to VSCode Language Model tools.
@@ -63,10 +69,13 @@ type VsCodeLm122RequestOptions = vscode.LanguageModelChatRequestOptions & {
 const VSCODE_GPT_56_MIN_VERSION = "1.128.0"
 const VSCODE_LM_STATEFUL_MARKER_MIME_TYPE = "stateful_marker"
 const VSCODE_LM_TOKEN_COUNT_TIMEOUT_MS = 5_000
+const VSCODE_LM_CLIENT_CACHE_MAX_SETTLED_ENTRIES = 32
+const VSCODE_LM_CLIENT_CACHE_MAX_TOTAL_ENTRIES = 64
 
 type VsCodeLmClientCacheEntry = {
 	generation: number
 	promise: Promise<vscode.LanguageModelChat>
+	settled: boolean
 }
 
 const vsCodeLmClientCache = new Map<string, VsCodeLmClientCacheEntry>()
@@ -86,6 +95,27 @@ function invalidateVsCodeLmClientCache(): void {
 	vsCodeLmClientCache.clear()
 }
 
+/**
+ * Keep selector churn bounded without breaking the single-flight contract. An
+ * unresolved selection can still have multiple handlers awaiting it, so pending
+ * entries are retained above the settled steady-state cap. A separate hard cap
+ * only drops the oldest mapping; it does not cancel or reject existing waiters,
+ * which still own the same promise and settle normally.
+ */
+function trimVsCodeLmClientCache(): void {
+	while (vsCodeLmClientCache.size > VSCODE_LM_CLIENT_CACHE_MAX_SETTLED_ENTRIES) {
+		const settledEntry = [...vsCodeLmClientCache].find(([, entry]) => entry.settled)
+		if (!settledEntry) break
+		vsCodeLmClientCache.delete(settledEntry[0])
+	}
+
+	while (vsCodeLmClientCache.size > VSCODE_LM_CLIENT_CACHE_MAX_TOTAL_ENTRIES) {
+		const oldestKey = vsCodeLmClientCache.keys().next().value
+		if (typeof oldestKey !== "string") return
+		vsCodeLmClientCache.delete(oldestKey)
+	}
+}
+
 function getCachedVsCodeLmClient(
 	selector: vscode.LanguageModelChatSelector,
 	resolve: () => Promise<vscode.LanguageModelChat>,
@@ -93,29 +123,50 @@ function getCachedVsCodeLmClient(
 	const key = getVsCodeLmClientCacheKey(selector)
 	const cached = vsCodeLmClientCache.get(key)
 	if (cached?.generation === vsCodeLmClientCacheGeneration) {
+		// Refresh insertion order so settled eviction approximates LRU while an
+		// in-flight entry continues to expose the exact same shared promise.
+		vsCodeLmClientCache.delete(key)
+		vsCodeLmClientCache.set(key, cached)
 		return cached.promise
 	}
 
 	const generation = vsCodeLmClientCacheGeneration
+	let entry: VsCodeLmClientCacheEntry
 	let promise: Promise<vscode.LanguageModelChat>
 	promise = resolve().then(
 		(client) => {
+			entry.settled = true
 			// VS Code documents that retained clients remain valid until its model-change
 			// event. If that event races selection, re-query instead of caching a stale client.
 			if (generation !== vsCodeLmClientCacheGeneration) {
 				return getCachedVsCodeLmClient(selector, resolve)
 			}
+			trimVsCodeLmClientCache()
 			return client
 		},
 		(error) => {
+			entry.settled = true
 			if (vsCodeLmClientCache.get(key)?.promise === promise) {
 				vsCodeLmClientCache.delete(key)
 			}
+			trimVsCodeLmClientCache()
 			throw error
 		},
 	)
-	vsCodeLmClientCache.set(key, { generation, promise })
+	entry = { generation, promise, settled: false }
+	vsCodeLmClientCache.set(key, entry)
+	trimVsCodeLmClientCache()
 	return promise
+}
+
+function evictPendingVsCodeLmClient(
+	selector: vscode.LanguageModelChatSelector,
+	promise: Promise<vscode.LanguageModelChat>,
+): void {
+	const key = getVsCodeLmClientCacheKey(selector)
+	if (vsCodeLmClientCache.get(key)?.promise === promise) {
+		vsCodeLmClientCache.delete(key)
+	}
 }
 
 type VsCodeLmPersistedMessage = Anthropic.Messages.MessageParam & {
@@ -159,6 +210,46 @@ function getVsCodeLmTokenCountTimeout(): number {
 	return configuredTimeout === undefined
 		? VSCODE_LM_TOKEN_COUNT_TIMEOUT_MS
 		: Math.min(configuredTimeout, VSCODE_LM_TOKEN_COUNT_TIMEOUT_MS)
+}
+
+function getAbsoluteDeadline(value: number | Date | undefined): number | undefined {
+	const deadline = value instanceof Date ? value.getTime() : value
+	return typeof deadline === "number" && Number.isFinite(deadline) ? deadline : undefined
+}
+
+function getAbortSignalReason(signal: AbortSignal): unknown {
+	if (signal.reason !== undefined) {
+		return signal.reason
+	}
+
+	const error = new Error("The operation was aborted")
+	error.name = "AbortError"
+	return error
+}
+
+type VsCodeLmRequestPhase = "model-selection" | "request-admission" | "first-response-chunk" | "response-stream"
+
+class VsCodeLmRequestDeadlineError extends ApiStreamDeadlineError {
+	readonly phase: VsCodeLmRequestPhase
+
+	constructor(phase: VsCodeLmRequestPhase) {
+		super(`VS Code LM caller deadline exceeded during ${phase}.`)
+		this.phase = phase
+	}
+}
+
+function getVsCodeLmRequestAbortError(signal: AbortSignal, phase: VsCodeLmRequestPhase): Error {
+	return signal.reason instanceof ApiStreamDeadlineError
+		? new VsCodeLmRequestDeadlineError(phase)
+		: new vscode.CancellationError()
+}
+
+function throwIfVsCodeLmRequestAborted(signal: AbortSignal, phase: VsCodeLmRequestPhase): void {
+	if (!signal.aborted) {
+		return
+	}
+
+	throw getVsCodeLmRequestAbortError(signal, phase)
 }
 
 function getVsCodeLmReasoningEffortOption(
@@ -371,6 +462,17 @@ function estimateTokens(text: string): number {
 	return Math.max(1, Math.ceil(new TextEncoder().encode(text).byteLength / 3))
 }
 
+/**
+ * Token-budget fallback used when the host tokenizer is unavailable. A byte
+ * ceiling is deliberately stricter than the usage estimate above: modern
+ * tokenizers cannot require more tokens than the UTF-8 byte representation,
+ * so this cannot make compaction accept text that the exact counter rejected.
+ */
+function estimateConservativeTokens(text: string): number {
+	if (text.length === 0) return 0
+	return Math.max(1, new TextEncoder().encode(text).byteLength)
+}
+
 function hasAnthropicImageContent(content: Anthropic.Messages.ContentBlockParam[]): boolean {
 	return content.some((block) => {
 		if (block.type === "image") {
@@ -520,6 +622,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	private client: vscode.LanguageModelChat | null
 	private disposables: vscode.Disposable[]
 	private currentRequestCancellation: vscode.CancellationTokenSource | null
+	private currentRequestControl: LinkedAbortController | null
 	private currentRequestSignalCleanup: (() => void) | null
 	private currentResponseStatefulMarker: string | undefined
 
@@ -529,6 +632,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		this.client = null
 		this.disposables = []
 		this.currentRequestCancellation = null
+		this.currentRequestControl = null
 		this.currentRequestSignalCleanup = null
 		this.currentResponseStatefulMarker = undefined
 
@@ -577,7 +681,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				return
 			}
 			// Create a new client instance
-			this.client = await this.resolveConfiguredClient()
+			await this.getClient()
 			console.debug("Alpha <Language Model API>: Client initialized successfully")
 		} catch (error) {
 			// Handle errors during client initialization
@@ -598,16 +702,22 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	 * const chatClient = await createClient(selector);
 	 */
 	async createClient(selector: vscode.LanguageModelChatSelector): Promise<vscode.LanguageModelChat> {
+		return this.selectClient(selector, true)
+	}
+
+	private async selectClient(
+		selector: vscode.LanguageModelChatSelector,
+		applyConfiguredTimeout: boolean,
+	): Promise<vscode.LanguageModelChat> {
 		try {
 			if (!vscode.lm?.selectChatModels) {
 				throw new Error("VS Code Language Model API is not available in this VS Code build.")
 			}
 
-			const models = await withApiRequestTimeout(
-				vscode.lm.selectChatModels(selector),
-				"VS Code LM model selection",
-				getApiRequestTimeout(),
-			)
+			const selection = vscode.lm.selectChatModels(selector)
+			const models = applyConfiguredTimeout
+				? await withApiRequestTimeout(selection, "VS Code LM model selection", getApiRequestTimeout())
+				: await selection
 
 			const selectorEntries = Object.entries(selector).filter(
 				(entry): entry is [keyof vscode.LanguageModelChatSelector, string] =>
@@ -634,12 +744,11 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			}
 
 			const hasSpecificSelector = selectorEntries.length > 0
-			const availableModels = hasSpecificSelector
-				? await withApiRequestTimeout(
-						vscode.lm.selectChatModels({}),
-						"VS Code LM availability check",
-						getApiRequestTimeout(),
-					)
+			const availability = hasSpecificSelector ? vscode.lm.selectChatModels({}) : undefined
+			const availableModels = availability
+				? applyConfiguredTimeout
+					? await withApiRequestTimeout(availability, "VS Code LM availability check", getApiRequestTimeout())
+					: await availability
 				: models
 
 			if (!availableModels?.length) {
@@ -690,13 +799,20 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	 * @param content The content blocks to count tokens for
 	 * @returns A promise resolving to the token count
 	 */
-	override async countTokens(content: Array<Anthropic.Messages.ContentBlockParam>): Promise<number> {
+	override async countTokens(
+		content: Array<Anthropic.Messages.ContentBlockParam>,
+		metadata?: ApiHandlerCountTokensMetadata,
+	): Promise<number> {
+		if (metadata?.signal?.aborted) {
+			throw getAbortSignalReason(metadata.signal)
+		}
+
 		const [message] = convertToVsCodeLmMessages([{ role: "user", content }])
 		// A text fallback can be estimated locally. Media token cost depends on its
 		// dimensions, so a failed provider count uses the full selected context as
 		// a safety floor rather than silently undercounting and overrunning it.
 		const fallbackFloor = hasAnthropicImageContent(content) ? this.getModel().info.contextWindow : 0
-		return message ? this.internalCountTokens(message, fallbackFloor) : 0
+		return message ? this.internalCountTokens(message, fallbackFloor, metadata) : 0
 	}
 
 	/**
@@ -705,21 +821,32 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	private async internalCountTokens(
 		text: string | vscode.LanguageModelChatMessage,
 		fallbackFloor = 0,
+		metadata?: ApiHandlerCountTokensMetadata,
 	): Promise<number> {
 		const estimatedTokens =
 			typeof text === "string"
-				? estimateTokens(text)
+				? estimateConservativeTokens(text)
 				: isLanguageModelChatMessageLike(text)
-					? estimateTokens(extractTextCountFromMessage(text))
+					? estimateConservativeTokens(extractTextCountFromMessage(text))
 					: 1
 		const normalizedFallbackFloor =
 			Number.isFinite(fallbackFloor) && fallbackFloor > 0 ? Math.ceil(fallbackFloor) : 0
 		const fallbackTokens = Math.max(estimatedTokens, normalizedFallbackFloor)
+		const useFallback = () => {
+			if (metadata?.signal?.aborted) {
+				throw getAbortSignalReason(metadata.signal)
+			}
+			return fallbackTokens
+		}
+
+		if (metadata?.signal?.aborted) {
+			throw getAbortSignalReason(metadata.signal)
+		}
 
 		// Check for required dependencies
 		if (!this.client) {
 			console.warn("Alpha <Language Model API>: No client available for token counting")
-			return fallbackTokens
+			return useFallback()
 		}
 
 		// Validate input
@@ -730,49 +857,75 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 		if (typeof text !== "string" && !isLanguageModelChatMessageLike(text)) {
 			console.warn("Alpha <Language Model API>: Invalid input type for token counting")
-			return fallbackTokens
+			return useFallback()
+		}
+
+		const remoteDeadline = getAbsoluteDeadline(metadata?.remoteDeadline)
+		if (remoteDeadline !== undefined && remoteDeadline <= Date.now()) {
+			return useFallback()
 		}
 
 		// Token counting can involve the same provider backend as generation. Keep it cancellable,
 		// but isolate count-token cancellation from the main request token.
-		let cancellationToken: vscode.CancellationToken
-		let tempCancellation: vscode.CancellationTokenSource | null = null
+		const tempCancellation = new vscode.CancellationTokenSource()
+		const timeoutDeadline = Date.now() + getVsCodeLmTokenCountTimeout()
+		const requestControl = createLinkedAbortController({
+			signal: metadata?.signal,
+			deadline: remoteDeadline === undefined ? timeoutDeadline : Math.min(timeoutDeadline, remoteDeadline),
+		})
+		const disposeSignalBridge = bridgeAbortSignalToVsCodeCancellation(requestControl.signal, tempCancellation)
 		let linkedCancellation: vscode.Disposable | undefined
-
-		tempCancellation = new vscode.CancellationTokenSource()
-		cancellationToken = tempCancellation.token
 
 		if (this.currentRequestCancellation) {
 			linkedCancellation = this.currentRequestCancellation.token.onCancellationRequested(() => {
-				tempCancellation?.cancel()
+				tempCancellation.cancel()
+				if (!requestControl.signal.aborted) {
+					requestControl.controller.abort(new vscode.CancellationError())
+				}
 			})
 		}
 
 		try {
-			const tokenCount = await withApiRequestTimeout(
-				this.client.countTokens(text, cancellationToken),
-				"VS Code LM token counting",
-				getVsCodeLmTokenCountTimeout(),
-				() => tempCancellation?.cancel(),
+			if (metadata?.signal?.aborted) {
+				throw getAbortSignalReason(metadata.signal)
+			}
+			if (remoteDeadline !== undefined && remoteDeadline <= Date.now()) {
+				return useFallback()
+			}
+
+			const tokenCount = await raceApiStreamAbort(
+				this.client.countTokens(text, tempCancellation.token),
+				requestControl.signal,
 			)
+
+			if (metadata?.signal?.aborted) {
+				throw getAbortSignalReason(metadata.signal)
+			}
+			if (tokenCount === undefined) {
+				return useFallback()
+			}
 
 			// Validate the result
 			if (typeof tokenCount !== "number" || !Number.isFinite(tokenCount)) {
 				console.warn("Alpha <Language Model API>: Non-numeric token count received:", tokenCount)
-				return fallbackTokens
+				return useFallback()
 			}
 
 			if (tokenCount <= 0) {
 				console.warn("Alpha <Language Model API>: Non-positive token count received:", tokenCount)
-				return fallbackTokens
+				return useFallback()
 			}
 
 			return Math.ceil(tokenCount)
 		} catch (error) {
+			if (metadata?.signal?.aborted) {
+				throw getAbortSignalReason(metadata.signal)
+			}
+
 			// Handle specific error types
 			if (error instanceof vscode.CancellationError) {
-				console.debug("Alpha <Language Model API>: Token counting cancelled by user")
-				return fallbackTokens
+				console.debug("Alpha <Language Model API>: Token counting cancelled")
+				return useFallback()
 			}
 
 			const errorMessage = error instanceof Error ? error.message : "Unknown error"
@@ -783,22 +936,29 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				console.debug("Token counting error stack:", error.stack)
 			}
 
-			return fallbackTokens
+			return useFallback()
 		} finally {
-			// Clean up temporary cancellation token
 			linkedCancellation?.dispose()
-			if (tempCancellation) {
-				tempCancellation.dispose()
-			}
+			disposeSignalBridge()
+			requestControl.dispose()
+			tempCancellation.dispose()
 		}
 	}
 
 	private ensureCleanState(): void {
 		const cancellation = this.currentRequestCancellation
+		const requestControl = this.currentRequestControl
 		const signalCleanup = this.currentRequestSignalCleanup
 		this.currentRequestCancellation = null
+		this.currentRequestControl = null
 		this.currentRequestSignalCleanup = null
 		signalCleanup?.()
+		if (requestControl) {
+			if (!requestControl.signal.aborted) {
+				requestControl.controller.abort(new vscode.CancellationError())
+			}
+			requestControl.dispose()
+		}
 
 		if (cancellation) {
 			cancellation.cancel()
@@ -813,15 +973,20 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 	private resolveConfiguredClient(): Promise<vscode.LanguageModelChat> {
 		const selector = this.options.vsCodeLmModelSelector || {}
-		return getCachedVsCodeLmClient(selector, () => this.createClient(selector))
+		// Selection is shared across cold handlers. Each waiter owns its timeout and
+		// cancellation below so abandoning one request cannot strand a timer or
+		// cancel another handler that is awaiting the same VS Code host operation.
+		return getCachedVsCodeLmClient(selector, () => this.selectClient(selector, false))
 	}
 
 	private finishRequest(
 		cancellation: vscode.CancellationTokenSource,
+		requestControl: LinkedAbortController,
 		disposeSignalBridge: () => void,
 		streamCompleted: boolean,
 	): void {
 		disposeSignalBridge()
+		requestControl.dispose()
 
 		// A superseding request may already have cancelled and disposed this source.
 		// Its predecessor must never clear or cancel the new request's source.
@@ -830,6 +995,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		}
 
 		this.currentRequestCancellation = null
+		this.currentRequestControl = null
 		this.currentRequestSignalCleanup = null
 		if (!streamCompleted && !cancellation.token.isCancellationRequested) {
 			cancellation.cancel()
@@ -837,7 +1003,11 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		cancellation.dispose()
 	}
 
-	private async getClient(): Promise<vscode.LanguageModelChat> {
+	private async getClient(signal?: AbortSignal): Promise<vscode.LanguageModelChat> {
+		if (signal) {
+			throwIfVsCodeLmRequestAborted(signal, "model-selection")
+		}
+
 		if (!this.client) {
 			console.debug("Alpha <Language Model API>: Getting client with options:", {
 				vsCodeLmModelSelector: this.options.vsCodeLmModelSelector,
@@ -845,12 +1015,28 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				selectorKeys: this.options.vsCodeLmModelSelector ? Object.keys(this.options.vsCodeLmModelSelector) : [],
 			})
 
+			// Use default empty selector if none provided to get all available models
+			const selector = this.options?.vsCodeLmModelSelector || {}
+			const pendingClient = this.resolveConfiguredClient()
 			try {
-				// Use default empty selector if none provided to get all available models
-				const selector = this.options?.vsCodeLmModelSelector || {}
 				console.debug("Alpha <Language Model API>: Creating client with selector:", selector)
-				this.client = await this.resolveConfiguredClient()
+				const client = await withApiRequestTimeout(
+					raceApiStreamAbort(pendingClient, signal),
+					"VS Code LM model selection",
+					getApiRequestTimeout(),
+				)
+				if (signal) {
+					throwIfVsCodeLmRequestAborted(signal, "model-selection")
+				}
+				if (!client) {
+					throw new vscode.CancellationError()
+				}
+				this.client = client
 			} catch (error) {
+				evictPendingVsCodeLmClient(selector, pendingClient)
+				if (signal?.aborted) {
+					throw getVsCodeLmRequestAbortError(signal, "model-selection")
+				}
 				const message = error instanceof Error ? error.message : "Unknown error"
 				console.error("Alpha <Language Model API>: Client creation failed:", message)
 				throw new Error(`Alpha <Language Model API>: Failed to create client: ${message}`)
@@ -871,13 +1057,20 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 		// Own cancellation locally. A previous generator can finish after this one
 		// starts, so its cleanup must not dereference and cancel this request.
+		const requestControl = createLinkedAbortController(metadata)
+		const callerDeadline = getAbsoluteDeadline(metadata?.deadline)
+		if (callerDeadline !== undefined && callerDeadline <= Date.now() && !requestControl.signal.aborted) {
+			requestControl.controller.abort(new ApiStreamDeadlineError())
+		}
 		const requestCancellation = new vscode.CancellationTokenSource()
 		this.currentRequestCancellation = requestCancellation
-		const disposeSignalBridge = bridgeAbortSignalToVsCodeCancellation(metadata?.signal, requestCancellation)
+		this.currentRequestControl = requestControl
+		const disposeSignalBridge = bridgeAbortSignalToVsCodeCancellation(requestControl.signal, requestCancellation)
 		this.currentRequestSignalCleanup = disposeSignalBridge
 		let streamCompleted = false
 		let responseStatefulMarker: string | undefined
 		let responseIterator: AsyncIterator<unknown> | undefined
+		let requestPhase: VsCodeLmRequestPhase = "model-selection"
 
 		// Keep response parts for providers that do not report terminal usage metadata.
 		// Joining once avoids quadratic concatenation during long streamed responses.
@@ -885,14 +1078,10 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		let reportedUsage: VsCodeLmUsage | undefined
 
 		try {
-			if (requestCancellation.token.isCancellationRequested) {
-				throw new vscode.CancellationError()
-			}
+			throwIfVsCodeLmRequestAborted(requestControl.signal, requestPhase)
 
-			const client: vscode.LanguageModelChat = await this.getClient()
-			if (requestCancellation.token.isCancellationRequested) {
-				throw new vscode.CancellationError()
-			}
+			const client: vscode.LanguageModelChat = await this.getClient(requestControl.signal)
+			throwIfVsCodeLmRequestAborted(requestControl.signal, requestPhase)
 
 			// Convert Anthropic messages to VS Code LM messages
 			const vsCodeLmMessages: vscode.LanguageModelChatMessage[] = [
@@ -911,29 +1100,35 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				requestOptions.tools = tools
 			}
 
+			requestPhase = "request-admission"
+			throwIfVsCodeLmRequestAborted(requestControl.signal, requestPhase)
 			const response = await withApiRequestTimeout(
 				raceApiStreamAbort(
 					client.sendRequest(vsCodeLmMessages, requestOptions, requestCancellation.token),
-					metadata?.signal,
+					requestControl.signal,
 				),
 				`VS Code LM request for ${client.name}`,
 				getApiRequestTimeout(),
 				() => requestCancellation.cancel(),
 			)
+			throwIfVsCodeLmRequestAborted(requestControl.signal, requestPhase)
 			if (!response) {
 				throw new vscode.CancellationError()
 			}
 
 			// Consume the stream and handle both text and tool call chunks
 			responseIterator = response.stream[Symbol.asyncIterator]()
+			requestPhase = "first-response-chunk"
 
 			while (true) {
+				throwIfVsCodeLmRequestAborted(requestControl.signal, requestPhase)
 				const nextChunk = await withApiRequestTimeout(
-					raceApiStreamAbort(responseIterator.next(), metadata?.signal),
+					raceApiStreamAbort(responseIterator.next(), requestControl.signal),
 					`VS Code LM response stream for ${client.name}`,
 					getApiRequestTimeout(),
 					() => requestCancellation.cancel(),
 				)
+				throwIfVsCodeLmRequestAborted(requestControl.signal, requestPhase)
 				if (!nextChunk) {
 					throw new vscode.CancellationError()
 				}
@@ -944,6 +1139,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				}
 
 				const chunk = nextChunk.value
+				requestPhase = "response-stream"
 				if (typeof chunk === "string") {
 					accumulatedText.push(chunk)
 					reportedUsage = undefined
@@ -1039,6 +1235,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				}
 			}
 
+			throwIfVsCodeLmRequestAborted(requestControl.signal, requestPhase)
 			if (this.currentRequestCancellation === requestCancellation) {
 				this.currentResponseStatefulMarker = responseStatefulMarker
 			}
@@ -1052,6 +1249,14 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				outputTokens: reportedUsage?.outputTokens ?? estimateTokens(accumulatedText.join("")),
 			}
 		} catch (error: unknown) {
+			if (requestControl.signal.aborted) {
+				const abortError = getVsCodeLmRequestAbortError(requestControl.signal, requestPhase)
+				if (abortError instanceof vscode.CancellationError) {
+					throw new Error("Alpha <Language Model API>: Request cancelled by user")
+				}
+				throw abortError
+			}
+
 			if (error instanceof vscode.CancellationError) {
 				throw new Error("Alpha <Language Model API>: Request cancelled by user")
 			}
@@ -1080,7 +1285,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			if (!streamCompleted) {
 				closeVsCodeLmResponseIterator(responseIterator)
 			}
-			this.finishRequest(requestCancellation, disposeSignalBridge, streamCompleted)
+			this.finishRequest(requestCancellation, requestControl, disposeSignalBridge, streamCompleted)
 		}
 	}
 

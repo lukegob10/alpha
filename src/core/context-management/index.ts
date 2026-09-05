@@ -8,6 +8,7 @@ import {
 	MAX_CONDENSE_THRESHOLD,
 	MIN_CONDENSE_THRESHOLD,
 	countContextTokens,
+	createTokenCountContext,
 	getEffectiveApiHistory,
 	getLogicalStepStarts,
 	getToolCallResultPairs,
@@ -15,6 +16,7 @@ import {
 	selectRecentTail,
 	summarizeConversation,
 	SummarizeResponse,
+	TokenCountContext,
 } from "../condense"
 import { ApiMessage } from "../task-persistence/apiMessages"
 import { ANTHROPIC_DEFAULT_MAX_TOKENS } from "@alpha-code/types"
@@ -55,9 +57,11 @@ export const TOKEN_BUFFER_PERCENTAGE = 0.1
 export async function estimateTokenCount(
 	content: Array<Anthropic.Messages.ContentBlockParam>,
 	apiHandler: ApiHandler,
+	countContext?: TokenCountContext,
 ): Promise<number> {
 	if (!content || content.length === 0) return 0
-	return apiHandler.countTokens(content)
+	const operation = countContext ?? createTokenCountContext(apiHandler)
+	return operation.countTokens(content, apiHandler)
 }
 
 /**
@@ -220,8 +224,15 @@ async function truncateToTokenBudget(
 	taskId: string,
 	metadata?: ApiHandlerCreateMessageMetadata,
 	forcedRecoveryTokens?: number,
+	countContext?: TokenCountContext,
 ): Promise<TruncationResult & { tokens: number; status: ContextRecoveryStatus }> {
 	const signal = metadata?.signal
+	const operation =
+		countContext ??
+		createTokenCountContext(apiHandler, {
+			signal,
+			remoteDeadline: metadata?.deadline,
+		})
 	signal?.throwIfAborted()
 	const active = getEffectiveApiHistory(messages)
 	const truncationId = crypto.randomUUID()
@@ -240,14 +251,27 @@ async function truncateToTokenBudget(
 		isTruncationMarker: true,
 		truncationId,
 	}
-	const fixedTokens = await countContextTokens([...firstStep, marker], apiHandler, systemPrompt, metadata)
+	const fixedTokens = await countContextTokens([...firstStep, marker], apiHandler, systemPrompt, metadata, operation)
+	if (!Number.isFinite(fixedTokens) || fixedTokens < 0) {
+		return { ...unchanged, tokens: Number.NaN, status: "no_progress" }
+	}
 	// A provider may have rejected this request despite a lower local estimate.
 	// Still make one real reduction, then tighten further if the budget requires it.
 	const requestedStart = firstStepEnd + Math.max(1, Math.floor((active.length - firstStepEnd) / 2))
 	const eligibleStarts = starts.filter((start) => start > firstStepEnd)
 	const minimumTailStart =
 		eligibleStarts.filter((start) => start <= requestedStart).at(-1) ?? eligibleStarts[0] ?? active.length
-	const tail = await selectRecentTail(active, apiHandler, maxContextTokens - fixedTokens, minimumTailStart, signal)
+	const tail = await selectRecentTail(
+		active,
+		apiHandler,
+		maxContextTokens - fixedTokens,
+		minimumTailStart,
+		signal,
+		operation,
+	)
+	if (!Number.isFinite(tail.tokens) || tail.tokens < 0) {
+		return { ...unchanged, tokens: Number.NaN, status: "no_progress" }
+	}
 	if (tail.startIndex === active.length || tail.startIndex <= firstStepEnd) return unchanged
 	const hidden = new Set(active.slice(firstStepEnd, tail.startIndex))
 	const insertIndex = messages.indexOf(active[tail.startIndex])
@@ -255,7 +279,13 @@ async function truncateToTokenBudget(
 		hidden.has(message) ? { ...message, truncationParent: truncationId } : message,
 	)
 	tagged.splice(insertIndex, 0, marker)
-	const tokens = await countContextTokens(getEffectiveApiHistory(tagged), apiHandler, systemPrompt, metadata)
+	const tokens = await countContextTokens(
+		getEffectiveApiHistory(tagged),
+		apiHandler,
+		systemPrompt,
+		metadata,
+		operation,
+	)
 	signal?.throwIfAborted()
 	if (
 		!Number.isFinite(tokens) ||
@@ -366,6 +396,8 @@ export type ContextManagementOptions = {
 	recentTailTokenBudget?: number
 	/** The provider rejected this input even if the local token estimate is lower. */
 	forceCompaction?: boolean
+	/** Shared token-counting budget/cache for this context-preparation operation. */
+	countContext?: TokenCountContext
 }
 
 export type ContextManagementResult = SummarizeResponse & {
@@ -407,8 +439,16 @@ export async function manageContext({
 	rooIgnoreController,
 	recentTailTokenBudget,
 	forceCompaction = false,
+	countContext,
 }: ContextManagementOptions): Promise<ContextManagementResult> {
 	metadata?.signal?.throwIfAborted()
+	const operation =
+		countContext ??
+		createTokenCountContext(apiHandler, {
+			signal: metadata?.signal,
+			remoteDeadline: metadata?.deadline,
+		})
+	operation.signal?.throwIfAborted()
 	let error: string | undefined
 	let errorDetails: string | undefined
 	let cost = 0
@@ -421,19 +461,38 @@ export async function manageContext({
 		targetPercent: DEFAULT_COMPACTION_TARGET_PERCENT,
 	})
 
-	// Estimate tokens for the last message (which is always a user message)
-	const lastMessage = messages[messages.length - 1]
-	const lastMessageContent = lastMessage?.content ?? ""
-	const lastMessageTokens = Array.isArray(lastMessageContent)
-		? await estimateTokenCount(lastMessageContent, apiHandler)
-		: await estimateTokenCount([{ type: "text", text: lastMessageContent as string }], apiHandler)
-
 	// Provider rejection invalidates the historical estimate. Forced recovery
 	// must reduce active input using the same counter as the resulting candidate.
-	const prevContextTokens = forceCompaction
-		? await countContextTokens(getEffectiveApiHistory(messages), apiHandler, systemPrompt, metadata)
-		: totalTokens + lastMessageTokens
+	// In that branch the full count already includes the newest message, so avoid
+	// issuing a duplicate standalone tokenizer request for it.
+	let prevContextTokens: number
+	if (forceCompaction) {
+		prevContextTokens = await countContextTokens(
+			getEffectiveApiHistory(messages),
+			apiHandler,
+			systemPrompt,
+			metadata,
+			operation,
+		)
+	} else {
+		// Estimate tokens for the last message (which is always a user message).
+		const lastMessageContent = messages[messages.length - 1]?.content ?? ""
+		const lastMessageTokens = Array.isArray(lastMessageContent)
+			? await estimateTokenCount(lastMessageContent, apiHandler, operation)
+			: await estimateTokenCount([{ type: "text", text: lastMessageContent as string }], apiHandler, operation)
+		prevContextTokens = totalTokens + lastMessageTokens
+	}
 	metadata?.signal?.throwIfAborted()
+	if (!Number.isFinite(prevContextTokens) || prevContextTokens < 0) {
+		return {
+			messages,
+			summary: "",
+			cost,
+			prevContextTokens,
+			status: "no_progress",
+			targetContextTokens,
+		}
+	}
 
 	// Calculate available tokens for conversation history
 	// Truncate if we're within TOKEN_BUFFER_PERCENTAGE of the context window
@@ -477,6 +536,7 @@ export async function manageContext({
 				rooIgnoreController,
 				maxContextTokens: targetContextTokens,
 				recentTailTokenBudget,
+				countContext: operation,
 			})
 			metadata?.signal?.throwIfAborted()
 			cost = result.cost
@@ -531,12 +591,21 @@ export async function manageContext({
 			taskId,
 			metadata,
 			forceCompaction ? prevContextTokens : undefined,
+			operation,
 		)
 		metadata?.signal?.throwIfAborted()
 		const newContextTokensAfterTruncation =
-			truncationResult.messagesRemoved > 0
+			truncationResult.status === "no_progress"
 				? truncationResult.tokens
-				: await countContextTokens(getEffectiveApiHistory(messages), apiHandler, systemPrompt, metadata)
+				: truncationResult.messagesRemoved > 0
+					? truncationResult.tokens
+					: await countContextTokens(
+							getEffectiveApiHistory(messages),
+							apiHandler,
+							systemPrompt,
+							metadata,
+							operation,
+						)
 		metadata?.signal?.throwIfAborted()
 
 		const fallbackProgress = evaluateCompactionProgress({

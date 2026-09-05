@@ -791,6 +791,329 @@ describe("summarizeConversation", () => {
 		expect(result.error).toBeUndefined()
 	})
 
+	it.each([
+		["incomplete", true],
+		["incomplete", false],
+		["completed", false],
+		["failed", true],
+		["cancelled", true],
+	] as const)("keeps exact history when a lifecycle summary ends %s (terminal=%s)", async (status, terminal) => {
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Initial task", ts: 1 },
+			{ role: "assistant", content: "First result", ts: 2 },
+			{ role: "user", content: "Follow-up", ts: 3 },
+			{ role: "assistant", content: "Second result", ts: 4 },
+			{ role: "user", content: "More work", ts: 5 },
+			{ role: "assistant", content: "Third result", ts: 6 },
+			{ role: "user", content: "Finish", ts: 7 },
+		]
+		const lifecycleHandler = {
+			...mockApiHandler,
+			streamCapabilities: { lifecycle: true, cancellation: true },
+			createMessage: vi.fn(() =>
+				(async function* () {
+					yield { type: "text" as const, text: "Partial summary missing constraints." }
+					yield { type: "usage" as const, totalCost: 0.07, outputTokens: 20 }
+					yield {
+						type: "outcome" as const,
+						status,
+						terminal,
+						semanticOutputObserved: true,
+						reason: "Summary did not complete.",
+					}
+				})(),
+			),
+		} as unknown as ApiHandler
+
+		const result = await summarizeConversation({
+			messages,
+			apiHandler: lifecycleHandler,
+			systemPrompt: defaultSystemPrompt,
+			taskId,
+		})
+
+		expect(result.status).toBe("no_progress")
+		expect(result.messages).toBe(messages)
+		expect(result.messages.every((message) => message.condenseParent === undefined)).toBe(true)
+		expect(result.summary).toBe("")
+		expect(result.cost).toBe(0.07)
+		expect(result.newContextTokens).toBeUndefined()
+		expect(result.errorDetails).toBe("Summary did not complete.")
+	})
+
+	it("rejects an explicit nonterminal completed outcome from a legacy handler", async () => {
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Initial task", ts: 1 },
+			{ role: "assistant", content: "First result", ts: 2 },
+			{ role: "user", content: "Follow-up", ts: 3 },
+			{ role: "assistant", content: "Second result", ts: 4 },
+			{ role: "user", content: "More work", ts: 5 },
+		]
+		const legacyHandler = {
+			...mockApiHandler,
+			createMessage: vi.fn(() =>
+				(async function* () {
+					yield { type: "text" as const, text: "Summary text before nonterminal EOF." }
+					yield { type: "usage" as const, totalCost: 0.06, outputTokens: 18 }
+					yield {
+						type: "outcome" as const,
+						status: "completed" as const,
+						terminal: false,
+						semanticOutputObserved: true,
+						reason: "Provider stream ended without a terminal event.",
+					}
+				})(),
+			),
+		} as unknown as ApiHandler
+
+		const result = await summarizeConversation({
+			messages,
+			apiHandler: legacyHandler,
+			systemPrompt: defaultSystemPrompt,
+			taskId,
+		})
+
+		expect(result.status).toBe("no_progress")
+		expect(result.messages).toBe(messages)
+		expect(result.summary).toBe("")
+		expect(result.cost).toBe(0.06)
+		expect(result.newContextTokens).toBeUndefined()
+		expect(result.errorDetails).toBe("Provider stream ended without a terminal event.")
+	})
+
+	it("fails closed when a lifecycle-capable summary stream ends without an outcome", async () => {
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Initial task", ts: 1 },
+			{ role: "assistant", content: "First result", ts: 2 },
+			{ role: "user", content: "Follow-up", ts: 3 },
+			{ role: "assistant", content: "Second result", ts: 4 },
+			{ role: "user", content: "More work", ts: 5 },
+		]
+		const lifecycleHandler = {
+			...mockApiHandler,
+			streamCapabilities: { lifecycle: true, cancellation: true },
+			createMessage: vi.fn(() =>
+				(async function* () {
+					yield { type: "text" as const, text: "Partial summary without terminal evidence." }
+					yield { type: "usage" as const, totalCost: 0.03, outputTokens: 12 }
+				})(),
+			),
+		} as unknown as ApiHandler
+
+		const result = await summarizeConversation({
+			messages,
+			apiHandler: lifecycleHandler,
+			systemPrompt: defaultSystemPrompt,
+			taskId,
+		})
+
+		expect(result.status).toBe("no_progress")
+		expect(result.messages).toBe(messages)
+		expect(result.summary).toBe("")
+		expect(result.cost).toBe(0.03)
+		expect(result.newContextTokens).toBeUndefined()
+	})
+
+	it("accepts a lifecycle summary only after an explicit completed outcome", async () => {
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Initial task", ts: 1 },
+			{ role: "assistant", content: "First result", ts: 2 },
+			{ role: "user", content: "Follow-up", ts: 3 },
+			{ role: "assistant", content: "Second result", ts: 4 },
+			{ role: "user", content: "More work", ts: 5 },
+		]
+		const lifecycleHandler = {
+			...mockApiHandler,
+			streamCapabilities: { lifecycle: true, cancellation: true },
+			createMessage: vi.fn(() =>
+				(async function* () {
+					yield { type: "text" as const, text: "Complete lifecycle summary." }
+					yield { type: "usage" as const, totalCost: 0.04, outputTokens: 12 }
+					yield {
+						type: "outcome" as const,
+						status: "completed" as const,
+						terminal: true,
+						semanticOutputObserved: true,
+					}
+				})(),
+			),
+		} as unknown as ApiHandler
+
+		const result = await summarizeConversation({
+			messages,
+			apiHandler: lifecycleHandler,
+			systemPrompt: defaultSystemPrompt,
+			taskId,
+		})
+
+		expect(result.status).toBe("reduced")
+		expect(result.summary).toBe("Complete lifecycle summary.")
+		expect(result.cost).toBe(0.04)
+		expect(result.messages).not.toBe(messages)
+	})
+
+	it("retains legacy text-at-EOF summary behavior without lifecycle capability", async () => {
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Initial task", ts: 1 },
+			{ role: "assistant", content: "First result", ts: 2 },
+			{ role: "user", content: "Follow-up", ts: 3 },
+			{ role: "assistant", content: "Second result", ts: 4 },
+			{ role: "user", content: "More work", ts: 5 },
+		]
+
+		const result = await summarizeConversation({
+			messages,
+			apiHandler: mockApiHandler,
+			systemPrompt: defaultSystemPrompt,
+			taskId,
+		})
+
+		expect(result.status).toBe("reduced")
+		expect(result.summary).toBe("This is a summary")
+	})
+
+	it("settles summary streaming promptly on cancellation and ignores late text", async () => {
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Initial task", ts: 1 },
+			{ role: "assistant", content: "First result", ts: 2 },
+			{ role: "user", content: "Follow-up", ts: 3 },
+			{ role: "assistant", content: "Second result", ts: 4 },
+			{ role: "user", content: "More work", ts: 5 },
+		]
+		let resolveNext!: (value: IteratorResult<{ type: "text"; text: string }>) => void
+		const next = vi.fn(
+			() =>
+				new Promise<IteratorResult<{ type: "text"; text: string }>>((resolve) => {
+					resolveNext = resolve
+				}),
+		)
+		const close = vi.fn(async () => ({ done: true as const, value: undefined }))
+		const controller = new AbortController()
+		const handler = {
+			...mockApiHandler,
+			createMessage: vi.fn(() => ({
+				[Symbol.asyncIterator]: () => ({ next, return: close }),
+			})),
+		} as unknown as ApiHandler
+		const pending = summarizeConversation({
+			messages,
+			apiHandler: handler,
+			systemPrompt: defaultSystemPrompt,
+			taskId,
+			metadata: { taskId, signal: controller.signal },
+			recentTailTokenBudget: 0,
+		})
+		await vi.waitFor(() => expect(next).toHaveBeenCalledTimes(1))
+		const countCallsBeforeAbort = (handler.countTokens as Mock).mock.calls.length
+
+		controller.abort(new DOMException("summary cancelled", "AbortError"))
+
+		await expect(pending).rejects.toMatchObject({ name: "AbortError", message: "summary cancelled" })
+		expect(close).toHaveBeenCalledTimes(1)
+		resolveNext({ done: false, value: { type: "text", text: "late summary must be ignored" } })
+		await Promise.resolve()
+		expect((handler.countTokens as Mock).mock.calls).toHaveLength(countCallsBeforeAbort)
+		expect(messages.every((message) => message.condenseParent === undefined)).toBe(true)
+	})
+
+	it("rejects the first explicit stream error for lifecycle handlers", async () => {
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Initial task", ts: 1 },
+			{ role: "assistant", content: "First result", ts: 2 },
+			{ role: "user", content: "Follow-up", ts: 3 },
+			{ role: "assistant", content: "Second result", ts: 4 },
+			{ role: "user", content: "More work", ts: 5 },
+		]
+		const firstErrorMessage = `First provider failure ${"x".repeat(600)}`
+		const lifecycleHandler = {
+			...mockApiHandler,
+			streamCapabilities: { lifecycle: true, cancellation: true },
+			createMessage: vi.fn(() =>
+				(async function* () {
+					yield { type: "text" as const, text: "Partial summary before the provider error." }
+					yield { type: "usage" as const, totalCost: 0.08, outputTokens: 24 }
+					yield {
+						type: "error" as const,
+						error: "FirstProviderError",
+						message: firstErrorMessage,
+						metadata: { sensitivePayload: "must not be copied into history" },
+					}
+					yield {
+						type: "error" as const,
+						error: "LaterProviderError",
+						message: "A later error must not replace the first error.",
+					}
+					yield { type: "usage" as const, totalCost: 9.99, outputTokens: 999 }
+					yield {
+						type: "outcome" as const,
+						status: "completed" as const,
+						terminal: true,
+						semanticOutputObserved: true,
+					}
+				})(),
+			),
+		} as unknown as ApiHandler
+
+		const result = await summarizeConversation({
+			messages,
+			apiHandler: lifecycleHandler,
+			systemPrompt: defaultSystemPrompt,
+			taskId,
+		})
+
+		expect(result.status).toBe("no_progress")
+		expect(result.messages).toBe(messages)
+		expect(result.summary).toBe("")
+		expect(result.cost).toBe(9.99)
+		expect(result.newContextTokens).toBeUndefined()
+		expect(result.errorDetails).toBe(`${firstErrorMessage.slice(0, 509)}...`)
+		expect(result.errorDetails).toHaveLength(512)
+		expect(result.errorDetails).not.toContain("sensitivePayload")
+		expect(result.errorDetails).not.toContain("LaterProviderError")
+	})
+
+	it("rejects an explicit stream error for legacy handlers at EOF", async () => {
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Initial task", ts: 1 },
+			{ role: "assistant", content: "First result", ts: 2 },
+			{ role: "user", content: "Follow-up", ts: 3 },
+			{ role: "assistant", content: "Second result", ts: 4 },
+			{ role: "user", content: "More work", ts: 5 },
+		]
+		const legacyHandler = {
+			...mockApiHandler,
+			createMessage: vi.fn(() =>
+				(async function* () {
+					yield { type: "text" as const, text: "Partial legacy summary before failure." }
+					yield { type: "usage" as const, totalCost: 0.06, outputTokens: 18 }
+					yield {
+						type: "error" as const,
+						error: "LegacyProviderError",
+						message: "Legacy provider failed while condensing.",
+						metadata: { rawPayload: "must not be copied into history" },
+					}
+					yield { type: "usage" as const, totalCost: 8.88, outputTokens: 888 }
+					yield { type: "text" as const, text: "Late text after failure." }
+				})(),
+			),
+		} as unknown as ApiHandler
+
+		const result = await summarizeConversation({
+			messages,
+			apiHandler: legacyHandler,
+			systemPrompt: defaultSystemPrompt,
+			taskId,
+		})
+
+		expect(result.status).toBe("no_progress")
+		expect(result.messages).toBe(messages)
+		expect(result.summary).toBe("")
+		expect(result.cost).toBe(8.88)
+		expect(result.newContextTokens).toBeUndefined()
+		expect(result.errorDetails).toBe("Legacy provider failed while condensing.")
+		expect(result.errorDetails).not.toContain("rawPayload")
+	})
+
 	it("does not expose history hidden by truncation to the summarizer", async () => {
 		const truncationId = "truncation-before-condense"
 		const hiddenContent = "hidden history must not be summarized"

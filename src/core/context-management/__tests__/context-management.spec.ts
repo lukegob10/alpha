@@ -612,14 +612,16 @@ describe("Context Management", () => {
 			})
 
 			// Verify summarizeConversation was called with the right parameters
-			expect(summarizeSpy).toHaveBeenCalledWith({
-				maxContextTokens: 52500,
-				messages: messagesWithSmallContent,
-				apiHandler: mockApiHandler,
-				systemPrompt: "System prompt",
-				taskId,
-				isAutomaticTrigger: true,
-			})
+			expect(summarizeSpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					maxContextTokens: 52500,
+					messages: messagesWithSmallContent,
+					apiHandler: mockApiHandler,
+					systemPrompt: "System prompt",
+					taskId,
+					isAutomaticTrigger: true,
+				}),
+			)
 
 			// Verify the result contains the summary information
 			expect(result).toMatchObject({
@@ -785,14 +787,16 @@ describe("Context Management", () => {
 			})
 
 			// Verify summarizeConversation was called with the right parameters
-			expect(summarizeSpy).toHaveBeenCalledWith({
-				maxContextTokens: 52500,
-				messages: messagesWithSmallContent,
-				apiHandler: mockApiHandler,
-				systemPrompt: "System prompt",
-				taskId,
-				isAutomaticTrigger: true,
-			})
+			expect(summarizeSpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					maxContextTokens: 52500,
+					messages: messagesWithSmallContent,
+					apiHandler: mockApiHandler,
+					systemPrompt: "System prompt",
+					taskId,
+					isAutomaticTrigger: true,
+				}),
+			)
 
 			// Verify the result contains the summary information
 			expect(result).toMatchObject({
@@ -956,17 +960,19 @@ describe("Context Management", () => {
 			})
 
 			// Verify summarizeConversation was called with filesReadByRoo, cwd, and rooIgnoreController
-			expect(summarizeSpy).toHaveBeenCalledWith({
-				maxContextTokens: 52500,
-				messages: messagesWithSmallContent,
-				apiHandler: mockApiHandler,
-				systemPrompt: "System prompt",
-				taskId,
-				isAutomaticTrigger: true,
-				filesReadByRoo,
-				cwd,
-				rooIgnoreController: mockRooIgnoreController,
-			})
+			expect(summarizeSpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					maxContextTokens: 52500,
+					messages: messagesWithSmallContent,
+					apiHandler: mockApiHandler,
+					systemPrompt: "System prompt",
+					taskId,
+					isAutomaticTrigger: true,
+					filesReadByRoo,
+					cwd,
+					rooIgnoreController: mockRooIgnoreController,
+				}),
+			)
 
 			// Verify the result contains the summary information
 			expect(result).toMatchObject({
@@ -1022,14 +1028,16 @@ describe("Context Management", () => {
 			})
 
 			// Verify summarizeConversation was called with undefined parameters
-			expect(summarizeSpy).toHaveBeenCalledWith({
-				maxContextTokens: 52500,
-				messages: messagesWithSmallContent,
-				apiHandler: mockApiHandler,
-				systemPrompt: "System prompt",
-				taskId,
-				isAutomaticTrigger: true,
-			})
+			expect(summarizeSpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					maxContextTokens: 52500,
+					messages: messagesWithSmallContent,
+					apiHandler: mockApiHandler,
+					systemPrompt: "System prompt",
+					taskId,
+					isAutomaticTrigger: true,
+				}),
+			)
 
 			// Verify the result
 			expect(result).toMatchObject({
@@ -1084,16 +1092,18 @@ describe("Context Management", () => {
 			})
 
 			// Verify summarizeConversation was called with empty array
-			expect(summarizeSpy).toHaveBeenCalledWith({
-				maxContextTokens: 52500,
-				messages: messagesWithSmallContent,
-				apiHandler: mockApiHandler,
-				systemPrompt: "System prompt",
-				taskId,
-				isAutomaticTrigger: true,
-				filesReadByRoo: [],
-				cwd: "/test/project",
-			})
+			expect(summarizeSpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					maxContextTokens: 52500,
+					messages: messagesWithSmallContent,
+					apiHandler: mockApiHandler,
+					systemPrompt: "System prompt",
+					taskId,
+					isAutomaticTrigger: true,
+					filesReadByRoo: [],
+					cwd: "/test/project",
+				}),
+			)
 
 			// Clean up
 			summarizeSpy.mockRestore()

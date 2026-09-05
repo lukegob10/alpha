@@ -466,24 +466,45 @@ function executeBaseTool<TName extends BuiltInToolName>(tool: BaseTool<TName>, n
 						let after: Record<string, string>
 						try {
 							after = await captureVerificationContent(task.cwd, paths)
-						} catch (error) {
-							await task.providerRef
-								.deref()
-								?.recordPrimaryMutation(
+						} catch (observationError) {
+							let recoveryError: unknown
+							try {
+								const receiptSettled = await mutationOwner!.recordPrimaryMutation(
 									task,
 									Object.fromEntries(Object.keys(before).map((file) => [file, "unavailable"])),
 									true,
+									reservation,
 								)
-							throw error
+								if (!receiptSettled) {
+									throw new Error("Primary mutation ledger did not affirm the unresolved receipt")
+								}
+							} catch (error) {
+								recoveryError = error
+							}
+							if (recoveryError) {
+								throw new AggregateError(
+									[observationError, recoveryError],
+									"Mutation observation failed and unresolved debt could not be persisted",
+								)
+							}
+							throw observationError
 						}
 						const changes = Object.fromEntries(
 							Object.entries(after).filter(([file, version]) => before[file] !== version),
 						)
-						const receiptSettled =
-							Object.keys(changes).length > 0
-								? await mutationOwner!.recordPrimaryMutation(task, changes, false, reservation)
-								: false
-						if (!receiptSettled) await mutationOwner!.releasePrimaryMutation(task, reservation)
+						if (Object.keys(changes).length > 0) {
+							const receiptSettled = await mutationOwner!.recordPrimaryMutation(
+								task,
+								changes,
+								false,
+								reservation,
+							)
+							if (!receiptSettled) {
+								throw new Error("Primary mutation ledger did not affirm the final receipt")
+							}
+						} else {
+							await mutationOwner!.releasePrimaryMutation(task, reservation)
+						}
 					}
 				} catch (error) {
 					if (executionFailed)

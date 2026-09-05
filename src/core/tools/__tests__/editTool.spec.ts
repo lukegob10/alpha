@@ -355,6 +355,62 @@ describe("editTool", () => {
 			expect(mockTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
 			expect(result).toContain("rejected")
 		})
+
+		it("passes the raw baseline to direct saves after normalizing for matching", async () => {
+			const rawBaseline = "Line 1\r\nLine 2\r\nLine 3"
+			mockedFsReadFile.mockResolvedValue(rawBaseline)
+			mockTask.providerRef.deref().getState.mockResolvedValue({
+				diagnosticsEnabled: true,
+				writeDelayMs: 1000,
+				experiments: { preventFocusDisruption: true },
+			})
+
+			await executeEditTool({ old_string: "Line 2", new_string: "Changed" }, { fileContent: rawBaseline })
+
+			expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+				testFilePath,
+				"Line 1\nChanged\nLine 3",
+				false,
+				true,
+				1000,
+				{ exists: true, content: rawBaseline },
+			)
+		})
+
+		it("does not complete an edit when the baseline changed during approval", async () => {
+			mockTask.providerRef.deref().getState.mockResolvedValue({
+				diagnosticsEnabled: true,
+				writeDelayMs: 1000,
+				experiments: { preventFocusDisruption: true },
+			})
+			mockAskApproval.mockImplementation(async () => {
+				mockedFsReadFile.mockResolvedValue("Line 1\nLine 2\nconcurrent edit")
+				return true
+			})
+			mockTask.diffViewProvider.saveDirectly.mockImplementation(
+				async (
+					_path: string,
+					_content: string,
+					_openFile: boolean,
+					_diagnostics: boolean,
+					_delay: number,
+					expected: { exists: boolean; content?: string },
+				) => {
+					const current = await mockedFsReadFile(absoluteFilePath, "utf8")
+					if (current !== expected.content) {
+						throw new Error("Cannot save: the file changed while approval was pending")
+					}
+				},
+			)
+
+			await executeEditTool()
+
+			expect(mockHandleError).toHaveBeenCalledWith(
+				"edit",
+				expect.objectContaining({ message: expect.stringContaining("changed") }),
+			)
+			expect(mockTask.didEditFile).toBe(false)
+		})
 	})
 
 	describe("partial block handling", () => {

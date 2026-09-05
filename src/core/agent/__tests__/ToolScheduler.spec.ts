@@ -1,7 +1,7 @@
 import * as fs from "fs/promises"
 import * as path from "path"
 import { tmpdir } from "os"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 import type { Task } from "../../task/Task"
 import { AskIgnoredError } from "../../task/AskIgnoredError"
@@ -10,6 +10,7 @@ import { ApplyPatchTool } from "../../tools/ApplyPatchTool"
 import { readFileTool } from "../../tools/ReadFileTool"
 import { ToolReadDeniedError } from "../../tools/BaseTool"
 import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
+import { useMcpToolTool } from "../../tools/UseMcpToolTool"
 import { collectAgentResponse } from "../AgentResponseAccumulator"
 import { AgentTurnEventLog, readAgentTurnEvents } from "../AgentTurnEventLog"
 import type { AgentTurnEvent } from "../AgentTurnEvents"
@@ -89,6 +90,131 @@ function resultIds(task: Task): string[] {
 }
 
 describe("ToolScheduler", () => {
+	it("commits MCP validation failures as error receipts in provider history", async () => {
+		const task = makeTask()
+		Object.assign(task, {
+			consecutiveMistakeCount: 0,
+			recordToolError: () => {},
+			lastMessageTs: 1,
+			providerRef: {
+				deref: () => ({ getMcpHub: () => undefined, postMessageToWebview: async () => {} }),
+			},
+		})
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(
+			descriptor("use_mcp_tool", "serial", async ({ task: executionTask, call, callbacks }) => {
+				await useMcpToolTool.execute(call.nativeArgs as any, executionTask, callbacks)
+			}),
+		)
+
+		const outcome = await new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(
+			response({
+				id: "mcp-missing-hub",
+				name: "use_mcp_tool",
+				arguments: { server_name: "missing", tool_name: "lookup" },
+			}),
+		)
+
+		expect(outcome.results[0].status).toBe("error")
+		expect(task.userMessageContent).toContainEqual(
+			expect.objectContaining({ type: "tool_result", tool_use_id: "mcp-missing-hub", is_error: true }),
+		)
+	})
+
+	it("keeps MCP cancellation authoritative in scheduler status and provider history", async () => {
+		const task = makeTask()
+		const controller = new AbortController()
+		const statuses: string[] = []
+		let requestStarted!: () => void
+		const started = new Promise<void>((resolve) => {
+			requestStarted = resolve
+		})
+		Object.assign(task, {
+			consecutiveMistakeCount: 0,
+			recordToolError: () => {},
+			lastMessageTs: 1,
+			providerRef: {
+				deref: () => ({
+					getMcpHub: () => ({
+						getAllServers: () => [{ name: "server", tools: [{ name: "lookup", description: "lookup" }] }],
+						callTool: (...args: unknown[]) => {
+							const signal = args[4] as AbortSignal
+							requestStarted()
+							return new Promise<never>((_, reject) => {
+								signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+							})
+						},
+					}),
+					postMessageToWebview: async (message: { text?: string }) => {
+						if (message.text) statuses.push(JSON.parse(message.text).status)
+					},
+				}),
+			},
+		})
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(
+			descriptor("use_mcp_tool", "serial", async ({ task: executionTask, call, callbacks }) => {
+				await useMcpToolTool.execute(call.nativeArgs as any, executionTask, callbacks)
+			}),
+		)
+		const run = new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+			signal: controller.signal,
+			preserveAbortedResults: true,
+		}).run(
+			response({
+				id: "mcp-cancelled",
+				name: "use_mcp_tool",
+				arguments: { server_name: "server", tool_name: "lookup" },
+			}),
+		)
+
+		await started
+		controller.abort(new Error("cancelled"))
+		const outcome = await run
+		expect(outcome.results[0].status).toBe("cancelled")
+		expect(statuses).toEqual(["started", "error"])
+		expect(task.userMessageContent).toContainEqual(
+			expect.objectContaining({ type: "tool_result", tool_use_id: "mcp-cancelled", is_error: true }),
+		)
+	})
+
+	it("publishes an invalid read_command_output artifact as an error history receipt", async () => {
+		const task = makeTask() as any
+		task.consecutiveMistakeCount = 0
+		task.recordToolError = vi.fn()
+		task.say = vi.fn().mockResolvedValue(undefined)
+		task.providerRef = { deref: vi.fn() }
+		const outcome = await new ToolScheduler({
+			task,
+			registry: new ToolRegistry(),
+			mode: "code",
+			validateCall: () => {},
+			policy: createToolPolicySnapshot({ visibleTools: ["read_command_output"] }),
+		}).run(
+			response({
+				id: "invalid-artifact",
+				name: "read_command_output",
+				arguments: { artifact_id: "../../secret.txt" },
+			}),
+		)
+
+		expect(outcome.results).toHaveLength(1)
+		expect(outcome.results[0]).toMatchObject({ name: "read_command_output", status: "error" })
+		expect(task.didToolFailInCurrentTurn).toBe(true)
+		expect(task.userMessageContent).toContainEqual(
+			expect.objectContaining({ tool_use_id: "invalid-artifact", is_error: true }),
+		)
+	})
+
 	it("retains earlier truthful receipts when a later read preflight rejects", async () => {
 		const task = makeTask()
 		const registry = new ToolRegistry({ includeBuiltIns: false })

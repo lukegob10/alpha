@@ -145,6 +145,60 @@ describe("ClineProvider primary verification", () => {
 		expect(satisfied).toMatchObject({ status: "satisfied", verification: { status: "passed" } })
 	})
 
+	it("requires explicit current scoped evidence for a two-file prose change set", async () => {
+		await fs.mkdir(path.join(workspace, "docs"), { recursive: true })
+		await fs.writeFile(path.join(workspace, "docs", "plan.md"), "# Plan\n")
+		await fs.writeFile(path.join(workspace, "docs", "notes.md"), "# Notes\n")
+		await provider.recordPrimaryMutation(
+			parent,
+			await captureVerificationContent(workspace, ["docs/plan.md", "docs/notes.md"]),
+		)
+		const pending = primaryObligation()
+		const command = "pnpm exec prettier --check docs/plan.md docs/notes.md"
+
+		expect(pending).toMatchObject({
+			changedFiles: ["docs/notes.md", "docs/plan.md"],
+			status: "pending",
+			verificationRequirements: { "docs/notes.md": [], "docs/plan.md": [] },
+		})
+		expect(await provider.captureCommandVerification(parent, command, workspace, [])).toBeUndefined()
+		expect(store.getParentCompletionDecision(parent.taskId)).toMatchObject({
+			allowed: false,
+			blockingObligations: [expect.objectContaining({ changeSetId: pending.changeSetId })],
+		})
+
+		const staleVersions = (await provider.captureCommandVerification(parent, command, workspace, [
+			pending.changeSetId,
+		]))!
+		expect(staleVersions[pending.changeSetId]).toMatchObject({
+			kind: "format",
+			matchedFiles: ["docs/notes.md", "docs/plan.md"],
+		})
+		await fs.writeFile(path.join(workspace, "docs", "notes.md"), "# Externally updated notes\n")
+		setCommandEvidence(staleVersions)
+		await provider.recordParentVerificationEvidence(parent)
+		expect(primaryObligation()).toMatchObject({ status: "pending" })
+		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(false)
+
+		const currentVersions = (await provider.captureCommandVerification(parent, command, workspace, [
+			pending.changeSetId,
+		]))!
+		const beforeMismatchedEvidence = primaryObligation()
+		setCommandEvidence(currentVersions, { verificationChangeSetIds: ["different-change-set"] })
+		await provider.recordParentVerificationEvidence(parent)
+		expect(primaryObligation()).toEqual(beforeMismatchedEvidence)
+
+		const satisfied = await recordCurrentEvidence(currentVersions)
+		expect(satisfied).toMatchObject({
+			status: "satisfied",
+			verifiedChecks: {
+				"docs/notes.md": ["format"],
+				"docs/plan.md": ["format"],
+			},
+		})
+		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(true)
+	})
+
 	it.each(["primary", "worker"] as const)(
 		"credits a real %s Task admission through a workspace alias",
 		async (kind) => {
@@ -223,9 +277,14 @@ describe("ClineProvider primary verification", () => {
 		await provider.reservePrimaryMutation(parent, "workspace-command")
 		expect(primaryObligation().workspacePath).toBe(workspace)
 		await fs.rename(workspace, path.join(outside, "moved-workspace"))
-		await provider.recordPrimaryMutation(parent, { "unknown-command-scope": "unknown" }, true)
-		await provider.releasePrimaryMutation(parent, "workspace-command")
-		expect(primaryObligation()).toMatchObject({ workspacePath: workspace, scopeUnresolved: true })
+		await expect(
+			provider.recordPrimaryMutation(parent, { "unknown-command-scope": "unknown" }, true, "workspace-command"),
+		).resolves.toBe(true)
+		expect(primaryObligation()).toMatchObject({
+			workspacePath: workspace,
+			scopeUnresolved: true,
+			mutationReservations: [],
+		})
 		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(false)
 	})
 
@@ -257,6 +316,104 @@ describe("ClineProvider primary verification", () => {
 			status: "pending",
 		})
 		expect(store.getParentCompletionDecision(parent.taskId).blockingObligations).toHaveLength(1)
+	})
+
+	it("returns an affirmed durable receipt when the projection boundary rejects", async () => {
+		const token = "workspace-command"
+		await provider.reservePrimaryMutation(parent, token)
+		await fs.writeFile(path.join(workspace, "src", "a.ts"), "export const value = 2\n")
+		const fileVersions = await captureVerificationContent(workspace, ["src/a.ts"])
+		const projectionError = new Error("verification projection crashed")
+		const publish = vi.fn().mockRejectedValue(projectionError)
+		Object.assign(provider, { publishParentVerificationTransition: publish })
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+
+		try {
+			await expect(provider.recordPrimaryMutation(parent, fileVersions, false, token)).resolves.toBe(true)
+			expect(errorSpy).toHaveBeenCalledWith(
+				"[ClineProvider] Failed to project a durable primary mutation receipt",
+				projectionError,
+			)
+		} finally {
+			errorSpy.mockRestore()
+		}
+
+		expect(publish).toHaveBeenCalledOnce()
+		expect(primaryObligation()).toMatchObject({
+			changedFiles: ["src/a.ts"],
+			mutationReservations: [],
+			status: "pending",
+		})
+		expect(store.getParentCompletionDecision(parent.taskId).blockingObligations).toHaveLength(1)
+	})
+
+	it("rejects a receipt for the wrong reservation token without mutating or settling the active reservation", async () => {
+		await provider.reservePrimaryMutation(parent, "workspace-command")
+		await fs.writeFile(path.join(workspace, "src", "a.ts"), "export const value = 2\n")
+		const fileVersions = await captureVerificationContent(workspace, ["src/a.ts"])
+
+		await expect(provider.releasePrimaryMutation(parent, "different-command")).rejects.toThrow(
+			"did not match an active reservation",
+		)
+		expect(primaryObligation()).toMatchObject({
+			changedFiles: [],
+			mutationReservations: ["workspace-command"],
+			status: "pending",
+		})
+
+		await expect(provider.recordPrimaryMutation(parent, fileVersions, false, "different-command")).rejects.toThrow(
+			"did not match an active reservation",
+		)
+		expect(primaryObligation()).toMatchObject({
+			changedFiles: [],
+			mutationReservations: ["workspace-command"],
+			status: "pending",
+		})
+
+		await expect(provider.recordPrimaryMutation(parent, fileVersions, false, "workspace-command")).resolves.toBe(
+			true,
+		)
+		expect(primaryObligation()).toMatchObject({
+			changedFiles: ["src/a.ts"],
+			mutationReservations: [],
+			status: "pending",
+		})
+	})
+
+	it("keeps the exact observed receipt when bounded dependency enrichment fails", async () => {
+		const token = "deep-workspace-command"
+		const relativeFile = [...Array.from({ length: 8 }, (_, index) => `level-${index}`), "deep.ts"].join("/")
+		const absoluteFile = path.join(workspace, ...relativeFile.split("/"))
+		await fs.mkdir(path.dirname(absoluteFile), { recursive: true })
+		await fs.writeFile(absoluteFile, "export const deeplyNested = true\n")
+		await provider.reservePrimaryMutation(parent, token)
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+
+		try {
+			await expect(
+				provider.recordPrimaryMutation(
+					parent,
+					await captureVerificationContent(workspace, [relativeFile]),
+					false,
+					token,
+				),
+			).resolves.toBe(true)
+			expect(errorSpy).toHaveBeenCalledWith(
+				"[ClineProvider] Failed to enrich a primary mutation receipt with dependencies",
+				expect.objectContaining({ message: expect.stringContaining("path bound") }),
+			)
+		} finally {
+			errorSpy.mockRestore()
+		}
+
+		expect(primaryObligation()).toMatchObject({
+			changedFiles: [relativeFile],
+			fileVersions: { [relativeFile]: expect.any(String) },
+			mutationReservations: [],
+			status: "pending",
+		})
+		expect(primaryObligation().scopeUnresolved).not.toBe(true)
+		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(false)
 	})
 
 	it("invalidates a passing verification after source and package manifest edits", async () => {

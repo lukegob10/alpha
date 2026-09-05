@@ -49,6 +49,13 @@ describe("useMcpToolTool", () => {
 	let mockRemoveClosingTag: ReturnType<typeof vi.fn>
 	let mockProviderRef: any
 
+	function executionStatuses(postMessageToWebview: ReturnType<typeof vi.fn>) {
+		return postMessageToWebview.mock.calls
+			.map(([message]) => message)
+			.filter((message) => message.type === "mcpExecutionStatus")
+			.map((message) => JSON.parse(message.text))
+	}
+
 	beforeEach(() => {
 		mockAskApproval = vi.fn()
 		mockHandleError = vi.fn()
@@ -67,6 +74,7 @@ describe("useMcpToolTool", () => {
 
 		mockTask = {
 			consecutiveMistakeCount: 0,
+			didToolFailInCurrentTurn: false,
 			recordToolError: vi.fn(),
 			sayAndCreateMissingParamError: vi.fn(),
 			say: vi.fn(),
@@ -234,11 +242,21 @@ describe("useMcpToolTool", () => {
 				isError: false,
 			}
 
+			const postMessageToWebview = vi.fn(async (message: { text: string }) => {
+				if (JSON.parse(message.text).status === "output") {
+					throw new Error("webview unavailable")
+				}
+			})
 			mockProviderRef.deref.mockReturnValue({
 				getMcpHub: () => ({
+					getAllServers: vi
+						.fn()
+						.mockReturnValue([
+							{ name: "test_server", tools: [{ name: "test_tool", description: "desc" }] },
+						]),
 					callTool: vi.fn().mockResolvedValue(mockToolResult),
 				}),
-				postMessageToWebview: vi.fn(),
+				postMessageToWebview,
 			})
 
 			await useMcpToolTool.handle(mockTask as Task, block as any, {
@@ -252,6 +270,9 @@ describe("useMcpToolTool", () => {
 			expect(mockTask.say).toHaveBeenCalledWith("mcp_server_request_started")
 			expect(mockTask.say).toHaveBeenCalledWith("mcp_server_response", "Tool executed successfully", [])
 			expect(mockPushToolResult).toHaveBeenCalledWith("Tool result: Tool executed successfully")
+			const statuses = executionStatuses(postMessageToWebview)
+			expect(statuses.map(({ status }) => status)).toEqual(["started", "output", "completed"])
+			expect(statuses.filter(({ status }) => status === "completed" || status === "error")).toHaveLength(1)
 		})
 
 		it("should handle user rejection", async () => {
@@ -299,6 +320,159 @@ describe("useMcpToolTool", () => {
 	})
 
 	describe("error handling", () => {
+		it("fails closed with error metadata when no MCP hub is available", async () => {
+			const setResultMetadata = vi.fn()
+			mockProviderRef.deref.mockReturnValue({
+				getMcpHub: () => undefined,
+				postMessageToWebview: vi.fn(),
+			})
+
+			await useMcpToolTool.handle(
+				mockTask as Task,
+				{
+					type: "tool_use",
+					name: "use_mcp_tool",
+					params: {},
+					nativeArgs: { server_name: "missing", tool_name: "lookup" },
+					partial: false,
+				} as any,
+				{
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					setResultMetadata,
+				},
+			)
+
+			expect(setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+			expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("not configured"))
+			expect(mockAskApproval).not.toHaveBeenCalled()
+		})
+
+		it("records an MCP isError response as a failed tool result", async () => {
+			const block: ToolUse = {
+				type: "tool_use",
+				name: "use_mcp_tool",
+				params: {
+					server_name: "test_server",
+					tool_name: "test_tool",
+				},
+				nativeArgs: {
+					server_name: "test_server",
+					tool_name: "test_tool",
+				},
+				partial: false,
+			}
+			const setResultMetadata = vi.fn()
+
+			mockAskApproval.mockResolvedValue(true)
+			const postMessageToWebview = vi.fn()
+			mockProviderRef.deref.mockReturnValue({
+				getMcpHub: () => ({
+					getAllServers: vi
+						.fn()
+						.mockReturnValue([
+							{ name: "test_server", tools: [{ name: "test_tool", description: "desc" }] },
+						]),
+					callTool: vi.fn().mockResolvedValue({
+						isError: true,
+						content: [{ type: "text", text: "Lookup failed" }],
+					}),
+				}),
+				postMessageToWebview,
+			})
+
+			await useMcpToolTool.handle(mockTask as Task, block as any, {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				setResultMetadata,
+			})
+
+			expect(setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("Error:"))
+			const statuses = executionStatuses(postMessageToWebview)
+			expect(statuses.map(({ status }) => status)).toEqual(["started", "output", "error"])
+			expect(statuses.filter(({ status }) => status === "completed" || status === "error")).toHaveLength(1)
+		})
+
+		it.each([
+			["an undefined response", () => Promise.resolve(undefined)],
+			["a rejected request", () => Promise.reject(new Error("MCP request failed"))],
+		])("emits one terminal error for %s", async (_label, implementation) => {
+			const setResultMetadata = vi.fn()
+			const postMessageToWebview = vi.fn()
+			mockAskApproval.mockResolvedValue(true)
+			mockProviderRef.deref.mockReturnValue({
+				getMcpHub: () => ({
+					getAllServers: () => [{ name: "test_server", tools: [{ name: "test_tool", description: "desc" }] }],
+					callTool: vi.fn(implementation),
+				}),
+				postMessageToWebview,
+			})
+
+			await useMcpToolTool.handle(
+				mockTask as Task,
+				{
+					type: "tool_use",
+					name: "use_mcp_tool",
+					params: {},
+					nativeArgs: { server_name: "test_server", tool_name: "test_tool" },
+					partial: false,
+				} as any,
+				{
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					setResultMetadata,
+				},
+			)
+
+			expect(setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+			expect(mockHandleError).toHaveBeenCalledTimes(1)
+			const statuses = executionStatuses(postMessageToWebview)
+			expect(statuses.map(({ status }) => status)).toEqual(["started", "error"])
+			expect(statuses.filter(({ status }) => status === "completed" || status === "error")).toHaveLength(1)
+		})
+
+		it("keeps an empty MCP content array successful", async () => {
+			const setResultMetadata = vi.fn()
+			const postMessageToWebview = vi.fn()
+			mockAskApproval.mockResolvedValue(true)
+			mockProviderRef.deref.mockReturnValue({
+				getMcpHub: () => ({
+					getAllServers: () => [{ name: "test_server", tools: [{ name: "test_tool", description: "desc" }] }],
+					callTool: vi.fn().mockResolvedValue({ content: [] }),
+				}),
+				postMessageToWebview,
+			})
+
+			await useMcpToolTool.handle(
+				mockTask as Task,
+				{
+					type: "tool_use",
+					name: "use_mcp_tool",
+					params: {},
+					nativeArgs: { server_name: "test_server", tool_name: "test_tool" },
+					partial: false,
+				} as any,
+				{
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					setResultMetadata,
+				},
+			)
+
+			expect(setResultMetadata).not.toHaveBeenCalled()
+			expect(mockPushToolResult).toHaveBeenCalledWith("Tool result: (No response)")
+			expect(executionStatuses(postMessageToWebview).map(({ status }) => status)).toEqual([
+				"started",
+				"completed",
+			])
+		})
+
 		it("should handle unexpected errors", async () => {
 			const block: ToolUse = {
 				type: "tool_use",
@@ -642,7 +816,195 @@ describe("useMcpToolTool", () => {
 		})
 	})
 
+	describe("cancellation", () => {
+		function validBlock(): ToolUse {
+			return {
+				type: "tool_use",
+				name: "use_mcp_tool",
+				params: {
+					server_name: "test_server",
+					tool_name: "test_tool",
+				},
+				nativeArgs: {
+					server_name: "test_server",
+					tool_name: "test_tool",
+				},
+				partial: false,
+			}
+		}
+
+		function installValidServer(callTool: ReturnType<typeof vi.fn>): ReturnType<typeof vi.fn> {
+			const postMessageToWebview = vi.fn()
+			mockProviderRef.deref.mockReturnValue({
+				getMcpHub: () => ({
+					getAllServers: vi
+						.fn()
+						.mockReturnValue([
+							{ name: "test_server", tools: [{ name: "test_tool", description: "desc" }] },
+						]),
+					callTool,
+				}),
+				postMessageToWebview,
+			})
+			return postMessageToWebview
+		}
+
+		it("does not dispatch when the scheduler signal is already aborted", async () => {
+			const controller = new AbortController()
+			const reason = new Error("cancelled before dispatch")
+			controller.abort(reason)
+			const callTool = vi.fn()
+			installValidServer(callTool)
+
+			await expect(
+				useMcpToolTool.handle(mockTask as Task, validBlock() as any, {
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					signal: controller.signal,
+				}),
+			).rejects.toThrow("cancelled before dispatch")
+			expect(callTool).not.toHaveBeenCalled()
+		})
+
+		it("forwards the scheduler signal and rejects a late MCP settlement", async () => {
+			let resolveRequest!: (result: unknown) => void
+			let signalFromCall: AbortSignal | undefined
+			let markStarted!: () => void
+			const started = new Promise<void>((resolve) => {
+				markStarted = resolve
+			})
+			const pending = new Promise<unknown>((resolve) => {
+				resolveRequest = resolve
+			})
+			const callTool = vi.fn((...args: unknown[]) => {
+				signalFromCall = args[4] as AbortSignal
+				markStarted()
+				return pending
+			})
+			const postMessageToWebview = installValidServer(callTool)
+			mockAskApproval.mockResolvedValue(true)
+			const controller = new AbortController()
+			const running = useMcpToolTool.handle(mockTask as Task, validBlock() as any, {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				signal: controller.signal,
+			})
+
+			await started
+			expect(signalFromCall).toBe(controller.signal)
+			controller.abort(new Error("cancelled while dispatched"))
+			resolveRequest({ content: [{ type: "text", text: "late output" }] })
+
+			await expect(running).rejects.toThrow("cancelled while dispatched")
+			expect(mockPushToolResult).not.toHaveBeenCalled()
+			expect(mockTask.say).not.toHaveBeenCalledWith("mcp_server_response", expect.anything(), expect.anything())
+			const statuses = executionStatuses(postMessageToWebview)
+			expect(statuses.map(({ status }) => status)).toEqual(["started", "error"])
+			expect(statuses.filter(({ status }) => status === "completed" || status === "error")).toHaveLength(1)
+		})
+
+		it("settles when the forwarded MCP request observes cancellation", async () => {
+			let markStarted!: () => void
+			const started = new Promise<void>((resolve) => {
+				markStarted = resolve
+			})
+			const callTool = vi.fn((...args: unknown[]) => {
+				const requestSignal = args[4] as AbortSignal
+				markStarted()
+				return new Promise<never>((_, reject) => {
+					requestSignal.addEventListener("abort", () => reject(requestSignal.reason), { once: true })
+				})
+			})
+			const postMessageToWebview = installValidServer(callTool)
+			mockAskApproval.mockResolvedValue(true)
+			const controller = new AbortController()
+			const running = useMcpToolTool.handle(mockTask as Task, validBlock() as any, {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				signal: controller.signal,
+			})
+
+			await started
+			controller.abort(new Error("request observed cancellation"))
+			await expect(running).rejects.toThrow("request observed cancellation")
+			expect(mockPushToolResult).not.toHaveBeenCalled()
+			expect(executionStatuses(postMessageToWebview).map(({ status }) => status)).toEqual(["started", "error"])
+		})
+	})
+
 	describe("image handling", () => {
+		it("normalizes an embedded image resource into image content", () => {
+			const result = (useMcpToolTool as any).processToolContent({
+				content: [
+					{
+						type: "resource",
+						resource: {
+							uri: "file:///report.png",
+							mimeType: "image/png",
+							blob: "iVBORw0KGgo=",
+						},
+					},
+				],
+			})
+
+			expect(result).toEqual({ text: "", images: ["data:image/png;base64,iVBORw0KGgo="] })
+		})
+
+		it("preserves metadata for embedded text resources", () => {
+			const result = (useMcpToolTool as any).processToolContent({
+				content: [
+					{
+						type: "resource",
+						resource: {
+							uri: "file:///report.txt",
+							mimeType: "text/plain",
+							text: "report contents",
+							_meta: { source: "fixture" },
+						},
+					},
+				],
+			})
+
+			expect(result.images).toEqual([])
+			expect(result.text).toBe(
+				JSON.stringify(
+					{
+						uri: "file:///report.txt",
+						mimeType: "text/plain",
+						text: "report contents",
+						_meta: { source: "fixture" },
+					},
+					null,
+					2,
+				),
+			)
+		})
+
+		it("describes unsupported binary resources without copying the blob", () => {
+			const blob = "A".repeat(100_000)
+			const result = (useMcpToolTool as any).processToolContent({
+				content: [
+					{
+						type: "resource",
+						resource: {
+							uri: "file:///archive.zip",
+							mimeType: "application/zip",
+							blob,
+						},
+					},
+				],
+			})
+
+			expect(result.images).toEqual([])
+			expect(result.text).toContain("unsupported_binary_resource")
+			expect(result.text).toContain('"base64Characters": 100000')
+			expect(result.text).not.toContain(blob)
+			expect(result.text.length).toBeLessThan(1024)
+		})
+
 		it("should handle tool response with image content", async () => {
 			const block: ToolUse = {
 				type: "tool_use",

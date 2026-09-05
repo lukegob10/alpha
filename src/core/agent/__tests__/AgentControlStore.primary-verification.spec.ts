@@ -450,11 +450,13 @@ describe("AgentControlStore primary verification", () => {
 		expect(reloaded.getParentCompletionDecision("root-1").allowed).toBe(false)
 	})
 
-	it("removes an empty provisional reservation only after its token is released", async () => {
+	it("rejects a mismatched release and removes an empty reservation only after its exact token is released", async () => {
 		const { store } = await setup()
 
 		await store.reservePrimaryMutation("root-1", "root-1", workspacePath, "mutation-1")
-		await store.releasePrimaryMutation("root-1", "root-1", "unknown-token")
+		await expect(store.releasePrimaryMutation("root-1", "root-1", "unknown-token")).rejects.toThrow(
+			"did not match an active reservation",
+		)
 		expect(store.getVerificationObligations()).toMatchObject([
 			{ id: "primary-change:root-1", mutationReservations: ["mutation-1"], status: "pending" },
 		])
@@ -510,6 +512,95 @@ describe("AgentControlStore primary verification", () => {
 		const reloaded = new AgentControlStore(persistence)
 		await reloaded.initialize()
 		expect(reloaded.getVerificationObligations()[0]?.mutationReservations).toEqual([])
+	})
+
+	it("settles an unresolved final receipt while retaining explicit unknown-scope debt", async () => {
+		const { store, persistence } = await setup()
+
+		await store.reservePrimaryMutation("root-1", "root-1", workspacePath, "mutation-1")
+		const primary = await store.recordPrimaryMutation({
+			rootTaskId: "root-1",
+			parentTaskId: "root-1",
+			workspacePath,
+			fileVersions: { __unobserved_command_scope__: "execution-1" },
+			scopeUnresolved: true,
+			reservationToken: "mutation-1",
+			at: 2_000,
+		})
+
+		expect(primary).toMatchObject({
+			scopeUnresolved: true,
+			mutationReservations: [],
+			status: "pending",
+		})
+		expect(store.getParentCompletionDecision("root-1")).toMatchObject({
+			allowed: false,
+			blockingObligations: [expect.objectContaining({ scopeUnresolved: true, mutationReservations: [] })],
+		})
+
+		const reloaded = new AgentControlStore(persistence)
+		await reloaded.initialize()
+		expect(reloaded.getVerificationObligations()[0]).toMatchObject({
+			scopeUnresolved: true,
+			mutationReservations: [],
+		})
+	})
+
+	it("settles only the matching concurrent reservation and rejects a mismatched receipt across reload", async () => {
+		const { store, persistence } = await setup()
+
+		await store.reservePrimaryMutation("root-1", "root-1", workspacePath, "mutation-a")
+		await store.reservePrimaryMutation("root-1", "root-1", workspacePath, "mutation-b")
+		const first = await store.recordPrimaryMutation({
+			rootTaskId: "root-1",
+			parentTaskId: "root-1",
+			workspacePath,
+			fileVersions: { "src/a.ts": "version-a" },
+			reservationToken: "mutation-a",
+			at: 2_000,
+		})
+
+		expect(first).toMatchObject({
+			changedFiles: ["src/a.ts"],
+			mutationReservations: ["mutation-b"],
+			status: "pending",
+		})
+		const beforeMismatch = store.getVerificationObligations()
+		await expect(
+			store.recordPrimaryMutation({
+				rootTaskId: "root-1",
+				parentTaskId: "root-1",
+				workspacePath,
+				fileVersions: { "src/b.ts": "version-b" },
+				reservationToken: "mutation-c",
+				at: 2_100,
+			}),
+		).rejects.toThrow("did not match an active reservation")
+		expect(store.getVerificationObligations()).toEqual(beforeMismatch)
+
+		const reloaded = new AgentControlStore(persistence)
+		await reloaded.initialize()
+		expect(reloaded.getVerificationObligations()).toEqual(beforeMismatch)
+		await reloaded.recordPrimaryMutation({
+			rootTaskId: "root-1",
+			parentTaskId: "root-1",
+			workspacePath,
+			fileVersions: { __unobserved_command_scope__: "execution-b" },
+			scopeUnresolved: true,
+			reservationToken: "mutation-b",
+			at: 2_200,
+		})
+		expect(reloaded.getVerificationObligations()[0]).toMatchObject({
+			changedFiles: ["__unobserved_command_scope__", "src/a.ts"],
+			mutationReservations: [],
+			scopeUnresolved: true,
+			status: "pending",
+		})
+
+		const reloadedAgain = new AgentControlStore(persistence)
+		await reloadedAgain.initialize()
+		expect(reloadedAgain.getVerificationObligations()).toEqual(reloaded.getVerificationObligations())
+		expect(reloadedAgain.getParentCompletionDecision("root-1").allowed).toBe(false)
 	})
 
 	it("does not infer a safe repair for a non-atomic reserved receipt after reload", async () => {

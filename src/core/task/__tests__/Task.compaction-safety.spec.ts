@@ -5,7 +5,7 @@ import type { ApiHandler } from "../../../api"
 import type { AgentResponse } from "../../agent/AgentResponse"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../../agent/AgentStepContextBuilder"
 import type { ToolSchedulerOutcome } from "../../agent/ToolScheduler"
-import { summarizeConversation, type SummarizeResponse } from "../../condense"
+import { summarizeConversation, type SummarizeResponse, type TokenCountContext } from "../../condense"
 import { manageContext, willManageContext } from "../../context-management"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
 import { SYSTEM_PROMPT } from "../../prompts/system"
@@ -379,6 +379,155 @@ describe("Task manual compaction boundary", () => {
 describe("Task context recovery admission", () => {
 	beforeEach(() => vi.clearAllMocks())
 	afterEach(() => vi.restoreAllMocks())
+
+	it("reuses one operation context from newest-message estimation through final compaction measurement", async () => {
+		const { task, api, history } = harness()
+		const result = {
+			...compactedResult(history),
+			prevContextTokens: 100,
+			targetContextTokens: 80,
+			status: "reduced" as const,
+		}
+		let sharedCountContext: TokenCountContext | undefined
+		let sharedCountCalls = 0
+		vi.mocked(manageContext).mockImplementationOnce(async (options) => {
+			sharedCountContext = options.countContext
+			expect(sharedCountContext).toBeDefined()
+			const countTokens = sharedCountContext!.countTokens.bind(sharedCountContext)
+			vi.spyOn(sharedCountContext!, "countTokens").mockImplementation(async (...args) => {
+				sharedCountCalls += 1
+				return countTokens(...args)
+			})
+			const callsBeforeCacheProbe = api.countTokens.mock.calls.length
+			await sharedCountContext!.countTokens([{ type: "text", text: "Recent instruction" }], api)
+			expect(api.countTokens).toHaveBeenCalledTimes(callsBeforeCacheProbe)
+			return result
+		})
+		const controller = new AbortController()
+
+		await task
+			.attemptApiRequest(0, {
+				skipProviderRateLimit: true,
+				ownerHandlesRetry: true,
+				interruptionSignal: controller.signal,
+			})
+			.next()
+
+		expect(sharedCountContext).toBeDefined()
+		expect(sharedCountCalls).toBeGreaterThan(1)
+		expect(api.countTokens.mock.calls[0][1]).toMatchObject({
+			signal: controller.signal,
+			remoteDeadline: expect.any(Number),
+		})
+	})
+
+	it("cancels a pending newest-message count without compaction or a late history commit", async () => {
+		const { task, api, save, history } = harness()
+		const countStarted = deferred<void>()
+		const countFinished = deferred<number>()
+		api.countTokens.mockImplementationOnce((_content, metadata) => {
+			expect(metadata?.signal).toBe(controller.signal)
+			countStarted.resolve()
+			return countFinished.promise
+		})
+		const controller = new AbortController()
+		const running = task
+			.attemptApiRequest(0, {
+				skipProviderRateLimit: true,
+				ownerHandlesRetry: true,
+				interruptionSignal: controller.signal,
+			})
+			.next()
+		await countStarted.promise
+
+		controller.abort(new Error("Context preparation cancelled"))
+		await expect(running).rejects.toThrow("Context preparation cancelled")
+		countFinished.resolve(10)
+		await Promise.resolve()
+
+		expect(api.countTokens).toHaveBeenCalledOnce()
+		expect(manageContext).not.toHaveBeenCalled()
+		expect(api.createMessage).not.toHaveBeenCalled()
+		expect(save).not.toHaveBeenCalled()
+		expect(task.apiConversationHistory).toBe(history)
+	})
+
+	it("bounds stalled forced recovery by its retry deadline and closes the started UI boundary", async () => {
+		vi.useFakeTimers()
+		try {
+			vi.setSystemTime(1_000)
+			const { task, api, provider, save } = harness()
+			const recoveryStarted = deferred<void>()
+			vi.mocked(manageContext).mockImplementationOnce(async () => {
+				recoveryStarted.resolve()
+				await new Promise<void>(() => undefined)
+				throw new Error("unreachable")
+			})
+
+			const running = Reflect.get(task, "handleContextWindowExceededError").call(task, 1_100) as Promise<void>
+			const rejected = expect(running).rejects.toThrow("Automatic retry deadline exceeded")
+			await recoveryStarted.promise
+			await vi.advanceTimersByTimeAsync(100)
+			await rejected
+
+			expect(api.createMessage).not.toHaveBeenCalled()
+			expect(save).not.toHaveBeenCalled()
+			expect(provider.postMessageToWebview).toHaveBeenLastCalledWith({
+				type: "condenseTaskContextResponse",
+				text: task.taskId,
+			})
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("finishes an owned context transcript commit before reporting an expired retry deadline", async () => {
+		const { task, api, provider, save, history } = harness()
+		let now = 1_000
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		const saveStarted = deferred<void>()
+		const saveRelease = deferred<void>()
+		const events: string[] = []
+		const result = {
+			...compactedResult(history),
+			prevContextTokens: 100,
+			targetContextTokens: 80,
+			status: "reduced" as const,
+		}
+		vi.mocked(manageContext).mockResolvedValueOnce(result)
+		save.mockImplementationOnce(async () => {
+			events.push("save-started")
+			now = 1_101
+			saveStarted.resolve()
+			await saveRelease.promise
+			events.push("save-committed")
+			return true
+		})
+
+		const running = Reflect.get(task, "handleContextWindowExceededError").call(task, 1_100) as Promise<void>
+		let settled = false
+		void running
+			.finally(() => {
+				settled = true
+				events.push("recovery-settled")
+			})
+			.catch(() => undefined)
+		await saveStarted.promise
+		await Promise.resolve()
+		expect(settled).toBe(false)
+
+		saveRelease.resolve()
+		await expect(running).rejects.toThrow("Automatic retry deadline exceeded")
+		expect(events).toEqual(["save-started", "save-committed", "recovery-settled"])
+		expect(task.apiConversationHistory).toBe(result.messages)
+		expect(save).toHaveBeenCalledOnce()
+		expect(api.createMessage).not.toHaveBeenCalled()
+		expect(provider.postMessageToWebview).toHaveBeenLastCalledWith({
+			type: "condenseTaskContextResponse",
+			text: task.taskId,
+		})
+	})
 
 	it.each([
 		["automatic", "exhausted"],

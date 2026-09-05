@@ -6504,12 +6504,24 @@ export class ClineProvider
 					.find((item) => item.origin === "primary")?.workspacePath ?? parent.cwd)
 			: await fs.realpath(parent.cwd)
 		const actualFiles = Object.keys(fileVersions)
-		const verificationRequirements = scopeUnresolved
-			? undefined
-			: await resolveVerificationRequirements(workspacePath, actualFiles)
-		const dependencyVersions = scopeUnresolved
-			? undefined
-			: await captureVerificationDependencies(workspacePath, actualFiles)
+		let verificationRequirements: Awaited<ReturnType<typeof resolveVerificationRequirements>> | undefined
+		let dependencyVersions: Awaited<ReturnType<typeof captureVerificationDependencies>> | undefined
+		if (!scopeUnresolved) {
+			try {
+				verificationRequirements = await resolveVerificationRequirements(workspacePath, actualFiles)
+			} catch (error) {
+				// The exact changed-file receipt is still authoritative. A later scoped
+				// verifier must recapture requirements before it can earn credit.
+				console.error("[ClineProvider] Failed to enrich a primary mutation receipt with requirements", error)
+			}
+			try {
+				dependencyVersions = await captureVerificationDependencies(workspacePath, actualFiles)
+			} catch (error) {
+				// Dependency capture is verification enrichment, not evidence that the
+				// already-observed changed-file scope became unknown.
+				console.error("[ClineProvider] Failed to enrich a primary mutation receipt with dependencies", error)
+			}
+		}
 		const obligation = await this.agentControlStore.recordPrimaryMutation({
 			rootTaskId: root.rootTaskId,
 			parentTaskId: parent.taskId,
@@ -6518,10 +6530,21 @@ export class ClineProvider
 			scopeUnresolved,
 			verificationRequirements,
 			dependencyVersions,
-			reservationToken: scopeUnresolved ? undefined : reservationToken,
+			reservationToken,
 		})
-		if (obligation) await this.publishParentVerificationTransition(parent, obligation, root.rootTaskId)
-		return Boolean(obligation && !scopeUnresolved && reservationToken)
+		if (obligation) {
+			try {
+				await this.publishParentVerificationTransition(parent, obligation, root.rootTaskId)
+			} catch (error) {
+				// The receipt and reservation settlement above are already durable. Keep
+				// mailbox/UI projection best-effort so a presentation failure cannot be
+				// misreported by the tool as missing mutation debt.
+				console.error("[ClineProvider] Failed to project a durable primary mutation receipt", error)
+			}
+		}
+		// AgentControlStore rejects a supplied token unless that exact active
+		// reservation was settled in the same transaction as this receipt.
+		return obligation !== undefined && reservationToken !== undefined
 	}
 
 	public async getParentVerificationContext(parent: Task): Promise<string | undefined> {

@@ -1614,6 +1614,85 @@ describe("McpHub", () => {
 			)
 		})
 
+		it("forwards an abort signal to the MCP SDK request options", async () => {
+			const controller = new AbortController()
+			const mockConnection: ConnectedMcpConnection = {
+				type: "connected",
+				server: {
+					name: "test-server",
+					config: JSON.stringify({}),
+					status: "connected" as const,
+				},
+				client: {
+					request: vi.fn().mockResolvedValue({ content: [] }),
+				} as any,
+				transport: {} as any,
+			}
+
+			mcpHub.connections = [mockConnection]
+			await mcpHub.callTool("test-server", "some-tool", {}, undefined, controller.signal)
+
+			expect(mockConnection.client!.request).toHaveBeenCalledWith(
+				expect.objectContaining({ method: "tools/call" }),
+				expect.any(Object),
+				expect.objectContaining({ timeout: 60000, signal: controller.signal }),
+			)
+		})
+
+		it("rejects before dispatch when an MCP tool signal is already aborted", async () => {
+			const controller = new AbortController()
+			const reason = new Error("tool cancelled before dispatch")
+			controller.abort(reason)
+			const request = vi.fn()
+			const mockConnection: ConnectedMcpConnection = {
+				type: "connected",
+				server: {
+					name: "test-server",
+					config: JSON.stringify({}),
+					status: "connected" as const,
+				},
+				client: { request } as any,
+				transport: {} as any,
+			}
+
+			mcpHub.connections = [mockConnection]
+			await expect(mcpHub.callTool("test-server", "some-tool", {}, undefined, controller.signal)).rejects.toBe(
+				reason,
+			)
+			expect(request).not.toHaveBeenCalled()
+		})
+
+		it("settles promptly when the MCP SDK ignores cancellation and absorbs late tool settlement", async () => {
+			const controller = new AbortController()
+			let signalFromRequest: AbortSignal | undefined
+			let resolveRequest!: (value: { content: never[] }) => void
+			const request = vi.fn((_request: unknown, _schema: unknown, options: { signal?: AbortSignal }) => {
+				signalFromRequest = options.signal
+				return new Promise<{ content: never[] }>((resolve) => {
+					resolveRequest = resolve
+				})
+			})
+			const mockConnection: ConnectedMcpConnection = {
+				type: "connected",
+				server: {
+					name: "test-server",
+					config: JSON.stringify({}),
+					status: "connected" as const,
+				},
+				client: { request } as any,
+				transport: {} as any,
+			}
+
+			mcpHub.connections = [mockConnection]
+			const running = mcpHub.callTool("test-server", "some-tool", {}, undefined, controller.signal)
+			await vi.waitFor(() => expect(signalFromRequest).toBe(controller.signal))
+			controller.abort(new Error("pending tool request cancelled"))
+
+			await expect(running).rejects.toThrow("pending tool request cancelled")
+			resolveRequest({ content: [] })
+			await Promise.resolve()
+		})
+
 		it("should throw error if server not found", async () => {
 			await expect(mcpHub.callTool("non-existent-server", "some-tool", {})).rejects.toThrow(
 				"No connection found for server: non-existent-server",
@@ -1887,6 +1966,87 @@ describe("McpHub", () => {
 					}),
 				)
 			})
+		})
+	})
+
+	describe("readResource", () => {
+		it("forwards an abort signal to resource request options", async () => {
+			const controller = new AbortController()
+			const mockConnection: ConnectedMcpConnection = {
+				type: "connected",
+				server: {
+					name: "test-server",
+					config: JSON.stringify({}),
+					status: "connected" as const,
+				},
+				client: {
+					request: vi.fn().mockResolvedValue({ contents: [] }),
+				} as any,
+				transport: {} as any,
+			}
+
+			mcpHub.connections = [mockConnection]
+			await mcpHub.readResource("test-server", "file:///report.txt", undefined, controller.signal)
+
+			expect(mockConnection.client!.request).toHaveBeenCalledWith(
+				expect.objectContaining({ method: "resources/read" }),
+				expect.any(Object),
+				{ signal: controller.signal },
+			)
+		})
+
+		it("rejects before dispatch when a resource signal is already aborted", async () => {
+			const controller = new AbortController()
+			const reason = new Error("resource cancelled before dispatch")
+			controller.abort(reason)
+			const request = vi.fn()
+			const mockConnection: ConnectedMcpConnection = {
+				type: "connected",
+				server: {
+					name: "test-server",
+					config: JSON.stringify({}),
+					status: "connected" as const,
+				},
+				client: { request } as any,
+				transport: {} as any,
+			}
+
+			mcpHub.connections = [mockConnection]
+			await expect(
+				mcpHub.readResource("test-server", "file:///report.txt", undefined, controller.signal),
+			).rejects.toBe(reason)
+			expect(request).not.toHaveBeenCalled()
+		})
+
+		it("settles promptly when the MCP SDK ignores cancellation and absorbs late resource settlement", async () => {
+			const controller = new AbortController()
+			let signalFromRequest: AbortSignal | undefined
+			let resolveRequest!: (value: { contents: never[] }) => void
+			const request = vi.fn((_request: unknown, _schema: unknown, options: { signal?: AbortSignal }) => {
+				signalFromRequest = options.signal
+				return new Promise<{ contents: never[] }>((resolve) => {
+					resolveRequest = resolve
+				})
+			})
+			const mockConnection: ConnectedMcpConnection = {
+				type: "connected",
+				server: {
+					name: "test-server",
+					config: JSON.stringify({}),
+					status: "connected" as const,
+				},
+				client: { request } as any,
+				transport: {} as any,
+			}
+
+			mcpHub.connections = [mockConnection]
+			const running = mcpHub.readResource("test-server", "file:///report.txt", undefined, controller.signal)
+			await vi.waitFor(() => expect(signalFromRequest).toBe(controller.signal))
+			controller.abort(new Error("pending resource request cancelled"))
+
+			await expect(running).rejects.toThrow("pending resource request cancelled")
+			resolveRequest({ contents: [] })
+			await Promise.resolve()
 		})
 	})
 

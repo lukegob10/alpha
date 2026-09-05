@@ -442,6 +442,7 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 					isNewFile,
 					diagnosticsEnabled,
 					writeDelayMs,
+					isNewFile ? { exists: false } : { exists: true, content: currentContent ?? "" },
 				)
 			} else {
 				// Call saveChanges to update the DiffViewProvider properties

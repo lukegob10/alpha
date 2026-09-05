@@ -27,11 +27,20 @@ export type AskApprovalResponse = (
 /**
  * Callbacks passed to tool execution
  */
+export interface TrustedExplorationObservation {
+	/** Real, workspace-contained scope captured by the execution host. */
+	scope: string
+	/** Stable digest of supported inspection semantics; never raw command output. */
+	semanticFingerprint: string
+}
+
 export interface ToolResultMetadata {
 	status?: "success" | "error" | "denied" | "cancelled"
 	executionStatus?: "running" | "success" | "error" | "denied" | "cancelled"
 	exitCode?: number
 	timedOut?: boolean
+	/** Host-issued progress observation. This is deliberately not verification evidence. */
+	trustedExploration?: TrustedExplorationObservation
 }
 
 export interface ToolCallbacks {

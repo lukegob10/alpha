@@ -322,6 +322,116 @@ describe("VsCodeLmHandler", () => {
 			}
 		})
 
+		it("bounds settled selector clients and retains the most recently used entries", async () => {
+			const cacheHandlers: VsCodeLmHandler[] = []
+			;(vscode.lm.selectChatModels as Mock).mockImplementation(async (selector) => [
+				{ ...mockLanguageModelChat, id: selector.id },
+			])
+
+			try {
+				for (let index = 0; index <= 32; index++) {
+					const cacheHandler = new VsCodeLmHandler({
+						vsCodeLmModelSelector: { id: `cache-model-${index}` },
+					})
+					cacheHandlers.push(cacheHandler)
+					await cacheHandler.initializeClient()
+				}
+				expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(33)
+
+				const evictedHandler = new VsCodeLmHandler({
+					vsCodeLmModelSelector: { id: "cache-model-0" },
+				})
+				cacheHandlers.push(evictedHandler)
+				await evictedHandler.initializeClient()
+				expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(34)
+
+				const retainedHandler = new VsCodeLmHandler({
+					vsCodeLmModelSelector: { id: "cache-model-32" },
+				})
+				cacheHandlers.push(retainedHandler)
+				await retainedHandler.initializeClient()
+				expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(34)
+			} finally {
+				for (const cacheHandler of cacheHandlers) cacheHandler.dispose()
+			}
+		})
+
+		it("allows a temporary over-capacity cache when every selector selection is still pending", async () => {
+			const cacheHandlers: VsCodeLmHandler[] = []
+			const resolveSelections = new Map<string, (models: (typeof mockLanguageModelChat)[]) => void>()
+			;(vscode.lm.selectChatModels as Mock).mockImplementation(
+				(selector) =>
+					new Promise<(typeof mockLanguageModelChat)[]>((resolve) => {
+						resolveSelections.set(String(selector.id), resolve)
+					}),
+			)
+
+			try {
+				const initializations: Promise<void>[] = []
+				for (let index = 0; index <= 32; index++) {
+					const cacheHandler = new VsCodeLmHandler({
+						vsCodeLmModelSelector: { id: `pending-model-${index}` },
+					})
+					cacheHandlers.push(cacheHandler)
+					initializations.push(cacheHandler.initializeClient())
+				}
+				await vi.waitFor(() => expect(resolveSelections.size).toBe(33))
+
+				const sharedHandler = new VsCodeLmHandler({
+					vsCodeLmModelSelector: { id: "pending-model-0" },
+				})
+				cacheHandlers.push(sharedHandler)
+				const sharedInitialization = sharedHandler.initializeClient()
+				await Promise.resolve()
+				expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(33)
+
+				for (let index = 0; index <= 32; index++) {
+					resolveSelections.get(`pending-model-${index}`)?.([
+						{ ...mockLanguageModelChat, id: `pending-model-${index}` },
+					])
+				}
+				await Promise.all([...initializations, sharedInitialization])
+				expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(33)
+			} finally {
+				for (const cacheHandler of cacheHandlers) cacheHandler.dispose()
+			}
+		})
+
+		it("hard-caps never-settling selector churn without cancelling retained pending waiters", async () => {
+			const cacheHandlers: VsCodeLmHandler[] = []
+			;(vscode.lm.selectChatModels as Mock).mockImplementation(() => new Promise(() => undefined))
+
+			try {
+				for (let index = 0; index <= 64; index++) {
+					const cacheHandler = new VsCodeLmHandler({
+						vsCodeLmModelSelector: { id: `never-settling-model-${index}` },
+					})
+					cacheHandlers.push(cacheHandler)
+					void cacheHandler.initializeClient()
+				}
+				await vi.waitFor(() => expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(65))
+
+				const retainedPendingHandler = new VsCodeLmHandler({
+					vsCodeLmModelSelector: { id: "never-settling-model-64" },
+				})
+				cacheHandlers.push(retainedPendingHandler)
+				void retainedPendingHandler.initializeClient()
+				await Promise.resolve()
+				expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(65)
+
+				// Only the cache mapping was evicted. Existing callers of selector zero
+				// remain attached to their original promise, while a new caller reselects.
+				const evictedPendingHandler = new VsCodeLmHandler({
+					vsCodeLmModelSelector: { id: "never-settling-model-0" },
+				})
+				cacheHandlers.push(evictedPendingHandler)
+				void evictedPendingHandler.initializeClient()
+				await vi.waitFor(() => expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(66))
+			} finally {
+				for (const cacheHandler of cacheHandlers) cacheHandler.dispose()
+			}
+		})
+
 		it("re-queries after the VS Code 1.122 model-change event invalidates retained clients", async () => {
 			mockVsCodeVersion.value = "1.122.1"
 			const createResponse = () => ({
@@ -1393,6 +1503,244 @@ describe("VsCodeLmHandler", () => {
 			expect(mockCancellationSources[0]?.cancel).toHaveBeenCalled()
 		})
 
+		it("enforces a 100ms caller deadline when the configured inactivity timeout is disabled and recovers", async () => {
+			vi.useFakeTimers()
+			try {
+				mockGetApiRequestTimeoutSetting.mockReturnValue(0)
+				mockLanguageModelChat.sendRequest.mockImplementationOnce(
+					() =>
+						new Promise((resolve) => {
+							setTimeout(
+								() =>
+									resolve({
+										stream: (async function* () {
+											yield new vscode.LanguageModelTextPart("Too late")
+										})(),
+									}),
+								1_000,
+							)
+						}),
+				)
+
+				const stream = handler.createMessage("System", [{ role: "user", content: "Hello" }], {
+					taskId: "deadline-admission",
+					deadline: Date.now() + 100,
+				})
+				const pending = stream.next()
+				const rejected = expect(pending).rejects.toMatchObject({
+					name: "ApiStreamDeadlineError",
+					phase: "request-admission",
+					message: expect.stringContaining("request-admission"),
+				})
+
+				await vi.advanceTimersByTimeAsync(100)
+				await rejected
+				expect(mockCancellationSources[0]?.cancel).toHaveBeenCalledOnce()
+				expect(mockCancellationSources[0]?.dispose).toHaveBeenCalledOnce()
+				expect(handler["currentRequestCancellation"]).toBeNull()
+				expect(handler["currentRequestControl"]).toBeNull()
+
+				// The abandoned host promise may resolve later, but it cannot publish output
+				// or retain ownership of the handler's next request.
+				await vi.advanceTimersByTimeAsync(900)
+				mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+					stream: (async function* () {
+						yield new vscode.LanguageModelTextPart("Recovered")
+					})(),
+				})
+
+				const followUp = handler.createMessage("System", [{ role: "user", content: "Follow up" }])
+				await expect(followUp.next()).resolves.toMatchObject({
+					value: { type: "text", text: "Recovered" },
+				})
+				await expect(followUp.next()).resolves.toMatchObject({ value: { type: "usage" } })
+				await expect(followUp.next()).resolves.toMatchObject({ done: true })
+				expect(mockCancellationSources[1]?.cancel).not.toHaveBeenCalled()
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
+		it("does not let periodic response chunks extend the caller deadline", async () => {
+			vi.useFakeTimers()
+			try {
+				let readCount = 0
+				const closeResponseIterator = vi.fn(() => Promise.resolve({ done: true as const, value: undefined }))
+				mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+					stream: {
+						[Symbol.asyncIterator]() {
+							return {
+								next: () =>
+									new Promise<IteratorResult<unknown>>((resolve) => {
+										readCount++
+										setTimeout(
+											() =>
+												resolve({
+													done: false,
+													value: new vscode.LanguageModelTextPart(`Chunk ${readCount}`),
+												}),
+											40,
+										)
+									}),
+								return: closeResponseIterator,
+							}
+						},
+					},
+				})
+
+				const stream = handler.createMessage("System", [{ role: "user", content: "Hello" }], {
+					taskId: "deadline-stream",
+					deadline: Date.now() + 100,
+				})
+				const first = stream.next()
+				await vi.advanceTimersByTimeAsync(40)
+				await expect(first).resolves.toMatchObject({ value: { type: "text", text: "Chunk 1" } })
+				const second = stream.next()
+				await vi.advanceTimersByTimeAsync(40)
+				await expect(second).resolves.toMatchObject({ value: { type: "text", text: "Chunk 2" } })
+
+				const third = stream.next()
+				const rejected = expect(third).rejects.toMatchObject({
+					name: "ApiStreamDeadlineError",
+					phase: "response-stream",
+				})
+				await vi.advanceTimersByTimeAsync(20)
+				await rejected
+
+				expect(readCount).toBe(3)
+				expect(mockCancellationSources[0]?.cancel).toHaveBeenCalledOnce()
+				expect(closeResponseIterator).toHaveBeenCalledOnce()
+				await vi.advanceTimersByTimeAsync(20)
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
+		it("reports a caller deadline while awaiting the first response chunk separately from admission", async () => {
+			vi.useFakeTimers()
+			try {
+				const closeResponseIterator = vi.fn(() => Promise.resolve({ done: true as const, value: undefined }))
+				mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+					stream: {
+						[Symbol.asyncIterator]() {
+							return {
+								next: () =>
+									new Promise<IteratorResult<unknown>>((resolve) => {
+										setTimeout(
+											() =>
+												resolve({
+													done: false,
+													value: new vscode.LanguageModelTextPart("Late first chunk"),
+												}),
+											1_000,
+										)
+									}),
+								return: closeResponseIterator,
+							}
+						},
+					},
+				})
+
+				const stream = handler.createMessage("System", [{ role: "user", content: "Hello" }], {
+					taskId: "deadline-first-response",
+					deadline: Date.now() + 100,
+				})
+				const pending = stream.next()
+				const rejected = expect(pending).rejects.toMatchObject({
+					name: "ApiStreamDeadlineError",
+					phase: "first-response-chunk",
+				})
+				await vi.advanceTimersByTimeAsync(100)
+				await rejected
+
+				expect(mockCancellationSources[0]?.cancel).toHaveBeenCalledOnce()
+				expect(closeResponseIterator).toHaveBeenCalledOnce()
+				await vi.advanceTimersByTimeAsync(900)
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
+		it("bounds model acquisition, ignores its late result, and reselects for a healthy follow-up", async () => {
+			vi.useFakeTimers()
+			try {
+				handler["client"] = null
+				;(vscode.lm.selectChatModels as Mock).mockReset().mockImplementationOnce(
+					() =>
+						new Promise((resolve) => {
+							setTimeout(() => resolve([mockLanguageModelChat]), 1_000)
+						}),
+				)
+
+				const stream = handler.createMessage("System", [{ role: "user", content: "Hello" }], {
+					taskId: "deadline-selection",
+					deadline: Date.now() + 100,
+				})
+				const pending = stream.next()
+				const rejected = expect(pending).rejects.toMatchObject({
+					name: "ApiStreamDeadlineError",
+					phase: "model-selection",
+				})
+				await vi.advanceTimersByTimeAsync(100)
+				await rejected
+				expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
+				expect(handler["client"]).toBeNull()
+				expect(vi.getTimerCount()).toBe(1)
+
+				await vi.advanceTimersByTimeAsync(900)
+				expect(handler["client"]).toBeNull()
+				expect(vi.getTimerCount()).toBe(0)
+				;(vscode.lm.selectChatModels as Mock).mockResolvedValueOnce([mockLanguageModelChat])
+				mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+					stream: (async function* () {
+						yield new vscode.LanguageModelTextPart("Recovered after selection")
+					})(),
+				})
+				const followUp = handler.createMessage("System", [{ role: "user", content: "Follow up" }])
+				await expect(followUp.next()).resolves.toMatchObject({
+					value: { type: "text", text: "Recovered after selection" },
+				})
+				expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(2)
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
+		it("cancels stalled model acquisition without poisoning the next selection", async () => {
+			handler["client"] = null
+			;(vscode.lm.selectChatModels as Mock).mockReset().mockImplementationOnce(() => new Promise(() => undefined))
+			const taskCancellation = new AbortController()
+			const removeAbortListener = vi.spyOn(taskCancellation.signal, "removeEventListener")
+			const stream = handler.createMessage("System", [{ role: "user", content: "Hello" }], {
+				taskId: "cancel-selection",
+				signal: taskCancellation.signal,
+			})
+			const pending = stream.next()
+			await vi.waitFor(() => expect(vscode.lm.selectChatModels).toHaveBeenCalledOnce())
+
+			taskCancellation.abort(new Error("caller stopped"))
+
+			await expect(pending).rejects.toThrow("Request cancelled by user")
+			expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
+			expect(mockCancellationSources[0]?.cancel).toHaveBeenCalledOnce()
+			expect(mockCancellationSources[0]?.dispose).toHaveBeenCalledOnce()
+			expect(removeAbortListener).toHaveBeenCalledWith("abort", expect.any(Function))
+			;(vscode.lm.selectChatModels as Mock).mockResolvedValueOnce([mockLanguageModelChat])
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Healthy follow-up")
+				})(),
+			})
+			const followUp = handler.createMessage("System", [{ role: "user", content: "Follow up" }])
+			await expect(followUp.next()).resolves.toMatchObject({
+				value: { type: "text", text: "Healthy follow-up" },
+			})
+			expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(2)
+		})
+
 		it("should cancel when VS Code LM response stream stalls past the API timeout", async () => {
 			mockGetApiRequestTimeoutSetting.mockReturnValue(0.001)
 
@@ -1765,7 +2113,7 @@ describe("VsCodeLmHandler", () => {
 			const content: Anthropic.Messages.ContentBlockParam[] = [{ type: "text", text: "Hello" }]
 			const result = await handler.countTokens(content)
 
-			expect(result).toBe(Math.ceil(new TextEncoder().encode("Hello").byteLength / 3))
+			expect(result).toBe(new TextEncoder().encode("Hello").byteLength)
 		})
 
 		it("should pass complete chat message objects to the VS Code tokenizer", async () => {
@@ -1799,6 +2147,61 @@ describe("VsCodeLmHandler", () => {
 			warnSpy.mockRestore()
 		})
 
+		it("rejects promptly on caller cancellation instead of returning a fallback count", async () => {
+			vi.useFakeTimers()
+			try {
+				const callerCancellation = new AbortController()
+				const cancellationReason = new Error("context preparation cancelled")
+				const removeAbortListener = vi.spyOn(callerCancellation.signal, "removeEventListener")
+				mockLanguageModelChat.countTokens.mockImplementationOnce(() => new Promise(() => undefined))
+				const pending = handler.countTokens([{ type: "text", text: "Do not finish this count" }], {
+					signal: callerCancellation.signal,
+					remoteDeadline: Date.now() + 4_000,
+				})
+
+				callerCancellation.abort(cancellationReason)
+
+				await expect(pending).rejects.toBe(cancellationReason)
+				expect(mockCancellationSources[0]?.cancel).toHaveBeenCalledOnce()
+				expect(mockCancellationSources[0]?.dispose).toHaveBeenCalledOnce()
+				expect(removeAbortListener).toHaveBeenCalledWith("abort", expect.any(Function))
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
+		it("shares one remote tokenizer allowance across counts with the same deadline", async () => {
+			vi.useFakeTimers()
+			try {
+				mockLanguageModelChat.countTokens.mockImplementationOnce(() => new Promise(() => undefined))
+				const text = "Use a conservative estimate after this operation's remote allowance"
+				const metadata = { remoteDeadline: new Date(Date.now() + 100) }
+				const first = handler.countTokens([{ type: "text", text }], metadata)
+				let settled = false
+				void first.then(() => {
+					settled = true
+				})
+
+				await vi.advanceTimersByTimeAsync(99)
+				expect(settled).toBe(false)
+				await vi.advanceTimersByTimeAsync(1)
+				const fallback = new TextEncoder().encode(text).byteLength
+				await expect(first).resolves.toBe(fallback)
+
+				// The same absolute allowance is now expired, so subsequent counts never
+				// enter the remote tokenizer or pay another per-message timeout.
+				await expect(handler.countTokens([{ type: "text", text }], metadata)).resolves.toBe(fallback)
+				expect(mockLanguageModelChat.countTokens).toHaveBeenCalledOnce()
+				expect(mockCancellationSources).toHaveLength(1)
+				expect(mockCancellationSources[0]?.cancel).toHaveBeenCalledOnce()
+				expect(mockCancellationSources[0]?.dispose).toHaveBeenCalledOnce()
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
 		it("should bound a stalled VS Code token count at five seconds and use the local fallback", async () => {
 			vi.useFakeTimers()
 			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined)
@@ -1809,7 +2212,7 @@ describe("VsCodeLmHandler", () => {
 
 				await vi.advanceTimersByTimeAsync(5_000)
 
-				await expect(result).resolves.toBe(Math.ceil(new TextEncoder().encode(text).byteLength / 3))
+				await expect(result).resolves.toBe(new TextEncoder().encode(text).byteLength)
 				expect(mockCancellationSources[0]?.cancel).toHaveBeenCalledOnce()
 				expect(mockCancellationSources[0]?.dispose).toHaveBeenCalledOnce()
 			} finally {

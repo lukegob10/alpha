@@ -1473,7 +1473,9 @@ export class AgentControlStore {
 	async releasePrimaryMutation(parentTaskId: string, rootTaskId: string, token: string): Promise<void> {
 		await this.transact((draft) => {
 			this.assertParentMutationOwned(draft, parentTaskId, rootTaskId, "settle primary mutation")
-			this.settlePrimaryMutationReservation(draft, parentTaskId, token)
+			if (!this.settlePrimaryMutationReservation(draft, parentTaskId, token)) {
+				throw new Error("Primary mutation release did not match an active reservation")
+			}
 		})
 	}
 
@@ -1485,6 +1487,12 @@ export class AgentControlStore {
 			const id = `primary-change:${input.parentTaskId}`
 			const at = input.at ?? this.now()
 			let obligation = draft.verificationObligations.find((item) => item.id === id)
+			if (
+				input.reservationToken !== undefined &&
+				!obligation?.mutationReservations?.includes(input.reservationToken)
+			) {
+				throw new Error("Primary mutation receipt did not match an active reservation")
+			}
 			if (!obligation) {
 				obligation = {
 					id,
@@ -1547,22 +1555,24 @@ export class AgentControlStore {
 			// A final content receipt and its admitted reservation must share one
 			// durable transaction. Otherwise a projection failure after this write can
 			// strand a reservation even though the receipt is already complete.
-			if (input.reservationToken && !input.scopeUnresolved) {
-				this.settlePrimaryMutationReservation(draft, input.parentTaskId, input.reservationToken)
+			if (input.reservationToken !== undefined) {
+				if (!this.settlePrimaryMutationReservation(draft, input.parentTaskId, input.reservationToken)) {
+					throw new Error("Primary mutation receipt failed to settle its active reservation")
+				}
 			}
 			return clone(obligation)
 		})
 	}
 
 	/** Settle one reservation after its final receipt has been added to the draft. */
-	private settlePrimaryMutationReservation(draft: AgentControlState, parentTaskId: string, token: string): void {
+	private settlePrimaryMutationReservation(draft: AgentControlState, parentTaskId: string, token: string): boolean {
 		const obligation = draft.verificationObligations.find((item) => item.id === `primary-change:${parentTaskId}`)
-		if (!obligation?.mutationReservations?.includes(token)) return
+		if (!obligation?.mutationReservations?.includes(token)) return false
 		obligation.mutationReservations = obligation.mutationReservations.filter((item) => item !== token)
-		if (obligation.mutationReservations.length > 0) return
+		if (obligation.mutationReservations.length > 0) return true
 		if (obligation.changedFiles.length === 0 && !obligation.scopeUnresolved) {
 			draft.verificationObligations = draft.verificationObligations.filter((item) => item !== obligation)
-			return
+			return true
 		}
 		obligation.status = obligation.scopeUnresolved
 			? "pending"
@@ -1572,6 +1582,7 @@ export class AgentControlStore {
 					? "failed"
 					: "pending"
 		obligation.updatedAt = this.now()
+		return true
 	}
 
 	/** Revalidate persisted content after reload, rewind, external edits, and before crediting a command. */

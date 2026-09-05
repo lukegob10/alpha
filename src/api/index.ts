@@ -96,6 +96,17 @@ export interface ApiHandlerCreateMessageMetadata extends ApiStreamRequestMetadat
 	streamCapabilities?: ApiStreamCapabilities
 }
 
+/**
+ * Operation-scoped controls for provider token counting. `signal` is terminal:
+ * providers must reject when the caller cancels. `remoteDeadline` bounds only
+ * native/remote tokenizer waiting, so providers may use a conservative local
+ * estimate after it expires without converting caller cancellation to success.
+ */
+export interface ApiHandlerCountTokensMetadata {
+	signal?: AbortSignal
+	remoteDeadline?: number | Date
+}
+
 export interface ApiHandler {
 	/** Additive capability declaration; absent means legacy stream semantics. */
 	readonly streamCapabilities?: ApiStreamCapabilities
@@ -116,7 +127,10 @@ export interface ApiHandler {
 	 * @param content The content to count tokens for
 	 * @returns A promise resolving to the token count
 	 */
-	countTokens(content: Array<Anthropic.Messages.ContentBlockParam>): Promise<number>
+	countTokens(
+		content: Array<Anthropic.Messages.ContentBlockParam>,
+		metadata?: ApiHandlerCountTokensMetadata,
+	): Promise<number>
 }
 
 export function buildApiHandler(configuration: ProviderSettings): ApiHandler {

@@ -1,5 +1,6 @@
 import type { ModelInfo, ProviderSettings } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
+import * as vscode from "vscode"
 
 import type { ApiHandler } from "../../../api"
 import { FakeAIHandler } from "../../../api/providers/fake-ai"
@@ -121,7 +122,7 @@ function harness() {
 		cost: 0,
 		prevContextTokens: 0,
 	}))
-	return { task, live, originalHandler, getSystemPrompt }
+	return { task, live, originalHandler, getSystemPrompt, provider }
 }
 
 function capturedStep(task: Task) {
@@ -299,6 +300,577 @@ describe("Task retained retry wire inputs", () => {
 		},
 	)
 
+	it("clamps a policy-approved retry to its remaining absolute budget and releases request ownership", async () => {
+		const { task, originalHandler } = harness()
+		vi.spyOn(Date, "now").mockReturnValue(2_000)
+
+		const retry = task.attemptApiRequest(1, {
+			skipProviderRateLimit: true,
+			ownerHandlesRetry: true,
+			retryCategory: "transport",
+			retryDeadline: 2_500,
+		})
+		expect(await retry.next()).toEqual({ done: false, value: { type: "text", text: "response" } })
+		expect(originalHandler.createMessage.mock.calls[0][2]?.deadline).toBe(2_500)
+		expect(await retry.next()).toEqual({ done: true, value: undefined })
+		expect(task.currentRequestAbortController).toBeUndefined()
+		expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+	})
+
+	it("releases request ownership when a consumer closes the stream after its first chunk", async () => {
+		const { task } = harness()
+		const request = task.attemptApiRequest(0, {
+			skipProviderRateLimit: true,
+			ownerHandlesRetry: true,
+		})
+
+		expect(await request.next()).toMatchObject({ value: { type: "text", text: "response" } })
+		expect(task.currentRequestAbortController).toBeDefined()
+		expect(Reflect.get(task, "currentRequestSignal")).toBeDefined()
+		await request.return(undefined)
+
+		expect(task.currentRequestAbortController).toBeUndefined()
+		expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+	})
+
+	it("does not install request ownership when the retry budget expires during preflight", async () => {
+		const { task, originalHandler, getSystemPrompt } = harness()
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_000)
+		getSystemPrompt.mockImplementationOnce(async () => {
+			now.mockReturnValue(1_501)
+			return "Original system prompt"
+		})
+
+		await expect(
+			task
+				.attemptApiRequest(1, {
+					skipProviderRateLimit: true,
+					ownerHandlesRetry: true,
+					retryCategory: "transport",
+					retryDeadline: 1_500,
+				})
+				.next(),
+		).rejects.toThrow("Automatic retry deadline exceeded")
+		expect(originalHandler.createMessage).not.toHaveBeenCalled()
+		expect(task.currentRequestAbortController).toBeUndefined()
+		expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+
+		now.mockReturnValue(2_000)
+		const followUp = task.attemptApiRequest(0, {
+			skipProviderRateLimit: true,
+			ownerHandlesRetry: true,
+		})
+		expect(await followUp.next()).toMatchObject({ value: { type: "text", text: "response" } })
+		expect(await followUp.next()).toEqual({ done: true, value: undefined })
+	})
+
+	it.each(["state", "mode", "system-prompt", "tool-surface", "auto-approval", "context-management"] as const)(
+		"does not dispatch after the %s preflight stage returns beyond the retry deadline",
+		async (stage) => {
+			const { task, live, originalHandler, getSystemPrompt, provider } = harness()
+			let nowMs = 1_000
+			vi.spyOn(Date, "now").mockImplementation(() => nowMs)
+			const expireBudget = () => {
+				nowMs = 1_101
+			}
+
+			switch (stage) {
+				case "state":
+					provider.getState.mockImplementationOnce(async () => {
+						expireBudget()
+						return { mode: "code", autoCondenseContext: false, autoApprovalEnabled: false }
+					})
+					break
+				case "mode":
+					vi.mocked(task.getTaskMode).mockImplementationOnce(async () => {
+						expireBudget()
+						return "code"
+					})
+					break
+				case "system-prompt":
+					getSystemPrompt.mockImplementationOnce(async () => {
+						expireBudget()
+						return "Original system prompt"
+					})
+					break
+				case "tool-surface":
+					vi.mocked(buildNativeToolsArrayWithRestrictions).mockImplementationOnce(async () => {
+						expireBudget()
+						return {
+							tools: structuredClone([...live.surface.schemas]),
+							allowedFunctionNames: live.allowedFunctionNames,
+							surface: live.surface,
+						}
+					})
+					break
+				case "auto-approval":
+					vi.mocked(task["autoApprovalHandler"].checkAutoApprovalLimits).mockImplementationOnce(async () => {
+						expireBudget()
+						return { shouldProceed: true, requiresApproval: false }
+					})
+					break
+				case "context-management":
+					live.contextTokens = 1
+					vi.mocked(manageContext).mockImplementationOnce(async ({ messages }) => {
+						expireBudget()
+						return { messages, summary: "", cost: 0, prevContextTokens: 1 }
+					})
+					break
+			}
+
+			await expect(
+				task
+					.attemptApiRequest(1, {
+						skipProviderRateLimit: true,
+						ownerHandlesRetry: true,
+						retryCategory: "context",
+						retryDeadline: 1_100,
+					})
+					.next(),
+			).rejects.toThrow("Automatic retry deadline exceeded")
+			expect(originalHandler.createMessage).not.toHaveBeenCalled()
+			expect(task.currentRequestAbortController).toBeUndefined()
+			expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+		},
+	)
+
+	it("interrupts a stalled read-only preflight without waiting for its late result", async () => {
+		const { task, originalHandler, provider } = harness()
+		let markStateStarted!: () => void
+		let releaseState!: () => void
+		const stateStarted = new Promise<void>((resolve) => {
+			markStateStarted = resolve
+		})
+		const stateRelease = new Promise<void>((resolve) => {
+			releaseState = resolve
+		})
+		provider.getState.mockImplementationOnce(async () => {
+			markStateStarted()
+			await stateRelease
+			return { mode: "code", autoCondenseContext: false, autoApprovalEnabled: false }
+		})
+		const controller = new AbortController()
+		const pending = task
+			.attemptApiRequest(0, {
+				skipProviderRateLimit: true,
+				ownerHandlesRetry: true,
+				interruptionSignal: controller.signal,
+			})
+			.next()
+		await stateStarted
+
+		controller.abort(new Error("preflight cancelled"))
+		await expect(pending).rejects.toThrow("preflight cancelled")
+		expect(originalHandler.createMessage).not.toHaveBeenCalled()
+		expect(task.currentRequestAbortController).toBeUndefined()
+
+		releaseState()
+		await Promise.resolve()
+		const followUp = task.attemptApiRequest(0, {
+			skipProviderRateLimit: true,
+			ownerHandlesRetry: true,
+		})
+		expect(await followUp.next()).toMatchObject({ value: { type: "text", text: "response" } })
+		expect(await followUp.next()).toEqual({ done: true, value: undefined })
+	})
+
+	it.each([
+		"auto-approval",
+		"context-start",
+		"post-start-tool-surface",
+		"context-finish",
+		"condense-message",
+	] as const)("bounds a stalled %s acknowledgement without admitting the provider", async (stage) => {
+		vi.useFakeTimers()
+		try {
+			vi.setSystemTime(1_000)
+			const { task, live, originalHandler, provider } = harness()
+			let markStageStarted!: () => void
+			const stageStarted = new Promise<void>((resolve) => {
+				markStageStarted = resolve
+			})
+			const never = async () => {
+				markStageStarted()
+				await new Promise<void>(() => undefined)
+			}
+
+			if (stage === "auto-approval") {
+				vi.mocked(task["autoApprovalHandler"].checkAutoApprovalLimits).mockImplementationOnce(async () => {
+					await never()
+					return { shouldProceed: true, requiresApproval: false }
+				})
+			} else {
+				live.contextTokens = 1
+				vi.mocked(willManageContext).mockReturnValueOnce(true)
+				if (stage === "context-start" || stage === "post-start-tool-surface") {
+					provider.getState.mockResolvedValueOnce({
+						mode: "code",
+						autoCondenseContext: true,
+						autoApprovalEnabled: false,
+					})
+					Object.assign(provider, {
+						postMessageToWebview: stage === "context-start" ? vi.fn(never) : vi.fn(async () => undefined),
+					})
+					if (stage === "post-start-tool-surface") {
+						vi.mocked(buildNativeToolsArrayWithRestrictions).mockImplementationOnce(async () => {
+							await never()
+							return {
+								tools: [],
+								allowedFunctionNames: undefined,
+								surface: live.surface,
+							}
+						})
+					}
+				} else if (stage === "context-finish") {
+					provider.getState.mockResolvedValueOnce({
+						mode: "code",
+						autoCondenseContext: true,
+						autoApprovalEnabled: false,
+					})
+					Object.assign(provider, {
+						postMessageToWebview: vi.fn().mockResolvedValueOnce(undefined).mockImplementationOnce(never),
+					})
+				} else {
+					Object.assign(provider, { postMessageToWebview: vi.fn(async () => undefined) })
+					vi.mocked(manageContext).mockImplementationOnce(async ({ messages }) => ({
+						messages,
+						summary: "bounded summary",
+						cost: 0,
+						prevContextTokens: 1,
+					}))
+					Object.assign(task, { say: vi.fn(never) })
+				}
+			}
+
+			const pending = task
+				.attemptApiRequest(1, {
+					skipProviderRateLimit: true,
+					ownerHandlesRetry: true,
+					retryCategory: "context",
+					retryDeadline: 1_100,
+				})
+				.next()
+			const rejected = expect(pending).rejects.toThrow("Automatic retry deadline exceeded")
+			await stageStarted
+			await vi.advanceTimersByTimeAsync(100)
+			await rejected
+
+			expect(originalHandler.createMessage).not.toHaveBeenCalled()
+			expect(task.currentRequestAbortController).toBeUndefined()
+			expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+			if (stage === "context-start" || stage === "post-start-tool-surface") {
+				expect(Reflect.get(provider, "postMessageToWebview")).toHaveBeenLastCalledWith({
+					type: "condenseTaskContextResponse",
+					text: task.taskId,
+				})
+			}
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("cancels during lifecycle preflight without retaining request ownership and recovers", async () => {
+		const { task, originalHandler } = harness()
+		let markLifecycleStarted!: () => void
+		let markLifecycleFinished!: () => void
+		let releaseLifecycle!: () => void
+		const lifecycleStarted = new Promise<void>((resolve) => {
+			markLifecycleStarted = resolve
+		})
+		const lifecycleFinished = new Promise<void>((resolve) => {
+			markLifecycleFinished = resolve
+		})
+		const lifecycleRelease = new Promise<void>((resolve) => {
+			releaseLifecycle = resolve
+		})
+		const ensureLifecycle = Reflect.get(task, "ensureCanonicalLifecycleStepStarted") as {
+			mockImplementationOnce(implementation: () => Promise<void>): void
+		}
+		ensureLifecycle.mockImplementationOnce(async () => {
+			markLifecycleStarted()
+			await lifecycleRelease
+			markLifecycleFinished()
+		})
+		const publishPhase = Reflect.get(task, "publishCanonicalLifecyclePhase") as ReturnType<typeof vi.fn>
+		const appendEvent = Reflect.get(task, "appendAgentTurnEvent") as ReturnType<typeof vi.fn>
+		const controller = new AbortController()
+		const pending = task
+			.attemptApiRequest(0, {
+				skipProviderRateLimit: true,
+				ownerHandlesRetry: true,
+				interruptionSignal: controller.signal,
+			})
+			.next()
+		await lifecycleStarted
+
+		controller.abort(new Error("lifecycle preflight cancelled"))
+		await expect(pending).rejects.toThrow("lifecycle preflight cancelled")
+		expect(originalHandler.createMessage).not.toHaveBeenCalled()
+		expect(publishPhase).not.toHaveBeenCalled()
+		expect(appendEvent).not.toHaveBeenCalled()
+		expect(task.currentRequestAbortController).toBeUndefined()
+		expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+
+		// The abandoned lifecycle operation may settle later, but its guard prevents
+		// it from committing any of the remaining stale preflight events.
+		releaseLifecycle()
+		await lifecycleFinished
+		await Promise.resolve()
+		expect(publishPhase).not.toHaveBeenCalled()
+		expect(appendEvent).not.toHaveBeenCalled()
+
+		const followUp = task.attemptApiRequest(0, {
+			skipProviderRateLimit: true,
+			ownerHandlesRetry: true,
+		})
+		expect(await followUp.next()).toMatchObject({ value: { type: "text", text: "response" } })
+		expect(await followUp.next()).toEqual({ done: true, value: undefined })
+	})
+
+	it("expires a stalled lifecycle preflight at its absolute retry deadline without late commits", async () => {
+		vi.useFakeTimers()
+		try {
+			vi.setSystemTime(1_000)
+			const { task, originalHandler } = harness()
+			let markLifecycleStarted!: () => void
+			let releaseLifecycle!: () => void
+			const lifecycleStarted = new Promise<void>((resolve) => {
+				markLifecycleStarted = resolve
+			})
+			const lifecycleRelease = new Promise<void>((resolve) => {
+				releaseLifecycle = resolve
+			})
+			const ensureLifecycle = Reflect.get(task, "ensureCanonicalLifecycleStepStarted") as {
+				mockImplementationOnce(implementation: () => Promise<void>): void
+			}
+			ensureLifecycle.mockImplementationOnce(async () => {
+				markLifecycleStarted()
+				await lifecycleRelease
+			})
+			const publishPhase = Reflect.get(task, "publishCanonicalLifecyclePhase") as ReturnType<typeof vi.fn>
+			const appendEvent = Reflect.get(task, "appendAgentTurnEvent") as ReturnType<typeof vi.fn>
+			const pending = task
+				.attemptApiRequest(1, {
+					skipProviderRateLimit: true,
+					ownerHandlesRetry: true,
+					retryCategory: "transport",
+					retryDeadline: 1_100,
+				})
+				.next()
+			await lifecycleStarted
+
+			const rejected = expect(pending).rejects.toThrow("Automatic retry deadline exceeded")
+			await vi.advanceTimersByTimeAsync(100)
+			await rejected
+			expect(originalHandler.createMessage).not.toHaveBeenCalled()
+			expect(task.currentRequestAbortController).toBeUndefined()
+			expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+
+			releaseLifecycle()
+			await Promise.resolve()
+			await Promise.resolve()
+			expect(publishPhase).not.toHaveBeenCalled()
+			expect(appendEvent).not.toHaveBeenCalled()
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("drops a queued canonical lifecycle event after its request guard becomes stale", async () => {
+		const { task, provider } = harness()
+		let releaseQueue!: () => void
+		const heldQueue = new Promise<void>((resolve) => {
+			releaseQueue = resolve
+		})
+		const publishLifecycleEvent = vi.fn(async () => ({ accepted: true }))
+		Object.assign(provider, { publishAgentLifecycleEvent: publishLifecycleEvent })
+		Object.assign(task, {
+			agentRunId: "old-run",
+			agentTurnId: "old-turn",
+			canonicalLifecycleQueue: heldQueue,
+			canonicalLifecyclePersistenceFailure: undefined,
+		})
+		let current = true
+		const pending = (Task.prototype as any).enqueueCanonicalLifecycleEvent.call(
+			task,
+			"phase_changed",
+			{ phase: "working" },
+			undefined,
+			() => current,
+		)
+
+		current = false
+		Object.assign(task, { agentRunId: "new-run", agentTurnId: "new-turn" })
+		releaseQueue()
+		await pending
+
+		expect(publishLifecycleEvent).not.toHaveBeenCalled()
+	})
+
+	it("does not apply a late lifecycle rejection to the replacement turn", async () => {
+		const { task, provider } = harness()
+		let rejectPublish!: (error: Error) => void
+		const publishLifecycleEvent = vi.fn(
+			() =>
+				new Promise<{ accepted: boolean; error: Error }>((_resolve, reject) => {
+					rejectPublish = reject
+				}),
+		)
+		const markLifecycleDegraded = vi.fn()
+		Object.assign(provider, {
+			publishAgentLifecycleEvent: publishLifecycleEvent,
+			markAgentLifecycleDegraded: markLifecycleDegraded,
+		})
+		Object.assign(task, {
+			agentRunId: "old-run",
+			agentTurnId: "old-turn",
+			canonicalLifecycleQueue: Promise.resolve(),
+			canonicalLifecyclePersistenceFailure: undefined,
+		})
+		let current = true
+		const pending = (Task.prototype as any).enqueueCanonicalLifecycleEvent.call(
+			task,
+			"phase_changed",
+			{ phase: "working" },
+			undefined,
+			() => current,
+		)
+		await vi.waitFor(() => expect(publishLifecycleEvent).toHaveBeenCalledOnce())
+
+		current = false
+		Object.assign(task, { agentRunId: "new-run", agentTurnId: "new-turn" })
+		rejectPublish(new Error("late rejected append"))
+		await pending
+
+		expect(Reflect.get(task, "canonicalLifecyclePersistenceFailure")).toBeUndefined()
+		expect(markLifecycleDegraded).not.toHaveBeenCalled()
+	})
+
+	it("fences background usage ownership from a replacement request and transcript message", () => {
+		const { task } = harness()
+		const oldRequestController = new AbortController()
+		const followUpController = new AbortController()
+		const oldMessage = { ts: 1, type: "say", say: "api_req_started", text: "{}" } as const
+		const replacementMessage = { ...oldMessage }
+		Object.assign(task, {
+			clineMessages: [oldMessage],
+			backgroundUsageDrainEpoch: 0,
+			backgroundUsageDrainAbortController: undefined,
+			abandoned: false,
+		})
+		const owner = (task as any).beginBackgroundUsageDrain(oldRequestController, 0, oldMessage)
+
+		expect((task as any).isBackgroundUsageDrainCurrent(owner)).toBe(true)
+		task.currentRequestAbortController = followUpController
+		task.clineMessages = [replacementMessage]
+		expect((task as any).isBackgroundUsageDrainCurrent(owner)).toBe(false)
+		;(task as any).invalidateBackgroundUsageDrain("replacement request")
+		expect(owner.controller.signal.aborted).toBe(true)
+		// A late timeout belongs to the captured old controller, never the mutable
+		// current-request field now owned by the follow-up.
+		owner.requestController?.abort(new Error("old usage timeout"))
+		expect(oldRequestController.signal.aborted).toBe(true)
+		expect(followUpController.signal.aborted).toBe(false)
+		expect((task as any).isBackgroundUsageDrainCurrent(owner)).toBe(false)
+	})
+
+	it("bounds provider-lane pacing by the retry deadline before request ownership", async () => {
+		vi.useFakeTimers()
+		try {
+			vi.setSystemTime(2_000)
+			vi.spyOn(performance, "now").mockReturnValue(0)
+			const { task, originalHandler } = harness()
+			task.apiConfiguration = { ...task.apiConfiguration, rateLimitSeconds: 1 }
+			Object.assign(task, { getProviderRateLimitLaneKey: vi.fn(async () => "deadline-lane") })
+			const lanes = Reflect.get(Task, "providerRateLimitLanes") as Map<
+				string,
+				{ queue: Promise<void>; lastRequestTime?: number }
+			>
+			lanes.set("deadline-lane", { queue: Promise.resolve(), lastRequestTime: 0 })
+
+			const pending = task
+				.attemptApiRequest(1, {
+					ownerHandlesRetry: true,
+					retryCategory: "transport",
+					retryDeadline: 2_100,
+				})
+				.next()
+			const rejected = expect(pending).rejects.toThrow("Automatic retry deadline exceeded")
+			await vi.advanceTimersByTimeAsync(100)
+			await rejected
+
+			expect(originalHandler.createMessage).not.toHaveBeenCalled()
+			expect(lanes.get("deadline-lane")?.lastRequestTime).toBe(0)
+			expect(task.currentRequestAbortController).toBeUndefined()
+			expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			Task.resetGlobalApiRequestTime()
+			vi.useRealTimers()
+		}
+	})
+
+	it("releases the provider lane when cancelled cleanup acknowledgement stalls and permits a healthy follow-up", async () => {
+		let now = 0
+		vi.spyOn(performance, "now").mockImplementation(() => now)
+		const { task, originalHandler } = harness()
+		task.apiConfiguration = { ...task.apiConfiguration, rateLimitSeconds: 1 }
+		Object.assign(task, { getProviderRateLimitLaneKey: vi.fn(async () => "cleanup-lane") })
+		const lanes = Reflect.get(Task, "providerRateLimitLanes") as Map<
+			string,
+			{ queue: Promise<void>; lastRequestTime?: number }
+		>
+		lanes.set("cleanup-lane", { queue: Promise.resolve(), lastRequestTime: 0 })
+		let markCountdownStarted!: () => void
+		let markCleanupStarted!: () => void
+		const countdownStarted = new Promise<void>((resolve) => {
+			markCountdownStarted = resolve
+		})
+		const cleanupStarted = new Promise<void>((resolve) => {
+			markCleanupStarted = resolve
+		})
+		const cleanupNeverSettles = new Promise<void>(() => undefined)
+		const say = vi.fn(async (_type: string, _text?: string, _images?: string[], partial?: boolean) => {
+			if (partial === true) {
+				markCountdownStarted()
+				return
+			}
+			markCleanupStarted()
+			await cleanupNeverSettles
+		})
+		Object.assign(task, { say })
+		const controller = new AbortController()
+
+		try {
+			const pending = (task as any).maybeWaitForProviderRateLimit(
+				0,
+				undefined,
+				controller.signal,
+				Date.now() + 10_000,
+			) as Promise<void>
+			await countdownStarted
+			controller.abort(new Error("rate-limit wait cancelled"))
+			await cleanupStarted
+			await expect(pending).rejects.toThrow("rate-limit wait cancelled")
+			await expect(lanes.get("cleanup-lane")?.queue).resolves.toBeUndefined()
+			expect(lanes.get("cleanup-lane")?.lastRequestTime).toBe(0)
+			expect(originalHandler.createMessage).not.toHaveBeenCalled()
+
+			now = 1_001
+			Object.assign(task, { say: vi.fn(async () => undefined) })
+			const followUp = task.attemptApiRequest(0, { ownerHandlesRetry: true })
+			expect(await followUp.next()).toMatchObject({ value: { type: "text", text: "response" } })
+			expect(await followUp.next()).toEqual({ done: true, value: undefined })
+			expect(originalHandler.createMessage).toHaveBeenCalledOnce()
+			expect(task.currentRequestAbortController).toBeUndefined()
+			expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+		} finally {
+			Task.resetGlobalApiRequestTime()
+		}
+	})
+
 	it.each(["context", "empty-response", undefined] as const)(
 		"does not compact retained retries, but a new %s boundary sends changed inputs",
 		async (retryCategory) => {
@@ -406,6 +978,12 @@ describe("Task retained retry wire inputs", () => {
 			}
 			summaryHandler.createMessage.mockImplementation(async function* () {
 				yield { type: "text", text: "Older work is complete. Continue from the recent read." }
+				yield {
+					type: "outcome",
+					status: "completed",
+					terminal: true,
+					semanticOutputObserved: true,
+				}
 			})
 			// Keep the recent transaction small; either older message alone exceeds the tail budget.
 			const messages: ApiMessage[] = [
@@ -511,6 +1089,224 @@ describe("Task retained retry wire inputs", () => {
 		expect(second[2]!.attemptId).not.toBe(first[2]!.attemptId)
 		expect(second[2]!.signal).not.toBe(first[2]!.signal)
 		expect(capturedStep(task).snapshot.context.retryAttempt).toBe(1)
+	})
+
+	it("does not retry a direct-caller first-chunk failure after the logical elapsed budget", async () => {
+		const { task, live, originalHandler } = harness()
+		live.autoApprovalEnabled = true
+		let elapsedMs = 0
+		vi.spyOn(performance, "now").mockImplementation(() => elapsedMs)
+		const backoff = vi.fn(async () => {})
+		Object.assign(task, { backoffAndAnnounce: backoff })
+		originalHandler.createMessage.mockImplementationOnce(async function* () {
+			elapsedMs = 90_001
+			yield* []
+			throw new Error("long first-chunk deadline exhausted")
+		})
+
+		await expect(task.attemptApiRequest(0, { skipProviderRateLimit: true }).next()).rejects.toThrow(
+			"long first-chunk deadline exhausted",
+		)
+
+		expect(originalHandler.createMessage).toHaveBeenCalledOnce()
+		expect(backoff).not.toHaveBeenCalled()
+		expect(task.currentRequestAbortController).toBeUndefined()
+		expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+	})
+
+	it.each(["retry-event", "announcement", "countdown"] as const)(
+		"bounds a stalled main-loop %s by its absolute retry deadline",
+		async (stage) => {
+			vi.useFakeTimers()
+			try {
+				vi.setSystemTime(3_000)
+				const { task } = harness()
+				const never = () => new Promise<void>(() => undefined)
+				const appendEvent = vi.fn(stage === "retry-event" ? never : async () => undefined)
+				const say = vi.fn(stage === "announcement" ? never : async () => undefined)
+				Object.assign(task, { appendAgentTurnEvent: appendEvent, say })
+				const controller = new AbortController()
+				const pending = (task as any).waitForRetryDecision(
+					{ shouldRetry: true, attempt: 1, nextAttempt: 2, delayMs: 1_000 },
+					new Error("retryable failure"),
+					controller.signal,
+					3_100,
+				)
+				if (stage !== "countdown") {
+					await vi.waitFor(() => expect(stage === "retry-event" ? appendEvent : say).toHaveBeenCalledOnce())
+				}
+
+				const rejected = expect(pending).rejects.toThrow("Automatic retry deadline exceeded")
+				await vi.advanceTimersByTimeAsync(100)
+				await rejected
+				expect(vi.getTimerCount()).toBe(0)
+				if (stage === "retry-event") expect(say).not.toHaveBeenCalled()
+				if (stage === "countdown") expect(say).toHaveBeenCalledOnce()
+			} finally {
+				vi.useRealTimers()
+			}
+		},
+	)
+
+	it("bounds a direct compatibility retry wait by the tighter supplied deadline", async () => {
+		vi.useFakeTimers()
+		try {
+			vi.setSystemTime(4_000)
+			const { task, live, originalHandler } = harness()
+			live.autoApprovalEnabled = true
+			originalHandler.createMessage.mockImplementationOnce(() =>
+				failBeforeFirstChunk(new Error("retryable first-chunk failure")),
+			)
+			const backoff = vi.fn(
+				(_retryAttempt: number, _error: unknown, _retryDeadline?: number) => new Promise<void>(() => undefined),
+			)
+			Object.assign(task, { backoffAndAnnounce: backoff })
+
+			const pending = task
+				.attemptApiRequest(0, {
+					skipProviderRateLimit: true,
+					retryDeadline: 4_100,
+				})
+				.next()
+			await vi.waitFor(() => expect(backoff).toHaveBeenCalledOnce())
+			const rejected = expect(pending).rejects.toThrow("Automatic retry deadline exceeded")
+			await vi.advanceTimersByTimeAsync(100)
+			await rejected
+
+			expect(backoff.mock.calls[0]?.[2]).toBe(4_100)
+			expect(originalHandler.createMessage).toHaveBeenCalledOnce()
+			expect(task.currentRequestAbortController).toBeUndefined()
+			expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("stops the direct compatibility countdown when its UI acknowledgement outlives the retry deadline", async () => {
+		vi.useFakeTimers()
+		try {
+			vi.setSystemTime(5_000)
+			const { task, live, originalHandler } = harness()
+			live.autoApprovalEnabled = true
+			Object.assign(task, {
+				agentRetryPolicy: new AgentRetryPolicy({ maxAttempts: 2, jitter: "none", baseDelayMs: 1_000 }),
+			})
+			originalHandler.createMessage.mockImplementationOnce(() =>
+				failBeforeFirstChunk(new Error("retryable first-chunk failure")),
+			)
+			const say = vi.fn(() => new Promise<void>(() => undefined))
+			Object.assign(task, { say })
+
+			const pending = task
+				.attemptApiRequest(0, {
+					skipProviderRateLimit: true,
+					retryDeadline: 5_100,
+				})
+				.next()
+			await vi.waitFor(() => expect(say).toHaveBeenCalledOnce())
+			const rejected = expect(pending).rejects.toThrow("Automatic retry deadline exceeded")
+			await vi.advanceTimersByTimeAsync(100)
+			await rejected
+
+			expect(originalHandler.createMessage).toHaveBeenCalledOnce()
+			expect(task.currentRequestAbortController).toBeUndefined()
+			expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("interrupts a stalled compatibility stream, closes its iterator, and permits a healthy follow-up", async () => {
+		const { task, live, originalHandler } = harness()
+		live.autoApprovalEnabled = true
+		const closeCompatibilityIterator = vi.fn(async () => ({ done: true as const, value: undefined }))
+		const stalledCompatibilityStream = {
+			[Symbol.asyncIterator]() {
+				return this
+			},
+			next: vi.fn(() => new Promise<IteratorResult<never>>(() => undefined)),
+			return: closeCompatibilityIterator,
+		} as unknown as ApiStream
+		originalHandler.createMessage
+			.mockImplementationOnce(() => failBeforeFirstChunk(new Error("initial transport failure")))
+			.mockImplementationOnce(() => stalledCompatibilityStream)
+		const backoff = vi.fn(async () => undefined)
+		Object.assign(task, { backoffAndAnnounce: backoff })
+		const controller = new AbortController()
+		const pending = task
+			.attemptApiRequest(0, {
+				skipProviderRateLimit: true,
+				interruptionSignal: controller.signal,
+			})
+			.next()
+		await vi.waitFor(() => expect(originalHandler.createMessage).toHaveBeenCalledTimes(2))
+		const compatibilityMetadata = originalHandler.createMessage.mock.calls[1]?.[2]
+
+		controller.abort(new Error("compatibility retry cancelled"))
+		await expect(pending).rejects.toThrow("compatibility retry cancelled")
+		expect(compatibilityMetadata?.signal?.aborted).toBe(true)
+		expect(closeCompatibilityIterator).toHaveBeenCalledOnce()
+		expect(task.currentRequestAbortController).toBeUndefined()
+		expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+
+		originalHandler.createMessage.mockImplementationOnce(async function* () {
+			yield { type: "text", text: "healthy follow-up" }
+		})
+		const followUp = task.attemptApiRequest(0, {
+			skipProviderRateLimit: true,
+			ownerHandlesRetry: true,
+		})
+		expect(await followUp.next()).toMatchObject({ value: { type: "text", text: "healthy follow-up" } })
+		expect(await followUp.next()).toEqual({ done: true, value: undefined })
+		expect(originalHandler.createMessage).toHaveBeenCalledTimes(3)
+	})
+
+	it("lets the outer retry deadline stop a stalled compatibility read when API timeout is disabled", async () => {
+		vi.useFakeTimers()
+		try {
+			vi.setSystemTime(6_000)
+			vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+				get: (key: string, defaultValue: unknown) => (key === "apiRequestTimeout" ? 0 : defaultValue),
+			} as any)
+			const { task, live, originalHandler } = harness()
+			live.autoApprovalEnabled = true
+			const closeCompatibilityIterator = vi.fn(async () => ({ done: true as const, value: undefined }))
+			const stalledCompatibilityStream = {
+				[Symbol.asyncIterator]() {
+					return this
+				},
+				next: vi.fn(() => new Promise<IteratorResult<never>>(() => undefined)),
+				return: closeCompatibilityIterator,
+			} as unknown as ApiStream
+			originalHandler.createMessage
+				.mockImplementationOnce(() => failBeforeFirstChunk(new Error("initial transport failure")))
+				.mockImplementationOnce(() => stalledCompatibilityStream)
+			Object.assign(task, { backoffAndAnnounce: vi.fn(async () => undefined) })
+
+			const pending = task
+				.attemptApiRequest(0, {
+					skipProviderRateLimit: true,
+					retryDeadline: 6_100,
+				})
+				.next()
+			const rejected = expect(pending).rejects.toMatchObject({ name: "ApiStreamDeadlineError" })
+			await vi.waitFor(() => expect(originalHandler.createMessage).toHaveBeenCalledTimes(2))
+			const compatibilityMetadata = originalHandler.createMessage.mock.calls[1]?.[2]
+
+			await vi.advanceTimersByTimeAsync(100)
+			await rejected
+			expect(compatibilityMetadata?.deadline).toBe(6_100)
+			expect(compatibilityMetadata?.signal?.aborted).toBe(true)
+			expect(closeCompatibilityIterator).toHaveBeenCalledOnce()
+			expect(originalHandler.createMessage).toHaveBeenCalledTimes(2)
+			expect(task.currentRequestAbortController).toBeUndefined()
+			expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
 	})
 
 	it("returns context errors to the direct caller instead of replaying obsolete captured input", async () => {

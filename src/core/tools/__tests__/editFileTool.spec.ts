@@ -697,6 +697,31 @@ describe("editFileTool", () => {
 			expect(mockTask.diffViewProvider.update).toHaveBeenCalledWith("Line 1\r\nModified Line 2\r\nLine 3", true)
 		})
 
+		it("passes the raw CRLF baseline to a direct save", async () => {
+			const contentWithCRLF = "Line 1\r\nLine 2\r\nLine 3"
+			mockTask.providerRef.deref.mockReturnValue({
+				getState: vi.fn().mockResolvedValue({
+					diagnosticsEnabled: false,
+					writeDelayMs: 0,
+					experiments: { preventFocusDisruption: true },
+				}),
+			})
+
+			await executeEditFileTool(
+				{ old_string: "Line 2", new_string: "Modified Line 2" },
+				{ fileContent: contentWithCRLF },
+			)
+
+			expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+				testFilePath,
+				"Line 1\r\nModified Line 2\r\nLine 3",
+				false,
+				false,
+				0,
+				{ exists: true, content: contentWithCRLF },
+			)
+		})
+
 		it("normalizes CRLF in old_string for matching against LF file content", async () => {
 			await executeEditFileTool(
 				{

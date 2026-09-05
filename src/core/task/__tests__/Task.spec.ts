@@ -11,6 +11,7 @@ import { RooCodeEventName, type GlobalState, type ProviderSettings, type ModelIn
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../Task"
+import { AskIgnoredError } from "../AskIgnoredError"
 import { ClineProvider } from "../../webview/ClineProvider"
 import { ApiStreamChunk } from "../../../api/transform/stream"
 import { maybeRemoveImageBlocks } from "../../../api/transform/image-cleaning"
@@ -19,6 +20,7 @@ import { processUserContentMentions } from "../../mentions/processUserContentMen
 import { MultiSearchReplaceDiffStrategy } from "../../diff/strategies/multi-search-replace"
 import { formatResponse } from "../../prompts/responses"
 import { createAgentResponse } from "../../agent/AgentResponse"
+import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
 import { ToolRegistry } from "../../tools/ToolRegistry"
 import type { AgentTurnEvent } from "../../agent/AgentTurnEvents"
@@ -680,17 +682,14 @@ describe("Alpha", () => {
 				])
 			})
 
-			it("should handle API retry with countdown", async () => {
+			it("should cap the provider retry countdown to the policy-approved delay", async () => {
+				vi.useFakeTimers()
 				const cline = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
 					task: "test task",
 					startTask: false,
 				})
-
-				// Mock delay to track countdown timing
-				const mockDelay = vi.fn().mockResolvedValue(undefined)
-				vi.spyOn(await import("delay"), "default").mockImplementation(mockDelay)
 
 				// Mock say to track messages
 				const saySpy = vi.spyOn(cline, "say").mockResolvedValue(undefined)
@@ -768,10 +767,24 @@ describe("Alpha", () => {
 
 				// Trigger API request
 				const iterator = cline.attemptApiRequest(0)
-				await iterator.next()
+				const request = iterator.next()
+				try {
+					await vi.waitFor(() =>
+						expect(saySpy).toHaveBeenCalledWith(
+							"api_req_retry_delayed",
+							expect.stringContaining("<retry_timer>1</retry_timer>"),
+							undefined,
+							true,
+						),
+					)
+					await vi.advanceTimersByTimeAsync(1_000)
+					await request
+				} finally {
+					vi.useRealTimers()
+				}
 
-				// Calculate expected delay for first retry
-				const baseDelay = 3 // test retry delay
+				// AgentRetryPolicy approves one second even though the provider requests three.
+				const baseDelay = 1
 
 				// Verify countdown messages
 				for (let i = baseDelay; i > 0; i--) {
@@ -784,11 +797,6 @@ describe("Alpha", () => {
 				}
 
 				expect(saySpy).toHaveBeenCalledWith("api_req_retry_delayed", "API Error\n", undefined, false)
-
-				// Calculate expected delay calls for countdown
-				const totalExpectedDelays = baseDelay // One delay per second for countdown
-				expect(mockDelay).toHaveBeenCalledTimes(totalExpectedDelays)
-				expect(mockDelay).toHaveBeenCalledWith(1000)
 
 				// Verify error message content
 				const errorMessage = saySpy.mock.calls.find((call) => call[1]?.includes("<retry_timer>"))?.[1]
@@ -816,16 +824,13 @@ describe("Alpha", () => {
 			})
 
 			it("should not apply retry delay twice", async () => {
+				vi.useFakeTimers()
 				const cline = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
 					task: "test task",
 					startTask: false,
 				})
-
-				// Mock delay to track countdown timing
-				const mockDelay = vi.fn().mockResolvedValue(undefined)
-				vi.spyOn(await import("delay"), "default").mockImplementation(mockDelay)
 
 				// Mock say to track messages
 				const saySpy = vi.spyOn(cline, "say").mockResolvedValue(undefined)
@@ -903,13 +908,24 @@ describe("Alpha", () => {
 
 				// Trigger API request
 				const iterator = cline.attemptApiRequest(0)
-				await iterator.next()
+				const request = iterator.next()
+				try {
+					await vi.waitFor(() =>
+						expect(saySpy).toHaveBeenCalledWith(
+							"api_req_retry_delayed",
+							expect.stringContaining("<retry_timer>1</retry_timer>"),
+							undefined,
+							true,
+						),
+					)
+					await vi.advanceTimersByTimeAsync(1_000)
+					await request
+				} finally {
+					vi.useRealTimers()
+				}
 
-				// Verify delay is only applied for the countdown
-				const baseDelay = 3 // test retry delay
-				const expectedDelayCount = baseDelay // One delay per second for countdown
-				expect(mockDelay).toHaveBeenCalledTimes(expectedDelayCount)
-				expect(mockDelay).toHaveBeenCalledWith(1000) // Each delay should be 1 second
+				// Verify delay is only applied for the policy-approved countdown.
+				const baseDelay = 1
 
 				// Verify countdown messages were only shown once
 				const retryMessages = saySpy.mock.calls.filter(
@@ -3199,6 +3215,62 @@ describe("Alpha", () => {
 
 		beforeEach(() => {
 			mockProvider.getParentCompletionDecision = vi.fn().mockResolvedValue({ allowed: true })
+			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+				() => ({ get: (_key: string, defaultValue: unknown) => defaultValue }) as any,
+			)
+		})
+
+		it("does not start another main-loop attempt when a retry announcement reaches the logical deadline", async () => {
+			vi.useFakeTimers()
+			try {
+				vi.setSystemTime(5_000)
+				const task = createTask()
+				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+				Object.assign(task, {
+					agentRetryPolicy: new AgentRetryPolicy({
+						maxAttempts: 2,
+						maxElapsedMs: 100,
+						baseDelayMs: 100,
+						jitter: "none",
+					}),
+				})
+				let markRetryAnnouncementStarted!: () => void
+				const retryAnnouncementStarted = new Promise<void>((resolve) => {
+					markRetryAnnouncementStarted = resolve
+				})
+				vi.spyOn(task, "say").mockImplementation(async (type, _text, _images, partial) => {
+					if (type === "api_req_retry_delayed" && partial) {
+						markRetryAnnouncementStarted()
+						await new Promise<void>(() => undefined)
+					}
+				})
+				const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+					(async function* (): AsyncGenerator<ApiStreamChunk> {
+						yield* []
+						throw Object.assign(new Error("transient provider failure"), {
+							firstChunkFailure: true,
+							retryable: true,
+							retryCategory: "transport",
+						})
+					})(),
+				)
+
+				const pending = task.recursivelyMakeClineRequests([{ type: "text", text: "start" }], false)
+				await retryAnnouncementStarted
+				await vi.advanceTimersByTimeAsync(100)
+				await expect(pending).resolves.toMatchObject({
+					status: "exhausted",
+					reason: "Automatic retry deadline exceeded",
+				})
+				expect(attempt).toHaveBeenCalledOnce()
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
 		})
 
 		it.each([
@@ -3591,6 +3663,266 @@ describe("Alpha", () => {
 			expect(task.consecutiveNoAssistantMessagesCount).toBe(0)
 			expect((task as any).automaticMistakeRecoveryCount).toBe(0)
 		})
+
+		it.each(["failed", "incomplete", "exhausted"] as const)(
+			"resumes a primary task after a %s turn and consumes its follow-up once",
+			async (status) => {
+				const task = createTask()
+				const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
+				const ask = vi.spyOn(task, "ask").mockResolvedValue({
+					response: "messageResponse",
+					text: "Please continue from the partial result.",
+					images: [],
+				})
+				const feedback = vi.spyOn(task, "say")
+				const requestStep = vi
+					.spyOn(task, "recursivelyMakeClineRequests")
+					.mockResolvedValueOnce({
+						status,
+						reason: `Provider turn ${status}.`,
+						response: createAgentResponse([{ type: "text", text: "Partial result." }]),
+					})
+					.mockResolvedValueOnce(true)
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				expect(ask).toHaveBeenCalledOnce()
+				expect(ask).toHaveBeenCalledWith("resume_task")
+				expect(requestStep).toHaveBeenCalledTimes(2)
+				expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+					[
+						{
+							type: "text",
+							text: "<user_message>\nPlease continue from the partial result.\n</user_message>",
+						},
+					],
+					false,
+				])
+				expect(feedback).toHaveBeenCalledTimes(1)
+				expect(feedback).toHaveBeenCalledWith("user_feedback", "Please continue from the partial result.", [])
+				const eventTypes = appendEvent.mock.calls.map(([event]) => (event as AgentTurnEvent).type)
+				expect(eventTypes).toContain(status === "incomplete" ? "turn_incomplete" : "turn_failed")
+				expect(eventTypes).not.toContain("task_failed")
+				expect(eventTypes).not.toContain("task_incomplete")
+			},
+		)
+
+		it("uses the established resumption marker when Resume has no follow-up", async () => {
+			const task = createTask()
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({
+				response: "yesButtonClicked",
+				text: undefined,
+				images: undefined,
+			})
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockResolvedValueOnce({ status: "incomplete", reason: "Stream ended before completion." })
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(ask).toHaveBeenCalledWith("resume_task")
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+				[{ type: "text", text: "[TASK RESUMPTION] Resuming task..." }],
+				false,
+			])
+		})
+
+		it("aborts instead of resuming when recovery is declined", async () => {
+			const task = createTask()
+			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
+			const abortTask = vi.spyOn(task, "abortTask").mockImplementation(async () => {
+				task.abort = true
+			})
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockResolvedValueOnce({ status: "failed", reason: "Stream ended before completion." })
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(ask).toHaveBeenCalledWith("resume_task")
+			expect(abortTask).toHaveBeenCalledOnce()
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(appendEvent).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "task_completed", status: "aborted" }),
+			)
+		})
+
+		it("stops the stale loop when recovery is superseded by another ask", async () => {
+			const task = createTask()
+			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
+			const abortTask = vi.spyOn(task, "abortTask")
+			;(task as any).activeAsk = { type: "followup", ts: 42 }
+			const ask = vi.spyOn(task, "ask").mockRejectedValue(new AskIgnoredError("superseded"))
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockResolvedValueOnce({ status: "failed", reason: "Stream ended before completion." })
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(ask).toHaveBeenCalledWith("resume_task")
+			expect(abortTask).not.toHaveBeenCalled()
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(appendEvent.mock.calls.map(([event]) => (event as AgentTurnEvent).type)).not.toContain("task_failed")
+			expect(appendEvent.mock.calls.map(([event]) => (event as AgentTurnEvent).type)).not.toContain(
+				"task_incomplete",
+			)
+		})
+
+		it("does not offer recovery after an authoritative aborted outcome", async () => {
+			const task = createTask()
+			const ask = vi.spyOn(task, "ask")
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockResolvedValueOnce({ status: "aborted", reason: "The request was cancelled." })
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(ask).not.toHaveBeenCalledWith("resume_task")
+		})
+
+		it("does not offer recovery when completion finalization is aborted", async () => {
+			const task = createTask()
+			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({
+				response: "yesButtonClicked",
+				text: "",
+				images: [],
+			})
+			vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+				task.assistantMessageContent = [{ type: "text", content: "Everything is done.", partial: false }]
+				return false
+			})
+			vi.spyOn(task, "finalizeTaskCompletion").mockImplementationOnce(async () => {
+				task.abort = true
+				return false
+			})
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(ask).not.toHaveBeenCalledWith("resume_task")
+			expect(appendEvent).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "task_completed", status: "aborted" }),
+			)
+		})
+
+		it("keeps failed managed children on their terminal handoff path", async () => {
+			const task = createTask("subagent")
+			const ask = vi.spyOn(task, "ask")
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockResolvedValueOnce({ status: "failed", reason: "Managed child failed." })
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(ask).not.toHaveBeenCalledWith("resume_task")
+		})
+
+		it("blocks ordinary text completion while the enabled todo policy has open work", async () => {
+			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+				() =>
+					({
+						get: (key: string, defaultValue: unknown) =>
+							key === "preventCompletionWithOpenTodos" ? true : defaultValue,
+					}) as any,
+			)
+			const task = createTask()
+			task.todoList = [{ id: "pending", content: "Finish the regression", status: "pending" }]
+			const ask = vi.spyOn(task, "ask")
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [{ type: "text", content: "Everything is done.", partial: false }]
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(ask).not.toHaveBeenCalledWith("completion_result", expect.anything(), expect.anything())
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[1]?.[0]).toEqual([
+				expect.objectContaining({
+					type: "text",
+					text: expect.stringContaining("incomplete todos"),
+				}),
+			])
+			expect((task as any).didComplete).toBe(false)
+		})
+
+		it("rechecks open todos after the completion review boundary", async () => {
+			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+				() =>
+					({
+						get: (key: string, defaultValue: unknown) =>
+							key === "preventCompletionWithOpenTodos" ? true : defaultValue,
+					}) as any,
+			)
+			const task = createTask()
+			task.todoList = [{ id: "late", content: "Late work", status: "completed" }]
+			const finalize = vi.spyOn(task, "finalizeTaskCompletion")
+			const retract = vi.spyOn(task, "retractCompletionResult")
+			vi.spyOn(task, "ask").mockImplementationOnce(async () => {
+				task.todoList = [{ id: "late", content: "Late work", status: "in_progress" }]
+				return { response: "yesButtonClicked", text: "", images: [] }
+			})
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [{ type: "text", content: "Everything is done.", partial: false }]
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(retract).toHaveBeenCalledOnce()
+			expect(finalize).not.toHaveBeenCalled()
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[1]?.[0]).toEqual([
+				expect.objectContaining({
+					type: "text",
+					text: expect.stringContaining("incomplete todos"),
+				}),
+			])
+			expect((task as any).didComplete).toBe(false)
+		})
+
+		it.each([
+			[false, "pending"],
+			[true, "completed"],
+		] as const)(
+			"allows ordinary text completion with todo prevention %s and todo status %s",
+			async (enabled, status) => {
+				vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+					() =>
+						({
+							get: (key: string, defaultValue: unknown) =>
+								key === "preventCompletionWithOpenTodos" ? enabled : defaultValue,
+						}) as any,
+				)
+				const task = createTask()
+				task.todoList = [{ id: "todo", content: "Tracked work", status }]
+				vi.spyOn(task, "ask").mockResolvedValue({
+					response: "yesButtonClicked",
+					text: "",
+					images: [],
+				})
+				vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+					task.assistantMessageContent = [
+						{ type: "text", content: "The requested work is complete.", partial: false },
+					]
+					return false
+				})
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				expect((task as any).didComplete).toBe(true)
+			},
+		)
 
 		it("does not expose a newly staged completion when every transcript write fails", async () => {
 			const task = createTask()

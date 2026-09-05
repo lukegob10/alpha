@@ -89,8 +89,10 @@ import { TelemetryService } from "@alpha-code/telemetry"
 // api
 import { ApiHandler, ApiHandlerCreateMessageMetadata, buildApiHandler } from "../../api"
 import {
+	ApiStreamDeadlineError,
 	ApiStream,
 	GroundingSource,
+	type ApiStreamChunk,
 	type ApiStreamOutcomeChunk,
 	isApiStreamAbortError,
 	isApiStreamSemanticChunk,
@@ -200,10 +202,12 @@ import {
 import { processUserContentMentions } from "../mentions/processUserContentMentions"
 import {
 	countContextTokens,
+	createTokenCountContext,
 	getMessagesSinceLastSummary,
 	summarizeConversation,
 	getEffectiveApiHistory,
 	type CountableHistoryMessage,
+	type TokenCountContext,
 } from "../condense"
 import { MessageQueueService } from "../message-queue/MessageQueueService"
 import { AutoApprovalHandler, checkAutoApprovalWithInheritedPolicy } from "../auto-approval"
@@ -249,6 +253,9 @@ export interface CompletionGateDecision {
 	modelCanResolveRejection: boolean
 }
 
+const OPEN_TODO_COMPLETION_MESSAGE =
+	"Cannot complete task while there are incomplete todos. Please finish all todos before attempting completion."
+
 const SAFE_EXTERNAL_MUTATION_ASKS = new Set<ClineAsk>([
 	"followup",
 	"completion_result",
@@ -279,8 +286,51 @@ const FORCED_CONTEXT_REDUCTION_PERCENT = 75 // Keep 75% of context (remove 25%) 
 const MAX_CONTEXT_WINDOW_RETRIES = 3 // Maximum retries for context window errors
 const MAX_AUTOMATIC_MISTAKE_RECOVERIES = 1
 
+function getBoundedRequestDeadline(
+	configuredTimeoutMs: number | undefined,
+	absoluteLimit: number | undefined,
+): number | undefined {
+	const configuredDeadline =
+		typeof configuredTimeoutMs === "number" && Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+			? Date.now() + configuredTimeoutMs
+			: undefined
+	const normalizedLimit =
+		typeof absoluteLimit === "number" && Number.isFinite(absoluteLimit) ? absoluteLimit : undefined
+	if (configuredDeadline === undefined) return normalizedLimit
+	if (normalizedLimit === undefined) return configuredDeadline
+	return Math.min(configuredDeadline, normalizedLimit)
+}
+
+function getTimeoutWithinDeadline(
+	configuredTimeoutMs: number | undefined,
+	absoluteDeadline: number | undefined,
+): number | undefined {
+	if (absoluteDeadline === undefined || !Number.isFinite(absoluteDeadline)) return configuredTimeoutMs
+	const remainingMs = absoluteDeadline - Date.now()
+	if (remainingMs <= 0) throw new ApiStreamDeadlineError("Automatic retry deadline exceeded")
+	if (typeof configuredTimeoutMs !== "number" || !Number.isFinite(configuredTimeoutMs) || configuredTimeoutMs <= 0) {
+		return remainingMs
+	}
+	return Math.min(configuredTimeoutMs, remainingMs)
+}
+
+function throwIfAbsoluteDeadlineExceeded(absoluteDeadline: number | undefined): void {
+	if (typeof absoluteDeadline === "number" && Number.isFinite(absoluteDeadline) && absoluteDeadline <= Date.now()) {
+		throw new ApiStreamDeadlineError("Automatic retry deadline exceeded")
+	}
+}
+
 type TaskRequestState = Awaited<ReturnType<ClineProvider["getState"]>>
 type CapturedTaskProvider = { apiHandler: ApiHandler; apiConfiguration: ProviderSettings }
+type CanonicalLifecycleEventGuard = () => boolean
+
+type BackgroundUsageDrainOwner = {
+	epoch: number
+	controller: AbortController
+	requestController?: AbortController
+	messageIndex: number
+	message: ClineMessage
+}
 
 /** Provider-neutral result returned by one Task model/tool step. */
 type TaskStepStatus = "completed" | "aborted" | "failed" | "incomplete" | "exhausted" | "awaiting-user"
@@ -768,6 +818,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private streamingPreviewQueue: Promise<void> = Promise.resolve()
 	private streamingPreviewRequestVersion = 0
 	private streamingPreviewPumpOwner?: symbol
+	private backgroundUsageDrainEpoch = 0
+	private backgroundUsageDrainAbortController?: AbortController
 	userMessageContent: (Anthropic.TextBlockParam | Anthropic.ImageBlockParam | Anthropic.ToolResultBlockParam)[] = []
 	userMessageContentReady = false
 
@@ -804,6 +856,52 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private invalidateStreamingPreviewEpoch(): void {
 		this.streamingPreviewEpoch += 1
+	}
+
+	/**
+	 * Usage collection may outlive the visible provider turn. Give that work a
+	 * separate epoch so a superseding request, rewind, or task cancellation can
+	 * stop it without consulting whichever request controller is current later.
+	 */
+	private invalidateBackgroundUsageDrain(reason = "Background usage collection was superseded"): void {
+		this.backgroundUsageDrainEpoch += 1
+		const controller = this.backgroundUsageDrainAbortController
+		this.backgroundUsageDrainAbortController = undefined
+		if (controller && !controller.signal.aborted) controller.abort(new Error(reason))
+	}
+
+	private beginBackgroundUsageDrain(
+		requestController: AbortController | undefined,
+		messageIndex: number,
+		message: ClineMessage,
+	): BackgroundUsageDrainOwner {
+		this.invalidateBackgroundUsageDrain()
+		const controller = new AbortController()
+		this.backgroundUsageDrainAbortController = controller
+		return {
+			epoch: this.backgroundUsageDrainEpoch,
+			controller,
+			requestController,
+			messageIndex,
+			message,
+		}
+	}
+
+	private isBackgroundUsageDrainCurrent(owner: BackgroundUsageDrainOwner): boolean {
+		return (
+			owner.epoch === this.backgroundUsageDrainEpoch &&
+			this.backgroundUsageDrainAbortController === owner.controller &&
+			!owner.controller.signal.aborted &&
+			!this.abort &&
+			!this.abandoned &&
+			this.clineMessages[owner.messageIndex] === owner.message
+		)
+	}
+
+	private finishBackgroundUsageDrain(owner: BackgroundUsageDrainOwner): void {
+		if (this.backgroundUsageDrainAbortController === owner.controller) {
+			this.backgroundUsageDrainAbortController = undefined
+		}
 	}
 
 	/**
@@ -2809,8 +2907,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		type: AgentLifecycleEventInput["type"],
 		payload: Record<string, unknown>,
 		stepId?: string,
+		guard?: CanonicalLifecycleEventGuard,
 	): Promise<void> {
+		// Capture identity at enqueue time. A delayed old event must never be
+		// constructed with a newer run/turn merely because the queue settled late.
+		const runId = this.agentRunId
+		const turnId = this.agentTurnId
 		const operation = this.canonicalLifecycleQueue.then(async () => {
+			if (guard && !guard()) return
 			const provider = this.providerRef.deref() as
 				| (ClineProvider & {
 						publishAgentLifecycleEvent?: (
@@ -2818,28 +2922,33 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						) => Promise<{ accepted?: boolean; error?: unknown }>
 				  })
 				| undefined
-			if (!provider || !this.agentRunId || !this.agentTurnId) return
+			if (!provider || !runId || !turnId) return
 			if (typeof provider.publishAgentLifecycleEvent !== "function") return
 			const current = this.getCanonicalLifecycleSnapshot()
 			if (
 				type !== "turn_started" &&
-				current?.runId === this.agentRunId &&
-				current.turnId === this.agentTurnId &&
+				current?.runId === runId &&
+				current.turnId === turnId &&
 				current.status !== "in_progress"
 			)
 				return
+			if (guard && !guard()) return
 			const event = {
 				version: 1,
 				eventId: crypto.randomUUID(),
 				taskId: this.taskId,
-				runId: this.agentRunId,
-				turnId: this.agentTurnId,
+				runId,
+				turnId,
 				occurredAt: Date.now(),
 				type,
 				...(stepId ? { stepId } : {}),
 				payload,
 			} as AgentLifecycleEventInput
 			const result = await provider.publishAgentLifecycleEvent(event)
+			// The host append is atomic once admitted, but a cancellation/replacement
+			// that wins while it is in flight must not let its late rejection poison
+			// the newer turn's local lifecycle state.
+			if (guard && !guard()) return
 			if (!result.accepted) {
 				const error =
 					result.error instanceof Error
@@ -2855,6 +2964,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		})
 		this.canonicalLifecycleQueue = operation.catch((error) => {
+			if (guard && !guard()) return
 			const normalizedError = error instanceof Error ? error : new Error(String(error))
 			this.canonicalLifecyclePersistenceFailure ??= { type, error: normalizedError }
 			this.notifyCanonicalLifecyclePersistenceFailure()
@@ -2940,11 +3050,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (!resumeExistingTurn) await this.enqueueCanonicalLifecycleEvent("turn_started", { phase: "starting" })
 	}
 
-	private async publishCanonicalLifecyclePhase(phase: AgentLifecyclePhase): Promise<void> {
-		await this.enqueueCanonicalLifecycleEvent("phase_changed", { phase })
+	private async publishCanonicalLifecyclePhase(
+		phase: AgentLifecyclePhase,
+		guard?: CanonicalLifecycleEventGuard,
+	): Promise<void> {
+		await this.enqueueCanonicalLifecycleEvent("phase_changed", { phase }, undefined, guard)
 	}
 
-	private async ensureCanonicalLifecycleStepStarted(step: CurrentAgentStep): Promise<void> {
+	private async ensureCanonicalLifecycleStepStarted(
+		step: CurrentAgentStep,
+		guard?: CanonicalLifecycleEventGuard,
+	): Promise<void> {
+		if (guard && !guard()) return
 		if (this.canonicalLifecycleStartedSteps.has(step.stepId)) return
 		const recovered = this.getCanonicalLifecycleSnapshot()
 		if (
@@ -2957,7 +3074,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			return
 		}
 		this.canonicalLifecycleStartedSteps.add(step.stepId)
-		await this.enqueueCanonicalLifecycleEvent("step_started", { phase: "working" }, step.stepId)
+		await this.enqueueCanonicalLifecycleEvent("step_started", { phase: "working" }, step.stepId, guard)
+		if (guard && !guard()) this.canonicalLifecycleStartedSteps.delete(step.stepId)
 	}
 
 	private async publishCanonicalLifecycleStepStatus(
@@ -3479,21 +3597,40 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		decision: AgentRetryDecision,
 		error: unknown,
 		interruptionSignal?: AbortSignal,
+		retryDeadline?: number,
 	): Promise<void> {
+		this.throwIfStepInterrupted(interruptionSignal)
+		throwIfAbsoluteDeadlineExceeded(retryDeadline)
 		const message = error instanceof Error ? error.message : String(error)
-		await this.appendAgentTurnEvent({
-			type: "retry",
-			attempt: decision.attempt,
-			reason: message,
-			delayMs: decision.delayMs,
-		})
+		await this.waitForRequestControl(
+			this.appendAgentTurnEvent({
+				type: "retry",
+				attempt: decision.attempt,
+				reason: message,
+				delayMs: decision.delayMs,
+			}),
+			interruptionSignal,
+			retryDeadline,
+		)
 		if (decision.delayMs <= 0) return
 
 		const headerText = message ? `${message}\n` : ""
 		const seconds = Math.max(1, Math.ceil(decision.delayMs / 1000))
-		await this.say("api_req_retry_delayed", `${headerText}<retry_timer>${seconds}</retry_timer>`, undefined, true)
-		await delayWithAbort(decision.delayMs, interruptionSignal ?? this.getTaskLifetimeCancellationSignal())
-		await this.say("api_req_retry_delayed", headerText, undefined, false)
+		await this.waitForRequestControl(
+			this.say("api_req_retry_delayed", `${headerText}<retry_timer>${seconds}</retry_timer>`, undefined, true),
+			interruptionSignal,
+			retryDeadline,
+		)
+		await this.waitForProviderPacingDelay(
+			decision.delayMs,
+			interruptionSignal ?? this.getTaskLifetimeCancellationSignal(),
+			retryDeadline,
+		)
+		await this.waitForRequestControl(
+			this.say("api_req_retry_delayed", headerText, undefined, false),
+			interruptionSignal,
+			retryDeadline,
+		)
 	}
 
 	// Alpha Messages
@@ -3534,6 +3671,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public async overwriteClineMessages(newMessages: ClineMessage[]) {
+		this.invalidateBackgroundUsageDrain("UI transcript was replaced")
 		this.clineMessages = newMessages
 		restoreTodoListForTask(this)
 		await this.saveClineMessages()
@@ -4474,6 +4612,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * Completion always fails closed when the provider or its ledger is unavailable.
 	 */
 	public async getCompletionGateDecision(): Promise<CompletionGateDecision> {
+		const todoDecision = this.getOpenTodoCompletionDecision()
+		if (todoDecision) return todoDecision
+
 		if (this.hasActiveCommandExecutions()) {
 			const key = `running:${this.getCommandExecutionEvidence()
 				.filter((item) => item.status === "running")
@@ -4537,6 +4678,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				message: `Cannot verify managed-agent completion obligations right now: ${error instanceof Error ? error.message : String(error)}`,
 			}
 		}
+	}
+
+	/** Return the user-configured todo completion policy shared by every completion path. */
+	public getOpenTodoCompletionDecision(): (CompletionGateDecision & { message: string }) | undefined {
+		const preventCompletionWithOpenTodos = vscode.workspace
+			.getConfiguration(Package.name)
+			.get<boolean>("preventCompletionWithOpenTodos", false)
+		const hasIncompleteTodos = this.todoList?.some((todo) => todo.status !== "completed") === true
+
+		return preventCompletionWithOpenTodos && hasIncompleteTodos
+			? {
+					allowed: false,
+					modelCanResolveRejection: true,
+					message: OPEN_TODO_COMPLETION_MESSAGE,
+				}
+			: undefined
 	}
 
 	/** Return an accepted text-only completion through the legacy blocking handoff, when applicable. */
@@ -5326,6 +5483,71 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		throw reason instanceof Error ? reason : new Error("Request cancelled by user")
 	}
 
+	/**
+	 * Await Task-owned preflight work without letting a stalled persistence or
+	 * pacing dependency hide cancellation or consume an absolute retry budget.
+	 * The attached rejection handler also absorbs a late failure after the race.
+	 */
+	private waitForRequestControl<T>(
+		operation: PromiseLike<T>,
+		signal?: AbortSignal,
+		absoluteDeadline?: number,
+	): Promise<T> {
+		const controlledOperation = Promise.resolve(operation)
+		try {
+			this.throwIfStepInterrupted(signal)
+			throwIfAbsoluteDeadlineExceeded(absoluteDeadline)
+		} catch (error) {
+			// The operation may already have been created by the caller. Observe its
+			// eventual rejection even when control was lost before this race began.
+			void controlledOperation.catch(() => undefined)
+			return Promise.reject(error)
+		}
+		if (!signal && absoluteDeadline === undefined) return controlledOperation
+
+		return new Promise<T>((resolve, reject) => {
+			let settled = false
+			let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+
+			const cleanup = () => {
+				if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
+				signal?.removeEventListener("abort", onAbort)
+			}
+			const finish = (callback: () => void) => {
+				if (settled) return
+				settled = true
+				cleanup()
+				callback()
+			}
+			const onAbort = () => {
+				let error: Error
+				try {
+					this.throwIfStepInterrupted(signal)
+					error = new Error("Request cancelled by user")
+				} catch (reason) {
+					error = reason instanceof Error ? reason : new Error(String(reason))
+				}
+				finish(() => reject(error))
+			}
+
+			if (signal) {
+				signal.addEventListener("abort", onAbort, { once: true })
+				if (signal.aborted) onAbort()
+			}
+			if (!settled && typeof absoluteDeadline === "number" && Number.isFinite(absoluteDeadline)) {
+				deadlineTimer = setTimeout(
+					() => finish(() => reject(new ApiStreamDeadlineError("Automatic retry deadline exceeded"))),
+					Math.max(0, absoluteDeadline - Date.now()),
+				)
+			}
+
+			controlledOperation.then(
+				(value) => finish(() => resolve(value)),
+				(error) => finish(() => reject(error)),
+			)
+		})
+	}
+
 	public canAcceptSubagentFollowup(): boolean {
 		return this.taskKind === "subagent" && this.didComplete && !this.isTaskLoopActive && !this.isStreaming
 	}
@@ -5424,9 +5646,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		metadata: ApiHandlerCreateMessageMetadata,
 		targetContextTokens: number | undefined,
 		messages: readonly CountableHistoryMessage[] = getEffectiveApiHistory(this.apiConversationHistory),
+		countContext?: TokenCountContext,
 	): Promise<number> {
 		this.throwIfStepInterrupted(metadata.signal)
-		const tokens = await countContextTokens(messages, apiHandler, systemPrompt, metadata)
+		const tokens = await countContextTokens(messages, apiHandler, systemPrompt, metadata, countContext)
 		this.throwIfStepInterrupted(metadata.signal)
 		if (!Number.isFinite(tokens) || (targetContextTokens !== undefined && tokens > targetContextTokens)) {
 			throw new ContextRecoveryExhaustedError()
@@ -5533,6 +5756,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 				: {}),
 		}
+		const countContext = createTokenCountContext(apiHandler, {
+			signal,
+			remoteDeadline: metadata.deadline,
+		})
 		const filesReadByRoo = await this.getFilesReadByRooSafely("condenseContext")
 		this.throwIfStepInterrupted(signal)
 
@@ -5547,6 +5774,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			filesReadByRoo,
 			cwd: this.cwd,
 			rooIgnoreController: this.rooIgnoreController,
+			countContext,
 		})
 		this.throwIfStepInterrupted(signal)
 		// Rewind/edit can replace the transcript while the summarizer is awaiting its provider.
@@ -5565,16 +5793,30 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			)
 			return
 		}
+		let newContextTokens = await this.measureCompactedContext(
+			apiHandler,
+			systemPrompt,
+			metadata,
+			targetContextTokens,
+			messages,
+			countContext,
+		)
+		this.throwIfStepInterrupted(signal)
+		if (digestProviderTranscript(this.apiConversationHistory) !== historyDigest) {
+			throw new Error("Conversation history changed during context compaction; retry with the current history")
+		}
 		if (!(await this.overwriteApiConversationHistory(messages))) {
 			throw new Error("Unable to persist condensed conversation history before continuing.")
 		}
 		this.environmentContext.reset()
 		await this.refreshEnvironmentContext(state, signal)
-		const newContextTokens = await this.measureCompactedContext(
+		newContextTokens = await this.measureCompactedContext(
 			apiHandler,
 			systemPrompt,
 			metadata,
 			targetContextTokens,
+			getEffectiveApiHistory(this.apiConversationHistory),
+			countContext,
 		)
 
 		const contextCondense: ContextCondense = {
@@ -5886,6 +6128,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// `clineMessages` might not be empty, so we need to set it to [] when
 			// we create a new Alpha client (otherwise webview would show stale
 			// messages from previous session).
+			this.invalidateBackgroundUsageDrain("A fresh task transcript was started")
 			this.clineMessages = []
 			this.apiConversationHistory = []
 
@@ -6133,6 +6376,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 
 			if (useRetainedHistory) {
+				this.invalidateBackgroundUsageDrain("The retained task transcript was resumed")
 				this.clineMessages = modifiedClineMessages
 				restoreTodoListForTask(this)
 			} else {
@@ -6373,6 +6617,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * This immediately aborts the underlying stream rather than waiting for the next chunk.
 	 */
 	public cancelCurrentRequest(): void {
+		this.invalidateBackgroundUsageDrain("Current task request was cancelled")
 		this.agentWaitAbortController?.abort(new Error("Current task request was cancelled"))
 		const cancellation = new Error("Current task request was cancelled")
 		this.stepInterruptionController?.abort(cancellation)
@@ -6708,6 +6953,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			includeFileDetails: boolean
 			onUserContentPersisted?: () => Promise<void> | void
 		}
+		type PrimaryTurnRecovery = TaskTurnInput | { kind: "superseded" }
 
 		const host: AgentTurnHost<TaskTurnInput> = {
 			shouldAbort: () => this.abort,
@@ -6905,6 +7151,58 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				includeFileDetails: false,
 			}
 		}
+		const waitForPrimaryTurnRecovery = async (): Promise<PrimaryTurnRecovery | undefined> => {
+			if (this.taskKind !== "primary") return undefined
+
+			let recovery: Awaited<ReturnType<Task["ask"]>>
+			try {
+				recovery = await this.ask("resume_task")
+			} catch (error) {
+				if (this.abort || this.didComplete) return undefined
+				if (error instanceof AskIgnoredError) {
+					// A newer ask owns the task when one is active. The stale loop must
+					// stop without publishing a competing terminal event; otherwise an
+					// unrelated follow-up can be turned into a failed task.
+					if (this.activeAsk) return { kind: "superseded" }
+
+					// If no newer ask is active, the superseded recovery boundary has no
+					// consumer left. Close the task rather than leaving an orphaned live
+					// session that can never resume.
+					this.abortReason = "user_cancelled"
+					await this.abortTask()
+					return undefined
+				}
+				throw error
+			}
+			if (this.abort || this.didComplete) return undefined
+
+			if (recovery.response !== "messageResponse" && recovery.response !== "yesButtonClicked") {
+				// A resume boundary is accepted only by an explicit message or Resume
+				// response. Denial/structured responses must close the abandoned task;
+				// treating them as an empty Resume would silently issue another model
+				// request.
+				this.abortReason = "user_cancelled"
+				await this.abortTask()
+				return undefined
+			}
+
+			const feedbackText = recovery.text ?? ""
+			const feedbackImages = recovery.images ?? []
+			if (feedbackText.trim() || feedbackImages.length > 0) {
+				await this.say("user_feedback", feedbackText, feedbackImages)
+				return {
+					userContent: this.buildUserMessageContent(feedbackText, feedbackImages),
+					includeFileDetails: false,
+				}
+			}
+
+			return {
+				userContent: [{ type: "text", text: "[TASK RESUMPTION] Resuming task..." }],
+				includeFileDetails: false,
+			}
+		}
+		const isSupersededRecovery = (recovery: PrimaryTurnRecovery | undefined): recovery is { kind: "superseded" } =>
+			Boolean(recovery && "kind" in recovery)
 
 		while (!this.abort && !this.didComplete) {
 			const outcome = await runAgentTurn(nextTurnInput)
@@ -6916,11 +7214,28 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.didComplete
 			) {
 				const terminalStatus = this.abort ? "aborted" : outcome.status
+				const terminalReason = "reason" in outcome ? outcome.reason : undefined
+				const terminalError = "error" in outcome ? outcome.error : undefined
+				const terminalToolCallCount =
+					"response" in outcome && outcome.response ? outcome.response.toolCalls.length : 0
+				if (
+					this.taskKind === "primary" &&
+					!this.abort &&
+					!this.didComplete &&
+					(terminalStatus === "failed" || terminalStatus === "exhausted" || terminalStatus === "incomplete")
+				) {
+					const continuation = await waitForPrimaryTurnRecovery()
+					if (continuation) {
+						if (isSupersededRecovery(continuation)) return
+						nextTurnInput = continuation
+						continue
+					}
+				}
 				await appendTaskTerminalEvent(
-					terminalStatus,
-					"reason" in outcome ? outcome.reason : undefined,
-					"error" in outcome ? outcome.error : undefined,
-					"response" in outcome && outcome.response ? outcome.response.toolCalls.length : 0,
+					this.abort ? "aborted" : this.didComplete ? "completed" : terminalStatus,
+					terminalReason,
+					terminalError,
+					terminalToolCallCount,
 				)
 				return
 			}
@@ -6933,7 +7248,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (!initialCompletionDecision.allowed) {
 				const continuation = await continueAfterCompletionRejection(initialCompletionDecision)
 				if (!continuation) {
-					await appendTaskTerminalEvent("incomplete", initialCompletionDecision.message)
+					const recovery = await waitForPrimaryTurnRecovery()
+					if (recovery) {
+						if (isSupersededRecovery(recovery)) return
+						nextTurnInput = recovery
+						continue
+					}
+					await appendTaskTerminalEvent(
+						this.abort ? "aborted" : this.didComplete ? "completed" : "incomplete",
+						initialCompletionDecision.message,
+					)
 					return
 				}
 				nextTurnInput = continuation
@@ -6970,7 +7294,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					await this.retractCompletionResult()
 					const continuation = await continueAfterCompletionRejection(finalCompletionDecision)
 					if (!continuation) {
-						await appendTaskTerminalEvent("incomplete", finalCompletionDecision.message)
+						const recovery = await waitForPrimaryTurnRecovery()
+						if (recovery) {
+							if (isSupersededRecovery(recovery)) return
+							nextTurnInput = recovery
+							continue
+						}
+						await appendTaskTerminalEvent(
+							this.abort ? "aborted" : this.didComplete ? "completed" : "incomplete",
+							finalCompletionDecision.message,
+						)
 						return
 					}
 					nextTurnInput = continuation
@@ -7006,8 +7339,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						message: `Cannot finish the delegated child right now: ${error instanceof Error ? error.message : String(error)}`,
 					})
 					if (!continuation) {
+						const recovery = await waitForPrimaryTurnRecovery()
+						if (recovery) {
+							if (isSupersededRecovery(recovery)) return
+							nextTurnInput = recovery
+							continue
+						}
 						await appendTaskTerminalEvent(
-							"incomplete",
+							this.abort ? "aborted" : this.didComplete ? "completed" : "incomplete",
 							error instanceof Error ? error.message : String(error),
 							error,
 						)
@@ -7019,6 +7358,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				const finalized = await this.finalizeTaskCompletion()
 				if (!finalized) {
+					if (this.abort || this.didComplete) {
+						await appendTaskTerminalEvent(
+							this.abort ? "aborted" : "completed",
+							undefined,
+							undefined,
+							outcome.response.toolCalls.length,
+						)
+						return
+					}
+
 					const concurrentFeedback = this.messageQueueService.dequeueMessage()
 					if (concurrentFeedback) {
 						await this.retractCompletionResult()
@@ -7032,13 +7381,26 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						}
 						continue
 					}
+
+					const completionFailureReason =
+						this.suspendAfterCurrentTurnReason ?? "Task completion was not durably finalized."
+					this.suspendAfterCurrentTurnReason = undefined
+					await this.say("error", completionFailureReason)
+					const recovery = await waitForPrimaryTurnRecovery()
+					if (recovery) {
+						if (isSupersededRecovery(recovery)) return
+						nextTurnInput = recovery
+						continue
+					}
+					await appendTaskTerminalEvent(
+						this.abort ? "aborted" : this.didComplete ? "completed" : "incomplete",
+						completionFailureReason,
+						undefined,
+						outcome.response.toolCalls.length,
+					)
+					return
 				}
-				await appendTaskTerminalEvent(
-					finalized ? "completed" : "incomplete",
-					finalized ? undefined : "Task completion was not durably finalized.",
-					undefined,
-					outcome.response.toolCalls.length,
-				)
+				await appendTaskTerminalEvent("completed", undefined, undefined, outcome.response.toolCalls.length)
 				return
 			}
 
@@ -7070,6 +7432,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			includeFileDetails: boolean
 			retryAttempt?: number
 			retryCategory?: AgentRetryCategory
+			/** Absolute wall-clock limit shared by every automatically scheduled retry. */
+			retryDeadline?: number
 			/** Category-local counters keep transport/context/empty retries independent. */
 			retryAttempts?: TaskRetryAttempts
 			userMessageWasRemoved?: boolean // Track if user message was removed due to empty response
@@ -7301,6 +7665,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						currentItem.retryAttempt ?? 0,
 						state,
 						stepInterruptionSignal,
+						currentItem.retryDeadline,
 					)
 					this.throwIfStepInterrupted(stepInterruptionSignal)
 				} catch (error) {
@@ -7331,6 +7696,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					)
 				}
 
+				// A new provider boundary invalidates any best-effort usage drain left
+				// behind by the preceding response before this request can own cancellation.
+				this.invalidateBackgroundUsageDrain("A newer provider request started")
 				await this.say(
 					"api_req_started",
 					JSON.stringify({
@@ -7357,21 +7725,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					const updateApiReqMsg = (
 						cancelReason?: ClineApiReqCancelReason,
 						streamingFailedMessage?: string,
-					) => {
+						expectedMessage?: ClineMessage,
+					): boolean => {
 						if (lastApiReqIndex < 0 || !this.clineMessages[lastApiReqIndex]) {
-							return
+							return false
+						}
+						if (expectedMessage && this.clineMessages[lastApiReqIndex] !== expectedMessage) {
+							return false
 						}
 
 						const existingData = JSON.parse(this.clineMessages[lastApiReqIndex].text || "{}")
 
-						// Calculate total tokens and cost using provider-aware function
-						const modelId = getModelId(this.apiConfiguration)
-						const apiProvider = this.apiConfiguration.apiProvider
-						const apiProtocol = getApiProtocol(
-							apiProvider && !isRetiredProvider(apiProvider) ? apiProvider : undefined,
-							modelId,
-						)
-
+						// Use the protocol captured for this request. A profile switch after
+						// streaming must not recost an older response under the new provider.
 						const costResult =
 							apiProtocol === "anthropic"
 								? calculateApiCostAnthropic(
@@ -7399,6 +7765,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							cancelReason,
 							streamingFailedMessage,
 						} satisfies ClineApiReqInfo)
+						return true
 					}
 
 					const abortStream = async (
@@ -7481,6 +7848,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						skipProviderRateLimit: true,
 						state,
 						retryCategory: currentItem.retryCategory,
+						retryDeadline: currentItem.retryDeadline,
 						ownerHandlesRetry: true,
 						interruptionSignal: stepInterruptionSignal,
 					})
@@ -7502,39 +7870,51 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						const nextChunkWithAbort = async (
 							operationName = `API response stream for ${cachedModelId}`,
 							timeoutMs = getApiRequestTimeout(),
+							requestController = this.currentRequestAbortController,
+							additionalSignal?: AbortSignal,
 						) => {
+							const boundedTimeoutMs = getTimeoutWithinDeadline(timeoutMs, currentItem.retryDeadline)
 							const nextPromise = iterator.next()
-							let removeAbortListener: (() => void) | undefined
+							const requestSignal = requestController?.signal
+							const abortSignals = [
+								...new Set([requestSignal, additionalSignal].filter(Boolean)),
+							] as AbortSignal[]
+							const removeAbortListeners: Array<() => void> = []
 
-							// If we have an abort controller, race it with the next chunk
-							const abortPromise = this.currentRequestAbortController
-								? new Promise<never>((_, reject) => {
-										const signal = this.currentRequestAbortController!.signal
-										const onAbort = () => {
-											if (this.pendingSteerMessage) {
-												reject(new SteerRequestInterruptError())
-												return
+							// Race only signals captured for this read. A delayed usage drain must
+							// never observe or abort a controller installed by a later request.
+							const abortPromise =
+								abortSignals.length > 0
+									? new Promise<never>((_, reject) => {
+											for (const signal of abortSignals) {
+												const onAbort = () => {
+													if (this.pendingSteerMessage && signal === requestSignal) {
+														reject(new SteerRequestInterruptError())
+														return
+													}
+													reject(
+														signal.reason instanceof Error
+															? signal.reason
+															: new Error("Request cancelled by user"),
+													)
+												}
+												if (signal.aborted) {
+													onAbort()
+												} else {
+													signal.addEventListener("abort", onAbort, { once: true })
+													removeAbortListeners.push(() =>
+														signal.removeEventListener("abort", onAbort),
+													)
+												}
 											}
-											reject(
-												signal.reason instanceof Error
-													? signal.reason
-													: new Error("Request cancelled by user"),
-											)
-										}
-										if (signal.aborted) {
-											onAbort()
-										} else {
-											signal.addEventListener("abort", onAbort, { once: true })
-											removeAbortListener = () => signal.removeEventListener("abort", onAbort)
-										}
-									})
-								: undefined
+										})
+									: undefined
 
 							const operation = abortPromise ? Promise.race([nextPromise, abortPromise]) : nextPromise
 
 							try {
-								return await withApiRequestTimeout(operation, operationName, timeoutMs, () => {
-									this.currentRequestAbortController?.abort()
+								return await withApiRequestTimeout(operation, operationName, boundedTimeoutMs, () => {
+									requestController?.abort(new ApiStreamDeadlineError())
 									const iteratorReturn = iterator.return?.(undefined)
 									if (iteratorReturn) {
 										void Promise.resolve(iteratorReturn).catch((error) => {
@@ -7543,7 +7923,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									}
 								})
 							} finally {
-								removeAbortListener?.()
+								for (const removeAbortListener of removeAbortListeners) removeAbortListener()
 							}
 						}
 
@@ -7717,11 +8097,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							cacheRead: cacheReadTokens,
 							total: totalCost,
 						}
+						const usageMessage = this.clineMessages[lastApiReqIndex]
+						const usageDrainOwner = usageMessage
+							? this.beginBackgroundUsageDrain(
+									this.currentRequestAbortController,
+									lastApiReqIndex,
+									usageMessage,
+								)
+							: undefined
 
-						const drainStreamInBackgroundToFindAllUsage = async (apiReqIndex: number) => {
+						const drainStreamInBackgroundToFindAllUsage = async (owner: BackgroundUsageDrainOwner) => {
 							const timeoutMs = DEFAULT_USAGE_COLLECTION_TIMEOUT_MS
 							const startTime = performance.now()
-							const modelId = getModelId(this.apiConfiguration)
+							const modelId = cachedModelId
 
 							// Local variables to accumulate usage data without affecting the main flow
 							let bgInputTokens = currentTokens.input
@@ -7739,8 +8127,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									cacheRead: number
 									total?: number
 								},
-								messageIndex: number = apiReqIndex,
+								messageIndex: number = owner.messageIndex,
 							) => {
+								if (!this.isBackgroundUsageDrainCurrent(owner)) return
 								if (
 									tokens.input > 0 ||
 									tokens.output > 0 ||
@@ -7755,8 +8144,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									totalCost = tokens.total
 
 									// Update the API request message with the latest usage data
-									updateApiReqMsg()
+									if (!updateApiReqMsg(undefined, undefined, owner.message)) return
 									await this.saveClineMessages()
+									if (!this.isBackgroundUsageDrainCurrent(owner)) return
 
 									// Update the specific message in the webview
 									const apiReqMessage = this.clineMessages[messageIndex]
@@ -7764,15 +8154,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 										await this.updateClineMessage(apiReqMessage)
 									}
 
-									// Capture telemetry with provider-aware cost calculation
-									const modelId = getModelId(this.apiConfiguration)
-									const apiProvider = this.apiConfiguration.apiProvider
-									const apiProtocol = getApiProtocol(
-										apiProvider && !isRetiredProvider(apiProvider) ? apiProvider : undefined,
-										modelId,
-									)
-
-									// Use the appropriate cost function based on the API protocol
+									if (!this.isBackgroundUsageDrainCurrent(owner)) return
+									// Use the provider protocol/model captured at request admission.
 									const costResult =
 										apiProtocol === "anthropic"
 											? calculateApiCostAnthropic(
@@ -7824,6 +8207,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									item = await nextChunkWithAbort(
 										`Background usage collection stream for ${modelId}`,
 										remainingTimeoutMs,
+										owner.requestController,
+										owner.controller.signal,
 									)
 									chunkCount++
 
@@ -7853,14 +8238,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 											cacheRead: bgCacheReadTokens,
 											total: bgTotalCost,
 										},
-										lastApiReqIndex,
+										owner.messageIndex,
 									)
 								} else {
 									console.warn(
-										`[Background Usage Collection] Suspicious: request ${apiReqIndex} is complete, but no usage info was found. Model: ${modelId}`,
+										`[Background Usage Collection] Suspicious: request ${owner.messageIndex} is complete, but no usage info was found. Model: ${modelId}`,
 									)
 								}
 							} catch (error) {
+								if (!this.isBackgroundUsageDrainCurrent(owner)) return
 								console.error("Error draining stream for usage data:", error)
 								// Still try to capture whatever usage data we have collected so far
 								if (
@@ -7877,16 +8263,27 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 											cacheRead: bgCacheReadTokens,
 											total: bgTotalCost,
 										},
-										lastApiReqIndex,
+										owner.messageIndex,
 									)
 								}
+							} finally {
+								if (!this.isBackgroundUsageDrainCurrent(owner)) {
+									try {
+										void Promise.resolve(iterator.return?.(undefined)).catch(() => undefined)
+									} catch {
+										// Superseded cleanup must not affect the newer request.
+									}
+								}
+								this.finishBackgroundUsageDrain(owner)
 							}
 						}
 
 						// Start the background task and handle any errors
-						drainStreamInBackgroundToFindAllUsage(lastApiReqIndex).catch((error) => {
-							console.error("Background usage collection failed:", error)
-						})
+						if (usageDrainOwner) {
+							drainStreamInBackgroundToFindAllUsage(usageDrainOwner).catch((error) => {
+								console.error("Background usage collection failed:", error)
+							})
+						}
 					} catch (error) {
 						// Abandoned happens when extension is no longer waiting for the
 						// Alpha instance to finish aborting (error is thrown here when
@@ -8017,10 +8414,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							const attempt = (retryAttempts[category] ?? 0) + 1
 							const hasSemanticOutput =
 								semanticOutputObserved || retryMetadata.semanticOutputObserved === true
+							const retryElapsedMs = performance.now() - retrySequenceStartedAt
 							const decision = this.agentRetryPolicy.decide({
 								category,
 								attempt,
-								elapsedMs: performance.now() - retrySequenceStartedAt,
+								elapsedMs: retryElapsedMs,
 								retryAfterMs: this.retryAfterMs(error),
 								hasSemanticOutput,
 							})
@@ -8070,9 +8468,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									response: canonicalResponse,
 								}
 							}
+							const automaticRetryDeadline =
+								currentItem.retryDeadline ??
+								Date.now() + Math.max(0, this.agentRetryPolicy.maxElapsedMs - retryElapsedMs)
 
 							if (category === "context") {
-								await this.handleContextWindowExceededError()
+								await this.handleContextWindowExceededError(automaticRetryDeadline)
 								if (this.currentAgentStep) {
 									const compactionStep = this.agentStepContextBuilder.compaction(
 										this.currentAgentStep.snapshot,
@@ -8093,7 +8494,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							}
 
 							try {
-								await this.waitForRetryDecision(decision, retryError, stepInterruptionSignal)
+								await this.waitForRetryDecision(
+									decision,
+									retryError,
+									stepInterruptionSignal,
+									automaticRetryDeadline,
+								)
 							} catch (retryWaitError) {
 								const pendingSteer = this.pendingSteerMessage
 								if (pendingSteer) {
@@ -8111,7 +8517,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									continue
 								}
 								return {
-									status: "aborted",
+									status: retryWaitError instanceof ApiStreamDeadlineError ? "exhausted" : "aborted",
 									reason:
 										retryWaitError instanceof Error
 											? retryWaitError.message
@@ -8126,6 +8532,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								includeFileDetails: false,
 								retryAttempt: (currentItem.retryAttempt ?? 0) + 1,
 								retryCategory: category,
+								retryDeadline: automaticRetryDeadline,
 								retryAttempts: { ...retryAttempts, [category]: decision.nextAttempt - 1 },
 							})
 							continue
@@ -8662,18 +9069,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						}
 
 						const emptyAttempt = (retryAttempts["empty-response"] ?? 0) + 1
+						const retryElapsedMs = performance.now() - retrySequenceStartedAt
 						const emptyDecision = this.agentRetryPolicy.decide({
 							category: "empty-response",
 							attempt: emptyAttempt,
-							elapsedMs: performance.now() - retrySequenceStartedAt,
+							elapsedMs: retryElapsedMs,
 						})
 
 						if (state?.autoApprovalEnabled && emptyDecision.shouldRetry) {
+							const automaticRetryDeadline =
+								currentItem.retryDeadline ??
+								Date.now() + Math.max(0, this.agentRetryPolicy.maxElapsedMs - retryElapsedMs)
 							try {
 								await this.waitForRetryDecision(
 									emptyDecision,
 									emptyResponseError,
 									stepInterruptionSignal,
+									automaticRetryDeadline,
 								)
 							} catch (retryWaitError) {
 								const pendingSteer = this.pendingSteerMessage
@@ -8694,7 +9106,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								}
 								await this.restoreRemovedApiUserMessage(removedUserMessage)
 								return {
-									status: "aborted",
+									status: retryWaitError instanceof ApiStreamDeadlineError ? "exhausted" : "aborted",
 									reason:
 										retryWaitError instanceof Error
 											? retryWaitError.message
@@ -8713,6 +9125,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								includeFileDetails: false,
 								retryAttempt: (currentItem.retryAttempt ?? 0) + 1,
 								retryCategory: "empty-response",
+								retryDeadline: automaticRetryDeadline,
 								retryAttempts: { ...retryAttempts, "empty-response": emptyDecision.nextAttempt - 1 },
 								userMessageWasRemoved: false,
 							})
@@ -9127,14 +9540,24 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		)
 	}
 
-	private async handleContextWindowExceededError(): Promise<void> {
+	private async handleContextWindowExceededError(retryDeadline?: number): Promise<void> {
 		const signal = this.stepInterruptionController?.signal ?? this.getTaskLifetimeCancellationSignal()
-		this.throwIfStepInterrupted(signal)
+		const contextRecoveryDeadline = getBoundedRequestDeadline(getApiRequestTimeout(), retryDeadline)
+		const assertRecoveryWithinBudget = () => {
+			this.throwIfStepInterrupted(signal)
+			throwIfAbsoluteDeadlineExceeded(contextRecoveryDeadline)
+		}
+		const waitForBoundedRecovery = <T>(operation: PromiseLike<T>): Promise<T> =>
+			this.waitForRequestControl(operation, signal, contextRecoveryDeadline)
+		assertRecoveryWithinBudget()
 		const apiHandler = this.api
 		const apiConfiguration = this.apiConfiguration
-		const state = await this.providerRef.deref()?.getState()
+		const pendingState = this.providerRef.deref()?.getState()
+		const state = pendingState ? await waitForBoundedRecovery(pendingState) : undefined
+		assertRecoveryWithinBudget()
 		const { profileThresholds = {} } = state ?? {}
-		const mode = await this.getTaskMode()
+		const mode = await waitForBoundedRecovery(this.getTaskMode())
+		assertRecoveryWithinBudget()
 
 		const { contextTokens } = this.getTokenUsage()
 		const modelInfo = apiHandler.getModel().info
@@ -9148,7 +9571,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const contextWindow = modelInfo.contextWindow
 
 		// Get the current profile ID using the helper method
-		const currentProfileId = await this.getCurrentProfileId(state)
+		const currentProfileId = await waitForBoundedRecovery(this.getCurrentProfileId(state))
+		assertRecoveryWithinBudget()
 
 		// Log the context window error for debugging
 		console.warn(
@@ -9156,85 +9580,126 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				`Current tokens: ${contextTokens}, Context window: ${contextWindow}. ` +
 				`Forcing truncation to ${FORCED_CONTEXT_REDUCTION_PERCENT}% of current context.`,
 		)
-		// Send condenseTaskContextStarted to show in-progress indicator
-		await this.providerRef.deref()?.postMessageToWebview({ type: "condenseTaskContextStarted", text: this.taskId })
-
-		// Build tools for condensing metadata (same tools used for normal API calls)
-		const provider = this.providerRef.deref()
-		let allTools: import("openai").default.Chat.ChatCompletionTool[] = []
-		let allowedFunctionNames: string[] | undefined
-		if (provider) {
-			const toolsResult = await buildNativeToolsArrayWithRestrictions({
-				provider,
-				cwd: this.cwd,
-				mode,
-				customModes: state?.customModes,
-				experiments: state?.experiments,
-				apiConfiguration,
-				disabledTools: state?.disabledTools,
-				modelInfo,
-				includeAllToolsWithRestrictions:
-					apiConfiguration.apiProvider === "gemini" || apiConfiguration.apiProvider === "vertex",
-				catalogCache: this.toolCatalogCache,
-				discoveryHistory: this.apiConversationHistory,
-				signal,
-				allowedToolNames: this.getTaskAllowedToolNames(),
-				taskKind: this.taskKind,
-				enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
-			})
-			allTools = toolsResult.tools
-			allowedFunctionNames = toolsResult.allowedFunctionNames
-		}
-
-		// Build metadata with tools and taskId for the condensing API call
-		const metadata: ApiHandlerCreateMessageMetadata = {
-			mode,
-			taskId: this.taskId,
-			...(signal ? { signal } : {}),
-			...(allTools.length > 0
-				? {
-						tools: allTools,
-						tool_choice: "auto",
-						parallelToolCalls: true,
-						...(allowedFunctionNames ? { allowedFunctionNames } : {}),
-					}
-				: {}),
-		}
-
+		let contextManagementUiStarted = false
+		let contextRecoveryError: unknown
+		let contextRecoveryCleanupError: unknown
 		try {
-			const systemPrompt = await this.getSystemPrompt(state, { apiHandler, apiConfiguration })
-			// Force aggressive truncation by keeping only 75% of the conversation history
-			const truncateResult = await manageContext({
-				messages: this.apiConversationHistory,
-				totalTokens: contextTokens || 0,
-				maxTokens,
-				contextWindow,
-				apiHandler,
-				autoCondenseContext: true,
-				autoCondenseContextPercent: FORCED_CONTEXT_REDUCTION_PERCENT,
-				forceCompaction: true,
-				systemPrompt,
-				taskId: this.taskId,
-				profileThresholds,
-				currentProfileId,
-				metadata,
-			})
+			contextManagementUiStarted = true
+			const contextStartedMessage = this.providerRef
+				.deref()
+				?.postMessageToWebview({ type: "condenseTaskContextStarted", text: this.taskId })
+			if (contextStartedMessage) await waitForBoundedRecovery(contextStartedMessage)
+			assertRecoveryWithinBudget()
 
-			this.throwIfStepInterrupted(signal)
+			// Build tools for condensing metadata (same tools used for normal API calls).
+			const provider = this.providerRef.deref()
+			let allTools: import("openai").default.Chat.ChatCompletionTool[] = []
+			let allowedFunctionNames: string[] | undefined
+			if (provider) {
+				const toolsResult = await waitForBoundedRecovery(
+					buildNativeToolsArrayWithRestrictions({
+						provider,
+						cwd: this.cwd,
+						mode,
+						customModes: state?.customModes,
+						experiments: state?.experiments,
+						apiConfiguration,
+						disabledTools: state?.disabledTools,
+						modelInfo,
+						includeAllToolsWithRestrictions:
+							apiConfiguration.apiProvider === "gemini" || apiConfiguration.apiProvider === "vertex",
+						catalogCache: this.toolCatalogCache,
+						discoveryHistory: this.apiConversationHistory,
+						signal,
+						allowedToolNames: this.getTaskAllowedToolNames(),
+						taskKind: this.taskKind,
+						enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
+					}),
+				)
+				allTools = toolsResult.tools
+				allowedFunctionNames = toolsResult.allowedFunctionNames
+			}
+			assertRecoveryWithinBudget()
+
+			const metadata: ApiHandlerCreateMessageMetadata = {
+				mode,
+				taskId: this.taskId,
+				...(signal ? { signal } : {}),
+				...(contextRecoveryDeadline !== undefined ? { deadline: contextRecoveryDeadline } : {}),
+				...(allTools.length > 0
+					? {
+							tools: allTools,
+							tool_choice: "auto",
+							parallelToolCalls: true,
+							...(allowedFunctionNames ? { allowedFunctionNames } : {}),
+						}
+					: {}),
+			}
+			const countContext = createTokenCountContext(apiHandler, {
+				signal,
+				remoteDeadline: metadata.deadline,
+			})
+			const systemPrompt = await waitForBoundedRecovery(
+				this.getSystemPrompt(state, { apiHandler, apiConfiguration }),
+			)
+			assertRecoveryWithinBudget()
+			// Force aggressive truncation by keeping only 75% of the conversation history
+			const truncateResult = await waitForBoundedRecovery(
+				manageContext({
+					messages: this.apiConversationHistory,
+					totalTokens: contextTokens || 0,
+					maxTokens,
+					contextWindow,
+					apiHandler,
+					autoCondenseContext: true,
+					autoCondenseContextPercent: FORCED_CONTEXT_REDUCTION_PERCENT,
+					forceCompaction: true,
+					systemPrompt,
+					taskId: this.taskId,
+					profileThresholds,
+					currentProfileId,
+					metadata,
+					countContext,
+				}),
+			)
+			assertRecoveryWithinBudget()
 			if (truncateResult.status === "exhausted" || truncateResult.status === "no_progress") {
 				throw new ContextRecoveryExhaustedError(truncateResult.error)
 			}
 			if (truncateResult.messages !== this.apiConversationHistory) {
+				let tokens = await waitForBoundedRecovery(
+					this.measureCompactedContext(
+						apiHandler,
+						systemPrompt,
+						metadata,
+						truncateResult.targetContextTokens,
+						truncateResult.messages,
+						countContext,
+					),
+				)
+				if (tokens >= truncateResult.prevContextTokens) {
+					throw new ContextRecoveryExhaustedError()
+				}
+				assertRecoveryWithinBudget()
+				// Transcript writes are atomic, generation-owned, and queue-capped. Await
+				// their commit instead of racing them so no detached stale snapshot can
+				// land after this recovery attempt has already reported cancellation.
 				if (!(await this.overwriteApiConversationHistory(truncateResult.messages))) {
 					throw new Error("Unable to persist forced context truncation before continuing.")
 				}
+				assertRecoveryWithinBudget()
 				this.environmentContext.reset()
 				await this.refreshEnvironmentContext(state, signal)
-				const tokens = await this.measureCompactedContext(
-					apiHandler,
-					systemPrompt,
-					metadata,
-					truncateResult.targetContextTokens,
+				assertRecoveryWithinBudget()
+				tokens = await waitForBoundedRecovery(
+					this.measureCompactedContext(
+						apiHandler,
+						systemPrompt,
+						metadata,
+						truncateResult.targetContextTokens,
+						getEffectiveApiHistory(this.apiConversationHistory),
+						countContext,
+					),
 				)
 				if (tokens >= truncateResult.prevContextTokens) {
 					throw new ContextRecoveryExhaustedError()
@@ -9252,15 +9717,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					prevContextTokens,
 					condenseId,
 				}
-				await this.say(
-					"condense_context",
-					undefined /* text */,
-					undefined /* images */,
-					false /* partial */,
-					undefined /* checkpoint */,
-					undefined /* progressStatus */,
-					{ isNonInteractive: true } /* options */,
-					contextCondense,
+				await waitForBoundedRecovery(
+					this.say(
+						"condense_context",
+						undefined /* text */,
+						undefined /* images */,
+						false /* partial */,
+						undefined /* checkpoint */,
+						undefined /* progressStatus */,
+						{ isNonInteractive: true } /* options */,
+						contextCondense,
+					),
 				)
 			} else if (truncateResult.truncationId) {
 				// Sliding window truncation occurred (fallback when condensing fails or is disabled)
@@ -9270,25 +9737,37 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					prevContextTokens: truncateResult.prevContextTokens,
 					newContextTokens: truncateResult.newContextTokensAfterTruncation ?? 0,
 				}
-				await this.say(
-					"sliding_window_truncation",
-					undefined /* text */,
-					undefined /* images */,
-					false /* partial */,
-					undefined /* checkpoint */,
-					undefined /* progressStatus */,
-					{ isNonInteractive: true } /* options */,
-					undefined /* contextCondense */,
-					contextTruncation,
+				await waitForBoundedRecovery(
+					this.say(
+						"sliding_window_truncation",
+						undefined /* text */,
+						undefined /* images */,
+						false /* partial */,
+						undefined /* checkpoint */,
+						undefined /* progressStatus */,
+						{ isNonInteractive: true } /* options */,
+						undefined /* contextCondense */,
+						contextTruncation,
+					),
 				)
 			}
+			assertRecoveryWithinBudget()
+		} catch (error) {
+			contextRecoveryError = error
+			throw error
 		} finally {
-			// Notify webview that context management is complete (removes in-progress spinner)
-			// IMPORTANT: Must always be sent to dismiss the spinner, even on error
-			await this.providerRef
-				.deref()
-				?.postMessageToWebview({ type: "condenseTaskContextResponse", text: this.taskId })
+			if (contextManagementUiStarted) {
+				try {
+					const contextFinishedMessage = this.providerRef
+						.deref()
+						?.postMessageToWebview({ type: "condenseTaskContextResponse", text: this.taskId })
+					if (contextFinishedMessage) await waitForBoundedRecovery(contextFinishedMessage)
+				} catch (cleanupError) {
+					if (contextRecoveryError === undefined) contextRecoveryCleanupError = cleanupError
+				}
+			}
 		}
+		if (contextRecoveryCleanupError !== undefined) throw contextRecoveryCleanupError
 	}
 
 	/**
@@ -9301,7 +9780,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		retryAttempt: number,
 		stateOverride?: TaskRequestState,
 		interruptionSignal?: AbortSignal,
+		retryDeadline?: number,
 	): Promise<void> {
+		this.throwIfStepInterrupted(interruptionSignal)
+		throwIfAbsoluteDeadlineExceeded(retryDeadline)
 		// A task owns a frozen provider profile. Background sub-agents may be
 		// routed differently from the foreground profile exposed by getState().
 		const rateLimitSeconds = this.apiConfiguration?.rateLimitSeconds ?? 0
@@ -9310,8 +9792,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			return
 		}
 
-		const laneKey = await this.getProviderRateLimitLaneKey(stateOverride)
+		const laneKey = await this.waitForRequestControl(
+			this.getProviderRateLimitLaneKey(stateOverride),
+			interruptionSignal,
+			retryDeadline,
+		)
 		this.throwIfStepInterrupted(interruptionSignal)
+		throwIfAbsoluteDeadlineExceeded(retryDeadline)
 		const existingLane = Task.providerRateLimitLanes.get(laneKey)
 		const lane = existingLane ?? { queue: Promise.resolve() }
 		if (!existingLane) {
@@ -9322,6 +9809,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// the lane key. This removes the check/wait/set race between concurrent tasks.
 		const reservation = lane.queue.then(async () => {
 			this.throwIfStepInterrupted(interruptionSignal)
+			throwIfAbsoluteDeadlineExceeded(retryDeadline)
 			const now = performance.now()
 			const timeSinceLastRequest = lane.lastRequestTime === undefined ? Infinity : now - lane.lastRequestTime
 			const remainingMs = Math.max(0, rateLimitSeconds * 1000 - timeSinceLastRequest)
@@ -9334,57 +9822,61 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						for (let i = rateLimitDelay; i > 0; i--) {
 							// Send structured JSON data for i18n-safe transport.
 							const delayMessage = JSON.stringify({ seconds: i })
-							await this.say("api_req_rate_limit_wait", delayMessage, undefined, true)
-							await this.waitForProviderPacingDelay(1000, interruptionSignal)
+							await this.waitForRequestControl(
+								this.say("api_req_rate_limit_wait", delayMessage, undefined, true),
+								interruptionSignal,
+								retryDeadline,
+							)
+							await this.waitForProviderPacingDelay(1000, interruptionSignal, retryDeadline)
 						}
 					} finally {
-						// Never leave the countdown looking active after cancellation or steering.
-						await this.say("api_req_rate_limit_wait", undefined, undefined, false)
+						// Never let a stalled UI/persistence acknowledgement strand the shared
+						// provider lane after cancellation or deadline exhaustion.
+						await this.waitForRequestControl(
+							this.say("api_req_rate_limit_wait", undefined, undefined, false),
+							interruptionSignal,
+							retryDeadline,
+						)
 					}
 				} else {
 					// Retry flows announce their own backoff. Still enforce any remainder
 					// introduced by another request on this lane without a second countdown.
-					await this.waitForProviderPacingDelay(remainingMs, interruptionSignal)
+					await this.waitForProviderPacingDelay(remainingMs, interruptionSignal, retryDeadline)
 				}
 				this.requestPacingWaitCount++
 				this.requestPacingWaitMs += plannedWaitMs
 			}
 
 			this.throwIfStepInterrupted(interruptionSignal)
+			throwIfAbsoluteDeadlineExceeded(retryDeadline)
 			lane.lastRequestTime = performance.now()
 		})
 
 		lane.queue = reservation.catch(() => undefined)
-		if (!interruptionSignal) {
+		if (!interruptionSignal && retryDeadline === undefined) {
 			await reservation
 			return
 		}
 
-		await new Promise<void>((resolve, reject) => {
-			const cleanup = () => interruptionSignal.removeEventListener("abort", onAbort)
-			const onAbort = () => {
-				cleanup()
-				reject(interruptionSignal.reason ?? new Error("Request cancelled by user"))
-			}
-			if (interruptionSignal.aborted) {
-				onAbort()
-				return
-			}
-			interruptionSignal.addEventListener("abort", onAbort, { once: true })
-			reservation.then(
-				() => {
-					cleanup()
-					resolve()
-				},
-				(error) => {
-					cleanup()
-					reject(error)
-				},
-			)
-		})
+		await this.waitForRequestControl(reservation, interruptionSignal, retryDeadline)
 	}
 
-	private async waitForProviderPacingDelay(delayMs: number, interruptionSignal?: AbortSignal): Promise<void> {
+	private async waitForProviderPacingDelay(
+		delayMs: number,
+		interruptionSignal?: AbortSignal,
+		retryDeadline?: number,
+	): Promise<void> {
+		if (retryDeadline !== undefined) {
+			const boundedDelayMs = getTimeoutWithinDeadline(delayMs, retryDeadline)
+			await delayWithAbort(boundedDelayMs ?? 0, interruptionSignal)
+			this.throwIfStepInterrupted(interruptionSignal)
+			if (boundedDelayMs !== delayMs) {
+				throw new ApiStreamDeadlineError("Automatic retry deadline exceeded")
+			}
+			throwIfAbsoluteDeadlineExceeded(retryDeadline)
+			return
+		}
+
 		if (!interruptionSignal) {
 			await delay(delayMs)
 			return
@@ -9458,21 +9950,36 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			skipProviderRateLimit?: boolean
 			state?: TaskRequestState
 			retryCategory?: AgentRetryCategory
+			/** Remaining absolute budget for a policy-approved automatic retry. */
+			retryDeadline?: number
 			/** The live Task loop owns policy decisions; omit for legacy direct callers. */
 			ownerHandlesRetry?: boolean
-			/** Interrupts preflight, compaction, provider admission, and retry waits for this logical step. */
+			/**
+			 * Interrupts read-only/cancellable preflight, provider admission, and retry
+			 * waits. Atomic transcript writes finish on their owning queue and are
+			 * rechecked against this signal/deadline before provider dispatch.
+			 */
 			interruptionSignal?: AbortSignal
 		} = {},
 	): ApiStream {
 		const stepInterruptionSignal = options.interruptionSignal
 		this.throwIfStepInterrupted(stepInterruptionSignal)
+		throwIfAbsoluteDeadlineExceeded(options.retryDeadline)
+		const assertPreflightWithinBudget = () => {
+			this.throwIfStepInterrupted(stepInterruptionSignal)
+			throwIfAbsoluteDeadlineExceeded(options.retryDeadline)
+		}
+		const waitForBoundedPreflight = <T>(operation: PromiseLike<T>): Promise<T> =>
+			this.waitForRequestControl(operation, stepInterruptionSignal, options.retryDeadline)
+		const compatibilityRetryStartedAt = performance.now()
 		const retainedStep =
 			options.retryCategory === "transport" || options.retryCategory === "rate-limit"
 				? this.currentAgentStep
 				: undefined
 		const retainedRequest = retainedStep?.getRequest()
-		const state = options.state ?? (await this.providerRef.deref()?.getState())
-		this.throwIfStepInterrupted(stepInterruptionSignal)
+		const pendingState = options.state === undefined ? this.providerRef.deref()?.getState() : undefined
+		const state = options.state ?? (pendingState ? await waitForBoundedPreflight(pendingState) : undefined)
+		assertPreflightWithinBudget()
 
 		const {
 			autoApprovalEnabled,
@@ -9481,7 +9988,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			autoCondenseContextPercent = 100,
 			profileThresholds = {},
 		} = state ?? {}
-		const mode = retainedStep?.snapshot.context.mode.slug ?? (await this.getTaskMode())
+		const mode = retainedStep?.snapshot.context.mode.slug ?? (await waitForBoundedPreflight(this.getTaskMode()))
+		assertPreflightWithinBudget()
 		const apiConfiguration = this.apiConfiguration
 		// Preflight can await compaction or approval while the selected profile changes.
 		// Dispatch and capture the same handler whose capabilities and budget we measured.
@@ -9494,21 +10002,29 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const customCondensingPrompt = state?.customSupportPrompts?.CONDENSE
 
 		if (!options.skipProviderRateLimit) {
-			await this.maybeWaitForProviderRateLimit(retryAttempt, state, stepInterruptionSignal)
+			await this.maybeWaitForProviderRateLimit(retryAttempt, state, stepInterruptionSignal, options.retryDeadline)
 		}
-		this.throwIfStepInterrupted(stepInterruptionSignal)
+		assertPreflightWithinBudget()
 		const systemPrompt =
 			retainedRequest?.systemPrompt ??
-			(await this.getSystemPrompt(state, { apiHandler: requestHandler, apiConfiguration }))
-		this.throwIfStepInterrupted(stepInterruptionSignal)
+			(await waitForBoundedPreflight(
+				this.getSystemPrompt(state, { apiHandler: requestHandler, apiConfiguration }),
+			))
+		assertPreflightWithinBudget()
 		const { contextTokens } = this.getTokenUsage()
 		let compactedContextTarget: number | undefined
+		let contextCount: TokenCountContext | undefined
 
 		// A retained transport attempt must not compact or reinterpret a different
 		// live transcript under the old logical identity. Recovery captures a new step.
 		if (contextTokens && !retainedStep) {
 			const apiHandler = requestHandler
 			const modelInfo = apiHandler.getModel().info
+			const contextManagementTimeoutMs = getApiRequestTimeout()
+			const contextManagementDeadline = getBoundedRequestDeadline(
+				contextManagementTimeoutMs,
+				options.retryDeadline,
+			)
 
 			const maxTokens = getModelMaxOutputTokens({
 				modelId: apiHandler.getModel().id,
@@ -9519,7 +10035,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const contextWindow = modelInfo.contextWindow
 
 			// Get the current profile ID using the helper method
-			const currentProfileId = await this.getCurrentProfileId(state)
+			const currentProfileId = await waitForBoundedPreflight(this.getCurrentProfileId(state))
+			contextCount = createTokenCountContext(apiHandler, {
+				signal: stepInterruptionSignal,
+				remoteDeadline: contextManagementDeadline,
+			})
 			// Check if context management will likely run (threshold check)
 			// This allows us to show an in-progress indicator to the user
 			// We use the centralized willManageContext helper to avoid duplicating threshold logic
@@ -9528,9 +10048,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			let lastMessageTokens = 0
 			if (lastMessageContent) {
 				lastMessageTokens = Array.isArray(lastMessageContent)
-					? await apiHandler.countTokens(lastMessageContent)
-					: await apiHandler.countTokens([{ type: "text", text: lastMessageContent as string }])
+					? await waitForBoundedPreflight(contextCount.countTokens(lastMessageContent, apiHandler))
+					: await waitForBoundedPreflight(
+							contextCount.countTokens(
+								[{ type: "text", text: lastMessageContent as string }],
+								apiHandler,
+							),
+						)
 			}
+			assertPreflightWithinBudget()
 
 			const contextManagementWillRun = willManageContext({
 				totalTokens: contextTokens,
@@ -9543,116 +10069,154 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				lastMessageTokens,
 			})
 
-			// Send condenseTaskContextStarted BEFORE manageContext to show in-progress indicator
-			// This notification must be sent here (not earlier) because the early check uses stale token count
-			// (before user message is added to history), which could incorrectly skip showing the indicator
-			if (contextManagementWillRun && autoCondenseContext) {
-				await this.providerRef
-					.deref()
-					?.postMessageToWebview({ type: "condenseTaskContextStarted", text: this.taskId })
-			}
-
-			// Build tools for condensing metadata (same tools used for normal API calls)
-			// This ensures the condensing API call includes tool definitions for providers that need them
-			let contextMgmtTools: import("openai").default.Chat.ChatCompletionTool[] = []
-			let contextMgmtAllowedFunctionNames: string[] | undefined
-			{
-				const provider = this.providerRef.deref()
-				if (provider) {
-					const toolsResult = await buildNativeToolsArrayWithRestrictions({
-						provider,
-						cwd: this.cwd,
-						mode,
-						customModes: state?.customModes,
-						experiments: state?.experiments,
-						apiConfiguration,
-						disabledTools: state?.disabledTools,
-						modelInfo,
-						includeAllToolsWithRestrictions:
-							apiConfiguration.apiProvider === "gemini" || apiConfiguration.apiProvider === "vertex",
-						catalogCache: this.toolCatalogCache,
-						discoveryHistory: this.apiConversationHistory,
-						signal: stepInterruptionSignal,
-						allowedToolNames: this.getTaskAllowedToolNames(),
-						taskKind: this.taskKind,
-						enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
-					})
-					contextMgmtTools = toolsResult.tools
-					contextMgmtAllowedFunctionNames = toolsResult.allowedFunctionNames
-				}
-			}
-
-			// Build metadata with tools and taskId for the condensing API call
-			const contextManagementTimeoutMs = getApiRequestTimeout()
-			const contextMgmtMetadata: ApiHandlerCreateMessageMetadata = {
-				mode,
-				taskId: this.taskId,
-				...(stepInterruptionSignal ? { signal: stepInterruptionSignal } : {}),
-				...(contextManagementTimeoutMs !== undefined
-					? { deadline: Date.now() + contextManagementTimeoutMs }
-					: {}),
-				...(contextMgmtTools.length > 0
-					? {
-							tools: contextMgmtTools,
-							tool_choice: "auto",
-							parallelToolCalls: true,
-							...(contextMgmtAllowedFunctionNames
-								? { allowedFunctionNames: contextMgmtAllowedFunctionNames }
-								: {}),
-						}
-					: {}),
-			}
-
-			// Get files read by Alpha for code folding - only when context management will run
-			const contextMgmtFilesReadByRoo =
-				contextManagementWillRun && autoCondenseContext
-					? await this.getFilesReadByRooSafely("attemptApiRequest")
-					: undefined
-
+			let contextManagementUiStarted = false
+			let contextManagementError: unknown
+			let contextManagementCleanupError: unknown
 			try {
+				// Send condenseTaskContextStarted BEFORE manageContext to show in-progress indicator.
+				// Everything after this notification stays under the matching cleanup boundary.
 				if (contextManagementWillRun && autoCondenseContext) {
-					await this.publishCanonicalLifecyclePhase("compacting")
+					contextManagementUiStarted = true
+					const contextStartedMessage = this.providerRef
+						.deref()
+						?.postMessageToWebview({ type: "condenseTaskContextStarted", text: this.taskId })
+					if (contextStartedMessage) await waitForBoundedPreflight(contextStartedMessage)
+					assertPreflightWithinBudget()
 				}
-				const truncateResult = await manageContext({
-					messages: this.apiConversationHistory,
-					totalTokens: contextTokens,
-					maxTokens,
-					contextWindow,
-					apiHandler,
-					autoCondenseContext,
-					autoCondenseContextPercent,
-					systemPrompt,
+
+				// Build tools for condensing metadata (same tools used for normal API calls)
+				// This ensures the condensing API call includes tool definitions for providers that need them
+				let contextMgmtTools: import("openai").default.Chat.ChatCompletionTool[] = []
+				let contextMgmtAllowedFunctionNames: string[] | undefined
+				{
+					const provider = this.providerRef.deref()
+					if (provider) {
+						const toolsResult = await waitForBoundedPreflight(
+							buildNativeToolsArrayWithRestrictions({
+								provider,
+								cwd: this.cwd,
+								mode,
+								customModes: state?.customModes,
+								experiments: state?.experiments,
+								apiConfiguration,
+								disabledTools: state?.disabledTools,
+								modelInfo,
+								includeAllToolsWithRestrictions:
+									apiConfiguration.apiProvider === "gemini" ||
+									apiConfiguration.apiProvider === "vertex",
+								catalogCache: this.toolCatalogCache,
+								discoveryHistory: this.apiConversationHistory,
+								signal: stepInterruptionSignal,
+								allowedToolNames: this.getTaskAllowedToolNames(),
+								taskKind: this.taskKind,
+								enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
+							}),
+						)
+						contextMgmtTools = toolsResult.tools
+						contextMgmtAllowedFunctionNames = toolsResult.allowedFunctionNames
+					}
+				}
+
+				// Build metadata with tools and taskId for the condensing API call
+				const contextMgmtMetadata: ApiHandlerCreateMessageMetadata = {
+					mode,
 					taskId: this.taskId,
-					customCondensingPrompt,
-					profileThresholds,
-					currentProfileId,
-					metadata: contextMgmtMetadata,
-					filesReadByRoo: contextMgmtFilesReadByRoo,
-					cwd: this.cwd,
-					rooIgnoreController: this.rooIgnoreController,
-				})
-				this.throwIfStepInterrupted(stepInterruptionSignal)
+					...(stepInterruptionSignal ? { signal: stepInterruptionSignal } : {}),
+					...(contextManagementDeadline !== undefined ? { deadline: contextManagementDeadline } : {}),
+					...(contextMgmtTools.length > 0
+						? {
+								tools: contextMgmtTools,
+								tool_choice: "auto",
+								parallelToolCalls: true,
+								...(contextMgmtAllowedFunctionNames
+									? { allowedFunctionNames: contextMgmtAllowedFunctionNames }
+									: {}),
+							}
+						: {}),
+				}
+
+				// Get files read by Alpha for code folding - only when context management will run
+				const contextMgmtFilesReadByRoo =
+					contextManagementWillRun && autoCondenseContext
+						? await waitForBoundedPreflight(this.getFilesReadByRooSafely("attemptApiRequest"))
+						: undefined
+
+				if (contextManagementWillRun && autoCondenseContext) {
+					await waitForBoundedPreflight(
+						this.publishCanonicalLifecyclePhase("compacting", () => {
+							try {
+								assertPreflightWithinBudget()
+								return true
+							} catch {
+								return false
+							}
+						}),
+					)
+				}
+				const truncateResult = await waitForBoundedPreflight(
+					manageContext({
+						messages: this.apiConversationHistory,
+						totalTokens: contextTokens,
+						maxTokens,
+						contextWindow,
+						apiHandler,
+						autoCondenseContext,
+						autoCondenseContextPercent,
+						systemPrompt,
+						taskId: this.taskId,
+						customCondensingPrompt,
+						profileThresholds,
+						currentProfileId,
+						metadata: contextMgmtMetadata,
+						filesReadByRoo: contextMgmtFilesReadByRoo,
+						cwd: this.cwd,
+						rooIgnoreController: this.rooIgnoreController,
+						countContext: contextCount,
+					}),
+				)
+				assertPreflightWithinBudget()
 				if (truncateResult.status === "exhausted" || truncateResult.status === "no_progress") {
 					throw new ContextRecoveryExhaustedError(truncateResult.error)
 				}
 				if (truncateResult.messages !== this.apiConversationHistory) {
+					let tokens = await waitForBoundedPreflight(
+						this.measureCompactedContext(
+							apiHandler,
+							systemPrompt,
+							contextMgmtMetadata,
+							truncateResult.targetContextTokens,
+							truncateResult.messages,
+							contextCount,
+						),
+					)
+					assertPreflightWithinBudget()
+					// Do not race this generation-owned, queue-capped transcript write.
+					// Completing it before surfacing cancellation prevents a detached
+					// compaction snapshot from landing after a newer request begins.
 					if (!(await this.overwriteApiConversationHistory(truncateResult.messages))) {
 						throw new Error("Unable to persist context recovery before continuing.")
 					}
+					assertPreflightWithinBudget()
 					this.environmentContext.reset()
 					await this.refreshEnvironmentContext(state, stepInterruptionSignal)
-					const tokens = await this.measureCompactedContext(
-						apiHandler,
-						systemPrompt,
-						contextMgmtMetadata,
-						truncateResult.targetContextTokens,
+					assertPreflightWithinBudget()
+					tokens = await waitForBoundedPreflight(
+						this.measureCompactedContext(
+							apiHandler,
+							systemPrompt,
+							contextMgmtMetadata,
+							truncateResult.targetContextTokens,
+							getEffectiveApiHistory(this.apiConversationHistory),
+							contextCount,
+						),
 					)
 					truncateResult.newContextTokens = tokens
 					truncateResult.newContextTokensAfterTruncation = tokens
 					compactedContextTarget = truncateResult.targetContextTokens
 				}
 				if (truncateResult.error) {
-					await this.say("condense_context_error", truncateResult.error)
+					await waitForBoundedPreflight(this.say("condense_context_error", truncateResult.error))
+					assertPreflightWithinBudget()
 				}
 				if (truncateResult.summary) {
 					const { summary, cost, prevContextTokens, newContextTokens = 0, condenseId } = truncateResult
@@ -9663,16 +10227,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						prevContextTokens,
 						condenseId,
 					}
-					await this.say(
-						"condense_context",
-						undefined /* text */,
-						undefined /* images */,
-						false /* partial */,
-						undefined /* checkpoint */,
-						undefined /* progressStatus */,
-						{ isNonInteractive: true } /* options */,
-						contextCondense,
+					await waitForBoundedPreflight(
+						this.say(
+							"condense_context",
+							undefined /* text */,
+							undefined /* images */,
+							false /* partial */,
+							undefined /* checkpoint */,
+							undefined /* progressStatus */,
+							{ isNonInteractive: true } /* options */,
+							contextCondense,
+						),
 					)
+					assertPreflightWithinBudget()
 				} else if (truncateResult.truncationId) {
 					// Sliding window truncation occurred (fallback when condensing fails or is disabled)
 					const contextTruncation: ContextTruncation = {
@@ -9681,28 +10248,40 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						prevContextTokens: truncateResult.prevContextTokens,
 						newContextTokens: truncateResult.newContextTokensAfterTruncation ?? 0,
 					}
-					await this.say(
-						"sliding_window_truncation",
-						undefined /* text */,
-						undefined /* images */,
-						false /* partial */,
-						undefined /* checkpoint */,
-						undefined /* progressStatus */,
-						{ isNonInteractive: true } /* options */,
-						undefined /* contextCondense */,
-						contextTruncation,
+					await waitForBoundedPreflight(
+						this.say(
+							"sliding_window_truncation",
+							undefined /* text */,
+							undefined /* images */,
+							false /* partial */,
+							undefined /* checkpoint */,
+							undefined /* progressStatus */,
+							{ isNonInteractive: true } /* options */,
+							undefined /* contextCondense */,
+							contextTruncation,
+						),
 					)
+					assertPreflightWithinBudget()
 				}
+			} catch (error) {
+				contextManagementError = error
+				throw error
 			} finally {
-				// Notify webview that context management is complete (sets isCondensing = false)
-				// This removes the in-progress spinner and allows the completed result to show
-				// IMPORTANT: Must always be sent to dismiss the spinner, even on error
-				if (contextManagementWillRun && autoCondenseContext) {
-					await this.providerRef
-						.deref()
-						?.postMessageToWebview({ type: "condenseTaskContextResponse", text: this.taskId })
+				if (contextManagementUiStarted) {
+					try {
+						const contextFinishedMessage = this.providerRef
+							.deref()
+							?.postMessageToWebview({ type: "condenseTaskContextResponse", text: this.taskId })
+						if (contextFinishedMessage) await waitForBoundedPreflight(contextFinishedMessage)
+					} catch (cleanupError) {
+						// Preserve the initiating failure; cleanup has the same absolute budget
+						// and must never replace the actionable cancellation/deadline cause.
+						if (contextManagementError === undefined) contextManagementCleanupError = cleanupError
+					}
 				}
 			}
+			if (contextManagementCleanupError !== undefined) throw contextManagementCleanupError
+			assertPreflightWithinBudget()
 		}
 
 		// Get the effective API history by filtering out condensed messages
@@ -9724,11 +10303,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		// Check auto-approval limits
-		const approvalResult = await this.autoApprovalHandler.checkAutoApprovalLimits(
-			state,
-			this.combineMessages(this.clineMessages.slice(1)),
-			async (type, data) => this.ask(type, data),
+		const approvalResult = await waitForBoundedPreflight(
+			this.autoApprovalHandler.checkAutoApprovalLimits(
+				state,
+				this.combineMessages(this.clineMessages.slice(1)),
+				async (type, data) => waitForBoundedPreflight(this.ask(type, data)),
+			),
 		)
+		assertPreflightWithinBudget()
 
 		if (!approvalResult.shouldProceed) {
 			// User did not approve, task should be aborted
@@ -9771,39 +10353,41 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				throw new Error("Provider reference lost during tool building")
 			}
 
-			const toolsResult = await buildNativeToolsArrayWithRestrictions({
-				provider,
-				cwd: this.cwd,
-				mode,
-				customModes: state?.customModes,
-				experiments: state?.experiments,
-				apiConfiguration,
-				disabledTools: state?.disabledTools,
-				modelInfo,
-				includeAllToolsWithRestrictions: supportsAllowedFunctionNames,
-				catalogCache: this.toolCatalogCache,
-				discoveryHistory: this.apiConversationHistory,
-				signal: stepInterruptionSignal,
-				autoApprovalEnabled: state?.autoApprovalEnabled,
-				readGrant: {
-					enabled:
-						this.taskKind === "primary" &&
-						state?.autoApprovalEnabled === true &&
-						state?.alwaysAllowReadOnly === true,
-					workspaceRoot: this.cwd,
-					showIgnoredFiles: state?.showRooIgnoredFiles === true,
-				},
-				allowedToolNames: this.getTaskAllowedToolNames(),
-				taskKind: this.taskKind,
-				enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
-			})
+			const toolsResult = await waitForBoundedPreflight(
+				buildNativeToolsArrayWithRestrictions({
+					provider,
+					cwd: this.cwd,
+					mode,
+					customModes: state?.customModes,
+					experiments: state?.experiments,
+					apiConfiguration,
+					disabledTools: state?.disabledTools,
+					modelInfo,
+					includeAllToolsWithRestrictions: supportsAllowedFunctionNames,
+					catalogCache: this.toolCatalogCache,
+					discoveryHistory: this.apiConversationHistory,
+					signal: stepInterruptionSignal,
+					autoApprovalEnabled: state?.autoApprovalEnabled,
+					readGrant: {
+						enabled:
+							this.taskKind === "primary" &&
+							state?.autoApprovalEnabled === true &&
+							state?.alwaysAllowReadOnly === true,
+						workspaceRoot: this.cwd,
+						showIgnoredFiles: state?.showRooIgnoredFiles === true,
+					},
+					allowedToolNames: this.getTaskAllowedToolNames(),
+					taskKind: this.taskKind,
+					enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
+				}),
+			)
 			allTools = toolsResult.tools
 			allowedFunctionNames = toolsResult.allowedFunctionNames
 			taskToolSurface = toolsResult.surface
 		}
 
 		const shouldIncludeTools = allTools.length > 0
-		this.throwIfStepInterrupted(stepInterruptionSignal)
+		assertPreflightWithinBudget()
 
 		const metadata: ApiHandlerCreateMessageMetadata = {
 			mode: mode,
@@ -9825,27 +10409,35 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (compactedContextTarget !== undefined) {
 			// Final schemas and provider conversion can differ from the compaction input.
 			// Gate the actual new request before capturing it or admitting the provider.
-			await this.measureCompactedContext(
-				requestHandler,
-				systemPrompt,
-				{ ...metadata, signal: stepInterruptionSignal },
-				compactedContextTarget,
-				cleanConversationHistory,
+			await waitForBoundedPreflight(
+				this.measureCompactedContext(
+					requestHandler,
+					systemPrompt,
+					{ ...metadata, signal: stepInterruptionSignal },
+					compactedContextTarget,
+					cleanConversationHistory,
+					contextCount,
+				),
 			)
 		}
+		assertPreflightWithinBudget()
 
+		const configuredRequestTimeoutMs = getApiRequestTimeout()
+		const requestDeadline = getBoundedRequestDeadline(configuredRequestTimeoutMs, options.retryDeadline)
+		const requestTimeoutMs = getTimeoutWithinDeadline(configuredRequestTimeoutMs, requestDeadline)
 		// Create an AbortController to allow cancelling the request mid-stream
 		const requestController = new AbortController()
-		const abortFromStep = () => requestController.abort(stepInterruptionSignal?.reason)
-		if (stepInterruptionSignal?.aborted) abortFromStep()
-		else stepInterruptionSignal?.addEventListener("abort", abortFromStep, { once: true })
-		this.currentRequestAbortController = requestController
 		const abortSignal = requestController.signal
-		this.currentRequestSignal = abortSignal
-		this.currentTaskToolSurface = taskToolSurface
+		const abortFromStep = () => {
+			const reason = stepInterruptionSignal?.reason
+			requestController.abort(
+				reason instanceof Error && reason.name !== "AbortError"
+					? reason
+					: new Error("Request cancelled by user"),
+			)
+		}
 		const requestId = retainedStep?.requestId ?? crypto.randomUUID()
 		const attemptId = crypto.randomUUID()
-		const requestTimeoutMs = getApiRequestTimeout()
 		// A retry reuses its original suppression decision; a newly requested reset
 		// belongs to the next logical step and must not be consumed here.
 		if (!retainedStep) this.skipPrevResponseIdOnce = false
@@ -9853,7 +10445,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			requestId,
 			attemptId,
 			signal: abortSignal,
-			...(requestTimeoutMs !== undefined ? { deadline: Date.now() + requestTimeoutMs } : {}),
+			...(requestDeadline !== undefined ? { deadline: requestDeadline } : {}),
 			...(requestHandler.streamCapabilities ? { streamCapabilities: requestHandler.streamCapabilities } : {}),
 		}
 		const step = this.captureAgentStep(
@@ -9871,33 +10463,35 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		)
 		const request = retainedRequest ?? step.getRequest()
 		const requestMetadata: ApiHandlerCreateMessageMetadata = { ...request.metadata, ...attemptMetadata }
-		await this.ensureCanonicalLifecycleStepStarted(step)
-		await this.publishCanonicalLifecyclePhase("working")
-		await this.appendAgentTurnEvent(
-			{ type: "model_request_started", attempt: retryAttempt + 1 },
-			step.snapshot.context,
-		)
-		await this.appendAgentTurnEvent(
-			{ type: "policy_snapshot", digest: taskToolSurface?.policy.digest ?? "", toolCount: allTools.length },
-			step.snapshot.context,
-		)
-		if (abortSignal.aborted) {
-			stepInterruptionSignal?.removeEventListener("abort", abortFromStep)
-			if (this.currentRequestAbortController === requestController) {
-				this.currentRequestAbortController = undefined
-			}
-			if (this.pendingSteerMessage) throw new SteerRequestInterruptError()
-			this.throwIfStepInterrupted(stepInterruptionSignal)
-			throw new Error("Request cancelled by user")
+		const lifecyclePreflightIsCurrent = () =>
+			this.currentAgentStep === step &&
+			!stepInterruptionSignal?.aborted &&
+			(requestDeadline === undefined || Date.now() < requestDeadline)
+		const lifecyclePreflight = (async () => {
+			await this.ensureCanonicalLifecycleStepStarted(step, lifecyclePreflightIsCurrent)
+			if (!lifecyclePreflightIsCurrent()) return
+			await this.publishCanonicalLifecyclePhase("working", lifecyclePreflightIsCurrent)
+			if (!lifecyclePreflightIsCurrent()) return
+			await this.appendAgentTurnEvent(
+				{ type: "model_request_started", attempt: retryAttempt + 1 },
+				step.snapshot.context,
+			)
+			if (!lifecyclePreflightIsCurrent()) return
+			await this.appendAgentTurnEvent(
+				{ type: "policy_snapshot", digest: taskToolSurface?.policy.digest ?? "", toolCount: allTools.length },
+				step.snapshot.context,
+			)
+		})()
+		await this.waitForRequestControl(lifecyclePreflight, stepInterruptionSignal, requestDeadline)
+		this.throwIfStepInterrupted(stepInterruptionSignal)
+		throwIfAbsoluteDeadlineExceeded(requestDeadline)
+		if (this.currentAgentStep !== step) {
+			throw new Error("Request lifecycle preflight was superseded by a newer agent step")
 		}
 
-		const stream = requestHandler.createMessage(request.systemPrompt, request.messages, requestMetadata)
-		const iterator = stream[Symbol.asyncIterator]()
-
-		// Set up abort handling. Ownership is explicit because an old request can
-		// finish or be aborted after a retry/follow-up has installed a new controller.
-		// Late cleanup from the old request must never make the newer operation
-		// uncancellable.
+		// Install request ownership only after lifecycle preflight has succeeded.
+		// A failed/aborted lifecycle await therefore cannot strand an active signal.
+		let removeFirstChunkAbortListener: (() => void) | undefined
 		const clearOwnedRequestController = () => {
 			console.log(`[Task#${this.taskId}.${this.instanceId}] AbortSignal triggered for current request`)
 			if (this.currentRequestAbortController === requestController) {
@@ -9905,174 +10499,295 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		}
 		const clearRequestOwnership = () => {
+			removeFirstChunkAbortListener?.()
+			removeFirstChunkAbortListener = undefined
 			stepInterruptionSignal?.removeEventListener("abort", abortFromStep)
 			abortSignal.removeEventListener("abort", clearOwnedRequestController)
 			if (this.currentRequestAbortController === requestController) {
 				this.currentRequestAbortController = undefined
 			}
+			if (this.currentRequestSignal === abortSignal) {
+				this.currentRequestSignal = undefined
+			}
 		}
+		if (stepInterruptionSignal?.aborted) abortFromStep()
+		else stepInterruptionSignal?.addEventListener("abort", abortFromStep, { once: true })
+		this.currentRequestAbortController = requestController
+		this.currentRequestSignal = abortSignal
+		this.currentTaskToolSurface = taskToolSurface
 		abortSignal.addEventListener("abort", clearOwnedRequestController, { once: true })
+		if (abortSignal.aborted) {
+			clearRequestOwnership()
+			if (this.pendingSteerMessage) throw new SteerRequestInterruptError()
+			this.throwIfStepInterrupted(stepInterruptionSignal)
+			throw new Error("Request cancelled by user")
+		}
+
+		let stream: ApiStream
+		try {
+			stream = requestHandler.createMessage(request.systemPrompt, request.messages, requestMetadata)
+		} catch (error) {
+			clearRequestOwnership()
+			throw error
+		}
+		const iterator = stream[Symbol.asyncIterator]()
 
 		try {
-			// Awaiting first chunk to see if it will throw an error.
-			this.isWaitingForFirstChunk = true
+			try {
+				// Awaiting first chunk to see if it will throw an error.
+				this.isWaitingForFirstChunk = true
 
-			// Race between the first chunk and the abort signal
-			const firstChunkPromise = iterator.next()
-			const abortPromise = new Promise<never>((_, reject) => {
-				if (abortSignal.aborted) {
-					reject(
-						this.pendingSteerMessage
-							? new SteerRequestInterruptError()
-							: new Error("Request cancelled by user"),
-					)
-				} else {
-					abortSignal.addEventListener("abort", () => {
+				// Race between the first chunk and the abort signal
+				const firstChunkPromise = iterator.next()
+				const abortPromise = new Promise<never>((_, reject) => {
+					const onFirstChunkAbort = () => {
 						reject(
 							this.pendingSteerMessage
 								? new SteerRequestInterruptError()
-								: new Error("Request cancelled by user"),
+								: abortSignal.reason instanceof Error && abortSignal.reason.name !== "AbortError"
+									? abortSignal.reason
+									: new Error("Request cancelled by user"),
 						)
-					})
-				}
-			})
-
-			const firstChunk = await withApiRequestTimeout(
-				Promise.race([firstChunkPromise, abortPromise]),
-				`API response stream for ${step.snapshot.context.provider.modelId}`,
-				getApiRequestTimeout(),
-				() => requestController.abort(),
-			)
-			yield firstChunk.value
-			this.isWaitingForFirstChunk = false
-		} catch (error) {
-			this.isWaitingForFirstChunk = false
-			clearRequestOwnership()
-			if (error instanceof SteerRequestInterruptError) {
-				throw error
-			}
-
-			// Retry policy and manual retry UX live in the owning Task loop. Mark
-			// this as a first-chunk failure so that loop can decide whether to ask
-			// the user or schedule a bounded automatic retry; this generator never
-			// recursively invokes itself.
-			const retryError = error instanceof Error ? error : new Error(String(error))
-			const retryMetadata = retryError as Error & {
-				firstChunkFailure?: boolean
-				retryCategory?: AgentRetryCategory
-			}
-			retryMetadata.firstChunkFailure = true
-			retryMetadata.retryCategory = this.retryCategoryForError(
-				error,
-				checkContextWindowExceededError(error) ? "context" : "transport",
-			)
-
-			// A few legacy integrations call this generator directly instead of
-			// running the owning Task loop. Keep that surface compatible with the
-			// historical first-chunk retry UX, but make it explicitly bounded and
-			// iterative. The production loop passes ownerHandlesRetry so it remains
-			// the sole policy owner and does not double-delay or replay a step here.
-			if (!options.ownerHandlesRetry && autoApprovalEnabled) {
-				let compatibilityAttempt = Math.max(1, retryAttempt + 1)
-				let compatibilityError: unknown = retryError
-
-				while (true) {
-					const category = this.retryCategoryForError(compatibilityError, retryMetadata.retryCategory)
-					// Context/empty-response recovery needs a new logical boundary owned
-					// by the caller, not another replay of this retained wire request.
-					if (category !== "transport" && category !== "rate-limit") break
-					const decision = this.agentRetryPolicy.decide({
-						category,
-						attempt: compatibilityAttempt,
-						retryAfterMs: this.retryAfterMs(compatibilityError),
-						hasSemanticOutput: false,
-					})
-					if (!decision.shouldRetry) break
-
-					// Preserve the legacy countdown shape for direct callers. The live
-					// Task loop uses waitForRetryDecision, which is abort-aware.
-					await this.backoffAndAnnounce(compatibilityAttempt - 1, compatibilityError)
-					if (this.abort) break
-
-					const compatibilityController = new AbortController()
-					this.currentRequestAbortController = compatibilityController
-					this.currentRequestSignal = compatibilityController.signal
-					const compatibilityAttemptId = crypto.randomUUID()
-					const compatibilityRequest = step.getRequest()
-					const compatibilityMetadata: ApiHandlerCreateMessageMetadata = {
-						...compatibilityRequest.metadata,
-						attemptId: compatibilityAttemptId,
-						signal: compatibilityController.signal,
-						...(requestTimeoutMs !== undefined ? { deadline: Date.now() + requestTimeoutMs } : {}),
-						...(requestHandler.streamCapabilities
-							? { streamCapabilities: requestHandler.streamCapabilities }
-							: {}),
 					}
-					this.captureAgentStep(
-						compatibilityAttempt,
-						systemPrompt,
-						cleanConversationHistory as Anthropic.Messages.MessageParam[],
-						allTools,
-						allowedFunctionNames,
-						compatibilityMetadata,
-						mode,
-						modelInfo,
-						taskToolSurface,
-						step,
-					)
+					if (abortSignal.aborted) {
+						onFirstChunkAbort()
+					} else {
+						abortSignal.addEventListener("abort", onFirstChunkAbort, { once: true })
+						removeFirstChunkAbortListener = () =>
+							abortSignal.removeEventListener("abort", onFirstChunkAbort)
+					}
+				})
 
-					try {
-						const compatibilityStream = requestHandler.createMessage(
-							compatibilityRequest.systemPrompt,
-							compatibilityRequest.messages,
-							compatibilityMetadata,
+				const firstChunk = await withApiRequestTimeout(
+					Promise.race([firstChunkPromise, abortPromise]),
+					`API response stream for ${step.snapshot.context.provider.modelId}`,
+					requestTimeoutMs,
+					() => requestController.abort(new ApiStreamDeadlineError()),
+				)
+				removeFirstChunkAbortListener?.()
+				removeFirstChunkAbortListener = undefined
+				this.isWaitingForFirstChunk = false
+				yield firstChunk.value
+			} catch (error) {
+				this.isWaitingForFirstChunk = false
+				clearRequestOwnership()
+				if (error instanceof SteerRequestInterruptError) {
+					throw error
+				}
+
+				// Retry policy and manual retry UX live in the owning Task loop. Mark
+				// this as a first-chunk failure so that loop can decide whether to ask
+				// the user or schedule a bounded automatic retry; this generator never
+				// recursively invokes itself.
+				const retryError = error instanceof Error ? error : new Error(String(error))
+				const retryMetadata = retryError as Error & {
+					firstChunkFailure?: boolean
+					retryCategory?: AgentRetryCategory
+				}
+				retryMetadata.firstChunkFailure = true
+				retryMetadata.retryCategory = this.retryCategoryForError(
+					error,
+					checkContextWindowExceededError(error) ? "context" : "transport",
+				)
+
+				// A few legacy integrations call this generator directly instead of
+				// running the owning Task loop. Keep that surface compatible with the
+				// historical first-chunk retry UX, but make it explicitly bounded and
+				// iterative. The production loop passes ownerHandlesRetry so it remains
+				// the sole policy owner and does not double-delay or replay a step here.
+				if (!options.ownerHandlesRetry && autoApprovalEnabled) {
+					const compatibilityRetryPolicy = this.agentRetryPolicy ?? new AgentRetryPolicy()
+					const compatibilityElapsedMs = performance.now() - compatibilityRetryStartedAt
+					const policyRetryDeadline =
+						Date.now() + Math.max(0, compatibilityRetryPolicy.maxElapsedMs - compatibilityElapsedMs)
+					const compatibilityRetryDeadline =
+						typeof options.retryDeadline === "number" && Number.isFinite(options.retryDeadline)
+							? Math.min(options.retryDeadline, policyRetryDeadline)
+							: policyRetryDeadline
+					let compatibilityAttempt = Math.max(1, retryAttempt + 1)
+					let compatibilityError: unknown = retryError
+
+					while (true) {
+						const category = this.retryCategoryForError(compatibilityError, retryMetadata.retryCategory)
+						// Context/empty-response recovery needs a new logical boundary owned
+						// by the caller, not another replay of this retained wire request.
+						if (category !== "transport" && category !== "rate-limit") break
+						const decision = compatibilityRetryPolicy.decide({
+							category,
+							attempt: compatibilityAttempt,
+							elapsedMs: performance.now() - compatibilityRetryStartedAt,
+							retryAfterMs: this.retryAfterMs(compatibilityError),
+							hasSemanticOutput: false,
+						})
+						if (!decision.shouldRetry) break
+
+						// Preserve the legacy countdown shape for direct callers. The live
+						// Task loop uses waitForRetryDecision, which is abort-aware.
+						await this.waitForRequestControl(
+							this.backoffAndAnnounce(
+								compatibilityAttempt - 1,
+								compatibilityError,
+								compatibilityRetryDeadline,
+								stepInterruptionSignal,
+								decision.delayMs,
+							),
+							stepInterruptionSignal,
+							compatibilityRetryDeadline,
 						)
-						const compatibilityIterator = compatibilityStream[Symbol.asyncIterator]()
-						this.isWaitingForFirstChunk = true
-						const compatibilityFirstChunk = await withApiRequestTimeout(
-							compatibilityIterator.next(),
-							`API response stream for ${step.snapshot.context.provider.modelId}`,
-							requestTimeoutMs,
-							() => compatibilityController.abort(),
+						if (this.abort) break
+
+						const compatibilityDeadline = getBoundedRequestDeadline(
+							configuredRequestTimeoutMs,
+							compatibilityRetryDeadline,
 						)
-						if (compatibilityFirstChunk.done) {
-							throw Object.assign(new Error("Provider returned an empty response"), {
-								firstChunkFailure: true,
-								retryCategory: "empty-response",
+						this.throwIfStepInterrupted(stepInterruptionSignal)
+						throwIfAbsoluteDeadlineExceeded(compatibilityDeadline)
+						const compatibilityRequest = step.getRequest()
+						const compatibilityController = new AbortController()
+						const abortCompatibilityFromStep = () => {
+							const reason = stepInterruptionSignal?.reason
+							if (!compatibilityController.signal.aborted) {
+								compatibilityController.abort(
+									reason instanceof Error && reason.name !== "AbortError"
+										? reason
+										: new Error("Request cancelled by user"),
+								)
+							}
+						}
+						if (stepInterruptionSignal?.aborted) abortCompatibilityFromStep()
+						else
+							stepInterruptionSignal?.addEventListener("abort", abortCompatibilityFromStep, {
+								once: true,
 							})
+						this.currentRequestAbortController = compatibilityController
+						this.currentRequestSignal = compatibilityController.signal
+						const compatibilityAttemptId = crypto.randomUUID()
+						const compatibilityMetadata: ApiHandlerCreateMessageMetadata = {
+							...compatibilityRequest.metadata,
+							attemptId: compatibilityAttemptId,
+							signal: compatibilityController.signal,
+							...(compatibilityDeadline !== undefined ? { deadline: compatibilityDeadline } : {}),
+							...(requestHandler.streamCapabilities
+								? { streamCapabilities: requestHandler.streamCapabilities }
+								: {}),
 						}
-						this.isWaitingForFirstChunk = false
-						yield compatibilityFirstChunk.value
-						yield* compatibilityIterator
-						return
-					} catch (nextError) {
-						this.isWaitingForFirstChunk = false
-						compatibilityError = nextError
-						if (nextError instanceof SteerRequestInterruptError) throw nextError
-					} finally {
-						if (this.currentRequestAbortController === compatibilityController) {
-							this.currentRequestAbortController = undefined
+						let compatibilityIterator: AsyncIterator<ApiStreamChunk> | undefined
+						let compatibilityStreamCompleted = false
+						try {
+							this.throwIfStepInterrupted(stepInterruptionSignal)
+							this.captureAgentStep(
+								compatibilityAttempt,
+								systemPrompt,
+								cleanConversationHistory as Anthropic.Messages.MessageParam[],
+								allTools,
+								allowedFunctionNames,
+								compatibilityMetadata,
+								mode,
+								modelInfo,
+								taskToolSurface,
+								step,
+							)
+							const compatibilityStream = requestHandler.createMessage(
+								compatibilityRequest.systemPrompt,
+								compatibilityRequest.messages,
+								compatibilityMetadata,
+							)
+							compatibilityIterator = compatibilityStream[Symbol.asyncIterator]()
+							const nextCompatibilityChunk = async (): Promise<IteratorResult<ApiStreamChunk>> => {
+								const readTimeoutMs = getTimeoutWithinDeadline(
+									configuredRequestTimeoutMs,
+									compatibilityDeadline,
+								)
+								const nextPromise = compatibilityIterator!.next()
+								let removeAbortListener: (() => void) | undefined
+								const abortPromise = new Promise<never>((_resolve, reject) => {
+									const onAbort = () => {
+										reject(
+											compatibilityController.signal.reason instanceof Error &&
+												compatibilityController.signal.reason.name !== "AbortError"
+												? compatibilityController.signal.reason
+												: new Error("Request cancelled by user"),
+										)
+									}
+									if (compatibilityController.signal.aborted) {
+										onAbort()
+									} else {
+										compatibilityController.signal.addEventListener("abort", onAbort, {
+											once: true,
+										})
+										removeAbortListener = () =>
+											compatibilityController.signal.removeEventListener("abort", onAbort)
+									}
+								})
+								try {
+									try {
+										return await withApiRequestTimeout(
+											Promise.race([nextPromise, abortPromise]),
+											`API response stream for ${step.snapshot.context.provider.modelId}`,
+											readTimeoutMs,
+											() => compatibilityController.abort(new ApiStreamDeadlineError()),
+										)
+									} catch (error) {
+										if (Date.now() >= compatibilityRetryDeadline) {
+											throw new ApiStreamDeadlineError("Automatic retry deadline exceeded")
+										}
+										throw error
+									}
+								} finally {
+									removeAbortListener?.()
+								}
+							}
+							this.isWaitingForFirstChunk = true
+							let compatibilityChunk = await nextCompatibilityChunk()
+							this.isWaitingForFirstChunk = false
+							if (compatibilityChunk.done) {
+								throw Object.assign(new Error("Provider returned an empty response"), {
+									firstChunkFailure: true,
+									retryCategory: "empty-response",
+								})
+							}
+							while (!compatibilityChunk.done) {
+								yield compatibilityChunk.value
+								compatibilityChunk = await nextCompatibilityChunk()
+							}
+							compatibilityStreamCompleted = true
+							return
+						} catch (nextError) {
+							this.isWaitingForFirstChunk = false
+							compatibilityError = nextError
+							if (nextError instanceof SteerRequestInterruptError) throw nextError
+							if (stepInterruptionSignal?.aborted) this.throwIfStepInterrupted(stepInterruptionSignal)
+						} finally {
+							stepInterruptionSignal?.removeEventListener("abort", abortCompatibilityFromStep)
+							if (!compatibilityStreamCompleted) {
+								if (!compatibilityController.signal.aborted) {
+									compatibilityController.abort(new Error("Compatibility provider request closed"))
+								}
+								try {
+									void Promise.resolve(compatibilityIterator?.return?.(undefined)).catch(
+										() => undefined,
+									)
+								} catch {
+									// Iterator cleanup is best effort after the request has already terminated.
+								}
+							}
+							if (this.currentRequestAbortController === compatibilityController) {
+								this.currentRequestAbortController = undefined
+							}
+							if (this.currentRequestSignal === compatibilityController.signal) {
+								this.currentRequestSignal = undefined
+							}
 						}
-						if (this.currentRequestSignal === compatibilityController.signal) {
-							this.currentRequestSignal = undefined
-						}
+						compatibilityAttempt = decision.nextAttempt
 					}
-					compatibilityAttempt = decision.nextAttempt
+					throw compatibilityError
 				}
-				throw compatibilityError
+				throw retryError
 			}
-			throw retryError
-		}
 
-		// No error, so we can continue to yield all remaining chunks.
-		// (Needs to be placed outside of try/catch since it we want caller to
-		// handle errors not with api_req_failed as that is reserved for first
-		// chunk failures only.)
-		// This delegates to another generator or iterable object. In this case,
-		// it's saying "yield all remaining values from this iterator". This
-		// effectively passes along all subsequent chunks from the original
-		// stream.
-		try {
+			// No error, so pass every subsequent chunk through without applying the
+			// first-chunk retry UX. The surrounding finally also runs if a consumer
+			// closes the generator while it is suspended at the first yield.
 			yield* iterator
 		} finally {
 			clearRequestOwnership()
@@ -10080,9 +10795,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	// Shared exponential backoff for retries (first-chunk and mid-stream)
-	private async backoffAndAnnounce(retryAttempt: number, error: any): Promise<void> {
+	private async backoffAndAnnounce(
+		retryAttempt: number,
+		error: any,
+		retryDeadline?: number,
+		interruptionSignal?: AbortSignal,
+		maxWaitMs?: number,
+	): Promise<void> {
 		try {
-			const state = await this.providerRef.deref()?.getState()
+			this.throwIfStepInterrupted(interruptionSignal)
+			throwIfAbsoluteDeadlineExceeded(retryDeadline)
+			const pendingState = this.providerRef.deref()?.getState()
+			const state = pendingState
+				? await this.waitForRequestControl(pendingState, interruptionSignal, retryDeadline)
+				: undefined
 			// Zero explicitly disables the retry countdown. Using `||` here replaced
 			// that valid setting with the five-second default on every retry.
 			const baseDelay = state?.requestDelaySeconds ?? 5
@@ -10093,7 +10819,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			)
 
 			// Respect this task's routed provider-profile lane.
-			const rateLimitDelay = await this.getProviderRateLimitRemainingSeconds()
+			const rateLimitDelay = await this.waitForRequestControl(
+				this.getProviderRateLimitRemainingSeconds(),
+				interruptionSignal,
+				retryDeadline,
+			)
 
 			// Prefer RetryInfo on 429 if present
 			if (error?.status === 429) {
@@ -10106,8 +10836,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 			}
 
-			const finalDelay = Math.max(exponentialDelay, rateLimitDelay)
-			if (finalDelay <= 0) {
+			const requestedDelayMs = Math.max(exponentialDelay, rateLimitDelay) * 1000
+			const boundedPolicyDelayMs =
+				typeof maxWaitMs === "number" && Number.isFinite(maxWaitMs) ? Math.max(0, maxWaitMs) : requestedDelayMs
+			let remainingDelayMs = Math.min(requestedDelayMs, boundedPolicyDelayMs)
+			if (remainingDelayMs <= 0) {
 				return
 			}
 
@@ -10128,18 +10861,38 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			headerText = headerText ? `${headerText}\n` : ""
 
 			// Show countdown timer with exponential backoff
-			for (let i = finalDelay; i > 0; i--) {
+			while (remainingDelayMs > 0) {
 				// Check abort flag during countdown to allow early exit
 				if (this.abort) {
 					throw new Error(`[Task#${this.taskId}] Aborted during retry countdown`)
 				}
+				this.throwIfStepInterrupted(interruptionSignal)
+				throwIfAbsoluteDeadlineExceeded(retryDeadline)
 
-				await this.say("api_req_retry_delayed", `${headerText}<retry_timer>${i}</retry_timer>`, undefined, true)
-				await delay(1000)
+				const secondsRemaining = Math.max(1, Math.ceil(remainingDelayMs / 1000))
+				await this.waitForRequestControl(
+					this.say(
+						"api_req_retry_delayed",
+						`${headerText}<retry_timer>${secondsRemaining}</retry_timer>`,
+						undefined,
+						true,
+					),
+					interruptionSignal,
+					retryDeadline,
+				)
+				const delaySliceMs = Math.min(1000, remainingDelayMs)
+				await this.waitForProviderPacingDelay(delaySliceMs, interruptionSignal, retryDeadline)
+				remainingDelayMs -= delaySliceMs
 			}
 
-			await this.say("api_req_retry_delayed", headerText, undefined, false)
+			await this.waitForRequestControl(
+				this.say("api_req_retry_delayed", headerText, undefined, false),
+				interruptionSignal,
+				retryDeadline,
+			)
 		} catch (err) {
+			if (err instanceof ApiStreamDeadlineError) throw err
+			if (interruptionSignal?.aborted) this.throwIfStepInterrupted(interruptionSignal)
 			const message = err instanceof Error ? err.message : String(err)
 
 			if (this.abort && message.includes("Aborted during retry countdown")) {
@@ -10413,7 +11166,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		result?: import("../agent/ToolScheduler").ToolSchedulerResult,
 	): Promise<void> {
 		await this.pendingCommandVerification
-		void result
 		const artifactId = args && typeof args === "object" && "artifact_id" in args ? args.artifact_id : undefined
 		const polling =
 			name === "wait_agent" ||
@@ -10425,15 +11177,24 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const read = ["read_file", "list_files", "search_files", "codebase_search", "read_command_output"].includes(
 			name,
 		)
+		const trustedExploration =
+			name === "execute_command" && status === "success" ? result?.trustedExploration : undefined
 		const state = this.providerRef?.deref()?.getVerificationProgressState?.(this)
 		const decision = this.toolRepetitionDetector.recordOutcome({
 			toolName: name,
 			args,
 			status,
-			kind: polling ? "poll" : read ? "read" : name === "execute_command" ? "check" : "other",
-			scope: this.cwd,
+			kind: polling
+				? "poll"
+				: read || trustedExploration
+					? "read"
+					: name === "execute_command"
+						? "check"
+						: "other",
+			scope: trustedExploration?.scope ?? this.cwd,
 			stateFingerprint: state?.stateFingerprint,
 			evidenceFingerprint: state?.evidenceFingerprint,
+			...(trustedExploration ? { explorationFingerprint: trustedExploration.semanticFingerprint } : {}),
 		})
 		if (decision.action === "stop") {
 			this.suspendAfterCurrentTurn(

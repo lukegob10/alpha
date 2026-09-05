@@ -103,6 +103,36 @@ describe("AgentRetryPolicy", () => {
 		})
 	})
 
+	it("treats a long first-attempt deadline as terminal once the default logical retry allowance is exhausted", () => {
+		const policy = new AgentRetryPolicy({ jitter: "none" })
+
+		expect(policy.decide({ category: "transport", attempt: 1, elapsedMs: 600_000 })).toMatchObject({
+			shouldRetry: false,
+			exhausted: true,
+			delayMs: 0,
+			reason: "elapsed-budget",
+		})
+	})
+
+	it("only schedules a safe retry when its delay still fits the remaining logical allowance", () => {
+		const policy = new AgentRetryPolicy({ jitter: "none" })
+
+		expect(policy.decide({ category: "transport", attempt: 1, elapsedMs: 89_000 })).toMatchObject({
+			shouldRetry: true,
+			delayMs: 1_000,
+		})
+		expect(policy.decide({ category: "transport", attempt: 1, elapsedMs: 89_001 })).toMatchObject({
+			shouldRetry: false,
+			reason: "elapsed-budget",
+		})
+		expect(
+			policy.decide({ category: "transport", attempt: 1, elapsedMs: 1_000, hasSemanticOutput: true }),
+		).toMatchObject({
+			shouldRetry: false,
+			reason: "semantic-output",
+		})
+	})
+
 	it("supports category-specific attempt budgets", () => {
 		const policy = new AgentRetryPolicy({
 			maxAttempts: 4,

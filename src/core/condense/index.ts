@@ -5,6 +5,8 @@ import { TelemetryService } from "@alpha-code/telemetry"
 
 import { t } from "../../i18n"
 import { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../api"
+import { getApiStreamErrorMessage } from "../../api/transform/stream"
+import type { ApiStreamError, ApiStreamOutcomeChunk } from "../../api/transform/stream"
 import { ApiMessage } from "../task-persistence/apiMessages"
 import { maybeRemoveImageBlocks } from "../../api/transform/image-cleaning"
 import { findLast } from "../../shared/array"
@@ -14,6 +16,14 @@ import { generateFoldedFileContext } from "./foldedFileContext"
 import type { ContextRecoveryStatus } from "../context-management/recovery"
 import { getCompactionTargetTokens } from "../context-management/recovery"
 import { ANTHROPIC_DEFAULT_MAX_TOKENS } from "@alpha-code/types"
+import { createTokenCountContext, TokenCountContext } from "./tokenCountContext"
+
+export {
+	createTokenCountContext,
+	DEFAULT_REMOTE_TOKENIZER_ALLOWANCE_MS,
+	DEFAULT_TOKEN_COUNT_CACHE_ENTRIES,
+} from "./tokenCountContext"
+export type { CreateTokenCountContextOptions, TokenCountContext } from "./tokenCountContext"
 
 export type { FoldedFileContextResult, FoldedFileContextOptions } from "./foldedFileContext"
 
@@ -209,6 +219,80 @@ export function hasToolCallResultIntegrity(messages: ApiMessage[]): boolean {
 
 export const DEFAULT_RECENT_TAIL_TOKENS = 16_384
 
+const MAX_CONDENSE_STREAM_ERROR_DETAIL_LENGTH = 512
+
+/** Keep provider stream failures useful without copying untrusted payloads into task history. */
+function getCondenseStreamErrorDetail(error: ApiStreamError): string {
+	const detail = getApiStreamErrorMessage(error, "Provider stream error").trim()
+	if (detail.length === 0) return "Provider stream error"
+	if (detail.length <= MAX_CONDENSE_STREAM_ERROR_DETAIL_LENGTH) return detail
+	return `${detail.slice(0, MAX_CONDENSE_STREAM_ERROR_DETAIL_LENGTH - 3)}...`
+}
+
+function getSignalAbortReason(signal: AbortSignal): unknown {
+	try {
+		signal.throwIfAborted()
+	} catch (error) {
+		return error
+	}
+	return new DOMException("The operation was aborted", "AbortError")
+}
+
+/** Await one stream item without letting an unresponsive iterator delay caller cancellation. */
+function nextStreamItem<T>(iterator: AsyncIterator<T>, signal?: AbortSignal): Promise<IteratorResult<T>> {
+	signal?.throwIfAborted()
+	const pending = iterator.next()
+	if (!signal) return pending
+
+	return new Promise((resolve, reject) => {
+		let settled = false
+		const finish = (callback: () => void) => {
+			if (settled) return
+			settled = true
+			signal.removeEventListener("abort", onAbort)
+			callback()
+		}
+		const onAbort = () => {
+			try {
+				const cleanup = iterator.return?.()
+				if (cleanup) void Promise.resolve(cleanup).catch(() => undefined)
+			} catch {
+				// Caller cancellation remains authoritative even if iterator cleanup fails.
+			}
+			finish(() => reject(getSignalAbortReason(signal)))
+		}
+		signal.addEventListener("abort", onAbort, { once: true })
+		if (signal.aborted) onAbort()
+		pending.then(
+			(result) => finish(() => resolve(result)),
+			(error) => finish(() => reject(error)),
+		)
+	})
+}
+
+/** Race non-provider preparation work with terminal caller cancellation. */
+function waitForOperation<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
+	if (!signal) return pending
+	signal.throwIfAborted()
+
+	return new Promise((resolve, reject) => {
+		let settled = false
+		const finish = (callback: () => void) => {
+			if (settled) return
+			settled = true
+			signal.removeEventListener("abort", onAbort)
+			callback()
+		}
+		const onAbort = () => finish(() => reject(getSignalAbortReason(signal)))
+		signal.addEventListener("abort", onAbort, { once: true })
+		if (signal.aborted) onAbort()
+		pending.then(
+			(value) => finish(() => resolve(value)),
+			(error) => finish(() => reject(error)),
+		)
+	})
+}
+
 const HISTORY_BOOKKEEPING_KEYS = new Set([
 	"content",
 	"ts",
@@ -229,9 +313,12 @@ export type CountableHistoryMessage =
 export async function countHistoryTokens(
 	messages: readonly CountableHistoryMessage[],
 	apiHandler: ApiHandler,
+	countContext?: TokenCountContext,
 ): Promise<number> {
+	const operation = countContext ?? createTokenCountContext(apiHandler)
 	let tokens = 0
 	for (const message of messages) {
+		operation.signal?.throwIfAborted()
 		const rawContent = "content" in message ? message.content : []
 		const content = typeof rawContent === "string" ? [{ type: "text" as const, text: rawContent }] : rawContent
 		// The common tokenizer ignores nonstandard reasoning/signature blocks. Count
@@ -245,7 +332,10 @@ export async function countHistoryTokens(
 			Object.entries(message).filter(([key]) => !HISTORY_BOOKKEEPING_KEYS.has(key)),
 		)
 		blocks.push({ type: "text", text: JSON.stringify(envelope) })
-		tokens += await apiHandler.countTokens(blocks)
+		const messageTokens = await operation.countTokens(blocks, apiHandler)
+		operation.signal?.throwIfAborted()
+		if (!Number.isFinite(messageTokens) || messageTokens < 0) return Number.NaN
+		tokens += messageTokens
 	}
 	return tokens
 }
@@ -309,7 +399,9 @@ export async function selectRecentTail(
 	tokenBudget: number,
 	minimumStartIndex = 1,
 	signal?: AbortSignal,
+	countContext?: TokenCountContext,
 ): Promise<RecentTailSelection> {
+	const operation = countContext ?? createTokenCountContext(apiHandler, { signal })
 	const starts = getLogicalStepStarts(messages)
 	let startIndex = messages.length
 	let tokens = 0
@@ -318,8 +410,11 @@ export async function selectRecentTail(
 		const start = starts[index]
 		if (start < minimumStartIndex || messages[start].isSummary) break
 		signal?.throwIfAborted()
-		const stepTokens = await countHistoryTokens(messages.slice(start, startIndex), apiHandler)
+		const stepTokens = await countHistoryTokens(messages.slice(start, startIndex), apiHandler, operation)
 		signal?.throwIfAborted()
+		if (!Number.isFinite(stepTokens) || stepTokens < 0) {
+			return { startIndex: messages.length, tokens: Number.NaN, newestStepTooLarge: false }
+		}
 		if (tokens + stepTokens > tokenBudget) {
 			newestStepTooLarge = startIndex === messages.length
 			break
@@ -335,10 +430,21 @@ export async function countContextTokens(
 	apiHandler: ApiHandler,
 	systemPrompt: string,
 	metadata?: ApiHandlerCreateMessageMetadata,
+	countContext?: TokenCountContext,
 ): Promise<number> {
+	const operation =
+		countContext ??
+		createTokenCountContext(apiHandler, {
+			signal: metadata?.signal,
+			remoteDeadline: metadata?.deadline,
+		})
+	operation.signal?.throwIfAborted()
 	const overhead: Anthropic.Messages.ContentBlockParam[] = [{ type: "text", text: systemPrompt }]
 	if (metadata?.tools?.length) overhead.push({ type: "text", text: JSON.stringify(metadata.tools) })
-	return (await apiHandler.countTokens(overhead)) + (await countHistoryTokens(messages, apiHandler))
+	const overheadTokens = await operation.countTokens(overhead, apiHandler)
+	operation.signal?.throwIfAborted()
+	if (!Number.isFinite(overheadTokens) || overheadTokens < 0) return Number.NaN
+	return overheadTokens + (await countHistoryTokens(messages, apiHandler, operation))
 }
 
 /**
@@ -500,6 +606,8 @@ export type SummarizeConversationOptions = {
 	maxContextTokens?: number
 	/** Exact recent working set; clamped to the available input budget. */
 	recentTailTokenBudget?: number
+	/** Shared token-counting budget/cache for this context-preparation operation. */
+	countContext?: TokenCountContext
 }
 
 /**
@@ -564,6 +672,13 @@ export async function summarizeConversation(options: SummarizeConversationOption
 	} = options
 	const signal = metadata?.signal
 	signal?.throwIfAborted()
+	const countContext =
+		options.countContext ??
+		createTokenCountContext(apiHandler, {
+			signal,
+			remoteDeadline: metadata?.deadline,
+		})
+	countContext.signal?.throwIfAborted()
 	TelemetryService.instance.captureContextCondensed(
 		taskId,
 		isAutomaticTrigger ?? false,
@@ -614,7 +729,10 @@ export async function summarizeConversation(options: SummarizeConversationOption
 		? Math.max(0, Math.min(requestedTailBudget, maxContextTokens))
 		: 0
 	const minimumTailStart = getLogicalStepStarts(activeMessages).length === 1 ? 0 : 1
-	const tail = await selectRecentTail(activeMessages, apiHandler, tailBudget, minimumTailStart, signal)
+	const tail = await selectRecentTail(activeMessages, apiHandler, tailBudget, minimumTailStart, signal, countContext)
+	if (!Number.isFinite(tail.tokens) || tail.tokens < 0) {
+		return { ...response, error: t("common:errors.condense_failed"), status: "no_progress" }
+	}
 	const messagesToSummarize = activeMessages.slice(0, tail.startIndex)
 	const retainedMessages = activeMessages.slice(tail.startIndex)
 	if (messagesToSummarize.length === 0) {
@@ -648,24 +766,60 @@ export async function summarizeConversation(options: SummarizeConversationOption
 
 	let summary = ""
 	let cost = 0
+	let completedOutcomeObserved = false
+	let unsuccessfulOutcome: ApiStreamOutcomeChunk | undefined
+	let streamError: ApiStreamError | undefined
+	const getStreamErrorResponse = (errorChunk: ApiStreamError): SummarizeResponse => {
+		const errorDetails = getCondenseStreamErrorDetail(errorChunk)
+		return {
+			...response,
+			cost,
+			error: t("common:errors.condense_api_failed", { message: errorDetails }),
+			errorDetails,
+			status: "no_progress",
+		}
+	}
 
 	try {
 		// Historical tool blocks were converted to text above.  Do not let the
 		// active task tool registry leak into this summarization-only request.
 		const stream = apiHandler.createMessage(promptToUse, requestMessages, getToolFreeMetadata(metadata))
+		const iterator = stream[Symbol.asyncIterator]()
 
-		for await (const chunk of stream) {
+		while (true) {
+			const next = await nextStreamItem(iterator, signal)
+			if (next.done) break
+			const chunk = next.value
 			signal?.throwIfAborted()
+			if (chunk.type === "error") {
+				// An explicit provider failure is terminal for condensing. Keep the
+				// first one and ignore any cleanup/outcome chunks that follow it.
+				streamError ??= chunk
+				continue
+			}
+			if (chunk.type === "usage") {
+				// Usage may arrive after a provider error while the transport drains;
+				// preserve the final accounting even though the summary is rejected.
+				cost = chunk.totalCost ?? 0
+				continue
+			}
+			if (streamError) continue
 			if (chunk.type === "text") {
 				summary += chunk.text
-			} else if (chunk.type === "usage") {
-				// Record final usage chunk only
-				cost = chunk.totalCost ?? 0
+			} else if (chunk.type === "outcome") {
+				if (chunk.status === "completed" && chunk.terminal) {
+					completedOutcomeObserved = true
+				} else {
+					// Once a provider declares this summary incomplete, failed, or
+					// cancelled, a later nominal completion cannot make partial text safe.
+					unsuccessfulOutcome ??= chunk
+				}
 			}
 		}
 	} catch (error) {
 		signal?.throwIfAborted()
 		if (error instanceof Error && error.name === "AbortError") throw error
+		if (streamError) return getStreamErrorResponse(streamError)
 		console.error("Error during condensing API call:", error)
 		const errorMessage = error instanceof Error ? error.message : String(error)
 
@@ -708,6 +862,20 @@ export async function summarizeConversation(options: SummarizeConversationOption
 		}
 	}
 	signal?.throwIfAborted()
+	if (streamError) return getStreamErrorResponse(streamError)
+
+	// Lifecycle-capable providers promise an explicit terminal outcome, so EOF
+	// without completed evidence must fail closed. Legacy providers have no such
+	// contract and retain their established text-at-EOF behavior.
+	if (unsuccessfulOutcome || (apiHandler.streamCapabilities?.lifecycle === true && !completedOutcomeObserved)) {
+		return {
+			...response,
+			cost,
+			error: t("common:errors.condense_failed"),
+			...(unsuccessfulOutcome?.reason ? { errorDetails: unsuccessfulOutcome.reason } : {}),
+			status: "no_progress",
+		}
+	}
 
 	summary = summary.trim()
 
@@ -748,10 +916,13 @@ ${commandBlocks}
 	// Each file gets its own <system-reminder> block as a separate content block
 	if (filesReadByRoo && filesReadByRoo.length > 0 && cwd) {
 		try {
-			const foldedResult = await generateFoldedFileContext(filesReadByRoo, {
-				cwd,
-				rooIgnoreController,
-			})
+			const foldedResult = await waitForOperation(
+				generateFoldedFileContext(filesReadByRoo, {
+					cwd,
+					rooIgnoreController,
+				}),
+				signal,
+			)
 			if (foldedResult.sections.length > 0) {
 				for (const section of foldedResult.sections) {
 					if (section.trim()) {
@@ -763,6 +934,7 @@ ${commandBlocks}
 				}
 			}
 		} catch (error) {
+			signal?.throwIfAborted()
 			console.error("[summarizeConversation] Failed to generate folded file context:", error)
 			// Continue without folded context - non-critical failure
 		}
@@ -798,6 +970,7 @@ ${commandBlocks}
 		apiHandler,
 		systemPrompt,
 		metadata,
+		countContext,
 	)
 	signal?.throwIfAborted()
 	if (!Number.isFinite(newContextTokens) || newContextTokens > maxContextTokens) {

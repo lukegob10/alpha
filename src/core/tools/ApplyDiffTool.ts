@@ -170,6 +170,8 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 				const didApprove = await askApproval("tool", completeMessage, toolProgressStatus, isWriteProtected)
 
 				if (!didApprove) {
+					await task.diffViewProvider.reset()
+					this.resetPartialState()
 					return
 				}
 
@@ -182,6 +184,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 					false,
 					diagnosticsEnabled,
 					writeDelayMs,
+					{ exists: true, content: originalContent },
 				)
 			} else {
 				// Original behavior with diff view
@@ -216,6 +219,8 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 
 				if (!didApprove) {
 					await task.diffViewProvider.revertChanges()
+					await task.diffViewProvider.reset()
+					this.resetPartialState()
 					task.processQueuedMessages()
 					return
 				}

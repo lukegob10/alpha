@@ -15,6 +15,8 @@ export interface ToolProgressObservation {
 	stateFingerprint?: string
 	/** Admitted validation evidence or scoped read evidence, excluding execution IDs and timestamps. */
 	evidenceFingerprint?: string
+	/** Host-issued semantic identity for a supported shell inspection. */
+	explorationFingerprint?: string
 }
 
 export interface ToolProgressDecision {
@@ -29,15 +31,6 @@ export interface ToolProgressOptions {
 	noProgressLimit?: number
 	/** Recent outcomes retained, hard capped at 128 and at least twice noProgressLimit. */
 	historyLimit?: number
-}
-
-interface RecentToolOutcome {
-	identity: string
-	scope: string
-	status: ToolProgressObservation["status"]
-	kind: ToolProgressObservation["kind"]
-	state?: string
-	evidence?: string
 }
 
 function boundedPositiveInteger(value: number | undefined, fallback: number, maximum: number): number {
@@ -61,7 +54,11 @@ export class ToolRepetitionDetector {
 	private readonly consecutiveIdenticalToolCallLimit: number
 	private readonly noProgressLimit: number
 	private readonly historyLimit: number
-	private readonly recentOutcomes: RecentToolOutcome[] = []
+	private readonly seenReadIdentities = new Set<string>()
+	private readonly seenStateIdentities = new Set<string>()
+	private readonly seenStateScopes = new Set<string>()
+	private readonly seenEvidenceIdentities = new Set<string>()
+	private retainedOutcomeCount = 0
 	private stagnantCalls = 0
 	private strategyChangeIssued = false
 	private stopped = false
@@ -95,38 +92,43 @@ export class ToolRepetitionDetector {
 		if (this.consecutiveIdenticalToolCallLimit <= 0) return this.progressDecision("continue")
 		if (this.stopped) return this.progressDecision("stop")
 
-		const outcome: RecentToolOutcome = {
-			identity: digest({ toolName: observation.toolName, args: observation.args }),
+		const outcome = {
+			identity: digest(
+				observation.explorationFingerprint === undefined
+					? { toolName: observation.toolName, args: observation.args }
+					: { exploration: observation.explorationFingerprint },
+			),
 			scope: digest(observation.scope),
-			status: observation.status,
-			kind: observation.kind,
 			...(observation.stateFingerprint !== undefined ? { state: digest(observation.stateFingerprint) } : {}),
 			...(observation.status === "success" && observation.evidenceFingerprint !== undefined
 				? { evidence: digest(observation.evidenceFingerprint) }
 				: {}),
 		}
-		const sameScope = this.recentOutcomes.filter((previous) => previous.scope === outcome.scope)
-		const stateChanged =
+		const stateScopeWasSeen = this.seenStateScopes.has(outcome.scope)
+		const freshState =
 			outcome.state !== undefined &&
-			sameScope.some((previous) => previous.state !== undefined) &&
-			!sameScope.some((previous) => previous.state === outcome.state)
+			this.rememberNovelty(this.seenStateIdentities, digest({ scope: outcome.scope, state: outcome.state }))
+		if (outcome.state !== undefined && freshState && this.seenStateScopes.size < this.historyLimit) {
+			this.seenStateScopes.add(outcome.scope)
+		}
+		const stateChanged = freshState && stateScopeWasSeen
 		const freshEvidence =
-			outcome.evidence !== undefined && !sameScope.some((previous) => previous.evidence === outcome.evidence)
+			outcome.evidence !== undefined &&
+			this.rememberNovelty(
+				this.seenEvidenceIdentities,
+				digest({ scope: outcome.scope, evidence: outcome.evidence }),
+			)
 		const freshRead =
 			observation.status === "success" &&
 			observation.kind === "read" &&
 			observation.scope !== undefined &&
-			!sameScope.some(
-				(previous) =>
-					previous.status === "success" && previous.kind === "read" && previous.identity === outcome.identity,
-			)
+			this.rememberNovelty(this.seenReadIdentities, digest({ scope: outcome.scope, identity: outcome.identity }))
 		const progressed = stateChanged || freshEvidence || freshRead
 		if (observation.kind === "poll" && observation.status === "success" && !progressed) {
 			return this.progressDecision("continue")
 		}
 
-		this.recentOutcomes.push(outcome)
-		if (this.recentOutcomes.length > this.historyLimit) this.recentOutcomes.shift()
+		this.retainedOutcomeCount = Math.min(this.historyLimit, this.retainedOutcomeCount + 1)
 		if (progressed) {
 			this.stagnantCalls = 0
 			this.strategyChangeIssued = false
@@ -146,17 +148,27 @@ export class ToolRepetitionDetector {
 	}
 
 	public resetProgress(): void {
-		this.recentOutcomes.length = 0
+		this.seenReadIdentities.clear()
+		this.seenStateIdentities.clear()
+		this.seenStateScopes.clear()
+		this.seenEvidenceIdentities.clear()
+		this.retainedOutcomeCount = 0
 		this.stagnantCalls = 0
 		this.strategyChangeIssued = false
 		this.stopped = false
+	}
+
+	private rememberNovelty(seen: Set<string>, identity: string): boolean {
+		if (seen.has(identity) || seen.size >= this.historyLimit) return false
+		seen.add(identity)
+		return true
 	}
 
 	private progressDecision(action: ToolProgressDecision["action"]): ToolProgressDecision {
 		return {
 			action,
 			stagnantCalls: this.stagnantCalls,
-			retainedOutcomes: this.recentOutcomes.length,
+			retainedOutcomes: this.retainedOutcomeCount,
 			...(action !== "continue" ? { reason: "no-progress" as const } : {}),
 		}
 	}

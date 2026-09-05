@@ -85,6 +85,48 @@ const mixedFieldsErrorMessage =
 const missingFieldsErrorMessage =
 	"Server configuration must include either 'command' (for stdio) or 'url' (for sse/streamable-http) and a corresponding 'type' if 'url' is used."
 
+/**
+ * Dispatch an MCP request synchronously, forward cancellation to the SDK, and
+ * still settle promptly when a transport ignores that signal. The handlers on
+ * the request promise remain attached after cancellation so late settlement is
+ * observed without changing the cancelled caller's result.
+ */
+function requestWithAbort<T>(dispatch: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+	signal?.throwIfAborted()
+	const request = dispatch()
+
+	if (!signal) {
+		return request
+	}
+
+	return new Promise<T>((resolve, reject) => {
+		let settled = false
+		const cleanup = () => signal.removeEventListener("abort", onAbort)
+		const onAbort = () => {
+			if (settled) return
+			settled = true
+			cleanup()
+			reject(signal.reason)
+		}
+		const settle = (callback: () => void) => {
+			if (settled) return
+			settled = true
+			cleanup()
+			callback()
+		}
+
+		signal.addEventListener("abort", onAbort, { once: true })
+		if (signal.aborted) {
+			onAbort()
+		}
+
+		request.then(
+			(value) => settle(() => resolve(value)),
+			(error) => settle(() => reject(error)),
+		)
+	})
+}
+
 // Helper function to create a refined schema with better error messages
 const createServerTypeSchema = () => {
 	return z.union([
@@ -1707,7 +1749,12 @@ export class McpHub {
 		}
 	}
 
-	async readResource(serverName: string, uri: string, source?: "global" | "project"): Promise<McpResourceResponse> {
+	async readResource(
+		serverName: string,
+		uri: string,
+		source?: "global" | "project",
+		signal?: AbortSignal,
+	): Promise<McpResourceResponse> {
 		const connection = this.findConnection(serverName, source)
 		if (!connection || connection.type !== "connected") {
 			throw new Error(`No connection found for server: ${serverName}${source ? ` with source ${source}` : ""}`)
@@ -1715,14 +1762,19 @@ export class McpHub {
 		if (connection.server.disabled) {
 			throw new Error(`Server "${serverName}" is disabled`)
 		}
-		return await connection.client.request(
-			{
-				method: "resources/read",
-				params: {
-					uri,
-				},
+		signal?.throwIfAborted()
+		const request = {
+			method: "resources/read" as const,
+			params: {
+				uri,
 			},
-			ReadResourceResultSchema,
+		}
+		return await requestWithAbort(
+			() =>
+				signal
+					? connection.client.request(request, ReadResourceResultSchema, { signal })
+					: connection.client.request(request, ReadResourceResultSchema),
+			signal,
 		)
 	}
 
@@ -1731,6 +1783,7 @@ export class McpHub {
 		toolName: string,
 		toolArguments?: Record<string, unknown>,
 		source?: "global" | "project",
+		signal?: AbortSignal,
 	): Promise<McpToolCallResponse> {
 		const connection = this.findConnection(serverName, source)
 		if (!connection || connection.type !== "connected") {
@@ -1751,19 +1804,22 @@ export class McpHub {
 			// Default to 60 seconds if parsing fails
 			timeout = 60 * 1000
 		}
+		signal?.throwIfAborted()
 
-		return await connection.client.request(
-			{
-				method: "tools/call",
-				params: {
-					name: toolName,
-					arguments: toolArguments,
-				},
-			},
-			CallToolResultSchema,
-			{
-				timeout,
-			},
+		return await requestWithAbort(
+			() =>
+				connection.client.request(
+					{
+						method: "tools/call",
+						params: {
+							name: toolName,
+							arguments: toolArguments,
+						},
+					},
+					CallToolResultSchema,
+					signal ? { timeout, signal } : { timeout },
+				),
+			signal,
 		)
 	}
 
