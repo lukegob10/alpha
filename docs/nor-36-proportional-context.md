@@ -99,19 +99,19 @@ Do not shorten the response scripts in a paired run to manufacture savings.
 
 `apps/vscode-e2e/src/suite/proportional-context.test.ts` adds real Task request capture for a conversation-only answer and a
 known-file lookup, three fresh tasks per scenario. It measures system/message/schema bytes and the environment subset,
-requires actual read evidence and visible ordinary-text completion, and leaves provider tokens unavailable. It is compiled
-and statically checked but its host run is pending central integration. It does not change Task or its completion policy.
+requires actual read evidence and visible ordinary-text completion, and leaves provider tokens unavailable. Its central
+candidate run passed all six samples on exact 1.122.1, as recorded below. It does not change Task or its completion policy.
 
-The full NOR-36 acceptance remains **pending**: integrate NOR-33/NOR-37, collect their completion-stage evidence, execute the
-new real-Task fixture, and use comparable task/provider traces to select any remaining call/context intervention. No soft
-effort classification, cross-step evidence cache, lower command cap, or additional prompt policy is justified by the
-measurements above. No live-model quality result or 25% call / 20% input-token achievement is claimed.
+The full NOR-36 acceptance remains **partial**. Candidate real-Task completion and context thresholds passed after shared
+NOR-33/NOR-37 integration. Representative model strategy, the proposed 25% median tool/command reduction, 20% input-token
+reduction, and useful-answer timing remain unproven. No soft effort classification, cross-step evidence cache, lower
+command cap, or additional prompt policy is justified by the measurements. No live-model quality result is claimed.
 
 The [final-stage acceptance protocol](../evals/proportional-scope/completion-acceptance.md) now declares the next real-Task
 comparison before measurement. NOR-37 and central coordination reviewed its fixed conditional provider policy, controlled
 settlement boundaries, three samples per scenario, quality oracle, and one-request candidate threshold. It targets avoided
 runtime recovery requests, with no physical-command, live-model strategy, token, or latency-improvement claim. The separate
-E2E fixture is implemented; paired host runs remain pending. Local E2E typecheck, lint, and CommonJS compilation passed.
+E2E fixture is implemented and its candidate host run passed. Local E2E typecheck, lint, and CommonJS compilation passed.
 
 Pre-host source review found that joining a stuck publication could make cleanup unreachable. The follow-up releases
 controlled barriers, attempts bounded cancellation, restores methods, and independently bounds remaining cleanup awaits.
@@ -124,7 +124,7 @@ completion or performance result. Both request fixtures now acknowledge only tha
 the standard Task UI response method and accept the canonical promoted final-text row. Two additional support tests cover
 the acknowledgment guard, unrelated/recovery asks, settled/cancelled tasks, and response-error propagation (ten total pass).
 The simulated user action has its own counter; provider behavior and settlement schedules remain unchanged. Corrected
-paired host execution is pending central coordination.
+reference and candidate observations are recorded separately below.
 
 The corrected reference attempt exposed a `running` control root after the Task completion event. The source contract
 requires that root to be durably completed; source tracing found the final completion-gate reconciliation can reopen the
@@ -135,8 +135,42 @@ samples remain excluded from equal-quality cost comparisons.
 The final reference host attempt confirmed this after the Task-owned lifecycle join: one attempted sample per scenario,
 each observing two provider requests, one completion event, one UI acknowledgment, and durable settlement of the original
 operation, with the root still `running`. The [protocol evidence table](../evals/proportional-scope/completion-acceptance.md)
-records these failed-quality observations. NOR-37 delivered corrective commit `fc3b25a`; central integration owns the
-remaining correction set and candidate host run. No further reference benchmark is required or planned.
+records these failed-quality observations. NOR-37 delivered corrective commit `fc3b25a` and subsequent admission
+corrections, included in the candidate below. No further reference benchmark is required or planned.
+
+## Candidate host evidence
+
+Central coordination ran both suites on exact VS Code **1.122.1**, using clean integrated source
+`a64816cb917fb32b0ca8baa9834e2f96a1332e1a` and extension bundle SHA-256
+`7aae92b32fa983e6bad113371cfb1411fddecba4510fe2ff1b3c6c0b21f80ceb`.
+Each suite used three fresh Tasks per scenario in its own shared host, configuration `isolated-defaults-v1`, and disabled
+provider prompt caching. The central runner verified that the compiled completion/context fixtures and helper were byte
+identical to the reference copies. Provenance in the reports remains explicitly runner-declared.
+
+| Candidate scenario  | Passing samples | Provider requests per sample | Recovery requests | Model-emitted tools | Physical commands |
+| ------------------- | --------------: | ---------------------------: | ----------------: | ------------------: | ----------------: |
+| Command publication |               3 |                            1 |                 0 |                   0 |                 0 |
+| No-op receipt       |               3 |                            1 |                 0 |                   0 |                 0 |
+| Conversation        |               3 |                            1 |               N/A |                   0 |               N/A |
+| Known-file lookup   |               3 |                            2 |               N/A |       1 `read_file` |               N/A |
+
+All six completion samples met the declared oracle: durable original settlement, completed control root after the
+Task-owned lifecycle join, one completion event, one UI acknowledgment, and no Resume boundary. Each reported
+`candidateCount: 1`, `rejectionCount: 0`, `repairToolCount: 0`, and positive runtime waiting. The command scenario registered
+one controlled terminal-evidence record; it launched no physical verifier. All lookup samples observed the actual scoped
+read result. Conversation and lookup met their existing minimal request bounds; no reference reduction is claimed.
+
+The [completion report](benchmarks/nor-36-completion-candidate-2026-09-05.json) and
+[context report](benchmarks/nor-36-context-candidate-2026-09-05.json) preserve only allowlisted report records. Context answer
+text was omitted from the durable projection. Neither artifact contains raw host logs, prompts, file content, commands,
+task IDs, or user paths. Both retain unavailable provider usage as `null`.
+
+The candidate demonstrates correct bounded completion without model recovery under the fixed provider policy; NOR-37 owns
+the settlement and durable-root intervention. The reference observed two requests but failed durable correctness, so this
+is a failed-quality reference versus passing candidate, **not an equal-quality speed or cost comparison**. Raw timing in
+the completion report is diagnostic under controlled 1,000/1,500 ms delays and host/UI overhead. Three samples do not
+establish stable latency percentiles. Request-byte measurements are not provider tokens or evidence of adaptive model
+strategy. Broader NOR-36 targets remain open; central release/certification gates are reported separately.
 
 ## Validation and handoff
 
@@ -149,7 +183,7 @@ remaining correction set and candidate host run. No further reference benchmark 
   commit; the hook wrapper was disabled only for commit creation because it invokes `npx`, contrary to the pnpm-only
   contract. Its formatting and lint checks were executed explicitly, and original CRLF source bytes were preserved.
 - `pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` built the extension/webview and downloaded exact VS Code 1.122.1,
-  then failed before loading tests because the Windows launch truncated development/test paths at `C:\Users\Luke`.
+  then failed before loading tests because the Windows launch truncated development/test paths at a space in the profile name.
   No runner source was changed. A short-path `node --preserve-symlinks-main` launch subsequently passed `extension.test`
   (two tests) and `modes.test` (two tests) on exact 1.122.1. The remaining LM suite, new context suite, and full required
   gate are delegated to the orchestrator's directory without spaces; further parallel host launches were stopped.

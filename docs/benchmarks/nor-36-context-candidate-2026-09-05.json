@@ -1,0 +1,187 @@
+[
+	{
+		"benchmark": "proportional-context-real-task",
+		"scenario": "conversation",
+		"vscode": "1.122.1",
+		"samples": 3,
+		"provenance": {
+			"provenanceSource": "runner-declared",
+			"sourceRevision": "a64816cb917fb32b0ca8baa9834e2f96a1332e1a",
+			"sourceTreeState": "clean",
+			"sourceDiffSha256": null,
+			"buildSha256": "7aae92b32fa983e6bad113371cfb1411fddecba4510fe2ff1b3c6c0b21f80ceb",
+			"configurationId": "isolated-defaults-v1",
+			"cacheState": {
+				"hostAtSuiteStart": "fresh",
+				"sampling": "fresh tasks in one host shared across scenarios and samples",
+				"providerPromptCache": "disabled"
+			}
+		},
+		"provider": "scripted fake-ai; fixed decisions",
+		"providerTokens": null,
+		"tokenAvailability": "Scripted provider has no measured provider/tokenizer usage",
+		"byteAttribution": "UTF-8 system text, JSON messages/schemas; environment text is a subset of messages",
+		"observations": [
+			{
+				"requests": [
+					{
+						"systemPromptBytes": 15974,
+						"messageJsonBytes": 894,
+						"toolSchemaJsonBytes": 17081,
+						"environmentTextBytes": 695,
+						"environmentBlocks": 1,
+						"environmentDigests": ["91fffda2c35359ab69252d55ea88352bd89f113350ce63fa83c2b15d42e39c38"],
+						"toolResultBlocks": 0
+					}
+				],
+				"emittedToolCalls": [],
+				"evidenceObserved": false,
+				"completionReviewAcknowledgements": 1,
+				"scenarioSampleIndex": 0,
+				"hostSampleIndex": 0
+			},
+			{
+				"requests": [
+					{
+						"systemPromptBytes": 15974,
+						"messageJsonBytes": 894,
+						"toolSchemaJsonBytes": 17081,
+						"environmentTextBytes": 695,
+						"environmentBlocks": 1,
+						"environmentDigests": ["91fffda2c35359ab69252d55ea88352bd89f113350ce63fa83c2b15d42e39c38"],
+						"toolResultBlocks": 0
+					}
+				],
+				"emittedToolCalls": [],
+				"evidenceObserved": false,
+				"completionReviewAcknowledgements": 1,
+				"scenarioSampleIndex": 1,
+				"hostSampleIndex": 1
+			},
+			{
+				"requests": [
+					{
+						"systemPromptBytes": 15974,
+						"messageJsonBytes": 894,
+						"toolSchemaJsonBytes": 17081,
+						"environmentTextBytes": 695,
+						"environmentBlocks": 1,
+						"environmentDigests": ["91fffda2c35359ab69252d55ea88352bd89f113350ce63fa83c2b15d42e39c38"],
+						"toolResultBlocks": 0
+					}
+				],
+				"emittedToolCalls": [],
+				"evidenceObserved": false,
+				"completionReviewAcknowledgements": 1,
+				"scenarioSampleIndex": 2,
+				"hostSampleIndex": 2
+			}
+		]
+	},
+	{
+		"benchmark": "proportional-context-real-task",
+		"scenario": "known-file-lookup",
+		"vscode": "1.122.1",
+		"samples": 3,
+		"provenance": {
+			"provenanceSource": "runner-declared",
+			"sourceRevision": "a64816cb917fb32b0ca8baa9834e2f96a1332e1a",
+			"sourceTreeState": "clean",
+			"sourceDiffSha256": null,
+			"buildSha256": "7aae92b32fa983e6bad113371cfb1411fddecba4510fe2ff1b3c6c0b21f80ceb",
+			"configurationId": "isolated-defaults-v1",
+			"cacheState": {
+				"hostAtSuiteStart": "fresh",
+				"sampling": "fresh tasks in one host shared across scenarios and samples",
+				"providerPromptCache": "disabled"
+			}
+		},
+		"provider": "scripted fake-ai; fixed decisions",
+		"providerTokens": null,
+		"tokenAvailability": "Scripted provider has no measured provider/tokenizer usage",
+		"byteAttribution": "UTF-8 system text, JSON messages/schemas; environment text is a subset of messages",
+		"observations": [
+			{
+				"requests": [
+					{
+						"systemPromptBytes": 15974,
+						"messageJsonBytes": 914,
+						"toolSchemaJsonBytes": 17081,
+						"environmentTextBytes": 695,
+						"environmentBlocks": 1,
+						"environmentDigests": ["91fffda2c35359ab69252d55ea88352bd89f113350ce63fa83c2b15d42e39c38"],
+						"toolResultBlocks": 0
+					},
+					{
+						"systemPromptBytes": 15974,
+						"messageJsonBytes": 1450,
+						"toolSchemaJsonBytes": 17081,
+						"environmentTextBytes": 695,
+						"environmentBlocks": 1,
+						"environmentDigests": ["91fffda2c35359ab69252d55ea88352bd89f113350ce63fa83c2b15d42e39c38"],
+						"toolResultBlocks": 1
+					}
+				],
+				"emittedToolCalls": ["read_file"],
+				"evidenceObserved": true,
+				"completionReviewAcknowledgements": 1,
+				"scenarioSampleIndex": 0,
+				"hostSampleIndex": 3
+			},
+			{
+				"requests": [
+					{
+						"systemPromptBytes": 15974,
+						"messageJsonBytes": 914,
+						"toolSchemaJsonBytes": 17081,
+						"environmentTextBytes": 695,
+						"environmentBlocks": 1,
+						"environmentDigests": ["91fffda2c35359ab69252d55ea88352bd89f113350ce63fa83c2b15d42e39c38"],
+						"toolResultBlocks": 0
+					},
+					{
+						"systemPromptBytes": 15974,
+						"messageJsonBytes": 1450,
+						"toolSchemaJsonBytes": 17081,
+						"environmentTextBytes": 695,
+						"environmentBlocks": 1,
+						"environmentDigests": ["91fffda2c35359ab69252d55ea88352bd89f113350ce63fa83c2b15d42e39c38"],
+						"toolResultBlocks": 1
+					}
+				],
+				"emittedToolCalls": ["read_file"],
+				"evidenceObserved": true,
+				"completionReviewAcknowledgements": 1,
+				"scenarioSampleIndex": 1,
+				"hostSampleIndex": 4
+			},
+			{
+				"requests": [
+					{
+						"systemPromptBytes": 15974,
+						"messageJsonBytes": 914,
+						"toolSchemaJsonBytes": 17081,
+						"environmentTextBytes": 695,
+						"environmentBlocks": 1,
+						"environmentDigests": ["91fffda2c35359ab69252d55ea88352bd89f113350ce63fa83c2b15d42e39c38"],
+						"toolResultBlocks": 0
+					},
+					{
+						"systemPromptBytes": 15974,
+						"messageJsonBytes": 1450,
+						"toolSchemaJsonBytes": 17081,
+						"environmentTextBytes": 695,
+						"environmentBlocks": 1,
+						"environmentDigests": ["91fffda2c35359ab69252d55ea88352bd89f113350ce63fa83c2b15d42e39c38"],
+						"toolResultBlocks": 1
+					}
+				],
+				"emittedToolCalls": ["read_file"],
+				"evidenceObserved": true,
+				"completionReviewAcknowledgements": 1,
+				"scenarioSampleIndex": 2,
+				"hostSampleIndex": 5
+			}
+		]
+	}
+]

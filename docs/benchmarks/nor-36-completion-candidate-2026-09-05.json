@@ -1,0 +1,240 @@
+[
+	{
+		"benchmark": "proportional-completion-real-task",
+		"scenario": "command-publication",
+		"expectation": "candidate",
+		"provenance": {
+			"provenanceSource": "runner-declared",
+			"sourceRevision": "a64816cb917fb32b0ca8baa9834e2f96a1332e1a",
+			"sourceTreeState": "clean",
+			"sourceDiffSha256": null,
+			"buildSha256": "7aae92b32fa983e6bad113371cfb1411fddecba4510fe2ff1b3c6c0b21f80ceb",
+			"configurationId": "isolated-defaults-v1",
+			"cacheState": {
+				"hostAtSuiteStart": "fresh",
+				"sampling": "fresh tasks in one host shared across scenarios and samples",
+				"providerPromptCache": "disabled"
+			}
+		},
+		"fixtureDigest": "bd251c5348d3a4cc1e489fd59dacb9f6f66ea3cc7dcdf5606b7a446a37d2570a",
+		"policyDigest": "2a8f50b3d44b8a0ceb040361371c36c726f2a91b7b6705225434e0b2b7f66ba4",
+		"provider": "scripted fake-ai; fixed conditional policy",
+		"providerTokens": null,
+		"tokenAvailability": "No measured provider usage; Task usage snapshots are not token evidence",
+		"timing": "diagnostic host time with controlled 1000/1500 ms waits; no latency improvement claim",
+		"observations": [
+			{
+				"scenarioSampleIndex": 0,
+				"hostSampleIndex": 0,
+				"quality": "passed",
+				"outcome": "completed",
+				"requests": [
+					{
+						"systemPromptBytes": 15974,
+						"messageJsonBytes": 997,
+						"toolSchemaJsonBytes": 17081,
+						"assistantTextBytes": 40
+					}
+				],
+				"modelRequests": 1,
+				"recoveryRequests": 0,
+				"emittedToolCalls": 0,
+				"physicalCommandLaunches": 0,
+				"commandEvidenceRegistrations": 1,
+				"completionEvents": 1,
+				"completionReviewAcknowledgements": 1,
+				"firstGateToCompletedMs": 3785,
+				"completionStage": {
+					"candidateCount": 1,
+					"rejectionCount": 0,
+					"repairToolCount": 0,
+					"runtimeWaitMs": 1566,
+					"firstCandidateAt": 1788588917711,
+					"persistenceSettledAt": 1788588921469,
+					"completedAt": 1788588921497
+				}
+			},
+			{
+				"scenarioSampleIndex": 1,
+				"hostSampleIndex": 1,
+				"quality": "passed",
+				"outcome": "completed",
+				"requests": [
+					{
+						"systemPromptBytes": 15974,
+						"messageJsonBytes": 997,
+						"toolSchemaJsonBytes": 17081,
+						"assistantTextBytes": 40
+					}
+				],
+				"modelRequests": 1,
+				"recoveryRequests": 0,
+				"emittedToolCalls": 0,
+				"physicalCommandLaunches": 0,
+				"commandEvidenceRegistrations": 1,
+				"completionEvents": 1,
+				"completionReviewAcknowledgements": 1,
+				"firstGateToCompletedMs": 3876,
+				"completionStage": {
+					"candidateCount": 1,
+					"rejectionCount": 0,
+					"repairToolCount": 0,
+					"runtimeWaitMs": 1556,
+					"firstCandidateAt": 1788588922233,
+					"persistenceSettledAt": 1788588926078,
+					"completedAt": 1788588926109
+				}
+			},
+			{
+				"scenarioSampleIndex": 2,
+				"hostSampleIndex": 2,
+				"quality": "passed",
+				"outcome": "completed",
+				"requests": [
+					{
+						"systemPromptBytes": 15974,
+						"messageJsonBytes": 997,
+						"toolSchemaJsonBytes": 17081,
+						"assistantTextBytes": 40
+					}
+				],
+				"modelRequests": 1,
+				"recoveryRequests": 0,
+				"emittedToolCalls": 0,
+				"physicalCommandLaunches": 0,
+				"commandEvidenceRegistrations": 1,
+				"completionEvents": 1,
+				"completionReviewAcknowledgements": 1,
+				"firstGateToCompletedMs": 3883,
+				"completionStage": {
+					"candidateCount": 1,
+					"rejectionCount": 0,
+					"repairToolCount": 0,
+					"runtimeWaitMs": 1558,
+					"firstCandidateAt": 1788588926814,
+					"persistenceSettledAt": 1788588930665,
+					"completedAt": 1788588930698
+				}
+			}
+		]
+	},
+	{
+		"benchmark": "proportional-completion-real-task",
+		"scenario": "no-op-receipt",
+		"expectation": "candidate",
+		"provenance": {
+			"provenanceSource": "runner-declared",
+			"sourceRevision": "a64816cb917fb32b0ca8baa9834e2f96a1332e1a",
+			"sourceTreeState": "clean",
+			"sourceDiffSha256": null,
+			"buildSha256": "7aae92b32fa983e6bad113371cfb1411fddecba4510fe2ff1b3c6c0b21f80ceb",
+			"configurationId": "isolated-defaults-v1",
+			"cacheState": {
+				"hostAtSuiteStart": "fresh",
+				"sampling": "fresh tasks in one host shared across scenarios and samples",
+				"providerPromptCache": "disabled"
+			}
+		},
+		"fixtureDigest": "bd251c5348d3a4cc1e489fd59dacb9f6f66ea3cc7dcdf5606b7a446a37d2570a",
+		"policyDigest": "2a8f50b3d44b8a0ceb040361371c36c726f2a91b7b6705225434e0b2b7f66ba4",
+		"provider": "scripted fake-ai; fixed conditional policy",
+		"providerTokens": null,
+		"tokenAvailability": "No measured provider usage; Task usage snapshots are not token evidence",
+		"timing": "diagnostic host time with controlled 1000/1500 ms waits; no latency improvement claim",
+		"observations": [
+			{
+				"scenarioSampleIndex": 0,
+				"hostSampleIndex": 3,
+				"quality": "passed",
+				"outcome": "completed",
+				"requests": [
+					{
+						"systemPromptBytes": 15974,
+						"messageJsonBytes": 997,
+						"toolSchemaJsonBytes": 17081,
+						"assistantTextBytes": 40
+					}
+				],
+				"modelRequests": 1,
+				"recoveryRequests": 0,
+				"emittedToolCalls": 0,
+				"physicalCommandLaunches": 0,
+				"commandEvidenceRegistrations": 0,
+				"completionEvents": 1,
+				"completionReviewAcknowledgements": 1,
+				"firstGateToCompletedMs": 3538,
+				"completionStage": {
+					"candidateCount": 1,
+					"rejectionCount": 0,
+					"repairToolCount": 0,
+					"runtimeWaitMs": 1145,
+					"firstCandidateAt": 1788588931405,
+					"persistenceSettledAt": 1788588934949,
+					"completedAt": 1788588934968
+				}
+			},
+			{
+				"scenarioSampleIndex": 1,
+				"hostSampleIndex": 4,
+				"quality": "passed",
+				"outcome": "completed",
+				"requests": [
+					{
+						"systemPromptBytes": 15974,
+						"messageJsonBytes": 997,
+						"toolSchemaJsonBytes": 17081,
+						"assistantTextBytes": 40
+					}
+				],
+				"modelRequests": 1,
+				"recoveryRequests": 0,
+				"emittedToolCalls": 0,
+				"physicalCommandLaunches": 0,
+				"commandEvidenceRegistrations": 0,
+				"completionEvents": 1,
+				"completionReviewAcknowledgements": 1,
+				"firstGateToCompletedMs": 3526,
+				"completionStage": {
+					"candidateCount": 1,
+					"rejectionCount": 0,
+					"repairToolCount": 0,
+					"runtimeWaitMs": 1147,
+					"firstCandidateAt": 1788588935690,
+					"persistenceSettledAt": 1788588939219,
+					"completedAt": 1788588939239
+				}
+			},
+			{
+				"scenarioSampleIndex": 2,
+				"hostSampleIndex": 5,
+				"quality": "passed",
+				"outcome": "completed",
+				"requests": [
+					{
+						"systemPromptBytes": 15974,
+						"messageJsonBytes": 997,
+						"toolSchemaJsonBytes": 17081,
+						"assistantTextBytes": 40
+					}
+				],
+				"modelRequests": 1,
+				"recoveryRequests": 0,
+				"emittedToolCalls": 0,
+				"physicalCommandLaunches": 0,
+				"commandEvidenceRegistrations": 0,
+				"completionEvents": 1,
+				"completionReviewAcknowledgements": 1,
+				"firstGateToCompletedMs": 3549,
+				"completionStage": {
+					"candidateCount": 1,
+					"rejectionCount": 0,
+					"repairToolCount": 0,
+					"runtimeWaitMs": 1143,
+					"firstCandidateAt": 1788588939960,
+					"persistenceSettledAt": 1788588943509,
+					"completedAt": 1788588943529
+				}
+			}
+		]
+	}
+]
