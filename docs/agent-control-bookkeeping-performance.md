@@ -56,6 +56,10 @@ The target uses the transaction **callback body's p95**, reported as `body.p95`,
 diagnostic. The 25% reduction must pass separately for both large-state process counts. The small-state guard compares
 the total reserve/settle cycle p95 and fails only when the increase exceeds both 10% and 2 ms. Any command, acquisition,
 release or cleanup failure invalidates acceptance; zero body times for rejected acquisitions cannot improve its score.
+Both revisions include the same reviewed lock wakeups and bounded Windows replacement retries. Replacement retries
+retain the closed temporary file and transaction lock, fence every rename attempt, and do not rerun the transaction
+body. Their backoff is included in callback-body and full lock-hold measurements. Diagnostic `attempts` counts lock
+acquisition attempts only; a successful transaction does not prove there were zero recovered OS replacement failures.
 
 Compare frozen reports with:
 
