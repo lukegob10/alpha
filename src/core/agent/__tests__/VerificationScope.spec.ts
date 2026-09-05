@@ -614,7 +614,7 @@ describe("verification scope observations", () => {
 		})
 	})
 
-	it("refuses unbounded non-Git trees, symlink traversal, and observation-kind changes", async () => {
+	it("refuses unbounded non-Git trees and symlinks while accepting content-preserving initialization", async () => {
 		await fs.symlink(outside, path.join(root, "escape"), "junction")
 		await expect(captureWorkspaceMutationState(root)).rejects.toThrow("symlinks")
 		await fs.unlink(path.join(root, "escape"))
@@ -622,7 +622,7 @@ describe("verification scope observations", () => {
 		await git(["init", "--quiet"])
 		const after = await captureWorkspaceMutationState(root)
 		expect(after.kind).toBe("git")
-		await expect(compareWorkspaceMutationState(root, before, after)).rejects.toThrow("observation changed")
+		expect(await compareWorkspaceMutationState(root, before, after)).toEqual({ changedPaths: [], files: {} })
 		for (let index = 0; index < 257; index++) await fs.writeFile(path.join(outside, `${index}.ts`), "")
 		await expect(captureWorkspaceMutationState(outside)).rejects.toThrow("file bound")
 	})

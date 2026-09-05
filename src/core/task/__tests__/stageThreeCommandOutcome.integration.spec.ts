@@ -441,6 +441,55 @@ function resultIds(harness: TaskHarness): string[] {
 
 describe("Stage Three command outcome integration", () => {
 	it.each([false, true])(
+		"settles repository initialization without suspending the task (background: %s)",
+		async (background) => {
+			await withTaskHarness(async (harness) => {
+				const events: AgentTurnEvent[] = []
+				const terminal = controlledTerminal(harness.workspacePath)
+				installTerminal(terminal)
+				const settled = completionGate()
+				const complete = harness.task.completeCommandExecution.bind(harness.task)
+				vi.spyOn(harness.task, "completeCommandExecution").mockImplementation((...args) => {
+					complete(...args)
+					settled.resolve()
+				})
+				const suspend = vi
+					.spyOn(harness.task, "suspendAfterCurrentTurn")
+					.mockImplementation(() => settled.resolve())
+				const run = createScheduler(harness, events).run(response("git-init", "git init -b main"))
+				await terminal.runStarted.promise
+				if (background) {
+					terminal.processForTest!.continue()
+					await run
+				}
+				await promisify(execFile)("git", ["init", "-b", "main"], {
+					cwd: harness.workspacePath,
+					windowsHide: true,
+				})
+				await terminal.processForTest!.complete({ exitCode: 0 })
+				await settled.promise
+				const outcome = await run
+
+				const reservation = harness.provider.reservePrimaryMutation.mock.calls[0]?.[1]
+				expect(reservation).toEqual(expect.any(String))
+				expect(suspend).not.toHaveBeenCalled()
+				expect(harness.provider.recordPrimaryMutation).not.toHaveBeenCalled()
+				expect(harness.provider.releasePrimaryMutation).toHaveBeenCalledExactlyOnceWith(
+					harness.task,
+					reservation,
+				)
+				expect(harness.task.getCommandExecutionEvidence()).toEqual([
+					expect.objectContaining({ toolCallId: "git-init", status: "succeeded", exitCode: 0 }),
+				])
+				expect(outcome.results).toHaveLength(1)
+				expect(outcome.results[0]).toMatchObject({ callId: "git-init", status: "success" })
+				expect(toolResultEvents(events)).toHaveLength(1)
+				expect(resultIds(harness)).toEqual(["git-init"])
+			})
+		},
+	)
+
+	it.each([false, true])(
 		"settles a Git commit without unobserved mutation debt (background: %s)",
 		async (background) => {
 			await withTaskHarness(async (harness) => {

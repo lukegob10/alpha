@@ -819,7 +819,30 @@ export interface GitMutationState {
 	digest: string
 }
 
-export type WorkspaceMutationState = GitMutationState & { kind: "git" | "files" }
+interface WorkspaceIdentity {
+	root: string
+	device: number
+	inode: number
+}
+
+/** Ephemeral command evidence; never reconstructed from saved verification obligations. */
+export type WorkspaceMutationState = GitMutationState & {
+	kind: "git" | "files"
+	workspace: WorkspaceIdentity
+}
+
+async function workspaceIdentity(workspaceRoot: string): Promise<WorkspaceIdentity> {
+	const root = await fs.realpath(workspaceRoot)
+	const stat = await fs.stat(root)
+	if (!stat.isDirectory()) throw new VerificationScopeError("Workspace observation requires a directory")
+	return { root, device: stat.dev, inode: stat.ino }
+}
+
+function assertWorkspaceIdentity(expected: WorkspaceIdentity, actual: WorkspaceIdentity): void {
+	if (expected.root !== actual.root || expected.device !== actual.device || expected.inode !== actual.inode) {
+		throw new VerificationScopeError("Workspace identity changed during command observation")
+	}
+}
 
 async function gitObservation(cwd: string, args: string[]): Promise<string> {
 	const { stdout } = await execFileAsync(
@@ -899,6 +922,9 @@ export async function compareGitMutationState(
 		...new Set([...Object.keys(before.files), ...Object.keys(after.files), ...committedPaths]),
 	])
 	const refreshed = await captureVerificationContent(workspaceRoot, candidates)
+	if (Object.keys(after.files).some((candidate) => after.files[candidate] !== refreshed[candidate])) {
+		throw new VerificationScopeError("Workspace content changed while comparing command changes")
+	}
 	if ((await readGitHead(workspaceRoot)) !== after.head) {
 		throw new VerificationScopeError("Git HEAD changed while comparing command changes")
 	}
@@ -943,23 +969,64 @@ async function workspaceFilePaths(root: string): Promise<string[]> {
 	return files.sort()
 }
 
-/** Non-Git workspaces use a full bounded snapshot; unobserved shell writes must not silently pass. */
-export async function captureWorkspaceMutationState(workspaceRoot: string): Promise<WorkspaceMutationState> {
-	const root = await fs.realpath(workspaceRoot)
-	let hasGitDirectory = true
+async function workspaceObservationKind(root: string): Promise<WorkspaceMutationState["kind"]> {
 	try {
-		await fs.lstat(path.join(root, ".git"))
+		const stat = await fs.lstat(path.join(root, ".git"))
+		if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) {
+			throw new VerificationScopeError(
+				"Workspace observation cannot follow Git metadata symlinks or special files",
+			)
+		}
+		return "git"
 	} catch (error) {
 		if (!isMissing(error)) throw error
-		hasGitDirectory = false
+		return "files"
 	}
-	if (hasGitDirectory) return { ...(await captureGitMutationState(root)), kind: "git" }
+}
+
+async function captureWorkspaceFiles(root: string): Promise<GitMutationState> {
 	const paths = await workspaceFilePaths(root)
 	const files = await captureVerificationContent(root, paths)
-	if (JSON.stringify(paths) !== JSON.stringify(await workspaceFilePaths(root))) {
+	// The per-file reader fences individual reads; repeat the bounded inventory and
+	// bytes to also detect changes to earlier files while later ones were captured.
+	const refreshed = await captureVerificationContent(root, paths)
+	if (
+		JSON.stringify(files) !== JSON.stringify(refreshed) ||
+		JSON.stringify(paths) !== JSON.stringify(await workspaceFilePaths(root))
+	) {
 		throw new VerificationScopeError("Workspace files changed while observing command changes")
 	}
-	return { kind: "files", head: null, files, digest: fingerprintContent(JSON.stringify(files)) }
+	return { head: null, files, digest: fingerprintContent(JSON.stringify(files)) }
+}
+
+/**
+ * Keep a complete baseline's content scope through repository initialization.
+ * Switching to Git status would lose committed or newly ignored final bytes.
+ * Ordinary Git commands retain their bounded Git-visible observation strategy.
+ */
+export async function captureWorkspaceMutationState(
+	workspaceRoot: string,
+	baseline?: WorkspaceMutationState,
+): Promise<WorkspaceMutationState> {
+	const workspace = await workspaceIdentity(workspaceRoot)
+	if (baseline) assertWorkspaceIdentity(baseline.workspace, workspace)
+	const observedKind = await workspaceObservationKind(workspace.root)
+	const kind = baseline?.kind === "files" ? "files" : observedKind
+	const state =
+		kind === "git" ? await captureGitMutationState(workspace.root) : await captureWorkspaceFiles(workspace.root)
+	const finalKind = await workspaceObservationKind(workspace.root)
+	if (baseline?.kind !== "files" && observedKind !== finalKind) {
+		throw new VerificationScopeError("Workspace observation changed while capturing command changes")
+	}
+	assertWorkspaceIdentity(workspace, await workspaceIdentity(workspaceRoot))
+	return { ...state, kind, workspace }
+}
+
+function assertWorkspaceObservation(expected: WorkspaceMutationState, actual: WorkspaceMutationState): void {
+	assertWorkspaceIdentity(expected.workspace, actual.workspace)
+	if (expected.kind !== actual.kind || expected.digest !== actual.digest) {
+		throw new VerificationScopeError("Workspace observation changed while comparing command changes")
+	}
 }
 
 export async function compareWorkspaceMutationState(
@@ -967,14 +1034,34 @@ export async function compareWorkspaceMutationState(
 	before: WorkspaceMutationState,
 	after: WorkspaceMutationState,
 ): Promise<{ changedPaths: string[]; files: VerificationContent }> {
-	if (before.kind !== after.kind)
-		throw new VerificationScopeError("Workspace observation changed during command execution")
-	if (before.kind === "git") return compareGitMutationState(workspaceRoot, before, after)
-	const candidates = boundedPaths([...new Set([...Object.keys(before.files), ...Object.keys(after.files)])])
-	const refreshed = await captureVerificationContent(workspaceRoot, candidates)
-	const changedPaths = candidates.filter((candidate) => before.files[candidate] !== refreshed[candidate])
+	assertWorkspaceIdentity(before.workspace, after.workspace)
+	assertWorkspaceIdentity(before.workspace, await workspaceIdentity(workspaceRoot))
+	if (before.kind === "git") {
+		if (after.kind !== "git") {
+			throw new VerificationScopeError(
+				"Repository metadata became unavailable; the Git baseline has incomplete content scope",
+			)
+		}
+		const changes = await compareGitMutationState(workspaceRoot, before, after)
+		assertWorkspaceObservation(after, await captureWorkspaceMutationState(workspaceRoot, after))
+		return changes
+	}
+	const current = await captureWorkspaceMutationState(workspaceRoot, before)
+	if (after.kind === "files") {
+		assertWorkspaceObservation(after, current)
+	} else {
+		// Compatibility for independently captured snapshots: the complete baseline
+		// can still be compared with a bounded full inventory at comparison time.
+		// Command finalizers pass the baseline to capture so final ignored bytes are
+		// already frozen and checked by the files branch above.
+		assertWorkspaceObservation(after, await captureWorkspaceMutationState(workspaceRoot))
+	}
+	const candidates = boundedPaths([...new Set([...Object.keys(before.files), ...Object.keys(current.files)])])
+	const changedPaths = candidates.filter(
+		(candidate) => (before.files[candidate] ?? "missing") !== (current.files[candidate] ?? "missing"),
+	)
 	return {
 		changedPaths,
-		files: Object.fromEntries(changedPaths.map((candidate) => [candidate, refreshed[candidate]])),
+		files: Object.fromEntries(changedPaths.map((candidate) => [candidate, current.files[candidate] ?? "missing"])),
 	}
 }

@@ -95,7 +95,7 @@ async function finalizeCommandMutationReceipt(
 
 	let after: WorkspaceMutationState
 	try {
-		after = await captureWorkspaceMutationState(task.cwd)
+		after = await captureWorkspaceMutationState(task.cwd, mutationBaseline)
 	} catch (error) {
 		throw new CommandMutationReceiptError("capture-final-state", true, error)
 	}
