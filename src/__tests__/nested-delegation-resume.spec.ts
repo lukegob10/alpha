@@ -192,7 +192,9 @@ describe("Nested delegation resume (A → B → C)", () => {
 			emitFinalTokenUsageUpdate: vi.fn(),
 			finalizeTaskCompletion: vi.fn(),
 			abort: false,
+			recordCompletionCandidate: vi.fn(),
 			getCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
+			waitForCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
 			messageQueueService: {
 				isEmpty: vi.fn(() => true),
 				on: vi.fn(),
@@ -259,7 +261,9 @@ describe("Nested delegation resume (A → B → C)", () => {
 			emitFinalTokenUsageUpdate: vi.fn(),
 			finalizeTaskCompletion: vi.fn(),
 			abort: false,
+			recordCompletionCandidate: vi.fn(),
 			getCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
+			waitForCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
 			messageQueueService: {
 				isEmpty: vi.fn(() => true),
 				on: vi.fn(),
