@@ -90,12 +90,18 @@ export function buildReport(input) {
 		const requests = events.filter(({ type }) => type === "agent.turn.model_request_started")
 		const assistants = events.filter(({ type }) => type === "agent.turn.assistant_committed")
 		const usages = events.filter(({ type }) => type === "agent.turn.request_usage")
-		const requestIndexes = usages
-			.map((event) => record(event.payload).requestIndex)
-			.filter((index) => index !== undefined)
-		const duplicateUsage =
-			new Set(requestIndexes).size !== requestIndexes.length ||
-			requestIndexes.some((index) => !finiteCount(index))
+		// The canonical start event has no request identity. Only a trusted observer
+		// can supply its mapping; equal row counts cannot establish usage coverage.
+		const requestIndexes = requests.map((event) => annotations.get(event.sequence)?.requestIndex)
+		const usageIndexes = usages.map((event) => record(event.payload).requestIndex)
+		const requestIdentities = new Set(requestIndexes)
+		const matchedUsage =
+			requestIndexes.every(finiteCount) &&
+			usageIndexes.every(finiteCount) &&
+			requestIdentities.size === requests.length &&
+			new Set(usageIndexes).size === usages.length &&
+			requests.length === usages.length &&
+			usageIndexes.every((index) => requestIdentities.has(index))
 		const categoryCounts = Object.fromEntries(categories.map((category) => [category, 0]))
 		let bytes = 0
 		let missingOutput = false
@@ -122,11 +128,7 @@ export function buildReport(input) {
 			}
 		}
 		const usageMetric = (field) => {
-			if (
-				duplicateUsage ||
-				usages.length !== requests.length ||
-				usages.some((event) => !finiteCount(record(event.payload)[field]))
-			) {
+			if (!matchedUsage || usages.some((event) => !finiteCount(record(event.payload)[field]))) {
 				return unavailable("Request usage does not cover every observed model request")
 			}
 			return count(
@@ -149,7 +151,13 @@ export function buildReport(input) {
 							metricCoverage,
 						),
 			toolResults: count(tools.length, metricCoverage),
-			commandCount: count(categoryCounts.terminal + categoryCounts.validation, metricCoverage),
+			commandCount: count(
+				tools.filter((event) => {
+					const payload = record(event.payload)
+					return (payload.name ?? payload.tool) === "execute_command"
+				}).length,
+				metricCoverage,
+			),
 			pollingToolResults: tools.some((event) => annotations.get(event.sequence)?.purpose === undefined)
 				? unavailable("Tool-purpose attribution is incomplete")
 				: count(

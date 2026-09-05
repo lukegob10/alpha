@@ -53,6 +53,10 @@ An observation document contains:
 - Optional `annotations`, keyed by unique trace `sequence`, with `phase` (`discovery`, `implementation`, `validation`,
   `finalization`, or `unattributed`). A phase comes from an observer; tool names never determine a phase. Unknown attribution
   remains in the `unattributed` bucket, and incomplete phase coverage is marked `observed`.
+- To attribute request usage, every `model_request_started` row needs an observer-supplied annotation `requestIndex`
+  matching the corresponding usage row's `payload.requestIndex`. Both identities must be nonnegative safe integers, unique
+  within the reported group, and match one-to-one. The canonical start event lacks this identity; never invent it from
+  sequence numbers, row counts, or delivery order. Missing or invalid identities leave usage unavailable.
 - Optional tool `category` (`read`, `search`, `mutation`, `validation`, `terminal`, `delegation`, or `other`) and orthogonal
   `purpose` (`ordinary`, `polling`, or `recovery`). Shell execution alone does not prove validation, polling, or recovery.
 - Optional tool `fingerprint`: a 64-character lowercase keyed digest of the operation semantics and relevant content
@@ -67,13 +71,54 @@ An observation document contains:
 `observedTotal` and all phase buckets expose model calls, terminal tool-result counts, categorized tool counts, command
 counts, polling/recovery counts, tool-output bytes, committed assistant-text bytes, repetitions, validation reruns, and
 completed compactions. Counts of `verification_result` are not added to tool counts because the same execution already
-emits `tool_result`. Output sizes count UTF-8 bytes of the observed tool output or committed visible assistant text; raw
-bytes are not retained. Repetition counts within a phase are local to that phase; total repetitions also detect matches
+emits `tool_result`. Command counts depend only on canonical `execute_command` identity (`payload.name`, falling back to
+`payload.tool`), independently of phase, category, and purpose. A discovery command categorized as a read still counts as a
+command; a noncommand validation tool does not. Output sizes count UTF-8 bytes of the observed tool output or committed
+visible assistant text; raw bytes are not retained. Repetition counts within a phase are local to that phase; total repetitions also detect matches
 across phases and therefore need not equal the sum of the phase repetition counts.
 
-Per-phase token metrics require canonical `request_usage` records covering each observed model request. Duplicate supplied
-request indexes invalidate usage coverage. Aggregate usage is retained separately, never distributed across phases by
-heuristic. Canonical request usage currently has no cache-write field, so phase cache writes remain unavailable. Exclusive
+Per-phase token metrics require canonical `request_usage` records matched by explicit request identity to each observed
+model request in that phase. Missing, invalid, duplicate, or mismatched request/usage indexes invalidate usage coverage.
+Complete empty groups retain zero input/output/cache-read usage. Aggregate usage is retained separately, never distributed
+across phases by heuristic. Canonical request usage currently has no cache-write field, so phase cache writes remain unavailable. Exclusive
 phase wall time also remains unavailable without an interval observer. Scripted fixture runs have no model usage records,
 so their input/cache/output token costs are explicitly unavailable. A metric with `coverage: observed` is a partial
 observation, not a complete task total; `coverage: unavailable` always has `value: null` and a reason.
+
+## Real Task request capture provenance
+
+The separate `apps/vscode-e2e/src/suite/proportional-context.test.ts` fixture requires the runner to supply
+`ALPHA_SCOPE_RUN_METADATA` as JSON before launching the host. It contains `sourceRevision` (40-character Git commit),
+`sourceTreeState` (`clean` or `modified`), `buildSha256` (SHA-256 of the **loaded extension's `dist/extension.js`**),
+`configurationId` (a nonsecret label identifying the recorded initial profile and fixture overrides), and
+`hostAtSuiteStart` (`fresh` or `reused`). For a modified source tree it additionally requires `sourceDiffSha256` covering
+the full source delta, including untracked files. Prefer committing every measured source file and using a clean tree.
+Do not mistake the current checkout commit for proof that it produced the loaded bundle: these fields are explicitly
+runner declarations, and the runner must associate the build artifact with its source revision.
+
+After building and compiling from the clean integration checkout, an example PowerShell setup is:
+
+```powershell
+if (git status --porcelain) { throw 'Use a clean measured checkout or supply a complete source delta digest.' }
+$env:ALPHA_SCOPE_RUN_METADATA = @{
+    sourceRevision = (git rev-parse HEAD).Trim()
+    sourceTreeState = 'clean'
+    buildSha256 = (Get-FileHash -LiteralPath src/dist/extension.js -Algorithm SHA256).Hash.ToLowerInvariant()
+    configurationId = 'isolated-defaults-v1'
+    hostAtSuiteStart = 'fresh'
+} | ConvertTo-Json -Compress
+```
+
+Use the same configuration label only while the externally recorded profile/overrides are unchanged. Never pass the
+credential-bearing settings object as provenance. The report allowlists the declared fields and rejects missing or
+invalid identities. Run the targeted host fixture centrally with `--file proportional-context.test`; no host run is
+performed by the support tests below.
+
+Three new Tasks per scenario share one host across both scenarios. Reports include scenario and host sample ordinals and
+state that provider prompt caching is disabled. They do not describe three cold-host runs. `emittedToolCalls` records
+provider-emitted calls; observed terminal tool results and actual read evidence are checked separately. A successful
+measurement is printed only after task disposal, cache eviction, configuration restoration, and fixture unlink complete.
+
+```sh
+pnpm exec tsx --test scripts/evals/proportional-context-support.test.ts
+```

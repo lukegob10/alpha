@@ -32,7 +32,7 @@ test("attributes all four phases without inferring phase from tool names", () =>
 		event(2, "tool_result", { name: "edit_file", output: "ok" }),
 		event(3, "tool_result", { name: "execute_command", output: "pass" }),
 		event(4, "model_request_started"),
-		event(5, "request_usage", { inputTokens: 12, outputTokens: 3, cacheReadTokens: 4 }),
+		event(5, "request_usage", { requestIndex: 42, inputTokens: 12, outputTokens: 3, cacheReadTokens: 4 }),
 	]
 	const report = buildReport(
 		input({
@@ -41,7 +41,7 @@ test("attributes all four phases without inferring phase from tool names", () =>
 				{ sequence: 1, phase: "discovery" },
 				{ sequence: 2, phase: "implementation" },
 				{ sequence: 3, phase: "validation", category: "validation" },
-				{ sequence: 4, phase: "finalization" },
+				{ sequence: 4, phase: "finalization", requestIndex: 42 },
 				{ sequence: 5, phase: "finalization" },
 			],
 		}),
@@ -142,6 +142,69 @@ test("duplicate request indexes cannot replace missing usage", () => {
 	assert.equal(report.observedTotal.tokensIn.value, null)
 })
 
+for (const [label, requestIndexes, usageIndexes] of [
+	["missing request identity", [undefined, 1], [0, 1]],
+	["missing usage identity", [0, 1], [undefined, 1]],
+	["duplicate request identity", [0, 0], [0, 1]],
+	["duplicate usage identity", [0, 1], [0, 0]],
+	["mismatched request identity", [0, 1], [0, 2]],
+	["string request identity", ["0", 1], [0, 1]],
+	["negative usage identity", [0, 1], [-1, 1]],
+]) {
+	test(`does not claim usage coverage with ${label}`, () => {
+		const trace = [
+			...requestIndexes.map((_, index) => event(index + 1, "model_request_started")),
+			...usageIndexes.map((requestIndex, index) =>
+				event(index + 3, "request_usage", {
+					requestIndex,
+					inputTokens: 2,
+					outputTokens: 1,
+					cacheReadTokens: 0,
+				}),
+			),
+		]
+		const annotations = trace.map(({ sequence }) => ({
+			sequence,
+			phase: "finalization",
+			...(sequence <= 2 ? { requestIndex: requestIndexes[sequence - 1] } : {}),
+		}))
+		const report = buildReport(input({ trace, annotations }))
+		for (const field of ["tokensIn", "tokensOut", "cacheReads"]) {
+			assert.equal(report.observedTotal[field].value, null)
+			assert.equal(report.phases.finalization[field].value, null)
+		}
+	})
+}
+
+test("matches explicit request identities independent of usage delivery order", () => {
+	const trace = [
+		event(1, "model_request_started"),
+		event(2, "model_request_started"),
+		event(3, "request_usage", { requestIndex: 9, inputTokens: 3, outputTokens: 2, cacheReadTokens: 1 }),
+		event(4, "request_usage", { requestIndex: 4, inputTokens: 6, outputTokens: 4, cacheReadTokens: 2 }),
+	]
+	const annotations = trace.map(({ sequence }) => ({
+		sequence,
+		phase: "finalization",
+		...(sequence <= 2 ? { requestIndex: sequence === 1 ? 4 : 9 } : {}),
+	}))
+	const report = buildReport(input({ trace, annotations }))
+	for (const group of [report.observedTotal, report.phases.finalization]) {
+		assert.deepEqual(group.tokensIn, { value: 9, coverage: "complete" })
+		assert.deepEqual(group.tokensOut, { value: 6, coverage: "complete" })
+		assert.deepEqual(group.cacheReads, { value: 3, coverage: "complete" })
+	}
+})
+
+test("keeps empty complete trace usage and command counts at zero", () => {
+	const report = buildReport(input())
+	for (const group of [report.observedTotal, ...Object.values(report.phases)]) {
+		for (const field of ["tokensIn", "tokensOut", "cacheReads", "commandCount"]) {
+			assert.deepEqual(group[field], { value: 0, coverage: "complete" })
+		}
+	}
+})
+
 test("attributes committed assistant text bytes without retaining text", () => {
 	const report = buildReport(
 		input({
@@ -170,6 +233,25 @@ test("counts commands independently from explicit polling and recovery purpose",
 	assert.equal(report.observedTotal.pollingToolResults.value, 1)
 	assert.equal(report.observedTotal.recoveryToolResults.value, 1)
 	assert.equal(buildReport(input({ trace })).observedTotal.pollingToolResults.value, null)
+})
+
+test("counts canonical commands independently of tool category and phase", () => {
+	const trace = [
+		event(1, "tool_result", { name: "execute_command", output: "discovery" }),
+		event(2, "tool_result", { tool: "execute_command", output: "recovery" }),
+		event(3, "tool_result", { name: "read_file", output: "verification" }),
+	]
+	const annotations = [
+		{ sequence: 1, phase: "discovery", category: "read", purpose: "ordinary" },
+		{ sequence: 2, phase: "implementation", category: "other", purpose: "recovery" },
+		{ sequence: 3, phase: "validation", category: "validation", purpose: "ordinary" },
+	]
+	const report = buildReport(input({ trace, annotations }))
+	assert.equal(report.observedTotal.commandCount.value, 2)
+	assert.equal(report.phases.discovery.commandCount.value, 1)
+	assert.equal(report.phases.implementation.commandCount.value, 1)
+	assert.equal(report.phases.validation.commandCount.value, 0)
+	assert.equal(report.phases.validation.toolCategories.validation.value, 1)
 })
 
 test("report is an allowlist projection that never retains raw trace, identifiers, paths, or secrets", () => {

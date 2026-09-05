@@ -8,6 +8,7 @@ import { RooCodeEventName, type RooCodeSettings } from "@alpha-code/types"
 
 import { setDefaultSuiteTimeout } from "./test-utils"
 import { waitFor } from "./utils"
+import { parseContextRunMetadata, withFixtureCleanup } from "./proportional-context-support"
 
 type Scenario = "conversation" | "known-file-lookup"
 type ScriptChunk = { type: "text"; text: string } | { type: "tool_call"; id: string; name: string; arguments: string }
@@ -24,7 +25,7 @@ interface RequestMeasurement {
 
 interface ScriptRuntime {
 	requests: RequestMeasurement[]
-	dispatchedTools: string[]
+	emittedToolCalls: string[]
 	answer?: string
 	evidenceObserved: boolean
 	removeFromCache?: () => void
@@ -52,7 +53,7 @@ class ProportionalContextScriptedAI {
 		sample: number,
 	) {
 		this.id = `proportional-context-${scenario}-${sample}`
-		runtimes.set(this, { requests: [], dispatchedTools: [], evidenceObserved: false })
+		runtimes.set(this, { requests: [], emittedToolCalls: [], evidenceObserved: false })
 	}
 
 	get removeFromCache(): (() => void) | undefined {
@@ -93,7 +94,7 @@ class ProportionalContextScriptedAI {
 		const turn = runtime.requests.length
 		if (this.scenario === "known-file-lookup" && turn === 1) {
 			assert.ok(metadata.tools.some((tool) => record(record(tool)?.function)?.name === "read_file"))
-			runtime.dispatchedTools.push("read_file")
+			runtime.emittedToolCalls.push("read_file")
 			yield {
 				type: "tool_call",
 				id: `${this.id}-read`,
@@ -153,10 +154,12 @@ interface ContextHostProvider {
 
 suite("Alpha proportional context request measurements", function () {
 	setDefaultSuiteTimeout(this)
+	let hostSampleIndex = 0
 
 	for (const scenario of ["conversation", "known-file-lookup"] as const) {
 		test(`${scenario} uses the actual Task request path with bounded scripted work`, async () => {
 			assert.equal(vscode.version, "1.122.1", "Request evidence must use the exact reference host")
+			const provenance = parseContextRunMetadata(process.env.ALPHA_SCOPE_RUN_METADATA)
 			const provider = (globalThis.api as unknown as { sidebarProvider?: ContextHostProvider }).sidebarProvider
 			assert.ok(provider)
 			const workspace = process.env.ALPHA_E2E_WORKSPACE
@@ -164,15 +167,16 @@ suite("Alpha proportional context request measurements", function () {
 			const fixtureName = "nor-36-context-fixture.txt"
 			const fixturePath = path.join(workspace, fixtureName)
 			const originalConfiguration = globalThis.api.getConfiguration()
-			const observations: ScriptRuntime[] = []
 			await fs.writeFile(fixturePath, "label=NOR-36\nanswer=42\nunrequested-sentinel\n", { flag: "wx" })
-			try {
+			const observations = await withFixtureCleanup(async () => {
+				const observations: Array<ScriptRuntime & { scenarioSampleIndex: number; hostSampleIndex: number }> = []
 				for (let sample = 0; sample < 3; sample++) {
+					const currentHostSampleIndex = hostSampleIndex++
 					const scripted = new ProportionalContextScriptedAI(scenario, fixtureName, sample)
 					const completed = new Set<string>()
 					const onCompleted = (taskId: string) => completed.add(taskId)
 					globalThis.api.on(RooCodeEventName.TaskCompleted, onCompleted)
-					try {
+					await withFixtureCleanup(async () => {
 						const configuration: RooCodeSettings = {
 							...originalConfiguration,
 							apiProvider: "fake-ai",
@@ -199,7 +203,7 @@ suite("Alpha proportional context request measurements", function () {
 							description: `${scenario} ordinary-text completion`,
 							onTimeout: () => ({
 								requests: runtime.requests,
-								dispatchedTools: runtime.dispatchedTools,
+								emittedToolCalls: runtime.emittedToolCalls,
 								didComplete: provider.getLiveTask(taskId)?.didComplete,
 								abort: provider.getLiveTask(taskId)?.abort,
 								ask: provider.getLiveTask(taskId)?.taskAsk?.ask,
@@ -207,7 +211,7 @@ suite("Alpha proportional context request measurements", function () {
 						})
 						assert.equal(runtime.requests.length, scenario === "conversation" ? 1 : 2)
 						assert.deepStrictEqual(
-							runtime.dispatchedTools,
+							runtime.emittedToolCalls,
 							scenario === "conversation" ? [] : ["read_file"],
 						)
 						assert.equal(runtime.evidenceObserved, scenario === "known-file-lookup")
@@ -229,31 +233,35 @@ suite("Alpha proportional context request measurements", function () {
 							assert.equal(second.toolResultBlocks, 1)
 							assert.deepStrictEqual(second.environmentDigests, first.environmentDigests)
 						}
-						observations.push({ ...runtime, removeFromCache: undefined })
-					} finally {
-						globalThis.api.off(RooCodeEventName.TaskCompleted, onCompleted)
-						await globalThis.api.clearCurrentTask()
-						scripted.removeFromCache?.()
-					}
+						observations.push({
+							...runtime,
+							removeFromCache: undefined,
+							scenarioSampleIndex: sample,
+							hostSampleIndex: currentHostSampleIndex,
+						})
+					}, [
+						() => globalThis.api.off(RooCodeEventName.TaskCompleted, onCompleted),
+						() => globalThis.api.clearCurrentTask(),
+						() => scripted.removeFromCache?.(),
+					])
 				}
-				console.log(
-					JSON.stringify({
-						benchmark: "proportional-context-real-task",
-						scenario,
-						vscode: vscode.version,
-						samples: observations.length,
-						provider: "scripted fake-ai; fixed decisions",
-						providerTokens: null,
-						tokenAvailability: "Scripted provider has no measured provider/tokenizer usage",
-						byteAttribution:
-							"UTF-8 system text, JSON messages/schemas; environment text is a subset of messages",
-						observations,
-					}),
-				)
-			} finally {
-				await globalThis.api.setConfiguration(originalConfiguration)
-				await fs.unlink(fixturePath)
-			}
+				return observations
+			}, [() => globalThis.api.setConfiguration(originalConfiguration), () => fs.unlink(fixturePath)])
+			console.log(
+				JSON.stringify({
+					benchmark: "proportional-context-real-task",
+					scenario,
+					vscode: vscode.version,
+					samples: observations.length,
+					provenance,
+					provider: "scripted fake-ai; fixed decisions",
+					providerTokens: null,
+					tokenAvailability: "Scripted provider has no measured provider/tokenizer usage",
+					byteAttribution:
+						"UTF-8 system text, JSON messages/schemas; environment text is a subset of messages",
+					observations,
+				}),
+			)
 		})
 	}
 })

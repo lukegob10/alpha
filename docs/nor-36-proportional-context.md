@@ -127,3 +127,19 @@ measurements above. No live-model quality result or 25% call / 20% input-token a
 Two actual GPT-6 Astra/high sub-agents contributed: `/root/scope_cost_fixtures` implemented the reviewed fixture/report
 portion; `/root/context_invariant_review` independently reviewed slice correctness and authority/invalidation constraints,
 then added the isolated real-Task E2E fixture. The parent reviewed both contributions and ran the reported focused checks.
+
+## Review corrections before fixture integration
+
+Independent review identified two attribution errors: command count followed the observer's category rather than the
+canonical tool identity, and unidentified usage rows could satisfy count-only coverage. Commands now depend solely on
+`execute_command` identity; token metrics require a valid one-to-one request-index mapping supplied by the observer for
+request-start events and by canonical usage records. Missing, duplicate, invalid, or mismatched identities yield
+unavailable usage. Six focused assertions reproduced the failures before the correction; all 23 reporter/oracle tests
+passed afterward.
+
+The real-Task fixture now attempts each cleanup independently and preserves primary failures through cleanup failures.
+Six host-independent support tests cover synchronous/asynchronous and nested cleanup failures, thrown `undefined`, and
+strict provenance projection. It reports only after cleanup succeeds, labels provider-emitted calls accurately, and
+requires external source/build/configuration/cache declarations as documented in the fixture README. Fresh tasks share
+one host; no cold-host equivalence is claimed. E2E package typecheck and lint passed. No host launch accompanied these
+review corrections; exact-host acceptance remains with central integration.
