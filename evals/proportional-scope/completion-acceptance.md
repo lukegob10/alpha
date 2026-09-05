@@ -12,8 +12,10 @@ and settlement schedule. The reference source is `530d737ec07ba6c4feac0f6745960d
 candidate and loaded extension bundle digest. Host launches remain centrally coordinated. Do not execute during a quiet
 measurement window.
 
-The candidate requires NOR-37 `211c687354e1eb8a9e95884b009db5d2eaf193c7` and its NOR-33 `c0cb247` dependency, or their
-integrated equivalents. The fixture depends on `proportional-context-support.ts` from the earlier NOR-36 fixture commits.
+The candidate requires NOR-37 `211c687354e1eb8a9e95884b009db5d2eaf193c7`, its NOR-33 `c0cb247` dependency, and the
+corrective root-lifecycle work beginning with `fc3b25a62b94197480d06d7c66422ede353a549c`, or their integrated equivalents.
+Central integration records the final correction set before the candidate host run. The fixture depends on
+`proportional-context-support.ts` from the earlier NOR-36 fixture commits.
 It uses structural adapters for existing runtime observation methods so the identical compiled fixture can run against
 the reference bundle, which lacks the metrics getter. No production code from the candidate may enter the reference build.
 
@@ -152,3 +154,18 @@ that method reopens non-running roots, while event forwarding uses `rootAlreadyP
 lifecycle concern referred to NOR-37, not permission to discard the durable assertion. The added Task-owned join rules out
 event/journal timing without mutating or repairing the measured state. No equal-quality cost result is admitted while
 this root-state check fails.
+
+The third central reference attempt used the lifecycle-join correction on exact VS Code 1.122.1. Both scenarios failed
+the unchanged root assertion after `waitForTermination()` returned. The bounded assertion diagnostics establish the
+following observations, one attempted sample per scenario before each scenario stopped:
+
+| Scenario            | Provider requests | Completion events | UI acknowledgments | Original settlement durable | Root after lifecycle join |
+| ------------------- | ----------------: | ----------------: | -----------------: | --------------------------- | ------------------------- |
+| Command publication |                 2 |                 1 |                  1 | true                        | running                   |
+| No-op receipt       |                 2 |                 1 |                  1 | true                        | running                   |
+
+These are actual failed correctness samples, not three admitted paired samples and not an equal-quality cost baseline.
+The log is `nor36-reference-completion-durable.log` in the central runner's temporary output directory. NOR-37 separately
+reported reproducing the root reopening with real Task/provider/store integration and correcting it; central candidate
+host acceptance remains pending. No second model request may be inferred from provider usage-owner indexes: the table
+uses the fixture's direct invocation counter printed by the failed durable assertion.

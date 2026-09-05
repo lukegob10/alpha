@@ -132,6 +132,12 @@ prepared root. NOR-37 owns the production investigation/fix. The fixture retains
 `Task.waitForTermination()` before final reads because the event precedes the terminal journal flush. Failed durable
 samples remain excluded from equal-quality cost comparisons.
 
+The final reference host attempt confirmed this after the Task-owned lifecycle join: one attempted sample per scenario,
+each observing two provider requests, one completion event, one UI acknowledgment, and durable settlement of the original
+operation, with the root still `running`. The [protocol evidence table](../evals/proportional-scope/completion-acceptance.md)
+records these failed-quality observations. NOR-37 delivered corrective commit `fc3b25a`; central integration owns the
+remaining correction set and candidate host run. No further reference benchmark is required or planned.
+
 ## Validation and handoff
 
 - Before the slice change: one intended operation-count regression failed, 50 tests passed.
