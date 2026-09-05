@@ -16,8 +16,8 @@ export interface SafeWriteJsonOptions {
 	 * @default false
 	 */
 	prettyPrint?: boolean
-	/** Optional synchronous fenced replacement for the temporary-file commit. */
-	commitTempFile?: (temporaryPath: string, destinationPath: string) => void
+	/** Optional replacement; each attempt must synchronously fence ownership and rename the closed temporary file. */
+	commitTempFile?: (temporaryPath: string, destinationPath: string) => void | Promise<void>
 	/** Replace the destination in one rename instead of creating a rollback backup. */
 	atomicReplace?: boolean
 	/** Caller holds an unstealable transaction lock and supplies the synchronous commit fence. */
@@ -129,9 +129,9 @@ async function safeWriteJson(filePath: string, data: any, options?: SafeWriteJso
 		// Step 3: Rename the new temporary file to the target file path.
 		// This is the main "commit" step.
 		if (options?.commitTempFile) {
-			// The callback is intentionally synchronous: persistence implementations
-			// can validate an unstealable lock and rename in one JavaScript turn.
-			options.commitTempFile(actualTempNewFilePath, absoluteFilePath)
+			// The owner may wait between failed OS replacement attempts. Invoke it
+			// once and retain the temporary file until its complete commit settles.
+			await options.commitTempFile(actualTempNewFilePath, absoluteFilePath)
 		} else {
 			await fs.rename(actualTempNewFilePath, absoluteFilePath)
 		}

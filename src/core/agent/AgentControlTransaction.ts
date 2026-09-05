@@ -172,3 +172,20 @@ export class AgentControlTransactionQueue {
 		await new Promise<void>((resolve) => this.idleWaiters.add(resolve))
 	}
 }
+
+/** Cancel only an uncommitted retry wait, without exposing an arbitrary abort reason. */
+export async function waitForTransactionRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+	throwIfTransactionCancelled(signal)
+	await new Promise<void>((resolve, reject) => {
+		const abort = () => {
+			clearTimeout(timer)
+			signal?.removeEventListener("abort", abort)
+			reject(new AgentControlTransactionError("Agent control transaction replacement was cancelled", "ABORT_ERR"))
+		}
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", abort)
+			resolve()
+		}, delayMs)
+		signal?.addEventListener("abort", abort, { once: true })
+	})
+}

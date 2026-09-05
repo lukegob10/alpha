@@ -28,8 +28,9 @@ not a cross-process fairness guarantee. Filesystem operations already submitted 
 `withTransaction(operation, options?)` is additive. Options contain an `AbortSignal`, a closed operation label, and the
 store queue time already spent. Cancellation stops queued acquisition and is checked before invoking the transaction
 body. Once the body begins, it settles and releases normally; no timer races it, retries it, or reports a committed write
-as cancelled. Task-lifetime cancellation is forwarded through primary mutation reservation and root admission. Receipt
-settlement after process execution remains durable and independent of acquisition cancellation.
+as cancelled. An attached signal can stop an uncommitted Windows replacement retry before another rename attempt.
+Task-lifetime cancellation is forwarded through primary mutation reservation and root admission. Receipt settlement
+after process execution remains durable and independent of acquisition cancellation.
 
 `FileAgentControlPersistence` optionally accepts `transactionWaitTimeoutMs`, `maxPendingTransactions`, and
 `onTransactionDiagnostic`. One final callback reports `operation`, `outcome`, `queueWaitMs`, `acquisitionWaitMs`, `holdMs`,
@@ -41,7 +42,8 @@ or command-process performance measurement. NOR-35 consumes this seam for transa
 Lock metadata reads are capped at 1024 bytes, tokens at 128 safe filename characters, and PIDs at the positive signed
 32-bit range. Operation names are allowlisted. Diagnostics exclude storage paths, tokens, task IDs, command text,
 prompts, and file contents. `ELOCKED` means bounded healthy/ambiguous contention; `EQUEUEFULL` means backpressure;
-`ABORT_ERR` means cancelled admission; `ELOCKLEGACY`/`ELOCKOWNER` identify unverified ownership with repair instructions.
+`ABORT_ERR` means cancelled admission or uncommitted replacement retry; `ELOCKLEGACY`/`ELOCKOWNER` identify unverified
+ownership with repair instructions.
 
 The persistence seam exposes its configured queue deadline and capacity to the outer store queue. Rejections before
 that queue admits its callback use the same diagnostic observer and error snapshot; admitted callbacks leave reporting
@@ -69,8 +71,9 @@ Committed data remains successful even when cleanup fails; diagnostics explicitl
 An async transaction context prevents an unrelated standalone write from borrowing another caller's lock. The context
 is fenced as finished as soon as its body settles, so escaped callbacks cannot write during cleanup or after replacement.
 Every file write has a synchronous owner check plus atomic replacement. The generic JSON writer's optional
-`externalTransaction` path requires atomic replacement and a synchronous commit callback, avoiding the nested
-mtime-expiring advisory lease only for externally fenced writes. Ordinary JSON callers retain their existing lock.
+`externalTransaction` path requires atomic replacement and a per-attempt synchronous commit fence, avoiding the nested
+mtime-expiring advisory lease only for externally fenced writes. The callback may await retry delays, but each ownership
+fence and rename must be synchronous with respect to one another. Ordinary JSON callers retain their existing lock.
 
 Ownerless and malformed locks are never removed automatically based on age. Close **all** Alpha extension hosts sharing
 the affected global storage, confirm no owner can resume, remove only `agent_control.json.transaction.lock`, and reopen
@@ -118,8 +121,9 @@ close failures; each preserves the prior target and prevents commit.
 
 This closes a verified lifecycle gap; it does not establish the cause of the exploratory `EPERM`. Node 20.19.2's Windows
 libuv opens ordinary files with delete sharing, so an outstanding Node file handle alone does not prove that rename must
-fail. Atomic replacement remains fenced and has no new retry or non-atomic fallback. The exploratory workload must be
-rerun before NOR-35 freezes its baseline; a successful rerun alone is not proof that an intermittent OS error is resolved.
+fail. The recurrence and bounded replacement handling below are separate from stream closure. The exploratory workload
+must be rerun before NOR-35 freezes its baseline; a successful rerun alone is not proof that an intermittent OS error is
+resolved.
 
 Primary sources retrieved September 5, 2026: Node 20.19.2
 [pipeline completion contract](https://nodejs.org/download/release/v20.19.2/docs/api/stream.html#streampipelinesource-transforms-destination-callback),
@@ -127,6 +131,33 @@ Primary sources retrieved September 5, 2026: Node 20.19.2
 the [pipeline error path](https://raw.githubusercontent.com/nodejs/node/v20.19.2/lib/internal/streams/pipeline.js), and
 [Windows libuv file operations](https://raw.githubusercontent.com/nodejs/node/v20.19.2/deps/uv/src/win/fs.c).
 The synchronous serializer construction behavior was checked against installed `json-stream-stringify` 3.1.6 source.
+
+## Windows replacement interference
+
+The sustained two-process writer test reproduced `EPERM` at integrated commit `69ae789` after both close barriers and the
+wakeup correction. A controlled native reproduction opened the destination through .NET with
+`FileAccess.Read`/`FileShare.ReadWrite`, deliberately excluding delete sharing. Node 20.19.2 `renameSync` returned
+`EPERM`; the closed source and prior destination remained intact. After disposing that external handle, the same rename
+succeeded. This establishes matching Windows replacement semantics, not the identity of the original blocking handle.
+
+The file-persistence commit now retries only a failed Windows rename reporting `EACCES`, `EBUSY`, or `EPERM`, with delays
+of 10, 25, 50, 100 and 200 ms: six total attempts and at most 385 ms of scheduled backoff. The same closed temporary file
+and transaction lock remain owned throughout. Before each attempt, the captured transaction must still be active,
+unfinished, and present in the caller's async context; its synchronous owner fence is immediately followed by
+`renameSync`. Fence failures never enter the rename retry catch. Cancellation can stop a pending retry before commit.
+Success sets `committed` immediately and performs no awaited work before returning. Permanent errors and exhausted
+retries retain the actual error and preserve the prior target; there is no target unlink or non-atomic fallback.
+The existing diagnostic `attempts` counts acquisition attempts; replacement backoff is included in `holdMs` and is not
+reported as a separate retry counter. A successful transaction therefore does not imply that its first OS rename worked.
+
+The generic JSON helper's additive `commitTempFile` return type accepts `void | Promise<void>`. It invokes and awaits
+that callback exactly once, retaining the temp file until settlement. The callback owns the per-attempt fence; neither
+the serializer, transaction body, nor command is rerun. Regression coverage includes transient success, exact retry
+bounds, permanent errors, fence loss, cancellation, unrelated queued writes, and escaped finished transaction contexts.
+
+Primary Windows sources retrieved September 5, 2026:
+[CreateFileW sharing rules](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew) and
+[MoveFileExW replacement behavior](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw).
 
 ## Command outcomes and validation
 

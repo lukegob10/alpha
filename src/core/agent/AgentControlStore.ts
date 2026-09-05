@@ -14,6 +14,7 @@ import {
 	createTransactionDiagnostic,
 	logTransactionDiagnostic,
 	throwIfTransactionCancelled,
+	waitForTransactionRetry,
 	type AgentControlOperation,
 	type AgentControlTransactionDiagnostic,
 	type AgentControlTransactionOptions,
@@ -66,7 +67,8 @@ const DEFAULT_OWNER_LEASE_UPDATE_MS = 10_000
 const DEFAULT_RECOVERY_SCAN_INTERVAL_MS = 30_000
 const TRANSACTION_LOCK_RETRY_DELAYS_MS = [50, 100, 200, 400] as const
 const TRANSACTION_LOCK_RELEASE_RETRY_DELAYS_MS = [10, 25, 50, 100, 200] as const
-const TRANSIENT_TRANSACTION_LOCK_RENAME_ERROR_CODES = new Set(["EACCES", "EBUSY", "EPERM"])
+const TRANSIENT_RENAME_ERROR_CODES = new Set(["EACCES", "EBUSY", "EPERM"])
+const TRANSACTION_FILE_REPLACE_RETRY_DELAYS_MS = [10, 25, 50, 100, 200] as const
 
 const ALLOWED_TRANSITIONS: Record<AgentLifecycleStatus, ReadonlySet<AgentLifecycleStatus>> = {
 	pending: new Set([
@@ -108,6 +110,7 @@ interface TransactionLockOwner {
 }
 
 interface ActiveTransaction {
+	signal?: AbortSignal
 	token: string
 	committed: boolean
 	finished: boolean
@@ -371,7 +374,12 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		options: AgentControlTransactionOptions,
 		diagnostic: AgentControlTransactionDiagnostic,
 	): Promise<T> {
-		const transaction: ActiveTransaction = { token: randomUUID(), committed: false, finished: false }
+		const transaction: ActiveTransaction = {
+			token: randomUUID(),
+			committed: false,
+			finished: false,
+			signal: options.signal,
+		}
 		const acquiringAt = performance.now()
 		try {
 			await this.acquireTransactionLock(transaction.token, options, diagnostic)
@@ -457,14 +465,40 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		if (observed.token !== transaction.token) throw new Error("Agent control transaction ownership was lost")
 	}
 
-	private commitTransactionFile(temporaryPath: string, destinationPath: string): void {
+	private async commitTransactionFile(temporaryPath: string, destinationPath: string): Promise<void> {
 		const transaction = this.activeTransaction
-		if (!transaction || transaction.finished || this.transactionContext.getStore() !== transaction) {
-			throw new Error("Agent control transaction ownership was lost")
+		for (let attempt = 0; ; attempt++) {
+			if (
+				!transaction ||
+				transaction !== this.activeTransaction ||
+				transaction.finished ||
+				this.transactionContext.getStore() !== transaction
+			) {
+				throw new Error("Agent control transaction ownership was lost")
+			}
+			if (attempt > 0) throwIfTransactionCancelled(transaction.signal)
+			// Every attempt fences and replaces in one uninterrupted JavaScript turn.
+			// Fence errors cannot enter the OS-rename retry path below.
+			this.assertTransactionOwnerSync()
+			try {
+				fsSync.renameSync(temporaryPath, destinationPath)
+			} catch (error) {
+				const delayMs = TRANSACTION_FILE_REPLACE_RETRY_DELAYS_MS[attempt]
+				if (
+					process.platform !== "win32" ||
+					!TRANSIENT_RENAME_ERROR_CODES.has((error as NodeJS.ErrnoException).code ?? "") ||
+					delayMs === undefined
+				) {
+					throw error
+				}
+				// Windows replacement may be denied by a transient sharing conflict.
+				// Keep this closed temp and its lock; never rerun the transaction body.
+				await waitForTransactionRetry(delayMs, transaction.signal)
+				continue
+			}
+			transaction.committed = true
+			return
 		}
-		this.assertTransactionOwnerSync()
-		fsSync.renameSync(temporaryPath, destinationPath)
-		transaction.committed = true
 	}
 
 	private async acquireTransactionLock(
@@ -639,7 +673,7 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 			}
 			try {
 				await fs.stat(this.transactionLockPath)
-				if (TRANSIENT_TRANSACTION_LOCK_RENAME_ERROR_CODES.has((error as NodeJS.ErrnoException).code ?? "")) {
+				if (TRANSIENT_RENAME_ERROR_CODES.has((error as NodeJS.ErrnoException).code ?? "")) {
 					return false
 				}
 				throw error
@@ -677,7 +711,7 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 				const code = (error as NodeJS.ErrnoException).code ?? ""
 				if (code === "ENOENT") return
 				const delayMs = TRANSACTION_LOCK_RELEASE_RETRY_DELAYS_MS[attempt]
-				if (!TRANSIENT_TRANSACTION_LOCK_RENAME_ERROR_CODES.has(code) || delayMs === undefined) {
+				if (!TRANSIENT_RENAME_ERROR_CODES.has(code) || delayMs === undefined) {
 					// A committed write must remain successful, but the live owner may not
 					// permanently block the next transaction. Publish a durable release
 					// marker that any store instance can safely quarantine by exact token.
