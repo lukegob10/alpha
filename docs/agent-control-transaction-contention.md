@@ -77,6 +77,27 @@ the affected global storage, confirm no owner can resume, remove only `agent_con
 Alpha. Preserve `agent_control.json` and all recovery tombstones. Restart all participating hosts when upgrading the
 recovery protocol: an older binary still running the two-destination reaper cannot be made safe by a newer contender.
 
+## JSON stream completion
+
+An exploratory NOR-35 two-process reserve/settle workload reported a Windows `EPERM` during atomic JSON replacement,
+with `committed: false`. Investigation exposed a separate deterministic lifecycle defect: the JSON writer resolved on
+`finish` while its file descriptor could still be closing. A regression holding the real `fs.close` callback behind a
+barrier reproduced the premature commit. The writer now awaits `stream/promises.pipeline`, which settles stream cleanup
+before committing or removing the temporary file. Serializer construction also precedes opening the destination because
+a root `toJSON` method can throw synchronously. Error regressions cover serializer construction, streaming serialization,
+filesystem write, and close failures; each preserves the prior target and prevents commit.
+
+This closes a verified lifecycle gap; it does not establish the cause of the exploratory `EPERM`. Node 20.19.2's Windows
+libuv opens ordinary files with delete sharing, so an outstanding Node file handle alone does not prove that rename must
+fail. Atomic replacement remains fenced and has no new retry or non-atomic fallback. The exploratory workload must be
+rerun before NOR-35 freezes its baseline; a successful rerun alone is not proof that an intermittent OS error is resolved.
+
+Primary sources retrieved September 5, 2026: Node 20.19.2
+[pipeline completion contract](https://nodejs.org/download/release/v20.19.2/docs/api/stream.html#streampipelinesource-transforms-destination-callback),
+[file stream close defaults](https://nodejs.org/download/release/v20.19.2/docs/api/fs.html#fscreatewritestreampath-options),
+and [Windows libuv file operations](https://raw.githubusercontent.com/nodejs/node/v20.19.2/deps/uv/src/win/fs.c).
+The synchronous serializer construction behavior was checked against installed `json-stream-stringify` 3.1.6 source.
+
 ## Command outcomes and validation
 
 Mutation reservation now belongs to the protected pre-launch admission block. A reservation failure explicitly reports

@@ -3,6 +3,7 @@ import * as fsSync from "fs"
 import * as path from "path"
 import * as lockfile from "proper-lockfile"
 import { JsonStreamStringify } from "json-stream-stringify"
+import { pipeline } from "stream/promises"
 
 /**
  * Options for safeWriteJson function
@@ -214,9 +215,6 @@ async function safeWriteJson(filePath: string, data: any, options?: SafeWriteJso
  * @returns Promise<void>
  */
 async function _streamDataToFile(targetPath: string, data: any, prettyPrint = false): Promise<void> {
-	// Stream data to avoid high memory usage for large JSON objects.
-	const fileWriteStream = fsSync.createWriteStream(targetPath, { encoding: "utf8" })
-
 	// JsonStreamStringify traverses the object and streams tokens directly
 	// The 'spaces' parameter adds indentation during streaming, not via a separate pass
 	// Convert undefined to null for valid JSON serialization (undefined is not valid JSON)
@@ -225,13 +223,12 @@ async function _streamDataToFile(targetPath: string, data: any, prettyPrint = fa
 		undefined, // replacer
 		prettyPrint ? "\t" : undefined, // spaces for indentation
 	)
+	// Construct the serializer before opening the file: root toJSON can throw.
+	const fileWriteStream = fsSync.createWriteStream(targetPath, { encoding: "utf8" })
 
-	return new Promise<void>((resolve, reject) => {
-		stringifyStream.on("error", reject)
-		fileWriteStream.on("error", reject)
-		fileWriteStream.on("finish", resolve)
-		stringifyStream.pipe(fileWriteStream)
-	})
+	// finish only means writes were flushed; the owned file descriptor can still
+	// be closing. Settle both streams before committing or cleaning the temp file.
+	await pipeline(stringifyStream, fileWriteStream)
 }
 
 export { safeWriteJson }
