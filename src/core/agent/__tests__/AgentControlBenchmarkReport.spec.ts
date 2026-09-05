@@ -3,10 +3,13 @@ import { compareAgentControlBenchmarkReports } from "../benchmarks/AgentControlB
 const sourcePaths = [
 	"src/core/agent/AgentControlStore.ts",
 	"src/core/agent/AgentControlTransaction.ts",
+	"src/core/agent/AgentControlLockWaiter.ts",
 	"src/core/agent/ParentVerification.ts",
+	"src/shared/globalFileNames.ts",
 	"src/utils/safeWriteJson.ts",
 	"src/core/agent/benchmarks/AgentControlStore.benchmark.ts",
 	"src/core/agent/benchmarks/AgentControlBenchmarkWorkers.ts",
+	"src/core/agent/benchmarks/AgentControlBenchmarkReport.ts",
 	"src/core/agent/__tests__/fixtures/agentControlBenchmarkFixture.ts",
 	"packages/types/dist/index.cjs",
 	"packages/types/dist/index.js",
@@ -232,6 +235,14 @@ describe("AgentControlBenchmarkReport", () => {
 		const candidate = report(true)
 		candidate.sourceIdentity[source] = "b".repeat(64)
 		expect(compareAgentControlBenchmarkReports(report(), candidate).passed).toBe(false)
+	})
+
+	it.each(sourcePaths)("rejects a source missing from both reports: %s", (source) => {
+		const baseline = report()
+		const candidate = report(true)
+		Reflect.deleteProperty(baseline.sourceIdentity, source)
+		Reflect.deleteProperty(candidate.sourceIdentity, source)
+		expect(compareAgentControlBenchmarkReports(baseline, candidate).passed).toBe(false)
 	})
 
 	it("rejects missing identities, placeholders, and changed runtime or workload conditions", () => {

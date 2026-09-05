@@ -97,10 +97,13 @@ const reportSchema = z.object({
 const requiredSources = [
 	"src/core/agent/AgentControlStore.ts",
 	"src/core/agent/AgentControlTransaction.ts",
+	"src/core/agent/AgentControlLockWaiter.ts",
 	"src/core/agent/ParentVerification.ts",
+	"src/shared/globalFileNames.ts",
 	"src/utils/safeWriteJson.ts",
 	"src/core/agent/benchmarks/AgentControlStore.benchmark.ts",
 	"src/core/agent/benchmarks/AgentControlBenchmarkWorkers.ts",
+	"src/core/agent/benchmarks/AgentControlBenchmarkReport.ts",
 	"src/core/agent/__tests__/fixtures/agentControlBenchmarkFixture.ts",
 	"packages/types/dist/index.cjs",
 	"packages/types/dist/index.js",

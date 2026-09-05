@@ -44,8 +44,11 @@ pnpm exec tsx src/core/agent/benchmarks/AgentControlStore.benchmark.ts --sizes "
 
 The baseline must include the reviewed NOR-34 dependency with the original serialization buffer. Record the exact commit
 and SHA-256 source identities in the raw report, then compare with a candidate differing only in the intended buffering
-change. The harness verifies those identities again after measurement so edits during a run cannot silently contaminate
-its code identity. The estimated baseline case durations are under 10 seconds (small, one writer), under 20 seconds
+change. Frozen identities include the lock wakeup helper, transaction contracts, shared filenames, benchmark runner,
+worker harness, comparator, fixture, built shared types, and dependency lockfile. Node built-ins are covered by the
+recorded exact Node version. Missing a required source from both reports is rejected. The harness verifies identities
+again after measurement so edits during a run cannot silently contaminate its code identity. The estimated baseline
+case durations are under 10 seconds (small, one writer), under 20 seconds
 (small, two writers), four minutes (large, one writer) and eight minutes (large, two writers); these are scheduling
 estimates from exploratory runs, not performance claims. Reserve 15 minutes per revision.
 
