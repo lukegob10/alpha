@@ -1,0 +1,71 @@
+{
+	"schemaVersion": 1,
+	"status": "unadmitted",
+	"cases": [
+		{
+			"id": "conversation-only",
+			"workspace": null,
+			"prompt": "Given only this information: a task is cancelled when its status equals cancelled. Is a task with status cancelled cancelled? Answer in one sentence.",
+			"quality": ["Answers yes from supplied context", "Does not require workspace discovery or mutation"],
+			"validation": []
+		},
+		{
+			"id": "narrow-lookup",
+			"workspace": "workspace",
+			"prompt": "What is the default retry limit in src/config.js? Cite the declaration. Do not change files.",
+			"quality": ["Reports retryLimit as 3", "Cites src/config.js", "Leaves workspace unchanged"],
+			"validation": []
+		},
+		{
+			"id": "small-edit",
+			"workspace": "../javascript/smoke-read-edit",
+			"prompt": "normalize in src/workflow.js incorrectly appends an exclamation mark. Remove that suffix, preserve the exported API, and verify the affected behavior.",
+			"quality": ["Existing workflow tests pass", "Preserves workflowIdentity", "Does not change tests"],
+			"validation": ["test/workflow.test.js"]
+		},
+		{
+			"id": "cross-component-bug",
+			"workspace": "workspace",
+			"prompt": "Cancelled tasks still appear as running in the session projection, and replay can reopen them. Fix the lifecycle and projection consistently. Preserve completed tasks and test the cancellation/replay path. Do not change tests.",
+			"quality": [
+				"Cancellation survives replay",
+				"Projection exposes cancelled as terminal",
+				"Completed task remains completed"
+			],
+			"validation": ["test/lifecycle.test.js"]
+		},
+		{
+			"id": "security-change",
+			"workspace": "workspace",
+			"prompt": "The path guard in src/paths.js permits sibling-prefix paths and symlink escapes. Fix the boundary and validate both cases. Preserve the inside-workspace case. Do not change tests.",
+			"quality": [
+				"Rejects sibling-prefix and traversal escapes",
+				"Rejects outside symlink targets",
+				"Allows canonical inside paths"
+			],
+			"validation": ["test/paths.test.js"]
+		},
+		{
+			"id": "comprehensive-audit",
+			"workspace": "workspace",
+			"prompt": "Comprehensively audit every source module for correctness and security. Report actionable findings with file evidence, including lifecycle replay, session projection, filesystem boundaries, and stale writes. Do not change files.",
+			"quality": [
+				"Finds all four seeded faulty boundaries",
+				"Supports findings with code evidence",
+				"Leaves workspace unchanged"
+			],
+			"validation": []
+		},
+		{
+			"id": "simple-request-escalation",
+			"workspace": "workspace",
+			"prompt": "Make saveDraft save the requested text. Check its version handling: another writer can update the draft after the editor reads it. Preserve external changes, surface the conflict, and demonstrate a fresh read followed by a successful retry. Do not change tests.",
+			"quality": [
+				"Detects stale version before mutation",
+				"Preserves concurrent external update",
+				"Succeeds after explicit reread and retry"
+			],
+			"validation": ["test/drafts.test.js"]
+		}
+	]
+}
