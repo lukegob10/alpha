@@ -18,7 +18,21 @@ vi.mock("fs/promises", () => {
 	const transactionDirectories = new Set<string>()
 	return {
 		mkdir: vi.fn().mockImplementation(async (filePath: string) => {
-			if (filePath.includes(".transaction.lock")) transactionDirectories.add(filePath)
+			if (filePath.includes(".transaction.lock")) {
+				if (transactionDirectories.has(filePath)) throw Object.assign(new Error("exists"), { code: "EEXIST" })
+				transactionDirectories.add(filePath)
+			}
+		}),
+		open: vi.fn().mockImplementation(async (filePath: string) => {
+			const content = transactionFiles.get(filePath)
+			if (content === undefined) throw Object.assign(new Error("not found"), { code: "ENOENT" })
+			return {
+				read: async (buffer: Buffer, offset: number, length: number, position: number) => ({
+					bytesRead: Buffer.from(content).copy(buffer, offset, position, position + length),
+					buffer,
+				}),
+				close: async () => undefined,
+			}
 		}),
 		writeFile: vi.fn().mockImplementation(async (filePath: string, data: unknown) => {
 			if (filePath.includes(".transaction.lock")) transactionFiles.set(filePath, String(data))

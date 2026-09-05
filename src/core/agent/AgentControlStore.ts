@@ -3,7 +3,28 @@ import * as fsSync from "fs"
 import * as path from "path"
 import { createHash, randomUUID } from "crypto"
 import { isDeepStrictEqual } from "util"
+import { AsyncLocalStorage } from "async_hooks"
 import * as lockfile from "proper-lockfile"
+import {
+	AGENT_CONTROL_OPERATIONS,
+	AgentControlTransactionError,
+	AgentControlTransactionQueue,
+	DEFAULT_MAX_PENDING_TRANSACTIONS,
+	DEFAULT_TRANSACTION_WAIT_TIMEOUT_MS,
+	throwIfTransactionCancelled,
+	waitForTransactionRetry,
+	type AgentControlOperation,
+	type AgentControlTransactionDiagnostic,
+	type AgentControlTransactionOptions,
+	type FileAgentControlPersistenceOptions,
+} from "./AgentControlTransaction"
+
+export { AgentControlTransactionError } from "./AgentControlTransaction"
+export type {
+	AgentControlTransactionDiagnostic,
+	AgentControlTransactionOptions,
+	FileAgentControlPersistenceOptions,
+} from "./AgentControlTransaction"
 
 import {
 	agentCanonicalPathSchema,
@@ -41,8 +62,7 @@ const CLOSABLE_STATUSES = new Set<AgentLifecycleStatus>([...TERMINAL_STATUSES, "
 const DEFAULT_OWNER_LEASE_STALE_MS = 60_000
 const DEFAULT_OWNER_LEASE_UPDATE_MS = 10_000
 const DEFAULT_RECOVERY_SCAN_INTERVAL_MS = 30_000
-const TRANSACTION_LOCK_RETRY_DELAYS_MS = [50, 100, 200, 400, 800, 1_000] as const
-const TRANSACTION_LOCK_PROMOTION_RETRY_DELAYS_MS = [10, 25, 50, 100, 200] as const
+const TRANSACTION_LOCK_RETRY_DELAYS_MS = [50, 100, 200, 400] as const
 const TRANSACTION_LOCK_RELEASE_RETRY_DELAYS_MS = [10, 25, 50, 100, 200] as const
 const TRANSIENT_TRANSACTION_LOCK_RENAME_ERROR_CODES = new Set(["EACCES", "EBUSY", "EPERM"])
 
@@ -82,11 +102,13 @@ const clone = <T>(value: T): T => structuredClone(value)
 interface TransactionLockOwner {
 	token: string
 	pid: number
+	operation?: AgentControlOperation
 }
 
 interface ActiveTransaction {
 	token: string
 	committed: boolean
+	finished: boolean
 }
 
 interface OwnerLeaseMetadata {
@@ -114,7 +136,7 @@ export interface AgentControlPersistence {
 	 * the complete read-modify-write operation. Persistence without this hook
 	 * retains the store's in-process serialization semantics.
 	 */
-	withTransaction?<T>(operation: () => Promise<T>): Promise<T>
+	withTransaction?<T>(operation: () => Promise<T>, options?: AgentControlTransactionOptions): Promise<T>
 	/** Optional commit fence for implementations whose transaction lock can be stolen after staleness. */
 	assertTransactionOwner?(): Promise<void>
 	/** Optional activation-scoped lease seam used by cross-process persistence. */
@@ -149,16 +171,31 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 	private readonly transactionLockPath: string
 	private readonly ownerLeaseDirectory: string
 	private readonly ownerLeaseHandles = new Map<AgentRuntimeOwnerId, OwnerLeaseHandle>()
-	private readonly releasedTransactionTokens = new Set<string>()
 	private activeTransaction?: ActiveTransaction
+	private releasedTransactionToken?: string
+	private readonly transactionContext = new AsyncLocalStorage<ActiveTransaction>()
+	private readonly transactionQueue: AgentControlTransactionQueue
+	private readonly transactionWaitTimeoutMs: number
 
-	constructor(globalStoragePath: string) {
+	constructor(
+		globalStoragePath: string,
+		private readonly options: FileAgentControlPersistenceOptions = {},
+	) {
 		this.filePath = path.join(globalStoragePath, GlobalFileNames.agentControl)
 		// This deliberately matches the directory path used by the former
 		// proper-lockfile transaction lease. A legacy live holder therefore blocks
 		// admission instead of running concurrently with the process-owned lock.
 		this.transactionLockPath = `${this.filePath}.transaction.lock`
 		this.ownerLeaseDirectory = `${this.filePath}.owners`
+		this.transactionWaitTimeoutMs = options.transactionWaitTimeoutMs ?? DEFAULT_TRANSACTION_WAIT_TIMEOUT_MS
+		const maxPending = options.maxPendingTransactions ?? DEFAULT_MAX_PENDING_TRANSACTIONS
+		if (!Number.isFinite(this.transactionWaitTimeoutMs) || this.transactionWaitTimeoutMs <= 0) {
+			throw new Error("Agent control transaction wait timeout must be positive")
+		}
+		if (!Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > DEFAULT_MAX_PENDING_TRANSACTIONS) {
+			throw new Error("Agent control pending transaction limit must be between 1 and 64")
+		}
+		this.transactionQueue = new AgentControlTransactionQueue(maxPending)
 	}
 
 	async acquireOwnerLease(
@@ -280,15 +317,76 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		return { token: value.token, pid: value.pid as number }
 	}
 
-	async withTransaction<T>(operation: () => Promise<T>): Promise<T> {
-		const transaction: ActiveTransaction = { token: randomUUID(), committed: false }
-		await this.acquireTransactionLock(transaction.token)
+	async withTransaction<T>(operation: () => Promise<T>, options: AgentControlTransactionOptions = {}): Promise<T> {
+		const started = performance.now()
+		const diagnostic: AgentControlTransactionDiagnostic = {
+			operation: AGENT_CONTROL_OPERATIONS.includes(options.operation!) ? options.operation! : "transaction",
+			outcome: "error",
+			queueWaitMs: options.queueWaitMs ?? 0,
+			acquisitionWaitMs: 0,
+			holdMs: 0,
+			releaseMs: 0,
+			attempts: 0,
+			ownerState: "none",
+			committed: false,
+			releaseFailed: false,
+		}
+		let dequeued = false
+		try {
+			return await this.transactionQueue.run(
+				async (queueWaitMs) => {
+					dequeued = true
+					diagnostic.queueWaitMs += queueWaitMs
+					return this.runTransaction(operation, options, diagnostic)
+				},
+				options.signal,
+				Math.max(0, this.transactionWaitTimeoutMs - diagnostic.queueWaitMs),
+			)
+		} catch (error) {
+			if (!dequeued) diagnostic.queueWaitMs += performance.now() - started
+			if (error instanceof AgentControlTransactionError) {
+				diagnostic.outcome = error.code === "ABORT_ERR" ? "cancelled" : "error"
+				error.diagnostic = { ...diagnostic }
+			}
+			throw error
+		} finally {
+			// Observers cannot change durable outcomes, and only this closed metadata
+			// shape is logged. Filesystem errors can contain sensitive absolute paths.
+			try {
+				this.options.onTransactionDiagnostic?.({ ...diagnostic })
+			} catch {
+				// Diagnostics are best effort.
+			}
+			if (diagnostic.outcome === "error" || diagnostic.releaseFailed || diagnostic.acquisitionWaitMs >= 1_000) {
+				console.warn("[AgentControlStore] Transaction diagnostic", diagnostic)
+			}
+		}
+	}
+
+	private async runTransaction<T>(
+		operation: () => Promise<T>,
+		options: AgentControlTransactionOptions,
+		diagnostic: AgentControlTransactionDiagnostic,
+	): Promise<T> {
+		const transaction: ActiveTransaction = { token: randomUUID(), committed: false, finished: false }
+		const acquiringAt = performance.now()
+		try {
+			await this.acquireTransactionLock(transaction.token, options, diagnostic)
+		} finally {
+			diagnostic.acquisitionWaitMs = performance.now() - acquiringAt
+		}
 		this.activeTransaction = transaction
+		const holdingAt = performance.now()
 		let result: T
 		let operationFailed = false
 		let operationError: unknown
 		try {
-			result = await operation()
+			throwIfTransactionCancelled(options.signal)
+			if (diagnostic.queueWaitMs + diagnostic.acquisitionWaitMs >= this.transactionWaitTimeoutMs) {
+				throw new AgentControlTransactionError("Agent control transaction acquisition wait expired", "ELOCKED")
+			}
+			result = await this.transactionContext.run(transaction, operation)
+			transaction.finished = true
 			// A real file write performs its final fence synchronously with the
 			// atomic rename. Read-only/test transactions still validate ownership
 			// before release.
@@ -297,6 +395,10 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 			operationFailed = true
 			operationError = error
 		}
+		transaction.finished = true
+		diagnostic.holdMs = performance.now() - holdingAt
+		diagnostic.committed = transaction.committed
+		const releasingAt = performance.now()
 		let releaseFailed = false
 		let releaseError: unknown
 		try {
@@ -304,10 +406,16 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		} catch (error) {
 			releaseFailed = true
 			releaseError = error
+			// Publish local proof only after every release/marker attempt settled.
+			// The instance queue and finished fence forbid any later write by this
+			// owner, even when the durable marker could not be written.
+			this.releasedTransactionToken = transaction.token
 		}
 		if (this.activeTransaction === transaction) {
 			this.activeTransaction = undefined
 		}
+		diagnostic.releaseMs = performance.now() - releasingAt
+		diagnostic.releaseFailed = releaseFailed
 		// Preserve the mutation failure when both the operation and cleanup fail.
 		if (operationFailed) throw operationError
 		// Once the synchronous fenced rename committed, a later cleanup failure
@@ -315,9 +423,7 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		// process-owned protocol prevents normal contenders from causing this;
 		// surface cleanup failures only for transactions that did not commit.
 		if (releaseFailed && !transaction.committed) throw releaseError
-		if (releaseFailed) {
-			console.error("[AgentControlStore] Failed to release a committed transaction lock", releaseError)
-		}
+		diagnostic.outcome = "success"
 		return result!
 	}
 
@@ -333,9 +439,15 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		if (!transaction) throw new Error("Agent control transaction is not active")
 		let observed: TransactionLockOwner
 		try {
-			observed = this.parseTransactionLock(
-				fsSync.readFileSync(this.transactionLockOwnerPath(this.transactionLockPath), "utf8"),
-			)
+			const descriptor = fsSync.openSync(this.transactionLockOwnerPath(this.transactionLockPath), "r")
+			try {
+				const buffer = Buffer.alloc(1_025)
+				const bytesRead = fsSync.readSync(descriptor, buffer, 0, buffer.length, 0)
+				if (bytesRead > 1_024) throw new Error("Agent control lock metadata exceeds its limit")
+				observed = this.parseTransactionLock(buffer.subarray(0, bytesRead).toString("utf8"))
+			} finally {
+				fsSync.closeSync(descriptor)
+			}
 		} catch (error) {
 			throw new Error("Agent control transaction ownership was lost", { cause: error })
 		}
@@ -344,49 +456,78 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 
 	private commitTransactionFile(temporaryPath: string, destinationPath: string): void {
 		const transaction = this.activeTransaction
-		if (!transaction) throw new Error("Agent control transaction is not active")
+		if (!transaction || transaction.finished || this.transactionContext.getStore() !== transaction) {
+			throw new Error("Agent control transaction ownership was lost")
+		}
 		this.assertTransactionOwnerSync()
 		fsSync.renameSync(temporaryPath, destinationPath)
 		transaction.committed = true
 	}
 
-	private async acquireTransactionLock(transactionToken: string): Promise<void> {
+	private async acquireTransactionLock(
+		transactionToken: string,
+		options: AgentControlTransactionOptions,
+		diagnostic: AgentControlTransactionDiagnostic,
+	): Promise<void> {
+		const deadline = performance.now() + this.transactionWaitTimeoutMs - diagnostic.queueWaitMs
 		await fs.mkdir(path.dirname(this.transactionLockPath), { recursive: true })
-		const owner: TransactionLockOwner = { token: transactionToken, pid: process.pid }
+		const owner: TransactionLockOwner = {
+			token: transactionToken,
+			pid: process.pid,
+			operation: diagnostic.operation,
+		}
 		for (let attempt = 0; ; attempt++) {
-			if (await this.tryCreateTransactionLock(owner)) return
+			throwIfTransactionCancelled(options.signal)
+			if (performance.now() >= deadline) {
+				if (diagnostic.ownerState === "legacy" || diagnostic.ownerState === "unreadable") {
+					throw new AgentControlTransactionError(
+						"Agent control lock ownership cannot be verified. Close all Alpha extension hosts using this global storage, then remove only agent_control.json.transaction.lock and reopen Alpha. Do not remove it while any host is running.",
+						diagnostic.ownerState === "legacy" ? "ELOCKLEGACY" : "ELOCKOWNER",
+					)
+				}
+				throw new AgentControlTransactionError(
+					"Agent control bookkeeping is busy; transaction acquisition wait expired (no operation was started)",
+					"ELOCKED",
+				)
+			}
+			diagnostic.attempts++
+			if (await this.tryCreateTransactionLock(owner, options.signal)) return
 			const observed = await this.observeTransactionLockForAcquisition()
+			if (observed === "legacy" || observed === "unreadable") {
+				diagnostic.ownerState = observed
+				delete diagnostic.ownerPid
+				delete diagnostic.ownerOperation
+				// mkdir reserves ownership before metadata publication. A contender
+				// must tolerate that brief window, but cannot recover it by age.
+				await waitForTransactionRetry(Math.max(0, Math.min(400, deadline - performance.now())), options.signal)
+				continue
+			}
+			diagnostic.ownerPid = observed?.pid
+			diagnostic.ownerOperation = observed?.operation
+			diagnostic.ownerState = observed ? "live" : "none"
 			if (
-				observed !== "legacy" &&
 				observed &&
-				(this.releasedTransactionTokens.has(observed.token) ||
+				(this.releasedTransactionToken === observed.token ||
 					(await this.isTransactionLockMarkedReleased(this.transactionLockPath, observed.token)))
 			) {
+				diagnostic.ownerState = "released"
 				if (await this.tryReapReleasedTransactionLock(observed)) {
-					this.releasedTransactionTokens.delete(observed.token)
+					if (this.releasedTransactionToken === observed.token) this.releasedTransactionToken = undefined
 					continue
 				}
 			}
-			if (
-				observed !== "legacy" &&
-				observed &&
-				!this.isProcessLive(observed.pid) &&
-				(await this.tryReapTransactionLock(observed))
-			) {
-				continue
+			if (observed && !this.isProcessLive(observed.pid)) {
+				diagnostic.ownerState = "dead"
+				if (await this.tryReapTransactionLock(observed)) continue
 			}
-			const delayMs = TRANSACTION_LOCK_RETRY_DELAYS_MS[attempt]
-			if (delayMs === undefined) {
-				throw Object.assign(new Error("Agent control transaction lock is already held"), {
-					code: "ELOCKED",
-					file: this.transactionLockPath,
-				})
-			}
-			await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+			const delayMs = TRANSACTION_LOCK_RETRY_DELAYS_MS[attempt] ?? 400
+			await waitForTransactionRetry(Math.max(0, Math.min(delayMs, deadline - performance.now())), options.signal)
 		}
 	}
 
-	private async observeTransactionLockForAcquisition(): Promise<TransactionLockOwner | "legacy" | undefined> {
+	private async observeTransactionLockForAcquisition(): Promise<
+		TransactionLockOwner | "legacy" | "unreadable" | undefined
+	> {
 		try {
 			return await this.readTransactionLock(this.transactionLockPath)
 		} catch (readError) {
@@ -396,64 +537,57 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 					// Empty proper-lockfile transaction directories only existed in an
 					// unlanded predecessor of this protocol. Never replace one: on POSIX
 					// rename could otherwise claim an empty live legacy directory.
-					return "legacy"
+					return (readError as NodeJS.ErrnoException).code === "ENOENT" ? "legacy" : "unreadable"
 				}
 			} catch {
 				// Preserve the original parsing/read failure below.
 			}
-			throw readError
+			return "unreadable"
 		}
 	}
 
-	private async tryCreateTransactionLock(owner: TransactionLockOwner): Promise<boolean> {
+	private async tryCreateTransactionLock(owner: TransactionLockOwner, signal?: AbortSignal): Promise<boolean> {
+		throwIfTransactionCancelled(signal)
 		try {
-			await fs.stat(this.transactionLockPath)
+			// Unlike rename of a candidate directory, mkdir cannot replace an empty
+			// legacy holder that appeared after an earlier existence check (POSIX).
+			await fs.mkdir(this.transactionLockPath)
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") return false
+			throw error
+		}
+		// If the process crashes here, retain an explicit ownerless lock. No
+		// contender can prove it abandoned; the documented offline repair applies.
+		try {
+			await fs.writeFile(this.transactionLockOwnerPath(this.transactionLockPath), JSON.stringify(owner), {
+				encoding: "utf8",
+				flag: "wx",
+			})
+		} catch (error) {
+			// No valid foreign owner can acquire our freshly created directory.
+			// Clean a failed publication while this process still proves ownership.
+			await this.removeTransactionLockDirectory(this.transactionLockPath, true).catch(() => undefined)
+			throw error
+		}
+		return true
+	}
+
+	private async tryReapTransactionLock(observed: TransactionLockOwner): Promise<boolean> {
+		return this.reapTransactionLock(observed, false)
+	}
+
+	private async reapTransactionLock(observed: TransactionLockOwner, released: boolean): Promise<boolean> {
+		// Earlier releases used a second namespace. Honor existing tombstones;
+		// all new dead/released recovery shares one atomic destination per token.
+		try {
+			await fs.stat(`${this.transactionLockPath}.released.${observed.token}`)
 			return false
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
 		}
-
-		const candidatePath = `${this.transactionLockPath}.candidate.${owner.token}`
-		const candidateOwnerPath = this.transactionLockOwnerPath(candidatePath)
-		let acquired = false
-		try {
-			await fs.mkdir(candidatePath)
-			await fs.writeFile(candidateOwnerPath, JSON.stringify(owner), { encoding: "utf8", flag: "wx" })
-			for (let attempt = 0; ; attempt++) {
-				try {
-					await this.renameTransactionLock(candidatePath, this.transactionLockPath)
-					acquired = true
-					return true
-				} catch (error) {
-					try {
-						await fs.stat(this.transactionLockPath)
-						return false
-					} catch (statError) {
-						if ((statError as NodeJS.ErrnoException).code !== "ENOENT") throw statError
-					}
-
-					const code = (error as NodeJS.ErrnoException).code ?? ""
-					const delayMs = TRANSACTION_LOCK_PROMOTION_RETRY_DELAYS_MS[attempt]
-					if (!TRANSIENT_TRANSACTION_LOCK_RENAME_ERROR_CODES.has(code) || delayMs === undefined) throw error
-
-					// On Windows, a contender can make rename fail with EPERM and then
-					// release the destination before the existence check completes. Keep
-					// the immutable candidate and retry its atomic promotion.
-					await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
-				}
-			}
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "EEXIST") return false
-			throw error
-		} finally {
-			if (!acquired) await this.removeTransactionLockDirectory(candidatePath, true)
-		}
-	}
-
-	private async tryReapTransactionLock(observed: TransactionLockOwner): Promise<boolean> {
 		const reapPath = `${this.transactionLockPath}.reap.${observed.token}`
 		try {
-			await fs.rename(this.transactionLockPath, reapPath)
+			await this.renameTransactionLock(this.transactionLockPath, reapPath)
 		} catch (error) {
 			try {
 				// A permanent deterministic tombstone means a previous reaper already
@@ -466,6 +600,9 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 			}
 			try {
 				await fs.stat(this.transactionLockPath)
+				if (TRANSIENT_TRANSACTION_LOCK_RENAME_ERROR_CODES.has((error as NodeJS.ErrnoException).code ?? "")) {
+					return false
+				}
 				throw error
 			} catch (lockStatError) {
 				if ((lockStatError as NodeJS.ErrnoException).code === "ENOENT") return true
@@ -474,7 +611,14 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		}
 
 		const quarantined = await this.readTransactionLock(reapPath)
-		if (!quarantined || quarantined.token !== observed.token || this.isProcessLive(quarantined.pid)) {
+		if (
+			!quarantined ||
+			quarantined.token !== observed.token ||
+			(released
+				? this.releasedTransactionToken !== observed.token &&
+					!(await this.isTransactionLockMarkedReleased(reapPath, observed.token))
+				: this.isProcessLive(quarantined.pid))
+		) {
 			throw new Error("Agent control transaction reaper quarantined an unexpected live owner")
 		}
 		// Keep the non-empty tombstone permanently. Removing it would allow a
@@ -494,12 +638,10 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 				const code = (error as NodeJS.ErrnoException).code ?? ""
 				if (code === "ENOENT") return
 				const delayMs = TRANSACTION_LOCK_RELEASE_RETRY_DELAYS_MS[attempt]
-				if (!TRANSIENT_TRANSACTION_LOCK_RENAME_ERROR_CODES.has(code)) throw error
-				if (delayMs === undefined) {
+				if (!TRANSIENT_TRANSACTION_LOCK_RENAME_ERROR_CODES.has(code) || delayMs === undefined) {
 					// A committed write must remain successful, but the live owner may not
 					// permanently block the next transaction. Publish a durable release
 					// marker that any store instance can safely quarantine by exact token.
-					this.releasedTransactionTokens.add(transactionToken)
 					await this.markTransactionLockReleased(transactionToken)
 					throw error
 				}
@@ -535,7 +677,10 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 
 	private async isTransactionLockMarkedReleased(lockPath: string, transactionToken: string): Promise<boolean> {
 		try {
-			return (await fs.readFile(this.transactionLockReleasedMarkerPath(lockPath), "utf8")) === transactionToken
+			return (
+				(await this.readBoundedLockMetadata(this.transactionLockReleasedMarkerPath(lockPath), 128)) ===
+				transactionToken
+			)
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
 			throw error
@@ -543,37 +688,7 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 	}
 
 	private async tryReapReleasedTransactionLock(observed: TransactionLockOwner): Promise<boolean> {
-		const releasedPath = `${this.transactionLockPath}.released.${observed.token}`
-		try {
-			await this.renameTransactionLock(this.transactionLockPath, releasedPath)
-		} catch (error) {
-			try {
-				// A permanent token-specific tombstone prevents a delayed releaser from
-				// ever moving a successor's live lock.
-				await fs.stat(releasedPath)
-				return false
-			} catch (releasedStatError) {
-				if ((releasedStatError as NodeJS.ErrnoException).code !== "ENOENT") throw releasedStatError
-			}
-			try {
-				await fs.stat(this.transactionLockPath)
-				if (TRANSIENT_TRANSACTION_LOCK_RENAME_ERROR_CODES.has((error as NodeJS.ErrnoException).code ?? "")) {
-					return false
-				}
-				throw error
-			} catch (lockStatError) {
-				if ((lockStatError as NodeJS.ErrnoException).code === "ENOENT") return true
-				throw error
-			}
-		}
-
-		const quarantined = await this.readTransactionLock(releasedPath)
-		const markedReleased = await this.isTransactionLockMarkedReleased(releasedPath, observed.token)
-		if (!quarantined || quarantined.token !== observed.token || !markedReleased) {
-			throw new Error("Agent control transaction releaser quarantined an unexpected owner")
-		}
-		// Keep the non-empty tombstone permanently for delayed-releaser safety.
-		return true
+		return this.reapTransactionLock(observed, true)
 	}
 
 	private async renameTransactionLock(source: string, destination: string): Promise<void> {
@@ -582,7 +697,9 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 
 	private async readTransactionLock(lockPath: string): Promise<TransactionLockOwner | undefined> {
 		try {
-			return this.parseTransactionLock(await fs.readFile(this.transactionLockOwnerPath(lockPath), "utf8"))
+			return this.parseTransactionLock(
+				await this.readBoundedLockMetadata(this.transactionLockOwnerPath(lockPath), 1_024),
+			)
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
 				try {
@@ -599,6 +716,18 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		return path.join(lockPath, "owner.json")
 	}
 
+	private async readBoundedLockMetadata(filePath: string, limit: number): Promise<string> {
+		const file = await fs.open(filePath, "r")
+		try {
+			const buffer = Buffer.alloc(limit + 1)
+			const { bytesRead } = await file.read(buffer, 0, buffer.length, 0)
+			if (bytesRead > limit) throw new Error("Agent control lock metadata exceeds its limit")
+			return buffer.subarray(0, bytesRead).toString("utf8")
+		} finally {
+			await file.close()
+		}
+	}
+
 	private async removeTransactionLockDirectory(lockPath: string, ignoreMissing: boolean): Promise<void> {
 		await fs.unlink(this.transactionLockOwnerPath(lockPath)).catch((error: NodeJS.ErrnoException) => {
 			if (!ignoreMissing || error.code !== "ENOENT") throw error
@@ -611,14 +740,20 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 	private parseTransactionLock(serialized: string): TransactionLockOwner {
 		const candidate = JSON.parse(serialized) as Partial<TransactionLockOwner>
 		if (
+			!candidate ||
 			typeof candidate.token !== "string" ||
-			!candidate.token ||
-			!Number.isInteger(candidate.pid) ||
-			candidate.pid! <= 0
+			!/^[A-Za-z0-9_-]{1,128}$/.test(candidate.token) ||
+			!Number.isSafeInteger(candidate.pid) ||
+			candidate.pid! <= 0 ||
+			candidate.pid! > 2_147_483_647
 		) {
 			throw new Error("Agent control transaction lock metadata is invalid")
 		}
-		return { token: candidate.token, pid: candidate.pid! }
+		return {
+			token: candidate.token,
+			pid: candidate.pid!,
+			operation: AGENT_CONTROL_OPERATIONS.includes(candidate.operation!) ? candidate.operation : undefined,
+		}
 	}
 
 	private isProcessLive(pid: number): boolean {
@@ -645,14 +780,15 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 	}
 
 	async write(state: AgentControlState): Promise<void> {
+		const context = this.transactionContext.getStore()
+		if (!context) return this.withTransaction(() => this.write(state))
+		if (context !== this.activeTransaction || context.finished)
+			throw new Error("Agent control transaction ownership was lost")
 		await safeWriteJson(this.filePath, state, {
 			prettyPrint: true,
-			...(this.activeTransaction
-				? {
-						atomicReplace: true,
-						commitTempFile: (source, destination) => this.commitTransactionFile(source, destination),
-					}
-				: {}),
+			atomicReplace: true,
+			externalTransaction: true,
+			commitTempFile: (source, destination) => this.commitTransactionFile(source, destination),
 		})
 	}
 }
@@ -895,7 +1031,7 @@ export class AgentControlStore {
 	private initialized = false
 	private disposed = false
 	private initialization?: Promise<void>
-	private writeLock: Promise<void> = Promise.resolve()
+	private readonly writeQueue = new AgentControlTransactionQueue()
 	private readonly listeners = new Set<AgentMailboxListener>()
 	private readonly pendingMailboxClaimSettlements = new Map<string, PendingMailboxClaimSettlement>()
 	private runtimeOwnerId: AgentRuntimeOwnerId
@@ -968,7 +1104,7 @@ export class AgentControlStore {
 		if (this.initialized) return
 		if (this.initialization) return this.initialization
 
-		const initialization = this.withWriteLock(async () => {
+		const initialization = this.withWriteLock(async (queueWaitMs) => {
 			if (this.disposed) throw new Error("AgentControlStore cannot be reinitialized after shutdown")
 			if (this.initialized) {
 				return
@@ -978,25 +1114,28 @@ export class AgentControlStore {
 			try {
 				let loadedState!: AgentControlState
 				let recoveredEvents: AgentMailboxEntry[] = []
-				await this.withPersistenceTransaction(async () => {
-					await this.assertCurrentOwnerLease()
-					const persisted = await this.readPersistedState()
-					const draft = persisted.state
-
-					const recoveredAt = this.now()
-					const recovery = await this.recoverAbandonedState(draft, recoveredAt)
-
-					if (recovery.changed || persisted.migrated) {
-						draft.updatedAt = recoveredAt
-						agentControlStateSchema.parse(draft)
+				await this.withPersistenceTransaction(
+					async () => {
 						await this.assertCurrentOwnerLease()
-						await this.assertPersistenceTransaction()
-						await this.persistence.write(draft)
-					}
+						const persisted = await this.readPersistedState()
+						const draft = persisted.state
 
-					loadedState = draft
-					recoveredEvents = recovery.events
-				})
+						const recoveredAt = this.now()
+						const recovery = await this.recoverAbandonedState(draft, recoveredAt)
+
+						if (recovery.changed || persisted.migrated) {
+							draft.updatedAt = recoveredAt
+							agentControlStateSchema.parse(draft)
+							await this.assertCurrentOwnerLease()
+							await this.assertPersistenceTransaction()
+							await this.persistence.write(draft)
+						}
+
+						loadedState = draft
+						recoveredEvents = recovery.events
+					},
+					{ operation: "initialize", queueWaitMs },
+				)
 				this.state = loadedState
 				this.initialized = true
 				this.publish(recoveredEvents)
@@ -1015,7 +1154,7 @@ export class AgentControlStore {
 	}
 
 	async flush(): Promise<void> {
-		await this.writeLock
+		await this.writeQueue.whenIdle()
 	}
 
 	/** Release this extension-host activation's lease without touching retained records. */
@@ -1037,31 +1176,34 @@ export class AgentControlStore {
 	async recoverAbandonedOwners(): Promise<number> {
 		this.assertInitialized()
 		if (!this.hasOwnerLeases()) return 0
-		return this.withWriteLock(async () => {
+		return this.withWriteLock(async (queueWaitMs) => {
 			let recoveredState!: AgentControlState
 			let recoveredEvents: AgentMailboxEntry[] = []
 			let recoveredRecordCount = 0
 			let ownerLeaseRecovery: OwnerLeaseRecovery | undefined
-			await this.withPersistenceTransaction(async () => {
-				ownerLeaseRecovery = await this.ensureCurrentOwnerLease()
-				const persisted = await this.readPersistedState()
-				const draft = persisted.state
-				const ownerLeaseChanged = ownerLeaseRecovery
-					? this.applyOwnerLeaseRecovery(draft, ownerLeaseRecovery)
-					: false
-				const recoveredAt = this.now()
-				const recovery = await this.recoverAbandonedState(draft, recoveredAt)
-				if (ownerLeaseChanged || recovery.changed || persisted.migrated) {
-					draft.updatedAt = recoveredAt
-					agentControlStateSchema.parse(draft)
-					await this.assertCurrentOwnerLease()
-					await this.assertPersistenceTransaction()
-					await this.persistence.write(draft)
-				}
-				recoveredState = draft
-				recoveredEvents = recovery.events
-				recoveredRecordCount = recovery.recordCount
-			})
+			await this.withPersistenceTransaction(
+				async () => {
+					ownerLeaseRecovery = await this.ensureCurrentOwnerLease()
+					const persisted = await this.readPersistedState()
+					const draft = persisted.state
+					const ownerLeaseChanged = ownerLeaseRecovery
+						? this.applyOwnerLeaseRecovery(draft, ownerLeaseRecovery)
+						: false
+					const recoveredAt = this.now()
+					const recovery = await this.recoverAbandonedState(draft, recoveredAt)
+					if (ownerLeaseChanged || recovery.changed || persisted.migrated) {
+						draft.updatedAt = recoveredAt
+						agentControlStateSchema.parse(draft)
+						await this.assertCurrentOwnerLease()
+						await this.assertPersistenceTransaction()
+						await this.persistence.write(draft)
+					}
+					recoveredState = draft
+					recoveredEvents = recovery.events
+					recoveredRecordCount = recovery.recordCount
+				},
+				{ operation: "recovery", queueWaitMs },
+			)
 			this.state = recoveredState
 			this.completeOwnerLeaseRecovery(ownerLeaseRecovery)
 			this.publish(recoveredEvents)
@@ -1122,7 +1264,7 @@ export class AgentControlStore {
 	}
 
 	/** Register the primary parent even when it is not managed as a subagent run. */
-	async ensureRoot(input: EnsureRootInput): Promise<AgentRecord> {
+	async ensureRoot(input: EnsureRootInput, options?: AgentControlTransactionOptions): Promise<AgentRecord> {
 		return this.transact((draft) => {
 			const existing = draft.agents.find((record) => record.taskId === input.taskId)
 			if (existing) {
@@ -1157,7 +1299,7 @@ export class AgentControlStore {
 			}
 			draft.agents.push(record)
 			return clone(record)
-		})
+		}, options)
 	}
 
 	async createAgent(input: CreateAgentInput): Promise<AgentRecord> {
@@ -1211,10 +1353,11 @@ export class AgentControlStore {
 		status: AgentLifecycleStatus,
 		input: UpdateAgentStatusInput = {},
 		rootTaskId?: string,
+		options?: AgentControlTransactionOptions,
 	): Promise<AgentRecord> {
 		return this.transact((draft) => {
 			return clone(this.applyAgentStatusTransition(draft, target, status, input, rootTaskId))
-		})
+		}, options)
 	}
 
 	/** Commit a lifecycle transition and its parent mailbox event in one durable transaction. */
@@ -1434,39 +1577,43 @@ export class AgentControlStore {
 		rootTaskId: string,
 		workspacePath: string,
 		token: string,
+		options?: AgentControlTransactionOptions,
 	): Promise<void> {
-		await this.transact((draft) => {
-			this.assertParentMutationOwned(draft, parentTaskId, rootTaskId, "reserve primary mutation")
-			const id = `primary-change:${parentTaskId}`
-			const at = this.now()
-			let obligation = draft.verificationObligations.find((item) => item.id === id)
-			if (!obligation) {
-				obligation = {
-					id,
-					changeSetId: id,
-					origin: "primary",
-					rootTaskId,
-					parentTaskId,
-					workspacePath,
-					workerTaskId: parentTaskId,
-					workerNickname: "Primary agent",
-					groupId: id,
-					changedFiles: [],
-					status: "pending",
-					createdAt: at,
-					updatedAt: at,
-					appliedAt: at,
-					fileVersions: {},
-					contentVersion: 1,
-					contentFingerprint: verificationFingerprint({}),
+		await this.transact(
+			(draft) => {
+				this.assertParentMutationOwned(draft, parentTaskId, rootTaskId, "reserve primary mutation")
+				const id = `primary-change:${parentTaskId}`
+				const at = this.now()
+				let obligation = draft.verificationObligations.find((item) => item.id === id)
+				if (!obligation) {
+					obligation = {
+						id,
+						changeSetId: id,
+						origin: "primary",
+						rootTaskId,
+						parentTaskId,
+						workspacePath,
+						workerTaskId: parentTaskId,
+						workerNickname: "Primary agent",
+						groupId: id,
+						changedFiles: [],
+						status: "pending",
+						createdAt: at,
+						updatedAt: at,
+						appliedAt: at,
+						fileVersions: {},
+						contentVersion: 1,
+						contentFingerprint: verificationFingerprint({}),
+					}
+					draft.verificationObligations.push(obligation)
 				}
-				draft.verificationObligations.push(obligation)
-			}
-			obligation.mutationReservations = [...new Set([...(obligation.mutationReservations ?? []), token])]
-			obligation.status = "pending"
-			obligation.updatedAt = at
-			obligation.reason = "An admitted workspace mutation has not published its final content receipt."
-		})
+				obligation.mutationReservations = [...new Set([...(obligation.mutationReservations ?? []), token])]
+				obligation.status = "pending"
+				obligation.updatedAt = at
+				obligation.reason = "An admitted workspace mutation has not published its final content receipt."
+			},
+			{ ...options, operation: "reserve-primary-mutation" },
+		)
 	}
 
 	/** Release only after the final content receipt is durable (including proven no-ops/denials). */
@@ -2381,44 +2528,50 @@ export class AgentControlStore {
 		})
 	}
 
-	private async transact<T>(mutate: (draft: AgentControlState) => T): Promise<T> {
+	private async transact<T>(
+		mutate: (draft: AgentControlState) => T,
+		options?: AgentControlTransactionOptions,
+	): Promise<T> {
 		this.assertInitialized()
-		return this.withWriteLock(async () => {
+		return this.withWriteLock(async (queueWaitMs) => {
 			let committedState!: AgentControlState
 			let publishedEntries: AgentMailboxEntry[] = []
 			let value!: T
 			let ownerLeaseRecovery: OwnerLeaseRecovery | undefined
-			await this.withPersistenceTransaction(async () => {
-				ownerLeaseRecovery = await this.ensureCurrentOwnerLease()
-				const reloadDurableState = this.persistence.withTransaction !== undefined
-				const persisted = reloadDurableState ? await this.readPersistedState() : undefined
-				const base = persisted?.state ?? this.state
-				const draft = clone(base)
-				if (ownerLeaseRecovery) this.applyOwnerLeaseRecovery(draft, ownerLeaseRecovery)
-				const previousMailboxLength = draft.mailbox.length
-				value = mutate(draft)
+			await this.withPersistenceTransaction(
+				async () => {
+					ownerLeaseRecovery = await this.ensureCurrentOwnerLease()
+					const reloadDurableState = this.persistence.withTransaction !== undefined
+					const persisted = reloadDurableState ? await this.readPersistedState() : undefined
+					const base = persisted?.state ?? this.state
+					const draft = clone(base)
+					if (ownerLeaseRecovery) this.applyOwnerLeaseRecovery(draft, ownerLeaseRecovery)
+					const previousMailboxLength = draft.mailbox.length
+					value = mutate(draft)
 
-				// A file transaction may have refreshed state while finding the
-				// requested mutation already applied. Refresh the local projection but
-				// avoid rewriting an identical complete snapshot.
-				if (reloadDurableState && !persisted?.migrated && isDeepStrictEqual(draft, base)) {
-					committedState = base
-					return
-				}
+					// A file transaction may have refreshed state while finding the
+					// requested mutation already applied. Refresh the local projection but
+					// avoid rewriting an identical complete snapshot.
+					if (reloadDurableState && !persisted?.migrated && isDeepStrictEqual(draft, base)) {
+						committedState = base
+						return
+					}
 
-				draft.updatedAt = this.now()
-				agentControlStateSchema.parse(draft)
-				await this.assertCurrentOwnerLease()
-				await this.assertPersistenceTransaction()
-				await this.persistence.write(draft)
-				committedState = draft
-				publishedEntries = draft.mailbox.slice(previousMailboxLength)
-			})
+					draft.updatedAt = this.now()
+					agentControlStateSchema.parse(draft)
+					await this.assertCurrentOwnerLease()
+					await this.assertPersistenceTransaction()
+					await this.persistence.write(draft)
+					committedState = draft
+					publishedEntries = draft.mailbox.slice(previousMailboxLength)
+				},
+				{ operation: "mutation", ...options, queueWaitMs },
+			)
 			this.state = committedState
 			this.completeOwnerLeaseRecovery(ownerLeaseRecovery)
 			this.publish(publishedEntries)
 			return value
-		})
+		}, options)
 	}
 
 	private ownerLeasePersistence(): AgentControlOwnerLeasePersistence | undefined {
@@ -2809,21 +2962,22 @@ export class AgentControlStore {
 		}
 	}
 
-	private withPersistenceTransaction<T>(operation: () => Promise<T>): Promise<T> {
-		return this.persistence.withTransaction ? this.persistence.withTransaction(operation) : operation()
+	private withPersistenceTransaction<T>(
+		operation: () => Promise<T>,
+		options?: AgentControlTransactionOptions,
+	): Promise<T> {
+		return this.persistence.withTransaction ? this.persistence.withTransaction(operation, options) : operation()
 	}
 
 	private async assertPersistenceTransaction(): Promise<void> {
 		await this.persistence.assertTransactionOwner?.()
 	}
 
-	private withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
-		const next = this.writeLock.then(operation, operation)
-		this.writeLock = next.then(
-			() => undefined,
-			() => undefined,
-		)
-		return next
+	private withWriteLock<T>(
+		operation: (queueWaitMs: number) => Promise<T>,
+		options?: AgentControlTransactionOptions,
+	): Promise<T> {
+		return this.writeQueue.run(operation, options?.signal)
 	}
 
 	private allocatePath(

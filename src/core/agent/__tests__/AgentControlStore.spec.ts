@@ -978,7 +978,7 @@ describe("AgentControlStore", () => {
 		}
 	})
 
-	it("retries a transient Windows failure while promoting a transaction-lock candidate", async () => {
+	it("acquires with mkdir without promoting over a potentially empty legacy directory", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-acquire-retry-"))
 		const persistence = new FileAgentControlPersistence(directory)
 		const lockPath = `${persistence.filePath}.transaction.lock`
@@ -986,18 +986,13 @@ describe("AgentControlStore", () => {
 			renameTransactionLock(source: string, destination: string): Promise<void>
 		}
 		const originalRename = internals.renameTransactionLock.bind(persistence)
-		const transientError = Object.assign(new Error("competing Windows lock disappeared during promotion"), {
-			code: "EPERM",
-		})
-		let promotionFailures = 1
 		const rename = vi.spyOn(internals, "renameTransactionLock").mockImplementation(async (source, destination) => {
-			if (source.startsWith(`${lockPath}.candidate.`) && promotionFailures-- > 0) throw transientError
 			await originalRename(source, destination)
 		})
 
 		try {
 			await expect(persistence.withTransaction(async () => "acquired")).resolves.toBe("acquired")
-			expect(rename.mock.calls.filter(([source]) => source.startsWith(`${lockPath}.candidate.`))).toHaveLength(2)
+			expect(rename.mock.calls.every(([source]) => source === lockPath)).toBe(true)
 			await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" })
 		} finally {
 			rename.mockRestore()
@@ -1043,7 +1038,7 @@ describe("AgentControlStore", () => {
 			expect(rename.mock.calls.filter(([source]) => source === lockPath)).toHaveLength(8)
 			await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" })
 			const entries = await fs.readdir(directory)
-			expect(entries.some((entry) => entry.includes(".transaction.lock.released."))).toBe(true)
+			expect(entries.some((entry) => entry.includes(".transaction.lock.reap."))).toBe(true)
 		} finally {
 			rename.mockRestore()
 			errorLog.mockRestore()
@@ -1070,7 +1065,7 @@ describe("AgentControlStore", () => {
 				await expect(internals.tryReapReleasedTransactionLock(releasedOwner)).resolves.toBe(false)
 				await expect(persistence.assertTransactionOwner()).resolves.toBeUndefined()
 			})
-			await expect(fs.stat(`${lockPath}.released.${releasedOwner.token}`)).resolves.toMatchObject({})
+			await expect(fs.stat(`${lockPath}.reap.${releasedOwner.token}`)).resolves.toMatchObject({})
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true })
 		}

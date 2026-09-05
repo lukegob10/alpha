@@ -19,6 +19,8 @@ export interface SafeWriteJsonOptions {
 	commitTempFile?: (temporaryPath: string, destinationPath: string) => void
 	/** Replace the destination in one rename instead of creating a rollback backup. */
 	atomicReplace?: boolean
+	/** Caller holds an unstealable transaction lock and supplies the synchronous commit fence. */
+	externalTransaction?: true
 }
 
 /**
@@ -37,6 +39,9 @@ export interface SafeWriteJsonOptions {
  */
 
 async function safeWriteJson(filePath: string, data: any, options?: SafeWriteJsonOptions): Promise<void> {
+	if (options?.externalTransaction && (!options.atomicReplace || typeof options.commitTempFile !== "function")) {
+		throw new Error("External JSON transactions require atomic replacement and a synchronous commit fence")
+	}
 	const absoluteFilePath = path.resolve(filePath)
 	let releaseLock = async () => {} // Initialized to a no-op
 
@@ -57,22 +62,24 @@ async function safeWriteJson(filePath: string, data: any, options?: SafeWriteJso
 
 	// Acquire the lock before any file operations
 	try {
-		releaseLock = await lockfile.lock(absoluteFilePath, {
-			stale: 31000, // Stale after 31 seconds
-			update: 10000, // Update mtime every 10 seconds to prevent staleness if operation is long
-			realpath: false, // the file may not exist yet, which is acceptable
-			retries: {
-				// Configuration for retrying lock acquisition
-				retries: 5, // Number of retries after the initial attempt
-				factor: 2, // Exponential backoff factor (e.g., 100ms, 200ms, 400ms, ...)
-				minTimeout: 100, // Minimum time to wait before the first retry (in ms)
-				maxTimeout: 1000, // Maximum time to wait for any single retry (in ms)
-			},
-			onCompromised: (err) => {
-				console.error(`Lock at ${absoluteFilePath} was compromised:`, err)
-				throw err
-			},
-		})
+		if (!options?.externalTransaction) {
+			releaseLock = await lockfile.lock(absoluteFilePath, {
+				stale: 31000, // Stale after 31 seconds
+				update: 10000, // Update mtime every 10 seconds to prevent staleness if operation is long
+				realpath: false, // the file may not exist yet, which is acceptable
+				retries: {
+					// Configuration for retrying lock acquisition
+					retries: 5, // Number of retries after the initial attempt
+					factor: 2, // Exponential backoff factor (e.g., 100ms, 200ms, 400ms, ...)
+					minTimeout: 100, // Minimum time to wait before the first retry (in ms)
+					maxTimeout: 1000, // Maximum time to wait for any single retry (in ms)
+				},
+				onCompromised: (err) => {
+					console.error(`Lock at ${absoluteFilePath} was compromised:`, err)
+					throw err
+				},
+			})
+		}
 	} catch (lockError) {
 		// If lock acquisition fails, we throw immediately.
 		// The releaseLock remains a no-op, so the finally block in the main file operations
