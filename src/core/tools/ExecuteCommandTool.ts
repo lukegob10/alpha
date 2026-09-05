@@ -35,7 +35,6 @@ import {
 	type WorkspaceMutationState,
 	type CommandVerificationDiagnostic,
 } from "../agent/VerificationScope"
-import { classifyPlanCommand } from "../../shared/plan-command"
 import { getTrustedCommandExploration } from "./CommandExploration"
 import { createPytestVerificationReceipt } from "../agent/PytestVerificationReceipt"
 
@@ -97,24 +96,22 @@ async function finalizeCommandMutationReceipt(
 	task: Task,
 	mutationBaseline: WorkspaceMutationState | undefined,
 	physicalExecutionId: string,
+	onIncomplete: () => void,
 ): Promise<void> {
-	if (!mutationBaseline) return
+	if (task.taskKind !== "primary") return
 
-	let after: WorkspaceMutationState
-	try {
-		after = await captureWorkspaceMutationState(task.cwd, mutationBaseline)
-	} catch (error) {
-		throw new CommandMutationReceiptError("capture-final-state", true, error)
+	let changes: Awaited<ReturnType<typeof compareWorkspaceMutationState>> | undefined
+	if (mutationBaseline) {
+		try {
+			const after = await captureWorkspaceMutationState(task.cwd, mutationBaseline)
+			changes = await compareWorkspaceMutationState(task.cwd, mutationBaseline, after)
+		} catch {
+			// A terminal process outcome is independent of our bounded diff observer.
+			// Record incompleteness durably instead of turning a real exit into failure.
+		}
 	}
 
-	let changes: Awaited<ReturnType<typeof compareWorkspaceMutationState>>
-	try {
-		changes = await compareWorkspaceMutationState(task.cwd, mutationBaseline, after)
-	} catch (error) {
-		throw new CommandMutationReceiptError("compare-final-state", true, error)
-	}
-
-	if (changes.changedPaths.length > 0) {
+	if (changes && changes.changedPaths.length > 0) {
 		try {
 			const owner = task.providerRef.deref()
 			if (!owner) throw new Error("Primary mutation ledger is unavailable")
@@ -131,7 +128,12 @@ async function finalizeCommandMutationReceipt(
 	try {
 		const owner = task.providerRef.deref()
 		if (!owner) throw new Error("Primary mutation ledger is unavailable")
-		await owner.releasePrimaryMutation(task, physicalExecutionId)
+		if (changes) {
+			await owner.releasePrimaryMutation(task, physicalExecutionId)
+		} else {
+			onIncomplete()
+			await owner.releasePrimaryMutation(task, physicalExecutionId, true)
+		}
 	} catch (error) {
 		throw new CommandMutationReceiptError("release-no-op-receipt", false, error)
 	}
@@ -504,11 +506,14 @@ export async function executeCommandInTerminal(
 		})
 	const ensureMutationReceipt = (): Promise<void> => {
 		mutationReceiptCompletion ??= observeCommandMutationFailure(
-			finalizeCommandMutationReceipt(task, mutationBaseline, physicalExecutionId),
+			finalizeCommandMutationReceipt(task, mutationBaseline, physicalExecutionId, () => {
+				workspaceObservationIncomplete = true
+			}),
 		)
 		return mutationReceiptCompletion
 	}
 	let mutationReservationAcquired = false
+	let workspaceObservationIncomplete = false
 	const releaseMutationReservationBeforeLaunch = async (primaryError: unknown): Promise<void> => {
 		if (!mutationReservationAcquired) return
 		try {
@@ -789,22 +794,13 @@ export async function executeCommandInTerminal(
 		try {
 			mutationBaseline = await captureWorkspaceMutationState(task.cwd)
 		} catch {
-			// Observation unavailability is not itself a mutation. Only the existing
-			// conservative inspection subset can run without a bounded receipt.
-			const classification = classifyPlanCommand(command)
-			if (!classification.allowed || classification.category !== "inspection") {
-				if (toolCallId) task.failCommandExecution?.(toolCallId)
-				return [
-					false,
-					"Command was not started because its workspace mutation scope cannot be observed within the bounds. Use explicit file tools or a supported inspection command.",
-				]
-			}
+			workspaceObservationIncomplete = true
 		}
 	}
 	let admissionFailure: { error: unknown; cancelled: boolean } | undefined
 	try {
 		if (taskWasCancelled()) return cancellationResult()
-		if (mutationBaseline) {
+		if (task.taskKind === "primary") {
 			const owner = task.providerRef.deref()
 			if (!owner) throw new Error("Primary mutation ledger is unavailable")
 			await owner.reservePrimaryMutation(task, physicalExecutionId)
@@ -874,7 +870,7 @@ export async function executeCommandInTerminal(
 	} catch (error) {
 		await disposePytestReceipt()
 		const launchError = new CommandExecutionLifecycleError("launch-command", error)
-		if (mutationBaseline) {
+		if (mutationReservationAcquired) {
 			const receiptError = new CommandMutationReceiptError("launch-outcome-unknown", true, launchError)
 			const { recoveryError } = await handleCommandMutationFailure(receiptError)
 			if (recoveryError) {
@@ -982,7 +978,7 @@ export async function executeCommandInTerminal(
 						{ cause: userTimeoutCleanupError },
 					),
 				)
-				if (mutationBaseline) {
+				if (mutationReservationAcquired) {
 					const receiptError = new CommandMutationReceiptError("process-outcome-unknown", true, cleanupError)
 					const { recoveryError } = await handleCommandMutationFailure(receiptError)
 					if (recoveryError) {
@@ -995,7 +991,7 @@ export async function executeCommandInTerminal(
 				throw cleanupError
 			}
 
-			if (mutationBaseline) {
+			if (mutationReservationAcquired) {
 				const timeoutError = new CommandExecutionLifecycleError("await-command-process", error)
 				if (exitDetails) {
 					// A terminal outcome arrived as part of abort cleanup. Settle the
@@ -1037,7 +1033,7 @@ export async function executeCommandInTerminal(
 		if (exitDetails) {
 			const receiptResult = await Promise.allSettled([commandMutationCompletion])
 			if (receiptResult[0].status === "rejected") failures.push(receiptResult[0].reason)
-		} else if (mutationBaseline) {
+		} else if (mutationReservationAcquired) {
 			const receiptError = new CommandMutationReceiptError("process-outcome-unknown", true, processError)
 			const { recoveryError } = await handleCommandMutationFailure(receiptError)
 			if (recoveryError) failures.push(recoveryError)
@@ -1134,12 +1130,18 @@ export async function executeCommandInTerminal(
 	} else if (completed || exitDetails) {
 		const currentWorkingDir = terminal.getCurrentWorkingDirectory().toPosix()
 		const displayWorkingDir = isManagedWorker ? "." : currentWorkingDir
+		const observationNote = workspaceObservationIncomplete
+			? "\nWorkspace diff observation was incomplete; this result reports the process outcome, not a complete inventory of changed files."
+			: ""
 
 		// Use persisted output format when output was truncated and spilled to disk
 		if (persistedResult?.truncated) {
 			return [
 				false,
-				redactTaskPrivatePaths(task, formatPersistedOutput(persistedResult, exitDetails, displayWorkingDir)),
+				redactTaskPrivatePaths(
+					task,
+					formatPersistedOutput(persistedResult, exitDetails, displayWorkingDir) + observationNote,
+				),
 			]
 		}
 
@@ -1172,7 +1174,7 @@ export async function executeCommandInTerminal(
 			false,
 			redactTaskPrivatePaths(
 				task,
-				`Command executed in terminal within working directory '${displayWorkingDir}'. ${exitStatus}\nOutput:\n${result}`,
+				`Command executed in terminal within working directory '${displayWorkingDir}'. ${exitStatus}${observationNote}\nOutput:\n${result}`,
 			),
 		]
 	} else {

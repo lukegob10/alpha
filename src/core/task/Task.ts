@@ -225,6 +225,7 @@ import {
 	type AgentTurnOutcome,
 } from "../agent/AgentTurnEngine"
 import { createAgentResponse } from "../agent/AgentResponse"
+import { lifecycleResponseItems } from "../agent/lifecycle/responseItems"
 import {
 	isValidSubagentContextManifest,
 	type SubagentContextInstructionSourceInput,
@@ -3151,17 +3152,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		step: CurrentAgentStep | undefined,
 	): Promise<void> {
 		if (!step) return
-		for (const [index, responseItem] of response.items.entries()) {
-			const itemId = `${step.stepId}:item-${index}`
-			const recovered = this.getCanonicalLifecycleSnapshot()
-			if (
-				recovered &&
-				recovered.runId === this.agentRunId &&
-				recovered.turnId === this.agentTurnId &&
-				recovered.items.some((item) => item.itemId === itemId)
-			)
-				continue
-
+		const recovered = this.getCanonicalLifecycleSnapshot()
+		const publishedIds = new Set(
+			recovered && recovered.runId === this.agentRunId && recovered.turnId === this.agentTurnId
+				? recovered.items.map((item) => item.itemId)
+				: [],
+		)
+		for (const { itemId, responseItem } of lifecycleResponseItems(response.items, step.stepId, publishedIds)) {
 			switch (responseItem.type) {
 				case "text":
 					await this.enqueueCanonicalLifecycleEvent(
@@ -4995,11 +4992,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	): Promise<void> {
 		const commandCwd = await fsSync.promises.realpath(cwd)
 		const verificationDiagnostics: CommandVerificationDiagnostic[] = []
-		const verificationVersions = await this.providerRef
-			?.deref()
-			?.captureCommandVerification?.(this, command, commandCwd, verificationChangeSetIds, (diagnostic) => {
-				if (verificationDiagnostics.length < 16) verificationDiagnostics.push(diagnostic)
+		let verificationVersions: CommandExecutionEvidence["verificationVersions"]
+		try {
+			verificationVersions = await this.providerRef
+				?.deref()
+				?.captureCommandVerification?.(this, command, commandCwd, verificationChangeSetIds, (diagnostic) => {
+					if (verificationDiagnostics.length < 16) verificationDiagnostics.push(diagnostic)
+				})
+		} catch {
+			verificationDiagnostics.push({
+				code: "unavailable_scope",
+				message:
+					"Verification scope could not be captured. The command can run, but cannot receive scoped verification credit.",
 			})
+		}
 		if (this.abort) throw new Error("Command admission was cancelled")
 		this.commandExecutionEvidence.delete(toolCallId)
 		if (this.commandExecutionEvidence.size >= 128) {

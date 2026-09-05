@@ -135,7 +135,7 @@ describe("ClineProvider primary verification", () => {
 		const captured = verificationVersions[before.changeSetId]
 
 		expect(captured).toMatchObject({
-			contentVersion: before.contentVersion,
+			contentVersion: before.contentVersion! + 1,
 			contentFingerprint: expect.any(String),
 			scopePath: path.join(workspace, "src"),
 			commandDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -226,7 +226,7 @@ describe("ClineProvider primary verification", () => {
 		const { command } = await pythonVerification()
 		const onRejected = vi.fn()
 		expect(await provider.captureCommandVerification(parent, command, workspace, [], onRejected)).toBeUndefined()
-		expect(onRejected).toHaveBeenLastCalledWith(expect.objectContaining({ code: "missing_change_set" }))
+		expect(onRejected).not.toHaveBeenCalled()
 		expect(await provider.captureCommandVerification(parent, command, workspace, ["unknown"], onRejected)).toEqual(
 			{},
 		)
@@ -248,7 +248,7 @@ describe("ClineProvider primary verification", () => {
 		)
 	})
 
-	it("requires explicit current scoped evidence for a two-file prose change set", async () => {
+	it("keeps optional evidence for prose edits without requiring it for completion", async () => {
 		await fs.mkdir(path.join(workspace, "docs"), { recursive: true })
 		await fs.writeFile(path.join(workspace, "docs", "plan.md"), "# Plan\n")
 		await fs.writeFile(path.join(workspace, "docs", "notes.md"), "# Notes\n")
@@ -262,12 +262,12 @@ describe("ClineProvider primary verification", () => {
 		expect(pending).toMatchObject({
 			changedFiles: ["docs/notes.md", "docs/plan.md"],
 			status: "pending",
-			verificationRequirements: { "docs/notes.md": [], "docs/plan.md": [] },
+			verificationRequirements: undefined,
 		})
 		expect(await provider.captureCommandVerification(parent, command, workspace, [])).toBeUndefined()
 		expect(store.getParentCompletionDecision(parent.taskId)).toMatchObject({
-			allowed: false,
-			blockingObligations: [expect.objectContaining({ changeSetId: pending.changeSetId })],
+			allowed: true,
+			blockingObligations: [],
 		})
 
 		const staleVersions = (await provider.captureCommandVerification(parent, command, workspace, [
@@ -281,7 +281,7 @@ describe("ClineProvider primary verification", () => {
 		setCommandEvidence(staleVersions)
 		await provider.recordParentVerificationEvidence(parent)
 		expect(primaryObligation()).toMatchObject({ status: "pending" })
-		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(false)
+		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(true)
 
 		const currentVersions = (await provider.captureCommandVerification(parent, command, workspace, [
 			pending.changeSetId,
@@ -391,7 +391,7 @@ describe("ClineProvider primary verification", () => {
 		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(false)
 	})
 
-	it("does not strand a receipt when its mailbox projection fails", async () => {
+	it("does not strand an unresolved receipt when its mailbox projection fails", async () => {
 		const token = "workspace-command"
 		await provider.reservePrimaryMutation(parent, token)
 		await fs.writeFile(path.join(workspace, "src", "a.ts"), "export const value = 2\n")
@@ -405,7 +405,7 @@ describe("ClineProvider primary verification", () => {
 		Object.assign(provider, { publishParentVerificationTransition: publish })
 
 		try {
-			await expect(provider.recordPrimaryMutation(parent, fileVersions, false, token)).resolves.toBe(true)
+			await expect(provider.recordPrimaryMutation(parent, fileVersions, true, token)).resolves.toBe(true)
 			expect(appendEvent).toHaveBeenCalledOnce()
 		} finally {
 			errorSpy.mockRestore()
@@ -421,7 +421,7 @@ describe("ClineProvider primary verification", () => {
 		expect(store.getParentCompletionDecision(parent.taskId).blockingObligations).toHaveLength(1)
 	})
 
-	it("returns an affirmed durable receipt when the projection boundary rejects", async () => {
+	it("returns an affirmed unresolved receipt when the projection boundary rejects", async () => {
 		const token = "workspace-command"
 		await provider.reservePrimaryMutation(parent, token)
 		await fs.writeFile(path.join(workspace, "src", "a.ts"), "export const value = 2\n")
@@ -432,7 +432,7 @@ describe("ClineProvider primary verification", () => {
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
 
 		try {
-			await expect(provider.recordPrimaryMutation(parent, fileVersions, false, token)).resolves.toBe(true)
+			await expect(provider.recordPrimaryMutation(parent, fileVersions, true, token)).resolves.toBe(true)
 			expect(errorSpy).toHaveBeenCalledWith(
 				"[ClineProvider] Failed to project a durable primary mutation receipt",
 				projectionError,
@@ -483,7 +483,7 @@ describe("ClineProvider primary verification", () => {
 		})
 	})
 
-	it("keeps the exact observed receipt when bounded dependency enrichment fails", async () => {
+	it("records a deeply nested file without inferring unrelated verification dependencies", async () => {
 		const token = "deep-workspace-command"
 		const relativeFile = [...Array.from({ length: 8 }, (_, index) => `level-${index}`), "deep.ts"].join("/")
 		const absoluteFile = path.join(workspace, ...relativeFile.split("/"))
@@ -501,10 +501,7 @@ describe("ClineProvider primary verification", () => {
 					token,
 				),
 			).resolves.toBe(true)
-			expect(errorSpy).toHaveBeenCalledWith(
-				"[ClineProvider] Failed to enrich a primary mutation receipt with dependencies",
-				expect.objectContaining({ message: expect.stringContaining("path bound") }),
-			)
+			expect(errorSpy).not.toHaveBeenCalled()
 		} finally {
 			errorSpy.mockRestore()
 		}
@@ -516,7 +513,7 @@ describe("ClineProvider primary verification", () => {
 			status: "pending",
 		})
 		expect(primaryObligation().scopeUnresolved).not.toBe(true)
-		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(false)
+		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(true)
 	})
 
 	it("invalidates a passing verification after source and package manifest edits", async () => {
@@ -603,6 +600,6 @@ describe("ClineProvider primary verification", () => {
 			completedAt: primaryObligation().appliedAt! + 3,
 		})
 		expect(failed).toMatchObject({ status: "failed", verification: { status: "failed" } })
-		expect(store.getParentCompletionDecision(parent.taskId, parent.taskId).allowed).toBe(false)
+		expect(store.getParentCompletionDecision(parent.taskId, parent.taskId).allowed).toBe(true)
 	})
 })

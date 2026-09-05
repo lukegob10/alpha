@@ -151,6 +151,8 @@ export const parentVerificationObligationSchema = z
 		contentFingerprint: z.string().min(1).optional(),
 		fileVersions: z.record(z.string()).optional(),
 		scopeUnresolved: z.boolean().optional(),
+		/** A completed operation whose complete filesystem diff was unavailable; not an unfinished effect. */
+		observationIncomplete: z.boolean().optional(),
 		mutationReservations: z.array(z.string().min(1)).max(128).optional(),
 		verificationRequirements: z.record(z.array(z.enum(["test", "types", "lint"]))).optional(),
 		verifiedChecks: z.record(z.array(z.string())).optional(),
@@ -167,11 +169,14 @@ export const parentVerificationObligationSchema = z
 	.superRefine((obligation, context) => {
 		if (
 			obligation.changedFiles.length === 0 &&
-			!(obligation.origin === "primary" && obligation.mutationReservations?.length)
+			!(
+				obligation.origin === "primary" &&
+				(obligation.mutationReservations?.length || obligation.observationIncomplete)
+			)
 		) {
 			context.addIssue({
 				code: z.ZodIssueCode.custom,
-				message: "Empty change sets require an unresolved primary mutation reservation",
+				message: "Empty change sets require a primary mutation reservation or incomplete observation",
 				path: ["changedFiles"],
 			})
 		}

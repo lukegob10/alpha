@@ -448,6 +448,94 @@ function verificationEvents(events: AgentTurnEvent[]) {
 	return events.filter((event) => event.type === "verification_result")
 }
 
+describe("ordinary task tool contracts", () => {
+	it.each(["node", "git"])(
+		"reports the actual %s process outcome in a large workspace with malformed metadata",
+		async (program) => {
+			await withTaskHarness(async (harness) => {
+				await mkdir(path.join(harness.workspacePath, ".git"))
+				await writeFile(path.join(harness.workspacePath, ".git", "HEAD"), "ref: refs/heads/main\n")
+				for (let index = 0; index < 256; index++)
+					await writeFile(path.join(harness.workspacePath, `entry-${index}`), "")
+				const args = program === "node" ? ["--version"] : ["-C", ".", "status"]
+				const command = [program, ...args].join(" ")
+				const terminal = controlledTerminal(harness.workspacePath, (process) => {
+					execFile(
+						program,
+						args,
+						{ cwd: harness.workspacePath, windowsHide: true },
+						(error, stdout, stderr) => {
+							void process.complete({ exitCode: error ? Number(error.code) : 0 }, stdout + stderr)
+						},
+					)
+				})
+				installTerminal(terminal)
+				const result = await createScheduler(harness, []).run(response("physical-command", command))
+				expect(terminal.runCommand).toHaveBeenCalledOnce()
+				expect(result.results[0].status).toBe(program === "node" ? "success" : "error")
+				expect(result.results[0].content).toEqual(
+					expect.stringMatching(program === "node" ? /v\d+\.\d+\.\d+/ : /not a git repository/),
+				)
+			})
+		},
+	)
+
+	it.each(["node --version", "python --version", "python -m pytest tests", "git -C . status"])(
+		"runs approved %s when a non-Git workspace exceeds the observation bound",
+		async (command) => {
+			await withTaskHarness(async (harness) => {
+				for (let index = 0; index < 256; index++) {
+					await writeFile(path.join(harness.workspacePath, `file-${index}.txt`), "")
+				}
+				const terminal = controlledTerminal(harness.workspacePath, (process) => {
+					void process.complete({ exitCode: 0 })
+				})
+				installTerminal(terminal)
+				const events: AgentTurnEvent[] = []
+				await createScheduler(harness, events).run(response("ordinary-command", command))
+				expect(terminal.runCommand).toHaveBeenCalledOnce()
+				expect(harness.task.getCommandExecutionEvidence()).toEqual([
+					expect.objectContaining({ status: "succeeded", exitCode: 0 }),
+				])
+				expect(toolResultEvents(events)).toEqual([expect.objectContaining({ status: "success" })])
+			})
+		},
+	)
+
+	it("returns every public batch entry through the real scheduler and read handler", async () => {
+		await withTaskHarness(async (harness) => {
+			await writeFile(path.join(harness.workspacePath, "second.txt"), "one\ntwo\nthree\n")
+			Object.assign(harness.task, {
+				api: { getModel: () => ({ info: {} }) },
+				rooIgnoreController: { validateAccess: () => true },
+				fileContextTracker: { trackFileContext: vi.fn().mockResolvedValue(undefined) },
+			})
+			const call = {
+				type: "tool_call" as const,
+				id: "batch",
+				name: "read_file",
+				arguments: {
+					path: "fixture.txt",
+					files: [
+						{ path: "fixture.txt" },
+						{ path: "second.txt", line_ranges: [{ start: 2, end: 2 }] },
+						{ path: "missing.txt" },
+					],
+				},
+			}
+			await createScheduler(harness, []).run({ items: [call], text: "", reasoning: "", toolCalls: [call] })
+			const output = JSON.stringify(harness.toolResults())
+			expect(output).toContain("File: fixture.txt")
+			expect(output).toContain("File: second.txt")
+			expect(output).toContain("2 | two")
+			expect(output).not.toContain("1 | one")
+			expect(output).toContain("File: missing.txt")
+			expect(harness.toolResults()).toHaveLength(1)
+			expect(harness.toolResults()[0].is_error).toBe(true)
+		})
+	})
+})
+
 function resultIds(harness: TaskHarness): string[] {
 	return harness.toolResults().map((result) => result.tool_use_id)
 }
@@ -561,7 +649,10 @@ describe("Stage Three command outcome integration", () => {
 					status: "succeeded",
 					testValidation: validating,
 				})
-				expect(store.getParentCompletionDecision(harness.task.taskId).allowed).toBe(validating)
+				expect(store.getParentCompletionDecision(harness.task.taskId).allowed).toBe(true)
+				expect(
+					store.getVerificationObligations({ parentTaskId: harness.task.taskId })[0].status === "satisfied",
+				).toBe(validating)
 				if (!validating)
 					expect(harness.task.getCommandExecutionEvidence()[0].verificationDiagnostics).toContainEqual(
 						expect.objectContaining({ code: "runtime_scope_unavailable" }),
@@ -844,7 +935,7 @@ describe("Stage Three command outcome integration", () => {
 		})
 	})
 
-	it("persists explicit unknown-scope debt with the admitted receipt identity", async () => {
+	it("preserves a terminal outcome when the final workspace diff is unavailable", async () => {
 		await withTaskHarness(async (harness) => {
 			const events: AgentTurnEvent[] = []
 			const terminal = controlledTerminal(harness.workspacePath)
@@ -861,18 +952,19 @@ describe("Stage Three command outcome integration", () => {
 
 				expect(outcome.results[0]).toMatchObject({
 					callId: "unknown-scope",
-					status: "error",
-					executionStatus: "error",
+					status: "success",
+					executionStatus: "success",
 				})
-				expect(outcome.results[0]?.content).toEqual(expect.stringContaining("capture-final-state"))
-				expect(harness.provider.recordPrimaryMutation).toHaveBeenCalledExactlyOnceWith(
-					harness.task,
-					{ __unobserved_command_scope__: expect.any(String) },
-					true,
-					expect.any(String),
+				expect(outcome.results[0]?.content).toEqual(
+					expect.stringContaining("Workspace diff observation was incomplete"),
 				)
-				expect(harness.provider.releasePrimaryMutation).not.toHaveBeenCalled()
-				expect(suspend).toHaveBeenCalledWith(mutationObservationSuspension)
+				expect(harness.provider.recordPrimaryMutation).not.toHaveBeenCalled()
+				expect(harness.provider.releasePrimaryMutation).toHaveBeenCalledExactlyOnceWith(
+					harness.task,
+					expect.any(String),
+					true,
+				)
+				expect(suspend).not.toHaveBeenCalled()
 			} finally {
 				errorSpy.mockRestore()
 			}
@@ -1213,11 +1305,13 @@ describe("Stage Three command outcome integration", () => {
 		}, "deny")
 	})
 
-	it("surfaces command-admission failures without treating them as shell integration fallback", async () => {
+	it("runs an approved command when optional verification scope capture fails", async () => {
 		await withTaskHarness(async (harness) => {
 			harness.provider.captureCommandVerification.mockRejectedValue(new Error("verification admission failed"))
 			const events: AgentTurnEvent[] = []
-			const terminal = controlledTerminal(harness.workspacePath)
+			const terminal = controlledTerminal(harness.workspacePath, (process) => {
+				void process.complete({ exitCode: 0 })
+			})
 			installTerminal(terminal)
 
 			const outcome = await createScheduler(harness, events).run(
@@ -1229,22 +1323,25 @@ describe("Stage Three command outcome integration", () => {
 			expect(result).toMatchObject({
 				callId: "admission-failure",
 				name: "execute_command",
-				status: "error",
-				executionStatus: "error",
+				status: "success",
+				executionStatus: "success",
 			})
-			expect(result?.content).toEqual(expect.stringContaining("verification admission failed"))
 			expect(toolResultEvents(events)).toEqual([
-				expect.objectContaining({ callId: "admission-failure", status: "error" }),
+				expect.objectContaining({ callId: "admission-failure", status: "success" }),
 			])
 			expect(verificationEvents(events)).toEqual([
-				expect.objectContaining({ commandCategory: "test", status: "error" }),
+				expect.objectContaining({ commandCategory: "test", status: "success" }),
 			])
-			expect(terminal.runCommand).not.toHaveBeenCalled()
-			expect(harness.provider.postMessageToWebview).not.toHaveBeenCalled()
+			expect(terminal.runCommand).toHaveBeenCalledOnce()
 			expect(harness.task.say).not.toHaveBeenCalledWith("shell_integration_warning")
 			expect(harness.task.supersedePendingAsk).not.toHaveBeenCalled()
 			expect(harness.task.getCommandExecutionEvidence()).toEqual([
-				expect.objectContaining({ toolCallId: "admission-failure", status: "failed" }),
+				expect.objectContaining({
+					toolCallId: "admission-failure",
+					status: "succeeded",
+					verificationVersions: undefined,
+					verificationDiagnostics: [expect.objectContaining({ code: "unavailable_scope" })],
+				}),
 			])
 			expect(resultIds(harness)).toEqual(["admission-failure"])
 		})
@@ -1299,7 +1396,9 @@ describe("Stage Three command outcome integration", () => {
 
 	it("preserves admission and pre-launch reservation cleanup failures", async () => {
 		await withTaskHarness(async (harness) => {
-			harness.provider.captureCommandVerification.mockRejectedValue(new Error("verification admission failed"))
+			vi.spyOn(harness.task, "admitCommandExecution").mockRejectedValue(
+				new Error("verification admission failed"),
+			)
 			harness.provider.releasePrimaryMutation.mockRejectedValue(new Error("reservation release failed"))
 			const events: AgentTurnEvent[] = []
 			const terminal = controlledTerminal(harness.workspacePath)

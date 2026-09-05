@@ -1847,9 +1847,42 @@ export class AgentControlStore {
 	}
 
 	/** Release only after the final content receipt is durable (including proven no-ops/denials). */
-	async releasePrimaryMutation(parentTaskId: string, rootTaskId: string, token: string): Promise<void> {
+	async releasePrimaryMutation(
+		parentTaskId: string,
+		rootTaskId: string,
+		token: string,
+		observationIncomplete = false,
+	): Promise<void> {
 		await this.transact((draft) => {
 			this.assertParentMutationOwned(draft, parentTaskId, rootTaskId, "settle primary mutation")
+			if (observationIncomplete) {
+				const obligation = draft.verificationObligations.find(
+					(item) => item.id === `primary-change:${parentTaskId}`,
+				)
+				if (!obligation?.mutationReservations?.includes(token))
+					throw new Error("Primary mutation release did not match an active reservation")
+				obligation.observationIncomplete = true
+				obligation.reason = "Command completed; its complete workspace diff was unavailable."
+				obligation.contentVersion = (obligation.contentVersion ?? 0) + 1
+				delete obligation.verification
+				delete obligation.verifiedChecks
+				// Unknown changes cannot preserve an earlier Worker verification receipt.
+				for (const worker of draft.verificationObligations) {
+					if (
+						worker.origin === "primary" ||
+						worker.parentTaskId !== parentTaskId ||
+						worker.appliedAt === undefined
+					)
+						continue
+					worker.status = "pending"
+					worker.contentVersion = (worker.contentVersion ?? 0) + 1
+					worker.updatedAt = this.now()
+					worker.reason =
+						"A command completed without a full workspace diff; revalidate applied Worker changes."
+					delete worker.verification
+					delete worker.verifiedChecks
+				}
+			}
 			if (!this.settlePrimaryMutationReservation(draft, parentTaskId, token)) {
 				throw new Error("Primary mutation release did not match an active reservation")
 			}
@@ -1891,20 +1924,17 @@ export class AgentControlStore {
 			const requirements = input.verificationRequirements
 				? { ...obligation.verificationRequirements, ...input.verificationRequirements }
 				: obligation.verificationRequirements
-			this.updateVerificationContent(
-				obligation,
-				input.workspacePath,
-				{
-					...obligation.fileVersions,
-					...input.dependencyVersions,
-					...input.fileVersions,
-				},
-				at,
-				requirements,
+			const receiptFiles = { ...obligation.fileVersions, ...input.dependencyVersions, ...input.fileVersions }
+			const boundedFiles = Object.fromEntries(
+				Object.entries(receiptFiles)
+					.sort(([a], [b]) => a.localeCompare(b))
+					.slice(0, 256),
 			)
-			obligation.changedFiles = [
-				...new Set([...obligation.changedFiles, ...Object.keys(input.fileVersions)]),
-			].sort()
+			if (Object.keys(receiptFiles).length > 256) obligation.observationIncomplete = true
+			this.updateVerificationContent(obligation, input.workspacePath, boundedFiles, at, requirements)
+			obligation.changedFiles = [...new Set([...obligation.changedFiles, ...Object.keys(input.fileVersions)])]
+				.sort()
+				.filter((file) => Object.hasOwn(boundedFiles, file))
 			if (input.scopeUnresolved) {
 				obligation.scopeUnresolved = true
 				obligation.status = "pending"
@@ -1947,7 +1977,7 @@ export class AgentControlStore {
 		if (!obligation?.mutationReservations?.includes(token)) return false
 		obligation.mutationReservations = obligation.mutationReservations.filter((item) => item !== token)
 		if (obligation.mutationReservations.length > 0) return true
-		if (obligation.changedFiles.length === 0 && !obligation.scopeUnresolved) {
+		if (obligation.changedFiles.length === 0 && !obligation.scopeUnresolved && !obligation.observationIncomplete) {
 			draft.verificationObligations = draft.verificationObligations.filter((item) => item !== obligation)
 			return true
 		}
@@ -1963,6 +1993,22 @@ export class AgentControlStore {
 	}
 
 	/** Revalidate persisted content after reload, rewind, external edits, and before crediting a command. */
+	async invalidatePrimaryVerification(parentTaskId: string, rootTaskId: string): Promise<void> {
+		await this.transact((draft) => {
+			this.assertParentMutationOwned(draft, parentTaskId, rootTaskId, "invalidate primary verification")
+			const obligation = draft.verificationObligations.find(
+				(item) => item.id === `primary-change:${parentTaskId}`,
+			)
+			if (!obligation) return
+			obligation.status = "pending"
+			obligation.contentVersion = (obligation.contentVersion ?? 0) + 1
+			obligation.updatedAt = this.now()
+			obligation.reason = "Earlier verification evidence could not be revalidated."
+			delete obligation.verification
+			delete obligation.verifiedChecks
+		})
+	}
+
 	async reconcileVerificationContent(
 		parentTaskId: string,
 		changeSetId: string,

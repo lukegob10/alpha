@@ -156,14 +156,17 @@ import {
 } from "../agent/AgentControlStore"
 import {
 	captureVerificationContent,
-	captureVerificationDependencies,
 	resolveCommandVerification,
 	type CommandVerificationDiagnostic,
 } from "../agent/VerificationScope"
 import { resolveVerificationRequirements } from "../agent/VerificationRequirements"
 import { reconcileSubagentGroupAfterReload } from "../agent/SubagentGroupRecovery"
 import { AgentLifecycleJournal, type AgentLifecycleEventInput } from "../agent/lifecycle"
-import { formatParentVerificationContext, type ParentCompletionDecision } from "../agent/ParentVerification"
+import {
+	formatParentVerificationContext,
+	isBlockingParentVerification,
+	type ParentCompletionDecision,
+} from "../agent/ParentVerification"
 import {
 	BoundedDelegationManager,
 	InternalTaskCancellationError,
@@ -6500,10 +6503,15 @@ export class ClineProvider
 		)
 	}
 
-	public async releasePrimaryMutation(parent: Task, token: string): Promise<void> {
+	public async releasePrimaryMutation(parent: Task, token: string, observationIncomplete = false): Promise<void> {
 		if (parent.taskKind !== "primary") return
 		const root = await this.ensureAgentControlRoot(parent)
-		await this.agentControlStore.releasePrimaryMutation(parent.taskId, root.rootTaskId, token)
+		await this.agentControlStore.releasePrimaryMutation(
+			parent.taskId,
+			root.rootTaskId,
+			token,
+			observationIncomplete,
+		)
 	}
 
 	public async recordPrimaryMutation(
@@ -6521,36 +6529,15 @@ export class ClineProvider
 					.getVerificationObligations({ parentTaskId: parent.taskId, rootTaskId: root.rootTaskId })
 					.find((item) => item.origin === "primary")?.workspacePath ?? parent.cwd)
 			: await fs.realpath(parent.cwd)
-		const actualFiles = Object.keys(fileVersions)
-		let verificationRequirements: Awaited<ReturnType<typeof resolveVerificationRequirements>> | undefined
-		let dependencyVersions: Awaited<ReturnType<typeof captureVerificationDependencies>> | undefined
-		if (!scopeUnresolved) {
-			try {
-				verificationRequirements = await resolveVerificationRequirements(workspacePath, actualFiles)
-			} catch (error) {
-				// The exact changed-file receipt is still authoritative. A later scoped
-				// verifier must recapture requirements before it can earn credit.
-				console.error("[ClineProvider] Failed to enrich a primary mutation receipt with requirements", error)
-			}
-			try {
-				dependencyVersions = await captureVerificationDependencies(workspacePath, actualFiles)
-			} catch (error) {
-				// Dependency capture is verification enrichment, not evidence that the
-				// already-observed changed-file scope became unknown.
-				console.error("[ClineProvider] Failed to enrich a primary mutation receipt with dependencies", error)
-			}
-		}
 		const obligation = await this.agentControlStore.recordPrimaryMutation({
 			rootTaskId: root.rootTaskId,
 			parentTaskId: parent.taskId,
 			workspacePath,
 			fileVersions,
 			scopeUnresolved,
-			verificationRequirements,
-			dependencyVersions,
 			reservationToken,
 		})
-		if (obligation) {
+		if (obligation && isBlockingParentVerification(obligation)) {
 			try {
 				await this.publishParentVerificationTransition(parent, obligation, root.rootTaskId)
 			} catch (error) {
@@ -6598,29 +6585,39 @@ export class ClineProvider
 
 	private async reconcilePrimaryVerification(parent: Task): Promise<void> {
 		const rootTaskId = this.getAgentControlRootTaskId(parent)
+		const explicitlyAssociated = new Set(
+			parent.getCommandExecutionEvidence().flatMap((item) => item.verificationChangeSetIds ?? []),
+		)
 		let workspacePath: string | undefined
 		for (const obligation of this.agentControlStore.getVerificationObligations({
 			parentTaskId: parent.taskId,
 			rootTaskId,
 		})) {
+			if (obligation.origin === "primary" && !explicitlyAssociated.has(obligation.changeSetId)) continue
 			if (obligation.contentVersion === undefined || obligation.appliedAt === undefined) continue
 			if (obligation.scopeUnresolved || obligation.mutationReservations?.length) continue
-			workspacePath ??= await fs.realpath(parent.cwd)
-			const files = await captureVerificationContent(
-				workspacePath,
-				Object.keys(
-					obligation.fileVersions ?? Object.fromEntries(obligation.changedFiles.map((file) => [file, ""])),
-				),
-			)
-			const requirements = await resolveVerificationRequirements(workspacePath, obligation.changedFiles)
-			await this.agentControlStore.reconcileVerificationContent(
-				parent.taskId,
-				obligation.changeSetId,
-				workspacePath,
-				files,
-				rootTaskId,
-				requirements,
-			)
+			try {
+				workspacePath ??= await fs.realpath(parent.cwd)
+				const files = await captureVerificationContent(
+					workspacePath,
+					Object.keys(
+						obligation.fileVersions ??
+							Object.fromEntries(obligation.changedFiles.map((file) => [file, ""])),
+					),
+				)
+				const requirements = await resolveVerificationRequirements(workspacePath, obligation.changedFiles)
+				await this.agentControlStore.reconcileVerificationContent(
+					parent.taskId,
+					obligation.changeSetId,
+					workspacePath,
+					files,
+					rootTaskId,
+					requirements,
+				)
+			} catch (error) {
+				if (obligation.origin !== "primary") throw error
+				await this.agentControlStore.invalidatePrimaryVerification(parent.taskId, obligation.rootTaskId)
+			}
 		}
 	}
 
@@ -6633,11 +6630,6 @@ export class ClineProvider
 		onRejected?: (diagnostic: CommandVerificationDiagnostic) => void,
 	): Promise<ParentCommandVerificationEvidence["verificationVersions"]> {
 		if (changeSetIds.length === 0) {
-			onRejected?.({
-				code: "missing_change_set",
-				message:
-					"Include the exact applied change-set IDs in execute_command verification.change_set_ids to associate verification evidence.",
-			})
 			return undefined
 		}
 		const workspacePath = await fs.realpath(parent.cwd)
@@ -6776,7 +6768,9 @@ export class ClineProvider
 			await this.currentCommandVerificationEvidence(parent),
 			root.rootTaskId,
 		)
-		for (const obligation of changed) await this.publishParentVerificationTransition(parent, obligation)
+		for (const obligation of changed) {
+			if (obligation.origin !== "primary") await this.publishParentVerificationTransition(parent, obligation)
+		}
 		if (changed.length > 0) {
 			await this.refreshParentVerificationProjections(parent)
 			await this.postStateToWebviewWithoutTaskHistory()
@@ -6855,19 +6849,20 @@ export class ClineProvider
 			},
 			verification: {
 				blocking: !completionDecision.allowed,
-				unresolvedCount: obligations.filter((item) => ["required", "pending", "failed"].includes(item.status))
-					.length,
+				unresolvedCount: obligations.filter(
+					(item) => item.status === "required" || isBlockingParentVerification(item),
+				).length,
 				obligations: obligations.map((item) => ({
 					id: item.id,
 					changeSetId: item.changeSetId,
 					workerTaskId: item.workerTaskId,
 					workerPath: item.workerPath,
 					status: item.status,
-					blocking: item.status === "pending" || item.status === "failed",
+					blocking: isBlockingParentVerification(item),
 					nextAction:
 						item.status === "required"
 							? "Review and apply or discard the quarantined change set."
-							: item.status === "pending" || item.status === "failed"
+							: isBlockingParentVerification(item)
 								? `Run execute_command with verification.change_set_ids including "${item.changeSetId}".`
 								: undefined,
 				})),

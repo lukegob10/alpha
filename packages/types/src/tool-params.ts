@@ -63,6 +63,8 @@ export interface FileEntry {
 	path: string
 	/** Optional list of line ranges to read (if omitted, reads entire file) */
 	lineRanges?: LineRange[]
+	/** Public native-tool spelling; lineRanges remains readable from saved calls. */
+	line_ranges?: LineRange[]
 }
 
 /**
@@ -76,7 +78,7 @@ export interface LegacyReadFileParams {
 	/** Array of file entries to read */
 	files: FileEntry[]
 	/** Discriminant flag for type narrowing */
-	_legacyFormat: true
+	_legacyFormat?: true
 }
 
 /**
@@ -89,7 +91,7 @@ export type ReadFileToolParams = ReadFileParams | LegacyReadFileParams
  * Type guard to check if params are in legacy format.
  */
 export function isLegacyReadFileParams(params: ReadFileToolParams): params is LegacyReadFileParams {
-	return "_legacyFormat" in params && params._legacyFormat === true
+	return "files" in params || ("_legacyFormat" in params && params._legacyFormat === true)
 }
 
 export interface Coordinate {

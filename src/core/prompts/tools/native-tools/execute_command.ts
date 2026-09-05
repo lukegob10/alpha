@@ -6,7 +6,7 @@ Parameters:
 - command: (required) The CLI command to execute. This should be valid for the current operating system. Ensure the command is properly formatted and does not contain any harmful instructions.
 - cwd: (optional) The working directory to execute the command in
 - timeout: (optional) Timeout in seconds. When exceeded, the command keeps running in the background and you receive the output so far. Set this for commands that may run indefinitely, such as dev servers or file watchers, so you can proceed without waiting for them to exit.
-- verification: (optional) Use only when the command validates current applied changes. Name the exact primary or Worker change-set IDs covered by the check. Evidence requires actual successful completion in the correct scope for the current content. Use null for ordinary commands.
+- verification: (optional) Associate a check with an applied Worker change set when its review workflow requires scoped evidence. Use null for ordinary commands, including task-directed validation of your own edits. Choose checks appropriate to the request and repository instructions; report the actual outcome.
 
 Example: Executing npm run dev
 { "command": "npm run dev", "cwd": null, "timeout": null, "verification": null }
@@ -44,7 +44,7 @@ const PLAN_CWD_PARAMETER_DESCRIPTION = `Optional workspace-relative working dire
 
 const TIMEOUT_PARAMETER_DESCRIPTION = `Timeout in seconds. When exceeded, the command continues running in the background and output collected so far is returned. Use this for long-running processes like dev servers, file watchers, or any command that may not exit on its own`
 
-const VERIFICATION_PARAMETER_DESCRIPTION = `Optional explicit verification scope. Use null for ordinary commands. For an installed test, type, or lint check, provide the exact primary or Worker change-set IDs it covers. Use the correct cwd; arbitrary successful commands are not verification`
+const VERIFICATION_PARAMETER_DESCRIPTION = `Optional scoped evidence for applied Worker changes. Use null for ordinary commands and validation of your own edits. When Worker review requires verification, provide its change-set IDs and use the correct cwd`
 
 export function createExecuteCommandTool(planMode = false): OpenAI.Chat.ChatCompletionTool {
 	return {

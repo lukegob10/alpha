@@ -109,10 +109,11 @@ describe("AgentControlStore primary verification", () => {
 				},
 			})
 			await store.recordParentVerificationEvidence("root-1", [evidence], "root-1")
-			expect(store.getParentCompletionDecision("root-1").allowed).toBe(testValidation === true)
+			expect(store.getParentCompletionDecision("root-1").allowed).toBe(true)
 			const restored = new AgentControlStore(persistence)
 			await restored.initialize()
-			expect(restored.getParentCompletionDecision("root-1").allowed).toBe(testValidation === true)
+			expect(restored.getParentCompletionDecision("root-1").allowed).toBe(true)
+			expect(restored.getVerificationObligations()[0].status === "satisfied").toBe(testValidation === true)
 		},
 	)
 
@@ -190,7 +191,7 @@ describe("AgentControlStore primary verification", () => {
 		})
 		expect(reconciled.verification).toBeUndefined()
 		expect(reconciled.contentFingerprint).not.toBe(primary.contentFingerprint)
-		expect(store.getParentCompletionDecision("root-1").allowed).toBe(false)
+		expect(store.getParentCompletionDecision("root-1").allowed).toBe(true)
 
 		const replay = await store.reconcileVerificationContent(
 			"root-1",
@@ -262,7 +263,7 @@ describe("AgentControlStore primary verification", () => {
 		).toEqual([])
 		expect(store.getVerificationObligations()[0]).toMatchObject({ status: "pending" })
 		expect(store.getVerificationObligations()[0].verification).toBeUndefined()
-		expect(store.getParentCompletionDecision("root-1").allowed).toBe(false)
+		expect(store.getParentCompletionDecision("root-1").allowed).toBe(true)
 	})
 
 	it("requires a zero-exit, signal-free successful command for the current content", async () => {
@@ -280,7 +281,7 @@ describe("AgentControlStore primary verification", () => {
 			]),
 		).toEqual([])
 		expect(store.getVerificationObligations()[0]).toMatchObject({ status: "pending" })
-		expect(store.getParentCompletionDecision("root-1").allowed).toBe(false)
+		expect(store.getParentCompletionDecision("root-1").allowed).toBe(true)
 	})
 
 	it.each(["failed", "cancelled"] as const)("records a %s command as failed debt", async (status) => {
@@ -300,7 +301,7 @@ describe("AgentControlStore primary verification", () => {
 				verification: { status: "failed", executionId: "verify-execution" },
 			},
 		])
-		expect(store.getParentCompletionDecision("root-1").allowed).toBe(false)
+		expect(store.getParentCompletionDecision("root-1").allowed).toBe(true)
 	})
 
 	it("lets a later failure invalidate an earlier pass and a later pass clear it again", async () => {
@@ -328,7 +329,7 @@ describe("AgentControlStore primary verification", () => {
 			}),
 		])
 		expect(failed).toMatchObject([{ status: "failed", verification: { executionId: "execution-failure-1" } }])
-		expect(store.getParentCompletionDecision("root-1").allowed).toBe(false)
+		expect(store.getParentCompletionDecision("root-1").allowed).toBe(true)
 
 		const passedAgain = await store.recordParentVerificationEvidence("root-1", [
 			verificationEvidence(primary.changeSetId, primary, {
@@ -350,7 +351,7 @@ describe("AgentControlStore primary verification", () => {
 		const reloaded = new AgentControlStore(persistence)
 		await reloaded.initialize()
 		expect(reloaded.getVerificationObligations()).toEqual(pending)
-		expect(reloaded.getParentCompletionDecision("root-1").allowed).toBe(false)
+		expect(reloaded.getParentCompletionDecision("root-1").allowed).toBe(true)
 
 		const evidence = verificationEvidence(primary.changeSetId, primary, {
 			toolCallId: "reload-pass",
@@ -489,7 +490,7 @@ describe("AgentControlStore primary verification", () => {
 		})
 	})
 
-	it("preserves verification debt when a reserved mutation publishes actual changes", async () => {
+	it("preserves the change receipt without forcing verification after a reserved mutation settles", async () => {
 		const { store } = await setup()
 
 		await store.reservePrimaryMutation("root-1", "root-1", workspacePath, "mutation-1")
@@ -505,7 +506,7 @@ describe("AgentControlStore primary verification", () => {
 				status: "pending",
 			},
 		])
-		expect(store.getParentCompletionDecision("root-1").allowed).toBe(false)
+		expect(store.getParentCompletionDecision("root-1").allowed).toBe(true)
 	})
 
 	it("records a final receipt and settles its reservation in one transaction", async () => {
@@ -526,7 +527,7 @@ describe("AgentControlStore primary verification", () => {
 			mutationReservations: [],
 			status: "pending",
 		})
-		expect(store.getParentCompletionDecision("root-1").allowed).toBe(false)
+		expect(store.getParentCompletionDecision("root-1").allowed).toBe(true)
 
 		const reloaded = new AgentControlStore(persistence)
 		await reloaded.initialize()

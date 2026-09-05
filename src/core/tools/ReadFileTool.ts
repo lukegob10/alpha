@@ -886,12 +886,17 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		// Process each file sequentially (legacy behavior)
 		const results: string[] = []
 
-		for (const rawEntry of fileEntries as unknown[]) {
+		for (const inputEntry of fileEntries as unknown[]) {
 			if (this.isCancelled(task, callbacks)) {
 				callbacks.setResultMetadata?.({ status: "cancelled" })
 				return
 			}
 
+			// Canonical tool calls arrive as public JSON, without the legacy parser.
+			const rawEntry =
+				inputEntry && typeof inputEntry === "object" && "line_ranges" in inputEntry
+					? { ...inputEntry, lineRanges: inputEntry.line_ranges }
+					: inputEntry
 			const entryError = this.validateLegacyEntry(rawEntry)
 			const relPath =
 				rawEntry && typeof rawEntry === "object" && typeof (rawEntry as { path?: unknown }).path === "string"

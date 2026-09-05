@@ -33,8 +33,6 @@ type UserContent = Anthropic.Messages.ContentBlockParam[]
 const COMPLETION_OBLIGATIONS = [
 	["text", "worker"],
 	["explicit", "worker"],
-	["text", "primary"],
-	["explicit", "primary"],
 ] as const
 
 function deferred() {
@@ -193,7 +191,7 @@ async function createHarness() {
 		kind: CompletionKind,
 		beforeCandidate?: (step: number) => void | Promise<void>,
 		interleaveReads: boolean | "repair-verification" | readonly string[] = false,
-		repairChangeSetId = PRIMARY_CHANGE_SET_ID,
+		repairChangeSetId = CHANGE_SET_ID,
 	) => {
 		requestStep.mockImplementation(async (input) => {
 			// Model the request adapter's durable steering consumption; the real
@@ -268,12 +266,12 @@ async function createHarness() {
 	}
 
 	const addAppliedObligation = async (kind: ObligationKind, files = ["src/changed.ts"]) => {
+		const content = "export const changed = true\n"
+		for (const file of files) {
+			await fs.mkdir(path.dirname(path.join(storagePath, file)), { recursive: true })
+			await fs.writeFile(path.join(storagePath, file), content)
+		}
 		if (kind === "primary") {
-			const content = "export const changed = true\n"
-			for (const file of files) {
-				await fs.mkdir(path.dirname(path.join(storagePath, file)), { recursive: true })
-				await fs.writeFile(path.join(storagePath, file), content)
-			}
 			await store.recordPrimaryMutation({
 				rootTaskId: TASK_ID,
 				parentTaskId: TASK_ID,
@@ -293,13 +291,20 @@ async function createHarness() {
 			changeSet: {
 				id: CHANGE_SET_ID,
 				status: "applied",
-				changedFiles: ["src/changed.ts"],
+				changedFiles: files,
 				createdAt: 1_000,
 				updatedAt: 2_000,
 			},
 			reviewSource: "apply",
 			at: 2_000,
 		})
+		await store.reconcileVerificationContent(
+			TASK_ID,
+			CHANGE_SET_ID,
+			storagePath,
+			Object.fromEntries(files.map((file) => [file, fingerprintContent(content)])),
+			TASK_ID,
+		)
 	}
 
 	const assertDurableObligationPending = async (kind: ObligationKind) => {
@@ -442,6 +447,18 @@ describe("Stage Three durable completion integration", () => {
 		])
 		return { running }
 	}
+
+	it.each(["text", "explicit"] as const)("completes a settled primary edit in one %s response", async (kind) => {
+		const harness = await setup(kind)
+		await harness.addAppliedObligation("primary", ["README.md"])
+		await harness.run()
+		expect(harness.requests).toHaveLength(1)
+		expect(
+			harness.events.filter((event) => event.type === "tool_result" && event.name === "execute_command"),
+		).toHaveLength(0)
+		expect(harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.store.getParentCompletionDecision(TASK_ID).allowed).toBe(true)
+	})
 
 	it.each(COMPLETION_OBLIGATIONS)(
 		"bounds repeated %s completion candidates against a real durable %s verification obligation",
@@ -771,7 +788,7 @@ describe("Stage Three durable completion integration", () => {
 		"does not charge internal completion gate reads against the %s candidate rejection budget",
 		async (kind) => {
 			const harness = await setup(kind)
-			await harness.addAppliedObligation("primary")
+			await harness.addAppliedObligation("worker")
 			harness.installCandidates(kind, async () => {
 				for (let read = 0; read < 5; read++) await harness.task.getCompletionGateDecision()
 			})
@@ -785,7 +802,7 @@ describe("Stage Three durable completion integration", () => {
 				rejectionCount: MAX_UNVERIFIED_COMPLETION_ATTEMPTS,
 				runtimeWaitMs: 0,
 			})
-			await harness.assertDurableObligationPending("primary")
+			await harness.assertDurableObligationPending("worker")
 		},
 	)
 
@@ -793,7 +810,7 @@ describe("Stage Three durable completion integration", () => {
 		"gives fresh user guidance a new %s rejection budget within the same task loop",
 		async (kind) => {
 			const harness = await setup(kind)
-			await harness.addAppliedObligation("primary")
+			await harness.addAppliedObligation("worker")
 			const guidance = "Use the documented verification procedure, then reassess the result."
 			harness.ask.mockImplementationOnce(async (type) => {
 				expect(type).toBe("resume_task")
@@ -806,7 +823,7 @@ describe("Stage Three durable completion integration", () => {
 			expect(harness.requests).toHaveLength(MAX_UNVERIFIED_COMPLETION_ATTEMPTS * 2)
 			expect(JSON.stringify(harness.requests[MAX_UNVERIFIED_COMPLETION_ATTEMPTS])).toContain(guidance)
 			expect(harness.ask).toHaveBeenCalledTimes(2)
-			await harness.assertDurableObligationPending("primary")
+			await harness.assertDurableObligationPending("worker")
 		},
 	)
 
@@ -814,7 +831,7 @@ describe("Stage Three durable completion integration", () => {
 		"bounds %s completion candidates despite interleaved unrelated successful reads",
 		async (kind) => {
 			const harness = await setup(kind)
-			await harness.addAppliedObligation("primary")
+			await harness.addAppliedObligation("worker")
 			harness.installCandidates(kind, undefined, true)
 
 			await harness.run()
@@ -824,7 +841,7 @@ describe("Stage Three durable completion integration", () => {
 			expect(
 				harness.events.filter((event) => event.type === "tool_result" && event.name === "list_files"),
 			).toHaveLength(2)
-			await harness.assertDurableObligationPending("primary")
+			await harness.assertDurableObligationPending("worker")
 		},
 	)
 
@@ -832,7 +849,7 @@ describe("Stage Three durable completion integration", () => {
 		"bounds explicitly scoped verification attempts that leave a rejected %s completion candidate unverified",
 		async (kind) => {
 			const harness = await setup(kind)
-			await harness.addAppliedObligation("primary")
+			await harness.addAppliedObligation("worker")
 			harness.installCandidates(kind, undefined, "repair-verification")
 
 			await harness.run()
@@ -853,7 +870,7 @@ describe("Stage Three durable completion integration", () => {
 						event.type === "tool_result" && event.name === "execute_command" && event.status === "success",
 				),
 			).toHaveLength(MAX_UNCHANGED_REPAIR_TOOLS)
-			await harness.assertDurableObligationPending("primary")
+			await harness.assertDurableObligationPending("worker")
 		},
 	)
 
@@ -893,7 +910,7 @@ describe("Stage Three durable completion integration", () => {
 			scope === "changed" ? `src/changed-${index}.ts` : `callers/dependency-${index}.ts`,
 		)
 		const changedFiles = scope === "changed" ? files : ["src/changed.ts"]
-		await harness.addAppliedObligation("primary", changedFiles)
+		await harness.addAppliedObligation("worker", changedFiles)
 		const obligation = harness.store.getVerificationObligations({ parentTaskId: TASK_ID })[0]
 		expect(Object.keys(obligation.fileVersions ?? {})).toEqual(changedFiles)
 		harness.installCandidates(
@@ -918,9 +935,9 @@ describe("Stage Three durable completion integration", () => {
 							status: "succeeded",
 							command: "pnpm check-types",
 							cwd: harness.storagePath,
-							verificationChangeSetIds: [PRIMARY_CHANGE_SET_ID],
+							verificationChangeSetIds: [CHANGE_SET_ID],
 							verificationVersions: {
-								[PRIMARY_CHANGE_SET_ID]: {
+								[CHANGE_SET_ID]: {
 									contentVersion: obligation.contentVersion!,
 									contentFingerprint: obligation.contentFingerprint!,
 									scopePath: harness.storagePath,
@@ -930,8 +947,8 @@ describe("Stage Three durable completion integration", () => {
 									kind: "types",
 								},
 							},
-							startedAt: 3_000,
-							completedAt: 4_000,
+							startedAt: obligation.appliedAt! + 1,
+							completedAt: obligation.appliedAt! + 2,
 							exitCode: 0,
 						},
 					],
