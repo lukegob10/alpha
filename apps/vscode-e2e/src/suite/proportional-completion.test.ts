@@ -11,7 +11,12 @@ import {
 	type TokenUsage,
 } from "@alpha-code/types"
 
-import { parseContextRunMetadata, withBoundedFixtureCleanup, withFixtureCleanup } from "./proportional-context-support"
+import {
+	createCompletionReviewAcknowledger,
+	parseContextRunMetadata,
+	withBoundedFixtureCleanup,
+	withFixtureCleanup,
+} from "./proportional-context-support"
 import { setDefaultSuiteTimeout } from "./test-utils"
 import { waitFor } from "./utils"
 
@@ -30,6 +35,7 @@ const policyDigest = createHash("sha256")
 			publicationDelayMs: 1500,
 			maxRequests: 2,
 			recoveryPolicy: "Await the original settlement, then emit the identical answer without tools",
+			uiPolicy: "Acknowledge the on-screen completion_result review once; never approve recovery or tools",
 		}),
 	)
 	.digest("hex")
@@ -53,6 +59,7 @@ interface CompletionTask {
 	didComplete: boolean
 	abort: boolean
 	taskAsk?: { ask?: string }
+	approveAsk(): void
 	clineMessages: Array<{ ask?: string; say?: string; text?: string; partial?: boolean }>
 	getCompletionGateDecision(): Promise<GateDecision>
 	getCompletionStageMetrics?: () => CompletionMetrics
@@ -112,6 +119,7 @@ class SettlementObservation {
 	settledAt?: number
 	completedAt?: number
 	completedEvents = 0
+	completionReviewAcknowledgements = 0
 	allowedGateObserved = false
 	reservationCreated = false
 	removeFromCache?: () => void
@@ -306,6 +314,7 @@ suite("Alpha proportional completion settlement measurements", function () {
 				const reports = []
 				for (let sample = 0; sample < 3; sample++) {
 					const observation = new SettlementObservation(provider, scenario)
+					const acknowledgeCompletionReview = createCompletionReviewAcknowledger()
 					const scripted = new CompletionScriptedAI(observation, sample)
 					const onCompleted = (taskId: string) => {
 						if (observation.task?.taskId !== taskId) return
@@ -331,10 +340,38 @@ suite("Alpha proportional completion settlement measurements", function () {
 							includeCurrentCost: false,
 						}
 						await globalThis.api.startNewTask({ configuration, text: INPUT })
-						await waitFor(() => observation.completedEvents > 0 || observation.failures.length > 0, {
-							timeout: 30_000,
-							description: `${scenario} durable ordinary-text completion`,
-						})
+						await waitFor(
+							() => {
+								if (observation.completedEvents > 0 || observation.failures.length > 0) return true
+								if (
+									observation.task?.taskAsk?.ask === "completion_result" &&
+									observation.settledAt === undefined
+								) {
+									observation.recordFailure(
+										new Error("Completion review appeared before durable settlement"),
+									)
+									return true
+								}
+								if (acknowledgeCompletionReview(observation.task))
+									observation.completionReviewAcknowledgements++
+								return false
+							},
+							{
+								timeout: 30_000,
+								description: `${scenario} durable ordinary-text completion`,
+								onTimeout: () => ({
+									modelRequests: observation.requests.length,
+									firstGateObserved: observation.firstGateAt !== undefined,
+									durableSettlementObserved: observation.settledAt !== undefined,
+									completionEvents: observation.completedEvents,
+									completionReviewAcknowledgements: observation.completionReviewAcknowledgements,
+									didComplete: observation.task?.didComplete,
+									abort: observation.task?.abort,
+									atCompletionReview: observation.task?.taskAsk?.ask === "completion_result",
+									atRecoveryBoundary: observation.task?.taskAsk?.ask === "resume_task",
+								}),
+							},
+						)
 						observation.assertHealthy()
 						const task = observation.task!
 						await task.flushApiConversationHistoryPersistence()
@@ -346,7 +383,10 @@ suite("Alpha proportional completion settlement measurements", function () {
 						assert.equal(provider.agentControlStore.getAgent(task.taskId, task.taskId)?.status, "completed")
 						assert.ok(
 							task.clineMessages.some(
-								(message) => message.say === "text" && !message.partial && message.text === ANSWER,
+								(message) =>
+									(message.say === "text" || message.say === "completion_result") &&
+									!message.partial &&
+									message.text === ANSWER,
 							),
 						)
 						assert.ok(!task.clineMessages.some((message) => message.ask === "resume_task"))
@@ -396,6 +436,7 @@ suite("Alpha proportional completion settlement measurements", function () {
 							physicalCommandLaunches: 0,
 							commandEvidenceRegistrations: evidence.length,
 							completionEvents: observation.completedEvents,
+							completionReviewAcknowledgements: observation.completionReviewAcknowledgements,
 							firstGateToCompletedMs: observation.completedAt! - observation.firstGateAt,
 							completionStage: metrics
 								? {

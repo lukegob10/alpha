@@ -118,6 +118,14 @@ controlled barriers, attempts bounded cancellation, restores methods, and indepe
 Eight host-independent support tests pass, including injected deadlines for stuck publication/cancellation, continued
 restoration, primary-error preservation, and late rejection observation. No host measurement preceded this correction.
 
+The first central reference host attempt subsequently reached `waiting (completion)` and timed out because the fixture
+omitted the real on-screen completion review acknowledgment. This is a fixture integration failure, not a baseline
+completion or performance result. Both request fixtures now acknowledge only that observed review boundary, once, through
+the standard Task UI response method and accept the canonical promoted final-text row. Two additional support tests cover
+the acknowledgment guard, unrelated/recovery asks, settled/cancelled tasks, and response-error propagation (ten total pass).
+The simulated user action has its own counter; provider behavior and settlement schedules remain unchanged. Corrected
+paired host execution is pending central coordination.
+
 ## Validation and handoff
 
 - Before the slice change: one intended operation-count regression failed, 50 tests passed.

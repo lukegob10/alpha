@@ -38,6 +38,13 @@ durable-settlement promise, then returns exactly the same text. It never starts 
 present in both revisions; do not shorten scripts, change input, or condition behavior on revision or metrics availability.
 An unexpected third request fails the fixture safety bound rather than yielding an unbounded stream of candidates.
 
+The on-screen host also has a user review boundary after the native completion gate succeeds. The fixture acknowledges
+only an observed `taskAsk.ask === "completion_result"`, once per sample, using the Task's standard `approveAsk()` path.
+It never acknowledges Resume, command, tool, or follow-up asks. In settlement scenarios that review must occur after the
+original operation settles. This simulated user acknowledgment is identical in both roles, counted separately in
+`completionReviewAcknowledgements`, and is neither a model request nor a tool call. The final visible answer can use the
+canonical `say:completion_result` row produced when ordinary streamed text is promoted for final presentation.
+
 Two scenarios isolate distinct runtime boundaries:
 
 1. **Running command and evidence publication.** Before the first candidate, a controlled terminal adapter registers one
@@ -122,3 +129,13 @@ uncontended paired timing experiment is declared.
 
 Conversation-only and narrow-lookup fixtures retain their existing one- and two-request thresholds. Their counts may
 already be optimal. Do not add exploration classifications, caching, or prompt policy to manufacture further savings.
+
+## Initial host fixture diagnosis
+
+The first central reference run on exact 1.122.1 (production `530d737`, fixture-only checkout `bad3939`) timed out in both
+scenarios after entering the logged `waiting (completion)` state. The fixture omitted the on-screen review acknowledgment;
+`autoApprovalEnabled` did not acknowledge that boundary. Source inspection of `Task.ask`, `getOffscreenAutoAskResponse`,
+and existing managed-agent/mode E2E tests established the missing user-adapter action. Its visible-answer oracle also
+omitted the canonical promoted completion row. These samples are **fixture integration failures**, not evidence of a
+baseline correctness regression, request savings, or latency. The correction applies to both roles and the minimal context
+fixtures. Matching corrected fixture/helper/policy digests and new paired runs are required before any accepted result.

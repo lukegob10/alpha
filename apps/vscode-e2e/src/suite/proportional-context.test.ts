@@ -8,7 +8,11 @@ import { RooCodeEventName, type RooCodeSettings } from "@alpha-code/types"
 
 import { setDefaultSuiteTimeout } from "./test-utils"
 import { waitFor } from "./utils"
-import { parseContextRunMetadata, withFixtureCleanup } from "./proportional-context-support"
+import {
+	createCompletionReviewAcknowledger,
+	parseContextRunMetadata,
+	withFixtureCleanup,
+} from "./proportional-context-support"
 
 type Scenario = "conversation" | "known-file-lookup"
 type ScriptChunk = { type: "text"; text: string } | { type: "tool_call"; id: string; name: string; arguments: string }
@@ -28,6 +32,7 @@ interface ScriptRuntime {
 	emittedToolCalls: string[]
 	answer?: string
 	evidenceObserved: boolean
+	completionReviewAcknowledgements: number
 	removeFromCache?: () => void
 }
 
@@ -53,7 +58,12 @@ class ProportionalContextScriptedAI {
 		sample: number,
 	) {
 		this.id = `proportional-context-${scenario}-${sample}`
-		runtimes.set(this, { requests: [], emittedToolCalls: [], evidenceObserved: false })
+		runtimes.set(this, {
+			requests: [],
+			emittedToolCalls: [],
+			evidenceObserved: false,
+			completionReviewAcknowledgements: 0,
+		})
 	}
 
 	get removeFromCache(): (() => void) | undefined {
@@ -147,6 +157,7 @@ interface ContextHostProvider {
 				didComplete?: boolean
 				abort?: boolean
 				taskAsk?: { ask?: string }
+				approveAsk(): void
 				clineMessages?: Array<{ say?: string; text?: string; partial?: boolean }>
 		  }
 		| undefined
@@ -173,6 +184,7 @@ suite("Alpha proportional context request measurements", function () {
 				for (let sample = 0; sample < 3; sample++) {
 					const currentHostSampleIndex = hostSampleIndex++
 					const scripted = new ProportionalContextScriptedAI(scenario, fixtureName, sample)
+					const acknowledgeCompletionReview = createCompletionReviewAcknowledger()
 					const completed = new Set<string>()
 					const onCompleted = (taskId: string) => completed.add(taskId)
 					globalThis.api.on(RooCodeEventName.TaskCompleted, onCompleted)
@@ -198,17 +210,25 @@ suite("Alpha proportional context request measurements", function () {
 									: `Read line 2 of ${fixtureName} and report the configured answer.`,
 						})
 						const runtime = runtimes.get(scripted)!
-						await waitFor(() => completed.has(taskId), {
-							timeout: 30_000,
-							description: `${scenario} ordinary-text completion`,
-							onTimeout: () => ({
-								requests: runtime.requests,
-								emittedToolCalls: runtime.emittedToolCalls,
-								didComplete: provider.getLiveTask(taskId)?.didComplete,
-								abort: provider.getLiveTask(taskId)?.abort,
-								ask: provider.getLiveTask(taskId)?.taskAsk?.ask,
-							}),
-						})
+						await waitFor(
+							() => {
+								if (completed.has(taskId)) return true
+								if (acknowledgeCompletionReview(provider.getLiveTask(taskId)))
+									runtime.completionReviewAcknowledgements++
+								return false
+							},
+							{
+								timeout: 30_000,
+								description: `${scenario} ordinary-text completion`,
+								onTimeout: () => ({
+									requests: runtime.requests,
+									emittedToolCalls: runtime.emittedToolCalls,
+									didComplete: provider.getLiveTask(taskId)?.didComplete,
+									abort: provider.getLiveTask(taskId)?.abort,
+									ask: provider.getLiveTask(taskId)?.taskAsk?.ask,
+								}),
+							},
+						)
 						assert.equal(runtime.requests.length, scenario === "conversation" ? 1 : 2)
 						assert.deepStrictEqual(
 							runtime.emittedToolCalls,
@@ -220,7 +240,9 @@ suite("Alpha proportional context request measurements", function () {
 								.getLiveTask(taskId)
 								?.clineMessages?.some(
 									(message) =>
-										message.say === "text" && !message.partial && message.text === runtime.answer,
+										(message.say === "text" || message.say === "completion_result") &&
+										!message.partial &&
+										message.text === runtime.answer,
 								),
 							"The final answer must be visible in the actual task transcript",
 						)

@@ -2,9 +2,53 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import {
 	parseContextRunMetadata,
+	createCompletionReviewAcknowledger,
 	withBoundedFixtureCleanup,
 	withFixtureCleanup,
 } from "../../apps/vscode-e2e/src/suite/proportional-context-support"
+
+test("the on-screen completion review is acknowledged once without accepting recovery or tool asks", () => {
+	let approvals = 0
+	const acknowledge = createCompletionReviewAcknowledger()
+	const task = {
+		taskAsk: { ask: "resume_task" },
+		approveAsk: () => {
+			approvals++
+		},
+	}
+	assert.equal(acknowledge(undefined), false)
+	for (const ask of ["resume_task", "resume_completed_task", "command", "tool", "followup"]) {
+		task.taskAsk.ask = ask
+		assert.equal(acknowledge(task), false)
+	}
+	assert.equal(approvals, 0)
+	task.taskAsk.ask = "completion_result"
+	assert.equal(acknowledge(task), true)
+	assert.equal(acknowledge(task), false)
+	assert.equal(approvals, 1)
+})
+
+test("completion acknowledgment skips settled or cancelled Tasks and preserves approval failures", () => {
+	const failure = new Error("review response failed")
+	const task = {
+		didComplete: true,
+		abort: false,
+		taskAsk: { ask: "completion_result" },
+		approveAsk: () => {
+			throw failure
+		},
+	}
+	const acknowledge = createCompletionReviewAcknowledger()
+	assert.equal(acknowledge(task), false)
+	task.didComplete = false
+	task.abort = true
+	assert.equal(acknowledge(task), false)
+	task.abort = false
+	assert.throws(
+		() => acknowledge(task),
+		(error: unknown) => error === failure,
+	)
+})
 
 test("a stuck publication and stuck cancellation cannot skip restoration or hide the primary failure", async () => {
 	const primary = new Error("completion assertion timed out")

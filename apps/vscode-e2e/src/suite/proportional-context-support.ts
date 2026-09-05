@@ -61,6 +61,28 @@ export async function withBoundedFixtureCleanup<T>(
 	)
 }
 
+/** Acknowledge only the on-screen final review, once; recovery and tool approvals remain untouched. */
+export function createCompletionReviewAcknowledger() {
+	let acknowledged = false
+	return (
+		task:
+			| {
+					didComplete?: boolean
+					abort?: boolean
+					taskAsk?: { ask?: string }
+					approveAsk(): void
+			  }
+			| undefined,
+	): boolean => {
+		if (acknowledged || !task || task.didComplete || task.abort || task.taskAsk?.ask !== "completion_result") {
+			return false
+		}
+		acknowledged = true
+		task.approveAsk()
+		return true
+	}
+}
+
 /** Runner-supplied provenance is a declaration, not proof that the checkout produced the loaded bundle. */
 export function parseContextRunMetadata(raw: string | undefined) {
 	if (!raw) throw new Error("ALPHA_SCOPE_RUN_METADATA must declare source, build, configuration, and cache state")
