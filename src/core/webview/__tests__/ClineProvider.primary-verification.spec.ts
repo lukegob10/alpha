@@ -55,6 +55,7 @@ describe("ClineProvider primary verification", () => {
 			metadata: { task: "Coordinate work" },
 			clineMessages: [],
 			getCommandExecutionEvidence: vi.fn(() => commandEvidence),
+			getTaskLifetimeCancellationSignal: vi.fn(() => new AbortController().signal),
 		}
 		provider = Object.assign(Object.create(ClineProvider.prototype), {
 			agentControlStore: store,
@@ -74,6 +75,16 @@ describe("ClineProvider primary verification", () => {
 	})
 
 	const primaryObligation = () => store.getVerificationObligations({ parentTaskId: parent.taskId })[0]!
+
+	it("propagates task cancellation to reservation admission without creating mutation debt", async () => {
+		const cancellation = new AbortController()
+		parent.getTaskLifetimeCancellationSignal.mockReturnValue(cancellation.signal)
+		cancellation.abort()
+		await expect(provider.reservePrimaryMutation(parent, "cancelled-command")).rejects.toMatchObject({
+			name: "AbortError",
+		})
+		expect(store.getVerificationObligations({ parentTaskId: parent.taskId })).toEqual([])
+	})
 
 	const recordPrimaryMutation = async () => {
 		await provider.recordPrimaryMutation(parent, await captureVerificationContent(workspace, ["src/a.ts"]))

@@ -1058,6 +1058,53 @@ describe("Stage Three command outcome integration", () => {
 		})
 	})
 
+	it.each([1, undefined])(
+		"reports a reservation failure before launching a command with agent timeout %s",
+		async (agentTimeout) => {
+			await withTaskHarness(async (harness) => {
+				const terminal = controlledTerminal(harness.workspacePath)
+				installTerminal(terminal)
+				harness.provider.reservePrimaryMutation.mockRejectedValue(
+					Object.assign(new Error("Agent control transaction acquisition wait expired"), { code: "ELOCKED" }),
+				)
+				await expect(
+					executeCommandInTerminal(harness.task, {
+						executionId: "busy-ledger",
+						toolCallId: "busy-ledger",
+						command: "python -m pip install .",
+						agentTimeout,
+					}),
+				).rejects.toMatchObject({
+					phase: "admit-command",
+					message: expect.stringContaining("Command was not started because pre-launch bookkeeping failed"),
+				})
+				expect(terminal.runCommand).not.toHaveBeenCalled()
+				expect(harness.provider.reservePrimaryMutation).toHaveBeenCalledOnce()
+				expect(harness.provider.releasePrimaryMutation).not.toHaveBeenCalled()
+				expect(harness.task.say).not.toHaveBeenCalledWith("shell_integration_warning")
+			})
+		},
+	)
+
+	it("cancels rejected reservation acquisition without launching or releasing an unacquired reservation", async () => {
+		await withTaskHarness(async (harness) => {
+			const terminal = controlledTerminal(harness.workspacePath)
+			installTerminal(terminal)
+			harness.provider.reservePrimaryMutation.mockImplementation(async () => {
+				harness.task.abort = true
+				throw Object.assign(new Error("Acquisition cancelled"), { name: "AbortError" })
+			})
+			const result = await executeCommandInTerminal(harness.task, {
+				executionId: "cancelled-reservation",
+				toolCallId: "cancelled-reservation",
+				command: "python -m pip install .",
+			})
+			expect(String(result[1])).toMatch(/cancelled/i)
+			expect(terminal.runCommand).not.toHaveBeenCalled()
+			expect(harness.provider.releasePrimaryMutation).not.toHaveBeenCalled()
+		})
+	})
+
 	it("preserves admission and pre-launch reservation cleanup failures", async () => {
 		await withTaskHarness(async (harness) => {
 			harness.provider.captureCommandVerification.mockRejectedValue(new Error("verification admission failed"))

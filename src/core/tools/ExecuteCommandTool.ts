@@ -62,7 +62,7 @@ export class CommandMutationReceiptError extends Error {
 	}
 }
 
-type CommandExecutionLifecyclePhase = "launch-command" | "await-command-process"
+type CommandExecutionLifecyclePhase = "admit-command" | "launch-command" | "await-command-process"
 
 export class CommandExecutionLifecycleError extends Error {
 	override readonly name = "CommandExecutionLifecycleError"
@@ -72,7 +72,12 @@ export class CommandExecutionLifecycleError extends Error {
 		cause: unknown,
 	) {
 		const detail = cause instanceof Error ? cause.message : String(cause)
-		super(`Command execution failed during ${phase}: ${detail.slice(0, 512)}`, { cause })
+		super(
+			phase === "admit-command"
+				? `Command was not started because pre-launch bookkeeping failed: ${detail.slice(0, 512)}`
+				: `Command execution failed during ${phase}: ${detail.slice(0, 512)}`,
+			{ cause },
+		)
 	}
 }
 
@@ -490,8 +495,9 @@ export async function executeCommandInTerminal(
 		)
 		return mutationReceiptCompletion
 	}
+	let mutationReservationAcquired = false
 	const releaseMutationReservationBeforeLaunch = async (primaryError: unknown): Promise<void> => {
-		if (!mutationBaseline) return
+		if (!mutationReservationAcquired) return
 		try {
 			const owner = task.providerRef.deref()
 			if (!owner) throw new Error("Primary mutation ledger is unavailable")
@@ -768,13 +774,15 @@ export async function executeCommandInTerminal(
 			}
 		}
 	}
-	if (mutationBaseline) {
-		const owner = task.providerRef.deref()
-		if (!owner) throw new Error("Primary mutation ledger is unavailable")
-		await owner.reservePrimaryMutation(task, physicalExecutionId)
-	}
 	let admissionFailure: { error: unknown; cancelled: boolean } | undefined
 	try {
+		if (taskWasCancelled()) return cancellationResult()
+		if (mutationBaseline) {
+			const owner = task.providerRef.deref()
+			if (!owner) throw new Error("Primary mutation ledger is unavailable")
+			await owner.reservePrimaryMutation(task, physicalExecutionId)
+			mutationReservationAcquired = true
+		}
 		if (toolCallId)
 			await task.admitCommandExecution?.(
 				toolCallId,
@@ -793,12 +801,12 @@ export async function executeCommandInTerminal(
 			}
 		}
 	} catch (error) {
-		admissionFailure = { error, cancelled: false }
+		admissionFailure = { error, cancelled: taskWasCancelled() }
 	}
 	if (admissionFailure) {
 		await releaseMutationReservationBeforeLaunch(admissionFailure.error)
 		if (admissionFailure.cancelled) return cancellationResult()
-		throw admissionFailure.error
+		throw new CommandExecutionLifecycleError("admit-command", admissionFailure.error)
 	}
 	let process: ReturnType<RooTerminal["runCommand"]>
 	try {

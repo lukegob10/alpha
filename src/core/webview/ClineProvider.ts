@@ -149,7 +149,11 @@ import { CustomModesManager } from "../config/CustomModesManager"
 import { Task, getSubagentAllowedToolNames } from "../task/Task"
 import { WorkspaceMutationGate } from "../task/WorkspaceMutationGate"
 import { AsyncSubagentRunManager } from "../agent/AsyncSubagentRunManager"
-import { AgentControlStore, type ParentCommandVerificationEvidence } from "../agent/AgentControlStore"
+import {
+	AgentControlStore,
+	type AgentControlTransactionOptions,
+	type ParentCommandVerificationEvidence,
+} from "../agent/AgentControlStore"
 import {
 	captureVerificationContent,
 	captureVerificationDependencies,
@@ -5904,20 +5908,29 @@ export class ClineProvider
 		return task.subagentContextManifest?.orchestration?.ancestry.rootTaskId ?? task.rootTaskId ?? task.taskId
 	}
 
-	private async ensureAgentControlRoot(parent: Task): Promise<AgentRecord> {
+	private async ensureAgentControlRoot(parent: Task, options?: AgentControlTransactionOptions): Promise<AgentRecord> {
 		await this.agentControlStoreReady
 		const rootTaskId = this.getAgentControlRootTaskId(parent)
-		let root = await this.agentControlStore.ensureRoot({
-			taskId: rootTaskId,
-			nickname: "root",
-			objective: parent.taskId === rootTaskId ? (parent.metadata?.task ?? "") : "",
-			status: "running",
-		})
+		let root = await this.agentControlStore.ensureRoot(
+			{
+				taskId: rootTaskId,
+				nickname: "root",
+				objective: parent.taskId === rootTaskId ? (parent.metadata?.task ?? "") : "",
+				status: "running",
+			},
+			options,
+		)
 		if (root.status !== "running") {
 			if (root.status !== "pending") {
-				root = await this.agentControlStore.updateAgentStatus(root.taskId, "pending", {}, root.rootTaskId)
+				root = await this.agentControlStore.updateAgentStatus(
+					root.taskId,
+					"pending",
+					{},
+					root.rootTaskId,
+					options,
+				)
 			}
-			root = await this.agentControlStore.updateAgentStatus(root.taskId, "running", {}, root.rootTaskId)
+			root = await this.agentControlStore.updateAgentStatus(root.taskId, "running", {}, root.rootTaskId, options)
 		}
 		return root
 	}
@@ -6477,9 +6490,19 @@ export class ClineProvider
 	/** Persist parent command outcomes and project resulting verification transitions. */
 	public async reservePrimaryMutation(parent: Task, token: string): Promise<void> {
 		if (parent.taskKind !== "primary") return
-		const root = await this.ensureAgentControlRoot(parent)
+		const options: AgentControlTransactionOptions = {
+			signal: parent.getTaskLifetimeCancellationSignal(),
+			operation: "reserve-primary-mutation",
+		}
+		const root = await this.ensureAgentControlRoot(parent, options)
 		const workspacePath = await fs.realpath(parent.cwd)
-		await this.agentControlStore.reservePrimaryMutation(parent.taskId, root.rootTaskId, workspacePath, token)
+		await this.agentControlStore.reservePrimaryMutation(
+			parent.taskId,
+			root.rootTaskId,
+			workspacePath,
+			token,
+			options,
+		)
 	}
 
 	public async releasePrimaryMutation(parent: Task, token: string): Promise<void> {
