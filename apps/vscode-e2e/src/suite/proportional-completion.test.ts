@@ -11,7 +11,7 @@ import {
 	type TokenUsage,
 } from "@alpha-code/types"
 
-import { parseContextRunMetadata, withFixtureCleanup } from "./proportional-context-support"
+import { parseContextRunMetadata, withBoundedFixtureCleanup, withFixtureCleanup } from "./proportional-context-support"
 import { setDefaultSuiteTimeout } from "./test-utils"
 import { waitFor } from "./utils"
 
@@ -213,21 +213,26 @@ class SettlementObservation {
 		this.settlement.resolve()
 	}
 
-	async cleanup() {
+	async cleanup(cancelTask: () => Promise<unknown>) {
 		for (const timer of this.timers) clearTimeout(timer)
 		this.timers.clear()
 		this.releaseCommand.resolve()
 		this.releasePublication.resolve()
-		await withFixtureCleanup(async () => {
-			await this.operation
-			await this.publication
-		}, [
-			async () => {
-				if (this.reservationCreated) await this.provider.releasePrimaryMutation(this.task!, RECEIPT_ID)
-			},
-			...this.restores.reverse(),
-		])
-		this.assertHealthy()
+		await withBoundedFixtureCleanup(
+			async () => undefined,
+			[
+				cancelTask,
+				...this.restores.reverse(),
+				async () => {
+					await this.operation
+					await this.publication
+				},
+				async () => {
+					if (this.reservationCreated) await this.provider.releasePrimaryMutation(this.task!, RECEIPT_ID)
+				},
+				() => this.assertHealthy(),
+			],
+		)
 	}
 }
 
@@ -297,7 +302,7 @@ suite("Alpha proportional completion settlement measurements", function () {
 			const provider = (globalThis.api as unknown as { sidebarProvider?: CompletionProvider }).sidebarProvider
 			assert.ok(provider)
 			const originalConfiguration = globalThis.api.getConfiguration()
-			const reports = await withFixtureCleanup(async () => {
+			const reports = await withBoundedFixtureCleanup(async () => {
 				const reports = []
 				for (let sample = 0; sample < 3; sample++) {
 					const observation = new SettlementObservation(provider, scenario)
@@ -305,6 +310,8 @@ suite("Alpha proportional completion settlement measurements", function () {
 					const onCompleted = (taskId: string) => {
 						if (observation.task?.taskId !== taskId) return
 						observation.completedEvents++
+						if (observation.completedEvents > 1)
+							observation.recordFailure(new Error("Duplicate completion event"))
 						observation.completedAt = Date.now()
 						if (observation.settledAt === undefined)
 							observation.recordFailure(new Error("Premature completion"))
@@ -403,9 +410,8 @@ suite("Alpha proportional completion settlement measurements", function () {
 								: null,
 						}
 					}, [
-						() => observation.cleanup(),
+						() => observation.cleanup(() => globalThis.api.clearCurrentTask()),
 						() => globalThis.api.off(RooCodeEventName.TaskCompleted, onCompleted),
-						() => globalThis.api.clearCurrentTask(),
 						() => scripted.removeFromCache?.(),
 					])
 					reports.push(report)

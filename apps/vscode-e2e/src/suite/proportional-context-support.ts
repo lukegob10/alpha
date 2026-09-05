@@ -29,6 +29,38 @@ export async function withFixtureCleanup<T>(
 	return outcome.value
 }
 
+type CleanupDeadlineScheduler = (timeout: () => void, milliseconds: number) => () => void
+const scheduleCleanupDeadline: CleanupDeadlineScheduler = (timeout, milliseconds) => {
+	const timer = setTimeout(timeout, milliseconds)
+	return () => clearTimeout(timer)
+}
+
+/** A stuck cleanup cannot prevent cancellation, method restoration, or subsequent cleanup attempts. */
+export async function withBoundedFixtureCleanup<T>(
+	operation: () => Promise<T>,
+	cleanups: readonly (() => unknown | Promise<unknown>)[],
+	scheduleDeadline: CleanupDeadlineScheduler = scheduleCleanupDeadline,
+): Promise<T> {
+	return withFixtureCleanup(
+		operation,
+		cleanups.map((cleanup, index) => async () => {
+			let cancelDeadline: (() => void) | undefined
+			const deadline = new Promise<never>((_resolve, reject) => {
+				cancelDeadline = scheduleDeadline(
+					() => reject(new Error(`Fixture cleanup ${index + 1} did not settle within 5000 ms`)),
+					5000,
+				)
+			})
+			try {
+				// Promise.race retains rejection handlers for a cleanup that fails after its deadline.
+				return await Promise.race([Promise.resolve().then(cleanup), deadline])
+			} finally {
+				cancelDeadline?.()
+			}
+		}),
+	)
+}
+
 /** Runner-supplied provenance is a declaration, not proof that the checkout produced the loaded bundle. */
 export function parseContextRunMetadata(raw: string | undefined) {
 	if (!raw) throw new Error("ALPHA_SCOPE_RUN_METADATA must declare source, build, configuration, and cache state")

@@ -2,8 +2,96 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import {
 	parseContextRunMetadata,
+	withBoundedFixtureCleanup,
 	withFixtureCleanup,
 } from "../../apps/vscode-e2e/src/suite/proportional-context-support"
+
+test("a stuck publication and stuck cancellation cannot skip restoration or hide the primary failure", async () => {
+	const primary = new Error("completion assertion timed out")
+	const deadlines: Array<() => void> = []
+	const entered: Array<() => void> = []
+	const observed = Array.from({ length: 2 }, () => new Promise<void>((resolve) => entered.push(resolve)))
+	const seen: string[] = []
+	let cancelledTimers = 0
+	let rejectLatePublication!: (error: Error) => void
+	const publication = new Promise<void>((_resolve, reject) => {
+		rejectLatePublication = reject
+	})
+	const result = assert.rejects(
+		withBoundedFixtureCleanup(
+			async () => {
+				throw primary
+			},
+			[
+				() => {
+					seen.push("publication")
+					entered[0]!()
+					return publication
+				},
+				() => {
+					seen.push("cancel")
+					entered[1]!()
+					return new Promise<void>(() => undefined)
+				},
+				() => {
+					seen.push("restore")
+				},
+				() => {
+					seen.push("cache")
+				},
+			],
+			(timeout, milliseconds) => {
+				assert.equal(milliseconds, 5000)
+				deadlines.push(timeout)
+				return () => {
+					cancelledTimers++
+				}
+			},
+		),
+		(error: unknown) => {
+			assert.ok(error instanceof AggregateError)
+			assert.equal(error.cause, primary)
+			assert.equal(error.errors[0], primary)
+			assert.equal(error.errors.length, 3)
+			assert.match(error.errors[1].message, /cleanup 1 did not settle/)
+			assert.match(error.errors[2].message, /cleanup 2 did not settle/)
+			return true
+		},
+	)
+	await observed[0]
+	deadlines[0]!()
+	await observed[1]
+	deadlines[1]!()
+	await result
+	rejectLatePublication(new Error("late publication failure"))
+	assert.deepEqual(seen, ["publication", "cancel", "restore", "cache"])
+	assert.equal(cancelledTimers, 4)
+})
+
+test("successful cleanup cancels its deadline and preserves cleanup failure identity", async () => {
+	const failure = new Error("immediate cleanup failure")
+	let cancelledTimers = 0
+	await assert.rejects(
+		withBoundedFixtureCleanup(
+			async () => "success",
+			[
+				() => {
+					throw failure
+				},
+				() => undefined,
+			],
+			() => () => {
+				cancelledTimers++
+			},
+		),
+		(error: unknown) => {
+			assert.ok(error instanceof AggregateError)
+			assert.deepEqual(error.errors, [failure])
+			return true
+		},
+	)
+	assert.equal(cancelledTimers, 2)
+})
 
 test("cleanup failures never skip task cache eviction or fixture unlink and preserve the primary failure", async () => {
 	const primary = new Error("assertion failed")

@@ -113,6 +113,11 @@ settlement boundaries, three samples per scenario, quality oracle, and one-reque
 runtime recovery requests, with no physical-command, live-model strategy, token, or latency-improvement claim. The separate
 E2E fixture is implemented; paired host runs remain pending. Local E2E typecheck, lint, and CommonJS compilation passed.
 
+Pre-host source review found that joining a stuck publication could make cleanup unreachable. The follow-up releases
+controlled barriers, attempts bounded cancellation, restores methods, and independently bounds remaining cleanup awaits.
+Eight host-independent support tests pass, including injected deadlines for stuck publication/cancellation, continued
+restoration, primary-error preservation, and late rejection observation. No host measurement preceded this correction.
+
 ## Validation and handoff
 
 - Before the slice change: one intended operation-count regression failed, 50 tests passed.

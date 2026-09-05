@@ -77,6 +77,13 @@ Every admitted sample must satisfy all of these conditions:
 - Cleanup releases every owned barrier/timer, restores instrumented methods and configuration, clears the Task and fake
   provider cache, and preserves primary failures. A report is emitted only after cleanup succeeds.
 
+Cleanup releases its controlled barriers before attempting Task cancellation, then restores patched methods before joining
+publication. Each cancellation, join, reservation release, and configuration restoration has an independent five-second
+cleanup deadline. Deadline failures preserve the original test failure and cannot skip later cleanup actions. A controlled
+host-independent regression expires injected deadlines for stuck publication and cancellation promises without sleeps,
+checks method/cache cleanup continues, and verifies late promise rejection remains observed. A failed cleanup invalidates
+the sample and stops subsequent samples; it is never admitted as a measurement.
+
 The candidate threshold is **one provider request, zero recovery requests, and zero model-emitted tool calls** in every
 sample. When metrics are available, require `candidateCount: 1`, `rejectionCount: 0`, `repairToolCount: 0`, and a positive
 `runtimeWaitMs`. First-candidate, persistence-settled, and completed timestamps must be ordered. These counters are
