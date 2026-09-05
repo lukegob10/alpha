@@ -152,6 +152,32 @@ explicit measurement grant are required before another baseline or candidate. Th
 context only and is not substituted for a valid baseline. The failed report has an explicit failure filename and must not
 be overwritten by a later measurement.
 
+### Corrected dependency baseline: rejected release diagnostics
+
+After the reviewed lock wakeup and bounded Windows replacement fixes, the first new window was
+[rejected for overlapping orchestrator lint](benchmarks/nor35-contaminated-baseline-20260905055146.md). Its three-case
+partial report remains intact and is excluded entirely from acceptance.
+
+The fresh [failed-release baseline](benchmarks/nor35-baseline-failed-release.json) ran at
+`e04f34d80f69b98baed002747121151ac87f2846` under separately granted window
+`nor31-corrected-baseline-restart-20260905055552`. All four cases collected their full samples: 360 measured cycles,
+720 transactions, and 720 writes, with no command errors. The final fixture comparison and worker cleanup succeeded.
+However, the 5,000-child, two-writer case had three `releaseFailed: true` diagnostics, each with `outcome: success` and
+`committed: true`. The harness exited with code 1 and the comparator rejected the raw diagnostics before calculating
+performance thresholds. The complete matrix is invalid for acceptance despite its durable writes succeeding.
+
+| Worker | Iteration | Operation                | Full hold (ms) | Release (ms) |
+| ------ | --------- | ------------------------ | -------------- | ------------ |
+| 0      | 40        | reserve-primary-mutation | 1,050.51       | 2.75         |
+| 1      | 36        | mutation                 | 1,047.25       | 2.65         |
+| 1      | 44        | mutation                 | 1,040.89       | 2.85         |
+
+These diagnostics do not contain the underlying release error code or phase, so the timings alone cannot establish a
+root cause. The quiet window was released immediately when the runner returned; a Windows process inventory confirmed
+that no runner or worker remained. No failed sample was discarded, no command was rerun, and no buffering edit or
+candidate run has started. A reviewed dependency correction and fresh explicit grant are required before measuring
+again. This report was renamed without changing its contents and must not be overwritten.
+
 ### Failed dependency smoke (not acceptance evidence)
 
 The [preserved smoke report](benchmarks/nor35-exploratory-rename-failure.json) ran at
