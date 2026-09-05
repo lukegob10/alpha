@@ -1362,6 +1362,88 @@ export class AgentControlStore {
 		return purged
 	}
 
+	/** Wait outside the transaction queues without cancelling the shared prerequisite. */
+	async waitForTransactionPrerequisite(
+		prerequisite: Promise<unknown> | undefined,
+		options: AgentControlTransactionOptions = {},
+	): Promise<AgentControlTransactionOptions> {
+		if (!prerequisite) return options
+		const startedAt = performance.now()
+		const diagnostic = createTransactionDiagnostic(options)
+		const elapsedBeforeWait = diagnostic.queueWaitMs
+		const timeoutMs = this.persistence.transactionWaitTimeoutMs ?? DEFAULT_TRANSACTION_WAIT_TIMEOUT_MS
+		const remainingMs = Math.max(0, timeoutMs - elapsedBeforeWait)
+		let sharedFailure = false
+		try {
+			throwIfTransactionCancelled(options.signal)
+			if (remainingMs === 0) {
+				throw new AgentControlTransactionError("Agent control prerequisite wait expired", "ELOCKED")
+			}
+			await new Promise<void>((resolve, reject) => {
+				let settled = false
+				const settle = (complete: () => void) => {
+					if (settled) return
+					settled = true
+					clearTimeout(timer)
+					options.signal?.removeEventListener("abort", abort)
+					complete()
+				}
+				const abort = () =>
+					settle(() =>
+						reject(
+							new AgentControlTransactionError(
+								"Agent control transaction acquisition was cancelled",
+								"ABORT_ERR",
+							),
+						),
+					)
+				const timer = setTimeout(
+					() =>
+						settle(() =>
+							reject(
+								new AgentControlTransactionError("Agent control prerequisite wait expired", "ELOCKED"),
+							),
+						),
+					remainingMs,
+				)
+				options.signal?.addEventListener("abort", abort, { once: true })
+				// Both handlers remain attached after a caller leaves, so a late shared
+				// rejection is observed without changing the shared writer's outcome.
+				void prerequisite.then(
+					() => settle(resolve),
+					(error: unknown) =>
+						settle(() => {
+							sharedFailure = true
+							reject(error)
+						}),
+				)
+				if (options.signal?.aborted) abort()
+			})
+			throwIfTransactionCancelled(options.signal)
+			const queueWaitMs = elapsedBeforeWait + Math.max(0, performance.now() - startedAt)
+			if (queueWaitMs >= timeoutMs) {
+				throw new AgentControlTransactionError("Agent control prerequisite wait expired", "ELOCKED")
+			}
+			return { ...options, queueWaitMs }
+		} catch (error) {
+			// A shared failure belongs to its original writer. Only this caller's
+			// admission rejection gets a new bounded diagnostic here.
+			if (!sharedFailure && error instanceof AgentControlTransactionError) {
+				diagnostic.queueWaitMs = elapsedBeforeWait + Math.max(0, performance.now() - startedAt)
+				diagnostic.outcome = error.code === "ABORT_ERR" ? "cancelled" : "error"
+				error.diagnostic = { ...diagnostic }
+				try {
+					if (this.persistence.reportTransactionDiagnostic)
+						this.persistence.reportTransactionDiagnostic(diagnostic)
+					else logTransactionDiagnostic(diagnostic)
+				} catch {
+					// An observer cannot replace the admission rejection.
+				}
+			}
+			throw error
+		}
+	}
+
 	/** Register the primary parent even when it is not managed as a subagent run. */
 	async ensureRoot(input: EnsureRootInput, options?: AgentControlTransactionOptions): Promise<AgentRecord> {
 		return this.transact((draft) => {

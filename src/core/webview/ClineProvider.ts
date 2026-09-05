@@ -5915,7 +5915,10 @@ export class ClineProvider
 		// Creation establishes identity; TaskStarted/TaskActive and explicit rollback
 		// own reactivation. Final verification must preserve a prepared terminal root.
 		// Join an admitted resume before immediate child work reads its parent status.
-		await this.agentControlRootStatusWrites.get(rootTaskId)
+		const admissionOptions = await this.agentControlStore.waitForTransactionPrerequisite(
+			this.agentControlRootStatusWrites.get(rootTaskId),
+			options,
+		)
 		return this.agentControlStore.ensureRoot(
 			{
 				taskId: rootTaskId,
@@ -5923,7 +5926,7 @@ export class ClineProvider
 				objective: parent.taskId === rootTaskId ? (parent.metadata?.task ?? "") : "",
 				status: "running",
 			},
-			options,
+			admissionOptions,
 		)
 	}
 
