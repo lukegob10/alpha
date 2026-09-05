@@ -118,3 +118,17 @@ testing bounded buffering before changing transaction state semantics. It does n
 
 Pending the fresh implementation-branch baseline and reviewed NOR-34 dependency. The preliminary investigation table is
 context only and is not used as the baseline for this experiment.
+
+### Failed dependency smoke (not acceptance evidence)
+
+The [preserved smoke report](benchmarks/nor35-exploratory-rename-failure.json) ran at
+`9b702f7dcfc425f425c18534e8afe3b310e781b9`, including NOR-34's core lock and outer-queue diagnostic changes with the original
+serialization buffer. It used one retained child, one and two independent processes, one warmup and two measured
+reserve/settle cycles per writer. Other local checks were active. The single-process case passed; the two-process case
+recorded one atomic-file replacement `EPERM` during `releasePrimaryMutation`, with `outcome: error`, `committed: false`
+and `releaseFailed: false`. The harness exited with failure and did not retry the command.
+
+This report is retained as a correctness failure and cannot satisfy the acceptance matrix. NOR-34 is investigating the
+writer's completion/close boundary; the observed OS error alone does not establish that boundary as its cause or prove a
+transaction-lock exclusion failure. No uncontended baseline or candidate measurement has started. Both must include the
+same eventual reviewed correction before buffering is compared.

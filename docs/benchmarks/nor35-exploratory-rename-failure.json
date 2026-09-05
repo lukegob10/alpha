@@ -1,0 +1,689 @@
+{
+	"version": 1,
+	"label": "final-baseline-smoke",
+	"startedAt": "2026-09-05T04:50:06.694Z",
+	"commit": "9b702f7dcfc425f425c18534e8afe3b310e781b9",
+	"workingTree": "?? src/utils/__tests__/safeWriteJson.buffering.test.ts",
+	"sourceIdentity": {
+		"src/core/agent/AgentControlStore.ts": "797c0825257522e76b14a1e6522249fa22c477950729ef26ed920bd77c0f4511",
+		"src/core/agent/AgentControlTransaction.ts": "e8b07da14b36bca38e22a25150cf6ee868e87431652d8dd6a19bf216955777cf",
+		"src/core/agent/ParentVerification.ts": "d5c6184855791e6fe8b7bdc5da86c236d8dd23a3a5a67a0e83961a5502117db1",
+		"src/utils/safeWriteJson.ts": "19831fe6f1a01a0a58fc44eea5aaebf4b5ad635dd820dac2a6235db00865d142",
+		"src/core/agent/benchmarks/AgentControlStore.benchmark.ts": "ddc9f7d613d09fa5217c664fa7f35fadf34648e538ee2015f6e1ecf07eb98a3c",
+		"src/core/agent/benchmarks/AgentControlBenchmarkWorkers.ts": "da203eb969c161db96e812fabcc81b92cbedc067a78c2310d381d517071ba714",
+		"src/core/agent/benchmarks/AgentControlBenchmarkReport.ts": "ddbb49b08bdc6a6d673a2617333765a98a45a748d781d957922aedc6119c641b",
+		"src/core/agent/__tests__/fixtures/agentControlBenchmarkFixture.ts": "798e4a7830df377d0fc2b49b8ca3a411b6eca792dd6f08be1d674ad76ea9cb85",
+		"packages/types/dist/index.cjs": "0cdadd42daefdc5d4c99c42bda98426bb0542c5eb96f9c0a60803c3d95079381",
+		"packages/types/dist/index.js": "706867a622c7ff2d09b13e9fa49497881e68b6722c0694906f92e1260a0ffe6b",
+		"pnpm-lock.yaml": "12a75be7f500e1a3a745951b0700a55aad590c734a53c13849d9125dad57a78a"
+	},
+	"runtime": {
+		"node": "v20.19.2",
+		"packageManager": "pnpm/10.8.1 npm/? node/v20.19.2 win32 x64",
+		"platform": "win32",
+		"arch": "x64",
+		"os": "10.0.26200",
+		"cpu": "AMD Ryzen 7 5800X 8-Core Processor             ",
+		"logicalCpus": 16,
+		"memoryBytes": 68662771712
+	},
+	"conditions": {
+		"quietWindow": "not granted; diagnostic run only",
+		"cache": "Fresh worker processes; warm filesystem cache after setup and warmup. No OS cache eviction.",
+		"units": "milliseconds",
+		"phases": "read includes JSON parse; body includes all internal phases. releaseAndFence includes the post-body owner check plus release. Unattributed body includes equality, mutation, owner lease checks and scheduler overhead. Snapshot reads use the local projection and zero transactions.",
+		"concurrency": "Processes synchronize at initialization and the start of measurement, then run independently. This does not guarantee continuous contention; attempts and acquisition wait describe observed contention.",
+		"backgroundRecoveryScanIntervalMs": 0
+	},
+	"cases": [
+		{
+			"options": {
+				"retainedAgentCount": 1,
+				"writers": 1,
+				"samples": 2,
+				"warmups": 1,
+				"commands": ["reserve-settle"],
+				"harnessTimeoutMs": 1800000
+			},
+			"initialBytes": 7571,
+			"finalBytes": 7571,
+			"fixture": {
+				"projectCount": 4,
+				"mailboxEntriesPerAgent": 4,
+				"mailboxPayloadBytes": 512,
+				"verificationObligationsPerAgent": 1,
+				"ownerId": "agent-control-benchmark-owner",
+				"retainedAgentCount": 1,
+				"writers": 1,
+				"samples": 2,
+				"warmups": 1,
+				"commands": ["reserve-settle"],
+				"harnessTimeoutMs": 1800000
+			},
+			"summary": [
+				{
+					"command": "reserve-settle",
+					"commands": 2,
+					"failures": 0,
+					"failureRate": 0,
+					"transactions": 4,
+					"transactionsPerCommand": 2,
+					"writes": 4,
+					"transactionFailures": 0,
+					"contendedTransactions": 0,
+					"contentionRate": 0,
+					"lock": {
+						"queueWait": {
+							"count": 4,
+							"p50": 0.0014999999999645297,
+							"p95": 0.004000000000019099,
+							"max": 0.004000000000019099
+						},
+						"acquisitionWait": {
+							"count": 4,
+							"p50": 1.5480000000000018,
+							"p95": 1.7515000000000782,
+							"max": 1.7515000000000782
+						},
+						"hold": {
+							"count": 4,
+							"p50": 9.289000000000101,
+							"p95": 11.583900000000085,
+							"max": 11.583900000000085
+						},
+						"release": {
+							"count": 4,
+							"p50": 3.261700000000019,
+							"p95": 3.519999999999982,
+							"max": 3.519999999999982
+						},
+						"attempts": {
+							"count": 4,
+							"p50": 1,
+							"p95": 1,
+							"max": 1
+						}
+					},
+					"total": {
+						"count": 2,
+						"p50": 28.058099999999968,
+						"p95": 30.639099999999985,
+						"max": 30.639099999999985
+					},
+					"wait": {
+						"count": 4,
+						"p50": 1.5920999999999594,
+						"p95": 1.7953999999999724,
+						"max": 1.7953999999999724
+					},
+					"body": {
+						"count": 4,
+						"p50": 9.268500000000017,
+						"p95": 11.56740000000002,
+						"max": 11.56740000000002
+					},
+					"releaseAndFence": {
+						"count": 4,
+						"p50": 3.3011999999999944,
+						"p95": 3.552400000000034,
+						"max": 3.552400000000034
+					},
+					"phases": {
+						"read": {
+							"count": 4,
+							"p50": 0.6272999999999911,
+							"p95": 0.6753999999999678,
+							"max": 0.6753999999999678
+						},
+						"jsonParse": {
+							"count": 4,
+							"p50": 0.07200000000000273,
+							"p95": 0.08430000000009841,
+							"max": 0.08430000000009841
+						},
+						"validation": {
+							"count": 4,
+							"p50": 0.8349999999999227,
+							"p95": 1.0565000000000282,
+							"max": 1.0565000000000282
+						},
+						"copy": {
+							"count": 4,
+							"p50": 0.07100000000002638,
+							"p95": 0.10310000000004038,
+							"max": 0.10310000000004038
+						},
+						"write": {
+							"count": 4,
+							"p50": 3.530399999999986,
+							"p95": 3.884999999999991,
+							"max": 3.884999999999991
+						}
+					},
+					"unattributedBody": {
+						"count": 4,
+						"p50": 4.031000000000063,
+						"p95": 5.876899999999978,
+						"max": 5.876899999999978
+					}
+				}
+			],
+			"workers": [
+				{
+					"samples": [
+						{
+							"command": "reserve-settle",
+							"iteration": 0,
+							"worker": 0,
+							"total": 30.639099999999985,
+							"transactions": [
+								{
+									"wait": 1.7953999999999724,
+									"body": 11.56740000000002,
+									"releaseAndFence": 3.552400000000034,
+									"phases": {
+										"read": 0.6753999999999678,
+										"jsonParse": 0.0764000000000351,
+										"validation": 1.0317000000000007,
+										"copy": 0.09840000000008331,
+										"write": 3.884999999999991
+									},
+									"writes": 1,
+									"diagnostic": {
+										"operation": "reserve-primary-mutation",
+										"outcome": "success",
+										"queueWaitMs": 0.004000000000019099,
+										"acquisitionWaitMs": 1.7515000000000782,
+										"holdMs": 11.583900000000085,
+										"releaseMs": 3.519999999999982,
+										"attempts": 1,
+										"ownerState": "none",
+										"committed": true,
+										"releaseFailed": false
+									}
+								},
+								{
+									"wait": 1.661799999999971,
+									"body": 9.268500000000017,
+									"releaseAndFence": 2.66719999999998,
+									"phases": {
+										"read": 0.5501000000000431,
+										"jsonParse": 0.07200000000000273,
+										"validation": 0.817899999999895,
+										"copy": 0.07100000000002638,
+										"write": 3.79849999999999
+									},
+									"writes": 1,
+									"diagnostic": {
+										"operation": "mutation",
+										"outcome": "success",
+										"queueWaitMs": 0.001199999999926149,
+										"acquisitionWaitMs": 1.624300000000062,
+										"holdMs": 9.289000000000101,
+										"releaseMs": 2.6316000000000486,
+										"attempts": 1,
+										"ownerState": "none",
+										"committed": true,
+										"releaseFailed": false
+									}
+								}
+							]
+						},
+						{
+							"command": "reserve-settle",
+							"iteration": 1,
+							"worker": 0,
+							"total": 28.058099999999968,
+							"transactions": [
+								{
+									"wait": 1.5920999999999594,
+									"body": 9.775899999999979,
+									"releaseAndFence": 3.3239000000000942,
+									"phases": {
+										"read": 0.6643000000000256,
+										"jsonParse": 0.07010000000002492,
+										"validation": 1.0565000000000282,
+										"copy": 0.06590000000005602,
+										"write": 3.530399999999986
+									},
+									"writes": 1,
+									"diagnostic": {
+										"operation": "reserve-primary-mutation",
+										"outcome": "success",
+										"queueWaitMs": 0.0014999999999645297,
+										"acquisitionWaitMs": 1.5446999999999207,
+										"holdMs": 9.795200000000023,
+										"releaseMs": 3.2799999999999727,
+										"attempts": 1,
+										"ownerState": "none",
+										"committed": true,
+										"releaseFailed": false
+									}
+								},
+								{
+									"wait": 1.5919999999999845,
+									"body": 8.293800000000033,
+									"releaseAndFence": 3.3011999999999944,
+									"phases": {
+										"read": 0.6272999999999911,
+										"jsonParse": 0.08430000000009841,
+										"validation": 0.8349999999999227,
+										"copy": 0.10310000000004038,
+										"write": 2.8011999999999944
+									},
+									"writes": 1,
+									"diagnostic": {
+										"operation": "mutation",
+										"outcome": "success",
+										"queueWaitMs": 0.0018000000000029104,
+										"acquisitionWaitMs": 1.5480000000000018,
+										"holdMs": 8.308100000000081,
+										"releaseMs": 3.261700000000019,
+										"attempts": 1,
+										"ownerState": "none",
+										"committed": true,
+										"releaseFailed": false
+									}
+								}
+							]
+						}
+					],
+					"eventLoop": {
+						"p50": 10.076159,
+						"p95": 10.387455,
+						"max": 10.387455,
+						"count": 4
+					}
+				}
+			]
+		},
+		{
+			"options": {
+				"retainedAgentCount": 1,
+				"writers": 2,
+				"samples": 2,
+				"warmups": 1,
+				"commands": ["reserve-settle"],
+				"harnessTimeoutMs": 1800000
+			},
+			"initialBytes": 7571,
+			"finalBytes": 8375,
+			"fixture": {
+				"projectCount": 4,
+				"mailboxEntriesPerAgent": 4,
+				"mailboxPayloadBytes": 512,
+				"verificationObligationsPerAgent": 1,
+				"ownerId": "agent-control-benchmark-owner",
+				"retainedAgentCount": 1,
+				"writers": 2,
+				"samples": 2,
+				"warmups": 1,
+				"commands": ["reserve-settle"],
+				"harnessTimeoutMs": 1800000
+			},
+			"summary": [
+				{
+					"command": "reserve-settle",
+					"commands": 4,
+					"failures": 1,
+					"failureRate": 0.25,
+					"transactions": 8,
+					"transactionsPerCommand": 2,
+					"writes": 8,
+					"transactionFailures": 1,
+					"contendedTransactions": 1,
+					"contentionRate": 0.125,
+					"lock": {
+						"queueWait": {
+							"count": 8,
+							"p50": 0.0018999999999778083,
+							"p95": 0.0048000000001593435,
+							"max": 0.0048000000001593435
+						},
+						"acquisitionWait": {
+							"count": 8,
+							"p50": 2.5204000000001088,
+							"p95": 413.02009999999996,
+							"max": 413.02009999999996
+						},
+						"hold": {
+							"count": 8,
+							"p50": 14.932299999999941,
+							"p95": 33.302999999999884,
+							"max": 33.302999999999884
+						},
+						"release": {
+							"count": 8,
+							"p50": 4.3659000000000106,
+							"p95": 6.4698000000000775,
+							"max": 6.4698000000000775
+						},
+						"attempts": {
+							"count": 8,
+							"p50": 1,
+							"p95": 2,
+							"max": 2
+						}
+					},
+					"total": {
+						"count": 4,
+						"p50": 49.648099999999886,
+						"p95": 451.51379999999995,
+						"max": 451.51379999999995
+					},
+					"wait": {
+						"count": 8,
+						"p50": 2.628199999999879,
+						"p95": 413.0674999999999,
+						"max": 413.0674999999999
+					},
+					"body": {
+						"count": 8,
+						"p50": 14.913600000000088,
+						"p95": 33.26760000000013,
+						"max": 33.26760000000013
+					},
+					"releaseAndFence": {
+						"count": 8,
+						"p50": 4.409200000000055,
+						"p95": 6.9495999999999185,
+						"max": 6.9495999999999185
+					},
+					"phases": {
+						"read": {
+							"count": 8,
+							"p50": 0.865500000000111,
+							"p95": 2.179300000000012,
+							"max": 2.179300000000012
+						},
+						"jsonParse": {
+							"count": 8,
+							"p50": 0.09159999999997126,
+							"p95": 0.11010000000010223,
+							"max": 0.11010000000010223
+						},
+						"validation": {
+							"count": 8,
+							"p50": 1.1584000000000287,
+							"p95": 1.7774999999999181,
+							"max": 1.7774999999999181
+						},
+						"copy": {
+							"count": 8,
+							"p50": 0.11610000000018772,
+							"p95": 0.17229999999995016,
+							"max": 0.17229999999995016
+						},
+						"write": {
+							"count": 8,
+							"p50": 4.656900000000178,
+							"p95": 19.8429000000001,
+							"max": 19.8429000000001
+						}
+					},
+					"unattributedBody": {
+						"count": 8,
+						"p50": 7.154600000000073,
+						"p95": 10.423800000000028,
+						"max": 10.423800000000028
+					}
+				}
+			],
+			"workers": [
+				{
+					"samples": [
+						{
+							"command": "reserve-settle",
+							"iteration": 0,
+							"worker": 0,
+							"total": 451.51379999999995,
+							"transactions": [
+								{
+									"wait": 413.0674999999999,
+									"body": 11.983800000000201,
+									"releaseAndFence": 4.304999999999836,
+									"phases": {
+										"read": 0.7862999999999829,
+										"jsonParse": 0.11010000000010223,
+										"validation": 1.3484000000000833,
+										"copy": 0.11590000000001055,
+										"write": 4.292899999999918
+									},
+									"writes": 1,
+									"diagnostic": {
+										"operation": "reserve-primary-mutation",
+										"outcome": "success",
+										"queueWaitMs": 0.0019999999999527063,
+										"acquisitionWaitMs": 413.02009999999996,
+										"holdMs": 12.003400000000056,
+										"releaseMs": 4.260400000000118,
+										"attempts": 2,
+										"ownerState": "legacy",
+										"committed": true,
+										"releaseFailed": false
+									}
+								},
+								{
+									"wait": 1.8900999999998476,
+									"body": 15.68380000000002,
+									"releaseAndFence": 4.409200000000055,
+									"phases": {
+										"read": 0.6729000000000269,
+										"jsonParse": 0.08370000000013533,
+										"validation": 1.2410999999999603,
+										"copy": 0.11740000000008877,
+										"write": 4.313499999999976
+									},
+									"writes": 1,
+									"diagnostic": {
+										"operation": "mutation",
+										"outcome": "success",
+										"queueWaitMs": 0.0014999999998508429,
+										"acquisitionWaitMs": 1.8368000000000393,
+										"holdMs": 15.712600000000066,
+										"releaseMs": 4.3659000000000106,
+										"attempts": 1,
+										"ownerState": "none",
+										"committed": true,
+										"releaseFailed": false
+									}
+								}
+							]
+						},
+						{
+							"command": "reserve-settle",
+							"iteration": 1,
+							"worker": 0,
+							"total": 49.648099999999886,
+							"transactions": [
+								{
+									"wait": 3.241700000000037,
+									"body": 15.605299999999943,
+									"releaseAndFence": 5.0253999999999905,
+									"phases": {
+										"read": 1.822700000000168,
+										"jsonParse": 0.09159999999997126,
+										"validation": 1.1584000000000287,
+										"copy": 0.11899999999991451,
+										"write": 4.656900000000178
+									},
+									"writes": 1,
+									"diagnostic": {
+										"operation": "reserve-primary-mutation",
+										"outcome": "success",
+										"queueWaitMs": 0.0018999999999778083,
+										"acquisitionWaitMs": 3.1738000000000284,
+										"holdMs": 15.630800000000136,
+										"releaseMs": 4.966099999999869,
+										"attempts": 1,
+										"ownerState": "none",
+										"committed": true,
+										"releaseFailed": false
+									}
+								},
+								{
+									"wait": 2.5726999999999407,
+									"body": 17.292999999999893,
+									"releaseAndFence": 5.733400000000074,
+									"phases": {
+										"read": 0.865500000000111,
+										"jsonParse": 0.10159999999996217,
+										"validation": 1.7774999999999181,
+										"copy": 0.11899999999991451,
+										"write": 7.376399999999876
+									},
+									"writes": 1,
+									"diagnostic": {
+										"operation": "mutation",
+										"outcome": "success",
+										"queueWaitMs": 0.002100000000154978,
+										"acquisitionWaitMs": 2.5204000000001088,
+										"holdMs": 17.315599999999904,
+										"releaseMs": 5.690799999999854,
+										"attempts": 1,
+										"ownerState": "none",
+										"committed": true,
+										"releaseFailed": false
+									}
+								}
+							]
+						}
+					],
+					"eventLoop": {
+						"p50": 15.106047,
+						"p95": 16.015359,
+						"max": 16.744447,
+						"count": 34
+					}
+				},
+				{
+					"samples": [
+						{
+							"command": "reserve-settle",
+							"iteration": 0,
+							"worker": 1,
+							"total": 63.86349999999993,
+							"transactions": [
+								{
+									"wait": 2.203399999999874,
+									"body": 14.913600000000088,
+									"releaseAndFence": 3.697499999999991,
+									"phases": {
+										"read": 0.6584000000000287,
+										"jsonParse": 0.06360000000017862,
+										"validation": 1.0953999999999269,
+										"copy": 0.1045000000001437,
+										"write": 5.231099999999969
+									},
+									"writes": 1,
+									"diagnostic": {
+										"operation": "reserve-primary-mutation",
+										"outcome": "success",
+										"queueWaitMs": 0.0048000000001593435,
+										"acquisitionWaitMs": 2.1573000000000775,
+										"holdMs": 14.932299999999941,
+										"releaseMs": 3.6521999999999935,
+										"attempts": 1,
+										"ownerState": "none",
+										"committed": true,
+										"releaseFailed": false
+									}
+								},
+								{
+									"wait": 2.6522999999999683,
+									"body": 33.26760000000013,
+									"releaseAndFence": 6.9495999999999185,
+									"phases": {
+										"read": 1.6549999999999727,
+										"jsonParse": 0.09619999999995343,
+										"validation": 1.229799999999841,
+										"copy": 0.11610000000018772,
+										"write": 19.8429000000001
+									},
+									"writes": 1,
+									"diagnostic": {
+										"operation": "mutation",
+										"outcome": "error",
+										"queueWaitMs": 0.0015000000000782165,
+										"acquisitionWaitMs": 2.593900000000076,
+										"holdMs": 33.302999999999884,
+										"releaseMs": 6.4698000000000775,
+										"attempts": 1,
+										"ownerState": "none",
+										"committed": false,
+										"releaseFailed": false
+									}
+								}
+							],
+							"error": "EPERM: operation not permitted, rename 'C:\\Users\\LUKEGO~1\\AppData\\Local\\Temp\\alpha-control-benchmark-9XpItH\\.agent_control.json.new_1788583808923_1b0uu98w5hr.tmp' -> 'C:\\Users\\LUKEGO~1\\AppData\\Local\\Temp\\alpha-control-benchmark-9XpItH\\agent_control.json'"
+						},
+						{
+							"command": "reserve-settle",
+							"iteration": 1,
+							"worker": 1,
+							"total": 43.676299999999856,
+							"transactions": [
+								{
+									"wait": 4.928900000000112,
+									"body": 12.021399999999858,
+									"releaseAndFence": 3.8677999999999884,
+									"phases": {
+										"read": 2.179300000000012,
+										"jsonParse": 0.06909999999993488,
+										"validation": 0.8773000000001048,
+										"copy": 0.10059999999998581,
+										"write": 4.012000000000171
+									},
+									"writes": 1,
+									"diagnostic": {
+										"operation": "reserve-primary-mutation",
+										"outcome": "success",
+										"queueWaitMs": 0.0018000000000029104,
+										"acquisitionWaitMs": 4.865099999999984,
+										"holdMs": 12.047599999999875,
+										"releaseMs": 3.822700000000168,
+										"attempts": 1,
+										"ownerState": "none",
+										"committed": true,
+										"releaseFailed": false
+									}
+								},
+								{
+									"wait": 2.628199999999879,
+									"body": 14.382900000000063,
+									"releaseAndFence": 5.658999999999878,
+									"phases": {
+										"read": 0.9739000000001852,
+										"jsonParse": 0.11009999999987485,
+										"validation": 1.0566999999998643,
+										"copy": 0.17229999999995016,
+										"write": 6.751700000000028
+									},
+									"writes": 1,
+									"diagnostic": {
+										"operation": "mutation",
+										"outcome": "success",
+										"queueWaitMs": 0.0022999999998774,
+										"acquisitionWaitMs": 2.473900000000185,
+										"holdMs": 14.404899999999998,
+										"releaseMs": 5.608699999999999,
+										"attempts": 1,
+										"ownerState": "none",
+										"committed": true,
+										"releaseFailed": false
+									}
+								}
+							]
+						}
+					],
+					"eventLoop": {
+						"p50": 10.330111,
+						"p95": 19.480575,
+						"max": 19.480575,
+						"count": 7
+					}
+				}
+			]
+		}
+	]
+}
