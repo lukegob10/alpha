@@ -153,6 +153,72 @@ const makeParent = () => ({
 	upsertSubagentGroup: vi.fn(async () => undefined),
 })
 
+describe("ClineProvider root lifecycle ownership", () => {
+	it.each(["pending", "completed", "interrupted", "failed", "timed_out", "cancelling"] as const)(
+		"preserves a %s root during completion and evidence reconciliation",
+		async (status) => {
+			const provider = makeProviderHarness()
+			const parent = makeParent()
+			const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+			await Reflect.get(provider, "agentControlStoreReady")
+			await store.ensureRoot({
+				taskId: parent.taskId,
+				objective: "Retained task",
+				status: status === "pending" ? "pending" : "running",
+			})
+			if (status !== "pending") await store.updateAgentStatus(parent.taskId, status, {}, parent.taskId)
+
+			await provider.recordParentVerificationEvidence(parent as any)
+			await provider.getParentCompletionDecision(parent as any)
+
+			expect(store.getAgent(parent.taskId, parent.taskId)?.status).toBe(status)
+		},
+	)
+
+	it("waits for an admitted lifecycle resume before resolving the root for immediate child work", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+		await Reflect.get(provider, "agentControlStoreReady")
+		await store.ensureRoot({ taskId: parent.taskId, objective: "Completed task", status: "running" })
+		await provider.prepareTaskCompletionLifecycle(parent.taskId)
+		let entered!: () => void
+		const writing = new Promise<void>((resolve) => {
+			entered = resolve
+		})
+		let release!: () => void
+		const pending = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const update = store.updateAgentStatus.bind(store)
+		const statusWrites = vi.spyOn(store, "updateAgentStatus").mockImplementation(async (...args) => {
+			if (args[1] === "pending") {
+				entered()
+				await pending
+			}
+			return update(...args)
+		})
+		const resume = (provider as any).updateAgentControlRootStatus(parent.taskId, "running") as Promise<void>
+		await writing
+		const resolving = (provider as any).ensureAgentControlRoot(parent) as Promise<{ status: string }>
+		release()
+		await expect(resolving).resolves.toMatchObject({ status: "running" })
+		await resume
+		expect(statusWrites.mock.calls.map(([, status]) => status)).toEqual(["pending", "running"])
+		await expect(
+			store.createAgent({
+				taskId: "resumed-child",
+				parentTaskId: parent.taskId,
+				rootTaskId: parent.taskId,
+				nickname: "resumed_child",
+				role: "explore",
+				objective: "Inspect resumed work",
+				status: "pending",
+			}),
+		).resolves.toMatchObject({ parentTaskId: parent.taskId })
+	})
+})
+
 describe("ClineProvider bounded sub-agent preparation", () => {
 	it("permits read-only Explore and Review agents in Plan mode", async () => {
 		const provider = makeProviderHarness(2)

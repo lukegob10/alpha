@@ -349,6 +349,25 @@ async function createHarness() {
 		provider.getParentCompletionDecision.mockImplementation(() => managedProvider.getParentCompletionDecision(task))
 	}
 
+	const useRealManagedCompletionLifecycle = () => {
+		const managedProvider = Object.assign(Object.create(ClineProvider.prototype), {
+			agentControlStore: store,
+			agentControlStoreReady: Promise.resolve(),
+			agentControlRootStatusWrites: new Map<string, Promise<void>>(),
+		}) as ClineProvider
+		provider.getParentCompletionDecision.mockImplementation(() => managedProvider.getParentCompletionDecision(task))
+		provider.recordParentVerificationEvidence.mockImplementation(() =>
+			managedProvider.recordParentVerificationEvidence(task),
+		)
+		provider.prepareTaskCompletionLifecycle.mockImplementation(() =>
+			managedProvider.prepareTaskCompletionLifecycle(TASK_ID),
+		)
+		provider.rollbackTaskCompletionLifecycle.mockImplementation(() =>
+			managedProvider.rollbackTaskCompletionLifecycle(TASK_ID),
+		)
+		return managedProvider
+	}
+
 	return {
 		task,
 		store,
@@ -368,6 +387,7 @@ async function createHarness() {
 		assertNotCompleted,
 		assertRecoverableStop,
 		useManagedCompletionDecision,
+		useRealManagedCompletionLifecycle,
 		guardTriggered: () => guardTriggered,
 		cancel: () => {
 			task.abort = true
@@ -1008,6 +1028,43 @@ describe("Stage Three durable completion integration", () => {
 		},
 	)
 
+	it.each(["text", "explicit"] as const)(
+		"preserves the durably completed root through real provider %s completion gates and reload",
+		async (kind) => {
+			const harness = await setup(kind)
+			const managedProvider = harness.useRealManagedCompletionLifecycle()
+
+			await harness.run()
+
+			expect(harness.guardTriggered()).toBe(false)
+			expect(harness.requests).toHaveLength(1)
+			expect(Reflect.get(harness.task, "didComplete")).toBe(true)
+			expect(harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted)).toHaveLength(1)
+			expect(
+				harness.events.filter((event) => event.type === "task_completed" && event.status === "completed"),
+			).toHaveLength(1)
+			const completed = harness.store.getAgent(TASK_ID, TASK_ID)
+			expect(completed).toMatchObject({ role: "root", status: "completed" })
+			const persisted = agentControlStateSchema.parse(await harness.persistence.read())
+			expect(persisted.agents.filter((agent) => agent.taskId === TASK_ID)).toEqual([completed])
+
+			await managedProvider.recordParentVerificationEvidence(harness.task)
+			expect(await managedProvider.getParentCompletionDecision(harness.task)).toMatchObject({ allowed: true })
+			expect(harness.store.getAgent(TASK_ID, TASK_ID)).toEqual(completed)
+
+			const reloaded = new AgentControlStore(new FileAgentControlPersistence(harness.storagePath))
+			try {
+				await reloaded.initialize()
+				expect(reloaded.getAgent(TASK_ID, TASK_ID)).toEqual(completed)
+				expect(
+					reloaded.listAgents({ rootTaskId: TASK_ID }).filter((agent) => agent.role === "root"),
+				).toHaveLength(1)
+			} finally {
+				await reloaded.shutdown()
+			}
+		},
+	)
+
 	it.each(["text", "explicit"] as const)("allows ordinary %s completion without applicable changes", async (kind) => {
 		const harness = await setup(kind)
 
@@ -1025,6 +1082,7 @@ describe("Stage Three durable completion integration", () => {
 		"preserves queued guidance arriving while %s completion is being persisted",
 		async (kind) => {
 			const harness = await setup(kind)
+			harness.useRealManagedCompletionLifecycle()
 			const guidance = "Include the missing explanation before finishing."
 			harness.flush.mockImplementationOnce(async () => {
 				harness.task.messageQueueService.addMessage(guidance)
@@ -1037,6 +1095,7 @@ describe("Stage Three durable completion integration", () => {
 			expect(harness.requests).toHaveLength(2)
 			expect(JSON.stringify(harness.requests[1])).toContain(guidance)
 			expect(harness.provider.rollbackTaskCompletionLifecycle).toHaveBeenCalledOnce()
+			expect(harness.store.getAgent(TASK_ID, TASK_ID)?.status).toBe("completed")
 			expect(harness.task.messageQueueService.isEmpty()).toBe(true)
 			expect(Reflect.get(harness.task, "didComplete")).toBe(true)
 			expect(harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted)).toHaveLength(1)

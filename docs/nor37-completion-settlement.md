@@ -32,6 +32,13 @@ workspace mutation gate, lifecycle prepare/rollback, transcript barrier, queued-
 transition. A transcript queue identity check also detects a save that both starts and finishes during the final gate.
 There is no runtime wait inside that final mutation boundary.
 
+The real VS Code fixture exposed an additional lifecycle defect that the earlier fixture's cached root lookup hid:
+final provider reconciliation reopened the root after completion preparation, leaving a completed Task event paired with
+a running durable root. Root lookup now creates missing identity and preserves existing status. It joins already-admitted
+lifecycle writes; `TaskStarted`/`TaskActive` own genuine resume and explicit completion rollback owns failed-finalization
+recovery. Real-provider text and explicit completion regressions verify terminal status survives later evidence reads
+and persistence reload. Status-preservation and queued resume/child-admission regressions cover adjacent transitions.
+
 `CompletionRecovery` is ephemeral accounting derived from durable debt. Each missing file/check has its own allowance,
 keyed by the file's content receipt rather than aggregate change-set version. Three rejected completion candidates or
 eight explicitly associated verification attempts that leave the same debt unresolved produce a useful unverified outcome. Unrelated edits and new

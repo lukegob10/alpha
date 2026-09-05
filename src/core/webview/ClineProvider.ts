@@ -5912,7 +5912,11 @@ export class ClineProvider
 	private async ensureAgentControlRoot(parent: Task, options?: AgentControlTransactionOptions): Promise<AgentRecord> {
 		await this.agentControlStoreReady
 		const rootTaskId = this.getAgentControlRootTaskId(parent)
-		let root = await this.agentControlStore.ensureRoot(
+		// Creation establishes identity; TaskStarted/TaskActive and explicit rollback
+		// own reactivation. Final verification must preserve a prepared terminal root.
+		// Join an admitted resume before immediate child work reads its parent status.
+		await this.agentControlRootStatusWrites.get(rootTaskId)
+		return this.agentControlStore.ensureRoot(
 			{
 				taskId: rootTaskId,
 				nickname: "root",
@@ -5921,19 +5925,6 @@ export class ClineProvider
 			},
 			options,
 		)
-		if (root.status !== "running") {
-			if (root.status !== "pending") {
-				root = await this.agentControlStore.updateAgentStatus(
-					root.taskId,
-					"pending",
-					{},
-					root.rootTaskId,
-					options,
-				)
-			}
-			root = await this.agentControlStore.updateAgentStatus(root.taskId, "running", {}, root.rootTaskId, options)
-		}
-		return root
 	}
 
 	/**
