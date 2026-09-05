@@ -169,7 +169,13 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 
 		expect(outcome.results[0]).toMatchObject({ callId: "mcp-1", name: "use_mcp_tool", status: "success" })
 		expect(outcome.results[0].content).toBe("mcp result")
-		expect(callTool).toHaveBeenCalledWith("nor30-server", "nor30_tool", { value: "hello" })
+		expect(callTool).toHaveBeenCalledWith(
+			"nor30-server",
+			"nor30_tool",
+			{ value: "hello" },
+			undefined,
+			expect.any(AbortSignal),
+		)
 		expect(harness.host.recordToolUsage).toHaveBeenCalledWith("use_mcp_tool")
 		expect(toolResults(harness)).toHaveLength(1)
 	})
@@ -214,7 +220,13 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 			]),
 		)
 		expect(callTool).toHaveBeenCalledOnce()
-		expect(callTool).toHaveBeenCalledWith("nor30-server", "nor30-tool", argumentsValue)
+		expect(callTool).toHaveBeenCalledWith(
+			"nor30-server",
+			"nor30-tool",
+			argumentsValue,
+			undefined,
+			expect.any(AbortSignal),
+		)
 		expect(harness.host.recordToolUsage).toHaveBeenCalledWith(name)
 		expect(harness.host.say).toHaveBeenCalledWith("user_feedback", "approved dynamic call", approvalImages)
 		expect(toolResults(harness)).toHaveLength(1)

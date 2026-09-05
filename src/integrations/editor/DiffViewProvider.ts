@@ -18,6 +18,14 @@ import { DecorationController } from "./DecorationController"
 export const DIFF_VIEW_URI_SCHEME = "cline-diff"
 export const DIFF_VIEW_LABEL_CHANGES = "Original ↔ Alpha's Changes"
 
+/**
+ * The file state captured before an approval prompt. Direct saves use this
+ * snapshot to avoid overwriting a file that changed while the prompt was open.
+ */
+export type ExpectedFileState =
+	| { exists: false }
+	| { exists: true; content: string }
+
 // TODO: https://github.com/cline/cline/pull/3354
 export class DiffViewProvider {
 	// Properties to store the results of saveChanges
@@ -169,23 +177,20 @@ export class DiffViewProvider {
 				await vscode.workspace.applyEdit(edit)
 			}
 
-			// Preserve empty last line if original content had one.
-			const hasEmptyLastLine = this.originalContent?.endsWith("\n")
-
-			if (hasEmptyLastLine && !accumulatedContent.endsWith("\n")) {
-				accumulatedContent += "\n"
-			}
-
-			// Apply the final content.
+			// Apply the final content exactly as supplied, including an empty value
+			// and an intentionally missing final newline.
 			const finalEdit = new vscode.WorkspaceEdit()
 
 			finalEdit.replace(
 				document.uri,
 				new vscode.Range(0, 0, document.lineCount, 0),
-				this.stripAllBOMs(accumulatedContent),
+				accumulatedContent,
 			)
 
-			await vscode.workspace.applyEdit(finalEdit)
+			const applied = await vscode.workspace.applyEdit(finalEdit)
+			if (applied === false) {
+				throw new Error("Failed to apply the final content to the diff editor")
+			}
 
 			// Clear all decorations at the end (after applying final edit).
 			this.fadedOverlayController.clear()
@@ -201,7 +206,7 @@ export class DiffViewProvider {
 		userEdits: string | undefined
 		finalContent: string | undefined
 	}> {
-		if (!this.relPath || !this.newContent || !this.activeDiffEditor) {
+		if (!this.relPath || this.newContent === undefined || !this.activeDiffEditor) {
 			return { newProblemsMessage: undefined, userEdits: undefined, finalContent: undefined }
 		}
 
@@ -210,11 +215,31 @@ export class DiffViewProvider {
 		const editedContent = updatedDocument.getText()
 
 		if (updatedDocument.isDirty) {
-			await updatedDocument.save()
+			const saved = await updatedDocument.save()
+			if (saved === false) {
+				throw new Error(`Failed to save the edited file '${this.relPath}'`)
+			}
 		}
 
-		await vscode.window.showTextDocument(vscode.Uri.file(absolutePath), { preview: false, preserveFocus: true })
-		await this.closeAllDiffViews()
+		const postWriteWarnings: string[] = []
+		const recordPostWriteWarning = (message: string, error: unknown) => {
+			const detail = error instanceof Error ? `: ${error.message}` : `: ${String(error)}`
+			console.warn(`${message}${detail}`)
+			postWriteWarnings.push(`${message}${detail}`)
+		}
+
+		try {
+			const editor = await vscode.window.showTextDocument(vscode.Uri.file(absolutePath), {
+				preview: false,
+				preserveFocus: true,
+			})
+			if (editor?.document?.isDirty) {
+				postWriteWarnings.push(`The file '${this.relPath}' was saved, but its open editor has unsaved changes.`)
+			}
+			await this.closeAllDiffViews()
+		} catch (error) {
+			recordPostWriteWarning(`The file '${this.relPath}' was saved, but the editor could not be refreshed`, error)
+		}
 
 		// Getting diagnostics before and after the file edit is a better approach than
 		// automatically tracking problems in real-time. This method ensures we only
@@ -235,38 +260,39 @@ export class DiffViewProvider {
 		let newProblemsMessage = ""
 
 		if (diagnosticsEnabled) {
-			// Add configurable delay to allow linters time to process and clean up issues
-			// like unused imports (especially important for Go and other languages)
-			// Ensure delay is non-negative
-			const safeDelayMs = Math.max(0, writeDelayMs)
-
 			try {
+				// Add configurable delay to allow linters time to process and clean up issues
+				// like unused imports (especially important for Go and other languages)
+				const safeDelayMs = Math.max(0, writeDelayMs)
 				await delay(safeDelayMs)
+
+				const postDiagnostics = vscode.languages.getDiagnostics()
+
+				// Get diagnostic settings from state
+				const task = this.taskRef.deref()
+				const state = await task?.providerRef.deref()?.getState()
+				const includeDiagnosticMessages = state?.includeDiagnosticMessages ?? true
+				const maxDiagnosticMessages = state?.maxDiagnosticMessages ?? 50
+
+				const newProblems = await diagnosticsToProblemsString(
+					getNewDiagnostics(this.preDiagnostics, postDiagnostics),
+					[
+						vscode.DiagnosticSeverity.Error, // only including errors since warnings can be distracting (if user wants to fix warnings they can use the @problems mention)
+					],
+					this.cwd,
+					includeDiagnosticMessages,
+					maxDiagnosticMessages,
+				) // Will be empty string if no errors.
+
+				newProblemsMessage =
+					newProblems.length > 0 ? `\n\nNew problems detected after saving the file:\n${newProblems}` : ""
 			} catch (error) {
-				// Log error but continue - delay failure shouldn't break the save operation
-				console.warn(`Failed to apply write delay: ${error}`)
+				recordPostWriteWarning(`The file '${this.relPath}' was saved, but diagnostics could not be collected`, error)
 			}
+		}
 
-			const postDiagnostics = vscode.languages.getDiagnostics()
-
-			// Get diagnostic settings from state
-			const task = this.taskRef.deref()
-			const state = await task?.providerRef.deref()?.getState()
-			const includeDiagnosticMessages = state?.includeDiagnosticMessages ?? true
-			const maxDiagnosticMessages = state?.maxDiagnosticMessages ?? 50
-
-			const newProblems = await diagnosticsToProblemsString(
-				getNewDiagnostics(this.preDiagnostics, postDiagnostics),
-				[
-					vscode.DiagnosticSeverity.Error, // only including errors since warnings can be distracting (if user wants to fix warnings they can use the @problems mention)
-				],
-				this.cwd,
-				includeDiagnosticMessages,
-				maxDiagnosticMessages,
-			) // Will be empty string if no errors.
-
-			newProblemsMessage =
-				newProblems.length > 0 ? `\n\nNew problems detected after saving the file:\n${newProblems}` : ""
+		if (postWriteWarnings.length > 0) {
+			newProblemsMessage += `\n\nPost-save checks reported:\n${postWriteWarnings.join("\n")}`
 		}
 
 		// If the edited content has different EOL characters, we don't want to
@@ -618,9 +644,13 @@ export class DiffViewProvider {
 
 	async reset(): Promise<void> {
 		await this.closeAllDiffViews()
+		this.newProblemsMessage = undefined
+		this.userEdits = undefined
 		this.editType = undefined
 		this.isEditing = false
 		this.originalContent = undefined
+		this.relPath = undefined
+		this.newContent = undefined
 		this.createdDirs = []
 		this.documentWasOpen = false
 		this.activeDiffEditor = undefined
@@ -637,6 +667,7 @@ export class DiffViewProvider {
 	 * @param relPath - Relative path to the file
 	 * @param content - Content to write to the file
 	 * @param openFile - Whether to show the file in editor (false = open in memory only for diagnostics)
+	 * @param expectedFileState - Raw file state captured before approval
 	 * @returns Result of the save operation including any new problems detected
 	 */
 	async saveDirectly(
@@ -645,71 +676,105 @@ export class DiffViewProvider {
 		openFile: boolean = true,
 		diagnosticsEnabled: boolean = true,
 		writeDelayMs: number = DEFAULT_WRITE_DELAY_MS,
+		expectedFileState: ExpectedFileState,
 	): Promise<{
 		newProblemsMessage: string | undefined
 		userEdits: string | undefined
 		finalContent: string | undefined
 	}> {
 		const absolutePath = path.resolve(this.cwd, relPath)
+		const expectedState = expectedFileState
 
 		// Get diagnostics before editing the file
 		this.preDiagnostics = vscode.languages.getDiagnostics()
 
-		// Write the content directly to the file
+		// Create parent directories before checking the target. This cannot create
+		// the target itself, and the exclusive create below closes the remaining
+		// expected-missing race.
 		await createDirectoriesForFile(absolutePath)
-		await fs.writeFile(absolutePath, content, "utf-8")
+		await this.assertExpectedFileState(absolutePath, relPath, expectedState)
 
-		// Open the document to ensure diagnostics are loaded
-		// When openFile is false (PREVENT_FOCUS_DISRUPTION enabled), we only open in memory
-		if (openFile) {
-			// Show the document in the editor
-			await vscode.window.showTextDocument(vscode.Uri.file(absolutePath), {
-				preview: false,
-				preserveFocus: true,
-			})
-		} else {
-			// Just open the document in memory to trigger diagnostics without showing it
-			const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(absolutePath))
-
-			// Save the document to ensure VSCode recognizes it as saved and triggers diagnostics
-			if (doc.isDirty) {
-				await doc.save()
+		try {
+			// An expected-missing file must never be replaced if it appeared after
+			// approval. The wx flag makes that check atomic with file creation.
+			await fs.writeFile(
+				absolutePath,
+				content,
+				expectedState.exists === false ? { encoding: "utf-8", flag: "wx" } : "utf-8",
+			)
+		} catch (error) {
+			if (expectedState.exists === false && isFileExistsError(error)) {
+				throw createDirectSaveConflict(relPath, "the file was created while approval was pending")
 			}
 
-			// Force a small delay to ensure diagnostics are triggered
-			await new Promise((resolve) => setTimeout(resolve, 100))
+			throw error
+		}
+
+		const postWriteWarnings: string[] = []
+		const recordPostWriteWarning = (message: string, error: unknown) => {
+			const detail = error instanceof Error ? `: ${error.message}` : `: ${String(error)}`
+			console.warn(`${message}${detail}`)
+			postWriteWarnings.push(`${message}${detail}`)
+		}
+
+		// These are best-effort post-write integrations. The file is already
+		// committed, so a refresh or diagnostics failure must be reported with
+		// the successful write instead of throwing and misreporting the operation.
+		try {
+			if (openFile) {
+				const editor = await vscode.window.showTextDocument(vscode.Uri.file(absolutePath), {
+					preview: false,
+					preserveFocus: true,
+				})
+				if (editor?.document?.isDirty) {
+					postWriteWarnings.push(`The file '${relPath}' was written, but its open editor has unsaved changes.`)
+				}
+			} else {
+				const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(absolutePath))
+				if (doc.isDirty) {
+					postWriteWarnings.push(`The file '${relPath}' was written, but its open editor has unsaved changes.`)
+				}
+
+				// Force a small delay to ensure diagnostics are triggered
+				await new Promise((resolve) => setTimeout(resolve, 100))
+			}
+		} catch (error) {
+			recordPostWriteWarning(`The file '${relPath}' was written, but the editor could not be refreshed`, error)
 		}
 
 		let newProblemsMessage = ""
 
 		if (diagnosticsEnabled) {
-			// Add configurable delay to allow linters time to process
-			const safeDelayMs = Math.max(0, writeDelayMs)
-
 			try {
+				// Add configurable delay to allow linters time to process
+				const safeDelayMs = Math.max(0, writeDelayMs)
 				await delay(safeDelayMs)
+
+				const postDiagnostics = vscode.languages.getDiagnostics()
+
+				// Get diagnostic settings from state
+				const task = this.taskRef.deref()
+				const state = await task?.providerRef.deref()?.getState()
+				const includeDiagnosticMessages = state?.includeDiagnosticMessages ?? true
+				const maxDiagnosticMessages = state?.maxDiagnosticMessages ?? 50
+
+				const newProblems = await diagnosticsToProblemsString(
+					getNewDiagnostics(this.preDiagnostics, postDiagnostics),
+					[vscode.DiagnosticSeverity.Error],
+					this.cwd,
+					includeDiagnosticMessages,
+					maxDiagnosticMessages,
+				)
+
+				newProblemsMessage =
+					newProblems.length > 0 ? `\n\nNew problems detected after saving the file:\n${newProblems}` : ""
 			} catch (error) {
-				console.warn(`Failed to apply write delay: ${error}`)
+				recordPostWriteWarning(`The file '${relPath}' was written, but diagnostics could not be collected`, error)
 			}
+		}
 
-			const postDiagnostics = vscode.languages.getDiagnostics()
-
-			// Get diagnostic settings from state
-			const task = this.taskRef.deref()
-			const state = await task?.providerRef.deref()?.getState()
-			const includeDiagnosticMessages = state?.includeDiagnosticMessages ?? true
-			const maxDiagnosticMessages = state?.maxDiagnosticMessages ?? 50
-
-			const newProblems = await diagnosticsToProblemsString(
-				getNewDiagnostics(this.preDiagnostics, postDiagnostics),
-				[vscode.DiagnosticSeverity.Error],
-				this.cwd,
-				includeDiagnosticMessages,
-				maxDiagnosticMessages,
-			)
-
-			newProblemsMessage =
-				newProblems.length > 0 ? `\n\nNew problems detected after saving the file:\n${newProblems}` : ""
+		if (postWriteWarnings.length > 0) {
+			newProblemsMessage += `\n\nPost-save checks reported:\n${postWriteWarnings.join("\n")}`
 		}
 
 		// Store the results for formatFileWriteResponse
@@ -724,4 +789,78 @@ export class DiffViewProvider {
 			finalContent: content,
 		}
 	}
+
+	async assertExpectedFileState(
+		absolutePath: string,
+		relPath: string,
+		expectedState: ExpectedFileState,
+	): Promise<void> {
+		const openDocument = vscode.workspace.textDocuments?.find(
+			(document) => document.uri.scheme === "file" && arePathsEqual(document.uri.fsPath, absolutePath),
+		)
+
+		const isManagedDiffDocument =
+			openDocument !== undefined && this.isEditing && this.activeDiffEditor?.document === openDocument
+
+		if (openDocument?.isDirty && !isManagedDiffDocument) {
+			throw createDirectSaveConflict(relPath, "the file has unsaved changes in an open editor")
+		}
+
+		if (!expectedState.exists) {
+			try {
+				await fs.readFile(absolutePath, "utf-8")
+				throw createDirectSaveConflict(relPath, "the file was created while approval was pending")
+			} catch (error) {
+				if (isFileNotFoundError(error)) {
+					return
+				}
+
+				if (error instanceof DirectSaveConflictError) {
+					throw error
+				}
+
+				throw createDirectSaveConflict(relPath, "the target path became unavailable while approval was pending")
+			}
+		}
+
+		let currentContent: string
+		try {
+			currentContent = await fs.readFile(absolutePath, "utf-8")
+		} catch (error) {
+			if (isFileNotFoundError(error)) {
+				throw createDirectSaveConflict(relPath, "the file was deleted while approval was pending")
+			}
+
+			throw error
+		}
+
+		if (currentContent !== expectedState.content) {
+			throw createDirectSaveConflict(relPath, "the file changed while approval was pending")
+		}
+	}
+}
+
+class DirectSaveConflictError extends Error {
+	constructor(message: string) {
+		super(message)
+		this.name = "DirectSaveConflictError"
+	}
+}
+
+function createDirectSaveConflict(relPath: string, reason: string): DirectSaveConflictError {
+	return new DirectSaveConflictError(
+		`Cannot save '${relPath}': ${reason}. Re-read the file and retry so the user's changes are preserved.`,
+	)
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+	return isFileSystemError(error, "ENOENT")
+}
+
+function isFileExistsError(error: unknown): boolean {
+	return isFileSystemError(error, "EEXIST")
+}
+
+function isFileSystemError(error: unknown, code: string): boolean {
+	return typeof error === "object" && error !== null && "code" in error && error.code === code
 }

@@ -405,7 +405,13 @@ describe("TaskToolCatalogCache", () => {
 			executionHost,
 		})
 		expect(result.outcome.results[0].status).toBe("success")
-		expect(effect).toHaveBeenCalledExactlyOnceWith("calendar", "lookup_one", { query: "today" }, "project")
+		expect(effect).toHaveBeenCalledExactlyOnceWith(
+			"calendar",
+			"lookup_one",
+			{ query: "today" },
+			"project",
+			expect.any(AbortSignal),
+		)
 	})
 
 	it.each([false, true])(
@@ -440,7 +446,7 @@ describe("TaskToolCatalogCache", () => {
 		expect(requests[0]).toHaveBeenCalledExactlyOnceWith(
 			{ method: "tools/call", params: { name: "lookup--one", arguments: { query: "today" } } },
 			expect.anything(),
-			{ timeout: 60_000 },
+			{ timeout: 60_000, signal: expect.any(AbortSignal) },
 		)
 	})
 

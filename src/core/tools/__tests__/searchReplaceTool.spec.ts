@@ -434,5 +434,67 @@ describe("searchReplaceTool", () => {
 			expect(mockCline.consecutiveMistakeCount).toBe(0)
 			expect(mockAskApproval).toHaveBeenCalled()
 		})
+
+		it("passes the raw CRLF baseline to direct saves", async () => {
+			const rawBaseline = "Line 1\r\nLine 2\r\nLine 3"
+			mockCline.providerRef.deref().getState.mockResolvedValue({
+				diagnosticsEnabled: true,
+				writeDelayMs: 0,
+				experiments: { preventFocusDisruption: true },
+			})
+
+			await executeSearchReplaceTool(
+				{ old_string: "Line 2", new_string: "Modified Line 2" },
+				{ fileContent: rawBaseline },
+			)
+
+			expect(mockCline.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+				testFilePath,
+				"Line 1\nModified Line 2\nLine 3",
+				false,
+				true,
+				0,
+				{ exists: true, content: rawBaseline },
+			)
+		})
+
+		it("rejects a direct save when the raw baseline changes during approval", async () => {
+			const rawBaseline = "Line 1\r\nLine 2\r\nLine 3"
+			mockCline.providerRef.deref().getState.mockResolvedValue({
+				diagnosticsEnabled: true,
+				writeDelayMs: 0,
+				experiments: { preventFocusDisruption: true },
+			})
+			mockAskApproval.mockImplementation(async () => {
+				mockedFsReadFile.mockResolvedValue("Line 1\r\nLine 2\r\nconcurrent edit")
+				return true
+			})
+			mockCline.diffViewProvider.saveDirectly.mockImplementation(
+				async (
+					_path: string,
+					_content: string,
+					_openFile: boolean,
+					_diagnostics: boolean,
+					_delay: number,
+					expected: { exists: true; content: string },
+				) => {
+					const current = await mockedFsReadFile(absoluteFilePath, "utf8")
+					if (current !== expected.content) {
+						throw new Error("Cannot save: the file changed while approval was pending")
+					}
+				},
+			)
+
+			await executeSearchReplaceTool(
+				{ old_string: "Line 2", new_string: "Modified Line 2" },
+				{ fileContent: rawBaseline },
+			)
+
+			expect(mockHandleError).toHaveBeenCalledWith(
+				"search and replace",
+				expect.objectContaining({ message: expect.stringContaining("changed") }),
+			)
+			expect(mockCline.didEditFile).toBe(false)
+		})
 	})
 })

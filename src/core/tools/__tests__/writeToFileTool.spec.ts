@@ -1,12 +1,11 @@
 import * as path from "path"
+import fs from "fs/promises"
 
 import type { MockedFunction } from "vitest"
 
 import { fileExistsAtPath, createDirectoriesForFile } from "../../../utils/fs"
 import { isPathOutsideWorkspace } from "../../../utils/pathUtils"
 import { getReadablePath } from "../../../utils/path"
-import { unescapeHtmlEntities } from "../../../utils/text-normalization"
-import { everyLineHasLineNumbers, stripLineNumbers } from "../../../integrations/misc/extract-text"
 import { ToolUse, ToolResponse } from "../../../shared/tools"
 import { writeToFileTool } from "../WriteToFileTool"
 
@@ -24,6 +23,13 @@ vi.mock("path", async () => {
 
 vi.mock("delay", () => ({
 	default: vi.fn(),
+}))
+
+vi.mock("fs/promises", () => ({
+	default: {
+		readFile: vi.fn().mockResolvedValue("existing content"),
+		writeFile: vi.fn().mockResolvedValue(undefined),
+	},
 }))
 
 vi.mock("../../../utils/fs", () => ({
@@ -45,21 +51,6 @@ vi.mock("../../../utils/pathUtils", () => ({
 
 vi.mock("../../../utils/path", () => ({
 	getReadablePath: vi.fn().mockReturnValue("test/path.txt"),
-}))
-
-vi.mock("../../../utils/text-normalization", () => ({
-	unescapeHtmlEntities: vi.fn().mockImplementation((content) => content),
-}))
-
-vi.mock("../../../integrations/misc/extract-text", () => ({
-	everyLineHasLineNumbers: vi.fn().mockReturnValue(false),
-	stripLineNumbers: vi.fn().mockImplementation((content) => content),
-	addLineNumbers: vi.fn().mockImplementation((content: string) =>
-		content
-			.split("\n")
-			.map((line: string, i: number) => `${i + 1} | ${line}`)
-			.join("\n"),
-	),
 }))
 
 vi.mock("vscode", () => ({
@@ -97,10 +88,10 @@ describe("writeToFileTool", () => {
 	const mockedCreateDirectoriesForFile = createDirectoriesForFile as MockedFunction<typeof createDirectoriesForFile>
 	const mockedIsPathOutsideWorkspace = isPathOutsideWorkspace as MockedFunction<typeof isPathOutsideWorkspace>
 	const mockedGetReadablePath = getReadablePath as MockedFunction<typeof getReadablePath>
-	const mockedUnescapeHtmlEntities = unescapeHtmlEntities as MockedFunction<typeof unescapeHtmlEntities>
-	const mockedEveryLineHasLineNumbers = everyLineHasLineNumbers as MockedFunction<typeof everyLineHasLineNumbers>
-	const mockedStripLineNumbers = stripLineNumbers as MockedFunction<typeof stripLineNumbers>
 	const mockedPathResolve = path.resolve as MockedFunction<typeof path.resolve>
+	const mockedFsReadFile = fs.readFile as unknown as MockedFunction<
+		(path: string, encoding: string) => Promise<string>
+	>
 
 	const mockCline: any = {}
 	let mockAskApproval: ReturnType<typeof vi.fn>
@@ -113,12 +104,10 @@ describe("writeToFileTool", () => {
 		writeToFileTool.resetPartialState()
 
 		mockedPathResolve.mockReturnValue(absoluteFilePath)
+		mockedFsReadFile.mockResolvedValue("existing content")
 		mockedFileExistsAtPath.mockResolvedValue(false)
 		mockedIsPathOutsideWorkspace.mockReturnValue(false)
 		mockedGetReadablePath.mockReturnValue("test/path.txt")
-		mockedUnescapeHtmlEntities.mockImplementation((content) => content)
-		mockedEveryLineHasLineNumbers.mockReturnValue(false)
-		mockedStripLineNumbers.mockImplementation((content) => content)
 
 		mockCline.cwd = "/"
 		mockCline.consecutiveMistakeCount = 0
@@ -143,6 +132,11 @@ describe("writeToFileTool", () => {
 			update: vi.fn().mockResolvedValue(undefined),
 			reset: vi.fn().mockResolvedValue(undefined),
 			revertChanges: vi.fn().mockResolvedValue(undefined),
+			saveDirectly: vi.fn().mockResolvedValue({
+				newProblemsMessage: "",
+				userEdits: undefined,
+				finalContent: testContent,
+			}),
 			saveChanges: vi.fn().mockResolvedValue({
 				newProblemsMessage: "",
 				userEdits: null,
@@ -315,10 +309,10 @@ describe("writeToFileTool", () => {
 	})
 
 	describe("content preprocessing", () => {
-		it("removes markdown code block markers from content", async () => {
+		it("preserves markdown code block markers in native content", async () => {
 			await executeWriteFileTool({ content: testContentWithMarkdown })
 
-			expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith("Line 1\nLine 2", true)
+			expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith(testContentWithMarkdown, true)
 		})
 
 		it("passes through empty content unchanged", async () => {
@@ -327,32 +321,21 @@ describe("writeToFileTool", () => {
 			expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith("", true)
 		})
 
-		it("unescapes HTML entities for non-Claude models", async () => {
-			mockCline.api.getModel.mockReturnValue({ id: "gpt-4" })
+		it.each(["gpt-4", "claude-3"])("preserves entities and Unicode for %s", async (modelId) => {
+			mockCline.api.getModel.mockReturnValue({ id: modelId })
+			const content = "<p>&lt;script&gt; &amp; — café 漢字</p>"
 
-			await executeWriteFileTool({ content: "&lt;test&gt;" })
+			await executeWriteFileTool({ content })
 
-			expect(mockedUnescapeHtmlEntities).toHaveBeenCalledWith("&lt;test&gt;")
+			expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith(content, true)
 		})
 
-		it("skips HTML unescaping for Claude models", async () => {
-			mockCline.api.getModel.mockReturnValue({ id: "claude-3" })
-
-			await executeWriteFileTool({ content: "&lt;test&gt;" })
-
-			expect(mockedUnescapeHtmlEntities).not.toHaveBeenCalled()
-		})
-
-		it("strips line numbers from numbered content", async () => {
-			const contentWithLineNumbers = "1 | line one\n2 | line two"
-			mockedEveryLineHasLineNumbers.mockReturnValue(true)
-			mockedStripLineNumbers.mockReturnValue("line one\nline two")
+		it("preserves line numbers in native content", async () => {
+			const contentWithLineNumbers = "1 | line one\r\n2 | line two"
 
 			await executeWriteFileTool({ content: contentWithLineNumbers })
 
-			expect(mockedEveryLineHasLineNumbers).toHaveBeenCalledWith(contentWithLineNumbers)
-			expect(mockedStripLineNumbers).toHaveBeenCalledWith(contentWithLineNumbers)
-			expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith("line one\nline two", true)
+			expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith(contentWithLineNumbers, true)
 		})
 	})
 
@@ -383,6 +366,47 @@ describe("writeToFileTool", () => {
 
 			// Should process normally without issues
 			expect(mockCline.consecutiveMistakeCount).toBe(0)
+		})
+
+		it("passes the captured existing baseline to direct saves", async () => {
+			const rawBaseline = "existing content\r\n"
+			const content = "literal &lt;value&gt; — café 漢字"
+			mockedFsReadFile.mockResolvedValue(rawBaseline)
+			mockCline.providerRef.deref().getState.mockResolvedValue({
+				diagnosticsEnabled: true,
+				writeDelayMs: 1000,
+				experiments: { preventFocusDisruption: true },
+			})
+
+			await executeWriteFileTool({ content }, { fileExists: true })
+
+			expect(mockCline.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+				testFilePath,
+				content,
+				false,
+				true,
+				1000,
+				{ exists: true, content: rawBaseline },
+			)
+		})
+
+		it("passes an expected-missing baseline to direct saves", async () => {
+			mockCline.providerRef.deref().getState.mockResolvedValue({
+				diagnosticsEnabled: true,
+				writeDelayMs: 1000,
+				experiments: { preventFocusDisruption: true },
+			})
+
+			await executeWriteFileTool({ content: "new file" }, { fileExists: false })
+
+			expect(mockCline.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+				testFilePath,
+				"new file",
+				false,
+				true,
+				1000,
+				{ exists: false },
+			)
 		})
 	})
 
@@ -420,7 +444,26 @@ describe("writeToFileTool", () => {
 			await executeWriteFileTool({})
 
 			expect(mockCline.diffViewProvider.revertChanges).toHaveBeenCalled()
+			expect(mockCline.diffViewProvider.reset).toHaveBeenCalled()
 			expect(mockCline.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+		})
+
+		it("cleans up a denied direct save before handling the next path", async () => {
+			mockCline.providerRef.deref().getState.mockResolvedValue({
+				diagnosticsEnabled: false,
+				writeDelayMs: 0,
+				experiments: { preventFocusDisruption: true },
+			})
+			mockAskApproval.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+
+			await executeWriteFileTool({ path: "first.txt" }, { fileExists: false })
+			await executeWriteFileTool({ path: "second.txt" }, { fileExists: false })
+
+			expect(mockCline.diffViewProvider.reset).toHaveBeenCalled()
+			expect(mockCline.diffViewProvider.saveDirectly).toHaveBeenCalledTimes(1)
+			expect(mockCline.diffViewProvider.saveDirectly.mock.invocationCallOrder[0]).toBeGreaterThan(
+				mockCline.diffViewProvider.reset.mock.invocationCallOrder[0],
+			)
 		})
 
 		it("reports user edits with diff feedback", async () => {

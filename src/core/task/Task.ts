@@ -249,6 +249,9 @@ export interface CompletionGateDecision {
 	modelCanResolveRejection: boolean
 }
 
+const OPEN_TODO_COMPLETION_MESSAGE =
+	"Cannot complete task while there are incomplete todos. Please finish all todos before attempting completion."
+
 const SAFE_EXTERNAL_MUTATION_ASKS = new Set<ClineAsk>([
 	"followup",
 	"completion_result",
@@ -4474,6 +4477,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * Completion always fails closed when the provider or its ledger is unavailable.
 	 */
 	public async getCompletionGateDecision(): Promise<CompletionGateDecision> {
+		const todoDecision = this.getOpenTodoCompletionDecision()
+		if (todoDecision) return todoDecision
+
 		if (this.hasActiveCommandExecutions()) {
 			const key = `running:${this.getCommandExecutionEvidence()
 				.filter((item) => item.status === "running")
@@ -4537,6 +4543,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				message: `Cannot verify managed-agent completion obligations right now: ${error instanceof Error ? error.message : String(error)}`,
 			}
 		}
+	}
+
+	/** Return the user-configured todo completion policy shared by every completion path. */
+	public getOpenTodoCompletionDecision(): (CompletionGateDecision & { message: string }) | undefined {
+		const preventCompletionWithOpenTodos = vscode.workspace
+			.getConfiguration(Package.name)
+			.get<boolean>("preventCompletionWithOpenTodos", false)
+		const hasIncompleteTodos = this.todoList?.some((todo) => todo.status !== "completed") === true
+
+		return preventCompletionWithOpenTodos && hasIncompleteTodos
+			? {
+					allowed: false,
+					modelCanResolveRejection: true,
+					message: OPEN_TODO_COMPLETION_MESSAGE,
+				}
+			: undefined
 	}
 
 	/** Return an accepted text-only completion through the legacy blocking handoff, when applicable. */
@@ -6708,6 +6730,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			includeFileDetails: boolean
 			onUserContentPersisted?: () => Promise<void> | void
 		}
+		type PrimaryTurnRecovery = TaskTurnInput | { kind: "superseded" }
 
 		const host: AgentTurnHost<TaskTurnInput> = {
 			shouldAbort: () => this.abort,
@@ -6905,6 +6928,59 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				includeFileDetails: false,
 			}
 		}
+		const waitForPrimaryTurnRecovery = async (): Promise<PrimaryTurnRecovery | undefined> => {
+			if (this.taskKind !== "primary") return undefined
+
+			let recovery: Awaited<ReturnType<Task["ask"]>>
+			try {
+				recovery = await this.ask("resume_task")
+			} catch (error) {
+				if (this.abort || this.didComplete) return undefined
+				if (error instanceof AskIgnoredError) {
+					// A newer ask owns the task when one is active. The stale loop must
+					// stop without publishing a competing terminal event; otherwise an
+					// unrelated follow-up can be turned into a failed task.
+					if (this.activeAsk) return { kind: "superseded" }
+
+					// If no newer ask is active, the superseded recovery boundary has no
+					// consumer left. Close the task rather than leaving an orphaned live
+					// session that can never resume.
+					this.abortReason = "user_cancelled"
+					await this.abortTask()
+					return undefined
+				}
+				throw error
+			}
+			if (this.abort || this.didComplete) return undefined
+
+			if (recovery.response !== "messageResponse" && recovery.response !== "yesButtonClicked") {
+				// A resume boundary is accepted only by an explicit message or Resume
+				// response. Denial/structured responses must close the abandoned task;
+				// treating them as an empty Resume would silently issue another model
+				// request.
+				this.abortReason = "user_cancelled"
+				await this.abortTask()
+				return undefined
+			}
+
+			const feedbackText = recovery.text ?? ""
+			const feedbackImages = recovery.images ?? []
+			if (feedbackText.trim() || feedbackImages.length > 0) {
+				await this.say("user_feedback", feedbackText, feedbackImages)
+				return {
+					userContent: this.buildUserMessageContent(feedbackText, feedbackImages),
+					includeFileDetails: false,
+				}
+			}
+
+			return {
+				userContent: [{ type: "text", text: "[TASK RESUMPTION] Resuming task..." }],
+				includeFileDetails: false,
+			}
+		}
+		const isSupersededRecovery = (
+			recovery: PrimaryTurnRecovery | undefined,
+		): recovery is { kind: "superseded" } => Boolean(recovery && "kind" in recovery)
 
 		while (!this.abort && !this.didComplete) {
 			const outcome = await runAgentTurn(nextTurnInput)
@@ -6916,11 +6992,28 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.didComplete
 			) {
 				const terminalStatus = this.abort ? "aborted" : outcome.status
+				const terminalReason = "reason" in outcome ? outcome.reason : undefined
+				const terminalError = "error" in outcome ? outcome.error : undefined
+				const terminalToolCallCount =
+					"response" in outcome && outcome.response ? outcome.response.toolCalls.length : 0
+				if (
+					this.taskKind === "primary" &&
+					!this.abort &&
+					!this.didComplete &&
+					(terminalStatus === "failed" || terminalStatus === "exhausted" || terminalStatus === "incomplete")
+				) {
+					const continuation = await waitForPrimaryTurnRecovery()
+					if (continuation) {
+						if (isSupersededRecovery(continuation)) return
+						nextTurnInput = continuation
+						continue
+					}
+				}
 				await appendTaskTerminalEvent(
-					terminalStatus,
-					"reason" in outcome ? outcome.reason : undefined,
-					"error" in outcome ? outcome.error : undefined,
-					"response" in outcome && outcome.response ? outcome.response.toolCalls.length : 0,
+					this.abort ? "aborted" : this.didComplete ? "completed" : terminalStatus,
+					terminalReason,
+					terminalError,
+					terminalToolCallCount,
 				)
 				return
 			}
@@ -6933,7 +7026,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (!initialCompletionDecision.allowed) {
 				const continuation = await continueAfterCompletionRejection(initialCompletionDecision)
 				if (!continuation) {
-					await appendTaskTerminalEvent("incomplete", initialCompletionDecision.message)
+					const recovery = await waitForPrimaryTurnRecovery()
+					if (recovery) {
+						if (isSupersededRecovery(recovery)) return
+						nextTurnInput = recovery
+						continue
+					}
+					await appendTaskTerminalEvent(
+						this.abort ? "aborted" : this.didComplete ? "completed" : "incomplete",
+						initialCompletionDecision.message,
+					)
 					return
 				}
 				nextTurnInput = continuation
@@ -6970,7 +7072,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					await this.retractCompletionResult()
 					const continuation = await continueAfterCompletionRejection(finalCompletionDecision)
 					if (!continuation) {
-						await appendTaskTerminalEvent("incomplete", finalCompletionDecision.message)
+						const recovery = await waitForPrimaryTurnRecovery()
+						if (recovery) {
+							if (isSupersededRecovery(recovery)) return
+							nextTurnInput = recovery
+							continue
+						}
+						await appendTaskTerminalEvent(
+							this.abort ? "aborted" : this.didComplete ? "completed" : "incomplete",
+							finalCompletionDecision.message,
+						)
 						return
 					}
 					nextTurnInput = continuation
@@ -7006,8 +7117,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						message: `Cannot finish the delegated child right now: ${error instanceof Error ? error.message : String(error)}`,
 					})
 					if (!continuation) {
+						const recovery = await waitForPrimaryTurnRecovery()
+						if (recovery) {
+							if (isSupersededRecovery(recovery)) return
+							nextTurnInput = recovery
+							continue
+						}
 						await appendTaskTerminalEvent(
-							"incomplete",
+							this.abort ? "aborted" : this.didComplete ? "completed" : "incomplete",
 							error instanceof Error ? error.message : String(error),
 							error,
 						)
@@ -7019,6 +7136,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				const finalized = await this.finalizeTaskCompletion()
 				if (!finalized) {
+					if (this.abort || this.didComplete) {
+						await appendTaskTerminalEvent(
+							this.abort ? "aborted" : "completed",
+							undefined,
+							undefined,
+							outcome.response.toolCalls.length,
+						)
+						return
+					}
+
 					const concurrentFeedback = this.messageQueueService.dequeueMessage()
 					if (concurrentFeedback) {
 						await this.retractCompletionResult()
@@ -7032,13 +7159,26 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						}
 						continue
 					}
+
+					const completionFailureReason =
+						this.suspendAfterCurrentTurnReason ?? "Task completion was not durably finalized."
+					this.suspendAfterCurrentTurnReason = undefined
+					await this.say("error", completionFailureReason)
+					const recovery = await waitForPrimaryTurnRecovery()
+					if (recovery) {
+						if (isSupersededRecovery(recovery)) return
+						nextTurnInput = recovery
+						continue
+					}
+					await appendTaskTerminalEvent(
+						this.abort ? "aborted" : this.didComplete ? "completed" : "incomplete",
+						completionFailureReason,
+						undefined,
+						outcome.response.toolCalls.length,
+					)
+					return
 				}
-				await appendTaskTerminalEvent(
-					finalized ? "completed" : "incomplete",
-					finalized ? undefined : "Task completion was not durably finalized.",
-					undefined,
-					outcome.response.toolCalls.length,
-				)
+				await appendTaskTerminalEvent("completed", undefined, undefined, outcome.response.toolCalls.length)
 				return
 			}
 

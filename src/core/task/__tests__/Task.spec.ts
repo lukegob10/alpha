@@ -11,6 +11,7 @@ import { RooCodeEventName, type GlobalState, type ProviderSettings, type ModelIn
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../Task"
+import { AskIgnoredError } from "../AskIgnoredError"
 import { ClineProvider } from "../../webview/ClineProvider"
 import { ApiStreamChunk } from "../../../api/transform/stream"
 import { maybeRemoveImageBlocks } from "../../../api/transform/image-cleaning"
@@ -3199,6 +3200,9 @@ describe("Alpha", () => {
 
 		beforeEach(() => {
 			mockProvider.getParentCompletionDecision = vi.fn().mockResolvedValue({ allowed: true })
+			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+				() => ({ get: (_key: string, defaultValue: unknown) => defaultValue }) as any,
+			)
 		})
 
 		it.each([
@@ -3591,6 +3595,266 @@ describe("Alpha", () => {
 			expect(task.consecutiveNoAssistantMessagesCount).toBe(0)
 			expect((task as any).automaticMistakeRecoveryCount).toBe(0)
 		})
+
+		it.each(["failed", "incomplete", "exhausted"] as const)(
+			"resumes a primary task after a %s turn and consumes its follow-up once",
+			async (status) => {
+				const task = createTask()
+				const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
+				const ask = vi.spyOn(task, "ask").mockResolvedValue({
+					response: "messageResponse",
+					text: "Please continue from the partial result.",
+					images: [],
+				})
+				const feedback = vi.spyOn(task, "say")
+				const requestStep = vi
+					.spyOn(task, "recursivelyMakeClineRequests")
+					.mockResolvedValueOnce({
+						status,
+						reason: `Provider turn ${status}.`,
+						response: createAgentResponse([{ type: "text", text: "Partial result." }]),
+					})
+					.mockResolvedValueOnce(true)
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				expect(ask).toHaveBeenCalledOnce()
+				expect(ask).toHaveBeenCalledWith("resume_task")
+				expect(requestStep).toHaveBeenCalledTimes(2)
+				expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+					[
+						{
+							type: "text",
+							text: "<user_message>\nPlease continue from the partial result.\n</user_message>",
+						},
+					],
+					false,
+				])
+				expect(feedback).toHaveBeenCalledTimes(1)
+				expect(feedback).toHaveBeenCalledWith("user_feedback", "Please continue from the partial result.", [])
+				const eventTypes = appendEvent.mock.calls.map(([event]) => (event as AgentTurnEvent).type)
+				expect(eventTypes).toContain(status === "incomplete" ? "turn_incomplete" : "turn_failed")
+				expect(eventTypes).not.toContain("task_failed")
+				expect(eventTypes).not.toContain("task_incomplete")
+			},
+		)
+
+		it("uses the established resumption marker when Resume has no follow-up", async () => {
+			const task = createTask()
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({
+				response: "yesButtonClicked",
+				text: undefined,
+				images: undefined,
+			})
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockResolvedValueOnce({ status: "incomplete", reason: "Stream ended before completion." })
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(ask).toHaveBeenCalledWith("resume_task")
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+				[{ type: "text", text: "[TASK RESUMPTION] Resuming task..." }],
+				false,
+			])
+		})
+
+		it("aborts instead of resuming when recovery is declined", async () => {
+			const task = createTask()
+			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
+			const abortTask = vi.spyOn(task, "abortTask").mockImplementation(async () => {
+				task.abort = true
+			})
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockResolvedValueOnce({ status: "failed", reason: "Stream ended before completion." })
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(ask).toHaveBeenCalledWith("resume_task")
+			expect(abortTask).toHaveBeenCalledOnce()
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(appendEvent).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "task_completed", status: "aborted" }),
+			)
+		})
+
+		it("stops the stale loop when recovery is superseded by another ask", async () => {
+			const task = createTask()
+			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
+			const abortTask = vi.spyOn(task, "abortTask")
+			;(task as any).activeAsk = { type: "followup", ts: 42 }
+			const ask = vi.spyOn(task, "ask").mockRejectedValue(new AskIgnoredError("superseded"))
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockResolvedValueOnce({ status: "failed", reason: "Stream ended before completion." })
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(ask).toHaveBeenCalledWith("resume_task")
+			expect(abortTask).not.toHaveBeenCalled()
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(appendEvent.mock.calls.map(([event]) => (event as AgentTurnEvent).type)).not.toContain("task_failed")
+			expect(appendEvent.mock.calls.map(([event]) => (event as AgentTurnEvent).type)).not.toContain(
+				"task_incomplete",
+			)
+		})
+
+		it("does not offer recovery after an authoritative aborted outcome", async () => {
+			const task = createTask()
+			const ask = vi.spyOn(task, "ask")
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockResolvedValueOnce({ status: "aborted", reason: "The request was cancelled." })
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(ask).not.toHaveBeenCalledWith("resume_task")
+		})
+
+		it("does not offer recovery when completion finalization is aborted", async () => {
+			const task = createTask()
+			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({
+				response: "yesButtonClicked",
+				text: "",
+				images: [],
+			})
+			vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+				task.assistantMessageContent = [{ type: "text", content: "Everything is done.", partial: false }]
+				return false
+			})
+			vi.spyOn(task, "finalizeTaskCompletion").mockImplementationOnce(async () => {
+				task.abort = true
+				return false
+			})
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(ask).not.toHaveBeenCalledWith("resume_task")
+			expect(appendEvent).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "task_completed", status: "aborted" }),
+			)
+		})
+
+		it("keeps failed managed children on their terminal handoff path", async () => {
+			const task = createTask("subagent")
+			const ask = vi.spyOn(task, "ask")
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockResolvedValueOnce({ status: "failed", reason: "Managed child failed." })
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(ask).not.toHaveBeenCalledWith("resume_task")
+		})
+
+		it("blocks ordinary text completion while the enabled todo policy has open work", async () => {
+			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+				() =>
+					({
+						get: (key: string, defaultValue: unknown) =>
+							key === "preventCompletionWithOpenTodos" ? true : defaultValue,
+					}) as any,
+			)
+			const task = createTask()
+			task.todoList = [{ id: "pending", content: "Finish the regression", status: "pending" }]
+			const ask = vi.spyOn(task, "ask")
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [{ type: "text", content: "Everything is done.", partial: false }]
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(ask).not.toHaveBeenCalledWith("completion_result", expect.anything(), expect.anything())
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[1]?.[0]).toEqual([
+				expect.objectContaining({
+					type: "text",
+					text: expect.stringContaining("incomplete todos"),
+				}),
+			])
+			expect((task as any).didComplete).toBe(false)
+		})
+
+		it("rechecks open todos after the completion review boundary", async () => {
+			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+				() =>
+					({
+						get: (key: string, defaultValue: unknown) =>
+							key === "preventCompletionWithOpenTodos" ? true : defaultValue,
+					}) as any,
+			)
+			const task = createTask()
+			task.todoList = [{ id: "late", content: "Late work", status: "completed" }]
+			const finalize = vi.spyOn(task, "finalizeTaskCompletion")
+			const retract = vi.spyOn(task, "retractCompletionResult")
+			vi.spyOn(task, "ask").mockImplementationOnce(async () => {
+				task.todoList = [{ id: "late", content: "Late work", status: "in_progress" }]
+				return { response: "yesButtonClicked", text: "", images: [] }
+			})
+			const requestStep = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [{ type: "text", content: "Everything is done.", partial: false }]
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(retract).toHaveBeenCalledOnce()
+			expect(finalize).not.toHaveBeenCalled()
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[1]?.[0]).toEqual([
+				expect.objectContaining({
+					type: "text",
+					text: expect.stringContaining("incomplete todos"),
+				}),
+			])
+			expect((task as any).didComplete).toBe(false)
+		})
+
+		it.each([
+			[false, "pending"],
+			[true, "completed"],
+		] as const)(
+			"allows ordinary text completion with todo prevention %s and todo status %s",
+			async (enabled, status) => {
+				vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+					() =>
+						({
+							get: (key: string, defaultValue: unknown) =>
+								key === "preventCompletionWithOpenTodos" ? enabled : defaultValue,
+						}) as any,
+				)
+				const task = createTask()
+				task.todoList = [{ id: "todo", content: "Tracked work", status }]
+				vi.spyOn(task, "ask").mockResolvedValue({
+					response: "yesButtonClicked",
+					text: "",
+					images: [],
+				})
+				vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+					task.assistantMessageContent = [
+						{ type: "text", content: "The requested work is complete.", partial: false },
+					]
+					return false
+				})
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				expect((task as any).didComplete).toBe(true)
+			},
+		)
 
 		it("does not expose a newly staged completion when every transcript write fails", async () => {
 			const task = createTask()

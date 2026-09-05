@@ -14,6 +14,7 @@ import type { ToolResponse, ToolUse } from "../../shared/tools"
 import { parsePatch, ParseError, processAllHunks } from "./apply-patch"
 import type { ApplyPatchFileChange } from "./apply-patch"
 import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
+import type { ExpectedFileState } from "../../integrations/editor/DiffViewProvider"
 
 interface ApplyPatchParams {
 	patch: string
@@ -259,7 +260,14 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 		// Save the changes
 		if (isPreventFocusDisruptionEnabled) {
-			await task.diffViewProvider.saveDirectly(relPath, newContent, true, diagnosticsEnabled, writeDelayMs)
+			await task.diffViewProvider.saveDirectly(
+				relPath,
+				newContent,
+				true,
+				diagnosticsEnabled,
+				writeDelayMs,
+				{ exists: false },
+			)
 		} else {
 			await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)
 		}
@@ -375,6 +383,53 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION,
 		)
 
+		const moveAbsolutePath = change.movePath ? path.resolve(task.cwd, change.movePath) : undefined
+		const effectiveMovePath =
+			change.movePath && moveAbsolutePath && path.relative(absolutePath, moveAbsolutePath) !== ""
+				? change.movePath
+				: undefined
+		const expectedSourceFileState: ExpectedFileState = { exists: true, content: originalContent }
+		let expectedMoveFileState: ExpectedFileState | undefined
+
+		// Validate and snapshot the move destination before showing the diff or
+		// asking for approval. Both save paths re-check this snapshot before
+		// writing so an approval cannot authorize a changed destination.
+		if (effectiveMovePath && moveAbsolutePath) {
+			const moveAccessAllowed = task.rooIgnoreController?.validateAccess(effectiveMovePath)
+			if (!moveAccessAllowed) {
+				await task.say("rooignore_error", effectiveMovePath)
+				await task.diffViewProvider.reset()
+				return { status: "error", result: formatResponse.rooIgnoreError(effectiveMovePath) }
+			}
+
+			const isMovePathWriteProtected = task.rooProtectedController?.isWriteProtected(effectiveMovePath) || false
+			if (isMovePathWriteProtected) {
+				task.consecutiveMistakeCount++
+				task.recordToolError("apply_patch")
+				const errorMessage = `Cannot move file to write-protected path: ${effectiveMovePath}`
+				await task.say("error", errorMessage)
+				await task.diffViewProvider.reset()
+				return { status: "error", result: formatResponse.toolError(errorMessage) }
+			}
+
+			const isMoveOutsideWorkspace = isTaskPathOutsideWorkspace(task, moveAbsolutePath)
+			if (isMoveOutsideWorkspace) {
+				task.consecutiveMistakeCount++
+				task.recordToolError("apply_patch")
+				const errorMessage = `Cannot move file to path outside workspace: ${effectiveMovePath}`
+				await task.say("error", errorMessage)
+				await task.diffViewProvider.reset()
+				return { status: "error", result: formatResponse.toolError(errorMessage) }
+			}
+
+			expectedMoveFileState = await captureExpectedFileState(moveAbsolutePath)
+			await task.diffViewProvider.assertExpectedFileState(
+				moveAbsolutePath,
+				effectiveMovePath,
+				expectedMoveFileState,
+			)
+		}
+
 		const sanitizedDiff = sanitizeUnifiedDiff(diff)
 		const diffStats = computeDiffStats(sanitizedDiff) || undefined
 
@@ -385,10 +440,13 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			originalContent,
 			isOutsideWorkspace,
 		}
+		const approvalContent = effectiveMovePath
+			? `${sanitizedDiff}\n\nMove destination: ${getTaskReadablePath(task, effectiveMovePath)}`
+			: sanitizedDiff
 
 		const completeMessage = JSON.stringify({
 			...sharedMessageProps,
-			content: sanitizedDiff,
+			content: approvalContent,
 			isProtected: isWriteProtected,
 			diffStats,
 		} satisfies ClineSayTool)
@@ -411,43 +469,9 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			return { status: "denied", result: "Changes were rejected by the user." }
 		}
 
-		const moveAbsolutePath = change.movePath ? path.resolve(task.cwd, change.movePath) : undefined
-		const effectiveMovePath =
-			change.movePath && moveAbsolutePath && path.relative(absolutePath, moveAbsolutePath) !== ""
-				? change.movePath
-				: undefined
-
 		// Handle file move if specified and distinct from the source path.
-		if (effectiveMovePath && moveAbsolutePath) {
-			// Validate destination path access permissions
-			const moveAccessAllowed = task.rooIgnoreController?.validateAccess(effectiveMovePath)
-			if (!moveAccessAllowed) {
-				await task.say("rooignore_error", effectiveMovePath)
-				await task.diffViewProvider.reset()
-				return { status: "error", result: formatResponse.rooIgnoreError(effectiveMovePath) }
-			}
-
-			// Check if destination path is write-protected
-			const isMovePathWriteProtected = task.rooProtectedController?.isWriteProtected(effectiveMovePath) || false
-			if (isMovePathWriteProtected) {
-				task.consecutiveMistakeCount++
-				task.recordToolError("apply_patch")
-				const errorMessage = `Cannot move file to write-protected path: ${effectiveMovePath}`
-				await task.say("error", errorMessage)
-				await task.diffViewProvider.reset()
-				return { status: "error", result: formatResponse.toolError(errorMessage) }
-			}
-
-			// Check if destination path is outside workspace
-			const isMoveOutsideWorkspace = isTaskPathOutsideWorkspace(task, moveAbsolutePath)
-			if (isMoveOutsideWorkspace) {
-				task.consecutiveMistakeCount++
-				task.recordToolError("apply_patch")
-				const errorMessage = `Cannot move file to path outside workspace: ${effectiveMovePath}`
-				await task.say("error", errorMessage)
-				await task.diffViewProvider.reset()
-				return { status: "error", result: formatResponse.toolError(errorMessage) }
-			}
+		if (effectiveMovePath && moveAbsolutePath && expectedMoveFileState) {
+			await task.diffViewProvider.assertExpectedFileState(absolutePath, relPath, expectedSourceFileState)
 
 			// Save new content to the new path
 			if (isPreventFocusDisruptionEnabled) {
@@ -457,12 +481,36 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 					false,
 					diagnosticsEnabled,
 					writeDelayMs,
+					expectedMoveFileState,
 				)
 			} else {
 				// Write to new path and delete old file
 				const parentDir = path.dirname(moveAbsolutePath)
 				await fs.mkdir(parentDir, { recursive: true })
-				await fs.writeFile(moveAbsolutePath, newContent, "utf8")
+				await task.diffViewProvider.assertExpectedFileState(
+					moveAbsolutePath,
+					effectiveMovePath,
+					expectedMoveFileState,
+				)
+				await writeWithExpectedFileState(moveAbsolutePath, effectiveMovePath, newContent, expectedMoveFileState)
+			}
+
+			// Re-check immediately before removing the source. If it changed after
+			// the destination write, report the partial move and preserve the source.
+			try {
+				await task.diffViewProvider.assertExpectedFileState(absolutePath, relPath, expectedSourceFileState)
+			} catch (error) {
+				await task.fileContextTracker.trackFileContext(effectiveMovePath, "roo_edited" as RecordSource)
+				task.didEditFile = true
+				task.consecutiveMistakeCount++
+				task.recordToolError("apply_patch")
+				const errorMessage = `Updated '${effectiveMovePath}', but the source '${relPath}' changed before it could be removed; the source was preserved: ${
+					error instanceof Error ? error.message : String(error)
+				}`
+				await task.say("error", errorMessage)
+				await task.diffViewProvider.reset()
+				task.processQueuedMessages()
+				return { status: "error", result: formatResponse.toolError(errorMessage) }
 			}
 
 			// Delete the original file
@@ -486,7 +534,10 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		} else {
 			// Save changes to the same file
 			if (isPreventFocusDisruptionEnabled) {
-				await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs)
+				await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs, {
+					exists: true,
+					content: originalContent,
+				})
 			} else {
 				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)
 			}
@@ -526,6 +577,57 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 		await task.ask("tool", JSON.stringify(sharedMessageProps), block.partial).catch(() => {})
 	}
+}
+
+async function captureExpectedFileState(absolutePath: string): Promise<ExpectedFileState> {
+	try {
+		return { exists: true, content: await fs.readFile(absolutePath, "utf8") }
+	} catch (error) {
+		if (isFileNotFoundError(error)) {
+			return { exists: false }
+		}
+
+		throw error
+	}
+}
+
+async function writeWithExpectedFileState(
+	absolutePath: string,
+	relPath: string,
+	content: string,
+	expectedState: ExpectedFileState,
+): Promise<void> {
+	try {
+		await fs.writeFile(
+			absolutePath,
+			content,
+			expectedState.exists ? "utf8" : { encoding: "utf-8", flag: "wx" },
+		)
+	} catch (error) {
+		if (!expectedState.exists && isFileExistsError(error)) {
+			throw createMoveConflict(relPath, "the destination was created while approval was pending")
+		}
+
+		throw error
+	}
+}
+
+function createMoveConflict(relPath: string, reason: string): Error {
+	return new Error(
+		`Cannot move '${relPath}': ${reason}. Re-read the affected files and retry so the user's changes are preserved.`,
+	)
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+	return isFileSystemError(error, "ENOENT")
+}
+
+function isFileExistsError(error: unknown): boolean {
+	return isFileSystemError(error, "EEXIST")
+}
+
+function isFileSystemError(error: unknown, code: string): boolean {
+	return typeof error === "object" && error !== null && "code" in error && error.code === code
 }
 
 export const applyPatchTool = new ApplyPatchTool()

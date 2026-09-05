@@ -86,11 +86,9 @@ export class EditTool extends BaseTool<"edit"> {
 				return
 			}
 
-			let fileContent: string
+			let originalFileContent: string
 			try {
-				fileContent = await fs.readFile(absolutePath, "utf8")
-				// Normalize line endings to LF for consistent matching
-				fileContent = fileContent.replace(/\r\n/g, "\n")
+				originalFileContent = await fs.readFile(absolutePath, "utf8")
 			} catch (error) {
 				task.consecutiveMistakeCount++
 				task.recordToolError("edit")
@@ -99,6 +97,9 @@ export class EditTool extends BaseTool<"edit"> {
 				pushToolResult(formatResponse.toolError(errorMessage))
 				return
 			}
+
+			// Normalize line endings to LF for consistent matching
+			const fileContent = originalFileContent.replace(/\r\n/g, "\n")
 
 			// Normalize line endings in old_string/new_string to match file content
 			const normalizedOld = oldString.replace(/\r\n/g, "\n")
@@ -151,7 +152,7 @@ export class EditTool extends BaseTool<"edit"> {
 
 			// Initialize diff view
 			task.diffViewProvider.editType = "modify"
-			task.diffViewProvider.originalContent = fileContent
+			task.diffViewProvider.originalContent = originalFileContent
 
 			// Generate and validate diff
 			const diff = formatResponse.createPrettyPatch(relPath, fileContent, newContent)
@@ -210,8 +211,16 @@ export class EditTool extends BaseTool<"edit"> {
 
 			// Save the changes
 			if (isPreventFocusDisruptionEnabled) {
-				// Direct file write without diff view or opening the file
-				await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs)
+				// Direct file write without diff view or opening the file. The raw
+				// content is the baseline; matching used a normalized projection.
+				await task.diffViewProvider.saveDirectly(
+					relPath,
+					newContent,
+					false,
+					diagnosticsEnabled,
+					writeDelayMs,
+					{ exists: true, content: originalFileContent },
+				)
 			} else {
 				// Call saveChanges to update the DiffViewProvider properties
 				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)

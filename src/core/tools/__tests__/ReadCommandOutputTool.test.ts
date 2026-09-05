@@ -3,7 +3,18 @@ import * as path from "path"
 import { vi, describe, it, expect, beforeEach, afterEach } from "vitest"
 
 import { ReadCommandOutputTool } from "../ReadCommandOutputTool"
+import {
+	READ_COMMAND_OUTPUT_ARTIFACT_ID_PATTERN,
+	READ_COMMAND_OUTPUT_DEFAULT_LIMIT_BYTES,
+	READ_COMMAND_OUTPUT_MAX_ARTIFACT_ID_LENGTH,
+	READ_COMMAND_OUTPUT_MAX_LIMIT_BYTES,
+	READ_COMMAND_OUTPUT_MAX_OFFSET,
+	READ_COMMAND_OUTPUT_MAX_SEARCH_LENGTH,
+	READ_COMMAND_OUTPUT_MAX_SEARCH_LINE_BYTES,
+	READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES,
+} from "../commandOutputContract"
 import { Task } from "../../task/Task"
+import readCommandOutput from "../../prompts/tools/native-tools/read_command_output"
 
 // Mock filesystem operations
 vi.mock("fs/promises", () => ({
@@ -63,6 +74,7 @@ describe("ReadCommandOutputTool", () => {
 		// Mock callbacks
 		mockCallbacks = {
 			pushToolResult: vi.fn(),
+			setResultMetadata: vi.fn(),
 		}
 
 		// Mock file handle
@@ -168,7 +180,7 @@ describe("ReadCommandOutputTool", () => {
 
 			// Mock read to return only up to default limit (40KB)
 			mockFileHandle.read.mockImplementation((buf: Buffer) => {
-				const defaultLimit = 40 * 1024
+				const defaultLimit = READ_COMMAND_OUTPUT_DEFAULT_LIMIT_BYTES
 				const bytesToRead = Math.min(buf.length, defaultLimit)
 				buf.write(largeContent.slice(0, bytesToRead))
 				return Promise.resolve({ bytesRead: bytesToRead })
@@ -234,6 +246,90 @@ describe("ReadCommandOutputTool", () => {
 			expect(mockCallbacks.pushToolResult).toHaveBeenCalled()
 			const result = mockCallbacks.pushToolResult.mock.calls[0][0]
 			expect(result).toContain("TRUNCATED")
+		})
+
+		it("should keep the complete normal-read response within the UTF-8 byte limit", async () => {
+			const artifactId = "cmd-1706119234567.txt"
+			const content = `${"🙂".repeat(1000)}\n`
+			const buffer = Buffer.from(content, "utf8")
+			const limit = READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES
+			vi.mocked(fs.stat).mockResolvedValue({ size: buffer.length } as any)
+			mockFileHandle.read.mockImplementation(
+				(buf: Buffer, bufOffset: number, length: number, position: number | null) => {
+					const start = position ?? 0
+					const bytesToRead = Math.min(length, buffer.length - start)
+					if (bytesToRead > 0) buffer.copy(buf, bufOffset, start, start + bytesToRead)
+					return Promise.resolve({ bytesRead: Math.max(0, bytesToRead) })
+				},
+			)
+
+			await tool.execute({ artifact_id: artifactId, limit }, mockTask, mockCallbacks)
+
+			const result = mockCallbacks.pushToolResult.mock.calls[0][0]
+			expect(Buffer.byteLength(result, "utf8")).toBeLessThanOrEqual(limit)
+			expect(result).not.toContain("�")
+		})
+
+		it("should advance a read offset inside a multibyte code point", async () => {
+			const artifactId = "cmd-1706119234567.txt"
+			const content = "prefix🙂suffix\n"
+			const buffer = Buffer.from(content, "utf8")
+			const emojiStart = Buffer.byteLength("prefix", "utf8")
+			const offset = emojiStart + 1
+			vi.mocked(fs.stat).mockResolvedValue({ size: buffer.length } as any)
+			mockFileHandle.read.mockImplementation(
+				(buf: Buffer, bufOffset: number, length: number, position: number | null) => {
+					const start = position ?? 0
+					const bytesToRead = Math.min(length, buffer.length - start)
+					if (bytesToRead > 0) buffer.copy(buf, bufOffset, start, start + bytesToRead)
+					return Promise.resolve({ bytesRead: Math.max(0, bytesToRead) })
+				},
+			)
+
+			await tool.execute({ artifact_id: artifactId, offset }, mockTask, mockCallbacks)
+
+			const result = mockCallbacks.pushToolResult.mock.calls[0][0]
+			const telemetry = JSON.parse(mockTask.say.mock.calls.find(([type]: [string]) => type === "tool")[1])
+			expect(result).toContain("suffix")
+			expect(result).not.toContain("�")
+			expect(telemetry.readStart).toBe(emojiStart + Buffer.byteLength("🙂", "utf8"))
+			expect(telemetry.nextOffset).toBe(telemetry.readEnd)
+		})
+
+		it("should fill multiple short positional reads before rendering", async () => {
+			const artifactId = "cmd-1706119234567.txt"
+			const content = `${"short-read ".repeat(200)}\n`
+			const buffer = Buffer.from(content, "utf8")
+			const limit = READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES
+			let readCalls = 0
+			vi.mocked(fs.stat).mockResolvedValue({ size: buffer.length } as any)
+			mockFileHandle.read.mockImplementation(
+				(buf: Buffer, bufOffset: number, length: number, position: number | null) => {
+					readCalls++
+					const start = position ?? 0
+					const bytesToRead = Math.min(7, length, buffer.length - start)
+					if (bytesToRead > 0) buffer.copy(buf, bufOffset, start, start + bytesToRead)
+					return Promise.resolve({ bytesRead: Math.max(0, bytesToRead) })
+				},
+			)
+
+			await tool.execute({ artifact_id: artifactId, limit }, mockTask, mockCallbacks)
+
+			const result = mockCallbacks.pushToolResult.mock.calls[0][0]
+			expect(readCalls).toBeGreaterThan(2)
+			expect(result).toContain("short-read")
+			expect(Buffer.byteLength(result, "utf8")).toBeLessThanOrEqual(limit)
+		})
+
+		it("should reject a limit above the resource cap", async () => {
+			const artifactId = "cmd-1706119234567.txt"
+
+			await tool.execute({ artifact_id: artifactId, limit: 4 * 1024 * 1024 + 1 }, mockTask, mockCallbacks)
+
+			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(mockCallbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+			expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Invalid limit"))
+			expect(fs.access).not.toHaveBeenCalled()
 		})
 
 		it("should show TRUNCATED when more content exists", async () => {
@@ -338,6 +434,244 @@ describe("ReadCommandOutputTool", () => {
 			expect(result).toMatch(/4 \|.*Error on line 4/)
 		})
 
+		it.each([
+			{ name: "with a trailing newline", suffix: "\n" },
+			{ name: "without a trailing newline", suffix: "" },
+		])("should report an oversized first match $name", async ({ suffix }) => {
+			const artifactId = "cmd-1706119234567.txt"
+			const content = `ERROR ${"x".repeat(50000)}${suffix}`
+			setupSearchMock(content)
+
+			const result = await (tool as any).searchInArtifact(
+				path.join(globalStoragePath, "tasks", taskId, "command-output", artifactId),
+				"ERROR",
+				0,
+				Buffer.byteLength(content),
+				READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES,
+			)
+
+			expect(result.matchCount).toBeGreaterThan(0)
+			expect(result.content).toContain("TRUNCATED")
+			expect(result.content).not.toContain("No matches found")
+			expect(Buffer.byteLength(result.content, "utf8")).toBeLessThan(1000)
+		})
+
+		it("should bound blank-line matches and stop scanning after the output budget", async () => {
+			const artifactId = "cmd-1706119234567.txt"
+			const content = "\n".repeat(100000)
+			setupSearchMock(content)
+
+			const result = await (tool as any).searchInArtifact(
+				path.join(globalStoragePath, "tasks", taskId, "command-output", artifactId),
+				"^$",
+				0,
+				Buffer.byteLength(content),
+				READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES,
+			)
+
+			expect(result.matchCount).toBeGreaterThan(0)
+			expect(result.content).toContain("TRUNCATED")
+			expect(Buffer.byteLength(result.content, "utf8")).toBeLessThan(1000)
+			expect(result.bytesRead).toBeLessThan(content.length)
+		})
+
+		it("should report the bounded search range in tool telemetry", async () => {
+			const artifactId = "cmd-1706119234567.txt"
+			const content = "\n".repeat(100000)
+			setupSearchMock(content)
+
+			await tool.execute({ artifact_id: artifactId, search: "^$", limit: READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES }, mockTask, mockCallbacks)
+
+			const telemetry = JSON.parse(mockTask.say.mock.calls.find(([type]: [string]) => type === "tool")[1])
+			expect(telemetry.readEnd).toBeLessThan(content.length)
+			expect(telemetry.searchBytesRead).toBe(telemetry.readEnd)
+			expect(telemetry.searchTruncated).toBe(true)
+			expect(telemetry.searchMatchCountExact).toBe(false)
+		})
+
+		it("should report processed search bytes and resume at the next match", async () => {
+			const artifactId = "cmd-1706119234567.txt"
+			const firstLine = `ERROR ${"x".repeat(200)}`
+			const content = `${firstLine}\nnoise\n${"noise\n".repeat(20)}ERROR later\n`
+			setupSearchMock(content)
+
+			await tool.execute(
+				{ artifact_id: artifactId, search: "ERROR", limit: READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES },
+				mockTask,
+				mockCallbacks,
+			)
+			const firstResult = mockCallbacks.pushToolResult.mock.calls[0][0]
+			const firstTelemetry = JSON.parse(mockTask.say.mock.calls.find(([type]: [string]) => type === "tool")[1])
+			expect(firstResult).toContain("ERROR")
+			expect(firstTelemetry.readStart).toBe(0)
+			expect(firstTelemetry.readEnd).toBe(Buffer.byteLength(`${firstLine}\n`, "utf8"))
+			expect(firstTelemetry.readEnd).toBeLessThan(Buffer.byteLength(content, "utf8"))
+			expect(firstTelemetry.searchBytesRead).toBe(firstTelemetry.readEnd)
+			expect(firstTelemetry.nextOffset).toBe(firstTelemetry.readEnd)
+
+			mockCallbacks.pushToolResult.mockClear()
+			mockTask.say.mockClear()
+			await tool.execute(
+				{
+					artifact_id: artifactId,
+					search: "ERROR",
+					offset: firstTelemetry.nextOffset,
+					limit: READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES,
+				},
+				mockTask,
+				mockCallbacks,
+			)
+
+			const secondResult = mockCallbacks.pushToolResult.mock.calls[0][0]
+			const secondTelemetry = JSON.parse(mockTask.say.mock.calls.find(([type]: [string]) => type === "tool")[1])
+			expect(secondResult).toContain("ERROR later")
+			expect(secondTelemetry.readStart).toBe(firstTelemetry.nextOffset)
+		})
+
+		it("should keep an exact-budget match at EOF exact", async () => {
+			const artifactId = "cmd-1706119234567.txt"
+			const line = `ERROR ${"x".repeat(50)}`
+			setupSearchMock(`${line}\n`)
+
+			const result = await (tool as any).searchInArtifact(
+				path.join(globalStoragePath, "tasks", taskId, "command-output", artifactId),
+				"ERROR",
+				0,
+				Buffer.byteLength(`${line}\n`, "utf8"),
+				READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES,
+			)
+
+			expect(result.matchCount).toBe(1)
+			expect(result.truncated).toBe(false)
+			expect(result.content).toContain("Total matches: 1")
+			expect(result.content).not.toContain("At least 1 matches observed")
+		})
+
+		it("should charge multibyte content by UTF-8 bytes when truncating a match", async () => {
+			const artifactId = "cmd-1706119234567.txt"
+			const content = `${"🙂".repeat(200)}\n`
+			setupSearchMock(content)
+
+			const result = await (tool as any).searchInArtifact(
+				path.join(globalStoragePath, "tasks", taskId, "command-output", artifactId),
+				"🙂",
+				0,
+				Buffer.byteLength(content),
+				READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES,
+			)
+
+			expect(result.matchCount).toBe(1)
+			expect(result.content).toContain("🙂")
+			expect(result.content).toContain("TRUNCATED")
+			expect(result.content).not.toContain("�")
+			expect(Buffer.byteLength(result.content, "utf8")).toBeLessThanOrEqual(READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES)
+		})
+
+		it("should keep the complete search response within the UTF-8 byte limit", async () => {
+			const artifactId = "cmd-1706119234567.txt"
+			const content = `ERROR ${"🙂".repeat(1000)}\n`
+			const limit = READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES
+			setupSearchMock(content)
+
+			await tool.execute({ artifact_id: artifactId, search: "ERROR", limit }, mockTask, mockCallbacks)
+
+			const result = mockCallbacks.pushToolResult.mock.calls[0][0]
+			expect(Buffer.byteLength(result, "utf8")).toBeLessThanOrEqual(limit)
+			expect(result).not.toContain("�")
+		})
+
+		it("should report an incomplete oversized unterminated line instead of no matches", async () => {
+			const artifactId = "cmd-1706119234567.txt"
+			const content = `ERROR ${"x".repeat(READ_COMMAND_OUTPUT_MAX_SEARCH_LINE_BYTES + 1024)}`
+			setupSearchMock(content)
+
+			await tool.execute({ artifact_id: artifactId, search: "ERROR" }, mockTask, mockCallbacks)
+
+			const result = mockCallbacks.pushToolResult.mock.calls[0][0]
+			const telemetry = JSON.parse(mockTask.say.mock.calls.find(([type]: [string]) => type === "tool")[1])
+			expect(result).toMatch(/incomplete/i)
+			expect(result).not.toContain("No matches found for the search pattern")
+			expect(telemetry.searchIncomplete).toBe(true)
+			expect(telemetry.searchMatchCountExact).toBe(false)
+		})
+
+		it.each([
+			"a+a+$",
+			"(a|aa)+$",
+			"(a?)+$",
+			"(?:a{1,2})+$",
+			"a{0,1000}a{1000}b",
+		])(
+			"should reject potentially unsafe search pattern %s before reading",
+			async (search) => {
+				const artifactId = "cmd-1706119234567.txt"
+
+				await tool.execute({ artifact_id: artifactId, search }, mockTask, mockCallbacks)
+
+				expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+				expect(mockCallbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+				expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Invalid search pattern"))
+				expect(fs.access).not.toHaveBeenCalled()
+			},
+		)
+
+		it.each([
+			["a+b", "aaab\n"],
+			["a+$", "aaa\n"],
+			["a+\\b", "aaa\n"],
+			["a{64}b", `${"a".repeat(64)}b\n`],
+			["a{1000}b", `${"a".repeat(1000)}b\n`],
+			["ERROR.*timeout", "ERROR: command timeout\n"],
+		])(
+			"should allow a flat quantifier with a suffix and return matching lines: %s",
+			async (search, content) => {
+				const artifactId = "cmd-1706119234567.txt"
+				setupSearchMock(content)
+
+				await tool.execute({ artifact_id: artifactId, search, limit: 2048 }, mockTask, mockCallbacks)
+
+				const result = mockCallbacks.pushToolResult.mock.calls[0][0]
+				expect(result).toContain("Total matches: 1")
+				expect(mockTask.didToolFailInCurrentTurn).toBe(false)
+			},
+		)
+
+		it.each(["test\\d+", "a{8}b+"])(
+			"should allow a safe search pattern with small or single quantifiers: %s",
+			async (search) => {
+				const artifactId = "cmd-1706119234567.txt"
+				setupSearchMock(search === "test\\d+" ? "test123\nother\n" : "aaaaaaaab\n")
+
+				await tool.execute({ artifact_id: artifactId, search }, mockTask, mockCallbacks)
+
+				const result = mockCallbacks.pushToolResult.mock.calls[0][0]
+				expect(result).toContain(search === "test\\d+" ? "test123" : "aaaaaaaab")
+				expect(mockTask.didToolFailInCurrentTurn).toBe(false)
+			},
+		)
+
+		it.each([64, 1000])("should allow a large fixed repetition when it is the terminal token: %s", async (count) => {
+			const artifactId = "cmd-1706119234567.txt"
+			setupSearchMock(`${"a".repeat(count)}\n`)
+
+			await tool.execute({ artifact_id: artifactId, search: `a{${count}}`, limit: 2048 }, mockTask, mockCallbacks)
+
+			const result = mockCallbacks.pushToolResult.mock.calls[0][0]
+			expect(result).toContain("Total matches: 1")
+			expect(mockTask.didToolFailInCurrentTurn).toBe(false)
+		})
+
+		it("should match blank CRLF lines as empty lines", async () => {
+			const artifactId = "cmd-1706119234567.txt"
+			setupSearchMock("first\r\n\r\nERROR\r\n")
+
+			await tool.execute({ artifact_id: artifactId, search: "^$" }, mockTask, mockCallbacks)
+
+			const result = mockCallbacks.pushToolResult.mock.calls[0][0]
+			expect(result).toContain("Total matches: 1")
+			expect(result).toMatch(/2 \|\s*$/m)
+		})
+
 		it("should handle empty search results gracefully", async () => {
 			const artifactId = "cmd-1706119234567.txt"
 			const content = "Line 1\nLine 2\nLine 3\n"
@@ -380,6 +714,22 @@ describe("ReadCommandOutputTool", () => {
 	})
 
 	describe("Error handling", () => {
+		it("should keep artifact validation in parity with the schema and bound invalid ID errors", async () => {
+			const artifactSchema = (readCommandOutput.function.parameters as any).properties.artifact_id
+			expect(artifactSchema.pattern).toBe(READ_COMMAND_OUTPUT_ARTIFACT_ID_PATTERN)
+			expect(artifactSchema.maxLength).toBe(READ_COMMAND_OUTPUT_MAX_ARTIFACT_ID_LENGTH)
+
+			const oversizedArtifactId = `cmd-${"9".repeat(500)}.txt`
+			await tool.execute({ artifact_id: oversizedArtifactId }, mockTask, mockCallbacks)
+
+			const errorResult = mockCallbacks.pushToolResult.mock.calls[0][0]
+			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(errorResult).toContain("Invalid artifact_id format")
+			expect(errorResult).not.toContain("9".repeat(100))
+			expect(Buffer.byteLength(errorResult, "utf8")).toBeLessThan(400)
+			expect(fs.access).not.toHaveBeenCalled()
+		})
+
 		it("should return error for non-existent artifact", async () => {
 			const artifactId = "cmd-9999999999.txt"
 
@@ -388,6 +738,7 @@ describe("ReadCommandOutputTool", () => {
 			await tool.execute({ artifact_id: artifactId }, mockTask, mockCallbacks)
 
 			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(mockCallbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
 			expect(mockTask.say).toHaveBeenCalledWith("error", expect.stringContaining("not found"))
 			expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(
 				expect.stringContaining("Error: Artifact not found"),
@@ -413,6 +764,7 @@ describe("ReadCommandOutputTool", () => {
 
 				expect(mockTask.consecutiveMistakeCount).toBeGreaterThan(0)
 				expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+				expect(mockCallbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
 				expect(mockTask.say).toHaveBeenCalledWith(
 					"error",
 					expect.stringContaining("Invalid artifact_id format"),
@@ -449,6 +801,8 @@ describe("ReadCommandOutputTool", () => {
 			)
 
 			expect(mockTask.say).toHaveBeenCalledWith("error", expect.stringContaining("Invalid offset"))
+			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(mockCallbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
 			expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Error: Invalid offset"))
 		})
 
@@ -461,6 +815,27 @@ describe("ReadCommandOutputTool", () => {
 			await tool.execute({ artifact_id: artifactId, offset: -10 }, mockTask, mockCallbacks)
 
 			expect(mockTask.say).toHaveBeenCalledWith("error", expect.stringContaining("Invalid offset"))
+			expect(mockCallbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+		})
+
+		it.each([
+			["fractional offset", { offset: 1.5 }, "Invalid offset"],
+			["NaN offset", { offset: Number.NaN }, "Invalid offset"],
+			["infinite offset", { offset: Number.POSITIVE_INFINITY }, "Invalid offset"],
+			["offset above safe maximum", { offset: READ_COMMAND_OUTPUT_MAX_OFFSET + 1 }, "Invalid offset"],
+			["zero limit", { limit: 0 }, "Invalid limit"],
+			["fractional limit", { limit: 1.5 }, "Invalid limit"],
+			["NaN limit", { limit: Number.NaN }, "Invalid limit"],
+			["infinite limit", { limit: Number.POSITIVE_INFINITY }, "Invalid limit"],
+			["limit below minimum", { limit: READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES - 1 }, "Invalid limit"],
+			["limit above maximum", { limit: READ_COMMAND_OUTPUT_MAX_LIMIT_BYTES + 1 }, "Invalid limit"],
+		] as const)("should reject %s", async (_label, params, message) => {
+			await tool.execute({ artifact_id: "cmd-1706119234567.txt", ...params }, mockTask, mockCallbacks)
+
+			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(mockCallbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+			expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining(message))
+			expect(fs.access).not.toHaveBeenCalled()
 		})
 
 		it("should handle missing artifact_id parameter", async () => {
@@ -469,6 +844,7 @@ describe("ReadCommandOutputTool", () => {
 			expect(mockTask.consecutiveMistakeCount).toBeGreaterThan(0)
 			expect(mockTask.recordToolError).toHaveBeenCalledWith("read_command_output")
 			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(mockCallbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
 			expect(mockTask.sayAndCreateMissingParamError).toHaveBeenCalledWith("read_command_output", "artifact_id")
 		})
 
@@ -488,6 +864,8 @@ describe("ReadCommandOutputTool", () => {
 				expect.stringContaining("Global storage path is not available"),
 			)
 			expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Error"))
+			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(mockCallbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
 		})
 
 		it("should handle file read errors", async () => {
@@ -498,6 +876,7 @@ describe("ReadCommandOutputTool", () => {
 			await tool.execute({ artifact_id: artifactId }, mockTask, mockCallbacks)
 
 			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(mockCallbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
 			expect(mockTask.say).toHaveBeenCalledWith("error", expect.stringContaining("Error reading command output"))
 		})
 
@@ -509,6 +888,76 @@ describe("ReadCommandOutputTool", () => {
 			await tool.execute({ artifact_id: artifactId }, mockTask, mockCallbacks)
 
 			expect(mockFileHandle.close).toHaveBeenCalled()
+		})
+
+		it("should close the search handle when UTF-8 alignment initialization fails", async () => {
+			const artifactId = "cmd-1706119234567.txt"
+			vi.spyOn(tool as any, "alignReadStart").mockRejectedValue(new Error("Alignment error"))
+
+			await tool.execute({ artifact_id: artifactId, search: "error" }, mockTask, mockCallbacks)
+
+			expect(mockFileHandle.close).toHaveBeenCalled()
+			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Alignment error"))
+		})
+
+		it("should report access failures as errors without calling them missing artifacts", async () => {
+			const artifactId = "cmd-1706119234567.txt"
+			vi.mocked(fs.access).mockRejectedValue(Object.assign(new Error("Permission denied"), { code: "EACCES" }))
+
+			await tool.execute({ artifact_id: artifactId }, mockTask, mockCallbacks)
+
+			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(mockCallbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+			expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Unable to access artifact"))
+			expect(mockCallbacks.pushToolResult).not.toHaveBeenCalledWith(expect.stringContaining("Artifact not found"))
+		})
+
+		it.each([
+			["stat", () => vi.mocked(fs.stat).mockRejectedValue(new Error("Stat error"))],
+			["open", () => vi.mocked(fs.open).mockRejectedValue(new Error("Open error"))],
+		])("should report %s failures with structured error metadata", async (_operation, fail) => {
+			const artifactId = "cmd-1706119234567.txt"
+			fail()
+
+			await tool.execute({ artifact_id: artifactId }, mockTask, mockCallbacks)
+
+			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(mockCallbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+			expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Error reading command output"))
+		})
+
+		it("should preserve cancellation and close a handle when a read is pending", async () => {
+			const artifactId = "cmd-1706119234567.txt"
+			const controller = new AbortController()
+			const reason = new Error("cancelled read")
+			let resolveRead!: (value: { bytesRead: number }) => void
+			let readStarted!: () => void
+			const readStartedPromise = new Promise<void>((resolve) => {
+				readStarted = resolve
+			})
+			const pendingRead = new Promise<{ bytesRead: number }>((resolve) => {
+				resolveRead = resolve
+			})
+			mockFileHandle.read.mockImplementation(() => {
+				readStarted()
+				return pendingRead
+			})
+
+			const execution = tool.execute(
+				{ artifact_id: artifactId },
+				mockTask,
+				{ ...mockCallbacks, signal: controller.signal },
+			)
+			await readStartedPromise
+			controller.abort(reason)
+
+			await expect(execution).rejects.toBe(reason)
+			expect(mockFileHandle.close).toHaveBeenCalled()
+			expect(mockCallbacks.pushToolResult).not.toHaveBeenCalled()
+
+			resolveRead({ bytesRead: 0 })
+			await Promise.resolve()
 		})
 	})
 

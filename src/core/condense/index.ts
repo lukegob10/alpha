@@ -5,6 +5,8 @@ import { TelemetryService } from "@alpha-code/telemetry"
 
 import { t } from "../../i18n"
 import { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../api"
+import { getApiStreamErrorMessage } from "../../api/transform/stream"
+import type { ApiStreamError, ApiStreamOutcomeChunk } from "../../api/transform/stream"
 import { ApiMessage } from "../task-persistence/apiMessages"
 import { maybeRemoveImageBlocks } from "../../api/transform/image-cleaning"
 import { findLast } from "../../shared/array"
@@ -208,6 +210,16 @@ export function hasToolCallResultIntegrity(messages: ApiMessage[]): boolean {
 }
 
 export const DEFAULT_RECENT_TAIL_TOKENS = 16_384
+
+const MAX_CONDENSE_STREAM_ERROR_DETAIL_LENGTH = 512
+
+/** Keep provider stream failures useful without copying untrusted payloads into task history. */
+function getCondenseStreamErrorDetail(error: ApiStreamError): string {
+	const detail = getApiStreamErrorMessage(error, "Provider stream error").trim()
+	if (detail.length === 0) return "Provider stream error"
+	if (detail.length <= MAX_CONDENSE_STREAM_ERROR_DETAIL_LENGTH) return detail
+	return `${detail.slice(0, MAX_CONDENSE_STREAM_ERROR_DETAIL_LENGTH - 3)}...`
+}
 
 const HISTORY_BOOKKEEPING_KEYS = new Set([
 	"content",
@@ -648,6 +660,19 @@ export async function summarizeConversation(options: SummarizeConversationOption
 
 	let summary = ""
 	let cost = 0
+	let completedOutcomeObserved = false
+	let unsuccessfulOutcome: ApiStreamOutcomeChunk | undefined
+	let streamError: ApiStreamError | undefined
+	const getStreamErrorResponse = (errorChunk: ApiStreamError): SummarizeResponse => {
+		const errorDetails = getCondenseStreamErrorDetail(errorChunk)
+		return {
+			...response,
+			cost,
+			error: t("common:errors.condense_api_failed", { message: errorDetails }),
+			errorDetails,
+			status: "no_progress",
+		}
+	}
 
 	try {
 		// Historical tool blocks were converted to text above.  Do not let the
@@ -656,16 +681,35 @@ export async function summarizeConversation(options: SummarizeConversationOption
 
 		for await (const chunk of stream) {
 			signal?.throwIfAborted()
+			if (chunk.type === "error") {
+				// An explicit provider failure is terminal for condensing. Keep the
+				// first one and ignore any cleanup/outcome chunks that follow it.
+				streamError ??= chunk
+				continue
+			}
+			if (chunk.type === "usage") {
+				// Usage may arrive after a provider error while the transport drains;
+				// preserve the final accounting even though the summary is rejected.
+				cost = chunk.totalCost ?? 0
+				continue
+			}
+			if (streamError) continue
 			if (chunk.type === "text") {
 				summary += chunk.text
-			} else if (chunk.type === "usage") {
-				// Record final usage chunk only
-				cost = chunk.totalCost ?? 0
+			} else if (chunk.type === "outcome") {
+				if (chunk.status === "completed" && chunk.terminal) {
+					completedOutcomeObserved = true
+				} else {
+					// Once a provider declares this summary incomplete, failed, or
+					// cancelled, a later nominal completion cannot make partial text safe.
+					unsuccessfulOutcome ??= chunk
+				}
 			}
 		}
 	} catch (error) {
 		signal?.throwIfAborted()
 		if (error instanceof Error && error.name === "AbortError") throw error
+		if (streamError) return getStreamErrorResponse(streamError)
 		console.error("Error during condensing API call:", error)
 		const errorMessage = error instanceof Error ? error.message : String(error)
 
@@ -708,6 +752,20 @@ export async function summarizeConversation(options: SummarizeConversationOption
 		}
 	}
 	signal?.throwIfAborted()
+	if (streamError) return getStreamErrorResponse(streamError)
+
+	// Lifecycle-capable providers promise an explicit terminal outcome, so EOF
+	// without completed evidence must fail closed. Legacy providers have no such
+	// contract and retain their established text-at-EOF behavior.
+	if (unsuccessfulOutcome || (apiHandler.streamCapabilities?.lifecycle === true && !completedOutcomeObserved)) {
+		return {
+			...response,
+			cost,
+			error: t("common:errors.condense_failed"),
+			...(unsuccessfulOutcome?.reason ? { errorDetails: unsuccessfulOutcome.reason } : {}),
+			status: "no_progress",
+		}
+	}
 
 	summary = summary.trim()
 

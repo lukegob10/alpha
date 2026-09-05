@@ -152,25 +152,25 @@ describe("DiffViewProvider", () => {
 	})
 
 	describe("update method", () => {
-		it("should preserve empty last line when original content has one", async () => {
-			;(diffViewProvider as any).originalContent = "Original content\n"
+		it("preserves the supplied replacement without adding a final newline", async () => {
+			;(diffViewProvider as any).originalContent = "Original content\r\n"
 			await diffViewProvider.update("New content", true)
 
 			expect(mockWorkspaceEdit.replace).toHaveBeenCalledWith(
 				expect.anything(),
 				expect.anything(),
-				"New content\n",
+				"New content",
 			)
 		})
 
-		it("should not add extra newline when accumulated content already ends with one", async () => {
-			;(diffViewProvider as any).originalContent = "Original content\n"
-			await diffViewProvider.update("New content\n", true)
+		it("preserves an explicitly supplied final newline", async () => {
+			;(diffViewProvider as any).originalContent = "Original content\r\n"
+			await diffViewProvider.update("New content\r\n", true)
 
 			expect(mockWorkspaceEdit.replace).toHaveBeenCalledWith(
 				expect.anything(),
 				expect.anything(),
-				"New content\n",
+				"New content\r\n",
 			)
 		})
 
@@ -179,6 +179,16 @@ describe("DiffViewProvider", () => {
 			await diffViewProvider.update("New content", true)
 
 			expect(mockWorkspaceEdit.replace).toHaveBeenCalledWith(expect.anything(), expect.anything(), "New content")
+		})
+
+		it("fails when the final exact-content edit is rejected", async () => {
+			;(diffViewProvider as any).originalContent = "Original content"
+			;(diffViewProvider as any).activeDiffEditor.document.lineCount = 1
+			vi.mocked(vscode.workspace.applyEdit).mockResolvedValueOnce(true).mockResolvedValueOnce(false)
+
+			await expect(diffViewProvider.update("New content", true)).rejects.toThrow(
+				"Failed to apply the final content",
+			)
 		})
 	})
 
@@ -358,17 +368,24 @@ describe("DiffViewProvider", () => {
 	})
 
 	describe("saveDirectly method", () => {
-		beforeEach(() => {
+		beforeEach(async () => {
 			// Mock vscode functions
 			vi.mocked(vscode.window.showTextDocument).mockResolvedValue({} as any)
 			vi.mocked(vscode.languages.getDiagnostics).mockReturnValue([])
+			;(vscode.workspace as any).textDocuments = []
+			const fs = await import("fs/promises")
+			vi.mocked(fs.readFile).mockResolvedValue("file content" as any)
+			vi.mocked(fs.writeFile).mockResolvedValue(undefined)
 		})
 
 		it("should write content directly to file without opening diff view", async () => {
 			const mockDelay = vi.mocked(delay)
 			mockDelay.mockClear()
 
-			const result = await diffViewProvider.saveDirectly("test.ts", "new content", true, true, 2000)
+			const result = await diffViewProvider.saveDirectly("test.ts", "new content", true, true, 2000, {
+				exists: true,
+				content: "file content",
+			})
 
 			// Verify file was written
 			const fs = await import("fs/promises")
@@ -391,7 +408,10 @@ describe("DiffViewProvider", () => {
 		})
 
 		it("should not open file when openWithoutFocus is false", async () => {
-			await diffViewProvider.saveDirectly("test.ts", "new content", false, true, 1000)
+			await diffViewProvider.saveDirectly("test.ts", "new content", false, true, 1000, {
+				exists: true,
+				content: "file content",
+			})
 
 			// Verify file was written
 			const fs = await import("fs/promises")
@@ -406,7 +426,10 @@ describe("DiffViewProvider", () => {
 			mockDelay.mockClear()
 			vi.mocked(vscode.languages.getDiagnostics).mockClear()
 
-			await diffViewProvider.saveDirectly("test.ts", "new content", true, false, 1000)
+			await diffViewProvider.saveDirectly("test.ts", "new content", true, false, 1000, {
+				exists: true,
+				content: "file content",
+			})
 
 			// Verify file was written
 			const fs = await import("fs/promises")
@@ -422,20 +445,147 @@ describe("DiffViewProvider", () => {
 			const mockDelay = vi.mocked(delay)
 			mockDelay.mockClear()
 
-			await diffViewProvider.saveDirectly("test.ts", "new content", true, true, -500)
+			await diffViewProvider.saveDirectly("test.ts", "new content", true, true, -500, {
+				exists: true,
+				content: "file content",
+			})
 
 			// Verify delay was called with 0 (safe minimum)
 			expect(mockDelay).toHaveBeenCalledWith(0)
 		})
 
 		it("should store results for formatFileWriteResponse", async () => {
-			await diffViewProvider.saveDirectly("test.ts", "new content", true, true, 1000)
+			await diffViewProvider.saveDirectly("test.ts", "new content", true, true, 1000, {
+				exists: true,
+				content: "file content",
+			})
 
 			// Verify internal state was updated
 			expect((diffViewProvider as any).newProblemsMessage).toBe("")
 			expect((diffViewProvider as any).userEdits).toBeUndefined()
 			expect((diffViewProvider as any).relPath).toBe("test.ts")
 			expect((diffViewProvider as any).newContent).toBe("new content")
+		})
+
+		it("should preserve an unchanged expected baseline", async () => {
+			const fs = await import("fs/promises")
+			vi.mocked(fs.readFile).mockResolvedValueOnce("original content" as any)
+
+			await diffViewProvider.saveDirectly("test.ts", "new content", false, false, 0, {
+				exists: true,
+				content: "original content",
+			})
+
+			expect(fs.writeFile).toHaveBeenCalledWith(`${mockCwd}/test.ts`, "new content", "utf-8")
+		})
+
+		it("rejects an existing file changed while approval is pending", async () => {
+			const fs = await import("fs/promises")
+			vi.mocked(fs.readFile).mockResolvedValueOnce("user edit" as any)
+
+			await expect(
+				diffViewProvider.saveDirectly("test.ts", "new content", false, false, 0, {
+					exists: true,
+					content: "original content",
+				}),
+			).rejects.toThrow("file changed while approval was pending")
+
+			expect(fs.writeFile).not.toHaveBeenCalled()
+		})
+
+		it("rejects an expected existing file that disappeared", async () => {
+			const fs = await import("fs/promises")
+			const error = Object.assign(new Error("missing"), { code: "ENOENT" })
+			vi.mocked(fs.readFile).mockRejectedValueOnce(error)
+
+			await expect(
+				diffViewProvider.saveDirectly("test.ts", "new content", false, false, 0, {
+					exists: true,
+					content: "original content",
+				}),
+			).rejects.toThrow("file was deleted while approval was pending")
+
+			expect(fs.writeFile).not.toHaveBeenCalled()
+		})
+
+		it("rejects a dirty open document before a direct save", async () => {
+			const fs = await import("fs/promises")
+			;(vscode.workspace as any).textDocuments = [
+				{
+					uri: { scheme: "file", fsPath: `${mockCwd}/test.ts` },
+					isDirty: true,
+				},
+			]
+
+			await expect(
+				diffViewProvider.saveDirectly("test.ts", "new content", false, false, 0, {
+					exists: true,
+					content: "original content",
+				}),
+			).rejects.toThrow("unsaved changes in an open editor")
+
+			expect(fs.readFile).not.toHaveBeenCalled()
+			expect(fs.writeFile).not.toHaveBeenCalled()
+		})
+
+		it("allows its managed dirty diff document while checking the disk baseline", async () => {
+			const fs = await import("fs/promises")
+			const managedDocument = {
+				uri: { scheme: "file", fsPath: `${mockCwd}/test.ts` },
+				isDirty: true,
+				getText: vi.fn().mockReturnValue("new content"),
+			}
+			;(vscode.workspace as any).textDocuments = [managedDocument]
+			;(diffViewProvider as any).isEditing = true
+			;(diffViewProvider as any).activeDiffEditor = { document: managedDocument }
+			vi.mocked(fs.readFile).mockResolvedValueOnce("file content" as any)
+
+			await expect(
+				diffViewProvider.assertExpectedFileState(`${mockCwd}/test.ts`, "test.ts", {
+					exists: true,
+					content: "file content",
+				}),
+			).resolves.toBeUndefined()
+
+			expect(fs.readFile).toHaveBeenCalledWith(`${mockCwd}/test.ts`, "utf-8")
+		})
+
+		it("uses exclusive create when an expected-missing file is still absent", async () => {
+			const fs = await import("fs/promises")
+			const error = Object.assign(new Error("missing"), { code: "ENOENT" })
+			vi.mocked(fs.readFile).mockRejectedValueOnce(error)
+
+			await diffViewProvider.saveDirectly("test.ts", "new content", false, false, 0, { exists: false })
+
+			expect(fs.writeFile).toHaveBeenCalledWith(`${mockCwd}/test.ts`, "new content", {
+				encoding: "utf-8",
+				flag: "wx",
+			})
+		})
+
+		it("rejects an expected-missing file that reappeared", async () => {
+			const fs = await import("fs/promises")
+			vi.mocked(fs.readFile).mockResolvedValueOnce("reappeared" as any)
+
+			await expect(
+				diffViewProvider.saveDirectly("test.ts", "new content", false, false, 0, { exists: false }),
+			).rejects.toThrow("file was created while approval was pending")
+
+			expect(fs.writeFile).not.toHaveBeenCalled()
+		})
+
+		it("rejects when an expected-missing file appears during the create race", async () => {
+			const fs = await import("fs/promises")
+			const missing = Object.assign(new Error("missing"), { code: "ENOENT" })
+			const appeared = Object.assign(new Error("already exists"), { code: "EEXIST" })
+			vi.mocked(fs.readFile).mockRejectedValueOnce(missing)
+			vi.mocked(fs.writeFile).mockRejectedValueOnce(appeared)
+
+			await expect(
+				diffViewProvider.saveDirectly("test.ts", "new content", false, false, 0, { exists: false }),
+			).rejects.toThrow("file was created while approval was pending")
+
+			expect((diffViewProvider as any).newContent).toBeUndefined()
 		})
 	})
 
@@ -457,6 +607,33 @@ describe("DiffViewProvider", () => {
 			vi.mocked(vscode.window.showTextDocument).mockResolvedValue({} as any)
 			vi.mocked(vscode.languages.getDiagnostics).mockReturnValue([])
 		})
+
+		function configureMutableDocument(initialContent: string) {
+			let documentText = initialContent
+			const document: any = {
+				uri: { fsPath: `${mockCwd}/test.ts` },
+				getText: vi.fn(() => documentText),
+				lineCount: initialContent.split(/\r\n|\n/).length,
+				isDirty: false,
+				save: vi.fn().mockImplementation(async () => {
+					document.isDirty = false
+				}),
+			}
+
+			vi.mocked(vscode.workspace.applyEdit).mockImplementation(async () => {
+				const replacement = mockWorkspaceEdit.replace.mock.calls.at(-1)?.[2]
+				if (typeof replacement === "string") {
+					documentText = replacement
+					document.lineCount = documentText.split(/\r\n|\n/).length
+					document.isDirty = true
+				}
+				return true
+			})
+
+			;(diffViewProvider as any).activeDiffEditor = { document }
+			;(diffViewProvider as any).closeAllDiffViews = vi.fn().mockResolvedValue(undefined)
+			return document
+		}
 
 		it("should apply diagnostic delay when diagnosticsEnabled is true", async () => {
 			const mockDelay = vi.mocked(delay)
@@ -515,6 +692,46 @@ describe("DiffViewProvider", () => {
 			// Verify custom delay was used
 			expect(mockDelay).toHaveBeenCalledWith(5000)
 			expect(vscode.languages.getDiagnostics).toHaveBeenCalled()
+		})
+
+		it("saves an empty replacement produced by update", async () => {
+			;(diffViewProvider as any).originalContent = "Original content\r\n"
+			const document = configureMutableDocument("Original content\r\n")
+
+			await diffViewProvider.update("", true)
+			const result = await diffViewProvider.saveChanges(false, 0)
+
+			expect(document.getText()).toBe("")
+			expect(document.save).toHaveBeenCalledTimes(1)
+			expect((diffViewProvider as any).closeAllDiffViews).toHaveBeenCalledTimes(1)
+			expect(result.finalContent).toBe("")
+		})
+
+		it("fails when a dirty document declines to save", async () => {
+			const save = vi.fn().mockResolvedValue(false)
+			const document = {
+				uri: { fsPath: `${mockCwd}/test.ts` },
+				getText: vi.fn().mockReturnValue("new content"),
+				isDirty: true,
+				save,
+			}
+			;(diffViewProvider as any).activeDiffEditor = { document }
+			;(diffViewProvider as any).closeAllDiffViews = vi.fn().mockResolvedValue(undefined)
+
+			await expect(diffViewProvider.saveChanges(false, 0)).rejects.toThrow("Failed to save the edited file")
+			expect(save).toHaveBeenCalledTimes(1)
+			expect((diffViewProvider as any).closeAllDiffViews).not.toHaveBeenCalled()
+		})
+
+		it("preserves a replacement without a final newline produced by update", async () => {
+			;(diffViewProvider as any).originalContent = "Original content\r\n"
+			const document = configureMutableDocument("Original content\r\n")
+
+			await diffViewProvider.update("replacement", true)
+			const result = await diffViewProvider.saveChanges(false, 0)
+
+			expect(document.getText()).toBe("replacement")
+			expect(result.finalContent).toBe("replacement")
 		})
 	})
 })

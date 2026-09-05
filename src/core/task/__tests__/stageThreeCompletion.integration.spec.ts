@@ -62,11 +62,20 @@ async function createHarness() {
 	const requests: UserContent[] = []
 	const emit = vi.fn()
 	const say = vi.fn<Task["say"]>(async () => undefined)
-	const ask = vi.fn<Task["ask"]>(async () => ({ response: "yesButtonClicked", text: "", images: [] }))
+	const cancellation = new AbortController()
+	let task!: Task
+	const ask = vi.fn<Task["ask"]>(async (type) => {
+		if (type === "resume_task") {
+			// Bounded-completion cases now remain live at a resume boundary. End the
+			// fixture there so the test can inspect that boundary without hanging.
+			task.abort = true
+			cancellation.abort(new Error("Fixture ended after observing the resume boundary"))
+		}
+		return { response: "yesButtonClicked", text: "", images: [] }
+	})
 	const presentCompletionResult = vi.fn<Task["presentCompletionResult"]>(async () => undefined)
 	const retractCompletionResult = vi.fn<Task["retractCompletionResult"]>(async () => undefined)
 	const flush = vi.fn<Task["flushPendingToolResultsToHistory"]>(async () => true)
-	const cancellation = new AbortController()
 	const provider = {
 		getParentCompletionDecision: vi.fn(async () => store.getParentCompletionDecision(TASK_ID, TASK_ID)),
 		prepareTaskCompletionLifecycle: vi.fn(async () => {
@@ -81,7 +90,7 @@ async function createHarness() {
 	// Keep the Task loop, engine, completion gate, completion tool, scheduler, and
 	// finalizer real. The substituted adapters isolate provider/UI I/O and expose
 	// the persistence await without introducing timers or a second completion loop.
-	const task = Object.assign(Object.create(Task.prototype), {
+	task = Object.assign(Object.create(Task.prototype), {
 		taskId: TASK_ID,
 		instanceId: "completion-fixture",
 		taskKind: "primary",
@@ -227,12 +236,14 @@ async function createHarness() {
 		)
 	}
 
-	const assertIncomplete = () => {
+	const assertRecoverableStop = () => {
 		expect(guardTriggered, "Production must stop before the test's 20-step safety guard").toBe(false)
 		expect(requests.length).toBeLessThanOrEqual(MAX_SCRIPTED_STEPS)
 		assertNotCompleted()
-		expect(events.filter((event) => event.type === "task_incomplete")).toHaveLength(1)
+		expect(ask).toHaveBeenCalledWith("resume_task")
+		expect(events.filter((event) => event.type === "task_incomplete")).toHaveLength(0)
 		expect(events.filter((event) => event.type === "task_failed")).toHaveLength(0)
+		expect(events).toContainEqual(expect.objectContaining({ type: "task_completed", status: "aborted" }))
 	}
 
 	const useManagedCompletionDecision = () => {
@@ -261,7 +272,7 @@ async function createHarness() {
 		addAppliedObligation,
 		assertDurableObligationPending,
 		assertNotCompleted,
-		assertIncomplete,
+		assertRecoverableStop,
 		useManagedCompletionDecision,
 		guardTriggered: () => guardTriggered,
 		cancel: () => {
@@ -305,7 +316,7 @@ describe("Stage Three durable completion integration", () => {
 
 			await harness.run()
 
-			harness.assertIncomplete()
+			harness.assertRecoverableStop()
 			expect(harness.presentCompletionResult).not.toHaveBeenCalled()
 			await harness.assertDurableObligationPending(obligationKind)
 		},
@@ -338,7 +349,7 @@ describe("Stage Three durable completion integration", () => {
 				await running
 			}
 
-			harness.assertIncomplete()
+			harness.assertRecoverableStop()
 			expect(harness.store.getAgent(TASK_ID, TASK_ID)?.status).not.toBe("completed")
 			await harness.assertDurableObligationPending(obligationKind)
 		},
@@ -354,7 +365,7 @@ describe("Stage Three durable completion integration", () => {
 
 			await harness.run()
 
-			harness.assertIncomplete()
+			harness.assertRecoverableStop()
 			expect(harness.requests.length).toBeLessThanOrEqual(MAX_UNVERIFIED_COMPLETION_ATTEMPTS)
 			expect(harness.presentCompletionResult).not.toHaveBeenCalled()
 			expect(harness.task.getCommandExecutionEvidence()).toEqual([
@@ -401,7 +412,7 @@ describe("Stage Three durable completion integration", () => {
 
 			await harness.run()
 
-			harness.assertIncomplete()
+			harness.assertRecoverableStop()
 			expect(harness.requests.length).toBeLessThanOrEqual(MAX_UNVERIFIED_COMPLETION_ATTEMPTS)
 			expect(harness.presentCompletionResult).not.toHaveBeenCalled()
 			expect(harness.provider.prepareTaskCompletionLifecycle).not.toHaveBeenCalled()

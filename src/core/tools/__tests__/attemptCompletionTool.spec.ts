@@ -93,6 +93,20 @@ describe("attemptCompletionTool", () => {
 			toolUsage: {},
 			taskKind: "primary",
 			hasActiveCommandExecutions: vi.fn().mockReturnValue(false),
+			getOpenTodoCompletionDecision: vi.fn(() => {
+				const enabled = vscode.workspace
+					.getConfiguration("alpha")
+					.get<boolean>("preventCompletionWithOpenTodos", false)
+				const hasIncompleteTodos = mockTask.todoList?.some((todo) => todo.status !== "completed") === true
+				return enabled && hasIncompleteTodos
+					? {
+							allowed: false,
+							modelCanResolveRejection: true,
+							message:
+								"Cannot complete task while there are incomplete todos. Please finish all todos before attempting completion.",
+						}
+					: undefined
+			}),
 			getCompletionGateDecision: vi.fn(async () => {
 				try {
 					return {

@@ -199,17 +199,22 @@ export const McpExecution = ({
 							<div className="flex flex-row items-center gap-2 font-mono text-xs">
 								<div
 									className={cn("rounded-full size-1.5", {
-										"bg-lime-400": status.status === "started" || status.status === "completed",
+										"bg-lime-400":
+											status.status === "started" ||
+											status.status === "output" ||
+											status.status === "completed",
 										"bg-red-400": status.status === "error",
 									})}
 								/>
 								<div
 									className={cn("whitespace-nowrap", {
 										"text-vscode-foreground":
-											status.status === "started" || status.status === "completed",
+											status.status === "started" ||
+											status.status === "output" ||
+											status.status === "completed",
 										"text-vscode-errorForeground": status.status === "error",
 									})}>
-									{status.status === "started"
+									{status.status === "started" || status.status === "output"
 										? t("execution.running")
 										: status.status === "completed"
 											? t("execution.completed")

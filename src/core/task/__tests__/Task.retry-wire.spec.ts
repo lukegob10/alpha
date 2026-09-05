@@ -406,6 +406,12 @@ describe("Task retained retry wire inputs", () => {
 			}
 			summaryHandler.createMessage.mockImplementation(async function* () {
 				yield { type: "text", text: "Older work is complete. Continue from the recent read." }
+				yield {
+					type: "outcome",
+					status: "completed",
+					terminal: true,
+					semanticOutputObserved: true,
+				}
 			})
 			// Keep the recent transaction small; either older message alone exceeds the tail budget.
 			const messages: ApiMessage[] = [
