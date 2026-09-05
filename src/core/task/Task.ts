@@ -10380,11 +10380,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					assertPreflightWithinBudget()
 				}
 
-				// Build tools for condensing metadata (same tools used for normal API calls)
-				// This ensures the condensing API call includes tool definitions for providers that need them
-				let contextMgmtTools: import("openai").default.Chat.ChatCompletionTool[] = []
-				let contextMgmtAllowedFunctionNames: string[] | undefined
-				{
+				const contextMgmtMetadata: ApiHandlerCreateMessageMetadata = {
+					mode,
+					taskId: this.taskId,
+					...(stepInterruptionSignal ? { signal: stepInterruptionSignal } : {}),
+					...(contextManagementDeadline !== undefined ? { deadline: contextManagementDeadline } : {}),
+				}
+				// The preview can differ from the authoritative count. Let manageContext
+				// request tool overhead only when needed, retaining it for post-compaction counts.
+				const prepareContextMgmtTools = async () => {
+					let contextMgmtTools: OpenAI.Chat.ChatCompletionTool[] = []
+					let contextMgmtAllowedFunctionNames: string[] | undefined
 					const provider = this.providerRef.deref()
 					if (provider) {
 						const toolsResult = await waitForBoundedPreflight(
@@ -10411,24 +10417,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						contextMgmtTools = toolsResult.tools
 						contextMgmtAllowedFunctionNames = toolsResult.allowedFunctionNames
 					}
-				}
-
-				// Build metadata with tools and taskId for the condensing API call
-				const contextMgmtMetadata: ApiHandlerCreateMessageMetadata = {
-					mode,
-					taskId: this.taskId,
-					...(stepInterruptionSignal ? { signal: stepInterruptionSignal } : {}),
-					...(contextManagementDeadline !== undefined ? { deadline: contextManagementDeadline } : {}),
-					...(contextMgmtTools.length > 0
-						? {
-								tools: contextMgmtTools,
-								tool_choice: "auto",
-								parallelToolCalls: true,
-								...(contextMgmtAllowedFunctionNames
-									? { allowedFunctionNames: contextMgmtAllowedFunctionNames }
-									: {}),
-							}
-						: {}),
+					const toolsMetadata =
+						contextMgmtTools.length > 0
+							? {
+									tools: contextMgmtTools,
+									tool_choice: "auto" as const,
+									parallelToolCalls: true,
+									...(contextMgmtAllowedFunctionNames
+										? { allowedFunctionNames: contextMgmtAllowedFunctionNames }
+										: {}),
+								}
+							: {}
+					Object.assign(contextMgmtMetadata, toolsMetadata)
+					return toolsMetadata
 				}
 
 				// Get files read by Alpha for code folding - only when context management will run
@@ -10464,6 +10465,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						profileThresholds,
 						currentProfileId,
 						metadata: contextMgmtMetadata,
+						prepareTools: prepareContextMgmtTools,
 						filesReadByRoo: contextMgmtFilesReadByRoo,
 						cwd: this.cwd,
 						rooIgnoreController: this.rooIgnoreController,

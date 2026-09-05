@@ -153,6 +153,103 @@ function runRecovery(task: Task, trigger: "manual" | "automatic" | "forced") {
 	return Reflect.get(task, "handleContextWindowExceededError").call(task) as Promise<void>
 }
 
+describe("Task proportional context preflight", () => {
+	beforeEach(async () => {
+		vi.clearAllMocks()
+		const actual = await vi.importActual<typeof import("../../context-management")>("../../context-management")
+		vi.mocked(manageContext).mockImplementation(actual.manageContext)
+		vi.mocked(willManageContext).mockImplementation(actual.willManageContext)
+	})
+	afterEach(() => {
+		vi.restoreAllMocks()
+		vi.mocked(manageContext).mockReset()
+		vi.mocked(willManageContext).mockReturnValue(true)
+	})
+
+	it.each([1, 2, 3])("builds only the dispatched catalog below the compaction threshold (sample %i)", async () => {
+		const { task, api, history, save } = harness()
+		const expectedHistory = structuredClone(history)
+
+		await runRecovery(task, "automatic")
+
+		expect(api.createMessage).toHaveBeenCalledOnce()
+		expect(api.createMessage.mock.calls[0].slice(0, 2)).toEqual([
+			"System prompt",
+			expectedHistory.map(({ role, content }) => ({ role, content })),
+		])
+		expect(api.createMessage.mock.calls[0][2]).not.toHaveProperty("tools")
+		expect(summarizeConversation).not.toHaveBeenCalled()
+		expect(save).not.toHaveBeenCalled()
+		expect(task.apiConversationHistory).toEqual(expectedHistory)
+		expect(buildNativeToolsArrayWithRestrictions).toHaveBeenCalledTimes(1)
+		expect(buildNativeToolsArrayWithRestrictions).toHaveBeenCalledWith(
+			expect.objectContaining({ readGrant: expect.objectContaining({ enabled: false }) }),
+		)
+	})
+
+	it("rejects invalid authoritative counts even when the preview says compaction is unnecessary", async () => {
+		const { task, api, save } = harness()
+		api.countTokens.mockResolvedValue(Number.NaN)
+
+		await expect(runRecovery(task, "automatic")).rejects.toMatchObject({
+			name: "ContextRecoveryExhaustedError",
+			retryable: false,
+		})
+
+		expect(willManageContext).toHaveReturnedWith(false)
+		expect(buildNativeToolsArrayWithRestrictions).not.toHaveBeenCalled()
+		expect(api.createMessage).not.toHaveBeenCalled()
+		expect(save).not.toHaveBeenCalled()
+	})
+
+	it("prepares compaction metadata when an uncached recount overturns the preview", async () => {
+		const { task, api, save } = harness()
+		api.countTokens.mockResolvedValueOnce(Number.NaN).mockResolvedValueOnce(130_000)
+
+		await runRecovery(task, "automatic")
+
+		expect(willManageContext).toHaveReturnedWith(false)
+		expect(summarizeConversation).toHaveBeenCalledOnce()
+		expect(buildNativeToolsArrayWithRestrictions).toHaveBeenCalledTimes(2)
+		expect(buildNativeToolsArrayWithRestrictions).toHaveBeenLastCalledWith(
+			expect.objectContaining({ readGrant: expect.objectContaining({ enabled: false }) }),
+		)
+		expect(save).toHaveBeenCalledOnce()
+		expect(api.createMessage).toHaveBeenCalledOnce()
+	})
+
+	it("cancels deferred catalog preparation before compaction, persistence, or dispatch", async () => {
+		const { task, api, save } = harness()
+		Reflect.set(task, "getTokenUsage", () => ({ contextTokens: 120_000 }))
+		const controller = new AbortController()
+		const started = deferred<void>()
+		const release = deferred<void>()
+		vi.mocked(buildNativeToolsArrayWithRestrictions).mockImplementationOnce(async () => {
+			started.resolve()
+			await release.promise
+			return { tools: [] }
+		})
+		const running = task
+			.attemptApiRequest(0, {
+				skipProviderRateLimit: true,
+				ownerHandlesRetry: true,
+				interruptionSignal: controller.signal,
+			})
+			.next()
+		await started.promise
+
+		controller.abort(new Error("Cancelled during tool preparation"))
+		await expect(running).rejects.toThrow("Cancelled during tool preparation")
+		release.resolve()
+		await Promise.resolve()
+
+		expect(summarizeConversation).not.toHaveBeenCalled()
+		expect(buildNativeToolsArrayWithRestrictions).toHaveBeenCalledOnce()
+		expect(api.createMessage).not.toHaveBeenCalled()
+		expect(save).not.toHaveBeenCalled()
+	})
+})
+
 describe("Task manual compaction boundary", () => {
 	beforeEach(() => vi.clearAllMocks())
 	afterEach(() => vi.restoreAllMocks())
@@ -663,11 +760,14 @@ describe("Task context recovery admission", () => {
 				task.apiConfiguration = { apiProvider: "gemini", apiModelId: "narrow-model" }
 			}),
 		})
-		vi.mocked(manageContext).mockResolvedValue({
-			...compactedResult(history),
-			prevContextTokens: 100,
-			targetContextTokens: 80,
-			status: "reduced",
+		vi.mocked(manageContext).mockImplementation(async ({ prepareTools }) => {
+			await prepareTools?.()
+			return {
+				...compactedResult(history),
+				prevContextTokens: 100,
+				targetContextTokens: 80,
+				status: "reduced",
+			}
 		})
 		api.createMessage.mockImplementation(async function* () {
 			yield { type: "text", text: "Original provider response" }
@@ -840,11 +940,14 @@ describe("Task context recovery admission", () => {
 		vi.mocked(buildNativeToolsArrayWithRestrictions)
 			.mockResolvedValueOnce({ tools: [], surface })
 			.mockResolvedValueOnce({ tools: [...surface.schemas], surface })
-		vi.mocked(manageContext).mockResolvedValue({
-			...compactedResult(history),
-			prevContextTokens: 100,
-			targetContextTokens: 80,
-			status: "reduced",
+		vi.mocked(manageContext).mockImplementation(async ({ prepareTools }) => {
+			await prepareTools?.()
+			return {
+				...compactedResult(history),
+				prevContextTokens: 100,
+				targetContextTokens: 80,
+				status: "reduced",
+			}
 		})
 		api.countTokens.mockImplementation(async (blocks) =>
 			JSON.stringify(blocks).includes("expanded-final-schema") ? 1000 : 10,
@@ -892,12 +995,15 @@ describe("Task context recovery admission", () => {
 			cost: 0,
 			error: "No reduction",
 		})
-		vi.mocked(manageContext).mockResolvedValue({
-			messages: history,
-			summary: "",
-			cost: 0,
-			prevContextTokens: 100,
-			status: "exhausted",
+		vi.mocked(manageContext).mockImplementation(async ({ prepareTools }) => {
+			await prepareTools?.()
+			return {
+				messages: history,
+				summary: "",
+				cost: 0,
+				prevContextTokens: 100,
+				status: "exhausted",
+			}
 		})
 
 		if (trigger === "manual") await runRecovery(task, trigger)
