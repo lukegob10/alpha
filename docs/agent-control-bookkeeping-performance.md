@@ -72,6 +72,21 @@ iterations per writer, 120/240 transactions and writes, successful diagnostics, 
 and finite nonnegative measurements. Summaries are not trusted as evidence. Missing event-loop observations are `null`
 (unavailable), not zero delay. Per-worker samples remain in both source reports and the comparison artifact.
 
+### Scoped buffering candidate
+
+The candidate adds an optional `safeWriteJson.serializationBufferSize` threshold validated as an integer from 512 to
+65,536 characters. The default remains 512; only control-state persistence selects 65,536. It uses the existing fifth
+constructor argument in installed `json-stream-stringify@3.1.6`, verified against its source and type declaration on
+2026-09-05. This is a serialization threshold, not a hard byte or memory ceiling: an individual primitive can overshoot
+it and UTF-8 encoding can require more bytes. Existing stream backpressure, descriptor-close barriers, atomic commit
+fences, and error cleanup remain in place.
+
+Before this edit, the prepared regressions produced eight intended failures (unchanged write counts and acceptance of
+invalid sizes) and three passes. The candidate passes twelve tests, including exact Unicode/surrogate output bytes,
+the default threshold, controlled backpressure at 16,384 and 65,536, rejected commit cleanup, and invalid-size rejection.
+The broader focused set passed 194 tests across thirteen files. Candidate performance is pending a separately granted
+quiet window; these correctness results alone make no speed claim.
+
 ## Reproduce
 
 Use Node 20.19.2 and pnpm 10.8.1. Install with `pnpm install --frozen-lockfile` and build the schema package with

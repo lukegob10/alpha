@@ -907,6 +907,7 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 			throw new Error("Agent control transaction ownership was lost")
 		await safeWriteJson(this.filePath, state, {
 			prettyPrint: true,
+			serializationBufferSize: 65_536,
 			atomicReplace: true,
 			externalTransaction: true,
 			commitTempFile: (source, destination) => this.commitTransactionFile(source, destination),

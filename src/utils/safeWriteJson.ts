@@ -16,6 +16,8 @@ export interface SafeWriteJsonOptions {
 	 * @default false
 	 */
 	prettyPrint?: boolean
+	/** Serialization buffer threshold in characters (512–65,536; default 512). A primitive may exceed it. */
+	serializationBufferSize?: number
 	/** Optional replacement; each attempt must synchronously fence ownership and rename the closed temporary file. */
 	commitTempFile?: (temporaryPath: string, destinationPath: string) => void | Promise<void>
 	/** Replace the destination in one rename instead of creating a rollback backup. */
@@ -40,6 +42,14 @@ export interface SafeWriteJsonOptions {
  */
 
 async function safeWriteJson(filePath: string, data: any, options?: SafeWriteJsonOptions): Promise<void> {
+	const serializationBufferSize = options?.serializationBufferSize ?? 512
+	if (
+		!Number.isSafeInteger(serializationBufferSize) ||
+		serializationBufferSize < 512 ||
+		serializationBufferSize > 65_536
+	) {
+		throw new RangeError("JSON serialization buffer size must be an integer between 512 and 65536 characters")
+	}
 	if (options?.externalTransaction && (!options.atomicReplace || typeof options.commitTempFile !== "function")) {
 		throw new Error("External JSON transactions require atomic replacement and a synchronous commit fence")
 	}
@@ -101,7 +111,7 @@ async function safeWriteJson(filePath: string, data: any, options?: SafeWriteJso
 			`.${path.basename(absoluteFilePath)}.new_${Date.now()}_${Math.random().toString(36).substring(2)}.tmp`,
 		)
 
-		await _streamDataToFile(actualTempNewFilePath, data, options?.prettyPrint)
+		await _streamDataToFile(actualTempNewFilePath, data, options?.prettyPrint, serializationBufferSize)
 
 		// Step 2: The default path retains a rollback backup. Callers with an
 		// external transaction fence can choose a single atomic replacement so
@@ -212,9 +222,15 @@ async function safeWriteJson(filePath: string, data: any, options?: SafeWriteJso
  * @param targetPath The path to write the stream to.
  * @param data The data to stream.
  * @param prettyPrint Whether to format the JSON with indentation.
+ * @param serializationBufferSize Serialization buffer threshold in characters, not a hard byte limit.
  * @returns Promise<void>
  */
-async function _streamDataToFile(targetPath: string, data: any, prettyPrint = false): Promise<void> {
+async function _streamDataToFile(
+	targetPath: string,
+	data: any,
+	prettyPrint = false,
+	serializationBufferSize = 512,
+): Promise<void> {
 	// JsonStreamStringify traverses the object and streams tokens directly
 	// The 'spaces' parameter adds indentation during streaming, not via a separate pass
 	// Convert undefined to null for valid JSON serialization (undefined is not valid JSON)
@@ -222,6 +238,8 @@ async function _streamDataToFile(targetPath: string, data: any, prettyPrint = fa
 		data === undefined ? null : data,
 		undefined, // replacer
 		prettyPrint ? "\t" : undefined, // spaces for indentation
+		undefined, // preserve the serializer's default cycle handling
+		serializationBufferSize,
 	)
 	// Construct the serializer before opening the file: root toJSON can throw.
 	const fileWriteStream = fsSync.createWriteStream(targetPath, { encoding: "utf8" })
