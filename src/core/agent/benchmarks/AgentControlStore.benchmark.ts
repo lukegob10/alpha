@@ -1,5 +1,6 @@
 /** Run with pnpm exec tsx src/core/agent/benchmarks/AgentControlStore.benchmark.ts --help. */
 import { fork, execFileSync, type ChildProcess } from "node:child_process"
+import { createHash } from "node:crypto"
 import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -393,12 +394,37 @@ async function main() {
 	)
 		throw new Error("Unknown command")
 	if (!values.output) throw new Error("--output is required to retain raw measurements")
+	const sourceIdentity = async () =>
+		Object.fromEntries(
+			await Promise.all(
+				[
+					"src/core/agent/AgentControlStore.ts",
+					"src/core/agent/AgentControlTransaction.ts",
+					"src/core/agent/ParentVerification.ts",
+					"src/utils/safeWriteJson.ts",
+					"src/core/agent/benchmarks/AgentControlStore.benchmark.ts",
+					"src/core/agent/__tests__/fixtures/agentControlBenchmarkFixture.ts",
+					"packages/types/dist/index.cjs",
+					"packages/types/dist/index.js",
+					"pnpm-lock.yaml",
+				].map(async (relativePath) => {
+					try {
+						const bytes = await fs.readFile(path.resolve(__dirname, "../../../..", relativePath))
+						return [relativePath, createHash("sha256").update(bytes).digest("hex")]
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code === "ENOENT") return [relativePath, "absent"]
+						throw error
+					}
+				}),
+			),
+		)
 	const report = {
 		version: 1,
 		label: values.label,
 		startedAt: new Date().toISOString(),
 		commit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
 		workingTree: execFileSync("git", ["status", "--short"], { encoding: "utf8" }).trim(),
+		sourceIdentity: await sourceIdentity(),
 		runtime: {
 			node: process.version,
 			packageManager: process.env.npm_config_user_agent ?? "unavailable (invoke through pnpm exec)",
@@ -421,6 +447,8 @@ async function main() {
 		for (const count of writers) {
 			console.log(`Measuring ${retainedAgentCount} retained agents, ${count} process(es)`)
 			report.cases.push(await runCase({ retainedAgentCount, writers: count, samples, warmups, commands }))
+			if (!isDeepStrictEqual(report.sourceIdentity, await sourceIdentity()))
+				throw new Error("Benchmark source changed during measurement")
 			await fs.mkdir(path.dirname(path.resolve(values.output)), { recursive: true })
 			await fs.writeFile(values.output, JSON.stringify(report, null, 2) + "\n")
 		}

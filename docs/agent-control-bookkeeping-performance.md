@@ -28,6 +28,27 @@ Production transaction work depends on NOR-34's reviewed lock contract. Its acqu
 release semantics remain authoritative. Any reduction in bookkeeping must retain fresh durable reads under that lock,
 runtime/schema validation, owner fencing, rollback isolation, atomic receipts and publication after commit.
 
+### Accepted acceptance matrix revision (before baseline)
+
+On September 5, 2026, the orchestrator accepted four cases for the uncontended acceptance comparison: `reserve-settle`
+with 1 and 5,000 retained children, each with one and two independent processes. Each writer still runs five warmup cycles
+and 60 measured cycles, yielding 120 transaction observations in each single-process case and 240 in each two-process
+case. The 25% large-state p95 body-hold target, small-state regression guard, transaction counts and failure-rate guard
+are unchanged. This retains both scaling endpoints and independent-process coverage while fitting the timing window;
+intermediate sizes and the additional read/no-op/recovery workloads remain supplemental measurements, clearly labelled
+separately from acceptance evidence. The broader default harness matrix remains available.
+
+```sh
+pnpm exec tsx src/core/agent/benchmarks/AgentControlStore.benchmark.ts --sizes "1,5000" --writers "1,2" --samples 60 --warmups 5 --commands reserve-settle --output /absolute/path/baseline.json --label baseline --quiet-window "orchestrator-granted window"
+```
+
+The baseline must include the reviewed NOR-34 dependency with the original serialization buffer. Record the exact commit
+and SHA-256 source identities in the raw report, then compare with a candidate differing only in the intended buffering
+change. The harness verifies those identities again after measurement so edits during a run cannot silently contaminate
+its code identity. The estimated baseline case durations are under 10 seconds (small, one writer), under 20 seconds
+(small, two writers), four minutes (large, one writer) and eight minutes (large, two writers); these are scheduling
+estimates from exploratory runs, not performance claims. Reserve 15 minutes per revision.
+
 ## Reproduce
 
 Use Node 20.19.2 and pnpm 10.8.1. Install with `pnpm install --frozen-lockfile` and build the schema package with
