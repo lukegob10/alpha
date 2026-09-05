@@ -241,14 +241,21 @@ function getAlphaDirectoriesForCwd(cwd: string): string[] {
 	return [path.join(os.homedir(), ".alpha"), path.join(cwd, ".alpha")]
 }
 
-async function getRuleDirectoriesForCwd(cwd: string, enableSubfolderRules: boolean): Promise<string[]> {
+interface InstructionDirectories {
+	alpha: string[]
+	legacy: string[]
+	agents: string[]
+}
+
+async function captureInstructionDirectories(
+	cwd: string,
+	enableSubfolderRules: boolean,
+): Promise<InstructionDirectories> {
 	const alphaDirectories = getAlphaDirectoriesForCwd(cwd)
+	const legacyDirectories = enableSubfolderRules
+		? await getAllRooDirectoriesForCwd(cwd)
+		: [getGlobalRooDirectory(), path.join(cwd, ".roo")]
 
-	if (!enableSubfolderRules) {
-		return alphaDirectories
-	}
-
-	const legacyDirectories = await getAllRooDirectoriesForCwd(cwd)
 	const alphaSubfolders = legacyDirectories
 		.map((dir) => {
 			const parent = path.dirname(dir)
@@ -256,7 +263,13 @@ async function getRuleDirectoriesForCwd(cwd: string, enableSubfolderRules: boole
 		})
 		.filter((dir) => !alphaDirectories.includes(dir))
 
-	return [...alphaDirectories, ...alphaSubfolders]
+	return {
+		alpha: enableSubfolderRules ? [...alphaDirectories, ...alphaSubfolders] : alphaDirectories,
+		legacy: legacyDirectories,
+		// The first two entries are global and project-local; only discovered
+		// descendants contribute additional AGENTS locations.
+		agents: [cwd, ...legacyDirectories.slice(2).map((directory) => path.dirname(directory))],
+	}
 }
 
 /**
@@ -267,12 +280,12 @@ async function getRuleDirectoriesForCwd(cwd: string, enableSubfolderRules: boole
  * @param enableSubfolderRules - Whether to include rules from subdirectories (default: false)
  */
 export async function loadRuleFiles(cwd: string, enableSubfolderRules: boolean = false): Promise<string> {
+	return loadRuleFilesFromDirectories(cwd, await captureInstructionDirectories(cwd, enableSubfolderRules))
+}
+
+async function loadRuleFilesFromDirectories(cwd: string, directories: InstructionDirectories): Promise<string> {
 	const rules: string[] = []
-	// Use recursive discovery only if enableSubfolderRules is true
-	const alphaDirectories = await getRuleDirectoriesForCwd(cwd, enableSubfolderRules)
-	const legacyDirectories = enableSubfolderRules
-		? await getAllRooDirectoriesForCwd(cwd)
-		: [getGlobalRooDirectory(), path.join(cwd, ".roo")]
+	const { alpha: alphaDirectories, legacy: legacyDirectories } = directories
 
 	// Check for .alpha/rules/ directories in order (global, project-local, and optionally subfolders)
 	for (const alphaDir of alphaDirectories) {
@@ -411,23 +424,11 @@ async function loadAgentRulesFile(cwd: string): Promise<string> {
  * Returns combined content with clear path headers for each file
  *
  * @param cwd - Current working directory (project root)
- * @param enableSubfolderRules - Whether to include AGENTS.md from subdirectories (default: false)
+ * @param directories - Ordered root and descendant locations captured for this assembly
  * @returns Combined AGENTS.md content from all locations
  */
-async function loadAllAgentRulesFiles(cwd: string, enableSubfolderRules: boolean = false): Promise<string> {
+async function loadAllAgentRulesFiles(cwd: string, directories: readonly string[]): Promise<string> {
 	const agentRules: string[] = []
-
-	// When subfolder rules are disabled, only load from root
-	if (!enableSubfolderRules) {
-		const content = await loadAgentRulesFileFromDirectory(cwd, false, cwd)
-		if (content && content.trim()) {
-			agentRules.push(content.trim())
-		}
-		return agentRules.join("\n\n")
-	}
-
-	// When enabled, load from root and all subdirectories with .roo folders
-	const directories = await getAgentsDirectoriesForCwd(cwd)
 
 	for (const directory of directories) {
 		// Show path for all directories except the root
@@ -504,6 +505,9 @@ export async function addCustomInstructions(
 
 	// Get the enableSubfolderRules setting (default: false)
 	const enableSubfolderRules = options.settings?.enableSubfolderRules ?? false
+	// One assembly owns discovery; subsequent requests capture fresh directories
+	// and reread rule contents, including rules added while the task is running.
+	const directories = await captureInstructionDirectories(cwd, enableSubfolderRules)
 
 	// Load mode-specific rules if mode is provided
 	let modeRuleContent = ""
@@ -512,10 +516,7 @@ export async function addCustomInstructions(
 	if (mode) {
 		const modeRules: string[] = []
 		// Use recursive discovery only if enableSubfolderRules is true
-		const alphaDirectories = await getRuleDirectoriesForCwd(cwd, enableSubfolderRules)
-		const legacyDirectories = enableSubfolderRules
-			? await getAllRooDirectoriesForCwd(cwd)
-			: [getGlobalRooDirectory(), path.join(cwd, ".roo")]
+		const { alpha: alphaDirectories, legacy: legacyDirectories } = directories
 
 		// Check for .alpha/rules-${mode}/ directories in order (global, project-local, and optionally subfolders)
 		for (const alphaDir of alphaDirectories) {
@@ -604,14 +605,14 @@ export async function addCustomInstructions(
 		const agentRulesContent =
 			options.agentInstructionSources !== undefined
 				? formatApplicableAgentInstructionSources(cwd, options.agentInstructionSources)
-				: await loadAllAgentRulesFiles(cwd, enableSubfolderRules)
+				: await loadAllAgentRulesFiles(cwd, directories.agents)
 		if (agentRulesContent && agentRulesContent.trim()) {
 			rules.push(agentRulesContent.trim())
 		}
 	}
 
 	// Add generic rules
-	const genericRuleContent = await loadRuleFiles(cwd, enableSubfolderRules)
+	const genericRuleContent = await loadRuleFilesFromDirectories(cwd, directories)
 	if (genericRuleContent && genericRuleContent.trim()) {
 		rules.push(genericRuleContent.trim())
 	}
