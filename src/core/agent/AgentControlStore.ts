@@ -11,6 +11,8 @@ import {
 	AgentControlTransactionQueue,
 	DEFAULT_MAX_PENDING_TRANSACTIONS,
 	DEFAULT_TRANSACTION_WAIT_TIMEOUT_MS,
+	createTransactionDiagnostic,
+	logTransactionDiagnostic,
 	throwIfTransactionCancelled,
 	waitForTransactionRetry,
 	type AgentControlOperation,
@@ -128,6 +130,11 @@ interface PersistedAgentControlState {
 
 /** Replaceable persistence seam used by the production file store and deterministic tests. */
 export interface AgentControlPersistence {
+	/** Share the same admission limits with the store queue in front of persistence. */
+	readonly transactionWaitTimeoutMs?: number
+	readonly maxPendingTransactions?: number
+	/** Report rejections that occur before the persistence transaction is invoked. */
+	reportTransactionDiagnostic?(diagnostic: AgentControlTransactionDiagnostic): void
 	read(): Promise<unknown | undefined>
 	write(state: AgentControlState): Promise<void>
 	/**
@@ -175,7 +182,8 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 	private releasedTransactionToken?: string
 	private readonly transactionContext = new AsyncLocalStorage<ActiveTransaction>()
 	private readonly transactionQueue: AgentControlTransactionQueue
-	private readonly transactionWaitTimeoutMs: number
+	readonly transactionWaitTimeoutMs: number
+	readonly maxPendingTransactions: number
 
 	constructor(
 		globalStoragePath: string,
@@ -188,14 +196,18 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		this.transactionLockPath = `${this.filePath}.transaction.lock`
 		this.ownerLeaseDirectory = `${this.filePath}.owners`
 		this.transactionWaitTimeoutMs = options.transactionWaitTimeoutMs ?? DEFAULT_TRANSACTION_WAIT_TIMEOUT_MS
-		const maxPending = options.maxPendingTransactions ?? DEFAULT_MAX_PENDING_TRANSACTIONS
+		this.maxPendingTransactions = options.maxPendingTransactions ?? DEFAULT_MAX_PENDING_TRANSACTIONS
 		if (!Number.isFinite(this.transactionWaitTimeoutMs) || this.transactionWaitTimeoutMs <= 0) {
 			throw new Error("Agent control transaction wait timeout must be positive")
 		}
-		if (!Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > DEFAULT_MAX_PENDING_TRANSACTIONS) {
+		if (
+			!Number.isSafeInteger(this.maxPendingTransactions) ||
+			this.maxPendingTransactions < 1 ||
+			this.maxPendingTransactions > DEFAULT_MAX_PENDING_TRANSACTIONS
+		) {
 			throw new Error("Agent control pending transaction limit must be between 1 and 64")
 		}
-		this.transactionQueue = new AgentControlTransactionQueue(maxPending)
+		this.transactionQueue = new AgentControlTransactionQueue(this.maxPendingTransactions)
 	}
 
 	async acquireOwnerLease(
@@ -319,18 +331,7 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 
 	async withTransaction<T>(operation: () => Promise<T>, options: AgentControlTransactionOptions = {}): Promise<T> {
 		const started = performance.now()
-		const diagnostic: AgentControlTransactionDiagnostic = {
-			operation: AGENT_CONTROL_OPERATIONS.includes(options.operation!) ? options.operation! : "transaction",
-			outcome: "error",
-			queueWaitMs: options.queueWaitMs ?? 0,
-			acquisitionWaitMs: 0,
-			holdMs: 0,
-			releaseMs: 0,
-			attempts: 0,
-			ownerState: "none",
-			committed: false,
-			releaseFailed: false,
-		}
+		const diagnostic = createTransactionDiagnostic(options)
 		let dequeued = false
 		try {
 			return await this.transactionQueue.run(
@@ -350,17 +351,19 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 			}
 			throw error
 		} finally {
-			// Observers cannot change durable outcomes, and only this closed metadata
-			// shape is logged. Filesystem errors can contain sensitive absolute paths.
-			try {
-				this.options.onTransactionDiagnostic?.({ ...diagnostic })
-			} catch {
-				// Diagnostics are best effort.
-			}
-			if (diagnostic.outcome === "error" || diagnostic.releaseFailed || diagnostic.acquisitionWaitMs >= 1_000) {
-				console.warn("[AgentControlStore] Transaction diagnostic", diagnostic)
-			}
+			this.reportTransactionDiagnostic(diagnostic)
 		}
+	}
+
+	reportTransactionDiagnostic(diagnostic: AgentControlTransactionDiagnostic): void {
+		// Observers cannot change durable outcomes, and only this closed metadata
+		// shape is logged. Filesystem errors can contain sensitive absolute paths.
+		try {
+			this.options.onTransactionDiagnostic?.({ ...diagnostic })
+		} catch {
+			// Diagnostics are best effort.
+		}
+		logTransactionDiagnostic(diagnostic)
 	}
 
 	private async runTransaction<T>(
@@ -1030,8 +1033,9 @@ export class AgentControlStore {
 	private state: AgentControlState
 	private initialized = false
 	private disposed = false
+	private shutdownOperation?: Promise<void>
 	private initialization?: Promise<void>
-	private readonly writeQueue = new AgentControlTransactionQueue()
+	private readonly writeQueue: AgentControlTransactionQueue
 	private readonly listeners = new Set<AgentMailboxListener>()
 	private readonly pendingMailboxClaimSettlements = new Map<string, PendingMailboxClaimSettlement>()
 	private runtimeOwnerId: AgentRuntimeOwnerId
@@ -1052,6 +1056,7 @@ export class AgentControlStore {
 		options: AgentControlStoreOptions = {},
 	) {
 		this.state = initialState(this.now())
+		this.writeQueue = new AgentControlTransactionQueue(persistence.maxPendingTransactions)
 		this.runtimeOwnerId = agentRuntimeOwnerIdSchema.parse(options.ownerId ?? randomUUID())
 		this.ownerLeaseStaleMs = options.ownerLeaseStaleMs ?? DEFAULT_OWNER_LEASE_STALE_MS
 		this.ownerLeaseUpdateMs = options.ownerLeaseUpdateMs ?? DEFAULT_OWNER_LEASE_UPDATE_MS
@@ -1104,46 +1109,49 @@ export class AgentControlStore {
 		if (this.initialized) return
 		if (this.initialization) return this.initialization
 
-		const initialization = this.withWriteLock(async (queueWaitMs) => {
-			if (this.disposed) throw new Error("AgentControlStore cannot be reinitialized after shutdown")
-			if (this.initialized) {
-				return
-			}
+		const initialization = this.withWriteLock(
+			async (queueWaitMs) => {
+				if (this.disposed) throw new Error("AgentControlStore cannot be reinitialized after shutdown")
+				if (this.initialized) {
+					return
+				}
 
-			const acquiredOwnerLease = await this.acquireOwnerLease()
-			try {
-				let loadedState!: AgentControlState
-				let recoveredEvents: AgentMailboxEntry[] = []
-				await this.withPersistenceTransaction(
-					async () => {
-						await this.assertCurrentOwnerLease()
-						const persisted = await this.readPersistedState()
-						const draft = persisted.state
-
-						const recoveredAt = this.now()
-						const recovery = await this.recoverAbandonedState(draft, recoveredAt)
-
-						if (recovery.changed || persisted.migrated) {
-							draft.updatedAt = recoveredAt
-							agentControlStateSchema.parse(draft)
+				const acquiredOwnerLease = await this.acquireOwnerLease()
+				try {
+					let loadedState!: AgentControlState
+					let recoveredEvents: AgentMailboxEntry[] = []
+					await this.withPersistenceTransaction(
+						async () => {
 							await this.assertCurrentOwnerLease()
-							await this.assertPersistenceTransaction()
-							await this.persistence.write(draft)
-						}
+							const persisted = await this.readPersistedState()
+							const draft = persisted.state
 
-						loadedState = draft
-						recoveredEvents = recovery.events
-					},
-					{ operation: "initialize", queueWaitMs },
-				)
-				this.state = loadedState
-				this.initialized = true
-				this.publish(recoveredEvents)
-			} catch (error) {
-				if (acquiredOwnerLease) await this.releaseOwnerLease()
-				throw error
-			}
-		})
+							const recoveredAt = this.now()
+							const recovery = await this.recoverAbandonedState(draft, recoveredAt)
+
+							if (recovery.changed || persisted.migrated) {
+								draft.updatedAt = recoveredAt
+								agentControlStateSchema.parse(draft)
+								await this.assertCurrentOwnerLease()
+								await this.assertPersistenceTransaction()
+								await this.persistence.write(draft)
+							}
+
+							loadedState = draft
+							recoveredEvents = recovery.events
+						},
+						{ operation: "initialize", queueWaitMs },
+					)
+					this.state = loadedState
+					this.initialized = true
+					this.publish(recoveredEvents)
+				} catch (error) {
+					if (acquiredOwnerLease) await this.releaseOwnerLease()
+					throw error
+				}
+			},
+			{ operation: "initialize" },
+		)
 		this.initialization = initialization
 		try {
 			await initialization
@@ -1159,6 +1167,18 @@ export class AgentControlStore {
 
 	/** Release this extension-host activation's lease without touching retained records. */
 	async shutdown(): Promise<void> {
+		if (this.shutdownOperation) return this.shutdownOperation
+		const shutdown = this.drainAndReleaseOwnerLease()
+		this.shutdownOperation = shutdown
+		try {
+			await shutdown
+		} catch (error) {
+			if (this.shutdownOperation === shutdown) this.shutdownOperation = undefined
+			throw error
+		}
+	}
+
+	private async drainAndReleaseOwnerLease(): Promise<void> {
 		this.disposed = true
 		this.stopRecoveryScan()
 		await this.recoveryScanInFlight?.catch(() => undefined)
@@ -1166,49 +1186,53 @@ export class AgentControlStore {
 		// Initialization starts the scan after its transaction completes. Stop it
 		// again in case shutdown raced an in-flight initialization.
 		this.stopRecoveryScan()
-		await this.withWriteLock(async () => {
-			await this.releaseOwnerLease()
-			this.initialized = false
-		})
+		// Cleanup drains already admitted work independently of its admission
+		// deadline. New queue submissions are blocked once disposed is set.
+		await this.writeQueue.whenIdle()
+		await this.releaseOwnerLease()
+		this.initialized = false
 	}
 
 	/** Reap active records only after their previous runtime owner's lease is revoked. */
 	async recoverAbandonedOwners(): Promise<number> {
 		this.assertInitialized()
 		if (!this.hasOwnerLeases()) return 0
-		return this.withWriteLock(async (queueWaitMs) => {
-			let recoveredState!: AgentControlState
-			let recoveredEvents: AgentMailboxEntry[] = []
-			let recoveredRecordCount = 0
-			let ownerLeaseRecovery: OwnerLeaseRecovery | undefined
-			await this.withPersistenceTransaction(
-				async () => {
-					ownerLeaseRecovery = await this.ensureCurrentOwnerLease()
-					const persisted = await this.readPersistedState()
-					const draft = persisted.state
-					const ownerLeaseChanged = ownerLeaseRecovery
-						? this.applyOwnerLeaseRecovery(draft, ownerLeaseRecovery)
-						: false
-					const recoveredAt = this.now()
-					const recovery = await this.recoverAbandonedState(draft, recoveredAt)
-					if (ownerLeaseChanged || recovery.changed || persisted.migrated) {
-						draft.updatedAt = recoveredAt
-						agentControlStateSchema.parse(draft)
-						await this.assertCurrentOwnerLease()
-						await this.assertPersistenceTransaction()
-						await this.persistence.write(draft)
-					}
-					recoveredState = draft
-					recoveredEvents = recovery.events
-					recoveredRecordCount = recovery.recordCount
-				},
-				{ operation: "recovery", queueWaitMs },
-			)
-			this.state = recoveredState
-			this.completeOwnerLeaseRecovery(ownerLeaseRecovery)
-			this.publish(recoveredEvents)
-			return recoveredRecordCount
-		})
+		return this.withWriteLock(
+			async (queueWaitMs) => {
+				let recoveredState!: AgentControlState
+				let recoveredEvents: AgentMailboxEntry[] = []
+				let recoveredRecordCount = 0
+				let ownerLeaseRecovery: OwnerLeaseRecovery | undefined
+				await this.withPersistenceTransaction(
+					async () => {
+						ownerLeaseRecovery = await this.ensureCurrentOwnerLease()
+						const persisted = await this.readPersistedState()
+						const draft = persisted.state
+						const ownerLeaseChanged = ownerLeaseRecovery
+							? this.applyOwnerLeaseRecovery(draft, ownerLeaseRecovery)
+							: false
+						const recoveredAt = this.now()
+						const recovery = await this.recoverAbandonedState(draft, recoveredAt)
+						if (ownerLeaseChanged || recovery.changed || persisted.migrated) {
+							draft.updatedAt = recoveredAt
+							agentControlStateSchema.parse(draft)
+							await this.assertCurrentOwnerLease()
+							await this.assertPersistenceTransaction()
+							await this.persistence.write(draft)
+						}
+						recoveredState = draft
+						recoveredEvents = recovery.events
+						recoveredRecordCount = recovery.recordCount
+					},
+					{ operation: "recovery", queueWaitMs },
+				)
+				this.state = recoveredState
+				this.completeOwnerLeaseRecovery(ownerLeaseRecovery)
+				this.publish(recoveredEvents)
+				return recoveredRecordCount
+			},
+			{ operation: "recovery" },
+		)
 	}
 
 	getSnapshot(): AgentControlState {
@@ -2533,45 +2557,48 @@ export class AgentControlStore {
 		options?: AgentControlTransactionOptions,
 	): Promise<T> {
 		this.assertInitialized()
-		return this.withWriteLock(async (queueWaitMs) => {
-			let committedState!: AgentControlState
-			let publishedEntries: AgentMailboxEntry[] = []
-			let value!: T
-			let ownerLeaseRecovery: OwnerLeaseRecovery | undefined
-			await this.withPersistenceTransaction(
-				async () => {
-					ownerLeaseRecovery = await this.ensureCurrentOwnerLease()
-					const reloadDurableState = this.persistence.withTransaction !== undefined
-					const persisted = reloadDurableState ? await this.readPersistedState() : undefined
-					const base = persisted?.state ?? this.state
-					const draft = clone(base)
-					if (ownerLeaseRecovery) this.applyOwnerLeaseRecovery(draft, ownerLeaseRecovery)
-					const previousMailboxLength = draft.mailbox.length
-					value = mutate(draft)
+		return this.withWriteLock(
+			async (queueWaitMs) => {
+				let committedState!: AgentControlState
+				let publishedEntries: AgentMailboxEntry[] = []
+				let value!: T
+				let ownerLeaseRecovery: OwnerLeaseRecovery | undefined
+				await this.withPersistenceTransaction(
+					async () => {
+						ownerLeaseRecovery = await this.ensureCurrentOwnerLease()
+						const reloadDurableState = this.persistence.withTransaction !== undefined
+						const persisted = reloadDurableState ? await this.readPersistedState() : undefined
+						const base = persisted?.state ?? this.state
+						const draft = clone(base)
+						if (ownerLeaseRecovery) this.applyOwnerLeaseRecovery(draft, ownerLeaseRecovery)
+						const previousMailboxLength = draft.mailbox.length
+						value = mutate(draft)
 
-					// A file transaction may have refreshed state while finding the
-					// requested mutation already applied. Refresh the local projection but
-					// avoid rewriting an identical complete snapshot.
-					if (reloadDurableState && !persisted?.migrated && isDeepStrictEqual(draft, base)) {
-						committedState = base
-						return
-					}
+						// A file transaction may have refreshed state while finding the
+						// requested mutation already applied. Refresh the local projection but
+						// avoid rewriting an identical complete snapshot.
+						if (reloadDurableState && !persisted?.migrated && isDeepStrictEqual(draft, base)) {
+							committedState = base
+							return
+						}
 
-					draft.updatedAt = this.now()
-					agentControlStateSchema.parse(draft)
-					await this.assertCurrentOwnerLease()
-					await this.assertPersistenceTransaction()
-					await this.persistence.write(draft)
-					committedState = draft
-					publishedEntries = draft.mailbox.slice(previousMailboxLength)
-				},
-				{ operation: "mutation", ...options, queueWaitMs },
-			)
-			this.state = committedState
-			this.completeOwnerLeaseRecovery(ownerLeaseRecovery)
-			this.publish(publishedEntries)
-			return value
-		}, options)
+						draft.updatedAt = this.now()
+						agentControlStateSchema.parse(draft)
+						await this.assertCurrentOwnerLease()
+						await this.assertPersistenceTransaction()
+						await this.persistence.write(draft)
+						committedState = draft
+						publishedEntries = draft.mailbox.slice(previousMailboxLength)
+					},
+					{ operation: "mutation", ...options, queueWaitMs },
+				)
+				this.state = committedState
+				this.completeOwnerLeaseRecovery(ownerLeaseRecovery)
+				this.publish(publishedEntries)
+				return value
+			},
+			{ operation: "mutation", ...options },
+		)
 	}
 
 	private ownerLeasePersistence(): AgentControlOwnerLeasePersistence | undefined {
@@ -2973,11 +3000,47 @@ export class AgentControlStore {
 		await this.persistence.assertTransactionOwner?.()
 	}
 
-	private withWriteLock<T>(
+	private async withWriteLock<T>(
 		operation: (queueWaitMs: number) => Promise<T>,
 		options?: AgentControlTransactionOptions,
 	): Promise<T> {
-		return this.writeQueue.run(operation, options?.signal)
+		if (this.disposed) throw new Error("AgentControlStore cannot accept transactions after shutdown")
+		const startedAt = performance.now()
+		const elapsedBeforeQueue = createTransactionDiagnostic(options).queueWaitMs
+		let operationStarted = false
+		try {
+			return await this.writeQueue.run(
+				async (queueWaitMs) => {
+					operationStarted = true
+					return operation(elapsedBeforeQueue + queueWaitMs)
+				},
+				options?.signal,
+				Math.max(
+					0,
+					(this.persistence.transactionWaitTimeoutMs ?? DEFAULT_TRANSACTION_WAIT_TIMEOUT_MS) -
+						elapsedBeforeQueue,
+				),
+			)
+		} catch (error) {
+			// Once handed to the operation, the persistence boundary owns reporting.
+			// Queue-only rejection never reaches that boundary, so report it here.
+			if (!operationStarted && error instanceof AgentControlTransactionError) {
+				const diagnostic = createTransactionDiagnostic({
+					...options,
+					queueWaitMs: elapsedBeforeQueue + performance.now() - startedAt,
+				})
+				diagnostic.outcome = error.code === "ABORT_ERR" ? "cancelled" : "error"
+				error.diagnostic = { ...diagnostic }
+				try {
+					if (this.persistence.reportTransactionDiagnostic)
+						this.persistence.reportTransactionDiagnostic(diagnostic)
+					else logTransactionDiagnostic(diagnostic)
+				} catch {
+					// Observer failure must not replace the queue rejection.
+				}
+			}
+			throw error
+		}
 	}
 
 	private allocatePath(

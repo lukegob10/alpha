@@ -52,6 +52,32 @@ export class AgentControlTransactionError extends Error {
 export const DEFAULT_TRANSACTION_WAIT_TIMEOUT_MS = 30_000
 export const DEFAULT_MAX_PENDING_TRANSACTIONS = 64
 
+export function createTransactionDiagnostic(
+	options: AgentControlTransactionOptions = {},
+): AgentControlTransactionDiagnostic {
+	return {
+		operation: AGENT_CONTROL_OPERATIONS.includes(options.operation!) ? options.operation! : "transaction",
+		outcome: "error",
+		queueWaitMs:
+			options.queueWaitMs !== undefined && Number.isFinite(options.queueWaitMs) && options.queueWaitMs >= 0
+				? options.queueWaitMs
+				: 0,
+		acquisitionWaitMs: 0,
+		holdMs: 0,
+		releaseMs: 0,
+		attempts: 0,
+		ownerState: "none",
+		committed: false,
+		releaseFailed: false,
+	}
+}
+
+export function logTransactionDiagnostic(diagnostic: AgentControlTransactionDiagnostic): void {
+	if (diagnostic.outcome === "error" || diagnostic.releaseFailed || diagnostic.acquisitionWaitMs >= 1_000) {
+		console.warn("[AgentControlStore] Transaction diagnostic", diagnostic)
+	}
+}
+
 export function throwIfTransactionCancelled(signal?: AbortSignal): void {
 	if (signal?.aborted) {
 		// Do not propagate an arbitrary abort reason into bounded diagnostics.
@@ -125,7 +151,11 @@ export class AgentControlTransactionQueue {
 		}
 		try {
 			throwIfTransactionCancelled(signal)
-			return await operation(performance.now() - started)
+			const queueWaitMs = performance.now() - started
+			if (queueWaitMs >= timeoutMs) {
+				throw new AgentControlTransactionError("Agent control transaction queue wait expired", "ELOCKED")
+			}
+			return await operation(queueWaitMs)
 		} finally {
 			const next = this.pending.shift()
 			if (next) next.start()

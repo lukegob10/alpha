@@ -43,6 +43,12 @@ Lock metadata reads are capped at 1024 bytes, tokens at 128 safe filename charac
 prompts, and file contents. `ELOCKED` means bounded healthy/ambiguous contention; `EQUEUEFULL` means backpressure;
 `ABORT_ERR` means cancelled admission; `ELOCKLEGACY`/`ELOCKOWNER` identify unverified ownership with repair instructions.
 
+The persistence seam exposes its configured queue deadline and capacity to the outer store queue. Rejections before
+that queue admits its callback use the same diagnostic observer and error snapshot; admitted callbacks leave reporting
+to persistence, so failures are not counted twice. Queue time already spent reduces the remaining acquisition budget.
+Shutdown blocks new submissions and drains admitted work before releasing the runtime lease, independently of admission
+deadlines. A 75 ms controlled reservation test covers deadline, cancellation, saturation, and shutdown behavior.
+
 ## Ownership and recovery
 
 Acquisition uses atomic `mkdir` at the canonical lock path followed by bounded owner publication. Contenders tolerate
