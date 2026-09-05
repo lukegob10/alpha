@@ -116,7 +116,7 @@ testing bounded buffering before changing transaction state semantics. It does n
 
 ## Results
 
-The first approved [original-buffer baseline](benchmarks/nor35-baseline.json) ran at
+The first approved [failed original-buffer baseline](benchmarks/nor35-baseline-failed-acquisition.json) ran at
 `4d5ca37a83036faff20f0030e7a2537c4e47f7db`, including the reviewed NOR-34 stream-close correction, under granted quiet-window
 `nor31-baseline-20260905-0509utc`. It is **invalid for acceptance**: the final large two-process case recorded three
 acquisition timeouts. The entire report is retained; no samples were retried or discarded and no buffering optimization
@@ -142,7 +142,8 @@ There was no atomic-rename `EPERM` in this run. The comparator rejected the repo
 counts and unsuccessful diagnostics before evaluating performance thresholds. The successful large single-process body
 p95 was 984.1 ms, but the failed matrix cannot substantiate a before/after improvement. Root-cause disposition and a new
 explicit measurement grant are required before another baseline or candidate. The preliminary investigation table is
-context only and is not substituted for a valid baseline.
+context only and is not substituted for a valid baseline. The failed report has an explicit failure filename and must not
+be overwritten by a later measurement.
 
 ### Failed dependency smoke (not acceptance evidence)
 
