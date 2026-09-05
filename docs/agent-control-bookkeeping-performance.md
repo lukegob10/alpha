@@ -21,8 +21,9 @@ eviction is attempted.
 
 Measurements must record Node/pnpm versions, OS/CPU/memory, commit, fixture sizes, sample counts, cache conditions and
 whether the orchestrator granted an uncontended host window. Installs, builds, tests and other benchmark jobs must finish
-before collecting a comparative baseline or candidate sample. Repeat baseline and candidate with identical options in the
-same window; retain raw per-command samples so aggregates can be audited. No timing assertions belong in CI.
+before collecting a comparative baseline or candidate sample. Run baseline and candidate in separate coordinated quiet
+windows on the same host with identical workloads, options, and cache procedure. Record each window and run timestamp,
+and retain raw per-command samples so aggregates can be audited. No timing assertions belong in CI.
 
 Production transaction work depends on NOR-34's reviewed lock contract. Its acquisition, ownership, cancellation and
 release semantics remain authoritative. Any reduction in bookkeeping must retain fresh durable reads under that lock,
