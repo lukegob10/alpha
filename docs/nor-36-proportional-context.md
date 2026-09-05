@@ -107,6 +107,12 @@ new real-Task fixture, and use comparable task/provider traces to select any rem
 effort classification, cross-step evidence cache, lower command cap, or additional prompt policy is justified by the
 measurements above. No live-model quality result or 25% call / 20% input-token achievement is claimed.
 
+The [final-stage acceptance protocol](../evals/proportional-scope/completion-acceptance.md) now declares the next real-Task
+comparison before measurement. NOR-37 and central coordination reviewed its fixed conditional provider policy, controlled
+settlement boundaries, three samples per scenario, quality oracle, and one-request candidate threshold. It targets avoided
+runtime recovery requests, with no physical-command, live-model strategy, token, or latency-improvement claim. The separate
+E2E fixture is implemented; paired host runs remain pending. Local E2E typecheck, lint, and CommonJS compilation passed.
+
 ## Validation and handoff
 
 - Before the slice change: one intended operation-count regression failed, 50 tests passed.

@@ -19,6 +19,10 @@ build production prompts, invoke an external model, exercise a real webview, or 
 fixtures and scripts when comparing revisions. Do not change scripted actions to manufacture a cost reduction. The small
 fixtures complement the production scoped-read benchmark; they do not establish a timing improvement.
 
+The [final-stage acceptance protocol](completion-acceptance.md) predeclares the separate real-Task settlement workloads,
+conditional provider policy, quality oracle, and thresholds for the pending NOR-37 comparison. It does not change these
+seven fixed engine scripts or claim unmeasured provider-token savings.
+
 ## Run
 
 From the repository root with Node 20.19.2 and pnpm 10.8.1:
