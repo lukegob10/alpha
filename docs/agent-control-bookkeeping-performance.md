@@ -116,8 +116,33 @@ testing bounded buffering before changing transaction state semantics. It does n
 
 ## Results
 
-Pending the fresh implementation-branch baseline and reviewed NOR-34 dependency. The preliminary investigation table is
-context only and is not used as the baseline for this experiment.
+The first approved [original-buffer baseline](benchmarks/nor35-baseline.json) ran at
+`4d5ca37a83036faff20f0030e7a2537c4e47f7db`, including the reviewed NOR-34 stream-close correction, under granted quiet-window
+`nor31-baseline-20260905-0509utc`. It is **invalid for acceptance**: the final large two-process case recorded three
+acquisition timeouts. The entire report is retained; no samples were retried or discarded and no buffering optimization
+has been applied. The quiet window was released when the final case returned its failure status. Workers report samples
+at case completion, so failures in that case became visible then.
+
+| Retained children | Processes | Cycles | Transactions | Writes | Failed cycles |
+| ----------------- | --------- | ------ | ------------ | ------ | ------------- |
+| 1                 | 1         | 60     | 120          | 120    | 0             |
+| 1                 | 2         | 120    | 240          | 240    | 0             |
+| 5,000             | 1         | 60     | 120          | 120    | 0             |
+| 5,000             | 2         | 120    | 238          | 235    | 3             |
+
+In the final case, worker 0's iteration 33 reservation waited 30,009.0 ms over 76 attempts while observing live holder
+PID 76548. Worker 1's iteration 0 reservation waited 30,002.5 ms over 75 attempts while observing live holder PID 36376;
+its iteration 22 release waited 30,006.9 ms over 76 attempts against that same live process after its reservation had
+committed. All three failed diagnostics reported `committed: false` and `releaseFailed: false`. Successful full lock-hold
+maxima were 1,117.2 ms for worker 0 and 1,196.2 ms for worker 1, consistent with missed admission opportunities during
+repeated peer transactions rather than one measured 30-second hold. This is admission evidence for NOR-34 review, not
+permission to increase the wait budget or weaken persistence.
+
+There was no atomic-rename `EPERM` in this run. The comparator rejected the report's errors, incomplete transaction/write
+counts and unsuccessful diagnostics before evaluating performance thresholds. The successful large single-process body
+p95 was 984.1 ms, but the failed matrix cannot substantiate a before/after improvement. Root-cause disposition and a new
+explicit measurement grant are required before another baseline or candidate. The preliminary investigation table is
+context only and is not substituted for a valid baseline.
 
 ### Failed dependency smoke (not acceptance evidence)
 
@@ -130,5 +155,5 @@ and `releaseFailed: false`. The harness exited with failure and did not retry th
 
 This report is retained as a correctness failure and cannot satisfy the acceptance matrix. NOR-34 is investigating the
 writer's completion/close boundary; the observed OS error alone does not establish that boundary as its cause or prove a
-transaction-lock exclusion failure. No uncontended baseline or candidate measurement has started. Both must include the
-same eventual reviewed correction before buffering is compared.
+transaction-lock exclusion failure. The later original-buffer run described above includes the reviewed stream-close
+correction and encountered acquisition timeouts instead. No candidate measurement has started.
