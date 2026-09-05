@@ -49,6 +49,22 @@ its code identity. The estimated baseline case durations are under 10 seconds (s
 (small, two writers), four minutes (large, one writer) and eight minutes (large, two writers); these are scheduling
 estimates from exploratory runs, not performance claims. Reserve 15 minutes per revision.
 
+The target uses the transaction **callback body's p95**, reported as `body.p95`, rather than NOR-34's full lock-hold
+diagnostic. The 25% reduction must pass separately for both large-state process counts. The small-state guard compares
+the total reserve/settle cycle p95 and fails only when the increase exceeds both 10% and 2 ms. Any command, acquisition,
+release or cleanup failure invalidates acceptance; zero body times for rejected acquisitions cannot improve its score.
+
+Compare frozen reports with:
+
+```sh
+pnpm exec tsx src/core/agent/benchmarks/AgentControlStore.benchmark.ts --compare-baseline /absolute/path/baseline.json --compare-candidate /absolute/path/candidate.json --output /absolute/path/comparison.json
+```
+
+The comparator derives nearest-rank p95 from raw per-worker samples. It requires the four expected cases, 60 distinct
+iterations per writer, 120/240 transactions and writes, successful diagnostics, matching fixture/runtime/frozen sources,
+and finite nonnegative measurements. Summaries are not trusted as evidence. Missing event-loop observations are `null`
+(unavailable), not zero delay. Per-worker samples remain in both source reports and the comparison artifact.
+
 ## Reproduce
 
 Use Node 20.19.2 and pnpm 10.8.1. Install with `pnpm install --frozen-lockfile` and build the schema package with
@@ -65,6 +81,17 @@ every measured command, including failures; failed warmups stop the run. Output 
 Independent processes synchronize before initialization and measurement and retain live leases until all siblings finish.
 Successful cases compare the complete retained state after reload, allowing only the top-level update timestamp to differ.
 
+`--harness-timeout-ms` defaults to 1,800,000 (30 minutes) per worker group, covering its initialization, warmups, barriers,
+measurement and shutdown. This generous harness deadline does not change production transaction timeouts. Deadline,
+interruption, spawn, IPC or worker failure terminates every child and awaits process closure before fixture deletion.
+Termination escalates after five seconds; if closure cannot be confirmed within ten seconds, the fixture is retained and
+cleanup failure is reported with the original failure as its cause. Worker barriers reject lost IPC. Tests use controlled
+events/fake timers, and a real two-process deadline smoke check verifies the fixture cleanup path.
+
+Processes synchronize at initialization and the start of measurement, then run independently. Start synchronization does
+not imply continuous contention; reported attempts and acquisition waits describe observed contention. Periodic background
+recovery is explicitly disabled in this controlled workload; the `owner-recovery` command remains available.
+
 `snapshot-read` measures the local projection copy, without a durable transaction. `noop-update` calls `ensureRoot` for an
 existing owned root. `reserve-settle` calls `reservePrimaryMutation` and `releasePrimaryMutation` with a fresh token, so
 the full command normally requires two transactions and two writes. `owner-recovery` scans the fixture's live owners and
@@ -73,7 +100,7 @@ remain correctness-gate cases, separate from this stable-size timing workload.
 
 Benchmark-only wrappers measure acquisition-to-body wait, transaction body, post-body fence/release, file read including
 JSON parse, schema parse, structured clone and full write. JSON parse is a subset of read; do not add it twice. Unattributed
-body time includes owner checks, mutation and equality. NOR-34 lock diagnostics will additionally separate queue,
+body time includes owner checks, mutation and equality. NOR-34 lock diagnostics additionally separate queue,
 acquisition, hold and release, and report attempts, contention, outcome and cleanup failure. No benchmark observer is
 installed in normal extension operation.
 
