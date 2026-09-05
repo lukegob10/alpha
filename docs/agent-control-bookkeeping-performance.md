@@ -123,6 +123,29 @@ testing bounded buffering before changing transaction state semantics. It does n
 
 ## Results
 
+### Admissible original-buffer baseline
+
+The [passing original-buffer baseline](benchmarks/nor35-baseline-wakeup.json) ran at clean commit
+`55e18388a043b5976cfe65ea8e654ee04c1198c7` under granted window
+`nor31-release-cleanup-baseline-202609050623`. It includes the reviewed bounded cleanup of released lock directories.
+All four cases completed with 360 measured cycles, 720 transactions, and 720 writes. Every transaction diagnostic was
+successful and committed, with `releaseFailed: false`. Each case passed the complete final-state comparison and frozen
+source-identity check; the runner exited 0 and a Windows process inventory confirmed all workers had closed.
+
+| Retained children | Processes | Cycles | Transactions / writes | Body p95 (ms) | Cycle p95 (ms) | Write p95 (ms) |
+| ----------------- | --------- | ------ | --------------------- | ------------- | -------------- | -------------- |
+| 1                 | 1         | 60     | 120                   | 11.30         | 31.14          | 3.65           |
+| 1                 | 2         | 120    | 240                   | 7.80          | 53.61          | 3.07           |
+| 5,000             | 1         | 60     | 120                   | 1,092.98      | 2,105.63       | 593.02         |
+| 5,000             | 2         | 120    | 240                   | 1,125.93      | 5,463.51       | 667.44         |
+
+Self-comparison accepted the raw schema, exact sample and transaction counts, successful diagnostics, and matching
+workload/runtime/source conditions. Its only failures were the two expected 25% improvement thresholds when comparing
+the baseline to itself; this checks admissibility and makes no improvement claim. The quiet window was released before
+post-run validation or documentation work. The original report is retained before the bounded-buffer candidate edit.
+
+### Earlier rejected acquisition baseline
+
 The first approved [failed original-buffer baseline](benchmarks/nor35-baseline-failed-acquisition.json) ran at
 `4d5ca37a83036faff20f0030e7a2537c4e47f7db`, including the reviewed NOR-34 stream-close correction, under granted quiet-window
 `nor31-baseline-20260905-0509utc`. It is **invalid for acceptance**: the final large two-process case recorded three
