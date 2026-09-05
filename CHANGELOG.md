@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.24
+
+### Patch Changes
+
+- Let approved commands run when bounded workspace observation is unavailable, while preserving explicit incomplete-scope reporting and cancellation semantics.
+- Keep ordinary primary edits proportionate to the request instead of forcing inferred verification recipes or dependency scans.
+- Repair public batch file reads and reduce lifecycle persistence amplification by coalescing compatible response fragments.
+
 ## 2.1.22
 
 ### Patch Changes
