@@ -85,8 +85,9 @@ fences, and error cleanup remain in place.
 Before this edit, the prepared regressions produced eight intended failures (unchanged write counts and acceptance of
 invalid sizes) and three passes. The candidate passes twelve tests, including exact Unicode/surrogate output bytes,
 the default threshold, controlled backpressure at 16,384 and 65,536, rejected commit cleanup, and invalid-size rejection.
-The broader focused set passed 194 tests across thirteen files. Candidate performance is pending a separately granted
-quiet window; these correctness results alone make no speed claim.
+The broader focused set passed 194 tests across thirteen files, followed by the extension typecheck and lint. Independent
+source review found no blocking issue. The separately granted comparison below supplies the performance evidence;
+correctness tests alone make no speed claim.
 
 ## Reproduce
 
@@ -159,6 +160,56 @@ Self-comparison accepted the raw schema, exact sample and transaction counts, su
 workload/runtime/source conditions. Its only failures were the two expected 25% improvement thresholds when comparing
 the baseline to itself; this checks admissibility and makes no improvement claim. The quiet window was released before
 post-run validation or documentation work. The original report is retained before the bounded-buffer candidate edit.
+
+### Accepted bounded-buffer comparison
+
+The [raw candidate](benchmarks/nor35-candidate-buffered.json) ran at clean commit
+`5336b936b90bcf28f6861676cd6879d265a4cdaa`, including implementation
+`67c83e2598a0003dde822c3c07514d46c396de72`, under window `nor31-buffered-candidate-202609050649`.
+Baseline measurement started at `2026-09-05T06:23:26.979Z`; candidate measurement started at
+`2026-09-05T06:49:17.756Z`. Both ran on the same Windows host with Node 20.19.2, pnpm 10.8.1, fresh worker processes,
+the same warm-cache procedure, and the same 25,650,417-byte large fixture. Of thirteen frozen source identities, only
+`AgentControlStore.ts` and `safeWriteJson.ts` differ. Harness, lock implementation, dependencies, and built shared types
+are unchanged.
+
+The unchanged comparator produced a [passing comparison](benchmarks/nor35-buffered-comparison.json), exiting 0 with
+`passed: true` and no failures.
+Each revision contains 360 measured cycles, 720 transactions, and 720 writes; all diagnostics report successful committed
+transactions and no release failures. Complete final-state, frozen-source, and worker cleanup checks passed. The quiet
+window was released before comparison and documentation, and no samples were rerun, discarded, or selectively replaced.
+Earlier rejected reports remain preserved and excluded. An independent read-only audit recomputed the raw counts,
+percentiles, guard decisions, and source identities without finding a discrepancy.
+
+| Retained children | Writers | Baseline body p95 (ms) | Candidate body p95 (ms) | Reduction | Acceptance         |
+| ----------------- | ------- | ---------------------- | ----------------------- | --------- | ------------------ |
+| 5,000             | 1       | 1,092.9830             | 683.4826                | 37.4663%  | Pass: at least 25% |
+| 5,000             | 2       | 1,125.9291             | 704.4877                | 37.4305%  | Pass: at least 25% |
+
+Full lock-hold p95 also fell from 1,092.9922 to 683.4987 ms for one writer and from 1,125.9419 to 704.5005 ms for two.
+Streamed write-phase p95 fell from 593.0211 to 230.2392 ms and from 667.4369 to 237.8867 ms, respectively. Large-state
+cycle p95 fell from 2,105.6308 to 1,365.9631 ms and from 5,463.5062 to 2,818.5511 ms.
+
+| Small-state writers | Baseline cycle p95 (ms) | Candidate cycle p95 (ms) | Change (ms) | Change (%) | Guard |
+| ------------------- | ----------------------- | ------------------------ | ----------- | ---------- | ----- |
+| 1                   | 31.1448                 | 26.7170                  | -4.4278     | -14.2168%  | Pass  |
+| 2                   | 53.6141                 | 55.8681                  | +2.2540     | +4.2041%   | Pass  |
+
+The two-writer small case is slower by 2.2540 ms, but its 4.2041% increase does not cross the predeclared guard, which
+requires increases greater than both 10% and 2 ms. The guard and all other thresholds were unchanged.
+
+Event-loop observations are mixed. Large single-writer p95 rose from 10.3219 to 11.9767 ms. Large two-writer p95 fell
+from 37.0278/35.7827 to 16.4905/16.5560 ms, while worker medians rose from about 10.25 to 15.19 ms and worker 0's maximum
+rose from 521.67 to 549.98 ms. Histograms were available for every worker, at 10 ms resolution, with different run
+durations and observation counts. These results do not establish a general responsiveness improvement. They describe
+one paired local retained-state workload in separate coordinated quiet windows, with sixty measured cycles per writer;
+they are not production latency estimates, hard memory bounds, continuous-contention guarantees, or proof of zero
+recovered OS replacement retries. Observed large two-writer contention changed from 212 to 239 of 240 transactions.
+
+Raw SHA-256 identities, preserved before documentation commits:
+
+- Baseline: `c1a72573bad6f8489d7540eede15914e7238a03dbeb86f643e322bbcddbb048a`
+- Candidate: `67409f8e8282d01af645f5d07d850b0d3db5a00a90ef0ba7c219dc3a2071eee8`
+- Comparison: `bc68009de8bd40147dbdbacdd6c8312edb4f2d235d784de1795a012911aaa972`
 
 ### Earlier rejected acquisition baseline
 
