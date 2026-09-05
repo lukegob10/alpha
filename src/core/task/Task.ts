@@ -40,6 +40,7 @@ import {
 	type TaskEvents,
 	type ProviderSettings,
 	type TokenUsage,
+	type ParentVerificationObligation,
 	type ToolUsage,
 	type ToolName,
 	type ContextCondense,
@@ -141,6 +142,7 @@ import { TaskToolCatalogCache } from "./TaskToolCatalogCache"
 import { ToolRepetitionDetector } from "../tools/ToolRepetitionDetector"
 import type { ParentCommandVerificationEvidence } from "../agent/AgentControlStore"
 import type { CommandVerificationDiagnostic } from "../agent/VerificationScope"
+import { CompletionRecovery } from "../agent/CompletionRecovery"
 import { redactTaskPrivatePaths } from "../tools/taskPathPresentation"
 import { restoreTodoListForTask } from "../tools/UpdateTodoListTool"
 import { FileContextTracker } from "../context-tracking/FileContextTracker"
@@ -252,8 +254,43 @@ export interface CommandExecutionEvidence {
 export interface CompletionGateDecision {
 	allowed: boolean
 	message?: string
-	/** False when the durable gate itself was unavailable, rather than an obligation the model can resolve. */
+	/** Runtime waits and unavailable evidence never require a model recovery turn. */
 	modelCanResolveRejection: boolean
+	classification?: "ready" | "waiting" | "repairable" | "blocked"
+	reasonCode?:
+		| "ready"
+		| "command_running"
+		| "receipt_pending"
+		| "evidence_pending"
+		| "scope_unavailable"
+		| "verification_failed"
+		| "verification_missing"
+		| "managed_results_pending"
+		| "descendants_running"
+		| "child_results_unconsumed"
+		| "todos_open"
+		| "persistence_unavailable"
+		| "runtime_timeout"
+		| "interrupted"
+		| "repair_limit"
+		| "stale_content"
+		| CommandVerificationDiagnostic["code"]
+	/** Internal semantic identity; never included in metrics or telemetry. */
+	blockerKey?: string
+}
+
+export interface CompletionStageMetrics {
+	candidateCount: number
+	rejectionCount: number
+	repairToolCount: number
+	runtimeWaitMs: number
+	firstCandidateAt?: number
+	firstCandidateUsage?: TokenUsage
+	settledUsage?: TokenUsage
+	persistenceSettledAt?: number
+	completedAt?: number
+	blockedAt?: number
+	lastReasonCode?: CompletionGateDecision["reasonCode"]
 }
 
 const OPEN_TODO_COMPLETION_MESSAGE =
@@ -634,8 +671,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private readonly childTasksRequiringVerification = new Set<string>()
 	private readonly commandExecutionEvidence = new Map<string, CommandExecutionEvidence>()
 	private pendingCommandVerification: Promise<void> = Promise.resolve()
-	private verificationRejectionKey?: string
-	private verificationRejectionCount = 0
+	private pendingCommandVerificationCount = 0
+	private completionRuntimeRevision = 0
+	private completionRecovery?: CompletionRecovery
+	private completionRecoveryActive = false
+	private completionStageMetrics?: CompletionStageMetrics
 	private pendingSteerMessage?: {
 		text: string
 		images: string[]
@@ -4363,6 +4403,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// Clear stale counters before the next request so that guidance reaches
 			// the model instead of being intercepted by another dialog.
 			this.resetMistakeRecoveryState()
+			this.resetCompletionRecoveryState()
 		}
 
 		// Create a checkpoint whenever the user sends a message.
@@ -4547,6 +4588,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				throw new Error("Unable to persist pending tool results before task completion.")
 			}
 			await this.flushApiConversationHistoryPersistence()
+			this.getMutableCompletionStageMetrics().persistenceSettledAt = Date.now()
+			const transcriptQueue = this.apiConversationHistorySaveQueue
 			const finalDecision = await this.getCompletionGateDecision()
 			if (!finalDecision.allowed || this.abort) {
 				verificationRejection = finalDecision.message ?? "Task completion was interrupted."
@@ -4556,7 +4599,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// admitted while it was pending requires a fresh completion attempt,
 			// not another await that could stale the Stage 3 verification decision.
 			if (this.providerTranscriptSidecarFailure) throw this.providerTranscriptSidecarFailure
-			if ((Task.apiConversationHistoryPendingCounts.get(this.apiConversationHistoryPersistenceKey) ?? 0) > 0) {
+			if (
+				transcriptQueue !== this.apiConversationHistorySaveQueue ||
+				(Task.apiConversationHistoryPendingCounts.get(this.apiConversationHistoryPersistenceKey) ?? 0) > 0
+			) {
 				throw new Error("Transcript persistence is still pending at task completion.")
 			}
 
@@ -4572,6 +4618,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 
 			this.markCompleted()
+			const completionMetrics = this.getMutableCompletionStageMetrics()
+			completionMetrics.completedAt = Date.now()
+			completionMetrics.lastReasonCode = "ready"
+			completionMetrics.settledUsage = this.getTokenUsage()
 			this.emitFinalTokenUsageUpdate()
 			TelemetryService.instance.captureTaskCompleted(this.taskId)
 			this.emit(RooCodeEventName.TaskCompleted, this.taskId, this.getTokenUsage(), this.toolUsage)
@@ -4618,71 +4668,263 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const todoDecision = this.getOpenTodoCompletionDecision()
 		if (todoDecision) return todoDecision
 
-		if (this.hasActiveCommandExecutions()) {
-			const key = `running:${this.getCommandExecutionEvidence()
-				.filter((item) => item.status === "running")
-				.map((item) => item.executionId)
-				.join("|")}`
-			this.verificationRejectionCount =
-				key === this.verificationRejectionKey ? (this.verificationRejectionCount ?? 0) + 1 : 1
-			this.verificationRejectionKey = key
-			return {
-				allowed: false,
-				modelCanResolveRejection: this.verificationRejectionCount < 3,
-				message:
-					"Task remains unverified while a command or its mutation receipt is running. Wait for the actual terminal outcome before completion.",
-			}
-		}
+		const runtimeDecision = this.getPendingCompletionRuntimeDecision()
+		if (runtimeDecision) return runtimeDecision
 		const provider = this.providerRef?.deref()
 		if (!provider || typeof provider.getParentCompletionDecision !== "function") {
 			return {
 				allowed: false,
+				classification: "blocked",
+				reasonCode: "persistence_unavailable",
 				modelCanResolveRejection: false,
 				message:
-					"Cannot verify managed-agent completion obligations because the durable completion decision is unavailable.",
+					"Cannot verify completion because the durable completion decision is unavailable. The task remains incomplete; restore task persistence before resuming.",
 			}
 		}
 
 		try {
 			await this.pendingCommandVerification
+			const runtimeRevision = this.completionRuntimeRevision
 			const decision = await provider.getParentCompletionDecision(this)
-			if (!decision.allowed) {
-				// Child activity and unconsumed results can reject completion without
-				// file debt. Count those unchanged completion claims, not ordinary polls.
-				const key = decision.blockingObligations?.length
-					? decision.blockingObligations
-							.map((item) =>
-								JSON.stringify([item.id, item.contentVersion ?? item.appliedAt, item.verifiedChecks]),
-							)
-							.sort()
-							.join("|")
-					: `completion:${decision.message ?? "unresolved"}`
-				if (key !== this.verificationRejectionKey) {
-					this.verificationRejectionKey = key
-					this.verificationRejectionCount = 0
+			// Commands and evidence publication can start while the durable snapshot is read.
+			const lateRuntimeDecision = this.getPendingCompletionRuntimeDecision()
+			if (lateRuntimeDecision) return lateRuntimeDecision
+			if (runtimeRevision !== this.completionRuntimeRevision) {
+				return {
+					allowed: false,
+					classification: "waiting",
+					reasonCode: "evidence_pending",
+					modelCanResolveRejection: false,
+					message:
+						"Command evidence changed while reading the completion decision. Refresh the durable evidence before completing.",
 				}
-				this.verificationRejectionCount = (this.verificationRejectionCount ?? 0) + 1
-				if (this.verificationRejectionCount >= 3) {
-					return {
-						...decision,
-						modelCanResolveRejection: false,
-						message: `Task remains incomplete and unverified. ${decision.message}`,
-					}
-				}
-			} else if (decision.allowed) {
-				this.verificationRejectionKey = undefined
-				this.verificationRejectionCount = 0
 			}
-			return { ...decision, modelCanResolveRejection: true }
-		} catch (error) {
+			if (decision.allowed)
+				return { ...decision, classification: "ready", reasonCode: "ready", modelCanResolveRejection: true }
+			const obligations = decision.blockingObligations ?? []
+			const unavailable = obligations.some((item) => item.scopeUnresolved)
+			const receiptPending = obligations.some((item) => item.mutationReservations?.length)
+			const resultsPending = (decision.unconsumedResultCount ?? 0) > 0
+			const descendantsPending = (decision.activeDescendantCount ?? 0) > 0 && !resultsPending
+			const waitReason = !unavailable
+				? receiptPending
+					? "receipt_pending"
+					: descendantsPending
+						? "descendants_running"
+						: undefined
+				: undefined
+			// Earlier command diagnostics cannot override a current receipt/child wait.
+			// In particular, orphan-receipt deadlines depend on this runtime reason.
+			if (waitReason) {
+				return {
+					...decision,
+					classification: "waiting",
+					reasonCode: waitReason,
+					modelCanResolveRejection: false,
+				}
+			}
+			if (!unavailable && resultsPending) {
+				return {
+					...decision,
+					classification: "repairable",
+					reasonCode: "child_results_unconsumed",
+					modelCanResolveRejection: true,
+				}
+			}
+			const diagnostic = this.getCompletionVerificationDiagnostic(obligations)
+			const diagnosticUnavailable =
+				diagnostic &&
+				[
+					"unavailable_scope",
+					"unavailable_content",
+					"unsupported_configuration",
+					"runtime_scope_unavailable",
+				].includes(diagnostic.code)
+			return {
+				...decision,
+				message: diagnostic
+					? `${decision.message ?? "Required verification is missing."}\nVerification evidence (${diagnostic.code}): ${diagnostic.message}`
+					: decision.message,
+				classification: unavailable || diagnosticUnavailable ? "blocked" : "repairable",
+				reasonCode: unavailable
+					? "scope_unavailable"
+					: (diagnostic?.code ??
+						(obligations.some((item) => item.status === "failed")
+							? "verification_failed"
+							: obligations.length > 0
+								? "verification_missing"
+								: "managed_results_pending")),
+				modelCanResolveRejection: !unavailable && !diagnosticUnavailable,
+			}
+		} catch {
 			return {
 				allowed: false,
+				classification: "blocked",
+				reasonCode: "persistence_unavailable",
 				modelCanResolveRejection: false,
-				message: `Cannot verify managed-agent completion obligations right now: ${error instanceof Error ? error.message : String(error)}`,
+				message:
+					"Cannot verify completion because durable verification evidence is unavailable. The task remains incomplete; restore task persistence before resuming.",
 			}
 		}
 	}
 
+	private getCompletionVerificationDiagnostic(
+		obligations: readonly ParentVerificationObligation[],
+	): CommandVerificationDiagnostic | { code: "stale_content"; message: string } | undefined {
+		const commands = [...(this.commandExecutionEvidence?.values() ?? [])].reverse()
+		for (const obligation of obligations) {
+			const latest = commands.find(
+				(item) =>
+					item.status !== "running" &&
+					item.startedAt >= (obligation.appliedAt ?? 0) &&
+					(item.verificationChangeSetIds?.includes(obligation.changeSetId) ||
+						item.verificationDiagnostics?.some(
+							(diagnostic) =>
+								diagnostic.code === "missing_change_set" || diagnostic.code === "unknown_change_set",
+						)),
+			)
+			if (!latest) continue
+			const diagnostic = latest.verificationDiagnostics?.find(
+				(item) => !item.changeSetId || item.changeSetId === obligation.changeSetId,
+			)
+			if (diagnostic) return diagnostic
+			const captured = latest.verificationVersions?.[obligation.changeSetId]
+			if (captured && captured.contentVersion !== obligation.contentVersion) {
+				return {
+					code: "stale_content",
+					message: `Change set ${obligation.changeSetId} requires content version ${obligation.contentVersion}; the command captured version ${captured.contentVersion}. Run only the remaining checks for the current content and exact change-set association.`,
+				}
+			}
+		}
+		return undefined
+	}
+
+	private getPendingCompletionRuntimeDecision(): CompletionGateDecision | undefined {
+		const commandRunning = this.hasActiveCommandExecutions()
+		if (!commandRunning && !(this.pendingCommandVerificationCount > 0)) return undefined
+		return {
+			allowed: false,
+			classification: "waiting",
+			reasonCode: commandRunning ? "command_running" : "evidence_pending",
+			modelCanResolveRejection: false,
+			message: commandRunning
+				? "A command or its content receipt is still running. The runtime is waiting for its terminal outcome; do not rerun the command."
+				: "The command has ended and its verification evidence is being persisted. The runtime is waiting for that receipt; do not rerun verification.",
+		}
+	}
+
+	/** Wait outside the workspace mutation gate: receipt publishers need that gate to settle. */
+	public async waitForCompletionGateDecision(): Promise<CompletionGateDecision> {
+		const lease = this.beginAgentWait()
+		const startedAt = Date.now()
+		let orphanReceiptDeadline: number | undefined
+		let timedOut = false
+		let waited = false
+		let lastDecision: CompletionGateDecision | undefined
+		try {
+			while (true) {
+				try {
+					lastDecision = await this.waitForRequestControl(
+						this.getCompletionGateDecision(),
+						lease.signal,
+						Date.now() + 30_000,
+					)
+				} catch (error) {
+					timedOut = error instanceof ApiStreamDeadlineError
+					throw error
+				}
+				if (lastDecision.classification !== "waiting") return lastDecision
+				waited = true
+				if (lastDecision.reasonCode === "receipt_pending") {
+					orphanReceiptDeadline ??= Date.now() + 30_000
+					if (Date.now() >= orphanReceiptDeadline) {
+						timedOut = true
+						throw new Error("Mutation receipt has no active publisher")
+					}
+				} else orphanReceiptDeadline = undefined
+				// Tracked evidence publication is joined directly. Standalone durable
+				// receipts have no local publisher; bounded runtime polls recheck the ledger.
+				await this.waitForRequestControl(
+					this.pendingCommandVerificationCount > 0
+						? this.pendingCommandVerification
+						: delayWithAbort(250, lease.signal),
+					lease.signal,
+				)
+			}
+		} catch {
+			return {
+				allowed: false,
+				classification: "blocked",
+				reasonCode: timedOut
+					? "runtime_timeout"
+					: lease.signal.aborted
+						? "interrupted"
+						: "persistence_unavailable",
+				modelCanResolveRejection: false,
+				message: timedOut
+					? `Task remains incomplete and unverified because runtime settlement did not finish within 30 seconds. ${lastDecision?.message ?? "Durable completion evidence is unavailable."} Resume after the existing operation settles.`
+					: lease.signal.aborted
+						? "Completion was interrupted; pending user guidance and unresolved evidence are preserved."
+						: "Task remains incomplete because verification evidence could not be persisted. Restore task persistence before resuming.",
+			}
+		} finally {
+			lease.dispose()
+			if (waited) this.getMutableCompletionStageMetrics().runtimeWaitMs += Math.max(0, Date.now() - startedAt)
+		}
+	}
+	private getMutableCompletionStageMetrics(): CompletionStageMetrics {
+		return (this.completionStageMetrics ??= {
+			candidateCount: 0,
+			rejectionCount: 0,
+			repairToolCount: 0,
+			runtimeWaitMs: 0,
+		})
+	}
+
+	/** Bounded redacted counters, independent from persisted lifecycle authority. */
+	public getCompletionStageMetrics(): Readonly<CompletionStageMetrics> {
+		return structuredClone(this.getMutableCompletionStageMetrics())
+	}
+
+	public recordCompletionCandidate(): void {
+		const metrics = this.getMutableCompletionStageMetrics()
+		if (metrics.firstCandidateAt === undefined) {
+			metrics.firstCandidateAt = Date.now()
+			metrics.firstCandidateUsage = this.getTokenUsage()
+		}
+		metrics.candidateCount++
+	}
+
+	/** Real user guidance starts a new repair allowance; automatic recovery text does not. */
+	public resetCompletionRecoveryState(): void {
+		this.completionRecovery?.reset()
+		this.completionRecoveryActive = false
+	}
+
+	/** Charge actual model feedback, never internal gate reads or runtime waiting. */
+	public recordCompletionRejection(decision: CompletionGateDecision): CompletionGateDecision {
+		if (decision.allowed) return decision
+		const metrics = this.getMutableCompletionStageMetrics()
+		metrics.rejectionCount++
+		metrics.lastReasonCode = decision.reasonCode
+		if (!decision.modelCanResolveRejection) {
+			metrics.blockedAt = Date.now()
+			metrics.settledUsage = this.getTokenUsage()
+			return decision
+		}
+		this.completionRecoveryActive = true
+		if (!(this.completionRecovery ??= new CompletionRecovery()).reject(decision)) return decision
+		metrics.blockedAt = Date.now()
+		metrics.settledUsage = this.getTokenUsage()
+		metrics.lastReasonCode = "repair_limit"
+		return {
+			...decision,
+			classification: "blocked",
+			reasonCode: "repair_limit",
+			modelCanResolveRejection: false,
+			message: `Task remains incomplete and unverified after repeated attempts to resolve the same obligation. ${decision.message ?? "Required evidence is missing."}`,
+		}
+	}
 	/** Return the user-configured todo completion policy shared by every completion path. */
 	public getOpenTodoCompletionDecision(): (CompletionGateDecision & { message: string }) | undefined {
 		const preventCompletionWithOpenTodos = vscode.workspace
@@ -4694,6 +4936,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			? {
 					allowed: false,
 					modelCanResolveRejection: true,
+					classification: "repairable",
+					reasonCode: "todos_open",
+					blockerKey: JSON.stringify(this.todoList?.filter((todo) => todo.status !== "completed")),
 					message: OPEN_TODO_COMPLETION_MESSAGE,
 				}
 			: undefined
@@ -4728,6 +4973,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		verificationChangeSetIds?: readonly string[],
 	): void {
 		if (this.commandExecutionEvidence.has(toolCallId)) return
+		this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
 		const scopedChangeSetIds =
 			verificationChangeSetIds === undefined ? undefined : [...new Set(verificationChangeSetIds)]
 		this.commandExecutionEvidence.set(toolCallId, {
@@ -4805,6 +5051,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			]
 		}
 		evidence.completedAt = Date.now()
+		this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
 		this.publishParentVerificationEvidence()
 	}
 
@@ -4817,6 +5064,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (!evidence || evidence.status !== "running" || (executionId && evidence.executionId !== executionId)) return
 		evidence.status = status
 		evidence.completedAt = Date.now()
+		this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
 		this.publishParentVerificationEvidence()
 	}
 
@@ -4824,9 +5072,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (this.taskKind === "subagent") return
 		const provider = this.providerRef.deref()
 		if (!provider) return
+		this.pendingCommandVerificationCount = (this.pendingCommandVerificationCount ?? 0) + 1
 		this.pendingCommandVerification = (this.pendingCommandVerification ?? Promise.resolve())
 			.catch(() => undefined)
 			.then(() => provider.recordParentVerificationEvidence(this))
+			.finally(() => {
+				this.pendingCommandVerificationCount--
+			})
 		void this.pendingCommandVerification.catch((error) =>
 			console.error(`[Task] Failed to persist parent verification evidence: ${String(error)}`),
 		)
@@ -5606,6 +5858,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		this.resetMistakeRecoveryState()
+		this.resetCompletionRecoveryState()
 		const retainForDurableRecovery = () => {
 			this.pendingSteerMessage = { text, images, ...(onPersisted ? { onPersisted } : {}) }
 			this.steerMessageAwaitingPersistence = true
@@ -6954,8 +7207,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Kicks off the checkpoints initialization process in the background.
 		if (userContent.length > 0) {
 			this.toolRepetitionDetector?.resetProgress()
-			this.verificationRejectionKey = undefined
-			this.verificationRejectionCount = 0
+			this.resetCompletionRecoveryState()
 		}
 		getCheckpointService(this)
 
@@ -7167,6 +7419,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const continueAfterCompletionRejection = async (
 			decision: CompletionGateDecision,
 		): Promise<TaskTurnInput | undefined> => {
+			if (decision.reasonCode === "interrupted") {
+				if (this.hasPendingSteerMessage()) return { userContent: [], includeFileDetails: false }
+				const queued = this.messageQueueService.dequeueMessage()
+				if (queued) {
+					this.resetCompletionRecoveryState()
+					await this.retractCompletionResult()
+					await this.say("user_feedback", queued.text, queued.images)
+					return {
+						userContent: this.buildUserMessageContent(queued.text, queued.images),
+						includeFileDetails: false,
+					}
+				}
+				if (this.abort) return undefined
+			}
+			decision = this.recordCompletionRejection(decision)
 			const message =
 				decision.message ??
 				"Cannot complete while managed-agent results or parent verification obligations remain unresolved."
@@ -7179,7 +7446,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		}
 		const waitForPrimaryTurnRecovery = async (): Promise<PrimaryTurnRecovery | undefined> => {
-			if (this.taskKind !== "primary") return undefined
+			if (this.taskKind !== "primary" || this.abort || this.didComplete) return undefined
 
 			let recovery: Awaited<ReturnType<Task["ask"]>>
 			try {
@@ -7214,6 +7481,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 
 			const feedbackText = recovery.text ?? ""
+			this.resetCompletionRecoveryState()
 			const feedbackImages = recovery.images ?? []
 			if (feedbackText.trim() || feedbackImages.length > 0) {
 				await this.say("user_feedback", feedbackText, feedbackImages)
@@ -7271,7 +7539,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// descendant/verification gate as attempt_completion. Do this before
 			// promoting the streamed text to terminal styling so a rejected candidate
 			// can never expose an accept-to-finish path.
-			const initialCompletionDecision = await this.getCompletionGateDecision()
+			this.recordCompletionCandidate()
+			const initialCompletionDecision = await this.waitForCompletionGateDecision()
 			if (!initialCompletionDecision.allowed) {
 				const continuation = await continueAfterCompletionRejection(initialCompletionDecision)
 				if (!continuation) {
@@ -7316,7 +7585,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (shouldFinish) {
 				// A background child or verification obligation can change while the
 				// review boundary is open. Recheck immediately before the terminal write.
-				const finalCompletionDecision = await this.getCompletionGateDecision()
+				const finalCompletionDecision = await this.waitForCompletionGateDecision()
 				if (!finalCompletionDecision.allowed) {
 					await this.retractCompletionResult()
 					const continuation = await continueAfterCompletionRejection(finalCompletionDecision)
@@ -11192,7 +11461,65 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		_commandCategory?: string,
 		result?: import("../agent/ToolScheduler").ToolSchedulerResult,
 	): Promise<void> {
-		await this.pendingCommandVerification
+		// Completion owns its rejection budget. Cancellation must not rejoin an
+		// unresolved publisher after its completion wait has already exited.
+		if (name === "attempt_completion" || this.abort || this.didComplete) return
+		try {
+			await this.waitForRequestControl(this.pendingCommandVerification, this.getTaskLifetimeCancellationSignal())
+		} catch (error) {
+			if (this.abort || this.getTaskLifetimeCancellationSignal().aborted) return
+			throw error
+		}
+		if (this.abort) return
+		if (this.completionRecoveryActive) {
+			let completionDecision: CompletionGateDecision
+			try {
+				completionDecision = await this.waitForRequestControl(
+					this.getCompletionGateDecision(),
+					this.getTaskLifetimeCancellationSignal(),
+				)
+			} catch (error) {
+				if (this.abort || this.getTaskLifetimeCancellationSignal().aborted) return
+				throw error
+			}
+			if (completionDecision.classification === "waiting") return
+			if (completionDecision.allowed) {
+				this.resetCompletionRecoveryState()
+			} else {
+				const metrics = this.getMutableCompletionStageMetrics()
+				metrics.repairToolCount++
+				const evidence = result?.callId ? this.commandExecutionEvidence.get(result.callId) : undefined
+				const verification =
+					args && typeof args === "object" && "verification" in args ? args.verification : undefined
+				const associatedIds =
+					verification &&
+					typeof verification === "object" &&
+					"change_set_ids" in verification &&
+					Array.isArray(verification.change_set_ids)
+						? verification.change_set_ids.filter((id): id is string => typeof id === "string")
+						: []
+				const scopes = Object.entries(evidence?.verificationVersions ?? {}).map(([changeSetId, scope]) => ({
+					changeSetId,
+					matchedFiles: scope.matchedFiles,
+					kind: scope.kind,
+				}))
+				const exhausted =
+					name === "execute_command" &&
+					(this.completionRecovery ??= new CompletionRecovery()).recordCheck(
+						completionDecision,
+						scopes.length > 0 ? scopes : associatedIds.map((changeSetId) => ({ changeSetId })),
+					)
+				if (!completionDecision.modelCanResolveRejection || exhausted) {
+					metrics.blockedAt = Date.now()
+					metrics.settledUsage = this.getTokenUsage()
+					metrics.lastReasonCode = exhausted ? "repair_limit" : completionDecision.reasonCode
+					this.suspendAfterCurrentTurn(
+						`Task remains incomplete and unverified: repair actions did not resolve the remaining obligation. ${completionDecision.message ?? "Required evidence is missing."}`,
+					)
+					return
+				}
+			}
+		}
 		const artifactId = args && typeof args === "object" && "artifact_id" in args ? args.artifact_id : undefined
 		const polling =
 			name === "wait_agent" ||

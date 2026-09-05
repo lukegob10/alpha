@@ -36,6 +36,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 	async execute(params: AttemptCompletionParams, task: Task, callbacks: AttemptCompletionCallbacks): Promise<void> {
 		const { result, outcome } = params
 		const { handleError, pushToolResult, askFinishSubTaskApproval, toolCallId } = callbacks
+		task.recordCompletionCandidate()
 
 		if (task.taskKind === "primary" && outcome === "blocked" && result?.trim()) {
 			const decision = await task.getCompletionGateDecision()
@@ -50,25 +51,6 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			const errorMsg = t("common:errors.attempt_completion_tool_failed")
 
 			await task.say("error", errorMsg)
-			pushToolResult(formatResponse.toolError(errorMsg))
-			return
-		}
-
-		const todoDecision = task.getOpenTodoCompletionDecision()
-		if (todoDecision) {
-			task.consecutiveMistakeCount++
-			task.recordToolError("attempt_completion")
-
-			pushToolResult(formatResponse.toolError(todoDecision.message))
-
-			return
-		}
-
-		if (task.taskKind === "subagent" && task.subagentRole === "worker" && task.hasActiveCommandExecutions()) {
-			const errorMsg =
-				"Cannot complete an editing worker while a command is still running. Wait for its terminal result before reporting verification."
-			task.consecutiveMistakeCount++
-			task.recordToolError("attempt_completion")
 			pushToolResult(formatResponse.toolError(errorMsg))
 			return
 		}
@@ -183,8 +165,25 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 		task: Task,
 		pushToolResult: AttemptCompletionCallbacks["pushToolResult"],
 	): Promise<boolean> {
-		const decision = await task.getCompletionGateDecision()
+		let decision = await task.waitForCompletionGateDecision()
 		if (decision.allowed) return false
+		if (decision.reasonCode === "interrupted") {
+			if (task.hasPendingSteerMessage()) {
+				pushToolResult(formatResponse.toolError(decision.message ?? "Completion interrupted by user guidance."))
+				return true
+			}
+			const queued = task.messageQueueService.dequeueMessage()
+			if (queued) {
+				task.resetCompletionRecoveryState()
+				await task.retractCompletionResult()
+				await task.say("user_feedback", queued.text, queued.images)
+				pushToolResult(
+					formatResponse.toolResult(`<user_message>\n${queued.text}\n</user_message>`, queued.images),
+				)
+				return true
+			}
+		}
+		decision = task.recordCompletionRejection(decision)
 
 		const errorMsg =
 			decision.message ??

@@ -861,6 +861,20 @@ describe("Task persistence", () => {
 			expect(mockProvider.rollbackTaskCompletionLifecycle).toHaveBeenCalledOnce()
 		})
 
+		it("rejects a save that starts and settles during the final verification gate", async () => {
+			const task = createTask()
+			mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+			mockProvider.rollbackTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+			vi.spyOn(task, "getCompletionGateDecision").mockImplementation(async () => {
+				expect(await (task as any).saveApiConversationHistory()).toBe(true)
+				await task.flushApiConversationHistoryPersistence()
+				return { allowed: true, modelCanResolveRejection: true }
+			})
+			const completed = vi.spyOn(task, "markCompleted")
+			await expect(task.finalizeTaskCompletion()).rejects.toThrow("still pending")
+			expect(completed).not.toHaveBeenCalled()
+		})
+
 		it("rejects a save admitted during the final verification gate without marking completed", async () => {
 			const task = createTask()
 			mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)

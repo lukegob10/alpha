@@ -6809,6 +6809,8 @@ export class ClineProvider
 		const activePaths = activeDescendants.map(({ path }) => path).join(", ")
 		return {
 			allowed: false,
+			activeDescendantCount: activeDescendants.length,
+			unconsumedResultCount: unacknowledgedResults.length,
 			blockingObligations: verificationDecision.blockingObligations,
 			message: [
 				verificationDecision.message,

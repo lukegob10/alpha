@@ -16,12 +16,14 @@ import { ToolRegistry } from "../../tools/ToolRegistry"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 import { ClineProvider } from "../../webview/ClineProvider"
 import { Task } from "../Task"
+import { WorkspaceMutationGate } from "../WorkspaceMutationGate"
 
 const TASK_ID = "stage-three-completion"
 const CHANGE_SET_ID = "applied-worker-change"
 const PRIMARY_CHANGE_SET_ID = `primary-change:${TASK_ID}`
 const MAX_SCRIPTED_STEPS = 20
 const MAX_UNVERIFIED_COMPLETION_ATTEMPTS = 3
+const MAX_UNCHANGED_REPAIR_TOOLS = 8
 const COMPLETION_TEXT = "The requested work is finished."
 
 type CompletionKind = "text" | "explicit"
@@ -76,8 +78,13 @@ async function createHarness() {
 	const presentCompletionResult = vi.fn<Task["presentCompletionResult"]>(async () => undefined)
 	const retractCompletionResult = vi.fn<Task["retractCompletionResult"]>(async () => undefined)
 	const flush = vi.fn<Task["flushPendingToolResultsToHistory"]>(async () => true)
+	const mutationGate = new WorkspaceMutationGate()
 	const provider = {
 		getParentCompletionDecision: vi.fn(async () => store.getParentCompletionDecision(TASK_ID, TASK_ID)),
+		recordParentVerificationEvidence: vi.fn<() => Promise<void>>(async () => undefined),
+		runWorkspaceMutation<T>(owner: Task, label: string, operation: () => Promise<T>) {
+			return mutationGate.run(owner.taskId, label, operation, () => owner.abort)
+		},
 		prepareTaskCompletionLifecycle: vi.fn(async () => {
 			await store.updateAgentStatus(TASK_ID, "completed", {}, TASK_ID)
 		}),
@@ -98,6 +105,7 @@ async function createHarness() {
 		globalStoragePath: storagePath,
 		enableCheckpoints: false,
 		abort: false,
+		isTaskLoopActive: true,
 		didComplete: false,
 		didEmitTaskCompleted: false,
 		didToolFailInCurrentTurn: false,
@@ -132,13 +140,73 @@ async function createHarness() {
 		}),
 		flushAgentTurnEvents: vi.fn(async () => undefined),
 	}) as Task
-	const registry = new ToolRegistry()
+	const builtIns = new ToolRegistry()
+	const registry = new ToolRegistry({ includeBuiltIns: false })
+	registry.register(builtIns.resolve("attempt_completion")!)
+	registry.register({
+		name: "list_files",
+		aliases: [],
+		schema: builtIns.resolve("list_files")!.schema,
+		capabilities: { concurrency: "serial", sideEffects: "none", controlFlow: false, requiresApproval: false },
+		async execute({ callbacks }) {
+			callbacks.pushToolResult("README.md")
+		},
+	})
+	registry.register({
+		name: "read_file",
+		aliases: [],
+		schema: builtIns.resolve("read_file")!.schema,
+		capabilities: { concurrency: "serial", sideEffects: "none", controlFlow: false, requiresApproval: false },
+		async execute({ call, callbacks }) {
+			const args = call.nativeArgs
+			if (!args || !("path" in args) || typeof args.path !== "string") {
+				throw new Error("The read fixture requires the canonical native path argument")
+			}
+			callbacks.pushToolResult(await fs.readFile(path.join(storagePath, args.path), "utf8"))
+		},
+	})
+	registry.register({
+		name: "execute_command",
+		aliases: [],
+		schema: builtIns.resolve("execute_command")!.schema,
+		capabilities: { concurrency: "serial", sideEffects: "workspace", controlFlow: false, requiresApproval: false },
+		async execute({ call, callbacks }) {
+			const args = call.nativeArgs
+			if (!call.id || !args || !("command" in args) || typeof args.command !== "string") {
+				throw new Error("The command fixture requires canonical native command arguments and an ID")
+			}
+			const executionId = `fixture-${call.id}`
+			const verification = "verification" in args ? args.verification : undefined
+			task.beginCommandExecution(call.id, executionId, args.command, verification?.change_set_ids)
+			task.completeCommandExecution(call.id, { exitCode: 0 }, executionId)
+			// A terminal command without captured, matching evidence cannot discharge the ledger debt.
+			callbacks.pushToolResult(
+				"Command exited with code 0; no current scoped verification evidence was credited.",
+			)
+		},
+	})
 	let guardTriggered = false
 	const requestStep = vi.fn<Task["recursivelyMakeClineRequests"]>()
 	task.recursivelyMakeClineRequests = requestStep
 
-	const installCandidates = (kind: CompletionKind, beforeCandidate?: (step: number) => void) => {
+	const installCandidates = (
+		kind: CompletionKind,
+		beforeCandidate?: (step: number) => void | Promise<void>,
+		interleaveReads: boolean | "repair-verification" | readonly string[] = false,
+		repairChangeSetId = PRIMARY_CHANGE_SET_ID,
+	) => {
 		requestStep.mockImplementation(async (input) => {
+			// Model the request adapter's durable steering consumption; the real
+			// steerUserMessage admission and completion-wait interruption remain intact.
+			const pendingSteer = Reflect.get(task, "pendingSteerMessage") as
+				| { text: string; onPersisted?: () => Promise<void> | void }
+				| undefined
+			if (pendingSteer) {
+				Reflect.set(task, "pendingSteerMessage", undefined)
+				input = [...input, { type: "text", text: pendingSteer.text }]
+				await pendingSteer.onPersisted?.()
+				Reflect.set(task, "steerMessageAwaitingPersistence", false)
+			}
 			requests.push(structuredClone(input))
 			// This is only a test safety net. A production bounded handoff must occur
 			// before this guard; throwing here becomes a failed turn, not incomplete.
@@ -148,20 +216,42 @@ async function createHarness() {
 			}
 			task.userMessageContent = []
 			task.didToolFailInCurrentTurn = false
-			beforeCandidate?.(requests.length)
+			const relevantFiles = typeof interleaveReads === "object" ? interleaveReads : undefined
+			const relevantPath = relevantFiles?.[requests.length - 2]
+			const isRead = relevantFiles
+				? relevantPath !== undefined
+				: interleaveReads === true && requests.length % 2 === 0
+			const isRepair = interleaveReads === "repair-verification" && requests.length > 1
+			await beforeCandidate?.(requests.length)
 			const response = createAgentResponse(
-				kind === "text"
-					? [{ type: "text", text: COMPLETION_TEXT }]
-					: [
+				isRead || isRepair
+					? [
 							{
 								type: "tool_call",
-								id: `completion-${requests.length}`,
-								name: "attempt_completion",
-								arguments: { result: COMPLETION_TEXT },
+								id: `${isRepair ? "check" : "read"}-${requests.length}`,
+								name: isRepair ? "execute_command" : relevantPath ? "read_file" : "list_files",
+								arguments: isRepair
+									? {
+											command: `pnpm${" ".repeat(requests.length)}check-types`,
+											cwd: storagePath,
+											timeout: null,
+											verification: { change_set_ids: [repairChangeSetId] },
+										}
+									: { path: relevantPath ?? `unrelated-${requests.length}` },
 							},
-						],
+						]
+					: kind === "text"
+						? [{ type: "text", text: COMPLETION_TEXT }]
+						: [
+								{
+									type: "tool_call",
+									id: `completion-${requests.length}`,
+									name: "attempt_completion",
+									arguments: { result: COMPLETION_TEXT },
+								},
+							],
 			)
-			if (kind === "explicit") {
+			if (isRead || isRepair || kind === "explicit") {
 				await new ToolScheduler({
 					task,
 					registry,
@@ -177,16 +267,18 @@ async function createHarness() {
 		})
 	}
 
-	const addAppliedObligation = async (kind: ObligationKind) => {
+	const addAppliedObligation = async (kind: ObligationKind, files = ["src/changed.ts"]) => {
 		if (kind === "primary") {
 			const content = "export const changed = true\n"
-			await fs.mkdir(path.join(storagePath, "src"), { recursive: true })
-			await fs.writeFile(path.join(storagePath, "src", "changed.ts"), content)
+			for (const file of files) {
+				await fs.mkdir(path.dirname(path.join(storagePath, file)), { recursive: true })
+				await fs.writeFile(path.join(storagePath, file), content)
+			}
 			await store.recordPrimaryMutation({
 				rootTaskId: TASK_ID,
 				parentTaskId: TASK_ID,
 				workspacePath: storagePath,
-				fileVersions: { "src/changed.ts": fingerprintContent(content) },
+				fileVersions: Object.fromEntries(files.map((file) => [file, fingerprintContent(content)])),
 				at: 2_000,
 			})
 			return
@@ -267,6 +359,8 @@ async function createHarness() {
 		ask,
 		flush,
 		provider,
+		mutationGate,
+		storagePath,
 		presentCompletionResult,
 		installCandidates,
 		addAppliedObligation,
@@ -298,13 +392,35 @@ describe("Stage Three durable completion integration", () => {
 	afterEach(async () => {
 		await Promise.all(harnesses.splice(0).map((harness) => harness.dispose()))
 		vi.restoreAllMocks()
+		vi.useRealTimers()
 	})
 
-	async function setup(kind: CompletionKind) {
+	async function setup(kind: CompletionKind, advanceOwnerHeartbeat = false) {
+		// Long runtime waits must advance the owner's real heartbeat along with
+		// completion timers, so install the fake clock before acquiring its lease.
+		if (advanceOwnerHeartbeat) vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
 		const harness = await createHarness()
 		harnesses.push(harness)
 		harness.installCandidates(kind)
 		return harness
+	}
+
+	async function observePendingCandidate(harness: Awaited<ReturnType<typeof createHarness>>, useFakeClock = true) {
+		if (useFakeClock && !vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+		const entered = deferred()
+		const gate = harness.task.getCompletionGateDecision.bind(harness.task)
+		vi.spyOn(harness.task, "getCompletionGateDecision").mockImplementation(async () => {
+			entered.resolve()
+			return gate()
+		})
+		const running = harness.run()
+		await Promise.race([
+			entered.promise,
+			running.then(() => {
+				throw new Error("Task ended before evaluating the completion candidate")
+			}),
+		])
+		return { running }
 	}
 
 	it.each(COMPLETION_OBLIGATIONS)(
@@ -356,32 +472,478 @@ describe("Stage Three durable completion integration", () => {
 	)
 
 	it.each(["text", "explicit"] as const)(
-		"bounds repeated %s completion candidates while a command is still running",
+		"retains one %s completion candidate until a running command and its verification publication settle",
 		async (kind) => {
 			const harness = await setup(kind)
+			const firstCandidateUsage = harness.task.getTokenUsage()
+			const publication = deferred()
+			harness.provider.recordParentVerificationEvidence.mockImplementationOnce(() => publication.promise)
 			harness.task.beginCommandExecution("running-check", "physical-running-check", "pnpm exec vitest run")
 			expect(harness.task.hasActiveCommandExecutions()).toBe(true)
 			expect(harness.store.getVerificationObligations({ parentTaskId: TASK_ID })).toEqual([])
 
-			await harness.run()
-
-			harness.assertRecoverableStop()
-			expect(harness.requests.length).toBeLessThanOrEqual(MAX_UNVERIFIED_COMPLETION_ATTEMPTS)
-			expect(harness.presentCompletionResult).not.toHaveBeenCalled()
-			expect(harness.task.getCommandExecutionEvidence()).toEqual([
-				expect.objectContaining({
-					toolCallId: "running-check",
-					executionId: "physical-running-check",
-					status: "running",
-				}),
-			])
+			const { running } = await observePendingCandidate(harness)
+			try {
+				await vi.advanceTimersByTimeAsync(1_000)
+				harness.assertNotCompleted()
+				expect(harness.requests).toHaveLength(1)
+				expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+				expect(harness.task.consecutiveMistakeCount).toBe(0)
+				harness.task.completeCommandExecution("running-check", { exitCode: 0 }, "physical-running-check")
+				await vi.advanceTimersByTimeAsync(1_000)
+				expect(harness.provider.recordParentVerificationEvidence).toHaveBeenCalledOnce()
+				harness.assertNotCompleted()
+				expect(harness.requests).toHaveLength(1)
+			} finally {
+				publication.resolve()
+				harness.task.completeCommandExecution("running-check", { exitCode: 0 }, "physical-running-check")
+				await vi.advanceTimersByTimeAsync(1_000)
+				await running
+			}
+			expect(harness.requests).toHaveLength(1)
+			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+			expect(harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted)).toHaveLength(1)
+			expect(harness.store.getAgent(TASK_ID, TASK_ID)?.status).toBe("completed")
+			const metrics = harness.task.getCompletionStageMetrics()
+			expect(metrics).toMatchObject({
+				candidateCount: 1,
+				rejectionCount: 0,
+				repairToolCount: 0,
+				firstCandidateAt: expect.any(Number),
+				persistenceSettledAt: expect.any(Number),
+				completedAt: expect.any(Number),
+				firstCandidateUsage,
+				settledUsage: harness.task.getTokenUsage(),
+			})
+			expect(metrics.firstCandidateAt).toBeLessThanOrEqual(metrics.persistenceSettledAt!)
+			expect(metrics.persistenceSettledAt).toBeLessThanOrEqual(metrics.completedAt!)
+			expect(metrics.runtimeWaitMs).toBeGreaterThanOrEqual(2_000)
 		},
 	)
 
+	it.each(["text", "explicit"] as const)(
+		"retains one %s candidate until a delayed mutation receipt is durably released",
+		async (kind) => {
+			const harness = await setup(kind)
+			const token = "delayed-no-op-receipt"
+			await harness.store.reservePrimaryMutation(TASK_ID, TASK_ID, harness.storagePath, token)
+			const { running } = await observePendingCandidate(harness)
+			try {
+				await vi.advanceTimersByTimeAsync(1_000)
+				harness.assertNotCompleted()
+				expect(harness.requests).toHaveLength(1)
+				expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+				expect(harness.task.consecutiveMistakeCount).toBe(0)
+				const persisted = agentControlStateSchema.parse(await harness.persistence.read())
+				expect(persisted.verificationObligations).toContainEqual(
+					expect.objectContaining({ mutationReservations: [token], status: "pending" }),
+				)
+			} finally {
+				// A proven no-op has no changed-file debt after its final receipt lands.
+				await harness.store.releasePrimaryMutation(TASK_ID, TASK_ID, token)
+				await vi.advanceTimersByTimeAsync(1_000)
+				await running
+			}
+			expect(harness.requests).toHaveLength(1)
+			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+			expect(harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted)).toHaveLength(1)
+			expect(harness.store.getVerificationObligations({ parentTaskId: TASK_ID })).toEqual([])
+		},
+	)
+
+	it.each(["text", "explicit"] as const)(
+		"rechecks command activity admitted during the %s durable completion read",
+		async (kind) => {
+			const harness = await setup(kind)
+			const entered = deferred()
+			const release = deferred()
+			harness.provider.getParentCompletionDecision.mockImplementationOnce(async () => {
+				const decision = harness.store.getParentCompletionDecision(TASK_ID, TASK_ID)
+				entered.resolve()
+				await release.promise
+				return decision
+			})
+			const { running } = await observePendingCandidate(harness)
+			try {
+				await entered.promise
+				harness.task.beginCommandExecution("late-check", "physical-late-check", "pnpm exec vitest run")
+				release.resolve()
+				await vi.advanceTimersByTimeAsync(1_000)
+				harness.assertNotCompleted()
+				expect(harness.requests).toHaveLength(1)
+				expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+			} finally {
+				release.resolve()
+				harness.task.completeCommandExecution("late-check", { exitCode: 0 }, "physical-late-check")
+				await vi.advanceTimersByTimeAsync(1_000)
+				await running
+			}
+			expect(harness.requests).toHaveLength(1)
+			expect(harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted)).toHaveLength(1)
+		},
+	)
+
+	it.each(["text", "explicit"] as const)(
+		"keeps a healthy command running past 60 seconds during %s completion without a model retry",
+		async (kind) => {
+			const harness = await setup(kind, true)
+			harness.task.beginCommandExecution("running-check", "physical-running-check", "pnpm exec vitest run")
+			const { running } = await observePendingCandidate(harness)
+			try {
+				await vi.advanceTimersByTimeAsync(60_000)
+				harness.assertNotCompleted()
+				expect(harness.requests).toHaveLength(1)
+				expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+				expect(harness.task.consecutiveMistakeCount).toBe(0)
+				expect(harness.task.hasActiveCommandExecutions()).toBe(true)
+			} finally {
+				harness.task.completeCommandExecution("running-check", { exitCode: 0 }, "physical-running-check")
+				await vi.advanceTimersByTimeAsync(1_000)
+				await running
+			}
+			expect(harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted)).toHaveLength(1)
+			expect(harness.requests).toHaveLength(1)
+		},
+	)
+
+	it.each(["text", "explicit"] as const)(
+		"bounds an orphan mutation receipt wait during %s completion without a model retry",
+		async (kind) => {
+			const harness = await setup(kind)
+			await harness.store.reservePrimaryMutation(TASK_ID, TASK_ID, harness.storagePath, "orphan-receipt")
+			const { running } = await observePendingCandidate(harness)
+			try {
+				await vi.advanceTimersByTimeAsync(31_000)
+				await running
+				harness.assertRecoverableStop()
+				expect(harness.requests).toHaveLength(1)
+				expect(harness.task.consecutiveMistakeCount).toBe(0)
+			} finally {
+				harness.cancel()
+				await vi.advanceTimersByTimeAsync(1_000)
+				await running
+			}
+		},
+	)
+
+	it.each(["text", "explicit"] as const)(
+		"cancels a %s completion wait while verification publication remains unresolved",
+		async (kind) => {
+			const harness = await setup(kind)
+			const publication = deferred()
+			harness.provider.recordParentVerificationEvidence.mockImplementationOnce(() => publication.promise)
+			harness.task.beginCommandExecution("running-check", "physical-running-check", "pnpm exec vitest run")
+			harness.task.completeCommandExecution("running-check", { exitCode: 0 }, "physical-running-check")
+			const { running } = await observePendingCandidate(harness)
+			let settled = false
+			void running.then(() => {
+				settled = true
+			})
+			try {
+				await vi.advanceTimersByTimeAsync(1_000)
+				harness.cancel()
+				await vi.advanceTimersByTimeAsync(1_000)
+				expect(settled, "Cancellation must settle without waiting for the verification publisher").toBe(true)
+				harness.assertNotCompleted()
+				expect(harness.requests).toHaveLength(1)
+				expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+				expect(harness.events).toContainEqual(
+					expect.objectContaining({ type: "task_completed", status: "aborted" }),
+				)
+			} finally {
+				publication.resolve()
+				await vi.advanceTimersByTimeAsync(1_000)
+				await running
+			}
+		},
+	)
+
+	it.each(["text", "explicit"] as const)(
+		"consumes real steering during a %s completion wait without Resume or losing its persistence receipt",
+		async (kind) => {
+			const harness = await setup(kind)
+			const onPersisted = vi.fn(async () => undefined)
+			const guidance = "Check the new requirement before finishing."
+			harness.task.beginCommandExecution("running-check", "physical-running-check", "pnpm exec vitest run")
+			harness.installCandidates(kind, (step) => {
+				if (step === 2)
+					harness.task.completeCommandExecution("running-check", { exitCode: 0 }, "physical-running-check")
+			})
+			const { running } = await observePendingCandidate(harness)
+			try {
+				await vi.advanceTimersByTimeAsync(1_000)
+				expect(harness.requests).toHaveLength(1)
+				await harness.task.steerUserMessage(guidance, [], onPersisted)
+				await vi.advanceTimersByTimeAsync(1_000)
+				await running
+				expect(harness.requests).toHaveLength(2)
+				expect(JSON.stringify(harness.requests[1])).toContain(guidance)
+				expect(onPersisted).toHaveBeenCalledOnce()
+				expect(Reflect.get(harness.task, "pendingSteerMessage")).toBeUndefined()
+				expect(Reflect.get(harness.task, "steerMessageAwaitingPersistence")).toBe(false)
+				expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+				expect(
+					harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted),
+				).toHaveLength(1)
+			} finally {
+				harness.cancel()
+				harness.task.completeCommandExecution("running-check", { exitCode: 0 }, "physical-running-check")
+				await vi.advanceTimersByTimeAsync(1_000)
+				await running
+			}
+		},
+	)
+
+	it.each(["text", "explicit"] as const)(
+		"allows a queued receipt publisher to acquire the workspace mutation gate during %s completion settlement",
+		async (kind) => {
+			const harness = await setup(kind)
+			const token = "queued-receipt"
+			await harness.store.reservePrimaryMutation(TASK_ID, TASK_ID, harness.storagePath, token)
+			const entered = deferred()
+			const release = deferred()
+			const heldMutation = harness.mutationGate.run(TASK_ID, "earlier mutation", async () => {
+				entered.resolve()
+				await release.promise
+			})
+			await entered.promise
+			const publisherQueued = deferred()
+			let publication: Promise<void> | undefined
+			harness.provider.recordParentVerificationEvidence.mockImplementationOnce(() => {
+				publication = harness.provider.runWorkspaceMutation(harness.task, "publish receipt", () =>
+					harness.store.releasePrimaryMutation(TASK_ID, TASK_ID, token),
+				)
+				publisherQueued.resolve()
+				return publication
+			})
+			harness.task.beginCommandExecution("running-check", "physical-running-check", "pnpm exec vitest run")
+			let running: Promise<void> | undefined
+			try {
+				// Gate ordering is controlled by promises. Leave persistence and runtime
+				// timers live so filesystem completion cannot strand a frozen follow-up poll.
+				const candidate = await observePendingCandidate(harness, false)
+				running = candidate.running
+				harness.task.completeCommandExecution("running-check", { exitCode: 0 }, "physical-running-check")
+				await publisherQueued.promise
+				harness.assertNotCompleted()
+				expect(harness.provider.recordParentVerificationEvidence).toHaveBeenCalledOnce()
+				expect(harness.provider.prepareTaskCompletionLifecycle).not.toHaveBeenCalled()
+				release.resolve()
+				await heldMutation
+				await publication
+				await running
+				expect(harness.requests).toHaveLength(1)
+				expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+				expect(
+					harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted),
+				).toHaveLength(1)
+				expect(harness.store.getVerificationObligations({ parentTaskId: TASK_ID })).toEqual([])
+			} finally {
+				release.resolve()
+				harness.cancel()
+				await heldMutation
+				await running
+			}
+		},
+	)
+
+	it.each(["text", "explicit"] as const)(
+		"does not charge internal completion gate reads against the %s candidate rejection budget",
+		async (kind) => {
+			const harness = await setup(kind)
+			await harness.addAppliedObligation("primary")
+			harness.installCandidates(kind, async () => {
+				for (let read = 0; read < 5; read++) await harness.task.getCompletionGateDecision()
+			})
+
+			await harness.run()
+
+			harness.assertRecoverableStop()
+			expect(harness.requests).toHaveLength(MAX_UNVERIFIED_COMPLETION_ATTEMPTS)
+			expect(harness.task.getCompletionStageMetrics()).toMatchObject({
+				candidateCount: MAX_UNVERIFIED_COMPLETION_ATTEMPTS,
+				rejectionCount: MAX_UNVERIFIED_COMPLETION_ATTEMPTS,
+				runtimeWaitMs: 0,
+			})
+			await harness.assertDurableObligationPending("primary")
+		},
+	)
+
+	it.each(["text", "explicit"] as const)(
+		"gives fresh user guidance a new %s rejection budget within the same task loop",
+		async (kind) => {
+			const harness = await setup(kind)
+			await harness.addAppliedObligation("primary")
+			const guidance = "Use the documented verification procedure, then reassess the result."
+			harness.ask.mockImplementationOnce(async (type) => {
+				expect(type).toBe("resume_task")
+				return { response: "messageResponse", text: guidance, images: [] }
+			})
+
+			await harness.run()
+
+			harness.assertRecoverableStop()
+			expect(harness.requests).toHaveLength(MAX_UNVERIFIED_COMPLETION_ATTEMPTS * 2)
+			expect(JSON.stringify(harness.requests[MAX_UNVERIFIED_COMPLETION_ATTEMPTS])).toContain(guidance)
+			expect(harness.ask).toHaveBeenCalledTimes(2)
+			await harness.assertDurableObligationPending("primary")
+		},
+	)
+
+	it.each(["text", "explicit"] as const)(
+		"bounds %s completion candidates despite interleaved unrelated successful reads",
+		async (kind) => {
+			const harness = await setup(kind)
+			await harness.addAppliedObligation("primary")
+			harness.installCandidates(kind, undefined, true)
+
+			await harness.run()
+
+			harness.assertRecoverableStop()
+			expect(harness.requests).toHaveLength(MAX_UNVERIFIED_COMPLETION_ATTEMPTS * 2 - 1)
+			expect(
+				harness.events.filter((event) => event.type === "tool_result" && event.name === "list_files"),
+			).toHaveLength(2)
+			await harness.assertDurableObligationPending("primary")
+		},
+	)
+
+	it.each(["text", "explicit"] as const)(
+		"bounds explicitly scoped verification attempts that leave a rejected %s completion candidate unverified",
+		async (kind) => {
+			const harness = await setup(kind)
+			await harness.addAppliedObligation("primary")
+			harness.installCandidates(kind, undefined, "repair-verification")
+
+			await harness.run()
+
+			harness.assertRecoverableStop()
+			expect(harness.requests).toHaveLength(1 + MAX_UNCHANGED_REPAIR_TOOLS)
+			expect(harness.task.getCompletionStageMetrics()).toMatchObject({
+				candidateCount: 1,
+				rejectionCount: 1,
+				repairToolCount: MAX_UNCHANGED_REPAIR_TOOLS,
+				blockedAt: expect.any(Number),
+				settledUsage: harness.task.getTokenUsage(),
+				lastReasonCode: "repair_limit",
+			})
+			expect(
+				harness.events.filter(
+					(event) =>
+						event.type === "tool_result" && event.name === "execute_command" && event.status === "success",
+				),
+			).toHaveLength(MAX_UNCHANGED_REPAIR_TOOLS)
+			await harness.assertDurableObligationPending("primary")
+		},
+	)
+
+	it.each(["text", "explicit"] as const)(
+		"keeps the unchanged worker repair budget through unrelated concurrent edits after %s rejection",
+		async (kind) => {
+			const harness = await setup(kind)
+			await harness.addAppliedObligation("worker")
+			harness.installCandidates(
+				kind,
+				async (step) => {
+					if (step > 1) await harness.addAppliedObligation("primary", [`src/unrelated-${step}.ts`])
+				},
+				"repair-verification",
+				CHANGE_SET_ID,
+			)
+
+			await harness.run()
+
+			harness.assertRecoverableStop()
+			expect(harness.requests).toHaveLength(1 + MAX_UNCHANGED_REPAIR_TOOLS)
+			await harness.assertDurableObligationPending("worker")
+			expect(harness.store.getVerificationObligations({ parentTaskId: TASK_ID })).toContainEqual(
+				expect.objectContaining({ changeSetId: PRIMARY_CHANGE_SET_ID, changedFiles: expect.any(Array) }),
+			)
+		},
+	)
+
+	it.each([
+		["text", "changed"],
+		["explicit", "changed"],
+		["text", "discovered caller/dependency"],
+		["explicit", "discovered caller/dependency"],
+	] as const)("allows %s completion after more than eight distinct %s reads", async (kind, scope) => {
+		const harness = await setup(kind)
+		const files = Array.from({ length: 10 }, (_, index) =>
+			scope === "changed" ? `src/changed-${index}.ts` : `callers/dependency-${index}.ts`,
+		)
+		const changedFiles = scope === "changed" ? files : ["src/changed.ts"]
+		await harness.addAppliedObligation("primary", changedFiles)
+		const obligation = harness.store.getVerificationObligations({ parentTaskId: TASK_ID })[0]
+		expect(Object.keys(obligation.fileVersions ?? {})).toEqual(changedFiles)
+		harness.installCandidates(
+			kind,
+			async (step) => {
+				if (scope !== "changed" && step === 2) {
+					// Newly discovered callers are outside the mutation receipt's initial scope.
+					await fs.mkdir(path.join(harness.storagePath, "callers"), { recursive: true })
+					for (const file of files)
+						await fs.writeFile(
+							path.join(harness.storagePath, file),
+							'import { changed } from "../src/changed"\nexport const caller = () => changed\n',
+						)
+				}
+				if (step !== files.length + 2) return
+				await harness.store.recordParentVerificationEvidence(
+					TASK_ID,
+					[
+						{
+							toolCallId: "scoped-verification",
+							executionId: "scoped-verification-execution",
+							status: "succeeded",
+							command: "pnpm check-types",
+							cwd: harness.storagePath,
+							verificationChangeSetIds: [PRIMARY_CHANGE_SET_ID],
+							verificationVersions: {
+								[PRIMARY_CHANGE_SET_ID]: {
+									contentVersion: obligation.contentVersion!,
+									contentFingerprint: obligation.contentFingerprint!,
+									scopePath: harness.storagePath,
+									matchedFiles: changedFiles,
+									commandDigest: fingerprintContent("pnpm check-types"),
+									repositoryDigest: fingerprintContent(changedFiles.join("\n")),
+									kind: "types",
+								},
+							},
+							startedAt: 3_000,
+							completedAt: 4_000,
+							exitCode: 0,
+						},
+					],
+					TASK_ID,
+				)
+			},
+			files,
+		)
+
+		await harness.run()
+
+		expect(harness.guardTriggered()).toBe(false)
+		for (const event of harness.events) {
+			if (event.type === "tool_result" && event.name === "read_file") {
+				expect(event, "Each relevant read must succeed before it can count as repair progress").toMatchObject({
+					status: "success",
+				})
+			}
+		}
+		expect(harness.requests).toHaveLength(files.length + 2)
+		expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+		expect(
+			harness.events.filter((event) => event.type === "tool_result" && event.name === "read_file"),
+		).toHaveLength(files.length)
+		expect(harness.store.getParentCompletionDecision(TASK_ID, TASK_ID).allowed).toBe(true)
+		expect(harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted)).toHaveLength(1)
+	})
+
 	it.each(["active descendant", "unconsumed result"] as const)(
-		"bounds repeated text completion claims blocked by an %s without file-verification debt",
+		"handles text completion blocked by an %s without file-verification debt",
 		async (blocker) => {
-			const harness = await setup("text")
+			const harness = await setup("text", blocker === "active descendant")
 			harness.useManagedCompletionDecision()
 			if (blocker === "active descendant") {
 				await harness.store.createAgent({
@@ -410,7 +972,26 @@ describe("Stage Three durable completion integration", () => {
 				message: expect.stringContaining(blocker === "active descendant" ? "still active" : "unconsumed"),
 			})
 
-			await harness.run()
+			if (blocker === "active descendant") {
+				const { running } = await observePendingCandidate(harness)
+				try {
+					await vi.advanceTimersByTimeAsync(60_000)
+					harness.assertNotCompleted()
+					expect(harness.requests).toHaveLength(1)
+					expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+				} finally {
+					await harness.store.updateAgentStatus("active-managed-child", "completed", {}, TASK_ID)
+					await vi.advanceTimersByTimeAsync(1_000)
+					await running
+				}
+				expect(harness.requests).toHaveLength(1)
+				expect(
+					harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted),
+				).toHaveLength(1)
+				return
+			} else {
+				await harness.run()
+			}
 
 			harness.assertRecoverableStop()
 			expect(harness.requests.length).toBeLessThanOrEqual(MAX_UNVERIFIED_COMPLETION_ATTEMPTS)
@@ -421,15 +1002,9 @@ describe("Stage Three durable completion integration", () => {
 			).toHaveLength(0)
 			const persisted = agentControlStateSchema.parse(await harness.persistence.read())
 			expect(persisted.verificationObligations).toEqual([])
-			if (blocker === "active descendant") {
-				expect(persisted.agents).toContainEqual(
-					expect.objectContaining({ taskId: "active-managed-child", status: "running" }),
-				)
-			} else {
-				const result = persisted.mailbox.find((entry) => entry.eventId === "unconsumed-managed-result")
-				expect(result).toBeDefined()
-				expect(result?.acknowledgedAt).toBeUndefined()
-			}
+			const result = persisted.mailbox.find((entry) => entry.eventId === "unconsumed-managed-result")
+			expect(result).toBeDefined()
+			expect(result?.acknowledgedAt).toBeUndefined()
 		},
 	)
 

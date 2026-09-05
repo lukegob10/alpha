@@ -17,6 +17,8 @@ export interface ParentCompletionDecision {
 	allowed: boolean
 	blockingObligations: ParentVerificationObligation[]
 	message?: string
+	activeDescendantCount?: number
+	unconsumedResultCount?: number
 }
 
 export const parentVerificationObligationId = (changeSetId: string): string => `worker-change:${changeSetId}`
@@ -98,7 +100,7 @@ export function decideParentCompletion(obligations: readonly ParentVerificationO
 	const details = blockingObligations.map((item) => {
 		const worker = item.workerPath ? `${item.workerNickname} (${item.workerPath})` : item.workerNickname
 		const failure = item.status === "failed" ? "; the latest scoped verification command failed" : ""
-		return `${worker}, change set ${item.changeSetId} (${item.changedFiles.length} file${item.changedFiles.length === 1 ? "" : "s"})${failure}; needs ${missingVerification(item)}`
+		return `${worker}, change set ${item.changeSetId}, content version ${item.contentVersion ?? "legacy"} (${item.changedFiles.length} file${item.changedFiles.length === 1 ? "" : "s"})${failure}; needs ${missingVerification(item)}`
 	})
 	const count = blockingObligations.length
 	return {
@@ -107,7 +109,11 @@ export function decideParentCompletion(obligations: readonly ParentVerificationO
 		message:
 			`Cannot complete while ${count} applied change set${count === 1 ? "" : "s"} ` +
 			`await${count === 1 ? "s" : ""} parent verification. ` +
-			`Run a genuine verification command in the owning task and name each covered change set in verification.change_set_ids, then report the outcome. If validation is unavailable, report an explicit blocked or unverified outcome with the missing evidence. ` +
+			(blockingObligations.some((item) => item.scopeUnresolved)
+				? "Validation is unavailable because the mutation scope could not be captured. Report the completed work and this missing evidence as an explicit blocked/unverified outcome. "
+				: blockingObligations.some((item) => item.mutationReservations?.length)
+					? "An admitted mutation still needs its durable content receipt. Let the runtime settle that receipt before selecting another verification command. "
+					: "Run the missing supported checks in the owning task for the current content version and include the exact covered IDs in verification.change_set_ids. Reuse accepted checks; if validation is unavailable, report an explicit blocked/unverified outcome with the missing evidence. ") +
 			`Needs attention: ${details.join("; ")}.`,
 	}
 }

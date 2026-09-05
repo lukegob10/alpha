@@ -73,6 +73,13 @@ describe("attemptCompletionTool", () => {
 		vi.mocked(vscode.workspace.getConfiguration).mockImplementation(mockGetConfiguration)
 
 		mockTask = {
+			recordCompletionCandidate: vi.fn(),
+			recordCompletionRejection: vi.fn((decision) => decision),
+			waitForCompletionGateDecision: vi.fn(async () => {
+				const todos = mockTask.getOpenTodoCompletionDecision?.()
+				if (todos) return todos
+				return mockTask.getCompletionGateDecision!()
+			}),
 			consecutiveMistakeCount: 0,
 			recordToolError: vi.fn(),
 			todoList: undefined,
@@ -146,6 +153,13 @@ describe("attemptCompletionTool", () => {
 		;(mockTask as any).taskKind = "subagent"
 		;(mockTask as any).subagentRole = "worker"
 		mockTask.hasActiveCommandExecutions = vi.fn().mockReturnValue(true)
+		mockTask.waitForCompletionGateDecision = vi.fn().mockResolvedValue({
+			allowed: false,
+			classification: "blocked",
+			reasonCode: "runtime_timeout",
+			modelCanResolveRejection: false,
+			message: "The command is still running after the runtime settlement deadline.",
+		})
 		const callbacks: AttemptCompletionCallbacks = {
 			askApproval: mockAskApproval,
 			handleError: mockHandleError,
