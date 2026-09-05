@@ -60,6 +60,77 @@ Acceptance, declared before integrating runtime edits:
 The proposed broad 25% tool/command and 20% input-token improvements remain unproven. The chosen interventions remove
 local request-preparation work; outgoing request tokens and fixed model decisions are expected to stay unchanged.
 
+## Final paired result
+
+The clean reference was measurement-only commit `78e6139c082f7fd8bb30aabebb367734e19d566f`, with production unchanged
+from `8b574a6`. The clean candidate was merge `e1ca2c78c6bc24ff7072292ecd379b492c255761`, preserving both the
+measurement commit and implementation tip `f82e939bbd9dfe0267734f0ef299ec18c67b6141` (including `7600788`). The
+loaded measurement source, fixture, runtime, configuration, and cache protocol identities matched. Both used Node
+20.19.2/pnpm 10.8.1 in the same isolated checkout. No comparative elapsed-time window was used.
+
+All **nine paired continuations passed**. Every sample reduced catalog-builder calls **2 to 1** and actual native-schema
+factory executions **2 to 1**. The factory runs inside a catalog cache miss; this establishes removed schema-building work
+in the declared fresh-catalog workload, rather than only fewer wrapper entries. Every other sample field was exactly equal:
+logical request/schema digests, request bytes, local estimates, output bytes, quality, and model/tool/command counts.
+This is not a claim of 50% faster requests. The reports omit elapsed times.
+
+| MCP catalog | Samples per side | Catalog calls, before → after | Schema factories, before → after | Schema bytes, both | Local schema estimate, both |
+| ----------- | ---------------: | ----------------------------- | -------------------------------- | -----------------: | --------------------------: |
+| None        |                3 | 2 → 1                         | 2 → 1                            |             33,033 |                      10,665 |
+| Small       |                3 | 2 → 1                         | 2 → 1                            |             34,204 |                      11,034 |
+| Large       |                3 | 2 → 1                         | 2 → 1                            |             33,676 |                      10,868 |
+
+Each continuation made one provider request, emitted no tools, and ran no commands. System text was 90 bytes / 23 local
+estimated tokens; messages were 398 bytes / 155 local estimated tokens; response text was 47 bytes. The provider fixture
+does not measure usage. Large MCP catalogs retain the existing deferred-discovery behavior, explaining their smaller
+outgoing schema than a fully expanded catalog. The complete [reference](benchmarks/nor36-preflight-reference-20260905.json),
+[candidate](benchmarks/nor36-preflight-candidate-20260905.json), and
+[admission result](benchmarks/nor36-preflight-comparison-20260905.json) contain only allowlisted counters and identities.
+
+All **42 engine observations** (seven classes × three invocations × two revisions) passed. For each class, the six
+existing reports were exactly equal after excluding only source revision. The
+[engine evidence](benchmarks/nor36-engine-oracle-pair-20260905.json) retains the equal metrics once per class and the six
+original report hashes. Provider usage, completion-stage observations, and timing remain unavailable where unobserved.
+
+| Class                    | Model requests | Tool results | Commands | Tool-output bytes | Discovery / implementation / validation / finalization tools |
+| ------------------------ | -------------: | -----------: | -------: | ----------------: | ------------------------------------------------------------ |
+| Conversation             |              1 |            0 |        0 |                 0 | 0 / 0 / 0 / 0                                                |
+| Narrow lookup            |              2 |            1 |        0 |                36 | 1 / 0 / 0 / 0                                                |
+| Small edit               |              4 |            3 |        1 |               171 | 1 / 1 / 1 / 0                                                |
+| Cross-component bug      |              6 |            5 |        1 |               534 | 2 / 2 / 1 / 0                                                |
+| Security change          |              4 |            3 |        1 |               178 | 1 / 1 / 1 / 0                                                |
+| Comprehensive audit      |              6 |            5 |        0 |               856 | 5 / 0 / 0 / 0                                                |
+| Stale-context escalation |              6 |            5 |        1 |               391 | 2 / 2 / 1 / 0                                                |
+
+Each has one finalization request. The escalation fixture retains its stale rejection, reread, successful retry, external
+content, required check, and two recovery tools. Reported repetitions/check reruns are zero under the existing fixture
+fingerprints. Those fingerprints are not a production evidence-reuse contract. The audit oracle remains a seeded fixture
+check, not an independent judgment of arbitrary model findings.
+
+Independent review found no blocking issue in the production compaction or instruction changes. The candidate's exact
+instruction snapshots and eight discovery cases passed in this lane; the implementation lane's measured scan counts
+were 5 → 1 with AGENTS enabled, 4 → 1 with AGENTS disabled/injected, and 0 with subfolder rules disabled. This lane did
+not independently rerun those new instruction fixtures against the old implementation. Their baseline attribution
+remains explicitly with the implementation lane; no broad default-path or instruction-token reduction is claimed.
+
+An earlier candidate run had identical passing results but a concurrent snapshot suite rewrote CRLF to LF, marking
+the working tree modified despite an empty Git content diff. That run was excluded from final pairing. The content-identical
+snapshot index was refreshed and final measurements ran again without that suite. No snapshot content was updated.
+
+Validation in this lane: 121 focused instruction/lazy-metadata/Task-compaction/retained-retry tests passed on the candidate;
+all reported engine and preflight observations passed; 86 reporter/admission tests and explicit touched-file ESLint passed.
+The measurement-only checkpoint passed its augmented source/benchmark typecheck; final production type validation is
+recorded centrally below. Formatting and staged `pnpm exec lint-staged` passed. Commit creation disabled the hook wrapper
+because it invokes `npx`, contrary to the pnpm-only contract.
+
+The orchestrator reports central `pnpm lint` (12/12 packages), `pnpm check-types` (13/13), and exact
+`pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` passing on clean `f82e939`. It verified that the merged candidate's
+production directories are byte-identical to that source. These local setup changes do not alter managed-agent contracts;
+no fresh full managed-agent certification was required. No live-model, provider-token, or useful-answer latency result
+was established, and the broader NOR-36/NOR-31 acceptance remains open.
+The tested extension bundle SHA-256 was
+`209a28cc8544a159f4997a3d0d389c0731d259a07f92ee976439b9607205d7cd` (runner-declared central artifact identity).
+
 ## Paired evidence admission
 
 The small [comparison helper](../scripts/evals/proportional-scope-compare.mjs) admits only complete seven-class sample

@@ -3,7 +3,7 @@ import test from "node:test"
 import fs from "node:fs/promises"
 import { URL } from "node:url"
 import { buildReport } from "./proportional-scope-report.mjs"
-import { compareReports } from "./proportional-scope-compare.mjs"
+import { compareReports, comparePreflightReports } from "./proportional-scope-compare.mjs"
 
 const fixtureIds = JSON.parse(
 	await fs.readFile(new URL("../../evals/proportional-scope/cases.json", import.meta.url), "utf8"),
@@ -155,3 +155,100 @@ test("compares only completely observed canonical provider usage, leaving partia
 	assert.equal(result.samples[0].providerTokens.tokensOut.value, null)
 	assert.equal(result.samples[0].providerTokens.cacheWrites.value, null)
 })
+
+function preflight(candidate = false) {
+	return {
+		schemaVersion: 1,
+		benchmark: "nor36-production-request-preflight",
+		revision: (candidate ? "b" : "a").repeat(40),
+		workingTree: "clean",
+		node: "v20.19.2",
+		harnessDigest: hash,
+		fixtureDigest: hash,
+		configuration: "fixture-profile",
+		cache: "fresh task; shared tokenizer; disabled provider cache",
+		boundary: "production request preflight with injected provider",
+		tokenMethod: "local estimator, not provider usage",
+		providerTokens: null,
+		wholeTaskCompletion: null,
+		timeToUsefulAnswerMs: null,
+		samples: ["none", "small", "large"].flatMap((catalog) =>
+			[0, 1, 2].map((sampleIndex) => ({
+				catalog,
+				sampleIndex,
+				catalogBuildCalls: candidate ? 1 : 2,
+				nativeSchemaFactoryCalls: candidate ? 1 : 2,
+				providerRequests: 1,
+				emittedToolCalls: 0,
+				commandsExecuted: 0,
+				inputBytes: { system: 10, messages: 20, schemas: 30 },
+				localInputTokenEstimates: { system: 4, messages: 8, schemas: 12 },
+				outputTextBytes: 40,
+				requestDigest: hash,
+				toolSchemaDigest: hash,
+				quality: "request-and-response-parity-passed",
+				providerTokens: null,
+			})),
+		),
+	}
+}
+
+test("admits the exact nine paired preflight samples, independent of delivery order", () => {
+	const candidate = preflight(true)
+	candidate.samples.reverse()
+	const result = comparePreflightReports(preflight(), candidate)
+	assert.equal(result.acceptedSamples, 9)
+	assert.deepEqual(result.catalogBuildCalls, { reference: 18, candidate: 9 })
+	assert.deepEqual(result.nativeSchemaFactoryCalls, { reference: 18, candidate: 9 })
+	assert.equal(result.providerTokens, null)
+	assert.equal(result.wholeTaskCompletion, null)
+	assert.equal(result.timeToUsefulAnswerMs, null)
+	assert.doesNotMatch(JSON.stringify(result), /localInputTokenEstimates|inputBytes|fixture-profile/)
+})
+
+for (const field of ["node", "harnessDigest", "fixtureDigest", "configuration", "cache", "boundary", "tokenMethod"]) {
+	test(`preflight rejects changed or missing ${field}`, () => {
+		const candidate = preflight(true)
+		candidate[field] = "changed"
+		assert.throws(() => comparePreflightReports(preflight(), candidate), /not admitted/)
+		delete candidate[field]
+		assert.throws(() => comparePreflightReports(preflight(), candidate), /not admitted/)
+	})
+}
+
+for (const [label, mutate] of [
+	["dirty source", (value) => (value.workingTree = "modified")],
+	["invalid revision", (value) => (value.revision = "unknown")],
+	["wrong schema", (value) => (value.schemaVersion = 2)],
+	["wrong benchmark", (value) => (value.benchmark = "other")],
+	["missing sample", (value) => value.samples.pop()],
+	["duplicate sample", (value) => (value.samples[0] = value.samples[1])],
+	["invalid sample ordinal", (value) => (value.samples[0].sampleIndex = 3)],
+	["invalid catalog", (value) => (value.samples[0].catalog = "unknown")],
+	["quality failure", (value) => (value.samples[0].quality = "failed")],
+	["provider usage claim", (value) => (value.providerTokens = 0)],
+	["sample provider usage claim", (value) => (value.samples[0].providerTokens = 0)],
+	["whole task claim", (value) => (value.wholeTaskCompletion = true)],
+	["time claim", (value) => (value.timeToUsefulAnswerMs = 0)],
+	["request digest mismatch", (value) => (value.samples[0].requestDigest = "b".repeat(64))],
+	["schema digest mismatch", (value) => (value.samples[0].toolSchemaDigest = "b".repeat(64))],
+	["byte mismatch", (value) => value.samples[0].inputBytes.schemas++],
+	["local token mismatch", (value) => value.samples[0].localInputTokenEstimates.messages++],
+	["invalid byte count", (value) => (value.samples[0].inputBytes.system = -1)],
+	["invalid token count", (value) => (value.samples[0].localInputTokenEstimates.system = 0.5)],
+	["output mismatch", (value) => value.samples[0].outputTextBytes++],
+	["provider continuation", (value) => value.samples[0].providerRequests++],
+	["emitted tool", (value) => value.samples[0].emittedToolCalls++],
+	["physical command", (value) => value.samples[0].commandsExecuted++],
+	["build count", (value) => value.samples[0].catalogBuildCalls++],
+	["schema factory count", (value) => value.samples[0].nativeSchemaFactoryCalls++],
+]) {
+	test(`preflight rejects ${label} in either run`, () => {
+		const reference = preflight()
+		mutate(reference)
+		assert.throws(() => comparePreflightReports(reference, preflight(true)), /not admitted/)
+		const candidate = preflight(true)
+		mutate(candidate)
+		assert.throws(() => comparePreflightReports(preflight(), candidate), /not admitted/)
+	})
+}

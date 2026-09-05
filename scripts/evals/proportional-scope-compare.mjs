@@ -139,3 +139,93 @@ export function compareReports(reference, candidate, contract) {
 		samples,
 	}
 }
+
+/** Admit the bounded production preflight experiment, preserving its deliberately unavailable whole-task evidence. */
+export function comparePreflightReports(reference, candidate) {
+	const catalogs = ["none", "small", "large"]
+	const identities = ["node", "harnessDigest", "fixtureDigest", "configuration", "cache", "boundary", "tokenMethod"]
+	const unavailable = ["providerTokens", "wholeTaskCompletion", "timeToUsefulAnswerMs"]
+	const runs = [reference, candidate].map((report, role) => {
+		requireCondition(
+			report?.benchmark === "nor36-production-request-preflight" && report.schemaVersion === 1,
+			"unsupported preflight report",
+		)
+		requireCondition(
+			report.workingTree === "clean" && digest(report.revision, 40),
+			"clean preflight source required",
+		)
+		for (const field of identities) {
+			requireCondition(
+				typeof report[field] === "string" && report[field].length > 0,
+				`missing preflight ${field}`,
+			)
+			requireCondition(reference[field] === report[field], `preflight ${field} mismatch`)
+		}
+		requireCondition(/^v\d+\.\d+\.\d+$/.test(report.node), "invalid Node identity")
+		requireCondition(digest(report.harnessDigest) && digest(report.fixtureDigest), "invalid preflight digest")
+		for (const field of unavailable)
+			requireCondition(report[field] === null, `preflight ${field} must remain unavailable`)
+		requireCondition(
+			Array.isArray(report.samples) && report.samples.length === 9,
+			"exactly nine preflight samples required",
+		)
+		const samples = new Map()
+		for (const sample of report.samples) {
+			requireCondition(
+				catalogs.includes(sample?.catalog) && [0, 1, 2].includes(sample.sampleIndex),
+				"invalid preflight sample",
+			)
+			const key = `${sample.catalog}:${sample.sampleIndex}`
+			const left =
+				role === 0 ? sample : reference.samples.find((row) => `${row.catalog}:${row.sampleIndex}` === key)
+			requireCondition(!samples.has(key), "duplicate preflight sample")
+			requireCondition(sample.quality === "request-and-response-parity-passed", "preflight quality failed")
+			requireCondition(sample.providerTokens === null, "preflight sample provider usage must remain unavailable")
+			for (const [field, expected] of Object.entries({
+				providerRequests: 1,
+				emittedToolCalls: 0,
+				commandsExecuted: 0,
+				catalogBuildCalls: role === 0 ? 2 : 1,
+				nativeSchemaFactoryCalls: role === 0 ? 2 : 1,
+			})) {
+				requireCondition(sample[field] === expected, `preflight ${field} acceptance failed`)
+			}
+			for (const field of ["requestDigest", "toolSchemaDigest"]) {
+				requireCondition(digest(sample[field]), `invalid preflight ${field}`)
+				requireCondition(left?.[field] === sample[field], `preflight ${field} parity failed`)
+			}
+			for (const field of ["inputBytes", "localInputTokenEstimates"]) {
+				for (const part of ["system", "messages", "schemas"]) {
+					requireCondition(
+						integer(sample[field]?.[part]) && sample[field][part] === left?.[field]?.[part],
+						`preflight ${field}.${part} parity failed`,
+					)
+				}
+			}
+			requireCondition(
+				integer(sample.outputTextBytes) && sample.outputTextBytes === left?.outputTextBytes,
+				"preflight output parity failed",
+			)
+			samples.set(key, sample)
+		}
+		return samples
+	})
+	return {
+		schemaVersion: 1,
+		benchmark: "nor36-production-request-preflight",
+		admitted: true,
+		acceptedSamples: runs[0].size,
+		catalogs: catalogs.length,
+		referenceRevision: reference.revision,
+		candidateRevision: candidate.revision,
+		harnessDigest: reference.harnessDigest,
+		fixtureDigest: reference.fixtureDigest,
+		catalogBuildCalls: { reference: 18, candidate: 9 },
+		nativeSchemaFactoryCalls: { reference: 18, candidate: 9 },
+		providerTokens: null,
+		wholeTaskCompletion: null,
+		timeToUsefulAnswerMs: null,
+		interpretation:
+			"Request/response parity and local operation counts only; no speed, model-strategy or provider-token claim",
+	}
+}
