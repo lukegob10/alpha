@@ -77,15 +77,44 @@ the affected global storage, confirm no owner can resume, remove only `agent_con
 Alpha. Preserve `agent_control.json` and all recovery tombstones. Restart all participating hosts when upgrading the
 recovery protocol: an older binary still running the two-destination reaper cannot be made safe by a newer contender.
 
+## Release notifications under sustained contention
+
+NOR-35's original-buffer acceptance workload at `4d5ca37a83036faff20f0030e7a2537c4e47f7db` exposed three 30-second
+acquisition failures among 238 transactions with 5,000 retained children and two writer processes. Successful holds were
+at most 1,196 ms; only six transactions observed contention. This supports repeated acquisition by one healthy process
+while another slept through brief release windows, rather than a single 30-second holder. The failed report remains
+failure evidence in NOR-35's `docs/benchmarks/nor35-baseline-failed-acquisition.json`; no comparison uses it as a successful
+baseline.
+
+Fixed polling can miss every opportunity: after attempts at 0, 50, 150, 350 and 750 ms, a 400 ms interval never samples
+one-millisecond release windows at each whole second. The former implementation also slept when its ownership probe
+already observed that the canonical lock had disappeared. Two controlled regressions fail against the former source
+with polling timers frozen: neither a release event nor a known absent lock admits the waiting transaction.
+
+After the first failed `mkdir`, acquisition now creates one nonpersistent watcher on the lock's stable parent directory
+and immediately retries. Canonical lock-name events, or events with an unavailable filename, shorten the polling wait;
+notifications received during ownership probes are coalesced. Events are only retry hints: atomic `mkdir`, ownership
+publication, commit fences, recovery rules, cancellation, and the absolute acquisition budget remain authoritative.
+A known absent lock gets an immediate retry; consecutive absent-lock races enter a bounded, interruptible polling wait.
+Uncontended transactions create no watcher. Watch errors, early closure, unsupported filesystems, and missing events
+retain timer polling, and every acquisition exit closes its watcher and clears its pending timer and abort listener.
+
+This corrects missed release notifications without adding persisted waiter tickets or claiming cross-process FIFO or
+starvation freedom. Deterministic regressions and actual process contention coverage accompany the change; NOR-35 must
+rerun its complete acceptance matrix before freezing a replacement baseline. Primary source retrieved September 5, 2026:
+Node 20.19.2 [filesystem watcher contract and platform caveats](https://nodejs.org/download/release/v20.19.2/docs/api/fs.html#fswatchfilename-options-listener).
+
 ## JSON stream completion
 
 An exploratory NOR-35 two-process reserve/settle workload reported a Windows `EPERM` during atomic JSON replacement,
 with `committed: false`. Investigation exposed a separate deterministic lifecycle defect: the JSON writer resolved on
 `finish` while its file descriptor could still be closing. A regression holding the real `fs.close` callback behind a
-barrier reproduced the premature commit. The writer now awaits `stream/promises.pipeline`, which settles stream cleanup
-before committing or removing the temporary file. Serializer construction also precedes opening the destination because
-a root `toJSON` method can throw synchronously. Error regressions cover serializer construction, streaming serialization,
-filesystem write, and close failures; each preserves the prior target and prevents commit.
+barrier reproduced the premature commit. The writer now awaits `stream/promises.pipeline` and explicitly joins the owned
+destination's `close` event in `finally`. Combined validation exposed that a source serialization error can reject the
+pipeline before destination destruction finishes; a second close-barrier regression prevents cleanup from racing that
+descriptor on rejection. Serializer construction also precedes opening the destination because a root `toJSON` method
+can throw synchronously. Error regressions cover serializer construction, streaming serialization, filesystem write, and
+close failures; each preserves the prior target and prevents commit.
 
 This closes a verified lifecycle gap; it does not establish the cause of the exploratory `EPERM`. Node 20.19.2's Windows
 libuv opens ordinary files with delete sharing, so an outstanding Node file handle alone does not prove that rename must
@@ -95,7 +124,8 @@ rerun before NOR-35 freezes its baseline; a successful rerun alone is not proof 
 Primary sources retrieved September 5, 2026: Node 20.19.2
 [pipeline completion contract](https://nodejs.org/download/release/v20.19.2/docs/api/stream.html#streampipelinesource-transforms-destination-callback),
 [file stream close defaults](https://nodejs.org/download/release/v20.19.2/docs/api/fs.html#fscreatewritestreampath-options),
-and [Windows libuv file operations](https://raw.githubusercontent.com/nodejs/node/v20.19.2/deps/uv/src/win/fs.c).
+the [pipeline error path](https://raw.githubusercontent.com/nodejs/node/v20.19.2/lib/internal/streams/pipeline.js), and
+[Windows libuv file operations](https://raw.githubusercontent.com/nodejs/node/v20.19.2/deps/uv/src/win/fs.c).
 The synchronous serializer construction behavior was checked against installed `json-stream-stringify` 3.1.6 source.
 
 ## Command outcomes and validation

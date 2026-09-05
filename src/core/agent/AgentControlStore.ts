@@ -14,12 +14,12 @@ import {
 	createTransactionDiagnostic,
 	logTransactionDiagnostic,
 	throwIfTransactionCancelled,
-	waitForTransactionRetry,
 	type AgentControlOperation,
 	type AgentControlTransactionDiagnostic,
 	type AgentControlTransactionOptions,
 	type FileAgentControlPersistenceOptions,
 } from "./AgentControlTransaction"
+import { AgentControlLockWaiter } from "./AgentControlLockWaiter"
 
 export { AgentControlTransactionError } from "./AgentControlTransaction"
 export type {
@@ -479,52 +479,88 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 			pid: process.pid,
 			operation: diagnostic.operation,
 		}
-		for (let attempt = 0; ; attempt++) {
-			throwIfTransactionCancelled(options.signal)
-			if (performance.now() >= deadline) {
-				if (diagnostic.ownerState === "legacy" || diagnostic.ownerState === "unreadable") {
+		let waiter: AgentControlLockWaiter | undefined
+		let retriedAbsentLock = false
+		try {
+			for (let attempt = 0; ; attempt++) {
+				const checkpoint = waiter?.checkpoint() ?? 0
+				throwIfTransactionCancelled(options.signal)
+				if (performance.now() >= deadline) {
+					if (diagnostic.ownerState === "legacy" || diagnostic.ownerState === "unreadable") {
+						throw new AgentControlTransactionError(
+							"Agent control lock ownership cannot be verified. Close all Alpha extension hosts using this global storage, then remove only agent_control.json.transaction.lock and reopen Alpha. Do not remove it while any host is running.",
+							diagnostic.ownerState === "legacy" ? "ELOCKLEGACY" : "ELOCKOWNER",
+						)
+					}
 					throw new AgentControlTransactionError(
-						"Agent control lock ownership cannot be verified. Close all Alpha extension hosts using this global storage, then remove only agent_control.json.transaction.lock and reopen Alpha. Do not remove it while any host is running.",
-						diagnostic.ownerState === "legacy" ? "ELOCKLEGACY" : "ELOCKOWNER",
+						"Agent control bookkeeping is busy; transaction acquisition wait expired (no operation was started)",
+						"ELOCKED",
 					)
 				}
-				throw new AgentControlTransactionError(
-					"Agent control bookkeeping is busy; transaction acquisition wait expired (no operation was started)",
-					"ELOCKED",
-				)
-			}
-			diagnostic.attempts++
-			if (await this.tryCreateTransactionLock(owner, options.signal)) return
-			const observed = await this.observeTransactionLockForAcquisition()
-			if (observed === "legacy" || observed === "unreadable") {
-				diagnostic.ownerState = observed
-				delete diagnostic.ownerPid
-				delete diagnostic.ownerOperation
-				// mkdir reserves ownership before metadata publication. A contender
-				// must tolerate that brief window, but cannot recover it by age.
-				await waitForTransactionRetry(Math.max(0, Math.min(400, deadline - performance.now())), options.signal)
-				continue
-			}
-			diagnostic.ownerPid = observed?.pid
-			diagnostic.ownerOperation = observed?.operation
-			diagnostic.ownerState = observed ? "live" : "none"
-			if (
-				observed &&
-				(this.releasedTransactionToken === observed.token ||
-					(await this.isTransactionLockMarkedReleased(this.transactionLockPath, observed.token)))
-			) {
-				diagnostic.ownerState = "released"
-				if (await this.tryReapReleasedTransactionLock(observed)) {
-					if (this.releasedTransactionToken === observed.token) this.releasedTransactionToken = undefined
+				diagnostic.attempts++
+				if (await this.tryCreateTransactionLock(owner, options.signal)) return
+				if (!waiter) {
+					waiter = new AgentControlLockWaiter(this.transactionLockPath)
+					// Retry after registration so a release before the watcher started
+					// cannot strand us until a later owner's release or polling deadline.
 					continue
 				}
+				const observed = await this.observeTransactionLockForAcquisition()
+				if (observed === "legacy" || observed === "unreadable") {
+					diagnostic.ownerState = observed
+					delete diagnostic.ownerPid
+					delete diagnostic.ownerOperation
+					// mkdir reserves ownership before metadata publication. A contender
+					// must tolerate that brief window, but cannot recover it by age.
+					await waiter.wait(
+						checkpoint,
+						Math.max(0, Math.min(400, deadline - performance.now())),
+						options.signal,
+					)
+					continue
+				}
+				diagnostic.ownerPid = observed?.pid
+				diagnostic.ownerOperation = observed?.operation
+				diagnostic.ownerState = observed ? "live" : "none"
+				// The holder released between mkdir and observation. Do not sleep
+				// through a known admission opportunity while it reacquires the lock.
+				if (!observed) {
+					if (retriedAbsentLock) {
+						// Bound repeated free/mkdir-lost races; a fresh release can still
+						// wake this fallback without spinning on an old notification.
+						await waiter.wait(
+							waiter.checkpoint(),
+							Math.max(0, Math.min(50, deadline - performance.now())),
+							options.signal,
+						)
+					}
+					retriedAbsentLock = !retriedAbsentLock
+					continue
+				}
+				retriedAbsentLock = false
+				if (
+					this.releasedTransactionToken === observed.token ||
+					(await this.isTransactionLockMarkedReleased(this.transactionLockPath, observed.token))
+				) {
+					diagnostic.ownerState = "released"
+					if (await this.tryReapReleasedTransactionLock(observed)) {
+						if (this.releasedTransactionToken === observed.token) this.releasedTransactionToken = undefined
+						continue
+					}
+				}
+				if (!this.isProcessLive(observed.pid)) {
+					diagnostic.ownerState = "dead"
+					if (await this.tryReapTransactionLock(observed)) continue
+				}
+				const delayMs = TRANSACTION_LOCK_RETRY_DELAYS_MS[Math.max(0, attempt - 1)] ?? 400
+				await waiter.wait(
+					checkpoint,
+					Math.max(0, Math.min(delayMs, deadline - performance.now())),
+					options.signal,
+				)
 			}
-			if (observed && !this.isProcessLive(observed.pid)) {
-				diagnostic.ownerState = "dead"
-				if (await this.tryReapTransactionLock(observed)) continue
-			}
-			const delayMs = TRANSACTION_LOCK_RETRY_DELAYS_MS[attempt] ?? 400
-			await waitForTransactionRetry(Math.max(0, Math.min(delayMs, deadline - performance.now())), options.signal)
+		} finally {
+			waiter?.close()
 		}
 	}
 

@@ -172,19 +172,3 @@ export class AgentControlTransactionQueue {
 		await new Promise<void>((resolve) => this.idleWaiters.add(resolve))
 	}
 }
-
-export async function waitForTransactionRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
-	throwIfTransactionCancelled(signal)
-	await new Promise<void>((resolve, reject) => {
-		const abort = () => {
-			clearTimeout(timer)
-			signal?.removeEventListener("abort", abort)
-			reject(new AgentControlTransactionError("Agent control transaction acquisition was cancelled", "ABORT_ERR"))
-		}
-		const timer = setTimeout(() => {
-			signal?.removeEventListener("abort", abort)
-			resolve()
-		}, delayMs)
-		signal?.addEventListener("abort", abort, { once: true })
-	})
-}
