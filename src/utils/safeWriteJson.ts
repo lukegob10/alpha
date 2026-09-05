@@ -225,10 +225,17 @@ async function _streamDataToFile(targetPath: string, data: any, prettyPrint = fa
 	)
 	// Construct the serializer before opening the file: root toJSON can throw.
 	const fileWriteStream = fsSync.createWriteStream(targetPath, { encoding: "utf8" })
+	const closed = new Promise<void>((resolve) => fileWriteStream.once("close", resolve))
 
 	// finish only means writes were flushed; the owned file descriptor can still
 	// be closing. Settle both streams before committing or cleaning the temp file.
-	await pipeline(stringifyStream, fileWriteStream)
+	try {
+		await pipeline(stringifyStream, fileWriteStream)
+	} finally {
+		// A source error can reject pipeline before destination destruction ends.
+		// Joining close must preserve the original serialization or write error.
+		await closed
+	}
 }
 
 export { safeWriteJson }

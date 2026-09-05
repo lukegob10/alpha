@@ -11,6 +11,11 @@ vi.mock("fs", async () => {
 	return { ...actual, createWriteStream: vi.fn(actual.createWriteStream) }
 })
 
+vi.mock("fs/promises", async () => {
+	const actual = await vi.importActual<typeof import("fs/promises")>("fs/promises")
+	return { ...actual, unlink: vi.fn(actual.unlink) }
+})
+
 const barrier = () => {
 	let resolve!: () => void
 	const promise = new Promise<void>((complete) => {
@@ -120,6 +125,76 @@ describe("safeWriteJson stream close boundary", () => {
 		expect(output?.closed).toBe(true)
 		expect(JSON.parse(await fs.readFile(target, "utf8"))).toEqual({ original: true })
 		expect(await fs.readdir(directory)).toEqual(["state.json"])
+	})
+
+	it("waits for destination close before reporting a source error or cleaning up its temporary file", async () => {
+		const closeStarted = barrier()
+		const finishClose = barrier()
+		const closeCompleted = barrier()
+		let serializationError: unknown
+		vi.mocked(fs.unlink).mockClear()
+		vi.mocked(fsSync.createWriteStream).mockImplementation((filename, options) => {
+			output = actualFs.createWriteStream(filename, {
+				...(typeof options === "string" ? { encoding: options } : options),
+				fs: {
+					open: actualFs.open,
+					write: actualFs.write,
+					writev: actualFs.writev,
+					close: (fd, callback) => {
+						closeStarted.resolve()
+						void finishClose.promise.then(() =>
+							actualFs.close(fd, (error) => {
+								callback(error)
+								closeCompleted.resolve()
+							}),
+						)
+					},
+				},
+			})
+			output.once("error", (error) => {
+				serializationError = error
+			})
+			return output
+		})
+		const circular: { self?: unknown } = {}
+		circular.self = circular
+		const commit = vi.fn((source: string, destination: string) => actualFs.renameSync(source, destination))
+		let settled = false
+		const writing = safeWriteJson(target, circular, {
+			externalTransaction: true,
+			atomicReplace: true,
+			commitTempFile: commit,
+		}).then(
+			() => {
+				settled = true
+			},
+			(error: unknown) => {
+				settled = true
+				return error
+			},
+		)
+
+		try {
+			await closeStarted.promise
+			await setImmediate()
+			expect(settled).toBe(false)
+			expect(output?.closed).toBe(false)
+			expect(fs.unlink).not.toHaveBeenCalled()
+			expect(commit).not.toHaveBeenCalled()
+			expect(await fs.readdir(directory)).toHaveLength(2)
+			expect(JSON.parse(await fs.readFile(target, "utf8"))).toEqual({ original: true })
+			finishClose.resolve()
+			const error = await writing
+			expect(error).toBe(serializationError)
+			expect(error).toMatchObject({ message: "Converting circular structure to JSON" })
+			expect(output?.closed).toBe(true)
+			expect(commit).not.toHaveBeenCalled()
+			expect(JSON.parse(await fs.readFile(target, "utf8"))).toEqual({ original: true })
+			expect(await fs.readdir(directory)).toEqual(["state.json"])
+		} finally {
+			finishClose.resolve()
+			await Promise.all([writing, closeCompleted.promise])
+		}
 	})
 
 	it("does not open a destination stream when root serialization throws synchronously", async () => {
