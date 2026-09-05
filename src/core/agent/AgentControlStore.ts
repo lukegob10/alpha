@@ -841,6 +841,8 @@ export interface ParentCommandVerificationEvidence {
 	status: "running" | "succeeded" | "failed" | "denied" | "cancelled" | "timed_out"
 	exitCode?: number
 	signalName?: string
+	/** Execution-bound pytest collection receipt, validated at physical terminal completion. */
+	testValidation?: boolean
 	startedAt: number
 	completedAt?: number
 	/** Ephemeral command text retained for diagnostics, never used to infer verification scope. */
@@ -858,6 +860,9 @@ export interface ParentCommandVerificationEvidence {
 			commandDigest: string
 			repositoryDigest: string
 			kind?: "test" | "types" | "lint" | "format"
+			runner?: "pytest"
+			pytestExpectedFiles?: string[]
+			pytestConfigFiles?: string[]
 			matchedFiles?: string[]
 		}
 	>
@@ -2127,6 +2132,8 @@ export class AgentControlStore {
 				)
 					return []
 				if (item.status === "succeeded" && (item.exitCode !== 0 || item.signalName)) return []
+				if (item.status === "succeeded" && captured.runner === "pytest" && item.testValidation !== true)
+					return []
 				if (obligation.verification && item.completedAt < obligation.verification.completedAt) return []
 			}
 			return [

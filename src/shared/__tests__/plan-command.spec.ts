@@ -9,6 +9,9 @@ describe("strict Plan command policy", () => {
 		["pnpm exec tsc --noEmit", "verification"],
 		["prettier --check src", "verification"],
 		["python -m pytest tests", "verification"],
+		["python3.13 -m pytest tests", "verification"],
+		["py -3.13 -m pytest tests", "verification"],
+		["py.exe -3.13-64 -m pytest tests", "verification"],
 		["cargo check", "verification"],
 	] as const)("allows one bounded %s command", (command, category) => {
 		expect(classifyPlanCommand(command)).toEqual({ allowed: true, category })
@@ -39,6 +42,11 @@ describe("strict Plan command policy", () => {
 		"pytest --junitxml=report.xml",
 		"pytest --basetemp=.pytest-temp",
 		"pytest --cache-clear",
+		"python3.13 -m pytest --cache-clear",
+		"py -3.13 -m pytest --junitxml=report.xml",
+		"py -V:arbitrary/company -m pytest tests",
+		"py -3.13 -c pytest",
+		"python3.13 -I -m pytest tests",
 		"pytest --cache-dir=.cache",
 		"pytest -c pytest-other.ini",
 		"pytest -p arbitrary_plugin",

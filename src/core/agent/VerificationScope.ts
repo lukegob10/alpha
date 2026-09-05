@@ -4,8 +4,9 @@ import fs from "fs/promises"
 import path from "path"
 import { promisify } from "util"
 import { parse } from "shell-quote"
+import { parse as parseToml } from "smol-toml"
 
-import { classifyPlanCommand } from "../../shared/plan-command"
+import { pythonPytestArguments } from "../../shared/python-command"
 import type { ToolUse } from "../../shared/tools"
 import { parsePatch } from "../tools/apply-patch/parser"
 import { fingerprintContent } from "../tools/contentVersion"
@@ -179,11 +180,318 @@ export interface CommandVerificationScope {
 	repositoryDigest: string
 	repositoryFiles: VerificationContent
 	kind: "test" | "types" | "lint" | "format"
+	runner?: "pytest"
+	matchedFiles?: string[]
+	pytestExpectedFiles?: string[]
+	pytestConfigFiles?: string[]
+}
+
+const PYTEST_CONFIG_FILES = [
+	"pytest.toml",
+	".pytest.toml",
+	"pytest.ini",
+	".pytest.ini",
+	"pyproject.toml",
+	"tox.ini",
+	"setup.cfg",
+]
+const PYTEST_OUTPUT_OPTIONS = new Set([
+	"-q",
+	"-v",
+	"-vv",
+	"-ra",
+	"-rA",
+	"--quiet",
+	"--verbose",
+	"--no-header",
+	"--disable-warnings",
+])
+const PYTEST_TEST_FILE = /(?:^|\/)(?:test_[^/]+|[^/]+_test)\.py$/
+const PYTEST_PRESENTATION_SETTINGS = new Set([
+	"minversion",
+	"markers",
+	"filterwarnings",
+	"console_output_style",
+	"verbosity_assertions",
+	"verbosity_test_cases",
+	"log_cli",
+	"log_cli_level",
+	"log_cli_format",
+	"log_cli_date_format",
+	"log_level",
+	"log_format",
+	"log_date_format",
+	"log_file",
+	"log_file_level",
+	"log_file_format",
+	"log_file_date_format",
+	"log_auto_indent",
+	"junit_suite_name",
+	"junit_logging",
+	"junit_log_passing_tests",
+	"junit_duration_report",
+	"junit_family",
+])
+
+/** Only literal testpaths and presentation options are supported; no executable config is evaluated. */
+function pytestConfiguration(bytes: Buffer, name: string): { active: boolean; testpaths?: string[] } | undefined {
+	// These files are authoritative only since pytest 9; runner version is not yet observed.
+	if (name === "pytest.toml" || name === ".pytest.toml") return undefined
+	const toml = name.endsWith(".toml")
+	const entries = new Map<string, unknown>()
+	let eligible = name === "pytest.ini" || name === ".pytest.ini"
+	const source = bytes.toString("utf8")
+	if (toml) {
+		let document: unknown
+		try {
+			document = parseToml(source)
+		} catch {
+			return undefined
+		}
+		const value = objectRecord(objectRecord(document)?.tool)?.pytest
+		if (value === undefined) return { active: false }
+		const pytest = objectRecord(value)
+		// Native pytest 9 settings must not silently coexist with older ini_options semantics.
+		if (!pytest || Object.keys(pytest).some((key) => key !== "ini_options")) return undefined
+		const options = objectRecord(pytest.ini_options)
+		if (!options) return undefined
+		eligible = true
+		for (const [key, value] of Object.entries(options)) entries.set(key, value)
+	} else {
+		const sectionName = name === "setup.cfg" ? "tool:pytest" : "pytest"
+		let active = false
+		let key: string | undefined
+		let indentation = 0
+		for (const line of source.split(/\r?\n/)) {
+			const trimmed = line.trim()
+			if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) continue
+			const currentIndentation = line.length - line.trimStart().length
+			if (active && key && currentIndentation > indentation) {
+				entries.set(key, `${entries.get(key)}\n${trimmed}`)
+				continue
+			}
+			if (trimmed.startsWith("[")) {
+				if (!/^\[[^\[\]\r\n]+\]$/.test(trimmed)) return undefined
+				active = trimmed === `[${sectionName}]`
+				if (active) eligible = true
+				key = undefined
+				continue
+			}
+			if (!active) continue
+			const entry = /^([a-z_]+)\s*=\s*(.*)$/.exec(trimmed)
+			if (!entry || entries.has(entry[1])) return undefined
+			key = entry[1]
+			indentation = currentIndentation
+			entries.set(key, entry[2])
+		}
+	}
+	for (const [key, value] of entries) {
+		if (key === "testpaths" || key === "addopts") continue
+		if (!PYTEST_PRESENTATION_SETTINGS.has(key)) return undefined
+		if (!["string", "boolean", "number"].includes(typeof value) && !stringArray(value)) return undefined
+	}
+	const list = (value: unknown): string[] | undefined => {
+		if (typeof value !== "string") return stringArray(value)
+		const normalized = value.trim().replace(/\r?\n/g, " ")
+		return normalized ? commandTokens(normalized) : []
+	}
+	const addopts = list(entries.get("addopts") ?? [])
+	if (!addopts || !addopts.every((arg) => PYTEST_OUTPUT_OPTIONS.has(arg))) return undefined
+	if (!entries.has("testpaths")) return { active: eligible }
+	const testpaths = list(entries.get("testpaths")!)
+	if (
+		!testpaths?.length ||
+		testpaths.length > MAX_PATHS ||
+		testpaths.some(
+			(target) =>
+				!target ||
+				target.startsWith("-") ||
+				/[\\:*?\[\]{}\0\r\n]/.test(target) ||
+				path.isAbsolute(target) ||
+				target.split("/").includes(".."),
+		)
+	)
+		return undefined
+	return { active: eligible, testpaths }
+}
+
+async function pytestCovers(
+	root: string,
+	cwd: string,
+	args: readonly string[],
+	changedFiles: readonly string[],
+	runtimeCollection = false,
+): Promise<{
+	covered: boolean
+	matchedFiles: string[]
+	dependencies: string[]
+	observed: VerificationContent
+	configurationUnsupported?: boolean
+}> {
+	const dependencies = new Set<string>()
+	const observed: VerificationContent = Object.create(null)
+	const observeHook = async (absolute: string) => {
+		const bytes = await readBoundedFile(root, absolute, MAX_MANIFEST_BYTES)
+		dependencies.add(absolute)
+		observed[path.relative(root, absolute).split(path.sep).join("/")] = bytes
+			? createHash("sha256").update(bytes).digest("hex")
+			: "missing"
+		return !bytes || runtimeCollection
+	}
+	const rejected = (configurationUnsupported = false) => ({
+		covered: false,
+		matchedFiles: [],
+		dependencies: [],
+		observed,
+		configurationUnsupported,
+	})
+	const explicit = args.filter((arg) => !PYTEST_OUTPUT_OPTIONS.has(arg))
+	const targets: Array<{ absolute: string; directory: boolean }> = []
+	for (const target of explicit) {
+		const absolute = resolveContainedPath(root, path.resolve(cwd, target))
+		const real = await realContainedPath(root, absolute)
+		if (!real) return rejected()
+		const stat = await fs.stat(real)
+		if ((!stat.isFile() && !stat.isDirectory()) || (stat.isFile() && !PYTEST_TEST_FILE.test(target)))
+			return rejected()
+		targets.push({ absolute: real, directory: stat.isDirectory() })
+	}
+	let configuration: { directory: string; testpaths?: string[] } | undefined
+	let directory = cwd
+	for (let depth = 0; depth < MAX_ANCESTORS; depth++) {
+		for (const name of PYTEST_CONFIG_FILES) {
+			const absolute = path.join(directory, name)
+			dependencies.add(absolute)
+			const bytes = await readBoundedFile(root, absolute, MAX_MANIFEST_BYTES)
+			observed[path.relative(root, absolute).split(path.sep).join("/")] = bytes
+				? createHash("sha256").update(bytes).digest("hex")
+				: "missing"
+			if (!bytes) continue
+			const parsed = pytestConfiguration(bytes, name)
+			if (!parsed) return rejected(true)
+			if (parsed.active) {
+				if (configuration) return rejected(true)
+				configuration = { directory, ...parsed }
+			}
+		}
+		const conftest = path.join(directory, "conftest.py")
+		if (!(await observeHook(conftest))) return rejected(true)
+		if (directory === root) break
+		directory = path.dirname(directory)
+	}
+	const suite = configuration?.testpaths?.map((target) =>
+		resolveContainedPath(root, path.resolve(configuration.directory, target)),
+	)
+	if (explicit.length === 0) {
+		for (const absolute of configuration?.directory === cwd && suite ? suite : [cwd]) {
+			const real = await realContainedPath(root, absolute)
+			if (!real) return rejected()
+			targets.push({ absolute: real, directory: (await fs.stat(real)).isDirectory() })
+		}
+	}
+	const selects = (file: string) =>
+		targets.some((target) => (target.directory ? containsPath(target.absolute, file) : target.absolute === file))
+	const collectionDirectory = (directory: string) =>
+		targets.some((target) =>
+			target.directory
+				? containsPath(target.absolute, directory) || containsPath(directory, target.absolute)
+				: containsPath(directory, target.absolute),
+		)
+	const needsDefaultDiscovery =
+		!suite &&
+		targets.some(
+			(target) => target.directory && (target.absolute === cwd || target.absolute === path.join(cwd, "tests")),
+		)
+	// Discover only the default pytest file/directory subset. The bounded walk establishes
+	// whether the conventional tests directory is the whole suite. Explicit/configured
+	// roots need only their collection paths and ancestors; unrelated source trees must
+	// not consume missing-config snapshots. Publication re-resolves collection topology.
+	const tests: string[] = []
+	const queue = [cwd]
+	let visited = 0
+	while (queue.length) {
+		const current = queue.shift()!
+		if ((await realContainedPath(root, current)) !== current) return rejected(true)
+		const observedCollectionDirectory = collectionDirectory(current)
+		// Pytest also excludes virtual environments with arbitrary directory names.
+		// Their discovery differs across releases; keep the bounded subset explicit.
+		for (const marker of ["pyvenv.cfg", "conda-meta/history"]) {
+			const absolute = path.join(current, marker)
+			if (await realContainedPath(root, absolute)) return rejected(true)
+			if (observedCollectionDirectory) {
+				dependencies.add(absolute)
+				observed[path.relative(root, absolute).split(path.sep).join("/")] = "missing"
+			}
+		}
+		const handle = await fs.opendir(current)
+		for await (const entry of handle) {
+			if (++visited > 4_096) return rejected(true)
+			if (current !== cwd && PYTEST_CONFIG_FILES.includes(entry.name)) return rejected(true)
+			if (entry.name === "conftest.py" && !(await observeHook(path.join(current, entry.name))))
+				return rejected(true)
+			if (
+				entry.name.startsWith(".") ||
+				entry.name.endsWith(".egg") ||
+				/^(?:__pycache__|node_modules|venv|build|dist|CVS|_darcs|\{arch\})$/.test(entry.name)
+			)
+				continue
+			const absolute = path.join(current, entry.name)
+			if (entry.isSymbolicLink()) return rejected(true)
+			if (entry.isDirectory()) {
+				if (needsDefaultDiscovery || collectionDirectory(absolute)) queue.push(absolute)
+			} else if (PYTEST_TEST_FILE.test(absolute.split(path.sep).join("/"))) {
+				tests.push(absolute)
+				if (selects(absolute)) dependencies.add(absolute)
+			}
+		}
+		// Capture absent collection hooks and target configs so creating one invalidates a receipt.
+		if (observedCollectionDirectory) {
+			for (const name of ["conftest.py", ...PYTEST_CONFIG_FILES]) {
+				const absolute = path.join(current, name)
+				dependencies.add(absolute)
+				const relative = path.relative(root, absolute).split(path.sep).join("/")
+				observed[relative] ??= "missing"
+			}
+		}
+		if (dependencies.size > MAX_PATHS) return rejected(true)
+	}
+	const fullSuite =
+		targets.some((target) => target.directory && target.absolute === cwd) ||
+		(suite
+			? suite.every((file) => targets.some((target) => target.directory && containsPath(target.absolute, file)))
+			: targets.some((target) => target.directory && target.absolute === path.join(cwd, "tests")) &&
+				tests.every(selects))
+	const matchedFiles = changedFiles.filter((file) => {
+		const absolute = resolveContainedPath(root, file)
+		return PYTEST_TEST_FILE.test(file) ? selects(absolute) && tests.includes(absolute) : fullSuite
+	})
+	return {
+		covered: matchedFiles.length === changedFiles.length,
+		matchedFiles,
+		dependencies: [...dependencies],
+		observed,
+	}
+}
+
+export interface CommandVerificationDiagnostic {
+	code:
+		| "unsafe_command"
+		| "unsupported_command"
+		| "unsupported_configuration"
+		| "uncovered_changes"
+		| "unavailable_scope"
+		| "missing_change_set"
+		| "unknown_change_set"
+		| "unavailable_content"
+		| "no_test_validation"
+		| "runtime_scope_unavailable"
+	message: string
+	changeSetId?: string
 }
 
 function commandTokens(command: string): string[] | undefined {
-	// Reuse the Plan policy for executable admission below; this guard also applies
-	// before resolving pnpm scripts, which Plan deliberately does not execute.
+	// Evidence accepts only an unambiguous single command. Execution permission is
+	// enforced separately by the active mode and approval boundary.
 	if (!command.trim() || command.length > MAX_COMMAND_LENGTH || /[\\\0\r\n;&|<>`$%!^#*?()[\]{}~]/.test(command)) {
 		return undefined
 	}
@@ -239,11 +547,6 @@ function verifierKind(tokens: readonly string[]): CommandVerificationScope["kind
 				: undefined
 		case "prettier":
 			return args.length === 2 && args[0] === "--check" && args[1] === "." ? "format" : undefined
-		case "python":
-		case "python3":
-			return args[0] === "-m" && args[1] === "pytest" ? verifierKind(["pytest", ...args.slice(2)]) : undefined
-		case "pytest":
-			return args.every((arg) => [".", "-q", "-v", "--quiet", "--verbose"].includes(arg)) ? "test" : undefined
 		case "go":
 			return args.length === 2 && ["test", "vet"].includes(args[0]) && args[1] === "./..."
 				? args[0] === "test"
@@ -279,12 +582,6 @@ function targetedVerifier(
 		)
 		if (!args.every((arg) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(arg))) return undefined
 		kind = "test"
-	} else if (executable === "pytest") {
-		args = args.filter((arg) => !["-q", "-v", "--quiet", "--verbose"].includes(arg))
-		if (!args.every((arg) => /(?:^|\/)(?:test_[^/]+|[^/]+_test)\.py$/.test(arg))) return undefined
-		kind = "test"
-	} else if (["python", "python3"].includes(executable) && args[0] === "-m" && args[1] === "pytest") {
-		return targetedVerifier(["pytest", ...args.slice(2)])
 	} else if (executable === "eslint") {
 		args = args.filter((arg) => arg !== "--max-warnings=0")
 		kind = "lint"
@@ -319,10 +616,8 @@ function verifierSupportsFiles(
 					: ["package.json", "tsconfig.json"]
 			break
 		case "pytest":
-		case "python":
-		case "python3":
 			extensions = /\.py$/
-			configFiles = ["pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini"]
+			configFiles = PYTEST_CONFIG_FILES
 			break
 		case "go":
 			extensions = /\.go$/
@@ -507,13 +802,6 @@ async function knownTestScopeIsSupported(root: string, cwd: string, tokens: read
 			if (manifest) {
 				const parsed = objectRecord(literalConfiguration(manifest))
 				if (!parsed || (parsed.jest !== undefined && !testConfigurationIsSupported(parsed.jest, executable)))
-					return false
-			}
-		}
-		if (["pytest", "python", "python3"].includes(executable)) {
-			for (const file of ["pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini"]) {
-				const bytes = await readBoundedFile(root, path.join(directory, file), MAX_MANIFEST_BYTES)
-				if (bytes && /\b(?:testpaths|norecursedirs|addopts|python_files)["']?\s*=/.test(bytes.toString("utf8")))
 					return false
 			}
 		}
@@ -712,9 +1000,22 @@ export async function resolveCommandVerification(input: {
 	command: string
 	/** Actual edited paths only; content-dependency paths must not be passed as edits. */
 	changedFiles?: readonly string[]
+	/** Host evidence capture may associate only the explicitly covered subset. */
+	allowPartialCoverage?: boolean
+	/** Host will require an execution-bound collection receipt before accepting evidence. */
+	runtimeCollection?: boolean
+	onRejected?: (diagnostic: CommandVerificationDiagnostic) => void
 }): Promise<CommandVerificationScope | undefined> {
+	const reject = (code: CommandVerificationDiagnostic["code"], message: string) => {
+		input.onRejected?.({ code, message })
+		return undefined
+	}
 	let tokens = commandTokens(input.command)
-	if (!tokens) return undefined
+	if (!tokens)
+		return reject(
+			"unsafe_command",
+			"Use one supported verification command without shell composition, expansion, or ambiguous quoting.",
+		)
 	const root = await fs.realpath(input.workspaceRoot)
 	let cwd = await realContainedPath(root, resolveContainedPath(root, input.cwd, input.workspaceRoot))
 	if (!cwd || !(await fs.stat(cwd)).isDirectory()) throw new VerificationScopeError("Verification cwd is unavailable")
@@ -722,7 +1023,7 @@ export async function resolveCommandVerification(input: {
 		let index = 1
 		if (tokens[index] === "--dir") {
 			const directory = tokens[++index]
-			if (!directory) return undefined
+			if (!directory) return reject("unsupported_command", "pnpm --dir requires a workspace directory.")
 			cwd = await realContainedPath(
 				root,
 				resolveContainedPath(root, path.resolve(cwd, directory), input.workspaceRoot),
@@ -737,24 +1038,53 @@ export async function resolveCommandVerification(input: {
 		} else {
 			if (tokens[index] === "run") index++
 			const scriptName = tokens[index++]
-			if (!["test", "check-types", "lint"].includes(scriptName)) return undefined
+			if (!["test", "check-types", "lint"].includes(scriptName))
+				return reject(
+					"unsupported_command",
+					"Use a supported installed verifier or a test, check-types, or lint package script.",
+				)
 			const script = await findPackageScript(root, cwd, scriptName)
-			if (!script) return undefined
+			if (!script)
+				return reject("unsupported_command", "The selected package has no supported verification script.")
 			const scriptTokens = commandTokens(script.script)
-			if (!scriptTokens) return undefined
+			if (!scriptTokens)
+				return reject(
+					"unsafe_command",
+					"The package script must invoke one supported verifier without shell composition.",
+				)
 			cwd = script.cwd
 			tokens = [...scriptTokens, ...tokens.slice(index)]
 		}
 	}
-	if (tokens.length === 0) return undefined
-	const command = tokens.map((token) => JSON.stringify(token)).join(" ")
-	const plan = classifyPlanCommand(command)
-	if (!plan.allowed || plan.category !== "verification") return undefined
-	const wholeScopeKind = verifierKind(tokens)
-	const targeted = wholeScopeKind ? undefined : targetedVerifier(tokens)
+	if (tokens.length === 0) return reject("unsupported_command", "A supported verification executable is required.")
+	const pytestArgs = pythonPytestArguments(tokens)
+	// Keep permission separate: only runner semantics decide what evidence an already
+	// approved execution could provide. Retain original argv in the command identity.
+	const semanticTokens = pytestArgs ? ["pytest", ...pytestArgs] : tokens
+	if (
+		pytestArgs?.some(
+			(arg) =>
+				!PYTEST_OUTPUT_OPTIONS.has(arg) &&
+				(!arg ||
+					arg.startsWith("-") ||
+					arg.includes(":") ||
+					path.isAbsolute(arg) ||
+					arg.split("/").includes("..")),
+		)
+	)
+		return reject(
+			"unsupported_command",
+			"Pytest evidence requires unfiltered test targets and supported reporting options; collection-only, selectors, plugins, and alternate configuration are unsupported.",
+		)
+	const wholeScopeKind = pytestArgs ? "test" : verifierKind(semanticTokens)
+	const targeted = wholeScopeKind ? undefined : targetedVerifier(semanticTokens)
 	const kind = wholeScopeKind ?? targeted?.kind
-	if (!kind) return undefined
-	const changedFiles = input.changedFiles
+	if (!kind)
+		return reject(
+			"unsupported_command",
+			"Use a supported verification runner and non-watching arguments; wrappers and filtered runs need explicit unverified handling.",
+		)
+	let changedFiles = input.changedFiles
 		? boundedPaths(input.changedFiles).map((file) =>
 				path
 					.relative(root, resolveContainedPath(root, file, input.workspaceRoot))
@@ -762,32 +1092,79 @@ export async function resolveCommandVerification(input: {
 					.join("/"),
 			)
 		: undefined
-	if (targeted && (!changedFiles || changedFiles.length === 0)) return undefined
+	if (targeted && (!changedFiles || changedFiles.length === 0))
+		return reject("uncovered_changes", "Targeted verification needs the associated changed paths.")
+	let pytestDependencies: string[] = []
+	let pytestObserved: VerificationContent = {}
 	if (changedFiles) {
 		const changedPaths = boundedPaths(changedFiles).map((file) => resolveContainedPath(root, file))
-		if (!changedPaths.every((file) => containsPath(cwd, file))) return undefined
-		if (!verifierSupportsFiles(root, cwd, tokens, changedFiles)) return undefined
+		if (!changedPaths.every((file) => containsPath(cwd, file)))
+			return reject(
+				"uncovered_changes",
+				"Run verification in the project containing the associated changed files.",
+			)
+		if (!verifierSupportsFiles(root, cwd, semanticTokens, changedFiles))
+			return reject(
+				"uncovered_changes",
+				"This runner does not validate the language or file types in the associated change set.",
+			)
+		if (pytestArgs) {
+			const python = await pytestCovers(root, cwd, pytestArgs, changedFiles, input.runtimeCollection)
+			if (!python.covered && !(input.allowPartialCoverage && python.matchedFiles.length))
+				return reject(
+					python.configurationUnsupported ? "unsupported_configuration" : "uncovered_changes",
+					python.configurationUnsupported
+						? "Pytest collection configuration, hooks, nested projects, or discovery bounds are unsupported. Use a supported literal testpaths configuration or report the missing scope as unverified."
+						: "The selected pytest targets do not cover these changes. Run the full configured suite for source changes, or explicitly target the changed tests.",
+				)
+			pytestDependencies = python.dependencies
+			pytestObserved = python.observed
+			changedFiles = python.matchedFiles
+		}
 		if (targeted) {
 			const targets = boundedPaths(targeted.targets).map((file) =>
 				resolveContainedPath(root, path.resolve(cwd, file)),
 			)
-			if (!changedPaths.every((file) => targets.includes(file))) return undefined
+			if (!changedPaths.every((file) => targets.includes(file)))
+				return reject("uncovered_changes", "The verifier targets do not include every associated changed file.")
 			for (const target of targets) {
 				const real = await realContainedPath(root, target)
-				if (!real || !(await fs.stat(real)).isFile()) return undefined
+				if (!real || !(await fs.stat(real)).isFile())
+					return reject("unavailable_scope", "A verification target is not an available workspace file.")
 			}
 		}
-		if (executableName(tokens[0]) === "tsc" && !(await typeScriptCovers(root, cwd, changedFiles))) return undefined
+		if (executableName(tokens[0]) === "tsc" && !(await typeScriptCovers(root, cwd, changedFiles)))
+			return reject(
+				"unsupported_configuration",
+				"TypeScript configuration does not provide supported coverage for these changes.",
+			)
 		if (executableName(tokens[0]) === "eslint" && !(await eslintCovers(root, cwd, tokens, changedFiles)))
-			return undefined
-		if (kind === "test" && !(await knownTestScopeIsSupported(root, cwd, tokens))) return undefined
+			return reject(
+				"unsupported_configuration",
+				"ESLint configuration does not provide supported coverage for these changes.",
+			)
+		if (kind === "test" && !pytestArgs && !(await knownTestScopeIsSupported(root, cwd, tokens)))
+			return reject(
+				"unsupported_configuration",
+				"The test runner configuration has unsupported collection or execution settings.",
+			)
 	}
 	const requirementPaths = ancestorRequirementPaths(root, [cwd])
 	const nestedPaths =
 		changedFiles && executableName(tokens[0]) !== "tsc" ? nestedRequirementPaths(root, cwd, changedFiles) : []
-	const requirements = await captureVerificationContent(root, [...new Set([...requirementPaths, ...nestedPaths])])
+	const requirements = await captureVerificationContent(root, [
+		...new Set([...requirementPaths, ...nestedPaths, ...pytestDependencies]),
+	])
+	if (Object.entries(pytestObserved).some(([file, fingerprint]) => requirements[file] !== fingerprint))
+		return reject(
+			"unavailable_content",
+			"Pytest configuration changed during evidence capture. Retry verification after workspace changes settle.",
+		)
 	if (nestedPaths.some((file) => requirements[path.relative(root, file).split(path.sep).join("/")] !== "missing"))
-		return undefined
+		return reject(
+			"unsupported_configuration",
+			"A nested project needs verification from its own project directory.",
+		)
 	if (changedFiles && executableName(tokens[0]) === "go") {
 		if (requirements[path.relative(root, path.join(cwd, "go.work")).split(path.sep).join("/")] !== "missing")
 			return undefined
@@ -807,6 +1184,21 @@ export async function resolveCommandVerification(input: {
 	return {
 		scopePath: cwd,
 		kind,
+		...(pytestArgs
+			? {
+					runner: "pytest" as const,
+					...(changedFiles ? { matchedFiles: [...changedFiles] } : {}),
+					pytestExpectedFiles: Object.keys(requirements)
+						.filter((file) => requirements[file] !== "missing" && PYTEST_TEST_FILE.test(file))
+						.map((file) => path.resolve(root, file)),
+					pytestConfigFiles: Object.keys(requirements)
+						.filter(
+							(file) =>
+								requirements[file] !== "missing" && PYTEST_CONFIG_FILES.includes(path.basename(file)),
+						)
+						.map((file) => path.resolve(root, file)),
+				}
+			: {}),
 		commandDigest: fingerprintContent(JSON.stringify([cwd, tokens])),
 		repositoryDigest: fingerprintContent(JSON.stringify(requirements)),
 		repositoryFiles: requirements,

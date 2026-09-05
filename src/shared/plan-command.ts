@@ -1,3 +1,5 @@
+import { pythonPytestArguments } from "./python-command"
+
 export type PlanCommandCategory = "inspection" | "verification"
 
 export type PlanCommandDecision = { allowed: true; category: PlanCommandCategory } | { allowed: false; reason: string }
@@ -269,6 +271,7 @@ function classifyVerificationExecutable(executable: string, args: readonly strin
 	if (hasUnsafeArgument(args)) {
 		return { allowed: false, reason: "verification option can write, watch, or update repository state" }
 	}
+	if (pythonPytestArguments([executable, ...args])) return { allowed: true, category: "verification" }
 
 	switch (executable) {
 		case "tsc":
@@ -295,11 +298,6 @@ function classifyVerificationExecutable(executable: string, args: readonly strin
 			return ["check", "clippy", "test"].includes(args[0]?.toLowerCase() ?? "")
 				? { allowed: true, category: "verification" }
 				: { allowed: false, reason: "only cargo check, clippy, and test are available in Plan" }
-		case "python":
-		case "python3":
-			return args[0] === "-m" && args[1]?.toLowerCase() === "pytest"
-				? { allowed: true, category: "verification" }
-				: { allowed: false, reason: "Python is available only as python -m pytest in Plan" }
 		default:
 			return { allowed: false, reason: "command is not in the Plan verification allow-list" }
 	}

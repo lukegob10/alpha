@@ -158,6 +158,7 @@ import {
 	captureVerificationContent,
 	captureVerificationDependencies,
 	resolveCommandVerification,
+	type CommandVerificationDiagnostic,
 } from "../agent/VerificationScope"
 import { resolveVerificationRequirements } from "../agent/VerificationRequirements"
 import { reconcileSubagentGroupAfterReload } from "../agent/SubagentGroupRecovery"
@@ -6635,30 +6636,51 @@ export class ClineProvider
 		command: string,
 		cwd: string,
 		changeSetIds: readonly string[] = [],
+		onRejected?: (diagnostic: CommandVerificationDiagnostic) => void,
 	): Promise<ParentCommandVerificationEvidence["verificationVersions"]> {
-		if (changeSetIds.length === 0) return undefined
+		if (changeSetIds.length === 0) {
+			onRejected?.({
+				code: "missing_change_set",
+				message:
+					"Include the exact applied change-set IDs in execute_command verification.change_set_ids to associate verification evidence.",
+			})
+			return undefined
+		}
 		const workspacePath = await fs.realpath(parent.cwd)
 		const commandScope = await resolveCommandVerification({ workspaceRoot: parent.cwd, cwd, command })
 		const root = await this.ensureAgentControlRoot(parent)
 		await this.synchronizeParentVerificationObligations(parent)
 		const versions: NonNullable<ParentCommandVerificationEvidence["verificationVersions"]> = {}
+		const matchedIds = new Set<string>()
 		for (const obligation of this.agentControlStore.getVerificationObligations({
 			parentTaskId: parent.taskId,
 			rootTaskId: root.rootTaskId,
 		})) {
 			if (!changeSetIds.includes(obligation.changeSetId) || obligation.appliedAt === undefined) continue
+			matchedIds.add(obligation.changeSetId)
+			const reject = (diagnostic: CommandVerificationDiagnostic) =>
+				onRejected?.({ ...diagnostic, changeSetId: obligation.changeSetId })
 			const matchedFiles = commandScope
 				? obligation.changedFiles.filter((file) => {
 						const relative = path.relative(commandScope.scopePath, path.resolve(workspacePath, file))
 						return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
 					})
 				: obligation.changedFiles
-			if (!matchedFiles.length) continue
+			if (!matchedFiles.length) {
+				reject({
+					code: "uncovered_changes",
+					message: "This command runs outside the project containing the associated changes.",
+				})
+				continue
+			}
 			const verifier = await resolveCommandVerification({
 				workspaceRoot: parent.cwd,
 				cwd,
 				command,
 				changedFiles: matchedFiles,
+				allowPartialCoverage: true,
+				runtimeCollection: true,
+				onRejected: reject,
 			})
 			if (!verifier) continue
 			const files = await captureVerificationContent(workspacePath, [
@@ -6685,11 +6707,62 @@ export class ClineProvider
 					commandDigest: verifier.commandDigest,
 					repositoryDigest: verifier.repositoryDigest,
 					kind: verifier.kind,
-					matchedFiles,
+					...(verifier.runner
+						? {
+								runner: verifier.runner,
+								pytestExpectedFiles: verifier.pytestExpectedFiles,
+								pytestConfigFiles: verifier.pytestConfigFiles,
+							}
+						: {}),
+					matchedFiles: verifier.matchedFiles ?? matchedFiles,
+				}
+			} else {
+				reject({
+					code: "unavailable_content",
+					message:
+						"Current change-set content could not be captured. Wait for pending mutations to settle before verification.",
+				})
+			}
+		}
+		for (const changeSetId of new Set(changeSetIds)) {
+			if (!matchedIds.has(changeSetId))
+				onRejected?.({
+					code: "unknown_change_set",
+					changeSetId,
+					message:
+						"This ID is not an applied change set owned by the current task. Use an ID from the current verification context.",
+				})
+		}
+		return versions
+	}
+
+	/** Recheck pytest discovery after terminal completion, including newly created configuration. */
+	private async currentCommandVerificationEvidence(parent: Task): Promise<ParentCommandVerificationEvidence[]> {
+		const evidence = parent.getCommandExecutionEvidence()
+		for (const item of evidence) {
+			if (item.status === "running") continue
+			for (const [changeSetId, captured] of Object.entries(item.verificationVersions ?? {})) {
+				if (captured.runner !== "pytest") continue
+				const current =
+					item.command && item.cwd
+						? await resolveCommandVerification({
+								workspaceRoot: parent.cwd,
+								cwd: item.cwd,
+								command: item.command,
+								changedFiles: captured.matchedFiles,
+								runtimeCollection: true,
+							})
+						: undefined
+				if (
+					!current ||
+					current.commandDigest !== captured.commandDigest ||
+					current.repositoryDigest !== captured.repositoryDigest
+				) {
+					delete item.verificationVersions![changeSetId]
 				}
 			}
 		}
-		return versions
+		return evidence
 	}
 
 	public async recordParentVerificationEvidence(parent: Task): Promise<void> {
@@ -6706,7 +6779,7 @@ export class ClineProvider
 		await this.reconcilePrimaryVerification(parent)
 		const changed = await this.agentControlStore.recordParentVerificationEvidence(
 			parent.taskId,
-			parent.getCommandExecutionEvidence(),
+			await this.currentCommandVerificationEvidence(parent),
 			root.rootTaskId,
 		)
 		for (const obligation of changed) await this.publishParentVerificationTransition(parent, obligation)

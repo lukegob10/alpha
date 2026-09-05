@@ -140,6 +140,7 @@ import { TaskToolCatalogCache } from "./TaskToolCatalogCache"
 // core modules
 import { ToolRepetitionDetector } from "../tools/ToolRepetitionDetector"
 import type { ParentCommandVerificationEvidence } from "../agent/AgentControlStore"
+import type { CommandVerificationDiagnostic } from "../agent/VerificationScope"
 import { redactTaskPrivatePaths } from "../tools/taskPathPresentation"
 import { restoreTodoListForTask } from "../tools/UpdateTodoListTool"
 import { FileContextTracker } from "../context-tracking/FileContextTracker"
@@ -244,6 +245,8 @@ export interface CommandExecutionEvidence {
 	verificationChangeSetIds?: string[]
 	cwd?: string
 	verificationVersions?: ParentCommandVerificationEvidence["verificationVersions"]
+	testValidation?: boolean
+	verificationDiagnostics?: CommandVerificationDiagnostic[]
 }
 
 export interface CompletionGateDecision {
@@ -4745,9 +4748,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		verificationChangeSetIds?: readonly string[],
 	): Promise<void> {
 		const commandCwd = await fsSync.promises.realpath(cwd)
+		const verificationDiagnostics: CommandVerificationDiagnostic[] = []
 		const verificationVersions = await this.providerRef
 			?.deref()
-			?.captureCommandVerification?.(this, command, commandCwd, verificationChangeSetIds)
+			?.captureCommandVerification?.(this, command, commandCwd, verificationChangeSetIds, (diagnostic) => {
+				if (verificationDiagnostics.length < 16) verificationDiagnostics.push(diagnostic)
+			})
 		if (this.abort) throw new Error("Command admission was cancelled")
 		this.commandExecutionEvidence.delete(toolCallId)
 		if (this.commandExecutionEvidence.size >= 128) {
@@ -4761,11 +4767,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const evidence = this.commandExecutionEvidence.get(toolCallId)!
 		evidence.cwd = commandCwd
 		evidence.verificationVersions = structuredClone(verificationVersions)
+		evidence.verificationDiagnostics = verificationDiagnostics
 	}
 
 	public completeCommandExecution(
 		toolCallId: string,
-		details: { exitCode?: number; signalName?: string },
+		details: {
+			exitCode?: number
+			signalName?: string
+			testValidation?: boolean
+			verificationDiagnostic?: CommandVerificationDiagnostic
+		},
 		executionId?: string,
 	): void {
 		const evidence = this.commandExecutionEvidence.get(toolCallId)
@@ -4777,6 +4789,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				: "failed"
 		evidence.exitCode = details.exitCode
 		evidence.signalName = details.signalName
+		evidence.testValidation = details.testValidation
+		if (
+			evidence.status === "succeeded" &&
+			details.testValidation !== true &&
+			Object.values(evidence.verificationVersions ?? {}).some((version) => version.runner === "pytest")
+		) {
+			evidence.verificationDiagnostics = [
+				...(evidence.verificationDiagnostics ?? []).slice(0, 15),
+				details.verificationDiagnostic ?? {
+					code: "no_test_validation",
+					message:
+						"The pytest command ended without an accepted validating test report. Its exit code alone does not verify the changed content.",
+				},
+			]
+		}
 		evidence.completedAt = Date.now()
 		this.publishParentVerificationEvidence()
 	}

@@ -97,6 +97,25 @@ const recordAppliedWorker = async (
 	})
 
 describe("AgentControlStore primary verification", () => {
+	it.each([undefined, false, true])(
+		"requires positive terminal corroboration for newly captured pytest evidence (%s)",
+		async (testValidation) => {
+			const { store, persistence } = await setup()
+			const obligation = (await recordPrimary(store, { "app.py": "source-version" }))!
+			const evidence = verificationEvidence(obligation.changeSetId, obligation, {
+				testValidation,
+				verificationVersions: {
+					[obligation.changeSetId]: verificationVersion(obligation, { runner: "pytest", kind: "test" }),
+				},
+			})
+			await store.recordParentVerificationEvidence("root-1", [evidence], "root-1")
+			expect(store.getParentCompletionDecision("root-1").allowed).toBe(testValidation === true)
+			const restored = new AgentControlStore(persistence)
+			await restored.initialize()
+			expect(restored.getParentCompletionDecision("root-1").allowed).toBe(testValidation === true)
+		},
+	)
+
 	it("records a primary ledger change set and treats identical replays as no-ops", async () => {
 		const { store } = await setup()
 

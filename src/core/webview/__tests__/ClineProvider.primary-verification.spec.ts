@@ -156,6 +156,98 @@ describe("ClineProvider primary verification", () => {
 		expect(satisfied).toMatchObject({ status: "satisfied", verification: { status: "passed" } })
 	})
 
+	const pythonVerification = async () => {
+		await fs.writeFile(path.join(workspace, "app.py"), "answer = 42\n")
+		await fs.mkdir(path.join(workspace, "tests"))
+		await fs.writeFile(path.join(workspace, "tests/test_app.py"), "def test_answer():\n    assert True\n")
+		await provider.recordPrimaryMutation(parent, await captureVerificationContent(workspace, ["app.py"]))
+		const command = "python3.13 -m pytest tests"
+		const versions = await captureVerification(command)
+		expect(versions[primaryObligation().changeSetId]).toMatchObject({
+			runner: "pytest",
+			kind: "test",
+			matchedFiles: ["app.py"],
+		})
+		return { command, versions }
+	}
+
+	it.each([undefined, false, true])(
+		"requires terminal pytest validation in addition to exit zero (%s)",
+		async (testValidation) => {
+			const { command, versions } = await pythonVerification()
+			const outcome = await recordCurrentEvidence(versions, { command, testValidation })
+			expect(outcome.status).toBe(testValidation === true ? "satisfied" : "pending")
+		},
+	)
+
+	it("credits only the explicitly selected tests in a mixed Python change set", async () => {
+		const { command } = await pythonVerification()
+		await provider.recordPrimaryMutation(
+			parent,
+			await captureVerificationContent(workspace, ["app.py", "tests/test_app.py"]),
+		)
+		const versions = await captureVerification("pytest tests/test_app.py")
+		const changeSetId = primaryObligation().changeSetId
+		expect(versions[changeSetId]?.matchedFiles).toEqual(["tests/test_app.py"])
+		const outcome = await recordCurrentEvidence(versions, {
+			command: "pytest tests/test_app.py",
+			testValidation: true,
+		})
+		expect(outcome.status).toBe("pending")
+		expect(outcome.verifiedChecks?.["tests/test_app.py"]).toEqual(["test"])
+		expect(outcome.verifiedChecks?.["app.py"]).toBeUndefined()
+		expect(await captureVerification(command)).toHaveProperty(changeSetId)
+	})
+
+	it.each([
+		{ status: "running" as const, completedAt: undefined },
+		{ status: "failed" as const, exitCode: 1 },
+		{ status: "cancelled" as const, exitCode: 0 },
+		{ status: "succeeded" as const, exitCode: undefined },
+		{ status: "succeeded" as const, exitCode: 0, signalName: "SIGTERM" },
+	])("does not credit pytest output without an actual successful terminal receipt: %j", async (receipt) => {
+		const { command, versions } = await pythonVerification()
+		const outcome = await recordCurrentEvidence(versions, { command, testValidation: true, ...receipt })
+		expect(outcome.status).not.toBe("satisfied")
+	})
+
+	it.each(["pytest.ini", "tests/.pytest.ini", "tests/new/conftest.py"])(
+		"invalidates Python evidence when collection configuration appears at %s",
+		async (file) => {
+			const { command, versions } = await pythonVerification()
+			await fs.mkdir(path.dirname(path.join(workspace, file)), { recursive: true })
+			await fs.writeFile(path.join(workspace, file), "[pytest]\naddopts = --collect-only\n")
+			const outcome = await recordCurrentEvidence(versions, { command, testValidation: true })
+			expect(outcome.status).toBe("pending")
+		},
+	)
+
+	it("explains missing, unknown and unsupported command associations without granting credit", async () => {
+		const { command } = await pythonVerification()
+		const onRejected = vi.fn()
+		expect(await provider.captureCommandVerification(parent, command, workspace, [], onRejected)).toBeUndefined()
+		expect(onRejected).toHaveBeenLastCalledWith(expect.objectContaining({ code: "missing_change_set" }))
+		expect(await provider.captureCommandVerification(parent, command, workspace, ["unknown"], onRejected)).toEqual(
+			{},
+		)
+		expect(onRejected).toHaveBeenLastCalledWith(
+			expect.objectContaining({ code: "unknown_change_set", changeSetId: "unknown" }),
+		)
+		const changeSetId = primaryObligation().changeSetId
+		expect(
+			await provider.captureCommandVerification(
+				parent,
+				"pytest --collect-only",
+				workspace,
+				[changeSetId],
+				onRejected,
+			),
+		).toEqual({})
+		expect(onRejected).toHaveBeenLastCalledWith(
+			expect.objectContaining({ code: "unsupported_command", changeSetId }),
+		)
+	})
+
 	it("requires explicit current scoped evidence for a two-file prose change set", async () => {
 		await fs.mkdir(path.join(workspace, "docs"), { recursive: true })
 		await fs.writeFile(path.join(workspace, "docs", "plan.md"), "# Plan\n")
