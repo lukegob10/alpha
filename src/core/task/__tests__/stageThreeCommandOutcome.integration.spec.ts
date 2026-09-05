@@ -458,6 +458,8 @@ describe("Stage Three command outcome integration", () => {
 		{ scenario: "background completion", validating: true, background: true },
 		{ scenario: "all skipped", validating: false, background: false },
 		{ scenario: "inherited ignore", validating: false, background: false },
+		{ scenario: "inherited function pattern", validating: false, background: false },
+		{ scenario: "inherited reporting option", validating: true, background: false },
 		{ scenario: "custom deselection", validating: false, background: false },
 	])(
 		"connects physical pytest execution to durable evidence: $scenario",
@@ -493,7 +495,10 @@ describe("Stage Three command outcome integration", () => {
 					path.join(harness.workspacePath, "tests/test_app.py"),
 					scenario === "all skipped"
 						? "import pytest\n@pytest.mark.skip(reason='fixture')\ndef test_answer(): pass\n"
-						: "def test_answer(answer):\n    assert answer == 42\n",
+						: "def test_answer(answer):\n    assert answer == 42\n" +
+								(scenario === "inherited function pattern"
+									? "def test_omitted():\n    assert False\n"
+									: ""),
 				)
 				if (scenario === "inherited ignore" || scenario === "custom deselection")
 					await writeFile(
@@ -536,7 +541,14 @@ describe("Stage Three command outcome integration", () => {
 						PYTEST_PLUGINS: "",
 						PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1",
 						PYTHONDONTWRITEBYTECODE: "1",
-						PYTEST_ADDOPTS: scenario === "inherited ignore" ? "--ignore=tests/test_ignored.py" : "",
+						PYTEST_ADDOPTS:
+							scenario === "inherited ignore"
+								? "--ignore=tests/test_ignored.py"
+								: scenario === "inherited function pattern"
+									? "-o python_functions=test_answer"
+									: scenario === "inherited reporting option"
+										? "-o console_output_style=count"
+										: "",
 					}),
 				})
 				await terminal.processForTest!.completeShellFirst({ exitCode: 0 }, outcome.stdout)

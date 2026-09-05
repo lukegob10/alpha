@@ -1,3 +1,5 @@
+import { PYTEST_PRESENTATION_SETTINGS } from "./VerificationScope"
+
 /**
  * An inert, bounded pytest hook plugin carried with the extension bundle. Its
  * receipt corroborates a physical terminal outcome; it is not a security boundary
@@ -10,6 +12,9 @@ export function pythonVerificationObserverSource(identity: {
 	reportPath: string
 }): string {
 	const encodedIdentity = Buffer.from(JSON.stringify(identity), "utf8").toString("base64")
+	const encodedPresentationSettings = Buffer.from(JSON.stringify([...PYTEST_PRESENTATION_SETTINGS]), "utf8").toString(
+		"base64",
+	)
 	return `import base64
 import hashlib
 import json
@@ -17,6 +22,7 @@ import os
 import pytest
 
 _identity = json.loads(base64.b64decode("${encodedIdentity}"))
+_PRESENTATION_SETTINGS = frozenset(json.loads(base64.b64decode("${encodedPresentationSettings}")))
 _MAX_FILES = 256
 _MAX_TEXT = 4096
 _MAX_ITEMS = 16384
@@ -29,6 +35,11 @@ _COLLECTION_HOOKS = frozenset((
     "pytest_ignore_collect", "pytest_collectstart", "pytest_collectreport",
     "pytest_itemcollected", "pytest_generate_tests"))
 _COLLECTION_WRAPPERS = frozenset(("pytest_collection_modifyitems", "pytest_collection_finish"))
+_COLLECTION_DEFAULTS = {
+    "python_files": ["test_*.py", "*_test.py"],
+    "python_functions": ["test"],
+    "python_classes": ["Test"],
+    "norecursedirs": ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}"]}
 _state = {"sessions": 0, "files": {}, "nodes": {}, "unsupported": None,
           "collectionCompleted": False, "selectionFingerprint": None, "nodeBytes": 0}
 
@@ -36,6 +47,34 @@ _state = {"sessions": 0, "files": {}, "nodes": {}, "unsupported": None,
 def _unsupported(reason):
     if _state["unsupported"] is None:
         _state["unsupported"] = reason
+
+
+def _collection_settings(config):
+    try:
+        overrides = getattr(config.option, "override_ini", None) or ()
+        if not isinstance(overrides, (list, tuple)) or len(overrides) > _MAX_FILES:
+            _unsupported("unsupported_collection_override")
+        else:
+            for override in overrides:
+                if (not isinstance(override, str) or len(override) > _MAX_TEXT or
+                        "=" not in override or override.split("=", 1)[0] not in _PRESENTATION_SETTINGS):
+                    _unsupported("unsupported_collection_override")
+        # Effective values also detect ordinary configure/session hooks changing
+        # pytest's ini cache without declaring a custom collection hook. Keep this
+        # latched before collection so resetting the values later cannot erase it.
+        for name, expected in _COLLECTION_DEFAULTS.items():
+            actual = config.getini(name)
+            if not isinstance(actual, (list, tuple)) or list(actual) != expected:
+                _unsupported("unsupported_collection_setting:" + name)
+        try:
+            imported_tests = config.getini("collect_imported_tests")
+        except ValueError:
+            pass  # Added after pytest 8.3; older runners do not expose this option.
+        else:
+            if imported_tests is not True:
+                _unsupported("unsupported_collection_setting:collect_imported_tests")
+    except Exception:
+        _unsupported("observer_configuration_failed")
 
 
 @pytest.hookimpl
@@ -160,6 +199,7 @@ def _write_receipt(session, exitstatus):
     created = False
     try:
         config = session.config
+        _collection_settings(config)
         _distributed(config)
         selection = _selection(config)
         files = []
@@ -216,6 +256,7 @@ def _write_receipt(session, exitstatus):
 def pytest_sessionstart(session):
     try:
         _state["sessions"] += 1
+        _collection_settings(session.config)
         _distributed(session.config)
         if _state["sessions"] != 1:
             _unsupported("repeated_sessions")
@@ -231,9 +272,16 @@ def pytest_sessionstart(session):
 
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_collection(session):
+    _collection_settings(session.config)
+    yield
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
 def pytest_collection_modifyitems(session, config, items):
     before = None
     try:
+        _collection_settings(config)
         before = _snapshot(items)
     except Exception:
         _unsupported("observer_collection_failed")

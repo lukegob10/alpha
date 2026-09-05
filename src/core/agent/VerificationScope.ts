@@ -207,7 +207,7 @@ const PYTEST_OUTPUT_OPTIONS = new Set([
 	"--disable-warnings",
 ])
 const PYTEST_TEST_FILE = /(?:^|\/)(?:test_[^/]+|[^/]+_test)\.py$/
-const PYTEST_PRESENTATION_SETTINGS = new Set([
+export const PYTEST_PRESENTATION_SETTINGS: ReadonlySet<string> = new Set([
 	"minversion",
 	"markers",
 	"filterwarnings",

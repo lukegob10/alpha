@@ -140,6 +140,43 @@ describe.skipIf(!python)("pytest verification observer with an installed Python/
 		})
 	})
 
+	it("rejects an inherited ini override silently dropping a failing test in the same file", async () => {
+		await write("test_selected.py", "def test_smoke(): assert True\ndef test_regression(): assert False\n")
+		const args = ["-m", "pytest", "-c", "pytest.ini", "-q"]
+		const environment = { PYTEST_ADDOPTS: "-o python_functions=test_smoke" }
+		expect((await execute(args)).exitCode).toBe(1)
+		const unobserved = await execute(args, environment)
+		expect(unobserved.exitCode).toBe(0)
+		expect(unobserved.stdout).toContain("1 passed")
+		expect((await pytest([], environment)).exitCode).toBe(0)
+		expect(await receipt()).toMatchObject({
+			unsupported: "unsupported_collection_override",
+			files: [{ collected: 1, passed: 1 }],
+		})
+	})
+
+	it("latches an effective collection restriction even when a later hook restores the default", async () => {
+		await write("test_selected.py", "def test_smoke(): assert True\ndef test_regression(): assert False\n")
+		await write(
+			"conftest.py",
+			"def pytest_configure(config): config._inicache['python_functions'] = ['test_smoke']\ndef pytest_sessionfinish(session): session.config._inicache['python_functions'] = ['test']\n",
+		)
+		expect((await pytest()).exitCode).toBe(0)
+		expect(await receipt()).toMatchObject({
+			unsupported: "unsupported_collection_setting:python_functions",
+			files: [{ collected: 1, passed: 1 }],
+		})
+	})
+
+	it("allows inherited overrides of supported reporting settings", async () => {
+		await write("test_selected.py", "def test_one(): assert True\ndef test_two(): assert True\n")
+		expect((await pytest([], { PYTEST_ADDOPTS: "-o console_output_style=count -o log_cli=false" })).exitCode).toBe(
+			0,
+		)
+		expect((await receipt()).unsupported).toBeUndefined()
+		expect((await receipt()).files[0]).toMatchObject({ collected: 2, passed: 2 })
+	})
+
 	it("detects custom deselection but allows collection reordering", async () => {
 		await write("test_selected.py", "def test_one(): assert True\ndef test_two(): assert True\n")
 		await write("conftest.py", "def pytest_collection_modifyitems(items): items.reverse()\n")

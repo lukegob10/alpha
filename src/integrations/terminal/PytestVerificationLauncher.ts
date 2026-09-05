@@ -105,7 +105,8 @@ export function buildPytestVerificationTerminalLaunch(
 				// An invoked script file provides the exit boundary; an inline script block's
 				// exit can terminate the user's shell. Do not bypass script execution policy.
 				content: [
-					"$alphaPytestHadPath = Test-Path -LiteralPath Env:PYTHONPATH",
+					// Windows PowerShell 5.1 reads BOM-less source as ANSI, corrupting Unicode paths and arguments.
+					"\uFEFF$alphaPytestHadPath = Test-Path -LiteralPath Env:PYTHONPATH",
 					"$alphaPytestHadPlugins = Test-Path -LiteralPath Env:PYTEST_PLUGINS",
 					"$alphaPytestPreviousPath = [Environment]::GetEnvironmentVariable('PYTHONPATH', 'Process')",
 					"$alphaPytestPreviousPlugins = [Environment]::GetEnvironmentVariable('PYTEST_PLUGINS', 'Process')",

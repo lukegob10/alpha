@@ -27,7 +27,9 @@ Ambiguous active configurations, unsupported native pytest TOML, unknown options
 projects, and exceeded discovery/content bounds remain unsupported. Ordinary conftest hooks are fingerprinted and
 supported when the host requires runtime collection evidence. Custom collection-producing hooks and outer collection
 wrappers are unsupported because they can hide tests before observation; ordinary fixtures and builtin parametrization
-remain supported. A caller using only the static resolver cannot claim
+remain supported. Runtime INI overrides reuse the static reporting-only allowlist, and effective collection defaults
+are checked so inherited `-o python_functions=...` or configuration callbacks cannot hide tests inside a passing file.
+A caller using only the static resolver cannot claim
 coverage through executable hooks. Source/configuration fingerprints and discovery dependencies are captured before
 execution. Observed configuration bytes must match the final snapshot, and pytest scope is resolved again after
 completion to detect changed configuration or test topology. The direct `smol-toml@1.3.4` dependency, already present
@@ -53,8 +55,9 @@ and disposal are idempotent. Backgrounding keeps the receipt alive; terminal com
 
 Execa uses a subprocess environment overlay. The VS Code adapter uses the stable 1.122.1 `TerminalState.shell` value
 to choose scoped bash/sh/zsh or PowerShell/Windows PowerShell launch transport. Existing PYTEST_ADDOPTS, PYTEST_PLUGINS,
-and PYTHONPATH are preserved; only the unique observer module and directory are appended. PowerShell restores environment
-presence/values and preserves the native exit code. Original command text remains in approval, evidence, and process
+and PYTHONPATH are preserved; only the unique observer module and directory are appended. PowerShell helpers include
+a UTF-8 BOM so Windows PowerShell 5 preserves Unicode paths and arguments. They restore environment presence/values and
+preserve the native exit code. Original command text remains in approval, evidence, and process
 records. No rerun or repository configuration change is used. Cancellation is latched across asynchronous helper
 creation so an aborted command cannot launch afterward. Unidentified/cmd/fish shells or unavailable instrumentation
 execute normally and remain unverified with an actionable diagnostic when preparation is unavailable. PowerShell script
@@ -76,11 +79,12 @@ configuration, precedence, path containment, config changes, virtual environment
 The resolver/Plan/provider/ledger batch passes 322 tests. Observer tests execute Python 3.12 with pytest 8.3.4 and cover
 normal fixtures, selection, error phases, counts, bounds, and host receipt acceptance. Launcher tests execute PowerShell
 7, Windows PowerShell 5, and Git bash/sh; zsh has unit coverage but its executable is unavailable here. Physical Task
-tests exercise the scheduler, receipt, provider, and durable completion gate. Final focused results are 33 Task command
-outcome tests, 39 receipt-manager tests, 22 actual-Python observer tests, 29 launcher tests, 40 existing command-tool tests,
+tests exercise the scheduler, receipt, provider, and durable completion gate. Final focused results are 35 Task command
+outcome tests, 39 receipt-manager tests, 25 actual-Python observer tests, 31 launcher tests, 40 existing command-tool tests,
 and 60 adjacent lifecycle/authority/mutation/terminal tests. Adapter regressions include 22 TerminalProcess tests.
-Final `src` typecheck, repository lint (12 tasks), `pnpm bundle`, and `pnpm vsix` pass. VSIX contents verification is
-deferred during the orchestrator's performance measurement quiet window. No performance improvement is claimed.
+Final `src` typecheck, repository lint (12 tasks), `pnpm bundle`, and `pnpm vsix` pass. The contents verifier checks all
+1,783 VSIX entries successfully: required files are present and no `.env` files are packaged. No performance improvement
+is claimed.
 
 The exact-host command was started and the root bundle passed. It was stopped during its second webview build at the
 orchestrator's request, before host launch. VS Code 1.122.1 validation remains required in the sequential combined run;
@@ -93,3 +97,5 @@ Primary references retrieved 2026-09-05: [pytest configuration](https://docs.pyt
 [pytest default discovery source](https://raw.githubusercontent.com/pytest-dev/pytest/main/src/_pytest/main.py).
 The observer uses the installed pytest 8.3.4 hook contracts; the terminal adapter is checked against
 [VS Code 1.122.1 API declarations](https://raw.githubusercontent.com/microsoft/vscode/1.122.1/src/vscode-dts/vscode.d.ts).
+The helper encoding follows Microsoft's
+[Windows PowerShell 5 character encoding guidance](https://github.com/MicrosoftDocs/PowerShell-Docs/blob/main/reference/5.1/Microsoft.PowerShell.Core/About/about_Character_Encoding.md).

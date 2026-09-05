@@ -174,6 +174,52 @@ describe("pytest verification launcher in real shells", () => {
 	})
 
 	for (const powerShell of powerShells) {
+		it(`preserves Unicode helper paths and native arguments in ${powerShell}`, async () => {
+			const unicodeDirectory = path.join(directory, "観察-é-Δ")
+			await fs.mkdir(unicodeDirectory)
+			const unicodeProbePath = path.join(unicodeDirectory, "検査.cjs")
+			const outputPath = path.join(unicodeDirectory, "結果.json")
+			await fs.writeFile(
+				unicodeProbePath,
+				`require('fs').writeFileSync(process.argv[2], JSON.stringify({args:process.argv.slice(3),path:process.env.PYTHONPATH}));process.exit(7);`,
+			)
+			const argumentsToPreserve = ["café", "日本語", "Δοκιμή"]
+			const command = `& ${[process.execPath, unicodeProbePath, outputPath, ...argumentsToPreserve].map(quotePowerShell).join(" ")}`
+			const result = buildPytestVerificationTerminalLaunch(
+				command,
+				{
+					...physicalLaunch,
+					moduleDirectory: unicodeDirectory,
+					reportPath: path.join(unicodeDirectory, "receipt.json"),
+				},
+				"pwsh",
+			)
+			if (!result.available || !result.helper) throw new Error("Expected a PowerShell helper")
+			await fs.writeFile(result.helper.path, result.helper.content, "utf8")
+			const { stdout } = await execFileAsync(
+				powerShell,
+				[
+					"-NoLogo",
+					"-NoProfile",
+					"-NonInteractive",
+					"-Command",
+					`${result.commandToExecute}\nWrite-Output ('exit=' + $LASTEXITCODE)`,
+				],
+				{
+					env: { ...process.env, PYTHONPATH: "inherited" },
+					timeout: 10_000,
+					maxBuffer: 64 * 1_024,
+					windowsHide: true,
+				},
+			)
+			// Read UTF-8 from the native process's artifact so PS5 console decoding cannot mask a source-encoding bug.
+			expect(JSON.parse(await fs.readFile(outputPath, "utf8"))).toEqual({
+				args: argumentsToPreserve,
+				path: `inherited${path.delimiter}${unicodeDirectory}`,
+			})
+			expect(stdout.trim()).toBe("exit=7")
+		})
+
 		it.each([0, 7])(
 			`preserves ${powerShell} native exit %i, inherited environment, and the caller shell`,
 			async (exitCode) => {
