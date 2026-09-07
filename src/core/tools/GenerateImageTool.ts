@@ -10,12 +10,23 @@ import {
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { fileExistsAtPath } from "../../utils/fs"
+import { arePathsEqual } from "../../utils/path"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { OpenRouterHandler } from "../../api/providers/openrouter"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import type { ToolUse } from "../../shared/tools"
 import { t } from "../../i18n"
 import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
+import {
+	captureImageOutputState,
+	writeImageOutput,
+	ImageOutputWriteError,
+	type ImageOutputState,
+} from "./imageOutputFile"
+import { resolvePathWithExistingAncestor } from "./pathSafety"
+import { getImageOutputPaths } from "./imageOutputPaths"
+
+class ImageGenerationCancelledError extends Error {}
 
 export class GenerateImageTool extends BaseTool<"generate_image"> {
 	readonly name = "generate_image" as const
@@ -23,6 +34,11 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 	async execute(params: GenerateImageParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
 		const { prompt, path: relPath, image: inputImagePath } = params
 		const { handleError, pushToolResult, askApproval } = callbacks
+		const pushFailure = (result: Parameters<ToolCallbacks["pushToolResult"]>[0]) => {
+			task.didToolFailInCurrentTurn = true
+			callbacks.setResultMetadata?.({ status: "error" })
+			pushToolResult(result)
+		}
 
 		const provider = task.providerRef.deref()
 		const state = await provider?.getState()
@@ -32,7 +48,7 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 		)
 
 		if (!isImageGenerationEnabled) {
-			pushToolResult(
+			pushFailure(
 				formatResponse.toolError(
 					"Image generation is an experimental feature that must be enabled in settings. Please enable 'Image Generation' in the Experimental Settings section.",
 				),
@@ -43,21 +59,21 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 		if (!prompt) {
 			task.consecutiveMistakeCount++
 			task.recordToolError("generate_image")
-			pushToolResult(await task.sayAndCreateMissingParamError("generate_image", "prompt"))
+			pushFailure(await task.sayAndCreateMissingParamError("generate_image", "prompt"))
 			return
 		}
 
 		if (!relPath) {
 			task.consecutiveMistakeCount++
 			task.recordToolError("generate_image")
-			pushToolResult(await task.sayAndCreateMissingParamError("generate_image", "path"))
+			pushFailure(await task.sayAndCreateMissingParamError("generate_image", "path"))
 			return
 		}
 
 		const accessAllowed = task.rooIgnoreController?.validateAccess(relPath)
 		if (!accessAllowed) {
 			await task.say("rooignore_error", relPath)
-			pushToolResult(formatResponse.rooIgnoreError(relPath))
+			pushFailure(formatResponse.rooIgnoreError(relPath))
 			return
 		}
 
@@ -68,8 +84,7 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 			const inputImageExists = await fileExistsAtPath(inputImageFullPath)
 			if (!inputImageExists) {
 				await task.say("error", `Input image not found: ${getTaskReadablePath(task, inputImagePath)}`)
-				task.didToolFailInCurrentTurn = true
-				pushToolResult(
+				pushFailure(
 					formatResponse.toolError(`Input image not found: ${getTaskReadablePath(task, inputImagePath)}`),
 				)
 				return
@@ -78,7 +93,7 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 			const inputImageAccessAllowed = task.rooIgnoreController?.validateAccess(inputImagePath)
 			if (!inputImageAccessAllowed) {
 				await task.say("rooignore_error", inputImagePath)
-				pushToolResult(formatResponse.rooIgnoreError(inputImagePath))
+				pushFailure(formatResponse.rooIgnoreError(inputImagePath))
 				return
 			}
 
@@ -92,8 +107,7 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 						"error",
 						`Unsupported image format: ${imageExtension}. Supported formats: ${supportedFormats.join(", ")}`,
 					)
-					task.didToolFailInCurrentTurn = true
-					pushToolResult(
+					pushFailure(
 						formatResponse.toolError(
 							`Unsupported image format: ${imageExtension}. Supported formats: ${supportedFormats.join(", ")}`,
 						),
@@ -108,8 +122,7 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 					"error",
 					`Failed to read input image: ${error instanceof Error ? error.message : "Unknown error"}`,
 				)
-				task.didToolFailInCurrentTurn = true
-				pushToolResult(
+				pushFailure(
 					formatResponse.toolError(
 						`Failed to read input image: ${error instanceof Error ? error.message : "Unknown error"}`,
 					),
@@ -117,8 +130,6 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 				return
 			}
 		}
-
-		const isWriteProtected = task.rooProtectedController?.isWriteProtected(relPath) || false
 
 		// Use shared utility for backwards compatibility logic
 		const imageProvider = getImageGenerationProvider(
@@ -153,35 +164,67 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 		if (imageProvider === "openrouter" && !openRouterApiKey) {
 			const errorMessage = t("tools:generateImage.openRouterApiKeyRequired")
 			await task.say("error", errorMessage)
-			pushToolResult(formatResponse.toolError(errorMessage))
+			pushFailure(formatResponse.toolError(errorMessage))
 			return
 		}
 
-		const fullPath = path.resolve(task.cwd, relPath)
-		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, fullPath)
-
-		const sharedMessageProps = {
-			tool: "generateImage" as const,
-			path: getTaskReadablePath(task, relPath),
-			content: prompt,
-			isOutsideWorkspace,
-			isProtected: isWriteProtected,
+		const assertActive = () => {
+			if (task.abort || task.abandoned || callbacks.signal?.aborted) {
+				throw new ImageGenerationCancelledError(t("tools:generateImage.cancelledBeforeSave"))
+			}
 		}
+		const pathPolicy = (outputPath: string) => ({
+			isOutsideWorkspace:
+				isTaskPathOutsideWorkspace(task, path.resolve(task.cwd, outputPath)) ||
+				isTaskPathOutsideWorkspace(task, resolvePathWithExistingAncestor(path.resolve(task.cwd, outputPath))),
+			isProtected: task.rooProtectedController?.isWriteProtected(outputPath) || false,
+		})
+		const approvePath = async (outputPath: string, policy: ReturnType<typeof pathPolicy>) => {
+			assertActive()
+			const approved = await askApproval(
+				"tool",
+				JSON.stringify({
+					tool: "generateImage",
+					path: getTaskReadablePath(task, outputPath),
+					content: prompt,
+					...policy,
+					...(inputImagePath && { inputImage: getTaskReadablePath(task, inputImagePath) }),
+				}),
+				undefined,
+				policy.isProtected,
+			)
+			assertActive()
+			if (!approved) callbacks.setResultMetadata?.({ status: "denied" })
+			return approved
+		}
+		let savedPath: string | undefined
 
 		try {
 			task.consecutiveMistakeCount = 0
 
-			const approvalMessage = JSON.stringify({
-				...sharedMessageProps,
-				content: prompt,
-				...(inputImagePath && { inputImage: getTaskReadablePath(task, inputImagePath) }),
-			})
-
-			const didApprove = await askApproval("tool", approvalMessage, undefined, isWriteProtected)
-
-			if (!didApprove) {
-				return
+			assertActive()
+			// The response decides the suffix. Capture every possible destination
+			// before the first approval, retaining failures only for the chosen path.
+			const candidates = getImageOutputPaths(relPath)
+			const outputStates = new Map<string, ImageOutputState | Error>()
+			for (const candidate of candidates) {
+				if (!task.rooIgnoreController?.validateAccess(candidate)) continue
+				try {
+					outputStates.set(
+						candidate,
+						await captureImageOutputState(
+							path.resolve(task.cwd, candidate),
+							getTaskReadablePath(task, candidate),
+						),
+					)
+				} catch (error) {
+					outputStates.set(candidate, error instanceof Error ? error : new Error(String(error)))
+				}
 			}
+			const initialState = outputStates.get(relPath)
+			if (initialState instanceof Error) throw initialState
+			let approvedPolicy = pathPolicy(relPath)
+			if (!(await approvePath(relPath, approvedPolicy))) return
 
 			const openRouterHandler = new OpenRouterHandler({} as any)
 			const result = await openRouterHandler.generateImage(
@@ -190,19 +233,18 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 				openRouterApiKey!,
 				inputImageData,
 			)
+			assertActive()
 
 			if (!result.success) {
 				await task.say("error", result.error || "Failed to generate image")
-				task.didToolFailInCurrentTurn = true
-				pushToolResult(formatResponse.toolError(result.error || "Failed to generate image"))
+				pushFailure(formatResponse.toolError(result.error || "Failed to generate image"))
 				return
 			}
 
 			if (!result.imageData) {
 				const errorMessage = "No image data received"
 				await task.say("error", errorMessage)
-				task.didToolFailInCurrentTurn = true
-				pushToolResult(formatResponse.toolError(errorMessage))
+				pushFailure(formatResponse.toolError(errorMessage))
 				return
 			}
 
@@ -210,36 +252,61 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 			if (!base64Match) {
 				const errorMessage = "Invalid image format received"
 				await task.say("error", errorMessage)
-				task.didToolFailInCurrentTurn = true
-				pushToolResult(formatResponse.toolError(errorMessage))
+				pushFailure(formatResponse.toolError(errorMessage))
 				return
 			}
 
 			const imageFormat = base64Match[1]
 			const base64Data = base64Match[2]
 
-			let finalPath = relPath
-			if (!finalPath.match(/\.(png|jpg|jpeg)$/i)) {
-				finalPath = `${finalPath}.${imageFormat === "jpeg" ? "jpg" : imageFormat}`
-			}
+			const finalPath = candidates.length === 1 ? candidates[0] : candidates[imageFormat === "png" ? 0 : 1]
 
 			const imageBuffer = Buffer.from(base64Data, "base64")
+			if (!task.rooIgnoreController?.validateAccess(finalPath)) {
+				await task.say("rooignore_error", finalPath)
+				pushFailure(formatResponse.rooIgnoreError(finalPath))
+				return
+			}
+			const expectedState = outputStates.get(finalPath)
+			if (expectedState instanceof Error) throw expectedState
+			if (!expectedState) throw new Error(t("tools:generateImage.destinationUnavailableBeforeGeneration"))
+			if (finalPath !== relPath) {
+				approvedPolicy = pathPolicy(finalPath)
+				if (!(await approvePath(finalPath, approvedPolicy))) return
+			}
 
 			const absolutePath = path.resolve(task.cwd, finalPath)
 			const directory = path.dirname(absolutePath)
+			const assertOutputScope = () => {
+				assertActive()
+				const currentPolicy = pathPolicy(finalPath)
+				if (
+					!task.rooIgnoreController?.validateAccess(finalPath) ||
+					(currentPolicy.isProtected && !approvedPolicy.isProtected) ||
+					currentPolicy.isOutsideWorkspace !== approvedPolicy.isOutsideWorkspace ||
+					!arePathsEqual(expectedState.resolvedPath, resolvePathWithExistingAncestor(absolutePath))
+				) {
+					throw new Error(t("tools:generateImage.destinationPolicyChangedBeforeSave"))
+				}
+			}
+			assertOutputScope()
 			await fs.mkdir(directory, { recursive: true })
 
-			await fs.writeFile(absolutePath, imageBuffer)
+			await writeImageOutput(
+				absolutePath,
+				getTaskReadablePath(task, finalPath),
+				imageBuffer,
+				expectedState,
+				assertOutputScope,
+				() => {
+					savedPath = finalPath
+					task.didEditFile = true
+					task.recordToolUsage("generate_image")
+				},
+			)
+			await task.fileContextTracker.trackFileContext(finalPath, "roo_edited")
 
-			if (finalPath) {
-				await task.fileContextTracker.trackFileContext(finalPath, "roo_edited")
-			}
-
-			task.didEditFile = true
-
-			task.recordToolUsage("generate_image")
-
-			const fullImagePath = path.join(task.cwd, finalPath)
+			const fullImagePath = absolutePath
 
 			let imageUri = provider?.convertToWebviewUri?.(fullImagePath) ?? vscode.Uri.file(fullImagePath).toString()
 
@@ -249,6 +316,26 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 			await task.say("image", JSON.stringify({ imageUri, imagePath: fullImagePath }))
 			pushToolResult(formatResponse.toolResult(getTaskReadablePath(task, finalPath)))
 		} catch (error) {
+			if (error instanceof ImageOutputWriteError) task.didEditFile = true
+			if (savedPath !== undefined) {
+				callbacks.setResultMetadata?.({ status: "success" })
+				pushToolResult(
+					formatResponse.toolResult(
+						t("tools:generateImage.postSaveProcessingFailed", {
+							path: getTaskReadablePath(task, savedPath),
+							message: error instanceof Error ? error.message : String(error),
+						}),
+					),
+				)
+				return
+			}
+			if (error instanceof ImageGenerationCancelledError) {
+				callbacks.setResultMetadata?.({ status: "cancelled" })
+				pushToolResult(formatResponse.toolError(error.message))
+				return
+			}
+			task.didToolFailInCurrentTurn = true
+			callbacks.setResultMetadata?.({ status: "error" })
 			await handleError("generating image", error as Error)
 		}
 	}

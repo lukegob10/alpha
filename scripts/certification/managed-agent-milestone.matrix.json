@@ -74,12 +74,15 @@
 		},
 		{
 			"id": "worker-completion-gate",
-			"label": "Worker Apply verification and parent completion gate",
+			"label": "Worker Apply settlement, optional command evidence, and parent completion",
 			"packageDir": "src",
 			"minimumTestCount": 68,
 			"include": [
 				"^core/task/__tests__/Task\\.external-mutation(?:-runtime)?\\.spec\\.ts$",
 				"^core/task/__tests__/WorkspaceMutationGate\\.spec\\.ts$",
+				"^core/task/__tests__/(?:stageThreeCompletion\\.integration|completionDiagnostics)\\.spec\\.ts$",
+				"^core/task-persistence/__tests__/stageThreeVerificationRecovery\\.integration\\.spec\\.ts$",
+				"^core/webview/__tests__/ClineProvider\\.primary-verification\\.spec\\.ts$",
 				"^core/tools/__tests__/(?:attemptCompletionTool|executeCommandTool)\\.spec\\.ts$",
 				"^core/webview/__tests__/(?:ClineProvider\\.change-set-actions|webviewMessageHandler\\.edit)\\.spec\\.ts$"
 			]
@@ -531,7 +534,9 @@
 				},
 				{
 					"label": "Apply decision reload",
-					"patterns": ["advances required to pending, survives reload, and verifies once"]
+					"patterns": [
+						"lands the reviewed patch, survives reload without mandatory checks, and records optional evidence once"
+					]
 				}
 			]
 		},
@@ -593,13 +598,15 @@
 		},
 		{
 			"id": "WORKER-GATE-001",
-			"requirement": "Worker Apply is quarantined, reload-safe, parent-verified, and blocks completion until satisfied.",
+			"requirement": "Worker Apply is quarantined and reload-safe; review and effect settlement gate completion while optional process evidence remains advisory.",
 			"classification": "baseline",
 			"trackIds": ["runtime-invariants", "worker-worktree", "worker-completion-gate", "live-tree-ui"],
 			"probes": [
 				{
 					"label": "durable Apply transition and verification",
-					"patterns": ["advances required to pending, survives reload, and verifies once"]
+					"patterns": [
+						"lands the reviewed patch, survives reload without mandatory checks, and records optional evidence once"
+					]
 				},
 				{
 					"label": "pre-terminal completion recheck",
@@ -608,6 +615,18 @@
 				{
 					"label": "fail-closed completion decision",
 					"patterns": ["fails closed when the durable completion decision cannot be loaded"]
+				},
+				{
+					"label": "optional Worker evidence does not invent completion debt",
+					"patterns": [
+						"does not block approved Worker changes when optional process evidence is missing or failed"
+					]
+				},
+				{
+					"label": "generic evidence does not claim test coverage",
+					"patterns": [
+						"accepts successful arbitrary process evidence without inferring a test classification"
+					]
 				}
 			]
 		},
@@ -629,7 +648,7 @@
 		},
 		{
 			"id": "WORKER-NESTED-001",
-			"requirement": "A descendant Worker has an explicit verification owner and the same double completion gate as a root-owned Worker.",
+			"requirement": "A descendant Worker has an explicit evidence owner and the same review, effect-settlement, and pre-terminal completion checks as a root-owned Worker.",
 			"classification": "merge-dependent",
 			"trackIds": ["runtime-invariants", "lifecycle-routing", "worker-completion-gate", "worker-worktree"],
 			"probes": [
@@ -843,7 +862,7 @@
 		},
 		{
 			"id": "INT-WORKER-GATE-001",
-			"requirement": "Real VS Code host: Worker Apply transitions required -> pending, completion is rejected, parent command satisfies verification, then completion succeeds across reload.",
+			"requirement": "Real VS Code host: Worker Apply transitions required -> pending after review; optional parent process evidence retains its outcome across reload without blocking settled completion.",
 			"reason": "Requires the real extension host, terminal ownership, filesystem worktree, UI Apply action, reload, and completion transition.",
 			"evidenceCommand": null
 		},

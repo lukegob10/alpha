@@ -10,7 +10,6 @@ import { fingerprintContent } from "../../tools/contentVersion"
 import {
 	captureGitMutationState,
 	captureVerificationContent,
-	captureVerificationDependencies,
 	captureWorkspaceMutationState,
 	compareGitMutationState,
 	compareWorkspaceMutationState,
@@ -105,14 +104,15 @@ describe("verification scope observations", () => {
 					command: "vitest run",
 					changedFiles: ["src/source.ts"],
 				}),
-			).resolves.toMatchObject({ scopePath: path.join(root, "src"), kind: "test" })
+			).resolves.toMatchObject({
+				scopePath: root,
+				assurance: "process",
+				matchedFiles: ["src/source.ts"],
+			})
 		}
 		await expect(captureVerificationContent(alias, [path.join(alias, "src/source.ts")])).resolves.toEqual({
 			"src/source.ts": fingerprintContent("export const value = 1"),
 		})
-		await expect(
-			captureVerificationDependencies(alias, [path.join(alias, "src/source.ts")]),
-		).resolves.toMatchObject({ "src/package.json": "missing", "package.json": "missing" })
 	})
 
 	it("still rejects traversal and outward junctions through a workspace alias", async () => {
@@ -181,7 +181,6 @@ describe("verification scope observations", () => {
 	it.each([
 		["write_to_file", "path"],
 		["apply_diff", "path"],
-		["generate_image", "path"],
 		["edit", "file_path"],
 		["edit_file", "file_path"],
 		["search_replace", "file_path"],
@@ -193,6 +192,22 @@ describe("verification scope observations", () => {
 			"native.ts",
 		])
 	})
+
+	it.each(["image.png", "image.JPG", "image.jpeg"])(
+		"captures an explicit image destination %s without appending a suffix",
+		(imagePath) => {
+			const block: ToolUse = {
+				type: "tool_use",
+				name: "generate_image",
+				params: { path: imagePath },
+				partial: false,
+			}
+			expect(extractMutationPaths(block)).toEqual([imagePath])
+			expect(extractMutationPaths({ ...block, nativeArgs: { prompt: "fixture", path: imagePath } })).toEqual([
+				imagePath,
+			])
+		},
+	)
 
 	it("extracts every patch source/destination and fails closed for malformed mutations", () => {
 		const block: ToolUse<"apply_patch"> = {
@@ -213,250 +228,82 @@ describe("verification scope observations", () => {
 	})
 
 	it.each([
-		["vitest run", "test"],
-		["pnpm exec vitest run --maxWorkers=2", "test"],
-		["vitest run --maxWorkers 2", "test"],
-		["jest --ci --runInBand", "test"],
-		["tsc --noEmit", "types"],
-		["eslint . --ext=ts --max-warnings=0", "lint"],
-		["prettier --check .", "format"],
-		["pytest -q", "test"],
-		["python -m pytest .", "test"],
-		["go test ./...", "test"],
-		["go vet ./...", "lint"],
-		["cargo test --workspace", "test"],
-		["cargo check --workspace", "types"],
-	] as const)("admits the whole-scope shape %s", async (command, kind) => {
-		const result = await resolve(command)
-		expect(result).toMatchObject({ scopePath: root, kind })
-		expect(result?.commandDigest).toMatch(/^[a-f0-9]{64}$/)
-		expect(result?.repositoryFiles["package.json"]).toBe("missing")
-	})
-
-	it.each([
-		"echo passed",
-		"git --no-pager status",
-		"vitest run unrelated.spec.ts",
-		"vitest run --passWithNoTests",
-		"vitest run --help",
-		"vitest run --version",
-		"vitest list",
-		"vitest run --testNamePattern=unrelated",
-		"vitest run --maxWorkers=0",
-		"vitest run --maxWorkers=2 unrelated.spec.ts",
-		"jest --listTests",
-		"jest --passWithNoTests",
-		"tsc --noEmit unrelated.ts",
-		"tsc --noEmit --showConfig",
-		"eslint unrelated.ts",
-		"eslint . --fix",
+		"vitest run",
+		"tox -e py",
+		"hatch test",
+		"pnpm run ci:custom",
 		"pytest --collect-only",
-		"pytest -k unrelated",
-		"go test ./unrelated",
-		"go test ./... -run NoTests",
-		"cargo test --workspace --no-run",
-		"cargo test --workspace unrelated",
+		"echo diagnostic",
 		"pnpm exec vitest run && echo passed",
-		"pnpm dlx vitest run",
-		"pnpm --filter unrelated test",
-		"pnpm exec vitest run\nvitest run",
-		"pnpm exec vitest 'run",
-	])("does not turn %s into verifier evidence", async (command) => {
-		expect(await resolve(command)).toBeUndefined()
+	] as const)("captures process evidence for arbitrary approved commands: %s", async (command) => {
+		const result = await resolve(command)
+
+		expect(result).toMatchObject({
+			scopePath: root,
+			assurance: "process",
+			repositoryFiles: {},
+		})
+		expect(result?.matchedFiles).toBeUndefined()
+		expect(result?.commandDigest).toBe(fingerprintContent(JSON.stringify({ command, cwd: root })))
+		expect(result?.repositoryDigest).toBe(fingerprintContent("{}"))
 	})
 
-	it("resolves actual package scripts, nearest package cwd, and repository requirement versions", async () => {
-		const manifest = JSON.stringify({ scripts: { test: "vitest run", "check-types": "tsc --noEmit" } })
-		await write("package.json", JSON.stringify({ scripts: { test: "echo no" } }))
-		await write("package space/package.json", manifest)
-		await fs.mkdir(path.join(root, "package space", "nested"))
-		const first = await resolve('pnpm --dir "package space/nested" test --maxWorkers=2')
-		expect(first?.scopePath).toBe(path.join(root, "package space"))
-		expect(first?.repositoryFiles["package space/package.json"]).toBe(fingerprintContent(manifest))
-		expect(first?.repositoryFiles["package.json"]).toBeDefined()
-		expect(await resolve('pnpm --dir "package space" test unrelated.spec.ts')).toBeUndefined()
-		expect(await resolve("pnpm test")).toBeUndefined()
-		expect(await resolve('pnpm --dir "package space" run check-types')).toMatchObject({ kind: "types" })
-		await write("package space/package.json", JSON.stringify({ scripts: { test: "vitest run" }, name: "changed" }))
-		const next = await resolve('pnpm --dir "package space/nested" test --maxWorkers=2')
-		expect(next?.repositoryDigest).not.toBe(first?.repositoryDigest)
-		await write("package space/vitest.config.ts", "export default {}")
-		expect((await resolve('pnpm --dir "package space" test'))?.repositoryDigest).not.toBe(next?.repositoryDigest)
-	})
+	it("binds evidence to the canonical workspace and explicit changed paths", async () => {
+		await write("src/source.py", "answer = 42")
+		await write("sibling/related.py", "answer = 43")
 
-	it("rejects malformed, oversized, or escaping package manifests without claiming evidence", async () => {
-		await write("package.json", "invalid")
-		await expect(resolve("pnpm test")).rejects.toThrow()
-		await write("package.json", " ".repeat(256 * 1_024 + 1))
-		await expect(resolve("pnpm test")).rejects.toThrow("bounded regular file")
-		await expect(resolve("pnpm --dir ../outside test")).rejects.toThrow("outside")
-	})
+		const result = await resolve("hatch test && custom-check", path.join(root, "src"), [
+			"src/source.py",
+			"sibling/related.py",
+		])
 
-	it("admits exact changed test/lint targets without guessing a source-to-test relationship", async () => {
-		await write("src/example.spec.ts", "test('example', () => {})")
-		await write("src/other.spec.ts", "test('other', () => {})")
-		await write("src/example.ts", "export const example = 1")
-		await write("eslint.config.mjs", 'export default [{"files":["**/*.ts"],"rules":{"semi":"error"}}]')
-		expect(
-			await resolve("vitest run src/example.spec.ts --maxWorkers=2", root, ["src/example.spec.ts"]),
-		).toMatchObject({ kind: "test" })
-		expect(
-			await resolve("vitest run src/example.spec.ts", root, ["src/example.spec.ts", "src/other.spec.ts"]),
-		).toBeUndefined()
-		expect(
-			await resolve("vitest run src/example.spec.ts src/other.spec.ts", root, [
-				"src/example.spec.ts",
-				"src/other.spec.ts",
-			]),
-		).toMatchObject({ kind: "test" })
-		expect(await resolve("vitest run src/example.spec.ts", root, ["src/example.ts"])).toBeUndefined()
-		expect(await resolve("vitest run src/example.ts", root, ["src/example.ts"])).toBeUndefined()
-		expect(await resolve("eslint src/example.ts", root, ["src/example.ts"])).toMatchObject({ kind: "lint" })
-		expect(await resolve("jest --runTestsByPath src/example.spec.ts", root, ["src/example.spec.ts"])).toMatchObject(
-			{ kind: "test" },
-		)
-		await fs.unlink(path.join(root, "src/example.spec.ts"))
-		expect(await resolve("vitest run src/example.spec.ts", root, ["src/example.spec.ts"])).toBeUndefined()
-	})
-
-	it("binds tsc to its actual configured files and supports the extension's bounded include shape", async () => {
-		await write("src/broken.ts", "const broken: string = 1")
-		await write("unrelated.ts", "export const okay = 1")
-		await write("tsconfig.json", JSON.stringify({ files: ["unrelated.ts"] }))
-		expect(await resolve("tsc --noEmit", root, ["src/broken.ts"])).toBeUndefined()
-		expect(await resolve("tsc --noEmit", root, ["unrelated.ts"])).toMatchObject({ kind: "types" })
-		await write(
-			"src/tsconfig.json",
-			JSON.stringify({ compilerOptions: { skipLibCheck: true }, include: ["."], exclude: ["node_modules"] }),
-		)
-		const accepted = await resolve("tsc --noEmit", path.join(root, "src"), ["src/broken.ts"])
-		expect(accepted).toMatchObject({ kind: "types", scopePath: path.join(root, "src") })
-		expect(accepted?.repositoryFiles["src/tsconfig.json"]).toMatch(/^[a-f0-9]{64}$/)
-		expect(await resolve("tsc --noEmit", path.join(root, "src"), ["src/contracts.d.ts"])).toBeUndefined()
-		expect(await resolve("tsc --noEmit", path.join(root, "src"), ["src/README.md"])).toBeUndefined()
-		expect(await resolve("tsc --noEmit", path.join(root, "src"), ["src/tsconfig.json"])).toMatchObject({
-			kind: "types",
+		expect(result).toMatchObject({
+			scopePath: root,
+			assurance: "process",
+			matchedFiles: ["sibling/related.py", "src/source.py"],
+		})
+		expect(result?.repositoryFiles).toEqual({
+			"sibling/related.py": fingerprintContent("answer = 43"),
+			"src/source.py": fingerprintContent("answer = 42"),
 		})
 	})
 
-	it.each([
-		{ include: ["unrelated/**/*.ts"] },
-		{ include: ["src/**/*.ts"], exclude: ["src/broken.ts"] },
-		{ include: ["src/**/*.ts"], exclude: ["src"] },
-		{ compilerOptions: { noCheck: true }, include: ["src"] },
-		{ extends: "./base.json", include: ["src"] },
-		{ references: [{ path: "./src" }], files: [] },
-		{ include: ["src/{broken,other}.ts"] },
-	])("does not credit unknown or excluding TS configuration %j", async (config) => {
-		await write("tsconfig.json", JSON.stringify(config))
-		expect(await resolve("tsc --noEmit", root, ["src/broken.ts"])).toBeUndefined()
+	it("refreshes command and associated-content identities independently", async () => {
+		await write("src/source.py", "before")
+		const first = await resolve("tox -e py", root, ["src/source.py"])
+		await fs.mkdir(path.join(root, "tools"), { recursive: true })
+		const differentCwd = await resolve("tox -e py", path.join(root, "tools"), ["src/source.py"])
+
+		await write("src/source.py", "after")
+		const second = await resolve("tox -e py", root, ["src/source.py"])
+		const differentCommand = await resolve("hatch test", root, ["src/source.py"])
+
+		expect(second?.commandDigest).toBe(first?.commandDigest)
+		expect(differentCwd?.commandDigest).not.toBe(first?.commandDigest)
+		expect(second?.repositoryDigest).not.toBe(first?.repositoryDigest)
+		expect(differentCommand?.commandDigest).not.toBe(first?.commandDigest)
+		expect(differentCommand?.repositoryDigest).toBe(second?.repositoryDigest)
 	})
 
-	it("supports simple TypeScript globs without treating excluded or hidden files as inputs", async () => {
-		await write("tsconfig.json", JSON.stringify({ include: ["src/**/*.ts"], exclude: ["src/ignored/**/*"] }))
-		expect(await resolve("tsc --noEmit", root, ["src/nested/source.ts"])).toMatchObject({ kind: "types" })
-		expect(await resolve("tsc --noEmit", root, ["src/ignored/source.ts"])).toBeUndefined()
-		expect(await resolve("tsc --noEmit", root, ["src/.hidden/source.ts"])).toBeUndefined()
-		expect(await resolve("tsc --noEmit", root, ["src/not-typescript.mtsx"])).toBeUndefined()
+	it("rejects invalid commands and paths without issuing process assurance", async () => {
+		expect(await resolve("")).toBeUndefined()
+		expect(await resolve("x\0y")).toBeUndefined()
+		expect(await resolve("x".repeat(4_097))).toBeUndefined()
+		await expect(resolve("tox -e py", path.join(outside, "missing"))).rejects.toThrow("outside")
+		await expect(resolve("tox -e py", root, [path.join(outside, "secret.py")])).rejects.toThrow("outside")
 	})
 
-	it("rejects nested module/package and known test-runner exclusions", async () => {
-		await write("go.mod", "module example.invalid/root\n")
-		await write("nested/go.mod", "module example.invalid/nested\n")
-		expect(await resolve("go test ./...", root, ["nested/broken.go"])).toBeUndefined()
-		expect(await resolve("go test ./...", path.join(root, "nested"), ["nested/broken.go"])).toMatchObject({
-			kind: "test",
+	it("accepts a contained cwd beside the associated changed paths", async () => {
+		await fs.mkdir(path.join(root, "src"), { recursive: true })
+		await fs.mkdir(path.join(root, "tools"), { recursive: true })
+		await write("src/source.ts", "export const source = true")
+		const result = await resolve("custom-ci --check", path.join(root, "tools"), ["src/source.ts"])
+
+		expect(result).toMatchObject({
+			scopePath: root,
+			matchedFiles: ["src/source.ts"],
+			assurance: "process",
 		})
-		await write("nested/package.json", JSON.stringify({ scripts: { test: "vitest run" } }))
-		expect(await resolve("vitest run", root, ["nested/source.ts"])).toBeUndefined()
-		expect(await resolve("pnpm --dir nested test", root, ["nested/source.ts"])).toMatchObject({ kind: "test" })
-		await write("vitest.config.ts", "export default { test: { exclude: ['src/excluded.spec.ts'] } }")
-		expect(await resolve("vitest run", root, ["src/excluded.spec.ts"])).toBeUndefined()
-	})
-
-	it.each([
-		'import settings from "./other-config"; export default settings',
-		"export default { ...settings }",
-		'export default { ["te" + "st"]: {} }',
-		"export default () => ({ test: {} })",
-		'import { defineConfig } from "vitest/config"; export default defineConfig({})',
-	])("does not infer test coverage from dynamic configuration %s", async (config) => {
-		await write("vitest.config.ts", config)
-		await write("src/example.spec.ts", "test('example', () => {})")
-		expect(await resolve("vitest run", root, ["src/source.ts"])).toBeUndefined()
-		expect(await resolve("vitest run", path.join(root, "src"), ["src/source.ts"])).toBeUndefined()
-		expect(await resolve("vitest run src/example.spec.ts", root, ["src/example.spec.ts"])).toBeUndefined()
-	})
-
-	it("accepts only harmless literal test settings and checks Jest's package configuration", async () => {
-		await write("vitest.config.mjs", 'export default {"test":{"globals":true,"watch":false,"testTimeout":20000}};')
-		expect(await resolve("vitest run", root, ["src/source.ts"])).toMatchObject({ kind: "test" })
-		await write("jest.config.cjs", 'module.exports = {"verbose":true};')
-		expect(await resolve("jest --ci", root, ["src/source.ts"])).toMatchObject({ kind: "test" })
-		await write("package.json", JSON.stringify({ jest: { testMatch: ["**/unrelated.spec.ts"] } }))
-		expect(await resolve("jest --ci", root, ["src/source.ts"])).toBeUndefined()
-	})
-
-	it("requires ESLint file types, matching literal rules, and supported ignores", async () => {
-		await write("src/example.ts", "export const example = 1")
-		await write("src/example.js", "export const example = 1")
-		await write("README.md", "# Notes")
-		await write("eslint.config.mjs", 'export default [{"rules":{"semi":"error"}}]')
-		expect(await resolve("eslint .", root, ["src/example.js"])).toMatchObject({ kind: "lint" })
-		expect(await resolve("eslint .", root, ["README.md"])).toBeUndefined()
-		expect(await resolve("eslint README.md", root, ["README.md"])).toBeUndefined()
-		expect(await resolve("eslint .", root, ["src/example.ts"])).toBeUndefined()
-		expect(await resolve("eslint . --ext=ts", root, ["src/example.ts"])).toMatchObject({ kind: "lint" })
-		await write(
-			"eslint.config.mjs",
-			'export default [{"files":["src/**/*.ts"],"rules":{"semi":"error"}},{"ignores":["src/ignored/**"]}]',
-		)
-		expect(await resolve("eslint .", root, ["src/example.ts"])).toMatchObject({ kind: "lint" })
-		expect(await resolve("eslint .", root, ["other/example.ts"])).toBeUndefined()
-		expect(await resolve("eslint .", root, ["src/ignored/example.ts"])).toBeUndefined()
-		await write("eslint.config.mjs", 'export default [{"rules":{"semi":"off"}}]')
-		expect(await resolve("eslint .", root, ["src/example.js"])).toBeUndefined()
-		await write("eslint.config.mjs", 'import rules from "./shared.js"; export default rules')
-		expect(await resolve("eslint .", root, ["src/example.js"])).toBeUndefined()
-	})
-
-	it.each([
-		["vitest run", "src/foreign.py"],
-		["jest --ci", "src/foreign.go"],
-		["pytest", "src/foreign.ts"],
-		["go test ./...", "src/foreign.rs"],
-		["go vet ./...", "src/foreign.ts"],
-		["cargo test --workspace", "src/foreign.go"],
-		["cargo check --workspace", "src/foreign.py"],
-	])("does not let %s cover prose, binaries, or another language", async (command, foreign) => {
-		expect(await resolve(command, root, ["README.md"])).toBeUndefined()
-		expect(await resolve(command, root, ["image.png"])).toBeUndefined()
-		expect(await resolve(command, root, [foreign])).toBeUndefined()
-	})
-
-	it("keeps explicit supported source/config types and Markdown formatting eligible", async () => {
-		expect(await resolve("vitest run", root, ["source.ts", "package.json"])).toMatchObject({ kind: "test" })
-		expect(await resolve("pytest", root, ["source.py", "pytest.ini"])).toMatchObject({ kind: "test" })
-		expect(await resolve("go test ./...", root, ["source.go", "go.mod"])).toMatchObject({ kind: "test" })
-		expect(await resolve("cargo check --workspace", root, ["source.rs", "Cargo.toml"])).toMatchObject({
-			kind: "types",
-		})
-		expect(await resolve("prettier --check .", root, ["README.md"])).toMatchObject({ kind: "format" })
-		await write("README.md", "# Notes")
-		expect(await resolve("prettier --check README.md", root, ["README.md"])).toMatchObject({ kind: "format" })
-		expect(await resolve("prettier --check .", root, ["image.png"])).toBeUndefined()
-		expect(await resolve("prettier --check .", root, ["program.exe"])).toBeUndefined()
-	})
-
-	it("captures requirement dependencies across changed packages without promoting source paths", async () => {
-		await write("one/package.json", JSON.stringify({ scripts: { test: "vitest run" } }))
-		await write("two/tsconfig.json", JSON.stringify({ include: ["."] }))
-		const dependencies = await captureVerificationDependencies(root, ["one/source.ts", "two/source.ts"])
-		expect(dependencies["one/package.json"]).toMatch(/^[a-f0-9]{64}$/)
-		expect(dependencies["two/tsconfig.json"]).toMatch(/^[a-f0-9]{64}$/)
-		expect(dependencies["package.json"]).toBe("missing")
-		expect(dependencies["one/source.ts"]).toBeUndefined()
-		expect(dependencies["two/source.ts"]).toBeUndefined()
 	})
 
 	it("compares real Git-visible edits, creations, deletions, and files becoming clean", async () => {

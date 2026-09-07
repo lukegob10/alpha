@@ -3,6 +3,7 @@ import { generateImageTool } from "../GenerateImageTool"
 import { ToolUse } from "../../../shared/tools"
 import { Task } from "../../task/Task"
 import * as fs from "fs/promises"
+import path from "path"
 import * as pathUtils from "../../../utils/pathUtils"
 import * as fileUtils from "../../../utils/fs"
 import { formatResponse } from "../../prompts/responses"
@@ -15,6 +16,12 @@ vi.mock("../../../utils/pathUtils")
 vi.mock("../../../utils/fs")
 vi.mock("../../../utils/safeWriteJson")
 vi.mock("../../../api/providers/openrouter")
+vi.mock("../imageOutputFile", () => ({
+	captureImageOutputState: vi
+		.fn()
+		.mockImplementation(async (resolvedPath: string) => ({ resolvedPath, file: { exists: false } })),
+	writeImageOutput: vi.fn().mockResolvedValue(undefined),
+}))
 
 describe("generateImageTool", () => {
 	let mockCline: any
@@ -212,11 +219,7 @@ describe("generateImageTool", () => {
 			if (sayCall) {
 				const imageData = JSON.parse(sayCall[1])
 				expect(imageData.imageUri).toMatch(/\?t=\d+$/)
-				// Handle both Unix and Windows path separators
-				const expectedPath =
-					process.platform === "win32"
-						? "\\test\\workspace\\test-image.png"
-						: "/test/workspace/test-image.png"
+				const expectedPath = path.resolve(mockCline.cwd, "test-image.png")
 				expect(imageData.imagePath).toBe(expectedPath)
 			}
 		})

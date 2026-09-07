@@ -67,8 +67,13 @@ function createTask() {
 		diffViewProvider: {
 			editType: undefined,
 			originalContent: undefined,
+			open: vi.fn(),
+			update: vi.fn(),
+			scrollToFirstDiff: vi.fn(),
 			saveDirectly: vi.fn(),
+			saveChanges: vi.fn(),
 			reset: vi.fn(),
+			revertChanges: vi.fn(),
 			pushToolWriteResult: vi.fn(async () => "write complete"),
 		},
 		fileContextTracker: { trackFileContext: vi.fn() },
@@ -118,5 +123,29 @@ describe("ApplyDiffTool", () => {
 			task.diffViewProvider.reset.mock.invocationCallOrder[0],
 		)
 		expect(callbacks.handleError).not.toHaveBeenCalled()
+	})
+
+	it("passes the raw baseline to the diff preview after diff computation", async () => {
+		vi.mocked(experiments.isEnabled).mockReturnValue(false)
+		const rawBaseline = "old\r\n"
+		const task = createTask()
+		const callbacks = createCallbacks()
+		task.diffStrategy.applyDiff.mockImplementationOnce(async () => {
+			// A later disk read must not become the preview baseline.
+			mockedFs.readFile.mockResolvedValueOnce("changed while computing diff")
+			return { success: true, content: "new\r\n" }
+		})
+		mockedFs.readFile.mockResolvedValueOnce(rawBaseline)
+
+		await new ApplyDiffTool().execute(
+			{ path: "test.txt", diff: "<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE" },
+			task,
+			callbacks as any,
+		)
+
+		expect(task.diffViewProvider.open).toHaveBeenCalledWith("test.txt", {
+			exists: true,
+			content: rawBaseline,
+		})
 	})
 })

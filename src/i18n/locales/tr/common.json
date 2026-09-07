@@ -20,6 +20,11 @@
 		"delete_custom_mode_with_rules": "Bu {scope} modunu silmek istediğinizden emin misiniz?\n\nBu işlem, ilişkili kurallar klasörünü de şu konumdan silecektir:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"task_recovery_lock_repair": "Alpha, paylaşılan görev depolama kilidinin sahibini doğrulayamıyor. Devam etmek veya yeniden yüklemek bunu güvenle onaramaz. Tüm VS Code pencerelerini ve Alpha test ana bilgisayarlarını kapatın. Ardından yeniden açmadan önce Alpha genel depolamasındaki yalnızca agent_control.json.transaction.lock dosyasını veya klasörünü yedekleyip kaldırın. Bir ana bilgisayar çalışırken kilidi asla kaldırmayın; görev geçmişini ve agent_control.json dosyasını koruyun.",
+		"task_recovery_failed": "Bir işlem başarısız olduğu için tur durdu. Görevi sürdürebilir veya yeni yönergeler gönderebilirsiniz.",
+		"task_recovery_incomplete": "Görev tamamlanmadan tur sona erdi. Görevi sürdürebilir veya yeni yönergeler gönderebilirsiniz.",
+		"task_recovery_exhausted": "Otomatik yeniden deneme sınırına ulaşıldığı için tur durdu. Görevi sürdürebilir veya yeni yönergeler gönderebilirsiniz.",
+		"task_recovery_persistence": "Gerekli görev verileri kaydedilemediği için görev duraklatıldı. Boş disk alanını ve görev depolama klasörüne erişimi kontrol edin, ardından görevi sürdürün veya yeni yönergeler gönderin.",
 		"invalid_data_uri": "Geçersiz veri URI formatı",
 		"error_copying_image": "Resim kopyalanırken hata oluştu: {{errorMessage}}",
 		"error_saving_image": "Resim kaydedilirken hata oluştu: {{errorMessage}}",

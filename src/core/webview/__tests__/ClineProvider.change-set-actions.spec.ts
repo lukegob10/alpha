@@ -187,7 +187,7 @@ describe("ClineProvider Worker change-set actions", () => {
 	)
 
 	it(
-		"lands the real patch, advances required to pending, survives reload, and verifies once",
+		"lands the reviewed patch, survives reload without mandatory checks, and records optional evidence once",
 		async () => {
 			const artifact = await createArtifact("verified worker change\n")
 			const { provider, parent, group, store, persistence, historyItems } = await createHarness(artifact)
@@ -200,7 +200,8 @@ describe("ClineProvider Worker change-set actions", () => {
 			expect((await managedSubagentWorktreeService.load(storage, artifact.id)).status).toBe("applied")
 			expect(group.agents[0]).toMatchObject({
 				changeSet: { status: "applied" },
-				parentVerification: { status: "pending", blocking: true },
+				parentVerification: { status: "pending", blocking: false },
+				requiresParentVerification: false,
 			})
 			expect(historyItems.get("worker-1").subagentChangeSet.status).toBe("applied")
 			expect(store.getVerificationObligations({ parentTaskId: "parent-1" })).toMatchObject([
@@ -353,7 +354,7 @@ describe("ClineProvider Worker change-set actions", () => {
 			expect(store.getVerificationObligations({ parentTaskId: "outer-worker" })).toMatchObject([
 				{ workerTaskId: "nested-worker", status: "pending" },
 			])
-			expect(store.getParentCompletionDecision("outer-worker", "root-1").allowed).toBe(false)
+			expect(store.getParentCompletionDecision("outer-worker", "root-1").allowed).toBe(true)
 			expect(store.getParentCompletionDecision("root-1", "root-1").allowed).toBe(true)
 			expect(
 				store.readMailbox("outer-worker", { rootTaskId: "root-1" }).entries.map((entry) => entry.name),

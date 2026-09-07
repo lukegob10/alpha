@@ -188,6 +188,7 @@ describe("writeToFileTool", () => {
 		params: Partial<ToolUse["params"]> = {},
 		options: {
 			fileExists?: boolean
+			fileContent?: string
 			isPartial?: boolean
 			accessAllowed?: boolean
 		} = {},
@@ -198,6 +199,9 @@ describe("writeToFileTool", () => {
 		const accessAllowed = options.accessAllowed ?? true
 
 		mockedFileExistsAtPath.mockResolvedValue(fileExists)
+		if (options.fileContent !== undefined) {
+			mockedFsReadFile.mockResolvedValue(options.fileContent)
+		}
 		mockCline.rooIgnoreController.validateAccess.mockReturnValue(accessAllowed)
 
 		// Create a tool use object
@@ -234,7 +238,7 @@ describe("writeToFileTool", () => {
 			await executeWriteFileTool({}, { accessAllowed: true })
 
 			expect(mockCline.rooIgnoreController.validateAccess).toHaveBeenCalledWith(testFilePath)
-			expect(mockCline.diffViewProvider.open).toHaveBeenCalledWith(testFilePath)
+			expect(mockCline.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, { exists: false })
 		})
 	})
 
@@ -264,16 +268,16 @@ describe("writeToFileTool", () => {
 
 	describe("directory creation for new files", () => {
 		it.skipIf(process.platform === "win32")(
-			"creates parent directories early when file does not exist (execute)",
+			"does not create parent directories before approval (execute)",
 			async () => {
 				await executeWriteFileTool({}, { fileExists: false })
 
-				expect(mockedCreateDirectoriesForFile).toHaveBeenCalledWith(absoluteFilePath)
+				expect(mockedCreateDirectoriesForFile).not.toHaveBeenCalled()
 			},
 		)
 
 		it.skipIf(process.platform === "win32")(
-			"creates parent directories when path has stabilized (partial)",
+			"does not create parent directories when path has stabilized (partial)",
 			async () => {
 				// First call - path not yet stabilized
 				await executeWriteFileTool({}, { fileExists: false, isPartial: true })
@@ -281,7 +285,7 @@ describe("writeToFileTool", () => {
 
 				// Second call with same path - path is now stabilized
 				await executeWriteFileTool({}, { fileExists: false, isPartial: true })
-				expect(mockedCreateDirectoriesForFile).toHaveBeenCalledWith(absoluteFilePath)
+				expect(mockedCreateDirectoriesForFile).not.toHaveBeenCalled()
 			},
 		)
 
@@ -299,13 +303,16 @@ describe("writeToFileTool", () => {
 			expect(mockedCreateDirectoriesForFile).not.toHaveBeenCalled()
 		})
 
-		it.skipIf(process.platform === "win32")("creates directories when editType is cached as create", async () => {
-			mockCline.diffViewProvider.editType = "create"
+		it.skipIf(process.platform === "win32")(
+			"does not create directories when editType is cached as create",
+			async () => {
+				mockCline.diffViewProvider.editType = "create"
 
-			await executeWriteFileTool({})
+				await executeWriteFileTool({})
 
-			expect(mockedCreateDirectoriesForFile).toHaveBeenCalledWith(absoluteFilePath)
-		})
+				expect(mockedCreateDirectoriesForFile).not.toHaveBeenCalled()
+			},
+		)
 	})
 
 	describe("content preprocessing", () => {
@@ -344,12 +351,28 @@ describe("writeToFileTool", () => {
 			await executeWriteFileTool({}, { fileExists: false })
 
 			expect(mockCline.consecutiveMistakeCount).toBe(0)
-			expect(mockCline.diffViewProvider.open).toHaveBeenCalledWith(testFilePath)
+			expect(mockCline.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, { exists: false })
 			expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith(testContent, true)
 			expect(mockAskApproval).toHaveBeenCalled()
 			expect(mockCline.diffViewProvider.saveChanges).toHaveBeenCalled()
 			expect(mockCline.fileContextTracker.trackFileContext).toHaveBeenCalledWith(testFilePath, "roo_edited")
 			expect(mockCline.didEditFile).toBe(true)
+		})
+
+		it("passes the raw baseline to a diff preview before settings lookup", async () => {
+			const rawBaseline = "existing\r\ncontent\r\n"
+			const getState = mockCline.providerRef.deref().getState
+			getState.mockImplementation(async () => {
+				mockedFsReadFile.mockResolvedValue("changed after settings lookup")
+				return { diagnosticsEnabled: true, writeDelayMs: 1000 }
+			})
+
+			await executeWriteFileTool({ content: "replacement" }, { fileExists: true, fileContent: rawBaseline })
+
+			expect(mockCline.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, {
+				exists: true,
+				content: rawBaseline,
+			})
 		})
 
 		it("processes files outside workspace boundary", async () => {
@@ -432,8 +455,46 @@ describe("writeToFileTool", () => {
 			// Second call with same path - path is now stabilized, file operations proceed
 			await executeWriteFileTool({}, { isPartial: true })
 			expect(mockCline.ask).toHaveBeenCalled()
-			expect(mockCline.diffViewProvider.open).toHaveBeenCalledWith(testFilePath)
+			expect(mockCline.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, { exists: false })
 			expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith(testContent, false)
+		})
+
+		it("retains the first partial raw baseline across streamed updates", async () => {
+			const rawBaseline = "existing\r\ncontent\r\n"
+			mockCline.ask.mockImplementation(async () => {
+				mockedFsReadFile.mockResolvedValue("changed after partial ask")
+			})
+			mockedFileExistsAtPath.mockResolvedValue(true)
+			mockCline.diffViewProvider.open.mockImplementation(async () => {
+				mockCline.diffViewProvider.isEditing = true
+			})
+
+			await executeWriteFileTool(
+				{ content: "first replacement" },
+				{ isPartial: true, fileExists: true, fileContent: rawBaseline },
+			)
+			await executeWriteFileTool(
+				{ content: "first replacement" },
+				{ isPartial: true, fileExists: true, fileContent: rawBaseline },
+			)
+			await executeWriteFileTool(
+				{ content: "later replacement" },
+				{ isPartial: true, fileExists: true, fileContent: "changed after preview opened" },
+			)
+
+			expect(mockCline.diffViewProvider.open).toHaveBeenCalledTimes(1)
+			expect(mockCline.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, {
+				exists: true,
+				content: rawBaseline,
+			})
+		})
+
+		it("does not read an ignored path while stabilizing a partial write", async () => {
+			await executeWriteFileTool({}, { isPartial: true, fileExists: true, accessAllowed: false })
+			await executeWriteFileTool({}, { isPartial: true, fileExists: true, accessAllowed: false })
+
+			expect(mockedFsReadFile).not.toHaveBeenCalled()
+			expect(mockCline.diffViewProvider.open).not.toHaveBeenCalled()
 		})
 	})
 

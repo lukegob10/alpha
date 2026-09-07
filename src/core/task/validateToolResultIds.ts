@@ -221,6 +221,7 @@ export function validateAndFixToolResultIds(
 		type: "tool_result" as const,
 		tool_use_id: toolUse.id,
 		content: "Tool execution was interrupted before completion.",
+		is_error: true,
 	}))
 
 	// Insert missing tool_results at the beginning of the content array

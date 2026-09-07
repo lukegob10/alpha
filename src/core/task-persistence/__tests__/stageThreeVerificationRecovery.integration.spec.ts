@@ -228,6 +228,64 @@ describe("Stage Three verification authority through compaction and recovery", (
 		if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 	})
 
+	it.each(["pending", "failed"] as const)(
+		"reloads approved Worker %s evidence without inventing a required check or passing result",
+		async (status) => {
+			const fixture = await createFixture()
+			try {
+				await fixture.ledger.recordWorkerChangeSet({
+					rootTaskId: TASK_ID,
+					parentTaskId: TASK_ID,
+					workerTaskId: "worker-1",
+					workerNickname: "Worker",
+					groupId: "worker-group",
+					reviewSource: "apply",
+					changeSet: {
+						id: "worker-change",
+						status: "applied",
+						changedFiles: [CHANGED_FILE],
+						createdAt: fixture.now(),
+						updatedAt: fixture.now(),
+					},
+				})
+				const obligation = await fixture.ledger.reconcileVerificationContent(
+					TASK_ID,
+					"worker-change",
+					fixture.workspace,
+					{ [CHANGED_FILE]: hash(await fs.readFile(fixture.file)) },
+					TASK_ID,
+					{ [CHANGED_FILE]: ["test", "types"] },
+				)
+				if (!obligation) throw new Error("Worker receipt was not recorded")
+				if (status === "failed") {
+					await fixture.ledger.recordParentVerificationEvidence(
+						TASK_ID,
+						[
+							{
+								...passingEvidence(fixture, obligation),
+								status: "failed",
+								exitCode: 1,
+							},
+						],
+						TASK_ID,
+					)
+				}
+				const before = fixture.ledger.getVerificationObligations({ parentTaskId: TASK_ID })
+				expect(before[0].status).toBe(status)
+				await compactAndReloadTranscript(fixture)
+				const reloaded = await fixture.reloadLedger(fixture.ledger)
+				expect(reloaded.getVerificationObligations({ parentTaskId: TASK_ID })).toEqual(before)
+				expect(reloaded.getParentCompletionDecision(TASK_ID)).toMatchObject({
+					allowed: true,
+					blockingObligations: [],
+				})
+				expect(before[0].verification?.status).not.toBe("passed")
+			} finally {
+				await fixture.close()
+			}
+		},
+	)
+
 	it("does not invent verification debt when an ordinary no-obligation task compacts and reloads", async () => {
 		const fixture = await createFixture()
 		try {
@@ -240,18 +298,18 @@ describe("Stage Three verification authority through compaction and recovery", (
 		}
 	})
 
-	it("retains primary verification debt after its originating edit leaves active context and the stores restart", async () => {
+	it("retains advisory primary evidence after its edit leaves active context and the stores restart", async () => {
 		const fixture = await createFixture()
 		try {
 			const obligation = await fixture.recordMutation(fixture.ledger)
-			expect(fixture.ledger.getParentCompletionDecision(TASK_ID).allowed).toBe(false)
+			expect(fixture.ledger.getParentCompletionDecision(TASK_ID).allowed).toBe(true)
 			await compactAndReloadTranscript(fixture)
 			const reloaded = await fixture.reloadLedger(fixture.ledger)
 			await fixture.reconcile(reloaded, obligation)
 			expect(reloaded.getVerificationObligations({ parentTaskId: TASK_ID })).toEqual([obligation])
 			expect(reloaded.getParentCompletionDecision(TASK_ID)).toMatchObject({
-				allowed: false,
-				blockingObligations: [{ changeSetId: obligation.changeSetId, status: "pending" }],
+				allowed: true,
+				blockingObligations: [],
 			})
 		} finally {
 			await fixture.close()
@@ -289,9 +347,9 @@ describe("Stage Three verification authority through compaction and recovery", (
 			await fs.writeFile(fixture.file, REVISION_B)
 			const changed = await fixture.recordMutation(reloaded)
 			expect(changed.contentVersion).toBeGreaterThan(original.contentVersion!)
-			expect(reloaded.getParentCompletionDecision(TASK_ID).allowed).toBe(false)
+			expect(reloaded.getParentCompletionDecision(TASK_ID).allowed).toBe(true)
 
-			// A history rewind cannot remove ledger debt. Returning to identical bytes is still
+			// A history rewind cannot erase evidence history. Returning to identical bytes is still
 			// a new revision after an intervening change, so an old physical execution stays stale.
 			await fs.writeFile(fixture.file, REVISION_A)
 			const rewoundReceipt = await restarted.commit({
@@ -303,11 +361,11 @@ describe("Stage Three verification authority through compaction and recovery", (
 			expect(reconciled?.contentFingerprint).toBe(original.contentFingerprint)
 			expect(reconciled?.contentVersion).toBeGreaterThan(changed.contentVersion!)
 			expect(await reloaded.recordParentVerificationEvidence(TASK_ID, [oldEvidence], TASK_ID)).toEqual([])
-			expect(reloaded.getParentCompletionDecision(TASK_ID).allowed).toBe(false)
+			expect(reloaded.getParentCompletionDecision(TASK_ID).allowed).toBe(true)
 
 			const finalReload = await fixture.reloadLedger(reloaded)
 			expect(finalReload.getVerificationObligations({ parentTaskId: TASK_ID })).toEqual([reconciled])
-			expect(finalReload.getParentCompletionDecision(TASK_ID).allowed).toBe(false)
+			expect(finalReload.getParentCompletionDecision(TASK_ID).allowed).toBe(true)
 			expect((await restarted.read()).messages).toEqual([initialHistory()[0]])
 		} finally {
 			await fixture.close()

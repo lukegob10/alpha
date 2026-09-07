@@ -63,6 +63,7 @@ describe("Task retained sub-agent follow-up", () => {
 					type: "tool_result",
 					tool_use_id: attemptId,
 					content: "Task was interrupted before this tool call could be completed.",
+					is_error: true,
 				},
 				{ type: "text", text: "<user_message>\nCheck the edge case next\n</user_message>" },
 			],

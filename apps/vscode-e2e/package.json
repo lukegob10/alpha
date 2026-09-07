@@ -4,6 +4,12 @@
 	"scripts": {
 		"lint": "eslint src --ext=ts --max-warnings=0",
 		"check-types": "tsc -p tsconfig.esm.json --noEmit",
+		"compile": "tsc -p tsconfig.json",
+		"test:unit": "pnpm compile && node ./out/runUnitTests.js",
+		"test:copilot": "pnpm compile && node ./out/runTest.js --provider live-copilot",
+		"test:campaign": "pnpm compile && node ./out/runCampaign.js",
+		"test:live:gate": "pnpm compile && node ./out/runCampaign.js --suite development --provider live-copilot --gate",
+		"test:development": "pnpm compile && node ./out/runCampaign.js --suite development",
 		"format": "prettier --write src",
 		"test:ci": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm test:run",
 		"test:run": "rimraf out && tsc -p tsconfig.json && npx dotenvx run -f .env.local -- node ./out/runTest.js",

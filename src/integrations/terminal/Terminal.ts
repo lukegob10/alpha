@@ -1,7 +1,7 @@
 import * as vscode from "vscode"
 import pWaitFor from "p-wait-for"
 
-import type { RooTerminalCallbacks, RooTerminalProcessResultPromise, TerminalExecutionOptions } from "./types"
+import type { RooTerminalCallbacks, RooTerminalProcessResultPromise } from "./types"
 import { BaseTerminal } from "./BaseTerminal"
 import { TerminalProcess } from "./TerminalProcess"
 import { ShellIntegrationManager } from "./ShellIntegrationManager"
@@ -40,11 +40,7 @@ export class Terminal extends BaseTerminal {
 		return this.terminal.exitStatus !== undefined
 	}
 
-	public override runCommand(
-		command: string,
-		callbacks: RooTerminalCallbacks,
-		options?: TerminalExecutionOptions,
-	): RooTerminalProcessResultPromise {
+	public override runCommand(command: string, callbacks: RooTerminalCallbacks): RooTerminalProcessResultPromise {
 		// We set busy before the command is running because the terminal may be
 		// waiting on terminal integration, and we must prevent another instance
 		// from selecting the terminal for use during that time.
@@ -81,7 +77,7 @@ export class Terminal extends BaseTerminal {
 						ShellIntegrationManager.zshCleanupTmpDir(this.id)
 
 						// Run the command in the terminal
-						return process.run(command, options, callbacks.onVerificationUnavailable)
+						return process.run(command)
 					},
 					() => {
 						console.log(`[Terminal ${this.id}] Shell integration not available. Command execution aborted.`)

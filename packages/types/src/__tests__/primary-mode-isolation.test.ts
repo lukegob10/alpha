@@ -25,4 +25,18 @@ describe("primary Code mode isolation", () => {
 		expect(planMode?.customInstructions).not.toContain("update_todo_list")
 		expect(planMode?.customInstructions).not.toContain("switch_mode")
 	})
+
+	it("keeps Debug guidance evidence-driven and proportionate", () => {
+		const debugMode = DEFAULT_MODES.find((mode) => mode.slug === "debug")
+		const instructions = debugMode?.customInstructions ?? ""
+
+		expect(instructions).toContain("available evidence")
+		expect(instructions).toContain("most likely root cause")
+		expect(instructions).toContain("requested fix when authorized")
+		expect(instructions).toContain("focused regression test")
+		expect(instructions).not.toContain("5-7")
+		expect(instructions).not.toContain("1-2")
+		expect(instructions).not.toContain("add logs")
+		expect(instructions).not.toContain("confirm the diagnosis")
+	})
 })

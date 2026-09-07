@@ -190,7 +190,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 				// Original behavior with diff view
 				// Show diff view before asking for approval
 				task.diffViewProvider.editType = "modify"
-				await task.diffViewProvider.open(relPath)
+				await task.diffViewProvider.open(relPath, { exists: true, content: originalContent })
 				await task.diffViewProvider.update(diffResult.content, true)
 				task.diffViewProvider.scrollToFirstDiff()
 

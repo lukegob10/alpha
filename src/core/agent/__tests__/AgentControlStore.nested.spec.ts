@@ -132,7 +132,7 @@ describe("AgentControlStore nested trees", () => {
 		expect(store.getVerificationObligations({ parentTaskId: outerWorker.taskId })).toMatchObject([
 			{ parentTaskId: outerWorker.taskId, workerTaskId: nestedWorker.taskId, status: "pending" },
 		])
-		expect(store.getParentCompletionDecision(outerWorker.taskId, root.rootTaskId).allowed).toBe(false)
+		expect(store.getParentCompletionDecision(outerWorker.taskId, root.rootTaskId).allowed).toBe(true)
 		expect(store.getParentCompletionDecision(root.taskId, root.rootTaskId).allowed).toBe(true)
 
 		await store.recordParentVerificationEvidence(
@@ -170,7 +170,7 @@ describe("AgentControlStore nested trees", () => {
 			reviewSource: "apply",
 			at: 2_300,
 		})
-		expect(store.getParentCompletionDecision(root.taskId, root.rootTaskId).allowed).toBe(false)
+		expect(store.getParentCompletionDecision(root.taskId, root.rootTaskId).allowed).toBe(true)
 		expect(store.getVerificationObligations({ parentTaskId: root.taskId })).toMatchObject([
 			{ parentTaskId: root.taskId, workerTaskId: outerWorker.taskId, status: "pending" },
 		])

@@ -20,6 +20,11 @@
 		"delete_custom_mode_with_rules": "Anda yakin ingin menghapus mode {scope} ini?\n\nIni juga akan menghapus folder aturan terkait di:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"task_recovery_lock_repair": "Alpha tidak dapat memverifikasi pemilik kunci penyimpanan tugas bersama. Melanjutkan atau memuat ulang tidak dapat memperbaikinya dengan aman. Tutup semua jendela VS Code dan host pengujian Alpha, lalu cadangkan dan hapus hanya agent_control.json.transaction.lock dari penyimpanan global Alpha sebelum membuka kembali. Jangan hapus kunci saat host berjalan; pertahankan riwayat tugas dan agent_control.json.",
+		"task_recovery_failed": "Giliran berhenti karena suatu operasi gagal. Anda dapat melanjutkan tugas atau mengirim petunjuk baru.",
+		"task_recovery_incomplete": "Giliran berakhir sebelum tugas selesai. Anda dapat melanjutkan tugas atau mengirim petunjuk baru.",
+		"task_recovery_exhausted": "Giliran berhenti setelah mencapai batas percobaan ulang otomatis. Anda dapat melanjutkan tugas atau mengirim petunjuk baru.",
+		"task_recovery_persistence": "Tugas dijeda karena data tugas yang diperlukan tidak dapat disimpan. Periksa ruang disk kosong dan akses ke folder penyimpanan tugas, lalu lanjutkan tugas atau kirim petunjuk baru.",
 		"invalid_data_uri": "Format data URI tidak valid",
 		"error_copying_image": "Error menyalin gambar: {{errorMessage}}",
 		"error_opening_image": "Error membuka gambar: {{error}}",

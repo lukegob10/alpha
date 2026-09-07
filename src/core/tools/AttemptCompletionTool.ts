@@ -39,10 +39,9 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 		task.recordCompletionCandidate()
 
 		if (task.taskKind === "primary" && outcome === "blocked" && result?.trim()) {
-			const decision = await task.getCompletionGateDecision()
-			const message = `Task remains incomplete and unverified. ${result}${decision.message ? `\n\nMissing evidence: ${decision.message}` : ""}`
-			task.suspendAfterCurrentTurn(message)
-			pushToolResult(formatResponse.toolError(message))
+			// Accepting a handoff does not complete the task or discharge its verification obligations.
+			task.suspendAfterCurrentTurn(result, "blocked")
+			pushToolResult(JSON.stringify({ status: "success", outcome: "blocked" }))
 			return
 		}
 

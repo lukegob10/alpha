@@ -200,13 +200,6 @@ interface SubagentPromptOptions {
 }
 
 export const SUBAGENT_REPORT_WORD_BUDGET = 900
-export const WORKER_NO_CHANGES_ERROR =
-	"Worker reported completion, but no changes were captured in its approved write scope."
-
-/** A Worker is an editing role, so a successful run must produce an authorized repository delta. */
-export function getWorkerCompletionError(status: string, changedFiles: readonly string[]): string | undefined {
-	return status === "completed" && changedFiles.length === 0 ? WORKER_NO_CHANGES_ERROR : undefined
-}
 
 /** Build a domain-agnostic prompt for any bounded read-only objective. */
 export function buildSubagentPrompt({
@@ -243,11 +236,11 @@ export function buildSubagentPrompt({
 			`Authorized write scope:\n${(writeScope ?? []).map((item) => `- ${item}`).join("\n")}`,
 			`Work directly in your isolated Git worktree. You may read repository files broadly, but may edit only the authorized paths above. Do not modify .git, escape the workspace, access the network or MCP, ask the user questions, or switch modes. ${delegationGuidance}`,
 			progressGuidance,
-			"Make the smallest complete implementation. When the objective and write scope already specify the complete small change, begin with the edit instead of broad repository reconnaissance; inspect only sources needed for correctness or established conventions.",
-			"Use commands only for targeted local verification; command and protected-write approvals remain separately governed. Prefer one shell-compatible verification command that covers the requested checks. If a command itself is malformed, correct it once and report both outcomes. Do not run Git status or diff solely to enumerate changed files because the host captures and scope-checks the final delta.",
+			"Work toward the objective and make the smallest complete change when a change is needed. Do not create changes merely to demonstrate progress; a complete objective may conclude that no repository change is needed, which should be reported clearly.",
+			"Use repository tools and commands as useful for the objective. Command and protected-write approvals remain separately governed; choose verification proportionate to the work and report checks run, skipped checks, and any limitations.",
 			"Do not commit, stage, create branches, or change remotes.",
-			"Before finishing, inspect your edits, list every changed file, report targeted verification and remaining risks. Never expose the private worktree path.",
-			"Call attempt_completion with outcome completed only after the objective is complete and at least one authorized change exists. If the objective cannot be completed, report the constraint with outcome blocked instead of implying success.",
+			"Before finishing, inspect any edits, list changed files if there are any, report verification and remaining risks. Never expose the private worktree path.",
+			"Call attempt_completion with outcome completed when the objective is satisfied, including when no change is needed. If the objective cannot be completed, report the constraint with outcome blocked instead of implying success.",
 			deliverables,
 		].join("\n\n")
 	}
@@ -259,10 +252,8 @@ export function buildSubagentPrompt({
 		progressGuidance,
 		"Stay within the assigned evidence scope. If a requested location or source is missing, say so explicitly; do not silently substitute a different scope. Use nearby evidence only when clearly labeled as supplemental, and report blocked when the requested deliverable cannot be supported.",
 		"If the assigned objective requires an edit or command despite these limits, state that authority mismatch explicitly and finish with outcome blocked.",
-		"Treat every path explicitly named by the current objective as already located and required evidence. Read those paths directly before discovery; do not use list_files or search_files to confirm an exact path, and never infer that an exact path is absent from listing or search output, especially truncated output. If the objective names more than eight paths, use consecutive read_file batches of at most eight until every named path returns contents or a direct read error.",
-		"Keep discovery for unnamed targets bounded: use at most one locate or search turn, then read related independent files in batches of at most eight. Do not read one known file per turn. Once every required target has been attempted and the evidence is sufficient, reserve the next turn for synthesis.",
-		"If a direct read establishes that a named target is absent from the current workspace, report that exact failure. Do not spend remaining turns searching unrelated hidden or support directories unless the objective identifies them as evidence sources.",
-		"Your research window ends before the hard timeout. When additional reads are no longer allowed, immediately synthesize the evidence already collected instead of retrying a research tool.",
+		"Use read, list, search, and codebase tools as appropriate for the objective, adapting discovery to named and unnamed targets. Tool results may be bounded, missing, or truncated; do not infer absence from incomplete output, and report the limitation or obtain direct evidence when it matters.",
+		"Once the evidence is sufficient for the objective, synthesize it. If the available evidence cannot support the requested conclusion, report the uncertainty or constraint explicitly instead of inventing certainty.",
 		`Keep the final report proportional to the objective and under ${SUBAGENT_REPORT_WORD_BUDGET} words unless extra detail is required for correctness. Prioritize requested deliverables, evidence, uncertainty, and actionable conclusions; do not repeat file contents or narrate the research process.`,
 		"When finished, call attempt_completion once with outcome completed and a concise, self-contained report. Use outcome blocked if a constraint prevented the objective. Include concrete file references where useful.",
 		deliverables,

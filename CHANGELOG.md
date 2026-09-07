@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.25
+
+### Patch Changes
+
+- Include the current main-v2 extension, agent lifecycle, persistence, tool, terminal, and UI improvements.
+- Add an on-demand live Copilot development gate covering local Git workflows, refactoring, cancellation, reload, and migration with retained trace evidence.
+- Harden test-profile persistence, workflow grading, and campaign evidence retention.
+- Validation: ten live workflows passed on VS Code 1.136.1 with Luna/high. Exact VS Code 1.122.1 deterministic smoke checks passed; live Copilot validation on 1.122.1 remains blocked by an exception in bundled Copilot.
+
 ## 2.1.24
 
 ### Patch Changes

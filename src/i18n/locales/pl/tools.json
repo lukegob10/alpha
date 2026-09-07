@@ -16,6 +16,41 @@
 			"policy_restriction": "Nie udało się utworzyć nowego zadania z powodu ograniczeń polityki."
 		}
 	},
+	"fileConflicts": {
+		"save": "Nie można zapisać '{{path}}': {{reason}}. Odczytaj plik ponownie i spróbuj jeszcze raz, aby zachować zmiany użytkownika.",
+		"delete": "Nie można usunąć '{{path}}': {{reason}}. Odczytaj plik ponownie i spróbuj jeszcze raz.",
+		"saveDestination": "Nie można zapisać '{{path}}': {{reason}}. Sprawdź miejsce docelowe i spróbuj ponownie.",
+		"reasons": {
+			"fileUnsavedChanges": "plik zawiera niezapisane zmiany w otwartym edytorze",
+			"fileChangedDuringApproval": "plik zmienił się podczas oczekiwania na zatwierdzenie",
+			"editorChangedWhileChecked": "otwarty edytor zmienił się podczas sprawdzania pliku",
+			"destinationUnsavedChanges": "miejsce docelowe zawiera niezapisane zmiany w otwartym edytorze",
+			"destinationNotRegularFile": "miejsce docelowe nie jest zwykłym plikiem",
+			"destinationChangedDuringInspection": "miejsce docelowe zmieniło się podczas sprawdzania",
+			"destinationPathChanged": "miejsce docelowe wskazuje teraz inną ścieżkę",
+			"destinationCreatedAfterInspection": "miejsce docelowe utworzono po sprawdzeniu",
+			"destinationDeletedAfterInspection": "miejsce docelowe usunięto po sprawdzeniu",
+			"destinationChangedAfterInspection": "miejsce docelowe zmieniło się po sprawdzeniu"
+		}
+	},
+	"diffView": {
+		"editCancelled": "Edycja pliku została anulowana",
+		"applyContentFailed": "Nie udało się zastosować zawartości w edytorze różnic",
+		"previewChangedDuringEdit": "Podgląd różnic zmienił się podczas edycji; zmiany użytkownika zostały zachowane",
+		"noEditAvailableToSave": "Brak edycji pliku dostępnej do zapisania",
+		"previewChangedAfterApproval": "Podgląd różnic zmienił się po zatwierdzeniu; sprawdź zmiany i spróbuj ponownie",
+		"previewHasUserChanges": "Podgląd różnic zawiera zmiany użytkownika; sprawdź je przed ponowną próbą edycji",
+		"noFilePathForOpening": "Nie ustawiono ścieżki pliku do otwarcia edytora różnic",
+		"previewChangedWhileOpening": "Podgląd różnic zmienił się podczas otwierania; zmiany użytkownika zostały zachowane",
+		"openFailed": "Nie udało się otworzyć edytora różnic dla {{path}}: {{message}}",
+		"missingExpectedFileState": "Brak oczekiwanego stanu pliku przed otwarciem podglądu różnic"
+	},
+	"applyPatch": {
+		"deleteCancelled": "Operacja usuwania została anulowana."
+	},
+	"imageOutput": {
+		"writeIncomplete": "Nie udało się dokończyć zapisu '{{path}}'; plik może być niekompletny. {{cause}}"
+	},
 	"generateImage": {
 		"openRouterApiKeyRequired": "Klucz API OpenRouter jest wymagany do generowania obrazów z modelami OpenRouter. Skonfiguruj go w eksperymentalnych ustawieniach generowania obrazów.",
 		"failedWithStatus": "Nie udało się wygenerować obrazu: {{status}} {{statusText}}",
@@ -24,6 +59,10 @@
 		"invalidImageData": "Nieprawidłowe dane obrazu w odpowiedzi",
 		"invalidImageFormat": "Otrzymano nieprawidłowy format obrazu",
 		"unknownError": "Wystąpił nieznany błąd",
+		"cancelledBeforeSave": "Generowanie obrazu anulowano przed zapisaniem obrazu.",
+		"destinationUnavailableBeforeGeneration": "Miejsce docelowe obrazu było niedostępne przed generowaniem. Spróbuj ponownie.",
+		"destinationPolicyChangedBeforeSave": "Ścieżka lub zasady dostępu do miejsca docelowego obrazu zmieniły się przed zapisem. Spróbuj ponownie.",
+		"postSaveProcessingFailed": "{{path}}\nObraz zapisano, ale przetwarzanie po zapisie nie powiodło się: {{message}}",
 		"roo": {}
 	}
 }

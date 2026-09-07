@@ -76,12 +76,12 @@ describe("AgentControlStore", () => {
 			obligation: { status: "pending", review: { decision: "approved", source: "apply" } },
 		})
 		expect(store.getParentCompletionDecision("root-1")).toMatchObject({
-			allowed: false,
-			message: expect.stringContaining("change-1"),
+			allowed: true,
+			blockingObligations: [],
 		})
 
 		await store.closeAgent("worker-1")
-		expect(store.getParentCompletionDecision("root-1").allowed).toBe(false)
+		expect(store.getParentCompletionDecision("root-1").allowed).toBe(true)
 		expect(
 			await store.recordParentVerificationEvidence("root-1", [
 				{
@@ -136,9 +136,15 @@ describe("AgentControlStore", () => {
 			},
 		])
 		expect(failed).toMatchObject([{ status: "failed", verification: { status: "failed" } }])
-		expect(store.getParentCompletionDecision("root-1").message).toContain(
-			"latest scoped verification command failed",
-		)
+		expect(store.getParentCompletionDecision("root-1")).toMatchObject({
+			allowed: true,
+			blockingObligations: [],
+		})
+		expect(store.getWorkerVerificationSummary("worker-1")).toMatchObject({
+			status: "failed",
+			blocking: false,
+			unresolvedCount: 0,
+		})
 		expect(
 			await store.recordParentVerificationEvidence("root-1", [
 				{
@@ -213,7 +219,12 @@ describe("AgentControlStore", () => {
 			groupId: "group-3",
 			reviewSource: "apply",
 		})
-		expect(store.getParentCompletionDecision("root-1").blockingObligations).toHaveLength(2)
+		expect(store.getParentCompletionDecision("root-1").blockingObligations).toHaveLength(0)
+		expect(store.getWorkerVerificationSummary("worker-2")).toMatchObject({
+			status: "pending",
+			blocking: false,
+			unresolvedCount: 0,
+		})
 
 		await store.recordParentVerificationEvidence("root-1", [
 			{

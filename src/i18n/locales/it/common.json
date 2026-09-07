@@ -20,6 +20,11 @@
 		"delete_custom_mode_with_rules": "Sei sicuro di voler eliminare questa modalità {scope}?\n\nQuesto eliminerà anche la cartella delle regole associata in:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"task_recovery_lock_repair": "Alpha non può verificare il proprietario del blocco condiviso delle attività. Riprendere o ricaricare non lo ripara in sicurezza. Chiudi tutte le finestre di VS Code e gli host di test Alpha, poi crea una copia e rimuovi solo agent_control.json.transaction.lock dall’archiviazione globale di Alpha prima di riaprire. Non rimuovere mai il blocco con un host in esecuzione; conserva la cronologia e agent_control.json.",
+		"task_recovery_failed": "Il turno si è interrotto perché un'operazione non è riuscita. Puoi riprendere l'attività o inviare nuove indicazioni.",
+		"task_recovery_incomplete": "Il turno è terminato prima che l'attività fosse completata. Puoi riprendere l'attività o inviare nuove indicazioni.",
+		"task_recovery_exhausted": "Il turno si è interrotto dopo aver raggiunto il limite di tentativi automatici. Puoi riprendere l'attività o inviare nuove indicazioni.",
+		"task_recovery_persistence": "L'attività è stata sospesa perché non è stato possibile salvare i dati necessari. Controlla lo spazio libero su disco e l'accesso alla cartella di archiviazione delle attività, poi riprendi l'attività o invia nuove indicazioni.",
 		"invalid_data_uri": "Formato URI dati non valido",
 		"error_copying_image": "Errore durante la copia dell'immagine: {{errorMessage}}",
 		"error_saving_image": "Errore durante il salvataggio dell'immagine: {{errorMessage}}",

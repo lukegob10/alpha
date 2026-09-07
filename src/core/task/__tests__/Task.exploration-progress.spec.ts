@@ -22,6 +22,7 @@ function createTask(detector: ToolRepetitionDetector = new ToolRepetitionDetecto
 	const suspendAfterCurrentTurn = vi.fn()
 	const task = Object.assign(Object.create(Task.prototype), {
 		workspacePath: "/workspace",
+		taskCancellationController: new AbortController(),
 		pendingCommandVerification: Promise.resolve(),
 		commandExecutionEvidence: new Map(),
 		toolRepetitionDetector: detector,

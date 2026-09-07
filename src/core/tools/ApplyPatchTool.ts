@@ -1,5 +1,6 @@
 import fs from "fs/promises"
 import path from "path"
+import * as vscode from "vscode"
 
 import { type ClineSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
 
@@ -7,6 +8,7 @@ import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
 import { fileExistsAtPath } from "../../utils/fs"
+import { arePathsEqual } from "../../utils/path"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { sanitizeUnifiedDiff, computeDiffStats } from "../diff/stats"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
@@ -15,6 +17,7 @@ import { parsePatch, ParseError, processAllHunks } from "./apply-patch"
 import type { ApplyPatchFileChange } from "./apply-patch"
 import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 import type { ExpectedFileState } from "../../integrations/editor/DiffViewProvider"
+import { t } from "../../i18n"
 
 interface ApplyPatchParams {
 	patch: string
@@ -155,7 +158,14 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 					outcome = await this.handleAddFile(change, absolutePath, relPath, task, callbacks, isWriteProtected)
 				} else if (change.type === "delete") {
 					// Delete file
-					outcome = await this.handleDeleteFile(absolutePath, relPath, task, callbacks, isWriteProtected)
+					outcome = await this.handleDeleteFile(
+						change,
+						absolutePath,
+						relPath,
+						task,
+						callbacks,
+						isWriteProtected,
+					)
 				} else {
 					// Update file
 					outcome = await this.handleUpdateFile(
@@ -242,7 +252,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 		// Show diff view if focus disruption prevention is disabled
 		if (!isPreventFocusDisruptionEnabled) {
-			await task.diffViewProvider.open(relPath)
+			await task.diffViewProvider.open(relPath, { exists: false })
 			await task.diffViewProvider.update(newContent, true)
 			task.diffViewProvider.scrollToFirstDiff()
 		}
@@ -278,50 +288,97 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 	}
 
 	private async handleDeleteFile(
+		change: ApplyPatchFileChange,
 		absolutePath: string,
 		relPath: string,
 		task: Task,
 		callbacks: ToolCallbacks,
 		isWriteProtected: boolean,
 	): Promise<ApplyPatchChangeOutcome> {
-		const { askApproval } = callbacks
+		const { askApproval, signal } = callbacks
+		const isCancelled = () => signal?.aborted || task.abort || task.abandoned
+		const assertCanDelete = () => {
+			if (isCancelled()) throw new Error(t("tools:applyPatch.deleteCancelled"))
 
-		// Check if file exists
-		const fileExists = await fileExistsAtPath(absolutePath)
-		if (!fileExists) {
-			task.consecutiveMistakeCount++
-			task.recordToolError("apply_patch")
-			const errorMessage = `File not found: ${relPath}. Cannot delete a non-existent file.`
-			await task.say("error", errorMessage)
-			return { status: "error", result: formatResponse.toolError(errorMessage) }
+			// Deletion never owns an editor buffer, including a previous managed diff.
+			if (
+				vscode.workspace.textDocuments.some(
+					(document) =>
+						document.uri.scheme === "file" &&
+						arePathsEqual(document.uri.fsPath, absolutePath) &&
+						document.isDirty,
+				)
+			) {
+				throw new Error(
+					t("tools:fileConflicts.delete", {
+						path: relPath,
+						reason: t("tools:fileConflicts.reasons.fileUnsavedChanges"),
+					}),
+				)
+			}
 		}
 
-		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
-
-		const sharedMessageProps: ClineSayTool = {
-			tool: "appliedDiff",
-			path: getTaskReadablePath(task, relPath),
-			diff: `File will be deleted: ${relPath}`,
-			isOutsideWorkspace,
-		}
-
-		const completeMessage = JSON.stringify({
-			...sharedMessageProps,
-			content: `Delete file: ${relPath}`,
-			isProtected: isWriteProtected,
-		} satisfies ClineSayTool)
-
-		const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
-
-		if (!didApprove) {
-			task.didRejectTool = true
-			return { status: "denied", result: "Delete operation was rejected by the user." }
-		}
-
-		// Delete the file
 		try {
+			assertCanDelete()
+			if (!(await fileExistsAtPath(absolutePath))) {
+				task.consecutiveMistakeCount++
+				throw new Error(`File not found: ${relPath}. Cannot delete a non-existent file.`)
+			}
+			// Retain the parsed snapshot so an earlier hunk's approval wait cannot
+			// silently adopt user edits to a later deletion target.
+			const expectedState: ExpectedFileState = { exists: true, content: change.originalContent ?? "" }
+			const expectedStat = await fs.lstat(absolutePath, { bigint: true })
+			await task.diffViewProvider.assertExpectedFileState(absolutePath, relPath, expectedState)
+			assertCanDelete()
+
+			const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
+			const sharedMessageProps: ClineSayTool = {
+				tool: "appliedDiff",
+				path: getTaskReadablePath(task, relPath),
+				diff: `File will be deleted: ${relPath}`,
+				isOutsideWorkspace,
+			}
+
+			const completeMessage = JSON.stringify({
+				...sharedMessageProps,
+				content: `Delete file: ${relPath}`,
+				isProtected: isWriteProtected,
+			} satisfies ClineSayTool)
+
+			const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
+
+			if (isCancelled()) throw new Error(t("tools:applyPatch.deleteCancelled"))
+			if (!didApprove) {
+				callbacks.setResultMetadata?.({ status: "denied" })
+				task.didRejectTool = true
+				return { status: "denied", result: "Delete operation was rejected by the user." }
+			}
+
+			await task.diffViewProvider.assertExpectedFileState(absolutePath, relPath, expectedState)
+			const currentStat = await fs.lstat(absolutePath, { bigint: true })
+			// Content alone cannot distinguish a replacement containing the same text.
+			if (
+				(["dev", "ino", "birthtimeNs", "ctimeNs", "mtimeNs", "size"] as const).some(
+					(key) => currentStat[key] !== expectedStat[key],
+				)
+			) {
+				throw new Error(
+					t("tools:fileConflicts.delete", {
+						path: relPath,
+						reason: t("tools:fileConflicts.reasons.fileChangedDuringApproval"),
+					}),
+				)
+			}
+			// Check editor changes and cancellation after all awaited validation, with
+			// no intervening await before unlink. External filesystem writes are not atomic with unlink.
+			assertCanDelete()
 			await fs.unlink(absolutePath)
 		} catch (error) {
+			if (isCancelled()) {
+				callbacks.setResultMetadata?.({ status: "cancelled" })
+				return { status: "error", result: t("tools:applyPatch.deleteCancelled") }
+			}
+			callbacks.setResultMetadata?.({ status: "error" })
 			const errorMessage = `Failed to delete file '${relPath}': ${error instanceof Error ? error.message : String(error)}`
 			await task.say("error", errorMessage)
 			task.recordToolError("apply_patch")
@@ -367,16 +424,6 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			await task.diffViewProvider.reset()
 			return { status: "success", result: `No changes needed for '${relPath}'` }
 		}
-
-		// Check experiment settings
-		const provider = task.providerRef.deref()
-		const state = await provider?.getState()
-		const diagnosticsEnabled = state?.diagnosticsEnabled ?? true
-		const writeDelayMs = state?.writeDelayMs ?? DEFAULT_WRITE_DELAY_MS
-		const isPreventFocusDisruptionEnabled = experiments.isEnabled(
-			state?.experiments ?? {},
-			EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION,
-		)
 
 		const moveAbsolutePath = change.movePath ? path.resolve(task.cwd, change.movePath) : undefined
 		const effectiveMovePath =
@@ -425,6 +472,16 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			)
 		}
 
+		// Check experiment settings only after all raw baselines have been captured.
+		const provider = task.providerRef.deref()
+		const state = await provider?.getState()
+		const diagnosticsEnabled = state?.diagnosticsEnabled ?? true
+		const writeDelayMs = state?.writeDelayMs ?? DEFAULT_WRITE_DELAY_MS
+		const isPreventFocusDisruptionEnabled = experiments.isEnabled(
+			state?.experiments ?? {},
+			EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION,
+		)
+
 		const sanitizedDiff = sanitizeUnifiedDiff(diff)
 		const diffStats = computeDiffStats(sanitizedDiff) || undefined
 
@@ -448,7 +505,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 		// Show diff view if focus disruption prevention is disabled
 		if (!isPreventFocusDisruptionEnabled) {
-			await task.diffViewProvider.open(relPath)
+			await task.diffViewProvider.open(relPath, expectedSourceFileState)
 			await task.diffViewProvider.update(newContent, true)
 			task.diffViewProvider.scrollToFirstDiff()
 		}
@@ -479,15 +536,10 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 					expectedMoveFileState,
 				)
 			} else {
-				// Write to new path and delete old file
-				const parentDir = path.dirname(moveAbsolutePath)
-				await fs.mkdir(parentDir, { recursive: true })
-				await task.diffViewProvider.assertExpectedFileState(
-					moveAbsolutePath,
-					effectiveMovePath,
-					expectedMoveFileState,
-				)
-				await writeWithExpectedFileState(moveAbsolutePath, effectiveMovePath, newContent, expectedMoveFileState)
+				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs, {
+					relPath: effectiveMovePath,
+					expectedFileState: expectedMoveFileState,
+				})
 			}
 
 			// Re-check immediately before removing the source. If it changed after
@@ -529,10 +581,14 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		} else {
 			// Save changes to the same file
 			if (isPreventFocusDisruptionEnabled) {
-				await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs, {
-					exists: true,
-					content: originalContent,
-				})
+				await task.diffViewProvider.saveDirectly(
+					relPath,
+					newContent,
+					false,
+					diagnosticsEnabled,
+					writeDelayMs,
+					expectedSourceFileState,
+				)
 			} else {
 				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)
 			}
@@ -586,35 +642,8 @@ async function captureExpectedFileState(absolutePath: string): Promise<ExpectedF
 	}
 }
 
-async function writeWithExpectedFileState(
-	absolutePath: string,
-	relPath: string,
-	content: string,
-	expectedState: ExpectedFileState,
-): Promise<void> {
-	try {
-		await fs.writeFile(absolutePath, content, expectedState.exists ? "utf8" : { encoding: "utf-8", flag: "wx" })
-	} catch (error) {
-		if (!expectedState.exists && isFileExistsError(error)) {
-			throw createMoveConflict(relPath, "the destination was created while approval was pending")
-		}
-
-		throw error
-	}
-}
-
-function createMoveConflict(relPath: string, reason: string): Error {
-	return new Error(
-		`Cannot move '${relPath}': ${reason}. Re-read the affected files and retry so the user's changes are preserved.`,
-	)
-}
-
 function isFileNotFoundError(error: unknown): boolean {
 	return isFileSystemError(error, "ENOENT")
-}
-
-function isFileExistsError(error: unknown): boolean {
-	return isFileSystemError(error, "EEXIST")
 }
 
 function isFileSystemError(error: unknown, code: string): boolean {

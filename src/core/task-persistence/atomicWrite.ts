@@ -2,6 +2,30 @@ import * as fs from "fs/promises"
 import * as path from "path"
 import * as lockfile from "proper-lockfile"
 
+// Six rename attempts with 775 ms of total backoff. Keep persistence bounded
+// while allowing short-lived filesystem sharing violations to clear.
+const atomicReplaceRetryDelaysMs = [25, 50, 100, 200, 400] as const
+
+async function renameWithRetry(source: string, destination: string): Promise<void> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			await fs.rename(source, destination)
+			return
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code
+			if (
+				(code !== "EPERM" && code !== "EACCES" && code !== "EBUSY") ||
+				attempt >= atomicReplaceRetryDelaysMs.length
+			) {
+				throw error
+			}
+			// Retry only the atomic replacement: the same synced, closed temp file
+			// and the caller's transaction lock remain owned throughout the wait.
+			await new Promise<void>((resolve) => setTimeout(resolve, atomicReplaceRetryDelaysMs[attempt]))
+		}
+	}
+}
+
 /**
  * Execute a file operation while holding an advisory lock for that file.
  *
@@ -61,7 +85,7 @@ export async function atomicWriteText(
 		}
 
 		try {
-			await fs.rename(temporaryPath, absolutePath)
+			await renameWithRetry(temporaryPath, absolutePath)
 		} catch (error) {
 			// The sole authoritative transcript must retain its previous durable
 			// snapshot if the platform cannot replace it atomically.

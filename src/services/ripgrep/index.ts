@@ -64,6 +64,7 @@ interface RipgrepResolverOptions {
 	skipRuntimePackageLookup?: boolean
 	env?: NodeJS.ProcessEnv
 	platform?: NodeJS.Platform
+	arch?: NodeJS.Architecture
 	logger?: Pick<Console, "info" | "warn">
 }
 
@@ -82,38 +83,6 @@ const BUNDLED_RIPGREP_PACKAGES = [
 	"@vscode/ripgrep-linux-riscv64",
 	"@vscode/ripgrep-linux-s390x",
 	"@vscode/ripgrep-linux-ia32",
-]
-const INTERNAL_RIPGREP_DIRS = [
-	"node_modules/@vscode/ripgrep/bin",
-	"node_modules/@vscode/ripgrep-universal/bin",
-	"node_modules/@vscode/ripgrep-darwin-x64/bin",
-	"node_modules/@vscode/ripgrep-darwin-arm64/bin",
-	"node_modules/@vscode/ripgrep-win32-x64/bin",
-	"node_modules/@vscode/ripgrep-win32-arm64/bin",
-	"node_modules/@vscode/ripgrep-win32-ia32/bin",
-	"node_modules/@vscode/ripgrep-linux-x64/bin",
-	"node_modules/@vscode/ripgrep-linux-arm64/bin",
-	"node_modules/@vscode/ripgrep-linux-arm/bin",
-	"node_modules/@vscode/ripgrep-linux-ppc64/bin",
-	"node_modules/@vscode/ripgrep-linux-riscv64/bin",
-	"node_modules/@vscode/ripgrep-linux-s390x/bin",
-	"node_modules/@vscode/ripgrep-linux-ia32/bin",
-	"node_modules/vscode-ripgrep/bin",
-	"node_modules.asar.unpacked/@vscode/ripgrep/bin",
-	"node_modules.asar.unpacked/@vscode/ripgrep-universal/bin",
-	"node_modules.asar.unpacked/@vscode/ripgrep-darwin-x64/bin",
-	"node_modules.asar.unpacked/@vscode/ripgrep-darwin-arm64/bin",
-	"node_modules.asar.unpacked/@vscode/ripgrep-win32-x64/bin",
-	"node_modules.asar.unpacked/@vscode/ripgrep-win32-arm64/bin",
-	"node_modules.asar.unpacked/@vscode/ripgrep-win32-ia32/bin",
-	"node_modules.asar.unpacked/@vscode/ripgrep-linux-x64/bin",
-	"node_modules.asar.unpacked/@vscode/ripgrep-linux-arm64/bin",
-	"node_modules.asar.unpacked/@vscode/ripgrep-linux-arm/bin",
-	"node_modules.asar.unpacked/@vscode/ripgrep-linux-ppc64/bin",
-	"node_modules.asar.unpacked/@vscode/ripgrep-linux-riscv64/bin",
-	"node_modules.asar.unpacked/@vscode/ripgrep-linux-s390x/bin",
-	"node_modules.asar.unpacked/@vscode/ripgrep-linux-ia32/bin",
-	"node_modules.asar.unpacked/vscode-ripgrep/bin",
 ]
 const MAX_PACKAGE_SCAN_DEPTH = 5
 let cachedResolution: RipgrepResolution | undefined
@@ -298,13 +267,23 @@ async function resolveSystemRipgrep(env: NodeJS.ProcessEnv, platform: NodeJS.Pla
 	return undefined
 }
 
-async function resolveInternalRipgrep(appRoot: string, platform: NodeJS.Platform): Promise<string | undefined> {
+async function resolveInternalRipgrep(
+	appRoot: string,
+	platform: NodeJS.Platform,
+	arch: NodeJS.Architecture,
+): Promise<string | undefined> {
 	const executableName = getExecutableName(platform)
+	const target = `${platform}-${arch}`
+	const packages = ["@vscode/ripgrep", "@vscode/ripgrep-universal", `@vscode/ripgrep-${target}`, "vscode-ripgrep"]
 
-	for (const relativeDir of INTERNAL_RIPGREP_DIRS) {
-		const candidate = path.join(appRoot, relativeDir, executableName)
-		if (await fileExistsAtPath(candidate)) {
-			return candidate
+	for (const moduleDirectory of ["node_modules", "node_modules.asar.unpacked"]) {
+		for (const packageName of packages) {
+			const binDirectory = path.join(appRoot, moduleDirectory, packageName, "bin")
+			// Current hosts use bin/<platform>-<arch>; retain flat legacy layouts without scanning other targets.
+			for (const directory of [path.join(binDirectory, target), binDirectory]) {
+				const candidate = path.join(directory, executableName)
+				if (await fileExistsAtPath(candidate)) return candidate
+			}
 		}
 	}
 
@@ -334,6 +313,7 @@ export async function resolveRipgrepBinary(
 
 	const env = options.env ?? process.env
 	const platform = options.platform ?? process.platform
+	const arch = options.arch ?? process.arch
 	const logger = options.logger ?? console
 
 	const bundledRipgrep = await resolveBundledRipgrep(
@@ -363,7 +343,7 @@ export async function resolveRipgrepBinary(
 	}
 
 	if (options.appRoot) {
-		const internalRipgrep = await resolveInternalRipgrep(options.appRoot, platform)
+		const internalRipgrep = await resolveInternalRipgrep(options.appRoot, platform, arch)
 		if (internalRipgrep) {
 			cachedResolution = {
 				path: internalRipgrep,

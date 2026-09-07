@@ -20,6 +20,11 @@
 		"delete_custom_mode_with_rules": "Bạn có chắc chắn muốn xóa chế độ {scope} này không?\n\nThao tác này cũng sẽ xóa thư mục quy tắc liên quan tại:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"task_recovery_lock_repair": "Alpha không thể xác minh chủ sở hữu khóa lưu trữ tác vụ dùng chung. Tiếp tục hoặc tải lại không thể sửa lỗi này an toàn. Đóng mọi cửa sổ VS Code và máy chủ thử nghiệm Alpha, rồi sao lưu và chỉ xóa agent_control.json.transaction.lock khỏi bộ nhớ toàn cục của Alpha trước khi mở lại. Không xóa khóa khi máy chủ đang chạy; giữ lịch sử tác vụ và agent_control.json.",
+		"task_recovery_failed": "Lượt đã dừng vì một thao tác thất bại. Bạn có thể tiếp tục tác vụ hoặc gửi hướng dẫn mới.",
+		"task_recovery_incomplete": "Lượt đã kết thúc trước khi tác vụ hoàn tất. Bạn có thể tiếp tục tác vụ hoặc gửi hướng dẫn mới.",
+		"task_recovery_exhausted": "Lượt đã dừng sau khi đạt giới hạn thử lại tự động. Bạn có thể tiếp tục tác vụ hoặc gửi hướng dẫn mới.",
+		"task_recovery_persistence": "Tác vụ đã tạm dừng vì không thể lưu dữ liệu cần thiết. Hãy kiểm tra dung lượng đĩa trống và quyền truy cập thư mục lưu trữ tác vụ, rồi tiếp tục hoặc gửi hướng dẫn mới.",
 		"invalid_data_uri": "Định dạng URI dữ liệu không hợp lệ",
 		"error_copying_image": "Lỗi khi sao chép hình ảnh: {{errorMessage}}",
 		"error_saving_image": "Lỗi khi lưu hình ảnh: {{errorMessage}}",

@@ -31,11 +31,9 @@ const groupAttentionByTaskId = (groups: readonly SubagentGroupState[] | undefine
 				? "Approval"
 				: agent.changeSet && ["pending_review", "conflicted"].includes(agent.changeSet.status)
 					? "Review"
-					: agent.parentVerification?.status === "failed"
-						? "Fix"
-						: agent.parentVerification?.status === "pending"
-							? "Verify"
-							: undefined
+					: agent.parentVerification?.blocking
+						? "Review"
+						: undefined
 			const observedAt = Math.max(
 				agent.completedAt ?? 0,
 				agent.phaseStartedAt ?? 0,

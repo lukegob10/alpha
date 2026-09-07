@@ -20,6 +20,11 @@
 		"delete_custom_mode_with_rules": "您確定要刪除此 {scope} 模式嗎？\n\n這也將刪除位於以下位置的關聯規則資料夾：\n{rulesFolderPath}"
 	},
 	"errors": {
+		"task_recovery_lock_repair": "Alpha 無法驗證共用工作儲存鎖的擁有者。繼續或重新載入無法安全修復此問題。請關閉所有 VS Code 視窗和 Alpha 擴充功能測試主機，然後僅備份並移除 Alpha 全域儲存中的 agent_control.json.transaction.lock，再重新開啟。主機執行時切勿移除鎖；請保留工作歷程記錄和 agent_control.json。",
+		"task_recovery_failed": "某項操作失敗，目前回合已停止。你可以繼續任務或傳送新的指示。",
+		"task_recovery_incomplete": "目前回合在任務完成前結束。你可以繼續任務或傳送新的指示。",
+		"task_recovery_exhausted": "已達到自動重試次數或時限，目前回合已停止。你可以繼續任務或傳送新的指示。",
+		"task_recovery_persistence": "無法儲存必要的任務資料，任務已暫停。請檢查磁碟可用空間及任務儲存資料夾的存取權限，然後繼續任務或傳送新的指示。",
 		"invalid_data_uri": "資料 URI 格式無效",
 		"error_copying_image": "複製圖片時發生錯誤：{{errorMessage}}",
 		"error_saving_image": "儲存圖片時發生錯誤：{{errorMessage}}",

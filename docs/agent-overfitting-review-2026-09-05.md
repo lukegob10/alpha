@@ -3,6 +3,7 @@
 Date: September 5, 2026. Mode: follow-up audit / contract alignment.
 
 Implementation follow-up: [execution and verification contract correction](agent-execution-simplification-2026-09-05.md).
+Broader loop and peripherals crawl after that correction: [core-agent-loop-overfitting-review-2026-09-05.md](core-agent-loop-overfitting-review-2026-09-05.md).
 The findings below describe the pre-fix behavior; the follow-up records the replacement and its acceptance coverage.
 
 ## Conclusion
@@ -101,8 +102,8 @@ shell effects, and other surfaces from its guarantee. An incomplete diff observe
 
 ### 2. High / must-fix: completion imposes a verifier catalogue as a task specification
 
-[`VerificationRequirements`](../src/core/agent/VerificationRequirements.ts) infers required kinds from package-script
-names. [`AgentControlStore.hasVerificationCoverage`](../src/core/agent/AgentControlStore.ts) requires at least one
+The former `VerificationRequirements` resolver (removed from the current working tree) inferred required kinds from
+package-script names. [`AgentControlStore.hasVerificationCoverage`](../src/core/agent/AgentControlStore.ts) requires at least one
 recognized check even when the required-kind list is empty. The resolver accepts only supported executable, argument,
 configuration, and coverage patterns.
 

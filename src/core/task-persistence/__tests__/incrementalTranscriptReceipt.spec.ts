@@ -19,6 +19,7 @@ const fsFaults = vi.hoisted(() => ({
 	renameTarget: undefined as string | undefined,
 	renameMessage: "",
 	renameInjected: false,
+	renameFailuresRemaining: 0,
 }))
 
 vi.mock("fs/promises", async (importOriginal) => {
@@ -42,11 +43,12 @@ vi.mock("fs/promises", async (importOriginal) => {
 		rename: (async (source, destination) => {
 			if (
 				fsFaults.renameTarget &&
-				!fsFaults.renameInjected &&
+				fsFaults.renameFailuresRemaining > 0 &&
 				isAtomicTempPath(source, fsFaults.renameTarget) &&
 				samePath(destination, fsFaults.renameTarget)
 			) {
 				fsFaults.renameInjected = true
+				fsFaults.renameFailuresRemaining -= 1
 				const error = new Error(fsFaults.renameMessage) as NodeJS.ErrnoException
 				error.code = "EPERM"
 				throw error
@@ -332,7 +334,11 @@ describe("incremental transcript receipts", () => {
 		const replacementMessages = simpleMessages("legacy-after-rename-failure")
 		const originalReceipt = await saveLegacy(originalMessages)
 		const originalBytes = await fs.readFile(originalReceipt.filePath)
-		const fault = failNextTempRename(originalReceipt.filePath, "injected legacy rename failure")
+		const fault = failNextTempRename(
+			originalReceipt.filePath,
+			"injected legacy rename failure",
+			Number.POSITIVE_INFINITY,
+		)
 
 		try {
 			await expect(
@@ -348,12 +354,46 @@ describe("incremental transcript receipts", () => {
 		expect(await readApiMessages({ taskId, globalStoragePath: storagePath })).toEqual(originalMessages)
 	})
 
+	it("commits a transient legacy EPERM replacement and binds the durable sidecar to the new receipt", async () => {
+		const originalMessages = simpleMessages("legacy-before-transient-rename-failure")
+		const replacementMessages = simpleMessages("legacy-after-transient-rename-failure")
+		const originalReceipt = await saveLegacy(originalMessages)
+		const fault = failNextTempRename(originalReceipt.filePath, "injected transient legacy rename failure")
+
+		let replacementReceipt: ApiMessagesCommitReceipt
+		try {
+			replacementReceipt = await saveApiMessages({
+				messages: replacementMessages,
+				taskId,
+				globalStoragePath: storagePath,
+			})
+			expect(fault.wasInjected()).toBe(true)
+		} finally {
+			fault.restore()
+		}
+
+		expect(await readApiMessages({ taskId, globalStoragePath: storagePath })).toEqual(replacementMessages)
+		expect(replacementReceipt.digest).toBe(digestProviderTranscript(replacementMessages))
+		expect(replacementReceipt.byteLength).toBe(
+			Buffer.byteLength(await fs.readFile(replacementReceipt.filePath, "utf8"), "utf8"),
+		)
+
+		const store = new ProviderTranscriptStore(taskId, storagePath, { now: () => 1_700_000_050 })
+		const sidecarReceipt = asV2Receipt(await store.commitAuthoritativeTranscript(replacementReceipt))
+		expect(sidecarReceipt.digest).toBe(replacementReceipt.digest)
+		expect(sidecarReceipt.byteLength).toBe(replacementReceipt.byteLength)
+		expect((await store.read()).messages).toEqual(replacementMessages)
+		expect(await atomicTempFiles(replacementReceipt.filePath)).toEqual([])
+	})
+
 	it("leaves a stale sidecar after a sync failure and repairs it on retry/reload", async () => {
 		await assertSidecarRetryAfterFault(failNextTempSync)
 	})
 
 	it("leaves a stale sidecar after a strict rename failure and repairs it on retry/reload", async () => {
-		await assertSidecarRetryAfterFault(failNextTempRename)
+		await assertSidecarRetryAfterFault((targetPath, message) =>
+			failNextTempRename(targetPath, message, Number.POSITIVE_INFINITY),
+		)
 	})
 
 	it("snapshots caller message graphs before asynchronous legacy and v1 writes", async () => {
@@ -528,16 +568,18 @@ function failNextTempSync(targetPath: string, message: string): FaultControl {
 	}
 }
 
-function failNextTempRename(targetPath: string, message: string): FaultControl {
+function failNextTempRename(targetPath: string, message: string, failures = 1): FaultControl {
 	fsFaults.renameTarget = path.resolve(targetPath)
 	fsFaults.renameMessage = message
 	fsFaults.renameInjected = false
+	fsFaults.renameFailuresRemaining = failures
 	return {
 		wasInjected: () => fsFaults.renameInjected,
 		restore: () => {
 			fsFaults.renameTarget = undefined
 			fsFaults.renameMessage = ""
 			fsFaults.renameInjected = false
+			fsFaults.renameFailuresRemaining = 0
 		},
 	}
 }
@@ -549,6 +591,7 @@ function resetFsFaults(): void {
 	fsFaults.renameTarget = undefined
 	fsFaults.renameMessage = ""
 	fsFaults.renameInjected = false
+	fsFaults.renameFailuresRemaining = 0
 }
 
 function isAtomicTempPath(candidate: unknown, targetPath: string): boolean {

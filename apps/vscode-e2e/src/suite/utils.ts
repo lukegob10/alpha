@@ -29,13 +29,18 @@ export const waitFor = async (
 		if (remaining <= 0) break
 
 		let timeoutId: NodeJS.Timeout | undefined
-		const result = await Promise.race([
-			Promise.resolve().then(condition),
-			new Promise<"deadline">((resolve) => {
-				timeoutId = setTimeout(() => resolve("deadline"), remaining)
-			}),
-		])
-		if (timeoutId) clearTimeout(timeoutId)
+		let result: boolean | "deadline"
+		try {
+			result = await Promise.race([
+				Promise.resolve().then(condition),
+				new Promise<"deadline">((resolve) => {
+					timeoutId = setTimeout(() => resolve("deadline"), remaining)
+				}),
+			])
+		} finally {
+			// A throwing condition is terminal too; do not retain its host timer.
+			if (timeoutId !== undefined) clearTimeout(timeoutId)
+		}
 
 		if (result === true) return
 		if (result === "deadline") break

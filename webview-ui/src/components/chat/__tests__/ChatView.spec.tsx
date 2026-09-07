@@ -1299,6 +1299,68 @@ describe("ChatView - Managed agent monitor", () => {
 		expect(queryByText("Transcript is read-only")).not.toBeInTheDocument()
 		expect(queryByRole("textbox")).not.toBeInTheDocument()
 	})
+
+	it("keeps a persisted recovery error visible while hiding the resume ask after rehydration", async () => {
+		const { getAllByTestId } = renderChatView()
+		const taskId = "recovery-task"
+		const recoveryMessage = {
+			type: "say" as const,
+			say: "error",
+			ts: 2,
+			text: "The turn stopped because an operation failed. You can resume the task or send new guidance.",
+		}
+		const state = {
+			currentTaskId: taskId,
+			currentView: { type: "task" as const, taskId },
+			currentTaskItem: {
+				id: taskId,
+				number: 1,
+				ts: 1,
+				task: "Recover the task",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				workspace: "/test/workspace",
+			},
+			liveTasksById: {
+				[taskId]: {
+					id: taskId,
+					status: "interactive",
+					lifecycle: "waiting",
+					isActive: true,
+					isStreaming: false,
+					isWaitingForInput: true,
+					waitingReason: "resumable",
+					lastUpdatedAt: 3,
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+			clineMessages: [
+				{ type: "say" as const, say: "task", ts: 1, text: "Recover the task" },
+				recoveryMessage,
+				{ type: "ask" as const, ask: "resume_task", ts: 3, text: "" },
+			],
+		}
+
+		const assertRehydratedTranscript = async () => {
+			await waitFor(() => {
+				const rows = getAllByTestId("chat-row")
+				expect(rows).toHaveLength(1)
+				expect(rows[0]).toHaveTextContent(recoveryMessage.text)
+				expect(rows.map((row) => row.textContent).join(" ")).not.toContain('"resume_task"')
+			})
+		}
+
+		mockPostMessage(state)
+		await assertRehydratedTranscript()
+
+		// A second full state post models the extension reload/rehydration path.
+		mockPostMessage(state)
+		await assertRehydratedTranscript()
+	})
 })
 
 describe("ChatView - Message Queueing Tests", () => {

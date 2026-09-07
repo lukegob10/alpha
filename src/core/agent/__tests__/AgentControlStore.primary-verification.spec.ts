@@ -48,6 +48,7 @@ const verificationVersion = (
 	scopePath: workspacePath,
 	commandDigest: "command-digest",
 	repositoryDigest: "repository-digest",
+	assurance: "process",
 	...override,
 })
 
@@ -97,25 +98,24 @@ const recordAppliedWorker = async (
 	})
 
 describe("AgentControlStore primary verification", () => {
-	it.each([undefined, false, true])(
-		"requires positive terminal corroboration for newly captured pytest evidence (%s)",
-		async (testValidation) => {
-			const { store, persistence } = await setup()
-			const obligation = (await recordPrimary(store, { "app.py": "source-version" }))!
-			const evidence = verificationEvidence(obligation.changeSetId, obligation, {
-				testValidation,
-				verificationVersions: {
-					[obligation.changeSetId]: verificationVersion(obligation, { runner: "pytest", kind: "test" }),
-				},
-			})
-			await store.recordParentVerificationEvidence("root-1", [evidence], "root-1")
-			expect(store.getParentCompletionDecision("root-1").allowed).toBe(true)
-			const restored = new AgentControlStore(persistence)
-			await restored.initialize()
-			expect(restored.getParentCompletionDecision("root-1").allowed).toBe(true)
-			expect(restored.getVerificationObligations()[0].status === "satisfied").toBe(testValidation === true)
-		},
-	)
+	it("accepts successful arbitrary process evidence without inferring a test classification", async () => {
+		const { store, persistence } = await setup()
+		const obligation = (await recordPrimary(store, { "app.py": "source-version" }))!
+		await store.recordParentVerificationEvidence("root-1", [
+			verificationEvidence(obligation.changeSetId, obligation),
+		])
+		expect(store.getVerificationObligations()[0]).toMatchObject({
+			status: "satisfied",
+			verification: { status: "passed", assurance: "process" },
+		})
+		expect(store.getVerificationObligations()[0].verifiedChecks).toBeUndefined()
+		const restored = new AgentControlStore(persistence)
+		await restored.initialize()
+		expect(restored.getVerificationObligations()[0]).toMatchObject({
+			status: "satisfied",
+			verification: { assurance: "process" },
+		})
+	})
 
 	it("records a primary ledger change set and treats identical replays as no-ops", async () => {
 		const { store } = await setup()
@@ -201,6 +201,30 @@ describe("AgentControlStore primary verification", () => {
 			"root-1",
 		)
 		expect(replay?.contentVersion).toBe(reconciled.contentVersion)
+	})
+
+	it("invalidates only the explicitly addressed evidence and preserves reservations", async () => {
+		const { store } = await setup()
+		const primary = (await recordPrimary(store, { "src/example.ts": "version-1" }))!
+		await store.recordParentVerificationEvidence("root-1", [verificationEvidence(primary.changeSetId, primary)])
+		await store.reservePrimaryMutation("root-1", "root-1", workspacePath, "mutation-1")
+		const before = store.getVerificationObligations()[0]
+
+		await store.invalidateVerificationEvidence("root-1", primary.changeSetId, "root-1")
+		const invalidated = store.getVerificationObligations()[0]
+		expect(invalidated).toMatchObject({
+			status: "pending",
+			contentVersion: before.contentVersion! + 1,
+			mutationReservations: ["mutation-1"],
+		})
+		expect(invalidated.verification).toBeUndefined()
+		expect(invalidated.verifiedChecks).toBeUndefined()
+
+		const afterFirstInvalidation = structuredClone(invalidated)
+		await store.invalidateVerificationEvidence("root-1", primary.changeSetId, "root-1")
+		expect(store.getVerificationObligations()[0]).toEqual(afterFirstInvalidation)
+		await store.invalidateVerificationEvidence("root-1", "unknown-change-set", "root-1")
+		expect(store.getVerificationObligations()[0]).toEqual(afterFirstInvalidation)
 	})
 
 	it("keeps ordinary completion available when no primary mutation is recorded", async () => {
@@ -437,7 +461,9 @@ describe("AgentControlStore primary verification", () => {
 			status: "satisfied",
 			verification: { executionId: "unrelated-execution" },
 		})
-		expect(store.getParentCompletionDecision("root-1").allowed).toBe(false)
+		// A reviewed Worker change remains completeable when optional process
+		// evidence is invalidated; the ledger still exposes its pending status.
+		expect(store.getParentCompletionDecision("root-1").allowed).toBe(true)
 	})
 
 	it("blocks an empty primary mutation reservation and retains it across reload", async () => {
@@ -687,6 +713,7 @@ describe("AgentControlStore primary verification", () => {
 				executionId,
 				verificationVersions: {
 					[primary.changeSetId]: verificationVersion(primary, {
+						assurance: undefined,
 						kind,
 						matchedFiles: ["src/required.ts"],
 					}),

@@ -16,6 +16,41 @@
 			"policy_restriction": "Falha ao criar nova tarefa devido a restrições de política."
 		}
 	},
+	"fileConflicts": {
+		"save": "Não foi possível salvar '{{path}}': {{reason}}. Leia o arquivo novamente e tente outra vez para preservar as alterações do usuário.",
+		"delete": "Não foi possível excluir '{{path}}': {{reason}}. Leia o arquivo novamente e tente outra vez.",
+		"saveDestination": "Não foi possível salvar '{{path}}': {{reason}}. Revise o destino e tente novamente.",
+		"reasons": {
+			"fileUnsavedChanges": "o arquivo tem alterações não salvas em um editor aberto",
+			"fileChangedDuringApproval": "o arquivo mudou enquanto a aprovação estava pendente",
+			"editorChangedWhileChecked": "o editor aberto mudou enquanto o arquivo estava sendo verificado",
+			"destinationUnsavedChanges": "o destino tem alterações não salvas em um editor aberto",
+			"destinationNotRegularFile": "o destino não é um arquivo comum",
+			"destinationChangedDuringInspection": "o destino mudou durante a inspeção",
+			"destinationPathChanged": "o destino agora resolve para um caminho diferente",
+			"destinationCreatedAfterInspection": "o destino foi criado após a inspeção",
+			"destinationDeletedAfterInspection": "o destino foi excluído após a inspeção",
+			"destinationChangedAfterInspection": "o destino mudou após a inspeção"
+		}
+	},
+	"diffView": {
+		"editCancelled": "A edição do arquivo foi cancelada",
+		"applyContentFailed": "Não foi possível aplicar o conteúdo ao editor de diferenças",
+		"previewChangedDuringEdit": "A visualização de diferenças mudou durante a edição; as alterações do usuário foram preservadas",
+		"noEditAvailableToSave": "Não há edição de arquivo disponível para salvar",
+		"previewChangedAfterApproval": "A visualização de diferenças mudou após a aprovação; revise as alterações e tente novamente",
+		"previewHasUserChanges": "A visualização de diferenças tem alterações do usuário; revise-as antes de tentar editar novamente",
+		"noFilePathForOpening": "Nenhum caminho de arquivo foi definido para abrir o editor de diferenças",
+		"previewChangedWhileOpening": "A visualização de diferenças mudou durante a abertura; as alterações do usuário foram preservadas",
+		"openFailed": "Não foi possível abrir o editor de diferenças para {{path}}: {{message}}",
+		"missingExpectedFileState": "O estado esperado do arquivo está ausente antes de abrir a visualização de diferenças"
+	},
+	"applyPatch": {
+		"deleteCancelled": "A operação de exclusão foi cancelada."
+	},
+	"imageOutput": {
+		"writeIncomplete": "Não foi possível concluir a gravação de '{{path}}'; o arquivo pode estar incompleto. {{cause}}"
+	},
 	"generateImage": {
 		"openRouterApiKeyRequired": "A chave API do OpenRouter é necessária para geração de imagens com modelos OpenRouter. Configure-a nas configurações experimentais de Geração de Imagens.",
 		"failedWithStatus": "Falha ao gerar imagem: {{status}} {{statusText}}",
@@ -24,6 +59,10 @@
 		"invalidImageData": "Dados de imagem inválidos na resposta",
 		"invalidImageFormat": "Formato de imagem inválido recebido",
 		"unknownError": "Ocorreu um erro desconhecido",
+		"cancelledBeforeSave": "A geração da imagem foi cancelada antes de salvar a imagem.",
+		"destinationUnavailableBeforeGeneration": "O destino da imagem não estava acessível antes da geração. Tente novamente.",
+		"destinationPolicyChangedBeforeSave": "O caminho ou a política de acesso do destino da imagem mudou antes do salvamento. Tente novamente.",
+		"postSaveProcessingFailed": "{{path}}\nImagem salva, mas o processamento pós-salvamento falhou: {{message}}",
 		"roo": {}
 	}
 }

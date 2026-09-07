@@ -189,7 +189,7 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 
 			// Show diff view if focus disruption prevention is disabled
 			if (!isPreventFocusDisruptionEnabled) {
-				await task.diffViewProvider.open(relPath)
+				await task.diffViewProvider.open(relPath, { exists: true, content: originalFileContent })
 				await task.diffViewProvider.update(newContent, true)
 				task.diffViewProvider.scrollToFirstDiff()
 			}

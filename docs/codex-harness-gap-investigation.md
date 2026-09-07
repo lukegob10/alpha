@@ -37,7 +37,7 @@ This investigation deliberately excludes long-term memory as a primary improveme
 
 - Alpha's current task loop, prompt assembly, tool surface, provider boundary, mode model, context management, and recent history.
 - The current public Codex agent-loop writeup and the current open-source Codex Rust core and model configuration.
-- Existing Alpha design documents, especially `docs/codex-convergence.md`, `docs/orchestrator-prompt-flow.md`, and `docs/orchestration-regression-review.md`.
+- Current Alpha architecture and evaluation contracts, especially the core harness, multi-agent, and frontier-evaluation records.
 
 The Codex comparison is based on public implementation and documentation, not private product prompts. The strongest conclusions are the ones visible in both the public Codex core and Alpha's local runtime. Some product details can vary by Codex surface and account configuration; those are marked as secondary or bounded observations.
 
@@ -661,9 +661,9 @@ If only one branch is funded, it should be the execution-kernel branch: stop str
 - [`packages/types/src/mode.ts`](../packages/types/src/mode.ts)
 - [`openai-codex.ts`](../src/api/providers/openai-codex.ts)
 - [`getEnvironmentDetails.ts`](../src/core/environment/getEnvironmentDetails.ts)
-- [`codex-convergence.md`](./codex-convergence.md)
-- [`orchestrator-prompt-flow.md`](./orchestrator-prompt-flow.md)
-- [`orchestration-regression-review.md`](./orchestration-regression-review.md)
+- [`core-harness-comparison-final-phases.md`](./core-harness-comparison-final-phases.md)
+- [`frontier-agent-eval-harness-convergence.md`](./frontier-agent-eval-harness-convergence.md)
+- [`multi-agent-concurrency-spec.md`](./multi-agent-concurrency-spec.md)
 
 ### Codex primary sources
 

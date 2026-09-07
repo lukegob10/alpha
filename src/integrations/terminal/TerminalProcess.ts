@@ -1,10 +1,8 @@
 import * as vscode from "vscode"
 import { inspect } from "util"
-import fs from "fs/promises"
 
 import { MAX_TERMINAL_OUTPUT_RECEIPT_CARRY_CHARACTERS } from "./types"
-import type { ExitCodeDetails, TerminalExecutionOptions } from "./types"
-import { buildPytestVerificationTerminalLaunch } from "./PytestVerificationLauncher"
+import type { ExitCodeDetails } from "./types"
 import { BaseTerminalProcess } from "./BaseTerminalProcess"
 import { Terminal } from "./Terminal"
 
@@ -58,11 +56,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 		return terminal
 	}
 
-	public override async run(
-		command: string,
-		options?: TerminalExecutionOptions,
-		onVerificationUnavailable?: (reason: string) => void,
-	) {
+	public override async run(command: string) {
 		this.command = command
 		if (this.completeCancellationBeforeLaunch()) return
 
@@ -91,29 +85,6 @@ export class TerminalProcess extends BaseTerminalProcess {
 			this.emit("continue")
 			return
 		}
-		let observedCommand = command
-		if (options?.pytestVerification) {
-			const launch = buildPytestVerificationTerminalLaunch(
-				command,
-				options.pytestVerification,
-				terminal.state?.shell,
-			)
-			if (launch.available) {
-				try {
-					if (launch.helper)
-						await fs.writeFile(launch.helper.path, launch.helper.content, { flag: "wx", mode: 0o600 })
-					observedCommand = launch.commandToExecute
-				} catch {
-					onVerificationUnavailable?.(
-						"The pytest observer could not be prepared for this terminal; the command ran without verification evidence.",
-					)
-				}
-			} else onVerificationUnavailable?.(launch.reason)
-		}
-		// Preparing a PowerShell helper yields control. Cancellation must remain latched
-		// until preparation settles, so cleanup cannot race an outstanding helper write.
-		if (this.completeCancellationBeforeLaunch()) return
-
 		// Create a promise that resolves when the stream becomes available
 		let streamTimeoutId: NodeJS.Timeout | undefined
 		let onStreamAvailable: ((stream: AsyncIterable<string>) => void) | undefined
@@ -163,11 +134,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 
 		try {
 			this.commandSubmitted = true
-			if (options?.pytestVerification) {
-				// Instrumented launches own their exit-preserving wrapper. Appended prompt
-				// workarounds must not replace the observed native command status.
-				terminal.shellIntegration.executeCommand(observedCommand)
-			} else if (isPowerShell) {
+			if (isPowerShell) {
 				let commandToExecute = command
 
 				// Only add the PowerShell counter workaround if enabled

@@ -77,6 +77,16 @@ describe("getRulesSection", () => {
 		expect(result).not.toContain("wait for the user's response after each tool use")
 	})
 
+	it("keeps primary rules free of fixed conversation and discovery recipes", () => {
+		const result = getRulesSection(cwd)
+
+		expect(result).toContain("ask_followup_question tool")
+		expect(result).not.toContain("2-4 suggested answers")
+		expect(result).not.toContain("Desktop")
+		expect(result).not.toContain("list_files tool")
+		expect(result).not.toContain('starting your messages with "Great"')
+	})
+
 	it("uses side-effect-aware MCP batching", () => {
 		const result = getRulesSection(cwd)
 

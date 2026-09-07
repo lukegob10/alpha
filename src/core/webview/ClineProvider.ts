@@ -159,7 +159,6 @@ import {
 	resolveCommandVerification,
 	type CommandVerificationDiagnostic,
 } from "../agent/VerificationScope"
-import { resolveVerificationRequirements } from "../agent/VerificationRequirements"
 import { reconcileSubagentGroupAfterReload } from "../agent/SubagentGroupRecovery"
 import { AgentLifecycleJournal, type AgentLifecycleEventInput } from "../agent/lifecycle"
 import {
@@ -194,7 +193,6 @@ import {
 import {
 	assertSubagentTaskAuthorities,
 	buildSubagentPrompt,
-	getWorkerCompletionError,
 	normalizeSubagentTaskDrafts,
 	type PreparedSubagentGroup,
 	type SubagentToolResult,
@@ -6417,9 +6415,7 @@ export class ClineProvider
 		const summary = this.agentControlStore.getWorkerVerificationSummary(agent.taskId, root.rootTaskId)
 		const projectionChanged = !isDeepStrictEqual(agent.parentVerification, summary)
 		agent.parentVerification = summary
-		agent.requiresParentVerification = Boolean(
-			summary && ["required", "pending", "failed"].includes(summary.status),
-		)
+		agent.requiresParentVerification = Boolean(summary && (summary.blocking || summary.status === "required"))
 		if (result.changed && result.obligation && result.previousStatus !== result.obligation.status) {
 			await this.publishParentVerificationTransition(parent, result.obligation)
 		}
@@ -6436,7 +6432,7 @@ export class ClineProvider
 				if (agent.role !== "worker") continue
 				const summary = this.agentControlStore.getWorkerVerificationSummary(agent.taskId, rootTaskId)
 				const requiresParentVerification = Boolean(
-					summary && ["required", "pending", "failed"].includes(summary.status),
+					summary && (summary.blocking || summary.status === "required"),
 				)
 				if (
 					!isDeepStrictEqual(agent.parentVerification, summary) ||
@@ -6565,6 +6561,7 @@ export class ClineProvider
 			.filter((item) => item.changedFiles.length > 0)
 		const evidenced = obligations.filter(
 			(item) =>
+				(item.verification?.assurance === "process" && item.verification.status === "passed") ||
 				Object.values(item.verifiedChecks ?? {}).some((checks) => checks.length > 0) ||
 				(item.contentVersion === undefined && item.status === "satisfied"),
 		)
@@ -6576,15 +6573,18 @@ export class ClineProvider
 							evidenced.map((item) => [
 								item.changeSetId,
 								item.contentFingerprint,
-								item.verifiedChecks ?? item.verification?.matchedFiles,
+								item.verification?.assurance === "process"
+									? "process"
+									: (item.verifiedChecks ?? item.verification?.matchedFiles),
 							]),
 						)
 					: undefined,
 		}
 	}
 
-	private async reconcilePrimaryVerification(parent: Task): Promise<void> {
+	private async reconcilePrimaryVerification(parent: Task): Promise<Set<string>> {
 		const rootTaskId = this.getAgentControlRootTaskId(parent)
+		const invalidated = new Set<string>()
 		const explicitlyAssociated = new Set(
 			parent.getCommandExecutionEvidence().flatMap((item) => item.verificationChangeSetIds ?? []),
 		)
@@ -6596,29 +6596,37 @@ export class ClineProvider
 			if (obligation.origin === "primary" && !explicitlyAssociated.has(obligation.changeSetId)) continue
 			if (obligation.contentVersion === undefined || obligation.appliedAt === undefined) continue
 			if (obligation.scopeUnresolved || obligation.mutationReservations?.length) continue
+			let files: Awaited<ReturnType<typeof captureVerificationContent>>
 			try {
 				workspacePath ??= await fs.realpath(parent.cwd)
-				const files = await captureVerificationContent(
+				files = await captureVerificationContent(
 					workspacePath,
 					Object.keys(
 						obligation.fileVersions ??
 							Object.fromEntries(obligation.changedFiles.map((file) => [file, ""])),
 					),
 				)
-				const requirements = await resolveVerificationRequirements(workspacePath, obligation.changedFiles)
-				await this.agentControlStore.reconcileVerificationContent(
+			} catch {
+				// Optional evidence observation cannot create new mutation debt. A durable
+				// version change also prevents an old in-memory receipt from restoring credit.
+				await this.agentControlStore.invalidateVerificationEvidence(
 					parent.taskId,
 					obligation.changeSetId,
-					workspacePath,
-					files,
 					rootTaskId,
-					requirements,
 				)
-			} catch (error) {
-				if (obligation.origin !== "primary") throw error
-				await this.agentControlStore.invalidatePrimaryVerification(parent.taskId, obligation.rootTaskId)
+				invalidated.add(obligation.changeSetId)
+				continue
 			}
+			const current = await this.agentControlStore.reconcileVerificationContent(
+				parent.taskId,
+				obligation.changeSetId,
+				workspacePath,
+				files,
+				rootTaskId,
+			)
+			if (current?.contentVersion !== obligation.contentVersion) invalidated.add(obligation.changeSetId)
 		}
+		return invalidated
 	}
 
 	/** Capture evidence only after approval, at the actual terminal admission boundary. */
@@ -6633,7 +6641,6 @@ export class ClineProvider
 			return undefined
 		}
 		const workspacePath = await fs.realpath(parent.cwd)
-		const commandScope = await resolveCommandVerification({ workspaceRoot: parent.cwd, cwd, command })
 		const root = await this.ensureAgentControlRoot(parent)
 		await this.synchronizeParentVerificationObligations(parent)
 		const versions: NonNullable<ParentCommandVerificationEvidence["verificationVersions"]> = {}
@@ -6646,26 +6653,12 @@ export class ClineProvider
 			matchedIds.add(obligation.changeSetId)
 			const reject = (diagnostic: CommandVerificationDiagnostic) =>
 				onRejected?.({ ...diagnostic, changeSetId: obligation.changeSetId })
-			const matchedFiles = commandScope
-				? obligation.changedFiles.filter((file) => {
-						const relative = path.relative(commandScope.scopePath, path.resolve(workspacePath, file))
-						return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
-					})
-				: obligation.changedFiles
-			if (!matchedFiles.length) {
-				reject({
-					code: "uncovered_changes",
-					message: "This command runs outside the project containing the associated changes.",
-				})
-				continue
-			}
+			const matchedFiles = obligation.changedFiles
 			const verifier = await resolveCommandVerification({
 				workspaceRoot: parent.cwd,
 				cwd,
 				command,
 				changedFiles: matchedFiles,
-				allowPartialCoverage: true,
-				runtimeCollection: true,
 				onRejected: reject,
 			})
 			if (!verifier) continue
@@ -6676,14 +6669,12 @@ export class ClineProvider
 					...Object.keys(verifier.repositoryFiles),
 				]),
 			])
-			const requirements = await resolveVerificationRequirements(workspacePath, obligation.changedFiles)
 			const current = await this.agentControlStore.reconcileVerificationContent(
 				parent.taskId,
 				obligation.changeSetId,
 				workspacePath,
 				files,
 				root.rootTaskId,
-				requirements,
 			)
 			if (current?.contentVersion && current.contentFingerprint) {
 				versions[obligation.changeSetId] = {
@@ -6692,14 +6683,7 @@ export class ClineProvider
 					scopePath: verifier.scopePath,
 					commandDigest: verifier.commandDigest,
 					repositoryDigest: verifier.repositoryDigest,
-					kind: verifier.kind,
-					...(verifier.runner
-						? {
-								runner: verifier.runner,
-								pytestExpectedFiles: verifier.pytestExpectedFiles,
-								pytestConfigFiles: verifier.pytestConfigFiles,
-							}
-						: {}),
+					assurance: verifier.assurance,
 					matchedFiles: verifier.matchedFiles ?? matchedFiles,
 				}
 			} else {
@@ -6722,29 +6706,61 @@ export class ClineProvider
 		return versions
 	}
 
-	/** Recheck pytest discovery after terminal completion, including newly created configuration. */
-	private async currentCommandVerificationEvidence(parent: Task): Promise<ParentCommandVerificationEvidence[]> {
+	/** Revalidate the admitted command and associated content without inferring test coverage. */
+	private async currentCommandVerificationEvidence(
+		parent: Task,
+		invalidated: Set<string>,
+	): Promise<ParentCommandVerificationEvidence[]> {
 		const evidence = parent.getCommandExecutionEvidence()
 		for (const item of evidence) {
 			if (item.status === "running") continue
 			for (const [changeSetId, captured] of Object.entries(item.verificationVersions ?? {})) {
-				if (captured.runner !== "pytest") continue
-				const current =
-					item.command && item.cwd
-						? await resolveCommandVerification({
-								workspaceRoot: parent.cwd,
-								cwd: item.cwd,
-								command: item.command,
-								changedFiles: captured.matchedFiles,
-								runtimeCollection: true,
-							})
-						: undefined
+				if (invalidated.has(changeSetId)) {
+					delete item.verificationVersions![changeSetId]
+					continue
+				}
+				if (captured.assurance !== "process") continue
+				let current: Awaited<ReturnType<typeof resolveCommandVerification>>
+				try {
+					current =
+						item.command && item.cwd
+							? await resolveCommandVerification({
+									workspaceRoot: parent.cwd,
+									cwd: item.cwd,
+									command: item.command,
+									changedFiles: captured.matchedFiles,
+								})
+							: undefined
+				} catch {
+					// The process result remains a fact even when its optional snapshot is unavailable.
+					current = undefined
+				}
 				if (
 					!current ||
 					current.commandDigest !== captured.commandDigest ||
 					current.repositoryDigest !== captured.repositoryDigest
 				) {
 					delete item.verificationVersions![changeSetId]
+					const rootTaskId = this.getAgentControlRootTaskId(parent)
+					const obligation = this.agentControlStore
+						.getVerificationObligations({ parentTaskId: parent.taskId, rootTaskId })
+						.find((candidate) => candidate.changeSetId === changeSetId)
+					if (
+						obligation?.verification?.executionId === item.executionId &&
+						obligation.contentVersion === captured.contentVersion &&
+						!obligation.scopeUnresolved &&
+						!obligation.mutationReservations?.length
+					) {
+						// A second observation can race the first. Invalidate only the
+						// current persisted receipt, never a newer receipt for another run.
+						const didInvalidate = await this.agentControlStore.invalidateVerificationEvidence(
+							parent.taskId,
+							changeSetId,
+							rootTaskId,
+							{ executionId: item.executionId, contentVersion: captured.contentVersion },
+						)
+						if (didInvalidate) invalidated.add(changeSetId)
+					}
 				}
 			}
 		}
@@ -6762,18 +6778,23 @@ export class ClineProvider
 		// ordinary roots and legacy blocking-handoff children have a valid owner.
 		const root = await this.ensureAgentControlRoot(parent)
 		await this.synchronizeParentVerificationObligations(parent)
-		await this.reconcilePrimaryVerification(parent)
+		const invalidated = await this.reconcilePrimaryVerification(parent)
 		const changed = await this.agentControlStore.recordParentVerificationEvidence(
 			parent.taskId,
-			await this.currentCommandVerificationEvidence(parent),
+			await this.currentCommandVerificationEvidence(parent, invalidated),
 			root.rootTaskId,
 		)
 		for (const obligation of changed) {
 			if (obligation.origin !== "primary") await this.publishParentVerificationTransition(parent, obligation)
 		}
-		if (changed.length > 0) {
-			await this.refreshParentVerificationProjections(parent)
-			await this.postStateToWebviewWithoutTaskHistory()
+		if (changed.length > 0 || invalidated.size > 0) {
+			try {
+				await this.refreshParentVerificationProjections(parent)
+				await this.postStateToWebviewWithoutTaskHistory()
+			} catch (error) {
+				// Optional evidence is already durable; a failed UI projection is not unsettled work.
+				console.error("[ClineProvider] Failed to project parent command evidence", error)
+			}
 		}
 	}
 
@@ -6863,7 +6884,7 @@ export class ClineProvider
 						item.status === "required"
 							? "Review and apply or discard the quarantined change set."
 							: isBlockingParentVerification(item)
-								? `Run execute_command with verification.change_set_ids including "${item.changeSetId}".`
+								? completionDecision.message
 								: undefined,
 				})),
 			},
@@ -8824,10 +8845,11 @@ export class ClineProvider
 				result.status !== "completed",
 			)
 			const changedFiles = this.getLogicalWorkerChangedFiles(artifact)
-			const changeSet = this.toSubagentChangeSetState(artifact, changedFiles)
+			const changeSet = this.shouldPublishWorkerChangeSet(artifact)
+				? this.toSubagentChangeSetState(artifact, changedFiles)
+				: undefined
 			const verification = this.getWorkerCommandResults(child)
 			const displayVerification = this.getWorkerVerification(verification)
-			const completionError = getWorkerCompletionError(result.status, changedFiles)
 			if (artifact.status === "scope_violation") {
 				result = {
 					...result,
@@ -8838,19 +8860,7 @@ export class ClineProvider
 					verification,
 					displayVerification,
 					remainingRisks: [artifact.error ?? "Worker scope violation"],
-					changeSet,
-				}
-			} else if (completionError) {
-				result = {
-					...result,
-					status: "failed",
-					stopReason: "failed",
-					summary: `${completionError}\n\nWorker report: ${result.summary}`,
-					changedFiles,
-					verification,
-					displayVerification,
-					remainingRisks: [completionError],
-					changeSet,
+					...(changeSet ? { changeSet } : {}),
 				}
 			} else {
 				result = {
@@ -8858,10 +8868,10 @@ export class ClineProvider
 					changedFiles,
 					verification,
 					displayVerification,
-					changeSet,
+					...(changeSet ? { changeSet } : {}),
 				}
 			}
-			child.setSubagentChangeSet(changeSet)
+			if (changeSet) child.setSubagentChangeSet(changeSet)
 		}
 
 		try {
@@ -9238,7 +9248,7 @@ export class ClineProvider
 					changeSetId,
 					success: true,
 					changeSetStatus: changeSet.status,
-					message: `Worker changes were applied. Run a genuine verification command with verification.change_set_ids including "${changeSetId}".`,
+					message: "Worker changes were applied.",
 				}
 			}
 		} catch (error) {
@@ -9343,6 +9353,10 @@ export class ClineProvider
 			.filter((candidate) => candidate && candidate !== ".." && !candidate.startsWith("../"))
 	}
 
+	private shouldPublishWorkerChangeSet(artifact: ManagedWorkerArtifact): boolean {
+		return artifact.changes.length > 0 || artifact.status === "scope_violation" || Boolean(artifact.error)
+	}
+
 	private toSubagentChangeSetState(
 		artifact: ManagedWorkerArtifact,
 		changedFiles = this.getLogicalWorkerChangedFiles(artifact),
@@ -9355,7 +9369,7 @@ export class ClineProvider
 			updatedAt: artifact.updatedAt,
 			partial: artifact.partial,
 			conflictPaths: artifact.conflictPaths,
-			error: artifact.error ?? (artifact.changes.length === 0 ? "No worker changes were captured." : undefined),
+			error: artifact.error,
 		}
 	}
 

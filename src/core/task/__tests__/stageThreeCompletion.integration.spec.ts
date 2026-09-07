@@ -23,7 +23,6 @@ const CHANGE_SET_ID = "applied-worker-change"
 const PRIMARY_CHANGE_SET_ID = `primary-change:${TASK_ID}`
 const MAX_SCRIPTED_STEPS = 20
 const MAX_UNVERIFIED_COMPLETION_ATTEMPTS = 3
-const MAX_UNCHANGED_REPAIR_TOOLS = 8
 const COMPLETION_TEXT = "The requested work is finished."
 
 type CompletionKind = "text" | "explicit"
@@ -192,6 +191,7 @@ async function createHarness() {
 		beforeCandidate?: (step: number) => void | Promise<void>,
 		interleaveReads: boolean | "repair-verification" | readonly string[] = false,
 		repairChangeSetId = CHANGE_SET_ID,
+		completionOverride?: { result: string; outcome: "blocked" },
 	) => {
 		requestStep.mockImplementation(async (input) => {
 			// Model the request adapter's durable steering consumption; the real
@@ -215,7 +215,7 @@ async function createHarness() {
 			task.userMessageContent = []
 			task.didToolFailInCurrentTurn = false
 			const relevantFiles = typeof interleaveReads === "object" ? interleaveReads : undefined
-			const relevantPath = relevantFiles?.[requests.length - 2]
+			const relevantPath = relevantFiles?.[requests.length - 1]
 			const isRead = relevantFiles
 				? relevantPath !== undefined
 				: interleaveReads === true && requests.length % 2 === 0
@@ -245,7 +245,7 @@ async function createHarness() {
 									type: "tool_call",
 									id: `completion-${requests.length}`,
 									name: "attempt_completion",
-									arguments: { result: COMPLETION_TEXT },
+									arguments: completionOverride ?? { result: COMPLETION_TEXT },
 								},
 							],
 			)
@@ -317,7 +317,7 @@ async function createHarness() {
 				...(kind === "primary" ? { origin: "primary", contentVersion: 1, workspacePath: storagePath } : {}),
 			}),
 		)
-		expect(store.getParentCompletionDecision(TASK_ID, TASK_ID).allowed).toBe(false)
+		expect(store.getParentCompletionDecision(TASK_ID, TASK_ID).allowed).toBe(true)
 	}
 
 	const run = () => {
@@ -448,6 +448,83 @@ describe("Stage Three durable completion integration", () => {
 		return { running }
 	}
 
+	it.each(["ready", "verification-pending", "earlier-tool-error"] as const)(
+		"hands off a blocked result normally with %s without completing the task",
+		async (condition) => {
+			const harness = await setup("explicit")
+			if (condition === "verification-pending") await harness.addAppliedObligation("worker")
+			const report = "The available work is finished. Further progress requires information I cannot obtain."
+			harness.installCandidates(
+				"explicit",
+				() => {
+					harness.task.didToolFailInCurrentTurn = condition === "earlier-tool-error"
+				},
+				false,
+				CHANGE_SET_ID,
+				{ result: report, outcome: "blocked" },
+			)
+			await harness.run()
+			harness.assertRecoverableStop()
+			expect(harness.requests).toHaveLength(1)
+			expect(harness.task.say).toHaveBeenCalledWith("text", report, undefined, false)
+			expect(vi.mocked(harness.task.say).mock.calls.some(([kind]) => kind === "error")).toBe(false)
+			expect(harness.presentCompletionResult).not.toHaveBeenCalled()
+			expect(harness.provider.prepareTaskCompletionLifecycle).not.toHaveBeenCalled()
+			expect(harness.events.filter((event) => event.type === "tool_result")).toEqual([
+				expect.objectContaining({ name: "attempt_completion", status: "success" }),
+			])
+			expect(harness.flush).toHaveBeenCalledOnce()
+			expect(harness.task.userMessageContent).toContainEqual(
+				expect.objectContaining({ type: "tool_result", tool_use_id: "completion-1", is_error: false }),
+			)
+			expect(harness.task.getCompletionStageMetrics()).toMatchObject({ candidateCount: 1, rejectionCount: 0 })
+			if (condition === "verification-pending") {
+				await harness.assertDurableObligationPending("worker")
+				const reloaded = new AgentControlStore(new FileAgentControlPersistence(harness.storagePath))
+				try {
+					await reloaded.initialize()
+					expect(reloaded.getParentCompletionDecision(TASK_ID, TASK_ID).allowed).toBe(true)
+					expect(reloaded.getAgent(TASK_ID, TASK_ID)?.status).not.toBe("completed")
+				} finally {
+					await reloaded.shutdown()
+				}
+			}
+		},
+	)
+
+	it("accepts new guidance in the same task after a blocked handoff", async () => {
+		const harness = await setup("explicit")
+		const guidance = "Limit the work to what is available and summarize the remaining dependency."
+		harness.installCandidates("explicit", undefined, false, CHANGE_SET_ID, {
+			result: "Further work depends on unavailable information.",
+			outcome: "blocked",
+		})
+		harness.ask.mockImplementationOnce(async (type) => {
+			expect(type).toBe("resume_task")
+			harness.installCandidates("explicit")
+			return { response: "messageResponse", text: guidance, images: [] }
+		})
+		await harness.run()
+		expect(harness.requests).toHaveLength(2)
+		expect(JSON.stringify(harness.requests[1])).toContain(guidance)
+		expect(harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(vi.mocked(harness.task.say).mock.calls.some(([kind]) => kind === "error")).toBe(false)
+	})
+
+	it("keeps a blocked handoff persistence failure visible as an error", async () => {
+		const harness = await setup("explicit")
+		harness.installCandidates("explicit", undefined, false, CHANGE_SET_ID, {
+			result: "Further work requires user input.",
+			outcome: "blocked",
+		})
+		harness.flush.mockResolvedValue(false)
+		await harness.run()
+		harness.assertRecoverableStop()
+		expect(harness.requests).toHaveLength(1)
+		expect(harness.task.say).toHaveBeenCalledWith("error", expect.stringContaining("could not be persisted"))
+		expect(harness.presentCompletionResult).not.toHaveBeenCalled()
+	})
+
 	it.each(["text", "explicit"] as const)("completes a settled primary edit in one %s response", async (kind) => {
 		const harness = await setup(kind)
 		await harness.addAppliedObligation("primary", ["README.md"])
@@ -461,7 +538,7 @@ describe("Stage Three durable completion integration", () => {
 	})
 
 	it.each(COMPLETION_OBLIGATIONS)(
-		"bounds repeated %s completion candidates against a real durable %s verification obligation",
+		"allows %s completion with a real durable advisory %s receipt",
 		async (kind, obligationKind) => {
 			const harness = await setup(kind)
 			await harness.addAppliedObligation(obligationKind)
@@ -469,14 +546,14 @@ describe("Stage Three durable completion integration", () => {
 
 			await harness.run()
 
-			harness.assertRecoverableStop()
-			expect(harness.presentCompletionResult).not.toHaveBeenCalled()
+			expect(harness.requests).toHaveLength(1)
+			expect(harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted)).toHaveLength(1)
 			await harness.assertDurableObligationPending(obligationKind)
 		},
 	)
 
 	it.each(COMPLETION_OBLIGATIONS)(
-		"revalidates %s completion when a durable %s obligation arrives during the persistence await",
+		"retains %s completion when an advisory %s receipt arrives during the persistence await",
 		async (kind, obligationKind) => {
 			const harness = await setup(kind)
 			const entered = deferred()
@@ -502,8 +579,7 @@ describe("Stage Three durable completion integration", () => {
 				await running
 			}
 
-			harness.assertRecoverableStop()
-			expect(harness.store.getAgent(TASK_ID, TASK_ID)?.status).not.toBe("completed")
+			expect(harness.store.getAgent(TASK_ID, TASK_ID)?.status).toBe("completed")
 			await harness.assertDurableObligationPending(obligationKind)
 		},
 	)
@@ -785,197 +861,54 @@ describe("Stage Three durable completion integration", () => {
 	)
 
 	it.each(["text", "explicit"] as const)(
-		"does not charge internal completion gate reads against the %s candidate rejection budget",
-		async (kind) => {
-			const harness = await setup(kind)
-			await harness.addAppliedObligation("worker")
-			harness.installCandidates(kind, async () => {
-				for (let read = 0; read < 5; read++) await harness.task.getCompletionGateDecision()
-			})
-
-			await harness.run()
-
-			harness.assertRecoverableStop()
-			expect(harness.requests).toHaveLength(MAX_UNVERIFIED_COMPLETION_ATTEMPTS)
-			expect(harness.task.getCompletionStageMetrics()).toMatchObject({
-				candidateCount: MAX_UNVERIFIED_COMPLETION_ATTEMPTS,
-				rejectionCount: MAX_UNVERIFIED_COMPLETION_ATTEMPTS,
-				runtimeWaitMs: 0,
-			})
-			await harness.assertDurableObligationPending("worker")
-		},
-	)
-
-	it.each(["text", "explicit"] as const)(
-		"gives fresh user guidance a new %s rejection budget within the same task loop",
-		async (kind) => {
-			const harness = await setup(kind)
-			await harness.addAppliedObligation("worker")
-			const guidance = "Use the documented verification procedure, then reassess the result."
-			harness.ask.mockImplementationOnce(async (type) => {
-				expect(type).toBe("resume_task")
-				return { response: "messageResponse", text: guidance, images: [] }
-			})
-
-			await harness.run()
-
-			harness.assertRecoverableStop()
-			expect(harness.requests).toHaveLength(MAX_UNVERIFIED_COMPLETION_ATTEMPTS * 2)
-			expect(JSON.stringify(harness.requests[MAX_UNVERIFIED_COMPLETION_ATTEMPTS])).toContain(guidance)
-			expect(harness.ask).toHaveBeenCalledTimes(2)
-			await harness.assertDurableObligationPending("worker")
-		},
-	)
-
-	it.each(["text", "explicit"] as const)(
-		"bounds %s completion candidates despite interleaved unrelated successful reads",
-		async (kind) => {
-			const harness = await setup(kind)
-			await harness.addAppliedObligation("worker")
-			harness.installCandidates(kind, undefined, true)
-
-			await harness.run()
-
-			harness.assertRecoverableStop()
-			expect(harness.requests).toHaveLength(MAX_UNVERIFIED_COMPLETION_ATTEMPTS * 2 - 1)
-			expect(
-				harness.events.filter((event) => event.type === "tool_result" && event.name === "list_files"),
-			).toHaveLength(2)
-			await harness.assertDurableObligationPending("worker")
-		},
-	)
-
-	it.each(["text", "explicit"] as const)(
-		"bounds explicitly scoped verification attempts that leave a rejected %s completion candidate unverified",
-		async (kind) => {
-			const harness = await setup(kind)
-			await harness.addAppliedObligation("worker")
-			harness.installCandidates(kind, undefined, "repair-verification")
-
-			await harness.run()
-
-			harness.assertRecoverableStop()
-			expect(harness.requests).toHaveLength(1 + MAX_UNCHANGED_REPAIR_TOOLS)
-			expect(harness.task.getCompletionStageMetrics()).toMatchObject({
-				candidateCount: 1,
-				rejectionCount: 1,
-				repairToolCount: MAX_UNCHANGED_REPAIR_TOOLS,
-				blockedAt: expect.any(Number),
-				settledUsage: harness.task.getTokenUsage(),
-				lastReasonCode: "repair_limit",
-			})
-			expect(
-				harness.events.filter(
-					(event) =>
-						event.type === "tool_result" && event.name === "execute_command" && event.status === "success",
-				),
-			).toHaveLength(MAX_UNCHANGED_REPAIR_TOOLS)
-			await harness.assertDurableObligationPending("worker")
-		},
-	)
-
-	it.each(["text", "explicit"] as const)(
-		"keeps the unchanged worker repair budget through unrelated concurrent edits after %s rejection",
+		"completes %s with advisory Worker evidence without requesting repair commands",
 		async (kind) => {
 			const harness = await setup(kind)
 			await harness.addAppliedObligation("worker")
 			harness.installCandidates(
 				kind,
-				async (step) => {
-					if (step > 1) await harness.addAppliedObligation("primary", [`src/unrelated-${step}.ts`])
+				async () => {
+					for (let read = 0; read < 5; read++) await harness.task.getCompletionGateDecision()
 				},
 				"repair-verification",
-				CHANGE_SET_ID,
 			)
-
 			await harness.run()
-
-			harness.assertRecoverableStop()
-			expect(harness.requests).toHaveLength(1 + MAX_UNCHANGED_REPAIR_TOOLS)
+			expect(harness.requests).toHaveLength(1)
+			expect(harness.task.getCompletionStageMetrics()).toMatchObject({
+				candidateCount: 1,
+				rejectionCount: 0,
+				repairToolCount: 0,
+			})
+			expect(
+				harness.events.filter((event) => event.type === "tool_result" && event.name === "execute_command"),
+			).toHaveLength(0)
+			expect(harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted)).toHaveLength(1)
 			await harness.assertDurableObligationPending("worker")
-			expect(harness.store.getVerificationObligations({ parentTaskId: TASK_ID })).toContainEqual(
-				expect.objectContaining({ changeSetId: PRIMARY_CHANGE_SET_ID, changedFiles: expect.any(Array) }),
-			)
 		},
 	)
 
-	it.each([
-		["text", "changed"],
-		["explicit", "changed"],
-		["text", "discovered caller/dependency"],
-		["explicit", "discovered caller/dependency"],
-	] as const)("allows %s completion after more than eight distinct %s reads", async (kind, scope) => {
-		const harness = await setup(kind)
-		const files = Array.from({ length: 10 }, (_, index) =>
-			scope === "changed" ? `src/changed-${index}.ts` : `callers/dependency-${index}.ts`,
-		)
-		const changedFiles = scope === "changed" ? files : ["src/changed.ts"]
-		await harness.addAppliedObligation("worker", changedFiles)
-		const obligation = harness.store.getVerificationObligations({ parentTaskId: TASK_ID })[0]
-		expect(Object.keys(obligation.fileVersions ?? {})).toEqual(changedFiles)
-		harness.installCandidates(
-			kind,
-			async (step) => {
-				if (scope !== "changed" && step === 2) {
-					// Newly discovered callers are outside the mutation receipt's initial scope.
-					await fs.mkdir(path.join(harness.storagePath, "callers"), { recursive: true })
-					for (const file of files)
-						await fs.writeFile(
-							path.join(harness.storagePath, file),
-							'import { changed } from "../src/changed"\nexport const caller = () => changed\n',
-						)
-				}
-				if (step !== files.length + 2) return
-				await harness.store.recordParentVerificationEvidence(
-					TASK_ID,
-					[
-						{
-							toolCallId: "scoped-verification",
-							executionId: "scoped-verification-execution",
-							status: "succeeded",
-							command: "pnpm check-types",
-							cwd: harness.storagePath,
-							verificationChangeSetIds: [CHANGE_SET_ID],
-							verificationVersions: {
-								[CHANGE_SET_ID]: {
-									contentVersion: obligation.contentVersion!,
-									contentFingerprint: obligation.contentFingerprint!,
-									scopePath: harness.storagePath,
-									matchedFiles: changedFiles,
-									commandDigest: fingerprintContent("pnpm check-types"),
-									repositoryDigest: fingerprintContent(changedFiles.join("\n")),
-									kind: "types",
-								},
-							},
-							startedAt: obligation.appliedAt! + 1,
-							completedAt: obligation.appliedAt! + 2,
-							exitCode: 0,
-						},
-					],
-					TASK_ID,
-				)
-			},
-			files,
-		)
-
-		await harness.run()
-
-		expect(harness.guardTriggered()).toBe(false)
-		for (const event of harness.events) {
-			if (event.type === "tool_result" && event.name === "read_file") {
-				expect(event, "Each relevant read must succeed before it can count as repair progress").toMatchObject({
-					status: "success",
-				})
+	it.each(["text", "explicit"] as const)(
+		"allows %s completion after the objective's independent reads without inventing a check",
+		async (kind) => {
+			const harness = await setup(kind)
+			const files = Array.from({ length: 10 }, (_, index) => `src/changed-${index}.ts`)
+			await harness.addAppliedObligation("worker", files)
+			harness.installCandidates(kind, undefined, files)
+			await harness.run()
+			expect(harness.guardTriggered()).toBe(false)
+			expect(harness.requests).toHaveLength(files.length + 1)
+			expect(
+				harness.events.filter((event) => event.type === "tool_result" && event.name === "read_file"),
+			).toHaveLength(files.length)
+			for (const event of harness.events) {
+				if (event.type === "tool_result" && event.name === "read_file") expect(event.status).toBe("success")
 			}
-		}
-		expect(harness.requests).toHaveLength(files.length + 2)
-		expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
-		expect(
-			harness.events.filter((event) => event.type === "tool_result" && event.name === "read_file"),
-		).toHaveLength(files.length)
-		expect(harness.store.getParentCompletionDecision(TASK_ID, TASK_ID).allowed).toBe(true)
-		expect(harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted)).toHaveLength(1)
-	})
+			expect(
+				harness.events.filter((event) => event.type === "tool_result" && event.name === "execute_command"),
+			).toHaveLength(0)
+			expect(harness.emit.mock.calls.filter(([name]) => name === RooCodeEventName.TaskCompleted)).toHaveLength(1)
+		},
+	)
 
 	it.each(["active descendant", "unconsumed result"] as const)(
 		"handles text completion blocked by an %s without file-verification debt",

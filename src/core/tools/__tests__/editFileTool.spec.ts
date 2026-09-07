@@ -422,6 +422,17 @@ describe("editFileTool", () => {
 			expect(mockAskApproval).toHaveBeenCalled()
 		})
 
+		it("passes the raw baseline to the diff preview", async () => {
+			const rawBaseline = "Line 1\r\nLine 2\r\nLine 3"
+
+			await executeEditFileTool({ old_string: "Line 2", new_string: "Changed" }, { fileContent: rawBaseline })
+
+			expect(mockTask.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, {
+				exists: true,
+				content: rawBaseline,
+			})
+		})
+
 		it("defaults expected_replacements to 1", async () => {
 			const result = await executeEditFileTool(
 				{ old_string: "Line" },

@@ -1265,7 +1265,7 @@ If complete, use attempt_completion.
 		expect(agent.completedAt).toBe(1_234)
 	})
 
-	it("fails a completed editing worker when its captured worktree has no changes", async () => {
+	it("completes a Worker whose objective is satisfied without a repository change", async () => {
 		let now = 1_000
 		vi.spyOn(Date, "now").mockImplementation(() => now)
 		const provider = makeProviderHarness()
@@ -1288,7 +1288,7 @@ If complete, use attempt_completion.
 		const artifact = {
 			id: "change-set-1",
 			taskId: "worker-1",
-			status: "pending_review" as const,
+			status: "discarded" as const,
 			createdAt: 10,
 			updatedAt: 20,
 			gitRoot: "F:/workspace",
@@ -1331,7 +1331,7 @@ If complete, use attempt_completion.
 						},
 					],
 					clineMessages: [
-						{ type: "say", say: "completion_result", text: "Could not make the requested edit." },
+						{ type: "say", say: "completion_result", text: "No documentation change was needed." },
 					],
 					getTokenUsage: () => ({ totalTokensIn: 10, totalTokensOut: 5 }),
 					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
@@ -1358,27 +1358,32 @@ If complete, use attempt_completion.
 
 		const prepared = await provider.prepareSubagentGroup(parent as any, [
 			{
-				objective: "Create a bounded documentation change",
+				objective: "Review whether a bounded documentation change is needed; apply it only if required",
 				agent_kind: "worker",
 				write_scope: ["docs"],
 			},
 		])
 		const result = await provider.runSubagentGroup(parent as any, prepared, new AbortController().signal)
 
-		expect(result.status).toBe("failed")
+		expect(result.status).toBe("completed")
 		expect(result.agents[0]).toMatchObject({
 			role: "worker",
-			status: "failed",
+			status: "completed",
 			usage: { durationMs: 125 },
 			changedFiles: [],
 			verification: [{ label: "Worker command 1", status: "passed", detail: "Exit code 0" }],
-			changeSet: { status: "unavailable", error: "No worker changes were captured." },
 		})
-		expect(result.agents[0]?.error).toContain("no changes were captured")
+		expect(result.agents[0]?.changeSet).toBeUndefined()
+		expect(child.setSubagentChangeSet).not.toHaveBeenCalled()
+		expect(result.agents[0]?.summary).toBe("No documentation change was needed.")
+		expect(result.agents[0]?.error).toBeUndefined()
+		expect((provider as any).agentControlStore.getVerificationObligations({ parentTaskId: parent.taskId })).toEqual(
+			[],
+		)
 		expect(child.finalizeSubagentHistory).toHaveBeenCalledWith(
-			"failed",
-			expect.stringContaining("Worker report: Could not make the requested edit."),
-			"failed",
+			"completed",
+			"No documentation change was needed.",
+			"completed",
 		)
 	})
 

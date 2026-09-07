@@ -42,11 +42,11 @@ describe("proportionate primary completion", () => {
 		await store.reservePrimaryMutation("root", "root", "/workspace", "command")
 		await store.releasePrimaryMutation("root", "root", "command", true)
 		const decision = store.getParentCompletionDecision("root")
-		expect(decision.allowed).toBe(false)
-		expect(decision.blockingObligations).toEqual([
-			expect.objectContaining({ changeSetId: "worker-change", status: "pending" }),
-		])
-		expect(decision.blockingObligations[0].verification).toBeUndefined()
+		expect(decision.allowed).toBe(true)
+		expect(decision.blockingObligations).toEqual([])
+		const worker = store.getVerificationObligations().find((item) => item.changeSetId === "worker-change")
+		expect(worker).toMatchObject({ changeSetId: "worker-change", status: "pending" })
+		expect(worker?.verification).toBeUndefined()
 	})
 
 	it("persists incomplete observation without inventing an unfinished command", async () => {
@@ -110,5 +110,88 @@ describe("proportionate primary completion", () => {
 		for (const pending of [{ mutationReservations: ["running"] }, { scopeUnresolved: true }]) {
 			expect(decideParentCompletion([{ ...obligations[0], ...pending }]).allowed).toBe(false)
 		}
+	})
+
+	it("does not block approved Worker changes when optional process evidence is missing or failed", () => {
+		const base = {
+			id: "worker-change:optional",
+			rootTaskId: "root",
+			parentTaskId: "root",
+			workerTaskId: "worker",
+			workerNickname: "Worker",
+			groupId: "group",
+			changeSetId: "optional",
+			origin: "worker" as const,
+			changedFiles: ["src/change.ts"],
+			createdAt: 1,
+			updatedAt: 2,
+			appliedAt: 2,
+			review: { decision: "approved" as const, source: "apply" as const, recordedAt: 2 },
+		}
+
+		for (const status of ["pending", "failed"] as const) {
+			const obligation = { ...base, status }
+			expect(decideParentCompletion([obligation])).toMatchObject({ allowed: true, blockingObligations: [] })
+			expect(summarizeParentVerification([obligation])).toMatchObject({
+				status,
+				blocking: false,
+				unresolvedCount: 0,
+			})
+			expect(formatParentVerificationContext([obligation])).toBeUndefined()
+		}
+	})
+
+	it("fails closed for an applied Worker record without approved review or effect settlement", () => {
+		const obligation = {
+			id: "worker-change:unreviewed",
+			rootTaskId: "root",
+			parentTaskId: "root",
+			workerTaskId: "worker",
+			workerNickname: "Worker",
+			groupId: "group",
+			changeSetId: "unreviewed",
+			origin: "worker" as const,
+			changedFiles: ["src/change.ts"],
+			status: "pending" as const,
+			createdAt: 1,
+			updatedAt: 2,
+		}
+		const decision = decideParentCompletion([obligation])
+		expect(decision.allowed).toBe(false)
+		expect(decision.blockingObligations).toEqual([expect.objectContaining({ changeSetId: "unreviewed" })])
+		expect(decision.message).toContain("approved review")
+		const optionalFailure = {
+			...obligation,
+			id: "worker-change:optional",
+			changeSetId: "optional",
+			status: "failed" as const,
+			appliedAt: 2,
+			review: { decision: "approved" as const, source: "apply" as const, recordedAt: 2 },
+		}
+		expect(summarizeParentVerification([optionalFailure, obligation])).toMatchObject({
+			blocking: true,
+			changeSetId: "unreviewed",
+			status: "pending",
+			unresolvedCount: 1,
+			message: expect.stringContaining("approved review"),
+		})
+		const processSuccess = {
+			...optionalFailure,
+			status: "satisfied" as const,
+			verification: {
+				assurance: "process" as const,
+				status: "passed" as const,
+				toolCallId: "tool",
+				executionId: "execution",
+				startedAt: 3,
+				completedAt: 4,
+				exitCode: 0,
+			},
+		}
+		expect(summarizeParentVerification([processSuccess])).toMatchObject({
+			blocking: false,
+			unresolvedCount: 0,
+			message: expect.stringContaining("test coverage is not established"),
+		})
 	})
 })

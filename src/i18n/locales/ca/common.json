@@ -24,6 +24,11 @@
 		"delete_custom_mode_with_rules": "Esteu segur que voleu suprimir aquest mode {scope}?\n\nAixò també suprimirà la carpeta de regles associada a:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"task_recovery_lock_repair": "Alpha no pot verificar el propietari del bloqueig compartit de tasques. Reprendre o recarregar no el pot reparar amb seguretat. Tanqueu totes les finestres de VS Code i els hosts de prova d’Alpha. Després, feu una còpia i elimineu només agent_control.json.transaction.lock de l’emmagatzematge global d’Alpha abans de reobrir. No elimineu el bloqueig amb un host en execució; conserveu l’historial i agent_control.json.",
+		"task_recovery_failed": "El torn s'ha aturat perquè ha fallat una operació. Pots reprendre la tasca o enviar noves indicacions.",
+		"task_recovery_incomplete": "El torn ha acabat abans de completar la tasca. Pots reprendre la tasca o enviar noves indicacions.",
+		"task_recovery_exhausted": "El torn s'ha aturat en arribar al límit de reintents automàtics. Pots reprendre la tasca o enviar noves indicacions.",
+		"task_recovery_persistence": "La tasca s'ha pausat perquè no s'han pogut desar les dades necessàries. Comprova l'espai lliure al disc i l'accés a la carpeta d'emmagatzematge de tasques, i després reprèn-la o envia noves indicacions.",
 		"invalid_data_uri": "Format d'URI de dades no vàlid",
 		"error_copying_image": "Error copiant la imatge: {{errorMessage}}",
 		"error_saving_image": "Error desant la imatge: {{errorMessage}}",

@@ -102,6 +102,26 @@ const hierarchyProjection = (): ManagedAgentTreeProjection => ({
 })
 
 describe("ManagedAgentTree", () => {
+	it.each(["pending", "failed"] as const)("does not turn advisory %s evidence into required attention", (status) => {
+		const agent = makeAgent({
+			status: "completed",
+			role: "worker",
+			parentVerification: {
+				status,
+				blocking: false,
+				obligationCount: 1,
+				unresolvedCount: 0,
+				changeSetId: "change-1",
+				updatedAt: NOW,
+				message: "Optional command evidence.",
+			},
+		})
+		render(<ManagedAgentTree rootTaskId="root-1" groups={[makeGroup(agent)]} onShowTask={vi.fn()} />)
+		expect(screen.getByRole("button", { name: /Open Maple · Completed/i })).toBeEnabled()
+		expect(screen.queryByText("Verify")).not.toBeInTheDocument()
+		expect(screen.queryByText("Fix")).not.toBeInTheDocument()
+	})
+
 	it("renders one compact, horizontally scrollable task strip without repeating the root or dashboard detail", () => {
 		render(<ManagedAgentTree rootTaskId="root-1" projection={hierarchyProjection()} onShowTask={vi.fn()} />)
 

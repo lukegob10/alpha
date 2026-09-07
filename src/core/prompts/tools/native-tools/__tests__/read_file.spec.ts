@@ -23,6 +23,8 @@ describe("createReadFileTool", () => {
 
 			expect(description).toContain("bounded files batch")
 			expect(description).toContain("up to 8 entries")
+			expect(description).toContain("missing files or truncated content")
+			expect(description).toContain("do not infer absence from them")
 		})
 
 		it("requires a concrete path so an empty tool call cannot reach execution", () => {

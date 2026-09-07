@@ -27,6 +27,7 @@ export class SpawnAgentTool extends BaseTool<"spawn_agent"> {
 		const reject = (message: string) => {
 			task.recordToolError("spawn_agent", message)
 			task.didToolFailInCurrentTurn = true
+			callbacks.setResultMetadata?.({ status: "error" })
 			callbacks.pushToolResult(`Error: ${message}`)
 		}
 		const provider = task.providerRef.deref() as (BoundedSubagentSpawnProvider & object) | undefined

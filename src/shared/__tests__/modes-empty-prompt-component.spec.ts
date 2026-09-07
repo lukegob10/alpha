@@ -24,7 +24,9 @@ describe("getModeSelection with empty promptComponent", () => {
 		// Should use built-in mode values
 		expect(result.roleDefinition).toBe(debugMode.roleDefinition)
 		expect(result.baseInstructions).toBe(debugMode.customInstructions)
-		expect(result.baseInstructions).toContain("Reflect on 5-7 different possible sources")
+		expect(result.baseInstructions).toContain(
+			"Use the available evidence to identify and verify the most likely root cause",
+		)
 	})
 
 	it("should ignore promptComponent content for canonical Plan", () => {

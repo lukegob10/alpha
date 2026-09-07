@@ -654,6 +654,7 @@ describe("validateAndFixToolResultIds", () => {
 			expect((resultContent[0] as Anthropic.ToolResultBlockParam).content).toBe(
 				"Tool execution was interrupted before completion.",
 			)
+			expect((resultContent[0] as Anthropic.ToolResultBlockParam).is_error).toBe(true)
 			// Original text block should be preserved
 			expect(resultContent[1].type).toBe("text")
 		})

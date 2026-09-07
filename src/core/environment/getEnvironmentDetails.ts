@@ -119,7 +119,7 @@ export async function captureEnvironmentDetails(
 		add("Current Mode", `<slug>${currentMode}</slug>\n<model>${modelId}</model>`)
 		add(
 			"Sub-agent Context",
-			"Workspace files are intentionally omitted. Paths explicitly named by the objective are already located: read them directly, and use a direct read error rather than list or search output to establish that one is absent. Use list_files or search_files only for unnamed or unresolved candidates, then read related files in batches.",
+			"Workspace files are intentionally omitted. Use read, list, search, and codebase tools as appropriate for the objective, adapting discovery to named and unnamed targets. Tool results may be bounded, missing, or truncated; do not infer absence from incomplete output, and report the limitation or obtain direct evidence when it matters.",
 		)
 		return context.prepare(identity, fields, "", [])
 	}

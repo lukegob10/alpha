@@ -16,6 +16,41 @@
 			"policy_restriction": "Impossible de créer une nouvelle tâche en raison de restrictions de politique."
 		}
 	},
+	"fileConflicts": {
+		"save": "Impossible d'enregistrer '{{path}}' : {{reason}}. Relisez le fichier et réessayez afin de préserver les modifications de l'utilisateur.",
+		"delete": "Impossible de supprimer '{{path}}' : {{reason}}. Relisez le fichier et réessayez.",
+		"saveDestination": "Impossible d'enregistrer '{{path}}' : {{reason}}. Vérifiez la destination et réessayez.",
+		"reasons": {
+			"fileUnsavedChanges": "le fichier contient des modifications non enregistrées dans un éditeur ouvert",
+			"fileChangedDuringApproval": "le fichier a changé pendant que l'approbation était en attente",
+			"editorChangedWhileChecked": "l'éditeur ouvert a changé pendant la vérification du fichier",
+			"destinationUnsavedChanges": "la destination contient des modifications non enregistrées dans un éditeur ouvert",
+			"destinationNotRegularFile": "la destination n'est pas un fichier ordinaire",
+			"destinationChangedDuringInspection": "la destination a changé pendant son inspection",
+			"destinationPathChanged": "la destination pointe maintenant vers un autre chemin",
+			"destinationCreatedAfterInspection": "la destination a été créée après l'inspection",
+			"destinationDeletedAfterInspection": "la destination a été supprimée après l'inspection",
+			"destinationChangedAfterInspection": "la destination a changé après l'inspection"
+		}
+	},
+	"diffView": {
+		"editCancelled": "La modification du fichier a été annulée",
+		"applyContentFailed": "Impossible d'appliquer le contenu à l'éditeur de différences",
+		"previewChangedDuringEdit": "L'aperçu des différences a changé pendant la modification ; les changements de l'utilisateur ont été préservés",
+		"noEditAvailableToSave": "Aucune modification de fichier n'est disponible à enregistrer",
+		"previewChangedAfterApproval": "L'aperçu des différences a changé après l'approbation ; vérifiez les changements et réessayez",
+		"previewHasUserChanges": "L'aperçu des différences contient des changements de l'utilisateur ; vérifiez-les avant de réessayer la modification",
+		"noFilePathForOpening": "Aucun chemin de fichier n'est défini pour ouvrir l'éditeur de différences",
+		"previewChangedWhileOpening": "L'aperçu des différences a changé pendant son ouverture ; les changements de l'utilisateur ont été préservés",
+		"openFailed": "Impossible d'ouvrir l'éditeur de différences pour {{path}} : {{message}}",
+		"missingExpectedFileState": "L'état attendu du fichier manque avant l'ouverture de l'aperçu des différences"
+	},
+	"applyPatch": {
+		"deleteCancelled": "L'opération de suppression a été annulée."
+	},
+	"imageOutput": {
+		"writeIncomplete": "Impossible de terminer l'écriture de '{{path}}' ; le fichier est peut-être incomplet. {{cause}}"
+	},
 	"generateImage": {
 		"openRouterApiKeyRequired": "La clé API OpenRouter est requise pour la génération d'images avec les modèles OpenRouter. Veuillez la configurer dans les paramètres expérimentaux de Génération d'Images.",
 		"failedWithStatus": "Échec de génération de l'image : {{status}} {{statusText}}",
@@ -24,6 +59,10 @@
 		"invalidImageData": "Données d'image non valides dans la réponse",
 		"invalidImageFormat": "Format d'image non valide reçu",
 		"unknownError": "Une erreur inconnue s'est produite",
+		"cancelledBeforeSave": "La génération de l'image a été annulée avant l'enregistrement de l'image.",
+		"destinationUnavailableBeforeGeneration": "La destination de l'image n'était pas accessible avant la génération. Réessayez.",
+		"destinationPolicyChangedBeforeSave": "Le chemin ou la politique d'accès de la destination de l'image a changé avant l'enregistrement. Réessayez.",
+		"postSaveProcessingFailed": "{{path}}\nImage enregistrée, mais le traitement après enregistrement a échoué : {{message}}",
 		"roo": {}
 	}
 }

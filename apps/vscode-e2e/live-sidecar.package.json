@@ -1,0 +1,10 @@
+{
+	"name": "alpha-live-e2e-sidecar",
+	"displayName": "Alpha Live E2E Sidecar",
+	"version": "1.0.0",
+	"publisher": "alpha-code-e2e",
+	"private": true,
+	"engines": { "vscode": "^1.122.1" },
+	"activationEvents": ["onStartupFinished"],
+	"main": "./liveRunnerExtension.js"
+}

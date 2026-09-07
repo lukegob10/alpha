@@ -23,32 +23,39 @@ export interface ParentCompletionDecision {
 
 export const parentVerificationObligationId = (changeSetId: string): string => `worker-change:${changeSetId}`
 
-export const isBlockingParentVerificationStatus = (status: ParentVerificationStatus): boolean =>
-	status === "pending" || status === "failed"
+const isPrimaryObligation = (obligation: ParentVerificationObligation): boolean => obligation.origin === "primary"
 
-/** Primary receipts describe effects; inferred verifier coverage is not an execution/completion policy. */
+/**
+ * Review and effect settlement are completion gates. An approved Worker change
+ * may have missing or failed optional process evidence without blocking the
+ * parent; malformed applied records still fail closed.
+ */
 export function isBlockingParentVerification(obligation: ParentVerificationObligation): boolean {
-	if (obligation.origin === "primary") {
-		return Boolean(obligation.scopeUnresolved || obligation.mutationReservations?.length)
-	}
-	return isBlockingParentVerificationStatus(obligation.status)
+	if (obligation.scopeUnresolved || obligation.mutationReservations?.length) return true
+	if (isPrimaryObligation(obligation)) return false
+	if (
+		obligation.status === "required" ||
+		obligation.status === "superseded" ||
+		obligation.status === "not_applicable"
+	)
+		return false
+	return obligation.review?.decision !== "approved" || obligation.appliedAt === undefined
 }
 
 function requiresVerificationProjection(obligation: ParentVerificationObligation): boolean {
-	return obligation.origin !== "primary" || isBlockingParentVerification(obligation)
+	return !isPrimaryObligation(obligation) || isBlockingParentVerification(obligation)
 }
 
 function missingVerification(obligation: ParentVerificationObligation): string {
 	if (obligation.mutationReservations?.length) return "an admitted mutation still needs its final content receipt"
 	if (obligation.scopeUnresolved) return "mutation scope could not be observed; report an explicit unverified outcome"
-	const missing = new Set<string>()
-	for (const file of obligation.changedFiles) {
-		const required = obligation.verificationRequirements?.[file] ?? []
-		const passed = obligation.verifiedChecks?.[file] ?? []
-		if (required.length === 0 && passed.length === 0) missing.add("a supported check covering the changed files")
-		for (const kind of required) if (!passed.includes(kind)) missing.add(kind)
+	if (!isPrimaryObligation(obligation)) {
+		const missing: string[] = []
+		if (obligation.review?.decision !== "approved") missing.push("an approved review decision")
+		if (obligation.appliedAt === undefined) missing.push("a durable applied effect receipt")
+		return missing.join(" and ") || "the parent-owned change-set ledger"
 	}
-	return [...missing].join(", ") || "current scoped evidence"
+	return "the parent-owned workspace receipt"
 }
 
 /** Compact durable facts for the existing environment snapshot and its delta delivery. */
@@ -60,12 +67,12 @@ export function formatParentVerificationContext(
 	const entries = active
 		.slice(0, 16)
 		.map((item) =>
-			item.origin === "primary"
+			isPrimaryObligation(item)
 				? `Primary operation: ${missingVerification(item)}.`
 				: `${item.changeSetId} (version ${item.contentVersion ?? "legacy"}, ${item.status}): needs ${missingVerification(item)}; changed files: ${item.changedFiles.slice(0, 8).join(", ") || "receipt pending"}${item.changedFiles.length > 8 ? `, and ${item.changedFiles.length - 8} more` : ""}`,
 		)
-	const guidance = active.some((item) => item.origin !== "primary")
-		? "Worker verification is pending. Include the exact covered IDs in execute_command verification.change_set_ids. Passing checks count only for current content and supported scope."
+	const guidance = active.some((item) => !isPrimaryObligation(item))
+		? "Applied Worker records have unresolved review or effect settlement. Resolve the parent-owned ledger state before completing."
 		: "Workspace operations remain unresolved. Let admitted operations settle; report interrupted or unknown outcomes explicitly."
 	return `${guidance}\n${entries.join("\n")}${active.length > 16 ? `\n${active.length - 16} additional change sets remain.` : ""}`
 }
@@ -78,23 +85,18 @@ export function summarizeParentVerification(
 
 	const ordered = [...obligations].sort(
 		(left, right) =>
-			STATUS_PRIORITY[left.status] - STATUS_PRIORITY[right.status] || right.updatedAt - left.updatedAt,
+			Number(isBlockingParentVerification(right)) - Number(isBlockingParentVerification(left)) ||
+			STATUS_PRIORITY[left.status] - STATUS_PRIORITY[right.status] ||
+			right.updatedAt - left.updatedAt,
 	)
 	const representative = ordered[0]
 	const blocking = obligations.some(isBlockingParentVerification)
-	const unresolvedCount = obligations.filter((item) => ["required", "pending", "failed"].includes(item.status)).length
-	const message =
-		representative.status === "failed"
-			? `Parent verification failed; rerun execute_command with verification.change_set_ids including "${representative.changeSetId}".`
-			: representative.status === "pending"
-				? `Applied changes need a passing execute_command scoped to change set "${representative.changeSetId}".`
-				: representative.status === "required"
-					? "Worker changes are quarantined for review."
-					: representative.status === "satisfied"
-						? "Applied changes were verified."
-						: representative.status === "superseded"
-							? "The quarantined proposal was superseded."
-							: "Parent verification is not applicable."
+	const unresolvedCount = obligations.filter(
+		(item) => item.status === "required" || isBlockingParentVerification(item),
+	).length
+	const message = blocking
+		? `The change set "${representative.changeSetId}" needs ${missingVerification(representative)}.`
+		: parentEvidenceMessage(representative)
 
 	return {
 		status: representative.status,
@@ -104,6 +106,25 @@ export function summarizeParentVerification(
 		changeSetId: representative.changeSetId,
 		updatedAt: Math.max(...obligations.map((item) => item.updatedAt)),
 		message,
+	}
+}
+
+function parentEvidenceMessage(obligation: ParentVerificationObligation): string {
+	switch (obligation.status) {
+		case "failed":
+			return `Optional command evidence failed for "${obligation.changeSetId}"; completion remains available.`
+		case "pending":
+			return `Optional command evidence is incomplete for "${obligation.changeSetId}"; completion remains available.`
+		case "required":
+			return "Worker changes are quarantined for review."
+		case "satisfied":
+			return obligation.verification?.assurance === "process"
+				? "An associated process completed successfully against the captured content; test coverage is not established."
+				: "Legacy command evidence satisfies the persisted advisory checks."
+		case "superseded":
+			return "The quarantined proposal was superseded."
+		case "not_applicable":
+			return "Parent verification is not applicable."
 	}
 }
 
@@ -125,12 +146,14 @@ export function decideParentCompletion(obligations: readonly ParentVerificationO
 		blockingObligations,
 		message:
 			`Cannot complete while ${count} applied change set${count === 1 ? "" : "s"} ` +
-			`await${count === 1 ? "s" : ""} parent verification. ` +
+			`await${count === 1 ? "s" : ""} review or effect settlement. ` +
 			(blockingObligations.some((item) => item.scopeUnresolved)
 				? "Validation is unavailable because the mutation scope could not be captured. Report the completed work and this missing evidence as an explicit blocked/unverified outcome. "
 				: blockingObligations.some((item) => item.mutationReservations?.length)
-					? "An admitted mutation still needs its durable content receipt. Let the runtime settle that receipt before selecting another verification command. "
-					: "Run the missing supported checks in the owning task for the current content version and include the exact covered IDs in verification.change_set_ids. Reuse accepted checks; if validation is unavailable, report an explicit blocked/unverified outcome with the missing evidence. ") +
+					? "An admitted mutation still needs its durable content receipt. Let the runtime settle that receipt before completing. "
+					: blockingObligations.some((item) => !isPrimaryObligation(item))
+						? "An applied Worker record lacks an approved review or durable effect receipt. Resolve that ledger state before completing. "
+						: "Resolve the parent-owned workspace receipt before completing. ") +
 			`Needs attention: ${details.join("; ")}.`,
 	}
 }

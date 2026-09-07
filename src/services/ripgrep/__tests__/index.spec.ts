@@ -174,6 +174,63 @@ describe("Ripgrep binary resolution", () => {
 		expect(resolution?.path).toBe(bundledRg)
 	})
 
+	it.each(
+		["node_modules", "node_modules.asar.unpacked"].flatMap((moduleDirectory) =>
+			(
+				[
+					["win32", "x64"],
+					["win32", "arm64"],
+					["darwin", "arm64"],
+					["linux", "x64"],
+					["linux", "arm64"],
+				] as const
+			).map(([platform, arch]) => ({ moduleDirectory, platform, arch })),
+		),
+	)(
+		"resolves host target layout $moduleDirectory/$platform-$arch without PATH",
+		async ({ moduleDirectory, platform, arch }) => {
+			const appRoot = path.join(tempDir, "VS Code host", "resources", "app")
+			const executable = platform === "win32" ? "rg.exe" : "rg"
+			const internalRg = path.join(
+				appRoot,
+				moduleDirectory,
+				"@vscode",
+				"ripgrep-universal",
+				"bin",
+				`${platform}-${arch}`,
+				executable,
+			)
+			await writeExecutable(internalRg)
+			const resolution = await resolveRipgrepBinary({
+				appRoot,
+				platform,
+				arch,
+				env: {},
+				logger,
+				skipRuntimePackageLookup: true,
+			})
+			expect(resolution?.path).toBe(internalRg)
+			expect(resolution?.source).toBe("vscode-internal")
+		},
+	)
+
+	it("never selects another architecture's internal platform package", async () => {
+		const appRoot = path.join(tempDir, "app-root")
+		await writeExecutable(path.join(appRoot, "node_modules", "@vscode", "ripgrep-win32-x64", "bin", "rg.exe"))
+		await writeExecutable(
+			path.join(appRoot, "node_modules", "@vscode", "ripgrep-universal", "bin", "win32-x64", "rg.exe"),
+		)
+		const resolution = await resolveRipgrepBinary({
+			appRoot,
+			platform: "win32",
+			arch: "arm64",
+			env: {},
+			logger,
+			skipRuntimePackageLookup: true,
+		})
+		expect(resolution).toBeUndefined()
+	})
+
 	it("supports @vscode/ripgrep platform package layouts", async () => {
 		const packageRoot = path.join(tempDir, "extension", "node_modules", "@vscode", "ripgrep-win32-x64")
 		const bundledRg = path.join(packageRoot, "bin", "rg.exe")

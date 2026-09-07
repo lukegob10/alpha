@@ -20,6 +20,11 @@
 		"delete_custom_mode_with_rules": "您确定要删除此 {scope} 模式吗？\n\n这也将删除位于以下位置的关联规则文件夹：\n{rulesFolderPath}"
 	},
 	"errors": {
+		"task_recovery_lock_repair": "Alpha 无法验证共享任务存储锁的所有者。继续或重新加载无法安全修复此问题。请关闭所有 VS Code 窗口和 Alpha 扩展测试宿主，然后仅备份并移除 Alpha 全局存储中的 agent_control.json.transaction.lock，再重新打开。宿主运行时切勿移除锁；请保留任务历史记录和 agent_control.json。",
+		"task_recovery_failed": "某项操作失败，当前轮次已停止。你可以恢复任务或发送新的指示。",
+		"task_recovery_incomplete": "当前轮次在任务完成前结束。你可以恢复任务或发送新的指示。",
+		"task_recovery_exhausted": "已达到自动重试次数或时限，当前轮次已停止。你可以恢复任务或发送新的指示。",
+		"task_recovery_persistence": "无法保存必要的任务数据，任务已暂停。请检查磁盘可用空间以及任务存储文件夹的访问权限，然后恢复任务或发送新的指示。",
 		"invalid_mcp_config": "项目MCP配置格式无效",
 		"invalid_mcp_settings_format": "MCP设置JSON格式无效。请确保您的设置遵循正确的JSON格式。",
 		"invalid_mcp_settings_syntax": "MCP设置JSON格式无效。请检查您的设置文件是否有语法错误。",

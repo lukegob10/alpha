@@ -20,6 +20,11 @@
 		"delete_custom_mode_with_rules": "Weet je zeker dat je deze {scope}-modus wilt verwijderen?\n\nDit verwijdert ook de bijbehorende regelsmap op:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"task_recovery_lock_repair": "Alpha kan de eigenaar van de gedeelde taakopslagvergrendeling niet verifiëren. Hervatten of herladen kan dit niet veilig herstellen. Sluit alle VS Code-vensters en Alpha-testhosts. Maak daarna een back-up en verwijder alleen agent_control.json.transaction.lock uit de globale opslag van Alpha voordat u opnieuw opent. Verwijder de vergrendeling nooit terwijl een host draait; bewaar de taakgeschiedenis en agent_control.json.",
+		"task_recovery_failed": "De beurt is gestopt omdat een bewerking is mislukt. Je kunt de taak hervatten of nieuwe aanwijzingen sturen.",
+		"task_recovery_incomplete": "De beurt is geëindigd voordat de taak was voltooid. Je kunt de taak hervatten of nieuwe aanwijzingen sturen.",
+		"task_recovery_exhausted": "De beurt is gestopt omdat de limiet voor automatische nieuwe pogingen is bereikt. Je kunt de taak hervatten of nieuwe aanwijzingen sturen.",
+		"task_recovery_persistence": "De taak is gepauzeerd omdat vereiste taakgegevens niet konden worden opgeslagen. Controleer de vrije schijfruimte en de toegang tot de opslagmap voor taken. Hervat daarna de taak of stuur nieuwe aanwijzingen.",
 		"invalid_data_uri": "Ongeldig data-URI-formaat",
 		"error_copying_image": "Fout bij kopiëren van afbeelding: {{errorMessage}}",
 		"error_saving_image": "Fout bij opslaan van afbeelding: {{errorMessage}}",

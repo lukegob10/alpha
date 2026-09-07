@@ -10,6 +10,7 @@ import { fileExistsAtPath } from "../../utils/fs"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { sanitizeUnifiedDiff, computeDiffStats } from "../diff/stats"
 import type { ToolUse } from "../../shared/tools"
+import type { ExpectedFileState } from "../../integrations/editor/DiffViewProvider"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
@@ -374,6 +375,9 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 			// Initialize diff view
 			task.diffViewProvider.editType = isNewFile ? "create" : "modify"
 			task.diffViewProvider.originalContent = currentContent || ""
+			const expectedFileState: ExpectedFileState = isNewFile
+				? { exists: false }
+				: { exists: true, content: currentContent ?? "" }
 
 			// Generate and validate diff
 			const diff = formatResponse.createPrettyPatch(relPath, currentContent || "", newContent)
@@ -416,7 +420,7 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 
 			// Show diff view if focus disruption prevention is disabled
 			if (!isPreventFocusDisruptionEnabled) {
-				await task.diffViewProvider.open(relPath)
+				await task.diffViewProvider.open(relPath, expectedFileState)
 				await task.diffViewProvider.update(newContent, true)
 				task.diffViewProvider.scrollToFirstDiff()
 			}
@@ -442,7 +446,7 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 					isNewFile,
 					diagnosticsEnabled,
 					writeDelayMs,
-					isNewFile ? { exists: false } : { exists: true, content: currentContent ?? "" },
+					expectedFileState,
 				)
 			} else {
 				// Call saveChanges to update the DiffViewProvider properties

@@ -12,7 +12,6 @@ import {
 
 import type {
 	ExtensionMessage,
-	ParentVerificationStatus,
 	SubagentChangeSetAction,
 	SubagentChangeSetActionCapability,
 	SubagentChangeSetActionResult,
@@ -51,33 +50,10 @@ const capabilityRefreshMessageTypes = new Set<ExtensionMessage["type"]>([
 	"taskHistoryItemUpdated",
 	"interactionRequired",
 ])
-const parentVerificationCopy: Record<
-	Extract<ParentVerificationStatus, "required" | "pending" | "failed" | "satisfied">,
-	{ label: string; nextAction: string }
-> = {
-	required: {
-		label: "Review changes",
-		nextAction: "Review the Worker diff, then apply or discard it.",
-	},
-	pending: {
-		label: "Verification pending",
-		nextAction: "Run a parent verification command scoped to this applied change set.",
-	},
-	failed: {
-		label: "Verification failed",
-		nextAction: "Fix the issue, then rerun verification for this applied change set.",
-	},
-	satisfied: {
-		label: "Verified",
-		nextAction: "Parent verification passed.",
-	},
-}
-
 const compactAttention = (agent: SubagentRunState): string | undefined => {
 	if (agent.pendingApproval) return "Approval"
 	if (agent.changeSet && ["pending_review", "conflicted"].includes(agent.changeSet.status)) return "Review"
-	if (agent.parentVerification?.status === "failed") return "Fix"
-	if (agent.parentVerification?.status === "pending") return "Verify"
+	if (agent.parentVerification?.blocking) return "Review"
 	return undefined
 }
 
@@ -87,10 +63,7 @@ const getChangeSetActionCapability = (
 ) => capability?.actions?.[action] ?? capability
 
 const agentDetail = (agent: SubagentRunState): string => {
-	const verification = agent.parentVerification
-		? parentVerificationCopy[agent.parentVerification.status as keyof typeof parentVerificationCopy]
-		: undefined
-	return [agent.role, agent.objective, verification?.nextAction].filter(Boolean).join(" · ")
+	return [agent.role, agent.objective, agent.parentVerification?.message].filter(Boolean).join(" · ")
 }
 
 export interface SubagentGroupCardProps {
@@ -363,13 +336,8 @@ export const SubagentGroupCard = memo(({ group, parentTaskId }: SubagentGroupCar
 							const pendingAction = agent.changeSet
 								? pendingChangeSetActions[agent.changeSet.id]
 								: undefined
-							const verificationCopy =
-								agent.parentVerification &&
-								["required", "pending", "failed", "satisfied"].includes(agent.parentVerification.status)
-									? parentVerificationCopy[
-											agent.parentVerification.status as keyof typeof parentVerificationCopy
-										]
-									: undefined
+							const reviewRequired =
+								agent.parentVerification?.blocking || agent.parentVerification?.status === "required"
 							const taskUnavailable = agent.stopReason === "never_launched"
 							const hasChangeSetActions =
 								agent.changeSet && !["unavailable", "scope_violation"].includes(agent.changeSet.status)
@@ -380,7 +348,7 @@ export const SubagentGroupCard = memo(({ group, parentTaskId }: SubagentGroupCar
 								agent.status === "running" ||
 								activeStatuses.has(agent.status) ||
 								Boolean(hasChangeSetActions) ||
-								Boolean(verificationCopy) ||
+								reviewRequired ||
 								hasGroupStopAction
 
 							return (
@@ -507,15 +475,15 @@ export const SubagentGroupCard = memo(({ group, parentTaskId }: SubagentGroupCar
 																)}
 															</>
 														)}
-													{verificationCopy && (
+													{reviewRequired && (
 														<>
 															<DropdownMenuSeparator />
 															<DropdownMenuLabel className="whitespace-normal text-xs font-normal text-vscode-descriptionForeground">
 																<span className="font-medium text-vscode-foreground">
-																	{verificationCopy.label}
+																	Review changes
 																</span>
 																<br />
-																{verificationCopy.nextAction}
+																{agent.parentVerification?.message}
 															</DropdownMenuLabel>
 														</>
 													)}

@@ -241,11 +241,11 @@ export const DEFAULT_MODES: readonly ModeConfig[] = [
 		roleDefinition:
 			"You are Alpha, an expert software debugger specializing in systematic problem diagnosis and resolution.",
 		whenToUse:
-			"Use this mode when you're troubleshooting issues, investigating errors, or diagnosing problems. Specialized in systematic debugging, adding logging, analyzing stack traces, and identifying root causes before applying fixes.",
+			"Use this mode when you're troubleshooting issues, investigating errors, or diagnosing problems. Specialized in systematic debugging, analyzing evidence, and identifying root causes before applying fixes.",
 		description: "Diagnose and fix software issues",
 		groups: ["read", "edit", "command", "mcp", "github", "browser"],
 		customInstructions:
-			"Reflect on 5-7 different possible sources of the problem, distill those down to 1-2 most likely sources, and then add logs to validate your assumptions. Explicitly ask the user to confirm the diagnosis before fixing the problem.",
+			"Use the available evidence to identify and verify the most likely root cause, then make the requested fix when authorized. Add a focused regression test or other proportionate safeguard when practical, and report any remaining uncertainty.",
 	},
 	{
 		slug: "orchestrator",

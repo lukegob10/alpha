@@ -95,7 +95,9 @@ export interface SubagentChangeSetActionResult {
  * Durable parent-verification lifecycle for one material Worker change set.
  *
  * `required` is intentionally nonblocking: the proposal is still quarantined.
- * Only applied changes (`pending` or `failed`) block parent completion.
+ * Approved applied Worker changes may retain pending or failed optional process
+ * evidence; review/effect settlement and unresolved mutation scope remain the
+ * completion gates.
  */
 export const parentVerificationStatusSchema = z.enum([
 	"required",
@@ -131,6 +133,9 @@ export const parentVerificationEvidenceSchema = z.object({
 	scopePath: z.string().min(1).optional(),
 	commandDigest: z.string().min(1).optional(),
 	repositoryDigest: z.string().min(1).optional(),
+	/** Host evidence binds an approved process to the current content; it does not prove test coverage. */
+	assurance: z.literal("process").optional(),
+	/** Legacy verifier metadata remains readable for persisted records. */
 	kind: z.enum(["test", "types", "lint", "format"]).optional(),
 })
 export type ParentVerificationEvidence = z.infer<typeof parentVerificationEvidenceSchema>

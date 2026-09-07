@@ -98,6 +98,24 @@ describe("ClineProvider primary verification", () => {
 
 	const captureCurrentVerification = () => captureVerification()
 
+	const recordAppliedWorker = async () => {
+		await store.recordWorkerChangeSet({
+			rootTaskId: parent.taskId,
+			parentTaskId: parent.taskId,
+			workerTaskId: "worker-1",
+			workerNickname: "Worker",
+			groupId: "worker-group",
+			reviewSource: "apply",
+			changeSet: {
+				id: "worker-change",
+				status: "applied",
+				changedFiles: ["src/a.ts"],
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			},
+		})
+	}
+
 	const setCommandEvidence = (
 		verificationVersions: NonNullable<ParentCommandVerificationEvidence["verificationVersions"]>,
 		override: Partial<ParentCommandVerificationEvidence> = {},
@@ -114,6 +132,7 @@ describe("ClineProvider primary verification", () => {
 				completedAt: obligation.appliedAt! + 2,
 				verificationChangeSetIds: [obligation.changeSetId],
 				cwd: workspace,
+				command: VALID_COMMAND,
 				verificationVersions,
 				...override,
 			},
@@ -129,23 +148,79 @@ describe("ClineProvider primary verification", () => {
 		return primaryObligation()
 	}
 
-	it("admits a scoped pnpm typecheck and preserves source changedFiles while capturing package requirements", async () => {
+	it.each(["tox -e py", "hatch test", "pnpm run ci:custom", "pytest --collect-only", "echo diagnostic"])(
+		"records only process assurance for an explicitly associated approved command: %s",
+		async (command) => {
+			const before = await recordPrimaryMutation()
+			const versions = await captureVerification(command)
+			expect(versions[before.changeSetId]).toMatchObject({
+				assurance: "process",
+				matchedFiles: ["src/a.ts"],
+			})
+			expect(versions[before.changeSetId]).not.toHaveProperty("kind")
+			const outcome = await recordCurrentEvidence(versions, { command })
+			expect(outcome.verification).toMatchObject({ status: "passed", assurance: "process" })
+		},
+	)
+
+	it.each(["missing", "malformed", "oversized"])(
+		"does not require an invented Worker check when the manifest is %s",
+		async (manifest) => {
+			await recordAppliedWorker()
+			if (manifest === "missing") await fs.unlink(path.join(workspace, "src/package.json"))
+			else
+				await fs.writeFile(
+					path.join(workspace, "src/package.json"),
+					manifest === "malformed" ? "{" : "x".repeat(300_000),
+				)
+			await captureVerification("custom-ci")
+			await expect(provider.recordParentVerificationEvidence(parent)).resolves.toBeUndefined()
+			expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(true)
+			expect(primaryObligation().verification).toBeUndefined()
+			expect(primaryObligation().verificationRequirements).toBeUndefined()
+		},
+	)
+
+	it.each(["primary", "worker"] as const)(
+		"invalidates unavailable optional %s evidence without reinstating a completion gate",
+		async (origin) => {
+			if (origin === "worker") await recordAppliedWorker()
+			else await recordPrimaryMutation()
+			const versions = await captureCurrentVerification()
+			const passed = await recordCurrentEvidence(versions)
+			expect(passed.verification?.status).toBe("passed")
+			await fs.unlink(path.join(workspace, "src/a.ts"))
+			await fs.mkdir(path.join(workspace, "src/a.ts"))
+			await expect(provider.recordParentVerificationEvidence(parent)).resolves.toBeUndefined()
+			const invalidated = primaryObligation()
+			expect(invalidated.contentVersion).toBeGreaterThan(passed.contentVersion!)
+			expect(invalidated.verification).toBeUndefined()
+			expect(invalidated.scopeUnresolved).not.toBe(true)
+			expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(true)
+			await fs.rmdir(path.join(workspace, "src/a.ts"))
+			await fs.writeFile(path.join(workspace, "src/a.ts"), "export const value = 1\n")
+			setCommandEvidence(versions)
+			await provider.recordParentVerificationEvidence(parent)
+			expect(primaryObligation().verification).toBeUndefined()
+		},
+	)
+
+	it("captures the associated content without inferring package requirements", async () => {
 		const before = await recordPrimaryMutation()
 		const verificationVersions = await captureCurrentVerification()
 		const captured = verificationVersions[before.changeSetId]
 
 		expect(captured).toMatchObject({
-			contentVersion: before.contentVersion! + 1,
+			contentVersion: before.contentVersion,
 			contentFingerprint: expect.any(String),
-			scopePath: path.join(workspace, "src"),
+			scopePath: workspace,
 			commandDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
 			repositoryDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
 		})
 		const current = primaryObligation()
 		expect(current.changedFiles).toEqual(["src/a.ts"])
-		expect(Object.keys(current.fileVersions ?? {})).toEqual(
-			expect.arrayContaining(["src/a.ts", "package.json", "src/package.json"]),
-		)
+		expect(Object.keys(current.fileVersions ?? {})).toEqual(["src/a.ts"])
+		expect(current.verificationRequirements).toBeUndefined()
 		expect(current.contentVersion).toBe(captured?.contentVersion)
 		expect(provider.getVerificationProgressState(parent)).toMatchObject({
 			stateFingerprint: expect.stringContaining(before.changeSetId),
@@ -154,6 +229,80 @@ describe("ClineProvider primary verification", () => {
 
 		const satisfied = await recordCurrentEvidence(verificationVersions)
 		expect(satisfied).toMatchObject({ status: "satisfied", verification: { status: "passed" } })
+		const progress = provider.getVerificationProgressState(parent).evidenceFingerprint
+		expect(progress).toBeDefined()
+		await recordCurrentEvidence(verificationVersions)
+		expect(provider.getVerificationProgressState(parent).evidenceFingerprint).toBe(progress)
+	})
+
+	it("preserves durable evidence when its UI projection fails", async () => {
+		await recordPrimaryMutation()
+		const versions = await captureCurrentVerification()
+		vi.mocked(provider.postStateToWebviewWithoutTaskHistory).mockRejectedValueOnce(new Error("UI unavailable"))
+		const error = vi.spyOn(console, "error").mockImplementation(() => undefined)
+		try {
+			const outcome = await recordCurrentEvidence(versions)
+			expect(outcome.verification).toMatchObject({ status: "passed", assurance: "process" })
+			expect(error).toHaveBeenCalled()
+		} finally {
+			error.mockRestore()
+		}
+	})
+
+	it.each([
+		["primary", "first"],
+		["primary", "second"],
+		["worker", "first"],
+		["worker", "second"],
+	])(
+		"invalidates and refreshes %s evidence when the %s observation detects a change",
+		async (origin, observation) => {
+			if (origin === "worker") await recordAppliedWorker()
+			else await recordPrimaryMutation()
+			const versions = await captureCurrentVerification()
+			const passed = await recordCurrentEvidence(versions)
+			const changeContent = () => fs.writeFile(path.join(workspace, "src/a.ts"), "export const value = 2\n")
+			if (observation === "first") await changeContent()
+			else {
+				const reconcile = store.reconcileVerificationContent.bind(store)
+				vi.spyOn(store, "reconcileVerificationContent").mockImplementationOnce(async (...args) => {
+					const result = await reconcile(...args)
+					await changeContent()
+					return result
+				})
+			}
+			vi.mocked(provider.postStateToWebviewWithoutTaskHistory).mockClear()
+			await provider.recordParentVerificationEvidence(parent)
+			expect(primaryObligation().verification).toBeUndefined()
+			expect(primaryObligation().contentVersion).toBeGreaterThan(passed.contentVersion!)
+			expect(provider.postStateToWebviewWithoutTaskHistory).toHaveBeenCalledOnce()
+		},
+	)
+
+	it("does not invalidate newer evidence when rejecting an older command identity", async () => {
+		await recordPrimaryMutation()
+		const versions = await captureCurrentVerification()
+		await recordCurrentEvidence(versions)
+		const older = structuredClone(commandEvidence[0])
+		const newer = await recordCurrentEvidence(versions)
+		commandEvidence = [{ ...older, command: "different command" }, ...commandEvidence]
+		await provider.recordParentVerificationEvidence(parent)
+		expect(primaryObligation()).toEqual(newer)
+	})
+
+	it("preserves a newer receipt committed while stale observation waits for ledger ownership", async () => {
+		await recordPrimaryMutation()
+		const versions = await captureCurrentVerification()
+		await recordCurrentEvidence(versions)
+		const newer = { ...structuredClone(commandEvidence[0]), executionId: "newer-execution" }
+		commandEvidence[0].command = "different command"
+		const invalidate = store.invalidateVerificationEvidence.bind(store)
+		vi.spyOn(store, "invalidateVerificationEvidence").mockImplementationOnce(async (...args) => {
+			await store.recordParentVerificationEvidence(parent.taskId, [newer])
+			return invalidate(...args)
+		})
+		await provider.recordParentVerificationEvidence(parent)
+		expect(primaryObligation().verification).toMatchObject({ executionId: "newer-execution", status: "passed" })
 	})
 
 	const pythonVerification = async () => {
@@ -164,65 +313,43 @@ describe("ClineProvider primary verification", () => {
 		const command = "python3.13 -m pytest tests"
 		const versions = await captureVerification(command)
 		expect(versions[primaryObligation().changeSetId]).toMatchObject({
-			runner: "pytest",
-			kind: "test",
+			assurance: "process",
 			matchedFiles: ["app.py"],
 		})
 		return { command, versions }
 	}
 
-	it.each([undefined, false, true])(
-		"requires terminal pytest validation in addition to exit zero (%s)",
-		async (testValidation) => {
-			const { command, versions } = await pythonVerification()
-			const outcome = await recordCurrentEvidence(versions, { command, testValidation })
-			expect(outcome.status).toBe(testValidation === true ? "satisfied" : "pending")
-		},
-	)
-
-	it("credits only the explicitly selected tests in a mixed Python change set", async () => {
-		const { command } = await pythonVerification()
+	it("associates filtered tests with the explicit change set without claiming test coverage", async () => {
+		await pythonVerification()
 		await provider.recordPrimaryMutation(
 			parent,
 			await captureVerificationContent(workspace, ["app.py", "tests/test_app.py"]),
 		)
 		const versions = await captureVerification("pytest tests/test_app.py")
 		const changeSetId = primaryObligation().changeSetId
-		expect(versions[changeSetId]?.matchedFiles).toEqual(["tests/test_app.py"])
+		expect(versions[changeSetId]?.matchedFiles).toEqual(["app.py", "tests/test_app.py"])
 		const outcome = await recordCurrentEvidence(versions, {
 			command: "pytest tests/test_app.py",
-			testValidation: true,
 		})
-		expect(outcome.status).toBe("pending")
-		expect(outcome.verifiedChecks?.["tests/test_app.py"]).toEqual(["test"])
-		expect(outcome.verifiedChecks?.["app.py"]).toBeUndefined()
-		expect(await captureVerification(command)).toHaveProperty(changeSetId)
+		expect(outcome.verification).toMatchObject({ status: "passed", assurance: "process" })
+		expect(outcome.verification).not.toHaveProperty("kind")
 	})
 
 	it.each([
 		{ status: "running" as const, completedAt: undefined },
 		{ status: "failed" as const, exitCode: 1 },
 		{ status: "cancelled" as const, exitCode: 0 },
+		{ status: "denied" as const, exitCode: 0 },
+		{ status: "timed_out" as const, exitCode: 0 },
 		{ status: "succeeded" as const, exitCode: undefined },
 		{ status: "succeeded" as const, exitCode: 0, signalName: "SIGTERM" },
 	])("does not credit pytest output without an actual successful terminal receipt: %j", async (receipt) => {
 		const { command, versions } = await pythonVerification()
-		const outcome = await recordCurrentEvidence(versions, { command, testValidation: true, ...receipt })
+		const outcome = await recordCurrentEvidence(versions, { command, ...receipt })
 		expect(outcome.status).not.toBe("satisfied")
 	})
 
-	it.each(["pytest.ini", "tests/.pytest.ini", "tests/new/conftest.py"])(
-		"invalidates Python evidence when collection configuration appears at %s",
-		async (file) => {
-			const { command, versions } = await pythonVerification()
-			await fs.mkdir(path.dirname(path.join(workspace, file)), { recursive: true })
-			await fs.writeFile(path.join(workspace, file), "[pytest]\naddopts = --collect-only\n")
-			const outcome = await recordCurrentEvidence(versions, { command, testValidation: true })
-			expect(outcome.status).toBe("pending")
-		},
-	)
-
-	it("explains missing, unknown and unsupported command associations without granting credit", async () => {
+	it("explains unknown command associations without granting credit", async () => {
 		const { command } = await pythonVerification()
 		const onRejected = vi.fn()
 		expect(await provider.captureCommandVerification(parent, command, workspace, [], onRejected)).toBeUndefined()
@@ -232,19 +359,6 @@ describe("ClineProvider primary verification", () => {
 		)
 		expect(onRejected).toHaveBeenLastCalledWith(
 			expect.objectContaining({ code: "unknown_change_set", changeSetId: "unknown" }),
-		)
-		const changeSetId = primaryObligation().changeSetId
-		expect(
-			await provider.captureCommandVerification(
-				parent,
-				"pytest --collect-only",
-				workspace,
-				[changeSetId],
-				onRejected,
-			),
-		).toEqual({})
-		expect(onRejected).toHaveBeenLastCalledWith(
-			expect.objectContaining({ code: "unsupported_command", changeSetId }),
 		)
 	})
 
@@ -274,11 +388,11 @@ describe("ClineProvider primary verification", () => {
 			pending.changeSetId,
 		]))!
 		expect(staleVersions[pending.changeSetId]).toMatchObject({
-			kind: "format",
+			assurance: "process",
 			matchedFiles: ["docs/notes.md", "docs/plan.md"],
 		})
 		await fs.writeFile(path.join(workspace, "docs", "notes.md"), "# Externally updated notes\n")
-		setCommandEvidence(staleVersions)
+		setCommandEvidence(staleVersions, { command })
 		await provider.recordParentVerificationEvidence(parent)
 		expect(primaryObligation()).toMatchObject({ status: "pending" })
 		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(true)
@@ -287,17 +401,14 @@ describe("ClineProvider primary verification", () => {
 			pending.changeSetId,
 		]))!
 		const beforeMismatchedEvidence = primaryObligation()
-		setCommandEvidence(currentVersions, { verificationChangeSetIds: ["different-change-set"] })
+		setCommandEvidence(currentVersions, { command, verificationChangeSetIds: ["different-change-set"] })
 		await provider.recordParentVerificationEvidence(parent)
 		expect(primaryObligation()).toEqual(beforeMismatchedEvidence)
 
-		const satisfied = await recordCurrentEvidence(currentVersions)
+		const satisfied = await recordCurrentEvidence(currentVersions, { command })
 		expect(satisfied).toMatchObject({
 			status: "satisfied",
-			verifiedChecks: {
-				"docs/notes.md": ["format"],
-				"docs/plan.md": ["format"],
-			},
+			verification: { status: "passed", assurance: "process" },
 		})
 		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(true)
 	})
@@ -362,7 +473,7 @@ describe("ClineProvider primary verification", () => {
 			expect(admitted).toMatchObject({
 				cwd: workspace,
 				verificationVersions: {
-					[before.changeSetId]: { scopePath: path.join(workspace, "src"), matchedFiles: ["src/a.ts"] },
+					[before.changeSetId]: { scopePath: workspace, matchedFiles: ["src/a.ts"] },
 				},
 			})
 			expect(primaryObligation().workspacePath).toBe(workspace)
@@ -516,7 +627,7 @@ describe("ClineProvider primary verification", () => {
 		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(true)
 	})
 
-	it("invalidates a passing verification after source and package manifest edits", async () => {
+	it("invalidates associated source changes without inferring new requirements from manifests", async () => {
 		await recordPrimaryMutation()
 		const firstVersions = await captureCurrentVerification()
 		const firstSatisfied = await recordCurrentEvidence(firstVersions)
@@ -542,41 +653,28 @@ describe("ClineProvider primary verification", () => {
 			'{"name":"verification-src","private":true,"scripts":{"check-types":"tsc --noEmit","lint":"eslint ."}}\n',
 		)
 		await provider.recordParentVerificationEvidence(parent)
-		const lintRequired = primaryObligation()
-		expect(lintRequired).toMatchObject({ status: "pending", changedFiles: ["src/a.ts"] })
-		expect(lintRequired.verification).toBeUndefined()
-
-		const refreshedTypeVersions = await captureCurrentVerification()
-		expect((await recordCurrentEvidence(refreshedTypeVersions)).status).toBe("pending")
-		const lintVersions = await captureVerification("pnpm --dir src exec eslint . --ext=ts")
-		expect((await recordCurrentEvidence(lintVersions)).status).toBe("satisfied")
-
-		await fs.writeFile(
-			path.join(workspace, "package.json"),
-			'{"name":"verification-root","private":true,"version":"2"}\n',
-		)
-		await provider.recordParentVerificationEvidence(parent)
-		const packageInvalidated = primaryObligation()
-		expect(packageInvalidated).toMatchObject({ status: "pending", changedFiles: ["src/a.ts"] })
-		expect(provider.getVerificationProgressState(parent).evidenceFingerprint).toBeUndefined()
+		expect(primaryObligation()).toMatchObject({
+			status: "satisfied",
+			changedFiles: ["src/a.ts"],
+			verification: { assurance: "process" },
+		})
+		expect(primaryObligation().verificationRequirements).toBeUndefined()
 	})
 
-	it("fails closed for composite, echo, and out of scope commands", async () => {
+	it("keeps execution cwd confined while allowing explicitly associated sibling files", async () => {
 		const primary = await recordPrimaryMutation()
-
-		await expect(
-			provider.captureCommandVerification(parent, `${VALID_COMMAND} && echo done`, workspace, [
-				primary.changeSetId,
-			]),
-		).resolves.toEqual({})
-		await expect(
-			provider.captureCommandVerification(parent, "echo done", workspace, [primary.changeSetId]),
-		).resolves.toEqual({})
-		await expect(
-			provider.captureCommandVerification(parent, "pnpm --dir .. exec tsc --noEmit", workspace, [
-				primary.changeSetId,
-			]),
-		).rejects.toThrow(/outside (the )?workspace/)
+		await fs.mkdir(path.join(workspace, "tools"))
+		const versions = await provider.captureCommandVerification(
+			parent,
+			"node check-sibling.js && echo done",
+			path.join(workspace, "tools"),
+			[primary.changeSetId],
+		)
+		expect(versions?.[primary.changeSetId]).toMatchObject({
+			scopePath: workspace,
+			matchedFiles: ["src/a.ts"],
+			assurance: "process",
+		})
 		await expect(
 			provider.captureCommandVerification(parent, VALID_COMMAND, outside, [primary.changeSetId]),
 		).rejects.toThrow(/outside (the )?workspace/)

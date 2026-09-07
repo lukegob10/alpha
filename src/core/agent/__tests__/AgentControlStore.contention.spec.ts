@@ -290,6 +290,7 @@ describe("Agent control transaction contention", () => {
 		["oversized token", JSON.stringify({ token: "x".repeat(129), pid: 2_147_483_647 })],
 		["out-of-range PID", JSON.stringify({ token: "owner", pid: 2_147_483_648 })],
 		["malformed JSON", "{secret-invalid-metadata"],
+		["interrupted empty publication", ""],
 		["oversized JSON", JSON.stringify({ token: "owner", pid: process.pid, padding: "x".repeat(1_024) })],
 	])("rejects %s metadata without moving the lock or exposing its content", async (_label, serialized) => {
 		const diagnostic = vi.fn()
@@ -314,7 +315,7 @@ describe("Agent control transaction contention", () => {
 		expect(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")).toBe(serialized)
 		expect(await fs.readFile(path.join(directory, "sentinel"), "utf8")).toBe("preserve external content")
 		expect(diagnostic).toHaveBeenCalledWith(expect.objectContaining({ ownerState: "unreadable", outcome: "error" }))
-		expect(JSON.stringify(diagnostic.mock.calls)).not.toContain(serialized)
+		if (serialized) expect(JSON.stringify(diagnostic.mock.calls)).not.toContain(serialized)
 		expect(JSON.stringify(diagnostic.mock.calls)).not.toContain(directory)
 	})
 

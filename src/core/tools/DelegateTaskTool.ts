@@ -25,6 +25,7 @@ export class DelegateTaskTool extends BaseTool<"delegate_task"> {
 		const reject = (message: string) => {
 			task.recordToolError("delegate_task", message)
 			task.didToolFailInCurrentTurn = true
+			callbacks.setResultMetadata?.({ status: "error" })
 			callbacks.pushToolResult(`Error: ${message}`)
 		}
 		const provider = task.providerRef.deref() as (BoundedSubagentProvider & object) | undefined

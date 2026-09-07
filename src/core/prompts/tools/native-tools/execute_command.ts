@@ -6,7 +6,7 @@ Parameters:
 - command: (required) The CLI command to execute. This should be valid for the current operating system. Ensure the command is properly formatted and does not contain any harmful instructions.
 - cwd: (optional) The working directory to execute the command in
 - timeout: (optional) Timeout in seconds. When exceeded, the command keeps running in the background and you receive the output so far. Set this for commands that may run indefinitely, such as dev servers or file watchers, so you can proceed without waiting for them to exit.
-- verification: (optional) Associate a check with an applied Worker change set when its review workflow requires scoped evidence. Use null for ordinary commands, including task-directed validation of your own edits. Choose checks appropriate to the request and repository instructions; report the actual outcome.
+- verification: (optional) Associate this command's process outcome with applied change-set IDs and their current content. This records process evidence, not proof of test execution or coverage. Use null when no association is needed. Choose checks appropriate to the request and repository instructions; report the actual outcome.
 
 Example: Executing npm run dev
 { "command": "npm run dev", "cwd": null, "timeout": null, "verification": null }
@@ -44,7 +44,7 @@ const PLAN_CWD_PARAMETER_DESCRIPTION = `Optional workspace-relative working dire
 
 const TIMEOUT_PARAMETER_DESCRIPTION = `Timeout in seconds. When exceeded, the command continues running in the background and output collected so far is returned. Use this for long-running processes like dev servers, file watchers, or any command that may not exit on its own`
 
-const VERIFICATION_PARAMETER_DESCRIPTION = `Optional scoped evidence for applied Worker changes. Use null for ordinary commands and validation of your own edits. When Worker review requires verification, provide its change-set IDs and use the correct cwd`
+const VERIFICATION_PARAMETER_DESCRIPTION = `Optional process evidence associated with applied change-set IDs and current content. This does not establish test coverage. Use null when no association is needed`
 
 export function createExecuteCommandTool(planMode = false): OpenAI.Chat.ChatCompletionTool {
 	return {
@@ -83,7 +83,7 @@ export function createExecuteCommandTool(planMode = false): OpenAI.Chat.ChatComp
 												items: { type: "string", minLength: 1 },
 												minItems: 1,
 												description:
-													"Current applied primary or Worker change-set IDs validated by this command",
+													"Current applied primary or Worker change-set IDs associated with this command",
 											},
 										},
 										required: ["change_set_ids"],

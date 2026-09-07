@@ -20,6 +20,11 @@
 		"delete_custom_mode_with_rules": "Are you sure you want to delete this {scope} mode?\n\nThis will also delete the associated rules folder at:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"task_recovery_lock_repair": "Alpha cannot verify the owner of its shared task-storage lock. Resume or reload cannot repair this safely. Close all VS Code windows and any Alpha extension test hosts, then back up and remove only agent_control.json.transaction.lock from Alpha's global storage before reopening. Never remove the lock while a host is running; keep task history and agent_control.json.",
+		"task_recovery_failed": "The turn stopped because an operation failed. You can resume the task or send new guidance.",
+		"task_recovery_incomplete": "The turn ended before the task was complete. You can resume the task or send new guidance.",
+		"task_recovery_exhausted": "The turn stopped after reaching its automatic retry limit. You can resume the task or send new guidance.",
+		"task_recovery_persistence": "The task paused because required task data could not be saved. Check free disk space and access to the task storage folder, then resume or send new guidance.",
 		"invalid_data_uri": "Invalid data URI format",
 		"error_copying_image": "Error copying image: {{errorMessage}}",
 		"error_opening_image": "Error opening image: {{error}}",

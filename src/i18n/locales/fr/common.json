@@ -20,6 +20,11 @@
 		"delete_custom_mode_with_rules": "Êtes-vous sûr de vouloir supprimer ce mode {scope} ?\n\nCela supprimera également le dossier de règles associé à l'adresse :\n{rulesFolderPath}"
 	},
 	"errors": {
+		"task_recovery_lock_repair": "Alpha ne peut pas vérifier le propriétaire du verrou partagé des tâches. Reprendre ou recharger ne permet pas de le réparer en toute sécurité. Fermez toutes les fenêtres VS Code et les hôtes de test Alpha. Sauvegardez puis supprimez uniquement agent_control.json.transaction.lock du stockage global d’Alpha avant de rouvrir. Ne supprimez jamais le verrou lorsqu’un hôte fonctionne ; conservez l’historique et agent_control.json.",
+		"task_recovery_failed": "Le tour s'est arrêté parce qu'une opération a échoué. Vous pouvez reprendre la tâche ou envoyer de nouvelles instructions.",
+		"task_recovery_incomplete": "Le tour s'est terminé avant que la tâche soit achevée. Vous pouvez reprendre la tâche ou envoyer de nouvelles instructions.",
+		"task_recovery_exhausted": "Le tour s'est arrêté après avoir atteint la limite de tentatives automatiques. Vous pouvez reprendre la tâche ou envoyer de nouvelles instructions.",
+		"task_recovery_persistence": "La tâche a été suspendue car les données nécessaires n'ont pas pu être enregistrées. Vérifiez l'espace disque disponible et l'accès au dossier de stockage des tâches, puis reprenez la tâche ou envoyez de nouvelles instructions.",
 		"invalid_data_uri": "Format d'URI de données invalide",
 		"error_copying_image": "Erreur lors de la copie de l'image : {{errorMessage}}",
 		"error_saving_image": "Erreur lors de l'enregistrement de l'image : {{errorMessage}}",

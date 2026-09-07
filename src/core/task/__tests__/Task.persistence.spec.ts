@@ -1527,7 +1527,7 @@ describe("Task persistence", () => {
 			expect(persisted).toBe(false)
 			expect(retry).toHaveBeenCalledOnce()
 			expect(task.assistantMessageSavedToHistory).toBe(false)
-			expect((task as any).suspendAfterCurrentTurnReason).toContain("could not be saved")
+			expect((task as any).pendingTurnSuspension?.reason).toContain("could not be saved")
 		})
 
 		it("opens the effects boundary only after a failed save is recovered", async () => {
@@ -1547,7 +1547,7 @@ describe("Task persistence", () => {
 
 			expect(persisted).toBe(true)
 			expect(task.assistantMessageSavedToHistory).toBe(true)
-			expect((task as any).suspendAfterCurrentTurnReason).toBeUndefined()
+			expect((task as any).pendingTurnSuspension).toBeUndefined()
 		})
 	})
 

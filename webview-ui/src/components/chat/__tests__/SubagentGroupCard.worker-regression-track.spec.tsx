@@ -56,6 +56,36 @@ const sendChangeSetCapability = (allowed: boolean, reason: string) =>
 	})
 
 describe("SubagentGroupCard Worker regressions", () => {
+	it.each(["pending", "failed"] as const)(
+		"keeps advisory %s evidence from requesting another check",
+		async (status) => {
+			const user = userEvent.setup()
+			render(
+				<SubagentGroupCard
+					group={makeWorkerGroup({
+						changeSet: undefined,
+						parentVerification: {
+							status,
+							blocking: false,
+							obligationCount: 1,
+							unresolvedCount: 0,
+							changeSetId: "change-1",
+							updatedAt: 6_000,
+							message: "Optional command evidence.",
+						},
+					})}
+					parentTaskId="parent-1"
+				/>,
+			)
+			expect(screen.getByRole("button", { name: /Open Maple · Completed/i })).toBeEnabled()
+			expect(screen.queryByText("Verify")).not.toBeInTheDocument()
+			expect(screen.queryByText("Fix")).not.toBeInTheDocument()
+			await user.click(screen.getByRole("button", { name: "Actions for Maple" }))
+			expect(screen.queryByText(/Run a parent verification command/)).not.toBeInTheDocument()
+			expect(screen.queryByText(/rerun verification/)).not.toBeInTheDocument()
+		},
+	)
+
 	beforeEach(() => {
 		postMessage.mockReset()
 	})
@@ -89,13 +119,13 @@ describe("SubagentGroupCard Worker regressions", () => {
 							changeSetId: "change-1",
 							success: true,
 							changeSetStatus: "applied",
-							message: "Changes applied; parent verification is required.",
+							message: "Worker changes were applied.",
 						},
 					},
 				}),
 			)
 		})
-		expect(screen.getByText("Changes applied; parent verification is required.")).toBeInTheDocument()
+		expect(screen.getByText("Worker changes were applied.")).toBeInTheDocument()
 
 		rerender(
 			<SubagentGroupCard
@@ -114,17 +144,18 @@ describe("SubagentGroupCard Worker regressions", () => {
 						unresolvedCount: 1,
 						changeSetId: "change-1",
 						updatedAt: 6_000,
-						message: "Parent verification is required before completion.",
+						message: "An admitted mutation still needs its durable content receipt.",
 					},
 				})}
 				parentTaskId="parent-1"
 			/>,
 		)
 
-		expect(screen.getByRole("button", { name: /Open Maple · Completed · Verify/i })).toBeEnabled()
+		expect(screen.getByRole("button", { name: /Open Maple · Completed · Review/i })).toBeEnabled()
 		await user.click(screen.getByRole("button", { name: "Actions for Maple" }))
-		expect(screen.getByText("Verification pending")).toBeInTheDocument()
-		expect(screen.getByText(/scoped to this applied change set/i)).toBeInTheDocument()
+		expect(screen.getByText("Review changes")).toBeInTheDocument()
+		expect(screen.queryByText(/Run a parent verification command/)).not.toBeInTheDocument()
+		expect(screen.getByText("An admitted mutation still needs its durable content receipt.")).toBeInTheDocument()
 		expect(screen.queryByRole("menuitem", { name: "Apply changes" })).not.toBeInTheDocument()
 		expect(screen.queryByRole("menuitem", { name: "Discard" })).not.toBeInTheDocument()
 		await user.keyboard("{Escape}")
@@ -146,7 +177,7 @@ describe("SubagentGroupCard Worker regressions", () => {
 						unresolvedCount: 0,
 						changeSetId: "change-1",
 						updatedAt: 7_000,
-						message: "Parent verification passed.",
+						message: "An associated process completed successfully against the captured content.",
 					},
 				})}
 				parentTaskId="parent-1"
@@ -155,8 +186,8 @@ describe("SubagentGroupCard Worker regressions", () => {
 
 		expect(screen.getByRole("button", { name: /Open Maple · Completed/i })).toBeEnabled()
 		await user.click(screen.getByRole("button", { name: "Actions for Maple" }))
-		expect(screen.getByText("Verified")).toBeInTheDocument()
-		expect(screen.getByText("Parent verification passed.")).toBeInTheDocument()
+		expect(screen.queryByText("Verified")).not.toBeInTheDocument()
+		expect(screen.queryByText(/Run a parent verification command/)).not.toBeInTheDocument()
 	})
 
 	it("keeps Worker review controls reachable and requests focus restoration after Escape", async () => {

@@ -33,10 +33,8 @@ import {
 	captureWorkspaceMutationState,
 	compareWorkspaceMutationState,
 	type WorkspaceMutationState,
-	type CommandVerificationDiagnostic,
 } from "../agent/VerificationScope"
 import { getTrustedCommandExploration } from "./CommandExploration"
-import { createPytestVerificationReceipt } from "../agent/PytestVerificationReceipt"
 
 class ShellIntegrationError extends Error {}
 
@@ -370,17 +368,6 @@ export async function executeCommandInTerminal(
 	let commandMutationCompletion = Promise.resolve()
 	let commandMutationFailureHandling: Promise<{ recoveryError?: unknown }> | undefined
 	let commandTerminalOutcomeFenced = false
-	let pytestReceipt: Awaited<ReturnType<typeof createPytestVerificationReceipt>> | undefined
-	let verificationDiagnostic: CommandVerificationDiagnostic | undefined
-	const disposePytestReceipt = async () => {
-		try {
-			await pytestReceipt?.dispose()
-		} catch (error) {
-			// Optional observer cleanup must not replace the physical outcome or skip
-			// settlement of the command's workspace mutation reservation.
-			console.error("Failed to clean pytest observer:", error)
-		}
-	}
 
 	const isManagedWorker = task.taskKind === "subagent" && task.subagentRole === "worker"
 	const executionMode = typeof task.getTaskMode === "function" ? await task.getTaskMode() : defaultModeSlug
@@ -612,7 +599,6 @@ export async function executeCommandInTerminal(
 	let onCompletedInvoked = false
 	let missingOutputCompletionTimer: NodeJS.Timeout | undefined
 	let backgroundResultReturned = false
-	let testValidation = false
 	let outputBookkeepingFailure: CommandOutputBookkeepingError | undefined
 	let outputBookkeepingFailureHandling: Promise<void> | undefined
 	const handleBackgroundOutputBookkeepingFailure = (): Promise<void> => {
@@ -697,11 +683,6 @@ export async function executeCommandInTerminal(
 			clearTimeout(missingOutputCompletionTimer)
 			missingOutputCompletionTimer = undefined
 			try {
-				if (pytestReceipt) {
-					const validation = await pytestReceipt.complete()
-					testValidation = validation.validated
-					verificationDiagnostic ??= validation.diagnostic
-				}
 				clearTimeout(pendingCommandOutputEmitTimer)
 				pendingCommandOutputEmitTimer = undefined
 
@@ -751,12 +732,7 @@ export async function executeCommandInTerminal(
 					if (outputBookkeepingFailure || commandMutationFailureHandling) return
 					if (!toolCallId) return
 					try {
-						const outcome = {
-							...details,
-							...(pytestVersions.length ? { testValidation } : {}),
-							...(verificationDiagnostic ? { verificationDiagnostic } : {}),
-						}
-						task.completeCommandExecution?.(toolCallId, outcome, physicalExecutionId)
+						task.completeCommandExecution?.(toolCallId, details, physicalExecutionId)
 					} catch (error) {
 						throw new CommandMutationReceiptError("complete-command-evidence", false, error)
 					}
@@ -764,9 +740,6 @@ export async function executeCommandInTerminal(
 			)
 			void commandMutationCompletion.catch(() => undefined)
 			void handleBackgroundOutputBookkeepingFailure()
-		},
-		onVerificationUnavailable: (message) => {
-			verificationDiagnostic = { code: "runtime_scope_unavailable", message }
 		},
 	}
 
@@ -831,44 +804,14 @@ export async function executeCommandInTerminal(
 		if (admissionFailure.cancelled) return cancellationResult()
 		throw new CommandExecutionLifecycleError("admit-command", admissionFailure.error)
 	}
-	const captured = toolCallId
-		? task
-				.getCommandExecutionEvidence?.()
-				.find((item) => item.toolCallId === toolCallId && item.executionId === physicalExecutionId)
-		: undefined
-	const pytestVersions = Object.values(captured?.verificationVersions ?? {}).filter(
-		(version) => version.runner === "pytest",
-	)
-	if (pytestVersions.length) {
-		try {
-			pytestReceipt = await createPytestVerificationReceipt({
-				executionId: physicalExecutionId,
-				commandDigest: pytestVersions[0].commandDigest,
-				cwd: pytestVersions[0].scopePath,
-				workspaceRoot: task.cwd,
-				expectedFiles: [...new Set(pytestVersions.flatMap((version) => version.pytestExpectedFiles ?? []))],
-				configFiles: [...new Set(pytestVersions.flatMap((version) => version.pytestConfigFiles ?? []))],
-			})
-		} catch {
-			verificationDiagnostic = {
-				code: "runtime_scope_unavailable",
-				message:
-					"The execution-bound pytest observer could not be prepared; this command cannot provide verification evidence.",
-			}
-		}
-	}
 	if (taskWasCancelled()) {
-		await disposePytestReceipt()
 		await releaseMutationReservationBeforeLaunch(new Error("Command admission was cancelled"))
 		return cancellationResult()
 	}
 	let process: ReturnType<RooTerminal["runCommand"]>
 	try {
-		process = pytestReceipt
-			? terminal.runCommand(command, callbacks, { pytestVerification: pytestReceipt.launch })
-			: terminal.runCommand(command, callbacks)
+		process = terminal.runCommand(command, callbacks)
 	} catch (error) {
-		await disposePytestReceipt()
 		const launchError = new CommandExecutionLifecycleError("launch-command", error)
 		if (mutationReservationAcquired) {
 			const receiptError = new CommandMutationReceiptError("launch-outcome-unknown", true, launchError)
@@ -883,17 +826,6 @@ export async function executeCommandInTerminal(
 			task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
 		}
 		throw launchError
-	}
-	if (pytestReceipt) {
-		const cleanup = () => {
-			process.removeListener("error", cleanup)
-			void disposePytestReceipt()
-		}
-		void onCompletedPromise.then(cleanup, cleanup)
-		process.once("error", cleanup)
-		// A provider can reject its process promise without emitting an error event.
-		// Fulfillment may merely background it, so only rejection releases this owner.
-		void process.catch(cleanup)
 	}
 	task.terminalProcess = process
 
@@ -968,7 +900,6 @@ export async function executeCommandInTerminal(
 			throw new Error(`Command execution timed out after ${commandExecutionTimeout}ms`)
 		}
 	} catch (error) {
-		await disposePytestReceipt()
 		if (isUserTimedOut) {
 			if (userTimeoutCleanupError) {
 				const cleanupError = new CommandExecutionLifecycleError(

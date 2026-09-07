@@ -16,6 +16,41 @@
 			"policy_restriction": "Politika kısıtlamaları nedeniyle yeni görev oluşturulamadı."
 		}
 	},
+	"fileConflicts": {
+		"save": "'{{path}}' kaydedilemiyor: {{reason}}. Kullanıcının değişikliklerini korumak için dosyayı yeniden okuyup tekrar deneyin.",
+		"delete": "'{{path}}' silinemiyor: {{reason}}. Dosyayı yeniden okuyup tekrar deneyin.",
+		"saveDestination": "'{{path}}' kaydedilemiyor: {{reason}}. Hedefi inceleyip tekrar deneyin.",
+		"reasons": {
+			"fileUnsavedChanges": "açık bir düzenleyicide dosyanın kaydedilmemiş değişiklikleri var",
+			"fileChangedDuringApproval": "onay beklemedeyken dosya değişti",
+			"editorChangedWhileChecked": "dosya denetlenirken açık düzenleyici değişti",
+			"destinationUnsavedChanges": "açık bir düzenleyicide hedefin kaydedilmemiş değişiklikleri var",
+			"destinationNotRegularFile": "hedef normal bir dosya değil",
+			"destinationChangedDuringInspection": "inceleme sırasında hedef değişti",
+			"destinationPathChanged": "hedef artık farklı bir yola çözümleniyor",
+			"destinationCreatedAfterInspection": "hedef incelemeden sonra oluşturuldu",
+			"destinationDeletedAfterInspection": "hedef incelemeden sonra silindi",
+			"destinationChangedAfterInspection": "hedef incelemeden sonra değişti"
+		}
+	},
+	"diffView": {
+		"editCancelled": "Dosya düzenleme iptal edildi",
+		"applyContentFailed": "İçerik diff düzenleyicisine uygulanamadı",
+		"previewChangedDuringEdit": "Düzenleme sırasında diff önizlemesi değişti; kullanıcının değişiklikleri korundu",
+		"noEditAvailableToSave": "Kaydedilecek bir dosya düzenlemesi yok",
+		"previewChangedAfterApproval": "Onaydan sonra diff önizlemesi değişti; değişiklikleri inceleyip tekrar deneyin",
+		"previewHasUserChanges": "Diff önizlemesinde kullanıcı değişiklikleri var; düzenlemeyi yeniden denemeden önce inceleyin",
+		"noFilePathForOpening": "Diff düzenleyicisini açmak için dosya yolu ayarlanmadı",
+		"previewChangedWhileOpening": "Açılırken diff önizlemesi değişti; kullanıcının değişiklikleri korundu",
+		"openFailed": "{{path}} için diff düzenleyicisi açılamadı: {{message}}",
+		"missingExpectedFileState": "Diff önizlemesi açılmadan önce beklenen dosya durumu eksik"
+	},
+	"applyPatch": {
+		"deleteCancelled": "Silme işlemi iptal edildi."
+	},
+	"imageOutput": {
+		"writeIncomplete": "'{{path}}' yazma işlemi tamamlanamadı; dosya eksik olabilir. {{cause}}"
+	},
 	"generateImage": {
 		"openRouterApiKeyRequired": "OpenRouter modelleriyle görüntü oluşturma için OpenRouter API anahtarı gereklidir. Lütfen Görüntü Oluşturma deneysel ayarlarında yapılandırın.",
 		"failedWithStatus": "Görüntü oluşturma başarısız: {{status}} {{statusText}}",
@@ -24,6 +59,10 @@
 		"invalidImageData": "Yanıtta geçersiz görüntü verisi",
 		"invalidImageFormat": "Geçersiz görüntü formatı alındı",
 		"unknownError": "Bilinmeyen bir hata oluştu",
+		"cancelledBeforeSave": "Görüntü kaydedilmeden önce görüntü oluşturma iptal edildi.",
+		"destinationUnavailableBeforeGeneration": "Görüntü hedefi oluşturma öncesinde erişilebilir değildi. İsteği yeniden deneyin.",
+		"destinationPolicyChangedBeforeSave": "Görüntü hedefinin yolu veya erişim politikası kaydetmeden önce değişti. İsteği yeniden deneyin.",
+		"postSaveProcessingFailed": "{{path}}\nGörüntü kaydedildi, ancak kaydetme sonrası işleme başarısız oldu: {{message}}",
 		"roo": {}
 	}
 }

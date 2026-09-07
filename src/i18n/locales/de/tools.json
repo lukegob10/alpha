@@ -16,6 +16,41 @@
 			"policy_restriction": "Neue Aufgabe konnte aufgrund von Richtlinienbeschränkungen nicht erstellt werden."
 		}
 	},
+	"fileConflicts": {
+		"save": "'{{path}}' kann nicht gespeichert werden: {{reason}}. Lies die Datei erneut ein und versuche es noch einmal, damit die Änderungen des Benutzers erhalten bleiben.",
+		"delete": "'{{path}}' kann nicht gelöscht werden: {{reason}}. Lies die Datei erneut ein und versuche es noch einmal.",
+		"saveDestination": "'{{path}}' kann nicht gespeichert werden: {{reason}}. Überprüfe das Ziel und versuche es erneut.",
+		"reasons": {
+			"fileUnsavedChanges": "die Datei enthält ungespeicherte Änderungen in einem geöffneten Editor",
+			"fileChangedDuringApproval": "die Datei wurde geändert, während die Genehmigung ausstand",
+			"editorChangedWhileChecked": "der geöffnete Editor wurde geändert, während die Datei geprüft wurde",
+			"destinationUnsavedChanges": "das Ziel enthält ungespeicherte Änderungen in einem geöffneten Editor",
+			"destinationNotRegularFile": "das Ziel ist keine reguläre Datei",
+			"destinationChangedDuringInspection": "das Ziel wurde während der Prüfung geändert",
+			"destinationPathChanged": "das Ziel verweist jetzt auf einen anderen Pfad",
+			"destinationCreatedAfterInspection": "das Ziel wurde nach der Prüfung erstellt",
+			"destinationDeletedAfterInspection": "das Ziel wurde nach der Prüfung gelöscht",
+			"destinationChangedAfterInspection": "das Ziel wurde nach der Prüfung geändert"
+		}
+	},
+	"diffView": {
+		"editCancelled": "Die Dateibearbeitung wurde abgebrochen",
+		"applyContentFailed": "Der Inhalt konnte nicht auf den Diff-Editor angewendet werden",
+		"previewChangedDuringEdit": "Die Diff-Vorschau wurde während der Bearbeitung geändert; die Änderungen des Benutzers wurden beibehalten",
+		"noEditAvailableToSave": "Keine Dateibearbeitung zum Speichern verfügbar",
+		"previewChangedAfterApproval": "Die Diff-Vorschau wurde nach der Genehmigung geändert; überprüfe die Änderungen und versuche es erneut",
+		"previewHasUserChanges": "Die Diff-Vorschau enthält Änderungen des Benutzers; überprüfe sie, bevor du die Dateibearbeitung erneut versuchst",
+		"noFilePathForOpening": "Kein Dateipfad zum Öffnen des Diff-Editors festgelegt",
+		"previewChangedWhileOpening": "Die Diff-Vorschau wurde während des Öffnens geändert; die Änderungen des Benutzers wurden beibehalten",
+		"openFailed": "Diff-Editor für {{path}} konnte nicht geöffnet werden: {{message}}",
+		"missingExpectedFileState": "Erwarteter Dateistatus fehlt vor dem Öffnen der Diff-Vorschau"
+	},
+	"applyPatch": {
+		"deleteCancelled": "Der Löschvorgang wurde abgebrochen."
+	},
+	"imageOutput": {
+		"writeIncomplete": "Das Schreiben von '{{path}}' konnte nicht abgeschlossen werden; die Datei ist möglicherweise unvollständig. {{cause}}"
+	},
 	"generateImage": {
 		"openRouterApiKeyRequired": "OpenRouter API-Schlüssel ist für die Bildgenerierung mit OpenRouter-Modellen erforderlich. Bitte konfiguriere ihn in den Experimentellen Einstellungen für Bildgenerierung.",
 		"failedWithStatus": "Bildgenerierung fehlgeschlagen: {{status}} {{statusText}}",
@@ -24,6 +59,10 @@
 		"invalidImageData": "Ungültige Bilddaten in der Antwort",
 		"invalidImageFormat": "Ungültiges Bildformat erhalten",
 		"unknownError": "Unbekannter Fehler aufgetreten",
+		"cancelledBeforeSave": "Die Bildgenerierung wurde vor dem Speichern des Bildes abgebrochen.",
+		"destinationUnavailableBeforeGeneration": "Das Bildziel war vor Beginn der Generierung nicht zugänglich. Wiederhole die Anfrage.",
+		"destinationPolicyChangedBeforeSave": "Der Pfad oder die Zugriffsrichtlinie des Bildziels wurde vor dem Speichern geändert. Wiederhole die Anfrage.",
+		"postSaveProcessingFailed": "{{path}}\nBild gespeichert, aber die Nachbearbeitung nach dem Speichern ist fehlgeschlagen: {{message}}",
 		"roo": {}
 	}
 }

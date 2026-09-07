@@ -7,11 +7,12 @@ import { type ClineSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
-import { fileExistsAtPath, createDirectoriesForFile } from "../../utils/fs"
+import { fileExistsAtPath } from "../../utils/fs"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { convertNewFileToUnifiedDiff, computeDiffStats, sanitizeUnifiedDiff } from "../diff/stats"
 import type { ToolUse } from "../../shared/tools"
 import type { ExpectedFileState } from "../../integrations/editor/DiffViewProvider"
+import { t } from "../../i18n"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
@@ -65,12 +66,6 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 			task.diffViewProvider.editType = fileExists ? "modify" : "create"
 		}
 
-		// Create parent directories early for new files to prevent ENOENT errors
-		// in subsequent operations (e.g., diffViewProvider.open, fs.readFile)
-		if (!fileExists) {
-			await createDirectoriesForFile(absolutePath)
-		}
-
 		const fullPath = relPath ? path.resolve(task.cwd, relPath) : ""
 		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, fullPath)
 
@@ -85,6 +80,16 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 		try {
 			task.consecutiveMistakeCount = 0
 
+			// Capture the raw source state before reading settings or asking for
+			// approval. A partial diff may already own this snapshot, in which case
+			// the provider retains it across streamed updates.
+			let expectedFileState: ExpectedFileState | undefined
+			if (!task.diffViewProvider.isEditing) {
+				expectedFileState = fileExists
+					? { exists: true, content: await fs.readFile(absolutePath, "utf-8") }
+					: { exists: false }
+			}
+
 			const provider = task.providerRef.deref()
 			const state = await provider?.getState()
 			const diagnosticsEnabled = state?.diagnosticsEnabled ?? true
@@ -96,16 +101,14 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 
 			if (isPreventFocusDisruptionEnabled) {
 				task.diffViewProvider.editType = fileExists ? "modify" : "create"
-				let expectedFileState: ExpectedFileState
-				if (fileExists) {
-					const absolutePath = path.resolve(task.cwd, relPath)
-					const originalContent = await fs.readFile(absolutePath, "utf-8")
-					task.diffViewProvider.originalContent = originalContent
-					expectedFileState = { exists: true, content: originalContent }
-				} else {
-					task.diffViewProvider.originalContent = ""
-					expectedFileState = { exists: false }
-				}
+				const directExpectedFileState =
+					expectedFileState ??
+					(fileExists
+						? { exists: true, content: task.diffViewProvider.originalContent ?? "" }
+						: { exists: false })
+				task.diffViewProvider.originalContent = directExpectedFileState.exists
+					? directExpectedFileState.content
+					: ""
 
 				let unified = fileExists
 					? formatResponse.createPrettyPatch(relPath, task.diffViewProvider.originalContent, newContent)
@@ -131,13 +134,16 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 					false,
 					diagnosticsEnabled,
 					writeDelayMs,
-					expectedFileState,
+					directExpectedFileState,
 				)
 			} else {
 				if (!task.diffViewProvider.isEditing) {
 					const partialMessage = JSON.stringify(sharedMessageProps)
 					await task.ask("tool", partialMessage, true).catch(() => {})
-					await task.diffViewProvider.open(relPath)
+					if (!expectedFileState) {
+						throw new Error(t("tools:diffView.missingExpectedFileState"))
+					}
+					await task.diffViewProvider.open(relPath, expectedFileState)
 				}
 
 				await task.diffViewProvider.update(newContent, true)
@@ -200,6 +206,10 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 			return
 		}
 
+		if (task.rooIgnoreController && !task.rooIgnoreController.validateAccess(relPath!)) {
+			return
+		}
+
 		const provider = task.providerRef.deref()
 		const state = await provider?.getState()
 		const isPreventFocusDisruptionEnabled = experiments.isEnabled(
@@ -212,8 +222,8 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 		}
 
 		// relPath is guaranteed non-null after hasPathStabilized
-		let fileExists: boolean
 		const absolutePath = path.resolve(task.cwd, relPath!)
+		let fileExists: boolean
 
 		if (task.diffViewProvider.editType !== undefined) {
 			fileExists = task.diffViewProvider.editType === "modify"
@@ -222,10 +232,14 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 			task.diffViewProvider.editType = fileExists ? "modify" : "create"
 		}
 
-		// Create parent directories early for new files to prevent ENOENT errors
-		// in subsequent operations (e.g., diffViewProvider.open)
-		if (!fileExists) {
-			await createDirectoriesForFile(absolutePath)
+		// Capture the raw source before the partial tool row can yield. The first
+		// open stores this state on the provider; later partial updates reuse it
+		// instead of recapturing the current disk contents.
+		let expectedFileState: ExpectedFileState | undefined
+		if (!task.diffViewProvider.isEditing) {
+			expectedFileState = fileExists
+				? { exists: true, content: await fs.readFile(absolutePath, "utf-8") }
+				: { exists: false }
 		}
 
 		const isWriteProtected = task.rooProtectedController?.isWriteProtected(relPath!) || false
@@ -244,7 +258,10 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 
 		if (newContent !== undefined) {
 			if (!task.diffViewProvider.isEditing) {
-				await task.diffViewProvider.open(relPath!)
+				if (!expectedFileState) {
+					throw new Error(t("tools:diffView.missingExpectedFileState"))
+				}
+				await task.diffViewProvider.open(relPath!, expectedFileState)
 			}
 
 			await task.diffViewProvider.update(newContent, false)

@@ -3,7 +3,6 @@
 **Status:** keyless implementation complete; model calibration pending  
 **Primary eval model:** Luna High  
 **Reference model:** Luna High (`frontier-v1` is Luna-only)  
-**Main-repository expansion roadmap:** [`cost-effective-frontier-benchmark-main-plan.md`](./cost-effective-frontier-benchmark-main-plan.md)  
 **Private expansion roadmap:** `F:\roo-fork\Alpha-Code-private-evals\docs\private-frontier-benchmark-expansion-plan.md`
 
 ## Release boundary

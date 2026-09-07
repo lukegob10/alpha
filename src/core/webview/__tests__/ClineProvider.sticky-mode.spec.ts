@@ -192,6 +192,17 @@ vi.mock("fs/promises", () => {
 				: Promise.resolve("")
 		}),
 		readdir: vi.fn().mockResolvedValue([]),
+		open: vi.fn().mockImplementation(async (filePath: string) => ({
+			read: vi
+				.fn()
+				.mockImplementation(async (buffer: Buffer, offset: number, length: number, position: number) => {
+					const data = Buffer.from(transactionFiles.get(filePath) ?? "")
+					const bytesRead = Math.min(length, Math.max(0, data.length - position))
+					data.copy(buffer, offset, position, position + bytesRead)
+					return { bytesRead, buffer }
+				}),
+			close: vi.fn().mockResolvedValue(undefined),
+		})),
 		stat: vi.fn().mockImplementation(async (filePath: string) => {
 			if (!transactionDirectories.has(filePath)) {
 				throw Object.assign(new Error("not found"), { code: "ENOENT" })

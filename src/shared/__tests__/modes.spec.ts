@@ -538,7 +538,7 @@ describe("FileRestrictionError", () => {
 				groups: ["read", "edit", "command", "mcp", "github", "browser"],
 			})
 			expect(debugMode?.customInstructions).toContain(
-				"Reflect on 5-7 different possible sources of the problem, distill those down to 1-2 most likely sources, and then add logs to validate your assumptions. Explicitly ask the user to confirm the diagnosis before fixing the problem.",
+				"Use the available evidence to identify and verify the most likely root cause, then make the requested fix when authorized.",
 			)
 		})
 	})

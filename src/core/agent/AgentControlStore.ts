@@ -960,8 +960,6 @@ export interface ParentCommandVerificationEvidence {
 	status: "running" | "succeeded" | "failed" | "denied" | "cancelled" | "timed_out"
 	exitCode?: number
 	signalName?: string
-	/** Execution-bound pytest collection receipt, validated at physical terminal completion. */
-	testValidation?: boolean
 	startedAt: number
 	completedAt?: number
 	/** Ephemeral command text retained for diagnostics, never used to infer verification scope. */
@@ -978,10 +976,10 @@ export interface ParentCommandVerificationEvidence {
 			scopePath: string
 			commandDigest: string
 			repositoryDigest: string
+			/** Process assurance binds the command and content; it does not prove test coverage. */
+			assurance?: "process"
+			/** Legacy verifier fields remain readable but are never inferred by the generic resolver. */
 			kind?: "test" | "types" | "lint" | "format"
-			runner?: "pytest"
-			pytestExpectedFiles?: string[]
-			pytestConfigFiles?: string[]
 			matchedFiles?: string[]
 		}
 	>
@@ -1007,6 +1005,7 @@ function verificationFingerprint(files: Record<string, string>): string {
 }
 
 function hasVerificationCoverage(obligation: ParentVerificationObligation): boolean {
+	if (obligation.verification?.assurance === "process") return true
 	return (
 		obligation.contentVersion === undefined ||
 		obligation.changedFiles.every((file) => {
@@ -1955,7 +1954,8 @@ export class AgentControlStore {
 				worker.contentVersion = (worker.contentVersion ?? 0) + 1
 				worker.appliedAt = at
 				worker.updatedAt = at
-				worker.reason = "Parent edits changed this applied change set; current validation is required."
+				worker.reason =
+					"Parent edits changed this applied change set; earlier command evidence is no longer current."
 				delete worker.verification
 				delete worker.verifiedChecks
 			}
@@ -1992,20 +1992,43 @@ export class AgentControlStore {
 		return true
 	}
 
-	/** Revalidate persisted content after reload, rewind, external edits, and before crediting a command. */
-	async invalidatePrimaryVerification(parentTaskId: string, rootTaskId: string): Promise<void> {
-		await this.transact((draft) => {
-			this.assertParentMutationOwned(draft, parentTaskId, rootTaskId, "invalidate primary verification")
+	/**
+	 * Invalidate optional process evidence after a content snapshot cannot be refreshed.
+	 * The change-set identity is explicit so this cannot manufacture a primary-only
+	 * obligation or accidentally invalidate a sibling change set.
+	 */
+	async invalidateVerificationEvidence(
+		parentTaskId: string,
+		changeSetId: string,
+		rootTaskId: string,
+		expectedEvidence?: { executionId: string; contentVersion: number },
+	): Promise<boolean> {
+		return this.transact((draft) => {
+			this.assertParentMutationOwned(draft, parentTaskId, rootTaskId, "invalidate verification evidence")
 			const obligation = draft.verificationObligations.find(
-				(item) => item.id === `primary-change:${parentTaskId}`,
+				(item) =>
+					item.parentTaskId === parentTaskId &&
+					item.changeSetId === changeSetId &&
+					item.rootTaskId === rootTaskId,
 			)
-			if (!obligation) return
+			if (!obligation || obligation.appliedAt === undefined) return false
+			// A filesystem observation may wait behind a newer receipt transaction.
+			// Compare its identity while holding the ledger transaction, not before it.
+			if (
+				expectedEvidence &&
+				(obligation.verification?.executionId !== expectedEvidence.executionId ||
+					obligation.contentVersion !== expectedEvidence.contentVersion)
+			)
+				return false
+			const reason = "Optional verification evidence could not be revalidated against current content."
+			if (!obligation.verification && obligation.reason === reason) return false
 			obligation.status = "pending"
 			obligation.contentVersion = (obligation.contentVersion ?? 0) + 1
 			obligation.updatedAt = this.now()
-			obligation.reason = "Earlier verification evidence could not be revalidated."
+			obligation.reason = reason
 			delete obligation.verification
 			delete obligation.verifiedChecks
+			return true
 		})
 	}
 
@@ -2063,7 +2086,8 @@ export class AgentControlStore {
 		obligation.status = "pending"
 		obligation.appliedAt = at
 		obligation.updatedAt = at
-		obligation.reason = "Current workspace changes require a successful scoped verification command."
+		obligation.reason =
+			"Workspace content changed; optional command evidence has not been captured for this version."
 		delete obligation.verification
 		delete obligation.verifiedChecks
 	}
@@ -2224,13 +2248,18 @@ export class AgentControlStore {
 					cwd: selected.evidence.cwd,
 				}
 				const covered = hasVerificationCoverage(obligation)
+				const processAssurance = captured?.assurance === "process"
 				obligation.status = status === "failed" ? "failed" : covered ? "satisfied" : "pending"
 				obligation.reason =
 					status === "passed"
 						? covered
-							? "Current scoped commands satisfy the required verification checks."
-							: "A current scoped check passed; additional required checks or changed files remain unverified."
-						: "The latest explicitly scoped parent verification command did not complete successfully."
+							? processAssurance
+								? "Current process evidence is associated with the applied change set and content."
+								: "Legacy verification evidence satisfies the persisted advisory checks."
+							: "A current legacy check passed; additional persisted advisory checks remain unverified."
+						: processAssurance
+							? "The latest associated process did not complete successfully."
+							: "The latest persisted legacy check did not complete successfully."
 				obligation.updatedAt = selected.evidence.completedAt
 				changed.push(clone(obligation))
 			}
@@ -2379,8 +2408,6 @@ export class AgentControlStore {
 				)
 					return []
 				if (item.status === "succeeded" && (item.exitCode !== 0 || item.signalName)) return []
-				if (item.status === "succeeded" && captured.runner === "pytest" && item.testValidation !== true)
-					return []
 				if (obligation.verification && item.completedAt < obligation.verification.completedAt) return []
 			}
 			return [
@@ -2398,7 +2425,11 @@ export class AgentControlStore {
 			return relevant.find((item) => item.evidence.status === "succeeded") ?? relevant.at(-1)
 		const verifiedChecks = clone(obligation.verifiedChecks ?? {})
 		for (const entry of relevant) {
-			const kind = entry.evidence.verificationVersions?.[obligation.changeSetId]?.kind ?? "check"
+			// Generic process assurance deliberately does not infer a verifier kind.
+			// Keep explicitly persisted legacy kinds readable for old receipts, but do
+			// not fabricate a check for a command that supplied no such identity.
+			const kind = entry.evidence.verificationVersions?.[obligation.changeSetId]?.kind
+			if (!kind) continue
 			for (const file of entry.matchedFiles) {
 				const checks = new Set(verifiedChecks[file] ?? [])
 				if (entry.evidence.status === "succeeded") checks.add(kind)
@@ -2406,7 +2437,10 @@ export class AgentControlStore {
 				verifiedChecks[file] = [...checks].sort()
 			}
 		}
-		return { ...relevant.at(-1)!, verifiedChecks }
+		return {
+			...relevant.at(-1)!,
+			...(Object.keys(verifiedChecks).length > 0 ? { verifiedChecks } : {}),
+		}
 	}
 
 	private assertVerificationIdentity(

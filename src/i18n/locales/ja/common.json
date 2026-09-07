@@ -20,6 +20,11 @@
 		"delete_custom_mode_with_rules": "この{scope}モードを削除してもよろしいですか？\n\nこれにより、関連するルールフォルダも次の場所で削除されます:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"task_recovery_lock_repair": "Alpha は共有タスクストレージのロック所有者を確認できません。再開や再読み込みでは安全に修復できません。VS Code の全ウィンドウと Alpha のテストホストを閉じてから、Alpha のグローバルストレージ内の agent_control.json.transaction.lock だけをバックアップして削除し、再度開いてください。ホストの実行中はロックを削除しないでください。タスク履歴と agent_control.json は保持してください。",
+		"task_recovery_failed": "操作が失敗したため、ターンが停止しました。タスクを再開するか、新しい指示を送信できます。",
+		"task_recovery_incomplete": "タスクが完了する前にターンが終了しました。タスクを再開するか、新しい指示を送信できます。",
+		"task_recovery_exhausted": "自動再試行の上限に達したため、ターンが停止しました。タスクを再開するか、新しい指示を送信できます。",
+		"task_recovery_persistence": "必要なタスクデータを保存できなかったため、タスクを一時停止しました。ディスクの空き容量とタスク保存フォルダーへのアクセスを確認してから、再開するか新しい指示を送信してください。",
 		"invalid_data_uri": "データURIフォーマットが無効です",
 		"error_copying_image": "画像のコピー中にエラーが発生しました：{{errorMessage}}",
 		"error_saving_image": "画像の保存中にエラーが発生しました：{{errorMessage}}",

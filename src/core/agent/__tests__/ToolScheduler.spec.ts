@@ -388,6 +388,7 @@ describe("ToolScheduler", () => {
 		["read_file", { path: "inside.txt", files: [{ path: "../outside.txt" }] }],
 		["search_files", { queries: [{ path: "../outside", regex: "secret" }] }],
 		["generate_image", { prompt: "fixture", path: "inside.png", image: "../outside.png" }],
+		["generate_image", { prompt: "fixture", path: process.cwd() }],
 	] as const)("rejects an out-of-policy nested path in %s before dispatch", async (name, argumentsValue) => {
 		const task = makeTask()
 		const execute = vi.fn(async ({ callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {

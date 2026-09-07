@@ -2,11 +2,9 @@ import {
 	assertSubagentTaskAuthorities,
 	buildSubagentPrompt,
 	getReadOnlyAuthorityMismatch,
-	getWorkerCompletionError,
 	normalizeSubagentForkTurns,
 	normalizeSubagentTaskDrafts,
 	SUBAGENT_REPORT_WORD_BUDGET,
-	WORKER_NO_CHANGES_ERROR,
 } from "../SubagentDelegation"
 
 describe("buildSubagentPrompt", () => {
@@ -17,12 +15,9 @@ describe("buildSubagentPrompt", () => {
 		const prompt = buildSubagentPrompt({ nickname: "Maple", role, objective, expectedOutput })
 
 		expect(prompt).toContain(`Objective: ${objective}`)
-		expect(prompt).toContain("every path explicitly named")
-		expect(prompt).toContain("at most one locate or search turn")
-		expect(prompt).toContain("batches of at most eight")
+		expect(prompt).toContain("Tool results may be bounded, missing, or truncated")
 		expect(prompt).toContain("do not silently substitute a different scope")
-		expect(prompt).toContain("a direct read establishes")
-		expect(prompt).toContain("unrelated hidden or support directories")
+		expect(prompt).toContain("Once the evidence is sufficient for the objective, synthesize it")
 		expect(prompt).toContain(`under ${SUBAGENT_REPORT_WORD_BUDGET} words`)
 		expect(prompt).toContain("do not repeat file contents or narrate the research process")
 		expect(prompt).toContain("Use report_progress")
@@ -30,10 +25,13 @@ describe("buildSubagentPrompt", () => {
 		expect(prompt).toContain("report each distinct update once")
 		expect(prompt).toContain("one bounded wait_agent call at a time")
 		expect(prompt).toContain("cannot address ancestors, siblings, or other agents")
+		expect(prompt).not.toContain("every path explicitly named")
+		expect(prompt).not.toContain("at most one locate or search turn")
+		expect(prompt).not.toContain("batches of at most eight")
 		expect(prompt).not.toMatch(/backend|frontend/i)
 	})
 
-	it("requires every explicitly named path even when more than one read batch is needed", () => {
+	it("keeps evidence guidance general rather than prescribing a discovery recipe", () => {
 		const paths = ["README.md", ...Array.from({ length: 8 }, (_, index) => `docs/evidence-${index + 1}.md`)]
 		const prompt = buildSubagentPrompt({
 			nickname: "Nova",
@@ -42,11 +40,11 @@ describe("buildSubagentPrompt", () => {
 			expectedOutput: ["Evidence for every named file"],
 		})
 
-		expect(prompt).toContain("Read those paths directly before discovery")
-		expect(prompt).toContain("more than eight paths")
-		expect(prompt).toContain("consecutive read_file batches of at most eight")
-		expect(prompt).toContain("every named path returns contents or a direct read error")
-		expect(prompt).toContain("never infer that an exact path is absent from listing or search output")
+		expect(prompt).toContain("adapting discovery to named and unnamed targets")
+		expect(prompt).toContain("do not infer absence from incomplete output")
+		expect(prompt).not.toContain("Read those paths directly before discovery")
+		expect(prompt).not.toContain("more than eight paths")
+		expect(prompt).not.toContain("consecutive read_file batches of at most eight")
 	})
 
 	it("provides a useful deliverable when expected_output is omitted", () => {
@@ -74,21 +72,17 @@ describe("buildSubagentPrompt", () => {
 		expect(prompt).toContain("isolated Git worktree")
 		expect(prompt).toContain("src/parser")
 		expect(prompt).toContain("Do not commit, stage, create branches, or change remotes")
-		expect(prompt).toContain("begin with the edit instead of broad repository reconnaissance")
-		expect(prompt).toContain("Do not run Git status or diff solely to enumerate changed files")
-		expect(prompt).toContain("Prefer one shell-compatible verification command")
-		expect(prompt).toContain("at least one authorized change exists")
+		expect(prompt).toContain("a complete objective may conclude that no repository change is needed")
+		expect(prompt).toContain("choose verification proportionate to the work")
+		expect(prompt).toContain("including when no change is needed")
+		expect(prompt).not.toContain("begin with the edit")
+		expect(prompt).not.toContain("Prefer one shell-compatible verification command")
+		expect(prompt).not.toContain("at least one authorized change exists")
 		expect(prompt).toContain("Use report_progress")
 		expect(prompt).toContain("immediate parent")
 		expect(prompt).toContain("report each distinct update once")
 		expect(prompt).toContain("one bounded wait_agent call at a time")
 		expect(prompt).not.toMatch(/specific prompt|single action/i)
-	})
-
-	it("requires a captured delta before treating an editing worker as complete", () => {
-		expect(getWorkerCompletionError("completed", [])).toBe(WORKER_NO_CHANGES_ERROR)
-		expect(getWorkerCompletionError("completed", ["src/parser.ts"])).toBeUndefined()
-		expect(getWorkerCompletionError("timed_out", [])).toBeUndefined()
 	})
 })
 

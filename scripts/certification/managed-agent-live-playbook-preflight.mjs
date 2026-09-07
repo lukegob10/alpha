@@ -23,7 +23,7 @@ const playbookPath = path.join(repositoryRoot, "docs", "certification", "managed
 const commandPrefix = "powershell.exe -NoProfile -NonInteractive -Command "
 const runAContractId = "MANAGED_AGENT_RUN_A_V6"
 const runBContractId = "MANAGED_AGENT_RUN_B_V5"
-const runCContractId = "MANAGED_AGENT_RUN_C_V4"
+const runCContractId = "MANAGED_AGENT_RUN_C_V5"
 const prepareRunCWorkspaceFlag = "--prepare-run-c-workspace"
 const expectedSetupCommand = String.raw`powershell.exe -NoProfile -NonInteractive -Command "$workspace=[IO.Path]::GetFullPath((Get-Location).Path); $target=[IO.Path]::GetFullPath([IO.Path]::Combine($workspace,'managed-agent-live-acceptance')); $prefix=$workspace.TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar))+[IO.Path]::DirectorySeparatorChar; if($target -eq $workspace -or -not $target.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){throw 'Target is not a strict workspace descendant'}; if(Test-Path -LiteralPath $target -PathType Leaf){throw 'Target exists and is not a directory'}; if(Test-Path -LiteralPath $target -PathType Container){Remove-Item -LiteralPath $target -Recurse -Force}; [IO.Directory]::CreateDirectory([IO.Path]::Combine($target,'cancel-probe')) | Out-Null; Write-Output ('SETUP_READY='+$target)"`
 const expectedSleeperCommand = String.raw`powershell.exe -NoProfile -NonInteractive -Command "$child=Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 300' -WindowStyle Hidden -PassThru; Write-Output ('PID_READY='+$child.Id); Wait-Process -Id $child.Id -Timeout 300"`
@@ -413,6 +413,19 @@ function validatePlaybook(
 	)
 	if (promptC.split("\n", 1)[0] !== `RUN_C_CONTRACT_ID=${runCContractId}`) {
 		throw new Error("Prompt C must start with the current contract identifier")
+	}
+	assertIncludes(
+		promptC,
+		"Correct behavior is a rejection naming\n   the active descendant.",
+		"Run C must retain the active-descendant completion barrier",
+	)
+	assertIncludes(
+		promptC,
+		"require the reviewed/applied root obligation to have blocking: false while optional evidence\n    is pending",
+		"Run C must not reinstate a mandatory optional-evidence completion gate",
+	)
+	if (countOccurrences(promptC, "verification.change_set_ids") !== 2) {
+		throw new Error("Run C must explicitly associate both requested checks with their applied change sets")
 	}
 	if (countOccurrences(promptC, "Start-Sleep -Seconds 3000") !== 1) {
 		throw new Error("Run C must contain exactly one 3000-second nested sleeper")

@@ -21,12 +21,15 @@ import { MultiSearchReplaceDiffStrategy } from "../../diff/strategies/multi-sear
 import { formatResponse } from "../../prompts/responses"
 import { createAgentResponse } from "../../agent/AgentResponse"
 import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
+import { AgentControlTransactionError } from "../../agent/AgentControlTransaction"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
 import { ToolRegistry } from "../../tools/ToolRegistry"
 import type { AgentTurnEvent } from "../../agent/AgentTurnEvents"
 import { captureEnvironmentDetails } from "../../environment/getEnvironmentDetails"
 import * as contextManagement from "../../context-management"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
+import i18n from "../../../i18n"
+import enCommon from "../../../i18n/locales/en/common.json"
 
 // Mock delay before any imports that might use it
 vi.mock("delay", () => ({
@@ -3214,6 +3217,7 @@ describe("Alpha", () => {
 		}
 
 		beforeEach(() => {
+			i18n.addResourceBundle("en", "common", enCommon)
 			mockProvider.getParentCompletionDecision = vi.fn().mockResolvedValue({ allowed: true })
 			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
 				() => ({ get: (_key: string, defaultValue: unknown) => defaultValue }) as any,
@@ -3460,6 +3464,59 @@ describe("Alpha", () => {
 			])
 		})
 
+		it.each([
+			["Resume", [{ type: "text", text: "[TASK RESUMPTION] Resuming task..." }]],
+			["typed guidance", [{ type: "text", text: "<user_message>Continue from the failed tool.</user_message>" }]],
+		] as const)("reconciles retained terminal receipts before %s", async (_label, followupContent) => {
+			const task = createTask()
+			task.apiConversationHistory = [
+				{ role: "user", content: [{ type: "text", text: "start" }], ts: 1 },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "retained-result", name: "read_file", input: {} }],
+					ts: 2,
+				},
+			] as any
+			task.assistantMessageSavedToHistory = true
+			const saveHistory = vi
+				.spyOn(task as any, "saveApiConversationHistory")
+				.mockResolvedValueOnce(false)
+				.mockResolvedValueOnce(true)
+			const response = createAgentResponse([
+				{ type: "tool_call", id: "retained-result", name: "read_file", arguments: {} },
+			])
+
+			await expect((task as any).persistUnexecutedTerminalToolResults(response, "failed")).resolves.toBe(false)
+			const requestContent = (task as any).mergePendingToolResultsIntoUserContent(followupContent)
+			expect(requestContent).toEqual([
+				{
+					type: "tool_result",
+					tool_use_id: "retained-result",
+					content: "Tool call was not executed because the provider response failed.",
+					is_error: true,
+				},
+				...followupContent,
+			])
+
+			await (task as any).persistUserContentWithEnvironment(requestContent, undefined, undefined)
+			;(task as any).acknowledgePersistedUserMessageContent(requestContent)
+
+			const resultBlocks = task.apiConversationHistory.flatMap((message) =>
+				message.role === "user" && Array.isArray(message.content)
+					? message.content.filter((block) => block.type === "tool_result")
+					: [],
+			)
+			expect(resultBlocks).toEqual([
+				expect.objectContaining({
+					tool_use_id: "retained-result",
+					content: "Tool call was not executed because the provider response failed.",
+					is_error: true,
+				}),
+			])
+			expect(task.userMessageContent).toEqual([])
+			expect(saveHistory).toHaveBeenCalledTimes(2)
+		})
+
 		it("fails closed without staging a tool result before the assistant boundary", async () => {
 			const task = createTask()
 			const saveHistory = vi.spyOn(task as any, "saveApiConversationHistory")
@@ -3504,6 +3561,7 @@ describe("Alpha", () => {
 					reason: expect.stringContaining("Terminal tool-result receipts could not be durably saved."),
 					error: expect.any(Error),
 				})
+				expect((result as any).error.name).toBe("TaskPersistenceError")
 				expect(appendEvent).toHaveBeenLastCalledWith(
 					expect.objectContaining({ type: "response_terminal", status: expectedStatus }),
 					undefined,
@@ -3611,6 +3669,45 @@ describe("Alpha", () => {
 			})
 		})
 
+		it("classifies a normal provider terminal receipt persistence failure", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "persistUnexecutedTerminalToolResults").mockResolvedValue(false)
+			const executeTools = vi.spyOn(task as any, "executeCanonicalToolCalls")
+			const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() => {
+				return (async function* (): AsyncGenerator<ApiStreamChunk> {
+					yield {
+						type: "tool_call",
+						id: "terminal-receipt-write",
+						name: "read_file",
+						arguments: JSON.stringify({ path: "README.md" }),
+					}
+					yield {
+						type: "outcome",
+						status: "failed",
+						terminal: true,
+						semanticOutputObserved: true,
+						reason: "Provider terminal outcome.",
+						retryable: false,
+					}
+				})()
+			})
+
+			const result = await task.recursivelyMakeClineRequests([{ type: "text", text: "start" }], false)
+
+			expect(result).toMatchObject({
+				status: "failed",
+				error: expect.objectContaining({ name: "TaskPersistenceError" }),
+				reason: expect.stringContaining("Terminal tool-result receipts could not be durably saved."),
+			})
+			expect(attempt).toHaveBeenCalledOnce()
+			expect(executeTools).not.toHaveBeenCalled()
+		})
+
 		it("publishes a durable completion boundary for an ordinary primary response", async () => {
 			const task = createTask()
 			let streamedMessageTs: number | undefined
@@ -3665,6 +3762,213 @@ describe("Alpha", () => {
 		})
 
 		it.each(["failed", "incomplete", "exhausted"] as const)(
+			"persists one safe recovery explanation before asking to resume a pre-provider %s turn",
+			async (status) => {
+				const task = createTask()
+				mockProvider.postTaskMessageToWebview = vi.fn().mockResolvedValue(undefined)
+				const privateReason =
+					"Authorization: Bearer test-secret\nPrivate prompt: do not publish\n at internalFrame"
+				const save = vi.mocked((task as any).saveClineMessages)
+				const ask = vi.spyOn(task, "ask").mockImplementation(async () => {
+					const errors = task.clineMessages.filter((message) => message.say === "error")
+					expect(errors).toHaveLength(1)
+					expect(errors[0].text).toBe(enCommon.errors[`task_recovery_${status}`])
+					expect(JSON.stringify(task.clineMessages)).not.toContain(privateReason)
+					expect(save).toHaveBeenCalled()
+					expect(mockProvider.postTaskMessageToWebview).toHaveBeenCalledExactlyOnceWith(
+						"messageCreated",
+						task.taskId,
+						errors[0],
+					)
+					return { response: "yesButtonClicked" }
+				})
+				const requestStep = vi
+					.spyOn(task, "recursivelyMakeClineRequests")
+					.mockResolvedValueOnce({ status, reason: privateReason })
+					.mockResolvedValueOnce(true)
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				expect(ask).toHaveBeenCalledExactlyOnceWith("resume_task")
+				expect(requestStep).toHaveBeenCalledTimes(2)
+				expect(task.clineMessages.filter((message) => message.say === "error")).toHaveLength(1)
+			},
+		)
+
+		it.each(["ELOCKOWNER", "ELOCKLEGACY"] as const)(
+			"explains the offline repair required by %s before offering recovery",
+			async (code) => {
+				const task = createTask()
+				const privateReason = "Private storage path and request content"
+				vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+				vi.spyOn(task, "recursivelyMakeClineRequests")
+					.mockRejectedValueOnce(new AgentControlTransactionError(privateReason, code))
+					.mockResolvedValueOnce(true)
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				const errors = task.clineMessages.filter((message) => message.say === "error")
+				expect(errors).toHaveLength(1)
+				expect(errors[0].text).toContain("Close all VS Code windows")
+				expect(errors[0].text).toContain("agent_control.json.transaction.lock")
+				expect(JSON.stringify(task.clineMessages)).not.toContain(privateReason)
+			},
+		)
+
+		it("explains an unhandled pre-provider exception without copying private diagnostics", async () => {
+			const task = createTask()
+			vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+			vi.spyOn(task, "recursivelyMakeClineRequests")
+				.mockRejectedValueOnce(new Error("Private request body with credentials and prompt"))
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(task.clineMessages.filter((message) => message.say === "error")).toEqual([
+				expect.objectContaining({ text: enCommon.errors.task_recovery_failed }),
+			])
+		})
+
+		it("explains a pacing metadata persistence failure before any provider request", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "maybeWaitForProviderRateLimit").mockImplementation(async () => {
+				;(task as any).requestPacingWaitCount++
+			})
+			vi.spyOn(task as any, "appendRequestPacingUpdateToLatestUserMessage").mockResolvedValue(false)
+			const request = vi.spyOn(task, "attemptApiRequest")
+			vi.spyOn(task, "ask").mockImplementation(async () => {
+				task.abort = true
+				return { response: "noButtonClicked" }
+			})
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(request).not.toHaveBeenCalled()
+			expect(task.clineMessages.filter((message) => message.say === "error")).toEqual([
+				expect.objectContaining({ text: enCommon.errors.task_recovery_persistence }),
+			])
+		})
+
+		it.each([
+			["error", undefined],
+			["api_req_started", "streaming_failed"],
+			["api_req_started", undefined],
+		] as const)(
+			"does not duplicate an existing terminal %s explanation (cancel reason: %s)",
+			async (say, cancelReason) => {
+				const task = createTask()
+				vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+				vi.spyOn(task, "recursivelyMakeClineRequests")
+					.mockImplementationOnce(async () => {
+						await task.say(
+							say,
+							say === "error"
+								? "Tool failed."
+								: JSON.stringify({
+										cancelReason,
+										streamingFailedMessage: "Provider failed.",
+									}),
+						)
+						return { status: "failed", reason: "Failure already presented." }
+					})
+					.mockResolvedValueOnce(true)
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				expect(task.clineMessages).toHaveLength(1)
+				expect(task.clineMessages[0].say).toBe(say)
+			},
+		)
+
+		it("does not let a recovered provider attempt hide a later persistence failure", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "maybeWaitForProviderRateLimit")
+				.mockResolvedValueOnce(undefined)
+				.mockImplementationOnce(async () => {
+					;(task as any).requestPacingWaitCount++
+				})
+			vi.spyOn(task as any, "appendRequestPacingUpdateToLatestUserMessage").mockResolvedValue(false)
+			vi.spyOn(task as any, "waitForRetryDecision").mockImplementation(async () => {
+				await task.say("error", "Recovered provider attempt.")
+			})
+			const request = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					yield* []
+					throw Object.assign(new Error("Transient failure"), {
+						firstChunkFailure: true,
+						retryable: true,
+						retryCategory: "transport",
+					})
+				})(),
+			)
+			vi.spyOn(task, "ask").mockImplementation(async () => {
+				task.abort = true
+				return { response: "noButtonClicked" }
+			})
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(request).toHaveBeenCalledOnce()
+			expect(
+				task.clineMessages.filter((message) => message.say === "error").map((message) => message.text),
+			).toEqual(["Recovered provider attempt.", enCommon.errors.task_recovery_persistence])
+		})
+
+		it("does not let an earlier recovered step hide a new runtime failure", async () => {
+			const task = createTask()
+			vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+			vi.spyOn(task, "recursivelyMakeClineRequests")
+				.mockImplementationOnce(async () => {
+					await task.say("error", "Earlier recoverable tool error.")
+					return { status: "completed", response: createAgentResponse([]) }
+				})
+				.mockRejectedValueOnce(new Error("New runtime failure"))
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(
+				task.clineMessages.filter((message) => message.say === "error").map((message) => message.text),
+			).toEqual(["Earlier recoverable tool error.", enCommon.errors.task_recovery_failed])
+		})
+
+		it("retains one recovery explanation when the task is loaded again", async () => {
+			const task = createTask()
+			vi.spyOn(task, "recursivelyMakeClineRequests")
+				.mockResolvedValueOnce({ status: "incomplete" })
+				.mockResolvedValueOnce(true)
+			vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+			let saved = structuredClone(task.clineMessages)
+			saved.push({ ts: Date.now() + 1, type: "ask", ask: "resume_task" })
+			vi.spyOn(task as any, "getSavedClineMessages").mockImplementation(async () => structuredClone(saved))
+			vi.spyOn(task as any, "overwriteClineMessages").mockImplementation(async (...args: unknown[]) => {
+				saved = structuredClone(args[0] as typeof saved)
+				return true
+			})
+			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "getSavedApiConversationHistory").mockResolvedValue([
+				{ role: "user", content: [{ type: "text", text: "start" }], ts: 1 },
+			])
+			vi.spyOn(task as any, "overwriteApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "initiateTaskLoop").mockResolvedValue(undefined)
+
+			await (task as any).resumeTaskFromHistory()
+
+			expect(task.clineMessages.filter((message) => message.say === "error")).toEqual([
+				expect.objectContaining({ text: enCommon.errors.task_recovery_incomplete }),
+			])
+			expect(saved.some((message) => message.ask === "resume_task")).toBe(false)
+		})
+
+		it.each(["failed", "incomplete", "exhausted"] as const)(
 			"resumes a primary task after a %s turn and consumes its follow-up once",
 			async (status) => {
 				const task = createTask()
@@ -3698,7 +4002,8 @@ describe("Alpha", () => {
 					],
 					false,
 				])
-				expect(feedback).toHaveBeenCalledTimes(1)
+				expect(feedback).toHaveBeenCalledTimes(2)
+				expect(feedback).toHaveBeenCalledWith("error", enCommon.errors[`task_recovery_${status}`])
 				expect(feedback).toHaveBeenCalledWith("user_feedback", "Please continue from the partial result.", [])
 				const eventTypes = appendEvent.mock.calls.map(([event]) => (event as AgentTurnEvent).type)
 				expect(eventTypes).toContain(status === "incomplete" ? "turn_incomplete" : "turn_failed")
@@ -3979,7 +4284,7 @@ describe("Alpha", () => {
 			expect(stagedSnapshots[0]).toContainEqual(expect.objectContaining({ say: "text", partial: false }))
 			expect(task.clineMessages).toEqual([completion])
 			expect(update).not.toHaveBeenCalled()
-			expect((task as any).suspendAfterCurrentTurnReason).toContain("paused before another model request")
+			expect((task as any).pendingTurnSuspension?.reason).toContain("paused before another model request")
 		})
 
 		it("does not expose a completion boundary when raw text fails the durable completion gate", async () => {
@@ -4153,7 +4458,7 @@ describe("Alpha", () => {
 			expect(task.clineMessages).toContainEqual(
 				expect.objectContaining({ type: "say", say: "completion_result", text: "Premature answer." }),
 			)
-			expect((task as any).suspendAfterCurrentTurnReason).toContain("paused before another model request")
+			expect((task as any).pendingTurnSuspension?.reason).toContain("paused before another model request")
 		})
 
 		it("does not discard pending user continuation after a no-tool response", async () => {
@@ -4385,6 +4690,7 @@ describe("Alpha", () => {
 						type: "tool_result",
 						tool_use_id: "read-after-reload",
 						content: "Task was interrupted before this tool call could be completed.",
+						is_error: true,
 					},
 					{ type: "text", text: "<user_message>\ncontinue after reload\n</user_message>" },
 				],

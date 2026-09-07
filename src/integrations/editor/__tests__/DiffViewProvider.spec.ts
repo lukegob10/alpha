@@ -2,6 +2,27 @@ import { DiffViewProvider, DIFF_VIEW_URI_SCHEME, DIFF_VIEW_LABEL_CHANGES } from 
 import * as vscode from "vscode"
 import * as path from "path"
 import delay from "delay"
+import * as fs from "fs/promises"
+
+vi.mock("../../../i18n", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../../i18n")>()
+	const { default: enTools } = await import("../../../i18n/locales/en/tools.json")
+	return {
+		...actual,
+		t: (key: string, options?: Record<string, unknown>) => {
+			const [namespace, translationPath] = key.split(":")
+			let value: unknown = namespace === "tools" ? enTools : undefined
+			for (const segment of translationPath?.split(".") ?? []) {
+				value =
+					typeof value === "object" && value !== null
+						? (value as Record<string, unknown>)[segment]
+						: undefined
+			}
+			if (typeof value !== "string") return key
+			return value.replace(/\{\{(\w+)\}\}/g, (_, name: string) => String(options?.[name] ?? `{{${name}}}`))
+		},
+	}
+})
 
 // Mock delay
 vi.mock("delay", () => ({
@@ -12,6 +33,9 @@ vi.mock("delay", () => ({
 vi.mock("fs/promises", () => ({
 	readFile: vi.fn().mockResolvedValue("file content"),
 	writeFile: vi.fn().mockResolvedValue(undefined),
+	mkdtemp: vi.fn().mockResolvedValue("/mock/preview"),
+	unlink: vi.fn().mockResolvedValue(undefined),
+	rmdir: vi.fn().mockResolvedValue(undefined),
 }))
 
 // Mock utils
@@ -21,6 +45,7 @@ vi.mock("../../../utils/fs", () => ({
 
 // Mock path
 vi.mock("path", () => ({
+	join: vi.fn((...parts) => parts.join("/")),
 	resolve: vi.fn((cwd, relPath) => `${cwd}/${relPath}`),
 	basename: vi.fn((path) => path.split("/").pop()),
 }))
@@ -85,8 +110,9 @@ vi.mock("vscode", () => ({
 		InCenter: 2,
 	},
 	TabInputTextDiff: class TabInputTextDiff {},
+	TabInputText: class TabInputText {},
 	Uri: {
-		file: vi.fn((path) => ({ fsPath: path })),
+		file: vi.fn((path) => ({ fsPath: path, scheme: "file", toString: () => path })),
 		parse: vi.fn((uri) => ({ with: vi.fn(() => ({})) })),
 	},
 }))
@@ -109,6 +135,11 @@ describe("DiffViewProvider", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
+		vi.mocked(fs.readFile).mockReset().mockResolvedValue("file content")
+		vi.mocked(fs.writeFile).mockReset().mockResolvedValue(undefined)
+		;(vscode.workspace as any).textDocuments = []
+		Object.defineProperty(vscode.window.tabGroups, "all", { value: [], writable: true, configurable: true })
+		;(vscode.window as any).visibleTextEditors = []
 		mockWorkspaceEdit = {
 			replace: vi.fn(),
 			delete: vi.fn(),
@@ -133,8 +164,9 @@ describe("DiffViewProvider", () => {
 		;(diffViewProvider as any).activeDiffEditor = {
 			document: {
 				uri: { fsPath: `${mockCwd}/test.txt` },
-				getText: vi.fn(),
+				getText: vi.fn().mockReturnValue(""),
 				lineCount: 10,
+				version: 1,
 			},
 			selection: {
 				active: { line: 0, character: 0 },
@@ -149,6 +181,19 @@ describe("DiffViewProvider", () => {
 			addLines: vi.fn(),
 			clear: vi.fn(),
 		}
+		const document = (diffViewProvider as any).activeDiffEditor.document
+		;(diffViewProvider as any).previewContent = ""
+		;(diffViewProvider as any).previewVersion = 1
+		;(diffViewProvider as any).activeDiffEditor.edit.mockImplementation(async (callback: any) => {
+			callback({
+				replace: (range: any, text: string) => {
+					mockWorkspaceEdit.replace(document.uri, range, text)
+					document.getText.mockReturnValue(text)
+					document.version++
+				},
+			})
+			return true
+		})
 	})
 
 	describe("update method", () => {
@@ -180,11 +225,9 @@ describe("DiffViewProvider", () => {
 		it("fails when the final exact-content edit is rejected", async () => {
 			;(diffViewProvider as any).originalContent = "Original content"
 			;(diffViewProvider as any).activeDiffEditor.document.lineCount = 1
-			vi.mocked(vscode.workspace.applyEdit).mockResolvedValueOnce(true).mockResolvedValueOnce(false)
+			;(diffViewProvider as any).activeDiffEditor.edit.mockResolvedValueOnce(false)
 
-			await expect(diffViewProvider.update("New content", true)).rejects.toThrow(
-				"Failed to apply the final content",
-			)
+			await expect(diffViewProvider.update("New content", true)).rejects.toThrow("Failed to apply the content")
 		})
 	})
 
@@ -193,8 +236,8 @@ describe("DiffViewProvider", () => {
 			// Setup
 			const mockEditor = {
 				document: {
-					uri: { fsPath: `${mockCwd}/test.md`, scheme: "file" },
-					getText: vi.fn().mockReturnValue(""),
+					uri: { fsPath: `/mock/preview/test.md`, scheme: "file" },
+					getText: vi.fn().mockReturnValue("file content"),
 					lineCount: 0,
 				},
 				selection: {
@@ -226,7 +269,7 @@ describe("DiffViewProvider", () => {
 			vi.mocked(vscode.workspace.onDidOpenTextDocument).mockImplementation((callback) => {
 				// Trigger the callback immediately with the document
 				setTimeout(() => {
-					callback({ uri: { fsPath: `${mockCwd}/test.md`, scheme: "file" } } as any)
+					callback({ uri: { fsPath: `/mock/preview/test.md`, scheme: "file" } } as any)
 				}, 0)
 				return { dispose: vi.fn() }
 			})
@@ -245,7 +288,7 @@ describe("DiffViewProvider", () => {
 
 			// Verify that showTextDocument was called with preview: false and preserveFocus: true
 			expect(vscode.window.showTextDocument).toHaveBeenCalledWith(
-				expect.objectContaining({ fsPath: `${mockCwd}/test.md` }),
+				expect.objectContaining({ fsPath: `/mock/preview/test.md` }),
 				{ preview: false, viewColumn: vscode.ViewColumn.Active, preserveFocus: true },
 			)
 
@@ -274,13 +317,13 @@ describe("DiffViewProvider", () => {
 
 			// Try to open and expect rejection
 			await expect(diffViewProvider.open("test.md")).rejects.toThrow(
-				"Failed to execute diff command for /mock/cwd/test.md: Cannot open file",
+				"Failed to open diff editor for test.md: Cannot open file",
 			)
 		})
 	})
 
 	describe("closeAllDiffViews method", () => {
-		it("should close diff views including those identified by label", async () => {
+		it("closes only this session's clean preview tabs", async () => {
 			// Mock tab groups with various types of tabs
 			const mockTabs = [
 				// Normal diff view
@@ -288,7 +331,7 @@ describe("DiffViewProvider", () => {
 					input: {
 						constructor: { name: "TabInputTextDiff" },
 						original: { scheme: DIFF_VIEW_URI_SCHEME },
-						modified: { fsPath: "/test/file1.ts" },
+						modified: { fsPath: "/test/file1.ts", scheme: "file" },
 					},
 					label: `file1.ts: ${DIFF_VIEW_LABEL_CHANGES} (Editable)`,
 					isDirty: false,
@@ -346,14 +389,15 @@ describe("DiffViewProvider", () => {
 				closedTabs.push(tab)
 				return Promise.resolve(true)
 			})
+			;(diffViewProvider as any).previewPath = "/test/file1.ts"
+			;(diffViewProvider as any).previewDirectory = "/test"
 
 			// Execute closeAllDiffViews
 			await (diffViewProvider as any).closeAllDiffViews()
 
 			// Verify that only the appropriate tabs were closed
-			expect(closedTabs).toHaveLength(2)
+			expect(closedTabs).toHaveLength(1)
 			expect(closedTabs[0].label).toBe(`file1.ts: ${DIFF_VIEW_LABEL_CHANGES} (Editable)`)
-			expect(closedTabs[1].label).toBe(`file2.md: ${DIFF_VIEW_LABEL_CHANGES} (Editable)`)
 
 			// Verify that the regular file and dirty diff were not closed
 			expect(closedTabs.find((t) => t.label === "file3.js")).toBeUndefined()
@@ -524,7 +568,28 @@ describe("DiffViewProvider", () => {
 			expect(fs.writeFile).not.toHaveBeenCalled()
 		})
 
-		it("allows its managed dirty diff document while checking the disk baseline", async () => {
+		it("rejects an editor revision saved while the disk baseline is being read", async () => {
+			const document = {
+				uri: { scheme: "file", fsPath: `${mockCwd}/test.ts` },
+				isDirty: false,
+				version: 1,
+			}
+			;(vscode.workspace as any).textDocuments = [document]
+			vi.mocked(fs.readFile).mockImplementationOnce(async () => {
+				// The read began before the user edited and saved; it returns the old bytes.
+				document.version++
+				return "file content"
+			})
+			await expect(
+				diffViewProvider.saveDirectly("test.ts", "replacement", false, false, 0, {
+					exists: true,
+					content: "file content",
+				}),
+			).rejects.toThrow("editor changed")
+			expect(fs.writeFile).not.toHaveBeenCalled()
+		})
+
+		it("rejects a dirty source even if a stale editor reference claims ownership", async () => {
 			const fs = await import("fs/promises")
 			const managedDocument = {
 				uri: { scheme: "file", fsPath: `${mockCwd}/test.ts` },
@@ -541,9 +606,9 @@ describe("DiffViewProvider", () => {
 					exists: true,
 					content: "file content",
 				}),
-			).resolves.toBeUndefined()
+			).rejects.toThrow("unsaved changes")
 
-			expect(fs.readFile).toHaveBeenCalledWith(`${mockCwd}/test.ts`, "utf-8")
+			expect(fs.readFile).not.toHaveBeenCalled()
 		})
 
 		it("uses exclusive create when an expected-missing file is still absent", async () => {
@@ -598,6 +663,8 @@ describe("DiffViewProvider", () => {
 				},
 			}
 			;(diffViewProvider as any).preDiagnostics = []
+			;(diffViewProvider as any).expectedFileState = { exists: true, content: "file content" }
+			;(diffViewProvider as any).isEditing = true
 
 			// Mock vscode functions
 			vi.mocked(vscode.window.showTextDocument).mockResolvedValue({} as any)
@@ -607,7 +674,8 @@ describe("DiffViewProvider", () => {
 		function configureMutableDocument(initialContent: string) {
 			let documentText = initialContent
 			const document: any = {
-				uri: { fsPath: `${mockCwd}/test.ts` },
+				uri: { fsPath: "/mock/preview/test.ts" },
+				version: 1,
 				getText: vi.fn(() => documentText),
 				lineCount: initialContent.split(/\r\n|\n/).length,
 				isDirty: false,
@@ -616,16 +684,20 @@ describe("DiffViewProvider", () => {
 				}),
 			}
 
-			vi.mocked(vscode.workspace.applyEdit).mockImplementation(async () => {
-				const replacement = mockWorkspaceEdit.replace.mock.calls.at(-1)?.[2]
-				if (typeof replacement === "string") {
-					documentText = replacement
-					document.lineCount = documentText.split(/\r\n|\n/).length
-					document.isDirty = true
-				}
+			const edit = vi.fn(async (callback: any) => {
+				callback({
+					replace: (_range: unknown, text: string) => {
+						documentText = text
+						document.lineCount = text.split(/\r\n|\n/).length
+						document.version++
+						document.isDirty = true
+					},
+				})
 				return true
 			})
-			;(diffViewProvider as any).activeDiffEditor = { document }
+			;(diffViewProvider as any).activeDiffEditor = { document, edit }
+			;(diffViewProvider as any).previewContent = initialContent
+			;(diffViewProvider as any).previewVersion = document.version
 			;(diffViewProvider as any).closeAllDiffViews = vi.fn().mockResolvedValue(undefined)
 			return document
 		}
@@ -697,15 +769,16 @@ describe("DiffViewProvider", () => {
 			const result = await diffViewProvider.saveChanges(false, 0)
 
 			expect(document.getText()).toBe("")
-			expect(document.save).toHaveBeenCalledTimes(1)
+			expect(document.save).not.toHaveBeenCalled()
 			expect((diffViewProvider as any).closeAllDiffViews).toHaveBeenCalledTimes(1)
 			expect(result.finalContent).toBe("")
 		})
 
-		it("fails when a dirty document declines to save", async () => {
+		it("fails when the target write fails", async () => {
 			const save = vi.fn().mockResolvedValue(false)
 			const document = {
-				uri: { fsPath: `${mockCwd}/test.ts` },
+				uri: { fsPath: "/mock/preview/test.ts" },
+				version: 1,
 				getText: vi.fn().mockReturnValue("new content"),
 				isDirty: true,
 				save,
@@ -713,8 +786,9 @@ describe("DiffViewProvider", () => {
 			;(diffViewProvider as any).activeDiffEditor = { document }
 			;(diffViewProvider as any).closeAllDiffViews = vi.fn().mockResolvedValue(undefined)
 
-			await expect(diffViewProvider.saveChanges(false, 0)).rejects.toThrow("Failed to save the edited file")
-			expect(save).toHaveBeenCalledTimes(1)
+			vi.mocked(fs.writeFile).mockRejectedValueOnce(new Error("Target write failed"))
+			await expect(diffViewProvider.saveChanges(false, 0)).rejects.toThrow("Target write failed")
+			expect(save).not.toHaveBeenCalled()
 			expect((diffViewProvider as any).closeAllDiffViews).not.toHaveBeenCalled()
 		})
 

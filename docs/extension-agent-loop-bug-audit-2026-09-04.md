@@ -6,6 +6,10 @@ This audit found **11 actionable defects: 4 High and 7 Medium**, grouped into fi
 
 ## Remediation update — 2026-09-04
 
+The [September 6 revalidation](extension-agent-loop-bug-revalidation-2026-09-06.md) checks these historical fixes against
+the later working tree and records six reproduced adjacent issues. The evidence below remains the original audit and
+remediation record.
+
 All **11 findings are fixed in the current working tree**. The changes keep the existing agent architecture and repair the owning boundaries: turn recovery, completion policy, compaction acceptance, tool result/cancellation contracts, file mutation integrity, and bounded command-output retrieval. The pre-existing `AGENTS.md` workspace edit was preserved, and no protected CLI or VS Code shim source was changed.
 
 | Finding | Status | Implemented behavior                                                                                                                                                                                                                                                                 | Primary regression coverage                                                                                                  |

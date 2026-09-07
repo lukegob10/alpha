@@ -64,74 +64,54 @@ describe("environment workspace verification context", () => {
 
 	const capture = () => captureEnvironmentDetails(task, false, undefined, { context, includeTransient: false })
 
-	it("delivers the primary change ID on the next snapshot before any check and suppresses an unchanged delta", async () => {
+	it("delivers an active primary mutation reservation and clears it after its receipt is durable", async () => {
 		const initial = await capture()
 		expect(initial.details).not.toContain("# Workspace Verification")
 		initial.commit()
 
-		const pending = await recordMutation()
-		expect(pending).toMatchObject({ changeSetId, status: "pending" })
-		expect(pending?.verification).toBeUndefined()
+		await store.reservePrimaryMutation(taskId, taskId, workspacePath, "mutation")
 		const next = await capture()
 		expect(next.details).toContain("# Environment Changes")
 		expect(next.details).toContain("# Workspace Verification")
-		expect(next.details).toContain(`${changeSetId} (version ${pending?.contentVersion}, pending)`)
-		expect(next.details).toContain("verification.change_set_ids")
-		expect(next.details).toContain("src/changed.ts")
+		expect(next.details).toContain("an admitted mutation still needs its final content receipt")
 		next.commit()
+
+		const pending = await store.recordPrimaryMutation({
+			rootTaskId: taskId,
+			parentTaskId: taskId,
+			workspacePath,
+			fileVersions: { "src/changed.ts": "content-v1" },
+			reservationToken: "mutation",
+			at: 2_000,
+		})
+		expect(pending).toMatchObject({ changeSetId, status: "pending", mutationReservations: [] })
+		const cleared = await capture()
+		expect(cleared.details).toContain("# Environment Changes")
+		expect(cleared.details).toContain("# Workspace Verification\n(none; previous value no longer applies)")
+		cleared.commit()
 
 		const unchanged = await capture()
 		expect(unchanged.details).toBe("")
 		unchanged.commit()
 	})
 
-	it("clears pending context once after durable satisfaction and omits it from the next full snapshot", async () => {
+	it("retains ordinary primary receipts across reload without making them completion blockers", async () => {
 		const pending = (await recordMutation())!
 		const initial = await capture()
-		expect(initial.details).toContain(changeSetId)
+		expect(initial.details).not.toContain("# Workspace Verification")
 		initial.commit()
 
-		await store.recordParentVerificationEvidence(
-			taskId,
-			[
-				{
-					toolCallId: "check-call",
-					executionId: "physical-check",
-					status: "succeeded",
-					exitCode: 0,
-					startedAt: 2_100,
-					completedAt: 2_200,
-					command: "pnpm test",
-					cwd: workspacePath,
-					verificationChangeSetIds: [changeSetId],
-					verificationVersions: {
-						[changeSetId]: {
-							contentVersion: pending.contentVersion!,
-							contentFingerprint: pending.contentFingerprint!,
-							scopePath: workspacePath,
-							commandDigest: "command-digest",
-							repositoryDigest: "repository-digest",
-						},
-					},
-				},
-			],
-			taskId,
-		)
 		store = new AgentControlStore(persistence)
 		await store.initialize()
 		Object.assign(provider, { agentControlStore: store })
-		expect(store.getVerificationObligations({ parentTaskId: taskId })).toEqual([
-			expect.objectContaining({ changeSetId, status: "satisfied" }),
-		])
-
-		const cleared = await capture()
-		expect(cleared.details).toBe(
-			"<environment_details>\n# Environment Changes\n# Workspace Verification\n(none; previous value no longer applies)\n</environment_details>",
-		)
-		cleared.commit()
-		const unchanged = await capture()
-		expect(unchanged.details).toBe("")
-		unchanged.commit()
+		const reloadedObligation = store.getVerificationObligations({ parentTaskId: taskId })[0]
+		expect(reloadedObligation).toMatchObject({
+			changeSetId,
+			contentVersion: pending.contentVersion,
+			status: "pending",
+		})
+		expect(reloadedObligation?.mutationReservations ?? []).toEqual([])
+		expect(store.getParentCompletionDecision(taskId).allowed).toBe(true)
 
 		context.reset()
 		const full = await capture()
@@ -140,16 +120,20 @@ describe("environment workspace verification context", () => {
 		full.release()
 	})
 
-	it("restores pending IDs in a full snapshot after a context reset", async () => {
-		const pending = await recordMutation()
-		const initial = await capture()
-		initial.commit()
-		context.reset()
+	it("restores an unresolved primary mutation in a full snapshot after a context reset", async () => {
+		await store.recordPrimaryMutation({
+			rootTaskId: taskId,
+			parentTaskId: taskId,
+			workspacePath,
+			fileVersions: { "src/changed.ts": "content-v1" },
+			scopeUnresolved: true,
+			at: 2_000,
+		})
 
 		const restored = await capture()
 		expect(restored.details).toContain("# Environment Snapshot")
 		expect(restored.details).toContain("# Workspace Verification")
-		expect(restored.details).toContain(`${changeSetId} (version ${pending?.contentVersion}, pending)`)
+		expect(restored.details).toContain("mutation scope could not be observed")
 		restored.commit()
 		const unchanged = await capture()
 		expect(unchanged.details).toBe("")

@@ -25,6 +25,14 @@ class ContextRecoveryExhaustedError extends Error {
 	}
 }
 
+/** Identifies local persistence failures without promoting diagnostic text into chat. */
+class TaskPersistenceError extends Error {
+	constructor(message: string) {
+		super(message)
+		this.name = "TaskPersistenceError"
+	}
+}
+
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 import debounce from "lodash.debounce"
@@ -141,6 +149,7 @@ import { TaskToolCatalogCache } from "./TaskToolCatalogCache"
 // core modules
 import { ToolRepetitionDetector } from "../tools/ToolRepetitionDetector"
 import type { ParentCommandVerificationEvidence } from "../agent/AgentControlStore"
+import { AgentControlTransactionError } from "../agent/AgentControlTransaction"
 import type { CommandVerificationDiagnostic } from "../agent/VerificationScope"
 import { CompletionRecovery } from "../agent/CompletionRecovery"
 import { redactTaskPrivatePaths } from "../tools/taskPathPresentation"
@@ -248,7 +257,6 @@ export interface CommandExecutionEvidence {
 	verificationChangeSetIds?: string[]
 	cwd?: string
 	verificationVersions?: ParentCommandVerificationEvidence["verificationVersions"]
-	testValidation?: boolean
 	verificationDiagnostics?: CommandVerificationDiagnostic[]
 }
 
@@ -697,8 +705,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private isTaskLoopActive = false
 	private didComplete = false
 	private didEmitTaskCompleted = false
-	private suspendAfterCurrentTurnReason?: string
+	private pendingTurnSuspension?: { reason: string; kind: "error" | "blocked" }
 	private currentAssistantResponseMessageTs: number | undefined
+	/** Transcript boundary used only to avoid repeating the current attempt's visible error. */
+	private recoveryAttemptMessageStart = 0
 	skipPrevResponseIdOnce: boolean = false
 
 	/** Canonical response and captured execution surface for the active step. */
@@ -2080,7 +2090,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const latest = this.apiConversationHistory.at(-1)
 			if (latest !== previousMessage) stagedMessage = latest
 			if ((await save) || (await this.retrySaveApiConversationHistory(acknowledge, signal))) acknowledge()
-			if (!persisted) throw new Error("Failed to persist the user turn before starting the provider request")
+			if (!persisted)
+				throw new TaskPersistenceError("Failed to persist the user turn before starting the provider request")
 		} catch (error) {
 			if (!persisted && stagedMessage) {
 				const index = this.apiConversationHistory.indexOf(stagedMessage)
@@ -2110,7 +2121,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (lastMessage !== removedUserMessage) {
 			this.apiConversationHistory.push(removedUserMessage)
 			const saved = await this.saveApiConversationHistory()
-			if (!saved) throw new Error("Unable to restore the removed user message before continuing.")
+			if (!saved) throw new TaskPersistenceError("Unable to restore the removed user message before continuing.")
 		}
 		return true
 	}
@@ -2130,6 +2141,61 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		return userContent
+	}
+
+	/**
+	 * Reconcile locally retained tool results with the next request boundary.
+	 *
+	 * A failed transcript write intentionally leaves the original result in
+	 * `userMessageContent` so a later request can retry it. Recovery requests carry
+	 * new text, so they do not otherwise include that result. Match by call ID and
+	 * prefer the retained block, preserving its content and error status instead of
+	 * allowing history validation to fabricate an interrupted placeholder.
+	 */
+	private mergePendingToolResultsIntoUserContent(
+		userContent: Anthropic.Messages.ContentBlockParam[],
+	): Anthropic.Messages.ContentBlockParam[] {
+		const pendingToolResults = this.userMessageContent.filter(
+			(block): block is Anthropic.ToolResultBlockParam => block.type === "tool_result",
+		)
+		if (pendingToolResults.length === 0) return userContent
+
+		const pendingByToolUseId = new Map(
+			pendingToolResults.map((result) => [sanitizeToolUseId(result.tool_use_id), result]),
+		)
+		const reconciledToolUseIds = new Set<string>()
+		const reconciledContent = userContent.map((block) => {
+			if (block.type !== "tool_result") return block
+
+			const toolUseId = sanitizeToolUseId(block.tool_use_id)
+			const pendingResult = pendingByToolUseId.get(toolUseId)
+			if (!pendingResult) return block
+
+			reconciledToolUseIds.add(toolUseId)
+			return pendingResult
+		})
+		const missingResults = pendingToolResults.filter(
+			(result) => !reconciledToolUseIds.has(sanitizeToolUseId(result.tool_use_id)),
+		)
+
+		return missingResults.length > 0 ? [...missingResults, ...reconciledContent] : reconciledContent
+	}
+
+	/** Remove only content that was included in the user message that just crossed the save fence. */
+	private acknowledgePersistedUserMessageContent(
+		persistedContent: readonly Anthropic.Messages.ContentBlockParam[],
+	): void {
+		const persistedToolUseIds = new Set(
+			persistedContent
+				.filter((block): block is Anthropic.ToolResultBlockParam => block.type === "tool_result")
+				.map((block) => sanitizeToolUseId(block.tool_use_id)),
+		)
+		this.userMessageContent = this.userMessageContent.filter((block) => {
+			if (block.type === "tool_result") {
+				return !persistedToolUseIds.has(sanitizeToolUseId(block.tool_use_id))
+			}
+			return !persistedContent.includes(block)
+		})
 	}
 
 	private takeLastApiUserMessageContent(): Anthropic.Messages.ContentBlockParam[] {
@@ -2436,7 +2502,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			: status === "cancelled"
 				? "aborted"
 				: status
-		const persistenceError = persistenceFailed ? new Error(persistenceFailures.join(" ")) : undefined
+		const persistenceError = persistenceFailed ? new TaskPersistenceError(persistenceFailures.join(" ")) : undefined
 
 		await this.appendAgentTurnEvent(
 			{
@@ -4497,8 +4563,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	/** Stop after the current tool protocol boundary instead of spending another model turn. */
-	public suspendAfterCurrentTurn(reason: string): void {
-		this.suspendAfterCurrentTurnReason = reason
+	public suspendAfterCurrentTurn(reason: string, kind: "error" | "blocked" = "error"): void {
+		// A model's handoff cannot replace a runtime failure already awaiting settlement.
+		if (kind === "blocked" && this.pendingTurnSuspension?.kind === "error") return
+		this.pendingTurnSuspension = { reason, kind }
 	}
 
 	/** Remove a staged native tool result when its terminal transaction fails. */
@@ -5027,8 +5095,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		details: {
 			exitCode?: number
 			signalName?: string
-			testValidation?: boolean
-			verificationDiagnostic?: CommandVerificationDiagnostic
 		},
 		executionId?: string,
 	): void {
@@ -5041,21 +5107,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				: "failed"
 		evidence.exitCode = details.exitCode
 		evidence.signalName = details.signalName
-		evidence.testValidation = details.testValidation
-		if (
-			evidence.status === "succeeded" &&
-			details.testValidation !== true &&
-			Object.values(evidence.verificationVersions ?? {}).some((version) => version.runner === "pytest")
-		) {
-			evidence.verificationDiagnostics = [
-				...(evidence.verificationDiagnostics ?? []).slice(0, 15),
-				details.verificationDiagnostic ?? {
-					code: "no_test_validation",
-					message:
-						"The pytest command ended without an accepted validating test report. Its exit code alone does not verify the changed content.",
-				},
-			]
-		}
 		evidence.completedAt = Date.now()
 		this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
 		this.publishParentVerificationEvidence()
@@ -6758,6 +6809,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							type: "tool_result",
 							tool_use_id: block.id,
 							content: "Task was interrupted before this tool call could be completed.",
+							is_error: true,
 						}))
 						modifiedApiConversationHistory = [...existingApiConversationHistory] // no changes
 						modifiedOldUserContent = [...toolResponses]
@@ -6797,6 +6849,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									type: "tool_result",
 									tool_use_id: toolUse.id,
 									content: "Task was interrupted before this tool call could be completed.",
+									is_error: true,
 								}))
 
 							modifiedApiConversationHistory = existingApiConversationHistory.slice(0, -1) // removes the last user message
@@ -7239,6 +7292,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			onUserContentPersisted?: () => Promise<void> | void
 		}
 		type PrimaryTurnRecovery = TaskTurnInput | { kind: "superseded" }
+		let recoveryExplanationPublished = false
 
 		const host: AgentTurnHost<TaskTurnInput> = {
 			shouldAbort: () => this.abort,
@@ -7251,6 +7305,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				)
 			},
 			runStep: async (input) => {
+				// Legacy hosts may return without entering the request loop.
+				this.recoveryAttemptMessageStart = this.clineMessages.length
+				recoveryExplanationPublished = false
 				const rawStepResult = await this.recursivelyMakeClineRequests(
 					input.userContent,
 					input.includeFileDetails,
@@ -7268,21 +7325,27 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					stepResult.status,
 					stepResult.reason,
 				)
-				const suspensionReason = this.suspendAfterCurrentTurnReason
-				if (suspensionReason) {
-					this.suspendAfterCurrentTurnReason = undefined
+				const suspension = this.pendingTurnSuspension
+				if (suspension) {
+					this.pendingTurnSuspension = undefined
 					const persisted = await this.flushPendingToolResultsToHistory()
-					const terminalReason = stepResult.reason ?? suspensionReason
+					const terminalReason = stepResult.reason ?? suspension.reason
 					const terminalStatus =
 						stepResult.status === "failed" || stepResult.status === "aborted"
 							? stepResult.status
 							: "incomplete"
-					await this.say(
-						"error",
-						persisted
-							? terminalReason
-							: `${terminalReason}\n\nThe completion error could not be persisted; the task was paused without another model request.`,
-					)
+					if (suspension.kind === "blocked" && persisted && stepResult.status === "completed") {
+						// Finalize the streamed report as ordinary text; resume keeps the task and its debt open.
+						await this.say("text", terminalReason, undefined, false)
+					} else {
+						await this.say(
+							"error",
+							persisted
+								? terminalReason
+								: `${terminalReason}\n\nThe completion error could not be persisted; the task was paused without another model request.`,
+						)
+					}
+					recoveryExplanationPublished = true
 					return {
 						response,
 						nextInput: "complete",
@@ -7451,8 +7514,42 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				includeFileDetails: false,
 			}
 		}
-		const waitForPrimaryTurnRecovery = async (): Promise<PrimaryTurnRecovery | undefined> => {
+		const waitForPrimaryTurnRecovery = async (failure?: {
+			status: "failed" | "incomplete" | "exhausted"
+			error?: unknown
+		}): Promise<PrimaryTurnRecovery | undefined> => {
 			if (this.taskKind !== "primary" || this.abort || this.didComplete) return undefined
+
+			if (failure && !recoveryExplanationPublished) {
+				const hasVisibleError = this.clineMessages.slice(this.recoveryAttemptMessageStart).some((message) => {
+					if (message.type !== "say") return false
+					if (message.say === "error") return Boolean(message.text?.trim())
+					if (message.say !== "api_req_started") return false
+					try {
+						const info: ClineApiReqInfo = JSON.parse(message.text || "{}")
+						return Boolean(info.streamingFailedMessage?.trim())
+					} catch {
+						return false
+					}
+				})
+				if (!hasVisibleError) {
+					// Outcome reasons may contain provider payloads, prompts, or credentials.
+					// Use typed local causes and localized status fallbacks, never raw diagnostics.
+					// A say row survives reload; resume asks are hidden and removed from history.
+					const message =
+						failure.error instanceof AgentControlTransactionError &&
+						(failure.error.code === "ELOCKOWNER" || failure.error.code === "ELOCKLEGACY")
+							? t("common:errors.task_recovery_lock_repair")
+							: failure.error instanceof TaskPersistenceError
+								? t("common:errors.task_recovery_persistence")
+								: failure.status === "exhausted"
+									? t("common:errors.task_recovery_exhausted")
+									: failure.status === "incomplete"
+										? t("common:errors.task_recovery_incomplete")
+										: t("common:errors.task_recovery_failed")
+					await this.say("error", message)
+				}
+			}
 
 			let recovery: Awaited<ReturnType<Task["ask"]>>
 			try {
@@ -7525,7 +7622,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					!this.didComplete &&
 					(terminalStatus === "failed" || terminalStatus === "exhausted" || terminalStatus === "incomplete")
 				) {
-					const continuation = await waitForPrimaryTurnRecovery()
+					const continuation = await waitForPrimaryTurnRecovery({
+						status: terminalStatus,
+						error: terminalError,
+					})
 					if (continuation) {
 						if (isSupersededRecovery(continuation)) return
 						nextTurnInput = continuation
@@ -7685,8 +7785,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 
 					const completionFailureReason =
-						this.suspendAfterCurrentTurnReason ?? "Task completion was not durably finalized."
-					this.suspendAfterCurrentTurnReason = undefined
+						this.pendingTurnSuspension?.reason ?? "Task completion was not durably finalized."
+					this.pendingTurnSuspension = undefined
 					await this.say("error", completionFailureReason)
 					const recovery = await waitForPrimaryTurnRecovery()
 					if (recovery) {
@@ -7766,7 +7866,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 
 				const currentItem = stack.pop()!
-				const currentUserContent = currentItem.userContent
+				// A recovered attempt must not hide a later failure, including one
+				// before the next provider request has started.
+				this.recoveryAttemptMessageStart = this.clineMessages.length
+				const currentUserContent = this.mergePendingToolResultsIntoUserContent(currentItem.userContent)
 				const currentIncludeFileDetails = currentItem.includeFileDetails
 
 				if (this.abort) {
@@ -7989,7 +8092,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 				if (this.requestPacingWaitCount > pacingWaitCountBefore) {
 					if (!(await this.appendRequestPacingUpdateToLatestUserMessage())) {
-						throw new Error("Unable to persist provider pacing metadata before continuing the request.")
+						throw new TaskPersistenceError(
+							"Unable to persist provider pacing metadata before continuing the request.",
+						)
 					}
 				}
 				if (this.abort) {
@@ -8119,7 +8224,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.currentRequestSignal = undefined
 					this.currentAssistantResponseMessageTs = undefined
 					this.didCompleteReadingStream = false
-					this.userMessageContent = []
+					this.acknowledgePersistedUserMessageContent(finalUserContent)
 					this.userMessageContentReady = false
 					this.didRejectTool = false
 					this.assistantMessageSavedToHistory = false
@@ -9105,7 +9210,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							const taskWasCancelled = this.abort || this.getTaskLifetimeCancellationSignal().aborted
 							const persistenceReason =
 								"The assistant response could not be durably persisted before tool execution."
-							const persistenceError = new Error(persistenceReason)
+							const persistenceError = new TaskPersistenceError(persistenceReason)
 							await this.appendAgentTurnEvent(
 								{
 									type: "response_terminal",
@@ -9169,7 +9274,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								: "failed"
 							: providerTerminalStatus
 						const terminalPersistenceError = terminalReceiptPersistenceFailed
-							? new Error("Terminal tool-result receipts could not be durably saved.")
+							? new TaskPersistenceError("Terminal tool-result receipts could not be durably saved.")
 							: undefined
 						await this.appendAgentTurnEvent(
 							{
@@ -9227,7 +9332,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								if (!resultsPersisted) {
 									const persistenceReason =
 										"Tool-result receipts could not be durably saved after cancellation."
-									const persistenceError = new Error(persistenceReason)
+									const persistenceError = new TaskPersistenceError(persistenceReason)
 									await this.appendAgentTurnEvent({
 										type: "response_terminal",
 										status:
@@ -9486,7 +9591,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							content: [{ type: "text", text: "Failure: I did not provide a response." }],
 						})
 						if (!failureHistoryPersisted) {
-							const persistenceError = new Error(
+							const persistenceError = new TaskPersistenceError(
 								"The fallback assistant failure response could not be durably saved.",
 							)
 							await this.appendAgentTurnEvent({
@@ -11459,7 +11564,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	public shouldStopRepeatedToolCall(name: string, args: unknown): boolean {
 		void name
 		void args
-		return this.suspendAfterCurrentTurnReason !== undefined
+		return this.pendingTurnSuspension !== undefined
 	}
 
 	public async recordToolCallForStopping(

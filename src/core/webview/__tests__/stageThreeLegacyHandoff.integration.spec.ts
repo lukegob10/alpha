@@ -322,7 +322,7 @@ describe("Stage Three legacy delegated handoff integration", () => {
 	})
 
 	it.each(["parent staging", "parent API persistence"] as const)(
-		"rolls back if durable debt arrives during %s",
+		"commits when optional process evidence arrives during %s",
 		async (boundary) => {
 			const harness = await setup()
 			const entered = deferred()
@@ -355,16 +355,16 @@ describe("Stage Three legacy delegated handoff integration", () => {
 				release.resolve()
 				await operation
 			}
-			expect(await operation).toMatchObject({
-				status: "rejected",
-				error: expect.objectContaining({ message: expect.stringContaining(CHANGE_SET_ID) }),
-			})
+			expect(await operation).toMatchObject({ status: "fulfilled" })
 			expect(harness.completionGate).toHaveBeenCalledOnce()
 			const persisted = agentControlStateSchema.parse(await harness.persistence.read())
 			expect(persisted.verificationObligations).toContainEqual(
 				expect.objectContaining({ changeSetId: CHANGE_SET_ID, status: "pending", parentTaskId: CHILD_ID }),
 			)
-			await harness.assertRolledBack()
+			expect(harness.provider.getLiveTask(CHILD_ID)).toBeUndefined()
+			expect(harness.provider.getLiveTask(PARENT_ID)).toBe(harness.parent)
+			expect(harness.child.abortTask).toHaveBeenCalledOnce()
+			expect(harness.parent.resumeAfterDelegation).toHaveBeenCalledOnce()
 		},
 	)
 

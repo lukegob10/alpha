@@ -324,6 +324,20 @@ describe("searchReplaceTool", () => {
 			expect(mockCline.diffViewProvider.saveChanges).not.toHaveBeenCalled()
 			expect(result).toContain("rejected")
 		})
+
+		it("passes the raw baseline to the diff preview", async () => {
+			const rawBaseline = "Line 1\r\nLine 2\r\nLine 3"
+
+			await executeSearchReplaceTool(
+				{ old_string: "Line 2", new_string: "Changed" },
+				{ fileContent: rawBaseline },
+			)
+
+			expect(mockCline.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, {
+				exists: true,
+				content: rawBaseline,
+			})
+		})
 	})
 
 	describe("partial block handling", () => {

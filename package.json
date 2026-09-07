@@ -12,6 +12,7 @@
 		"lint": "turbo lint --log-order grouped --output-logs new-only",
 		"check-types": "turbo check-types --log-order grouped --output-logs new-only",
 		"test": "pnpm bundle && turbo test --log-order grouped --output-logs new-only",
+		"test:live:gate": "pnpm --dir apps/vscode-e2e test:live:gate",
 		"certify:managed-agents": "node scripts/certification/managed-agent-milestone-certify.mjs --strict --evidence artifacts/certification/managed-agent-milestone-evidence.json",
 		"certify:managed-agents:list": "node scripts/certification/managed-agent-milestone-certify.mjs --list",
 		"certify:managed-agents:self-check": "node scripts/certification/managed-agent-milestone-certify.mjs --self-check",

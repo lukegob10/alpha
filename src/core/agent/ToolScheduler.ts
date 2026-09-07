@@ -7,6 +7,7 @@ import type { ClineAsk, ClineAskResponse, ClineSay, ModeConfig, ToolProgressStat
 import type { ToolResponse, ToolUse } from "../../shared/tools"
 import type { ToolApprovalResponse, ToolCallbacks, ToolResultMetadata } from "../tools/BaseTool"
 import { ToolReadDeniedError } from "../tools/BaseTool"
+import { getImageOutputPaths } from "../tools/imageOutputPaths"
 import { formatResponse } from "../prompts/responses"
 import { getModeBySlug } from "../../shared/modes"
 import { sanitizeToolUseId } from "../../utils/tool-id"
@@ -435,7 +436,10 @@ function normalizeAgentToolCall(value: unknown): AgentToolCall {
 
 function getPathArguments(toolName: string, argumentsValue: Record<string, unknown>): unknown[] {
 	const candidates = ["path", "file_path", "cwd", "directory"].map((key) => argumentsValue[key])
-	if (toolName === "generate_image") candidates.push(argumentsValue.image)
+	if (toolName === "generate_image") {
+		candidates.push(argumentsValue.image)
+		if (typeof argumentsValue.path === "string") candidates.push(...getImageOutputPaths(argumentsValue.path))
+	}
 
 	if (toolName === "read_file" && Array.isArray(argumentsValue.files)) {
 		candidates.push(
