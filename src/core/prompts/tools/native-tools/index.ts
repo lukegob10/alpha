@@ -1,3 +1,4 @@
+import { ticketTools } from "./tickets"
 import type OpenAI from "openai"
 import accessMcpResource from "./access_mcp_resource"
 import { apply_diff } from "./apply_diff"
@@ -81,6 +82,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 	})
 
 	return [
+		...ticketTools,
 		accessMcpResource,
 		apply_diff,
 		applyPatch,

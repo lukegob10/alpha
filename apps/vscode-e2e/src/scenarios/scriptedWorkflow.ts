@@ -59,6 +59,7 @@ export class WorkflowScriptedAI {
 	readonly id = `workflow-scripted-${randomUUID()}`
 	private calls = 0
 	private plan: ScriptTool[] = []
+	private finalReport = "The requested workflow step is complete."
 	private removeRegistration?: () => void
 
 	constructor(
@@ -79,6 +80,12 @@ export class WorkflowScriptedAI {
 	}
 
 	setPhase(phase: WorkflowPromptName, step = 1): void {
+		this.finalReport =
+			phase === "devSearchScope"
+				? "Copilot matches: docs/integrations.md:3 and config/assistants.json:1. The initial lib search was empty."
+				: phase === "devSearchAbsent"
+					? "No matches for AlphaMissingProvider947 in tracked repository files."
+					: "The requested workflow step is complete."
 		if (isDevelopmentPrompt(phase)) {
 			this.plan = developmentScript(phase, this.workspace)
 			return
@@ -147,7 +154,7 @@ export class WorkflowScriptedAI {
 				name: tool.name,
 				arguments: JSON.stringify(tool.arguments),
 			}
-		else yield { type: "text", text: "The requested workflow step is complete." }
+		else yield { type: "text", text: this.finalReport }
 		yield { type: "usage", inputTokens: 10, outputTokens: 5, totalCost: 0 }
 	}
 	getModel() {

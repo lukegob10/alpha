@@ -12,6 +12,7 @@ type AutoApproveToggles = Pick<
 	| "alwaysAllowModeSwitch"
 	| "alwaysAllowSubtasks"
 	| "alwaysAllowSubagents"
+	| "alwaysAllowTickets"
 	| "alwaysAllowExecute"
 	| "alwaysAllowFollowupQuestions"
 >
@@ -68,6 +69,13 @@ export const autoApproveSettingsConfig: Record<AutoApproveSetting, AutoApproveCo
 		descriptionKey: "settings:autoApprove.subagents.description",
 		icon: "organization",
 		testId: "always-allow-subagents-toggle",
+	},
+	alwaysAllowTickets: {
+		key: "alwaysAllowTickets",
+		labelKey: "settings:autoApprove.tickets.label",
+		descriptionKey: "settings:autoApprove.tickets.description",
+		icon: "issues",
+		testId: "always-allow-tickets-toggle",
 	},
 	alwaysAllowExecute: {
 		key: "alwaysAllowExecute",

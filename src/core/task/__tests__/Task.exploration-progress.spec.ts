@@ -75,6 +75,7 @@ describe("Task trusted exploration progress", () => {
 			toolName: "execute_command",
 			args: { command: "rg --files src" },
 			status: "success",
+			executionStatus: "success",
 			kind: "read",
 			scope: "/workspace",
 			stateFingerprint: "unchanged-workspace",
@@ -97,6 +98,10 @@ describe("Task trusted exploration progress", () => {
 		}
 
 		expect(suspendAfterCurrentTurn).toHaveBeenCalledOnce()
+		expect(suspendAfterCurrentTurn).toHaveBeenCalledWith(
+			expect.stringContaining("Task remains incomplete"),
+			"blocked",
+		)
 		expect(Reflect.get(task, "userMessageContent")).toHaveLength(1)
 	})
 })

@@ -124,6 +124,8 @@ export const subagentAutoApprovalPolicySchema = z
 		alwaysAllowWrite: z.boolean(),
 		alwaysAllowWriteOutsideWorkspace: z.boolean(),
 		alwaysAllowWriteProtected: z.boolean(),
+		/** Missing legacy grants remain disabled without changing their persisted policy digest. */
+		alwaysAllowTickets: z.boolean().optional(),
 		alwaysAllowExecute: z.boolean(),
 		alwaysAllowSubagents: z.boolean(),
 		commandApproval: subagentCommandApprovalPolicySchema,
@@ -141,6 +143,7 @@ export const disabledSubagentAutoApprovalPolicy: SubagentAutoApprovalPolicy = su
 	alwaysAllowWrite: false,
 	alwaysAllowWriteOutsideWorkspace: false,
 	alwaysAllowWriteProtected: false,
+	alwaysAllowTickets: false,
 	alwaysAllowExecute: false,
 	alwaysAllowSubagents: false,
 	commandApproval: {

@@ -170,8 +170,13 @@ vi.mock("@/components/ui", () => ({
 			data-testid={dataTestId}
 		/>
 	),
-	Button: ({ children, onClick, variant, className, "data-testid": dataTestId }: any) => (
-		<button onClick={onClick} data-variant={variant} className={className} data-testid={dataTestId}>
+	Button: ({ children, onClick, variant, className, "data-testid": dataTestId, "aria-pressed": pressed }: any) => (
+		<button
+			onClick={onClick}
+			data-variant={variant}
+			className={className}
+			data-testid={dataTestId}
+			aria-pressed={pressed}>
 			{children}
 		</button>
 	),
@@ -681,6 +686,66 @@ describe("SettingsView - API Configuration", () => {
 		renderSettingsView()
 
 		expect(screen.getByTestId("api-config-management")).toBeInTheDocument()
+	})
+})
+
+describe("SettingsView - Ticket Auto Approval", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	const dispatchSettings = (state: Record<string, unknown>) => {
+		act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state } })))
+	}
+
+	it("keeps ticket approval buffered through live refreshes and saves both enabled and disabled values", () => {
+		const { activateTab, getSettingsContent } = renderSettingsView()
+		dispatchSettings({ settingsImportedAt: 1, alwaysAllowTickets: false })
+		activateTab("autoApprove")
+		const toggle = within(getSettingsContent()).getByTestId("always-allow-tickets-toggle")
+
+		expect(toggle).toHaveAttribute("aria-pressed", "false")
+		fireEvent.click(toggle)
+		expect(toggle).toHaveAttribute("aria-pressed", "true")
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+
+		dispatchSettings({ alwaysAllowTickets: false, liveTaskIds: ["background-task"] })
+		expect(toggle).toHaveAttribute("aria-pressed", "true")
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({ alwaysAllowTickets: true }),
+			}),
+		)
+
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(toggle)
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({ alwaysAllowTickets: false }),
+			}),
+		)
+	})
+
+	it("preserves ticket edits on Cancel and resets them on Discard", () => {
+		const { activateTab, getSettingsContent, onDone } = renderSettingsView()
+		dispatchSettings({ settingsImportedAt: 1 })
+		activateTab("autoApprove")
+		const toggle = within(getSettingsContent()).getByTestId("always-allow-tickets-toggle")
+
+		expect(toggle).toHaveAttribute("aria-pressed", "false")
+		fireEvent.click(toggle)
+		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
+		fireEvent.click(screen.getByTestId("alert-dialog-cancel"))
+		expect(toggle).toHaveAttribute("aria-pressed", "true")
+		expect(onDone).not.toHaveBeenCalled()
+
+		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
+		fireEvent.click(screen.getByTestId("alert-dialog-action"))
+		expect(toggle).toHaveAttribute("aria-pressed", "false")
+		expect(onDone).toHaveBeenCalledTimes(1)
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
 	})
 })
 

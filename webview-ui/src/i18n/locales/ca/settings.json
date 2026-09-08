@@ -271,6 +271,10 @@
 			"label": "Subtasques",
 			"description": "Permetre la creació i finalització de subtasques sense requerir aprovació"
 		},
+		"tickets": {
+			"label": "Tiquets Alpha",
+			"description": "Aprova automàticament la creació i l’actualització de tiquets Alpha."
+		},
 		"followupQuestions": {
 			"label": "Pregunta",
 			"description": "Seleccionar automàticament la primera resposta suggerida per a preguntes de seguiment després del temps d'espera configurat",

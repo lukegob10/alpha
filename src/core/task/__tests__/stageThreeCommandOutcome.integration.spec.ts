@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type { AgentTurnEvent } from "../../agent/AgentTurnEvents"
 import { ToolScheduler, type ToolExecutionHost } from "../../agent/ToolScheduler"
 import { ToolRegistry } from "../../tools/ToolRegistry"
+import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 import { OutputInterceptor } from "../../../integrations/terminal/OutputInterceptor"
 import { Task } from "../Task"
 import type {
@@ -436,6 +437,45 @@ function verificationEvents(events: AgentTurnEvent[]) {
 }
 
 describe("ordinary task tool contracts", () => {
+	it("retains capability failure allowance through the real command, scheduler, and Task path", async () => {
+		await withTaskHarness(async (harness) => {
+			Reflect.set(harness.task, "toolRepetitionDetector", new ToolRepetitionDetector(3, { noProgressLimit: 2 }))
+			const events: AgentTurnEvent[] = []
+			const suspend = vi.spyOn(harness.task, "suspendAfterCurrentTurn")
+			const terminal = controlledTerminal(harness.workspacePath)
+			installTerminal(terminal)
+
+			for (let index = 0; index < 4; index++) {
+				const outcome = await createScheduler(harness, events).run(
+					response(`unavailable-${index}`, "gh repo view"),
+				)
+				expect(outcome.results[0]).toMatchObject({
+					status: "error",
+					failure: {
+						reason: "capability_unavailable",
+						effectsStarted: "no",
+						outcome: "known",
+						recovery: { kind: "alternative", toolName: "github_api" },
+					},
+				})
+				await harness.task.recordToolCallForStopping("read_file", { path: `unrelated-${index}.ts` }, "success")
+			}
+			expect(suspend).not.toHaveBeenCalled()
+			expect(harness.task.getToolRetryBlock("github_api", { operation: "repository" })).toBeUndefined()
+
+			const blocked = await createScheduler(harness, events).run(response("unavailable-repeat", "gh repo view"))
+			expect(blocked.results[0]).toMatchObject({ status: "error", failure: { reason: "capability_unavailable" } })
+			expect(blocked.results[0]?.content).toEqual(expect.stringContaining("github_api"))
+			expect(suspend).toHaveBeenCalledOnce()
+			expect(terminal.runCommand).not.toHaveBeenCalled()
+			const receipts = harness.toolResults().filter((receipt) => receipt.type === "tool_result")
+			expect(receipts).toHaveLength(5)
+			expect(receipts.every((receipt) => receipt.is_error === true)).toBe(true)
+			expect(new Set(receipts.map((receipt) => receipt.tool_use_id)).size).toBe(5)
+			expect(toolResultEvents(events)).toHaveLength(5)
+		})
+	})
+
 	it.each(["node", "git"])(
 		"reports the actual %s process outcome in a large workspace with malformed metadata",
 		async (program) => {

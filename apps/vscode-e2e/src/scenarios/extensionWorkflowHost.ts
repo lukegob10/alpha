@@ -20,6 +20,7 @@ import {
 	type WorkflowPromptName,
 } from "./prompts"
 import { inspectWorkflowTrace } from "./workflowTrace"
+import { inspectRecoveryTrace, isRecoveryPhase } from "./recoveryTrace"
 import { guardTaskApi, WorkflowRequestBudget } from "./requestBudget"
 import { WorkflowScriptedAI } from "./scriptedWorkflow"
 import { inspectTaskLifecycle, inspectToolTransactions } from "./transactionAssertions"
@@ -328,10 +329,13 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		}
 	}
 
-	async complete(taskId: string): Promise<void> {
+	async complete(taskId: string, outcome: "completed" | "blocked" = "completed"): Promise<void> {
 		const expected = this.expectedCompletions.get(taskId) ?? 1
 		await this.until(() => {
-			if ((this.completions.get(taskId) ?? 0) >= expected) return true
+			if ((this.completions.get(taskId) ?? 0) >= expected) {
+				if (outcome === "blocked") throw new WorkflowFailure("lifecycle", "unexpected_completed_verification")
+				return true
+			}
 			const task = this.requireTask(taskId)
 			const ask = task.taskAsk
 			if (!ask || ask.partial || this.approvedAsks.has(ask.ts)) return false
@@ -349,8 +353,12 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 				this.approvedAsks.add(ask.ts)
 				task.approveAsk()
 			} else if (ask.ask === "completion_result") {
+				if (outcome === "blocked") throw new WorkflowFailure("lifecycle", "unexpected_completed_verification")
 				this.approvedAsks.add(ask.ts)
 				task.approveAsk()
+			} else if (ask.ask === "resume_task" && outcome === "blocked" && !task.didComplete) {
+				// Do not approve or cancel the handoff. Inspect its durable interrupted turn and visible report.
+				return true
 			} else if (ask.ask === "api_req_failed" || ask.ask === "auto_approval_max_req_reached") {
 				throw new WorkflowFailure("provider", ask.ask, true)
 			} else {
@@ -425,14 +433,18 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			throw new WorkflowFailure("lifecycle", "projected_task_identity_lost")
 	}
 
-	async inspect(taskId: string): Promise<WorkflowEvidence> {
+	async inspect(taskId: string, outcome: "completed" | "blocked" = "completed"): Promise<WorkflowEvidence> {
 		if (!/^[a-zA-Z0-9_-]{1,128}$/.test(taskId)) throw new WorkflowFailure("persistence", "invalid_task_id")
 		const task = this.requireTask(taskId)
 		// Join the existing Task-owned durability boundary, not a poll that could
 		// accidentally turn a real integrity defect into a generic timeout.
 		await this.until(async () => {
 			try {
-				await task.waitForTermination()
+				if (outcome === "blocked") {
+					// A resume ask is published after the turn journals flush. The task loop itself remains alive.
+					if (task.taskAsk?.ask !== "resume_task" || task.didComplete)
+						throw new WorkflowFailure("lifecycle", "blocked_boundary_lost")
+				} else await task.waitForTermination()
 				await task.flushApiConversationHistoryPersistence()
 			} catch {
 				throw new WorkflowFailure("persistence", "durability_boundary_failed")
@@ -453,6 +465,15 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			...lifecycle,
 			errors: [...transactions.errors, ...lifecycle.errors],
 			trace: inspectWorkflowTrace(history, WORKFLOW_TRACE_COMMANDS),
+			...(isRecoveryPhase(this.activePrompt)
+				? {
+						recoveryChecks: inspectRecoveryTrace(
+							history,
+							await readBoundedJson(path.join(directory, "ui_messages.json")),
+							this.activePrompt,
+						),
+					}
+				: {}),
 		}
 	}
 

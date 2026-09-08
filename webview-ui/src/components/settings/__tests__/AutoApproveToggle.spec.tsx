@@ -23,6 +23,7 @@ describe("AutoApproveToggle", () => {
 		alwaysAllowModeSwitch: true,
 		alwaysAllowSubtasks: false,
 		alwaysAllowSubagents: false,
+		alwaysAllowTickets: false,
 		alwaysAllowExecute: true,
 		alwaysAllowFollowupQuestions: false,
 		onToggle: mockOnToggle,
@@ -30,6 +31,15 @@ describe("AutoApproveToggle", () => {
 
 	beforeEach(() => {
 		mockOnToggle.mockClear()
+	})
+
+	test("defaults ticket approval to off when the saved setting is missing", () => {
+		render(<AutoApproveToggle {...initialProps} alwaysAllowTickets={undefined} />)
+
+		const ticketsButton = screen.getByRole("button", { name: "settings:autoApprove.tickets.label" })
+		expect(ticketsButton).toHaveAttribute("aria-pressed", "false")
+		fireEvent.click(ticketsButton)
+		expect(mockOnToggle).toHaveBeenCalledWith("alwaysAllowTickets", true)
 	})
 
 	test("renders all toggle buttons with correct initial ARIA attributes", () => {

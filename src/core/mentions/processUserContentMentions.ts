@@ -3,6 +3,7 @@ import Anthropic from "@anthropic-ai/sdk"
 import { parseMentions, ParseMentionsResult, MentionContentBlock } from "./index"
 import { FileContextTracker } from "../context-tracking/FileContextTracker"
 import type { SkillLookup } from "../../services/skills/skillInvocation"
+import type { TicketActivity } from "@alpha-code/types"
 
 // Internal aliases for the Anthropic content block subtypes used during processing.
 type TextPart = Anthropic.Messages.TextBlockParam
@@ -43,6 +44,7 @@ export async function processUserContentMentions({
 	maxDiagnosticMessages = 50,
 	skillsManager,
 	currentMode = "code",
+	onTicketActivity,
 }: {
 	userContent: Anthropic.Messages.ContentBlockParam[]
 	cwd: string
@@ -53,6 +55,7 @@ export async function processUserContentMentions({
 	maxDiagnosticMessages?: number
 	skillsManager?: SkillLookup
 	currentMode?: string
+	onTicketActivity?: (activity: TicketActivity) => Promise<void>
 }): Promise<ProcessUserContentMentionsResult> {
 	const commandModes: Array<{ blockIndex: number; contentIndex: number; mode: string }> = []
 	const captureCommandMode = (mode: string | undefined, blockIndex: number, contentIndex: number) => {
@@ -80,6 +83,7 @@ export async function processUserContentMentions({
 							maxDiagnosticMessages,
 							skillsManager,
 							currentMode,
+							onTicketActivity,
 						)
 						captureCommandMode(result.mode, blockIndex, 0)
 
@@ -122,6 +126,7 @@ export async function processUserContentMentions({
 								maxDiagnosticMessages,
 								skillsManager,
 								currentMode,
+								onTicketActivity,
 							)
 							captureCommandMode(result.mode, blockIndex, 0)
 
@@ -170,6 +175,7 @@ export async function processUserContentMentions({
 											maxDiagnosticMessages,
 											skillsManager,
 											currentMode,
+											onTicketActivity,
 										)
 										captureCommandMode(result.mode, blockIndex, contentIndex)
 

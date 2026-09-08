@@ -1,3 +1,4 @@
+import { TicketPanel } from "./services/tickets/TicketPanel"
 import * as vscode from "vscode"
 import * as dotenvx from "@dotenvx/dotenvx"
 import * as fs from "fs"
@@ -175,6 +176,11 @@ export async function activate(context: vscode.ExtensionContext) {
 	}
 
 	const provider = new ClineProvider(context, outputChannel, "sidebar", contextProxy)
+	const ticketPanel = new TicketPanel(context, provider)
+	context.subscriptions.push(
+		ticketPanel,
+		vscode.commands.registerCommand("alpha.openTickets", (target?: unknown) => ticketPanel.open(target)),
+	)
 	sidebarProvider = provider
 	const scheduledTaskService = new ScheduledTaskService(context, provider, outputChannel)
 	provider.setScheduledTaskService(scheduledTaskService)

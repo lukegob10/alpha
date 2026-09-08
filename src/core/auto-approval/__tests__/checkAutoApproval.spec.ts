@@ -4,6 +4,123 @@ import { checkAutoApproval, checkAutoApprovalWithInheritedPolicy } from "../inde
 import { createSubagentCommandApprovalPolicy } from "../commands"
 
 describe("checkAutoApproval", () => {
+	describe.each(["create", "update"] as const)("Alpha Tickets %s", (operation) => {
+		const request = {
+			ask: "tool" as const,
+			text: JSON.stringify({ tool: "ticket", ticketActivity: { operation, state: "pending", name: "Ticket" } }),
+		}
+
+		it.each([
+			{ autoApprovalEnabled: true, alwaysAllowTickets: true, decision: "approve" },
+			{ autoApprovalEnabled: true, alwaysAllowTickets: false, decision: "ask" },
+			{ autoApprovalEnabled: true, alwaysAllowTickets: undefined, decision: "ask" },
+			{ autoApprovalEnabled: false, alwaysAllowTickets: true, decision: "ask" },
+			{ autoApprovalEnabled: undefined, alwaysAllowTickets: true, decision: "ask" },
+		])("requires both switches: $autoApprovalEnabled / $alwaysAllowTickets", async ({ decision, ...state }) => {
+			await expect(checkAutoApproval({ ...request, state })).resolves.toEqual({ decision })
+		})
+
+		it("asks when settings are unavailable", async () => {
+			await expect(checkAutoApproval(request)).resolves.toEqual({ decision: "ask" })
+		})
+
+		it("does not inherit authorization from other approval categories", async () => {
+			await expect(
+				checkAutoApproval({
+					...request,
+					state: {
+						autoApprovalEnabled: true,
+						alwaysAllowReadOnly: true,
+						alwaysAllowWrite: true,
+						alwaysAllowWriteOutsideWorkspace: true,
+						alwaysAllowWriteProtected: true,
+						alwaysAllowExecute: true,
+						allowedCommands: ["*"],
+						alwaysAllowMcp: true,
+					},
+				}),
+			).resolves.toEqual({ decision: "ask" })
+		})
+
+		it.each([
+			{ live: true, captured: true, decision: "approve" },
+			{ live: true, captured: false, decision: "ask" },
+			{ live: true, captured: undefined, decision: "ask" },
+			{ live: false, captured: true, decision: "ask" },
+		])("respects live $live and captured $captured grants", async ({ live, captured, decision }) => {
+			await expect(
+				checkAutoApprovalWithInheritedPolicy({
+					...request,
+					state: { autoApprovalEnabled: true, alwaysAllowTickets: live },
+					inheritedState: {
+						autoApprovalEnabled: true,
+						alwaysAllowTickets: captured,
+						alwaysAllowReadOnly: false,
+						alwaysAllowReadOnlyOutsideWorkspace: false,
+						alwaysAllowWrite: false,
+						alwaysAllowWriteOutsideWorkspace: false,
+						alwaysAllowWriteProtected: false,
+						alwaysAllowExecute: false,
+						alwaysAllowSubagents: false,
+						commandApproval: createSubagentCommandApprovalPolicy([], [], "9".repeat(64)),
+					},
+				}),
+			).resolves.toEqual({ decision })
+		})
+	})
+
+	it.each([
+		{ ask: "tool" as const, text: JSON.stringify({ tool: "newFileCreated", path: "ticket.md" }) },
+		{ ask: "tool" as const, text: JSON.stringify({ tool: "readFile", path: "ticket.md" }) },
+		{ ask: "command" as const, text: "git status" },
+		{
+			ask: "use_mcp_server" as const,
+			text: JSON.stringify({ type: "use_mcp_tool", serverName: "linear", toolName: "update_issue" }),
+		},
+	])("does not authorize other categories through Alpha Tickets: $text", async (request) => {
+		await expect(
+			checkAutoApproval({
+				...request,
+				state: { autoApprovalEnabled: true, alwaysAllowTickets: true, allowedCommands: ["*"] },
+			}),
+		).resolves.toEqual({ decision: "ask" })
+	})
+
+	it.each([
+		undefined,
+		{ operation: "read", state: "pending" },
+		{ operation: "list", state: "pending" },
+		{ operation: "create", state: "success", name: "Ticket" },
+	])("does not broaden ticket authorization to unsupported activity: %j", async (ticketActivity) => {
+		await expect(
+			checkAutoApproval({
+				ask: "tool",
+				text: JSON.stringify({ tool: "ticket", ticketActivity }),
+				state: { autoApprovalEnabled: true, alwaysAllowTickets: true },
+			}),
+		).resolves.toEqual({ decision: "ask" })
+	})
+
+	it("requires manual deletion approval even when all relevant auto-approval categories are enabled", async () => {
+		await expect(
+			checkAutoApproval({
+				ask: "tool",
+				text: JSON.stringify({
+					tool: "ticket",
+					ticketActivity: { operation: "delete", state: "pending", name: "Ticket" },
+				}),
+				state: {
+					autoApprovalEnabled: true,
+					alwaysAllowTickets: true,
+					alwaysAllowWrite: true,
+					alwaysAllowWriteOutsideWorkspace: true,
+					alwaysAllowWriteProtected: true,
+					alwaysAllowMcp: true,
+				},
+			}),
+		).resolves.toEqual({ decision: "ask" })
+	})
+
 	it("auto-approves delegation control tools when auto-approval is enabled", async () => {
 		const state = {
 			autoApprovalEnabled: true,

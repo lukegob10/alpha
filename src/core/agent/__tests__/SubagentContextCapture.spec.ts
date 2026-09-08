@@ -1,4 +1,5 @@
 import path from "path"
+import { subagentContextManifestSchema } from "@alpha-code/types"
 
 import { formatResponse } from "../../prompts/responses"
 import { createSubagentCommandApprovalPolicy } from "../../auto-approval/commands"
@@ -123,6 +124,16 @@ function capture(forkTurns: "none" | "all" | `${number}` = "all") {
 }
 
 describe("sub-agent context capture", () => {
+	it("keeps legacy ticket approval absent across manifest reload and digest validation", () => {
+		const { manifest } = capture("none")
+		expect(manifest.runtimePolicy.autoApproval).not.toHaveProperty("alwaysAllowTickets")
+		const serialized = serializeSubagentContextManifest(manifest)
+		const reloaded = subagentContextManifestSchema.parse(JSON.parse(serialized))
+		expect(reloaded).toEqual(manifest)
+		expect(isValidSubagentContextManifest(reloaded)).toBe(true)
+		expect(serializeSubagentContextManifest(reloaded)).toBe(serialized)
+	})
+
 	it("groups history into user-led turns and excludes protocol-only user records", () => {
 		const turns = captureUserLedTurns("parent-task", history)
 

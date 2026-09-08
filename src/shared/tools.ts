@@ -1,3 +1,4 @@
+import type { CreateTicket, UpdateTicket, DeleteTicket } from "@alpha-code/types"
 import { Anthropic } from "@anthropic-ai/sdk"
 
 import type {
@@ -238,6 +239,11 @@ export type NativeToolArgs = BrowserToolArgs & {
 				}>
 		  }
 	switch_mode: { mode_slug: string; reason: string }
+	list_tickets: { query?: string; status?: "backlog" | "in-progress" | "complete"; offset?: number; limit?: number }
+	read_ticket: { id: string }
+	create_ticket: CreateTicket
+	update_ticket: UpdateTicket
+	delete_ticket: DeleteTicket
 	update_todo_list: { todos: string }
 	use_mcp_tool: { server_name: string; tool_name: string; arguments?: Record<string, unknown> }
 	write_to_file: { path: string; content: string }
@@ -480,6 +486,11 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	cancel_agent: "cancel an agent",
 	close_agent: "close an agent",
 	codebase_search: "codebase search",
+	list_tickets: "list tickets",
+	read_ticket: "read a ticket",
+	create_ticket: "create a ticket",
+	update_ticket: "update a ticket",
+	delete_ticket: "delete a ticket",
 	update_todo_list: "update todo list",
 	run_slash_command: "run slash command",
 	skill: "load skill",
@@ -502,10 +513,10 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 // Define available tool groups.
 export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 	read: {
-		tools: ["read_file", "search_files", "list_files", "codebase_search"],
+		tools: ["read_file", "search_files", "list_files", "codebase_search", "list_tickets", "read_ticket"],
 	},
 	edit: {
-		tools: ["apply_diff", "write_to_file", "generate_image"],
+		tools: ["apply_diff", "write_to_file", "generate_image", "create_ticket", "update_ticket", "delete_ticket"],
 		customTools: ["edit", "search_replace", "edit_file", "apply_patch"],
 	},
 	command: {

@@ -1,0 +1,1761 @@
+{
+	"schemaVersion": 1,
+	"startedAt": "2026-09-07T23:55:13.028Z",
+	"completedAt": "2026-09-07T23:55:22.567Z",
+	"wallTimeMs": 9538.3467,
+	"command": "pnpm exec node scripts/benchmarks/nor38-failure-overhead.mjs",
+	"baselineCommit": "90bb4ea24cfc3848e4c245bebdbbea2aa20f80fd",
+	"sources": {
+		"baselineDetectorSha256": "67615759a3bd2f98068a39258e6f7655f122b313e3e4f31297bf6e2cc19eb9dc",
+		"stage1DetectorSha256": "ba9bf0b06ff909c33d62d27b09303895f8b9b44065598aeda2ead222a97efdc1",
+		"stage1FailureSha256": "00a19d82df127db7a3481df9dcded9909dbcf1d2045a08ba8e3905069c59cb69"
+	},
+	"environment": {
+		"node": "v20.19.2",
+		"platform": "win32",
+		"architecture": "x64",
+		"cpu": "AMD Ryzen 7 5800X 8-Core Processor             ",
+		"logicalCpus": 16
+	},
+	"method": {
+		"warmupPairs": 2,
+		"timedPairs": 12,
+		"order": "AB/BA alternates by pair, with separately reported raw samples and ratios of medians",
+		"compiledInMemory": "Installed esbuild; original detector source from git-show HEAD and current working tree",
+		"dependencies": "Both variants use the same installed extension safe-stable-stringify and zod packages",
+		"stub": "Only detector ../../i18n is stubbed to return its key; this benchmark never calls legacy check()",
+		"adapter": "Two optional getRetryBlock calls, each normalized, followed by recordOutcome per serial tool call",
+		"baselineAdapter": "Baseline has no getRetryBlock or failure normalizer; missing features return undefined",
+		"argumentBytes": "Exact UTF-8 byte length of the JSON arguments; public ASCII payload; same objects for both variants",
+		"state": "Fresh default-config detectors per batch; 16 healthy observations each prevent novelty-window exhaustion",
+		"pendingState": "32 distinct known pre-launch failures, each followed by the same fresh read in both variants; seeded outside timing",
+		"intentionalSemanticDifference": "Stage 1 retains scoped failure allowances; baseline ignores failure metadata. Healthy measured decisions agree",
+		"setupExcluded": "Compilation, fixtures, detector creation, failure-state seeding, and output assertions",
+		"outputs": "Every gate output counted; every decision checked for continue, absent failure, and expected stagnation; values consumed",
+		"modelRequests": 0,
+		"toolExecutions": 0,
+		"limitations": [
+			"Local synchronous microbenchmark, not full ToolScheduler or Task execution; canonical-name lookup and collector metadata handling are excluded",
+			"No provider, VS Code host, network, filesystem tool work, prompt/token effects, tool round-trip savings, or end-to-end quality is measured",
+			"Default repetition policy is enabled; pending state has 32 blockers, not every possible saturation pattern",
+			"Absent-metadata baseline is an adapter no-op and may be JIT-optimized; its ratio does not represent whole-call slowdown",
+			"Timing includes natural garbage collection but does not measure allocation volume or retained heap bytes",
+			"One process on one machine; medians and raw samples are evidence for this workload, not a general task-speed claim"
+		]
+	},
+	"consumedOutputs": 5935552,
+	"results": [
+		{
+			"name": "successful-mutation-128B-empty",
+			"operationsPerBatch": 1024,
+			"baseline": {
+				"medianMs": 6.4039499999999805,
+				"medianMicrosecondsPerOperation": 6.253857421874981
+			},
+			"stage1": {
+				"medianMs": 19.987899999999996,
+				"medianMicrosecondsPerOperation": 19.519433593749998
+			},
+			"deltaMicrosecondsPerOperation": 13.265576171875017,
+			"ratioOfMedians": 3.1211830198549424,
+			"rawSamples": [
+				{
+					"pair": 0,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 10.665600000000012,
+					"operations": 1024
+				},
+				{
+					"pair": 0,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 24.642899999999997,
+					"operations": 1024
+				},
+				{
+					"pair": 1,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 19.835000000000036,
+					"operations": 1024
+				},
+				{
+					"pair": 1,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 7.010500000000036,
+					"operations": 1024
+				},
+				{
+					"pair": 2,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 6.77679999999998,
+					"operations": 1024
+				},
+				{
+					"pair": 2,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 22.580100000000016,
+					"operations": 1024
+				},
+				{
+					"pair": 3,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 17.84699999999998,
+					"operations": 1024
+				},
+				{
+					"pair": 3,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 8.811000000000035,
+					"operations": 1024
+				},
+				{
+					"pair": 4,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 6.031099999999981,
+					"operations": 1024
+				},
+				{
+					"pair": 4,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 23.410799999999995,
+					"operations": 1024
+				},
+				{
+					"pair": 5,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 19.54140000000001,
+					"operations": 1024
+				},
+				{
+					"pair": 5,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 5.663099999999986,
+					"operations": 1024
+				},
+				{
+					"pair": 6,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 5.849699999999984,
+					"operations": 1024
+				},
+				{
+					"pair": 6,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 20.213599999999985,
+					"operations": 1024
+				},
+				{
+					"pair": 7,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 16.73509999999999,
+					"operations": 1024
+				},
+				{
+					"pair": 7,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 8.289600000000007,
+					"operations": 1024
+				},
+				{
+					"pair": 8,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 5.723199999999963,
+					"operations": 1024
+				},
+				{
+					"pair": 8,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 20.049300000000017,
+					"operations": 1024
+				},
+				{
+					"pair": 9,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 19.926499999999976,
+					"operations": 1024
+				},
+				{
+					"pair": 9,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 5.74490000000003,
+					"operations": 1024
+				},
+				{
+					"pair": 10,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 5.854199999999992,
+					"operations": 1024
+				},
+				{
+					"pair": 10,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 20.590400000000045,
+					"operations": 1024
+				},
+				{
+					"pair": 11,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 16.50720000000001,
+					"operations": 1024
+				},
+				{
+					"pair": 11,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 8.27559999999994,
+					"operations": 1024
+				}
+			],
+			"workload": {
+				"name": "successful-mutation-128B-empty",
+				"argumentBytes": 128,
+				"seeded": false,
+				"polling": false,
+				"detectorsPerBatch": 64
+			}
+		},
+		{
+			"name": "successful-mutation-8192B-empty",
+			"operationsPerBatch": 512,
+			"baseline": {
+				"medianMs": 14.386250000000018,
+				"medianMicrosecondsPerOperation": 28.098144531250036
+			},
+			"stage1": {
+				"medianMs": 54.64209999999997,
+				"medianMicrosecondsPerOperation": 106.72285156249994
+			},
+			"deltaMicrosecondsPerOperation": 78.6247070312499,
+			"ratioOfMedians": 3.7982170475280146,
+			"rawSamples": [
+				{
+					"pair": 0,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 15.094400000000064,
+					"operations": 512
+				},
+				{
+					"pair": 0,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 54.418199999999956,
+					"operations": 512
+				},
+				{
+					"pair": 1,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 54.73879999999997,
+					"operations": 512
+				},
+				{
+					"pair": 1,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 13.915700000000015,
+					"operations": 512
+				},
+				{
+					"pair": 2,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 14.799800000000005,
+					"operations": 512
+				},
+				{
+					"pair": 2,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 54.364200000000096,
+					"operations": 512
+				},
+				{
+					"pair": 3,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 53.75280000000009,
+					"operations": 512
+				},
+				{
+					"pair": 3,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 14.579200000000014,
+					"operations": 512
+				},
+				{
+					"pair": 4,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 13.901900000000069,
+					"operations": 512
+				},
+				{
+					"pair": 4,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 54.86469999999997,
+					"operations": 512
+				},
+				{
+					"pair": 5,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 54.249700000000075,
+					"operations": 512
+				},
+				{
+					"pair": 5,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 14.273300000000063,
+					"operations": 512
+				},
+				{
+					"pair": 6,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 14.724999999999909,
+					"operations": 512
+				},
+				{
+					"pair": 6,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 55.31700000000001,
+					"operations": 512
+				},
+				{
+					"pair": 7,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 55.347499999999854,
+					"operations": 512
+				},
+				{
+					"pair": 7,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 14.057000000000016,
+					"operations": 512
+				},
+				{
+					"pair": 8,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 13.958599999999933,
+					"operations": 512
+				},
+				{
+					"pair": 8,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 54.8590999999999,
+					"operations": 512
+				},
+				{
+					"pair": 9,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 54.12349999999992,
+					"operations": 512
+				},
+				{
+					"pair": 9,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 14.499199999999973,
+					"operations": 512
+				},
+				{
+					"pair": 10,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 15.204300000000103,
+					"operations": 512
+				},
+				{
+					"pair": 10,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 54.54539999999997,
+					"operations": 512
+				},
+				{
+					"pair": 11,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 55.106199999999944,
+					"operations": 512
+				},
+				{
+					"pair": 11,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 13.98070000000007,
+					"operations": 512
+				}
+			],
+			"workload": {
+				"name": "successful-mutation-8192B-empty",
+				"argumentBytes": 8192,
+				"seeded": false,
+				"polling": false,
+				"detectorsPerBatch": 32
+			}
+		},
+		{
+			"name": "successful-mutation-131072B-empty",
+			"operationsPerBatch": 64,
+			"baseline": {
+				"medianMs": 25.556499999999915,
+				"medianMicrosecondsPerOperation": 399.32031249999864
+			},
+			"stage1": {
+				"medianMs": 101.33280000000013,
+				"medianMicrosecondsPerOperation": 1583.325000000002
+			},
+			"deltaMicrosecondsPerOperation": 1184.0046875000035,
+			"ratioOfMedians": 3.965049987283097,
+			"rawSamples": [
+				{
+					"pair": 0,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 26.11850000000004,
+					"operations": 64
+				},
+				{
+					"pair": 0,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 101.01659999999993,
+					"operations": 64
+				},
+				{
+					"pair": 1,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 100.91530000000012,
+					"operations": 64
+				},
+				{
+					"pair": 1,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 25.666799999999967,
+					"operations": 64
+				},
+				{
+					"pair": 2,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 24.92540000000008,
+					"operations": 64
+				},
+				{
+					"pair": 2,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 101.69700000000012,
+					"operations": 64
+				},
+				{
+					"pair": 3,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 101.44869999999992,
+					"operations": 64
+				},
+				{
+					"pair": 3,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 25.611899999999878,
+					"operations": 64
+				},
+				{
+					"pair": 4,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 25.743599999999788,
+					"operations": 64
+				},
+				{
+					"pair": 4,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 101.1253999999999,
+					"operations": 64
+				},
+				{
+					"pair": 5,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 101.33159999999998,
+					"operations": 64
+				},
+				{
+					"pair": 5,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 24.7167000000004,
+					"operations": 64
+				},
+				{
+					"pair": 6,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 25.303599999999733,
+					"operations": 64
+				},
+				{
+					"pair": 6,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 100.80069999999978,
+					"operations": 64
+				},
+				{
+					"pair": 7,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 101.53929999999991,
+					"operations": 64
+				},
+				{
+					"pair": 7,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 25.729699999999866,
+					"operations": 64
+				},
+				{
+					"pair": 8,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 24.86920000000009,
+					"operations": 64
+				},
+				{
+					"pair": 8,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 101.7464,
+					"operations": 64
+				},
+				{
+					"pair": 9,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 101.1849000000002,
+					"operations": 64
+				},
+				{
+					"pair": 9,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 25.143600000000333,
+					"operations": 64
+				},
+				{
+					"pair": 10,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 25.50109999999995,
+					"operations": 64
+				},
+				{
+					"pair": 10,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 101.48599999999988,
+					"operations": 64
+				},
+				{
+					"pair": 11,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 101.33400000000029,
+					"operations": 64
+				},
+				{
+					"pair": 11,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 25.667399999999816,
+					"operations": 64
+				}
+			],
+			"workload": {
+				"name": "successful-mutation-131072B-empty",
+				"argumentBytes": 131072,
+				"seeded": false,
+				"polling": false,
+				"detectorsPerBatch": 4
+			}
+		},
+		{
+			"name": "unchanged-successful-poll-128B-empty",
+			"operationsPerBatch": 1024,
+			"baseline": {
+				"medianMs": 3.0696499999999105,
+				"medianMicrosecondsPerOperation": 2.9977050781249126
+			},
+			"stage1": {
+				"medianMs": 16.522550000000138,
+				"medianMicrosecondsPerOperation": 16.135302734375134
+			},
+			"deltaMicrosecondsPerOperation": 13.137597656250222,
+			"ratioOfMedians": 5.382551756715137,
+			"rawSamples": [
+				{
+					"pair": 0,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 3.2997999999997774,
+					"operations": 1024
+				},
+				{
+					"pair": 0,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 18.447599999999966,
+					"operations": 1024
+				},
+				{
+					"pair": 1,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 16.87830000000031,
+					"operations": 1024
+				},
+				{
+					"pair": 1,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 2.746100000000297,
+					"operations": 1024
+				},
+				{
+					"pair": 2,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 2.8395000000000437,
+					"operations": 1024
+				},
+				{
+					"pair": 2,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 17.390199999999822,
+					"operations": 1024
+				},
+				{
+					"pair": 3,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 16.689900000000307,
+					"operations": 1024
+				},
+				{
+					"pair": 3,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 2.7252000000003136,
+					"operations": 1024
+				},
+				{
+					"pair": 4,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 2.837800000000243,
+					"operations": 1024
+				},
+				{
+					"pair": 4,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 16.97380000000021,
+					"operations": 1024
+				},
+				{
+					"pair": 5,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 22.342999999999847,
+					"operations": 1024
+				},
+				{
+					"pair": 5,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 3.5671000000002095,
+					"operations": 1024
+				},
+				{
+					"pair": 6,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 3.520299999999679,
+					"operations": 1024
+				},
+				{
+					"pair": 6,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 14.095800000000054,
+					"operations": 1024
+				},
+				{
+					"pair": 7,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 13.64619999999968,
+					"operations": 1024
+				},
+				{
+					"pair": 7,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 5.611899999999878,
+					"operations": 1024
+				},
+				{
+					"pair": 8,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 2.8000999999999294,
+					"operations": 1024
+				},
+				{
+					"pair": 8,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 16.355199999999968,
+					"operations": 1024
+				},
+				{
+					"pair": 9,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 13.453899999999976,
+					"operations": 1024
+				},
+				{
+					"pair": 9,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 5.416099999999915,
+					"operations": 1024
+				},
+				{
+					"pair": 10,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 2.757799999999861,
+					"operations": 1024
+				},
+				{
+					"pair": 10,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 16.236699999999928,
+					"operations": 1024
+				},
+				{
+					"pair": 11,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 13.571900000000369,
+					"operations": 1024
+				},
+				{
+					"pair": 11,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 5.137699999999768,
+					"operations": 1024
+				}
+			],
+			"workload": {
+				"name": "unchanged-successful-poll-128B-empty",
+				"argumentBytes": 128,
+				"seeded": false,
+				"polling": true,
+				"detectorsPerBatch": 64
+			}
+		},
+		{
+			"name": "successful-mutation-128B-32-pending",
+			"operationsPerBatch": 1024,
+			"baseline": {
+				"medianMs": 5.841699999999719,
+				"medianMicrosecondsPerOperation": 5.704785156249725
+			},
+			"stage1": {
+				"medianMs": 19.864050000000134,
+				"medianMicrosecondsPerOperation": 19.39848632812513
+			},
+			"deltaMicrosecondsPerOperation": 13.693701171875405,
+			"ratioOfMedians": 3.400388585514677,
+			"rawSamples": [
+				{
+					"pair": 0,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 5.699700000000121,
+					"operations": 1024
+				},
+				{
+					"pair": 0,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 20.620000000000346,
+					"operations": 1024
+				},
+				{
+					"pair": 1,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 19.827900000000227,
+					"operations": 1024
+				},
+				{
+					"pair": 1,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 5.8607999999999265,
+					"operations": 1024
+				},
+				{
+					"pair": 2,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 5.880200000000059,
+					"operations": 1024
+				},
+				{
+					"pair": 2,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 19.934699999999793,
+					"operations": 1024
+				},
+				{
+					"pair": 3,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 20.211299999999937,
+					"operations": 1024
+				},
+				{
+					"pair": 3,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 5.435100000000148,
+					"operations": 1024
+				},
+				{
+					"pair": 4,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 8.87649999999985,
+					"operations": 1024
+				},
+				{
+					"pair": 4,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 19.672099999999773,
+					"operations": 1024
+				},
+				{
+					"pair": 5,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 20.201199999999517,
+					"operations": 1024
+				},
+				{
+					"pair": 5,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 5.913199999999961,
+					"operations": 1024
+				},
+				{
+					"pair": 6,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 5.696600000000217,
+					"operations": 1024
+				},
+				{
+					"pair": 6,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 19.72310000000016,
+					"operations": 1024
+				},
+				{
+					"pair": 7,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 20.045100000000275,
+					"operations": 1024
+				},
+				{
+					"pair": 7,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 9.285900000000765,
+					"operations": 1024
+				},
+				{
+					"pair": 8,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 5.778700000000754,
+					"operations": 1024
+				},
+				{
+					"pair": 8,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 19.544199999999364,
+					"operations": 1024
+				},
+				{
+					"pair": 9,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 19.90020000000004,
+					"operations": 1024
+				},
+				{
+					"pair": 9,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 5.576900000000023,
+					"operations": 1024
+				},
+				{
+					"pair": 10,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 9.175599999999577,
+					"operations": 1024
+				},
+				{
+					"pair": 10,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 19.53480000000036,
+					"operations": 1024
+				},
+				{
+					"pair": 11,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 18.960299999999734,
+					"operations": 1024
+				},
+				{
+					"pair": 11,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 5.822599999999511,
+					"operations": 1024
+				}
+			],
+			"workload": {
+				"name": "successful-mutation-128B-32-pending",
+				"argumentBytes": 128,
+				"seeded": true,
+				"polling": false,
+				"detectorsPerBatch": 64
+			}
+		},
+		{
+			"name": "successful-mutation-8192B-32-pending",
+			"operationsPerBatch": 512,
+			"baseline": {
+				"medianMs": 14.214699999999993,
+				"medianMicrosecondsPerOperation": 27.763085937499987
+			},
+			"stage1": {
+				"medianMs": 56.541349999999966,
+				"medianMicrosecondsPerOperation": 110.43232421874993
+			},
+			"deltaMicrosecondsPerOperation": 82.66923828124993,
+			"ratioOfMedians": 3.977667485068274,
+			"rawSamples": [
+				{
+					"pair": 0,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 14.272700000000441,
+					"operations": 512
+				},
+				{
+					"pair": 0,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 57.095900000000256,
+					"operations": 512
+				},
+				{
+					"pair": 1,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 55.66910000000007,
+					"operations": 512
+				},
+				{
+					"pair": 1,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 14.198499999999513,
+					"operations": 512
+				},
+				{
+					"pair": 2,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 14.183500000000095,
+					"operations": 512
+				},
+				{
+					"pair": 2,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 56.98980000000029,
+					"operations": 512
+				},
+				{
+					"pair": 3,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 56.384799999999814,
+					"operations": 512
+				},
+				{
+					"pair": 3,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 14.269599999999627,
+					"operations": 512
+				},
+				{
+					"pair": 4,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 14.230900000000474,
+					"operations": 512
+				},
+				{
+					"pair": 4,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 57.05159999999978,
+					"operations": 512
+				},
+				{
+					"pair": 5,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 55.14510000000064,
+					"operations": 512
+				},
+				{
+					"pair": 5,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 14.181700000000092,
+					"operations": 512
+				},
+				{
+					"pair": 6,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 14.11869999999999,
+					"operations": 512
+				},
+				{
+					"pair": 6,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 57.0001000000002,
+					"operations": 512
+				},
+				{
+					"pair": 7,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 55.89049999999952,
+					"operations": 512
+				},
+				{
+					"pair": 7,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 14.234699999999975,
+					"operations": 512
+				},
+				{
+					"pair": 8,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 14.143599999999424,
+					"operations": 512
+				},
+				{
+					"pair": 8,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 56.69790000000012,
+					"operations": 512
+				},
+				{
+					"pair": 9,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 55.82999999999993,
+					"operations": 512
+				},
+				{
+					"pair": 9,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 14.115799999999581,
+					"operations": 512
+				},
+				{
+					"pair": 10,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 14.341199999999844,
+					"operations": 512
+				},
+				{
+					"pair": 10,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 56.79020000000037,
+					"operations": 512
+				},
+				{
+					"pair": 11,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 55.42650000000049,
+					"operations": 512
+				},
+				{
+					"pair": 11,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 14.748800000000301,
+					"operations": 512
+				}
+			],
+			"workload": {
+				"name": "successful-mutation-8192B-32-pending",
+				"argumentBytes": 8192,
+				"seeded": true,
+				"polling": false,
+				"detectorsPerBatch": 32
+			}
+		},
+		{
+			"name": "successful-mutation-131072B-32-pending",
+			"operationsPerBatch": 64,
+			"baseline": {
+				"medianMs": 25.18159999999989,
+				"medianMicrosecondsPerOperation": 393.4624999999983
+			},
+			"stage1": {
+				"medianMs": 102.0023500000002,
+				"medianMicrosecondsPerOperation": 1593.7867187500033
+			},
+			"deltaMicrosecondsPerOperation": 1200.324218750005,
+			"ratioOfMedians": 4.050669933602339,
+			"rawSamples": [
+				{
+					"pair": 0,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 26.42960000000039,
+					"operations": 64
+				},
+				{
+					"pair": 0,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 101.3709000000008,
+					"operations": 64
+				},
+				{
+					"pair": 1,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 101.83259999999973,
+					"operations": 64
+				},
+				{
+					"pair": 1,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 25.60059999999976,
+					"operations": 64
+				},
+				{
+					"pair": 2,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 26.445200000000114,
+					"operations": 64
+				},
+				{
+					"pair": 2,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 101.1859000000004,
+					"operations": 64
+				},
+				{
+					"pair": 3,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 101.73909999999978,
+					"operations": 64
+				},
+				{
+					"pair": 3,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 26.144400000000132,
+					"operations": 64
+				},
+				{
+					"pair": 4,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 24.78610000000026,
+					"operations": 64
+				},
+				{
+					"pair": 4,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 103.06870000000072,
+					"operations": 64
+				},
+				{
+					"pair": 5,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 102.09469999999965,
+					"operations": 64
+				},
+				{
+					"pair": 5,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 25.02260000000024,
+					"operations": 64
+				},
+				{
+					"pair": 6,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 25.03310000000056,
+					"operations": 64
+				},
+				{
+					"pair": 6,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 102.52300000000014,
+					"operations": 64
+				},
+				{
+					"pair": 7,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 101.91000000000076,
+					"operations": 64
+				},
+				{
+					"pair": 7,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 25.38040000000001,
+					"operations": 64
+				},
+				{
+					"pair": 8,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 25.208300000000236,
+					"operations": 64
+				},
+				{
+					"pair": 8,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 101.88390000000072,
+					"operations": 64
+				},
+				{
+					"pair": 9,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 102.28149999999914,
+					"operations": 64
+				},
+				{
+					"pair": 9,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 25.123199999999997,
+					"operations": 64
+				},
+				{
+					"pair": 10,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 25.154899999999543,
+					"operations": 64
+				},
+				{
+					"pair": 10,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 102.16820000000007,
+					"operations": 64
+				},
+				{
+					"pair": 11,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 102.15160000000014,
+					"operations": 64
+				},
+				{
+					"pair": 11,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 24.961899999999332,
+					"operations": 64
+				}
+			],
+			"workload": {
+				"name": "successful-mutation-131072B-32-pending",
+				"argumentBytes": 131072,
+				"seeded": true,
+				"polling": false,
+				"detectorsPerBatch": 4
+			}
+		},
+		{
+			"name": "unchanged-successful-poll-128B-32-pending",
+			"operationsPerBatch": 1024,
+			"baseline": {
+				"medianMs": 3.0279999999997926,
+				"medianMicrosecondsPerOperation": 2.9570312499997975
+			},
+			"stage1": {
+				"medianMs": 16.866350000000693,
+				"medianMicrosecondsPerOperation": 16.471044921875677
+			},
+			"deltaMicrosecondsPerOperation": 13.51401367187588,
+			"ratioOfMedians": 5.570128797887004,
+			"rawSamples": [
+				{
+					"pair": 0,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 3.0387000000000626,
+					"operations": 1024
+				},
+				{
+					"pair": 0,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 17.17150000000038,
+					"operations": 1024
+				},
+				{
+					"pair": 1,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 16.947699999999713,
+					"operations": 1024
+				},
+				{
+					"pair": 1,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 2.894000000000233,
+					"operations": 1024
+				},
+				{
+					"pair": 2,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 2.795700000000579,
+					"operations": 1024
+				},
+				{
+					"pair": 2,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 17.207399999999325,
+					"operations": 1024
+				},
+				{
+					"pair": 3,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 16.86450000000059,
+					"operations": 1024
+				},
+				{
+					"pair": 3,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 2.994999999999891,
+					"operations": 1024
+				},
+				{
+					"pair": 4,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 2.9403000000002066,
+					"operations": 1024
+				},
+				{
+					"pair": 4,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 14.933500000000095,
+					"operations": 1024
+				},
+				{
+					"pair": 5,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 16.868200000000797,
+					"operations": 1024
+				},
+				{
+					"pair": 5,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 2.9957000000013068,
+					"operations": 1024
+				},
+				{
+					"pair": 6,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 3.573100000001432,
+					"operations": 1024
+				},
+				{
+					"pair": 6,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 17.365599999999176,
+					"operations": 1024
+				},
+				{
+					"pair": 7,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 16.611700000001292,
+					"operations": 1024
+				},
+				{
+					"pair": 7,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 6.520199999999022,
+					"operations": 1024
+				},
+				{
+					"pair": 8,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 3.467499999998836,
+					"operations": 1024
+				},
+				{
+					"pair": 8,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 16.424399999999878,
+					"operations": 1024
+				},
+				{
+					"pair": 9,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 16.655400000001464,
+					"operations": 1024
+				},
+				{
+					"pair": 9,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 6.600200000000768,
+					"operations": 1024
+				},
+				{
+					"pair": 10,
+					"position": 0,
+					"variant": "baseline",
+					"elapsedMs": 3.045700000000579,
+					"operations": 1024
+				},
+				{
+					"pair": 10,
+					"position": 1,
+					"variant": "stage1",
+					"elapsedMs": 16.869300000000294,
+					"operations": 1024
+				},
+				{
+					"pair": 11,
+					"position": 0,
+					"variant": "stage1",
+					"elapsedMs": 16.589700000000448,
+					"operations": 1024
+				},
+				{
+					"pair": 11,
+					"position": 1,
+					"variant": "baseline",
+					"elapsedMs": 3.0172999999995227,
+					"operations": 1024
+				}
+			],
+			"workload": {
+				"name": "unchanged-successful-poll-128B-32-pending",
+				"argumentBytes": 128,
+				"seeded": true,
+				"polling": true,
+				"detectorsPerBatch": 64
+			}
+		}
+	],
+	"absentMetadata": {
+		"name": "normalize-absent-failure-metadata",
+		"operationsPerBatch": 25000,
+		"baseline": {
+			"medianMs": 0.09745000000020809,
+			"medianMicrosecondsPerOperation": 0.0038980000000083236
+		},
+		"stage1": {
+			"medianMs": 66.32594999999856,
+			"medianMicrosecondsPerOperation": 2.6530379999999423
+		},
+		"deltaMicrosecondsPerOperation": 2.649139999999934,
+		"ratioOfMedians": 680.6151872740577,
+		"rawSamples": [
+			{
+				"pair": 0,
+				"position": 0,
+				"variant": "baseline",
+				"elapsedMs": 0.4801000000006752,
+				"operations": 25000
+			},
+			{
+				"pair": 0,
+				"position": 1,
+				"variant": "stage1",
+				"elapsedMs": 65.54320000000007,
+				"operations": 25000
+			},
+			{
+				"pair": 1,
+				"position": 0,
+				"variant": "stage1",
+				"elapsedMs": 65.92950000000019,
+				"operations": 25000
+			},
+			{
+				"pair": 1,
+				"position": 1,
+				"variant": "baseline",
+				"elapsedMs": 0.0977999999995518,
+				"operations": 25000
+			},
+			{
+				"pair": 2,
+				"position": 0,
+				"variant": "baseline",
+				"elapsedMs": 0.0918999999994412,
+				"operations": 25000
+			},
+			{
+				"pair": 2,
+				"position": 1,
+				"variant": "stage1",
+				"elapsedMs": 89.01549999999952,
+				"operations": 25000
+			},
+			{
+				"pair": 3,
+				"position": 0,
+				"variant": "stage1",
+				"elapsedMs": 65.82279999999992,
+				"operations": 25000
+			},
+			{
+				"pair": 3,
+				"position": 1,
+				"variant": "baseline",
+				"elapsedMs": 0.09770000000025902,
+				"operations": 25000
+			},
+			{
+				"pair": 4,
+				"position": 0,
+				"variant": "baseline",
+				"elapsedMs": 0.09710000000086438,
+				"operations": 25000
+			},
+			{
+				"pair": 4,
+				"position": 1,
+				"variant": "stage1",
+				"elapsedMs": 66.47889999999825,
+				"operations": 25000
+			},
+			{
+				"pair": 5,
+				"position": 0,
+				"variant": "stage1",
+				"elapsedMs": 68.71060000000034,
+				"operations": 25000
+			},
+			{
+				"pair": 5,
+				"position": 1,
+				"variant": "baseline",
+				"elapsedMs": 0.09720000000015716,
+				"operations": 25000
+			},
+			{
+				"pair": 6,
+				"position": 0,
+				"variant": "baseline",
+				"elapsedMs": 0.09169999999903666,
+				"operations": 25000
+			},
+			{
+				"pair": 6,
+				"position": 1,
+				"variant": "stage1",
+				"elapsedMs": 64.61260000000038,
+				"operations": 25000
+			},
+			{
+				"pair": 7,
+				"position": 0,
+				"variant": "stage1",
+				"elapsedMs": 84.52549999999974,
+				"operations": 25000
+			},
+			{
+				"pair": 7,
+				"position": 1,
+				"variant": "baseline",
+				"elapsedMs": 0.09689999999864085,
+				"operations": 25000
+			},
+			{
+				"pair": 8,
+				"position": 0,
+				"variant": "baseline",
+				"elapsedMs": 0.0967000000000553,
+				"operations": 25000
+			},
+			{
+				"pair": 8,
+				"position": 1,
+				"variant": "stage1",
+				"elapsedMs": 65.22949999999946,
+				"operations": 25000
+			},
+			{
+				"pair": 9,
+				"position": 0,
+				"variant": "stage1",
+				"elapsedMs": 66.17299999999886,
+				"operations": 25000
+			},
+			{
+				"pair": 9,
+				"position": 1,
+				"variant": "baseline",
+				"elapsedMs": 0.09770000000025902,
+				"operations": 25000
+			},
+			{
+				"pair": 10,
+				"position": 0,
+				"variant": "baseline",
+				"elapsedMs": 0.12219999999979336,
+				"operations": 25000
+			},
+			{
+				"pair": 10,
+				"position": 1,
+				"variant": "stage1",
+				"elapsedMs": 87.27939999999944,
+				"operations": 25000
+			},
+			{
+				"pair": 11,
+				"position": 0,
+				"variant": "stage1",
+				"elapsedMs": 67.91549999999916,
+				"operations": 25000
+			},
+			{
+				"pair": 11,
+				"position": 1,
+				"variant": "baseline",
+				"elapsedMs": 0.09790000000066357,
+				"operations": 25000
+			}
+		]
+	}
+}

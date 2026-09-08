@@ -158,15 +158,17 @@ describe("importExport", () => {
 			expect(mockContextProxy.setValues).not.toHaveBeenCalled()
 		})
 
-		it("should import settings successfully from a valid file", async () => {
+		it.each([false, true])("imports ticket approval %s from settings", async (alwaysAllowTickets) => {
 			;(vscode.window.showOpenDialog as Mock).mockResolvedValue([{ fsPath: "/mock/path/settings.json" }])
 
 			const mockFileContent = JSON.stringify({
 				providerProfiles: {
 					currentApiConfigName: "test",
-					apiConfigs: { test: { apiProvider: "openai" as ProviderName, apiKey: "test-key", id: "test-id" } },
+					apiConfigs: {
+						test: { apiProvider: "openai" as ProviderName, apiKey: "test-key", id: "test-id" },
+					},
 				},
-				globalSettings: { mode: "code", autoApprovalEnabled: true },
+				globalSettings: { mode: "code", autoApprovalEnabled: true, alwaysAllowTickets },
 			})
 
 			;(fs.readFile as Mock).mockResolvedValue(mockFileContent)
@@ -204,7 +206,11 @@ describe("importExport", () => {
 				modeApiConfigs: {},
 			})
 
-			expect(mockContextProxy.setValues).toHaveBeenCalledWith({ mode: "code", autoApprovalEnabled: true })
+			expect(mockContextProxy.setValues).toHaveBeenCalledWith({
+				mode: "code",
+				autoApprovalEnabled: true,
+				alwaysAllowTickets,
+			})
 			expect(mockContextProxy.setValue).toHaveBeenCalledWith("currentApiConfigName", "test")
 
 			expect(mockContextProxy.setValue).toHaveBeenCalledWith("listApiConfigMeta", [

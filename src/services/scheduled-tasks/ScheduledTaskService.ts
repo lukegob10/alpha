@@ -471,6 +471,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			alwaysAllowWrite: autoApproval.alwaysAllowWrite,
 			alwaysAllowWriteOutsideWorkspace: autoApproval.alwaysAllowWriteOutsideWorkspace,
 			alwaysAllowWriteProtected: autoApproval.alwaysAllowWriteProtected,
+			alwaysAllowTickets: false,
 			alwaysAllowExecute: autoApproval.alwaysAllowExecute,
 			alwaysAllowMcp: autoApproval.alwaysAllowMcp,
 			alwaysAllowModeSwitch: autoApproval.alwaysAllowModeSwitch,

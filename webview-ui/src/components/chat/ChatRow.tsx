@@ -79,6 +79,7 @@ import { cn } from "@/lib/utils"
 import { PathTooltip } from "../ui/PathTooltip"
 import { OpenMarkdownPreviewButton } from "./OpenMarkdownPreviewButton"
 import { SubagentGroupCard } from "./SubagentGroupCard"
+import { TicketActivity } from "./TicketActivity"
 
 // Helper function to get previous todos before a specific message
 function getPreviousTodos(messages: ClineMessage[], currentMessageTs: number): any[] {
@@ -593,6 +594,8 @@ const ChatRowContentInner = ({
 					</div>
 				)
 			}
+			case "ticket":
+				return <TicketActivity tool={tool} />
 			case "updateTodoList" as any: {
 				const todos = (tool as any).todos || []
 				// Get previous todos from the latest todos in the task context
@@ -1499,6 +1502,8 @@ const ChatRowContentInner = ({
 					if (!sayTool) return null
 
 					switch (sayTool.tool) {
+						case "ticket":
+							return <TicketActivity tool={sayTool} />
 						case "browserAction": {
 							const labels: Record<NonNullable<ClineSayTool["action"]>, string> = {
 								open_browser_page: "Open browser page",

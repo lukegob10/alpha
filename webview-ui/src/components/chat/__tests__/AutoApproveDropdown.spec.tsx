@@ -17,6 +17,7 @@ const mockSetters = {
 	setAlwaysAllowModeSwitch: vi.fn(),
 	setAlwaysAllowSubtasks: vi.fn(),
 	setAlwaysAllowSubagents: vi.fn(),
+	setAlwaysAllowTickets: vi.fn(),
 	setAlwaysAllowFollowupQuestions: vi.fn(),
 	setAllowedCommands: vi.fn(),
 }
@@ -69,6 +70,7 @@ describe("AutoApproveDropdown", () => {
 			alwaysAllowModeSwitch: false,
 			alwaysAllowSubtasks: false,
 			alwaysAllowSubagents: false,
+			alwaysAllowTickets: false,
 			alwaysAllowFollowupQuestions: false,
 		}
 	})
@@ -92,6 +94,7 @@ describe("AutoApproveDropdown", () => {
 				alwaysAllowModeSwitch: true,
 				alwaysAllowSubtasks: true,
 				alwaysAllowSubagents: true,
+				alwaysAllowTickets: true,
 				alwaysAllowFollowupQuestions: true,
 				allowedCommands: ["git", "*"],
 			}),
@@ -100,6 +103,7 @@ describe("AutoApproveDropdown", () => {
 		expect(mockSetters.setAllowedCommands).toHaveBeenCalledWith(["git", "*"])
 		expect(mockSetters.setAlwaysAllowWriteProtected).toHaveBeenCalledWith(true)
 		expect(mockSetters.setAlwaysAllowSubagents).toHaveBeenCalledWith(true)
+		expect(mockSetters.setAlwaysAllowTickets).toHaveBeenCalledWith(true)
 	})
 
 	it("select all includes nested permissions and wildcard commands", () => {
@@ -118,6 +122,7 @@ describe("AutoApproveDropdown", () => {
 				alwaysAllowWriteOutsideWorkspace: true,
 				alwaysAllowWriteProtected: true,
 				allowedCommands: ["*"],
+				alwaysAllowTickets: true,
 			}),
 		})
 		expect(vscode.postMessage).not.toHaveBeenCalledWith({ type: "autoApprovalEnabled", bool: true })
@@ -138,6 +143,37 @@ describe("AutoApproveDropdown", () => {
 		expect(mockSetters.setAlwaysAllowSubagents).toHaveBeenCalledWith(true)
 	})
 
+	it.each([undefined, false, true])("updates ticket approval from %s independently of file writes", (value) => {
+		mockState.autoApprovalEnabled = true
+		mockState.alwaysAllowTickets = value
+
+		render(<AutoApproveDropdown />)
+		fireEvent.click(screen.getByTestId("auto-approve-dropdown-trigger"))
+		fireEvent.click(screen.getByTestId("auto-approve-alwaysAllowTickets"))
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "updateSettings",
+			updatedSettings: { alwaysAllowTickets: !value },
+		})
+		expect(mockSetters.setAlwaysAllowTickets).toHaveBeenCalledWith(!value)
+		expect(mockSetters.setAlwaysAllowWrite).not.toHaveBeenCalled()
+	})
+
+	it("disables ticket approval with Select None", () => {
+		mockState.autoApprovalEnabled = true
+		mockState.alwaysAllowTickets = true
+
+		render(<AutoApproveDropdown />)
+		fireEvent.click(screen.getByTestId("auto-approve-dropdown-trigger"))
+		fireEvent.click(screen.getByRole("button", { name: "chat:autoApprove.selectNone" }))
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "updateSettings",
+			updatedSettings: { alwaysAllowTickets: false },
+		})
+		expect(mockSetters.setAlwaysAllowTickets).toHaveBeenCalledWith(false)
+	})
+
 	it("does not label a restricted command allowlist as full auto-approval", () => {
 		mockState = {
 			...mockState,
@@ -152,6 +188,7 @@ describe("AutoApproveDropdown", () => {
 			alwaysAllowModeSwitch: true,
 			alwaysAllowSubtasks: true,
 			alwaysAllowSubagents: true,
+			alwaysAllowTickets: true,
 			alwaysAllowFollowupQuestions: true,
 			allowedCommands: ["git diff", "git log"],
 		}
@@ -159,7 +196,7 @@ describe("AutoApproveDropdown", () => {
 		render(<AutoApproveDropdown />)
 
 		expect(screen.queryAllByText("chat:autoApprove.triggerLabelAll")).toHaveLength(0)
-		expect(screen.getAllByText("8 auto-approved").length).toBeGreaterThan(0)
+		expect(screen.getAllByText("9 auto-approved").length).toBeGreaterThan(0)
 	})
 
 	it("does not label a wildcard with command denials as full auto-approval", () => {
@@ -176,6 +213,7 @@ describe("AutoApproveDropdown", () => {
 			alwaysAllowModeSwitch: true,
 			alwaysAllowSubtasks: true,
 			alwaysAllowSubagents: true,
+			alwaysAllowTickets: true,
 			alwaysAllowFollowupQuestions: true,
 			allowedCommands: ["*"],
 			deniedCommands: ["git push"],
@@ -184,36 +222,36 @@ describe("AutoApproveDropdown", () => {
 		render(<AutoApproveDropdown />)
 
 		expect(screen.queryAllByText("chat:autoApprove.triggerLabelAll")).toHaveLength(0)
-		expect(screen.getAllByText("8 auto-approved").length).toBeGreaterThan(0)
+		expect(screen.getAllByText("9 auto-approved").length).toBeGreaterThan(0)
 	})
 
-	it.each([
-		"alwaysAllowReadOnlyOutsideWorkspace",
-		"alwaysAllowWriteOutsideWorkspace",
-		"alwaysAllowWriteProtected",
-	])("does not advertise All while nested permission %s is disabled", (permission) => {
-		mockState = {
-			...mockState,
-			autoApprovalEnabled: true,
-			alwaysAllowReadOnly: true,
-			alwaysAllowReadOnlyOutsideWorkspace: true,
-			alwaysAllowWrite: true,
-			alwaysAllowWriteOutsideWorkspace: true,
-			alwaysAllowWriteProtected: true,
-			alwaysAllowExecute: true,
-			alwaysAllowMcp: true,
-			alwaysAllowModeSwitch: true,
-			alwaysAllowSubtasks: true,
-			alwaysAllowSubagents: true,
-			alwaysAllowFollowupQuestions: true,
-			allowedCommands: ["*"],
-			[permission]: false,
-		}
+	it.each(["alwaysAllowReadOnlyOutsideWorkspace", "alwaysAllowWriteOutsideWorkspace", "alwaysAllowWriteProtected"])(
+		"does not advertise All while nested permission %s is disabled",
+		(permission) => {
+			mockState = {
+				...mockState,
+				autoApprovalEnabled: true,
+				alwaysAllowReadOnly: true,
+				alwaysAllowReadOnlyOutsideWorkspace: true,
+				alwaysAllowWrite: true,
+				alwaysAllowWriteOutsideWorkspace: true,
+				alwaysAllowWriteProtected: true,
+				alwaysAllowExecute: true,
+				alwaysAllowMcp: true,
+				alwaysAllowModeSwitch: true,
+				alwaysAllowSubtasks: true,
+				alwaysAllowSubagents: true,
+				alwaysAllowTickets: true,
+				alwaysAllowFollowupQuestions: true,
+				allowedCommands: ["*"],
+				[permission]: false,
+			}
 
-		render(<AutoApproveDropdown />)
+			render(<AutoApproveDropdown />)
 
-		expect(screen.queryAllByText("chat:autoApprove.triggerLabelAll")).toHaveLength(0)
-	})
+			expect(screen.queryAllByText("chat:autoApprove.triggerLabelAll")).toHaveLength(0)
+		},
+	)
 
 	it("does not advertise global All while the visible child has a frozen approval cap", () => {
 		mockState = {
@@ -229,6 +267,7 @@ describe("AutoApproveDropdown", () => {
 			alwaysAllowModeSwitch: true,
 			alwaysAllowSubtasks: true,
 			alwaysAllowSubagents: true,
+			alwaysAllowTickets: true,
 			alwaysAllowFollowupQuestions: true,
 			allowedCommands: ["*"],
 			deniedCommands: [],
@@ -238,6 +277,6 @@ describe("AutoApproveDropdown", () => {
 		render(<AutoApproveDropdown />)
 
 		expect(screen.queryAllByText("chat:autoApprove.triggerLabelAll")).toHaveLength(0)
-		expect(screen.getAllByText("8 auto-approved").length).toBeGreaterThan(0)
+		expect(screen.getAllByText("9 auto-approved").length).toBeGreaterThan(0)
 	})
 })

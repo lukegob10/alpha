@@ -2,6 +2,9 @@ import type { ClineAsk, ClineAskResponse, ToolName, ToolProgressStatus } from "@
 
 import { Task } from "../task/Task"
 import type { ToolUse, HandleError, PushToolResult, AskApproval, NativeToolArgs } from "../../shared/tools"
+import { createToolFailure, type ToolFailureMetadata } from "./ToolFailure"
+
+export type { ToolFailureMetadata } from "./ToolFailure"
 
 /** A captured read grant was revoked; never turn this into an interactive parallel ask. */
 export class ToolReadDeniedError extends Error {}
@@ -41,6 +44,8 @@ export interface ToolResultMetadata {
 	timedOut?: boolean
 	/** Host-issued progress observation. This is deliberately not verification evidence. */
 	trustedExploration?: TrustedExplorationObservation
+	/** Trusted bounded cause and recovery information; never extracted from model/tool text. */
+	failure?: ToolFailureMetadata
 }
 
 export interface ToolCallbacks {
@@ -195,6 +200,17 @@ export abstract class BaseTool<TName extends ToolName> {
 			}
 		} catch (error) {
 			console.error(`Error parsing parameters:`, error)
+			callbacks.setResultMetadata?.({
+				status: "error",
+				failure: createToolFailure({
+					reason: "invalid_arguments",
+					scopeKind: "operation",
+					scopeIdentity: [this.name, block.nativeArgs ?? block.params],
+					effectsStarted: "no",
+					outcome: "known",
+					recovery: { kind: "repair" },
+				}),
+			})
 			const errorMessage = `Failed to parse ${this.name} parameters: ${error instanceof Error ? error.message : String(error)}`
 			await callbacks.handleError(`parsing ${this.name} args`, new Error(errorMessage))
 			// Note: handleError already emits a tool_result via formatResponse.toolError in the caller.

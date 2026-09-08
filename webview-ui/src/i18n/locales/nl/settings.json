@@ -271,6 +271,10 @@
 			"label": "Subtaken",
 			"description": "Subtaken aanmaken en afronden zonder goedkeuring"
 		},
+		"tickets": {
+			"label": "Alpha-tickets",
+			"description": "Het aanmaken en bijwerken van Alpha-tickets automatisch goedkeuren."
+		},
 		"followupQuestions": {
 			"label": "Vraag",
 			"description": "Selecteer automatisch het eerste voorgestelde antwoord voor vervolgvragen na de geconfigureerde time-out",

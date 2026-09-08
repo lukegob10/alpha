@@ -32,8 +32,8 @@ test("exposes the three suites and their requested scenario catalog", () => {
 test("uses bounded matrix budgets and scales iterations to the selected host count", () => {
 	const expected = {
 		smoke: { samples: 1, maxIterations: 18, maxRequests: 300, maxDurationMs: 30 * 60 * 1_000 },
-		development: { samples: 1, maxIterations: 60, maxRequests: 1_200, maxDurationMs: 2 * 60 * 60 * 1_000 },
-		soak: { samples: 3, maxIterations: 180, maxRequests: 3_000, maxDurationMs: 6 * 60 * 60 * 1_000 },
+		development: { samples: 1, maxIterations: 72, maxRequests: 1_200, maxDurationMs: 2 * 60 * 60 * 1_000 },
+		soak: { samples: 3, maxIterations: 216, maxRequests: 3_000, maxDurationMs: 6 * 60 * 60 * 1_000 },
 	} as const
 
 	for (const suite of DEVELOPMENT_SUITE_NAMES) {
@@ -49,7 +49,7 @@ test("uses bounded matrix budgets and scales iterations to the selected host cou
 	}
 
 	const singleHost = createDevelopmentSuite(options({ suite: "development", host: { version: "1.136.1" } }))
-	assert.equal(singleHost.budgets.maxIterations, 30)
+	assert.equal(singleHost.budgets.maxIterations, 36)
 })
 
 test("defaults to the exact supported hosts in compatibility order and accepts one host", () => {

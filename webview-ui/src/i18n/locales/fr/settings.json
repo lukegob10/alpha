@@ -272,6 +272,10 @@
 			"label": "Sous-tâches",
 			"description": "Permettre la création et l'achèvement des sous-tâches sans nécessiter d'approbation"
 		},
+		"tickets": {
+			"label": "Tickets Alpha",
+			"description": "Approuver automatiquement la création et la mise à jour des tickets Alpha."
+		},
 		"followupQuestions": {
 			"label": "Question",
 			"description": "Sélectionner automatiquement la première réponse suggérée pour les questions de suivi après le délai configuré",

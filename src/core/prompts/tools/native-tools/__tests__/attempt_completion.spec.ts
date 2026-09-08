@@ -11,8 +11,9 @@ describe("attempt_completion native tool", () => {
 		expect(description).toContain("verification proportionate to the task")
 		expect(description).toContain("Optional polish is not a completion blocker")
 		expect(description).toContain("separate user confirmation of each intermediate tool is not required")
-		expect(description).toContain("latest tool result establishes the explicit requested outcome")
-		expect(description).toContain("call this tool next")
+		expect(description).toContain("visible ordinary assistant answer")
+		expect(description).toContain("when no tool call or continuation is needed")
+		expect(description).not.toContain("call this tool next")
 		expect(description).toContain("Do not explore, configure, or improve adjacent state")
 		expect(description).toContain("This does not mark the task completed")
 		expect(description).toContain("ask_followup_question with a focused question")
@@ -29,6 +30,8 @@ describe("attempt_completion native tool", () => {
 	it("retains managed-child outcome reporting in the sub-agent contract", () => {
 		const subagentCompletion = createAttemptCompletionTool("subagent")
 
+		expect(subagentCompletion.function.description).toContain("required durable handoff")
+		expect(subagentCompletion.function.description).not.toContain("visible ordinary assistant answer")
 		expect(subagentCompletion.function.description).toContain("outcome")
 		expect(subagentCompletion.function.parameters.properties.outcome).toMatchObject({
 			enum: ["completed", "blocked"],

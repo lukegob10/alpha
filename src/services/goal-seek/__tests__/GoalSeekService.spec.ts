@@ -159,7 +159,7 @@ type GoalSeekServiceInternals = {
 }
 
 describe("GoalSeekService task completion", () => {
-	it("installs its completion waiter before a fast task can start", async () => {
+	it.each([false, true])("starts with file write grant %s and no ticket grant", async (writeCapable) => {
 		const taskId = "fast-task"
 		let internals!: GoalSeekServiceInternals
 		const start = vi.fn(() => {
@@ -184,8 +184,15 @@ describe("GoalSeekService task completion", () => {
 		internals = service as unknown as GoalSeekServiceInternals
 		vi.spyOn(internals, "getTaskCompletionText").mockResolvedValue("Fast completion result")
 
-		const result = await internals.runAlphaTask("Do the work", "test-workspace", "code", true)
+		const result = await internals.runAlphaTask("Do the work", "test-workspace", "code", writeCapable)
 
+		expect(createTask).toHaveBeenCalledWith(
+			"Do the work",
+			undefined,
+			undefined,
+			expect.objectContaining({ startTask: false }),
+			expect.objectContaining({ alwaysAllowWrite: writeCapable, alwaysAllowTickets: false }),
+		)
 		expect(start).toHaveBeenCalledTimes(1)
 		expect(result).toEqual({ taskId, result: "Fast completion result" })
 		expect(internals.taskWaiters.size).toBe(0)

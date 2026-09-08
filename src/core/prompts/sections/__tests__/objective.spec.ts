@@ -17,13 +17,35 @@ describe("getObjectiveSection", () => {
 		expect(objective).toContain("cannot be resolved safely from the task or environment")
 	})
 
-	it("adapts execution depth to the task", () => {
-		const objective = getObjectiveSection()
+	it.each([false, true])("uses the smallest complete workflow in Plan mode: %s", (isPlanMode) => {
+		const objective = getObjectiveSection(isPlanMode)
 
-		expect(objective).toContain("Handle narrow, well-scoped requests directly")
-		expect(objective).toContain("For substantial or multi-part work")
-		expect(objective).toContain("proportionate verification")
-		expect(objective).not.toContain("one at a time")
+		expect(objective).toContain("smallest complete workflow")
+		expect(objective).toContain("requested outcome, coverage, material unknowns, and required checks")
+		expect(objective).toContain("For bounded work, proceed directly")
+		expect(objective).toContain("For broad work, preserve all requested coverage")
+		expect(objective).toContain("For unclear work, resolve material unknowns")
+		expect(objective).toContain("concrete dependency, contradiction, material risk, or user scope change")
+		expect(objective).toContain("no classifier call, todo list, or tool call is required")
+	})
+
+	it.each([false, true])("preserves outcome-specific and fresh verification in Plan mode: %s", (isPlanMode) => {
+		const objective = getObjectiveSection(isPlanMode)
+
+		expect(objective).toContain("Verification must establish the requested outcome")
+		expect(objective).toContain("relevant content, configuration, scope, and authority remain valid")
+		expect(objective).toContain("Preserve required checks and fresh reads")
+		expect(objective).toContain("Never weaken a required check to obtain a pass")
+	})
+
+	it("keeps planning read-only and terminates with the required handoff", () => {
+		const objective = getObjectiveSection(true)
+
+		expect(objective).toContain("decision-complete implementation plan")
+		expect(objective).toContain("non-mutating exploration")
+		expect(objective).toContain("required proposed-plan block")
+		expect(objective).toContain("do not implement it or ask for approval")
+		expect(objective).not.toContain("visible ordinary assistant answer")
 	})
 
 	it("allows a visible primary answer without forcing a completion tool", () => {

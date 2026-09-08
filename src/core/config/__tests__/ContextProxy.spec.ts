@@ -57,6 +57,31 @@ describe("ContextProxy", () => {
 		await proxy.initialize()
 	})
 
+	describe("ticket auto-approval persistence", () => {
+		it("keeps missing settings disabled and round-trips explicit choices through storage and export", async () => {
+			const stored = new Map<string, unknown>()
+			mockGlobalState.get.mockImplementation((key: string) => stored.get(key))
+			mockGlobalState.update.mockImplementation(async (key: string, value: unknown) => {
+				if (value === undefined) stored.delete(key)
+				else stored.set(key, value)
+			})
+			expect(proxy.getValue("alwaysAllowTickets")).toBeUndefined()
+
+			for (const alwaysAllowTickets of [true, false]) {
+				await proxy.setValues({ alwaysAllowTickets })
+				const reloaded = new ContextProxy(mockContext)
+				await reloaded.initialize()
+				expect(reloaded.getValue("alwaysAllowTickets")).toBe(alwaysAllowTickets)
+				expect(await reloaded.export()).toMatchObject({ alwaysAllowTickets })
+			}
+
+			await proxy.setValue("alwaysAllowTickets", true)
+			await proxy.resetAllState()
+			expect(stored.has("alwaysAllowTickets")).toBe(false)
+			expect(proxy.getValue("alwaysAllowTickets")).toBeUndefined()
+		})
+	})
+
 	describe("read-only pass-through properties", () => {
 		it("should return extension properties from the original context", () => {
 			expect(proxy.extensionUri).toBe(mockContext.extensionUri)

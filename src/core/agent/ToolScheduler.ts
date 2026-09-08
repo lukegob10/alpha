@@ -7,6 +7,12 @@ import type { ClineAsk, ClineAskResponse, ClineSay, ModeConfig, ToolProgressStat
 import type { ToolResponse, ToolUse } from "../../shared/tools"
 import type { ToolApprovalResponse, ToolCallbacks, ToolResultMetadata } from "../tools/BaseTool"
 import { ToolReadDeniedError } from "../tools/BaseTool"
+import {
+	createToolFailure,
+	formatToolFailureGuidance,
+	normalizeToolFailure,
+	type ToolFailureMetadata,
+} from "../tools/ToolFailure"
 import { getImageOutputPaths } from "../tools/imageOutputPaths"
 import { formatResponse } from "../prompts/responses"
 import { getModeBySlug } from "../../shared/modes"
@@ -101,6 +107,8 @@ export interface ToolExecutionHost {
 	hasToolResultForCall?: (callId: string) => boolean
 	/** Pure gate; checked before read preparation and immediately before execution. */
 	shouldStopRepeatedToolCall?: (name: string, args: unknown) => boolean
+	/** Trusted cause for a blocked retry; independent tools keep their normal authority. */
+	getToolRetryBlock?: (name: string, args: unknown) => ToolFailureMetadata | undefined
 	/** Observe terminal effects in model order before admitting the next effect. */
 	recordToolCallForStopping?: (
 		name: string,
@@ -148,6 +156,7 @@ export interface ToolSchedulerResult {
 	timedOut?: boolean
 	/** Trusted progress-only observation; never verification evidence. */
 	trustedExploration?: ToolResultMetadata["trustedExploration"]
+	failure?: ToolFailureMetadata
 	durationMs: number
 }
 
@@ -230,7 +239,9 @@ class ToolResultCollector {
 	}
 
 	setMetadata(metadata: ToolResultMetadata): void {
-		this.metadata = { ...this.metadata, ...metadata }
+		const { failure, ...rest } = metadata
+		const normalizedFailure = normalizeToolFailure(failure)
+		this.metadata = { ...this.metadata, ...rest, ...(normalizedFailure ? { failure: normalizedFailure } : {}) }
 	}
 
 	getMetadata(): ToolResultMetadata {
@@ -326,6 +337,7 @@ interface PreparedCall {
 	toolCall?: ToolUse<any>
 	descriptor?: ToolDescriptor
 	validationError?: string
+	failure?: ToolFailureMetadata
 	preparationDenied?: boolean
 	readPrepared?: boolean
 	read?: PreparedToolRead
@@ -381,12 +393,23 @@ function resultForError(
 	call: AgentToolCall,
 	message: string,
 	status: "error" | "denied" = "error",
+	failure?: ToolFailureMetadata,
 ): ToolSchedulerResult {
 	return {
 		callId: call.id,
 		name: call.name,
 		status,
 		content: formatFailureResult(message, status),
+		failure:
+			failure ??
+			createToolFailure({
+				reason: status === "denied" ? "policy_denied" : "pre_launch_rejected",
+				scopeKind: "operation",
+				scopeIdentity: [call.name, call.arguments],
+				effectsStarted: "no",
+				outcome: "known",
+				recovery: { kind: status === "denied" ? "user-action" : "repair" },
+			}),
 		durationMs: 0,
 	}
 }
@@ -574,7 +597,7 @@ export class ToolScheduler {
 				return
 			this.observedToolCallIds.add(callId)
 			await this.executionHost.recordToolCallForStopping(
-				result.name,
+				this.options.registry.canonicalName(result.name),
 				call.arguments,
 				result.status,
 				getVerificationCategory(call),
@@ -717,11 +740,18 @@ export class ToolScheduler {
 			}
 
 			const item = prepared[cursor]
+			const retryBlock = this.retryBlockResult(item.call)
+			if (retryBlock) {
+				results[item.index] = retryBlock
+				cursor += 1
+				continue
+			}
 			if (item.validationError || !item.descriptor || !item.toolCall) {
 				results[item.index] = resultForError(
 					item.call,
 					item.validationError ?? "Tool call could not be prepared.",
 					item.preparationDenied ? "denied" : "error",
+					item.failure,
 				)
 				cursor += 1
 				continue
@@ -750,6 +780,7 @@ export class ToolScheduler {
 					item.call,
 					item.validationError,
 					item.preparationDenied ? "denied" : "error",
+					item.failure,
 				)
 				cursor++
 				continue
@@ -1067,21 +1098,40 @@ export class ToolScheduler {
 
 	private prepareCall(call: AgentToolCall, index: number): PreparedCall {
 		const prepared: PreparedCall = { index, call }
+		const reject = (
+			reason: ToolFailureMetadata["reason"],
+			scopeKind: ToolFailureMetadata["affectedScope"]["kind"] = "operation",
+		) => {
+			prepared.failure = createToolFailure({
+				reason,
+				scopeKind,
+				scopeIdentity:
+					scopeKind === "operation"
+						? [call.name, call.arguments]
+						: [call.name, this.executionHost.cwd, this.options.policy],
+				effectsStarted: "no",
+				outcome: "known",
+				recovery: { kind: reason === "policy_denied" ? "user-action" : "repair" },
+			})
+		}
 
 		if (typeof call.id !== "string" || typeof call.name !== "string" || !call.id || !call.name) {
 			prepared.validationError = "Tool call is missing a valid ID or name."
+			reject("invalid_arguments")
 			return prepared
 		}
 
 		const descriptor = this.options.registry.resolve(call.name)
 		if (!descriptor) {
 			prepared.validationError = `Unknown tool "${call.name}". This tool is not registered.`
+			reject("capability_unavailable", "capability")
 			return prepared
 		}
 
 		const canonicalName = this.options.registry.canonicalName(call.name)
 		if (!isToolAllowed(this.options.policy, canonicalName)) {
 			prepared.validationError = `Tool "${call.name}" is not allowed by the current step policy.`
+			reject("policy_denied", "capability")
 			prepared.descriptor = descriptor
 			return prepared
 		}
@@ -1089,6 +1139,7 @@ export class ToolScheduler {
 		const argumentsValue = call.arguments === undefined ? {} : call.arguments
 		if (argumentsValue === null || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {
 			prepared.validationError = `Invalid arguments for tool "${call.name}".`
+			reject("invalid_arguments")
 			prepared.descriptor = descriptor
 			return prepared
 		}
@@ -1100,6 +1151,7 @@ export class ToolScheduler {
 				!isPathAllowed(this.options.policy, candidate, this.executionHost.cwd ?? "")
 			) {
 				prepared.validationError = `Path argument "${candidate}" is outside the allowed workspace roots.`
+				reject("policy_denied", "workspace")
 				prepared.descriptor = descriptor
 				return prepared
 			}
@@ -1109,6 +1161,7 @@ export class ToolScheduler {
 			const command = (argumentsValue as Record<string, unknown>).command
 			if (typeof command === "string" && isCommandDeniedByPolicy(this.options.policy, command)) {
 				prepared.validationError = "This command is denied by the current execution policy."
+				reject("policy_denied", "capability")
 				prepared.descriptor = descriptor
 				return prepared
 			}
@@ -1153,6 +1206,7 @@ export class ToolScheduler {
 			}
 		} catch (error) {
 			prepared.validationError = this.errorMessage(error)
+			reject("policy_denied", "capability")
 		}
 
 		prepared.descriptor = descriptor
@@ -1165,6 +1219,8 @@ export class ToolScheduler {
 		if (this.isCancelled()) {
 			return this.cancelledResultFor(prepared.call)
 		}
+		const retryBlock = this.retryBlockResult(prepared.call)
+		if (retryBlock) return retryBlock
 
 		const collector = new ToolResultCollector(
 			Math.min(
@@ -1172,7 +1228,40 @@ export class ToolScheduler {
 				getToolOutputLimit(this.options.policy, prepared.call.name),
 			),
 		)
+		let executionAdmitted = false
+		const recordExecutionFailure = (status: "error" | "denied" | "cancelled") => {
+			if (collector.getMetadata().failure) return
+			const effectsUnknown =
+				executionAdmitted && prepared.descriptor?.capabilities.sideEffects !== "none" && status !== "denied"
+			collector.setMetadata({
+				failure: createToolFailure({
+					reason: effectsUnknown
+						? "outcome_unknown"
+						: status === "cancelled"
+							? "cancelled"
+							: status === "denied"
+								? "policy_denied"
+								: "execution_failed",
+					scopeKind: "operation",
+					scopeIdentity: [this.options.registry.canonicalName(prepared.call.name), prepared.call.arguments],
+					effectsStarted: effectsUnknown ? "unknown" : "no",
+					outcome: effectsUnknown ? "unknown" : "known",
+					recovery: { kind: effectsUnknown ? "verify-outcome" : "repair" },
+				}),
+			})
+		}
 		const approvalFeedback = (text: string, images?: string[]) => collector.setApprovalFeedback({ text, images })
+		const approvalFailure = (decision: "denied" | "cancelled") =>
+			collector.setMetadata({
+				failure: createToolFailure({
+					reason: decision === "denied" ? "approval_denied" : "cancelled",
+					scopeKind: "operation",
+					scopeIdentity: [prepared.call.name, prepared.call.arguments],
+					effectsStarted: "no",
+					outcome: "known",
+					recovery: { kind: "user-action" },
+				}),
+			})
 		const requestApproval = async (
 			args: Parameters<ToolCallbacks["askApproval"]>,
 			responseMode: "boolean" | "structured",
@@ -1281,6 +1370,7 @@ export class ToolScheduler {
 
 					if (decision !== "approved") {
 						collector.setStatus(decision)
+						approvalFailure(decision)
 						if (decision === "denied") this.approvalDeniedCount += 1
 						else this.approvalCancelledCount += 1
 					}
@@ -1308,6 +1398,7 @@ export class ToolScheduler {
 						collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
 					}
 					collector.setStatus(decision)
+					approvalFailure(decision)
 					if (decision === "denied") this.approvalDeniedCount += 1
 					else this.approvalCancelledCount += 1
 					await this.options.onEvent?.({
@@ -1345,6 +1436,7 @@ export class ToolScheduler {
 					this.executionHost.didToolFailInCurrentTurn = true
 				}
 				collector.setStatus(cancelled ? "cancelled" : "error")
+				recordExecutionFailure(cancelled ? "cancelled" : "error")
 				const errorString = `Error ${action}: ${JSON.stringify(serializeError(error))}`
 				if (cancelled) {
 					collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
@@ -1393,6 +1485,7 @@ export class ToolScheduler {
 				await this.checkEffectFence(prepared.call)
 				if (this.isCancelled()) return
 				this.executionHost.recordToolUsage(prepared.call.name)
+				executionAdmitted = true
 				execution = prepared.read
 					? prepared.read.run(this.executionSignal).then((finalize) => {
 							prepared.finalizeRead = finalize
@@ -1412,6 +1505,7 @@ export class ToolScheduler {
 			const cancelled = this.isCancelled()
 			const status = cancelled ? "cancelled" : error instanceof ToolReadDeniedError ? "denied" : "error"
 			collector.setStatus(status)
+			recordExecutionFailure(status)
 			if (prepared.read && error instanceof Error && "timedOut" in error && error.timedOut === true) {
 				collector.setMetadata({ status: "error", timedOut: true })
 			}
@@ -1458,6 +1552,7 @@ export class ToolScheduler {
 			truncated: collector.isTruncated(),
 			timedOut: metadata.timedOut,
 			...(trustedExploration ? { trustedExploration } : {}),
+			...(status !== "success" && metadata.failure ? { failure: metadata.failure } : {}),
 			durationMs: Math.max(0, performance.now() - startedAt),
 		}
 	}
@@ -1570,6 +1665,17 @@ export class ToolScheduler {
 
 	private isCancelled(): boolean {
 		return this.executionHost.abort === true || this.options.signal?.aborted === true
+	}
+
+	private retryBlockResult(call: AgentToolCall): ToolSchedulerResult | undefined {
+		const failure = normalizeToolFailure(
+			this.executionHost.getToolRetryBlock?.(this.options.registry.canonicalName(call.name), call.arguments),
+		)
+		const denied =
+			failure?.outcome === "known" && (failure.reason === "policy_denied" || failure.reason === "approval_denied")
+		return failure
+			? resultForError(call, formatToolFailureGuidance(failure), denied ? "denied" : "error", failure)
+			: undefined
 	}
 
 	private errorMessage(error: unknown): string {

@@ -16,6 +16,7 @@ import {
 	marketplaceItemSchema,
 } from "./marketplace.js"
 import type { TodoItem } from "./todo.js"
+import type { TicketActivity, TicketSearchResponse, TicketTarget } from "./ticket.js"
 import type { SerializedCustomToolDefinition } from "./custom-tool.js"
 import type { GitCommit } from "./git.js"
 import type { McpServer } from "./mcp.js"
@@ -316,6 +317,7 @@ export interface ExtensionMessage {
 		| "ttsStart"
 		| "ttsStop"
 		| "fileSearchResults"
+		| "ticketSearchResults"
 		| "toggleApiConfigPin"
 		| "acceptInput"
 		| "setHistoryPreviewCollapsed"
@@ -364,6 +366,7 @@ export interface ExtensionMessage {
 	subagentChangeSetActionResult?: SubagentChangeSetActionResult
 	/** For fileContent: { path, content, error? } */
 	fileContent?: { path: string; content: string | null; error?: string }
+	ticketSearch?: TicketSearchResponse
 	scheduledTasks?: ScheduledTask[]
 	scheduledTaskRuns?: ScheduledTaskRun[]
 	scheduledTaskState?: ScheduledTaskState
@@ -552,6 +555,7 @@ export type ExtensionState = Pick<
 	| "alwaysAllowModeSwitch"
 	| "alwaysAllowSubtasks"
 	| "alwaysAllowSubagents"
+	| "alwaysAllowTickets"
 	| "alwaysAllowFollowupQuestions"
 	| "alwaysAllowExecute"
 	| "followupAutoApproveTimeoutMs"
@@ -808,6 +812,8 @@ interface WebviewMessageBase {
 		| "codebaseIndexEnabled"
 		| "telemetrySetting"
 		| "searchFiles"
+		| "searchTickets"
+		| "openTicket"
 		| "toggleApiConfigPin"
 		| "hasOpenedModeSelector"
 		| "lockApiConfigAcrossModes"
@@ -901,6 +907,7 @@ interface WebviewMessageBase {
 	text?: string
 	taskId?: string
 	groupId?: string
+	ticketTarget?: TicketTarget
 	subagentTaskId?: string
 	approvalId?: string
 	changeSetId?: string
@@ -1117,6 +1124,7 @@ export interface LanguageModelChatSelector {
 }
 
 export interface ClineSayTool {
+	ticketActivity?: TicketActivity
 	tool:
 		| "editedExistingFile"
 		| "appliedDiff"
@@ -1136,6 +1144,7 @@ export interface ClineSayTool {
 		| "generateImage"
 		| "imageGenerated"
 		| "runSlashCommand"
+		| "ticket"
 		| "updateTodoList"
 		| "skill"
 		| "browserAction"

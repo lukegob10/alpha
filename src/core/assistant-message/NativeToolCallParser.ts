@@ -1265,6 +1265,14 @@ export class NativeToolCallParser {
 					}
 					break
 
+				case "list_tickets":
+				case "read_ticket":
+				case "create_ticket":
+				case "update_ticket":
+				case "delete_ticket":
+					nativeArgs = args as NativeArgsFor<TName>
+					break
+
 				case "update_todo_list":
 					if (args.todos !== undefined) {
 						nativeArgs = {

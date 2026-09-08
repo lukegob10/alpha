@@ -191,6 +191,19 @@ describe("removeMention", () => {
 })
 
 describe("getContextMenuOptions", () => {
+	it("offers matching tickets alongside files for a project prefix", () => {
+		const ticket = { type: ContextMenuOptionType.Ticket, value: "ticket:PM-01", label: "PM-01 · Backend cleanup" }
+		const options = getContextMenuOptions("PM", null, [], [{ path: "PM.ts", type: "file" }], undefined, undefined, [
+			ticket,
+		])
+		expect(options[0]).toEqual(ticket)
+		expect(options).toContainEqual(expect.objectContaining({ type: ContextMenuOptionType.File, value: "/PM.ts" }))
+		expect(
+			getContextMenuOptions("PM", null, [], [], undefined, undefined, [
+				{ type: ContextMenuOptionType.NoResults },
+			]),
+		).toEqual([{ type: ContextMenuOptionType.NoResults }])
+	})
 	const mockQueryItems: ContextMenuQueryItem[] = [
 		{
 			type: ContextMenuOptionType.File,
@@ -238,7 +251,7 @@ describe("getContextMenuOptions", () => {
 
 	it("should return all option types for empty query", () => {
 		const result = getContextMenuOptions("", null, [])
-		expect(result).toHaveLength(6)
+		expect(result).toHaveLength(7)
 		expect(result.map((item) => item.type)).toEqual([
 			ContextMenuOptionType.Problems,
 			ContextMenuOptionType.Terminal,
@@ -246,6 +259,7 @@ describe("getContextMenuOptions", () => {
 			ContextMenuOptionType.Folder,
 			ContextMenuOptionType.File,
 			ContextMenuOptionType.Git,
+			ContextMenuOptionType.Ticket,
 		])
 	})
 

@@ -1422,11 +1422,21 @@ describe("ClineProvider", () => {
 		expect(state).toHaveProperty("alwaysAllowWrite")
 		expect(state).toHaveProperty("alwaysAllowExecute")
 		expect(state).toHaveProperty("alwaysAllowSubagents")
+		expect(state.alwaysAllowTickets).toBe(false)
 		expect(state).toHaveProperty("taskHistory")
 		expect(state).toHaveProperty("soundEnabled")
 		expect(state).toHaveProperty("ttsEnabled")
 		expect(state).toHaveProperty("writeDelayMs")
 	})
+
+	test.each([true, false])(
+		"projects the saved ticket approval preference %s to runtime and webview",
+		async (value) => {
+			await provider.contextProxy.setValue("alwaysAllowTickets", value)
+			expect((await provider.getState()).alwaysAllowTickets).toBe(value)
+			expect((await provider.getStateToPostToWebview()).alwaysAllowTickets).toBe(value)
+		},
+	)
 
 	test("getState uses merged command lists for runtime auto-approval", async () => {
 		await provider.contextProxy.setValue("allowedCommands", ["git", "npm"])

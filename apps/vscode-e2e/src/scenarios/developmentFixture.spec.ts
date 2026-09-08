@@ -196,6 +196,25 @@ test("keeps the development catalog typed, bounded, and scriptable", () => {
 	assert.match(DEVELOPMENT_PHASES.devMigrationUpgrade.prompt, /kind = "account"/)
 })
 
+for (const scenarioId of ["dev-search-recovery", "dev-verification-unavailable"] as const) {
+	test(`${scenarioId} seeds a real tested repository and detects changed data`, async () => {
+		await withOwnedWorkspace(async (workspace) => {
+			await createDevelopmentFixture(workspace, scenarioId)
+			await assertChecksPass(workspace, scenarioId, "baseline")
+			for (const phase of DEVELOPMENT_SCENARIOS[scenarioId].phases)
+				await assertChecksPass(workspace, scenarioId, phase)
+			await fs.writeFile(path.join(workspace, "config/local-integration.json"), "{}")
+			const checks = await verifyDevelopmentFixture(
+				workspace,
+				scenarioId,
+				DEVELOPMENT_SCENARIOS[scenarioId].phases[0],
+			)
+			assert.ok(failedCheckNames(checks).includes("recovery-all-workspace-bytes-preserved"))
+			assert.ok(failedCheckNames(checks).includes("recovery-integration-config-remains-absent"))
+		})
+	})
+}
+
 test("creates, builds, and independently verifies the bootstrap scenario", async () => {
 	await withOwnedWorkspace(async (workspace) => {
 		await createDevelopmentFixture(workspace, "dev-repo-bootstrap")

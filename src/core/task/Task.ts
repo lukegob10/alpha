@@ -148,6 +148,7 @@ import { TaskToolCatalogCache } from "./TaskToolCatalogCache"
 
 // core modules
 import { ToolRepetitionDetector } from "../tools/ToolRepetitionDetector"
+import { formatToolFailureGuidance, normalizeToolFailure, type ToolFailureMetadata } from "../tools/ToolFailure"
 import type { ParentCommandVerificationEvidence } from "../agent/AgentControlStore"
 import { AgentControlTransactionError } from "../agent/AgentControlTransaction"
 import type { CommandVerificationDiagnostic } from "../agent/VerificationScope"
@@ -847,7 +848,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	consecutiveNoToolUseCount: number = 0
 	consecutiveNoAssistantMessagesCount: number = 0
 	private automaticMistakeRecoveryCount: number = 0
-	private lastToolFailure?: { toolName: ToolName; error?: string }
+	private lastToolFailure?: { toolName: string; error?: string; failure?: ToolFailureMetadata }
 	toolUsage: ToolUsage = {}
 
 	// Checkpoints
@@ -4012,7 +4013,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		details.push(
-			"Recovery guidance: continue with one concrete next action. Use a tool if work remains, use attempt_completion if the task is finished, and use ask_followup_question only when a specific missing input blocks progress.",
+			this.getRecoveryActionGuidance(),
 			"If delegating, call new_task by itself in its own assistant turn. Do not batch new_task with any other tool.",
 		)
 
@@ -4053,16 +4054,27 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		details.push(
-			"Use exactly one concrete next action now: call one valid tool with complete arguments if work remains, call attempt_completion if finished, or call ask_followup_question only when a specific missing input blocks progress.",
-			"If the requested work includes workspace changes and inspection is sufficient, call an edit or other mutation tool now. More reads, searches, todo updates, or status narration do not apply the change.",
+			this.getRecoveryActionGuidance(),
+			"Unrelated reads or substitute writes do not resolve a failed operation. Use a supported repair or authorized alternative; otherwise report the remaining limitation accurately. Resolve an unknown execution outcome before repeating its effects.",
 			"If delegating, call new_task by itself in its own assistant turn. Do not batch new_task with any other tool.",
 		)
 
 		return details.join("\n")
 	}
 
+	private getRecoveryActionGuidance(): string {
+		const completion =
+			this.taskKind === "subagent"
+				? "publish the durable child result through attempt_completion"
+				: "give an ordinary final answer"
+		return `Resolve the reported cause with the smallest supported action. When the requested outcome and applicable checks are satisfied, ${completion}. Ask a follow-up only when specific missing user input blocks progress.`
+	}
+
 	private getLastToolFailureGuidance(): string | undefined {
 		if (!this.lastToolFailure) return undefined
+		if (this.lastToolFailure.failure) {
+			return `Most recent tool failure: ${this.lastToolFailure.toolName}. ${formatToolFailureGuidance(this.lastToolFailure.failure)}`
+		}
 		const normalizedError = this.lastToolFailure.error?.replace(/\s+/g, " ").trim().slice(0, 500)
 		return normalizedError
 			? `Most recent tool failure: ${this.lastToolFailure.toolName} — ${normalizedError}`
@@ -4165,10 +4177,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private getOffscreenMistakeLimitGuidance(): string {
 		return [
-			"Continue the current task without waiting for the user because this task lane is not currently on-screen.",
-			"Recover from the previous invalid or unproductive turns with exactly one concrete next action.",
-			"If work remains, use the most appropriate tool now. If delegating, call new_task by itself and do not include any other tool in the same turn. If complete, use attempt_completion.",
-		].join(" ")
+			"This task lane is not currently on-screen. Continue independent authorized work where possible.",
+			this.getLastToolFailureGuidance(),
+			this.getRecoveryActionGuidance(),
+			"If delegating, call new_task by itself and do not include any other tool in the same turn.",
+		]
+			.filter(Boolean)
+			.join(" ")
 	}
 
 	// Note that `partial` has three valid states true (partial message),
@@ -7940,6 +7955,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					maxDiagnosticMessages,
 					skillsManager: provider?.getSkillsManager(),
 					currentMode,
+					onTicketActivity: async (activity) => {
+						await this.say("tool", JSON.stringify({ tool: "ticket", ticketActivity: activity }))
+					},
 				})
 
 				// Switch mode if specified in a slash command's frontmatter
@@ -11567,6 +11585,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return this.pendingTurnSuspension !== undefined
 	}
 
+	/** Pure admission check; requesting a blocked retry is settled with its terminal receipt. */
+	public getToolRetryBlock(name: string, args: unknown): ToolFailureMetadata | undefined {
+		return this.toolRepetitionDetector.getRetryBlock?.(name, args)
+	}
+
 	public async recordToolCallForStopping(
 		name: string,
 		args: unknown,
@@ -11584,6 +11607,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			throw error
 		}
 		if (this.abort) return
+		const failure = status === "success" ? undefined : normalizeToolFailure(result?.failure)
+		const retryWasBlocked = failure ? this.getToolRetryBlock(name, args) : undefined
+		if (failure) this.lastToolFailure = { toolName: name, failure }
 		if (this.completionRecoveryActive) {
 			let completionDecision: CompletionGateDecision
 			try {
@@ -11662,10 +11688,26 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			stateFingerprint: state?.stateFingerprint,
 			evidenceFingerprint: state?.evidenceFingerprint,
 			...(trustedExploration ? { explorationFingerprint: trustedExploration.semanticFingerprint } : {}),
+			...(failure ? { failure } : {}),
+			...(result?.executionStatus ? { executionStatus: result.executionStatus } : {}),
 		})
-		if (decision.action === "stop") {
+		if (decision.failure) {
+			// Failure allowance belongs to the operation, not the whole task. An
+			// optional failure must leave inspection and supported alternatives usable.
+			const guidance = formatToolFailureGuidance(decision.failure)
+			if (decision.reason === "failure-capacity") {
+				this.suspendAfterCurrentTurn(
+					`Task remains incomplete: unresolved operation failures exceeded the bounded recovery record. ${guidance}`,
+				)
+			} else if (retryWasBlocked) {
+				this.suspendAfterCurrentTurn(`Task remains incomplete: ${guidance}`, "blocked")
+			} else if (decision.action !== "continue") {
+				this.userMessageContent.push({ type: "text", text: guidance })
+			}
+		} else if (decision.action === "stop") {
 			this.suspendAfterCurrentTurn(
 				"Task remains incomplete: repeated tool outcomes produced no new state or verification evidence. Resume with a different approach or the missing validation.",
+				"blocked",
 			)
 		} else if (decision.action === "change-strategy") {
 			this.userMessageContent.push({

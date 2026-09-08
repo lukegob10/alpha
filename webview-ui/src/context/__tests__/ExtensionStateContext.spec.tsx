@@ -1,4 +1,4 @@
-import { render, screen, act } from "@/utils/test-utils"
+import { render, screen, act, fireEvent } from "@/utils/test-utils"
 
 import {
 	type ProviderSettings,
@@ -15,6 +15,13 @@ import {
 } from "@alpha-code/types"
 
 import { ExtensionStateContextProvider, useExtensionState, mergeExtensionState } from "../ExtensionStateContext"
+import { useAutoApprovalToggles } from "@/hooks/useAutoApprovalToggles"
+
+const TicketApprovalTestComponent = () => {
+	const { setAlwaysAllowTickets } = useExtensionState()
+	const { alwaysAllowTickets } = useAutoApprovalToggles()
+	return <button onClick={() => setAlwaysAllowTickets(!alwaysAllowTickets)}>{String(alwaysAllowTickets)}</button>
+}
 
 const TestComponent = () => {
 	const { allowedCommands, setAllowedCommands, soundEnabled, showRooIgnoredFiles, setShowRooIgnoredFiles } =
@@ -148,6 +155,29 @@ const makeLifecycleDegradedSignal = (degraded: boolean) =>
 describe("ExtensionStateContext", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals()
+	})
+
+	it("defaults missing ticket approval off and hydrates, toggles, and reloads saved ticket approval", () => {
+		const view = (
+			<ExtensionStateContextProvider>
+				<TicketApprovalTestComponent />
+			</ExtensionStateContextProvider>
+		)
+		const { unmount } = render(view)
+		expect(screen.getByRole("button")).toHaveTextContent("false")
+		act(() => dispatchExtensionState({ autoApprovalEnabled: true }))
+		expect(screen.getByRole("button")).toHaveTextContent("false")
+		act(() => dispatchExtensionState({ alwaysAllowTickets: true }))
+		expect(screen.getByRole("button")).toHaveTextContent("true")
+		fireEvent.click(screen.getByRole("button"))
+		expect(screen.getByRole("button")).toHaveTextContent("false")
+
+		unmount()
+		render(view)
+		act(() => dispatchExtensionState({ alwaysAllowTickets: true }))
+		expect(screen.getByRole("button")).toHaveTextContent("true")
+		act(() => dispatchExtensionState({ alwaysAllowTickets: false }))
+		expect(screen.getByRole("button")).toHaveTextContent("false")
 	})
 
 	it("initializes with empty allowedCommands array", () => {

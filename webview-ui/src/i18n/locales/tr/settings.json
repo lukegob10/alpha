@@ -271,6 +271,10 @@
 			"label": "Alt Görevler",
 			"description": "Onay gerektirmeden alt görevlerin oluşturulmasına ve tamamlanmasına izin ver"
 		},
+		"tickets": {
+			"label": "Alpha Biletleri",
+			"description": "Alpha biletlerinin oluşturulmasını ve güncellenmesini otomatik olarak onayla."
+		},
 		"followupQuestions": {
 			"label": "Soru",
 			"description": "Yapılandırılan zaman aşımından sonra takip sorularına ilişkin ilk önerilen yanıtı otomatik olarak seç",

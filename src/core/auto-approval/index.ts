@@ -18,6 +18,7 @@ import { getCommandDecision, getSubagentCommandDecision } from "./commands"
 export type AutoApprovalState =
 	| "alwaysAllowReadOnly"
 	| "alwaysAllowWrite"
+	| "alwaysAllowTickets"
 	| "alwaysAllowMcp"
 	| "alwaysAllowModeSwitch"
 	| "alwaysAllowSubtasks"
@@ -148,6 +149,15 @@ export async function checkAutoApproval({
 
 		if (tool.tool === "updateTodoList") {
 			return { decision: "approve" }
+		}
+
+		if (tool.tool === "ticket") {
+			const activity = tool.ticketActivity
+			return state.alwaysAllowTickets === true &&
+				activity?.state === "pending" &&
+				(activity.operation === "create" || activity.operation === "update")
+				? { decision: "approve" }
+				: { decision: "ask" }
 		}
 
 		// The skill tool only loads pre-defined instructions from global or project skills.

@@ -271,6 +271,10 @@
 			"label": "Podzadania",
 			"description": "Zezwalaj na tworzenie i ukończenie podzadań bez konieczności zatwierdzania"
 		},
+		"tickets": {
+			"label": "Zgłoszenia Alpha",
+			"description": "Automatycznie zatwierdzaj tworzenie i aktualizowanie zgłoszeń Alpha."
+		},
 		"followupQuestions": {
 			"label": "Pytanie",
 			"description": "Automatycznie wybierz pierwszą sugerowaną odpowiedź na pytania uzupełniające po skonfigurowanym limicie czasu",

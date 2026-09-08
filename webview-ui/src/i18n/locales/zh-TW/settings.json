@@ -279,6 +279,10 @@
 			"label": "子任務",
 			"description": "無需核准即可建立與完成子任務"
 		},
+		"tickets": {
+			"label": "Alpha 工單",
+			"description": "自動核准建立和更新 Alpha 工單。"
+		},
 		"followupQuestions": {
 			"label": "後續提問",
 			"description": "在設定的逾時時間過後，自動選擇後續問題的第一個建議答案",

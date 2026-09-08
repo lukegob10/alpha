@@ -24,7 +24,7 @@ const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/
 const ENVIRONMENT_DETAILS_PATTERN = /<environment_details\b[^>]*>[\s\S]*?<\/environment_details\s*>/gi
 const ENVIRONMENT_DETAILS_RECORD_PATTERN = /^<environment_details\b[^>]*>[\s\S]*<\/environment_details\s*>$/i
 const SYSTEM_REMINDER_PATTERN = /<system-reminder\b[^>]*>[\s\S]*?<\/system-reminder\s*>/gi
-const TOOL_MARKUP_NAMES = [...toolNames, "tool_call", "tool_use"] as const
+const TOOL_MARKUP_NAMES: readonly string[] = [...toolNames, "tool_call", "tool_use"]
 const TOOL_MARKUP_BLOCK_PATTERN = new RegExp(`<(${TOOL_MARKUP_NAMES.join("|")})\\b[^>]*>[\\s\\S]*?<\\/\\1\\s*>`, "gi")
 const TOOL_MARKUP_SELF_CLOSING_PATTERN = new RegExp(`<(?:${TOOL_MARKUP_NAMES.join("|")})\\b[^>]*/\\s*>`, "gi")
 const FUNCTION_MARKUP_PATTERN = /<function(?:=|\s+name=)[^>]+>[\s\S]*?<\/function\s*>/gi
@@ -528,6 +528,7 @@ function sanitizeAutoApprovalPolicy(
 		alwaysAllowWrite: input.alwaysAllowWrite,
 		alwaysAllowWriteOutsideWorkspace: input.alwaysAllowWriteOutsideWorkspace,
 		alwaysAllowWriteProtected: input.alwaysAllowWriteProtected,
+		...(input.alwaysAllowTickets !== undefined ? { alwaysAllowTickets: input.alwaysAllowTickets } : {}),
 		alwaysAllowExecute: input.alwaysAllowExecute,
 		alwaysAllowSubagents: input.alwaysAllowSubagents,
 		commandApproval: sanitizeCommandApproval(input.commandApproval),

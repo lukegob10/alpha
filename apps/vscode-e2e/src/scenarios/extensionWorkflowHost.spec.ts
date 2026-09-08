@@ -26,6 +26,38 @@ const history = (command: string, cwd: unknown = workspace) => [
 	},
 ]
 
+test("blocked acceptance observes a resume boundary without approving it or accepting completed work", async () => {
+	for (const boundary of ["resume_task", "completion_result", "api_req_failed"] as const) {
+		const task = {
+			taskId: "blocked-task",
+			taskAsk: { ts: 1, type: "ask", ask: boundary } as ClineMessage,
+			didComplete: false,
+			approveAsk: () => assert.fail("blocked acceptance must not approve a boundary"),
+		}
+		const provider = Object.assign(new EventEmitter(), { getLiveTask: () => task })
+		const api = Object.assign(new EventEmitter(), { sidebarProvider: provider, getConfiguration: () => ({}) })
+		const host = new ExtensionWorkflowHost(
+			api as unknown as RooCodeAPI,
+			workspace,
+			"scripted",
+			new WorkflowRequestBudget(10),
+			5_000,
+		)
+		try {
+			if (boundary === "resume_task") {
+				await host.complete(task.taskId, "blocked")
+				await assert.rejects(host.complete(task.taskId), /unexpected_resume_task/)
+			} else
+				await assert.rejects(
+					host.complete(task.taskId, "blocked"),
+					boundary === "completion_result" ? /unexpected_completed_verification/ : /api_req_failed/,
+				)
+		} finally {
+			await host.dispose()
+		}
+	}
+})
+
 test("cancellation waits for an actual scoped command approval and never approves it", async () => {
 	for (const ask of ["command", "followup"] as const) {
 		const task = {

@@ -1,6 +1,7 @@
 import { defaultModeSlug } from "@alpha/modes"
 
-import { render, fireEvent, screen } from "@src/utils/test-utils"
+import { render, fireEvent, screen, waitFor, act } from "@src/utils/test-utils"
+import { useState } from "react"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 import { vscode } from "@src/utils/vscode"
 import * as pathMentions from "@src/utils/path-mentions"
@@ -79,6 +80,116 @@ describe("ChatTextArea", () => {
 	})
 
 	describe("mode selection surface", () => {
+		it.each(["@tickets:PM", "@ticket:PM-", "@PM-0", "@PM"])(
+			"searches a typed ticket reference: %s",
+			async (text) => {
+				function Composer() {
+					const [inputValue, setInputValue] = useState("")
+					return <ChatTextArea {...defaultProps} inputValue={inputValue} setInputValue={setInputValue} />
+				}
+				const { container } = render(<Composer />)
+				const textarea = container.querySelector("textarea")!
+				fireEvent.change(textarea, { target: { value: text, selectionStart: text.length } })
+				const query = text.replace(/^@(?:tickets?:)?/, "")
+				await waitFor(() =>
+					expect(mockPostMessage).toHaveBeenCalledWith(
+						expect.objectContaining({ type: "searchTickets", query }),
+					),
+				)
+				const request = mockPostMessage.mock.calls.find(([message]) => message.type === "searchTickets")![0]
+				act(() =>
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: {
+								type: "ticketSearchResults",
+								ticketSearch: {
+									type: "ticketSearchResults",
+									requestId: request.requestId,
+									tickets: [
+										{
+											id: "a97392fe-59bf-4f80-8a10-51b2cb62a38f",
+											reference: "PM-01",
+											name: "Backend cleanup",
+											status: "backlog",
+											updatedAt: "2026-09-07T00:00:00.000Z",
+										},
+									],
+								},
+							},
+						}),
+					),
+				)
+				expect(screen.getByRole("option", { name: /PM-01 · Backend cleanup/ })).toBeInTheDocument()
+				fireEvent.keyDown(textarea, { key: "Tab" })
+				expect(textarea).toHaveValue("@ticket:PM-01 ")
+				expect(defaultProps.onSend).not.toHaveBeenCalled()
+			},
+		)
+		it("leaves ticket search when the input switches to slash commands", () => {
+			const { container } = render(<ChatTextArea {...defaultProps} />)
+			const textarea = container.querySelector("textarea")!
+			fireEvent.change(textarea, { target: { value: "@ticket:", selectionStart: 8 } })
+			fireEvent.change(textarea, { target: { value: "/", selectionStart: 1 } })
+			expect(screen.getByText("/plan")).toBeInTheDocument()
+			expect(screen.getByText("/code")).toBeInTheDocument()
+		})
+		it("searches Alpha Tickets by title, ignores stale replies, and inserts the selected reference", async () => {
+			function Composer() {
+				const [inputValue, setInputValue] = useState("")
+				return <ChatTextArea {...defaultProps} inputValue={inputValue} setInputValue={setInputValue} />
+			}
+			const { container } = render(<Composer />)
+			const textarea = container.querySelector("textarea")!
+			fireEvent.change(textarea, { target: { value: "Work on @", selectionStart: 9 } })
+			fireEvent.click(screen.getByRole("option", { name: "Alpha Tickets" }))
+			expect(textarea).toHaveValue("Work on @ticket:")
+			await waitFor(() =>
+				expect(mockPostMessage).toHaveBeenCalledWith(
+					expect.objectContaining({ type: "searchTickets", query: "" }),
+				),
+			)
+			const first = mockPostMessage.mock.calls.find(([message]) => message.type === "searchTickets")![0]
+			const text = "Work on @ticket:backend cleanup"
+			fireEvent.change(textarea, { target: { value: text, selectionStart: text.length } })
+			await waitFor(() =>
+				expect(mockPostMessage).toHaveBeenCalledWith(
+					expect.objectContaining({ type: "searchTickets", query: "backend cleanup" }),
+				),
+			)
+			const current = mockPostMessage.mock.calls
+				.filter(([message]) => message.type === "searchTickets")
+				.at(-1)![0]
+			const result = {
+				id: "a97392fe-59bf-4f80-8a10-51b2cb62a38f",
+				reference: "PM-01",
+				name: "Backend cleanup",
+				status: "in-progress",
+				updatedAt: "2026-09-07T00:00:00.000Z",
+			}
+			const reply = (requestId: string, name: string) =>
+				act(() =>
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: {
+								type: "ticketSearchResults",
+								ticketSearch: {
+									type: "ticketSearchResults",
+									requestId,
+									tickets: [{ ...result, name }],
+								},
+							},
+						}),
+					),
+				)
+			reply(first.requestId, "Stale ticket")
+			expect(screen.queryByText(/Stale ticket/)).not.toBeInTheDocument()
+			reply(current.requestId, "Backend cleanup")
+			expect(screen.getByRole("option", { name: /PM-01 · Backend cleanup/ })).toBeInTheDocument()
+			fireEvent.keyDown(textarea, { key: "Enter" })
+			expect(textarea).toHaveValue("Work on @ticket:PM-01 ")
+			expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+			expect(defaultProps.onSend).not.toHaveBeenCalled()
+		})
 		it("offers only Plan and Code built-ins through slash-mode suggestions", () => {
 			const { container } = render(<ChatTextArea {...defaultProps} />)
 			const textarea = container.querySelector("textarea")!

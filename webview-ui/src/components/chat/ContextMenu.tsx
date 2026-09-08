@@ -36,9 +36,7 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
 
 	useEffect(() => {
 		if (menuRef.current) {
-			const selectedElement = menuRef.current.querySelector<HTMLElement>(
-				`[data-option-index="${selectedIndex}"]`,
-			)
+			const selectedElement = menuRef.current.querySelector<HTMLElement>(`[data-option-index="${selectedIndex}"]`)
 			if (selectedElement) {
 				const menuRect = menuRef.current.getBoundingClientRect()
 				const selectedRect = selectedElement.getBoundingClientRect()
@@ -130,7 +128,16 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
 			case ContextMenuOptionType.URL:
 				return <span>{t("chat:contextMenu.url")}</span>
 			case ContextMenuOptionType.NoResults:
-				return <span>{t("chat:contextMenu.noResults")}</span>
+				return <span role="status">{option.label || t("chat:contextMenu.noResults")}</span>
+			case ContextMenuOptionType.Ticket:
+				return option.value ? (
+					<div className="min-w-0 flex flex-col">
+						<span className="truncate">{option.label}</span>
+						<span className="text-xs opacity-70">{option.description}</span>
+					</div>
+				) : (
+					<span>{t("tickets:activityTitle")}</span>
+				)
 			case ContextMenuOptionType.Git:
 				if (option.value) {
 					return (
@@ -215,6 +222,8 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
 				return "link"
 			case ContextMenuOptionType.Git:
 				return "git-commit"
+			case ContextMenuOptionType.Ticket:
+				return "issues"
 			case ContextMenuOptionType.NoResults:
 				return "info"
 			default:
@@ -405,7 +414,8 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
 							</div>
 							{(option.type === ContextMenuOptionType.File ||
 								option.type === ContextMenuOptionType.Folder ||
-								option.type === ContextMenuOptionType.Git) &&
+								option.type === ContextMenuOptionType.Git ||
+								option.type === ContextMenuOptionType.Ticket) &&
 								!option.value && (
 									<i
 										className="codicon codicon-chevron-right"

@@ -1,3 +1,5 @@
+import { executeTicketTool } from "./TicketTools"
+import { ticketTools } from "../prompts/tools/native-tools/tickets"
 import type OpenAI from "openai"
 import { randomUUID } from "crypto"
 
@@ -344,7 +346,10 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 		? "workspace"
 		: TASK_TOOLS.has(name)
 			? "task"
-			: name === "github_api" ||
+			: name === "create_ticket" ||
+				  name === "update_ticket" ||
+				  name === "delete_ticket" ||
+				  name === "github_api" ||
 				  name === "use_mcp_tool" ||
 				  name.startsWith("mcp") ||
 				  name === "custom_tool" ||
@@ -358,7 +363,7 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 		controlFlow: BARRIER_TOOLS.has(name) || name === "run_slash_command" || name === "skill",
 		// Individual tool handlers own the exact approval prompt. This flag is
 		// metadata for scheduling and future policy decisions, not a second prompt.
-		requiresApproval: name !== "report_progress",
+		requiresApproval: name !== "report_progress" && name !== "list_tickets" && name !== "read_ticket",
 	}
 }
 
@@ -536,6 +541,18 @@ export class ToolRegistry {
 			return
 		}
 
+		for (const schema of ticketTools) {
+			const name = schema.function.name
+			if (schemas.has(name))
+				this.register({
+					name,
+					aliases: [],
+					schema,
+					capabilities: getToolCapabilities(name),
+					maxOutputChars: 100000,
+					execute: executeTicketTool,
+				})
+		}
 		this.registerBuiltIn("access_mcp_resource", accessMcpResourceTool, schemas)
 		this.registerBuiltIn("apply_diff", applyDiffTool, schemas)
 		this.registerBuiltIn("apply_patch", applyPatchTool, schemas)

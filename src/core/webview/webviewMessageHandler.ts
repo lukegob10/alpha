@@ -62,6 +62,8 @@ import { exportSettings, importSettingsWithFeedback } from "../config/importExpo
 import { getOpenAiModels } from "../../api/providers/openai"
 import { getVsCodeLmModels } from "../../api/providers/vscode-lm"
 import { openMention } from "../mentions"
+import { searchTicketMentions } from "../../services/tickets/TicketChat"
+import { ticketTargetSchema } from "@alpha-code/types"
 import { resolveImageMentions } from "../mentions/resolveImageMentions"
 import { RooIgnoreController } from "../ignore/RooIgnoreController"
 import { getWorkspacePath } from "../../utils/path"
@@ -1310,8 +1312,18 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "openMention":
-			openMention(getCurrentCwd(), message.text)
+			await openMention(getCurrentCwd(), message.text)
 			break
+		case "openTicket": {
+			const target = ticketTargetSchema.safeParse(message.ticketTarget)
+			if (target.success) await vscode.commands.executeCommand("alpha.openTickets", target.data)
+			break
+		}
+		case "searchTickets": {
+			const result = await searchTicketMentions(getCurrentCwd(), message)
+			if (result) await provider.postMessageToWebview({ type: "ticketSearchResults", ticketSearch: result })
+			break
+		}
 		case "openExternal":
 			if (message.url) {
 				vscode.env.openExternal(vscode.Uri.parse(message.url))

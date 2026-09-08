@@ -1348,6 +1348,25 @@ describe("webviewMessageHandler - mcpEnabled", () => {
 	})
 })
 
+describe("webviewMessageHandler - ticket auto-approval settings", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it.each([true, false])(
+		"saves ticket approval %s through the settings edit buffer message",
+		async (alwaysAllowTickets) => {
+			await webviewMessageHandler(mockClineProvider, {
+				type: "updateSettings",
+				updatedSettings: { alwaysAllowTickets },
+			})
+			expect(mockClineProvider.contextProxy.setValue).toHaveBeenCalledWith(
+				"alwaysAllowTickets",
+				alwaysAllowTickets,
+			)
+			expect(mockClineProvider.postStateToWebview).toHaveBeenCalledTimes(1)
+		},
+	)
+})
+
 describe("webviewMessageHandler - command auto-approval settings", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()

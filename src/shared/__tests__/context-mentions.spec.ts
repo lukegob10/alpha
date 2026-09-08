@@ -1,8 +1,33 @@
-import { mentionRegex, mentionRegexGlobal } from "../context-mentions"
+import { mentionRegex, mentionRegexGlobal, getTicketMentionLocator } from "../context-mentions"
 
 describe("mentionRegex and mentionRegexGlobal", () => {
+	it.each(["ticket:PM-01", "tickets:pm-1", "PM-01", "pm-1"])("normalizes ticket alias %s", (value) => {
+		expect(getTicketMentionLocator(value)).toBe("PM-01")
+	})
+	it.each(["PM", "tickets:../../private", "PM-00", "PM-01suffix", "abc1234"])(
+		"rejects non-ticket locator %s",
+		(value) => {
+			expect(getTicketMentionLocator(value)).toBeUndefined()
+		},
+	)
 	// Test cases for various mention types
 	const testCases = [
+		{ input: "Work on @ticket:PM-01.", expected: ["@ticket:PM-01"] },
+		{ input: "@ticket:pm-1", expected: ["@ticket:pm-1"] },
+		{ input: "Work on @tickets:PM-01.", expected: ["@tickets:PM-01"] },
+		{ input: "Work on @PM-01, please", expected: ["@PM-01"] },
+		{ input: "\\@PM-01", expected: null },
+		{ input: "email@PM-01", expected: null },
+		{ input: "@tickets:../../private", expected: null },
+		{ input: "@PM-01suffix", expected: null },
+		{
+			input: "@ticket:a97392fe-59bf-4f80-8a10-51b2cb62a38f",
+			expected: ["@ticket:a97392fe-59bf-4f80-8a10-51b2cb62a38f"],
+		},
+		{ input: "\\@ticket:PM-01", expected: null },
+		{ input: "email@ticket:PM-01", expected: null },
+		{ input: "@ticket:../../private", expected: null },
+		{ input: "@ticket:PM-01suffix", expected: null },
 		// Basic file paths at line start
 		{ input: "@/path/to/file.txt", expected: ["@/path/to/file.txt"] },
 		{ input: "@/file.js", expected: ["@/file.js"] },

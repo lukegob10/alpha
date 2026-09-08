@@ -1,4 +1,5 @@
 import * as vscode from "vscode"
+import { getTicketsSection } from "./sections/tickets"
 
 import {
 	PLAN_MODE_INSTRUCTIONS,
@@ -148,6 +149,8 @@ ${getSharedToolUseSection(
 )}${toolsCatalog}
 
 ${getToolUseGuidelinesSection(subagentRole, isPlanMode)}
+
+${!subagentRole && modeConfig.groups.some((entry) => getGroupName(entry) === "read") ? getTicketsSection(isPlanMode) : ""}
 
 ${getCapabilitiesSection(
 	cwd,

@@ -27,6 +27,8 @@ checkpoints, not the current aggregate result. The stale lock was quarantined of
 | `dev-selective-commit`             | Fix one defect while unrelated work is staged, unstaged and untracked                                | Only requested files committed; unrelated bytes and staged entries preserved                              |
 | `dev-merge-conflict`               | Resolve an actual divergent-branch merge conflict and test both changes                              | No unresolved index stages, both behaviors retained, true two-parent merge commit                         |
 | `dev-local-migration`              | Implement/run a JSON fixture migration, then run it again                                            | Version upgraded, IDs and data preserved, second execution is idempotent                                  |
+| `dev-search-recovery`              | Recover from an empty search scope, find Copilot references, then search for an absent term          | Bounded calls, actual search receipts, correct reports, unchanged repository                              |
+| `dev-verification-unavailable`     | Attempt required integration verification with missing local configuration                           | One visible blocked handoff, resumable incomplete task, no false verification or successful final         |
 | `review-edit-test-commit-followup` | Review → bug fix → tests → commit → follow-up                                                        | Existing independent repository, transcript and lifecycle checks                                          |
 | `cancel-resume`                    | Cancel at a known approval boundary, resume the same task                                            | Cancelled lifecycle recorded; no premature mutation; resumed task succeeds                                |
 | `reload-continuation`              | Close/reopen the host and continue a retained task                                                   | Correlated checkpoint and same-task persistence; prepare alone is not a pass                              |
@@ -93,7 +95,7 @@ Live smoke, using the exact model ID returned by the profile's discovery result:
 pnpm --dir apps/vscode-e2e test:campaign --suite smoke --provider live-copilot --model-id EXACT_DISCOVERED_ID --effort high --root F:/alpha-development/live --profile-dir F:/alpha-development/profiles --init-root
 ```
 
-Use `--suite development` for all ten scenarios or `--suite soak` for repeated samples. Both hosts run by default,
+Use `--suite development` for all twelve scenarios or `--suite soak` for repeated samples. Both hosts run by default,
 reference version first. To isolate a host, add `--vscode-version 1.122.1`; an installed binary can be supplied with
 `--vscode-executable` and its matching exact version. Run IDs are generated uniquely; `--id` permits an explicit unique ID.
 Keep the same `--profile-dir` across runs. `--init-root` applies only to an empty or already marked campaign root, not to
@@ -106,6 +108,8 @@ No provider is assumed: `--provider` is mandatory for presets. Live also require
 unsupported/unavailable options block rather than substitute. Scripted presets reject model/effort labels. Presets do
 not permit source-repair flags. Use an explicit `--config` instead for custom budgets or a reviewed patch campaign;
 configuration mode and preset mode cannot be combined.
+
+For only the search and unavailable-verification cases, use the [focused recovery demo](live-search-recovery.md).
 
 See [campaign budgets and result semantics](vscode-test-campaigns.md) for exit codes, immutable reports, resource limits,
 evidence retention, and stop conditions. There is no background overnight scheduler: soak is an explicitly started,

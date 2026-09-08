@@ -1,0 +1,644 @@
+{
+	"schemaVersion": 1,
+	"kind": "nor38-live-descriptive-aggregation",
+	"comparisonId": "nor38-comparison-20260908001538584-154f41a3",
+	"method": "All 18 original samples included regardless of status; differences are candidate minus baseline",
+	"sources": {
+		"comparisonPlanPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3\\comparison-plan.json",
+		"comparisonResultPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3\\comparison-result.json",
+		"blocks": [
+			{
+				"side": "baseline",
+				"campaignId": "nor38-comparison-20260908001538584-154f41a3-b1-baseline",
+				"blockPlanPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b1-baseline\\block-plan.json",
+				"blockResultPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b1-baseline\\block-result.json",
+				"reportPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b1-baseline\\report-00006.json"
+			},
+			{
+				"side": "candidate",
+				"campaignId": "nor38-comparison-20260908001538584-154f41a3-b2-candidate",
+				"blockPlanPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b2-candidate\\block-plan.json",
+				"blockResultPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b2-candidate\\block-result.json",
+				"reportPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b2-candidate\\report-00006.json"
+			},
+			{
+				"side": "candidate",
+				"campaignId": "nor38-comparison-20260908001538584-154f41a3-b3-candidate",
+				"blockPlanPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b3-candidate\\block-plan.json",
+				"blockResultPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b3-candidate\\block-result.json",
+				"reportPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b3-candidate\\report-00006.json"
+			},
+			{
+				"side": "baseline",
+				"campaignId": "nor38-comparison-20260908001538584-154f41a3-b4-baseline",
+				"blockPlanPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b4-baseline\\block-plan.json",
+				"blockResultPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b4-baseline\\block-result.json",
+				"reportPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b4-baseline\\report-00006.json"
+			},
+			{
+				"side": "baseline",
+				"campaignId": "nor38-comparison-20260908001538584-154f41a3-b5-baseline",
+				"blockPlanPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b5-baseline\\block-plan.json",
+				"blockResultPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b5-baseline\\block-result.json",
+				"reportPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b5-baseline\\report-00006.json"
+			},
+			{
+				"side": "candidate",
+				"campaignId": "nor38-comparison-20260908001538584-154f41a3-b6-candidate",
+				"blockPlanPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b6-candidate\\block-plan.json",
+				"blockResultPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b6-candidate\\block-result.json",
+				"reportPath": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b6-candidate\\report-00006.json"
+			}
+		]
+	},
+	"identities": {
+		"baseline": {
+			"gateArtifacts": "c1b8ce65804766c24f4b73ce6a056df5c137490b11c8e459ffc72e81fad03281",
+			"extensionBundle": "3dcef87c785da21921c83e2a1030159d9d6dc391e3e7ee8610fca0386ae6b9c3",
+			"harnessSource": {
+				"sha256": "2372904d131fdf2ab58538f1a86ac25fd677a3adc8b45a0b88b825282d4ad156",
+				"entries": 127,
+				"bytes": 1215779
+			},
+			"harnessCompiled": {
+				"sha256": "b4fd0be3bbcd53c6656f34a5304c441f3bb2d24e2d41ac111025e516e7cf8258",
+				"entries": 242,
+				"bytes": 2590691
+			},
+			"fixtureAndBuildInputs": {
+				"sha256": "0fc22a4a748db83fa37a4f3b38e35b9eeae2f221d3723366890b0efb2ccfb6f0",
+				"entries": 7,
+				"bytes": 8974
+			}
+		},
+		"candidate": {
+			"gateArtifacts": "d3f03058a9129e57bdbca6222ae551e0ba2c0b1acdeaaa4ce031c8de749a8a50",
+			"extensionBundle": "6f99a0f370c45cc91e679bd709d3f312d53c2a148742a7b9519b84308e0beeee",
+			"harnessSource": {
+				"sha256": "2372904d131fdf2ab58538f1a86ac25fd677a3adc8b45a0b88b825282d4ad156",
+				"entries": 127,
+				"bytes": 1215779
+			},
+			"harnessCompiled": {
+				"sha256": "b4fd0be3bbcd53c6656f34a5304c441f3bb2d24e2d41ac111025e516e7cf8258",
+				"entries": 242,
+				"bytes": 2590691
+			},
+			"fixtureAndBuildInputs": {
+				"sha256": "0fc22a4a748db83fa37a4f3b38e35b9eeae2f221d3723366890b0efb2ccfb6f0",
+				"entries": 7,
+				"bytes": 8974
+			}
+		}
+	},
+	"provider": {
+		"mode": "live-copilot",
+		"modelId": "gpt-5.6-luna",
+		"effort": "high"
+	},
+	"hostVersion": "1.136.1",
+	"samples": [
+		{
+			"side": "baseline",
+			"block": 1,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b1-baseline",
+			"attemptId": "attempt-0001",
+			"scenarioId": "dev-git-inspect",
+			"status": "passed",
+			"failure": null,
+			"requests": 6,
+			"elapsedMs": 56155.532699999996,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b1-baseline\\report-00006.json",
+			"evidenceReference": "attempt-0001\\evidence-index.json"
+		},
+		{
+			"side": "baseline",
+			"block": 1,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b1-baseline",
+			"attemptId": "attempt-0002",
+			"scenarioId": "review-edit-test-commit-followup",
+			"status": "passed",
+			"failure": null,
+			"requests": 15,
+			"elapsedMs": 81577.30230000001,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b1-baseline\\report-00006.json",
+			"evidenceReference": "attempt-0002\\evidence-index.json"
+		},
+		{
+			"side": "baseline",
+			"block": 1,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b1-baseline",
+			"attemptId": "attempt-0003",
+			"scenarioId": "long-thread",
+			"status": "passed",
+			"failure": null,
+			"requests": 24,
+			"elapsedMs": 139895.6379,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b1-baseline\\report-00006.json",
+			"evidenceReference": "attempt-0003\\evidence-index.json"
+		},
+		{
+			"side": "candidate",
+			"block": 2,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b2-candidate",
+			"attemptId": "attempt-0001",
+			"scenarioId": "dev-git-inspect",
+			"status": "passed",
+			"failure": null,
+			"requests": 6,
+			"elapsedMs": 49918.591199999966,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b2-candidate\\report-00006.json",
+			"evidenceReference": "attempt-0001\\evidence-index.json"
+		},
+		{
+			"side": "candidate",
+			"block": 2,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b2-candidate",
+			"attemptId": "attempt-0002",
+			"scenarioId": "review-edit-test-commit-followup",
+			"status": "passed",
+			"failure": null,
+			"requests": 15,
+			"elapsedMs": 87350.46140000003,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b2-candidate\\report-00006.json",
+			"evidenceReference": "attempt-0002\\evidence-index.json"
+		},
+		{
+			"side": "candidate",
+			"block": 2,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b2-candidate",
+			"attemptId": "attempt-0003",
+			"scenarioId": "long-thread",
+			"status": "passed",
+			"failure": null,
+			"requests": 25,
+			"elapsedMs": 121429.505,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b2-candidate\\report-00006.json",
+			"evidenceReference": "attempt-0003\\evidence-index.json"
+		},
+		{
+			"side": "candidate",
+			"block": 3,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b3-candidate",
+			"attemptId": "attempt-0001",
+			"scenarioId": "dev-git-inspect",
+			"status": "passed",
+			"failure": null,
+			"requests": 6,
+			"elapsedMs": 47216.72680000006,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b3-candidate\\report-00006.json",
+			"evidenceReference": "attempt-0001\\evidence-index.json"
+		},
+		{
+			"side": "candidate",
+			"block": 3,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b3-candidate",
+			"attemptId": "attempt-0002",
+			"scenarioId": "review-edit-test-commit-followup",
+			"status": "passed",
+			"failure": null,
+			"requests": 16,
+			"elapsedMs": 78534.28590000002,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b3-candidate\\report-00006.json",
+			"evidenceReference": "attempt-0002\\evidence-index.json"
+		},
+		{
+			"side": "candidate",
+			"block": 3,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b3-candidate",
+			"attemptId": "attempt-0003",
+			"scenarioId": "long-thread",
+			"status": "passed",
+			"failure": null,
+			"requests": 25,
+			"elapsedMs": 115579.46059999999,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b3-candidate\\report-00006.json",
+			"evidenceReference": "attempt-0003\\evidence-index.json"
+		},
+		{
+			"side": "baseline",
+			"block": 4,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b4-baseline",
+			"attemptId": "attempt-0001",
+			"scenarioId": "dev-git-inspect",
+			"status": "passed",
+			"failure": null,
+			"requests": 6,
+			"elapsedMs": 47175.466000000015,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b4-baseline\\report-00006.json",
+			"evidenceReference": "attempt-0001\\evidence-index.json"
+		},
+		{
+			"side": "baseline",
+			"block": 4,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b4-baseline",
+			"attemptId": "attempt-0002",
+			"scenarioId": "review-edit-test-commit-followup",
+			"status": "passed",
+			"failure": null,
+			"requests": 15,
+			"elapsedMs": 86944.38500000001,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b4-baseline\\report-00006.json",
+			"evidenceReference": "attempt-0002\\evidence-index.json"
+		},
+		{
+			"side": "baseline",
+			"block": 4,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b4-baseline",
+			"attemptId": "attempt-0003",
+			"scenarioId": "long-thread",
+			"status": "passed",
+			"failure": null,
+			"requests": 25,
+			"elapsedMs": 120141.27249999996,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b4-baseline\\report-00006.json",
+			"evidenceReference": "attempt-0003\\evidence-index.json"
+		},
+		{
+			"side": "baseline",
+			"block": 5,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b5-baseline",
+			"attemptId": "attempt-0001",
+			"scenarioId": "dev-git-inspect",
+			"status": "passed",
+			"failure": null,
+			"requests": 5,
+			"elapsedMs": 46731.05550000002,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b5-baseline\\report-00006.json",
+			"evidenceReference": "attempt-0001\\evidence-index.json"
+		},
+		{
+			"side": "baseline",
+			"block": 5,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b5-baseline",
+			"attemptId": "attempt-0002",
+			"scenarioId": "review-edit-test-commit-followup",
+			"status": "passed",
+			"failure": null,
+			"requests": 15,
+			"elapsedMs": 85286.92119999998,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b5-baseline\\report-00006.json",
+			"evidenceReference": "attempt-0002\\evidence-index.json"
+		},
+		{
+			"side": "baseline",
+			"block": 5,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b5-baseline",
+			"attemptId": "attempt-0003",
+			"scenarioId": "long-thread",
+			"status": "passed",
+			"failure": null,
+			"requests": 24,
+			"elapsedMs": 122452.57410000009,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b5-baseline\\report-00006.json",
+			"evidenceReference": "attempt-0003\\evidence-index.json"
+		},
+		{
+			"side": "candidate",
+			"block": 6,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b6-candidate",
+			"attemptId": "attempt-0001",
+			"scenarioId": "dev-git-inspect",
+			"status": "passed",
+			"failure": null,
+			"requests": 6,
+			"elapsedMs": 52653.70409999997,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b6-candidate\\report-00006.json",
+			"evidenceReference": "attempt-0001\\evidence-index.json"
+		},
+		{
+			"side": "candidate",
+			"block": 6,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b6-candidate",
+			"attemptId": "attempt-0002",
+			"scenarioId": "review-edit-test-commit-followup",
+			"status": "passed",
+			"failure": null,
+			"requests": 16,
+			"elapsedMs": 90395.6102,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b6-candidate\\report-00006.json",
+			"evidenceReference": "attempt-0002\\evidence-index.json"
+		},
+		{
+			"side": "candidate",
+			"block": 6,
+			"campaignId": "nor38-comparison-20260908001538584-154f41a3-b6-candidate",
+			"attemptId": "attempt-0003",
+			"scenarioId": "long-thread",
+			"status": "passed",
+			"failure": null,
+			"requests": 24,
+			"elapsedMs": 122560.15699999989,
+			"sourceReport": "F:\\alpha-vscode-e2e-runs\\nor38-performance-20260907\\campaigns\\nor38-comparison-20260908001538584-154f41a3-b6-candidate\\report-00006.json",
+			"evidenceReference": "attempt-0003\\evidence-index.json"
+		}
+	],
+	"totals": {
+		"baseline": {
+			"samples": 9,
+			"statusCounts": {
+				"passed": 9,
+				"failed": 0,
+				"blocked": 0
+			},
+			"requests": 135,
+			"attemptElapsedMs": 786360.1472000001,
+			"campaignElapsedMs": 786422
+		},
+		"candidate": {
+			"samples": 9,
+			"statusCounts": {
+				"passed": 9,
+				"failed": 0,
+				"blocked": 0
+			},
+			"requests": 139,
+			"attemptElapsedMs": 765638.5022,
+			"campaignElapsedMs": 765702
+		}
+	},
+	"totalDifferences": {
+		"requests": {
+			"absolute": 4,
+			"percentOfBaseline": 2.9629629629629632
+		},
+		"attemptElapsedMs": {
+			"absolute": -20721.645000000135,
+			"percentOfBaseline": -2.6351341778679767
+		},
+		"campaignElapsedMs": {
+			"absolute": -20720,
+			"percentOfBaseline": -2.6347177469602836
+		}
+	},
+	"statusCountDifferences": {
+		"passed": {
+			"absolute": 0,
+			"percentOfBaseline": 0
+		},
+		"failed": {
+			"absolute": 0,
+			"percentOfBaseline": null
+		},
+		"blocked": {
+			"absolute": 0,
+			"percentOfBaseline": null
+		}
+	},
+	"scenarios": [
+		{
+			"scenarioId": "dev-git-inspect",
+			"baseline": {
+				"samples": 3,
+				"statusCounts": {
+					"passed": 3,
+					"failed": 0,
+					"blocked": 0
+				},
+				"requests": {
+					"median": 6,
+					"min": 5,
+					"max": 6,
+					"total": 17
+				},
+				"elapsedMs": {
+					"median": 47175.466000000015,
+					"min": 46731.05550000002,
+					"max": 56155.532699999996,
+					"total": 150062.0542
+				}
+			},
+			"candidate": {
+				"samples": 3,
+				"statusCounts": {
+					"passed": 3,
+					"failed": 0,
+					"blocked": 0
+				},
+				"requests": {
+					"median": 6,
+					"min": 6,
+					"max": 6,
+					"total": 18
+				},
+				"elapsedMs": {
+					"median": 49918.591199999966,
+					"min": 47216.72680000006,
+					"max": 52653.70409999997,
+					"total": 149789.0221
+				}
+			},
+			"differences": {
+				"requests": {
+					"median": {
+						"absolute": 0,
+						"percentOfBaseline": 0
+					},
+					"min": {
+						"absolute": 1,
+						"percentOfBaseline": 20
+					},
+					"max": {
+						"absolute": 0,
+						"percentOfBaseline": 0
+					},
+					"total": {
+						"absolute": 1,
+						"percentOfBaseline": 5.88235294117647
+					}
+				},
+				"elapsedMs": {
+					"median": {
+						"absolute": 2743.1251999999513,
+						"percentOfBaseline": 5.814728359015999
+					},
+					"min": {
+						"absolute": 485.67130000004545,
+						"percentOfBaseline": 1.0392902424385542
+					},
+					"max": {
+						"absolute": -3501.8286000000226,
+						"percentOfBaseline": -6.2359458304987685
+					},
+					"total": {
+						"absolute": -273.03210000001127,
+						"percentOfBaseline": -0.18194612985646524
+					}
+				}
+			}
+		},
+		{
+			"scenarioId": "review-edit-test-commit-followup",
+			"baseline": {
+				"samples": 3,
+				"statusCounts": {
+					"passed": 3,
+					"failed": 0,
+					"blocked": 0
+				},
+				"requests": {
+					"median": 15,
+					"min": 15,
+					"max": 15,
+					"total": 45
+				},
+				"elapsedMs": {
+					"median": 85286.92119999998,
+					"min": 81577.30230000001,
+					"max": 86944.38500000001,
+					"total": 253808.6085
+				}
+			},
+			"candidate": {
+				"samples": 3,
+				"statusCounts": {
+					"passed": 3,
+					"failed": 0,
+					"blocked": 0
+				},
+				"requests": {
+					"median": 16,
+					"min": 15,
+					"max": 16,
+					"total": 47
+				},
+				"elapsedMs": {
+					"median": 87350.46140000003,
+					"min": 78534.28590000002,
+					"max": 90395.6102,
+					"total": 256280.35750000004
+				}
+			},
+			"differences": {
+				"requests": {
+					"median": {
+						"absolute": 1,
+						"percentOfBaseline": 6.666666666666667
+					},
+					"min": {
+						"absolute": 0,
+						"percentOfBaseline": 0
+					},
+					"max": {
+						"absolute": 1,
+						"percentOfBaseline": 6.666666666666667
+					},
+					"total": {
+						"absolute": 2,
+						"percentOfBaseline": 4.444444444444445
+					}
+				},
+				"elapsedMs": {
+					"median": {
+						"absolute": 2063.5402000000468,
+						"percentOfBaseline": 2.4195271337805626
+					},
+					"min": {
+						"absolute": -3043.016399999993,
+						"percentOfBaseline": -3.7302243567816444
+					},
+					"max": {
+						"absolute": 3451.225199999986,
+						"percentOfBaseline": 3.96946300787565
+					},
+					"total": {
+						"absolute": 2471.74900000004,
+						"percentOfBaseline": 0.973863343173421
+					}
+				}
+			}
+		},
+		{
+			"scenarioId": "long-thread",
+			"baseline": {
+				"samples": 3,
+				"statusCounts": {
+					"passed": 3,
+					"failed": 0,
+					"blocked": 0
+				},
+				"requests": {
+					"median": 24,
+					"min": 24,
+					"max": 25,
+					"total": 73
+				},
+				"elapsedMs": {
+					"median": 122452.57410000009,
+					"min": 120141.27249999996,
+					"max": 139895.6379,
+					"total": 382489.4845
+				}
+			},
+			"candidate": {
+				"samples": 3,
+				"statusCounts": {
+					"passed": 3,
+					"failed": 0,
+					"blocked": 0
+				},
+				"requests": {
+					"median": 25,
+					"min": 24,
+					"max": 25,
+					"total": 74
+				},
+				"elapsedMs": {
+					"median": 121429.505,
+					"min": 115579.46059999999,
+					"max": 122560.15699999989,
+					"total": 359569.1225999999
+				}
+			},
+			"differences": {
+				"requests": {
+					"median": {
+						"absolute": 1,
+						"percentOfBaseline": 4.166666666666666
+					},
+					"min": {
+						"absolute": 0,
+						"percentOfBaseline": 0
+					},
+					"max": {
+						"absolute": 0,
+						"percentOfBaseline": 0
+					},
+					"total": {
+						"absolute": 1,
+						"percentOfBaseline": 1.36986301369863
+					}
+				},
+				"elapsedMs": {
+					"median": {
+						"absolute": -1023.0691000000807,
+						"percentOfBaseline": -0.83548190597006
+					},
+					"min": {
+						"absolute": -4561.8118999999715,
+						"percentOfBaseline": -3.7970397724894855
+					},
+					"max": {
+						"absolute": -17335.48090000011,
+						"percentOfBaseline": -12.391723687905005
+					},
+					"total": {
+						"absolute": -22920.361900000134,
+						"percentOfBaseline": -5.992416217654249
+					}
+				}
+			}
+		}
+	],
+	"unobserved": {
+		"inputTokens": null,
+		"outputTokens": null,
+		"cost": null,
+		"cache": null,
+		"timeToFirstToken": null
+	},
+	"elapsedBoundaries": {
+		"attemptElapsedMs": "Campaign attempt timing",
+		"campaignElapsedMs": "Campaign report wall time including setup and report overhead"
+	}
+}

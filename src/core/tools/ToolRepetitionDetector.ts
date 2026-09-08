@@ -2,6 +2,7 @@ import { createHash } from "crypto"
 import stringify from "safe-stable-stringify"
 import type { ToolUse } from "../../shared/tools"
 import { t } from "../../i18n"
+import { normalizeToolFailure, type ToolFailureMetadata } from "./ToolFailure"
 
 export interface ToolProgressObservation {
 	toolName: string
@@ -17,13 +18,19 @@ export interface ToolProgressObservation {
 	evidenceFingerprint?: string
 	/** Host-issued semantic identity for a supported shell inspection. */
 	explorationFingerprint?: string
+	/** Trusted execution cause. Unrelated progress cannot renew this blocker's retry allowance. */
+	failure?: ToolFailureMetadata
+	/** Running command handlers have not established a successful operation outcome. */
+	executionStatus?: "running" | "success" | "error" | "denied" | "cancelled"
 }
 
 export interface ToolProgressDecision {
 	action: "continue" | "change-strategy" | "stop"
 	stagnantCalls: number
 	retainedOutcomes: number
-	reason?: "no-progress"
+	reason?: "no-progress" | "unchanged-blocker" | "unknown-outcome" | "failure-capacity"
+	/** A per-operation retry decision, never a global stop on independent work. */
+	failure?: ToolFailureMetadata
 }
 
 export interface ToolProgressOptions {
@@ -41,6 +48,23 @@ function digest(value: unknown): string {
 	return createHash("sha256")
 		.update(stringify(value) ?? "")
 		.digest("hex")
+}
+
+function operationIdentity(toolName: string, args: unknown): string {
+	if (toolName === "execute_command" && args && typeof args === "object" && "command" in args) {
+		const command = typeof args.command === "string" ? args.command.trim() : args.command
+		const cwd = "cwd" in args ? (args.cwd ?? undefined) : undefined
+		// Timeout and verification association do not change the requested effect.
+		// Preserve whitespace inside shell strings, which can change their meaning.
+		return digest({ toolName, command, cwd })
+	}
+	return digest({ toolName, args })
+}
+
+interface FailureAllowance {
+	failure: ToolFailureMetadata
+	attempts: number
+	operations: Set<string>
 }
 
 /**
@@ -62,6 +86,8 @@ export class ToolRepetitionDetector {
 	private stagnantCalls = 0
 	private strategyChangeIssued = false
 	private stopped = false
+	private readonly failureAllowances = new Map<string, FailureAllowance>()
+	private failureCapacity?: ToolFailureMetadata
 
 	/**
 	 * Creates a new ToolRepetitionDetector
@@ -89,8 +115,52 @@ export class ToolRepetitionDetector {
 	 * can reset the ephemeral window; durable verification remains the host's job.
 	 */
 	public recordOutcome(observation: ToolProgressObservation): ToolProgressDecision {
-		if (this.consecutiveIdenticalToolCallLimit <= 0) return this.progressDecision("continue")
+		const failure = observation.status === "success" ? undefined : normalizeToolFailure(observation.failure)
+		if (this.failureCapacity) return this.failureCapacityDecision(this.failureCapacity)
+		if (this.consecutiveIdenticalToolCallLimit <= 0 && failure?.outcome !== "unknown")
+			return this.progressDecision("continue")
 		if (this.stopped) return this.progressDecision("stop")
+		const operation = operationIdentity(observation.toolName, observation.args)
+		if (failure && (failure.reason !== "cancelled" || failure.outcome === "unknown")) {
+			const key = digest([failure.reason, failure.affectedScope])
+			let allowance = this.failureAllowances.get(key)
+			if (
+				(!allowance && this.failureAllowances.size >= this.historyLimit) ||
+				(allowance && !allowance.operations.has(operation) && allowance.operations.size >= this.historyLimit)
+			) {
+				this.failureCapacity = failure
+				return this.failureCapacityDecision(failure)
+			}
+			if (!allowance && this.failureAllowances.size < this.historyLimit) {
+				allowance = { failure, attempts: 0, operations: new Set() }
+				this.failureAllowances.set(key, allowance)
+			}
+			if (allowance) {
+				if (allowance.failure.outcome !== "unknown") allowance.failure = failure
+				allowance.attempts = Math.min(this.noProgressLimit * 2, allowance.attempts + 1)
+				if (allowance.operations.size < this.historyLimit) allowance.operations.add(operation)
+				this.retainedOutcomeCount = Math.min(this.historyLimit, this.retainedOutcomeCount + 1)
+				const unknown = allowance.failure.outcome === "unknown"
+				return {
+					action:
+						unknown || allowance.attempts >= this.noProgressLimit * 2
+							? "stop"
+							: allowance.attempts === this.noProgressLimit
+								? "change-strategy"
+								: "continue",
+					stagnantCalls: allowance.attempts,
+					retainedOutcomes: this.retainedOutcomeCount,
+					reason: unknown ? "unknown-outcome" : "unchanged-blocker",
+					failure: allowance.failure,
+				}
+			}
+		} else if (observation.status === "success" && observation.executionStatus !== "running") {
+			for (const [key, allowance] of this.failureAllowances) {
+				if (allowance.failure.outcome === "known" && allowance.operations.has(operation)) {
+					this.failureAllowances.delete(key)
+				}
+			}
+		}
 
 		const outcome = {
 			identity: digest(
@@ -148,6 +218,8 @@ export class ToolRepetitionDetector {
 	}
 
 	public resetProgress(): void {
+		this.failureCapacity = undefined
+		this.failureAllowances.clear()
 		this.seenReadIdentities.clear()
 		this.seenStateIdentities.clear()
 		this.seenStateScopes.clear()
@@ -156,6 +228,33 @@ export class ToolRepetitionDetector {
 		this.stagnantCalls = 0
 		this.strategyChangeIssued = false
 		this.stopped = false
+	}
+
+	/** Pure, bounded gate for previously failed effects; inspection and alternatives remain available. */
+	public getRetryBlock(toolName: string, args: unknown): ToolFailureMetadata | undefined {
+		if (this.failureCapacity) return this.failureCapacity
+		const operation = operationIdentity(toolName, args)
+		let blocked: ToolFailureMetadata | undefined
+		for (const allowance of this.failureAllowances.values()) {
+			if (
+				allowance.operations.has(operation) &&
+				(allowance.failure.outcome === "unknown" || allowance.attempts >= this.noProgressLimit * 2)
+			) {
+				if (allowance.failure.outcome === "unknown") return allowance.failure
+				blocked = allowance.failure
+			}
+		}
+		return blocked
+	}
+
+	private failureCapacityDecision(failure: ToolFailureMetadata): ToolProgressDecision {
+		return {
+			action: "stop",
+			stagnantCalls: this.stagnantCalls,
+			retainedOutcomes: this.retainedOutcomeCount,
+			reason: "failure-capacity",
+			failure,
+		}
 	}
 
 	private rememberNovelty(seen: Set<string>, identity: string): boolean {

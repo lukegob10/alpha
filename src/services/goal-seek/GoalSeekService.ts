@@ -775,6 +775,7 @@ export class GoalSeekService implements vscode.Disposable {
 				alwaysAllowWrite: writeCapable,
 				alwaysAllowWriteOutsideWorkspace: false,
 				alwaysAllowWriteProtected: false,
+				alwaysAllowTickets: false,
 				alwaysAllowExecute: writeCapable,
 				alwaysAllowMcp: writeCapable,
 				alwaysAllowModeSwitch: false,

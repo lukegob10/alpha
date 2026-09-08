@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.26
+
+### Patch Changes
+
+- Add ticket deletion to Alpha Tickets with named confirmation, revision checks, linked-task preservation, and permanent reference sequencing.
+- Require manual approval for native ticket deletion and preserve drafts, focus, pagination, and search when deletion is cancelled or fails.
+
 ## 2.1.25
 
 ### Patch Changes

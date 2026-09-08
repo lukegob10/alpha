@@ -3968,6 +3968,32 @@ describe("Alpha", () => {
 			expect(saved.some((message) => message.ask === "resume_task")).toBe(false)
 		})
 
+		it.each([true, false])(
+			"reports blocked stagnation once and preserves receipt-persistence failure (%s)",
+			async (persisted) => {
+				const task = createTask()
+				const report = "Task remains incomplete: repeated search outcomes produced no new evidence."
+				vi.spyOn(task as any, "flushPendingToolResultsToHistory").mockResolvedValue(persisted)
+				const request = vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+					task.suspendAfterCurrentTurn(report, "blocked")
+					return { status: "completed", response: createAgentResponse([]) }
+				})
+				const ask = vi.spyOn(task, "ask").mockImplementation(async () => {
+					task.abort = true
+					return { response: "noButtonClicked" }
+				})
+				await (task as any).initiateTaskLoop([{ type: "text", text: "Search the codebase." }])
+				expect(request).toHaveBeenCalledOnce()
+				expect(ask).toHaveBeenCalledWith("resume_task")
+				const reports = task.clineMessages.filter((message) => message.say === (persisted ? "text" : "error"))
+				expect(reports).toEqual([expect.objectContaining({ text: expect.stringContaining(report) })])
+				expect(reports[0].partial).not.toBe(true)
+				expect(task.clineMessages.some((message) => message.say === "completion_result")).toBe(false)
+				expect(task.clineMessages.some((message) => message.say === "error")).toBe(!persisted)
+				expect(Reflect.get(task, "didComplete")).toBe(false)
+			},
+		)
+
 		it.each(["failed", "incomplete", "exhausted"] as const)(
 			"resumes a primary task after a %s turn and consumes its follow-up once",
 			async (status) => {

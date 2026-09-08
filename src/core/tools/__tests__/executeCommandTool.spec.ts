@@ -8,6 +8,7 @@ import { Task } from "../../task/Task"
 import { formatResponse } from "../../prompts/responses"
 import { ToolUse, AskApproval, HandleError, PushToolResult } from "../../../shared/tools"
 import { unescapeHtmlEntities } from "../../../utils/text-normalization"
+import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 
 // Mock dependencies
 vitest.mock("execa", () => ({
@@ -151,6 +152,79 @@ describe("executeCommandTool", () => {
 
 	// Now we can run these tests
 	describe("Basic functionality", () => {
+		it("reports the supported GitHub API alternative without including command arguments in metadata", async () => {
+			const setResultMetadata = vitest.fn()
+			await executeCommandTool.handle(
+				mockCline,
+				{ ...mockToolUse, nativeArgs: { command: "gh pr create --body private-description" } },
+				{
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					setResultMetadata,
+				},
+			)
+			expect(setResultMetadata).toHaveBeenCalledWith(
+				expect.objectContaining({
+					failure: expect.objectContaining({
+						reason: "capability_unavailable",
+						effectsStarted: "no",
+						outcome: "known",
+						recovery: { kind: "alternative", toolName: "github_api" },
+					}),
+				}),
+			)
+			expect(JSON.stringify(setResultMetadata.mock.calls)).not.toContain("private-description")
+		})
+
+		it("distinguishes a terminal capability failure before process launch", async () => {
+			vitest
+				.mocked(TerminalRegistry.getOrCreateTerminal)
+				.mockRejectedValueOnce(new Error("private-terminal-error"))
+			const setResultMetadata = vitest.fn()
+			await executeCommandTool.handle(mockCline, mockToolUse, {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				setResultMetadata,
+			})
+			expect(setResultMetadata).toHaveBeenCalledWith(
+				expect.objectContaining({
+					failure: expect.objectContaining({
+						reason: "pre_launch_rejected",
+						effectsStarted: "no",
+						outcome: "known",
+						recovery: { kind: "repair" },
+					}),
+				}),
+			)
+			expect(JSON.stringify(setResultMetadata.mock.calls)).not.toContain("private-terminal-error")
+		})
+
+		it("requires reconciliation after launch throws with an unknown effect outcome", async () => {
+			vitest.mocked(TerminalRegistry.getOrCreateTerminal).mockResolvedValueOnce({
+				runCommand: () => {
+					throw new Error("launch failed")
+				},
+			} as never)
+			const setResultMetadata = vitest.fn()
+			await executeCommandTool.handle(mockCline, mockToolUse, {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				setResultMetadata,
+			})
+			expect(setResultMetadata).toHaveBeenCalledWith(
+				expect.objectContaining({
+					failure: expect.objectContaining({
+						reason: "outcome_unknown",
+						effectsStarted: "unknown",
+						outcome: "unknown",
+						recovery: { kind: "verify-outcome" },
+					}),
+				}),
+			)
+		})
 		it("emits trusted exploration metadata only after a supported command exits successfully", async () => {
 			mockToolUse.params.command = "rg --files"
 			mockToolUse.nativeArgs = { command: "rg --files" }

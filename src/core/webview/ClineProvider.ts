@@ -3305,6 +3305,7 @@ export class ClineProvider
 			alwaysAllowWrite: settings.alwaysAllowWrite === true,
 			alwaysAllowWriteOutsideWorkspace: settings.alwaysAllowWriteOutsideWorkspace === true,
 			alwaysAllowWriteProtected: settings.alwaysAllowWriteProtected === true,
+			alwaysAllowTickets: settings.alwaysAllowTickets === true,
 			alwaysAllowExecute: settings.alwaysAllowExecute === true,
 			alwaysAllowSubagents: settings.alwaysAllowSubagents === true,
 			commandApproval: createSubagentCommandApprovalPolicy(allowedCommands, deniedCommands),
@@ -3320,6 +3321,7 @@ export class ClineProvider
 			policy.alwaysAllowWrite &&
 			policy.alwaysAllowWriteOutsideWorkspace &&
 			policy.alwaysAllowWriteProtected &&
+			policy.alwaysAllowTickets === true &&
 			policy.alwaysAllowExecute &&
 			policy.alwaysAllowSubagents &&
 			commandPolicies.every(
@@ -3343,6 +3345,7 @@ export class ClineProvider
 			alwaysAllowWriteOutsideWorkspace:
 				live.alwaysAllowWriteOutsideWorkspace && inherited.alwaysAllowWriteOutsideWorkspace,
 			alwaysAllowWriteProtected: live.alwaysAllowWriteProtected && inherited.alwaysAllowWriteProtected,
+			alwaysAllowTickets: live.alwaysAllowTickets === true && inherited.alwaysAllowTickets === true,
 			alwaysAllowExecute: live.alwaysAllowExecute && inherited.alwaysAllowExecute,
 			alwaysAllowSubagents: live.alwaysAllowSubagents && inherited.alwaysAllowSubagents,
 			commandApproval: live.commandApproval,
@@ -3579,6 +3582,7 @@ export class ClineProvider
 			alwaysAllowModeSwitch,
 			alwaysAllowSubtasks,
 			alwaysAllowSubagents,
+			alwaysAllowTickets,
 			maxConcurrentTasks,
 			maxConcurrentSubagents,
 			subagentDelegationPolicy,
@@ -3728,6 +3732,7 @@ export class ClineProvider
 			alwaysAllowModeSwitch: alwaysAllowModeSwitch ?? false,
 			alwaysAllowSubtasks: alwaysAllowSubtasks ?? false,
 			alwaysAllowSubagents: alwaysAllowSubagents ?? false,
+			alwaysAllowTickets: alwaysAllowTickets ?? false,
 			maxConcurrentTasks: maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS,
 			maxConcurrentSubagents: orchestrationSettings.maxConcurrentSubagents,
 			subagentDelegationPolicy: orchestrationSettings.delegationPolicy,
@@ -3925,6 +3930,7 @@ export class ClineProvider
 			alwaysAllowModeSwitch: stateValues.alwaysAllowModeSwitch ?? false,
 			alwaysAllowSubtasks: stateValues.alwaysAllowSubtasks ?? false,
 			alwaysAllowSubagents: stateValues.alwaysAllowSubagents ?? false,
+			alwaysAllowTickets: stateValues.alwaysAllowTickets ?? false,
 			maxConcurrentTasks: this.getConfiguredMaxConcurrentTasks(),
 			maxConcurrentSubagents: orchestrationSettings.maxConcurrentSubagents,
 			subagentDelegationPolicy: orchestrationSettings.delegationPolicy,

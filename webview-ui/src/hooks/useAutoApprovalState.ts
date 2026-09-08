@@ -8,6 +8,7 @@ interface AutoApprovalToggles {
 	alwaysAllowModeSwitch?: boolean
 	alwaysAllowSubtasks?: boolean
 	alwaysAllowSubagents?: boolean
+	alwaysAllowTickets?: boolean
 	alwaysAllowFollowupQuestions?: boolean
 }
 

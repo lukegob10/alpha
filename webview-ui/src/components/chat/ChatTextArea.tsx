@@ -33,6 +33,7 @@ import { MAX_IMAGES_PER_MESSAGE } from "./ChatView"
 import ContextMenu from "./ContextMenu"
 import { IndexingStatusBadge } from "./IndexingStatusBadge"
 import { usePromptHistory } from "./hooks/usePromptHistory"
+import { useTicketSearch } from "./hooks/useTicketSearch"
 
 interface ChatTextAreaProps {
 	inputValue: string
@@ -218,6 +219,13 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		const highlightLayerRef = useRef<HTMLDivElement>(null)
 		const [selectedMenuIndex, setSelectedMenuIndex] = useState(-1)
 		const [selectedType, setSelectedType] = useState<ContextMenuOptionType | null>(null)
+		const ticketOptions = useTicketSearch(
+			showContextMenu &&
+				(selectedType === ContextMenuOptionType.Ticket ||
+					(selectedType === null && /^[a-z]{2,4}$/i.test(searchQuery))),
+			searchQuery,
+			cwd ?? "",
+		)
 		const [justDeletedSpaceAfterMention, setJustDeletedSpaceAfterMention] = useState(false)
 		const [intendedCursorPosition, setIntendedCursorPosition] = useState<number | null>(null)
 		const contextMenuContainerRef = useRef<HTMLDivElement>(null)
@@ -235,7 +243,10 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 		// Fetch git commits when Git is selected or when typing a hash.
 		useEffect(() => {
-			if (selectedType === ContextMenuOptionType.Git || /^[a-f0-9]+$/i.test(searchQuery)) {
+			if (
+				selectedType === ContextMenuOptionType.Git ||
+				(selectedType !== ContextMenuOptionType.Ticket && /^[a-f0-9]+$/i.test(searchQuery))
+			) {
 				const message: WebviewMessage = {
 					type: "searchCommits",
 					query: searchQuery || "",
@@ -310,8 +321,9 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					fileSearchResults,
 					contextMenuModes,
 					commands,
+					ticketOptions,
 				),
-			[searchQuery, selectedType, queryItems, fileSearchResults, contextMenuModes, commands],
+			[searchQuery, selectedType, queryItems, fileSearchResults, contextMenuModes, commands, ticketOptions],
 		)
 
 		useEffect(() => {
@@ -378,12 +390,23 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				if (
 					type === ContextMenuOptionType.File ||
 					type === ContextMenuOptionType.Folder ||
-					type === ContextMenuOptionType.Git
+					type === ContextMenuOptionType.Git ||
+					type === ContextMenuOptionType.Ticket
 				) {
 					if (!value) {
 						setSelectedType(type)
 						setSearchQuery("")
 						setSelectedMenuIndex(0)
+						if (type === ContextMenuOptionType.Ticket && textAreaRef.current) {
+							const before = textAreaRef.current.value.slice(0, cursorPosition)
+							const start = before.lastIndexOf("@")
+							setInputValue(
+								before.slice(0, start) + "@ticket:" + textAreaRef.current.value.slice(cursorPosition),
+							)
+							setCursorPosition(start + 8)
+							setIntendedCursorPosition(start + 8)
+							textAreaRef.current.focus()
+						}
 						return
 					}
 				}
@@ -662,11 +685,21 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				const newCursorPosition = e.target.selectionStart
 				setCursorPosition(newCursorPosition)
 
-				const showMenu = shouldShowContextMenu(newValue, newCursorPosition)
+				const lastAtIndex = newValue.lastIndexOf("@", newCursorPosition - 1)
+				const mentionQuery = newValue.slice(lastAtIndex + 1, newCursorPosition)
+				const ticketPrefix = /^tickets?:/.exec(mentionQuery)?.[0]
+				const searchingTickets =
+					lastAtIndex >= 0 &&
+					(lastAtIndex === 0 || /\s/.test(newValue[lastAtIndex - 1])) &&
+					!/[\r\n]/.test(mentionQuery) &&
+					((ticketPrefix && (selectedType === ContextMenuOptionType.Ticket || !mentionQuery.includes(" "))) ||
+						/^[a-z]{2,4}-\d{0,10}$/i.test(mentionQuery))
+				const showMenu = searchingTickets || shouldShowContextMenu(newValue, newCursorPosition)
 				setShowContextMenu(showMenu)
 
 				if (showMenu) {
 					if (newValue.startsWith("/") && !newValue.includes(" ")) {
+						setSelectedType(null)
 						// Handle slash command - request fresh commands
 						const query = newValue
 						setSearchQuery(query)
@@ -676,9 +709,15 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						vscode.postMessage({ type: "requestCommands" })
 					} else {
 						// Existing @ mention handling.
-						const lastAtIndex = newValue.lastIndexOf("@", newCursorPosition - 1)
-						const query = newValue.slice(lastAtIndex + 1, newCursorPosition)
+						const query =
+							searchingTickets && ticketPrefix ? mentionQuery.slice(ticketPrefix.length) : mentionQuery
 						setSearchQuery(query)
+						if (searchingTickets) {
+							setSelectedType(ContextMenuOptionType.Ticket)
+							setSelectedMenuIndex(0)
+							return
+						}
+						if (selectedType === ContextMenuOptionType.Ticket) setSelectedType(null)
 
 						// Send file search request if query is not empty.
 						if (query.length > 0) {
@@ -711,15 +750,16 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					setFileSearchResults([]) // Clear file search results.
 				}
 			},
-			[cancelPendingFileSearch, setInputValue, setFileSearchResults, resetOnInputChange],
+			[cancelPendingFileSearch, setInputValue, setFileSearchResults, resetOnInputChange, selectedType],
 		)
 
 		useEffect(() => {
+			if (selectedType === ContextMenuOptionType.Ticket) cancelPendingFileSearch()
 			if (!showContextMenu) {
 				cancelPendingFileSearch()
 				setSelectedType(null)
 			}
-		}, [cancelPendingFileSearch, showContextMenu])
+		}, [cancelPendingFileSearch, showContextMenu, selectedType])
 
 		const handleBlur = useCallback(() => {
 			// Only hide the context menu if the user didn't click on it.

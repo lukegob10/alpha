@@ -17,10 +17,12 @@ import {
 	type DevelopmentPhaseId,
 } from "./developmentCatalog"
 import type { WorkflowTrace } from "./workflowTrace"
+import { isRecoveryPhase } from "./recoveryTrace"
 import type { LifecycleInspectionErrorCode, ToolTransactionErrorCode } from "./transactionAssertions"
 
 export interface WorkflowEvidence {
 	trace?: WorkflowTrace
+	recoveryChecks?: WorkflowCheck[]
 	callCount: number
 	resultCount: number
 	completedTurns: number
@@ -32,12 +34,12 @@ export interface WorkflowEvidence {
 export interface WorkflowHost {
 	start(prompt: WorkflowPromptName): Promise<string>
 	followup(taskId: string, prompt: WorkflowPromptName, step?: number): Promise<void>
-	complete(taskId: string): Promise<void>
+	complete(taskId: string, outcome?: "completed" | "blocked"): Promise<void>
 	waitForCommandApproval(taskId: string): Promise<void>
 	cancel(taskId: string): Promise<void>
 	resume(taskId: string, prompt: WorkflowPromptName): Promise<void>
 	assertUiTask(taskId: string): Promise<void>
-	inspect(taskId: string): Promise<WorkflowEvidence>
+	inspect(taskId: string, outcome?: "completed" | "blocked"): Promise<WorkflowEvidence>
 	requestsUsed(): number | null
 }
 
@@ -114,8 +116,8 @@ export async function runWorkflowScenario(
 		check(`${expected}_checks_present`, checks.length > 0)
 		for (const item of checks) check(`${expected}_${item.name}`, item.passed)
 	}
-	const inspect = async (taskId: string, minimumCompleted: number, requireCancellation = false) => {
-		const evidence = await host.inspect(taskId)
+	const inspect = async (taskId: string, minimumCompleted: number, requireCancellation = false, blocked = false) => {
+		const evidence = await host.inspect(taskId, blocked ? "blocked" : "completed")
 		if (evidence.errors.length > 0) {
 			for (const code of evidence.errors) recordCheck({ name: code, passed: false })
 			const code = evidence.errors[0]!
@@ -126,6 +128,10 @@ export async function runWorkflowScenario(
 		check("all_calls_have_receipts", evidence.callCount === evidence.resultCount)
 		check("required_turns_completed", evidence.completedTurns >= minimumCompleted)
 		check("no_unexpected_failed_turn", evidence.failedTurns === 0)
+		if (blocked) {
+			check("blocked_turn_interrupted", evidence.cancelledTurns === 1)
+			check("blocked_task_not_completed", evidence.completedTurns === minimumCompleted)
+		}
 		if (requireCancellation) check("cancelled_turn_recorded", evidence.cancelledTurns > 0)
 		return evidence
 	}
@@ -154,18 +160,22 @@ export async function runWorkflowScenario(
 			let previousCalls = 0
 			let previousCommands: Record<string, number> = {}
 			for (const [index, phase] of plan.phases.entries()) {
+				const blocked = phase === "devVerificationUnavailable"
 				if (!taskId) {
 					taskId = await host.start(phase)
 					result.taskIds.push(taskId)
 				} else await host.followup(taskId, phase)
-				await host.complete(taskId)
+				await host.complete(taskId, blocked ? "blocked" : "completed")
 				await host.assertUiTask(taskId)
 				// Inspect joins Task's durable terminal boundary before grading repository effects.
-				const evidence = await inspect(taskId, index + 1)
+				const evidence = await inspect(taskId, blocked ? index : index + 1, false, blocked)
 				check(`${phase}_new_tool_calls`, evidence.callCount > previousCalls)
 				check(`${phase}_trace_present`, evidence.trace !== undefined)
 				const trace = evidence.trace!
-				check(`${phase}_no_unexpected_tool_errors`, trace.errorResults === 0)
+				if (isRecoveryPhase(phase)) {
+					check(`${phase}_recovery_checks_present`, (evidence.recoveryChecks?.length ?? 0) > 0)
+					for (const item of evidence.recoveryChecks ?? []) check(`${phase}_${item.name}`, item.passed)
+				} else check(`${phase}_no_unexpected_tool_errors`, trace.errorResults === 0)
 				for (const [commandIndex, command] of DEVELOPMENT_PHASES[phase].requiredCommands.entries())
 					check(
 						`${phase}_required_command_${commandIndex + 1}`,

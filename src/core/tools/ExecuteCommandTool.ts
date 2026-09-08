@@ -27,6 +27,7 @@ import { Package } from "../../shared/package"
 import { t } from "../../i18n"
 import { getTaskDirectoryPath } from "../../utils/storage"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { createToolFailure, type ToolFailureMetadata } from "./ToolFailure"
 import { isToolAllowedForMode } from "./validateToolUse"
 import { redactTaskPrivatePaths } from "./taskPathPresentation"
 import {
@@ -166,9 +167,41 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 		const customCwd = requestedCwd ?? undefined
 		const { handleError, pushToolResult, askApproval } = callbacks
 		let commandEvidenceId: string | undefined
+		let effectsStarted: ToolFailureMetadata["effectsStarted"] = "no"
+		let failure: ToolFailureMetadata | undefined
+		const reportFailure = (metadata: ToolFailureMetadata) => {
+			failure = metadata
+			callbacks.setResultMetadata?.({
+				status:
+					metadata.reason === "policy_denied" || metadata.reason === "approval_denied"
+						? "denied"
+						: metadata.reason === "cancelled"
+							? "cancelled"
+							: "error",
+				failure: metadata,
+			})
+		}
+		const preLaunchFailure = (
+			reason: ToolFailureMetadata["reason"],
+			recovery: ToolFailureMetadata["recovery"],
+			identity: unknown = command,
+		) => {
+			reportFailure(
+				createToolFailure({
+					reason,
+					scopeKind: "capability",
+					scopeIdentity: ["execute_command", task.cwd, identity],
+					effectsStarted: "no",
+					outcome: "known",
+					recovery,
+				}),
+			)
+		}
 
 		try {
 			if (!command) {
+				preLaunchFailure("invalid_arguments", { kind: "repair" })
+				callbacks.setResultMetadata?.({ status: "error" })
 				task.consecutiveMistakeCount++
 				task.recordToolError("execute_command")
 				pushToolResult(await task.sayAndCreateMissingParamError("execute_command", "command"))
@@ -181,6 +214,12 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			task.beginCommandExecution?.(commandEvidenceId, executionId, canonicalCommand, verification?.change_set_ids)
 
 			if (isGitHubCliCommand(canonicalCommand)) {
+				preLaunchFailure(
+					"capability_unavailable",
+					{ kind: "alternative", toolName: "github_api" },
+					"github-cli",
+				)
+				callbacks.setResultMetadata?.({ status: "error" })
 				task.failCommandExecution?.(commandEvidenceId)
 				task.recordToolError("execute_command")
 				pushToolResult(
@@ -194,6 +233,11 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			const ignoredFileAttemptedToAccess = task.rooIgnoreController?.validateCommand(canonicalCommand)
 
 			if (ignoredFileAttemptedToAccess) {
+				preLaunchFailure("policy_denied", { kind: "user-action" }, [
+					"alphaignore",
+					ignoredFileAttemptedToAccess,
+				])
+				callbacks.setResultMetadata?.({ status: "denied" })
 				task.failCommandExecution?.(commandEvidenceId, "denied")
 				await task.say("rooignore_error", ignoredFileAttemptedToAccess)
 				pushToolResult(formatResponse.rooIgnoreError(ignoredFileAttemptedToAccess))
@@ -220,6 +264,8 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			) {
 				task.failCommandExecution?.(commandEvidenceId, "denied")
 				task.recordToolError("execute_command", "Command authority changed while approval was pending")
+				preLaunchFailure("policy_denied", { kind: "user-action" }, ["mode", executionMode])
+				callbacks.setResultMetadata?.({ status: "denied" })
 				pushToolResult(
 					formatResponse.toolError(
 						`Command was not started because it is not allowed in the task's current ${executionMode} mode.`,
@@ -263,6 +309,10 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				terminalShellIntegrationDisabled,
 				commandExecutionTimeout,
 				agentTimeout,
+				onExecutionState: (state) => {
+					effectsStarted = state
+				},
+				onFailure: reportFailure,
 			}
 
 			try {
@@ -297,12 +347,60 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 
 			return
 		} catch (error) {
+			if (!failure) {
+				const outcomeKnown =
+					effectsStarted === "no" ||
+					error instanceof CommandOutputBookkeepingError ||
+					(error instanceof CommandMutationReceiptError && !error.observationUnknown)
+				reportFailure(
+					createToolFailure({
+						reason:
+							effectsStarted === "no"
+								? "pre_launch_rejected"
+								: outcomeKnown
+									? "execution_failed"
+									: "outcome_unknown",
+						scopeKind: effectsStarted === "no" ? "capability" : "operation",
+						scopeIdentity:
+							effectsStarted === "no"
+								? ["command-admission", task.cwd]
+								: ["execute_command", task.cwd, command, customCwd],
+						effectsStarted,
+						outcome: outcomeKnown ? "known" : "unknown",
+						recovery: { kind: outcomeKnown ? "repair" : "verify-outcome" },
+					}),
+				)
+			}
+			callbacks.setResultMetadata?.({ status: "error" })
 			if (commandEvidenceId) task.failCommandExecution?.(commandEvidenceId)
 			await handleError("executing command", error as Error)
 			return
 		} finally {
 			const evidence = task.getCommandExecutionEvidence?.().find((item) => item.toolCallId === commandEvidenceId)
 			if (evidence) {
+				if (!failure && evidence.status !== "succeeded" && evidence.status !== "running") {
+					const unknown =
+						effectsStarted !== "no" &&
+						evidence.exitCode === undefined &&
+						evidence.status !== "denied" &&
+						evidence.status !== "cancelled"
+					reportFailure(
+						createToolFailure({
+							reason: unknown
+								? "outcome_unknown"
+								: evidence.status === "denied"
+									? "approval_denied"
+									: evidence.status === "cancelled"
+										? "cancelled"
+										: "execution_failed",
+							scopeKind: "operation",
+							scopeIdentity: ["execute_command", task.cwd, command, customCwd],
+							effectsStarted,
+							outcome: unknown ? "unknown" : "known",
+							recovery: { kind: unknown ? "verify-outcome" : "repair" },
+						}),
+					)
+				}
 				const trustedExploration =
 					evidence.command && evidence.cwd
 						? await getTrustedCommandExploration({
@@ -344,6 +442,9 @@ export type ExecuteCommandOptions = {
 	terminalShellIntegrationDisabled?: boolean
 	commandExecutionTimeout?: number
 	agentTimeout?: number
+	/** Trusted launch boundary for distinguishing rejection from an unknown process outcome. */
+	onExecutionState?: (state: ToolFailureMetadata["effectsStarted"]) => void
+	onFailure?: (failure: ToolFailureMetadata) => void
 }
 
 export async function executeCommandInTerminal(
@@ -357,6 +458,8 @@ export async function executeCommandInTerminal(
 		terminalShellIntegrationDisabled = true,
 		commandExecutionTimeout = 0,
 		agentTimeout = 0,
+		onExecutionState,
+		onFailure,
 	}: ExecuteCommandOptions,
 ): Promise<[boolean, ToolResponse]> {
 	// Convert milliseconds back to seconds for display purposes.
@@ -372,6 +475,17 @@ export async function executeCommandInTerminal(
 	const isManagedWorker = task.taskKind === "subagent" && task.subagentRole === "worker"
 	const executionMode = typeof task.getTaskMode === "function" ? await task.getTaskMode() : defaultModeSlug
 	const isPlanMode = executionMode === planModeSlug
+	const rejectBeforeLaunch = (reason: ToolFailureMetadata["reason"], scope: unknown) =>
+		onFailure?.(
+			createToolFailure({
+				reason,
+				scopeKind: "workspace",
+				scopeIdentity: ["command-directory", task.cwd, scope],
+				effectsStarted: "no",
+				outcome: "known",
+				recovery: { kind: reason === "policy_denied" ? "user-action" : "repair" },
+			}),
+		)
 	const restrictCommandCwdToWorkspace = isManagedWorker || isPlanMode
 	const cancellationResult = (): [boolean, ToolResponse] => {
 		if (toolCallId) task.failCommandExecution?.(toolCallId, "cancelled")
@@ -380,6 +494,7 @@ export async function executeCommandInTerminal(
 	const taskWasCancelled = () => task.abort || task.getTaskLifetimeCancellationSignal().aborted
 	if (taskWasCancelled()) return cancellationResult()
 	if (restrictCommandCwdToWorkspace && customCwd && path.isAbsolute(customCwd)) {
+		rejectBeforeLaunch("policy_denied", customCwd)
 		if (toolCallId) task.failCommandExecution?.(toolCallId)
 		return [
 			false,
@@ -402,6 +517,7 @@ export async function executeCommandInTerminal(
 			const [realWorkspace, realWorkingDir] = await Promise.all([fs.realpath(task.cwd), fs.realpath(workingDir)])
 			const relative = path.relative(realWorkspace, realWorkingDir)
 			if (relative.startsWith("..") || path.isAbsolute(relative)) {
+				rejectBeforeLaunch("policy_denied", realWorkingDir)
 				if (toolCallId) task.failCommandExecution?.(toolCallId)
 				return [
 					false,
@@ -412,6 +528,7 @@ export async function executeCommandInTerminal(
 			}
 		}
 	} catch (error) {
+		rejectBeforeLaunch("pre_launch_rejected", workingDir)
 		if (toolCallId) task.failCommandExecution?.(toolCallId)
 		return [
 			false,
@@ -810,7 +927,9 @@ export async function executeCommandInTerminal(
 	}
 	let process: ReturnType<RooTerminal["runCommand"]>
 	try {
+		onExecutionState?.("unknown")
 		process = terminal.runCommand(command, callbacks)
+		onExecutionState?.("yes")
 	} catch (error) {
 		const launchError = new CommandExecutionLifecycleError("launch-command", error)
 		if (mutationReservationAcquired) {

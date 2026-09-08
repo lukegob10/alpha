@@ -362,6 +362,10 @@
 			"label": "Sub-agents",
 			"description": "Allow Alpha to launch read-only sub-agent groups without requiring approval. Read access must also be auto-approved."
 		},
+		"tickets": {
+			"label": "Alpha Tickets",
+			"description": "Automatically approve creating and updating Alpha tickets."
+		},
 		"followupQuestions": {
 			"label": "Question",
 			"description": "Automatically select the first suggested answer for follow-up questions after the configured timeout",

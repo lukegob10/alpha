@@ -1,6 +1,8 @@
 import { addCustomInstructions } from "../sections/custom-instructions"
 import { getCapabilitiesSection } from "../sections/capabilities"
 import { getRulesSection, getCommandChainOperator } from "../sections/rules"
+import { getObjectiveSection } from "../sections/objective"
+import { getToolUseGuidelinesSection } from "../sections/tool-use-guidelines"
 import { McpHub } from "../../../services/mcp/McpHub"
 import * as shellUtils from "../../../utils/shell"
 
@@ -69,9 +71,9 @@ describe("getRulesSection", () => {
 	})
 
 	it("uses command evidence without requiring user confirmation", () => {
-		const result = getRulesSection(cwd)
+		const result = getToolUseGuidelinesSection()
 
-		expect(result).toContain("do not infer success if the result matters")
+		expect(result).toContain("Never assume success")
 		expect(result).toContain("bounded follow-up")
 		expect(result).not.toContain("assume the terminal executed the command successfully")
 		expect(result).not.toContain("wait for the user's response after each tool use")
@@ -88,10 +90,12 @@ describe("getRulesSection", () => {
 	})
 
 	it("uses side-effect-aware MCP batching", () => {
-		const result = getRulesSection(cwd)
+		const result = getToolUseGuidelinesSection()
 
-		expect(result).toContain("Batch independent read-only MCP operations")
-		expect(result).toContain("Serialize MCP operations with side effects or dependencies")
+		expect(result).toContain("Group independent, read-only calls when policy permits")
+		expect(result).toContain(
+			"Serialize dependent actions, workspace mutations, approvals, and control-flow operations",
+		)
 		expect(result).not.toContain("MCP operations should be used one at a time")
 	})
 
@@ -142,9 +146,17 @@ describe("getRulesSection", () => {
 	it("allows a primary task to finish with a visible ordinary answer", () => {
 		const result = getRulesSection(cwd)
 
-		expect(result).toContain("A primary task may finish with a visible ordinary assistant answer")
-		expect(result).toContain("when no tool call or continuation is needed")
+		expect(result).not.toContain("visible ordinary assistant answer")
+		expect(getObjectiveSection()).toContain(
+			"visible ordinary assistant answer when no tool call or continuation is needed",
+		)
 		expect(result).not.toContain("you must use the attempt_completion tool")
+	})
+
+	it("requires fresh file evidence when content or mutation safeguards need it", () => {
+		expect(getRulesSection(cwd)).toContain(
+			"obtain fresh reads when current content or mutation safeguards require them",
+		)
 	})
 
 	it("requires managed subagents to publish a durable result", () => {

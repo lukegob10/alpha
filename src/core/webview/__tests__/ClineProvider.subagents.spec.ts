@@ -39,6 +39,7 @@ const makeProviderHarness = (
 		subagentRootCostBudget?: number | null
 		autoApprovalEnabled?: boolean
 		alwaysAllowSubagents?: boolean
+		alwaysAllowTickets?: boolean
 		alwaysAllowReadOnly?: boolean
 		alwaysAllowWrite?: boolean
 		alwaysAllowReadOnlyOutsideWorkspace?: boolean
@@ -1592,6 +1593,43 @@ If complete, use attempt_completion.
 			]),
 		})
 		expect(nestedManifest.runtimePolicy.autoApproval.commandApprovalCeilings).toHaveLength(1)
+	})
+
+	it.each([
+		{ captured: undefined, live: true, expected: false },
+		{ captured: false, live: true, expected: false },
+		{ captured: true, live: false, expected: false },
+		{ captured: true, live: true, expected: true },
+	])("freezes ticket approval through nested delegation: %j", async ({ captured, live, expected }) => {
+		const provider = makeProviderHarness(3, {
+			autoApprovalEnabled: true,
+			alwaysAllowSubagents: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowTickets: captured,
+			subagentDelegationPolicy: "proactive",
+			subagentMaxDepth: 2,
+		})
+		const root = makeParent()
+		const direct = await provider.prepareSubagentGroup(root as any, [
+			{ objective: "Inspect ticket state", agent_kind: "review" },
+		])
+		const manifest = (provider as any).subagentDescriptors.get(direct.envelopes[0].id).contextManifest
+		expect(manifest.runtimePolicy.autoApproval.alwaysAllowTickets).toBe(captured === true)
+		await provider.contextProxy.setValues({ alwaysAllowTickets: live })
+		const child = {
+			...makeParent(),
+			taskId: direct.envelopes[0].id,
+			rootTaskId: root.taskId,
+			taskKind: "subagent",
+			subagentContextManifest: manifest,
+			subagentDelegationPolicy: "proactive",
+		}
+		const nested = await provider.prepareSubagentGroup(child as any, [
+			{ objective: "Inspect nested ticket state", agent_kind: "explore" },
+		])
+		const nestedManifest = (provider as any).subagentDescriptors.get(nested.envelopes[0].id).contextManifest
+		expect(nestedManifest.runtimePolicy.autoApproval.alwaysAllowTickets).toBe(expected)
+		expect(manifest.runtimePolicy.autoApproval.alwaysAllowTickets).toBe(captured === true)
 	})
 
 	it("requires explicit approval when a retained parent predates approval capture", async () => {

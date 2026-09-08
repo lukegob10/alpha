@@ -535,6 +535,13 @@ async function initializeRepository(root: string, scenarioId: DevelopmentScenari
 	}
 
 	await requireGit(root, ["-c", "init.defaultBranch=main", "init", "--quiet", "--template="])
+	if (scenarioId === "dev-search-recovery" || scenarioId === "dev-verification-unavailable") {
+		for (const [file, content] of Object.entries(RECOVERY_FILES)) {
+			await ensureFixtureDirectory(root, path.dirname(file))
+			await writeNewFixtureFile(root, file, content)
+			trackedFiles.push(file)
+		}
+	}
 	await requireGit(root, ["add", "--", ...trackedFiles])
 	await requireGit(root, ["commit", "--quiet", "--no-verify", "-m", `fixture: ${scenarioId}`], true, {
 		GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
@@ -1058,6 +1065,49 @@ async function verifyInspect(root: string, state: FixtureState): Promise<Develop
 	]
 }
 
+const RECOVERY_FILES = {
+	"docs/integrations.md":
+		"# Assistant integrations\n\nCopilot assists with cart changes. Runtime checkout does not depend on an assistant provider.\n",
+	"config/assistants.json": '{ "developmentAssistant": "copilot", "runtimeDependency": false }\n',
+	"scripts/verify-integration.cjs": `const fs = require("node:fs")
+const file = "config/local-integration.json"
+if (!fs.existsSync(file)) {
+	console.error("INTEGRATION_CONFIGURATION_MISSING: " + file + "; integration was not verified")
+	process.exitCode = 2
+} else {
+	throw new Error("Local integration verification requires the configured service")
+}
+`,
+} as const
+
+async function verifyRecovery(root: string, state: FixtureState): Promise<DevelopmentVerification[]> {
+	const unchanged = await stateMatches(root, state)
+	const narrow = await runGit(root, ["grep", "-n", "-i", "-e", "Copilot", "--", "lib"])
+	const broad = await runGit(root, ["grep", "-n", "-i", "-e", "Copilot", "--", "."])
+	const absent = await runGit(root, ["grep", "-n", "-i", "-e", "AlphaMissingProvider947", "--", "."])
+	return [
+		...(await baseSeedChecks(root, state, commonFiles(Object.keys(RECOVERY_FILES)), {
+			requireGit: true,
+			requireIgnoreFiles: true,
+		})),
+		check("recovery-head-and-index-preserved", unchanged.git),
+		check("recovery-all-workspace-bytes-preserved", unchanged.workspace),
+		check("recovery-real-cart-tests-pass", await executeNodeTests(root, [DEVELOPMENT_FILES.cartTest], 3)),
+		check("recovery-empty-initial-search", narrow.exitCode === 1 && narrow.stdout.trim() === ""),
+		check(
+			"recovery-matches-outside-lib",
+			broad.exitCode === 0 &&
+				broad.stdout.includes("docs/integrations.md") &&
+				broad.stdout.includes("config/assistants.json"),
+		),
+		check("recovery-absent-term-is-absent", absent.exitCode === 1 && absent.stdout.trim() === ""),
+		check(
+			"recovery-integration-config-remains-absent",
+			(await readFixtureFile(root, "config/local-integration.json", true)) === undefined,
+		),
+	]
+}
+
 async function verifyRefactor(root: string, state: FixtureState): Promise<DevelopmentVerification[]> {
 	const baseline = state.baseline.git
 	if (baseline === null) throw new Error("Refactor fixture has no Git baseline")
@@ -1286,6 +1336,9 @@ async function verifyBaseline(
 	state: FixtureState,
 ): Promise<DevelopmentVerification[]> {
 	switch (scenarioId) {
+		case "dev-search-recovery":
+		case "dev-verification-unavailable":
+			return verifyRecovery(root, state)
 		case "dev-repo-bootstrap":
 			return verifyBootstrapBaseline(root, state)
 		case "dev-git-inspect":
@@ -1343,6 +1396,9 @@ export async function verifyDevelopmentFixture(
 	if (phase === "baseline") return verifyBaseline(root, scenarioId, state)
 
 	switch (scenarioId) {
+		case "dev-search-recovery":
+		case "dev-verification-unavailable":
+			return verifyRecovery(root, state)
 		case "dev-repo-bootstrap":
 			return verifyBootstrapFinal(root, state)
 		case "dev-git-inspect":

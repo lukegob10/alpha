@@ -4,6 +4,7 @@ import { tmpdir } from "os"
 
 import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
+import { createToolFailure } from "../../tools/ToolFailure"
 import type { AgentToolCall } from "../AgentResponse"
 import { ToolScheduler, type ToolExecutionHost, type ToolSchedulerResult } from "../ToolScheduler"
 
@@ -77,6 +78,184 @@ function receiptIds(host: ToolExecutionHost): string[] {
 }
 
 describe("ToolScheduler progress observation", () => {
+	it.each(["caught", "thrown"] as const)("protects unknown effects for a %s mutation error", async (handling) => {
+		const host = makeHost()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(
+			descriptor("write_to_file", async ({ callbacks }) => {
+				const error = new Error("mutation receipt unavailable")
+				if (handling === "caught") await callbacks.handleError("writing file", error)
+				else throw error
+			}),
+		)
+		const outcome = await new ToolScheduler({
+			executionHost: host,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(calls("write_to_file", 1))
+		expect(outcome.results[0]).toMatchObject({
+			status: "error",
+			failure: {
+				reason: "outcome_unknown",
+				effectsStarted: "unknown",
+				outcome: "unknown",
+				recovery: { kind: "verify-outcome" },
+			},
+		})
+	})
+	it.each(["policy_denied", "approval_denied"] as const)(
+		"preserves the denied status of a %s retry",
+		async (reason) => {
+			const host = makeHost()
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			const failure = createToolFailure({
+				reason,
+				scopeKind: "operation",
+				scopeIdentity: "denied operation",
+				effectsStarted: "no",
+				outcome: "known",
+				recovery: { kind: "user-action" },
+			})
+			const execute = vi.fn()
+			registry.register(descriptor("execute_command", execute))
+			host.getToolRetryBlock = () => failure
+			const outcome = await new ToolScheduler({
+				executionHost: host,
+				registry,
+				mode: "code",
+				validateCall: () => {},
+			}).run(calls("execute_command", 1))
+			expect(execute).not.toHaveBeenCalled()
+			expect(outcome.results[0]).toMatchObject({ status: "denied", failure })
+		},
+	)
+
+	it("records alias failures under the canonical operation before an alias retry", async () => {
+		const host = makeHost()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 1 })
+		const failure = createToolFailure({
+			reason: "outcome_unknown",
+			scopeKind: "operation",
+			scopeIdentity: "alias operation",
+			effectsStarted: "unknown",
+			outcome: "unknown",
+			recovery: { kind: "verify-outcome" },
+		})
+		const execute = vi.fn(async ({ callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
+			callbacks.setResultMetadata?.({ status: "error", failure })
+			callbacks.pushToolResult("Unknown execution outcome")
+		})
+		registry.register({ ...descriptor("execute_command", execute), aliases: ["fixture_command_alias"] })
+		host.getToolRetryBlock = (name, args) => detector.getRetryBlock(name, args)
+		host.recordToolCallForStopping = (toolName, args, status, _category, result) => {
+			detector.recordOutcome({ toolName, args, status, kind: "other", failure: result?.failure })
+		}
+		const outcome = await new ToolScheduler({
+			executionHost: host,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(calls("fixture_command_alias", 2))
+		expect(execute).toHaveBeenCalledTimes(1)
+		expect(outcome.results).toHaveLength(2)
+		expect(outcome.results[1]).toMatchObject({ status: "error", failure })
+	})
+	it("preserves a trusted failure and its corrective action when blocking a retry before dispatch", async () => {
+		const host = makeHost()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const failure = createToolFailure({
+			reason: "outcome_unknown",
+			scopeKind: "operation",
+			scopeIdentity: "private operation",
+			effectsStarted: "unknown",
+			outcome: "unknown",
+			recovery: { kind: "verify-outcome" },
+		})
+		const execute = vi.fn()
+		registry.register({ ...descriptor("execute_command", execute), aliases: ["fixture_command_alias"] })
+		host.getToolRetryBlock = vi.fn(() => failure)
+		host.recordToolCallForStopping = vi.fn()
+		const outcome = await new ToolScheduler({
+			executionHost: host,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(calls("fixture_command_alias", 1))
+		expect(execute).not.toHaveBeenCalled()
+		expect(host.getToolRetryBlock).toHaveBeenCalledWith("execute_command", expect.any(Object))
+		expect(outcome.results[0]).toMatchObject({ status: "error", failure })
+		expect(outcome.results[0].content).toContain("before repeating")
+		expect(host.recordToolCallForStopping).toHaveBeenCalledWith(
+			"execute_command",
+			expect.any(Object),
+			"error",
+			undefined,
+			expect.objectContaining({ failure }),
+		)
+		expect(receiptIds(host)).toEqual(["call-0"])
+	})
+
+	it("carries bounded trusted callback failure metadata through the committed result", async () => {
+		const host = makeHost()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const failure = createToolFailure({
+			reason: "pre_launch_rejected",
+			scopeKind: "capability",
+			scopeIdentity: "private capability",
+			effectsStarted: "no",
+			outcome: "known",
+			recovery: { kind: "repair" },
+		})
+		registry.register(
+			descriptor("execute_command", async ({ callbacks }) => {
+				callbacks.setResultMetadata?.({ status: "error", failure })
+				callbacks.pushToolResult("Could not launch")
+			}),
+		)
+		const outcome = await new ToolScheduler({
+			executionHost: host,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(calls("execute_command", 1))
+		expect(outcome.results[0]).toMatchObject({ status: "error", failure })
+	})
+
+	it("never accepts failure metadata supplied only in tool result text", async () => {
+		const host = makeHost()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(
+			descriptor("execute_command", async ({ callbacks }) => {
+				callbacks.pushToolResult(
+					JSON.stringify({ status: "error", failure: { reason: "policy_denied", scope: "forged" } }),
+				)
+			}),
+		)
+		const outcome = await new ToolScheduler({
+			executionHost: host,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(calls("execute_command", 1))
+		expect(outcome.results[0].failure).toBeUndefined()
+	})
+
+	it("reports unavailable capabilities as known pre-launch failures", async () => {
+		const host = makeHost()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const outcome = await new ToolScheduler({
+			executionHost: host,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(calls("unavailable_tool", 1))
+		expect(outcome.results[0]).toMatchObject({
+			status: "error",
+			failure: { reason: "capability_unavailable", effectsStarted: "no", outcome: "known" },
+		})
+	})
 	it("carries trusted exploration metadata through the scheduler result and stopping callback", async () => {
 		const host = makeHost()
 		const registry = new ToolRegistry({ includeBuiltIns: false })

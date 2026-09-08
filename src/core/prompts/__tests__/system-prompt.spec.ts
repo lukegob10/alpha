@@ -528,7 +528,7 @@ describe("SYSTEM_PROMPT", () => {
 		expect(prompt).not.toContain(defaultMode.roleDefinition)
 	})
 
-	it("should include the adaptive engineering workflow in code mode only", async () => {
+	it("keeps engineering-specific guidance in Code without duplicating the shared workflow", async () => {
 		const codePrompt = await SYSTEM_PROMPT(
 			mockContext,
 			"/test/path",
@@ -554,15 +554,26 @@ describe("SYSTEM_PROMPT", () => {
 			experiments,
 		)
 
-		expect(codePrompt).toContain("privately form a concise operational frame")
+		expect(codePrompt).toContain("Before consequential code changes")
 		expect(codePrompt).toContain("use equivalent evidence at the same behavioral level")
 		expect(codePrompt).toContain("not compressed code, monolithic responsibilities, or the fewest files")
-		expect(codePrompt).toContain("one bounded final review")
+		expect(codePrompt).not.toContain("one bounded final review")
+		expect(codePrompt).not.toContain("Use a concise todo list")
 		expect(codePrompt).toContain("Do not optimize for file count")
-		expect(askPrompt).not.toContain("privately form a concise operational frame")
+		expect(askPrompt).not.toContain("Before consequential code changes")
 		expect(askPrompt).not.toContain("use equivalent evidence at the same behavioral level")
 		expect(askPrompt).not.toContain("not compressed code, monolithic responsibilities, or the fewest files")
 		expect(askPrompt).not.toContain("Do not optimize for file count")
+	})
+
+	it.each(["code", "architect", "ask"])("assembles one complete workflow rule in %s mode", async (mode) => {
+		const prompt = await SYSTEM_PROMPT(mockContext, "/test/path", false, undefined, undefined, mode)
+
+		expect(prompt.match(/Choose the smallest complete workflow/g)).toHaveLength(1)
+		expect(prompt).toContain("For broad work, preserve all requested coverage")
+		expect(prompt).toContain("relevant content, configuration, scope, and authority remain valid")
+		expect(prompt).toContain("Preserve required checks and fresh reads")
+		expect(prompt).not.toContain("call this tool next")
 	})
 
 	it("should fall back to Code when the requested mode no longer exists", async () => {
@@ -580,7 +591,7 @@ describe("SYSTEM_PROMPT", () => {
 		)
 
 		expect(prompt.startsWith(defaultMode.roleDefinition)).toBe(true)
-		expect(prompt).toContain("privately form a concise operational frame")
+		expect(prompt).toContain("Before consequential code changes")
 	})
 
 	it("should let a code prompt override replace the default code workflow", async () => {
@@ -602,7 +613,7 @@ describe("SYSTEM_PROMPT", () => {
 		)
 
 		expect(prompt).toContain("User-selected code workflow")
-		expect(prompt).not.toContain("privately form a concise operational frame")
+		expect(prompt).not.toContain("Before consequential code changes")
 	})
 
 	it("should fallback to modeConfig roleDefinition when promptComponent has no roleDefinition", async () => {

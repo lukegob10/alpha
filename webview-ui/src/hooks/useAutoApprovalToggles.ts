@@ -14,6 +14,7 @@ export function useAutoApprovalToggles() {
 		alwaysAllowModeSwitch,
 		alwaysAllowSubtasks,
 		alwaysAllowSubagents,
+		alwaysAllowTickets = false,
 		alwaysAllowFollowupQuestions,
 	} = useExtensionState()
 
@@ -26,6 +27,7 @@ export function useAutoApprovalToggles() {
 			alwaysAllowModeSwitch,
 			alwaysAllowSubtasks,
 			alwaysAllowSubagents,
+			alwaysAllowTickets,
 			alwaysAllowFollowupQuestions,
 		}),
 		[
@@ -36,6 +38,7 @@ export function useAutoApprovalToggles() {
 			alwaysAllowModeSwitch,
 			alwaysAllowSubtasks,
 			alwaysAllowSubagents,
+			alwaysAllowTickets,
 			alwaysAllowFollowupQuestions,
 		],
 	)

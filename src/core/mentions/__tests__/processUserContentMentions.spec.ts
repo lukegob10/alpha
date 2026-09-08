@@ -196,6 +196,7 @@ describe("processUserContentMentions", () => {
 				50, // maxDiagnosticMessages
 				undefined,
 				"code",
+				undefined,
 			)
 		})
 
@@ -224,6 +225,7 @@ describe("processUserContentMentions", () => {
 				50, // maxDiagnosticMessages
 				undefined,
 				"code",
+				undefined,
 			)
 		})
 	})

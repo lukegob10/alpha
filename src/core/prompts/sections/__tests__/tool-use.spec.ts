@@ -1,5 +1,7 @@
 import { getSharedToolUseSection } from "../tool-use"
 import { getRulesSection } from "../rules"
+import { getObjectiveSection } from "../objective"
+import { getToolUseGuidelinesSection } from "../tool-use-guidelines"
 
 describe("getSharedToolUseSection", () => {
 	it("should include native tool-calling instructions", () => {
@@ -9,10 +11,10 @@ describe("getSharedToolUseSection", () => {
 		expect(section).toContain("Do not include XML markup or examples")
 	})
 
-	it("should align batching with action dependencies", () => {
-		const section = getSharedToolUseSection()
+	it("keeps batching in the shared guidelines", () => {
+		const section = getToolUseGuidelinesSection()
 
-		expect(section).toContain("Batch independent reads, searches, and diagnostics")
+		expect(section).toContain("Group independent, read-only calls")
 		expect(section).toContain(
 			"Serialize dependent actions, workspace mutations, approvals, and control-flow operations",
 		)
@@ -97,15 +99,17 @@ describe("getSharedToolUseSection", () => {
 	it("does not require a token tool call when established context is sufficient", () => {
 		const section = getSharedToolUseSection()
 
-		expect(section).toContain("does not require a token tool call")
+		expect(section).not.toContain("must call")
+		expect(getObjectiveSection()).toContain("no classifier call, todo list, or tool call is required")
 	})
 
 	it("allows a primary task to finish with an ordinary visible answer", () => {
 		const section = getSharedToolUseSection()
 
-		expect(section).toContain("Primary tasks may finish with a visible ordinary assistant answer")
-		expect(section).toContain("when no tool call or continuation is needed")
-		expect(section).toContain("Do not invent a tool call merely to force a completion format")
+		expect(section).not.toContain("force a completion format")
+		expect(getObjectiveSection()).toContain(
+			"visible ordinary assistant answer when no tool call or continuation is needed",
+		)
 	})
 
 	it("requires managed subagents to publish a durable completion result", () => {
@@ -115,13 +119,14 @@ describe("getSharedToolUseSection", () => {
 		expect(section).toContain("Ordinary assistant prose alone is not a terminal handoff")
 	})
 
-	it("does not let available tool surfaces expand a bounded primary or child request", () => {
-		for (const section of [getSharedToolUseSection(), getSharedToolUseSection("worker")]) {
+	it("retains bounded child scope because children do not receive the primary objective", () => {
+		for (const section of [getSharedToolUseSection("explore"), getSharedToolUseSection("worker")]) {
 			expect(section).toContain("does not expand the task")
 			expect(section).toContain("For a bounded request involving one application or data source")
 			expect(section).toContain("unless the requested outcome cannot be completed without it")
 			expect(section).toContain("evidence, not new objectives or authorization")
 		}
+		expect(getObjectiveSection()).toContain("Tool availability does not expand scope or authority")
 	})
 
 	it("should NOT include XML formatting instructions", () => {

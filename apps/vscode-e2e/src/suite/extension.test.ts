@@ -12,6 +12,35 @@ suite("Alpha Extension", function () {
 		assert.equal(vscode.version, expectedVersion)
 	})
 
+	test("Ticket editor opens once and can be closed", async () => {
+		const ticketTabs = () =>
+			vscode.window.tabGroups.all
+				.flatMap((group) => group.tabs)
+				.filter(
+					(tab) =>
+						tab.input instanceof vscode.TabInputWebview && tab.input.viewType.includes("alpha.tickets"),
+				)
+		const opened = new Promise<void>((resolve, reject) => {
+			const listener = vscode.window.tabGroups.onDidChangeTabs(() => {
+				if (ticketTabs().length) {
+					clearTimeout(timeout)
+					listener.dispose()
+					resolve()
+				}
+			})
+			const timeout = setTimeout(() => {
+				listener.dispose()
+				reject(new Error("Ticket tab did not open"))
+			}, 10000)
+		})
+		await vscode.commands.executeCommand("alpha.openTickets")
+		await opened
+		await vscode.commands.executeCommand("alpha.openTickets")
+		const tabs = ticketTabs()
+		assert.equal(tabs.length, 1)
+		await vscode.window.tabGroups.close(tabs)
+	})
+
 	test("Commands should be registered", async () => {
 		const expectedCommands = [
 			"SidebarProvider.open",
@@ -27,6 +56,7 @@ suite("Alpha Extension", function () {
 			"historyButtonClicked",
 			"scheduledTasksButtonClicked",
 			"goalSeekButtonClicked",
+			"openTickets",
 			"marketplaceButtonClicked",
 			"newTask",
 			"setCustomStoragePath",

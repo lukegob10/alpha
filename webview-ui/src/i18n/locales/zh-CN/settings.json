@@ -271,6 +271,10 @@
 			"label": "子任务",
 			"description": "允许创建和完成子任务而无需批准"
 		},
+		"tickets": {
+			"label": "Alpha 工单",
+			"description": "自动批准创建和更新 Alpha 工单。"
+		},
 		"followupQuestions": {
 			"label": "问题",
 			"description": "在配置的超时时间后自动选择后续问题的第一个建议答案",

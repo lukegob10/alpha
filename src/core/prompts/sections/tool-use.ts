@@ -50,9 +50,7 @@ TOOL USE
 
 Use the provider-native tool-calling mechanism for non-mutating repository inspection only. The Plan tool surface is limited to reads, listing, search, host-classified inspection or verification commands, command-output reads, questions, and managed read-only agent coordination.
 
-${scopeGuidance}
-
-Explore enough evidence to make the plan concrete. Batch independent reads and searches when useful, and inspect their results before deciding the next action. execute_command accepts only a conservative, workspace-confined single-command allow-list; never use shell composition, expansion, redirection, mutation/fix/update flags, watchers, arbitrary scripts, package installation, or output/temp/cache/config/plugin overrides. Permitted verification may execute trusted repository test/config code and create ordinary tool caches. Managed agents must be Explore or Review children with read-only objectives. You may observe or stop a retained Worker, but never steer, relaunch, or otherwise advance one. Never call a mutation, MCP, browser, legacy task, mode-switch, todo, slash-command, or skill tool from Plan mode.`
+execute_command accepts only a conservative, workspace-confined single-command allow-list; never use shell composition, expansion, redirection, mutation/fix/update flags, watchers, arbitrary scripts, package installation, or output/temp/cache/config/plugin overrides. Permitted verification may execute trusted repository test/config code and create ordinary tool caches. Managed agents must be Explore or Review children with read-only objectives. You may observe or stop a retained Worker, but never steer, relaunch, or otherwise advance one. Never call a mutation, MCP, browser, legacy task, mode-switch, todo, slash-command, or skill tool from Plan mode.`
 	}
 
 	const rootDelegationGuidance =
@@ -70,11 +68,7 @@ The frozen delegation policy is proactive. Delegate only when it materially adva
 
 TOOL USE
 
-You have access to tools governed by the current execution and approval policy. Use the provider-native tool-calling mechanism. Do not include XML markup or examples. Use tools when they materially advance inspection, implementation, or verification; a response that can be completed from established context does not require a token tool call.
+You have access to tools governed by the current execution and approval policy. Use the provider-native tool-calling mechanism. Do not include XML markup or examples.
 
-${scopeGuidance}
-
-Primary tasks may finish with a visible ordinary assistant answer when no tool call or continuation is needed. Do not invent a tool call merely to force a completion format.
-
-Batch independent reads, searches, and diagnostics when their results do not affect one another. Serialize dependent actions, workspace mutations, approvals, and control-flow operations, and inspect their results before deciding the next action. Do not maximize the number of calls in a batch. new_task and delegate_task are blocking delegation boundaries and must each be called alone, never batched with another tool. spawn_agent is nonblocking. Independent spawn_agent calls may be batched together.${rootDelegationGuidance}`
+new_task and delegate_task are blocking delegation boundaries and must each be called alone, never batched with another tool. spawn_agent is nonblocking. Independent spawn_agent calls may be batched together.${rootDelegationGuidance}`
 }

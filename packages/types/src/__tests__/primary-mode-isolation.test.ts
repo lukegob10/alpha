@@ -26,6 +26,18 @@ describe("primary Code mode isolation", () => {
 		expect(planMode?.customInstructions).not.toContain("switch_mode")
 	})
 
+	it("keeps Code engineering guidance without mandatory tracking or repeated review", () => {
+		const instructions = DEFAULT_MODES.find((mode) => mode.slug === "code")?.customInstructions ?? ""
+
+		expect(instructions).toContain("repository architecture and conventions")
+		expect(instructions).toContain("component responsibilities and data flow")
+		expect(instructions).toContain("not compressed code, monolithic responsibilities, or the fewest files")
+		expect(instructions).toContain("validation, loading, empty, error, and recovery states")
+		expect(instructions).toContain("tests that establish requested behavior")
+		expect(instructions).not.toContain("Use a concise todo list")
+		expect(instructions).not.toContain("one bounded final review")
+	})
+
 	it("keeps Debug guidance evidence-driven and proportionate", () => {
 		const debugMode = DEFAULT_MODES.find((mode) => mode.slug === "debug")
 		const instructions = debugMode?.customInstructions ?? ""

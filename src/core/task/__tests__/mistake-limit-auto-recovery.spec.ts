@@ -67,9 +67,7 @@ describe("Task mistake-limit recovery", () => {
 			"Most recent tool failure: attempt_completion — Completion is still blocked by pending verification.",
 		)
 		expect(guidance.feedback).toContain("The previous completion call failed. Do not repeat it unchanged")
-		expect(guidance.feedback).toContain(
-			"More reads, searches, todo updates, or status narration do not apply the change",
-		)
+		expect(guidance.feedback).toContain("Unrelated reads or substitute writes do not resolve a failed operation")
 		expect(guidance.feedback).toContain("new_task by itself")
 	})
 
@@ -105,6 +103,44 @@ describe("Task mistake-limit recovery", () => {
 		const guidance = JSON.parse(userContent[0].text)
 		expect(guidance.feedback).toBe("manual recovery guidance")
 	})
+
+	it("allows an ordinary final answer instead of requiring another completion or mutation tool", async () => {
+		const task = createTask({ isTaskOnScreen: () => false })
+		const userContent: Array<{ type: string; text: string }> = []
+
+		await Reflect.get(task, "handleConsecutiveMistakeLimit").call(task, userContent)
+
+		const guidance = JSON.parse(userContent[0].text).feedback as string
+		expect(guidance).toContain("ordinary final answer")
+		expect(guidance).not.toContain("call attempt_completion if finished")
+		expect(guidance).not.toContain("call an edit or other mutation tool now")
+	})
+
+	it("preserves the durable completion requirement for managed children", async () => {
+		const task = createTask({ isTaskOnScreen: () => false })
+		Reflect.set(task, "taskKind", "subagent")
+		const userContent: Array<{ type: string; text: string }> = []
+
+		await Reflect.get(task, "handleConsecutiveMistakeLimit").call(task, userContent)
+
+		const guidance = JSON.parse(userContent[0].text).feedback as string
+		expect(guidance).toContain("publish the durable child result through attempt_completion")
+		expect(guidance).not.toContain("ordinary final answer")
+	})
+
+	it.each(["primary", "subagent"] as const)(
+		"keeps offscreen %s recovery consistent with its completion path",
+		(kind) => {
+			const task = createTask({ isTaskOnScreen: () => false })
+			Reflect.set(task, "taskKind", kind)
+
+			const guidance: string = Reflect.get(task, "getOffscreenMistakeLimitGuidance").call(task)
+
+			expect(guidance).toContain("pending verification")
+			expect(guidance).toContain(kind === "primary" ? "ordinary final answer" : "durable child result")
+			expect(guidance).not.toContain("exactly one concrete next action")
+		},
+	)
 
 	it("auto-recovers off-screen without consulting auto-approval state", async () => {
 		const provider = {

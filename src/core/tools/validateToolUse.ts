@@ -10,9 +10,11 @@ import { isPlanCommandAllowed, isPlanCommandCwdAllowed } from "../../shared/plan
 import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS, TOOL_ALIASES } from "../../shared/tools"
 import { parseMcpToolName } from "../../utils/mcp-name"
 
-const executableNativeToolNames = validToolNames
+const executableNativeToolNames: readonly string[] = validToolNames
 
 const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
+	"list_tickets",
+	"read_ticket",
 	"read_file",
 	"search_files",
 	"list_files",

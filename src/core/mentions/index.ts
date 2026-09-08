@@ -4,7 +4,12 @@ import * as path from "path"
 import * as vscode from "vscode"
 import { isBinaryFile } from "isbinaryfile"
 
-import { mentionRegexGlobal, commandRegexGlobal, unescapeSpaces } from "../../shared/context-mentions"
+import {
+	mentionRegexGlobal,
+	commandRegexGlobal,
+	unescapeSpaces,
+	getTicketMentionLocator,
+} from "../../shared/context-mentions"
 
 import { getCommitInfo, getWorkingState } from "../../utils/git"
 
@@ -21,13 +26,21 @@ import { buildSkillResult, resolveSkillContentForMode, type SkillLookup } from "
 import type { SkillContent } from "../../shared/skills"
 import { parsePlanModeCommand } from "../../shared/plan-mode"
 import { planModeSlug } from "../../shared/modes"
+import type { TicketActivity } from "@alpha-code/types"
+import { TicketStore } from "../../services/tickets/TicketStore"
+import { readTicketMention } from "../../services/tickets/TicketChat"
 
 export async function openMention(cwd: string, mention?: string): Promise<void> {
 	if (!mention) {
 		return
 	}
 
-	if (mention.startsWith("/")) {
+	const ticketLocator = getTicketMentionLocator(mention)
+	if (ticketLocator) {
+		const store = await TicketStore.forWorkspace(cwd)
+		const ticket = await store.read(ticketLocator)
+		await vscode.commands.executeCommand("alpha.openTickets", { project: store.projectId, id: ticket.id })
+	} else if (mention.startsWith("/")) {
 		// Slice off the leading slash and unescape any spaces in the path
 		const relPath = unescapeSpaces(mention.slice(1))
 		const absPath = path.resolve(cwd, relPath)
@@ -51,7 +64,7 @@ export async function openMention(cwd: string, mention?: string): Promise<void> 
  * proper formatting as distinct message blocks.
  */
 export interface MentionContentBlock {
-	type: "file" | "folder" | "url" | "diagnostics" | "git_changes" | "git_commit" | "terminal" | "command"
+	type: "file" | "folder" | "url" | "diagnostics" | "git_changes" | "git_commit" | "terminal" | "command" | "ticket"
 	/** Path for file/folder mentions */
 	path?: string
 	/** The content to display */
@@ -136,6 +149,7 @@ export async function parseMentions(
 	maxDiagnosticMessages: number = 50,
 	skillsManager?: SkillLookup,
 	currentMode: string = "code",
+	onTicketActivity?: (activity: TicketActivity) => Promise<void>,
 ): Promise<ParseMentionsResult> {
 	const mentions: Set<string> = new Set()
 	const validCommands: Map<string, Command> = new Map()
@@ -195,8 +209,11 @@ export async function parseMentions(
 	// Second pass: handle regular mentions - replace with clean references
 	// Content will be provided as separate blocks that look like read_file results
 	parsedText = parsedText.replace(mentionRegexGlobal, (match, mention) => {
-		mentions.add(mention)
-		if (mention.startsWith("http")) {
+		const ticketLocator = getTicketMentionLocator(mention)
+		mentions.add(ticketLocator ? `ticket:${ticketLocator}` : mention)
+		if (ticketLocator) {
+			return `Alpha ticket ${ticketLocator} (attached below)`
+		} else if (mention.startsWith("http")) {
 			return `'${mention}'`
 		} else if (mention.startsWith("/")) {
 			// Clean path reference - no "see below" since we format like tool results
@@ -215,7 +232,12 @@ export async function parseMentions(
 	})
 
 	for (const mention of mentions) {
-		if (mention.startsWith("/")) {
+		const ticketLocator = getTicketMentionLocator(mention)
+		if (ticketLocator) {
+			const result = await readTicketMention(cwd, ticketLocator)
+			contentBlocks.push({ type: "ticket", content: result.content })
+			await onTicketActivity?.(result.activity)
+		} else if (mention.startsWith("/")) {
 			const mentionPath = mention.slice(1)
 			try {
 				const fileResult = await getFileOrFolderContentWithMetadata(

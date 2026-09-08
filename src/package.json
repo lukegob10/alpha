@@ -3,7 +3,7 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "2.1.25",
+	"version": "2.1.26",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
@@ -46,6 +46,7 @@
 		"alpha"
 	],
 	"activationEvents": [
+		"onWebviewPanel:alpha.tickets",
 		"onLanguage",
 		"onStartupFinished"
 	],
@@ -70,6 +71,11 @@
 			]
 		},
 		"commands": [
+			{
+				"command": "alpha.openTickets",
+				"title": "%command.openTickets.title%",
+				"icon": "$(issues)"
+			},
 			{
 				"command": "alpha.plusButtonClicked",
 				"title": "%command.newTask.title%",
@@ -218,6 +224,11 @@
 				}
 			],
 			"view/title": [
+				{
+					"command": "alpha.openTickets",
+					"group": "overflow@2",
+					"when": "view == alpha.SidebarProvider"
+				},
 				{
 					"command": "alpha.plusButtonClicked",
 					"group": "navigation@1",

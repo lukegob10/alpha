@@ -271,6 +271,10 @@
 			"label": "サブタスク",
 			"description": "承認なしでサブタスクの作成と完了を許可"
 		},
+		"tickets": {
+			"label": "Alpha チケット",
+			"description": "Alpha チケットの作成と更新を自動的に承認します。"
+		},
 		"followupQuestions": {
 			"label": "質問",
 			"description": "設定された時間が経過すると、フォローアップ質問の最初の提案回答を自動的に選択します",

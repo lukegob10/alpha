@@ -215,7 +215,8 @@ describe("Task.ask queued message drain", () => {
 		const result = await task.ask("mistake_limit_reached", "generic guidance", false)
 
 		expect(result.response).toBe("messageResponse")
-		expect(result.text).toContain("Continue the current task without waiting for the user")
+		expect(result.text).toContain("Continue independent authorized work where possible")
+		expect(result.text).toContain("ordinary final answer")
 		expect(result.text).toContain("new_task by itself")
 	})
 

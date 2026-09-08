@@ -271,6 +271,10 @@
 			"label": "Teilaufgaben",
 			"description": "Erstellung und Abschluss von Unteraufgaben ohne Genehmigung erlauben"
 		},
+		"tickets": {
+			"label": "Alpha-Tickets",
+			"description": "Das Erstellen und Aktualisieren von Alpha-Tickets automatisch genehmigen."
+		},
 		"followupQuestions": {
 			"label": "Frage",
 			"description": "Automatisch die erste vorgeschlagene Antwort für Folgefragen nach der konfigurierten Zeitüberschreitung auswählen",

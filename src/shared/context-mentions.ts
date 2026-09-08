@@ -1,3 +1,5 @@
+import { normalizeTicketReference, ticketIdSchema } from "@alpha-code/types"
+
 /*
 Mention regex:
 - **Purpose**:
@@ -10,11 +12,11 @@ Mention regex:
   - `(?:^|\s)`:
 	- **Non-Capturing Group (`(?:...)`)**: Groups the alternatives without capturing them.
 	- **Line Start or Whitespace (`^|\s`)**: The @ must be at the start of a line or preceded by whitespace.
-  
+
   - `(?<!\\)@`:
 	- **Negative Lookbehind (`(?<!\\)`)**: Ensures the @ is not escaped with a backslash.
 	- **@**: The mention must start with the '@' symbol.
-  
+
   - `((?:\/|\w+:\/\/)[^\s]+?|problems\b|git-changes\b)`:
 	- **Capturing Group (`(...)`)**: Captures the part of the string that matches one of the specified patterns.
 	- `(?:\/|\w+:\/\/)`:
@@ -44,7 +46,7 @@ Mention regex:
 	  - **Optional Punctuation (`[.,;:!?]?`)**: Matches zero or one of the specified punctuation marks.
 	- `(?=[\s\r\n]|$)`:
 	  - **Nested Positive Lookahead (`(?=[\s\r\n]|$)`)**: Ensures that the punctuation (if present) is followed by a whitespace character, a line break, or the end of the string.
-  
+
 - **Summary**:
   - The regex effectively matches:
 	- Mentions that are file or folder paths starting with '/' and containing any non-whitespace characters (including periods within the path).
@@ -61,8 +63,19 @@ Mention regex:
 
 */
 export const mentionRegex =
-	/(?:^|(?<=\s))(?<!\\)@((?:\/|\w+:\/\/)(?:[^\s\\]|\\ )+?|[a-f0-9]{7,40}\b|problems\b|git-changes\b|terminal\b)(?=[.,;:!?]?(?=[\s\r\n]|$))/
+	/(?:^|(?<=\s))(?<!\\)@((?:\/|\w+:\/\/)(?:[^\s\\]|\\ )+?|(?:tickets?:)?[A-Za-z]{2,4}-\d{1,10}|tickets?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|[a-f0-9]{7,40}\b|problems\b|git-changes\b|terminal\b)(?=[.,;:!?]?(?=[\s\r\n]|$))/
 export const mentionRegexGlobal = new RegExp(mentionRegex.source, "g")
+
+/** Keep ticket aliases consistent across attachment loading and clickable chat mentions. */
+export function getTicketMentionLocator(mention: string): string | undefined {
+	const prefixed = /^tickets?:/.test(mention)
+	if (!prefixed && !/^[A-Za-z]{2,4}-\d{1,10}$/.test(mention)) return undefined
+	const locator = prefixed ? mention.slice(mention.indexOf(":") + 1) : mention
+	return (
+		normalizeTicketReference(locator) ??
+		(prefixed && ticketIdSchema.safeParse(locator).success ? locator : undefined)
+	)
+}
 
 // Regex to match command mentions like /command-name anywhere in text
 export const commandRegexGlobal = /(?:^|\s)\/([a-zA-Z0-9_\.-]+)(?=\s|$)/g

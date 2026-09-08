@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert"
 import { test } from "node:test"
 import { assertWorkflowResult, MAX_WORKFLOW_CHECKS, MAX_WORKFLOW_TURNS } from "./contracts"
 import { DEVELOPMENT_PHASES, DEVELOPMENT_SCENARIOS, DEVELOPMENT_SCENARIO_IDS } from "./developmentCatalog"
+import { isRecoveryPhase } from "./recoveryTrace"
 
 import {
 	runWorkflowScenario,
@@ -98,6 +99,7 @@ function developmentDependencies() {
 	const commands: Record<string, number> = {}
 	let calls = 0
 	let phase: keyof typeof DEVELOPMENT_PHASES | undefined
+	let blocked = false
 	const start = fixture.deps.host.start
 	const followup = fixture.deps.host.followup
 	fixture.deps.host.start = async (prompt) => {
@@ -109,8 +111,9 @@ function developmentDependencies() {
 		await followup(taskId, prompt)
 	}
 	const complete = fixture.deps.host.complete
-	fixture.deps.host.complete = async (taskId) => {
-		await complete(taskId)
+	fixture.deps.host.complete = async (taskId, outcome) => {
+		blocked = outcome === "blocked"
+		if (!blocked) await complete(taskId)
 		calls++
 		for (const command of DEVELOPMENT_PHASES[phase!].requiredCommands)
 			commands[command] = (commands[command] ?? 0) + 1
@@ -121,6 +124,8 @@ function developmentDependencies() {
 		callCount: calls,
 		resultCount: calls,
 		trace: { commandReceipts: { ...commands }, errorResults: 0 },
+		...(blocked ? { cancelledTurns: 1 } : {}),
+		...(phase && isRecoveryPhase(phase) ? { recoveryChecks: [{ name: "recovery_oracle", passed: true }] } : {}),
 	})
 	fixture.deps.development = {
 		create: async (id) => {
@@ -164,6 +169,24 @@ test("development scenarios cannot pass on repo effects alone without fresh non-
 		const result = await runWorkflowScenario({ ...options, scenarioId: "dev-repo-bootstrap" }, deps)
 		assert.equal(result.status, "failed", fault)
 		assert.equal(result.failure?.category, "assertion")
+	}
+})
+
+test("recovery acceptance requires its oracle and cannot treat completed verification as a blocked turn", async () => {
+	for (const fault of ["missing-oracle", "failed-oracle", "completed", "failed-turn", "open-turn"] as const) {
+		const { deps } = developmentDependencies()
+		const inspect = deps.host.inspect
+		deps.host.inspect = async (taskId, outcome) => {
+			const evidence = await inspect(taskId, outcome)
+			if (fault === "missing-oracle") delete evidence.recoveryChecks
+			if (fault === "failed-oracle") evidence.recoveryChecks = [{ name: "recovery_oracle", passed: false }]
+			if (fault === "completed") evidence.completedTurns = 1
+			if (fault === "failed-turn") evidence.failedTurns = 1
+			if (fault === "open-turn") evidence.cancelledTurns = 0
+			return evidence
+		}
+		const result = await runWorkflowScenario({ ...options, scenarioId: "dev-verification-unavailable" }, deps)
+		assert.equal(result.status, "failed", fault)
 	}
 })
 

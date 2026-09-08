@@ -1,10 +1,10 @@
 import type OpenAI from "openai"
 
-const BASE_DESCRIPTION = `Use this tool to deliver a final report of completed work or a blocked handoff. Report completion when the user's intended outcome has been handled end to end and any verification appropriate to the task has completed. Rely on the tool results returned by the harness; separate user confirmation of each intermediate tool is not required. If the latest tool result establishes the explicit requested outcome and no requested verification remains, call this tool next. Do not explore, configure, or improve adjacent state that the user did not request.
-
-Before reporting completion, compare the result with the requested outcome and use verification proportionate to the task. Address any material defect or missing requested verification. Optional polish is not a completion blocker.`
+const BASE_DESCRIPTION = `Deliver a final report of completed work or a blocked handoff. Report completion when the user's intended outcome has been handled end to end with verification proportionate to the task and all required checks satisfied. Rely on harness results; separate user confirmation of each intermediate tool is not required. Optional polish is not a completion blocker. Do not explore, configure, or improve adjacent state without a task-relevant reason.`
 
 const PRIMARY_DESCRIPTION = `${BASE_DESCRIPTION}
+
+A primary task may instead finish with a visible ordinary assistant answer when no tool call or continuation is needed.
 
 Parameters:
 - result: (required) The result of the task. Formulate this result in a way that is final and does not require further input from the user. Don't end your result with questions or offers for further assistance.
@@ -16,6 +16,8 @@ Example: Completing after updating CSS
 { "result": "I've updated the CSS to use flexbox layout for better responsiveness" }`
 
 const SUBAGENT_DESCRIPTION = `${BASE_DESCRIPTION}
+
+For a managed subagent, this tool is the required durable handoff when the assigned objective is completed or blocked.
 
 Parameters:
 - result: (required) A concise, self-contained report of the assigned objective and evidence.
