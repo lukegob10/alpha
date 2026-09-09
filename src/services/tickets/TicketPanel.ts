@@ -1,10 +1,13 @@
 import * as vscode from "vscode"
 import path from "path"
+import { z } from "zod"
 import { ticketRequestSchema, ticketTargetSchema, type TicketResponse, type TicketTarget } from "@alpha-code/types"
 import type { ClineProvider } from "../../core/webview/ClineProvider"
 import { getNonce } from "../../core/webview/getNonce"
 import { workOnTicket } from "./TicketTaskLink"
 import { TicketStore } from "./TicketStore"
+
+const menuContextSchema = z.object({ preserveFocus: z.boolean() }).strict()
 
 /** Presentation adapter only: task execution remains owned by ClineProvider. */
 export class TicketPanel implements vscode.Disposable {
@@ -48,7 +51,8 @@ export class TicketPanel implements vscode.Disposable {
 	}
 
 	async open(target?: unknown): Promise<void> {
-		if (target !== undefined) {
+		// VS Code title-menu clicks supply focus context instead of a ticket target.
+		if (target !== undefined && target !== null && !menuContextSchema.safeParse(target).success) {
 			const parsed = ticketTargetSchema.safeParse(target)
 			if (!parsed.success) return
 			this.pendingTarget = parsed.data

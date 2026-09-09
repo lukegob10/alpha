@@ -91,6 +91,37 @@ const listRequest = (requestId: string, project = "project") => ({
 })
 
 describe("ticket panel navigation", () => {
+	it.each([undefined, null, { preserveFocus: false }, { preserveFocus: true }])(
+		"opens and reveals the ticket board with command menu context %j",
+		async (context) => {
+			const { panel, nativePanel, webview, receive } = createPanel()
+			await panel.open(context)
+			expect(vscode.window.createWebviewPanel).toHaveBeenCalledOnce()
+			receive({ type: "ticketsReady" })
+			await vi.waitFor(() =>
+				expect(webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "ticketProjects" })),
+			)
+			await panel.open(context)
+			expect(nativePanel.reveal).toHaveBeenCalledOnce()
+			expect(vscode.window.createWebviewPanel).toHaveBeenCalledOnce()
+			expect(webview.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "ticketOpen" }))
+			panel.dispose()
+		},
+	)
+
+	it.each([{}, { project: "project" }, { preserveFocus: false, project: "project", id: "invalid" }])(
+		"still rejects malformed ticket targets %j",
+		async (target) => {
+			const { panel, nativePanel } = createPanel()
+			await panel.open(target)
+			expect(vscode.window.createWebviewPanel).not.toHaveBeenCalled()
+			await panel.open()
+			await panel.open(target)
+			expect(nativePanel.reveal).not.toHaveBeenCalled()
+			panel.dispose()
+		},
+	)
+
 	it("publishes deletion and refresh only after the selected store commits", async () => {
 		const { store } = setupProject()
 		const pending = deferred()
