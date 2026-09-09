@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.27
+
+### Patch Changes
+
+- Add live Copilot reliability campaigns covering completion-idle behavior, recovery, cancellation, and provider faults with retained evidence.
+- Preserve completion-review lifecycle state when late host snapshots arrive, preventing false stalled-turn warnings after long implementations.
+- Handle VS Code command-menu focus context while keeping malformed ticket targets rejected.
+
 ## 2.1.26
 
 ### Patch Changes
