@@ -3,6 +3,7 @@ import * as assert from "node:assert/strict"
 import * as path from "node:path"
 
 import { WORKFLOW_SCENARIO_IDS } from "../../scenarios/contracts"
+import { isReliabilityScenario, RELIABILITY_SCENARIO_IDS } from "../../scenarios/reliabilityCatalog"
 import { createDevelopmentSuite, DEVELOPMENT_SUITE_NAMES, type DevelopmentSuiteOptions } from "../developmentSuites"
 import { parseCampaignConfig } from "../config"
 import type { CampaignConfig } from "../types"
@@ -14,19 +15,30 @@ const options = (overrides: Partial<DevelopmentSuiteOptions> = {}): DevelopmentS
 	...overrides,
 })
 
-test("exposes the three suites and their requested scenario catalog", () => {
-	assert.deepEqual(DEVELOPMENT_SUITE_NAMES, ["smoke", "development", "soak"])
+test("preserves the existing suites and adds explicit live reliability acceptance", () => {
+	assert.deepEqual(DEVELOPMENT_SUITE_NAMES, ["smoke", "development", "soak", "reliability"])
 	assert.deepEqual(createDevelopmentSuite(options()).scenarioIds, [
 		"dev-git-inspect",
 		"dev-repo-bootstrap",
 		"review-edit-test-commit-followup",
 	])
-	assert.deepEqual(createDevelopmentSuite(options({ suite: "development" })).scenarioIds, WORKFLOW_SCENARIO_IDS)
-	assert.deepEqual(createDevelopmentSuite(options({ suite: "soak" })).scenarioIds, WORKFLOW_SCENARIO_IDS)
+	const existing = WORKFLOW_SCENARIO_IDS.filter((id) => !isReliabilityScenario(id))
+	assert.deepEqual(createDevelopmentSuite(options({ suite: "development" })).scenarioIds, existing)
+	assert.deepEqual(createDevelopmentSuite(options({ suite: "soak" })).scenarioIds, existing)
 
-	for (const scenarioId of WORKFLOW_SCENARIO_IDS) {
+	for (const scenarioId of existing) {
 		assert.ok(createDevelopmentSuite(options({ suite: "development" })).scenarioIds.includes(scenarioId))
 	}
+	assert.throws(() => createDevelopmentSuite(options({ suite: "reliability" })), /requires live Copilot/)
+	const live = createDevelopmentSuite(
+		options({ suite: "reliability", provider: "live-copilot", modelId: "model", effort: "high" }),
+	)
+	assert.deepEqual(live.scenarioIds, [
+		...RELIABILITY_SCENARIO_IDS,
+		"cancel-resume",
+		"long-thread",
+		"reload-continuation",
+	])
 })
 
 test("uses bounded matrix budgets and scales iterations to the selected host count", () => {
@@ -34,10 +46,18 @@ test("uses bounded matrix budgets and scales iterations to the selected host cou
 		smoke: { samples: 1, maxIterations: 18, maxRequests: 300, maxDurationMs: 30 * 60 * 1_000 },
 		development: { samples: 1, maxIterations: 72, maxRequests: 1_200, maxDurationMs: 2 * 60 * 60 * 1_000 },
 		soak: { samples: 3, maxIterations: 216, maxRequests: 3_000, maxDurationMs: 6 * 60 * 60 * 1_000 },
+		reliability: { samples: 1, maxIterations: 66, maxRequests: 1_200, maxDurationMs: 2 * 60 * 60 * 1_000 },
 	} as const
 
 	for (const suite of DEVELOPMENT_SUITE_NAMES) {
-		const config = createDevelopmentSuite(options({ suite }))
+		const config = createDevelopmentSuite(
+			options({
+				suite,
+				...(suite === "reliability"
+					? ({ provider: "live-copilot", modelId: "model", effort: "high" } as const)
+					: {}),
+			}),
+		)
 		assert.equal(config.samples, expected[suite].samples)
 		assert.deepEqual(config.budgets, {
 			maxIterations: expected[suite].maxIterations,

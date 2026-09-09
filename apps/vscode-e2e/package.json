@@ -9,6 +9,7 @@
 		"test:copilot": "pnpm compile && node ./out/runTest.js --provider live-copilot",
 		"test:campaign": "pnpm compile && node ./out/runCampaign.js",
 		"test:live:gate": "pnpm compile && node ./out/runCampaign.js --suite development --provider live-copilot --gate",
+		"test:live:reliability": "pnpm compile && node ./out/runCampaign.js --suite reliability --provider live-copilot --gate",
 		"test:development": "pnpm compile && node ./out/runCampaign.js --suite development",
 		"format": "prettier --write src",
 		"test:ci": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm test:run",

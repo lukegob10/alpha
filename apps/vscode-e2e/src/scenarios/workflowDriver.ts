@@ -19,6 +19,7 @@ import {
 import type { WorkflowTrace } from "./workflowTrace"
 import { isRecoveryPhase } from "./recoveryTrace"
 import type { LifecycleInspectionErrorCode, ToolTransactionErrorCode } from "./transactionAssertions"
+import { isReliabilityScenario, type ReliabilityScenarioId } from "./reliabilityCatalog"
 
 export interface WorkflowEvidence {
 	trace?: WorkflowTrace
@@ -54,6 +55,10 @@ export interface WorkflowCheckpoint {
 
 export interface WorkflowDependencies {
 	host: WorkflowHost
+	reliability?: (
+		options: WorkflowOptions & { scenarioId: ReliabilityScenarioId },
+		repository: WorkflowDependencies["repository"],
+	) => Promise<WorkflowResult>
 	development?: {
 		create(scenarioId: DevelopmentScenarioId): Promise<void>
 		verify(scenarioId: DevelopmentScenarioId, phase: "baseline" | DevelopmentPhaseId): Promise<WorkflowCheck[]>
@@ -85,8 +90,10 @@ export interface WorkflowOptions {
 /** The host drives Alpha; repository and transcript checks independently judge its effects. */
 export async function runWorkflowScenario(
 	options: WorkflowOptions,
-	{ host, repository, checkpoint, development }: WorkflowDependencies,
+	{ host, repository, checkpoint, development, reliability }: WorkflowDependencies,
 ): Promise<WorkflowResult> {
+	if (isReliabilityScenario(options.scenarioId) && reliability)
+		return reliability({ ...options, scenarioId: options.scenarioId }, repository)
 	const result: WorkflowResult = {
 		schemaVersion: 1,
 		runId: options.runId,
@@ -141,6 +148,8 @@ export async function runWorkflowScenario(
 		await verify(expected)
 	}
 	try {
+		if (isReliabilityScenario(options.scenarioId))
+			throw new WorkflowFailure("configuration", "reliability_driver_unavailable", true)
 		if (!Number.isInteger(options.turns) || options.turns < 4 || options.turns > MAX_WORKFLOW_TURNS)
 			throw new WorkflowFailure("configuration", "invalid_budget", true)
 		if (DEVELOPMENT_SCENARIO_IDS.includes(options.scenarioId as DevelopmentScenarioId)) {

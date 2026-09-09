@@ -3,6 +3,43 @@ import { test } from "node:test"
 
 import { guardTaskApi, guardVsCodeLmHandler, WorkflowRequestBudget } from "./requestBudget"
 
+test("fault hooks only receive resolved real responses and never bypass the request budget", async () => {
+	let resolveResponse!: (value: object) => void
+	let sends = 0
+	let interceptions = 0
+	const actual = Object.freeze({ stream: "opaque" })
+	const client = {
+		id: "model",
+		sendRequest: () => {
+			sends++
+			return new Promise<object>((resolve) => {
+				resolveResponse = resolve
+			})
+		},
+	}
+	const handler = { getClient: async () => client }
+	const budget = new WorkflowRequestBudget(1, "model")
+	budget.transformResponse = (response) => {
+		assert.equal(response, actual)
+		interceptions++
+		return response
+	}
+	const restore = guardVsCodeLmHandler(handler, budget)
+	try {
+		const guarded = await handler.getClient()
+		const pending = guarded.sendRequest()
+		assert.equal(sends, 1)
+		assert.equal(interceptions, 0)
+		resolveResponse(actual)
+		assert.equal(await pending, actual)
+		assert.equal(interceptions, 1)
+		assert.throws(() => guarded.sendRequest(), /request_limit_reached/)
+		assert.equal(sends, 1)
+	} finally {
+		restore()
+	}
+})
+
 test("request budget fences actual sends including retries and completions without mutating the shared client", async () => {
 	let sends = 0
 	const client = {

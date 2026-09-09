@@ -75,8 +75,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 	const sharedRoot = values.get("--shared-storage-root")
 	const suite = values.get("--suite")
 	const gate = flags.has("--gate")
-	if (gate && (suite !== "development" || values.get("--provider") !== "live-copilot"))
-		throw new Error("Gate requires --suite development --provider live-copilot")
+	if (gate && (!["development", "reliability"].includes(suite ?? "") || values.get("--provider") !== "live-copilot"))
+		throw new Error("Gate requires --suite development or reliability --provider live-copilot")
 	const suiteOptions = ["--provider", "--model-id", "--effort", "--id"]
 	if (
 		(recoveryRoot || sharedRoot || values.has("--config")) &&
@@ -223,7 +223,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 				return 2
 			}
 			await prepareLiveSidecar()
-			artifactDigest = await fingerprintGateArtifacts(repositoryRoot)
+			artifactDigest = await fingerprintGateArtifacts(
+				repositoryRoot,
+				config.scenarioIds.includes("completion-idle"),
+			)
 			await fs.writeFile(
 				path.join(store.directory, "gate-plan.json"),
 				JSON.stringify({ config, artifactDigest }) + "\n",
@@ -236,7 +239,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 		const report = await runCampaign(config, operations, signal, { reproduceFailures: !gate })
 		if (gate) {
 			const verdict = evaluateLiveGate(config, report)
-			const artifactsUnchanged = await fingerprintGateArtifacts(repositoryRoot).then(
+			const artifactsUnchanged = await fingerprintGateArtifacts(
+				repositoryRoot,
+				config.scenarioIds.includes("completion-idle"),
+			).then(
 				(digest) => digest === artifactDigest,
 				() => false,
 			)

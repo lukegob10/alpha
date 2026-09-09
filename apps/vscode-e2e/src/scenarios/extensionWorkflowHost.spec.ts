@@ -26,6 +26,30 @@ const history = (command: string, cwd: unknown = workspace) => [
 	},
 ]
 
+test("completion review is observed without approval and rejects an already accepted completion", async () => {
+	const task = {
+		taskId: "review-task",
+		taskAsk: { ts: 1, type: "ask", ask: "completion_result" } as ClineMessage,
+		approveAsk: () => assert.fail("review observation must not accept completion"),
+	}
+	const provider = Object.assign(new EventEmitter(), { getLiveTask: () => task })
+	const api = Object.assign(new EventEmitter(), { sidebarProvider: provider, getConfiguration: () => ({}) })
+	const host = new ExtensionWorkflowHost(
+		api as unknown as RooCodeAPI,
+		workspace,
+		"scripted",
+		new WorkflowRequestBudget(10),
+		5_000,
+	)
+	try {
+		await host.complete(task.taskId, "review")
+		api.emit(RooCodeEventName.TaskCompleted, task.taskId)
+		await assert.rejects(host.complete(task.taskId, "review"), /review_automatically_accepted/)
+	} finally {
+		await host.dispose()
+	}
+})
+
 test("blocked acceptance observes a resume boundary without approving it or accepting completed work", async () => {
 	for (const boundary of ["resume_task", "completion_result", "api_req_failed"] as const) {
 		const task = {
@@ -360,6 +384,11 @@ test("resume retains its instance and waits for same-task guidance admission aft
 		admit()
 		await resuming
 		assert.equal(submissions, 1)
+		assert.equal(host.admissionsAreUnique(taskId), false, "an event alone does not prove persisted admission")
+		task.clineMessages.push({ ts: 2, type: "say", say: "user_feedback", text: sentText })
+		assert.equal(host.admissionsAreUnique(taskId), true)
+		task.clineMessages.push({ ts: 3, type: "say", say: "user_feedback", text: sentText })
+		assert.equal(host.admissionsAreUnique(taskId), false, "duplicate admissions must fail acceptance")
 		assert.equal(provider.getLiveTask(taskId), task)
 		assert.equal(api.listenerCount(RooCodeEventName.Message), 0)
 	} finally {

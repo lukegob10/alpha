@@ -352,9 +352,16 @@ export function applyLifecycleSnapshotsToExtensionState(
 			existing?.lifecycle === TaskLifecycleState.Completed ||
 			existing?.lifecycle === TaskLifecycleState.Failed ||
 			existing?.lifecycle === TaskLifecycleState.Closed
-		// Host task terminality is authoritative and must not be resurrected by a
-		// delayed snapshot from that task's final model turn.
-		if (existingIsTerminal) continue
+		// The completion tool remains executing while its report awaits user feedback.
+		// That turn snapshot must not replace the host's newer task-level review boundary
+		// with "running". The host releases the boundary when it admits the follow-up.
+		const existingIsCompletionReview =
+			snapshot.status === "in_progress" &&
+			existing?.lifecycle === TaskLifecycleState.Waiting &&
+			existing.isWaitingForInput &&
+			existing.waitingReason === "completion"
+		// Host task terminality is also authoritative over delayed turn snapshots.
+		if (existingIsTerminal || existingIsCompletionReview) continue
 
 		const projectedMetadata = {
 			...existing,

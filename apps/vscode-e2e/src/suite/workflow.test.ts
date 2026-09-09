@@ -19,6 +19,7 @@ import {
 	verifyRepositoryFixture,
 } from "../scenarios/repositoryFixture"
 import { accumulatedCases } from "../scenarios/scriptedWorkflow"
+import { runReliabilityScenario } from "../scenarios/reliabilityDriver"
 import {
 	createDevelopmentFixture,
 	disposeDevelopmentFixture,
@@ -104,6 +105,10 @@ suite("Alpha realistic workflow scenarios", function () {
 				},
 				{
 					host,
+					reliability: (options, repository) =>
+						runReliabilityScenario(options, host, budget, repository, (name, value) =>
+							writeNewArtifact(path.join(process.env.ALPHA_E2E_ARTIFACTS_DIR!, name), value),
+						),
 					development: {
 						create: (scenarioId) => createDevelopmentFixture(workspace, scenarioId),
 						verify: (scenarioId, phase) => verifyDevelopmentFixture(workspace, scenarioId, phase),

@@ -8,6 +8,7 @@ import {
 	type ClineMessage,
 	type RooCodeAPI,
 	type RooCodeSettings,
+	type ExtensionState,
 } from "@alpha-code/types"
 
 import { waitFor } from "../suite/utils"
@@ -58,12 +59,21 @@ interface HostTask {
 	approveAsk(): void
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
+	condenseContext(): Promise<void>
 }
 
 interface HostProvider {
+	createTask(
+		text: string,
+		images: undefined,
+		parent: undefined,
+		options: { preserveExisting: true; background: true; apiConfiguration: RooCodeSettings },
+		configuration: RooCodeSettings,
+	): Promise<HostTask>
+	closeTask(taskId: string): Promise<void>
 	viewLaunched: boolean
 	getLiveTask(taskId: string): HostTask | undefined
-	getStateToPostToWebview(): Promise<{ currentTaskId?: string }>
+	getStateToPostToWebview(): Promise<ExtensionState>
 	getTaskWithId(taskId: string): Promise<{ historyItem: unknown; taskDirPath: string }>
 	createTaskWithHistoryItem(
 		historyItem: unknown,
@@ -187,6 +197,8 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 	private readonly configuration: RooCodeSettings
 	private readonly deadline: number
 	private currentId?: string
+	private readonly backgroundIds = new Set<string>()
+	private readonly admissions: Array<{ taskId: string; text: string; after: number }> = []
 	private activePrompt: WorkflowPromptName = "review"
 	private readonly onCompleted = (id: string) => this.completions.set(id, (this.completions.get(id) ?? 0) + 1)
 	private readonly onCreated = (task: HostTask) => {
@@ -254,7 +266,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		if (Date.now() >= this.deadline) throw new WorkflowFailure("timeout", "scenario_deadline")
 	}
 
-	private async until(condition: () => boolean | Promise<boolean>, code: string): Promise<void> {
+	private async until(condition: () => boolean | Promise<boolean>, code: string, timeoutMs?: number): Promise<void> {
 		this.checkBudget()
 		try {
 			await waitFor(
@@ -263,7 +275,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 					return condition()
 				},
 				{
-					timeout: Math.max(1, this.deadline - Date.now()),
+					timeout: Math.max(1, Math.min(this.deadline - Date.now(), timeoutMs ?? Infinity)),
 					interval: 50,
 					description: code,
 				},
@@ -312,27 +324,33 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		// first so synchronous and delayed same-task admissions are both observed.
 		this.api.on(RooCodeEventName.Message, onFeedback)
 		try {
+			this.admissions.push({ taskId, text: guidance, after: previousTimestamp })
 			await this.api.sendMessage(guidance)
-			await this.until(() => {
-				const current = this.requireTask(taskId)
-				if (current !== task) throw new WorkflowFailure("lifecycle", "message_admission_task_replaced")
-				if (admitted) return true
-				const ask = current.taskAsk
-				// Only the exact pre-dispatch boundary may remain while its response
-				// crosses the webview. A new recovery/approval is not silently ignored.
-				if (ask && !ask.partial && (ask.ts !== previousAsk?.ts || ask.ask !== previousAsk?.ask))
-					throw unexpectedAskFailure(ask)
-				return false
-			}, "message_admission_timeout")
+			await this.until(
+				() => {
+					const current = this.requireTask(taskId)
+					if (current !== task) throw new WorkflowFailure("lifecycle", "message_admission_task_replaced")
+					if (admitted) return true
+					const ask = current.taskAsk
+					// Only the exact pre-dispatch boundary may remain while its response
+					// crosses the webview. A new recovery/approval is not silently ignored.
+					if (ask && !ask.partial && (ask.ts !== previousAsk?.ts || ask.ask !== previousAsk?.ask))
+						throw unexpectedAskFailure(ask)
+					return false
+				},
+				"message_admission_timeout",
+				30_000,
+			)
 		} finally {
 			this.api.off(RooCodeEventName.Message, onFeedback)
 		}
 	}
 
-	async complete(taskId: string, outcome: "completed" | "blocked" = "completed"): Promise<void> {
+	async complete(taskId: string, outcome: "completed" | "blocked" | "review" = "completed"): Promise<void> {
 		const expected = this.expectedCompletions.get(taskId) ?? 1
 		await this.until(() => {
 			if ((this.completions.get(taskId) ?? 0) >= expected) {
+				if (outcome === "review") throw new WorkflowFailure("lifecycle", "review_automatically_accepted")
 				if (outcome === "blocked") throw new WorkflowFailure("lifecycle", "unexpected_completed_verification")
 				return true
 			}
@@ -353,6 +371,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 				this.approvedAsks.add(ask.ts)
 				task.approveAsk()
 			} else if (ask.ask === "completion_result") {
+				if (outcome === "review") return true
 				if (outcome === "blocked") throw new WorkflowFailure("lifecycle", "unexpected_completed_verification")
 				this.approvedAsks.add(ask.ts)
 				task.approveAsk()
@@ -481,8 +500,119 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		return this.budget.used
 	}
 
+	/** Capture only fixture lifecycle state; never export profile configuration or credentials. */
+	async captureCompletionReview(taskId: string) {
+		const task = this.requireTask(taskId)
+		if (task.taskAsk?.ask !== "completion_result" || task.didComplete)
+			throw new WorkflowFailure("lifecycle", "completion_review_lost")
+		return this.captureTaskState(taskId)
+	}
+
+	async captureTaskState(taskId: string) {
+		const task = this.requireTask(taskId)
+		const state = await this.provider.getStateToPostToWebview()
+		return {
+			currentTaskId: state.currentTaskId,
+			activeTaskId: state.activeTaskId,
+			currentView: state.currentView,
+			liveTaskIds: state.liveTaskIds,
+			liveTasksById: { [taskId]: state.liveTasksById?.[taskId] },
+			agentLifecycleSnapshots: { [taskId]: state.agentLifecycleSnapshots?.[taskId] },
+			clineMessages: task.clineMessages.slice(-2),
+		}
+	}
+
+	async waitForFault(condition: () => boolean): Promise<void> {
+		await this.until(condition, "live_fault_boundary_timeout", 60_000)
+	}
+
+	admissionsAreUnique(taskId: string): boolean {
+		const messages = this.requireTask(taskId).clineMessages
+		const expected = this.admissions.filter((admission) => admission.taskId === taskId)
+		return expected.every(
+			(admission, index) =>
+				messages.filter(
+					(message) =>
+						message.type === "say" &&
+						message.say === "user_feedback" &&
+						message.partial !== true &&
+						message.text === admission.text &&
+						message.ts > admission.after &&
+						message.ts <= (expected[index + 1]?.after ?? Infinity),
+				).length === 1,
+		)
+	}
+
+	async startBackgroundReview(): Promise<string> {
+		const task = await this.provider.createTask(
+			workflowPrompt("review"),
+			undefined,
+			undefined,
+			{ preserveExisting: true, background: true, apiConfiguration: this.configuration },
+			{ ...this.configuration, maxConcurrentTasks: 2 },
+		)
+		this.backgroundIds.add(task.taskId)
+		return task.taskId
+	}
+
+	async condense(taskId: string): Promise<boolean> {
+		const task = this.requireTask(taskId)
+		const summaries = () =>
+			task.apiConversationHistory.filter((message) => record(message)?.isSummary === true).length
+		const before = summaries()
+		const condensing = task.condenseContext()
+		await this.until(
+			async () => {
+				await condensing
+				return true
+			},
+			"live_compaction_timeout",
+			90_000,
+		)
+		return summaries() > before
+	}
+
+	async cancelAtStreamBoundary(taskId: string): Promise<void> {
+		await this.assertUiTask(taskId)
+		const cancellation = this.api.cancelCurrentTask()
+		await this.until(
+			async () => {
+				await cancellation
+				return true
+			},
+			"stream_cancel_timeout",
+			10_000,
+		)
+	}
+
+	async waitForResumeBoundary(taskId: string): Promise<void> {
+		await this.until(
+			() => this.requireTask(taskId).taskAsk?.ask === "resume_task",
+			"cancel_resume_boundary_timeout",
+			30_000,
+		)
+	}
+
+	async recoverProviderError(taskId: string): Promise<void> {
+		await this.until(
+			() => {
+				const task = this.requireTask(taskId)
+				const ask = task.taskAsk
+				if (ask?.ask === "api_req_failed" && !ask.partial) {
+					task.approveAsk()
+					return true
+				}
+				// Automatic retry is also a valid recovery, but must have reached another real request.
+				return this.budget.used > 1
+			},
+			"provider_recovery_timeout",
+			60_000,
+		)
+	}
+
 	async dispose(): Promise<void> {
 		try {
+			for (const id of this.backgroundIds) await this.provider.closeTask(id)
 			if (this.currentId && !this.provider.getLiveTask(this.currentId)?.didComplete)
 				await this.api.cancelCurrentTask()
 		} finally {

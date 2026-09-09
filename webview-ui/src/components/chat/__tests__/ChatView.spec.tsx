@@ -4,6 +4,7 @@ import React from "react"
 import { render, waitFor, act, fireEvent, within } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { agentLifecycleSnapshotSchema } from "@alpha-code/types"
+import { readFileSync } from "node:fs"
 
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
 import { vscode } from "@src/utils/vscode"
@@ -1889,6 +1890,82 @@ describe("ChatView - Message Queueing Tests", () => {
 		await waitFor(() => expect(getByRole("status")).toHaveTextContent("chat:stalledTurn"))
 		expect(getByTestId("mock-stop")).toBeEnabled()
 	})
+
+	it("keeps an idle completion-tool review out of the stalled running state", async () => {
+		const { getByTestId, queryByText } = renderChatView()
+		const taskId = "completion-review"
+		mockPostMessage({
+			currentTaskId: taskId,
+			currentView: { type: "task", taskId },
+			liveTaskIds: [taskId],
+			liveTasksById: {
+				[taskId]: {
+					id: taskId,
+					status: "idle",
+					lifecycle: "waiting",
+					isActive: true,
+					isStreaming: false,
+					isTurnActive: true,
+					canInterrupt: false,
+					isWaitingForInput: true,
+					waitingReason: "completion",
+					activityPhase: "executing",
+					lastUpdatedAt: Date.now() - 35_000,
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+			agentLifecycleSnapshots: {
+				[taskId]: agentLifecycleSnapshotSchema.parse({
+					version: 1,
+					taskId,
+					runId: "run",
+					turnId: "turn",
+					status: "in_progress",
+					phase: "executing",
+					lastSequence: 0,
+					items: [],
+					steps: [],
+					acceptedToolCallIds: [],
+					terminalToolCallIds: [],
+					processedEvents: [],
+				}),
+			},
+			clineMessages: [
+				{ type: "say", say: "completion_result", ts: 1, text: "Implementation verified.", partial: false },
+				{ type: "ask", ask: "completion_result", ts: 2, text: "" },
+			],
+		})
+		await waitFor(() =>
+			expect(getByTestId("chat-textarea").querySelector("input")).toHaveAttribute("data-is-streaming", "false"),
+		)
+		expect(queryByText("chat:stalledTurn")).not.toBeInTheDocument()
+	})
+	;(process.env.ALPHA_COMPLETION_IDLE_EVIDENCE ? it : it.skip)(
+		"replays the isolated live completion-idle capture through the rendered chat",
+		async () => {
+			const evidence = JSON.parse(readFileSync(process.env.ALPHA_COMPLETION_IDLE_EVIDENCE!, "utf8"))
+			expect(evidence.schemaVersion).toBe(1)
+			expect(evidence.elapsedMs).toBeGreaterThanOrEqual(30_000)
+			expect(evidence.requestsAfterIdle).toBe(evidence.requestsAtReview)
+			expect(evidence.states).toHaveLength(2)
+			const { getByTestId, queryByText } = renderChatView()
+			for (const state of evidence.states) {
+				expect(state.currentTaskId).toBe(evidence.taskId)
+				agentLifecycleSnapshotSchema.parse(state.agentLifecycleSnapshots[evidence.taskId])
+				mockPostMessage(state)
+				await waitFor(() =>
+					expect(getByTestId("chat-textarea").querySelector("input")).toHaveAttribute(
+						"data-is-streaming",
+						"false",
+					),
+				)
+				expect(queryByText("chat:stalledTurn")).not.toBeInTheDocument()
+			}
+		},
+	)
 
 	it("shows the task chat shell when a focused task exists before its first message arrives", async () => {
 		const { getByTestId, queryByTestId, queryByText } = renderChatView()

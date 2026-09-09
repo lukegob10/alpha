@@ -132,6 +132,13 @@ export class WorkflowScriptedAI {
 			case "verify":
 				this.plan = [read("lib/stats.cjs"), command(WORKFLOW_COMMANDS.test)]
 				break
+			case "completionIdle":
+				this.plan = [
+					read("lib/stats.cjs"),
+					command(WORKFLOW_COMMANDS.test),
+					{ name: "attempt_completion", arguments: { result: this.finalReport, outcome: "completed" } },
+				]
+				break
 			case "extend":
 				this.plan = [
 					read(step === 1 ? "test/stats.test.cjs" : "test/workflow-cases.json"),

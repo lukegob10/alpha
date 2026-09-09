@@ -5,6 +5,8 @@ export class WorkflowRequestBudget {
 	exhausted = false
 	failure?: WorkflowFailure
 	model: WorkflowResult["model"] = {}
+	/** Opt-in test fault at the real response boundary; ordinary guards preserve response identity. */
+	transformResponse?: (response: unknown) => unknown
 
 	constructor(
 		readonly limit: number,
@@ -72,7 +74,14 @@ export function guardVsCodeLmHandler(handler: unknown, budget: WorkflowRequestBu
 					if (key === "sendRequest") {
 						return (...requestArgs: unknown[]) => {
 							budget.consume()
-							return Reflect.apply(value as (...args: unknown[]) => unknown, client, requestArgs)
+							const response: unknown = Reflect.apply(
+								value as (...args: unknown[]) => unknown,
+								client,
+								requestArgs,
+							)
+							return budget.transformResponse
+								? Promise.resolve(response).then(budget.transformResponse)
+								: response
 						}
 					}
 					return typeof value === "function" ? value.bind(client) : value

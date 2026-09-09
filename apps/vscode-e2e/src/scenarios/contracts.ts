@@ -1,4 +1,5 @@
 import { DEVELOPMENT_SCENARIO_IDS } from "./developmentCatalog"
+import { RELIABILITY_SCENARIO_IDS } from "./reliabilityCatalog"
 
 export const WORKFLOW_SCENARIO_IDS = [
 	"review-edit-test-commit-followup",
@@ -6,6 +7,7 @@ export const WORKFLOW_SCENARIO_IDS = [
 	"long-thread",
 	"reload-continuation",
 	...DEVELOPMENT_SCENARIO_IDS,
+	...RELIABILITY_SCENARIO_IDS,
 ] as const
 
 export type WorkflowScenarioId = (typeof WORKFLOW_SCENARIO_IDS)[number]

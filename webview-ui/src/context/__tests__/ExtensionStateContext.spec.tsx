@@ -997,6 +997,64 @@ describe("mergeExtensionState", () => {
 			expect(afterLifecycle.messageQueueSeq).toBe(8)
 		})
 
+		it("preserves host completion review across executing snapshots and releases it on host follow-up", () => {
+			const taskId = "lifecycle-task"
+			const snapshot = makeLifecycleSnapshot({ phase: "executing" })
+			const waiting: ExtensionState = {
+				...baseState,
+				currentTaskId: taskId,
+				liveTaskIds: [taskId],
+				agentLifecycleSnapshots: { [taskId]: snapshot },
+				liveTasksById: {
+					[taskId]: {
+						id: taskId,
+						lifecycle: TaskLifecycleState.Waiting,
+						status: TaskStatus.Idle,
+						isActive: true,
+						isStreaming: false,
+						isTurnActive: true,
+						canInterrupt: false,
+						isWaitingForInput: true,
+						waitingReason: "completion",
+						lastUpdatedAt: 100,
+						queueCount: 0,
+						tokensIn: 0,
+						tokensOut: 0,
+						totalCost: 0,
+					},
+				},
+			}
+			const reviewed = mergeExtensionState(waiting, {})
+			expect(reviewed.liveTasksById?.[taskId]).toMatchObject({
+				lifecycle: TaskLifecycleState.Waiting,
+				status: TaskStatus.Idle,
+				isWaitingForInput: true,
+				waitingReason: "completion",
+				canInterrupt: false,
+			})
+			const replayed = mergeExtensionState(reviewed, { agentLifecycleSnapshots: { [taskId]: snapshot } })
+			expect(replayed.liveTasksById?.[taskId]).toEqual(reviewed.liveTasksById?.[taskId])
+			const continued = mergeExtensionState(replayed, {
+				liveTasksById: {
+					[taskId]: {
+						...waiting.liveTasksById![taskId],
+						lifecycle: TaskLifecycleState.Running,
+						status: TaskStatus.Running,
+						isWaitingForInput: false,
+						waitingReason: undefined,
+						isStreaming: true,
+						canInterrupt: true,
+					},
+				},
+			})
+			expect(continued.liveTasksById?.[taskId]).toMatchObject({
+				lifecycle: TaskLifecycleState.Running,
+				isWaitingForInput: false,
+				isStreaming: true,
+				canInterrupt: true,
+			})
+		})
+
 		it("ignores a queue-only patch scoped to a task that is no longer visible", () => {
 			const currentQueue = [{ id: "current", text: "current queue", images: [], timestamp: 1 }]
 			const prevState: ExtensionState = {

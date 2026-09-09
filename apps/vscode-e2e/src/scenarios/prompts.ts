@@ -23,6 +23,7 @@ export const WORKFLOW_PROMPTS = {
 	followup: `[workflow:followup]\n${scope}\nAdd a regression test for negative numbers in test/stats.test.cjs and document sum([-2, 1]) = -1 in README.md. Run ${WORKFLOW_COMMANDS.test}. Keep this follow-up uncommitted.`,
 	hold: `[workflow:hold]\n${scope}\nSubmit ${WORKFLOW_COMMANDS.test} using execute_command with the workspace as cwd. Do not edit files. This cancellation test needs the tool's pending command-approval boundary: submit the tool call now; the host will withhold execution approval. Do not request conversational approval through ask_followup_question or wait in prose before submitting the command.`,
 	verify: `[workflow:verify]\n${scope}\nRecheck the current files and run ${WORKFLOW_COMMANDS.test}. Do not modify or commit anything. Explain the result using the accumulated task context.`,
+	completionIdle: `[workflow:completion-idle]\n${scope}\nRecheck the implemented changes and run ${WORKFLOW_COMMANDS.test}. Do not modify or commit anything. Finish using attempt_completion with outcome completed and a concise verification report. This tests the normal completion-tool boundary after an implementation thread.`,
 	extend: `[workflow:extend]\n${scope}\nExtend the accumulated regression cases as instructed below, preserving all earlier behavior and tests.`,
 } as const
 

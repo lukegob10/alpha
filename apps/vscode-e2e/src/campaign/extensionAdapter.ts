@@ -37,6 +37,34 @@ async function readJson(filePath: string): Promise<unknown> {
 	return JSON.parse((await readBounded(filePath, MAX_WORKFLOW_RESULT_BYTES)).toString("utf8"))
 }
 
+/** A zero exit code with all tests skipped is not rendered completion acceptance. */
+export function completionReplayPassed(value: unknown): boolean {
+	if (!value || typeof value !== "object") return false
+	const report = value as Record<string, unknown>
+	if (
+		report.success !== true ||
+		report.numPassedTests !== 1 ||
+		report.numFailedTests !== 0 ||
+		!Array.isArray(report.testResults)
+	)
+		return false
+	return report.testResults.some((entry: unknown) => {
+		if (!entry || typeof entry !== "object") return false
+		const assertions = (entry as Record<string, unknown>).assertionResults
+		return (
+			Array.isArray(assertions) &&
+			assertions.some((item: unknown) => {
+				if (!item || typeof item !== "object") return false
+				const assertion = item as Record<string, unknown>
+				return (
+					assertion.title === "replays the isolated live completion-idle capture through the rendered chat" &&
+					assertion.status === "passed"
+				)
+			})
+		)
+	})
+}
+
 const blocked = (fingerprint: string, failureClass: FailureClass = "infrastructure"): ScenarioResult => ({
 	status: "blocked",
 	failure: { class: failureClass, fingerprint },
@@ -318,6 +346,40 @@ export function createExtensionCampaignOperations(
 						projection.result,
 						runner?.failure === "evidence-failed" ? "evidence_failed" : "host_exit_failed",
 					)
+				if (request.scenarioId === "completion-idle" && projection.result.status === "passed") {
+					const replayReportPath = path.join(directory, "completion-ui-tests.json")
+					const replay = await runProcess(
+						{
+							executable: process.execPath,
+							args: [
+								path.join(options.repositoryRoot, "webview-ui/node_modules/vitest/vitest.mjs"),
+								"run",
+								"src/components/chat/__tests__/ChatView.spec.tsx",
+								"-t",
+								"isolated live completion-idle",
+								"--reporter=json",
+								"--outputFile",
+								replayReportPath,
+							],
+							cwd: path.join(options.repositoryRoot, "webview-ui"),
+							env: {
+								...process.env,
+								ALPHA_COMPLETION_IDLE_EVIDENCE: path.join(record.artifacts, "completion-idle.json"),
+							},
+						},
+						{ signal, maxOutputBytes: 32_768 },
+					)
+					await fs.writeFile(path.join(directory, "completion-ui-replay.json"), JSON.stringify(replay), {
+						flag: "wx",
+					})
+					const assertionsPassed = await readJson(replayReportPath).then(completionReplayPassed, () => false)
+					if (replay.exitCode !== 0 || replay.signal !== null || replay.outputTruncated || !assertionsPassed)
+						projection.result = {
+							...projection.result,
+							status: "failed",
+							failure: { class: "assertion", fingerprint: "completion_ui_replay_failed" },
+						}
+				}
 				if (projection.result.usage.requests === null) return projection.result
 				requestsUsed += projection.result.usage.requests
 				const combined = { ...projection.result, usage: { ...projection.result.usage, requests: requestsUsed } }

@@ -2,8 +2,9 @@ import { alphaReasoningEfforts } from "../liveModelSelection"
 import { WORKFLOW_SCENARIO_IDS, type WorkflowScenarioId } from "../scenarios/contracts"
 import { parseCampaignConfig } from "./config"
 import { HOST_VERSIONS, type CampaignConfig, type CampaignHost } from "./types"
+import { RELIABILITY_ACCEPTANCE_SCENARIO_IDS, isReliabilityScenario } from "../scenarios/reliabilityCatalog"
 
-export const DEVELOPMENT_SUITE_NAMES = ["smoke", "development", "soak"] as const
+export const DEVELOPMENT_SUITE_NAMES = ["smoke", "development", "soak", "reliability"] as const
 export type DevelopmentSuiteName = (typeof DEVELOPMENT_SUITE_NAMES)[number]
 
 export interface DevelopmentSuiteOptions {
@@ -37,16 +38,22 @@ const SUITE_DEFINITIONS: Record<DevelopmentSuiteName, SuiteDefinition> = {
 		maxDurationMs: 30 * MINUTE_MS,
 	},
 	development: {
-		scenarioIds: WORKFLOW_SCENARIO_IDS,
+		scenarioIds: WORKFLOW_SCENARIO_IDS.filter((id) => !isReliabilityScenario(id)),
 		samples: 1,
 		maxRequests: 1_200,
 		maxDurationMs: 2 * HOUR_MS,
 	},
 	soak: {
-		scenarioIds: WORKFLOW_SCENARIO_IDS,
+		scenarioIds: WORKFLOW_SCENARIO_IDS.filter((id) => !isReliabilityScenario(id)),
 		samples: 3,
 		maxRequests: 3_000,
 		maxDurationMs: 6 * HOUR_MS,
+	},
+	reliability: {
+		scenarioIds: RELIABILITY_ACCEPTANCE_SCENARIO_IDS,
+		samples: 1,
+		maxRequests: 1_200,
+		maxDurationMs: 2 * HOUR_MS,
 	},
 }
 
@@ -62,6 +69,8 @@ export function createDevelopmentSuite(options: DevelopmentSuiteOptions): Campai
 		throw new Error("Invalid development suite")
 	if (options.provider !== "scripted" && options.provider !== "live-copilot")
 		throw new Error("Invalid development suite provider")
+	if (options.suite === "reliability" && options.provider !== "live-copilot")
+		throw new Error("Reliability acceptance requires live Copilot")
 
 	if (options.provider === "scripted" && (options.modelId !== undefined || options.effort !== undefined))
 		throw new Error("Scripted development suites do not accept model or effort")

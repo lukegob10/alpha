@@ -4,20 +4,26 @@ import { createHash } from "node:crypto"
 import { createReadStream } from "node:fs"
 
 import { WORKFLOW_SCENARIO_IDS } from "../scenarios/contracts"
+import { isReliabilityScenario, RELIABILITY_ACCEPTANCE_SCENARIO_IDS } from "../scenarios/reliabilityCatalog"
 import { rejectSymlinkComponents } from "../evidence/paths"
 import { runOwnedProcess } from "./ownedProcess"
 import type { CampaignConfig, CampaignReport } from "./types"
 
 export function assertLiveGateConfig(config: CampaignConfig): void {
+	const completeSuite = [
+		WORKFLOW_SCENARIO_IDS.filter((id) => !isReliabilityScenario(id)),
+		RELIABILITY_ACCEPTANCE_SCENARIO_IDS,
+	].some((ids) => config.scenarioIds.length === ids.length && ids.every((id) => config.scenarioIds.includes(id)))
 	if (
 		config.provider.mode !== "live-copilot" ||
 		!config.provider.modelId ||
 		!config.provider.effort ||
 		config.repair ||
-		config.scenarioIds.length !== WORKFLOW_SCENARIO_IDS.length ||
-		WORKFLOW_SCENARIO_IDS.some((id) => !config.scenarioIds.includes(id))
+		!completeSuite
 	)
-		throw new Error("Live gate requires the complete development suite, exact live model/effort, and no repair")
+		throw new Error(
+			"Live gate requires a complete development or reliability suite, exact live model/effort, and no repair",
+		)
 }
 
 /** Count every required cell independently; aggregate counters and a later retry cannot manufacture acceptance. */
@@ -101,7 +107,10 @@ export function evaluateLiveGate(config: CampaignConfig, report: CampaignReport)
 }
 
 /** Fingerprint the entrypoint, webview and harness bytes actually used; a watcher rebuild invalidates this run. */
-export async function fingerprintGateArtifacts(repositoryRoot: string): Promise<string> {
+export async function fingerprintGateArtifacts(
+	repositoryRoot: string,
+	includeCompletionReplay = false,
+): Promise<string> {
 	const hash = createHash("sha256")
 	let entries = 0
 	let bytes = 0
@@ -122,6 +131,14 @@ export async function fingerprintGateArtifacts(repositoryRoot: string): Promise<
 	}
 	for (const relative of ["src/package.json", "src/dist/extension.js", "src/webview-ui/build", "apps/vscode-e2e/out"])
 		await visit(relative)
+	if (includeCompletionReplay)
+		for (const relative of [
+			"webview-ui/src",
+			"webview-ui/vitest.config.ts",
+			"webview-ui/tsconfig.json",
+			"packages/types/dist",
+		])
+			await visit(relative)
 	return hash.digest("hex")
 }
 

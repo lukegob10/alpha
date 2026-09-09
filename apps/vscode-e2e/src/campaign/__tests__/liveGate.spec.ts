@@ -67,6 +67,22 @@ test("gate covers the whole registered matrix and labels single-host acceptance 
 	assert.equal(evaluateLiveGate(plan, completeReport(plan)).scope, "single-host-only")
 })
 
+test("reliability gate requires every live cell and retains failed attempts", () => {
+	const plan = createDevelopmentSuite({
+		suite: "reliability",
+		id: "reliability-gate",
+		provider: "live-copilot",
+		modelId: "exact-model",
+		effort: "high",
+	})
+	assert.equal(evaluateLiveGate(plan, completeReport(plan)).status, "passed")
+	const report = completeReport(plan)
+	report.attempts[0]!.result.status = "failed"
+	assert.equal(evaluateLiveGate(plan, report).status, "failed")
+	plan.scenarioIds.pop()
+	assert.throws(() => assertLiveGateConfig(plan))
+})
+
 test("gate rejects scripted, partial catalog and missing model configuration", () => {
 	for (const alter of [
 		(plan: CampaignConfig) => {
@@ -241,6 +257,19 @@ test("artifact fingerprints detect modified, added and removed runtime files", a
 	await fs.writeFile(path.join(root, "src/dist/extension.js"), "changed!")
 	assert.notEqual(await fingerprintGateArtifacts(root), baseline)
 	await fs.writeFile(path.join(root, "src/dist/extension.js"), "original")
+	for (const file of [
+		"webview-ui/src/fixture.ts",
+		"webview-ui/vitest.config.ts",
+		"webview-ui/tsconfig.json",
+		"packages/types/dist/index.js",
+	]) {
+		await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true })
+		await fs.writeFile(path.join(root, file), "original")
+	}
+	const replayBaseline = await fingerprintGateArtifacts(root, true)
+	await fs.writeFile(path.join(root, "webview-ui/src/fixture.ts"), "changed test")
+	assert.notEqual(await fingerprintGateArtifacts(root, true), replayBaseline)
+	assert.equal(await fingerprintGateArtifacts(root), baseline)
 	await fs.writeFile(path.join(root, "src/webview-ui/build/extra.js"), "new")
 	assert.notEqual(await fingerprintGateArtifacts(root), baseline)
 	await fs.unlink(path.join(root, "src/webview-ui/build/extra.js"))

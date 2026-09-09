@@ -3,7 +3,7 @@ import * as assert from "node:assert/strict"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import * as os from "node:os"
-import { createExtensionCampaignOperations, projectWorkflowResult } from "../extensionAdapter"
+import { createExtensionCampaignOperations, projectWorkflowResult, completionReplayPassed } from "../extensionAdapter"
 import { prepareEvidenceRun } from "../../evidence/paths"
 import { openCampaignRoot } from "../reportStore"
 import { auditRetainedStorage } from "../../evidence/retainedStorageBudget"
@@ -40,6 +40,35 @@ const workflow = () => ({
 	providerMode: "scripted",
 	model: { id: "fake-model" },
 	requestsUsed: 2,
+})
+
+test("completion replay rejects successful empty/skipped runs and requires the actual assertion", () => {
+	const report = {
+		success: true,
+		numPassedTests: 1,
+		numFailedTests: 0,
+		testResults: [
+			{
+				assertionResults: [
+					{
+						title: "replays the isolated live completion-idle capture through the rendered chat",
+						status: "passed",
+					},
+				],
+			},
+		],
+	}
+	assert.equal(completionReplayPassed(report), true)
+	assert.equal(completionReplayPassed({ ...report, numPassedTests: 0 }), false)
+	assert.equal(completionReplayPassed({ ...report, testResults: [] }), false)
+	assert.equal(completionReplayPassed({ ...report, success: false }), false)
+	assert.equal(
+		completionReplayPassed({
+			...report,
+			testResults: [{ assertionResults: [{ title: "other", status: "passed" }] }],
+		}),
+		false,
+	)
 })
 
 test("campaign profile selection preserves the default and forwards an explicit absolute profile root", async () => {
