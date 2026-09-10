@@ -20,6 +20,7 @@
 		"delete_custom_mode_with_rules": "Weet je zeker dat je deze {scope}-modus wilt verwijderen?\n\nDit verwijdert ook de bijbehorende regelsmap op:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "De taak blijft onvoltooid en niet geverifieerd: na 30 seconden ontbreekt nog steeds een registratie van een wijziging in de werkruimte. Er wordt geen actieve bewerking voor deze ontbrekende registratie bijgehouden. Opnieuw voltooien of verifiëren herstelt dit niet. Gebruik de gedetailleerde foutinformatie om de oorspronkelijke gereedschaps- of opslagfout te onderzoeken voordat u hervat.",
 		"task_recovery_lock_repair": "Alpha kan de eigenaar van de gedeelde taakopslagvergrendeling niet verifiëren. Hervatten of herladen kan dit niet veilig herstellen. Sluit alle VS Code-vensters en Alpha-testhosts. Maak daarna een back-up en verwijder alleen agent_control.json.transaction.lock uit de globale opslag van Alpha voordat u opnieuw opent. Verwijder de vergrendeling nooit terwijl een host draait; bewaar de taakgeschiedenis en agent_control.json.",
 		"task_recovery_failed": "De beurt is gestopt omdat een bewerking is mislukt. Je kunt de taak hervatten of nieuwe aanwijzingen sturen.",
 		"task_recovery_incomplete": "De beurt is geëindigd voordat de taak was voltooid. Je kunt de taak hervatten of nieuwe aanwijzingen sturen.",
@@ -79,6 +80,7 @@
 		"command_timeout": "Time-out bij uitvoeren van commando na {{seconds}} seconden",
 		"command_mutation_observation_incomplete": "De taak blijft onvolledig en niet geverifieerd omdat de wijzigingen door de opdracht niet volledig konden worden waargenomen.",
 		"command_mutation_receipt_incomplete": "De taak blijft onvolledig en niet geverifieerd omdat het mutatiebewijs van de opdracht niet kon worden afgerond.",
+		"mutation_receipt_incomplete": "De taak blijft onvoltooid omdat de registratie van een werkruimtewijziging niet kon worden afgerond. Bekijk de oorspronkelijke toolfout voordat u doorgaat.",
 		"command_output_bookkeeping_incomplete": "De taak blijft onvolledig omdat de uitvoer van de voltooide opdracht niet kon worden afgerond.",
 		"share_task_failed": "Delen van taak mislukt",
 		"share_no_active_task": "Geen actieve taak om te delen",

@@ -1607,6 +1607,8 @@ describe("webviewMessageHandler - downloadErrorDiagnostics", () => {
 		expect(generateErrorDiagnostics).toHaveBeenCalledTimes(1)
 		expect(generateErrorDiagnostics).toHaveBeenCalledWith({
 			taskId: "test-task-id",
+			extension: mockClineProvider.context.extension,
+			getRuntimeDiagnostics: expect.any(Function),
 			globalStoragePath: "/mock/global/storage",
 			values: {
 				timestamp: "2025-01-01T00:00:00.000Z",

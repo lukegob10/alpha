@@ -20,6 +20,7 @@
 		"delete_custom_mode_with_rules": "您确定要删除此 {scope} 模式吗？\n\n这也将删除位于以下位置的关联规则文件夹：\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "任务仍未完成且未经验证：30 秒后，仍缺少工作区更改记录。当前没有跟踪到与该记录对应的活动操作。重试完成或验证不会修复此状态。恢复之前，请使用详细错误信息调查最初的工具或存储错误。",
 		"task_recovery_lock_repair": "Alpha 无法验证共享任务存储锁的所有者。继续或重新加载无法安全修复此问题。请关闭所有 VS Code 窗口和 Alpha 扩展测试宿主，然后仅备份并移除 Alpha 全局存储中的 agent_control.json.transaction.lock，再重新打开。宿主运行时切勿移除锁；请保留任务历史记录和 agent_control.json。",
 		"task_recovery_failed": "某项操作失败，当前轮次已停止。你可以恢复任务或发送新的指示。",
 		"task_recovery_incomplete": "当前轮次在任务完成前结束。你可以恢复任务或发送新的指示。",
@@ -84,6 +85,7 @@
 		"command_timeout": "命令执行超时，{{seconds}} 秒后",
 		"command_mutation_observation_incomplete": "由于无法完整观察命令造成的更改，任务仍未完成且未经验证。",
 		"command_mutation_receipt_incomplete": "由于无法完成命令变更回执，任务仍未完成且未经验证。",
+		"mutation_receipt_incomplete": "无法完成工作区更改记录，因此任务仍未完成。恢复前请查看工具的原始错误。",
 		"command_output_bookkeeping_incomplete": "由于无法完成已结束命令的输出处理，任务仍未完成。",
 		"share_task_failed": "分享任务失败。请重试。",
 		"share_no_active_task": "没有活跃任务可分享",

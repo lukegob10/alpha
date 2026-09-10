@@ -4,6 +4,7 @@ import fs from "fs/promises"
 import EventEmitter from "events"
 import crypto from "crypto"
 import { isDeepStrictEqual } from "util"
+import { settlementDiagnostics } from "../agent/SettlementDiagnostics"
 
 import { Anthropic } from "@anthropic-ai/sdk"
 import delay from "delay"
@@ -6802,6 +6803,14 @@ export class ClineProvider
 				console.error("[ClineProvider] Failed to project parent command evidence", error)
 			}
 		}
+	}
+
+	/** Last in-memory ledger projection; diagnostics must not retry or settle the failing operation. */
+	public getTaskSettlementDiagnostics(parent: Task) {
+		return settlementDiagnostics(
+			parent,
+			this.agentControlStore.getVerificationObligations({ parentTaskId: parent.taskId }),
+		)
 	}
 
 	/** Authoritative production completion gate used by attempt_completion. */

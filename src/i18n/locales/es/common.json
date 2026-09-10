@@ -20,6 +20,7 @@
 		"delete_custom_mode_with_rules": "¿Estás seguro de que quieres eliminar este modo {scope}?\n\nEsto también eliminará la carpeta de reglas asociada en:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "La tarea sigue incompleta y sin verificar: después de 30 segundos aún falta el registro de un cambio en el espacio de trabajo. No hay ninguna operación activa registrada para ese registro pendiente. Reintentar la finalización o la verificación no lo reparará. Use la información detallada del error para investigar el error original de la herramienta o del almacenamiento antes de reanudar.",
 		"task_recovery_lock_repair": "Alpha no puede verificar el propietario del bloqueo compartido de tareas. Reanudar o recargar no lo repara de forma segura. Cierra todas las ventanas de VS Code y los hosts de prueba de Alpha. Después, respalda y elimina solo agent_control.json.transaction.lock del almacenamiento global de Alpha antes de volver a abrir. Nunca elimines el bloqueo con un host en ejecución; conserva el historial y agent_control.json.",
 		"task_recovery_failed": "El turno se detuvo porque falló una operación. Puedes reanudar la tarea o enviar nuevas indicaciones.",
 		"task_recovery_incomplete": "El turno terminó antes de completar la tarea. Puedes reanudar la tarea o enviar nuevas indicaciones.",
@@ -79,6 +80,7 @@
 		"command_timeout": "La ejecución del comando superó el tiempo de espera de {{seconds}} segundos",
 		"command_mutation_observation_incomplete": "La tarea permanece incompleta y sin verificar porque no fue posible observar por completo las modificaciones realizadas por el comando.",
 		"command_mutation_receipt_incomplete": "La tarea permanece incompleta y sin verificar porque no fue posible finalizar el comprobante de modificaciones del comando.",
+		"mutation_receipt_incomplete": "La tarea sigue incompleta porque no se pudo finalizar el registro de un cambio en el espacio de trabajo. Revisa el error original de la herramienta antes de continuar.",
 		"command_output_bookkeeping_incomplete": "La tarea permanece incompleta porque no fue posible finalizar la salida del comando completado.",
 		"share_task_failed": "Error al compartir la tarea. Por favor, inténtalo de nuevo.",
 		"share_no_active_task": "No hay tarea activa para compartir",

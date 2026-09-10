@@ -2,6 +2,7 @@ import { executeTicketTool } from "./TicketTools"
 import { ticketTools } from "../prompts/tools/native-tools/tickets"
 import type OpenAI from "openai"
 import { randomUUID } from "crypto"
+import { t } from "../../i18n"
 
 import { customToolRegistry, formatNative } from "@alpha-code/core"
 import {
@@ -512,6 +513,12 @@ function executeBaseTool<TName extends BuiltInToolName>(tool: BaseTool<TName>, n
 						}
 					}
 				} catch (error) {
+					// The filesystem may already have changed. A failed durable receipt is
+					// runtime debt, not a repairable model/tool error. Stop before another
+					// effect can hide it behind a later completion timeout; retain the token.
+					task.didToolFailInCurrentTurn = true
+					callbacks.setResultMetadata?.({ status: "error" })
+					task.suspendAfterCurrentTurn(t("common:errors.mutation_receipt_incomplete"))
 					if (executionFailed)
 						throw new AggregateError(
 							[executionError, error],

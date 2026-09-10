@@ -31,6 +31,8 @@ export interface ExtensionTestRunOptions {
 	providerMode: ProviderMode
 	vscodeVersion: string
 	vscodeExecutablePath?: string
+	/** Test an artifact installed in the owned profile, without overriding Alpha from the source checkout. */
+	installedExtensionPath?: string
 	workspace?: string
 	profileDir?: string
 	artifactsDir?: string
@@ -107,6 +109,7 @@ const valueOptions = new Set([
 	"--provider",
 	"--vscode-version",
 	"--vscode-executable",
+	"--installed-extension",
 	"--workspace",
 	"--profile-dir",
 	"--artifacts-dir",
@@ -174,6 +177,7 @@ export function readRunOptions(
 		scenarioId: parsed.get("--scenario-id"),
 		scenarioPhase: phase,
 		scenarioResultPath: parsed.get("--scenario-result-path"),
+		installedExtensionPath: parsed.get("--installed-extension"),
 		requestLimit: limit ? Number(limit) : undefined,
 		retainEvidenceForCampaign: parsed.has("--retain-evidence-for-campaign"),
 	}
@@ -258,11 +262,21 @@ export async function runExtensionTests(
 	dependencies: ExtensionTestRunDependencies = {},
 ): Promise<ExtensionTestRunResult> {
 	if (!providerModes.includes(options.providerMode)) throw new Error("Unsupported E2E provider mode")
+	if (options.installedExtensionPath && (!options.profileDir || !path.isAbsolute(options.installedExtensionPath))) {
+		throw new TestRunError(
+			"invalid-options",
+			"Installed extension tests require an absolute artifact path and an owned profile",
+		)
+	}
 	const launchKind =
-		dependencies.launchKind ?? (options.providerMode === "live-copilot" ? "development-sidecar" : "extension-test")
+		dependencies.launchKind ??
+		(options.providerMode === "live-copilot" || options.installedExtensionPath
+			? "development-sidecar"
+			: "extension-test")
 	if (
 		!["extension-test", "development-sidecar"].includes(launchKind) ||
-		(options.providerMode === "live-copilot" && launchKind !== "development-sidecar") ||
+		((options.providerMode === "live-copilot" || options.installedExtensionPath) &&
+			launchKind !== "development-sidecar") ||
 		(launchKind === "development-sidecar" &&
 			(!options.profileDir || !["live-copilot", "scripted"].includes(options.providerMode)))
 	)
@@ -292,13 +306,32 @@ export async function runExtensionTests(
 	}
 	const runId = options.runId ?? randomUUID()
 	if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(runId)) throw new Error("Invalid test run ID")
-	const extensionDevelopmentPath = dependencies.extensionDevelopmentPath ?? path.resolve(__dirname, "../../../src")
+	const extensionDevelopmentPath =
+		options.installedExtensionPath ??
+		dependencies.extensionDevelopmentPath ??
+		path.resolve(__dirname, "../../../src")
 	const extensionTestsPath = dependencies.extensionTestsPath ?? path.resolve(__dirname, "./suite/index")
 	const extensionId = await readExtensionId(extensionDevelopmentPath)
 	const fixturePath = dependencies.vscodeLmFixturePath ?? path.resolve(__dirname, "../fixtures/vscode-lm-provider")
 	const fixtureId = options.providerMode === "vscode-lm-fixture" ? await readExtensionId(fixturePath) : undefined
 	const profile = await prepareTestProfile({ ...options, sharedData: launchKind === "development-sidecar" })
+	if (options.installedExtensionPath) {
+		const relative = path.relative(
+			await fs.realpath(profile.extensionsDir),
+			await fs.realpath(options.installedExtensionPath),
+		)
+		if (!relative || path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`)) {
+			throw new TestRunError(
+				"invalid-options",
+				"Installed artifact must be inside the owned profile's extensions directory",
+			)
+		}
+	}
 	const sidecarPath = launchKind === "development-sidecar" ? await prepareLiveSidecar() : undefined
+	const developmentPaths = [
+		...(options.installedExtensionPath ? [] : [extensionDevelopmentPath]),
+		...(sidecarPath ? [sidecarPath] : options.providerMode === "vscode-lm-fixture" ? [fixturePath] : []),
+	]
 	const { artifactDirectory: artifactsDir } = await prepareEvidenceRun({ artifactsRoot: profile.artifactsDir, runId })
 	const scenarioResultPath = options.scenarioResultPath ?? path.join(artifactsDir, "workflow-result.json")
 	if (!path.isAbsolute(scenarioResultPath) || path.dirname(path.resolve(scenarioResultPath)) !== artifactsDir) {
@@ -360,11 +393,7 @@ export async function runExtensionTests(
 					options.signal,
 				))
 		)({
-			extensionDevelopmentPath: sidecarPath
-				? [extensionDevelopmentPath, sidecarPath]
-				: options.providerMode === "vscode-lm-fixture"
-					? [extensionDevelopmentPath, fixturePath]
-					: extensionDevelopmentPath,
+			extensionDevelopmentPath: developmentPaths.length === 1 ? developmentPaths[0]! : developmentPaths,
 			...(sidecarPath
 				? { launchKind: "development-sidecar" as const, liveHost: { artifactsDir, expected: liveExpected } }
 				: { launchKind: "extension-test" as const, extensionTestsPath }),
@@ -382,6 +411,7 @@ export async function runExtensionTests(
 				...process.env,
 				...options.extensionTestsEnv,
 				ALPHA_E2E_EXTENSION_ID: extensionId,
+				ALPHA_E2E_INSTALLED_EXTENSION_DIR: options.installedExtensionPath,
 				ALPHA_E2E_LAUNCH_KIND: launchKind,
 				ALPHA_E2E_LAUNCH_NONCE: sidecarPath ? liveExpected.nonce : undefined,
 				ALPHA_E2E_SHARED_DATA_DIR: profile.sharedDataDir,

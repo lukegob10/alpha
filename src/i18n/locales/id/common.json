@@ -20,6 +20,7 @@
 		"delete_custom_mode_with_rules": "Anda yakin ingin menghapus mode {scope} ini?\n\nIni juga akan menghapus folder aturan terkait di:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "Tugas tetap belum selesai dan belum terverifikasi: setelah 30 detik, bukti perubahan ruang kerja masih belum tersedia. Tidak ada operasi aktif yang dilacak untuk bukti tersebut. Mengulangi penyelesaian atau verifikasi tidak akan memperbaikinya. Gunakan informasi kesalahan terperinci untuk menyelidiki kesalahan alat atau penyimpanan awal sebelum melanjutkan.",
 		"task_recovery_lock_repair": "Alpha tidak dapat memverifikasi pemilik kunci penyimpanan tugas bersama. Melanjutkan atau memuat ulang tidak dapat memperbaikinya dengan aman. Tutup semua jendela VS Code dan host pengujian Alpha, lalu cadangkan dan hapus hanya agent_control.json.transaction.lock dari penyimpanan global Alpha sebelum membuka kembali. Jangan hapus kunci saat host berjalan; pertahankan riwayat tugas dan agent_control.json.",
 		"task_recovery_failed": "Giliran berhenti karena suatu operasi gagal. Anda dapat melanjutkan tugas atau mengirim petunjuk baru.",
 		"task_recovery_incomplete": "Giliran berakhir sebelum tugas selesai. Anda dapat melanjutkan tugas atau mengirim petunjuk baru.",
@@ -79,6 +80,7 @@
 		"command_timeout": "Eksekusi perintah waktu habis setelah {{seconds}} detik",
 		"command_mutation_observation_incomplete": "Tugas tetap belum selesai dan belum diverifikasi karena perubahan yang dilakukan perintah tidak dapat diamati sepenuhnya.",
 		"command_mutation_receipt_incomplete": "Tugas tetap belum selesai dan belum diverifikasi karena bukti perubahan perintah tidak dapat diselesaikan.",
+		"mutation_receipt_incomplete": "Tugas belum selesai karena catatan perubahan ruang kerja tidak dapat diselesaikan. Periksa kesalahan alat yang asli sebelum melanjutkan.",
 		"command_output_bookkeeping_incomplete": "Tugas tetap belum selesai karena output perintah yang telah selesai tidak dapat difinalisasi.",
 		"share_task_failed": "Gagal membagikan tugas. Silakan coba lagi.",
 		"share_no_active_task": "Tidak ada tugas aktif untuk dibagikan",

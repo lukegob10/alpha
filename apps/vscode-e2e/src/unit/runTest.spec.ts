@@ -52,6 +52,62 @@ async function writeNormalCompletion(options: HostLaunchOptions, status: "passed
 	await writeLiveHostReceipt(artifactsDir, receipt)
 }
 
+test("installed artifact runs load only the test sidecar, preserve identity, and reject paths outside the owned profile", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-installed-runner-"))
+	try {
+		const options = {
+			providerMode: "scripted" as const,
+			vscodeVersion: "1.122.1",
+			profileDir: path.join(root, "profile"),
+			workspace: path.join(root, "workspace"),
+			artifactsDir: path.join(root, "artifacts"),
+			initializeProfile: true,
+		}
+		const profile = await prepareTestProfile(options)
+		const installed = path.join(profile.extensionsDir, "alphainc.alpha-2.1.28")
+		await fs.mkdir(installed)
+		await fs.writeFile(
+			path.join(installed, "package.json"),
+			JSON.stringify({ publisher: "AlphaInc", name: "alpha", version: "2.1.28" }),
+		)
+		let launches = 0
+		const result = await runExtensionTests(
+			{ ...options, installedExtensionPath: installed },
+			{
+				launch: async (launch) => {
+					launches++
+					assert.equal(launch.launchKind, "development-sidecar")
+					const paths = Array.isArray(launch.extensionDevelopmentPath)
+						? launch.extensionDevelopmentPath
+						: [launch.extensionDevelopmentPath]
+					assert.equal(paths.length, 1)
+					assert.ok(!paths.includes(installed))
+					assert.equal(launch.extensionTestsEnv?.ALPHA_E2E_INSTALLED_EXTENSION_DIR, installed)
+					assert.equal(launch.extensionTestsEnv?.ALPHA_E2E_EXTENSION_ID, "AlphaInc.alpha")
+					await writeHostPreflight(launch)
+					await writeNormalCompletion(launch)
+					return 0
+				},
+			},
+		)
+		assert.equal(result.status, "passed")
+		assert.equal(launches, 1)
+		await assert.rejects(
+			runExtensionTests({ ...options, installedExtensionPath: installed }, { launchKind: "extension-test" }),
+			/Invalid persistent host launch mode/,
+		)
+		const outside = path.join(root, "outside")
+		await fs.mkdir(outside)
+		await fs.copyFile(path.join(installed, "package.json"), path.join(outside, "package.json"))
+		await assert.rejects(
+			runExtensionTests({ ...options, installedExtensionPath: outside }),
+			/inside the owned profile/,
+		)
+	} finally {
+		await fs.rm(root, { recursive: true, force: true })
+	}
+})
+
 test("live Copilot and explicit scripted diagnostics use the normal sidecar with protected correlation and shared storage", async () => {
 	for (const providerMode of ["live-copilot", "scripted"] as const) {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-normal-runner-"))

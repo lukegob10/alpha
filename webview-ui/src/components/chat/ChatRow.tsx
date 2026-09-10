@@ -218,6 +218,8 @@ const ChatRowContentInner = ({
 		modelSupportsImages,
 		getClineMessages,
 	} = environment
+	// A completion report can survive an interrupted finalization; only the projected task status confirms success.
+	const isTaskCompleted = currentTaskItem?.id === currentTaskId && currentTaskItem?.status === "completed"
 	const clineMessages = getClineMessages()
 	const [isEditing, setIsEditing] = useState(false)
 	const [editedContent, setEditedContent] = useState("")
@@ -344,10 +346,16 @@ const ChatRowContentInner = ({
 				]
 			case "completion_result":
 				return [
-					<span
-						className="codicon codicon-check"
-						style={{ color: successColor, marginBottom: "-1.5px" }}></span>,
-					<span style={{ color: successColor, fontWeight: "bold" }}>{t("chat:taskCompleted")}</span>,
+					isTaskCompleted ? (
+						<span
+							className="codicon codicon-check"
+							style={{ color: successColor, marginBottom: "-1.5px" }}></span>
+					) : (
+						<MessageCircle className="w-4 shrink-0" aria-hidden="true" />
+					),
+					<span style={{ color: isTaskCompleted ? successColor : normalColor, fontWeight: "bold" }}>
+						{t(isTaskCompleted ? "chat:taskCompleted" : "chat:completionReport")}
+					</span>,
 				]
 			case "api_req_rate_limit_wait":
 				return []
@@ -421,6 +429,7 @@ const ChatRowContentInner = ({
 		apiRequestFailedMessage,
 		t,
 		isLast,
+		isTaskCompleted,
 	])
 
 	const headerStyle: React.CSSProperties = {
@@ -1425,7 +1434,9 @@ const ChatRowContentInner = ({
 								<div style={{ flexGrow: 1 }} />
 								<OpenMarkdownPreviewButton markdown={message.text} />
 							</div>
-							<div className="border-l border-green-600/30 ml-2 pl-4 pb-1">
+							<div
+								className="border-l ml-2 pl-4 pb-1"
+								style={{ borderColor: isTaskCompleted ? successColor : "var(--vscode-panel-border)" }}>
 								<Markdown markdown={message.text} />
 							</div>
 						</div>
@@ -1868,7 +1879,7 @@ const ChatRowContentInner = ({
 									<div style={{ flexGrow: 1 }} />
 									<OpenMarkdownPreviewButton markdown={message.text} />
 								</div>
-								<div style={{ color: "var(--vscode-charts-green)", paddingTop: 10 }}>
+								<div style={{ color: isTaskCompleted ? successColor : normalColor, paddingTop: 10 }}>
 									<Markdown markdown={message.text} partial={message.partial} />
 								</div>
 							</div>

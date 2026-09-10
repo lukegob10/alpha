@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import { isDevelopmentPrompt, WORKFLOW_COMMANDS, type WorkflowPromptName } from "./prompts"
 import { developmentScript } from "./developmentCatalog"
 import { WorkflowRequestBudget } from "./requestBudget"
+import { settlementScript } from "./commandSettlement"
 
 export const ENHANCED_SOURCE = [
 	"function sum(values) {",
@@ -80,6 +81,10 @@ export class WorkflowScriptedAI {
 	}
 
 	setPhase(phase: WorkflowPromptName, step = 1): void {
+		if (phase === "commandSettlement") {
+			this.plan = settlementScript(step, this.workspace)
+			return
+		}
 		this.finalReport =
 			phase === "devSearchScope"
 				? "Copilot matches: docs/integrations.md:3 and config/assistants.json:1. The initial lib search was empty."

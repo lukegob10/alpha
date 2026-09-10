@@ -20,6 +20,7 @@
 		"delete_custom_mode_with_rules": "Czy na pewno chcesz usunąć ten tryb {scope}?\n\nSpowoduje to również usunięcie powiązanego folderu reguł pod adresem:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "Zadanie pozostaje nieukończone i niezweryfikowane: po 30 sekundach nadal brakuje zapisu zmiany w obszarze roboczym. Dla tego zapisu nie jest śledzona żadna aktywna operacja. Ponowienie ukończenia lub weryfikacji nie naprawi tego stanu. Przed wznowieniem użyj szczegółowych informacji o błędzie, aby zbadać pierwotny błąd narzędzia lub zapisu danych.",
 		"task_recovery_lock_repair": "Alpha nie może zweryfikować właściciela blokady wspólnego magazynu zadań. Wznowienie ani przeładowanie nie naprawi tego bezpiecznie. Zamknij wszystkie okna VS Code i hosty testowe Alpha. Następnie wykonaj kopię i usuń wyłącznie agent_control.json.transaction.lock z globalnego magazynu Alpha przed ponownym otwarciem. Nigdy nie usuwaj blokady przy działającym hoście; zachowaj historię zadań i agent_control.json.",
 		"task_recovery_failed": "Tura została zatrzymana, ponieważ operacja nie powiodła się. Możesz wznowić zadanie lub wysłać nowe instrukcje.",
 		"task_recovery_incomplete": "Tura zakończyła się przed ukończeniem zadania. Możesz wznowić zadanie lub wysłać nowe instrukcje.",
@@ -79,6 +80,7 @@
 		"command_timeout": "Przekroczono limit czasu wykonania polecenia po {{seconds}} sekundach",
 		"command_mutation_observation_incomplete": "Zadanie pozostaje nieukończone i niezweryfikowane, ponieważ nie udało się w pełni zaobserwować zmian wprowadzonych przez polecenie.",
 		"command_mutation_receipt_incomplete": "Zadanie pozostaje nieukończone i niezweryfikowane, ponieważ nie udało się sfinalizować potwierdzenia zmian polecenia.",
+		"mutation_receipt_incomplete": "Zadanie pozostaje nieukończone, ponieważ nie udało się sfinalizować zapisu zmiany w obszarze roboczym. Przed wznowieniem sprawdź pierwotny błąd narzędzia.",
 		"command_output_bookkeeping_incomplete": "Zadanie pozostaje nieukończone, ponieważ nie udało się sfinalizować danych wyjściowych ukończonego polecenia.",
 		"share_task_failed": "Nie udało się udostępnić zadania",
 		"share_no_active_task": "Brak aktywnego zadania do udostępnienia",

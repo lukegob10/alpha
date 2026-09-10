@@ -3645,6 +3645,8 @@ export const webviewMessageHandler = async (
 				taskId: currentTask.taskId,
 				globalStoragePath: provider.contextProxy.globalStorageUri.fsPath,
 				values: message.values,
+				extension: provider.context.extension,
+				getRuntimeDiagnostics: () => provider.getTaskSettlementDiagnostics(currentTask),
 				log: (msg) => provider.log(msg),
 			})
 			break

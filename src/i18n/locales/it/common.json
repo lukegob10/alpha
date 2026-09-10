@@ -20,6 +20,7 @@
 		"delete_custom_mode_with_rules": "Sei sicuro di voler eliminare questa modalità {scope}?\n\nQuesto eliminerà anche la cartella delle regole associata in:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "L'attività rimane incompleta e non verificata: dopo 30 secondi manca ancora la registrazione di una modifica all'area di lavoro. Non viene tracciata alcuna operazione attiva per questa registrazione mancante. Riprovare il completamento o la verifica non risolverà il problema. Consultare le informazioni dettagliate sull'errore per indagare sull'errore originale dello strumento o dell'archiviazione prima di riprendere.",
 		"task_recovery_lock_repair": "Alpha non può verificare il proprietario del blocco condiviso delle attività. Riprendere o ricaricare non lo ripara in sicurezza. Chiudi tutte le finestre di VS Code e gli host di test Alpha, poi crea una copia e rimuovi solo agent_control.json.transaction.lock dall’archiviazione globale di Alpha prima di riaprire. Non rimuovere mai il blocco con un host in esecuzione; conserva la cronologia e agent_control.json.",
 		"task_recovery_failed": "Il turno si è interrotto perché un'operazione non è riuscita. Puoi riprendere l'attività o inviare nuove indicazioni.",
 		"task_recovery_incomplete": "Il turno è terminato prima che l'attività fosse completata. Puoi riprendere l'attività o inviare nuove indicazioni.",
@@ -79,6 +80,7 @@
 		"command_timeout": "Esecuzione del comando scaduta dopo {{seconds}} secondi",
 		"command_mutation_observation_incomplete": "Il task rimane incompleto e non verificato perché non è stato possibile osservare completamente le modifiche apportate dal comando.",
 		"command_mutation_receipt_incomplete": "Il task rimane incompleto e non verificato perché la ricevuta delle modifiche del comando non è stata finalizzata.",
+		"mutation_receipt_incomplete": "L'attività rimane incompleta perché non è stato possibile completare la registrazione di una modifica all'area di lavoro. Esamina l'errore originale dello strumento prima di riprendere.",
 		"command_output_bookkeeping_incomplete": "Il task rimane incompleto perché non è stato possibile finalizzare l'output del comando completato.",
 		"share_task_failed": "Condivisione dell'attività fallita. Riprova.",
 		"share_no_active_task": "Nessuna attività attiva da condividere",

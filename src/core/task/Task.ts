@@ -4901,6 +4901,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const lease = this.beginAgentWait()
 		const startedAt = Date.now()
 		let orphanReceiptDeadline: number | undefined
+		let orphanReceiptTimedOut = false
 		let timedOut = false
 		let waited = false
 		let lastDecision: CompletionGateDecision | undefined
@@ -4922,6 +4923,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					orphanReceiptDeadline ??= Date.now() + 30_000
 					if (Date.now() >= orphanReceiptDeadline) {
 						timedOut = true
+						orphanReceiptTimedOut = true
 						throw new Error("Mutation receipt has no active publisher")
 					}
 				} else orphanReceiptDeadline = undefined
@@ -4944,11 +4946,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						? "interrupted"
 						: "persistence_unavailable",
 				modelCanResolveRejection: false,
-				message: timedOut
-					? `Task remains incomplete and unverified because runtime settlement did not finish within 30 seconds. ${lastDecision?.message ?? "Durable completion evidence is unavailable."} Resume after the existing operation settles.`
-					: lease.signal.aborted
-						? "Completion was interrupted; pending user guidance and unresolved evidence are preserved."
-						: "Task remains incomplete because verification evidence could not be persisted. Restore task persistence before resuming.",
+				message: orphanReceiptTimedOut
+					? t("common:errors.mutation_receipt_orphaned")
+					: timedOut
+						? `Task remains incomplete and unverified because runtime settlement did not finish within 30 seconds. ${lastDecision?.message ?? "Durable completion evidence is unavailable."} Resume after the existing operation settles.`
+						: lease.signal.aborted
+							? "Completion was interrupted; pending user guidance and unresolved evidence are preserved."
+							: "Task remains incomplete because verification evidence could not be persisted. Restore task persistence before resuming.",
 			}
 		} finally {
 			lease.dispose()

@@ -20,6 +20,7 @@
 		"delete_custom_mode_with_rules": "Bu {scope} modunu silmek istediğinizden emin misiniz?\n\nBu işlem, ilişkili kurallar klasörünü de şu konumdan silecektir:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "Görev tamamlanmamış ve doğrulanmamış durumda: 30 saniye sonra çalışma alanı değişikliğinin kaydı hâlâ eksik. Eksik kayıt için izlenen etkin bir işlem yok. Tamamlamayı veya doğrulamayı yeniden denemek bu durumu düzeltmez. Devam etmeden önce, ayrıntılı hata bilgilerini kullanarak ilk araç veya depolama hatasını inceleyin.",
 		"task_recovery_lock_repair": "Alpha, paylaşılan görev depolama kilidinin sahibini doğrulayamıyor. Devam etmek veya yeniden yüklemek bunu güvenle onaramaz. Tüm VS Code pencerelerini ve Alpha test ana bilgisayarlarını kapatın. Ardından yeniden açmadan önce Alpha genel depolamasındaki yalnızca agent_control.json.transaction.lock dosyasını veya klasörünü yedekleyip kaldırın. Bir ana bilgisayar çalışırken kilidi asla kaldırmayın; görev geçmişini ve agent_control.json dosyasını koruyun.",
 		"task_recovery_failed": "Bir işlem başarısız olduğu için tur durdu. Görevi sürdürebilir veya yeni yönergeler gönderebilirsiniz.",
 		"task_recovery_incomplete": "Görev tamamlanmadan tur sona erdi. Görevi sürdürebilir veya yeni yönergeler gönderebilirsiniz.",
@@ -79,6 +80,7 @@
 		"command_timeout": "Komut çalıştırma {{seconds}} saniye sonra zaman aşımına uğradı",
 		"command_mutation_observation_incomplete": "Komutun yaptığı değişiklikler tam olarak gözlemlenemediği için görev tamamlanmamış ve doğrulanmamış durumda kaldı.",
 		"command_mutation_receipt_incomplete": "Komut değişikliği kaydı tamamlanamadığı için görev tamamlanmamış ve doğrulanmamış durumda kaldı.",
+		"mutation_receipt_incomplete": "Çalışma alanı değişiklik kaydı tamamlanamadığından görev tamamlanmamış durumda. Devam etmeden önce aracın ilk hatasını inceleyin.",
 		"command_output_bookkeeping_incomplete": "Tamamlanan komutun çıktısı sonuçlandırılamadığı için görev tamamlanmamış durumda kaldı.",
 		"share_task_failed": "Görev paylaşılamadı",
 		"share_no_active_task": "Paylaşılacak aktif görev yok",

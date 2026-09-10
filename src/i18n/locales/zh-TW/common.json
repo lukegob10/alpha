@@ -20,6 +20,7 @@
 		"delete_custom_mode_with_rules": "您確定要刪除此 {scope} 模式嗎？\n\n這也將刪除位於以下位置的關聯規則資料夾：\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "任務仍未完成且未經驗證：30 秒後，仍缺少工作區變更記錄。目前未追蹤到與該記錄對應的活動操作。重試完成或驗證不會修復此狀態。繼續之前，請使用詳細錯誤資訊調查最初的工具或儲存錯誤。",
 		"task_recovery_lock_repair": "Alpha 無法驗證共用工作儲存鎖的擁有者。繼續或重新載入無法安全修復此問題。請關閉所有 VS Code 視窗和 Alpha 擴充功能測試主機，然後僅備份並移除 Alpha 全域儲存中的 agent_control.json.transaction.lock，再重新開啟。主機執行時切勿移除鎖；請保留工作歷程記錄和 agent_control.json。",
 		"task_recovery_failed": "某項操作失敗，目前回合已停止。你可以繼續任務或傳送新的指示。",
 		"task_recovery_incomplete": "目前回合在任務完成前結束。你可以繼續任務或傳送新的指示。",
@@ -79,6 +80,7 @@
 		"command_timeout": "命令執行超時，{{seconds}} 秒後",
 		"command_mutation_observation_incomplete": "由於無法完整觀察命令造成的變更，任務仍未完成且未經驗證。",
 		"command_mutation_receipt_incomplete": "由於無法完成命令變更回執，任務仍未完成且未經驗證。",
+		"mutation_receipt_incomplete": "無法完成工作區變更記錄，因此任務仍未完成。繼續前請查看工具的原始錯誤。",
 		"command_output_bookkeeping_incomplete": "由於無法完成已結束命令的輸出處理，任務仍未完成。",
 		"share_task_failed": "分享工作失敗。請重試。",
 		"share_no_active_task": "沒有活躍的工作可分享",

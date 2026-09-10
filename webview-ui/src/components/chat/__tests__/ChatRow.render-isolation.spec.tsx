@@ -22,6 +22,60 @@ vi.mock("react-i18next", () => ({
 }))
 
 describe("ChatRow render isolation", () => {
+	it.each(["interrupted", "blocked", "failed", undefined] as const)(
+		"does not label a completion report as task success when the task status is %s",
+		(status) => {
+			const message: ClineMessage = {
+				ts: 2,
+				type: "say",
+				say: "completion_result",
+				text: "The task record ended as interrupted.",
+				partial: false,
+			}
+			const environment: ChatRowEnvironment = {
+				mcpServers: [],
+				alwaysAllowMcp: false,
+				mode: "code",
+				reasoningBlockCollapsed: true,
+				currentTaskId: "original-task",
+				currentTaskItem: {
+					id: "original-task",
+					number: 1,
+					ts: 1,
+					task: "Build HTML",
+					status,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+				getClineMessages: () => [message],
+			}
+			const row = (nextEnvironment: ChatRowEnvironment) => (
+				<ChatRow
+					message={message}
+					environment={nextEnvironment}
+					isExpanded={false}
+					isLast={true}
+					isStreaming={false}
+					onToggleExpand={() => {}}
+				/>
+			)
+			const { rerender } = render(row(environment))
+			expect(screen.queryByText("chat:taskCompleted")).not.toBeInTheDocument()
+			expect(screen.getByText("chat:completionReport")).toBeInTheDocument()
+			expect(screen.getByText(message.text!)).toBeInTheDocument()
+			const completed = { ...environment.currentTaskItem!, status: "completed" as const }
+			rerender(row({ ...environment, currentTaskItem: completed }))
+			expect(screen.getByText("chat:taskCompleted")).toBeInTheDocument()
+			expect(screen.queryByText("chat:completionReport")).not.toBeInTheDocument()
+			// A stale snapshot for a different task cannot authorize the success label.
+			rerender(row({ ...environment, currentTaskItem: { ...completed, id: "another-task" } }))
+			expect(screen.queryByText("chat:taskCompleted")).not.toBeInTheDocument()
+			expect(screen.getByText("chat:completionReport")).toBeInTheDocument()
+			expect(mockUseExtensionState).not.toHaveBeenCalled()
+		},
+	)
+
 	it("renders from its stable environment without reading root transcript state", () => {
 		const message: ClineMessage = {
 			ts: 1,

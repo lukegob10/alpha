@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.29
+
+### Patch Changes
+
+- Stop a task at the original file-receipt persistence error instead of allowing later commands to mask unresolved mutation debt.
+- Add bounded settlement diagnostics and exact-host/live Copilot coverage for long HTML workflows, reloads, installation identity, and receipt recovery.
+- Show interrupted completion reports as reports instead of falsely labeling them as completed tasks.
+
 ## 2.1.28
 
 ### Patch Changes

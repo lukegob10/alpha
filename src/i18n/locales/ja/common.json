@@ -20,6 +20,7 @@
 		"delete_custom_mode_with_rules": "この{scope}モードを削除してもよろしいですか？\n\nこれにより、関連するルールフォルダも次の場所で削除されます:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "タスクは未完了かつ未検証です。30 秒経過してもワークスペースの変更記録がありません。この記録に対応する実行中の操作は追跡されていません。完了や検証を再試行しても修復されません。再開する前に、エラーの詳細情報を使って元のツールまたはストレージのエラーを調べてください。",
 		"task_recovery_lock_repair": "Alpha は共有タスクストレージのロック所有者を確認できません。再開や再読み込みでは安全に修復できません。VS Code の全ウィンドウと Alpha のテストホストを閉じてから、Alpha のグローバルストレージ内の agent_control.json.transaction.lock だけをバックアップして削除し、再度開いてください。ホストの実行中はロックを削除しないでください。タスク履歴と agent_control.json は保持してください。",
 		"task_recovery_failed": "操作が失敗したため、ターンが停止しました。タスクを再開するか、新しい指示を送信できます。",
 		"task_recovery_incomplete": "タスクが完了する前にターンが終了しました。タスクを再開するか、新しい指示を送信できます。",
@@ -79,6 +80,7 @@
 		"command_timeout": "コマンドの実行が{{seconds}}秒後にタイムアウトしました",
 		"command_mutation_observation_incomplete": "コマンドによる変更を完全に観測できなかったため、タスクは未完了かつ未検証のままです。",
 		"command_mutation_receipt_incomplete": "コマンド変更の記録を確定できなかったため、タスクは未完了かつ未検証のままです。",
+		"mutation_receipt_incomplete": "ワークスペースの変更記録を確定できなかったため、タスクは未完了です。再開する前に、ツールの元のエラーを確認してください。",
 		"command_output_bookkeeping_incomplete": "完了したコマンドの出力を確定できなかったため、タスクは未完了のままです。",
 		"share_task_failed": "タスクの共有に失敗しました",
 		"share_no_active_task": "共有するアクティブなタスクがありません",

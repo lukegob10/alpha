@@ -74,6 +74,8 @@ interface HostProvider {
 	viewLaunched: boolean
 	getLiveTask(taskId: string): HostTask | undefined
 	getStateToPostToWebview(): Promise<ExtensionState>
+	getTaskSettlementDiagnostics(task: HostTask): unknown
+	recordPrimaryMutation(task: HostTask, ...args: unknown[]): Promise<boolean>
 	getTaskWithId(taskId: string): Promise<{ historyItem: unknown; taskDirPath: string }>
 	createTaskWithHistoryItem(
 		historyItem: unknown,
@@ -213,6 +215,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		providerMode: string,
 		readonly budget: WorkflowRequestBudget,
 		timeoutMs: number,
+		terminalProvider: "execa" | "vscode" = "execa",
 	) {
 		const provider = (api as unknown as { sidebarProvider?: HostProvider }).sidebarProvider
 		if (!provider || typeof provider.on !== "function")
@@ -248,7 +251,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			commandExecutionTimeout: 30,
 			commandTimeoutAllowlist: [],
 			enableCheckpoints: false,
-			terminalShellIntegrationDisabled: true,
+			terminalShellIntegrationDisabled: terminalProvider === "execa",
 		}
 		this.api.on(RooCodeEventName.TaskCompleted, this.onCompleted)
 		this.provider.on("taskCreated", this.onCreated)
@@ -539,6 +542,35 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			agentLifecycleSnapshots: { [taskId]: state.agentLifecycleSnapshots?.[taskId] },
 			clineMessages: task.clineMessages.slice(-2),
 		}
+	}
+
+	captureSettlement(taskId: string) {
+		const task = this.requireTask(taskId)
+		return {
+			runtime: this.provider.getTaskSettlementDiagnostics(task),
+			shellIntegrationWarnings: task.clineMessages.filter(
+				(message) => message.say === "shell_integration_warning",
+			).length,
+		}
+	}
+
+	/** Explicit test fault after the real file effect/reservation, before its durable receipt. */
+	injectReceiptFailureOnce() {
+		const original = this.provider.recordPrimaryMutation
+		let injected = false
+		const replacement: HostProvider["recordPrimaryMutation"] = async (task, ...args) => {
+			if (!injected && task.taskId === this.currentId) {
+				injected = true
+				throw Object.assign(new Error("Injected receipt persistence failure"), { code: "EBUSY" })
+			}
+			return original.call(this.provider, task, ...args)
+		}
+		this.provider.recordPrimaryMutation = replacement
+		const restore = () => {
+			if (this.provider.recordPrimaryMutation === replacement) this.provider.recordPrimaryMutation = original
+		}
+		this.cleanup.push(restore)
+		return { injected: () => injected, restore }
 	}
 
 	inspectContext(taskId: string, expectedReceipt: string) {

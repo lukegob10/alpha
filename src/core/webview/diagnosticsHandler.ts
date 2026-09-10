@@ -5,6 +5,8 @@ import * as vscode from "vscode"
 
 import { getTaskDirectoryPath } from "../../utils/storage"
 import { fileExistsAtPath } from "../../utils/fs"
+import { Package } from "../../shared/package"
+import type { settlementDiagnostics } from "../agent/SettlementDiagnostics"
 
 export interface ErrorDiagnosticsValues {
 	timestamp?: string
@@ -19,6 +21,9 @@ export interface GenerateDiagnosticsParams {
 	globalStoragePath: string
 	values?: ErrorDiagnosticsValues
 	log: (message: string) => void
+	/** Evaluated only for the user-requested report; failures do not discard the original error. */
+	getRuntimeDiagnostics?: () => ReturnType<typeof settlementDiagnostics>
+	extension?: vscode.Extension<unknown>
 }
 
 export interface GenerateDiagnosticsResult {
@@ -53,6 +58,22 @@ export async function generateErrorDiagnostics(params: GenerateDiagnosticsParams
 		}
 
 		const diagnostics = {
+			runtime: (() => {
+				try {
+					return params.getRuntimeDiagnostics?.()
+				} catch {
+					return { unavailable: true }
+				}
+			})(),
+			installation: {
+				vscodeVersion: vscode.version,
+				runtimeVersion: Package.version,
+				runtimeCommit: Package.sha,
+				extensionId: params.extension?.id,
+				manifestVersion: params.extension?.packageJSON?.version,
+				extensionDirectory: params.extension ? path.basename(params.extension.extensionPath) : undefined,
+				extensionActive: params.extension?.isActive,
+			},
 			error: {
 				timestamp: values?.timestamp ?? new Date().toISOString(),
 				version: values?.version ?? "",

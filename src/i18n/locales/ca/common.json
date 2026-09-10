@@ -24,6 +24,7 @@
 		"delete_custom_mode_with_rules": "Esteu segur que voleu suprimir aquest mode {scope}?\n\nAixò també suprimirà la carpeta de regles associada a:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "La tasca continua incompleta i sense verificar: després de 30 segons encara falta el registre d'un canvi a l'espai de treball. No es registra cap operació activa per a aquest registre pendent. Tornar a intentar completar o verificar la tasca no el repararà. Utilitzeu la informació detallada de l'error per investigar l'error original de l'eina o de l'emmagatzematge abans de reprendre-la.",
 		"task_recovery_lock_repair": "Alpha no pot verificar el propietari del bloqueig compartit de tasques. Reprendre o recarregar no el pot reparar amb seguretat. Tanqueu totes les finestres de VS Code i els hosts de prova d’Alpha. Després, feu una còpia i elimineu només agent_control.json.transaction.lock de l’emmagatzematge global d’Alpha abans de reobrir. No elimineu el bloqueig amb un host en execució; conserveu l’historial i agent_control.json.",
 		"task_recovery_failed": "El torn s'ha aturat perquè ha fallat una operació. Pots reprendre la tasca o enviar noves indicacions.",
 		"task_recovery_incomplete": "El torn ha acabat abans de completar la tasca. Pots reprendre la tasca o enviar noves indicacions.",
@@ -83,6 +84,7 @@
 		"command_timeout": "L'execució de la comanda ha superat el temps d'espera de {{seconds}} segons",
 		"command_mutation_observation_incomplete": "La tasca continua incompleta i sense verificar perquè les mutacions de l'ordre no s'han pogut observar completament.",
 		"command_mutation_receipt_incomplete": "La tasca continua incompleta i sense verificar perquè no s'ha pogut finalitzar el rebut de mutació de l'ordre.",
+		"mutation_receipt_incomplete": "La tasca continua incompleta perquè no s'ha pogut finalitzar el registre d'un canvi a l'espai de treball. Reviseu l'error original de l'eina abans de reprendre-la.",
 		"command_output_bookkeeping_incomplete": "La tasca continua incompleta perquè no s'ha pogut finalitzar la sortida de l'ordre completada.",
 		"share_task_failed": "Ha fallat compartir la tasca. Si us plau, torna-ho a provar.",
 		"share_no_active_task": "No hi ha cap tasca activa per compartir",

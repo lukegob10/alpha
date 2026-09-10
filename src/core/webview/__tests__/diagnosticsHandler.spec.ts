@@ -9,6 +9,7 @@ vi.mock("vscode", () => {
 	const showTextDocument = vi.fn().mockResolvedValue(undefined)
 
 	return {
+		version: "1.122.1",
 		window: {
 			showErrorMessage,
 			showTextDocument,
@@ -142,6 +143,46 @@ describe("generateErrorDiagnostics", () => {
 		expect(String(writtenContent)).toContain('"provider": ""')
 		expect(String(writtenContent)).toContain('"model": ""')
 		expect(String(writtenContent)).toContain('"details": ""')
+	})
+
+	it("distinguishes the reported version from the actively loaded installation", async () => {
+		vi.mocked(fsUtils.fileExistsAtPath).mockResolvedValue(false)
+		const result = await generateErrorDiagnostics({
+			taskId: "task",
+			globalStoragePath: "/mock",
+			log: mockLog,
+			values: { version: "2.1.18" },
+			extension: {
+				id: "AlphaInc.alpha",
+				isActive: true,
+				extensionPath: "/extensions/alphainc.alpha-2.1.28",
+				packageJSON: { version: "2.1.28", secret: "do not export" },
+			} as unknown as vscode.Extension<unknown>,
+		})
+		expect(result.success).toBe(true)
+		const text = String(vi.mocked(fs.writeFile).mock.calls[0][1])
+		expect(text).toContain('"version": "2.1.18"')
+		expect(text).toContain('"manifestVersion": "2.1.28"')
+		expect(text).toContain('"vscodeVersion": "1.122.1"')
+		expect(text).not.toContain("do not export")
+	})
+
+	it("retains the original report when runtime diagnostics are unavailable", async () => {
+		vi.mocked(fsUtils.fileExistsAtPath).mockResolvedValue(false)
+		const result = await generateErrorDiagnostics({
+			taskId: "task",
+			globalStoragePath: "/mock",
+			log: mockLog,
+			values: { details: "original receipt error" },
+			getRuntimeDiagnostics: () => {
+				throw new Error("store unavailable")
+			},
+		})
+		expect(result.success).toBe(true)
+		const text = String(vi.mocked(fs.writeFile).mock.calls[0][1])
+		expect(text).toContain('"unavailable": true')
+		expect(text).toContain("original receipt error")
+		expect(text).toContain('"runtimeVersion":')
 	})
 
 	it("handles JSON parse error gracefully", async () => {

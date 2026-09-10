@@ -20,6 +20,7 @@
 		"delete_custom_mode_with_rules": "Êtes-vous sûr de vouloir supprimer ce mode {scope} ?\n\nCela supprimera également le dossier de règles associé à l'adresse :\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "La tâche reste incomplète et non vérifiée : après 30 secondes, il manque toujours l'enregistrement d'une modification de l'espace de travail. Aucune opération active n'est suivie pour cet enregistrement manquant. Réessayer de terminer ou de vérifier la tâche ne réparera pas cet état. Consultez les informations détaillées de l'erreur pour rechercher l'erreur initiale de l'outil ou du stockage avant de reprendre.",
 		"task_recovery_lock_repair": "Alpha ne peut pas vérifier le propriétaire du verrou partagé des tâches. Reprendre ou recharger ne permet pas de le réparer en toute sécurité. Fermez toutes les fenêtres VS Code et les hôtes de test Alpha. Sauvegardez puis supprimez uniquement agent_control.json.transaction.lock du stockage global d’Alpha avant de rouvrir. Ne supprimez jamais le verrou lorsqu’un hôte fonctionne ; conservez l’historique et agent_control.json.",
 		"task_recovery_failed": "Le tour s'est arrêté parce qu'une opération a échoué. Vous pouvez reprendre la tâche ou envoyer de nouvelles instructions.",
 		"task_recovery_incomplete": "Le tour s'est terminé avant que la tâche soit achevée. Vous pouvez reprendre la tâche ou envoyer de nouvelles instructions.",
@@ -79,6 +80,7 @@
 		"command_timeout": "L'exécution de la commande a expiré après {{seconds}} secondes",
 		"command_mutation_observation_incomplete": "La tâche reste incomplète et non vérifiée, car les modifications provoquées par la commande n'ont pas pu être observées intégralement.",
 		"command_mutation_receipt_incomplete": "La tâche reste incomplète et non vérifiée, car le reçu de modification de la commande n'a pas pu être finalisé.",
+		"mutation_receipt_incomplete": "La tâche reste incomplète car l'enregistrement d'une modification de l'espace de travail n'a pas pu être finalisé. Consultez l'erreur initiale de l'outil avant de reprendre.",
 		"command_output_bookkeeping_incomplete": "La tâche reste incomplète, car la sortie de la commande terminée n'a pas pu être finalisée.",
 		"share_task_failed": "Échec du partage de la tâche. Veuillez réessayer.",
 		"share_no_active_task": "Aucune tâche active à partager",

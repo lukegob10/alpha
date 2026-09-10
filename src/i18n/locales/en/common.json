@@ -20,6 +20,7 @@
 		"delete_custom_mode_with_rules": "Are you sure you want to delete this {scope} mode?\n\nThis will also delete the associated rules folder at:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "Task remains incomplete and unverified: a workspace change receipt is still missing after 30 seconds. No active operation is tracked for the missing receipt. Retrying completion or verification will not repair it. Use Get detailed error info to investigate the original tool or storage error before resuming.",
 		"task_recovery_lock_repair": "Alpha cannot verify the owner of its shared task-storage lock. Resume or reload cannot repair this safely. Close all VS Code windows and any Alpha extension test hosts, then back up and remove only agent_control.json.transaction.lock from Alpha's global storage before reopening. Never remove the lock while a host is running; keep task history and agent_control.json.",
 		"task_recovery_failed": "The turn stopped because an operation failed. You can resume the task or send new guidance.",
 		"task_recovery_incomplete": "The turn ended before the task was complete. You can resume the task or send new guidance.",
@@ -79,6 +80,7 @@
 		"command_timeout": "Command execution timed out after {{seconds}} seconds",
 		"command_mutation_observation_incomplete": "Task remains incomplete and unverified because command mutations could not be fully observed.",
 		"command_mutation_receipt_incomplete": "Task remains incomplete and unverified because the command mutation receipt could not be finalized.",
+		"mutation_receipt_incomplete": "Task remains incomplete because a workspace change receipt could not be finalized. Review the original tool error before resuming.",
 		"command_output_bookkeeping_incomplete": "Task remains incomplete because completed command output could not be finalized.",
 		"share_task_failed": "Failed to share task. Please try again.",
 		"share_no_active_task": "No active task to share",
