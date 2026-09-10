@@ -75,6 +75,14 @@ describe("getObjectiveSection", () => {
 		expect(objective).toContain("Do not explore, configure, or improve adjacent state")
 	})
 
+	it.each([false, true])("bounds verification without skipping required checks in Plan mode: %s", (isPlanMode) => {
+		const objective = getObjectiveSection(isPlanMode)
+		expect(objective).toContain("Once affected required checks pass, stop verifying")
+		expect(objective).toContain("changed inputs, a failure, an unresolved requirement, or an explicit request")
+		expect(objective).toContain("Preserve required checks and fresh reads")
+		expect(objective).toContain("Never weaken a required check")
+	})
+
 	it("should include the OBJECTIVE header", () => {
 		const objective = getObjectiveSection()
 

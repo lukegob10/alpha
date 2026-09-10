@@ -3,9 +3,11 @@ import { setTimeout as delay } from "node:timers/promises"
 import { WorkflowFailure, type WorkflowResult } from "./contracts"
 import type { ExtensionWorkflowHost } from "./extensionWorkflowHost"
 import { LiveResponseFaultController } from "./liveResponseFault"
+import { LiveResponseProbe } from "./liveResponseProbe"
 import type { WorkflowRequestBudget } from "./requestBudget"
 import type { WorkflowDependencies, WorkflowOptions } from "./workflowDriver"
 import type { ReliabilityScenarioId } from "./reliabilityCatalog"
+import { contextProbeReceipt, isLongContextScenario, MAX_CONTEXT_PROBE_TURNS } from "./longContextProbe"
 
 type Observation = { phase: string; elapsedMs: number; requestsBefore: number; requestsAfter: number; heapUsed: number }
 
@@ -31,7 +33,10 @@ export async function runReliabilityScenario(
 		requestsUsed: null,
 	}
 	const observations: Observation[] = []
+	const contextObservations: Array<ReturnType<ExtensionWorkflowHost["inspectContext"]> & { phase: string }> = []
 	const fault = new LiveResponseFaultController()
+	const secondEmpty = new LiveResponseFaultController()
+	const responseProbe = new LiveResponseProbe()
 	const check = (name: string, passed: boolean) => {
 		result.checks.push({ name, passed })
 		if (!passed) throw new WorkflowFailure("assertion", name)
@@ -49,6 +54,11 @@ export async function runReliabilityScenario(
 				requestsAfter: budget.used,
 				heapUsed: process.memoryUsage().heapUsed,
 			})
+			if (isLongContextScenario(options.scenarioId))
+				await writeEvidence(`context-step-${String(observations.length).padStart(3, "0")}.json`, {
+					phase: observations.at(-1),
+					context: contextObservations.at(-1),
+				})
 		}
 	}
 	const inspect = async (id: string, cancelled = false) => {
@@ -62,9 +72,77 @@ export async function runReliabilityScenario(
 	try {
 		if (options.providerMode !== "live-copilot")
 			throw new WorkflowFailure("configuration", "reliability_requires_live_copilot", true)
+		if (!Number.isSafeInteger(options.turns) || options.turns < 4 || options.turns > MAX_CONTEXT_PROBE_TURNS)
+			throw new WorkflowFailure("configuration", "invalid_budget", true)
 		await repository.create()
 		for (const item of await repository.verify("baseline")) check(`baseline_${item.name}`, item.passed)
-		if (options.scenarioId === "background-isolation") {
+		if (isLongContextScenario(options.scenarioId)) {
+			budget.responseProbe = responseProbe
+			const observeContext = (phase: string, step: number) => {
+				const observation = host.inspectContext(taskId!, contextProbeReceipt(step))
+				contextObservations.push({ phase, ...observation })
+				check(`${phase}_correct_receipt`, observation.receiptPresent)
+			}
+			await measure("initial_probe", async () => {
+				taskId = await host.start("contextProbe")
+				result.taskIds.push(taskId)
+				await host.complete(taskId)
+				await inspect(taskId)
+				observeContext("initial", 0)
+			})
+			for (let step = 1; step < options.turns; step++) {
+				await measure(`retained_followup_${step}`, async () => {
+					const before = budget.used
+					await host.followup(taskId!, "contextProbe", step)
+					await host.complete(taskId!)
+					await inspect(taskId!)
+					check(`turn_${step}_reached_provider`, budget.used > before)
+					observeContext(`turn_${step}`, step)
+				})
+			}
+			const requestsBeforeFault = budget.used
+			fault.arm("empty")
+			const exhaustEmpty = options.scenarioId === "long-context-empty-exhaustion"
+			if (exhaustEmpty) secondEmpty.arm("empty")
+			budget.transformResponse = (response) =>
+				exhaustEmpty && fault.injected ? secondEmpty.wrap(response) : fault.wrap(response)
+			await measure("late_empty_recovery", async () => {
+				await host.followup(taskId!, "contextProbe", options.turns)
+				await host.waitForFault(() => fault.injected)
+				check("late_fault_observed_real_output", fault.observedParts > 0)
+				if (exhaustEmpty) {
+					await host.waitForFault(() => secondEmpty.injected)
+					await host.waitForResumeBoundary(taskId!)
+					check("repeated_empty_warning_visible", host.inspectContext(taskId!, "").emptyWarnings > 0)
+					check("empty_retry_budget_bounded", budget.used === requestsBeforeFault + 2)
+					budget.transformResponse = undefined
+					await host.followup(taskId!, "contextProbe", options.turns)
+				} else await host.recoverProviderError(taskId!, requestsBeforeFault)
+				await host.complete(taskId!)
+				await inspect(taskId!)
+				observeContext("recovered", options.turns)
+				check("late_fault_retried_real_provider", budget.used > requestsBeforeFault + 1)
+			})
+			budget.transformResponse = undefined
+			const beforeCompaction = budget.used
+			await measure("late_compaction", async () => check("late_summary_persisted", await host.condense(taskId!)))
+			check("late_compaction_used_real_provider", budget.used > beforeCompaction)
+			await measure("post_compaction_restart", async () => {
+				await host.resume(taskId!, "contextProbe", options.turns + 1, { reopen: true })
+				check("compacted_task_reopened", true)
+				await host.complete(taskId!)
+				await inspect(taskId!)
+				observeContext("post_compaction", options.turns + 1)
+			})
+			for (const item of await repository.verify("baseline")) check(`probe_preserved_${item.name}`, item.passed)
+			await measure("late_problem_solving", async () => {
+				await host.followup(taskId!, "enhance")
+				await host.complete(taskId!)
+				await inspect(taskId!)
+				for (const item of await repository.verify("enhanced")) check(`late_fix_${item.name}`, item.passed)
+				check("late_fix_tests_pass", (await repository.test()).exitCode === 0)
+			})
+		} else if (options.scenarioId === "background-isolation") {
 			fault.arm("pause")
 			budget.transformResponse = (response) => fault.wrap(response)
 			taskId = await host.start("review")
@@ -196,14 +274,19 @@ export async function runReliabilityScenario(
 		}
 	} finally {
 		fault.release()
+		secondEmpty.release()
 		budget.transformResponse = undefined
+		budget.responseProbe = undefined
 		result.requestsUsed = budget.used
 		await writeEvidence("reliability-observations.json", {
 			schemaVersion: 1,
 			runId: options.runId,
 			model: budget.model,
 			observations,
+			contextObservations,
 			fault: { injected: fault.injected, observedParts: fault.observedParts },
+			secondEmpty: { injected: secondEmpty.injected, observedParts: secondEmpty.observedParts },
+			responses: responseProbe.observations,
 		})
 	}
 	return result

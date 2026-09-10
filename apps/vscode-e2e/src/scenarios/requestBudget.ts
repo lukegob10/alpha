@@ -1,4 +1,5 @@
 import { WorkflowFailure, type WorkflowResult } from "./contracts"
+import type { LiveResponseProbe } from "./liveResponseProbe"
 
 export class WorkflowRequestBudget {
 	used = 0
@@ -7,6 +8,7 @@ export class WorkflowRequestBudget {
 	model: WorkflowResult["model"] = {}
 	/** Opt-in test fault at the real response boundary; ordinary guards preserve response identity. */
 	transformResponse?: (response: unknown) => unknown
+	responseProbe?: LiveResponseProbe
 
 	constructor(
 		readonly limit: number,
@@ -74,14 +76,20 @@ export function guardVsCodeLmHandler(handler: unknown, budget: WorkflowRequestBu
 					if (key === "sendRequest") {
 						return (...requestArgs: unknown[]) => {
 							budget.consume()
+							const request = budget.used
+							const probe = budget.responseProbe
+							const transform = budget.transformResponse
 							const response: unknown = Reflect.apply(
 								value as (...args: unknown[]) => unknown,
 								client,
 								requestArgs,
 							)
-							return budget.transformResponse
-								? Promise.resolve(response).then(budget.transformResponse)
-								: response
+							if (!probe && !transform) return response
+							return Promise.resolve(response).then((value) => {
+								const options = requestArgs[1] as { tools?: unknown[] } | undefined
+								const observed = probe?.wrap(value, request, options?.tools?.length ?? 0) ?? value
+								return transform ? transform(observed) : observed
+							})
 						}
 					}
 					return typeof value === "function" ? value.bind(client) : value

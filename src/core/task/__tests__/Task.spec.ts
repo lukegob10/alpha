@@ -3965,7 +3965,11 @@ describe("Alpha", () => {
 			expect(task.clineMessages.filter((message) => message.say === "error")).toEqual([
 				expect.objectContaining({ text: enCommon.errors.task_recovery_incomplete }),
 			])
-			expect(saved.some((message) => message.ask === "resume_task")).toBe(false)
+			expect(task.clineMessages.some((message) => message.ask === "resume_task")).toBe(false)
+			// Hydration cleans the in-memory view; this mocked ask does not persist
+			// an interaction, so the original saved bytes must remain untouched.
+			expect(saved.some((message) => message.ask === "resume_task")).toBe(true)
+			expect(task.overwriteClineMessages).not.toHaveBeenCalled()
 		})
 
 		it.each([true, false])(
@@ -4679,6 +4683,90 @@ describe("Alpha", () => {
 			expect(task.skipPrevResponseIdOnce).toBe(true)
 			expect(task.abort).toBe(false)
 			expect(task.abandoned).toBe(false)
+		})
+
+		it("hydrates both histories before publishing or saving a reopened task", async () => {
+			const task = createTask()
+			const savedUi = [
+				{ ts: 1, type: "say", say: "text", text: "historical task" },
+				{ ts: 2, type: "say", say: "reasoning", text: "completed reasoning", partial: false },
+				{ ts: 3, type: "say", say: "reasoning", text: "interrupted reasoning", partial: true },
+			]
+			const savedApi = [{ role: "user", content: "original task", ts: 1 }]
+			let releaseRead!: () => void
+			const readBarrier = new Promise<void>((resolve) => {
+				releaseRead = resolve
+			})
+			let reachedRead!: () => void
+			const readStarted = new Promise<void>((resolve) => {
+				reachedRead = resolve
+			})
+			vi.spyOn(task as any, "getSavedClineMessages").mockImplementation(async () => structuredClone(savedUi))
+			vi.spyOn(task as any, "getSavedApiConversationHistory").mockImplementation(async () => {
+				reachedRead()
+				await readBarrier
+				return savedApi
+			})
+			const overwrite = vi.spyOn(task, "overwriteClineMessages").mockResolvedValue(undefined)
+			const save = vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(true)
+			vi.spyOn(task as any, "overwriteApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "initiateTaskLoop").mockResolvedValue(undefined)
+			const ask = vi.spyOn(task, "ask").mockImplementation(async () => {
+				expect(task.apiConversationHistory).toEqual(savedApi)
+				return { response: "noButtonClicked" }
+			})
+			const resume = (task as any).resumeTaskFromHistory()
+			await readStarted
+			const effectsBeforeRead = [overwrite.mock.calls.length, save.mock.calls.length, ask.mock.calls.length]
+			releaseRead()
+			await resume
+			expect(effectsBeforeRead).toEqual([0, 0, 0])
+			expect(overwrite).not.toHaveBeenCalled()
+			expect(task.clineMessages).toEqual(savedUi.slice(0, 2))
+		})
+
+		it.each(["ui", "api"] as const)("preserves history when the %s read fails during reopen", async (phase) => {
+			const task = createTask()
+			const failure = new Error("History read unavailable")
+			const uiRead = vi
+				.spyOn(task as any, "getSavedClineMessages")
+				.mockResolvedValue([{ ts: 1, type: "say", say: "text", text: "saved" }])
+			const apiRead = vi
+				.spyOn(task as any, "getSavedApiConversationHistory")
+				.mockResolvedValue([{ role: "user", content: "saved", ts: 1 }])
+			if (phase === "ui") uiRead.mockRejectedValue(failure)
+			else apiRead.mockRejectedValue(failure)
+			const overwrite = vi.spyOn(task, "overwriteClineMessages").mockResolvedValue(undefined)
+			const save = vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(true)
+			const ask = vi.spyOn(task, "ask")
+			await expect((task as any).resumeTaskFromHistory()).rejects.toBe(failure)
+			expect(overwrite).not.toHaveBeenCalled()
+			expect(save).not.toHaveBeenCalled()
+			expect(ask).not.toHaveBeenCalled()
+		})
+
+		it.each(["ui", "api"] as const)("abandons hydration after eviction during the %s read", async (phase) => {
+			const task = createTask()
+			vi.spyOn(task as any, "getSavedClineMessages").mockImplementation(async () => {
+				if (phase === "ui") task.abandoned = true
+				return [{ ts: 1, type: "say", say: "text", text: "saved" }]
+			})
+			vi.spyOn(task as any, "getSavedApiConversationHistory").mockImplementation(async () => {
+				task.abandoned = true
+				return [{ role: "user", content: "saved", ts: 1 }]
+			})
+			const overwrite = vi.spyOn(task, "overwriteClineMessages").mockResolvedValue(undefined)
+			const save = vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(true)
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "initiateTaskLoop").mockResolvedValue(undefined)
+			await (task as any).resumeTaskFromHistory()
+			expect(overwrite).not.toHaveBeenCalled()
+			expect(save).not.toHaveBeenCalled()
+			expect(ask).not.toHaveBeenCalled()
+			expect(task.clineMessages).toEqual([])
+			expect(task.apiConversationHistory).toEqual([])
 		})
 
 		it("repairs an interrupted tool call when a root task resumes after reload", async () => {

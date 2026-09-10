@@ -1,0 +1,14 @@
+{
+	"id": "long-context-recovery",
+	"hosts": [{ "version": "1.136.1" }],
+	"scenarioIds": ["long-context-recovery", "long-context-empty-exhaustion"],
+	"samples": 1,
+	"provider": { "mode": "live-copilot", "modelId": "gpt-5.6-luna", "effort": "high" },
+	"budgets": {
+		"maxIterations": 2,
+		"maxRequests": 180,
+		"maxDurationMs": 2700000,
+		"attemptTimeoutMs": 1200000
+	},
+	"maxReproductions": 1
+}

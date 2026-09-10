@@ -123,6 +123,44 @@ Line 2
 	})
 
 	describe("summarizeConversation", () => {
+		it.each([
+			{ count: 1_001, reason: "candidate_over_budget" },
+			{ count: Number.NaN, reason: "invalid_candidate_count" },
+			{ count: 20, reason: "candidate_ready" },
+		])("reports $reason without retaining private content in diagnostics", async ({ count, reason }) => {
+			const handler = new MockApiHandler()
+			vi.spyOn(handler, "countTokens").mockImplementation(async (blocks) =>
+				JSON.stringify(blocks).includes("Conversation Summary") ? count : 10,
+			)
+			const messages: ApiMessage[] = [
+				{ role: "user", content: "PRIVATE_TASK_CONTENT" },
+				{ role: "assistant", content: "PRIVATE_ANSWER_CONTENT" },
+				{ role: "user", content: "PRIVATE_FOLLOWUP_CONTENT" },
+			]
+			const result = await summarizeConversation({
+				messages,
+				apiHandler: handler,
+				systemPrompt: "PRIVATE_SYSTEM_CONTENT",
+				taskId,
+				maxContextTokens: 1_000,
+				recentTailTokenBudget: 0,
+			})
+			expect(result.diagnostic).toMatchObject({
+				reason,
+				storedMessages: 3,
+				activeMessages: 3,
+				targetTokens: 1_000,
+				tailMessages: 0,
+				textParts: 1,
+			})
+			expect(JSON.stringify(result.diagnostic)).not.toContain("PRIVATE_")
+			expect(JSON.stringify(result.diagnostic)).not.toContain("Mock summary")
+			if (reason !== "candidate_ready") {
+				expect(result.messages).toBe(messages)
+				expect(result.status).toBe("no_progress")
+			} else expect(result.status).toBe("reduced")
+		})
+
 		it("should create a summary message with role user (fresh start model)", async () => {
 			const messages: ApiMessage[] = [
 				{ role: "user", content: "First message with /prr command content" },

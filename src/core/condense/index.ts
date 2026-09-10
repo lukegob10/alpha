@@ -574,6 +574,38 @@ export function extractCommandBlocks(message: ApiMessage): string {
 	return matches.join("\n")
 }
 
+export type CompactionDiagnostic = {
+	reason:
+		| "insufficient_history"
+		| "recent_summary"
+		| "invalid_history"
+		| "invalid_handler"
+		| "invalid_tail_count"
+		| "provider_error"
+		| "incomplete_outcome"
+		| "empty_summary"
+		| "invalid_candidate_count"
+		| "candidate_over_budget"
+		| "candidate_ready"
+	elapsedMs: number
+	storedMessages: number
+	activeMessages: number
+	summaryCharacters: number
+	textParts: number
+	reasoningParts: number
+	toolParts: number
+	systemCharacters: number
+	toolSchemaCharacters: number
+	remoteDeadlineExpired: boolean
+	targetTokens?: number
+	tailTokens?: number
+	tailMessages?: number
+	candidateTokens?: number
+	lifecycleRequired?: boolean
+	completedOutcomeObserved?: boolean
+	unsuccessfulOutcome?: ApiStreamOutcomeChunk["status"]
+}
+
 export type SummarizeResponse = {
 	messages: ApiMessage[] // The messages after summarization
 	summary: string // The summary text; empty string for no summary
@@ -588,6 +620,8 @@ export type SummarizeResponse = {
 	retainedTailMessages?: number
 	tailFallback?: "newest_step_exceeds_budget"
 	targetContextTokens?: number
+	/** Bounded numeric/enum evidence; never contains conversation or provider payloads. */
+	diagnostic?: CompactionDiagnostic
 }
 
 export type SummarizeConversationOptions = {
@@ -690,13 +724,36 @@ export async function summarizeConversation(options: SummarizeConversationOption
 	// Summarize only the history that would be sent to the model. The stored history
 	// also contains messages hidden by prior truncation and condensation markers.
 	const activeMessages = getMessagesSinceLastSummary(getEffectiveApiHistory(messages))
+	const startedAt = Date.now()
+	const diagnostic: CompactionDiagnostic = {
+		reason: "insufficient_history",
+		elapsedMs: 0,
+		storedMessages: messages.length,
+		activeMessages: activeMessages.length,
+		summaryCharacters: 0,
+		textParts: 0,
+		reasoningParts: 0,
+		toolParts: 0,
+		systemCharacters: systemPrompt.length,
+		toolSchemaCharacters: metadata?.tools?.length ? JSON.stringify(metadata.tools).length : 0,
+		remoteDeadlineExpired: false,
+	}
+	const finish = (result: SummarizeResponse, reason: CompactionDiagnostic["reason"]): SummarizeResponse => {
+		const receipt = {
+			...diagnostic,
+			reason,
+			elapsedMs: Date.now() - startedAt,
+			remoteDeadlineExpired: Date.now() >= countContext.remoteDeadline,
+		}
+		return { ...result, diagnostic: receipt }
+	}
 
 	if (activeMessages.length <= 1) {
 		const error =
 			messages.length <= 1
 				? t("common:errors.condense_not_enough_messages")
 				: t("common:errors.condensed_recently")
-		return { ...response, error, status: "exhausted" }
+		return finish({ ...response, error, status: "exhausted" }, "insufficient_history")
 	}
 
 	// Check if there's a recent summary in the messages (edge case)
@@ -704,16 +761,22 @@ export async function summarizeConversation(options: SummarizeConversationOption
 
 	if (recentSummaryExists && activeMessages.length <= 2) {
 		const error = t("common:errors.condensed_recently")
-		return { ...response, error, status: "exhausted" }
+		return finish({ ...response, error, status: "exhausted" }, "recent_summary")
 	}
 	// Do not manufacture terminal results for a live or incomplete transaction.
 	// Legacy repair helpers remain available to explicit history recovery callers.
 	const storedMessages = new Set(messages)
 	if (!hasToolCallResultIntegrity(activeMessages) || activeMessages.some((message) => !storedMessages.has(message))) {
-		return { ...response, error: t("common:errors.condense_failed"), status: "exhausted" }
+		return finish(
+			{ ...response, error: t("common:errors.condense_failed"), status: "exhausted" },
+			"invalid_history",
+		)
 	}
 	if (!apiHandler || typeof apiHandler.createMessage !== "function") {
-		return { ...response, error: t("common:errors.condense_handler_invalid"), status: "no_progress" }
+		return finish(
+			{ ...response, error: t("common:errors.condense_handler_invalid"), status: "no_progress" },
+			"invalid_handler",
+		)
 	}
 	const modelInfo = apiHandler.getModel().info
 	const requestedTarget =
@@ -723,6 +786,7 @@ export async function summarizeConversation(options: SummarizeConversationOption
 			reservedTokens: modelInfo.maxTokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS,
 		})
 	const maxContextTokens = Number.isFinite(requestedTarget) ? Math.max(0, requestedTarget) : 0
+	diagnostic.targetTokens = maxContextTokens
 	const requestedTailBudget =
 		options.recentTailTokenBudget ?? Math.min(DEFAULT_RECENT_TAIL_TOKENS, maxContextTokens / 4)
 	const tailBudget = Number.isFinite(requestedTailBudget)
@@ -730,16 +794,27 @@ export async function summarizeConversation(options: SummarizeConversationOption
 		: 0
 	const minimumTailStart = getLogicalStepStarts(activeMessages).length === 1 ? 0 : 1
 	const tail = await selectRecentTail(activeMessages, apiHandler, tailBudget, minimumTailStart, signal, countContext)
+	diagnostic.tailTokens = tail.tokens
+	diagnostic.tailMessages = activeMessages.length - tail.startIndex
 	if (!Number.isFinite(tail.tokens) || tail.tokens < 0) {
-		return { ...response, error: t("common:errors.condense_failed"), status: "no_progress" }
+		return finish(
+			{ ...response, error: t("common:errors.condense_failed"), status: "no_progress" },
+			"invalid_tail_count",
+		)
 	}
 	const messagesToSummarize = activeMessages.slice(0, tail.startIndex)
 	const retainedMessages = activeMessages.slice(tail.startIndex)
 	if (messagesToSummarize.length === 0) {
-		return { ...response, error: t("common:errors.condense_not_enough_messages"), status: "exhausted" }
+		return finish(
+			{ ...response, error: t("common:errors.condense_not_enough_messages"), status: "exhausted" },
+			"insufficient_history",
+		)
 	}
 	if (messagesToSummarize.length === 1 && messagesToSummarize[0].isSummary) {
-		return { ...response, error: t("common:errors.condensed_recently"), status: "exhausted" }
+		return finish(
+			{ ...response, error: t("common:errors.condensed_recently"), status: "exhausted" },
+			"recent_summary",
+		)
 	}
 
 	// Use custom prompt if provided and non-empty, otherwise use the default CONDENSE prompt
@@ -771,13 +846,16 @@ export async function summarizeConversation(options: SummarizeConversationOption
 	let streamError: ApiStreamError | undefined
 	const getStreamErrorResponse = (errorChunk: ApiStreamError): SummarizeResponse => {
 		const errorDetails = getCondenseStreamErrorDetail(errorChunk)
-		return {
-			...response,
-			cost,
-			error: t("common:errors.condense_api_failed", { message: errorDetails }),
-			errorDetails,
-			status: "no_progress",
-		}
+		return finish(
+			{
+				...response,
+				cost,
+				error: t("common:errors.condense_api_failed", { message: errorDetails }),
+				errorDetails,
+				status: "no_progress",
+			},
+			"provider_error",
+		)
 	}
 
 	try {
@@ -791,6 +869,11 @@ export async function summarizeConversation(options: SummarizeConversationOption
 			if (next.done) break
 			const chunk = next.value
 			signal?.throwIfAborted()
+			if (chunk.type === "text") {
+				diagnostic.textParts++
+				diagnostic.summaryCharacters += chunk.text.length
+			} else if (chunk.type === "reasoning") diagnostic.reasoningParts++
+			else if (chunk.type === "tool_call") diagnostic.toolParts++
 			if (chunk.type === "error") {
 				// An explicit provider failure is terminal for condensing. Keep the
 				// first one and ignore any cleanup/outcome chunks that follow it.
@@ -853,35 +936,44 @@ export async function summarizeConversation(options: SummarizeConversationOption
 			errorDetails = String(error)
 		}
 
-		return {
-			...response,
-			cost,
-			error: t("common:errors.condense_api_failed", { message: errorMessage }),
-			errorDetails,
-			status: "no_progress",
-		}
+		return finish(
+			{
+				...response,
+				cost,
+				error: t("common:errors.condense_api_failed", { message: errorMessage }),
+				errorDetails,
+				status: "no_progress",
+			},
+			"provider_error",
+		)
 	}
 	signal?.throwIfAborted()
 	if (streamError) return getStreamErrorResponse(streamError)
+	diagnostic.lifecycleRequired = apiHandler.streamCapabilities?.lifecycle === true
+	diagnostic.completedOutcomeObserved = completedOutcomeObserved
+	diagnostic.unsuccessfulOutcome = unsuccessfulOutcome?.status
 
 	// Lifecycle-capable providers promise an explicit terminal outcome, so EOF
 	// without completed evidence must fail closed. Legacy providers have no such
 	// contract and retain their established text-at-EOF behavior.
 	if (unsuccessfulOutcome || (apiHandler.streamCapabilities?.lifecycle === true && !completedOutcomeObserved)) {
-		return {
-			...response,
-			cost,
-			error: t("common:errors.condense_failed"),
-			...(unsuccessfulOutcome?.reason ? { errorDetails: unsuccessfulOutcome.reason } : {}),
-			status: "no_progress",
-		}
+		return finish(
+			{
+				...response,
+				cost,
+				error: t("common:errors.condense_failed"),
+				...(unsuccessfulOutcome?.reason ? { errorDetails: unsuccessfulOutcome.reason } : {}),
+				status: "no_progress",
+			},
+			"incomplete_outcome",
+		)
 	}
 
 	summary = summary.trim()
 
 	if (summary.length === 0) {
 		const error = t("common:errors.condense_failed")
-		return { ...response, cost, error, status: "no_progress" }
+		return finish({ ...response, cost, error, status: "no_progress" }, "empty_summary")
 	}
 
 	// Extract command blocks from the first message (original task)
@@ -973,10 +1065,14 @@ ${commandBlocks}
 		countContext,
 	)
 	signal?.throwIfAborted()
+	diagnostic.candidateTokens = newContextTokens
 	if (!Number.isFinite(newContextTokens) || newContextTokens > maxContextTokens) {
 		// The tail was excluded from the summary request, so silently dropping it
 		// now would lose unsummarized evidence. Leave history unchanged for fallback.
-		return { ...response, cost, error: t("common:errors.condense_failed"), status: "no_progress" }
+		return finish(
+			{ ...response, cost, error: t("common:errors.condense_failed"), status: "no_progress" },
+			Number.isFinite(newContextTokens) ? "candidate_over_budget" : "invalid_candidate_count",
+		)
 	}
 	const prefix = new Set(messagesToSummarize)
 	const insertIndex = retainedMessages.length ? messages.indexOf(retainedMessages[0]) : messages.length
@@ -984,18 +1080,21 @@ ${commandBlocks}
 		prefix.has(msg) && !msg.condenseParent ? { ...msg, condenseParent: condenseId } : msg,
 	)
 	newMessages.splice(insertIndex, 0, summaryMessage)
-	return {
-		messages: newMessages,
-		summary,
-		cost,
-		newContextTokens,
-		condenseId,
-		status: "reduced",
-		targetContextTokens: maxContextTokens,
-		retainedTailTokens: tail.tokens,
-		retainedTailMessages: retainedMessages.length,
-		...(tail.newestStepTooLarge ? { tailFallback: "newest_step_exceeds_budget" as const } : {}),
-	}
+	return finish(
+		{
+			messages: newMessages,
+			summary,
+			cost,
+			newContextTokens,
+			condenseId,
+			status: "reduced",
+			targetContextTokens: maxContextTokens,
+			retainedTailTokens: tail.tokens,
+			retainedTailMessages: retainedMessages.length,
+			...(tail.newestStepTooLarge ? { tailFallback: "newest_step_exceeds_budget" as const } : {}),
+		},
+		"candidate_ready",
+	)
 }
 
 /**

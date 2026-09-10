@@ -467,6 +467,7 @@ export async function manageContext({
 	}
 	let error: string | undefined
 	let errorDetails: string | undefined
+	let diagnostic: SummarizeResponse["diagnostic"]
 	let cost = 0
 	let forceTruncation = forceCompaction
 	// Calculate the maximum tokens reserved for response
@@ -558,6 +559,7 @@ export async function manageContext({
 			})
 			metadata?.signal?.throwIfAborted()
 			cost = result.cost
+			diagnostic = result.diagnostic
 			if (result.error) {
 				error = result.error
 				errorDetails = result.errorDetails
@@ -643,6 +645,7 @@ export async function manageContext({
 			error,
 			errorDetails,
 			truncationId: truncationResult.messagesRemoved > 0 ? truncationResult.truncationId : undefined,
+			diagnostic,
 			messagesRemoved: truncationResult.messagesRemoved,
 			newContextTokensAfterTruncation,
 			status,

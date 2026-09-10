@@ -770,6 +770,28 @@ describe("Task persistence", () => {
 				startTask: false,
 			})
 
+		it("loads nonempty history for hydration without a sidecar backfill write", async () => {
+			const task = createTask()
+			const messages = [{ role: "user", content: "durable original" }]
+			mockReadApiMessages.mockResolvedValueOnce(messages)
+			const reconcile = vi.spyOn(task as any, "reconcileProviderTranscriptSidecar")
+			expect(await (task as any).getSavedApiConversationHistory({ hydrateOnly: true })).toEqual(messages)
+			expect(mockReadApiMessages).toHaveBeenCalledOnce()
+			expect(reconcile).not.toHaveBeenCalled()
+			expect(mockSaveApiMessages).not.toHaveBeenCalled()
+		})
+
+		it("still requires verified canonical recovery for empty legacy history during hydration", async () => {
+			const task = createTask()
+			const messages = [{ role: "user", content: "verified canonical history" }]
+			mockReadApiMessages.mockResolvedValueOnce([])
+			const store = (task as any).providerTranscriptStore
+			store.read.mockResolvedValueOnce({ version: 2, taskId: task.taskId, messages })
+			expect(await (task as any).getSavedApiConversationHistory({ hydrateOnly: true })).toEqual(messages)
+			expect(store.read).toHaveBeenCalledOnce()
+			expect(mockSaveApiMessages).not.toHaveBeenCalled()
+		})
+
 		it.each(["initial", "queued"])(
 			"returns verified v2 history when the %s legacy read was stale-empty",
 			async (phase) => {

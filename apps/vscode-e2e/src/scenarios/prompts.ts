@@ -1,4 +1,5 @@
 import { DEVELOPMENT_PHASES, type DevelopmentPhaseId } from "./developmentCatalog"
+import { contextProbePrompt } from "./longContextProbe"
 
 export const WORKFLOW_COMMANDS = {
 	test: "node --test test/stats.test.cjs",
@@ -17,6 +18,7 @@ const scope = [
 ].join("\n")
 
 export const WORKFLOW_PROMPTS = {
+	contextProbe: "[workflow:context-probe]",
 	review: `[workflow:review]\n${scope}\nReview lib/stats.cjs and test/stats.test.cjs. Identify the empty-array bug. Do not edit or commit anything.`,
 	enhance: `[workflow:enhance]\n${scope}\nFix sum([]) to return 0 while preserving sum of numbers. Add an empty-array regression test in test/stats.test.cjs if absent. Run ${WORKFLOW_COMMANDS.test} and report its outcome. Do not commit yet.`,
 	commit: `[workflow:commit]\n${scope}\nReview the diff, stage the changes and create exactly one local commit with the approved stage and commit commands. Leave the repository clean.`,
@@ -38,12 +40,14 @@ export function isDevelopmentPrompt(prompt: WorkflowPromptName): prompt is Devel
 }
 
 export function workflowPrompt(prompt: WorkflowPromptName, step?: number): string {
+	if (prompt === "contextProbe") return contextProbePrompt(step ?? 0)
 	if (isDevelopmentPrompt(prompt)) return DEVELOPMENT_PHASES[prompt].prompt
 	return prompt === "extend" ? longThreadPrompt(step!) : WORKFLOW_PROMPTS[prompt]
 }
 
 /** A phase's command authority never inherits commands from another scenario. */
 export function workflowCommands(prompt: WorkflowPromptName): readonly string[] {
+	if (prompt === "contextProbe") return []
 	return isDevelopmentPrompt(prompt) ? DEVELOPMENT_PHASES[prompt].commands : Object.values(WORKFLOW_COMMANDS)
 }
 

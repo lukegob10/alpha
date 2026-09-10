@@ -4,6 +4,7 @@ import * as path from "node:path"
 
 import { WORKFLOW_SCENARIO_IDS } from "../../scenarios/contracts"
 import { isReliabilityScenario, RELIABILITY_SCENARIO_IDS } from "../../scenarios/reliabilityCatalog"
+import { isLongContextScenario } from "../../scenarios/longContextProbe"
 import { createDevelopmentSuite, DEVELOPMENT_SUITE_NAMES, type DevelopmentSuiteOptions } from "../developmentSuites"
 import { parseCampaignConfig } from "../config"
 import type { CampaignConfig } from "../types"
@@ -34,11 +35,13 @@ test("preserves the existing suites and adds explicit live reliability acceptanc
 		options({ suite: "reliability", provider: "live-copilot", modelId: "model", effort: "high" }),
 	)
 	assert.deepEqual(live.scenarioIds, [
-		...RELIABILITY_SCENARIO_IDS,
+		...RELIABILITY_SCENARIO_IDS.filter((id) => !isLongContextScenario(id)),
 		"cancel-resume",
 		"long-thread",
 		"reload-continuation",
 	])
+	assert.ok(WORKFLOW_SCENARIO_IDS.includes("long-context-recovery"))
+	assert.ok(!live.scenarioIds.includes("long-context-recovery"))
 })
 
 test("uses bounded matrix budgets and scales iterations to the selected host count", () => {

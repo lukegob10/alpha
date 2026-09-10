@@ -505,6 +505,27 @@ describe("getEnvironmentDetails", () => {
 
 		await expect(getEnvironmentDetails(mockCline as Task)).resolves.not.toThrow()
 	})
+	it.each([undefined, []])("omits planning reminders when there is no checklist", async (todoList) => {
+		const result = await getEnvironmentDetails({ ...mockCline, todoList } as Task)
+		expect(result).not.toContain("# Reminders")
+		expect(result).not.toContain("update_todo_list")
+	})
+
+	it("retracts a cleared checklist from incremental context without asking to recreate it", async () => {
+		const context = new EnvironmentContext()
+		const cline = { ...mockCline, todoList: [{ id: "1", content: "Check behavior", status: "pending" }] } as Task
+		const first = await captureEnvironmentDetails(cline, false, mockState, { context })
+		expect(first.details).toContain("Check behavior")
+		first.commit()
+		cline.todoList = []
+		const cleared = await captureEnvironmentDetails(cline, false, mockState, { context })
+		expect(cleared.details).toContain("# Reminders\n(none; previous value no longer applies)")
+		expect(cleared.details).not.toContain("update_todo_list")
+		cleared.commit()
+		const next = await captureEnvironmentDetails(cline, false, mockState, { context })
+		expect(next.details).not.toContain("# Reminders")
+	})
+
 	it("should include REMINDERS section when todoListEnabled is true", async () => {
 		mockProvider.getState.mockResolvedValue({
 			...mockState,

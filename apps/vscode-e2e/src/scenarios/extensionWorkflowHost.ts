@@ -417,12 +417,25 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		)
 	}
 
-	async resume(taskId: string, prompt: WorkflowPromptName): Promise<void> {
+	async resume(
+		taskId: string,
+		prompt: WorkflowPromptName,
+		step?: number,
+		options: { reopen?: boolean } = {},
+	): Promise<void> {
 		if (!(await this.api.isTaskInHistory(taskId))) throw new WorkflowFailure("persistence", "saved_task_missing")
 		// The saved provider callback does not restore global execution policy.
 		// Establish the same dedicated-profile policy before Task construction.
 		await this.api.setConfiguration(this.configuration)
 		this.scripted?.setPhase(prompt)
+		const previous = options.reopen ? this.requireTask(taskId) : undefined
+		const summaryCount = (task: HostTask) =>
+			task.apiConversationHistory.filter((message) => record(message)?.isSummary === true).length
+		const previousSummaries = previous ? summaryCount(previous) : undefined
+		if (previous) {
+			await previous.flushApiConversationHistoryPersistence()
+			await this.provider.closeTask(taskId)
+		}
 		const liveAsk = this.provider.getLiveTask(taskId)?.taskAsk?.ask
 		if (liveAsk === "resume_task" || liveAsk === "resume_completed_task") {
 			// cancelCurrentTask already rehydrates through the provider. Retain that
@@ -440,7 +453,13 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			() => ["resume_task", "resume_completed_task"].includes(this.requireTask(taskId).taskAsk?.ask ?? ""),
 			"saved_task_resume_timeout",
 		)
-		await this.followup(taskId, prompt)
+		if (
+			previous &&
+			(this.requireTask(taskId) === previous || summaryCount(this.requireTask(taskId)) !== previousSummaries)
+		) {
+			throw new WorkflowFailure("persistence", "compacted_task_reopen_failed")
+		}
+		await this.followup(taskId, prompt, step)
 	}
 
 	async assertUiTask(taskId: string): Promise<void> {
@@ -522,6 +541,45 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		}
 	}
 
+	inspectContext(taskId: string, expectedReceipt: string) {
+		const task = this.requireTask(taskId)
+		const handler = task.api as {
+			getModel?: () => { id: string; info: { contextWindow?: number; maxTokens?: number } }
+		}
+		const model = handler?.getModel?.()
+		const messages = task.apiConversationHistory.map(record)
+		const assistant = [...messages].reverse().find((message) => message?.role === "assistant")
+		const blocks: unknown[] = Array.isArray(assistant?.content) ? assistant.content : []
+		const report = blocks
+			.flatMap((block) => {
+				const item = record(block)
+				if (item?.type === "text" && typeof item.text === "string") return [item.text]
+				const input = record(item?.input)
+				return item?.type === "tool_use" &&
+					item.name === "attempt_completion" &&
+					typeof input?.result === "string"
+					? [input.result]
+					: []
+			})
+			.join("\n")
+		return {
+			modelContext: {
+				id: model?.id,
+				contextWindow: model?.info.contextWindow,
+				maxTokens: model?.info.maxTokens,
+				autoCondenseContext: this.configuration.autoCondenseContext,
+				autoCondenseContextPercent: this.configuration.autoCondenseContextPercent,
+			},
+			apiMessages: messages.length,
+			apiHistoryBytes: Buffer.byteLength(JSON.stringify(task.apiConversationHistory)),
+			summaries: messages.filter((message) => message?.isSummary === true).length,
+			emptyWarnings: task.clineMessages.filter(
+				(message) => message.say === "error" && message.text === "MODEL_NO_ASSISTANT_MESSAGES",
+			).length,
+			receiptPresent: report.trim() === expectedReceipt,
+		}
+	}
+
 	async waitForFault(condition: () => boolean): Promise<void> {
 		await this.until(condition, "live_fault_boundary_timeout", 60_000)
 	}
@@ -560,7 +618,9 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		const summaries = () =>
 			task.apiConversationHistory.filter((message) => record(message)?.isSummary === true).length
 		const before = summaries()
-		const condensing = task.condenseContext()
+		const condensing = task.condenseContext().catch(() => {
+			throw new WorkflowFailure("lifecycle", "live_compaction_failed")
+		})
 		await this.until(
 			async () => {
 				await condensing
@@ -593,7 +653,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		)
 	}
 
-	async recoverProviderError(taskId: string): Promise<void> {
+	async recoverProviderError(taskId: string, requestsBeforeFault = 0): Promise<void> {
 		await this.until(
 			() => {
 				const task = this.requireTask(taskId)
@@ -603,7 +663,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 					return true
 				}
 				// Automatic retry is also a valid recovery, but must have reached another real request.
-				return this.budget.used > 1
+				return this.budget.used > requestsBeforeFault + 1
 			},
 			"provider_recovery_timeout",
 			60_000,

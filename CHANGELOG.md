@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.28
+
+### Patch Changes
+
+- Harden compaction and long-context recovery so hidden rewind history does not consume the active context budget.
+- Preserve complete tool and reasoning history across reopen, reload, cancellation, and retry paths while preventing stale writes.
+- Add deterministic and live Copilot recovery campaigns with bounded request accounting and retained evidence.
+
 ## 2.1.27
 
 ### Patch Changes

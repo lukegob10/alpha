@@ -1,5 +1,6 @@
 import { DEVELOPMENT_SCENARIO_IDS } from "./developmentCatalog"
 import { RELIABILITY_SCENARIO_IDS } from "./reliabilityCatalog"
+import { isLongContextScenario, MAX_CONTEXT_PROBE_TURNS } from "./longContextProbe"
 
 export const WORKFLOW_SCENARIO_IDS = [
 	"review-edit-test-commit-followup",
@@ -147,7 +148,12 @@ export function readWorkflowSelection(env: NodeJS.ProcessEnv): {
 	return {
 		scenarioId: scenarioId as WorkflowScenarioId,
 		phase: phase as WorkflowPhase,
-		turns: boundedInteger(env.ALPHA_E2E_SCENARIO_TURNS, 6, 4, MAX_WORKFLOW_TURNS),
+		turns: boundedInteger(
+			env.ALPHA_E2E_SCENARIO_TURNS,
+			scenarioId === "long-context-recovery" ? 32 : scenarioId === "long-context-empty-exhaustion" ? 12 : 6,
+			4,
+			isLongContextScenario(scenarioId!) ? MAX_CONTEXT_PROBE_TURNS : MAX_WORKFLOW_TURNS,
+		),
 		requestCap: boundedInteger(env.ALPHA_E2E_REQUEST_LIMIT, 60, 1, 200),
 		timeoutMs: boundedInteger(env.ALPHA_E2E_SCENARIO_TIMEOUT_MS, 300_000, 1_000, 1_200_000),
 	}

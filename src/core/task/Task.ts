@@ -1835,7 +1835,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	// API Messages
 
-	private async getSavedApiConversationHistory(): Promise<ApiMessage[]> {
+	private async getSavedApiConversationHistory({ hydrateOnly = false } = {}): Promise<ApiMessage[]> {
 		let messages: ApiMessage[]
 		try {
 			messages = await readApiMessages({ taskId: this.taskId, globalStoragePath: this.globalStoragePath })
@@ -1856,6 +1856,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			return messages
 		}
+		// Reopen must finish loading both histories before any instance-owned write.
+		// The next normal save reconciles the sidecar under its existing queue.
+		if (hydrateOnly) return messages
 
 		// The legacy file is still authoritative for reads. Reconcile the new
 		// provider-facing sidecar only after the read succeeds, and do it behind
@@ -3742,8 +3745,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	// Alpha Messages
 
-	private async getSavedClineMessages(): Promise<ClineMessage[]> {
-		return readTaskMessages({ taskId: this.taskId, globalStoragePath: this.globalStoragePath })
+	private async getSavedClineMessages(requireExisting = false): Promise<ClineMessage[]> {
+		return readTaskMessages({ taskId: this.taskId, globalStoragePath: this.globalStoragePath, requireExisting })
 	}
 
 	private async addToClineMessages(message: ClineMessage, stateUpdate?: "full" | "task") {
@@ -5992,6 +5995,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	private logCompactionDiagnostic(diagnostic: Record<string, unknown> | undefined): void {
+		if (!diagnostic) return
+		try {
+			this.providerRef.deref()?.log?.(`[compaction] ${JSON.stringify({ taskId: this.taskId, ...diagnostic })}`)
+		} catch {
+			// Diagnostic delivery must never prevent history validation or persistence.
+		}
+	}
+
 	private async measureCompactedContext(
 		apiHandler: ApiHandler,
 		systemPrompt: string,
@@ -6004,6 +6016,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const tokens = await countContextTokens(messages, apiHandler, systemPrompt, metadata, countContext)
 		this.throwIfStepInterrupted(metadata.signal)
 		if (!Number.isFinite(tokens) || (targetContextTokens !== undefined && tokens > targetContextTokens)) {
+			this.logCompactionDiagnostic({
+				stage: "validation",
+				tokens,
+				targetContextTokens,
+				messages: messages.length,
+			})
 			throw new ContextRecoveryExhaustedError()
 		}
 		return tokens
@@ -6115,19 +6133,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const filesReadByRoo = await this.getFilesReadByRooSafely("condenseContext")
 		this.throwIfStepInterrupted(signal)
 
-		const { messages, summary, cost, error, condenseId, targetContextTokens } = await summarizeConversation({
-			messages: history,
-			apiHandler,
-			systemPrompt,
-			taskId: this.taskId,
-			isAutomaticTrigger: false,
-			customCondensingPrompt,
-			metadata,
-			filesReadByRoo,
-			cwd: this.cwd,
-			rooIgnoreController: this.rooIgnoreController,
-			countContext,
-		})
+		const { messages, summary, cost, error, condenseId, targetContextTokens, diagnostic } =
+			await summarizeConversation({
+				messages: history,
+				apiHandler,
+				systemPrompt,
+				taskId: this.taskId,
+				isAutomaticTrigger: false,
+				customCondensingPrompt,
+				metadata,
+				filesReadByRoo,
+				cwd: this.cwd,
+				rooIgnoreController: this.rooIgnoreController,
+				countContext,
+			})
+		this.logCompactionDiagnostic(diagnostic && { stage: "summary", automatic: false, ...diagnostic })
 		this.throwIfStepInterrupted(signal)
 		// Rewind/edit can replace the transcript while the summarizer is awaiting its provider.
 		if (digestProviderTranscript(this.apiConversationHistory) !== historyDigest) {
@@ -6150,7 +6170,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			systemPrompt,
 			metadata,
 			targetContextTokens,
-			messages,
+			// Stored messages include the rewind archive; only the active projection
+			// is sent to the provider and belongs in the input-budget check.
+			getEffectiveApiHistory(messages),
 			countContext,
 		)
 		this.throwIfStepInterrupted(signal)
@@ -6682,12 +6704,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// preceding turn. Join it before reading and rewriting the transcript so
 			// resume cannot base its next request on an older snapshot.
 			await this.flushApiConversationHistoryPersistence()
+			if (this.abort || this.abandoned) return
 			// A retained completed Task already owns the authoritative in-memory
 			// transcripts. Its prior lifecycle was joined before entering this method,
 			// so re-reading and rewriting both full histories only adds startup latency.
 			const modifiedClineMessages = useRetainedHistory
 				? structuredClone(this.clineMessages)
-				: await this.getSavedClineMessages()
+				: await this.getSavedClineMessages(true)
+			if (this.abort || this.abandoned) return
+			const savedApiHistory = useRetainedHistory
+				? this.apiConversationHistory
+				: await this.getSavedApiConversationHistory({ hydrateOnly: true })
+			if (this.abort || this.abandoned) return
 
 			// Remove any resume messages that may have been added before.
 			const lastRelevantMessageIndex = findLastIndex(
@@ -6699,10 +6727,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				modifiedClineMessages.splice(lastRelevantMessageIndex + 1)
 			}
 
-			// Remove any trailing reasoning-only UI messages that were not part of the persisted API conversation
+			// Only incomplete reasoning belongs to the interrupted preview. Completed
+			// reasoning is durable UI history even when it has no separate API record.
 			while (modifiedClineMessages.length > 0) {
 				const last = modifiedClineMessages[modifiedClineMessages.length - 1]
-				if (last.type === "say" && last.say === "reasoning") {
+				if (last.type === "say" && last.say === "reasoning" && last.partial === true) {
 					modifiedClineMessages.pop()
 				} else {
 					break
@@ -6727,24 +6756,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 			}
 
-			if (useRetainedHistory) {
-				this.invalidateBackgroundUsageDrain("The retained task transcript was resumed")
-				this.clineMessages = modifiedClineMessages
-				restoreTodoListForTask(this)
-			} else {
-				await this.overwriteClineMessages(modifiedClineMessages)
-				this.clineMessages = await this.getSavedClineMessages()
-				await this.reconcileInterruptedSubagentGroups()
-			}
-
-			// Now present the cline messages to the user and ask if they want to
-			// resume (NOTE: we ran into a bug before where the
-			// apiConversationHistory wouldn't be initialized when opening a old
-			// task, and it was because we were waiting for resume).
-			// This is important in case the user deletes messages without resuming
-			// the task first.
+			// Hydrate together without a standalone UI rewrite. The next interaction
+			// persists cleaned rows through the normal owner after both reads succeed.
+			this.invalidateBackgroundUsageDrain("The task transcript was resumed")
+			this.clineMessages = modifiedClineMessages
+			this.apiConversationHistory = savedApiHistory
+			restoreTodoListForTask(this)
 			if (!useRetainedHistory) {
-				this.apiConversationHistory = await this.getSavedApiConversationHistory()
+				await this.reconcileInterruptedSubagentGroups()
+				if (this.abort || this.abandoned) return
 			}
 
 			if (this.taskKind === "subagent" && !hasDirectFollowup) {
@@ -10088,6 +10108,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}),
 			)
 			assertRecoveryWithinBudget()
+			this.logCompactionDiagnostic(
+				truncateResult.diagnostic && { stage: "summary", automatic: true, ...truncateResult.diagnostic },
+			)
 			if (truncateResult.status === "exhausted" || truncateResult.status === "no_progress") {
 				throw new ContextRecoveryExhaustedError(truncateResult.error)
 			}
@@ -10098,7 +10121,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						systemPrompt,
 						metadata,
 						truncateResult.targetContextTokens,
-						truncateResult.messages,
+						getEffectiveApiHistory(truncateResult.messages),
 						countContext,
 					),
 				)
@@ -10602,6 +10625,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}),
 				)
 				assertPreflightWithinBudget()
+				this.logCompactionDiagnostic(
+					truncateResult.diagnostic && { stage: "summary", automatic: true, ...truncateResult.diagnostic },
+				)
 				if (truncateResult.status === "exhausted" || truncateResult.status === "no_progress") {
 					throw new ContextRecoveryExhaustedError(truncateResult.error)
 				}
@@ -10612,7 +10638,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							systemPrompt,
 							contextMgmtMetadata,
 							truncateResult.targetContextTokens,
-							truncateResult.messages,
+							getEffectiveApiHistory(truncateResult.messages),
 							contextCount,
 						),
 					)

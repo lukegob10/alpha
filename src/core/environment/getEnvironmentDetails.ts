@@ -146,7 +146,10 @@ export async function captureEnvironmentDetails(
 		const { totalCost } = getApiMetrics(cline.clineMessages)
 		add("Current Cost", totalCost !== null ? `$${totalCost.toFixed(2)}` : "(Not available)")
 	}
-	if (state?.apiConfiguration?.todoListEnabled ?? true) add("Reminders", formatReminderSection(cline.todoList))
+	if (state?.apiConfiguration?.todoListEnabled ?? true) {
+		const reminders = formatReminderSection(cline.todoList)
+		if (reminders) add("Reminders", reminders)
+	}
 
 	const allowedPaths = (paths: string[]) => {
 		const relative = paths

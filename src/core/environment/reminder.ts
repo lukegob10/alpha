@@ -5,7 +5,7 @@ import { TodoItem, TodoStatus } from "@alpha-code/types"
  */
 export function formatReminderSection(todoList?: TodoItem[]): string {
 	if (!todoList || todoList.length === 0) {
-		return "You have not created a todo list yet. Create one with `update_todo_list` if your task is complicated or involves multiple steps."
+		return ""
 	}
 	const statusMap: Record<TodoStatus, string> = {
 		pending: "Pending",
@@ -17,7 +17,7 @@ export function formatReminderSection(todoList?: TodoItem[]): string {
 		"",
 		"REMINDERS",
 		"",
-		"Below is your current list of reminders for this task. Keep them updated as you progress.",
+		"Current task checklist. Update at meaningful stage transitions or before the final response; combine status changes in one update. Do not update merely because a tool ran.",
 		"",
 	]
 
@@ -29,10 +29,5 @@ export function formatReminderSection(todoList?: TodoItem[]): string {
 	})
 	lines.push("")
 
-	lines.push(
-		"",
-		"IMPORTANT: When task status changes, remember to call the `update_todo_list` tool to update your progress.",
-		"",
-	)
 	return lines.join("\n")
 }

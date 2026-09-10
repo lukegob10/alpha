@@ -474,6 +474,39 @@ describe("Task manual compaction boundary", () => {
 })
 
 describe("Task context recovery admission", () => {
+	it.each(["manual", "automatic", "forced"] as const)(
+		"validates active context while preserving a large rewind archive during %s compaction",
+		async (trigger) => {
+			const { task, api, history, save } = harness()
+			history[0].content = "ARCHIVED_ONLY_EVIDENCE".repeat(500)
+			const originalContent = history[0].content
+			api.countTokens.mockImplementation(async (blocks) =>
+				JSON.stringify(blocks).includes("ARCHIVED_ONLY_EVIDENCE") ? 400 : 10,
+			)
+			const result = {
+				...compactedResult(history),
+				prevContextTokens: 500,
+				status: "reduced" as const,
+				targetContextTokens: 80,
+			}
+			vi.mocked(summarizeConversation).mockResolvedValueOnce(result)
+			vi.mocked(manageContext).mockResolvedValueOnce(result)
+
+			await runRecovery(task, trigger)
+
+			expect(save).toHaveBeenCalledOnce()
+			expect(task.apiConversationHistory[0]).toMatchObject({
+				content: originalContent,
+				condenseParent: "summary-1",
+			})
+			expect(task.apiConversationHistory.some((message) => message.isSummary)).toBe(true)
+			if (trigger === "automatic") {
+				expect(api.createMessage).toHaveBeenCalledOnce()
+				expect(JSON.stringify(api.createMessage.mock.calls[0][1])).not.toContain("ARCHIVED_ONLY_EVIDENCE")
+			} else expect(api.createMessage).not.toHaveBeenCalled()
+		},
+	)
+
 	beforeEach(() => vi.clearAllMocks())
 	afterEach(() => vi.restoreAllMocks())
 

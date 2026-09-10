@@ -19,6 +19,116 @@ import { WorkflowRequestBudget } from "./requestBudget"
 import { WorkflowFailure } from "./contracts"
 
 const workspace = process.cwd()
+
+test("post-compaction reopen replaces the task instance and preserves the summary before follow-up", async () => {
+	const actions: string[] = []
+	const saved = [{ role: "user", content: "summary", isSummary: true, condenseId: "saved-summary" }]
+	const previous = {
+		taskId: "reopen-task",
+		apiConversationHistory: saved,
+		flushApiConversationHistoryPersistence: async () => {
+			actions.push("flush")
+		},
+	}
+	const reopened = { ...previous, taskAsk: { ask: "resume_task" }, apiConversationHistory: structuredClone(saved) }
+	let current: typeof previous | undefined = previous
+	const provider = Object.assign(new EventEmitter(), {
+		getLiveTask: () => current,
+		closeTask: async () => {
+			actions.push("close")
+			current = undefined
+		},
+	})
+	const api = Object.assign(new EventEmitter(), {
+		sidebarProvider: provider,
+		getConfiguration: () => ({}),
+		setConfiguration: async () => {},
+		isTaskInHistory: async () => true,
+		resumeTask: async () => {
+			actions.push("load")
+			current = reopened
+		},
+		cancelCurrentTask: async () => {},
+	})
+	const host = new ExtensionWorkflowHost(
+		api as unknown as RooCodeAPI,
+		workspace,
+		"live-copilot",
+		new WorkflowRequestBudget(10),
+		5_000,
+	)
+	host.followup = async (id, prompt, step) => {
+		assert.equal(current, reopened)
+		assert.equal(id, "reopen-task")
+		assert.equal(prompt, "contextProbe")
+		assert.equal(step, 13)
+		actions.push("followup")
+	}
+	try {
+		await host.resume("reopen-task", "contextProbe", 13, { reopen: true })
+		assert.deepEqual(actions, ["flush", "close", "load", "followup"])
+	} finally {
+		await host.dispose()
+	}
+})
+
+test("a rejected manual compaction is a failure rather than a timeout", async () => {
+	const task = {
+		taskId: "compaction-task",
+		apiConversationHistory: [],
+		condenseContext: async () => {
+			throw new Error("summary rejected")
+		},
+	}
+	const provider = Object.assign(new EventEmitter(), { getLiveTask: () => task })
+	const api = Object.assign(new EventEmitter(), { sidebarProvider: provider, getConfiguration: () => ({}) })
+	const host = new ExtensionWorkflowHost(
+		api as unknown as RooCodeAPI,
+		workspace,
+		"scripted",
+		new WorkflowRequestBudget(10),
+		5_000,
+	)
+	try {
+		await assert.rejects(
+			host.condense(task.taskId),
+			(error: unknown) =>
+				error instanceof WorkflowFailure &&
+				error.category === "lifecycle" &&
+				error.code === "live_compaction_failed",
+		)
+	} finally {
+		await host.dispose()
+	}
+})
+
+test("late provider recovery waits for a new retry instead of counting earlier requests", async () => {
+	const budget = new WorkflowRequestBudget(30)
+	budget.used = 20
+	let observations = 0
+	let approvals = 0
+	const task = {
+		taskId: "late-fault",
+		get taskAsk() {
+			observations++
+			return observations < 2 ? undefined : { ask: "api_req_failed", partial: false }
+		},
+		approveAsk: () => {
+			approvals++
+		},
+	}
+	const provider = Object.assign(new EventEmitter(), { getLiveTask: () => task })
+	const api = Object.assign(new EventEmitter(), { sidebarProvider: provider, getConfiguration: () => ({}) })
+	const host = new ExtensionWorkflowHost(api as unknown as RooCodeAPI, workspace, "scripted", budget, 5_000)
+	try {
+		await host.recoverProviderError(task.taskId, 19)
+		assert.equal(approvals, 1)
+		assert.ok(observations >= 2)
+	} finally {
+		await host.dispose()
+	}
+})
+
 const history = (command: string, cwd: unknown = workspace) => [
 	{
 		role: "assistant",
