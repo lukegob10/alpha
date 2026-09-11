@@ -304,5 +304,30 @@ describe("ThinkingBudget", () => {
 			expect(screen.getByTestId("select-item-medium")).toBeInTheDocument()
 			expect(screen.getByTestId("select-item-high")).toBeInTheDocument()
 		})
+
+		it.each([
+			["claude-opus-5", ["low", "medium", "high", "xhigh", "max"]],
+			["grok-4.6", ["low", "medium", "high", "xhigh"]],
+		] as const)("uses the high default and no disable toggle for %s", (_modelId, efforts) => {
+			const setApiConfigurationField = vi.fn()
+
+			render(
+				<ThinkingBudget
+					{...defaultProps}
+					apiConfiguration={{}}
+					setApiConfigurationField={setApiConfigurationField}
+					modelInfo={{
+						...reasoningEffortModelInfo,
+						supportsReasoningEffort: [...efforts],
+						requiredReasoningEffort: true,
+						reasoningEffort: "high",
+					}}
+				/>,
+			)
+
+			expect(screen.getByTestId("select")).toHaveAttribute("data-value", "high")
+			expect(screen.queryByTestId("select-item-disable")).not.toBeInTheDocument()
+			expect(setApiConfigurationField).toHaveBeenCalledWith("reasoningEffort", "high", false)
+		})
 	})
 })

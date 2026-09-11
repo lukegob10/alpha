@@ -215,6 +215,7 @@ describe("VSCodeLM", () => {
 	it.each([
 		["gemini-3.1-pro", "Gemini 3.1 Pro (Preview)", 936_000, 200_000, 936_000],
 		["gemini-3.6-flash", "Gemini 3.6 Flash", 936_000, 200_000, 936_000],
+		["claude-opus-5", "Claude Opus 5", 936_000, 200_000, 936_000],
 		["grok-4.6", "Grok 4.6", 425_001, 200_000, 425_001],
 	] as const)(
 		"renders the live standard and extended context tiers for %s",
@@ -241,6 +242,33 @@ describe("VSCodeLM", () => {
 			expect(setApiConfigurationField).toHaveBeenCalledWith("vsCodeLmContextSize", extendedContextSize)
 		},
 	)
+
+	it.each([
+		["claude-opus-5", "Claude Opus 5", ["low", "medium", "high", "xhigh", "max"]],
+		["grok-4.6", "Grok 4.6", ["low", "medium", "high", "xhigh"]],
+	] as const)("exposes Copilot reasoning controls for %s", (family, name, efforts) => {
+		const selectedModel = {
+			vendor: "copilot",
+			family,
+			version: family,
+			id: family,
+			name,
+			maxInputTokens: family === "grok-4.6" ? 425_001 : 936_000,
+		}
+
+		renderProvider({ apiProvider: "vscode-lm", vsCodeLmModelSelector: selectedModel })
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
+		})
+
+		expect(thinkingBudgetProps.at(-1).modelInfo).toEqual(
+			expect.objectContaining({
+				supportsReasoningEffort: efforts,
+				requiredReasoningEffort: true,
+				reasoningEffort: "high",
+			}),
+		)
+	})
 
 	it("uses Kimi K3's single live window without showing a context toggle", () => {
 		const selectedModel = {
@@ -510,6 +538,29 @@ describe("VSCodeLM", () => {
 		props.onModelChange("copilot/claude-opus-4.5")
 
 		expect(setApiConfigurationField).toHaveBeenCalledWith("enableReasoningEffort", false)
+		expect(setApiConfigurationField).toHaveBeenCalledWith("reasoningEffort", undefined)
+	})
+
+	it("clears a stale disabled effort when switching to an always-reasoning Copilot model", () => {
+		const model = {
+			vendor: "copilot",
+			family: "claude-opus-5",
+			version: "claude-opus-5",
+			id: "copilot-claude-opus-5",
+			name: "Claude Opus 5",
+		}
+
+		renderProvider({
+			apiProvider: "vscode-lm",
+			enableReasoningEffort: false,
+			reasoningEffort: "disable",
+		})
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [model] } } as MessageEvent)
+		})
+
+		modelPickerProps.at(-1).onModelChange("copilot-claude-opus-5/copilot-claude-opus-5")
+
 		expect(setApiConfigurationField).toHaveBeenCalledWith("reasoningEffort", undefined)
 	})
 

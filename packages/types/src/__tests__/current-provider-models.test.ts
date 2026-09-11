@@ -248,6 +248,8 @@ describe("current provider model catalogs", () => {
 					contextWindow: 200_000,
 					supportsImages: true,
 					supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
+					requiredReasoningEffort: true,
+					reasoningEffort: "high",
 					supportsContextWindowConfiguration: true,
 					extendedContextSize: 936_000,
 				}),
@@ -290,6 +292,9 @@ describe("current provider model catalogs", () => {
 				expect.objectContaining({
 					contextWindow: 200_000,
 					extendedContextSize: 425_001,
+					supportsReasoningEffort: ["low", "medium", "high", "xhigh"],
+					requiredReasoningEffort: true,
+					reasoningEffort: "high",
 					supportsContextWindowConfiguration: true,
 				}),
 			)

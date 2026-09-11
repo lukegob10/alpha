@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.30
+
+### Patch Changes
+
+- Add Claude Opus 5 and Grok 4.6 to the VS Code language-model provider with Copilot-compatible reasoning and context controls.
+- Forward model-specific reasoning defaults and selected context sizes through the VS Code LM request compatibility paths.
+
 ## 2.1.29
 
 ### Patch Changes

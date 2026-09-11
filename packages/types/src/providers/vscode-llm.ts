@@ -62,6 +62,8 @@ function copilotModel({
 	contextWindow = COPILOT_DEFAULT_CONTEXT_WINDOW,
 	supportsImages = false,
 	supportsReasoningEffort,
+	requiredReasoningEffort = false,
+	reasoningEffort,
 	supportsContextWindowConfiguration = false,
 	extendedContextSize,
 	deprecated,
@@ -72,6 +74,8 @@ function copilotModel({
 	contextWindow?: number
 	supportsImages?: boolean
 	supportsReasoningEffort?: ModelInfo["supportsReasoningEffort"]
+	requiredReasoningEffort?: boolean
+	reasoningEffort?: ModelInfo["reasoningEffort"]
 	supportsContextWindowConfiguration?: boolean
 	extendedContextSize?: number
 	deprecated?: boolean
@@ -89,6 +93,8 @@ function copilotModel({
 		name,
 		supportsToolCalling: true,
 		supportsReasoningEffort,
+		requiredReasoningEffort,
+		reasoningEffort,
 		supportsContextWindowConfiguration,
 		extendedContextSize: supportsContextWindowConfiguration
 			? (extendedContextSize ?? COPILOT_EXTENDED_CONTEXT_SIZE)
@@ -253,6 +259,8 @@ export const vscodeLlmModels = {
 		contextWindow: COPILOT_CLAUDE_CONTEXT_WINDOW,
 		supportsImages: true,
 		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
+		requiredReasoningEffort: true,
+		reasoningEffort: "high",
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
 	}),
@@ -350,6 +358,8 @@ export const vscodeLlmModels = {
 		contextWindow: COPILOT_GROK_CONTEXT_WINDOW,
 		supportsImages: true,
 		supportsReasoningEffort: COPILOT_CODEX_REASONING_EFFORTS,
+		requiredReasoningEffort: true,
+		reasoningEffort: "high",
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_GROK_EXTENDED_CONTEXT_SIZE,
 	}),

@@ -150,6 +150,26 @@ const mockCopilotGpt56TerraLanguageModelChat = {
 	maxInputTokens: 921_793,
 }
 
+const mockCopilotClaudeOpus5LanguageModelChat = {
+	...mockLanguageModelChat,
+	id: "copilot-claude-opus-5",
+	name: "Claude Opus 5",
+	vendor: "copilot",
+	family: "claude-opus-5",
+	version: "claude-opus-5",
+	maxInputTokens: 936_000,
+}
+
+const mockCopilotGrok46LanguageModelChat = {
+	...mockLanguageModelChat,
+	id: "copilot-grok-4.6",
+	name: "Grok 4.6",
+	vendor: "copilot",
+	family: "grok-4.6",
+	version: "grok-4.6",
+	maxInputTokens: 425_001,
+}
+
 describe("VsCodeLmHandler", () => {
 	let handler: VsCodeLmHandler
 	const defaultOptions: ApiHandlerOptions = {
@@ -1332,6 +1352,64 @@ describe("VsCodeLmHandler", () => {
 				expect.objectContaining({
 					modelOptions: { reasoningEffort: "max", contextSize: 936_000 },
 					configuration: { reasoningEffort: "max", contextSize: 936_000 },
+				}),
+				expect.anything(),
+			)
+		})
+
+		it("should pass Claude Opus 5 reasoning and context through both model option routes", async () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				enableReasoningEffort: true,
+				reasoningEffort: "max",
+				vsCodeLmContextSize: 936_000,
+			})
+			handler["client"] = mockCopilotClaudeOpus5LanguageModelChat as any
+
+			mockCopilotClaudeOpus5LanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Claude Opus 5 response")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "Think deeply" }])) {
+				// consume stream
+			}
+
+			expect(mockCopilotClaudeOpus5LanguageModelChat.sendRequest).toHaveBeenCalledWith(
+				expect.any(Array),
+				expect.objectContaining({
+					modelOptions: { reasoningEffort: "max", contextSize: 936_000 },
+					configuration: { reasoningEffort: "max", contextSize: 936_000 },
+				}),
+				expect.anything(),
+			)
+		})
+
+		it("should pass Grok 4.6 reasoning and context through both model option routes", async () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				enableReasoningEffort: true,
+				reasoningEffort: "xhigh",
+				vsCodeLmContextSize: 425_001,
+			})
+			handler["client"] = mockCopilotGrok46LanguageModelChat as any
+
+			mockCopilotGrok46LanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Grok 4.6 response")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "Think deeply" }])) {
+				// consume stream
+			}
+
+			expect(mockCopilotGrok46LanguageModelChat.sendRequest).toHaveBeenCalledWith(
+				expect.any(Array),
+				expect.objectContaining({
+					modelOptions: { reasoningEffort: "xhigh", contextSize: 425_001 },
+					configuration: { reasoningEffort: "xhigh", contextSize: 425_001 },
 				}),
 				expect.anything(),
 			)

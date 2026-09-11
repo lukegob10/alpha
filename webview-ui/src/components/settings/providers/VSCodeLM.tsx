@@ -133,6 +133,8 @@ function buildVsCodeLmModelInfo(model: VSCodeLmModel, configuredContextSize?: nu
 		supportsImages: staticInfo?.supportsImages ?? false,
 		supportsPromptCache: staticInfo?.supportsPromptCache ?? false,
 		supportsReasoningEffort: staticInfo?.supportsReasoningEffort,
+		requiredReasoningEffort: staticInfo?.requiredReasoningEffort,
+		reasoningEffort: staticInfo?.reasoningEffort,
 		// The live VS Code list is authoritative even when static retirement metadata is stale.
 		deprecated: false,
 		description: [model.name, model.vendor, model.family, model.version, model.id].filter(Boolean).join(" - "),
@@ -267,7 +269,6 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 				setApiConfigurationField("reasoningEffort", undefined)
 			} else if (
 				configuredReasoningEffort &&
-				configuredReasoningEffort !== "disable" &&
 				Array.isArray(supportsReasoningEffort) &&
 				!supportsReasoningEffort.includes(configuredReasoningEffort)
 			) {
