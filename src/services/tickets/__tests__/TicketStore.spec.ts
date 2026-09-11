@@ -20,6 +20,51 @@ describe("TicketStore", () => {
 		expect(await store.list()).toMatchObject({ tickets: [], total: 0 })
 		await expect(fs.stat(path.join(home, ".alpha"))).rejects.toMatchObject({ code: "ENOENT" })
 	})
+	it("persists classification through edits, status moves, reload, and explicit removal", async () => {
+		const created = await store.create({ name: "Classified", type: "bug" })
+		expect(await fs.readFile(await store.markdownPath(created.id), "utf8")).toContain("type: bug")
+		const moved = await store.update({ id: created.id, expectedRevision: created.revision, status: "in-progress" })
+		const reopened = await TicketStore.forWorkspace(workspace, home)
+		expect((await reopened.read(created.id)).type).toBe("bug")
+		const changed = await reopened.update({ id: moved.id, expectedRevision: moved.revision, type: "improvement" })
+		expect(changed.type).toBe("improvement")
+		await expect(store.update({ id: moved.id, expectedRevision: moved.revision, type: "feature" })).rejects.toThrow(
+			"changed",
+		)
+		const cleared = await store.update({ id: changed.id, expectedRevision: changed.revision, type: null })
+		expect((await reopened.read(cleared.id)).type).toBeNull()
+		expect((await store.list({ type: null })).tickets).toEqual([
+			expect.objectContaining({ id: cleared.id, type: null }),
+		])
+	})
+	it("keeps legacy tickets untagged without rewriting them during inspection", async () => {
+		const created = await store.create({ name: "Legacy" })
+		const file = await store.markdownPath(created.id)
+		const before = await fs.readFile(file, "utf8")
+		expect((await store.read(created.id)).type).toBeUndefined()
+		expect((await store.list({ type: null })).tickets[0].id).toBe(created.id)
+		expect(await fs.readFile(file, "utf8")).toBe(before)
+		await store.update({ id: created.id, expectedRevision: created.revision, name: "Renamed" })
+		expect((await store.read(created.id)).type).toBeUndefined()
+	})
+	it("filters classifications before pagination and combines them with search and status", async () => {
+		const bug = await store.create({ name: "Search bug", type: "bug" })
+		const active = await store.create({ name: "Search feature", type: "feature" })
+		await store.update({ id: active.id, expectedRevision: active.revision, status: "in-progress" })
+		await store.create({ name: "Other feature", type: "feature" })
+		await store.create({ name: "Search improvement", type: "improvement" })
+		expect(await store.list({ type: "feature", limit: 1, offset: 0 })).toMatchObject({
+			total: 2,
+			tickets: [{ id: active.id, type: "feature" }],
+		})
+		expect((await store.list({ type: "feature", limit: 1, offset: 1 })).tickets).toHaveLength(1)
+		expect(await store.list({ type: "bug", query: "Search", status: "backlog" })).toMatchObject({
+			total: 1,
+			tickets: [{ id: bug.id, type: "bug" }],
+		})
+		expect((await store.list({ type: "bug", status: "in-progress" })).total).toBe(0)
+		expect((await store.list()).total).toBe(4)
+	})
 	it("orders active tickets before backlog and completed tickets across pages", async () => {
 		const active = await store.create({ name: "Active" })
 		await store.update({ id: active.id, expectedRevision: active.revision, status: "in-progress" })

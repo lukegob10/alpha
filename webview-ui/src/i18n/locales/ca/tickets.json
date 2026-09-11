@@ -48,5 +48,15 @@
 	"deleteDescription": "Se suprimirà permanentment {{ticket}}. Les tasques vinculades es conservaran.",
 	"deleteAction": "Suprimeix",
 	"activityDelete": "Suprimeix el tiquet",
-	"activityDeleted": "Tiquet suprimit"
+	"activityDeleted": "Tiquet suprimit",
+	"type": "Tipus",
+	"noType": "Sense tipus",
+	"allTypes": "Tots els tipus",
+	"filterType": "Filtra per tipus",
+	"properties": "Propietats",
+	"types": {
+		"bug": "Error",
+		"feature": "Funcionalitat",
+		"improvement": "Millora"
+	}
 }

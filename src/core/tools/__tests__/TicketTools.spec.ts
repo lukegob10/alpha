@@ -73,7 +73,9 @@ describe("native tickets", () => {
 		expect(callbacks.setResultMetadata).toHaveBeenLastCalledWith({ status: "error" })
 	})
 	it.each([
-		{ name: "create_ticket" as const, args: { name: "Ticket", description: "Text" } },
+		{ name: "create_ticket" as const, args: { name: "Ticket", description: "Text", type: "bug" } },
+		{ name: "update_ticket" as const, args: { id: "PM-01", expectedRevision: "v1", type: null } },
+		{ name: "list_tickets" as const, args: { type: "feature" } },
 		{ name: "delete_ticket" as const, args: { id: "PM-01", expectedRevision: "v1" } },
 	])("preserves native $name structured arguments", ({ name, args }) => {
 		const call = NativeToolCallParser.parseToolCall({
@@ -86,6 +88,17 @@ describe("native tickets", () => {
 	})
 	it("exposes read tools in Plan while restricting writes", () => {
 		const registry = new ToolRegistry()
+		for (const name of ["create_ticket", "update_ticket", "list_tickets"] as const) {
+			expect(registry.resolve(name)?.schema).toMatchObject({
+				function: {
+					parameters: {
+						properties: {
+							type: { type: ["string", "null"], enum: ["bug", "feature", "improvement", null] },
+						},
+					},
+				},
+			})
+		}
 		for (const name of ["list_tickets", "read_ticket"] as const) {
 			expect(registry.resolve(name)?.capabilities.sideEffects).toBe("none")
 			expect(isToolAllowedForMode(name, "architect", [])).toBe(true)

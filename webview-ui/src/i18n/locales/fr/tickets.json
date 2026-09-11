@@ -48,5 +48,15 @@
 	"deleteDescription": "{{ticket}} sera supprimé définitivement. Les tâches liées seront conservées.",
 	"deleteAction": "Supprimer",
 	"activityDelete": "Supprimer le ticket",
-	"activityDeleted": "Ticket supprimé"
+	"activityDeleted": "Ticket supprimé",
+	"type": "Type",
+	"noType": "Sans type",
+	"allTypes": "Tous les types",
+	"filterType": "Filtrer par type",
+	"properties": "Propriétés",
+	"types": {
+		"bug": "Bug",
+		"feature": "Fonctionnalité",
+		"improvement": "Amélioration"
+	}
 }

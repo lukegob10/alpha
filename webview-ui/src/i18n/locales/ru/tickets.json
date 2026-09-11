@@ -48,5 +48,15 @@
 	"deleteDescription": "{{ticket}} будет удалён безвозвратно. Связанные задачи сохранятся.",
 	"deleteAction": "Удалить",
 	"activityDelete": "Удалить тикет",
-	"activityDeleted": "Тикет удалён"
+	"activityDeleted": "Тикет удалён",
+	"type": "Тип",
+	"noType": "Без типа",
+	"allTypes": "Все типы",
+	"filterType": "Фильтр по типу",
+	"properties": "Свойства",
+	"types": {
+		"bug": "Ошибка",
+		"feature": "Функция",
+		"improvement": "Улучшение"
+	}
 }

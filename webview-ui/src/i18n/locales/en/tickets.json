@@ -48,5 +48,15 @@
 	"deleteDescription": "{{ticket}} will be permanently deleted. Linked tasks will remain.",
 	"deleteAction": "Delete",
 	"activityDelete": "Delete ticket",
-	"activityDeleted": "Ticket deleted"
+	"activityDeleted": "Ticket deleted",
+	"type": "Type",
+	"noType": "No type",
+	"allTypes": "All types",
+	"filterType": "Filter by type",
+	"properties": "Properties",
+	"types": {
+		"bug": "Bug",
+		"feature": "Feature",
+		"improvement": "Improvement"
+	}
 }

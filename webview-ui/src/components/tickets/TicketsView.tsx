@@ -5,6 +5,8 @@ import {
 	ticketSchema,
 	ticketTargetSchema,
 	ticketStatusOrder,
+	ticketTypeSchema,
+	type TicketType,
 	type TicketTarget,
 	type Ticket,
 	type TicketFields,
@@ -38,12 +40,14 @@ type StoredState = {
 	draft?: Draft
 	editing?: boolean
 	query?: string
+	typeFilter?: TicketType | "untagged"
 	offset?: number
 }
 type Result = Ticket | TicketList | undefined
 
 const ticketDraft = (ticket: Ticket): Draft => ({
 	name: ticket.name,
+	type: ticket.type,
 	description: ticket.description,
 	context: ticket.context,
 	successCriteria: ticket.successCriteria,
@@ -74,6 +78,7 @@ export default function TicketsView() {
 	const [listError, setListError] = useState("")
 	const projectAvailable = projects.some((item) => item.id === project)
 	const [query, setQuery] = useState(initial?.query ?? "")
+	const [typeFilter, setTypeFilter] = useState<StoredState["typeFilter"]>(initial?.typeFilter)
 	const [offset, setOffset] = useState(initial?.offset ?? 0)
 	const [collapsedStatuses, setCollapsedStatuses] = useState<TicketStatus[]>([])
 	const [error, setError] = useState("")
@@ -162,8 +167,8 @@ export default function TicketsView() {
 	}, [])
 
 	useEffect(() => {
-		vscode.setState({ project, ticket, draft, editing, query, offset })
-	}, [project, ticket, draft, editing, query, offset])
+		vscode.setState({ project, ticket, draft, editing, query, typeFilter, offset })
+	}, [project, ticket, draft, editing, query, typeFilter, offset])
 	useLayoutEffect(() => {
 		if (page.current) page.current.scrollTop = showingDetail ? 0 : listScroll.current
 	}, [showingDetail])
@@ -173,7 +178,13 @@ export default function TicketsView() {
 		const currentSequence = ++listSequence.current
 		setListLoading(true)
 		const timer = setTimeout(() => {
-			void request({ action: "list", input: { query, offset, limit: 50 } }, project)
+			void request(
+				{
+					action: "list",
+					input: { query, type: typeFilter === "untagged" ? null : typeFilter, offset, limit: 50 },
+				},
+				project,
+			)
 				.then((result) => {
 					if (active && currentSequence === listSequence.current && result && "tickets" in result) {
 						setList(result)
@@ -194,7 +205,7 @@ export default function TicketsView() {
 			active = false
 			clearTimeout(timer)
 		}
-	}, [projectAvailable, project, query, offset, refresh, request])
+	}, [projectAvailable, project, query, typeFilter, offset, refresh, request])
 
 	const accept = (value: Result) => {
 		if (!mounted.current) return
@@ -245,6 +256,7 @@ export default function TicketsView() {
 					if (target.project !== project) {
 						setProject(target.project)
 						setQuery("")
+						setTypeFilter(undefined)
 						setOffset(0)
 						setList({ tickets: [], total: 0, invalidFiles: [] })
 						listScroll.current = 0
@@ -379,6 +391,7 @@ export default function TicketsView() {
 										setEditing(false)
 										setOffset(0)
 										setQuery("")
+										setTypeFilter(undefined)
 										setChanged(false)
 										setError("")
 										setList({ tickets: [], total: 0, invalidFiles: [] })
@@ -492,6 +505,13 @@ export default function TicketsView() {
 						loading={!projectsLoaded || (projectAvailable && listLoading)}
 						showEmpty={projectAvailable && !listLoading && !listError}
 						query={query}
+						typeFilter={typeFilter}
+						onTypeFilterChange={(value) => {
+							setTypeFilter(value)
+							setOffset(0)
+							listScroll.current = 0
+							if (page.current) page.current.scrollTop = 0
+						}}
 						offset={offset}
 						busy={busy}
 						returnToTicket={returnToTicket.current}
@@ -550,20 +570,40 @@ export default function TicketsView() {
 									onChange={(event) => setDraft({ ...draft, name: event.target.value })}
 								/>
 							</label>
-							<label>
-								{t("status")}
-								<select
-									value={draft.status}
-									onChange={(event) =>
-										setDraft({ ...draft, status: event.target.value as TicketStatus })
-									}>
-									{statuses.map((status) => (
-										<option key={status} value={status}>
-											{t(status)}
-										</option>
-									))}
-								</select>
-							</label>
+							<div className="ticket-editor-properties">
+								<label>
+									{t("status")}
+									<select
+										value={draft.status}
+										onChange={(event) =>
+											setDraft({ ...draft, status: event.target.value as TicketStatus })
+										}>
+										{statuses.map((status) => (
+											<option key={status} value={status}>
+												{t(status)}
+											</option>
+										))}
+									</select>
+								</label>
+								<label>
+									{t("type")}
+									<select
+										value={draft.type ?? ""}
+										onChange={(event) =>
+											setDraft({
+												...draft,
+												type: ticketTypeSchema.safeParse(event.target.value).data ?? null,
+											})
+										}>
+										<option value="">{t("noType")}</option>
+										{ticketTypeSchema.options.map((type) => (
+											<option key={type} value={type}>
+												{t(`types.${type}`)}
+											</option>
+										))}
+									</select>
+								</label>
+							</div>
 							{ticket && (
 								<div className="ticket-dates">
 									<span>

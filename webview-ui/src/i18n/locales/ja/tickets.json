@@ -48,5 +48,15 @@
 	"deleteDescription": "{{ticket}} は完全に削除されます。リンクされたタスクは保持されます。",
 	"deleteAction": "削除",
 	"activityDelete": "チケットを削除",
-	"activityDeleted": "チケットを削除しました"
+	"activityDeleted": "チケットを削除しました",
+	"type": "種類",
+	"noType": "種類なし",
+	"allTypes": "すべての種類",
+	"filterType": "種類で絞り込む",
+	"properties": "プロパティ",
+	"types": {
+		"bug": "バグ",
+		"feature": "機能",
+		"improvement": "改善"
+	}
 }

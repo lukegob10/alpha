@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest"
 import {
 	createTicketSchema,
+	listTicketsSchema,
+	ticketTypeSchema,
 	deleteTicketSchema,
 	updateTicketSchema,
 	ticketRequestSchema,
@@ -13,6 +15,19 @@ import {
 } from "../ticket.js"
 
 describe("ticket wire contracts", () => {
+	it("accepts optional ticket classifications and explicit removal across mutations and filters", () => {
+		for (const type of [...ticketTypeSchema.options, null]) {
+			expect(createTicketSchema.parse({ name: "Ticket", type })).toEqual({ name: "Ticket", type })
+			expect(updateTicketSchema.parse({ id: "PM-01", expectedRevision: "v1", type }).type).toBe(type)
+			expect(listTicketsSchema.parse({ type }).type).toBe(type)
+		}
+		expect(listTicketsSchema.parse({}).type).toBeUndefined()
+		for (const type of ["task", "Bug", ["bug"], 1]) {
+			expect(createTicketSchema.safeParse({ name: "Ticket", type }).success).toBe(false)
+			expect(updateTicketSchema.safeParse({ id: "PM-01", expectedRevision: "v1", type }).success).toBe(false)
+			expect(listTicketsSchema.safeParse({ type }).success).toBe(false)
+		}
+	})
 	it("validates ticket navigation identities and bounded search messages", () => {
 		const target = { project: "project-hash", id: "a97392fe-59bf-4f80-8a10-51b2cb62a38f" }
 		expect(ticketTargetSchema.parse(target)).toEqual(target)

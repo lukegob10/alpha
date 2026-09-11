@@ -48,5 +48,15 @@
 	"deleteDescription": "{{ticket}} sẽ bị xóa vĩnh viễn. Các tác vụ được liên kết vẫn được giữ lại.",
 	"deleteAction": "Xóa",
 	"activityDelete": "Xóa phiếu",
-	"activityDeleted": "Đã xóa phiếu"
+	"activityDeleted": "Đã xóa phiếu",
+	"type": "Loại",
+	"noType": "Chưa phân loại",
+	"allTypes": "Tất cả các loại",
+	"filterType": "Lọc theo loại",
+	"properties": "Thuộc tính",
+	"types": {
+		"bug": "Lỗi",
+		"feature": "Tính năng",
+		"improvement": "Cải tiến"
+	}
 }

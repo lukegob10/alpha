@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 export const ticketStatusSchema = z.enum(["backlog", "in-progress", "complete"])
+export const ticketTypeSchema = z.enum(["bug", "feature", "improvement"])
 export const ticketIdSchema = z.string().uuid()
 export const ticketReferenceSchema = z
 	.string()
@@ -23,6 +24,8 @@ export const ticketLocatorSchema = z
 const section = z.string().max(16000)
 export const ticketFieldsSchema = z.object({
 	name: z.string().trim().min(1).max(200),
+	// Omitted in legacy tickets; null explicitly removes an existing classification.
+	type: ticketTypeSchema.nullable().optional(),
 	description: section,
 	context: section,
 	successCriteria: section,
@@ -54,6 +57,7 @@ export const listTicketsSchema = z
 		query: z.string().max(200).optional(),
 		status: ticketStatusSchema.optional(),
 		offset: z.number().int().min(0).default(0),
+		type: ticketTypeSchema.nullable().optional(),
 		limit: z.number().int().min(1).max(100).default(50),
 	})
 	.strict()
@@ -63,6 +67,7 @@ export type CreateTicket = z.infer<typeof createTicketSchema>
 export type DeleteTicket = z.infer<typeof deleteTicketSchema>
 export type UpdateTicket = z.infer<typeof updateTicketSchema>
 export type TicketStatus = z.infer<typeof ticketStatusSchema>
+export type TicketType = z.infer<typeof ticketTypeSchema>
 export const ticketStatusOrder: TicketStatus[] = ["in-progress", "backlog", "complete"]
 export const ticketTargetSchema = z.object({ project: z.string().min(1).max(200), id: ticketIdSchema }).strict()
 export type TicketTarget = z.infer<typeof ticketTargetSchema>
@@ -75,7 +80,7 @@ export const ticketSearchResponseSchema = z.object({
 	type: z.literal("ticketSearchResults"),
 	requestId: z.string(),
 	tickets: z
-		.array(ticketSchema.pick({ id: true, reference: true, name: true, status: true, updatedAt: true }))
+		.array(ticketSchema.pick({ id: true, reference: true, name: true, status: true, type: true, updatedAt: true }))
 		.max(50),
 	error: z.boolean().optional(),
 })
@@ -113,7 +118,7 @@ export const ticketActivitySchema = z.discriminatedUnion("operation", [
 	}),
 ])
 export type TicketActivity = z.infer<typeof ticketActivitySchema>
-export type TicketSummary = Pick<Ticket, "id" | "reference" | "name" | "status" | "updatedAt">
+export type TicketSummary = Pick<Ticket, "id" | "reference" | "name" | "status" | "type" | "updatedAt">
 export interface TicketList {
 	tickets: TicketSummary[]
 	total: number

@@ -48,5 +48,15 @@
 	"deleteDescription": "{{ticket}} wird dauerhaft gelöscht. Verknüpfte Aufgaben bleiben erhalten.",
 	"deleteAction": "Löschen",
 	"activityDelete": "Ticket löschen",
-	"activityDeleted": "Ticket gelöscht"
+	"activityDeleted": "Ticket gelöscht",
+	"type": "Typ",
+	"noType": "Kein Typ",
+	"allTypes": "Alle Typen",
+	"filterType": "Nach Typ filtern",
+	"properties": "Eigenschaften",
+	"types": {
+		"bug": "Fehler",
+		"feature": "Funktion",
+		"improvement": "Verbesserung"
+	}
 }

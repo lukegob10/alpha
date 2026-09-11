@@ -48,5 +48,15 @@
 	"deleteDescription": "{{ticket}} kalıcı olarak silinecek. Bağlantılı görevler korunacak.",
 	"deleteAction": "Sil",
 	"activityDelete": "Bileti sil",
-	"activityDeleted": "Bilet silindi"
+	"activityDeleted": "Bilet silindi",
+	"type": "Tür",
+	"noType": "Tür yok",
+	"allTypes": "Tüm türler",
+	"filterType": "Türe göre filtrele",
+	"properties": "Özellikler",
+	"types": {
+		"bug": "Hata",
+		"feature": "Yeni özellik",
+		"improvement": "İyileştirme"
+	}
 }

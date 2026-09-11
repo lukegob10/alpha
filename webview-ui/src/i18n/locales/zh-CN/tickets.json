@@ -48,5 +48,15 @@
 	"deleteDescription": "{{ticket}} 将被永久删除。关联任务将保留。",
 	"deleteAction": "删除",
 	"activityDelete": "删除工单",
-	"activityDeleted": "工单已删除"
+	"activityDeleted": "工单已删除",
+	"type": "类型",
+	"noType": "无类型",
+	"allTypes": "所有类型",
+	"filterType": "按类型筛选",
+	"properties": "属性",
+	"types": {
+		"bug": "缺陷",
+		"feature": "功能",
+		"improvement": "改进"
+	}
 }

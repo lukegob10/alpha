@@ -48,5 +48,15 @@
 	"deleteDescription": "{{ticket}} akan dihapus secara permanen. Tugas tertaut akan tetap ada.",
 	"deleteAction": "Hapus",
 	"activityDelete": "Hapus tiket",
-	"activityDeleted": "Tiket dihapus"
+	"activityDeleted": "Tiket dihapus",
+	"type": "Jenis",
+	"noType": "Tanpa jenis",
+	"allTypes": "Semua jenis",
+	"filterType": "Filter menurut jenis",
+	"properties": "Properti",
+	"types": {
+		"bug": "Bug",
+		"feature": "Fitur",
+		"improvement": "Peningkatan"
+	}
 }

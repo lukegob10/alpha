@@ -48,5 +48,15 @@
 	"deleteDescription": "{{ticket}} स्थायी रूप से हटा दिया जाएगा। जुड़े हुए कार्य बने रहेंगे।",
 	"deleteAction": "हटाएँ",
 	"activityDelete": "टिकट हटाएँ",
-	"activityDeleted": "टिकट हटा दिया गया"
+	"activityDeleted": "टिकट हटा दिया गया",
+	"type": "प्रकार",
+	"noType": "कोई प्रकार नहीं",
+	"allTypes": "सभी प्रकार",
+	"filterType": "प्रकार के अनुसार फ़िल्टर करें",
+	"properties": "गुण",
+	"types": {
+		"bug": "बग",
+		"feature": "सुविधा",
+		"improvement": "सुधार"
+	}
 }

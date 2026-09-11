@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 import type { TicketList, TicketStatus } from "@alpha-code/types"
 import { TicketListView } from "../TicketListView"
@@ -28,6 +28,8 @@ function List({
 		<TicketListView
 			list={data}
 			query=""
+			typeFilter={undefined}
+			onTypeFilterChange={() => {}}
 			offset={0}
 			busy={false}
 			returnToTicket={returnToTicket}
@@ -45,6 +47,13 @@ function List({
 }
 
 describe("ticket status sections", () => {
+	it("shows classification labels on rows and leaves legacy rows untagged", () => {
+		render(<List data={{ ...list, tickets: [{ ...list.tickets[0], type: "bug" }, list.tickets[1]] }} />)
+		expect(within(screen.getByRole("button", { name: /Active ticket/ })).getByText("types.bug")).toBeVisible()
+		expect(
+			within(screen.getByRole("button", { name: /Backlog ticket/ })).queryByText("types.bug"),
+		).not.toBeInTheDocument()
+	})
 	it("keeps all three headings visible when the collection is empty", () => {
 		render(<List data={{ tickets: [], total: 0, invalidFiles: [] }} />)
 		expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([

@@ -1,11 +1,20 @@
 import { useEffect, useRef } from "react"
 import { ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, Search, Ticket as TicketIcon } from "lucide-react"
 import { useTranslation } from "react-i18next"
-import { ticketStatusOrder, type TicketList, type TicketStatus } from "@alpha-code/types"
+import {
+	ticketStatusOrder,
+	ticketTypeSchema,
+	type TicketList,
+	type TicketStatus,
+	type TicketType,
+} from "@alpha-code/types"
+import { TicketTypeBadge } from "./TicketTypeBadge"
 
 interface TicketListViewProps {
 	list: TicketList
 	query: string
+	typeFilter: TicketType | "untagged" | undefined
+	onTypeFilterChange: (type: TicketType | "untagged" | undefined) => void
 	offset: number
 	busy: boolean
 	loading?: boolean
@@ -23,6 +32,8 @@ const statusIcons = { backlog: Circle, "in-progress": CircleDot, complete: Circl
 export function TicketListView({
 	list,
 	query,
+	typeFilter,
+	onTypeFilterChange,
 	offset,
 	busy,
 	loading = false,
@@ -48,15 +59,32 @@ export function TicketListView({
 					<h1 id="tickets-heading">{t("title")}</h1>
 					<span className="ticket-count">{list.total}</span>
 				</div>
-				<div className="tickets-search">
-					<Search size={15} aria-hidden="true" />
-					<input
-						ref={search}
-						aria-label={t("search")}
-						placeholder={t("search")}
-						value={query}
-						onChange={(event) => onQueryChange(event.target.value)}
-					/>
+				<div className="tickets-list-filters">
+					<select
+						aria-label={t("filterType")}
+						value={typeFilter ?? ""}
+						onChange={(event) => {
+							const value = event.target.value
+							onTypeFilterChange(value === "untagged" ? value : ticketTypeSchema.safeParse(value).data)
+						}}>
+						<option value="">{t("allTypes")}</option>
+						{ticketTypeSchema.options.map((type) => (
+							<option key={type} value={type}>
+								{t(`types.${type}`)}
+							</option>
+						))}
+						<option value="untagged">{t("noType")}</option>
+					</select>
+					<div className="tickets-search">
+						<Search size={15} aria-hidden="true" />
+						<input
+							ref={search}
+							aria-label={t("search")}
+							placeholder={t("search")}
+							value={query}
+							onChange={(event) => onQueryChange(event.target.value)}
+						/>
+					</div>
 				</div>
 			</header>
 			{ticketStatusOrder.map((status) => {
@@ -90,18 +118,21 @@ export function TicketListView({
 									<button
 										ref={!collapsed && returnToTicket === item.id ? selectedRow : undefined}
 										className="ticket-row"
+										data-status={item.status}
 										disabled={busy}
 										onClick={() => onOpen(item.id)}>
 										<StatusIcon size={15} aria-hidden="true" />
 										{item.reference && <span className="ticket-reference">{item.reference}</span>}
-										<span className="ticket-row-name">{item.name}</span>
+										<span className="ticket-row-name" title={item.name}>
+											{item.name}
+										</span>
+										{item.type && <TicketTypeBadge type={item.type} />}
 										<time
 											dateTime={item.updatedAt}
 											title={`${t("updated")} ${new Date(item.updatedAt).toLocaleString()}`}>
 											{new Date(item.updatedAt).toLocaleDateString(undefined, {
 												month: "short",
 												day: "numeric",
-												year: "numeric",
 											})}
 										</time>
 										<ChevronRight size={14} className="ticket-row-chevron" aria-hidden="true" />

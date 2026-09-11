@@ -48,5 +48,15 @@
 	"deleteDescription": "{{ticket}} será excluído permanentemente. As tarefas vinculadas serão mantidas.",
 	"deleteAction": "Excluir",
 	"activityDelete": "Excluir ticket",
-	"activityDeleted": "Ticket excluído"
+	"activityDeleted": "Ticket excluído",
+	"type": "Tipo",
+	"noType": "Sem tipo",
+	"allTypes": "Todos os tipos",
+	"filterType": "Filtrar por tipo",
+	"properties": "Propriedades",
+	"types": {
+		"bug": "Bug",
+		"feature": "Funcionalidade",
+		"improvement": "Melhoria"
+	}
 }

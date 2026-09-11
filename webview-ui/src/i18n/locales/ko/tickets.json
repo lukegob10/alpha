@@ -48,5 +48,15 @@
 	"deleteDescription": "{{ticket}}이(가) 영구적으로 삭제됩니다. 연결된 작업은 유지됩니다.",
 	"deleteAction": "삭제",
 	"activityDelete": "티켓 삭제",
-	"activityDeleted": "티켓이 삭제되었습니다"
+	"activityDeleted": "티켓이 삭제되었습니다",
+	"type": "유형",
+	"noType": "유형 없음",
+	"allTypes": "모든 유형",
+	"filterType": "유형별 필터",
+	"properties": "속성",
+	"types": {
+		"bug": "버그",
+		"feature": "기능",
+		"improvement": "개선"
+	}
 }

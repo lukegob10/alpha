@@ -1,7 +1,15 @@
 import type OpenAI from "openai"
+import { ticketTypeSchema } from "@alpha-code/types"
+
+const ticketType = {
+	type: ["string", "null"],
+	enum: [...ticketTypeSchema.options, null],
+	description: "Ticket classification: bug, feature, or improvement. Use null for no type.",
+}
 
 const fields = {
 	name: { type: "string", description: "Ticket name (1–200 characters)." },
+	type: ticketType,
 	description: { type: "string" },
 	context: { type: "string" },
 	successCriteria: { type: "string" },
@@ -23,6 +31,10 @@ export const ticketTools = [
 		{
 			query: { type: "string" },
 			status: { type: "string", enum: ["backlog", "in-progress", "complete"] },
+			type: {
+				...ticketType,
+				description: "Filter by classification; null finds untagged tickets. Omit for all types.",
+			},
 			offset: { type: "integer", minimum: 0 },
 			limit: { type: "integer", minimum: 1, maximum: 100 },
 		},

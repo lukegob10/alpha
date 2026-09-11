@@ -381,6 +381,7 @@ export class TicketStore {
 				.filter(
 					(ticket) =>
 						(!filter.status || ticket.status === filter.status) &&
+						(filter.type === undefined || (ticket.type ?? null) === filter.type) &&
 						(reference
 							? ticket.reference === reference
 							: terms.every((term) =>
@@ -399,7 +400,14 @@ export class TicketStore {
 			return {
 				tickets: matches
 					.slice(filter.offset, filter.offset + filter.limit)
-					.map(({ id, reference, name, status, updatedAt }) => ({ id, reference, name, status, updatedAt })),
+					.map(({ id, reference, name, status, type, updatedAt }) => ({
+						id,
+						reference,
+						name,
+						status,
+						type,
+						updatedAt,
+					})),
 				total: matches.length,
 				invalidFiles: invalidFiles.slice(0, 100),
 			}

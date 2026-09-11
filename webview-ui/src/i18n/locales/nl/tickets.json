@@ -48,5 +48,15 @@
 	"deleteDescription": "{{ticket}} wordt permanent verwijderd. Gekoppelde taken blijven behouden.",
 	"deleteAction": "Verwijderen",
 	"activityDelete": "Ticket verwijderen",
-	"activityDeleted": "Ticket verwijderd"
+	"activityDeleted": "Ticket verwijderd",
+	"type": "Type",
+	"noType": "Geen type",
+	"allTypes": "Alle typen",
+	"filterType": "Filteren op type",
+	"properties": "Eigenschappen",
+	"types": {
+		"bug": "Bug",
+		"feature": "Functionaliteit",
+		"improvement": "Verbetering"
+	}
 }

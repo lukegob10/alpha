@@ -388,6 +388,7 @@ describe("ticket editor", () => {
 		fireEvent.click(screen.getByRole("button", { name: "edit" }))
 		reply({ type: "ticketProjects", projects: [{ id: "project", name: "Project" }], language: "en" })
 		fireEvent.change(screen.getByLabelText("name"), { target: { value: "My draft" } })
+		fireEvent.change(screen.getByLabelText("type"), { target: { value: "improvement" } })
 		reply({ type: "ticketChanged", project: "project" })
 		expect(screen.getByLabelText("name")).toHaveValue("My draft")
 		fireEvent.click(screen.getByText("save"))
@@ -395,10 +396,85 @@ describe("ticket editor", () => {
 			.mocked(vscode.postTicketMessage)
 			.mock.calls.map(([value]) => value)
 			.find((value) => value.type === "ticketRequest" && value.operation.action === "update") as TicketRequest
-		expect(request.operation).toMatchObject({ input: { name: "My draft", expectedRevision: "v1" } })
+		expect(request.operation).toMatchObject({
+			input: { name: "My draft", type: "improvement", expectedRevision: "v1" },
+		})
 		reply({ type: "ticketResponse", requestId: request.requestId, error: "Ticket changed" })
 		await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Ticket changed"))
 		expect(screen.getByLabelText("name")).toHaveValue("My draft")
+		expect(screen.getByLabelText("type")).toHaveValue("improvement")
+	})
+
+	it("saves and removes a classification and displays the saved type in properties", async () => {
+		render(<TicketsView />)
+		expect(within(screen.getByRole("complementary", { name: "properties" })).getByText("noType")).toBeVisible()
+		fireEvent.click(screen.getByRole("button", { name: "edit" }))
+		expect(screen.getByRole("button", { name: "save" })).toBeDisabled()
+		fireEvent.change(screen.getByLabelText("type"), { target: { value: "bug" } })
+		fireEvent.click(screen.getByRole("button", { name: "save" }))
+		expect(requests("update")[0].operation).toMatchObject({ input: { type: "bug", expectedRevision: "v1" } })
+		reply({
+			type: "ticketResponse",
+			requestId: requests("update")[0].requestId,
+			result: { ...ticket, type: "bug", revision: "v2" },
+		})
+		await screen.findByRole("article")
+		expect(within(screen.getByRole("complementary")).getByText("types.bug")).toBeVisible()
+		fireEvent.click(screen.getByRole("button", { name: "edit" }))
+		expect(screen.getByLabelText("type")).toHaveValue("bug")
+		fireEvent.change(screen.getByLabelText("type"), { target: { value: "" } })
+		fireEvent.click(screen.getByRole("button", { name: "save" }))
+		expect(requests("update")[1].operation).toMatchObject({ input: { type: null, expectedRevision: "v2" } })
+		reply({
+			type: "ticketResponse",
+			requestId: requests("update")[1].requestId,
+			result: { ...ticket, type: null, revision: "v3" },
+		})
+		await screen.findByRole("article")
+		expect(within(screen.getByRole("complementary")).getByText("noType")).toBeVisible()
+	})
+
+	it("includes the type when creating a ticket", () => {
+		render(<TicketsView />)
+		fireEvent.click(screen.getByRole("button", { name: "new" }))
+		fireEvent.change(screen.getByLabelText("name"), { target: { value: "New feature" } })
+		fireEvent.change(screen.getByLabelText("type"), { target: { value: "feature" } })
+		fireEvent.click(screen.getByRole("button", { name: "save" }))
+		expect(requests("create")[0].operation).toMatchObject({ input: { name: "New feature", type: "feature" } })
+	})
+
+	it("restores type filters, resets pagination on changes, and preserves filters through navigation", async () => {
+		vi.useFakeTimers()
+		vi.mocked(vscode.getState).mockReturnValue({ project: "project", typeFilter: "bug", offset: 50 })
+		vi.mocked(vscode.postTicketMessage).mockImplementation(announceProjects)
+		render(<TicketsView />)
+		expect(screen.getByLabelText("filterType")).toHaveValue("bug")
+		await act(() => vi.advanceTimersByTimeAsync(150))
+		expect(requests("list").at(-1)?.operation).toMatchObject({ input: { type: "bug", offset: 50 } })
+		fireEvent.change(screen.getByLabelText("filterType"), { target: { value: "feature" } })
+		await act(() => vi.advanceTimersByTimeAsync(150))
+		expect(requests("list").at(-1)?.operation).toMatchObject({ input: { type: "feature", offset: 0 } })
+		reply({
+			type: "ticketResponse",
+			requestId: requests("list").at(-1)!.requestId,
+			result: { tickets: [{ ...ticket, type: "feature" }], total: 1, invalidFiles: [] },
+		})
+		await act(async () => {})
+		fireEvent.click(screen.getByRole("button", { name: /Original/ }))
+		reply({
+			type: "ticketResponse",
+			requestId: requests("read").at(-1)!.requestId,
+			result: { ...ticket, type: "feature" },
+		})
+		await act(async () => {})
+		fireEvent.click(within(screen.getByRole("navigation")).getByRole("button", { name: "title" }))
+		expect(screen.getByLabelText("filterType")).toHaveValue("feature")
+		fireEvent.change(screen.getByLabelText("filterType"), { target: { value: "untagged" } })
+		await act(() => vi.advanceTimersByTimeAsync(150))
+		expect(requests("list").at(-1)?.operation).toMatchObject({ input: { type: null, offset: 0 } })
+		fireEvent.change(screen.getByLabelText("filterType"), { target: { value: "" } })
+		await act(() => vi.advanceTimersByTimeAsync(150))
+		expect(requests("list").at(-1)?.operation).toMatchObject({ input: { type: undefined, offset: 0 } })
 	})
 
 	it("asks before discarding a dirty ticket to create another", () => {

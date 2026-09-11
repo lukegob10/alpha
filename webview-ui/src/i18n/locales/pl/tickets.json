@@ -48,5 +48,15 @@
 	"deleteDescription": "{{ticket}} zostanie trwale usunięte. Powiązane zadania zostaną zachowane.",
 	"deleteAction": "Usuń",
 	"activityDelete": "Usuń zgłoszenie",
-	"activityDeleted": "Zgłoszenie usunięte"
+	"activityDeleted": "Zgłoszenie usunięte",
+	"type": "Typ",
+	"noType": "Bez typu",
+	"allTypes": "Wszystkie typy",
+	"filterType": "Filtruj według typu",
+	"properties": "Właściwości",
+	"types": {
+		"bug": "Błąd",
+		"feature": "Funkcja",
+		"improvement": "Ulepszenie"
+	}
 }

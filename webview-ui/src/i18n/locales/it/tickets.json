@@ -48,5 +48,15 @@
 	"deleteDescription": "{{ticket}} verrà eliminato definitivamente. Le attività collegate verranno conservate.",
 	"deleteAction": "Elimina",
 	"activityDelete": "Elimina ticket",
-	"activityDeleted": "Ticket eliminato"
+	"activityDeleted": "Ticket eliminato",
+	"type": "Tipo",
+	"noType": "Nessun tipo",
+	"allTypes": "Tutti i tipi",
+	"filterType": "Filtra per tipo",
+	"properties": "Proprietà",
+	"types": {
+		"bug": "Bug",
+		"feature": "Funzionalità",
+		"improvement": "Miglioramento"
+	}
 }
