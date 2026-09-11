@@ -289,7 +289,9 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		}
 	}
 
-	async start(prompt: WorkflowPromptName): Promise<string> {
+	async start(prompt: WorkflowPromptName, options?: { autoApprovalEnabled?: boolean }): Promise<string> {
+		if (options?.autoApprovalEnabled !== undefined)
+			this.configuration.autoApprovalEnabled = options.autoApprovalEnabled
 		this.activePrompt = prompt
 		this.scripted?.setPhase(prompt)
 		// Policy stays explicit across reloads and never derives from the selected model.

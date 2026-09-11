@@ -5,14 +5,14 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
-	"inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-base font-medium transition-[color,background-color,border-color,box-shadow,transform,opacity] duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder disabled:pointer-events-none disabled:opacity-40 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 cursor-pointer active:translate-y-px active:opacity-90",
+	"inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-base font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder disabled:pointer-events-none disabled:opacity-40 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 cursor-pointer active:opacity-90",
 	{
 		variants: {
 			variant: {
 				primary:
-					"bg-[var(--alpha-accent)] text-[var(--alpha-accent-contrast)] shadow-[var(--shadow-accent)] hover:bg-[var(--alpha-accent-hover)]",
+					"border border-[var(--vscode-contrastBorder,transparent)] bg-[var(--control-primary-background)] text-[var(--control-primary-foreground)] hover:opacity-90",
 				secondary:
-					"border border-[var(--border-subtle)] bg-[var(--surface-raised)] text-secondary-foreground shadow-sm hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)]",
+					"border border-[var(--border-subtle)] bg-[var(--surface-raised)] text-vscode-foreground hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)]",
 				ghost: "hover:bg-[var(--alpha-accent-soft)] hover:text-foreground",
 				destructive: "bg-destructive text-destructive-foreground hover:bg-destructive/90",
 				outline:

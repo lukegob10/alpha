@@ -32,7 +32,7 @@ test("a paused real stream preserves parts and opaque state after release", asyn
 })
 
 test("error and empty faults consume genuine parts and close the source", async () => {
-	for (const kind of ["error", "empty"] as const) {
+	for (const kind of ["error", "empty", "no-choices"] as const) {
 		const fault = new LiveResponseFaultController()
 		fault.arm(kind)
 		let closed = false
@@ -47,6 +47,8 @@ test("error and empty faults consume genuine parts and close the source", async 
 		}
 		const wrapped = fault.wrap(response) as typeof response
 		if (kind === "error") await assert.rejects(wrapped.stream.next(), /transport interruption/)
+		else if (kind === "no-choices")
+			await assert.rejects(wrapped.stream.next(), /^Error: Response contained no choices\.$/)
 		else assert.deepEqual(await wrapped.stream.next(), { value: undefined, done: true })
 		assert.equal(fault.observedParts, 1)
 		assert.equal(closed, true)

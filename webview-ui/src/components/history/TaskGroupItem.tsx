@@ -57,8 +57,8 @@ const TaskGroupItem = ({
 			data-testid={`task-group-${parent.id}`}
 			data-state={hasSubtasks && isExpanded ? "expanded" : "collapsed"}
 			className={cn(
-				"surface-raised overflow-hidden rounded-2xl transition-[border-color,box-shadow] duration-150 hover:border-[var(--border-accent)] hover:shadow-[var(--shadow-accent)]",
-				hasSubtasks && isExpanded && "border-[var(--border-accent)] shadow-[var(--shadow-accent)]",
+				"surface-raised overflow-hidden rounded-2xl transition-[border-color,box-shadow] duration-150 hover:border-[var(--border-accent)]",
+				hasSubtasks && isExpanded && "border-[var(--border-accent)]",
 				className,
 			)}>
 			{/* Parent task */}

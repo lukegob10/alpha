@@ -96,6 +96,9 @@ const provider = {
 			if (scenario === "error-recovery" && requestIndex === 0) {
 				throw new Error("Deterministic VS Code LM transport failure")
 			}
+			if (scenario === "no-choices-recovery" && requestIndex === 0) {
+				throw new Error("Response contained no choices.")
+			}
 			if (!(await waitForRelease(requestIndex, token))) return
 
 			if (scenario === "tool-followup" && requestIndex === 0) {

@@ -1,4 +1,7 @@
 {
+	"activityTrace": {
+		"workedFor": "Время работы: {{duration}}"
+	},
 	"completionReport": "Итоговый отчёт",
 	"greeting": "Добро пожаловать в Alpha",
 	"task": {
@@ -31,7 +34,9 @@
 	"unpin": "Открепить",
 	"pin": "Закрепить",
 	"fileChangesInConversation": {
-		"header": "{{count}} файл(ов) изменено в этом разговоре"
+		"header": "Изменено файлов: {{count}}",
+		"linesChanged": "Добавлено строк: {{added}}, удалено строк: {{removed}}",
+		"openFile": "Открыть файл: {{path}}"
 	},
 	"retry": {
 		"title": "Повторить",
@@ -221,6 +226,7 @@
 	},
 	"commandOutput": "Вывод команды",
 	"commandExecution": {
+		"command": "Команда",
 		"running": "Выполняется",
 		"abort": "Прервать",
 		"pid": "PID: {{pid}}",

@@ -1,4 +1,7 @@
 {
+	"activityTrace": {
+		"workedFor": "工作用時 {{duration}}"
+	},
 	"completionReport": "完成報告",
 	"greeting": "歡迎使用 Alpha！",
 	"task": {
@@ -31,7 +34,9 @@
 	"unpin": "取消釘選",
 	"pin": "釘選",
 	"fileChangesInConversation": {
-		"header": "此對話中已變更 {{count}} 個檔案"
+		"header": "已編輯檔案：{{count}}",
+		"linesChanged": "新增 {{added}} 行，刪除 {{removed}} 行",
+		"openFile": "開啟檔案：{{path}}"
 	},
 	"retry": {
 		"title": "重試",
@@ -272,6 +277,7 @@
 	},
 	"commandOutput": "命令輸出",
 	"commandExecution": {
+		"command": "命令",
 		"abort": "中止",
 		"running": "執行中",
 		"pid": "PID: {{pid}}",

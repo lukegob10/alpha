@@ -6,7 +6,7 @@ import { RooCodeEventName, type RooCodeSettings } from "@alpha-code/types"
 import { setDefaultSuiteTimeout } from "./test-utils"
 import { sleep, waitFor } from "./utils"
 
-type FixtureScenario = "tool-followup" | "cancellation" | "error-recovery" | "completion"
+type FixtureScenario = "tool-followup" | "cancellation" | "error-recovery" | "no-choices-recovery" | "completion"
 
 interface FixturePart {
 	kind: "tool_call" | "tool_result" | "text" | "unknown"
@@ -228,6 +228,27 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 			fixture.releaseAll()
 			await responseIterator?.return?.()
 			cancellation.dispose()
+		}
+	})
+
+	test("recovers no-choices without Continue while tool auto-approval is disabled", async () => {
+		const provider = getHostProvider()
+		fixture.reset("no-choices-recovery")
+		let completedCount = 0
+		const onTaskCompleted = () => completedCount++
+		globalThis.api.on(RooCodeEventName.TaskCompleted, onTaskCompleted)
+		try {
+			const taskId = await globalThis.api.startNewTask({
+				configuration: { ...createConfiguration(), autoApprovalEnabled: false },
+				text: "Recover this empty response and finish the same task.",
+			})
+			await waitForRequestCount(provider, fixture, taskId, 2)
+			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 1)
+			assert.equal(fixture.getRequests().length, 2)
+			assert.ok(!provider.getLiveTask(taskId)?.clineMessages?.some(({ ask }) => ask === "api_req_failed"))
+			assert.deepStrictEqual(fixture.getRequests()[1]!.messages, fixture.getRequests()[0]!.messages)
+		} finally {
+			globalThis.api.off(RooCodeEventName.TaskCompleted, onTaskCompleted)
 		}
 	})
 

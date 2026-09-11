@@ -1,6 +1,6 @@
 import { WorkflowFailure } from "./contracts"
 
-export type LiveResponseFault = "pause" | "error" | "empty"
+export type LiveResponseFault = "pause" | "error" | "empty" | "no-choices"
 
 /** Test-only interception after a real model response. No replacement model output is synthesized. */
 export class LiveResponseFaultController {
@@ -53,6 +53,7 @@ export class LiveResponseFaultController {
 				this.injected = true
 				this.signalInjected()
 				if (fault === "error") throw new Error("Alpha live test injected a transport interruption")
+				if (fault === "no-choices") throw new Error("Response contained no choices.")
 				if (fault === "pause" && !this.released)
 					await new Promise<void>((resolve) => {
 						this.releasePause = resolve

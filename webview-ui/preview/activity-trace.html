@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Alpha · Extension visual preview</title>
+		<style>
+			:root {
+				color-scheme: dark;
+				--vscode-font-family: "Segoe UI", sans-serif;
+				--vscode-font-size: 13px;
+				--vscode-foreground: #ddd;
+				--vscode-editor-foreground: #eee;
+				--vscode-charts-purple: #5552cc;
+				--vscode-charts-red: #f48771;
+				--vscode-charts-blue: #70bfff;
+				--vscode-textPreformat-background: #303030;
+				--vscode-textPreformat-foreground: #eee;
+				--vscode-descriptionForeground: #a0a0a0;
+				--vscode-editor-background: #181818;
+				--vscode-sideBar-background: #181818;
+				--vscode-panel-border: #383838;
+				--vscode-focusBorder: #007fd4;
+				--vscode-list-hoverBackground: #252525;
+				--vscode-input-background: #222;
+				--vscode-input-foreground: #eee;
+				--vscode-input-border: #444;
+				--vscode-editor-font-size: 12px;
+				--vscode-editor-font-family: Consolas, monospace;
+				--vscode-terminal-background: #101010;
+				--vscode-terminal-foreground: #ddd;
+				--vscode-button-background: #086db6;
+				--vscode-button-foreground: #fff;
+				--vscode-button-secondaryBackground: #303030;
+				--vscode-button-secondaryForeground: #ddd;
+				--vscode-dropdown-background: #222;
+				--vscode-dropdown-foreground: #ddd;
+				--vscode-dropdown-border: #444;
+				--vscode-charts-green: #73c991;
+				--vscode-errorForeground: #f48771;
+				--vscode-textLink-foreground: #70bfff;
+			}
+			:root[data-theme="light"] {
+				color-scheme: light;
+				--vscode-editor-background: #fff;
+				--vscode-editor-foreground: #242424;
+				--vscode-foreground: #242424;
+				--vscode-descriptionForeground: #606060;
+				--vscode-panel-border: #e2e2e2;
+				--vscode-list-hoverBackground: #ededed;
+				--vscode-input-background: #f5f5f5;
+				--vscode-input-foreground: #242424;
+				--vscode-dropdown-foreground: #242424;
+				--vscode-dropdown-background: #fff;
+				--vscode-dropdown-border: #ddd;
+				--vscode-charts-green: #19733e;
+				--vscode-charts-red: #c42b1c;
+				--vscode-textPreformat-background: #eee;
+				--vscode-textPreformat-foreground: #242424;
+				--vscode-textLink-foreground: #3158b4;
+			}
+			:root[data-theme="contrast"] {
+				--vscode-editor-background: #000;
+				--vscode-foreground: #fff;
+				--vscode-editor-foreground: #fff;
+				--vscode-descriptionForeground: #fff;
+				--vscode-panel-border: #fff;
+				--vscode-contrastBorder: #fff;
+				--vscode-focusBorder: #f38518;
+			}
+			body {
+				height: 100vh;
+				display: flex;
+				flex-direction: column;
+				margin: 0;
+				background: #101010;
+				color: #ddd;
+				font-family: "Segoe UI", sans-serif;
+			}
+			#preview-controls {
+				flex-shrink: 0;
+				display: flex;
+				gap: 8px;
+				flex-wrap: wrap;
+				padding: 16px;
+				align-items: center;
+				max-width: 760px;
+				margin: auto;
+			}
+			#preview-controls button,
+			#preview-controls select {
+				background: #282828;
+				border: 1px solid #484848;
+				border-radius: 6px;
+				padding: 7px 12px;
+				color: #eee;
+				cursor: pointer;
+			}
+			#root {
+				position: relative;
+				flex: 1;
+				min-height: 0;
+				width: min(100%, 760px);
+				margin: auto;
+				border: 1px solid #383838;
+				background: #181818;
+			}
+			#root .app-shell {
+				position: absolute !important;
+			}
+		</style>
+	</head>
+	<body>
+		<nav id="preview-controls">
+			<strong style="margin-right: auto">Alpha · Extension preview</strong><button id="running">Running</button
+			><button id="complete">Complete</button><button id="narrow">Narrow</button>
+			<select id="surface" aria-label="Preview surface">
+				<option value="chat">Chat</option>
+				<option value="settings">Settings</option>
+				<option value="history">History</option>
+			</select>
+			<select id="theme" aria-label="Preview theme">
+				<option value="dark">Dark</option>
+				<option value="light">Light</option>
+				<option value="contrast">High contrast</option>
+			</select>
+		</nav>
+		<div id="root"></div>
+		<script type="module">
+			import React from "react"
+			import { createRoot } from "react-dom/client"
+			import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+			import { ExtensionStateContextProvider } from "/src/context/ExtensionStateContext.tsx"
+			import { TranslationProvider } from "/src/i18n/TranslationContext.tsx"
+			import { TooltipProvider } from "/src/components/ui/tooltip.tsx"
+			import ChatView from "/src/components/chat/ChatView.tsx"
+			import SettingsView from "/src/components/settings/SettingsView.tsx"
+			import HistoryView from "/src/components/history/HistoryView.tsx"
+			import "/src/index.css"
+			import "@vscode/codicons/dist/codicon.css"
+
+			const base = 1700000000000
+			const messages = [
+				{
+					ts: base,
+					type: "say",
+					say: "text",
+					text: "Add keyboard navigation to the command palette and run the tests.",
+				},
+				{
+					ts: base + 1000,
+					type: "say",
+					say: "api_req_started",
+					text: JSON.stringify({ cost: 0.01, tokensIn: 2500, tokensOut: 480 }),
+				},
+				{
+					ts: base + 2000,
+					type: "say",
+					say: "reasoning",
+					text: "I’ll inspect how the palette handles focus and selection, then cover the keyboard interactions with tests.",
+				},
+				{
+					ts: base + 8000,
+					type: "say",
+					say: "text",
+					text: "The palette already tracks the selected item. I’m adding Arrow Up, Arrow Down, and Enter handling, plus focus restoration when it closes.",
+				},
+				{
+					ts: base + 14000,
+					type: "ask",
+					ask: "command",
+					text: "pnpm --dir webview-ui test -- CommandPalette.spec.tsx\nOutput:\n RUN  v3.2.4\n ✓ moves selection with arrow keys\n ✓ activates the selected command with Enter\n ✓ restores focus on Escape\n\n Test Files  1 passed (1)\n      Tests  8 passed (8)",
+				},
+				{
+					ts: base + 42000,
+					type: "say",
+					say: "text",
+					text: "The keyboard tests pass. I’m checking the TypeScript build next.",
+				},
+				{
+					ts: base + 45000,
+					type: "ask",
+					ask: "command",
+					text: "pnpm --dir webview-ui check-types\nOutput:\n> tsc\n\nType check completed successfully.",
+				},
+			]
+			const answer = {
+				ts: base + 60000,
+				type: "say",
+				say: "completion_result",
+				partial: false,
+				text: "Added keyboard navigation to the command palette.\n\n- `↑` / `↓` move between commands.\n- `Enter` runs the selected command.\n- `Escape` closes the palette and restores focus.\n\nAll **8 tests pass**, and TypeScript checks are clean.",
+			}
+			messages.splice(
+				4,
+				0,
+				...["src/CommandPalette.tsx", "src/CommandPalette.spec.tsx", "src/palette.css", "README.md"].map(
+					(path, index) => ({
+						ts: base + 10000 + index,
+						type: "say",
+						say: "tool",
+						text: JSON.stringify({
+							tool: "appliedDiff",
+							path,
+							diff:
+								"--- a/" +
+								path +
+								"\n+++ b/" +
+								path +
+								"\n@@ -1 +1,2 @@\n-const active = false\n+const active = true\n+restoreFocus()",
+							diffStats: { added: index + 2, removed: 1 },
+						}),
+					}),
+				),
+			)
+			function show(completed) {
+				const taskId = "trace-preview"
+				const state = {
+					version: "2.1.3",
+					currentTaskId: taskId,
+					currentView: { type: "task", taskId },
+					currentTaskItem: {
+						id: taskId,
+						number: 1,
+						ts: base,
+						task: messages[0].text,
+						status: completed ? "completed" : "active",
+						tokensIn: 2500,
+						tokensOut: 480,
+						totalCost: 0.01,
+					},
+					clineMessages: completed
+						? [...messages, answer, { ts: base + 83000, type: "ask", ask: "completion_result", text: "" }]
+						: messages,
+					taskHistory: [
+						{
+							id: "history-1",
+							number: 1,
+							ts: base,
+							task: "Add keyboard navigation to the command palette",
+							tokensIn: 2500,
+							tokensOut: 480,
+							totalCost: 0.01,
+						},
+						{
+							id: "history-2",
+							number: 2,
+							ts: base - 100000,
+							task: "Simplify the settings navigation",
+							tokensIn: 1850,
+							tokensOut: 620,
+							totalCost: 0.02,
+						},
+					],
+					shouldShowAnnouncement: false,
+					allowedCommands: [],
+					deniedCommands: [],
+					alwaysAllowExecute: false,
+					telemetrySetting: "disabled",
+					soundEnabled: false,
+					language: "en",
+					mode: "code",
+					apiConfiguration: { apiProvider: "anthropic" },
+					liveTasksById: {
+						[taskId]: {
+							id: taskId,
+							status: completed ? "idle" : "running",
+							lifecycle: completed ? "completed" : "running",
+							isActive: true,
+							isStreaming: false,
+							isTurnActive: !completed,
+							canInterrupt: !completed,
+							isWaitingForInput: false,
+							lastUpdatedAt: base + 83000,
+							queueCount: 0,
+							tokensIn: 2500,
+							tokensOut: 480,
+							totalCost: 0.01,
+						},
+					},
+				}
+				window.postMessage({ type: "state", state }, "*")
+			}
+			function Preview() {
+				const [surface, setSurface] = React.useState("chat")
+				React.useEffect(() => {
+					show(true)
+					document.getElementById("surface").onchange = (event) => setSurface(event.target.value)
+				}, [])
+				if (surface === "settings")
+					return React.createElement(SettingsView, { onDone: () => setSurface("chat") })
+				if (surface === "history") return React.createElement(HistoryView, { onDone: () => setSurface("chat") })
+				return React.createElement(ChatView, {
+					isHidden: false,
+					showAnnouncement: false,
+					hideAnnouncement: () => {},
+				})
+			}
+			createRoot(document.getElementById("root")).render(
+				React.createElement(
+					ExtensionStateContextProvider,
+					null,
+					React.createElement(
+						QueryClientProvider,
+						{ client: new QueryClient() },
+						React.createElement(
+							TranslationProvider,
+							null,
+							React.createElement(TooltipProvider, null, React.createElement(Preview)),
+						),
+					),
+				),
+			)
+			document.getElementById("running").onclick = () => show(false)
+			document.getElementById("complete").onclick = () => show(true)
+			document.getElementById("narrow").onclick = () => {
+				document.getElementById("root").style.width =
+					document.getElementById("root").style.width === "340px" ? "min(100%, 760px)" : "340px"
+			}
+			document.getElementById("theme").onchange = (event) => {
+				const theme = event.target.value
+				document.documentElement.dataset.theme = theme
+				document.documentElement.className = document.body.className =
+					theme === "contrast" ? "vscode-high-contrast" : `vscode-${theme}`
+			}
+		</script>
+	</body>
+</html>

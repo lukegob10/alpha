@@ -1,4 +1,7 @@
 {
+	"activityTrace": {
+		"workedFor": "Czas pracy: {{duration}}"
+	},
 	"completionReport": "Raport końcowy",
 	"greeting": "Witamy w Alpha",
 	"task": {
@@ -31,7 +34,9 @@
 	"unpin": "Odepnij",
 	"pin": "Przypnij",
 	"fileChangesInConversation": {
-		"header": "{{count}} plik(ów) zmienionych w tej rozmowie"
+		"header": "Edytowane pliki: {{count}}",
+		"linesChanged": "Dodano {{added}} wierszy, usunięto {{removed}} wierszy",
+		"openFile": "Otwórz plik: {{path}}"
 	},
 	"tokenProgress": {
 		"availableSpace": "Dostępne miejsce: {{amount}} tokenów",
@@ -226,6 +231,7 @@
 	},
 	"commandOutput": "Wyjście polecenia",
 	"commandExecution": {
+		"command": "Polecenie",
 		"running": "Wykonywanie",
 		"abort": "Przerwij",
 		"pid": "PID: {{pid}}",

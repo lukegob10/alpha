@@ -6,13 +6,13 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.31 Preview
+## Welcome to Alpha v2.1.32 Preview
 
-Alpha v2.1.31 publishes the current main-v2 extension worktree, including the reordered menus and scheduled-task/UI updates.
+Alpha v2.1.32 brings a cleaner extension interface and automatic recovery from recognized Copilot empty-response failures.
 
-- Extension menu actions are ordered consistently across the sidebar and editor panel
-- Scheduled-task behavior and UI updates are included in the preview build
-- Retired Goal Seek surfaces and documentation-only artifacts are removed from the V2 extension package
+- Commands start collapsed, and completed activity folds into an expandable elapsed-time row
+- Chat, file-change summaries, settings, history, and shared controls use consistent theme-aware styling
+- Recognized Copilot empty responses retry once automatically without enabling tool auto-approval or replaying partial responses
 
 <details>
   <summary>🌐 Available languages</summary>

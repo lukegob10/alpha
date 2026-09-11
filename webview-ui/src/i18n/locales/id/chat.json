@@ -1,4 +1,7 @@
 {
+	"activityTrace": {
+		"workedFor": "Bekerja selama {{duration}}"
+	},
 	"completionReport": "Laporan penyelesaian",
 	"greeting": "Selamat datang di Alpha",
 	"task": {
@@ -34,7 +37,9 @@
 	"unpin": "Lepas Pin",
 	"pin": "Pin",
 	"fileChangesInConversation": {
-		"header": "{{count}} file diubah dalam percakapan ini"
+		"header": "File yang diedit: {{count}}",
+		"linesChanged": "{{added}} baris ditambahkan, {{removed}} baris dihapus",
+		"openFile": "Buka file: {{path}}"
 	},
 	"retry": {
 		"title": "Coba Lagi",
@@ -277,6 +282,7 @@
 	},
 	"commandOutput": "Keluaran Perintah",
 	"commandExecution": {
+		"command": "Perintah",
 		"abort": "Batalkan",
 		"running": "Menjalankan",
 		"pid": "PID: {{pid}}",

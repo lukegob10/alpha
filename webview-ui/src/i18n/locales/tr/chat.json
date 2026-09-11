@@ -1,4 +1,7 @@
 {
+	"activityTrace": {
+		"workedFor": "{{duration}} boyunca çalıştı"
+	},
 	"completionReport": "Tamamlama raporu",
 	"greeting": "Alpha'a Hoş Geldiniz",
 	"task": {
@@ -31,7 +34,9 @@
 	"unpin": "Sabitlemeyi iptal et",
 	"pin": "Sabitle",
 	"fileChangesInConversation": {
-		"header": "Bu sohbette {{count}} dosya değiştirildi"
+		"header": "Düzenlenen dosyalar: {{count}}",
+		"linesChanged": "{{added}} satır eklendi, {{removed}} satır silindi",
+		"openFile": "Dosyayı aç: {{path}}"
 	},
 	"tokenProgress": {
 		"availableSpace": "Kullanılabilir alan: {{amount}} token",
@@ -226,6 +231,7 @@
 	},
 	"commandOutput": "Komut Çıktısı",
 	"commandExecution": {
+		"command": "Komut",
 		"running": "Çalışıyor",
 		"abort": "İptal Et",
 		"pid": "PID: {{pid}}",

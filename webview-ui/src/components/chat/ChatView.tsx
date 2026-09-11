@@ -60,6 +60,8 @@ import { CheckpointWarning } from "./CheckpointWarning"
 import { QueuedMessages } from "./QueuedMessages"
 import { WorktreeSelector } from "./WorktreeSelector"
 import FileChangesPanel from "./FileChangesPanel"
+import { ActivityTraceToggle } from "./ActivityTraceToggle"
+import { getCompletedActivity } from "./completedActivity"
 import { useProgressiveTranscript } from "./hooks/useProgressiveTranscript"
 import { useChatScrollController } from "@src/hooks/useChatScrollController"
 
@@ -1777,6 +1779,38 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const transcriptTaskKey = transcriptIdentity
 		? `${transcriptIdentity}:${transcriptRootMessageTs ?? "pending"}`
 		: undefined
+	const completedActivity = useMemo(
+		() => getCompletedActivity(groupedMessages, activeMessages, effectiveVisibleLiveTask),
+		[groupedMessages, activeMessages, effectiveVisibleLiveTask],
+	)
+	const [traceExpansion, setTraceExpansion] = useState<{ taskKey?: string; expanded: Record<number, boolean> }>({
+		expanded: {},
+	})
+	const focusedActivityRef = useRef<{ taskKey?: string; index: number }>()
+	useEffect(() => {
+		// Retracted completions and checkpoint restores must not reuse an old
+		// expansion choice if that activity completes again later.
+		const traceIds = new Set(Array.from(completedActivity.values(), (trace) => trace.id))
+		setTraceExpansion((current) => {
+			if (current.taskKey !== transcriptTaskKey) return { taskKey: transcriptTaskKey, expanded: {} }
+			const entries = Object.entries(current.expanded)
+			const retained = entries.filter(([id]) => traceIds.has(Number(id)))
+			return retained.length === entries.length ? current : { ...current, expanded: Object.fromEntries(retained) }
+		})
+	}, [completedActivity, transcriptTaskKey])
+	const expandedTraces = useMemo(
+		() => (traceExpansion.taskKey === transcriptTaskKey ? traceExpansion.expanded : {}),
+		[traceExpansion, transcriptTaskKey],
+	)
+	const setTraceExpanded = useCallback(
+		(id: number, expanded: boolean) => {
+			setTraceExpansion((current) => ({
+				taskKey: transcriptTaskKey,
+				expanded: { ...(current.taskKey === transcriptTaskKey ? current.expanded : {}), [id]: expanded },
+			}))
+		},
+		[transcriptTaskKey],
+	)
 	const {
 		items: renderedGroupedMessages,
 		startIndex: transcriptStartIndex,
@@ -1827,6 +1861,20 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		},
 		[setScrollerRef],
 	)
+	useLayoutEffect(() => {
+		const focused = document.activeElement
+		const activity = focusedActivityRef.current
+		if (!activity || activity.taskKey !== transcriptTaskKey) return
+		// Hiding a focused element may already have returned focus to body before
+		// layout effects run. The capture handler retains the previous row identity.
+		if (focused !== document.body && !transcriptScrollerRef.current?.contains(focused)) return
+		const trace = completedActivity.get(activity.index)
+		if (trace && !expandedTraces[trace.id]) {
+			transcriptScrollerRef.current
+				?.querySelector<HTMLButtonElement>(`[data-activity-trace-id="${trace.id}"]`)
+				?.focus({ preventScroll: true })
+		}
+	}, [completedActivity, expandedTraces, transcriptTaskKey])
 
 	// The floating controls are siblings of the transcript scroller, so wheel input
 	// over a button would otherwise stop at the overflow-hidden viewport wrapper.
@@ -1959,6 +2007,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const handleTaskHeaderExpandedChange = useCallback(() => {
 		releaseFollow("task-header-toggle")
 	}, [releaseFollow])
+	const handleFileChangesExpandedChange = useCallback(() => {
+		releaseFollow("row-expansion")
+	}, [releaseFollow])
 
 	const handleScrollToLatestCheckpoint = useCallback(() => {
 		if (checkpointIndices.length === 0) {
@@ -1971,6 +2022,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		checkpointJumpCursorRef.current = nextCursor
 
 		releaseFollow("checkpoint-navigation")
+		const trace = completedActivity.get(nextCheckpointIndex)
+		if (trace && !expandedTraces[trace.id]) {
+			pendingCheckpointIndexRef.current = nextCheckpointIndex
+			setTraceExpanded(trace.id, true)
+			revealTranscriptIndex(nextCheckpointIndex)
+			return
+		}
 		const checkpoint = transcriptScrollerRef.current?.querySelector<HTMLElement>(
 			`[data-chat-message-index="${nextCheckpointIndex}"]`,
 		)
@@ -1981,7 +2039,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 		pendingCheckpointIndexRef.current = nextCheckpointIndex
 		revealTranscriptIndex(nextCheckpointIndex)
-	}, [checkpointIndices, releaseFollow, revealTranscriptIndex])
+	}, [checkpointIndices, releaseFollow, revealTranscriptIndex, completedActivity, expandedTraces, setTraceExpanded])
 
 	useEffect(() => {
 		const pendingCheckpointIndex = pendingCheckpointIndexRef.current
@@ -1996,7 +2054,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			pendingCheckpointIndexRef.current = null
 			checkpoint.scrollIntoView({ block: "center", behavior: "smooth" })
 		}
-	}, [renderedGroupedMessages.length, transcriptStartIndex])
+	}, [renderedGroupedMessages.length, transcriptStartIndex, expandedTraces])
 
 	const itemContent = useCallback(
 		(index: number, messageOrGroup: ClineMessage) => {
@@ -2091,6 +2149,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	return (
 		<div
 			data-testid="chat-view"
+			onFocusCapture={(event) => {
+				const row = event.target.closest<HTMLElement>("[data-chat-message-index]")
+				focusedActivityRef.current = row
+					? { taskKey: transcriptTaskKey, index: Number(row.dataset.chatMessageIndex) }
+					: undefined
+			}}
 			className={isHidden ? "hidden" : "app-shell fixed inset-0 flex flex-col overflow-hidden"}>
 			{telemetrySetting === "unset" && <TelemetryBanner />}
 			{(showAnnouncement || showAnnouncementModal) && (
@@ -2204,15 +2268,42 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							data-rendered-count={renderedGroupedMessages.length}>
 							{renderedGroupedMessages.map((message, localIndex) => {
 								const index = transcriptStartIndex + localIndex
+								const trace = completedActivity.get(index)
+								const traceExpanded = trace ? Boolean(expandedTraces[trace.id]) : false
 								return (
-									<div
-										key={computeChatItemKey(index, message)}
-										data-chat-message-index={index}
-										data-testid={`chat-message-${index}`}>
-										{itemContent(index, message)}
+									<div key={`${transcriptTaskKey}:${computeChatItemKey(index, message)}`}>
+										{trace && index === Math.max(trace.startIndex, transcriptStartIndex) && (
+											<ActivityTraceToggle
+												traceId={trace.id}
+												durationMs={trace.durationMs}
+												expanded={traceExpanded}
+												controls={Array.from(
+													{ length: trace.endIndex - index + 1 },
+													(_, offset) => `activity-row-${index + offset}`,
+												).join(" ")}
+												onToggle={() => {
+													releaseFollow("row-expansion")
+													setTraceExpanded(trace.id, !traceExpanded)
+												}}
+											/>
+										)}
+										{/* Keep live tool subscriptions mounted when hiding finished activity. */}
+										<div
+											id={`activity-row-${index}`}
+											hidden={Boolean(trace) && !traceExpanded}
+											data-chat-message-index={index}
+											data-testid={`chat-message-${index}`}>
+											{itemContent(index, message)}
+										</div>
 									</div>
 								)
 							})}
+							<FileChangesPanel
+								key={visibleCurrentTaskId}
+								clineMessages={activeMessages}
+								taskId={visibleCurrentTaskId}
+								onExpandedChange={handleFileChangesExpandedChange}
+							/>
 						</div>
 					</div>
 					{showScrollToBottom && (
@@ -2250,7 +2341,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			<div data-testid="chat-bottom-dock" className="relative z-20 flex shrink-0 flex-col">
 				{task && (
 					<>
-						<FileChangesPanel clineMessages={activeMessages} taskId={visibleCurrentTaskId} />
 						{isCompletedTaskResumePending && !isManagedSubagent && (
 							<div
 								data-testid="completed-task-resume-pending"

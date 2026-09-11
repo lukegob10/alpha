@@ -187,9 +187,9 @@
 .tickets-app select {
 	background: var(--vscode-input-background);
 	color: var(--vscode-input-foreground);
-	border: 1px solid var(--vscode-input-border, transparent);
+	border: 1px solid var(--border-subtle);
 	padding: 7px;
-	border-radius: 3px;
+	border-radius: 8px;
 }
 .tickets-app input,
 .tickets-app textarea {
@@ -201,20 +201,20 @@
 	line-height: 1.5;
 }
 .tickets-app button {
-	background: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
-	border: 1px solid transparent;
-	border-radius: 4px;
+	background: var(--surface-raised);
+	color: var(--vscode-foreground);
+	border: 1px solid var(--border-subtle);
+	border-radius: 8px;
 	padding: 7px 10px;
 	cursor: pointer;
 }
 .tickets-app button:hover {
-	background: var(--vscode-button-secondaryHoverBackground);
+	background: var(--vscode-list-hoverBackground);
 }
 .tickets-app button[type="submit"],
 .tickets-app .tickets-new-button {
-	background: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
+	background: var(--control-primary-background);
+	color: var(--control-primary-foreground);
 }
 .tickets-app :focus-visible {
 	outline: 1px solid var(--vscode-focusBorder);

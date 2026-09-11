@@ -114,10 +114,10 @@ const TaskItem = ({
 			data-testid={`task-item-${item.id}`}
 			data-contained={contained ? "true" : "false"}
 			className={cn(
-				"cursor-pointer group relative overflow-hidden text-vscode-foreground/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--alpha-accent)]",
+				"cursor-pointer group relative overflow-hidden text-vscode-foreground/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-vscode-focusBorder",
 				contained
 					? "bg-transparent transition-[color,background-color] duration-150 hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground"
-					: "surface-raised transition-[color,background-color,border-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground hover:shadow-[var(--shadow-accent)]",
+					: "surface-raised transition-[color,background-color,border-color,box-shadow,transform] duration-150 hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground",
 				isActive && "border-[var(--border-accent)] bg-[var(--alpha-accent-soft)] text-vscode-foreground",
 				hasSubtasks ? "rounded-t-xl" : "rounded-xl",
 				className,

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.32
+
+### Patch Changes
+
+- Keep commands collapsed by default and fold completed activity into an expandable elapsed-time row, leaving prompts and formatted final answers visible.
+- Refresh the extension's chat, file-change summaries, settings, history, and shared controls with consistent theme-aware styling.
+- Automatically retry recognized Copilot empty-response failures once before requiring Continue, while preserving cancellation, partial responses, and tool approval boundaries.
+
 ## 2.1.31
 
 ### Patch Changes

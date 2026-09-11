@@ -56,7 +56,6 @@ import {
 	Eye,
 	FileDiff,
 	ListTree,
-	User,
 	Edit,
 	Trash2,
 	MessageCircleQuestionMark,
@@ -321,9 +320,7 @@ const ChatRowContentInner = ({
 					) : (
 						<TerminalSquare className="size-4" aria-label="Terminal icon" />
 					),
-					<span style={{ color: normalColor, fontWeight: "bold" }}>
-						{t("chat:commandExecution.running")}
-					</span>,
+					<span className="shrink-0 text-sm">{t("chat:commandExecution.command")}</span>,
 				]
 			case "use_mcp_server":
 				const mcpServerUse = safeJsonParse<ClineAskUseMcpServer>(message.text)
@@ -1279,38 +1276,30 @@ const ChatRowContentInner = ({
 					return null // we should never see this message type
 				case "text":
 					return (
-						<div className="group">
-							<div style={headerStyle}>
-								<MessageCircle className="w-4 shrink-0" aria-label="Speech bubble icon" />
-								<span style={{ fontWeight: "bold" }}>{t("chat:text.rooSaid")}</span>
-								<div style={{ flexGrow: 1 }} />
-								<OpenMarkdownPreviewButton markdown={message.text} />
-							</div>
-							<div className="pl-6">
-								<Markdown markdown={message.text} partial={message.partial} />
-								{message.images && message.images.length > 0 && (
-									<div style={{ marginTop: "10px" }}>
-										{message.images.map((image, index) => (
-											<ImageBlock key={index} imageData={image} />
-										))}
-									</div>
-								)}
-							</div>
-						</div>
+						<article className="group" aria-label={t("chat:text.rooSaid")}>
+							<Markdown
+								markdown={message.text}
+								partial={message.partial}
+								actions={<OpenMarkdownPreviewButton markdown={message.text} />}
+							/>
+							{message.images && message.images.length > 0 && (
+								<div style={{ marginTop: "10px" }}>
+									{message.images.map((image, index) => (
+										<ImageBlock key={index} imageData={image} />
+									))}
+								</div>
+							)}
+						</article>
 					)
 				case "user_feedback":
 					return (
-						<div className="group">
-							<div style={headerStyle}>
-								<User className="w-4 shrink-0" aria-label="User icon" />
-								<span style={{ fontWeight: "bold" }}>{t("chat:feedback.youSaid")}</span>
-							</div>
+						<article className="group flex justify-end" aria-label={t("chat:feedback.youSaid")}>
 							<div
 								className={cn(
-									"ml-6 border rounded-sm overflow-hidden whitespace-pre-wrap",
+									"min-w-0 overflow-hidden whitespace-pre-wrap",
 									isEditing
-										? "bg-vscode-editor-background text-vscode-editor-foreground"
-										: "cursor-text p-1 bg-vscode-editor-foreground/70 text-vscode-editor-background",
+										? "w-full rounded-xl bg-vscode-editor-background text-vscode-editor-foreground"
+										: "user-message max-w-[92%] cursor-text px-3 py-2",
 								)}>
 								{isEditing ? (
 									<div className="flex flex-col gap-2">
@@ -1345,7 +1334,7 @@ const ChatRowContentInner = ({
 											title={t("chat:queuedMessages.clickToEdit")}>
 											<Mention text={message.text} withShadow />
 										</div>
-										<div className="flex gap-2 pr-1">
+										<div className="flex items-center gap-2 pl-2">
 											<button
 												type="button"
 												aria-label={t("chat:queuedMessages.edit")}
@@ -1379,7 +1368,7 @@ const ChatRowContentInner = ({
 									<Thumbnails images={message.images} style={{ marginTop: "8px" }} />
 								)}
 							</div>
-						</div>
+						</article>
 					)
 				case "user_feedback_diff":
 					const tool = safeJsonParse<ClineSayTool>(message.text)
@@ -1427,19 +1416,15 @@ const ChatRowContentInner = ({
 					)
 				case "completion_result":
 					return (
-						<div className="group">
-							<div style={headerStyle}>
-								{icon}
-								{title}
-								<div style={{ flexGrow: 1 }} />
-								<OpenMarkdownPreviewButton markdown={message.text} />
-							</div>
-							<div
-								className="border-l ml-2 pl-4 pb-1"
-								style={{ borderColor: isTaskCompleted ? successColor : "var(--vscode-panel-border)" }}>
-								<Markdown markdown={message.text} />
-							</div>
-						</div>
+						<article
+							className="group"
+							aria-label={t(isTaskCompleted ? "chat:taskCompleted" : "chat:completionReport")}>
+							<Markdown
+								markdown={message.text}
+								partial={message.partial}
+								actions={<OpenMarkdownPreviewButton markdown={message.text} />}
+							/>
+						</article>
 					)
 				case "shell_integration_warning":
 					return <CommandExecutionError />
@@ -1805,6 +1790,7 @@ const ChatRowContentInner = ({
 					return (
 						<CommandExecution
 							executionId={message.ts.toString()}
+							onToggleExpand={handleToggleExpand}
 							text={message.text}
 							icon={icon}
 							title={title}
@@ -1872,17 +1858,15 @@ const ChatRowContentInner = ({
 				case "completion_result":
 					if (message.text) {
 						return (
-							<div className="group">
-								<div style={headerStyle}>
-									{icon}
-									{title}
-									<div style={{ flexGrow: 1 }} />
-									<OpenMarkdownPreviewButton markdown={message.text} />
-								</div>
-								<div style={{ color: isTaskCompleted ? successColor : normalColor, paddingTop: 10 }}>
-									<Markdown markdown={message.text} partial={message.partial} />
-								</div>
-							</div>
+							<article
+								className="group"
+								aria-label={t(isTaskCompleted ? "chat:taskCompleted" : "chat:completionReport")}>
+								<Markdown
+									markdown={message.text}
+									partial={message.partial}
+									actions={<OpenMarkdownPreviewButton markdown={message.text} />}
+								/>
+							</article>
 						)
 					} else {
 						return null // Don't render anything when we get a completion_result ask without text

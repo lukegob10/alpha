@@ -27,7 +27,6 @@ const HistoryPreview = () => {
 				<h2
 					id="recent-tasks-heading"
 					className="m-0 flex grow items-center gap-2 text-sm font-semibold tracking-[-0.01em] text-vscode-foreground">
-					<span className="h-4 w-1 rounded-full bg-[linear-gradient(var(--alpha-accent),var(--alpha-brand-teal))]" />
 					{t("history:recentTasks")}
 				</h2>
 				<button

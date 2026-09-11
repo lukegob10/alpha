@@ -9,9 +9,9 @@ const badgeVariants = cva(
 		variants: {
 			variant: {
 				default:
-					"border-[var(--border-accent)] bg-[var(--alpha-accent-soft)] text-vscode-foreground hover:bg-[color-mix(in_srgb,var(--alpha-accent)_20%,transparent)]",
+					"border-[var(--border-subtle)] bg-[var(--surface-raised)] text-vscode-foreground hover:bg-vscode-list-hoverBackground",
 				secondary:
-					"border-[var(--border-subtle)] bg-[var(--alpha-teal-soft)] text-secondary-foreground hover:border-[var(--border-accent)]",
+					"border-[var(--border-subtle)] bg-[var(--surface-raised)] text-vscode-descriptionForeground hover:border-[var(--border-accent)]",
 				destructive: "bg-destructive text-destructive-foreground hover:bg-destructive/80",
 				outline: "border-[var(--border-subtle)] text-muted-foreground",
 			},

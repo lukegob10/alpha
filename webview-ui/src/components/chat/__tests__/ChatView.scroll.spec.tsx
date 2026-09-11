@@ -304,7 +304,7 @@ describe("ChatView native scroll behavior", () => {
 		expect(dock).toHaveClass("flex", "shrink-0", "flex-col")
 		expect(viewport?.nextElementSibling).toBe(dock)
 		expect(dock).not.toContainElement(scrollable)
-		expect(dock).toContainElement(document.querySelector("[data-testid='file-changes-panel']"))
+		expect(scrollable).toContainElement(document.querySelector("[data-testid='file-changes-panel']"))
 		expect(dock).toContainElement(document.querySelector("[data-testid='chat-input']"))
 	})
 
@@ -376,6 +376,25 @@ describe("ChatView native scroll behavior", () => {
 		})
 		fireEvent.click(checkpointButton)
 
+		expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior: "smooth" })
+	})
+
+	it("opens a collapsed trace before navigating to a checkpoint inside it", async () => {
+		const messages = buildMessagesWithCheckpoint(Date.now() - 3_000)
+		messages.push({ ts: Date.now(), type: "say", say: "completion_result", text: "Done", partial: false })
+		await hydrate(messages)
+		const checkpoint = document.querySelector<HTMLElement>("[data-chat-message-index='1']")!
+		expect(checkpoint).not.toBeVisible()
+		const scrollIntoView = vi.fn()
+		Object.defineProperty(checkpoint, "scrollIntoView", { configurable: true, value: scrollIntoView })
+		fireEvent.click(document.querySelector("[data-testid='task-header']") as HTMLElement)
+		const checkpointButton = await waitFor(() => {
+			const button = document.querySelector("button[aria-label='chat:scrollToLatestCheckpoint']")
+			expect(button).toBeInstanceOf(HTMLButtonElement)
+			return button as HTMLButtonElement
+		})
+		fireEvent.click(checkpointButton)
+		await waitFor(() => expect(checkpoint).toBeVisible())
 		expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior: "smooth" })
 	})
 

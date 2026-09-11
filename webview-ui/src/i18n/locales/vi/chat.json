@@ -1,4 +1,7 @@
 {
+	"activityTrace": {
+		"workedFor": "Đã làm việc trong {{duration}}"
+	},
 	"completionReport": "Báo cáo hoàn tất",
 	"greeting": "Chào mừng đến với Alpha",
 	"task": {
@@ -31,7 +34,9 @@
 	"unpin": "Bỏ ghim khỏi đầu",
 	"pin": "Ghim lên đầu",
 	"fileChangesInConversation": {
-		"header": "{{count}} tệp đã thay đổi trong cuộc hội thoại này"
+		"header": "Tệp đã chỉnh sửa: {{count}}",
+		"linesChanged": "Đã thêm {{added}} dòng, đã xóa {{removed}} dòng",
+		"openFile": "Mở tệp: {{path}}"
 	},
 	"tokenProgress": {
 		"availableSpace": "Không gian khả dụng: {{amount}} tokens",
@@ -226,6 +231,7 @@
 	},
 	"commandOutput": "Kết quả lệnh",
 	"commandExecution": {
+		"command": "Lệnh",
 		"running": "Đang chạy",
 		"abort": "Hủy bỏ",
 		"pid": "PID: {{pid}}",

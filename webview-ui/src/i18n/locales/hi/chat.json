@@ -1,4 +1,7 @@
 {
+	"activityTrace": {
+		"workedFor": "{{duration}} तक काम किया"
+	},
 	"completionReport": "समापन रिपोर्ट",
 	"greeting": "Alpha में आपका स्वागत है",
 	"task": {
@@ -31,7 +34,9 @@
 	"unpin": "पिन करें",
 	"pin": "अवपिन करें",
 	"fileChangesInConversation": {
-		"header": "इस वार्तालाप में {{count}} फ़ाइल(ें) बदली गईं"
+		"header": "संपादित फ़ाइलें: {{count}}",
+		"linesChanged": "{{added}} पंक्तियाँ जोड़ी गईं, {{removed}} पंक्तियाँ हटाई गईं",
+		"openFile": "फ़ाइल खोलें: {{path}}"
 	},
 	"tokenProgress": {
 		"availableSpace": "उपलब्ध स्थान: {{amount}} tokens",
@@ -226,6 +231,7 @@
 	},
 	"commandOutput": "कमांड आउटपुट",
 	"commandExecution": {
+		"command": "कमांड",
 		"abort": "रद्द करें",
 		"running": "चल रहा है",
 		"pid": "पीआईडी: {{pid}}",

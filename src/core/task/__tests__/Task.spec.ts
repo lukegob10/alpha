@@ -693,6 +693,7 @@ describe("Alpha", () => {
 					task: "test task",
 					startTask: false,
 				})
+				vi.spyOn(cline as any, "getSystemPrompt").mockResolvedValue("test instructions")
 
 				// Mock say to track messages
 				const saySpy = vi.spyOn(cline, "say").mockResolvedValue(undefined)
@@ -834,6 +835,7 @@ describe("Alpha", () => {
 					task: "test task",
 					startTask: false,
 				})
+				vi.spyOn(cline as any, "getSystemPrompt").mockResolvedValue("test instructions")
 
 				// Mock say to track messages
 				const saySpy = vi.spyOn(cline, "say").mockResolvedValue(undefined)
@@ -2780,6 +2782,7 @@ describe("Alpha", () => {
 				task: "initial task",
 				startTask: false,
 			})
+			vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("test instructions")
 			const askSpy = vi.spyOn(task, "ask")
 
 			async function* neverRespondingStream(): AsyncGenerator<ApiStreamChunk> {
@@ -2812,6 +2815,7 @@ describe("Alpha", () => {
 				task: "preserve newer cancellation owner",
 				startTask: false,
 			})
+			vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("test instructions")
 
 			async function* neverRespondingStream(): AsyncGenerator<ApiStreamChunk> {
 				await new Promise<void>(() => {})
@@ -3224,58 +3228,130 @@ describe("Alpha", () => {
 			)
 		})
 
-		it("does not start another main-loop attempt when a retry announcement reaches the logical deadline", async () => {
-			vi.useFakeTimers()
-			try {
-				vi.setSystemTime(5_000)
+		it.each([false, true])(
+			"automatically recovers a recognized empty response with tool auto-approval=%s",
+			async (autoApprovalEnabled) => {
 				const task = createTask()
-				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled })
+				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				const events = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+				Object.assign(task, { agentRetryPolicy: new AgentRetryPolicy({ baseDelayMs: 0 }) })
+				const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+				const request = vi
+					.spyOn(task, "attemptApiRequest")
+					.mockImplementationOnce(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							yield* []
+							throw Object.assign(new Error("Response contained no choices."), {
+								firstChunkFailure: true,
+								retryable: true,
+								retryCategory: "empty-response",
+							})
+						})(),
+					)
+					.mockImplementationOnce(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							yield { type: "text", text: "Recovered answer." }
+						})(),
+					)
+
+				await expect(
+					task.recursivelyMakeClineRequests([{ type: "text", text: "start" }], false),
+				).resolves.toMatchObject({ status: "completed" })
+				expect(request).toHaveBeenCalledTimes(2)
+				expect(ask).not.toHaveBeenCalled()
+				expect(events).toHaveBeenCalledWith(expect.objectContaining({ type: "retry", attempt: 1 }))
+			},
+		)
+
+		it.each([undefined, false, true])(
+			"bounds first-chunk recovery with retryable=%s and keeps manual recovery available",
+			async (retryable) => {
+				const task = createTask()
+				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: false })
 				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
 				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
 				vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
 				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
-				Object.assign(task, {
-					agentRetryPolicy: new AgentRetryPolicy({
-						maxAttempts: 2,
-						maxElapsedMs: 100,
-						baseDelayMs: 100,
-						jitter: "none",
-					}),
-				})
-				let markRetryAnnouncementStarted!: () => void
-				const retryAnnouncementStarted = new Promise<void>((resolve) => {
-					markRetryAnnouncementStarted = resolve
-				})
-				vi.spyOn(task, "say").mockImplementation(async (type, _text, _images, partial) => {
-					if (type === "api_req_retry_delayed" && partial) {
-						markRetryAnnouncementStarted()
-						await new Promise<void>(() => undefined)
-					}
-				})
-				const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				Object.assign(task, { agentRetryPolicy: new AgentRetryPolicy({ baseDelayMs: 0 }) })
+				const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+				const request = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
 					(async function* (): AsyncGenerator<ApiStreamChunk> {
 						yield* []
-						throw Object.assign(new Error("transient provider failure"), {
+						throw Object.assign(new Error("Provider failure"), {
 							firstChunkFailure: true,
-							retryable: true,
-							retryCategory: "transport",
+							retryable,
+							retryCategory: "empty-response",
 						})
 					})(),
 				)
 
-				const pending = task.recursivelyMakeClineRequests([{ type: "text", text: "start" }], false)
-				await retryAnnouncementStarted
-				await vi.advanceTimersByTimeAsync(100)
-				await expect(pending).resolves.toMatchObject({
-					status: "exhausted",
-					reason: "Automatic retry deadline exceeded",
-				})
-				expect(attempt).toHaveBeenCalledOnce()
-				expect(vi.getTimerCount()).toBe(0)
-			} finally {
-				vi.useRealTimers()
-			}
-		})
+				await expect(
+					task.recursivelyMakeClineRequests([{ type: "text", text: "start" }], false),
+				).resolves.toMatchObject({ status: "failed" })
+				expect(request).toHaveBeenCalledTimes(retryable === true ? 2 : 1)
+				if (retryable === false) expect(ask).not.toHaveBeenCalled()
+				else expect(ask).toHaveBeenCalledExactlyOnceWith("api_req_failed", "Provider failure")
+			},
+		)
+
+		it.each([false, true])(
+			"stops at the logical retry deadline with tool auto-approval=%s",
+			async (autoApprovalEnabled) => {
+				vi.useFakeTimers()
+				try {
+					vi.setSystemTime(5_000)
+					const task = createTask()
+					mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled })
+					vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+					vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+					vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+					vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+					Object.assign(task, {
+						agentRetryPolicy: new AgentRetryPolicy({
+							maxAttempts: 2,
+							maxElapsedMs: 100,
+							baseDelayMs: 100,
+							jitter: "none",
+						}),
+					})
+					let markRetryAnnouncementStarted!: () => void
+					const retryAnnouncementStarted = new Promise<void>((resolve) => {
+						markRetryAnnouncementStarted = resolve
+					})
+					vi.spyOn(task, "say").mockImplementation(async (type, _text, _images, partial) => {
+						if (type === "api_req_retry_delayed" && partial) {
+							markRetryAnnouncementStarted()
+							await new Promise<void>(() => undefined)
+						}
+					})
+					const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							yield* []
+							throw Object.assign(new Error("transient provider failure"), {
+								firstChunkFailure: true,
+								retryable: true,
+								retryCategory: "transport",
+							})
+						})(),
+					)
+
+					const pending = task.recursivelyMakeClineRequests([{ type: "text", text: "start" }], false)
+					await retryAnnouncementStarted
+					await vi.advanceTimersByTimeAsync(100)
+					await expect(pending).resolves.toMatchObject({
+						status: "exhausted",
+						reason: "Automatic retry deadline exceeded",
+					})
+					expect(attempt).toHaveBeenCalledOnce()
+					expect(vi.getTimerCount()).toBe(0)
+				} finally {
+					vi.useRealTimers()
+				}
+			},
+		)
 
 		it.each([
 			"new_task",

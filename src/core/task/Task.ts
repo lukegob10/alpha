@@ -8883,10 +8883,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								}
 							}
 
-							// Manual retry remains available for first-chunk failures. It is a
-							// user-selected retry, so it does not silently turn into completion
-							// when the automatic budget is exhausted.
-							if (firstChunkFailure && !state?.autoApprovalEnabled) {
+							// Recover explicitly retryable provider failures independently of tool
+							// auto-approval. Unknown failures and exhausted automatic retries still
+							// offer the existing manual recovery boundary.
+							if (
+								firstChunkFailure &&
+								!state?.autoApprovalEnabled &&
+								!(retryMetadata.retryable === true && decision.shouldRetry)
+							) {
 								const askResponse = await this.ask("api_req_failed", retryError.message)
 								if (askResponse.response !== "yesButtonClicked") {
 									await this.say("error", retryError.message)

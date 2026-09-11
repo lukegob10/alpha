@@ -1,4 +1,7 @@
 {
+	"activityTrace": {
+		"workedFor": "Worked for {{duration}}"
+	},
 	"completionReport": "Completion report",
 	"greeting": "Welcome to Alpha.",
 	"task": {
@@ -31,7 +34,9 @@
 	"unpin": "Unpin",
 	"pin": "Pin",
 	"fileChangesInConversation": {
-		"header": "{{count}} file(s) changed in this conversation"
+		"header": "Files edited: {{count}}",
+		"linesChanged": "{{added}} lines added, {{removed}} lines removed",
+		"openFile": "Open file: {{path}}"
 	},
 	"retry": {
 		"title": "Retry",
@@ -296,6 +301,7 @@
 	},
 	"commandOutput": "Command Output",
 	"commandExecution": {
+		"command": "Command",
 		"abort": "Abort",
 		"running": "Running",
 		"pid": "PID: {{pid}}",

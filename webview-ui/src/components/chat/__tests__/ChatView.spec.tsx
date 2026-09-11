@@ -346,6 +346,73 @@ const renderChatView = (props: Partial<ChatViewProps> = {}) => {
 	)
 }
 
+describe("ChatView activity trace", () => {
+	const focusDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "focus")!
+	afterEach(() => Object.defineProperty(HTMLElement.prototype, "focus", focusDescriptor))
+
+	it("shows live activity, folds it above the final response, and restores it on click", async () => {
+		const { getByTestId, getByRole, queryByRole } = renderChatView()
+		const messages: ClineMessage[] = [
+			{ ts: 100, type: "say", say: "text", text: "Run the tests" },
+			{ ts: 1000, type: "say", say: "reasoning", text: "Checking the test suite" },
+			{ ts: 2000, type: "ask", ask: "command", text: "pnpm test" },
+			{ ts: 3000, type: "say", say: "text", text: "All tests passed", partial: true },
+		]
+		mockPostMessage({ currentTaskId: "trace-a", clineMessages: messages })
+		await waitFor(() => expect(getByTestId("chat-message-0")).toBeVisible())
+		expect(getByTestId("chat-message-1")).toBeVisible()
+		expect(queryByRole("button", { name: "chat:activityTrace.workedFor" })).not.toBeInTheDocument()
+		// The shared FAST/JSDOM setup replaces native focus with a no-op. Record
+		// the actual target of focus restoration and dispatch the focus event.
+		const focusedElements: HTMLElement[] = []
+		Object.defineProperty(HTMLElement.prototype, "focus", {
+			configurable: true,
+			value: function (this: HTMLElement) {
+				focusedElements.push(this)
+			},
+		})
+		fireEvent.focus(getByTestId("chat-message-1"))
+
+		const completedMessages: ClineMessage[] = [
+			...messages.slice(0, 3),
+			{ ...messages[3], say: "completion_result", partial: false },
+			{ ts: 5500, type: "ask", ask: "completion_result", text: "" },
+		]
+		mockPostMessage({ currentTaskId: "trace-a", clineMessages: completedMessages })
+		await waitFor(() =>
+			expect(getByRole("button", { name: "chat:activityTrace.workedFor" })).toHaveAttribute(
+				"aria-expanded",
+				"false",
+			),
+		)
+		expect(getByTestId("chat-message-0")).not.toBeVisible()
+		expect(getByTestId("chat-message-1")).not.toBeVisible()
+		expect(getByTestId("chat-message-2")).toBeVisible()
+		expect(getByTestId("chat-message-2")).toHaveTextContent("All tests passed")
+		expect(focusedElements).toContain(getByRole("button", { name: "chat:activityTrace.workedFor" }))
+		fireEvent.click(getByRole("button", { name: "chat:activityTrace.workedFor" }))
+		expect(getByTestId("chat-message-0")).toBeVisible()
+		expect(getByTestId("chat-message-1")).toBeVisible()
+
+		// A state refresh preserves the reader's choice; another task cannot inherit it.
+		mockPostMessage({ currentTaskId: "trace-a", clineMessages: completedMessages })
+		await waitFor(() =>
+			expect(getByRole("button", { name: "chat:activityTrace.workedFor" })).toHaveAttribute(
+				"aria-expanded",
+				"true",
+			),
+		)
+		mockPostMessage({ currentTaskId: "trace-b", clineMessages: completedMessages })
+		await waitFor(() =>
+			expect(getByRole("button", { name: "chat:activityTrace.workedFor" })).toHaveAttribute(
+				"aria-expanded",
+				"false",
+			),
+		)
+		expect(getByTestId("chat-message-2")).toBeVisible()
+	})
+})
+
 describe("ChatView - Plan command", () => {
 	beforeEach(() => vi.clearAllMocks())
 

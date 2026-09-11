@@ -139,8 +139,10 @@ describe("TaskHeader", () => {
 		)
 	}
 
-	it("should display cost when totalCost is greater than 0", () => {
+	it("keeps task metrics in the expandable details", () => {
 		renderTaskHeader()
+		expect(screen.queryByText("$0.05")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
 		expect(screen.getByText("$0.05")).toBeInTheDocument()
 	})
 
@@ -181,10 +183,7 @@ describe("TaskHeader", () => {
 
 		fireEvent.click(expandButton)
 
-		expect(screen.getByRole("button", { name: "chat:task.collapse" })).toHaveAttribute(
-			"aria-expanded",
-			"true",
-		)
+		expect(screen.getByRole("button", { name: "chat:task.collapse" })).toHaveAttribute("aria-expanded", "true")
 	})
 
 	it("should render the condense context button when expanded", () => {
@@ -532,8 +531,9 @@ describe("TaskHeader", () => {
 			// Old (incorrect) formula would have been: (200 + 200) / 1000 * 100 = 40%
 
 			renderTaskHeader({ contextTokens: 200 })
+			fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
 
-			// The percentage should be rendered in the collapsed header state
+			// The percentage remains available in the expanded task details.
 			// Verify that 25% is displayed (correct formula) and NOT 40% (old incorrect formula)
 			expect(screen.getByText("25%")).toBeInTheDocument()
 			expect(screen.queryByText("40%")).not.toBeInTheDocument()
@@ -546,6 +546,7 @@ describe("TaskHeader", () => {
 			mockMaxOutputTokens = 200
 
 			renderTaskHeader({ contextTokens: 100 })
+			fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
 
 			// Should show 0% when available input space is 0
 			expect(screen.getByText("0%")).toBeInTheDocument()

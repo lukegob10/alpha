@@ -1,4 +1,7 @@
 {
+	"activityTrace": {
+		"workedFor": "Gewerkt gedurende {{duration}}"
+	},
 	"completionReport": "Afrondingsrapport",
 	"greeting": "Welkom bij Alpha",
 	"task": {
@@ -31,7 +34,9 @@
 	"unpin": "Losmaken",
 	"pin": "Vastmaken",
 	"fileChangesInConversation": {
-		"header": "{{count}} bestand(en) gewijzigd in dit gesprek"
+		"header": "Bewerkte bestanden: {{count}}",
+		"linesChanged": "{{added}} regels toegevoegd, {{removed}} regels verwijderd",
+		"openFile": "Bestand openen: {{path}}"
 	},
 	"retry": {
 		"title": "Opnieuw proberen",
@@ -221,6 +226,7 @@
 	},
 	"commandOutput": "Commando-uitvoer",
 	"commandExecution": {
+		"command": "Opdracht",
 		"running": "Lopend",
 		"abort": "Afbreken",
 		"pid": "PID: {{pid}}",

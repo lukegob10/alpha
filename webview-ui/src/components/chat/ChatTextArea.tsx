@@ -1119,7 +1119,9 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			<div
 				className={cn(
 					"box-border flex flex-col gap-1 outline-none",
-					isEditMode ? "w-full p-2" : "surface-raised relative mx-auto w-[calc(100%-16px)] rounded-2xl p-1.5",
+					isEditMode
+						? "chat-composer w-full rounded-xl border border-transparent p-2"
+						: "chat-composer surface-raised relative mx-auto w-[calc(100%-24px)] rounded-2xl p-1.5",
 				)}>
 				<div className={cn(!isEditMode && "relative")}>
 					<div
@@ -1201,7 +1203,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									"text-vscode-editor-font-size",
 									"leading-vscode-editor-line-height",
 									isFocused
-										? "border border-[var(--alpha-accent)] outline outline-[var(--alpha-accent)]"
+										? "border border-transparent"
 										: isDraggingOver
 											? "border-2 border-dashed border-vscode-focusBorder"
 											: "border border-transparent",
@@ -1275,13 +1277,13 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 									"cursor-text",
 									"py-2 pl-2",
 									isFocused
-										? "border border-[var(--alpha-accent)] outline outline-[var(--alpha-accent)]"
+										? "border border-transparent focus:outline-0 focus-visible:ring-0"
 										: isDraggingOver
 											? "border-2 border-dashed border-vscode-focusBorder"
 											: "border border-transparent",
 									isDraggingOver
 										? "bg-[color-mix(in_srgb,var(--vscode-input-background)_95%,var(--vscode-focusBorder))]"
-										: "bg-[var(--surface-sunken)]",
+										: "bg-transparent",
 									"transition-background-color duration-150 ease-in-out",
 									"will-change-background-color",
 									"min-h-[94px]",
@@ -1427,7 +1429,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 												? "opacity-100 hover:opacity-100 pointer-events-auto"
 												: "opacity-0 pointer-events-none",
 											(isEditMode || isStreaming || hasInputContent) &&
-												"bg-[var(--alpha-accent)] text-[var(--alpha-accent-contrast)] shadow-[var(--shadow-accent)] hover:bg-[var(--alpha-accent-hover)] active:scale-95",
+												"bg-[var(--control-primary-background)] text-[var(--control-primary-foreground)] hover:opacity-90",
 											"focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder",
 											(isEditMode || isStreaming || hasInputContent) &&
 												(sendDisabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"),
@@ -1435,7 +1437,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 												"bg-transparent text-vscode-descriptionForeground",
 										)}>
 										{!isEditMode && isStreaming ? (
-											<Square className="size-4 stroke-none fill-vscode-button-foreground" />
+											<Square className="size-4 stroke-none fill-current" />
 										) : (
 											<SendHorizontal className="size-4" />
 										)}

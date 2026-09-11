@@ -18,6 +18,15 @@ vi.mock("@src/components/ui", () => ({
 }))
 
 describe("Markdown proposed-plan rendering", () => {
+	it("shows response actions after the answer completes", () => {
+		const actions = <button>Preview answer</button>
+		const { rerender } = render(<Markdown markdown="Answer" partial actions={actions} />)
+		expect(screen.queryByRole("button", { name: "Preview answer" })).not.toBeInTheDocument()
+		rerender(<Markdown markdown="Answer" actions={actions} />)
+		expect(screen.getByRole("button", { name: "Preview answer" })).toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Copy as markdown" }))
+		expect(copyWithFeedback).toHaveBeenCalledWith("Answer")
+	})
 	it("renders an exact proposed-plan block as a dedicated surface without exposing protocol tags", () => {
 		render(<Markdown markdown={"<proposed_plan>\n# Provider plan\n- Update selection\n</proposed_plan>"} />)
 

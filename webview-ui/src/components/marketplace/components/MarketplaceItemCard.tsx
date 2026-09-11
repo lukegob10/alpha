@@ -91,7 +91,7 @@ export const MarketplaceItemCard: React.FC<MarketplaceItemCardProps> = ({ item, 
 
 	return (
 		<>
-			<div className="surface-raised cursor-default rounded-2xl p-4 transition-[border-color,background-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)] hover:shadow-[var(--shadow-accent)]">
+			<div className="surface-raised cursor-default rounded-2xl p-4 transition-[border-color,background-color,box-shadow,transform] duration-150 hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)]">
 				<div className="flex gap-2 items-start justify-between">
 					<div className="flex gap-2 items-start">
 						<div>

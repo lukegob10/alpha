@@ -229,6 +229,31 @@ function getAbortSignalReason(signal: AbortSignal): unknown {
 
 type VsCodeLmRequestPhase = "model-selection" | "request-admission" | "first-response-chunk" | "response-stream"
 
+function normalizeVsCodeLmStreamError(
+	error: Error,
+	phase: VsCodeLmRequestPhase,
+	semanticOutputObserved: boolean,
+): Error {
+	const metadata = error as Error & { code?: unknown; retryable?: unknown }
+	// Copilot reports missing completions as a plain Error through vscode.lm.
+	// Keep this exact: auth, filtering, cancellation, and other provider failures
+	// must not gain retry authority from a broadly matching error message.
+	if (
+		phase === "model-selection" ||
+		error.message !== "Response contained no choices." ||
+		metadata.retryable === false ||
+		(metadata.code !== undefined && metadata.code !== "Unknown")
+	) {
+		return error
+	}
+	return Object.assign(new Error(error.message, { cause: error }), {
+		retryCategory: "empty-response" as const,
+		retryable: !semanticOutputObserved,
+		semanticOutputObserved,
+		phase,
+	})
+}
+
 class VsCodeLmRequestDeadlineError extends ApiStreamDeadlineError {
 	readonly phase: VsCodeLmRequestPhase
 
@@ -1068,6 +1093,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		const disposeSignalBridge = bridgeAbortSignalToVsCodeCancellation(requestControl.signal, requestCancellation)
 		this.currentRequestSignalCleanup = disposeSignalBridge
 		let streamCompleted = false
+		let semanticOutputObserved = false
 		let responseStatefulMarker: string | undefined
 		let responseIterator: AsyncIterator<unknown> | undefined
 		let requestPhase: VsCodeLmRequestPhase = "model-selection"
@@ -1141,6 +1167,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				const chunk = nextChunk.value
 				requestPhase = "response-stream"
 				if (typeof chunk === "string") {
+					semanticOutputObserved ||= chunk.length > 0
 					accumulatedText.push(chunk)
 					reportedUsage = undefined
 					yield {
@@ -1154,6 +1181,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 					}
 
 					accumulatedText.push(thinkingText)
+					semanticOutputObserved = true
 					reportedUsage = undefined
 					yield {
 						type: "reasoning",
@@ -1167,6 +1195,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 					}
 
 					accumulatedText.push(chunk.value)
+					semanticOutputObserved ||= chunk.value.length > 0
 					reportedUsage = undefined
 					yield {
 						type: "text",
@@ -1202,6 +1231,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 						if (metadata?.tools?.length) {
 							const argumentsString = JSON.stringify(chunk.input)
 							accumulatedText.push(argumentsString)
+							semanticOutputObserved = true
 							reportedUsage = undefined
 							yield {
 								type: "tool_call",
@@ -1268,8 +1298,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 					name: error.name,
 				})
 
-				// Return original error if it's already an Error instance
-				throw error
+				throw normalizeVsCodeLmStreamError(error, requestPhase, semanticOutputObserved)
 			} else if (typeof error === "object" && error !== null) {
 				// Handle error-like objects
 				const errorDetails = JSON.stringify(error, null, 2)

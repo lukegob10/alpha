@@ -186,9 +186,8 @@ const TaskHeader = ({
 			)}
 			<div
 				className={cn(
-					"task-context-card px-3 pt-3 pb-2.5 flex flex-col gap-1.5 relative z-1 cursor-pointer",
-					"text-vscode-foreground/80 hover:text-vscode-foreground",
-					"rounded-2xl transition-[border-color,box-shadow,transform] duration-150 hover:border-[var(--border-accent)] hover:shadow-[var(--shadow-raised)]",
+					"px-4 py-2.5 flex flex-col gap-1.5 relative z-1 cursor-pointer",
+					isTaskExpanded ? "task-context-card rounded-xl" : "user-message ml-auto w-fit max-w-[92%]",
 					hasTodos && "border-b-0",
 				)}
 				onClick={(e) => {
@@ -219,11 +218,11 @@ const TaskHeader = ({
 					toggleTaskExpanded()
 				}}>
 				<div className="flex justify-between items-center gap-0">
-					<div className="flex items-center select-none grow min-w-0">
+					<div className="flex items-center grow min-w-0">
 						<div className="grow min-w-0">
 							{isTaskExpanded && <span className="font-bold">{t("chat:task.title")}</span>}
 							{!isTaskExpanded && (
-								<div className="flex items-center gap-2 whitespace-nowrap overflow-hidden text-ellipsis">
+								<div className="line-clamp-4 whitespace-pre-wrap wrap-anywhere">
 									<Mention text={task.text} />
 								</div>
 							)}
@@ -238,14 +237,17 @@ const TaskHeader = ({
 									{isTaskExpanded ? (
 										<ChevronUp size={16} />
 									) : (
-										<ChevronDown size={16} className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100" />
+										<ChevronDown
+											size={16}
+											className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+										/>
 									)}
 								</button>
 							</StandardTooltip>
 						</div>
 					</div>
 				</div>
-				{!isTaskExpanded && contextWindow > 0 && (
+				{isTaskExpanded && contextWindow > 0 && (
 					<div
 						className="flex items-center justify-between text-sm text-muted-foreground/70"
 						onClick={(e) => e.stopPropagation()}>
@@ -310,43 +312,6 @@ const TaskHeader = ({
 									})()}
 								</span>
 							</StandardTooltip>
-							{!!totalCost && (
-								<>
-									<span>·</span>
-									<StandardTooltip
-										content={
-											hasSubtasks ? (
-												<div>
-													<div>
-														{t("chat:costs.totalWithSubtasks", {
-															cost: (aggregatedCost ?? totalCost).toFixed(2),
-														})}
-													</div>
-													{costBreakdown && (
-														<div className="text-xs mt-1">{costBreakdown}</div>
-													)}
-												</div>
-											) : (
-												<div>{t("chat:costs.total", { cost: totalCost.toFixed(2) })}</div>
-											)
-										}
-										side="top"
-										sideOffset={8}>
-										<>
-											<span>
-												${(aggregatedCost ?? totalCost).toFixed(2)}
-												{hasSubtasks && (
-													<span
-														className="text-xs ml-1"
-														title={t("chat:costs.includesSubtasks")}>
-														*
-													</span>
-												)}
-											</span>
-										</>
-									</StandardTooltip>
-								</>
-							)}
 						</div>
 					</div>
 				)}

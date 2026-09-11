@@ -1,4 +1,7 @@
 {
+	"activityTrace": {
+		"workedFor": "工作用时 {{duration}}"
+	},
 	"completionReport": "完成报告",
 	"greeting": "欢迎使用 Alpha",
 	"task": {
@@ -31,7 +34,9 @@
 	"unpin": "取消置顶",
 	"pin": "置顶",
 	"fileChangesInConversation": {
-		"header": "此对话中已更改 {{count}} 个文件"
+		"header": "已编辑文件：{{count}}",
+		"linesChanged": "新增 {{added}} 行，删除 {{removed}} 行",
+		"openFile": "打开文件：{{path}}"
 	},
 	"tokenProgress": {
 		"availableSpace": "可用: {{amount}}",
@@ -226,6 +231,7 @@
 	},
 	"commandOutput": "命令输出",
 	"commandExecution": {
+		"command": "命令",
 		"running": "正在运行",
 		"abort": "中止",
 		"pid": "PID: {{pid}}",

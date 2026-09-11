@@ -1,4 +1,7 @@
 {
+	"activityTrace": {
+		"workedFor": "Ha lavorato per {{duration}}"
+	},
 	"completionReport": "Resoconto finale",
 	"greeting": "Benvenuto a Alpha",
 	"task": {
@@ -31,7 +34,9 @@
 	"unpin": "Rilascia",
 	"pin": "Fissa",
 	"fileChangesInConversation": {
-		"header": "{{count}} file modificati in questa conversazione"
+		"header": "File modificati: {{count}}",
+		"linesChanged": "{{added}} righe aggiunte, {{removed}} righe rimosse",
+		"openFile": "Apri file: {{path}}"
 	},
 	"tokenProgress": {
 		"availableSpace": "Spazio disponibile: {{amount}} tokens",
@@ -226,6 +231,7 @@
 	},
 	"commandOutput": "Output del Comando",
 	"commandExecution": {
+		"command": "Comando",
 		"abort": "Interrompi",
 		"running": "In esecuzione",
 		"pid": "PID: {{pid}}",

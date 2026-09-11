@@ -1,4 +1,7 @@
 {
+	"activityTrace": {
+		"workedFor": "Ha treballat durant {{duration}}"
+	},
 	"completionReport": "Informe de finalització",
 	"greeting": "Benvingut a Alpha",
 	"task": {
@@ -31,7 +34,9 @@
 	"unpin": "Desfixar",
 	"pin": "Fixar",
 	"fileChangesInConversation": {
-		"header": "{{count}} fitxer(s) canviat(s) en aquesta conversa"
+		"header": "Fitxers editats: {{count}}",
+		"linesChanged": "{{added}} línies afegides, {{removed}} línies eliminades",
+		"openFile": "Obre el fitxer: {{path}}"
 	},
 	"tokenProgress": {
 		"availableSpace": "Espai disponible: {{amount}} tokens",
@@ -226,6 +231,7 @@
 	},
 	"commandOutput": "Sortida de la comanda",
 	"commandExecution": {
+		"command": "Ordre",
 		"abort": "Avortar",
 		"running": "En execució",
 		"pid": "PID: {{pid}}",

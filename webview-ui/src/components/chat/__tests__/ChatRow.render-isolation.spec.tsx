@@ -61,17 +61,17 @@ describe("ChatRow render isolation", () => {
 				/>
 			)
 			const { rerender } = render(row(environment))
-			expect(screen.queryByText("chat:taskCompleted")).not.toBeInTheDocument()
-			expect(screen.getByText("chat:completionReport")).toBeInTheDocument()
+			expect(screen.queryByRole("article", { name: "chat:taskCompleted" })).not.toBeInTheDocument()
+			expect(screen.getByRole("article", { name: "chat:completionReport" })).toBeInTheDocument()
 			expect(screen.getByText(message.text!)).toBeInTheDocument()
 			const completed = { ...environment.currentTaskItem!, status: "completed" as const }
 			rerender(row({ ...environment, currentTaskItem: completed }))
-			expect(screen.getByText("chat:taskCompleted")).toBeInTheDocument()
-			expect(screen.queryByText("chat:completionReport")).not.toBeInTheDocument()
+			expect(screen.getByRole("article", { name: "chat:taskCompleted" })).toBeInTheDocument()
+			expect(screen.queryByRole("article", { name: "chat:completionReport" })).not.toBeInTheDocument()
 			// A stale snapshot for a different task cannot authorize the success label.
 			rerender(row({ ...environment, currentTaskItem: { ...completed, id: "another-task" } }))
-			expect(screen.queryByText("chat:taskCompleted")).not.toBeInTheDocument()
-			expect(screen.getByText("chat:completionReport")).toBeInTheDocument()
+			expect(screen.queryByRole("article", { name: "chat:taskCompleted" })).not.toBeInTheDocument()
+			expect(screen.getByRole("article", { name: "chat:completionReport" })).toBeInTheDocument()
 			expect(mockUseExtensionState).not.toHaveBeenCalled()
 		},
 	)

@@ -1548,6 +1548,66 @@ describe("VsCodeLmHandler", () => {
 			expect(requestOptions).not.toHaveProperty("configuration")
 		})
 
+		it.each(["admission", "stream"])(
+			"classifies Copilot no-choices failures during %s for bounded recovery",
+			async (phase) => {
+				const error = new Error("Response contained no choices.")
+				if (phase === "admission") mockLanguageModelChat.sendRequest.mockRejectedValueOnce(error)
+				else
+					mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+						stream: (async function* () {
+							yield* []
+							throw error
+						})(),
+					})
+				await expect(handler.createMessage("System", []).next()).rejects.toMatchObject({
+					message: error.message,
+					cause: error,
+					retryCategory: "empty-response",
+					retryable: true,
+					semanticOutputObserved: false,
+				})
+				expect(mockLanguageModelChat.sendRequest).toHaveBeenCalledOnce()
+				expect(mockCancellationSources.at(-1)?.dispose).toHaveBeenCalled()
+			},
+		)
+
+		it.each(["NoPermissions", "Blocked", "NotFound", "Filtered"])(
+			"preserves %s errors even with matching no-choices text",
+			async (code) => {
+				const error = Object.assign(new Error("Response contained no choices."), { code })
+				mockLanguageModelChat.sendRequest.mockRejectedValueOnce(error)
+				await expect(handler.createMessage("System", []).next()).rejects.toBe(error)
+			},
+		)
+
+		it("does not mark an explicit non-retryable no-choices error as retryable", async () => {
+			const error = Object.assign(new Error("Response contained no choices."), { retryable: false })
+			mockLanguageModelChat.sendRequest.mockRejectedValueOnce(error)
+			await expect(handler.createMessage("System", []).next()).rejects.toBe(error)
+		})
+
+		it("does not replay no-choices failures after partial text, reasoning, or tool output", async () => {
+			for (const part of [
+				new vscode.LanguageModelTextPart("Partial answer"),
+				{ value: ["Partial reasoning"], id: undefined, metadata: undefined },
+				new vscode.LanguageModelToolCallPart("call-1", "read_file", { path: "file.ts" }),
+			]) {
+				mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+					stream: (async function* () {
+						yield part
+						throw new Error("Response contained no choices.")
+					})(),
+				})
+				const stream = handler.createMessage("System", [], {
+					taskId: "partial-no-choices",
+					tools: [createReadFileTool()],
+				})
+				await stream.next()
+				await expect(stream.next()).rejects.toMatchObject({ retryable: false, semanticOutputObserved: true })
+			}
+		})
+
 		it("should handle errors", async () => {
 			const systemPrompt = "You are a helpful assistant"
 			const messages: Anthropic.Messages.MessageParam[] = [
