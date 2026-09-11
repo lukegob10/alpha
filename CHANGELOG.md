@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.33
+
+### Patch Changes
+
+- Add Bug, Feature, and Improvement tags to Alpha Tickets, with type selection, filtering, and support in ticket tools.
+- Refresh ticket lists and detail views with compact rows, visible type badges, and a properties sidebar.
+- Separate ticket stages with clear single-line borders while preserving theme support and narrow layouts.
+
 ## 2.1.32
 
 ### Patch Changes
