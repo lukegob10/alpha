@@ -38,7 +38,7 @@ vi.mock("../diagnosticsHandler", () => ({
 	generateErrorDiagnostics: vi.fn().mockResolvedValue({ success: true, filePath: "/tmp/diagnostics.json" }),
 }))
 
-import type { ModelRecord } from "@alpha-code/types"
+import type { ModelRecord, WebviewMessage } from "@alpha-code/types"
 
 import { webviewMessageHandler } from "../webviewMessageHandler"
 import type { ClineProvider } from "../ClineProvider"
@@ -181,6 +181,19 @@ import { resolveImageMentions } from "../../mentions/resolveImageMentions"
 
 beforeEach(() => {
 	vi.mocked(mockClineProvider.canAcceptTaskInput).mockReturnValue(true)
+})
+
+describe("webviewMessageHandler - removed features", () => {
+	it.each(["createGoalSeekJob", "updateGoalSeekJob", "deleteGoalSeekJob", "runGoalSeekJob", "cancelGoalSeekRun"])(
+		"ignores the obsolete %s message without starting a task",
+		async (type) => {
+			vi.mocked(mockClineProvider.createTask).mockClear()
+			await expect(
+				webviewMessageHandler(mockClineProvider, { type } as unknown as WebviewMessage),
+			).resolves.toBeUndefined()
+			expect(mockClineProvider.createTask).not.toHaveBeenCalled()
+		},
+	)
 })
 
 describe("webviewMessageHandler - showTaskWithId", () => {

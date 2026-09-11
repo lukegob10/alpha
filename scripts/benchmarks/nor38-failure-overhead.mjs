@@ -303,6 +303,8 @@ const report = {
 	results,
 	absentMetadata,
 }
+
+await fs.mkdir(path.dirname(outputPath), { recursive: true })
 await fs.writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`)
 console.log(
 	JSON.stringify({

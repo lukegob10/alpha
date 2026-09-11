@@ -1860,7 +1860,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		expect(input).toHaveAttribute("data-sending-disabled", "false")
 	})
 
-	it("shows recoverable stalled-turn feedback while preserving the Stop control", async () => {
+	it("shows delayed model feedback while preserving the Stop control", async () => {
 		const { getByRole, getByTestId } = renderChatView()
 
 		mockPostMessage({
@@ -1875,7 +1875,7 @@ describe("ChatView - Message Queueing Tests", () => {
 					isStreaming: true,
 					isTurnActive: true,
 					canInterrupt: true,
-					activityPhase: "thinking",
+					activityPhase: "working",
 					isWaitingForInput: false,
 					lastUpdatedAt: Date.now() - 31_000,
 					queueCount: 0,
@@ -1887,8 +1887,165 @@ describe("ChatView - Message Queueing Tests", () => {
 			clineMessages: [{ type: "say", say: "task", ts: 1, text: "Initial task" }],
 		})
 
-		await waitFor(() => expect(getByRole("status")).toHaveTextContent("chat:stalledTurn"))
+		await waitFor(() => expect(getByRole("status")).toHaveTextContent("chat:modelResponseDelayed"))
 		expect(getByTestId("mock-stop")).toBeEnabled()
+	})
+
+	describe("model response delay", () => {
+		beforeEach(() => {
+			vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] })
+			vi.setSystemTime(new Date("2026-09-10T18:00:00Z"))
+		})
+		afterEach(() => vi.useRealTimers())
+
+		const publishActivity = (phase: string | undefined, overrides: Partial<ExtensionState> = {}) => {
+			mockPostMessage({
+				currentTaskId: "task-1",
+				currentView: { type: "task", taskId: "task-1" },
+				liveTasksById: {
+					"task-1": {
+						id: "task-1",
+						status: "running",
+						lifecycle: "running",
+						isActive: true,
+						isStreaming: true,
+						isTurnActive: true,
+						canInterrupt: true,
+						activityPhase: phase,
+						isWaitingForInput: false,
+						lastUpdatedAt: Date.now(),
+						queueCount: 0,
+						tokensIn: 0,
+						tokensOut: 0,
+						totalCost: 0,
+					},
+				},
+				clineMessages: [{ type: "say", say: "task", ts: 1, text: "Waiting test" }],
+				...overrides,
+			})
+		}
+
+		it.each([
+			"executing",
+			"waiting",
+			"awaiting_approval",
+			"compacting",
+			"starting",
+			"queued",
+			"finalizing",
+			undefined,
+		])("does not treat the %s phase as a delayed model response", async (phase) => {
+			const { getByTestId, queryByText } = renderChatView()
+			publishActivity(phase)
+			await waitFor(() => expect(getByTestId("mock-stop")).toBeEnabled())
+			act(() => vi.advanceTimersByTime(300_000))
+			expect(queryByText("chat:modelResponseDelayed")).not.toBeInTheDocument()
+		})
+
+		it("does not flag an accepted wait_agent call before its execution phase arrives", async () => {
+			const { getByTestId, queryByText } = renderChatView()
+			publishActivity("working", {
+				agentLifecycleSnapshots: {
+					"task-1": agentLifecycleSnapshotSchema.parse({
+						version: 1,
+						taskId: "task-1",
+						runId: "run",
+						turnId: "turn",
+						status: "in_progress",
+						phase: "working",
+						lastSequence: 0,
+						items: [
+							{
+								type: "tool_call",
+								itemId: "wait",
+								toolCallId: "call-wait",
+								name: "wait_agent",
+								arguments: {},
+							},
+						],
+						steps: [],
+						acceptedToolCallIds: ["call-wait"],
+						terminalToolCallIds: [],
+						processedEvents: [],
+					}),
+				},
+			})
+			await waitFor(() => expect(getByTestId("mock-stop")).toBeEnabled())
+			act(() => vi.advanceTimersByTime(300_000))
+			expect(queryByText("chat:modelResponseDelayed")).not.toBeInTheDocument()
+		})
+
+		it.each(["completed", "error", "cancelled"])(
+			"still detects a quiet model after a tool has %s",
+			async (status) => {
+				const { getByTestId, getByRole } = renderChatView()
+				publishActivity("working", {
+					agentLifecycleSnapshots: {
+						"task-1": agentLifecycleSnapshotSchema.parse({
+							version: 1,
+							taskId: "task-1",
+							runId: "run",
+							turnId: "turn",
+							status: "in_progress",
+							phase: "working",
+							lastSequence: 0,
+							items: [
+								{ type: "tool_result", itemId: "result", toolCallId: "call-wait", status, output: {} },
+							],
+							steps: [],
+							acceptedToolCallIds: ["call-wait"],
+							terminalToolCallIds: ["call-wait"],
+							processedEvents: [],
+						}),
+					},
+				})
+				await waitFor(() => expect(getByTestId("mock-stop")).toBeEnabled())
+				act(() => vi.advanceTimersByTime(30_000))
+				expect(getByRole("status")).toHaveTextContent("chat:modelResponseDelayed")
+			},
+		)
+
+		it("does not use another task's activity to diagnose the visible model", async () => {
+			const { getByTestId, getByRole } = renderChatView()
+			publishActivity("working", {
+				agentLifecycleSnapshots: {
+					"other-task": agentLifecycleSnapshotSchema.parse({
+						version: 1,
+						taskId: "other-task",
+						runId: "other-run",
+						turnId: "other-turn",
+						status: "in_progress",
+						phase: "executing",
+						lastSequence: 0,
+						items: [],
+						steps: [],
+						acceptedToolCallIds: ["other-call"],
+						terminalToolCallIds: [],
+						processedEvents: [],
+					}),
+				},
+			})
+			await waitFor(() => expect(getByTestId("mock-stop")).toBeEnabled())
+			act(() => vi.advanceTimersByTime(30_000))
+			expect(getByRole("status")).toHaveTextContent("chat:modelResponseDelayed")
+		})
+
+		it("starts a fresh delay after tools finish and clears it when model activity resumes", async () => {
+			const { getByTestId, queryByText, getByRole } = renderChatView()
+			publishActivity("executing")
+			await waitFor(() => expect(getByTestId("mock-stop")).toBeEnabled())
+			act(() => vi.advanceTimersByTime(300_000))
+			expect(queryByText("chat:modelResponseDelayed")).not.toBeInTheDocument()
+			publishActivity("working")
+			await waitFor(() => expect(queryByText("chat:modelResponseDelayed")).not.toBeInTheDocument())
+			act(() => vi.advanceTimersByTime(25_000))
+			expect(queryByText("chat:modelResponseDelayed")).not.toBeInTheDocument()
+			act(() => vi.advanceTimersByTime(5_000))
+			expect(getByRole("status")).toHaveTextContent("chat:modelResponseDelayed")
+			publishActivity("working")
+			await waitFor(() => expect(queryByText("chat:modelResponseDelayed")).not.toBeInTheDocument())
+			expect(getByTestId("mock-stop")).toBeEnabled()
+		})
 	})
 
 	it("keeps an idle completion-tool review out of the stalled running state", async () => {
@@ -1941,7 +2098,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		await waitFor(() =>
 			expect(getByTestId("chat-textarea").querySelector("input")).toHaveAttribute("data-is-streaming", "false"),
 		)
-		expect(queryByText("chat:stalledTurn")).not.toBeInTheDocument()
+		expect(queryByText("chat:modelResponseDelayed")).not.toBeInTheDocument()
 	})
 	;(process.env.ALPHA_COMPLETION_IDLE_EVIDENCE ? it : it.skip)(
 		"replays the isolated live completion-idle capture through the rendered chat",
@@ -1962,7 +2119,7 @@ describe("ChatView - Message Queueing Tests", () => {
 						"false",
 					),
 				)
-				expect(queryByText("chat:stalledTurn")).not.toBeInTheDocument()
+				expect(queryByText("chat:modelResponseDelayed")).not.toBeInTheDocument()
 			}
 		},
 	)

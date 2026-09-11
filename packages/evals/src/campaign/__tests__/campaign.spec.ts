@@ -18,8 +18,7 @@ afterEach(async () => {
 async function makeRoot(): Promise<string> {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-campaign-"))
 	roots.push(root)
-	await fs.mkdir(path.join(root, "docs"), { recursive: true })
-	await fs.writeFile(path.join(root, "docs", "core-harness-comparison.md"), "target")
+	await fs.writeFile(path.join(root, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n")
 	await fs.writeFile(path.join(root, "package.json"), "{}")
 	return root
 }

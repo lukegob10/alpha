@@ -19,7 +19,7 @@ export function findRepositoryRoot(start = process.env.INIT_CWD ?? process.cwd()
 	let current = path.resolve(start)
 	while (true) {
 		if (
-			fs.existsSync(path.join(current, "docs", "core-harness-comparison.md")) &&
+			fs.existsSync(path.join(current, "pnpm-workspace.yaml")) &&
 			fs.existsSync(path.join(current, "package.json"))
 		)
 			return current

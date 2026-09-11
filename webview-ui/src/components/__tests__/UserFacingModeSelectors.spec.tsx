@@ -1,6 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@/utils/test-utils"
 
-import GoalSeekView from "@/components/goal-seek/GoalSeekView"
 import ScheduledTasksView from "@/components/scheduled-tasks/ScheduledTasksView"
 import { CreateSkillDialog } from "@/components/settings/CreateSkillDialog"
 
@@ -14,12 +13,8 @@ vi.mock("@/utils/vscode", () => ({
 	vscode: { postMessage: vi.fn() },
 }))
 
-vi.mock("@/components/ui", () => ({
-	Button: ({ children, onClick, disabled, ...props }: any) => (
-		<button onClick={onClick} disabled={disabled} aria-label={props["aria-label"]}>
-			{children}
-		</button>
-	),
+vi.mock("@/components/ui", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@/components/ui")>()),
 	Checkbox: ({ id, checked, onCheckedChange }: any) => (
 		<input
 			type="checkbox"
@@ -56,9 +51,7 @@ const baseState = () => ({
 	cwd: "/workspace",
 	mode: "code",
 	customModes: [customMode],
-	goalSeekJobs: [],
-	goalSeekRuns: [],
-	goalSeekAttempts: [],
+	listApiConfigMeta: [{ id: "profile", name: "Scheduled profile" }],
 	scheduledTasks: [],
 	scheduledTaskRuns: [],
 })
@@ -66,17 +59,6 @@ const baseState = () => ({
 describe("secondary user-facing mode selectors", () => {
 	beforeEach(() => {
 		mockExtensionState = baseState()
-	})
-
-	it("limits a new Goal Seek job to Plan and Code", () => {
-		render(<GoalSeekView onDone={vi.fn()} />)
-
-		expect(screen.getByTestId("select-item-architect")).toHaveTextContent("Plan")
-		expect(screen.getByTestId("select-item-code")).toHaveTextContent("Code")
-		expect(screen.queryByTestId("select-item-security-review")).not.toBeInTheDocument()
-		expect(screen.queryByTestId("select-item-ask")).not.toBeInTheDocument()
-		expect(screen.queryByTestId("select-item-debug")).not.toBeInTheDocument()
-		expect(screen.queryByTestId("select-item-orchestrator")).not.toBeInTheDocument()
 	})
 
 	it("limits a new skill binding to Plan and Code", () => {
@@ -89,69 +71,6 @@ describe("secondary user-facing mode selectors", () => {
 		expect(screen.queryByTestId("checkbox-create-mode-ask")).not.toBeInTheDocument()
 		expect(screen.queryByTestId("checkbox-create-mode-debug")).not.toBeInTheDocument()
 		expect(screen.queryByTestId("checkbox-create-mode-orchestrator")).not.toBeInTheDocument()
-	})
-
-	it("normalizes a hidden active mode when starting a new Goal Seek job", () => {
-		mockExtensionState = { ...baseState(), mode: "security-review" }
-		const { container } = render(<GoalSeekView onDone={vi.fn()} />)
-
-		expect(container.querySelector('[data-select-value="code"]')).toBeInTheDocument()
-		expect(screen.queryByTestId("select-item-security-review")).not.toBeInTheDocument()
-	})
-
-	it("retains the saved legacy mode when a Goal Seek job is opened", () => {
-		mockExtensionState = {
-			...baseState(),
-			goalSeekJobs: [
-				{
-					id: "legacy-goal",
-					name: "Legacy goal",
-					goal: "Preserve the saved mode",
-					verifier: { type: "prompt", prompt: "Verify" },
-					direction: "maximize",
-					targetScore: 100,
-					maxAttempts: 3,
-					maxFailedAttempts: 1,
-					candidateCount: 2,
-					mode: "debug",
-				},
-			],
-		}
-		render(<GoalSeekView onDone={vi.fn()} />)
-
-		fireEvent.click(screen.getByRole("button", { name: /Legacy goal/ }))
-
-		expect(screen.getByTestId("select-item-debug")).toHaveTextContent(/Debug/)
-		expect(screen.queryByTestId("select-item-ask")).not.toBeInTheDocument()
-		expect(screen.queryByTestId("select-item-orchestrator")).not.toBeInTheDocument()
-	})
-
-	it("hydrates a preselected Goal Seek job before allowing it to be saved", async () => {
-		mockExtensionState = {
-			...baseState(),
-			goalSeekJobs: [
-				{
-					id: "goal-1",
-					name: "Existing goal",
-					goal: "Keep the existing draft",
-					verifier: { type: "prompt", prompt: "Verify the result" },
-					direction: "maximize",
-					targetScore: 95,
-					maxAttempts: 7,
-					maxFailedAttempts: 2,
-					candidateCount: 4,
-					mode: "code",
-				},
-			],
-		}
-
-		render(<GoalSeekView onDone={vi.fn()} targetJobId="goal-1" />)
-
-		await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue("Existing goal"))
-		expect(screen.getByLabelText("Goal")).toHaveValue("Keep the existing draft")
-		expect(screen.getByLabelText("Verifier prompt")).toHaveValue("Verify the result")
-		expect(screen.getByLabelText("Target score")).toHaveValue(95)
-		expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
 	})
 
 	it("retains the saved legacy mode when a scheduled task is opened", async () => {
@@ -189,6 +108,7 @@ describe("secondary user-facing mode selectors", () => {
 	it("hydrates the first scheduled task and preserves an edited draft across context refreshes", async () => {
 		const scheduledTask = {
 			id: "schedule-1",
+			apiConfig: { id: "profile", name: "Scheduled profile" },
 			name: "Existing schedule",
 			prompt: "Keep the existing prompt",
 			execution: { type: "prompt" },

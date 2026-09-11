@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.31
+
+### Patch Changes
+
+- Publish the current main-v2 worktree, including the reordered extension menus and current scheduled-task/UI updates.
+- Remove retired Goal Seek surfaces and documentation-only artifacts from the V2 extension package.
+
 ## 2.1.30
 
 ### Patch Changes

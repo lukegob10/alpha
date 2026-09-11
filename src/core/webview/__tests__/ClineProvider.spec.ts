@@ -1673,6 +1673,55 @@ describe("ClineProvider", () => {
 		}
 	})
 
+	test("keeps the interactive profile when creating a background task with its own profile", async () => {
+		await provider.contextProxy.setValue("currentApiConfigName", "Coding")
+		await provider.contextProxy.setValue("apiProvider", "anthropic")
+		const activate = vi.spyOn(provider, "setProviderProfile")
+		const addTask = vi.spyOn(provider, "addClineToStack").mockResolvedValue(undefined)
+		vi.spyOn(provider, "postTaskStateToWebview").mockResolvedValue(undefined)
+		const apiConfiguration = { apiProvider: "openai" as const, openAiModelId: "internal-model" }
+		await provider.createTask("Scheduled prompt", undefined, undefined, {
+			preserveExisting: true,
+			background: true,
+			startTask: false,
+			taskApiConfigName: "Internal models",
+			apiConfiguration,
+			taskMode: "architect",
+		})
+		expect(vi.mocked(Task)).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				apiConfiguration,
+				taskApiConfigName: "Internal models",
+				taskMode: "architect",
+			}),
+		)
+		expect(addTask).toHaveBeenCalledWith(expect.anything(), { focus: false })
+		expect(activate).not.toHaveBeenCalled()
+		expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("Coding")
+		expect(provider.contextProxy.getValue("apiProvider")).toBe("anthropic")
+	})
+
+	test("returns a skill catalog for the scheduled workspace and mode", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const getSkills = vi.fn().mockResolvedValue([])
+		vi.spyOn(provider, "getScheduledTaskService").mockReturnValue({ getSkills } as unknown as ReturnType<
+			ClineProvider["getScheduledTaskService"]
+		>)
+		const messageHandler = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]
+		await messageHandler({
+			type: "requestScheduledTaskSkills",
+			scheduledTaskSkillsRequest: { requestId: "catalog", workspace: "/scheduled", mode: "architect" },
+		})
+		expect(getSkills).toHaveBeenCalledWith("/scheduled", "architect")
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "scheduledTaskSkills",
+			scheduledTaskSkills: { requestId: "catalog", skills: [] },
+		})
+		getSkills.mockClear()
+		await messageHandler({ type: "requestScheduledTaskSkills", scheduledTaskSkillsRequest: { workspace: 42 } })
+		expect(getSkills).not.toHaveBeenCalled()
+	})
+
 	test("allows a root task policy override to narrow but never widen", async () => {
 		const getState = vi.spyOn(provider, "getState")
 		vi.spyOn(provider, "removeClineFromStack").mockResolvedValue(undefined)

@@ -463,7 +463,7 @@
 		"queueFailed": "Mesaj sıraya eklenemedi. Taslağınız yazma alanında duruyor.",
 		"steerFailed": "Yönlendirme başlatılamadı. Sıradaki mesaj hâlâ kullanılabilir."
 	},
-	"stalledTurn": "Bir süredir model çıktısı yok. Görevi durdurabilir veya sıradaki bir mesajla yönlendirebilirsiniz.",
+	"modelResponseDelayed": "Modelin sonraki güncellemesi bekleniyor. Daha uzun akıl yürütme zaman alabilir.",
 	"slashCommand": {
 		"wantsToRun": "Alpha bir slash komutu çalıştırmak istiyor",
 		"didRun": "Alpha bir slash komutu çalıştırdı"

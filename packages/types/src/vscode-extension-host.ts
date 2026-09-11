@@ -31,16 +31,10 @@ import type {
 	ScheduledTask,
 	ScheduledTaskRun,
 	ScheduledTaskState,
+	ScheduledTaskSkillsRequest,
+	ScheduledTaskSkillsResponse,
 	UpdateScheduledTaskPayload,
 } from "./scheduled-task.js"
-import type {
-	CreateGoalSeekJobPayload,
-	GoalSeekAttempt,
-	GoalSeekJob,
-	GoalSeekRun,
-	GoalSeekState,
-	UpdateGoalSeekJobPayload,
-} from "./goal-seek.js"
 import {
 	agentLifecycleEventSchema,
 	agentLifecycleDegradedSignalSchema,
@@ -357,7 +351,7 @@ export interface ExtensionMessage {
 		| "skills"
 		| "fileContent"
 		| "scheduledTasksUpdated"
-		| "goalSeekUpdated"
+		| "scheduledTaskSkills"
 		| "subagentChangeSetActionCapability"
 		| "subagentChangeSetActionResult"
 	text?: string
@@ -370,10 +364,7 @@ export interface ExtensionMessage {
 	scheduledTasks?: ScheduledTask[]
 	scheduledTaskRuns?: ScheduledTaskRun[]
 	scheduledTaskState?: ScheduledTaskState
-	goalSeekJobs?: GoalSeekJob[]
-	goalSeekRuns?: GoalSeekRun[]
-	goalSeekAttempts?: GoalSeekAttempt[]
-	goalSeekState?: GoalSeekState
+	scheduledTaskSkills?: ScheduledTaskSkillsResponse
 	/** Canonical lifecycle event payload for extension -> webview rollout. */
 	agentLifecycleEvent?: AgentLifecycleEvent
 	/** Canonical lifecycle snapshot payload for extension -> webview rollout. */
@@ -669,9 +660,6 @@ export type ExtensionState = Pick<
 	mcpServers?: McpServer[]
 	scheduledTasks?: ScheduledTask[]
 	scheduledTaskRuns?: ScheduledTaskRun[]
-	goalSeekJobs?: GoalSeekJob[]
-	goalSeekRuns?: GoalSeekRun[]
-	goalSeekAttempts?: GoalSeekAttempt[]
 	openAiCodexIsAuthenticated?: boolean
 	debug?: boolean
 
@@ -899,11 +887,7 @@ interface WebviewMessageBase {
 		| "resumeScheduledTask"
 		| "runScheduledTaskNow"
 		| "duplicateScheduledTask"
-		| "createGoalSeekJob"
-		| "updateGoalSeekJob"
-		| "deleteGoalSeekJob"
-		| "runGoalSeekJob"
-		| "cancelGoalSeekRun"
+		| "requestScheduledTaskSkills"
 	text?: string
 	taskId?: string
 	groupId?: string
@@ -915,12 +899,9 @@ interface WebviewMessageBase {
 	scheduledTaskId?: string
 	scheduledTask?: CreateScheduledTaskPayload
 	scheduledTaskUpdate?: UpdateScheduledTaskPayload
-	goalSeekJobId?: string
-	goalSeekRunId?: string
-	goalSeekJob?: CreateGoalSeekJobPayload
-	goalSeekJobUpdate?: UpdateGoalSeekJobPayload
+	scheduledTaskSkillsRequest?: ScheduledTaskSkillsRequest
 	editedMessageContent?: string
-	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "marketplace" | "scheduledTasks" | "goalSeek"
+	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "marketplace" | "scheduledTasks"
 	disabled?: boolean
 	context?: string
 	dataUri?: string

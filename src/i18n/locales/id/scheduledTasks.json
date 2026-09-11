@@ -1,0 +1,6 @@
+{
+	"profileRequired": "Pilih profil tersimpan sebelum menjalankan tugas terjadwal ini.",
+	"profileUnavailable": "Profil “{{name}}” hilang, diganti namanya, atau tidak dapat dimuat. Pilih ulang profil tersimpan.",
+	"skillUnavailable": "Keterampilan “{{name}}” hilang, tidak dapat dibaca, atau tidak tersedia di ruang kerja dan mode terjadwal. Pilih ulang keterampilan.",
+	"workspaceInvalid": "Ruang kerja terjadwal harus berupa jalur absolut."
+}

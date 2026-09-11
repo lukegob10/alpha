@@ -57,7 +57,6 @@ suite("Alpha Extension", function () {
 			"settingsButtonClicked",
 			"historyButtonClicked",
 			"scheduledTasksButtonClicked",
-			"goalSeekButtonClicked",
 			"openTickets",
 			"marketplaceButtonClicked",
 			"newTask",
@@ -81,5 +80,15 @@ suite("Alpha Extension", function () {
 		for (const command of expectedCommands) {
 			assert.ok(commands.has(`alpha.${command}`), `Command ${command} should be registered`)
 		}
+
+		assert.ok(!commands.has("alpha.goalSeekButtonClicked"), "Goal Seek must not be registered")
+		const extensionId = process.env.ALPHA_E2E_EXTENSION_ID
+		assert.ok(extensionId, "The E2E runner should provide the extension ID")
+		const extension = vscode.extensions.getExtension(extensionId)
+		assert.ok(extension, "Alpha extension should be installed")
+		assert.ok(
+			!JSON.stringify(extension.packageJSON.contributes).includes("alpha.goalSeekButtonClicked"),
+			"Goal Seek must not be contributed to the command palette or title menus",
+		)
 	})
 })

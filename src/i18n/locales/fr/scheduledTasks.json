@@ -1,0 +1,6 @@
+{
+	"profileRequired": "Sélectionnez un profil enregistré avant d’exécuter cette tâche planifiée.",
+	"profileUnavailable": "Le profil « {{name}} » est introuvable, a été renommé ou n’a pas pu être chargé. Sélectionnez à nouveau un profil enregistré.",
+	"skillUnavailable": "La compétence « {{name}} » est introuvable, illisible ou indisponible dans l’espace de travail et le mode planifiés. Sélectionnez-la à nouveau.",
+	"workspaceInvalid": "L’espace de travail planifié doit être un chemin absolu."
+}

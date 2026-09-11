@@ -147,4 +147,12 @@ describe("registerCommands", () => {
 			startBlankTask.mock.invocationCallOrder[0],
 		)
 	})
+
+	it("does not register the removed Goal Seek command", () => {
+		const context = { subscriptions: [] } as unknown as vscode.ExtensionContext
+		registerCommands({ context, outputChannel: mockOutputChannel, provider: {} as ClineProvider })
+		const commands = vi.mocked(vscode.commands.registerCommand).mock.calls.map(([command]) => command)
+		expect(commands).not.toContain("alpha.goalSeekButtonClicked")
+		expect(commands).toContain("alpha.scheduledTasksButtonClicked")
+	})
 })

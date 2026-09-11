@@ -10,7 +10,6 @@ const mocks = vi.hoisted(() => {
 		providerSettingsManager: {},
 		customModesManager: {},
 		setScheduledTaskService: vi.fn(),
-		setGoalSeekService: vi.fn(),
 		dispose: vi.fn().mockResolvedValue(undefined),
 	}
 
@@ -45,6 +44,7 @@ vi.mock("vscode", () => ({
 	},
 	commands: {
 		executeCommand: vi.fn().mockResolvedValue(undefined),
+		registerCommand: vi.fn(() => ({ dispose: vi.fn() })),
 	},
 	env: { language: "en" },
 }))
@@ -91,8 +91,8 @@ vi.mock("../../services/code-index/manager", () => ({
 vi.mock("../../services/scheduled-tasks", () => ({
 	ScheduledTaskService: vi.fn(() => ({ initialize: vi.fn().mockResolvedValue(undefined) })),
 }))
-vi.mock("../../services/goal-seek", () => ({
-	GoalSeekService: vi.fn(() => ({ initialize: vi.fn().mockResolvedValue(undefined) })),
+vi.mock("../../services/tickets/TicketPanel", () => ({
+	TicketPanel: vi.fn(() => ({ dispose: vi.fn() })),
 }))
 vi.mock("../../utils/migrateSettings", () => ({ migrateSettings: vi.fn().mockResolvedValue(undefined) }))
 vi.mock("../../utils/autoImportSettings", () => ({ autoImportSettings: vi.fn().mockResolvedValue(undefined) }))

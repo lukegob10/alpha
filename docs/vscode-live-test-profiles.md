@@ -12,8 +12,7 @@ confirmed Alpha-owned `canSendRequest: true` for exact Luna with High, without a
 1.136.1 and actual live workflows remain unverified. No credentials were copied or inspected.
 
 **Current live blocker:** the authenticated 1.122.1 workflow hit an uncaught exception in its bundled Copilot 0.50.1,
-before an Alpha task was created. Repeating sign-in does not address that failure. See the
-[recorded host/provider investigation](vscode-live-test-orchestration-2026-09-06.md#authenticated-workflow-upstream-copilot-exception-on-exact-11221).
+before an Alpha task was created. Repeating sign-in does not address that failure.
 
 ## Persistent storage requires a normal development host
 

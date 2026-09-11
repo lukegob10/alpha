@@ -174,6 +174,29 @@ describe("SkillsManager", () => {
 	})
 
 	describe("discoverSkills", () => {
+		it("discovers scheduled workspace skills without watching or reading the coding workspace", async () => {
+			const scheduledDir = p(PROJECT_DIR, "scheduled")
+			const skillDir = p(scheduledDir, ".agents", "skills", "review")
+			mockDirectoryExists.mockImplementation(async (dir: string) => dir === p(scheduledDir, ".agents", "skills"))
+			mockRealpath.mockImplementation(async (dir: string) => dir)
+			mockReaddir.mockResolvedValue(["review"])
+			mockStat.mockResolvedValue({ isDirectory: () => true })
+			mockFileExists.mockResolvedValue(true)
+			mockReadFile.mockResolvedValue(
+				"---\nname: review\ndescription: Review work\nmodeSlugs: [architect]\n---\nUse the checklist.",
+			)
+			const scoped = new SkillsManager(mockProvider as ClineProvider, scheduledDir)
+			await scoped.discoverSkills()
+			expect(scoped.getSkillsForMode("architect")).toEqual([
+				expect.objectContaining({ name: "review", path: p(skillDir, "SKILL.md") }),
+			])
+			expect(scoped.getSkillsForMode("code")).toEqual([])
+			expect(mockDirectoryExists).not.toHaveBeenCalledWith(projectSkillsDir)
+			expect(mockDirectoryExists).not.toHaveBeenCalledWith(projectAgentsSkillsDir)
+			expect(mockCreateFileSystemWatcher).not.toHaveBeenCalled()
+			await scoped.dispose()
+		})
+
 		it("should discover skills from global directory", async () => {
 			const pdfSkillDir = p(globalSkillsDir, "pdf-processing")
 			const pdfSkillMd = p(pdfSkillDir, "SKILL.md")

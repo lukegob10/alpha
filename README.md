@@ -6,14 +6,13 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.8 Preview
+## Welcome to Alpha v2.1.31 Preview
 
-Alpha v2.1.8 fixes multi-turn tool calling for stateful GitHub Copilot models used through the VS Code Language Model API.
+Alpha v2.1.31 publishes the current main-v2 extension worktree, including the reordered menus and scheduled-task/UI updates.
 
-- Opaque `stateful_marker` response data is preserved on the exact assistant turn that emitted it
-- Subsequent tool outputs can be matched to their original Copilot function calls instead of failing with `invalid_request_body`
-- Persisted markers survive task reloads and are replayed only through the `vscode-lm` provider
-- Models that do not emit stateful markers keep their existing request behavior
+- Extension menu actions are ordered consistently across the sidebar and editor panel
+- Scheduled-task behavior and UI updates are included in the preview build
+- Retired Goal Seek surfaces and documentation-only artifacts are removed from the V2 extension package
 
 <details>
   <summary>🌐 Available languages</summary>

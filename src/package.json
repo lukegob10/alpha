@@ -3,7 +3,7 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "2.1.30",
+	"version": "2.1.31",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
@@ -90,11 +90,6 @@
 				"command": "alpha.scheduledTasksButtonClicked",
 				"title": "%command.scheduledTasks.title%",
 				"icon": "$(calendar)"
-			},
-			{
-				"command": "alpha.goalSeekButtonClicked",
-				"title": "%command.goalSeek.title%",
-				"icon": "$(target)"
 			},
 			{
 				"command": "alpha.marketplaceButtonClicked",
@@ -225,11 +220,6 @@
 			],
 			"view/title": [
 				{
-					"command": "alpha.openTickets",
-					"group": "overflow@2",
-					"when": "view == alpha.SidebarProvider"
-				},
-				{
 					"command": "alpha.plusButtonClicked",
 					"group": "navigation@1",
 					"when": "view == alpha.SidebarProvider"
@@ -240,8 +230,8 @@
 					"when": "view == alpha.SidebarProvider"
 				},
 				{
-					"command": "alpha.marketplaceButtonClicked",
-					"group": "navigation@4",
+					"command": "alpha.openTickets",
+					"group": "navigation@3",
 					"when": "view == alpha.SidebarProvider"
 				},
 				{
@@ -255,7 +245,7 @@
 					"when": "view == alpha.SidebarProvider"
 				},
 				{
-					"command": "alpha.goalSeekButtonClicked",
+					"command": "alpha.marketplaceButtonClicked",
 					"group": "overflow@3",
 					"when": "view == alpha.SidebarProvider"
 				},
@@ -277,8 +267,8 @@
 					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
 				},
 				{
-					"command": "alpha.marketplaceButtonClicked",
-					"group": "navigation@4",
+					"command": "alpha.openTickets",
+					"group": "navigation@3",
 					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
 				},
 				{
@@ -292,7 +282,7 @@
 					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
 				},
 				{
-					"command": "alpha.goalSeekButtonClicked",
+					"command": "alpha.marketplaceButtonClicked",
 					"group": "overflow@3",
 					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
 				},

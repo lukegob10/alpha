@@ -84,7 +84,7 @@ const messageResponseAskTypes = new Set<ClineAsk>([
 ])
 const completedTaskResponseAskTypes = new Set<ClineAsk>(["completion_result", "resume_completed_task"])
 const approvalAskTypes = new Set<ClineAsk>(["tool", "command", "use_mcp_server"])
-const STALLED_TURN_THRESHOLD_MS = 30_000
+const MODEL_RESPONSE_DELAY_MS = 30_000
 
 const computeChatItemKey = (index: number, message: ClineMessage) => `${message.ts}:${index}`
 
@@ -127,6 +127,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		soundVolume,
 		messageQueue = [],
 		liveTasksById,
+		agentLifecycleSnapshots,
 		agentLifecycleDegraded,
 		managedAgentTree,
 		showWorktreesInHomeScreen,
@@ -781,10 +782,21 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		enableButtons &&
 		primaryButtonText !== undefined
 	const isStreaming = isTurnActive && !effectiveVisibleLiveTask?.isWaitingForInput && !isToolCurrentlyAsking
-	const isTurnStalled =
+	const visibleLifecycleSnapshot = visibleCurrentTaskId ? agentLifecycleSnapshots?.[visibleCurrentTaskId] : undefined
+	const hasPendingToolCalls = useMemo(() => {
+		if (!visibleLifecycleSnapshot) return false
+		const completed = new Set(visibleLifecycleSnapshot.terminalToolCallIds)
+		return visibleLifecycleSnapshot.acceptedToolCallIds.some((id) => !completed.has(id))
+	}, [visibleLifecycleSnapshot])
+	// Silence is expected while tools (including wait_agent), compaction, or other runtime phases run.
+	// Missing/degraded phase data cannot establish that the model is the source of a delay.
+	const isModelResponseDelayed =
 		isStreaming &&
+		!isVisibleTaskLifecycleDegraded &&
+		effectiveVisibleLiveTask?.activityPhase === "working" &&
+		!hasPendingToolCalls &&
 		Boolean(effectiveVisibleLiveTask?.lastUpdatedAt) &&
-		activityClock - (effectiveVisibleLiveTask?.lastUpdatedAt ?? activityClock) >= STALLED_TURN_THRESHOLD_MS
+		activityClock - (effectiveVisibleLiveTask?.lastUpdatedAt ?? activityClock) >= MODEL_RESPONSE_DELAY_MS
 
 	useEffect(() => {
 		if (!isTurnActive) return
@@ -2370,11 +2382,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						{chatCommandError}
 					</div>
 				)}
-				{isTurnStalled && (
+				{isModelResponseDelayed && (
 					<div
 						role="status"
-						className="mx-[15px] mb-2 rounded-md border border-vscode-inputValidation-warningBorder bg-vscode-inputValidation-warningBackground px-3 py-2 text-sm text-vscode-inputValidation-warningForeground">
-						{t("chat:stalledTurn")}
+						className="mx-[15px] mb-2 rounded-md border border-vscode-panel-border px-3 py-2 text-sm text-vscode-descriptionForeground">
+						{t("chat:modelResponseDelayed")}
 					</div>
 				)}
 				{showRetiredProviderWarning && (

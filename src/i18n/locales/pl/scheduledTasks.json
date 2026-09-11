@@ -1,0 +1,6 @@
+{
+	"profileRequired": "Wybierz zapisany profil przed uruchomieniem tego zaplanowanego zadania.",
+	"profileUnavailable": "Brak profilu „{{name}}”, zmieniono jego nazwę lub nie można go wczytać. Wybierz ponownie zapisany profil.",
+	"skillUnavailable": "Umiejętność „{{name}}” nie istnieje, jest nieczytelna lub niedostępna w zaplanowanym obszarze roboczym i trybie. Wybierz ją ponownie.",
+	"workspaceInvalid": "Zaplanowany obszar roboczy musi być ścieżką bezwzględną."
+}

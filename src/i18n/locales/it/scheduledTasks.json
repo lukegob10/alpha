@@ -1,0 +1,6 @@
+{
+	"profileRequired": "Seleziona un profilo salvato prima di eseguire questa attività pianificata.",
+	"profileUnavailable": "Il profilo «{{name}}» è mancante, è stato rinominato o non può essere caricato. Seleziona di nuovo un profilo salvato.",
+	"skillUnavailable": "La competenza «{{name}}» è mancante, illeggibile o non disponibile nello spazio di lavoro e nella modalità pianificati. Selezionala di nuovo.",
+	"workspaceInvalid": "Lo spazio di lavoro pianificato deve essere un percorso assoluto."
+}

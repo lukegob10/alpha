@@ -462,7 +462,7 @@
 		"queueFailed": "Non è stato possibile mettere il messaggio in coda. La bozza è ancora nell'editor.",
 		"steerFailed": "Non è stato possibile avviare il reindirizzamento. Il messaggio in coda è ancora disponibile."
 	},
-	"stalledTurn": "Il modello non produce output da un po'. Puoi interrompere l'attività o reindirizzarla con un messaggio in coda.",
+	"modelResponseDelayed": "In attesa del prossimo aggiornamento del modello. Un ragionamento più lungo può richiedere tempo.",
 	"slashCommand": {
 		"wantsToRun": "Alpha vuole eseguire un comando slash",
 		"didRun": "Alpha ha eseguito un comando slash"

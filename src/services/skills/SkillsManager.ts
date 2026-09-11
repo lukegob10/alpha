@@ -35,7 +35,10 @@ export class SkillsManager {
 	private disposables: vscode.Disposable[] = []
 	private isDisposed = false
 
-	constructor(provider: ClineProvider) {
+	constructor(
+		provider: ClineProvider,
+		private readonly workspacePath?: string,
+	) {
 		this.providerRef = new WeakRef(provider)
 	}
 
@@ -613,8 +616,9 @@ Add your skill instructions here.
 		const globalAlphaDir = getGlobalAlphaDirectory()
 		const globalAgentsDir = getGlobalAgentsDirectory()
 		const provider = this.providerRef.deref()
-		const projectAlphaDir = provider?.cwd ? getProjectAlphaDirectoryForCwd(provider.cwd) : null
-		const projectAgentsDir = provider?.cwd ? getProjectAgentsDirectoryForCwd(provider.cwd) : null
+		const cwd = this.workspacePath ?? provider?.cwd
+		const projectAlphaDir = cwd ? getProjectAlphaDirectoryForCwd(cwd) : null
+		const projectAgentsDir = cwd ? getProjectAgentsDirectoryForCwd(cwd) : null
 
 		// Get list of modes to check for mode-specific skills
 		const modesList = await this.getAvailableModes()

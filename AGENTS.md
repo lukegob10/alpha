@@ -159,10 +159,8 @@ source structure or a copied prompt.
 - Keep prompts lean, stable, and non-duplicative. Measure prompt or tool-schema changes against representative evals and
   inspect cache/token effects rather than assuming more instructions improve performance.
 
-Relevant architectural context includes `docs/core-harness-comparison-final-phases.md`,
-`docs/codex-harness-gap-investigation.md`, `docs/testing-harness-convergence-milestones.md`,
-`docs/frontier-agent-eval-harness-convergence.md`, and `docs/multi-agent-concurrency-spec.md`. Reconcile those plans with
-the current code before acting because completed phases may make older descriptions obsolete.
+Relevant architectural context includes `docs/multi-agent-concurrency-spec.md`. Reconcile it with the current code before
+acting because completed phases may make older descriptions obsolete.
 
 ## State, concurrency, and messaging rules
 

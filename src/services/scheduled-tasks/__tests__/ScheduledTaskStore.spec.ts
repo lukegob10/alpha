@@ -68,6 +68,15 @@ describe("ScheduledTaskStore", () => {
 		expect(store.getState()).toEqual({ tasks: [], runs: [] })
 	})
 
+	it("reloads legacy schedules and history without profile fields", async () => {
+		await store.upsertTask(makeTask())
+		await store.upsertRun(makeRun({ status: "succeeded" }))
+		const reloaded = new ScheduledTaskStore(tmpDir)
+		await reloaded.initialize()
+		expect(reloaded.getState()).toEqual(store.getState())
+		expect(reloaded.getTask("task-1")?.apiConfig).toBeUndefined()
+	})
+
 	it("creates, updates, and deletes scheduled tasks with their runs", async () => {
 		const task = makeTask()
 		const run = makeRun()

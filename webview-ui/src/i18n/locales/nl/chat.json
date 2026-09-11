@@ -462,7 +462,7 @@
 		"queueFailed": "Het bericht kon niet in de wachtrij worden geplaatst. Je concept staat nog in het invoerveld.",
 		"steerFailed": "Bijsturen kon niet worden gestart. Het bericht in de wachtrij blijft beschikbaar."
 	},
-	"stalledTurn": "Er is al een tijdje geen modeluitvoer. Je kunt de taak stoppen of bijsturen met een bericht uit de wachtrij.",
+	"modelResponseDelayed": "Wachten op de volgende update van het model. Uitgebreider nadenken kan tijd kosten.",
 	"slashCommand": {
 		"wantsToRun": "Alpha wil een slash commando uitvoeren",
 		"didRun": "Alpha heeft een slash commando uitgevoerd"

@@ -1,5 +1,21 @@
 import { z } from "zod"
 
+import type { SkillMetadata } from "./skills.js"
+
+export const scheduledTaskProfileSchema = z.object({
+	id: z.string().min(1),
+	name: z.string().min(1),
+})
+
+export const scheduledTaskSkillsRequestSchema = z.object({
+	requestId: z.string().min(1),
+	workspace: z.string().optional(),
+	mode: z.string().min(1),
+})
+
+export type ScheduledTaskSkillsRequest = z.infer<typeof scheduledTaskSkillsRequestSchema>
+export type ScheduledTaskSkillsResponse = { requestId: string; skills: SkillMetadata[] }
+
 export const scheduledTaskRunStatusSchema = z.enum([
 	"pending",
 	"queued",
@@ -93,6 +109,7 @@ export const scheduledTaskExecutionSchema = z.discriminatedUnion("type", [
 	z.object({
 		type: z.literal("skill"),
 		skillName: z.string(),
+		skillPath: z.string().optional(),
 		arguments: z.string().optional(),
 	}),
 	z.object({
@@ -125,6 +142,8 @@ export const scheduledTaskSchema = z.object({
 	id: z.string(),
 	name: z.string(),
 	prompt: z.string(),
+	// Optional for legacy schedules. Model runs must explicitly select a saved profile.
+	apiConfig: scheduledTaskProfileSchema.optional(),
 	execution: scheduledTaskExecutionSchema.optional(),
 	mode: z.string().optional(),
 	autoApproval: scheduledTaskAutoApprovalSchema.optional(),
@@ -147,6 +166,8 @@ export const scheduledTaskRunSchema = z.object({
 	id: z.string(),
 	taskId: z.string(),
 	alphaTaskId: z.string().optional(),
+	apiConfig: scheduledTaskProfileSchema.optional(),
+	resolvedApiConfig: scheduledTaskProfileSchema.optional(),
 	status: scheduledTaskRunStatusSchema,
 	trigger: z.enum(["schedule", "manual", "missed", "system"]),
 	scheduledFor: z.number(),
@@ -177,6 +198,7 @@ export type ScheduledTaskState = z.infer<typeof scheduledTaskStateSchema>
 export type CreateScheduledTaskPayload = {
 	name: string
 	prompt: string
+	apiConfig?: z.infer<typeof scheduledTaskProfileSchema>
 	execution?: ScheduledTaskExecution
 	mode?: string
 	autoApproval?: ScheduledTaskAutoApproval

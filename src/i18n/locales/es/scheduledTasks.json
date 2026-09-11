@@ -1,0 +1,6 @@
+{
+	"profileRequired": "Selecciona un perfil guardado antes de ejecutar esta tarea programada.",
+	"profileUnavailable": "El perfil «{{name}}» falta, cambió de nombre o no se pudo cargar. Selecciona de nuevo un perfil guardado.",
+	"skillUnavailable": "La habilidad «{{name}}» falta, no se puede leer o no está disponible en el espacio de trabajo y modo programados. Selecciónala de nuevo.",
+	"workspaceInvalid": "El espacio de trabajo programado debe ser una ruta absoluta."
+}

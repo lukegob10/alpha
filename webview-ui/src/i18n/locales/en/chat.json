@@ -485,7 +485,7 @@
 		"queueFailed": "The message could not be queued. Your draft is still in the composer.",
 		"steerFailed": "Steering could not start. The queued message is still available."
 	},
-	"stalledTurn": "No model output for a while. You can stop the task or steer it with a queued message.",
+	"modelResponseDelayed": "Waiting for the model's next update. Longer reasoning can take time.",
 	"contextMenu": {
 		"noResults": "No results",
 		"problems": "Problems",

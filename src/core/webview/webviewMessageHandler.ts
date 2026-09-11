@@ -23,6 +23,7 @@ import {
 	ExperimentId,
 	checkoutDiffPayloadSchema,
 	checkoutRestorePayloadSchema,
+	scheduledTaskSkillsRequestSchema,
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -3039,6 +3040,20 @@ export const webviewMessageHandler = async (
 			}
 			break
 		}
+		case "requestScheduledTaskSkills": {
+			const request = scheduledTaskSkillsRequestSchema.safeParse(message.scheduledTaskSkillsRequest)
+			if (!request.success) break
+			const { requestId, workspace, mode } = request.data
+			const skills = await provider
+				.getScheduledTaskService()
+				?.getSkills(workspace, mode)
+				.catch(() => [])
+			await provider.postMessageToWebview({
+				type: "scheduledTaskSkills",
+				scheduledTaskSkills: { requestId, skills: skills ?? [] },
+			})
+			break
+		}
 		case "createScheduledTask": {
 			const service = provider.getScheduledTaskService()
 			if (!service || !message.scheduledTask) {
@@ -3112,69 +3127,6 @@ export const webviewMessageHandler = async (
 				break
 			}
 			await service.duplicateTask(message.scheduledTaskId)
-			break
-		}
-		case "createGoalSeekJob": {
-			const service = provider.getGoalSeekService()
-			if (!service || !message.goalSeekJob) {
-				vscode.window.showErrorMessage("Goal Seek service is not available.")
-				break
-			}
-			try {
-				await service.createJob(message.goalSeekJob)
-			} catch (error) {
-				vscode.window.showErrorMessage(
-					`Failed to create Goal Seek job: ${error instanceof Error ? error.message : String(error)}`,
-				)
-			}
-			break
-		}
-		case "updateGoalSeekJob": {
-			const service = provider.getGoalSeekService()
-			if (!service || !message.goalSeekJobId || !message.goalSeekJobUpdate) {
-				vscode.window.showErrorMessage("Goal Seek update is missing required data.")
-				break
-			}
-			try {
-				await service.updateJob(message.goalSeekJobId, message.goalSeekJobUpdate)
-			} catch (error) {
-				vscode.window.showErrorMessage(
-					`Failed to update Goal Seek job: ${error instanceof Error ? error.message : String(error)}`,
-				)
-			}
-			break
-		}
-		case "deleteGoalSeekJob": {
-			const service = provider.getGoalSeekService()
-			if (!service || !message.goalSeekJobId) {
-				vscode.window.showErrorMessage("Goal Seek delete is missing required data.")
-				break
-			}
-			await service.deleteJob(message.goalSeekJobId)
-			break
-		}
-		case "runGoalSeekJob": {
-			const service = provider.getGoalSeekService()
-			if (!service || !message.goalSeekJobId) {
-				vscode.window.showErrorMessage("Goal Seek run is missing required data.")
-				break
-			}
-			try {
-				await service.runJob(message.goalSeekJobId)
-			} catch (error) {
-				vscode.window.showErrorMessage(
-					`Failed to run Goal Seek job: ${error instanceof Error ? error.message : String(error)}`,
-				)
-			}
-			break
-		}
-		case "cancelGoalSeekRun": {
-			const service = provider.getGoalSeekService()
-			if (!service || !message.goalSeekRunId) {
-				vscode.window.showErrorMessage("Goal Seek cancel is missing required data.")
-				break
-			}
-			await service.cancelRun(message.goalSeekRunId)
 			break
 		}
 		case "requestCommands": {

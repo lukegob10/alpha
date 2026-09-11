@@ -27,9 +27,9 @@ const MarketplaceView = React.lazy(() =>
 	import("./components/marketplace/MarketplaceView").then(({ MarketplaceView }) => ({ default: MarketplaceView })),
 )
 const ScheduledTasksView = React.lazy(() => import("./components/scheduled-tasks/ScheduledTasksView"))
-const GoalSeekView = React.lazy(() => import("./components/goal-seek/GoalSeekView"))
 
-type Tab = "settings" | "history" | "chat" | "marketplace" | "scheduledTasks" | "goalSeek"
+const supportedTabs = ["settings", "history", "chat", "marketplace", "scheduledTasks"] as const
+type Tab = (typeof supportedTabs)[number]
 
 interface DeleteMessageDialogState {
 	isOpen: boolean
@@ -73,7 +73,6 @@ const App = () => {
 	const [showAnnouncement, setShowAnnouncement] = useState(false)
 	const [tab, setTab] = useState<Tab>("chat")
 	const [scheduledTaskTargetId, setScheduledTaskTargetId] = useState<string | undefined>(undefined)
-	const [goalSeekTargetId, setGoalSeekTargetId] = useState<string | undefined>(undefined)
 
 	const [deleteMessageDialogState, setDeleteMessageDialogState] = useState<DeleteMessageDialogState>({
 		isOpen: false,
@@ -113,12 +112,10 @@ const App = () => {
 			if (message.type === "action" && message.action) {
 				// Handle switchTab action with tab parameter
 				if (message.action === "switchTab" && message.tab) {
-					const targetTab = message.tab as Tab
+					const targetTab = supportedTabs.find((tab) => tab === message.tab)
+					if (!targetTab) return
 					if (targetTab === "scheduledTasks") {
 						setScheduledTaskTargetId(message.values?.scheduledTaskId as string | undefined)
-					}
-					if (targetTab === "goalSeek") {
-						setGoalSeekTargetId(message.values?.goalSeekJobId as string | undefined)
 					}
 					switchTab(targetTab)
 					// Extract targetSection from values if provided
@@ -243,7 +240,6 @@ const App = () => {
 				{tab === "scheduledTasks" && (
 					<ScheduledTasksView onDone={() => switchTab("chat")} targetTaskId={scheduledTaskTargetId} />
 				)}
-				{tab === "goalSeek" && <GoalSeekView onDone={() => switchTab("chat")} targetJobId={goalSeekTargetId} />}
 			</React.Suspense>
 			<ChatView
 				ref={chatViewRef}

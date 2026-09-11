@@ -1,0 +1,6 @@
+{
+	"profileRequired": "Wählen Sie vor dem Start dieser geplanten Aufgabe ein gespeichertes Profil aus.",
+	"profileUnavailable": "Profil „{{name}}“ fehlt, wurde umbenannt oder konnte nicht geladen werden. Wählen Sie erneut ein gespeichertes Profil aus.",
+	"skillUnavailable": "Skill „{{name}}“ fehlt, ist nicht lesbar oder im geplanten Arbeitsbereich und Modus nicht verfügbar. Wählen Sie den Skill erneut aus.",
+	"workspaceInvalid": "Der geplante Arbeitsbereich muss ein absoluter Pfad sein."
+}

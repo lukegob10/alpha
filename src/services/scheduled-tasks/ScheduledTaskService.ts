@@ -2,9 +2,12 @@ import * as crypto from "crypto"
 import { execFile } from "child_process"
 import * as vscode from "vscode"
 import { promisify } from "util"
+import * as path from "path"
 
 import {
 	RooCodeEventName,
+	scheduledTaskExecutionSchema,
+	scheduledTaskProfileSchema,
 	type CreateScheduledTaskPayload,
 	type ScheduledTask,
 	type ScheduledTaskAutoApproval,
@@ -18,8 +21,12 @@ import {
 import type { ClineProvider } from "../../core/webview/ClineProvider"
 import { Package } from "../../shared/package"
 import { getWorkspacePath } from "../../utils/path"
+import { defaultModeSlug } from "../../shared/modes"
+import { t } from "../../i18n"
+import { SkillsManager } from "../skills/SkillsManager"
+import { buildSkillResult, resolveSkillContentForMode } from "../skills/skillInvocation"
 import { ScheduledTaskStore } from "./ScheduledTaskStore"
-import { formatScheduleForPrompt, getNextRunAt, isRecurringSchedule } from "./schedule"
+import { getNextRunAt, isRecurringSchedule } from "./schedule"
 
 const ACTIVE_RUN_STATUSES = new Set(["pending", "queued", "running", "waiting_for_approval"])
 const DEFAULT_TICK_MS = 60 * 1000
@@ -54,7 +61,8 @@ const defaultAutoApproval: ScheduledTaskAutoApproval = {
 	deniedCommands: [],
 }
 
-const normalizeExecution = (execution?: ScheduledTaskExecution): ScheduledTaskExecution => execution ?? defaultExecution
+const normalizeExecution = (execution?: ScheduledTaskExecution): ScheduledTaskExecution =>
+	scheduledTaskExecutionSchema.parse(execution ?? defaultExecution)
 
 const normalizeAutoApproval = (
 	autoApproval: ScheduledTaskAutoApproval | undefined,
@@ -130,6 +138,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 	}
 
 	async createTask(payload: CreateScheduledTaskPayload): Promise<ScheduledTask> {
+		this.validateSetup(payload)
 		const now = Date.now()
 		const execution = normalizeExecution(payload.execution)
 		const autoApproval = normalizeAutoApproval(payload.autoApproval, execution)
@@ -137,6 +146,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			id: crypto.randomUUID(),
 			name: payload.name.trim(),
 			prompt: payload.prompt.trim(),
+			apiConfig: scheduledTaskProfileSchema.optional().parse(payload.apiConfig),
 			execution,
 			mode: payload.mode,
 			autoApproval,
@@ -158,6 +168,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 
 	async updateTask(taskId: string, payload: UpdateScheduledTaskPayload): Promise<void> {
 		const existing = this.requireTask(taskId)
+		this.validateSetup({ ...existing, ...payload })
 		const now = Date.now()
 		const schedule = payload.schedule ?? existing.schedule
 		const execution = normalizeExecution(payload.execution ?? existing.execution)
@@ -168,6 +179,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			id: existing.id,
 			name: payload.name?.trim() ?? existing.name,
 			prompt: payload.prompt?.trim() ?? existing.prompt,
+			apiConfig: scheduledTaskProfileSchema.optional().parse(payload.apiConfig ?? existing.apiConfig),
 			execution,
 			mode: payload.mode ?? existing.mode,
 			autoApproval,
@@ -212,6 +224,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 		await this.createTask({
 			name: `${task.name} copy`,
 			prompt: task.prompt,
+			apiConfig: task.apiConfig,
 			execution: normalizeExecution(task.execution),
 			mode: task.mode,
 			autoApproval: task.autoApproval,
@@ -281,6 +294,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			queuedAt: Date.now(),
 			workspace: task.workspace,
 			prompt: task.prompt,
+			apiConfig: task.apiConfig,
 			execution,
 			mode: task.mode,
 			autoApproval,
@@ -325,6 +339,16 @@ export class ScheduledTaskService implements vscode.Disposable {
 	}
 
 	private async startRun(task: ScheduledTask, run: ScheduledTaskRun): Promise<void> {
+		// A queued run retains its selected setup even if the schedule is edited before admission.
+		task = {
+			...task,
+			prompt: run.prompt,
+			workspace: run.workspace,
+			mode: run.mode ?? defaultModeSlug,
+			apiConfig: run.apiConfig,
+			execution: run.execution,
+			autoApproval: run.autoApproval,
+		}
 		const execution = normalizeExecution(task.execution)
 		const autoApproval = normalizeAutoApproval(task.autoApproval, execution)
 		const startedRun: ScheduledTaskRun = {
@@ -345,14 +369,39 @@ export class ScheduledTaskService implements vscode.Disposable {
 		}
 
 		try {
+			const selectedProfile = scheduledTaskProfileSchema.safeParse(run.apiConfig)
+			if (!selectedProfile.success) {
+				throw new Error(t("scheduledTasks:profileRequired"))
+			}
+			const profile = await this.provider.providerSettingsManager
+				.getProfile({ id: selectedProfile.data.id })
+				.catch(() => {
+					throw new Error(t("scheduledTasks:profileUnavailable", { name: selectedProfile.data.name }))
+				})
+			if (profile.name !== selectedProfile.data.name || !profile.apiProvider) {
+				throw new Error(t("scheduledTasks:profileUnavailable", { name: selectedProfile.data.name }))
+			}
+			const { name, id: _id, ...apiConfiguration } = profile
+			const prompt = await this.buildPrompt(task)
 			const alphaTask = await this.provider.createTask(
-				this.buildPrompt(task, startedRun),
+				prompt,
 				undefined,
 				undefined,
-				{ preserveExisting: true, background: true, workspacePath: task.workspace, taskMode: task.mode },
+				{
+					preserveExisting: true,
+					background: true,
+					workspacePath: task.workspace,
+					taskMode: task.mode,
+					taskApiConfigName: name,
+					apiConfiguration,
+				},
 				this.configurationForAutoApproval(autoApproval),
 			)
-			await this.store.upsertRun({ ...startedRun, alphaTaskId: alphaTask.taskId })
+			await this.store.upsertRun({
+				...startedRun,
+				alphaTaskId: alphaTask.taskId,
+				resolvedApiConfig: { id: selectedProfile.data.id, name },
+			})
 			await this.broadcast()
 		} catch (error) {
 			const failedRun: ScheduledTaskRun = {
@@ -422,45 +471,60 @@ export class ScheduledTaskService implements vscode.Disposable {
 		}
 	}
 
-	private buildPrompt(task: ScheduledTask, run: ScheduledTaskRun): string {
+	private async buildPrompt(task: ScheduledTask): Promise<string> {
 		const execution = normalizeExecution(task.execution)
-		const autoApproval = normalizeAutoApproval(task.autoApproval, execution)
-		const executionBlock =
-			execution.type === "skill"
-				? [
-						`Execution mode: skill`,
-						`Skill: ${execution.skillName}`,
-						execution.arguments ? `Arguments: ${execution.arguments}` : "",
-					]
-				: execution.type === "plugin"
-					? [
-							`Execution mode: plugin`,
-							`Plugin: ${execution.pluginName}`,
-							execution.arguments ? `Arguments: ${execution.arguments}` : "",
-						]
-					: [`Execution mode: prompt`]
-		return [
-			`Scheduled task: ${task.name}`,
-			`Run id: ${run.id}`,
-			`Scheduled for: ${new Date(run.scheduledFor).toISOString()}`,
-			`Schedule: ${formatScheduleForPrompt(task.schedule)}`,
-			`Workspace: ${task.workspace ?? "current workspace"}`,
-			`Mode: ${task.mode ?? "current mode"}`,
-			`Auto-approval: ${this.describeAutoApproval(autoApproval)}`,
-			...executionBlock.filter(Boolean),
-			"",
-			"Execution constraints:",
-			...this.autoApprovalPromptLines(autoApproval),
-			"- Do not stage, commit, push, or open pull requests.",
-			...(execution.type === "skill" || execution.type === "plugin"
-				? [
-						"- Use the requested skill or plugin only if it is available; otherwise report that it is unavailable.",
-					]
-				: []),
-			"",
-			"Task prompt:",
-			task.prompt,
-		].join("\n")
+		if (execution.type === "skill") {
+			return [await this.buildSkillPrompt(task, execution), task.prompt].filter(Boolean).join("\n\n")
+		}
+		if (execution.type === "plugin") {
+			const invocation = [
+				`Plugin: ${execution.pluginName}`,
+				execution.arguments ? `Arguments: ${execution.arguments}` : "",
+			]
+				.filter(Boolean)
+				.join("\n")
+			return [invocation, task.prompt].filter(Boolean).join("\n\n")
+		}
+		return task.prompt
+	}
+
+	private validateSetup(payload: CreateScheduledTaskPayload): void {
+		const execution = normalizeExecution(payload.execution)
+		if (execution.type !== "command" && !scheduledTaskProfileSchema.safeParse(payload.apiConfig).success) {
+			throw new Error(t("scheduledTasks:profileRequired"))
+		}
+	}
+
+	private async discoverSkills(workspace?: string): Promise<SkillsManager> {
+		const cwd = workspace || this.provider.cwd
+		if (cwd && !path.isAbsolute(cwd)) {
+			throw new Error(t("scheduledTasks:workspaceInvalid"))
+		}
+		// One-shot discovery uses the existing catalog rules without adding file watchers.
+		const manager = new SkillsManager(this.provider, cwd)
+		await manager.discoverSkills()
+		return manager
+	}
+
+	async getSkills(workspace: string | undefined, mode: string) {
+		const manager = await this.discoverSkills(workspace)
+		return manager.getSkillsForMode(mode)
+	}
+
+	private async buildSkillPrompt(
+		task: ScheduledTask,
+		execution: Extract<ScheduledTaskExecution, { type: "skill" }>,
+	): Promise<string> {
+		try {
+			const manager = await this.discoverSkills(task.workspace)
+			const content = await resolveSkillContentForMode(manager, execution.skillName, task.mode ?? defaultModeSlug)
+			if (!content || (execution.skillPath && execution.skillPath !== content.path)) {
+				throw new Error("Unavailable skill")
+			}
+			return buildSkillResult(execution.skillName, execution.arguments, content)
+		} catch {
+			throw new Error(t("scheduledTasks:skillUnavailable", { name: execution.skillName }))
+		}
 	}
 
 	private configurationForAutoApproval(autoApproval: ScheduledTaskAutoApproval) {
@@ -479,35 +543,6 @@ export class ScheduledTaskService implements vscode.Disposable {
 			allowedCommands: autoApproval.allowedCommands,
 			deniedCommands: autoApproval.deniedCommands,
 		}
-	}
-
-	private describeAutoApproval(autoApproval: ScheduledTaskAutoApproval): string {
-		if (!autoApproval.autoApprovalEnabled) {
-			return "ask for approval"
-		}
-		const enabled = [
-			autoApproval.alwaysAllowReadOnly ? "read" : undefined,
-			autoApproval.alwaysAllowWrite ? "write" : undefined,
-			autoApproval.alwaysAllowExecute ? "execute" : undefined,
-			autoApproval.alwaysAllowMcp ? "mcp" : undefined,
-			autoApproval.alwaysAllowModeSwitch ? "mode switch" : undefined,
-			autoApproval.alwaysAllowSubtasks ? "subtasks" : undefined,
-		].filter(Boolean)
-		return enabled.length ? enabled.join(", ") : "ask for approval"
-	}
-
-	private autoApprovalPromptLines(autoApproval: ScheduledTaskAutoApproval): string[] {
-		if (!autoApproval.autoApprovalEnabled) {
-			return ["- Ask before using tools or making changes."]
-		}
-		const lines = ["- Use only the auto-approved capabilities configured for this scheduled task."]
-		if (!autoApproval.alwaysAllowWrite) {
-			lines.push("- Do not edit files.")
-		}
-		if (!autoApproval.alwaysAllowExecute) {
-			lines.push("- Do not run shell commands.")
-		}
-		return lines
 	}
 
 	private handleTaskCompleted = async (alphaTaskId: string): Promise<void> => {
@@ -539,7 +574,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 	private async finishRun(task: ScheduledTask, run: ScheduledTaskRun): Promise<void> {
 		await this.store.updateTaskAndRun(
 			{
-				...task,
+				...(this.store.getTask(task.id) ?? task),
 				lastRunId: run.id,
 				lastRunStatus: run.status,
 				lastRunSummary: run.summary ?? run.error,
@@ -590,6 +625,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			skipReason: reason,
 			workspace: task.workspace,
 			prompt: task.prompt,
+			apiConfig: task.apiConfig,
 			execution: normalizeExecution(task.execution),
 			mode: task.mode,
 			autoApproval: task.autoApproval,

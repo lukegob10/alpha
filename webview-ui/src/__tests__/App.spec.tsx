@@ -58,6 +58,12 @@ vi.mock("@src/components/history/HistoryView", () => ({
 	},
 }))
 
+vi.mock("@src/components/scheduled-tasks/ScheduledTasksView", () => ({
+	default: ({ targetTaskId }: { targetTaskId?: string }) => (
+		<div data-testid="scheduled-tasks-view" data-target={targetTaskId} />
+	),
+}))
+
 vi.mock("@src/components/mcp/McpView", () => ({
 	__esModule: true,
 	default: function McpView() {
@@ -205,6 +211,32 @@ describe("App", () => {
 		expect(chatView).toBeInTheDocument()
 		expect(chatView.getAttribute("data-hidden")).toBe("false")
 	}, 10000)
+
+	it.each(["goalSeek", "unknownTab"])("ignores an unavailable tab request for %s", (tab) => {
+		render(<AppWithProviders />)
+		act(() => {
+			window.dispatchEvent(new MessageEvent("message", { data: { type: "action", action: "switchTab", tab } }))
+		})
+		expect(screen.getByTestId("chat-view")).toHaveAttribute("data-hidden", "false")
+	})
+
+	it("still opens a targeted scheduled task through switchTab", async () => {
+		render(<AppWithProviders />)
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "action",
+						action: "switchTab",
+						tab: "scheduledTasks",
+						values: { scheduledTaskId: "saved-schedule" },
+					},
+				}),
+			)
+		})
+		expect(await screen.findByTestId("scheduled-tasks-view")).toHaveAttribute("data-target", "saved-schedule")
+		expect(screen.getByTestId("chat-view")).toHaveAttribute("data-hidden", "true")
+	})
 
 	it("switches to settings view when receiving settingsButtonClicked action", async () => {
 		render(<AppWithProviders />)

@@ -15,6 +15,7 @@ describe("scheduled task approval grants", () => {
 				id: "scheduled-1",
 				name: "Review repository",
 				prompt: "Review repository work",
+				apiConfig: { id: "background", name: "Background" },
 				workspace: "/workspace",
 				enabled: true,
 				schedule: { type: "daily", startAt: 1_000, timezone: "UTC", intervalDays: 1 },
@@ -37,6 +38,11 @@ describe("scheduled task approval grants", () => {
 			const createTask = vi.fn().mockResolvedValue({ taskId: "alpha-task-1" })
 			const provider = {
 				createTask,
+				providerSettingsManager: {
+					getProfile: vi
+						.fn()
+						.mockResolvedValue({ id: "background", name: "Background", apiProvider: "openai" }),
+				},
 				postMessageToWebview: vi.fn().mockResolvedValue(undefined),
 				off: vi.fn(),
 			} as unknown as ClineProvider

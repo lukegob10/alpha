@@ -1,0 +1,6 @@
+{
+	"profileRequired": "Selecteer een opgeslagen profiel voordat u deze geplande taak uitvoert.",
+	"profileUnavailable": "Profiel ‘{{name}}’ ontbreekt, is hernoemd of kon niet worden geladen. Selecteer opnieuw een opgeslagen profiel.",
+	"skillUnavailable": "Vaardigheid ‘{{name}}’ ontbreekt, is onleesbaar of niet beschikbaar in de geplande werkruimte en modus. Selecteer de vaardigheid opnieuw.",
+	"workspaceInvalid": "De geplande werkruimte moet een absoluut pad zijn."
+}

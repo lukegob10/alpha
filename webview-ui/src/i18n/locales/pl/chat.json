@@ -462,7 +462,7 @@
 		"queueFailed": "Nie udało się dodać wiadomości do kolejki. Wersja robocza nadal jest w edytorze.",
 		"steerFailed": "Nie udało się rozpocząć przekierowania. Wiadomość w kolejce jest nadal dostępna."
 	},
-	"stalledTurn": "Model od pewnego czasu nie generuje odpowiedzi. Możesz zatrzymać zadanie lub przekierować je wiadomością z kolejki.",
+	"modelResponseDelayed": "Oczekiwanie na kolejną odpowiedź modelu. Dłuższe rozumowanie może zająć trochę czasu.",
 	"slashCommand": {
 		"wantsToRun": "Alpha chce uruchomić komendę slash",
 		"didRun": "Alpha uruchomił komendę slash"
