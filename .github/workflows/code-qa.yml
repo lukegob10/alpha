@@ -62,10 +62,31 @@ jobs:
     vscode-1221-smoke:
         name: VS Code 1.122.1 extension-host contract
         runs-on: windows-latest
+        timeout-minutes: 45
         steps:
             - name: Checkout code
               uses: actions/checkout@v4
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
-            - name: Run exact VS Code 1.122.1 smoke and LM contract
-              run: pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+            - name: Run offline core confidence and exact-host contracts
+              shell: pwsh
+              run: |
+                  New-Item -ItemType Directory -Force artifacts/certification | Out-Null
+                  pnpm test:core:confidence 2>&1 | Tee-Object -FilePath artifacts/certification/core-confidence.log
+                  exit $LASTEXITCODE
+            - name: Retain confidence results and failure diagnostics
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: core-confidence-${{ github.run_id }}-${{ github.run_attempt }}
+                  path: |
+                      artifacts/certification/managed-agent-milestone-evidence.json
+                      artifacts/certification/core-confidence.log
+                      artifacts/core-confidence/*/gate-result.json
+                      artifacts/core-confidence/*/prepare-*.json
+                      artifacts/core-confidence/*/certification-*.json
+                      artifacts/core-confidence/*/*-result.json
+                      ${{ runner.temp }}/alpha-core-confidence/*/runs/**
+                      ${{ runner.temp }}/alpha-vscode-e2e-*/artifacts/**
+                  retention-days: 14
+                  if-no-files-found: error

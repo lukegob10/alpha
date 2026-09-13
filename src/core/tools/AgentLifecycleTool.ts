@@ -5,7 +5,7 @@ import type { Task } from "../task/Task"
 import type { ToolCallbacks } from "./BaseTool"
 
 export const WAIT_AGENT_MIN_TIMEOUT_MS = 10_000
-export const WAIT_AGENT_DEFAULT_TIMEOUT_MS = 30_000
+export const WAIT_AGENT_DEFAULT_TIMEOUT_MS = 120_000
 export const WAIT_AGENT_MAX_TIMEOUT_MS = 300_000
 
 export type AgentLifecycleToolName =

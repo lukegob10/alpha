@@ -7,12 +7,14 @@ import { WORKFLOW_SCENARIO_IDS } from "../scenarios/contracts"
 import { isReliabilityScenario, RELIABILITY_ACCEPTANCE_SCENARIO_IDS } from "../scenarios/reliabilityCatalog"
 import { rejectSymlinkComponents } from "../evidence/paths"
 import { runOwnedProcess } from "./ownedProcess"
+import { CORE_SCENARIO_IDS } from "./developmentSuites"
 import type { CampaignConfig, CampaignReport } from "./types"
 
 export function assertLiveGateConfig(config: CampaignConfig): void {
 	const completeSuite = [
 		WORKFLOW_SCENARIO_IDS.filter((id) => !isReliabilityScenario(id)),
 		RELIABILITY_ACCEPTANCE_SCENARIO_IDS,
+		CORE_SCENARIO_IDS,
 	].some((ids) => config.scenarioIds.length === ids.length && ids.every((id) => config.scenarioIds.includes(id)))
 	if (
 		config.provider.mode !== "live-copilot" ||
@@ -22,7 +24,7 @@ export function assertLiveGateConfig(config: CampaignConfig): void {
 		!completeSuite
 	)
 		throw new Error(
-			"Live gate requires a complete development or reliability suite, exact live model/effort, and no repair",
+			"Live gate requires a complete development, reliability or core suite, exact live model/effort, and no repair",
 		)
 }
 
@@ -54,6 +56,8 @@ export function evaluateLiveGate(config: CampaignConfig, report: CampaignReport)
 						result.model?.effort === config.provider.effort &&
 						Number.isSafeInteger(result.usage.requests) &&
 						result.usage.requests! > 0 &&
+						Number.isSafeInteger(request.requestLimit) &&
+						result.usage.requests! <= request.requestLimit &&
 						Boolean(result.taskIds?.length) &&
 						Boolean(evidence) &&
 						!evidenceFailed,
@@ -69,6 +73,8 @@ export function evaluateLiveGate(config: CampaignConfig, report: CampaignReport)
 								? "passed"
 								: "failed",
 					attemptIds: attempts.map((attempt) => attempt.request.attemptId),
+					requests: attempts.map((attempt) => attempt.result.usage.requests),
+					elapsedMs: attempts.map((attempt) => attempt.elapsedMs),
 				}
 			}),
 		),
@@ -86,6 +92,8 @@ export function evaluateLiveGate(config: CampaignConfig, report: CampaignReport)
 		report.counts.failed === 0 &&
 		report.counts.blocked === 0 &&
 		report.counts.passed === report.attempts.length &&
+		Number.isSafeInteger(report.usage.requests) &&
+		report.usage.requests! <= config.budgets.maxRequests &&
 		report.usage.requests ===
 			report.attempts.reduce((sum, attempt) => sum + (attempt.result.usage.requests ?? 0), 0) &&
 		new Set(report.attempts.map((attempt) => attempt.request.attemptId)).size === report.attempts.length &&
@@ -95,6 +103,13 @@ export function evaluateLiveGate(config: CampaignConfig, report: CampaignReport)
 	return {
 		schemaVersion: 1,
 		kind: "alpha-live-development-gate",
+		scenarioScope:
+			config.scenarioIds.length === CORE_SCENARIO_IDS.length &&
+			CORE_SCENARIO_IDS.every((id) => config.scenarioIds.includes(id))
+				? "core"
+				: config.scenarioIds.includes("completion-idle")
+					? "reliability"
+					: "development",
 		campaignId: config.id,
 		scope: config.hosts.length === 2 ? "reference-and-current-hosts" : "single-host-only",
 		status: passed ? "passed" : "failed",
@@ -102,6 +117,9 @@ export function evaluateLiveGate(config: CampaignConfig, report: CampaignReport)
 		retention: report.retention ?? null,
 		counts: report.counts,
 		provider: config.provider,
+		budgets: config.budgets,
+		samplesPerScenario: config.samples,
+		usage: report.usage,
 		cells,
 	} as const
 }
@@ -149,9 +167,15 @@ export async function prepareLiveGate(
 	runDirectory: string,
 	signal: AbortSignal,
 	runProcess = runOwnedProcess,
+	coreCoverage: "none" | "regressions" | "full" = "none",
 ): Promise<boolean> {
 	if (!pnpmCliPath || !path.isAbsolute(pnpmCliPath)) throw new Error("Run the live gate through pnpm")
-	for (const script of ["test:unit", "test:smoke:1221"]) {
+	for (const script of [
+		"test:unit",
+		"test:smoke:1221",
+		...(coreCoverage !== "none" ? ["test:core:regressions"] : []),
+		...(coreCoverage === "full" ? ["test:core:1221:run"] : []),
+	]) {
 		signal.throwIfAborted()
 		process.stdout.write(`Live gate prerequisite: ${script}\n`)
 		const abort = new AbortController()

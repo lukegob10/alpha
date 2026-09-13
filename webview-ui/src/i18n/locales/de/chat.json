@@ -1,5 +1,6 @@
 {
 	"activityTrace": {
+		"needsAttention": "Benötigt Aufmerksamkeit",
 		"workedFor": "Gearbeitet für {{duration}}"
 	},
 	"completionReport": "Abschlussbericht",
@@ -388,6 +389,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "Codebasesuche",
 		"wantsToSearch": "Alpha möchte den Codebase nach <code>{{query}}</code> durchsuchen",
 		"wantsToSearchWithPath": "Alpha möchte den Codebase nach <code>{{query}}</code> in <code>{{path}}</code> durchsuchen",
 		"didSearch_one": "1 Ergebnis gefunden",

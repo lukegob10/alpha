@@ -74,7 +74,7 @@ export function getCompletedActivity(
 				}
 				for (let row = startIndex; row < index; row++) activityByIndex.set(row, activity)
 			}
-			startIndex = index + 1
+			if (terminalAt !== undefined) startIndex = index + 1
 		}
 	}
 	return activityByIndex

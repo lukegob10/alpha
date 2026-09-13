@@ -1,6 +1,7 @@
 import * as fs from "fs/promises"
 import * as path from "path"
 import { StringDecoder } from "node:string_decoder"
+import { createHash } from "node:crypto"
 
 import { Task } from "../task/Task"
 import { getTaskDirectoryPath } from "../../utils/storage"
@@ -27,6 +28,7 @@ const LARGE_FIXED_QUANTIFIER_THRESHOLD = 64
 
 type ReadArtifactResult = {
 	content: string
+	stateFingerprint: string
 	readStart: number
 	readEnd: number
 	nextOffset: number
@@ -34,6 +36,7 @@ type ReadArtifactResult = {
 
 type SearchArtifactResult = {
 	content: string
+	stateFingerprint: string
 	matchCount: number
 	readStart: number
 	readEnd: number
@@ -444,6 +447,7 @@ export class ReadCommandOutputTool extends BaseTool<"read_command_output"> {
 			}
 
 			let result: string
+			let stateFingerprint: string
 			let readStart = 0
 			let readEnd = 0
 			let nextOffset = 0
@@ -455,6 +459,7 @@ export class ReadCommandOutputTool extends BaseTool<"read_command_output"> {
 				// Search mode: filter lines matching the pattern
 				const searchResult = await this.searchInArtifact(artifactPath, search, offset, totalSize, limit, signal)
 				result = searchResult.content
+				stateFingerprint = searchResult.stateFingerprint
 				matchCount = searchResult.matchCount
 				readStart = searchResult.readStart
 				readEnd = searchResult.readEnd
@@ -465,6 +470,7 @@ export class ReadCommandOutputTool extends BaseTool<"read_command_output"> {
 				// Normal read mode with offset/limit
 				const readResult = await this.readArtifact(artifactPath, offset, limit, totalSize, signal)
 				result = readResult.content
+				stateFingerprint = readResult.stateFingerprint
 				readStart = readResult.readStart
 				readEnd = readResult.readEnd
 				nextOffset = readResult.nextOffset
@@ -499,6 +505,10 @@ export class ReadCommandOutputTool extends BaseTool<"read_command_output"> {
 			task.consecutiveMistakeCount = 0
 			signal?.throwIfAborted()
 			pushToolResult(result)
+			callbacks.setResultMetadata?.({
+				status: "success",
+				trustedProgress: { kind: "read", scope: artifactPath, stateFingerprint },
+			})
 		} catch (error) {
 			if (signal?.aborted) {
 				throw error
@@ -606,6 +616,10 @@ export class ReadCommandOutputTool extends BaseTool<"read_command_output"> {
 
 			result = {
 				content: header + rendered.content,
+				// Off-page growth and display headers are not information obtained by this read.
+				stateFingerprint: createHash("sha256")
+					.update(JSON.stringify([readStart, rendered.content]))
+					.digest("hex"),
 				readStart,
 				readEnd,
 				nextOffset: readEnd,
@@ -975,6 +989,10 @@ export class ReadCommandOutputTool extends BaseTool<"read_command_output"> {
 		}
 		return {
 			content,
+			// Only the returned matches count. Query spelling and scan-size churn cannot renew the loop.
+			stateFingerprint: createHash("sha256")
+				.update(JSON.stringify([content.slice(metadata.length), incomplete]))
+				.digest("hex"),
 			matchCount: observedMatchCount,
 			readStart,
 			readEnd: processedBytes,

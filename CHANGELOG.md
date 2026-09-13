@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.34
+
+### Patch Changes
+
+- Improve task execution reliability with clearer lifecycle progress, bounded tool scheduling, cancellation recovery, and expanded confidence coverage.
+- Improve code search and indexing with stronger retrieval, parser/chunking, embedding, and storage behavior.
+- Refresh the extension UI with compact activity traces, expandable batch file searches and code-search results, running task indicators, queue placement guides, and updated ticket/history presentation.
+
 ## 2.1.33
 
 ### Patch Changes

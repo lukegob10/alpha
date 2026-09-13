@@ -4,6 +4,18 @@ import { getObjectiveSection } from "../objective"
 import { getToolUseGuidelinesSection } from "../tool-use-guidelines"
 
 describe("getSharedToolUseSection", () => {
+	it.each([undefined, "explore", "review", "worker"] as const)(
+		"keeps proportionate error recovery guidance in the %s surface",
+		(role) => {
+			const section = getSharedToolUseSection(role)
+			expect(section.match(/Continue useful work after recoverable errors/g)).toHaveLength(1)
+			expect(section).toContain("an optional failure need not stop independent work")
+			expect(section).toContain(
+				"Repeat tools when different targets, new information, or repaired prerequisites justify it",
+			)
+		},
+	)
+
 	it("should include native tool-calling instructions", () => {
 		const section = getSharedToolUseSection()
 
@@ -112,11 +124,12 @@ describe("getSharedToolUseSection", () => {
 		)
 	})
 
-	it("requires managed subagents to publish a durable completion result", () => {
+	it("routes managed final answers through review and retains pending work", () => {
 		const section = getSharedToolUseSection("review")
 
-		expect(section).toContain("Managed subagents must publish a durable result through attempt_completion")
-		expect(section).toContain("Ordinary assistant prose alone is not a terminal handoff")
+		expect(section).toContain("managed subagents may return a final assistant answer or use attempt_completion")
+		expect(section).toContain("Both paths preserve parent review and verification")
+		expect(section).toContain("Continue when tools, steering, or required work remain pending")
 	})
 
 	it("retains bounded child scope because children do not receive the primary objective", () => {

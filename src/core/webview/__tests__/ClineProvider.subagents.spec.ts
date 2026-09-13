@@ -2651,6 +2651,137 @@ If complete, use attempt_completion.
 		expect(parent.beginAgentWait).not.toHaveBeenCalled()
 	})
 
+	it.each([NaN, Infinity, -1, 9_999, 300_001, 10_000.5])(
+		"rejects an invalid host wait deadline %s before reading the mailbox",
+		async (timeoutMs) => {
+			const provider = makeProviderHarness()
+			const initialize = vi.spyOn(provider as any, "ensureAgentControlRoot")
+			await expect(provider.waitForAgent(makeParent() as any, timeoutMs)).rejects.toThrow(
+				"timeout_ms must be an integer",
+			)
+			expect(initialize).not.toHaveBeenCalled()
+		},
+	)
+
+	it.each(["default-deadline", "explicit-deadline", "activity", "cancel"] as const)(
+		"settles a blocking wait on %s and disposes its timer and subscription",
+		async (scenario) => {
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+			try {
+				const provider = makeProviderHarness()
+				const parent = makeParent()
+				const root = await (provider as any).ensureAgentControlRoot(parent)
+				const store = (provider as any).agentControlStore as AgentControlStore
+				await store.createAgent({
+					taskId: "waiting-child",
+					parentTaskId: root.taskId,
+					rootTaskId: root.rootTaskId,
+					nickname: "Waiting",
+					role: "review",
+					objective: "Wait",
+					status: "running",
+				})
+				const controller = new AbortController()
+				const dispose = vi.fn()
+				parent.beginAgentWait = vi.fn(() => ({ signal: controller.signal, dispose }))
+				const unsubscribe = vi.fn()
+				const subscribe = store.subscribe.bind(store)
+				vi.spyOn(store, "subscribe").mockImplementation((listener) => {
+					const release = subscribe(listener)
+					return () => {
+						unsubscribe()
+						release()
+					}
+				})
+				const waiting = provider.waitForAgent(
+					parent as any,
+					scenario === "explicit-deadline" ? 10_000 : undefined,
+				)
+				await vi.waitFor(() => expect(store.subscribe).toHaveBeenCalledOnce())
+				const duration =
+					scenario === "default-deadline" ? 120_000 : scenario === "explicit-deadline" ? 10_000 : 1_000
+				await vi.advanceTimersByTimeAsync(duration)
+				if (scenario === "activity")
+					await store.appendEvent({
+						rootTaskId: root.rootTaskId,
+						sender: "waiting-child",
+						recipient: root.taskId,
+						kind: "message",
+						name: "agent_progress",
+					})
+				if (scenario === "cancel") controller.abort()
+				expect(await waiting).toMatchObject(
+					scenario === "cancel"
+						? { cancelled: true, timedOut: false }
+						: { timedOut: scenario !== "activity" },
+				)
+				expect(dispose).toHaveBeenCalledOnce()
+				expect(unsubscribe).toHaveBeenCalledOnce()
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
+		},
+	)
+
+	it("collects a child result after 95 seconds with one default wait and no timer leak", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+		try {
+			const provider = makeProviderHarness()
+			const parent = makeParent()
+			const root = await (provider as any).ensureAgentControlRoot(parent)
+			const store = (provider as any).agentControlStore as AgentControlStore
+			await store.createAgent({
+				taskId: "slow-child",
+				parentTaskId: root.taskId,
+				rootTaskId: root.rootTaskId,
+				nickname: "Slow child",
+				role: "review",
+				objective: "Complete after 95 seconds",
+				status: "running",
+			})
+			const dispose = vi.fn()
+			parent.beginAgentWait = vi.fn(() => ({ signal: new AbortController().signal, dispose }))
+			const waitCalls = vi.spyOn(provider, "waitForAgent")
+			let elapsedMs = 0
+			let result: unknown
+			while (elapsedMs < 95_000) {
+				const waiting = provider.waitForAgent(parent as any)
+				await vi.waitFor(() => expect(parent.beginAgentWait).toHaveBeenCalledTimes(waitCalls.mock.calls.length))
+				// Observe the actual host timer, then advance only until that deadline or child delivery.
+				let settled = false
+				void waiting.then(() => {
+					settled = true
+				})
+				while (!settled && elapsedMs < 95_000) {
+					await vi.advanceTimersByTimeAsync(5_000)
+					elapsedMs += 5_000
+					await store.flush()
+				}
+				if (elapsedMs === 95_000) {
+					await store.appendEvent({
+						rootTaskId: root.rootTaskId,
+						sender: "slow-child",
+						recipient: root.taskId,
+						kind: "result",
+						name: "agent_completed",
+						payload: { taskId: "slow-child", status: "completed", summary: "Verified result" },
+					})
+				}
+				result = await waiting
+			}
+			expect(result).toMatchObject({
+				timedOut: false,
+				events: [expect.objectContaining({ name: "agent_completed" })],
+			})
+			expect(waitCalls).toHaveBeenCalledTimes(1)
+			expect(dispose).toHaveBeenCalledTimes(1)
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
 	it("keeps a registered managed child waiting for immediate-parent control without active descendants", async () => {
 		const provider = makeProviderHarness()
 		const rootTask = makeParent()

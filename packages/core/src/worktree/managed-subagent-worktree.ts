@@ -9,6 +9,8 @@ import { worktreeIncludeService } from "./worktree-include.js"
 const execFileAsync = promisify(execFile)
 const MAX_GIT_OUTPUT = 100 * 1024 * 1024
 const GLOB_PATTERN = /[*?[\]{}!]/
+// Match the extension's bounded atomic-replacement allowance: six attempts, 775 ms total backoff.
+const METADATA_RETRY_DELAYS_MS = [25, 50, 100, 200, 400] as const
 
 export interface ValidatedWorkerScope {
 	gitRoot: string
@@ -112,7 +114,21 @@ export class ManagedSubagentWorktreeService {
 		const temporaryPath = `${metadataPath}.${process.pid}.${crypto.randomUUID()}.tmp`
 		try {
 			await fs.writeFile(temporaryPath, JSON.stringify(artifact, null, 2), "utf8")
-			await fs.rename(temporaryPath, metadataPath)
+			for (let attempt = 0; ; attempt++) {
+				try {
+					await fs.rename(temporaryPath, metadataPath)
+					break
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException | undefined)?.code
+					if (
+						(code !== "EPERM" && code !== "EACCES" && code !== "EBUSY") ||
+						attempt >= METADATA_RETRY_DELAYS_MS.length
+					)
+						throw error
+					// Retry only the same closed temporary file; never remove the committed snapshot.
+					await new Promise<void>((resolve) => setTimeout(resolve, METADATA_RETRY_DELAYS_MS[attempt]))
+				}
+			}
 		} finally {
 			await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
 		}
@@ -623,13 +639,18 @@ export class ManagedSubagentWorktreeService {
 
 	async discard(storagePath: string, artifactId: string): Promise<ManagedWorkerArtifact> {
 		const artifact = await this.load(storagePath, artifactId)
-		if (["applied", "discarded"].includes(artifact.status)) return artifact
+		if (artifact.status === "applied") return artifact
+		if (artifact.status !== "discarded") {
+			// Commit the decision before deleting proposal data. Keep the patch reference
+			// until cleanup settles so interrupted discards can resume idempotently.
+			artifact.status = "discarded"
+			await this.persist(storagePath, artifact)
+		}
 		if (artifact.patchFile) {
 			await fs.rm(path.join(this.artifactDir(storagePath, artifact.id), artifact.patchFile), { force: true })
 			delete artifact.patchFile
+			await this.persist(storagePath, artifact)
 		}
-		artifact.status = "discarded"
-		await this.persist(storagePath, artifact)
 		return artifact
 	}
 

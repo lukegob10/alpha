@@ -1,5 +1,6 @@
 {
 	"activityTrace": {
+		"needsAttention": "확인 필요",
 		"workedFor": "작업 시간 {{duration}}"
 	},
 	"completionReport": "완료 보고서",
@@ -388,6 +389,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "코드베이스 검색",
 		"wantsToSearch": "Alpha가 코드베이스에서 <code>{{query}}</code>을(를) 검색하고 싶어합니다",
 		"wantsToSearchWithPath": "Alpha가 <code>{{path}}</code>에서 <code>{{query}}</code>을(를) 검색하고 싶어합니다",
 		"didSearch_one": "1개의 결과를 찾았습니다",

@@ -55,7 +55,11 @@ export class BedrockEmbedder implements IEmbedder {
 	 * @param model Optional model identifier
 	 * @returns Promise resolving to embedding response
 	 */
-	async createEmbeddings(texts: string[], model?: string): Promise<EmbeddingResponse> {
+	async createEmbeddings(
+		texts: string[],
+		model?: string,
+		purpose: "document" | "query" = "document",
+	): Promise<EmbeddingResponse> {
 		const modelToUse = model || this.defaultModelId
 
 		const allEmbeddings: number[][] = []
@@ -98,7 +102,7 @@ export class BedrockEmbedder implements IEmbedder {
 			}
 
 			if (currentBatch.length > 0) {
-				const batchResult = await this._embedBatchWithRetries(currentBatch, modelToUse)
+				const batchResult = await this._embedBatchWithRetries(currentBatch, modelToUse, purpose)
 				allEmbeddings.push(...batchResult.embeddings)
 				usage.promptTokens += batchResult.usage.promptTokens
 				usage.totalTokens += batchResult.usage.totalTokens
@@ -117,6 +121,7 @@ export class BedrockEmbedder implements IEmbedder {
 	private async _embedBatchWithRetries(
 		batchTexts: string[],
 		model: string,
+		purpose: "document" | "query" = "document",
 	): Promise<{ embeddings: number[][]; usage: { promptTokens: number; totalTokens: number } }> {
 		for (let attempts = 0; attempts < MAX_RETRIES; attempts++) {
 			try {
@@ -128,7 +133,7 @@ export class BedrockEmbedder implements IEmbedder {
 				// Note: Amazon Titan models typically don't support batch embedding in a single request
 				// So we process them individually
 				for (const text of batchTexts) {
-					const embedding = await this._invokeEmbeddingModel(text, model)
+					const embedding = await this._invokeEmbeddingModel(text, model, purpose)
 					embeddings.push(embedding.embedding)
 					totalPromptTokens += embedding.inputTextTokenCount || 0
 					totalTokens += embedding.inputTextTokenCount || 0
@@ -186,6 +191,7 @@ export class BedrockEmbedder implements IEmbedder {
 	private async _invokeEmbeddingModel(
 		text: string,
 		model: string,
+		purpose: "document" | "query" = "document",
 	): Promise<{ embedding: number[]; inputTextTokenCount?: number }> {
 		let requestBody: any
 		let modelId = model
@@ -197,7 +203,7 @@ export class BedrockEmbedder implements IEmbedder {
 			requestBody = {
 				taskType: "SINGLE_EMBEDDING",
 				singleEmbeddingParams: {
-					embeddingPurpose: "GENERIC_INDEX",
+					embeddingPurpose: purpose === "query" ? "TEXT_RETRIEVAL" : "GENERIC_INDEX",
 					embeddingDimension: 1024, // Nova supports 1024 or 3072
 					text: {
 						truncationMode: "END",
@@ -213,14 +219,14 @@ export class BedrockEmbedder implements IEmbedder {
 			// Cohere Embed v4 requires embedding_types parameter
 			requestBody = {
 				texts: [text],
-				input_type: "search_document",
+				input_type: purpose === "query" ? "search_query" : "search_document",
 				embedding_types: ["float"],
 			}
 		} else if (model.startsWith("cohere.embed")) {
 			// Cohere Embed v3 format
 			requestBody = {
 				texts: [text],
-				input_type: "search_document",
+				input_type: purpose === "query" ? "search_query" : "search_document",
 			}
 		} else {
 			// Default to Titan format

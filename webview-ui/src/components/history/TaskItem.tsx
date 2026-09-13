@@ -1,5 +1,5 @@
 import { memo, useContext, type KeyboardEvent } from "react"
-import { ArrowRight, Folder } from "lucide-react"
+import { ArrowRight, Folder, LoaderCircle } from "lucide-react"
 import { TaskLifecycleState, TaskStatus, type LiveTaskMetadata } from "@alpha-code/types"
 import type { DisplayHistoryItem } from "./types"
 
@@ -77,6 +77,8 @@ const TaskItem = ({
 	const liveTasksById = extensionState?.liveTasksById
 	const liveTask = liveTasksById?.[item.id]
 	const liveTaskIndicator = liveTask ? getLiveTaskIndicator(liveTask) : undefined
+	const isRunning =
+		liveTask?.lifecycle === TaskLifecycleState.Running || liveTask?.lifecycle === TaskLifecycleState.Initializing
 	const isActive = currentTaskId === item.id
 	const liveTaskTooltip = liveTask
 		? `${isActive ? "Selected" : "Background"} task: ${liveTaskIndicator?.label ?? formatStatusText(liveTask.lifecycle)}${
@@ -180,10 +182,17 @@ const TaskItem = ({
 									className="mt-1.5 flex size-3.5 shrink-0 items-center justify-center"
 									aria-label={`Task status: ${liveTaskIndicator.label}`}
 									data-testid="task-status-indicator">
-									<span
-										className={cn("block size-2 rounded-full", liveTaskIndicator.className)}
-										aria-hidden="true"
-									/>
+									{isRunning ? (
+										<LoaderCircle
+											className="size-3.5 animate-spin motion-reduce:animate-none text-vscode-progressBar-background"
+											aria-hidden="true"
+										/>
+									) : (
+										<span
+											className={cn("block size-2 rounded-full", liveTaskIndicator.className)}
+											aria-hidden="true"
+										/>
+									)}
 								</span>
 							</StandardTooltip>
 						)}

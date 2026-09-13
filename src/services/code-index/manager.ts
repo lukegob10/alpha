@@ -444,6 +444,11 @@ export class CodeIndexManager {
 			this._stateManager,
 			embedder,
 			vectorStore,
+			{
+				workspacePath,
+				validateAccess: (filePath) =>
+					!ignoreInstance.ignores(filePath) && rooIgnoreController.validateAccess(filePath),
+			},
 		)
 
 		// Clear any error state after successful recreation

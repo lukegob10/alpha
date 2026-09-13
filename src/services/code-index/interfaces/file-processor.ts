@@ -18,6 +18,7 @@ export interface ICodeParser {
 			maxBlockLines?: number
 			content?: string
 			fileHash?: string
+			signal?: AbortSignal
 		},
 	): Promise<CodeBlock[]>
 }
@@ -112,6 +113,12 @@ export interface FileProcessingResult {
  */
 
 export interface CodeBlock {
+	/** Exact UTF-16 offsets into source; optional for custom parsers. */
+	startOffset?: number
+	endOffset?: number
+	/** Derived scope text, kept separate from exact source. */
+	context?: string
+	tokenCount?: number
 	file_path: string
 	identifier: string | null
 	type: string

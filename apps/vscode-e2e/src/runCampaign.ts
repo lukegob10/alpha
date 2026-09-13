@@ -64,6 +64,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 				"--shared-storage-root",
 				"--vscode-version",
 				"--vscode-executable",
+				"--max-requests",
+				"--samples",
 			].includes(option)
 		) {
 			const value = argv[++index]
@@ -75,9 +77,19 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 	const sharedRoot = values.get("--shared-storage-root")
 	const suite = values.get("--suite")
 	const gate = flags.has("--gate")
-	if (gate && (!["development", "reliability"].includes(suite ?? "") || values.get("--provider") !== "live-copilot"))
-		throw new Error("Gate requires --suite development or reliability --provider live-copilot")
-	const suiteOptions = ["--provider", "--model-id", "--effort", "--id"]
+	if (
+		gate &&
+		(!["development", "reliability", "core"].includes(suite ?? "") || values.get("--provider") !== "live-copilot")
+	)
+		throw new Error("Gate requires --suite development, reliability or core --provider live-copilot")
+	const suiteOptions = ["--provider", "--model-id", "--effort", "--id", "--max-requests", "--samples"]
+	const integerOption = (name: string) => {
+		const value = values.get(name)
+		if (value === undefined) return undefined
+		if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value)))
+			throw new Error("Invalid campaign integer option")
+		return Number(value)
+	}
 	if (
 		(recoveryRoot || sharedRoot || values.has("--config")) &&
 		(suite || suiteOptions.some((key) => values.has(key)))
@@ -150,6 +162,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 			provider,
 			modelId: values.get("--model-id"),
 			effort: values.get("--effort"),
+			maxRequests: integerOption("--max-requests"),
+			samples: integerOption("--samples"),
 			host: version
 				? { version: version as CampaignHost["version"], executable: values.get("--vscode-executable") }
 				: undefined,
@@ -166,7 +180,16 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 			JSON.stringify({
 				schemaVersion: 1,
 				status: "planned",
-				...(gate ? { gate: true, preparation: ["test:unit", "test:smoke:1221"] } : {}),
+				...(gate
+					? {
+							gate: true,
+							preparation: [
+								"test:unit",
+								"test:smoke:1221",
+								...(suite === "core" ? ["test:core:regressions", "test:core:1221:run"] : []),
+							],
+						}
+					: {}),
 				evidenceMode: config.provider.mode === "live-copilot" ? "live-model" : "harness-only",
 				config,
 			}) + "\n",
@@ -205,7 +228,16 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 		let artifactDigest: string | undefined
 		if (gate) {
 			process.stdout.write("Preparing live gate: unit tests, fresh build, and exact VS Code 1.122.1 contracts.\n")
-			if (!(await prepareLiveGate(repositoryRoot, process.env.npm_execpath, store.directory, signal))) {
+			if (
+				!(await prepareLiveGate(
+					repositoryRoot,
+					process.env.npm_execpath,
+					store.directory,
+					signal,
+					undefined,
+					suite === "core" ? "full" : "none",
+				))
+			) {
 				const resultPath = path.join(store.directory, "gate-result.json")
 				await fs.writeFile(
 					resultPath,

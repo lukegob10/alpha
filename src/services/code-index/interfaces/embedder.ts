@@ -1,15 +1,16 @@
 /**
  * Interface for code index embedders.
- * This interface is implemented by both OpenAI and Ollama embedders.
+ * Provider adapters preserve retrieval roles where the model supports them.
  */
 export interface IEmbedder {
 	/**
 	 * Creates embeddings for the given texts.
 	 * @param texts Array of text strings to create embeddings for
 	 * @param model Optional model ID to use for embeddings
+	 * @param purpose Document indexing by default; search callers explicitly request query embeddings
 	 * @returns Promise resolving to an EmbeddingResponse
 	 */
-	createEmbeddings(texts: string[], model?: string): Promise<EmbeddingResponse>
+	createEmbeddings(texts: string[], model?: string, purpose?: "document" | "query"): Promise<EmbeddingResponse>
 
 	/**
 	 * Validates the embedder configuration by testing connectivity and credentials.

@@ -1,5 +1,6 @@
 {
 	"activityTrace": {
+		"needsAttention": "需要处理",
 		"workedFor": "工作用时 {{duration}}"
 	},
 	"completionReport": "完成报告",
@@ -389,6 +390,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "代码库搜索",
 		"wantsToSearch": "Alpha 需要搜索代码库: <code>{{query}}</code>",
 		"wantsToSearchWithPath": "Alpha 需要在 <code>{{path}}</code> 中搜索: <code>{{query}}</code>",
 		"didSearch_one": "找到 1 个结果",

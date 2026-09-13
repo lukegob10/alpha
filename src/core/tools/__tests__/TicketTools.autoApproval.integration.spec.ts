@@ -73,7 +73,20 @@ describe("native ticket approvals with persisted storage", () => {
 		})
 		expect(await store.read(created.id)).toMatchObject({ status: "complete", completedAt: expect.any(String) })
 		expect(manualApproval).toHaveBeenCalledTimes(prompts)
-		expect(callbacks.setResultMetadata.mock.calls).toEqual([[{ status: "success" }], [{ status: "success" }]])
+		expect(callbacks.setResultMetadata.mock.calls).toEqual([
+			[
+				expect.objectContaining({
+					status: "success",
+					trustedProgress: expect.objectContaining({ kind: "mutation" }),
+				}),
+			],
+			[
+				expect.objectContaining({
+					status: "success",
+					trustedProgress: expect.objectContaining({ kind: "mutation" }),
+				}),
+			],
+		])
 		expect(callbacks.pushToolResult).toHaveBeenCalledTimes(2)
 		expect(task.say.mock.calls.map(([, text]) => JSON.parse(text).ticketActivity)).toEqual([
 			expect.objectContaining({ operation: "create", state: "success", reference: "PRO-01" }),
@@ -154,9 +167,11 @@ describe("native ticket approvals with persisted storage", () => {
 			)
 			await run("delete_ticket", { id: deleted.reference!, expectedRevision: deleted.revision })
 			expect(manualApproval).toHaveBeenCalledTimes(1)
-			expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({
-				status: approved ? "success" : "denied",
-			})
+			expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({
+					status: approved ? "success" : "denied",
+				}),
+			)
 			expect(callbacks.pushToolResult).toHaveBeenCalledTimes(1)
 			expect(await store.read(survivor.id)).toEqual(survivor)
 			if (approved) {

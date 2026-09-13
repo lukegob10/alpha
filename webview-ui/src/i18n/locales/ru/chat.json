@@ -1,5 +1,6 @@
 {
 	"activityTrace": {
+		"needsAttention": "Требует внимания",
 		"workedFor": "Время работы: {{duration}}"
 	},
 	"completionReport": "Итоговый отчёт",
@@ -389,6 +390,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "Поиск по кодовой базе",
 		"wantsToSearch": "Alpha хочет выполнить поиск в кодовой базе по <code>{{query}}</code>",
 		"wantsToSearchWithPath": "Alpha хочет выполнить поиск в кодовой базе по <code>{{query}}</code> в <code>{{path}}</code>",
 		"didSearch_one": "Найден 1 результат",

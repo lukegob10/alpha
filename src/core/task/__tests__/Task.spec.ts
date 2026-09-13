@@ -3228,6 +3228,42 @@ describe("Alpha", () => {
 			)
 		})
 
+		it("finishes a managed child from its streamed final text without a forced tool round", async () => {
+			const task = createTask("subagent")
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+			const completed = vi.fn()
+			task.on(RooCodeEventName.TaskCompleted, completed)
+			const request = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					if (request.mock.calls.length > 1) {
+						throw Object.assign(new Error("Unexpected extra request after the final answer"), {
+							retryable: false,
+						})
+					}
+					yield { type: "text", text: "The parser handles the reported case correctly." }
+				})(),
+			)
+
+			await Reflect.get(task, "initiateTaskLoop").call(task, [{ type: "text", text: "Review the parser." }])
+
+			expect(request).toHaveBeenCalledOnce()
+			expect(ask).not.toHaveBeenCalled()
+			expect(completed).toHaveBeenCalledOnce()
+			expect(Reflect.get(task, "didComplete")).toBe(true)
+			expect(task.subagentCompletionOutcome).toBe("completed")
+			expect(task.clineMessages.filter((message) => message.say === "completion_result")).toEqual([
+				expect.objectContaining({ text: "The parser handles the reported case correctly.", partial: false }),
+			])
+			expect(JSON.stringify(task.apiConversationHistory)).not.toContain(formatResponse.noToolsUsed())
+			expect(await task.finalizeTaskCompletion()).toBe(false)
+			expect(completed).toHaveBeenCalledOnce()
+		})
+
 		it.each([false, true])(
 			"automatically recovers a recognized empty response with tool auto-approval=%s",
 			async (autoApprovalEnabled) => {
@@ -4194,30 +4230,33 @@ describe("Alpha", () => {
 			expect(ask).not.toHaveBeenCalledWith("resume_task")
 		})
 
-		it("does not offer recovery when completion finalization is aborted", async () => {
-			const task = createTask()
-			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
-			const ask = vi.spyOn(task, "ask").mockResolvedValue({
-				response: "yesButtonClicked",
-				text: "",
-				images: [],
-			})
-			vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
-				task.assistantMessageContent = [{ type: "text", content: "Everything is done.", partial: false }]
-				return false
-			})
-			vi.spyOn(task, "finalizeTaskCompletion").mockImplementationOnce(async () => {
-				task.abort = true
-				return false
-			})
+		it.each(["primary", "subagent"] as const)(
+			"does not offer recovery when %s completion is aborted",
+			async (kind) => {
+				const task = createTask(kind)
+				const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
+				const ask = vi.spyOn(task, "ask").mockResolvedValue({
+					response: "yesButtonClicked",
+					text: "",
+					images: [],
+				})
+				vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+					task.assistantMessageContent = [{ type: "text", content: "Everything is done.", partial: false }]
+					return false
+				})
+				vi.spyOn(task, "finalizeTaskCompletion").mockImplementationOnce(async () => {
+					task.abort = true
+					return false
+				})
 
-			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 
-			expect(ask).not.toHaveBeenCalledWith("resume_task")
-			expect(appendEvent).toHaveBeenCalledWith(
-				expect.objectContaining({ type: "task_completed", status: "aborted" }),
-			)
-		})
+				expect(ask).not.toHaveBeenCalledWith("resume_task")
+				expect(appendEvent).toHaveBeenCalledWith(
+					expect.objectContaining({ type: "task_completed", status: "aborted" }),
+				)
+			},
+		)
 
 		it("keeps failed managed children on their terminal handoff path", async () => {
 			const task = createTask("subagent")
@@ -4232,37 +4271,42 @@ describe("Alpha", () => {
 			expect(ask).not.toHaveBeenCalledWith("resume_task")
 		})
 
-		it("blocks ordinary text completion while the enabled todo policy has open work", async () => {
-			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
-				() =>
-					({
-						get: (key: string, defaultValue: unknown) =>
-							key === "preventCompletionWithOpenTodos" ? true : defaultValue,
-					}) as any,
-			)
-			const task = createTask()
-			task.todoList = [{ id: "pending", content: "Finish the regression", status: "pending" }]
-			const ask = vi.spyOn(task, "ask")
-			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
-				.mockImplementationOnce(async () => {
-					task.assistantMessageContent = [{ type: "text", content: "Everything is done.", partial: false }]
-					return false
-				})
-				.mockResolvedValueOnce(true)
+		it.each(["primary", "subagent"] as const)(
+			"blocks %s text completion while the enabled todo policy has open work",
+			async (kind) => {
+				vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+					() =>
+						({
+							get: (key: string, defaultValue: unknown) =>
+								key === "preventCompletionWithOpenTodos" ? true : defaultValue,
+						}) as any,
+				)
+				const task = createTask(kind)
+				task.todoList = [{ id: "pending", content: "Finish the regression", status: "pending" }]
+				const ask = vi.spyOn(task, "ask")
+				const requestStep = vi
+					.spyOn(task, "recursivelyMakeClineRequests")
+					.mockImplementationOnce(async () => {
+						task.assistantMessageContent = [
+							{ type: "text", content: "Everything is done.", partial: false },
+						]
+						return false
+					})
+					.mockResolvedValueOnce(true)
 
-			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 
-			expect(ask).not.toHaveBeenCalledWith("completion_result", expect.anything(), expect.anything())
-			expect(requestStep).toHaveBeenCalledTimes(2)
-			expect(requestStep.mock.calls[1]?.[0]).toEqual([
-				expect.objectContaining({
-					type: "text",
-					text: expect.stringContaining("incomplete todos"),
-				}),
-			])
-			expect((task as any).didComplete).toBe(false)
-		})
+				expect(ask).not.toHaveBeenCalledWith("completion_result", expect.anything(), expect.anything())
+				expect(requestStep).toHaveBeenCalledTimes(2)
+				expect(requestStep.mock.calls[1]?.[0]).toEqual([
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringContaining("incomplete todos"),
+					}),
+				])
+				expect((task as any).didComplete).toBe(false)
+			},
+		)
 
 		it("rechecks open todos after the completion review boundary", async () => {
 			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
@@ -4393,35 +4437,38 @@ describe("Alpha", () => {
 			expect((task as any).pendingTurnSuspension?.reason).toContain("paused before another model request")
 		})
 
-		it("does not expose a completion boundary when raw text fails the durable completion gate", async () => {
-			const task = createTask()
-			mockProvider.getParentCompletionDecision.mockResolvedValue({
-				allowed: false,
-				message: "A managed descendant is still active.",
-			})
-			const ask = vi.spyOn(task, "ask")
-			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
-				.mockImplementationOnce(async () => {
-					await task.say("text", "Everything is finished.", undefined, false)
-					task.assistantMessageContent = [
-						{ type: "text", content: "Everything is finished.", partial: false },
-					]
-					return false
+		it.each(["primary", "subagent"] as const)(
+			"does not expose a completion boundary when %s text fails the durable gate",
+			async (kind) => {
+				const task = createTask(kind)
+				mockProvider.getParentCompletionDecision.mockResolvedValue({
+					allowed: false,
+					message: "A managed descendant is still active.",
 				})
-				.mockResolvedValueOnce(true)
+				const ask = vi.spyOn(task, "ask")
+				const requestStep = vi
+					.spyOn(task, "recursivelyMakeClineRequests")
+					.mockImplementationOnce(async () => {
+						await task.say("text", "Everything is finished.", undefined, false)
+						task.assistantMessageContent = [
+							{ type: "text", content: "Everything is finished.", partial: false },
+						]
+						return false
+					})
+					.mockResolvedValueOnce(true)
 
-			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 
-			expect(ask).not.toHaveBeenCalledWith("completion_result", expect.anything(), expect.anything())
-			expect(task.clineMessages).not.toContainEqual(
-				expect.objectContaining({ type: "say", say: "completion_result" }),
-			)
-			expect(requestStep).toHaveBeenCalledTimes(2)
-			expect(requestStep.mock.calls[1]?.[0]).toEqual([
-				expect.objectContaining({ type: "text", text: expect.stringContaining("still active") }),
-			])
-		})
+				expect(ask).not.toHaveBeenCalledWith("completion_result", expect.anything(), expect.anything())
+				expect(task.clineMessages).not.toContainEqual(
+					expect.objectContaining({ type: "say", say: "completion_result" }),
+				)
+				expect(requestStep).toHaveBeenCalledTimes(2)
+				expect(requestStep.mock.calls[1]?.[0]).toEqual([
+					expect.objectContaining({ type: "text", text: expect.stringContaining("still active") }),
+				])
+			},
+		)
 
 		it("returns an accepted raw completion from a legacy child to its parent", async () => {
 			const parent = createTask()
@@ -4567,25 +4614,28 @@ describe("Alpha", () => {
 			expect((task as any).pendingTurnSuspension?.reason).toContain("paused before another model request")
 		})
 
-		it("does not discard pending user continuation after a no-tool response", async () => {
-			const task = createTask()
-			const queuedUserContent = [{ type: "text" as const, text: "Please continue with this detail." }]
-			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
-				.mockImplementationOnce(async () => {
-					task.assistantMessageContent = [
-						{ type: "text", content: "I can continue when that detail is available.", partial: false },
-					]
-					task.userMessageContent = queuedUserContent
-					return false
-				})
-				.mockResolvedValueOnce(true)
+		it.each(["primary", "subagent"] as const)(
+			"retains pending user continuation after a %s no-tool response",
+			async (kind) => {
+				const task = createTask(kind)
+				const queuedUserContent = [{ type: "text" as const, text: "Please continue with this detail." }]
+				const requestStep = vi
+					.spyOn(task, "recursivelyMakeClineRequests")
+					.mockImplementationOnce(async () => {
+						task.assistantMessageContent = [
+							{ type: "text", content: "I can continue when that detail is available.", partial: false },
+						]
+						task.userMessageContent = queuedUserContent
+						return false
+					})
+					.mockResolvedValueOnce(true)
 
-			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 
-			expect(requestStep).toHaveBeenCalledTimes(2)
-			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([queuedUserContent, false])
-		})
+				expect(requestStep).toHaveBeenCalledTimes(2)
+				expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([queuedUserContent, false])
+			},
+		)
 
 		it("promotes one queued user message with images after a visible primary response", async () => {
 			const task = createTask()
@@ -4646,8 +4696,8 @@ describe("Alpha", () => {
 			expect(task.messageQueueService.messages).toHaveLength(1)
 		})
 
-		it("keeps the queue behind pending steering", async () => {
-			const task = createTask()
+		it.each(["primary", "subagent"] as const)("keeps the %s queue behind pending steering", async (kind) => {
+			const task = createTask(kind)
 			task.messageQueueService.addMessage("queued after steering")
 			const requestStep = vi
 				.spyOn(task, "recursivelyMakeClineRequests")
@@ -4669,9 +4719,111 @@ describe("Alpha", () => {
 			expect(task.messageQueueService.messages).toHaveLength(1)
 		})
 
-		it("keeps managed children on the explicit attempt_completion contract", async () => {
+		it.each(["failed", "incomplete", "aborted", "exhausted"] as const)(
+			"does not publish managed text from a %s response",
+			async (status) => {
+				const task = createTask("subagent")
+				const completed = vi.fn()
+				task.on(RooCodeEventName.TaskCompleted, completed)
+				const request = vi.spyOn(task, "recursivelyMakeClineRequests").mockResolvedValueOnce({
+					status,
+					response: createAgentResponse([{ type: "text", text: "Partial analysis before interruption." }]),
+				})
+
+				await Reflect.get(task, "initiateTaskLoop").call(task, [{ type: "text", text: "Investigate." }])
+
+				expect(request).toHaveBeenCalledOnce()
+				expect(completed).not.toHaveBeenCalled()
+				expect(Reflect.get(task, "didComplete")).toBe(false)
+				expect(task.clineMessages.some((message) => message.say === "completion_result")).toBe(false)
+			},
+		)
+
+		it("allows a managed final answer after a recoverable completion rejection", async () => {
 			const task = createTask("subagent")
-			task.messageQueueService.addMessage("do not consume child queue implicitly")
+			mockProvider.getParentCompletionDecision
+				.mockResolvedValueOnce({
+					allowed: false,
+					modelCanResolveRejection: true,
+					message: "Inspect the pending result.",
+				})
+				.mockResolvedValue({ allowed: true })
+			const request = vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementation(async () => {
+				task.userMessageContent = []
+				return {
+					status: "completed",
+					response: createAgentResponse([{ type: "text", text: "Reviewed result." }]),
+				}
+			})
+			const completed = vi.fn()
+			task.on(RooCodeEventName.TaskCompleted, completed)
+
+			await Reflect.get(task, "initiateTaskLoop").call(task, [{ type: "text", text: "Review." }])
+
+			expect(request).toHaveBeenCalledTimes(2)
+			expect(request.mock.calls[1]?.[0]).toEqual([
+				expect.objectContaining({ text: expect.stringContaining("Inspect the pending result.") }),
+			])
+			expect(completed).toHaveBeenCalledOnce()
+			expect(Reflect.get(task, "didComplete")).toBe(true)
+		})
+
+		it("retains guidance arriving while a managed answer is being persisted", async () => {
+			const task = createTask("subagent")
+			const present = task.presentCompletionResult.bind(task)
+			vi.spyOn(task, "presentCompletionResult").mockImplementationOnce(async (...args) => {
+				await present(...args)
+				task.messageQueueService.addMessage("Include the cancellation case.")
+			})
+			const request = vi
+				.spyOn(task, "recursivelyMakeClineRequests")
+				.mockResolvedValueOnce({
+					status: "completed",
+					response: createAgentResponse([{ type: "text", text: "Initial review." }]),
+				})
+				.mockResolvedValueOnce({
+					status: "completed",
+					response: createAgentResponse([{ type: "text", text: "Expanded review." }]),
+				})
+			const completed = vi.fn()
+			task.on(RooCodeEventName.TaskCompleted, completed)
+
+			await Reflect.get(task, "initiateTaskLoop").call(task, [{ type: "text", text: "Review." }])
+
+			expect(request).toHaveBeenCalledTimes(2)
+			expect(request.mock.calls[1]?.[0]).toEqual([
+				{ type: "text", text: "<user_message>\nInclude the cancellation case.\n</user_message>" },
+			])
+			expect(task.clineMessages.filter((message) => message.say === "completion_result")).toEqual([
+				expect.objectContaining({ text: "Expanded review." }),
+			])
+			expect(completed).toHaveBeenCalledOnce()
+		})
+
+		it("does not publish managed completion when persistence fails and can retry once it recovers", async () => {
+			const task = createTask("subagent")
+			vi.spyOn(task, "recursivelyMakeClineRequests").mockResolvedValue({
+				status: "completed",
+				response: createAgentResponse([{ type: "text", text: "The durable report." }]),
+			})
+			vi.spyOn(task, "flushPendingToolResultsToHistory").mockRejectedValueOnce(
+				new Error("Persistence unavailable"),
+			)
+			const completed = vi.fn()
+			task.on(RooCodeEventName.TaskCompleted, completed)
+			const run = () => Reflect.get(task, "initiateTaskLoop").call(task, [{ type: "text", text: "Review." }])
+
+			await expect(run()).rejects.toThrow("Persistence unavailable")
+			expect(completed).not.toHaveBeenCalled()
+			expect(Reflect.get(task, "didComplete")).toBe(false)
+			await run()
+			expect(Reflect.get(task, "didComplete")).toBe(true)
+			expect(completed).toHaveBeenCalledOnce()
+		})
+
+		it("consumes queued guidance before accepting managed child text", async () => {
+			const task = createTask("subagent")
+			task.messageQueueService.addMessage("Check the additional edge case.")
 			const requestStep = vi
 				.spyOn(task, "recursivelyMakeClineRequests")
 				.mockImplementationOnce(async () => {
@@ -4686,10 +4838,11 @@ describe("Alpha", () => {
 
 			expect(requestStep).toHaveBeenCalledTimes(2)
 			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
-				[{ type: "text", text: formatResponse.noToolsUsed() }],
+				[{ type: "text", text: "<user_message>\nCheck the additional edge case.\n</user_message>" }],
 				false,
 			])
-			expect(task.messageQueueService.messages).toHaveLength(1)
+			expect(task.messageQueueService.messages).toHaveLength(0)
+			expect(Reflect.get(task, "didComplete")).toBe(false)
 		})
 
 		it("stops at the completion boundary without starting another request", async () => {

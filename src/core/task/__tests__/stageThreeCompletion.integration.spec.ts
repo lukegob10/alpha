@@ -740,6 +740,34 @@ describe("Stage Three durable completion integration", () => {
 	)
 
 	it.each(["text", "explicit"] as const)(
+		"bounds a stuck verification publisher during %s completion without another model request",
+		async (kind) => {
+			const harness = await setup(kind)
+			const publication = deferred()
+			harness.provider.recordParentVerificationEvidence.mockImplementationOnce(() => publication.promise)
+			harness.task.beginCommandExecution("running-check", "physical-running-check", "pnpm exec vitest run")
+			harness.task.completeCommandExecution("running-check", { exitCode: 0 }, "physical-running-check")
+			const { running } = await observePendingCandidate(harness)
+			let settled = false
+			void running.then(() => {
+				settled = true
+			})
+			try {
+				await vi.advanceTimersByTimeAsync(31_000)
+				expect(settled, "Completion must not wait forever on a finished command's publisher").toBe(true)
+				harness.assertRecoverableStop()
+				expect(harness.requests).toHaveLength(1)
+				expect(harness.task.consecutiveMistakeCount).toBe(0)
+			} finally {
+				harness.cancel()
+				publication.resolve()
+				await vi.advanceTimersByTimeAsync(1_000)
+				await running
+			}
+		},
+	)
+
+	it.each(["text", "explicit"] as const)(
 		"cancels a %s completion wait while verification publication remains unresolved",
 		async (kind) => {
 			const harness = await setup(kind)

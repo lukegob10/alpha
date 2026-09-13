@@ -1,4 +1,6 @@
 import type { ClineAskUseMcpServer, McpExecutionStatus } from "@alpha-code/types"
+import { createHash } from "crypto"
+import stringify from "safe-stable-stringify"
 
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
@@ -438,6 +440,14 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 			await task.say("mcp_server_response", toolResultPretty, images)
 			signal?.throwIfAborted()
 			pushToolResult(formatResponse.toolResult(toolResultPretty, images))
+			if (!toolResult.isError)
+				callbacks.setResultMetadata?.({
+					status: "success",
+					// This observes the exchange, not the server's claims about effects or completion.
+					opaqueResultFingerprint: createHash("sha256")
+						.update(stringify([serverName, source, toolName, parsedArguments, outputText, images]) ?? "")
+						.digest("hex"),
+				})
 			await finishExecution(
 				toolResult.isError
 					? { executionId, status: "error", error: "Error executing MCP tool" }

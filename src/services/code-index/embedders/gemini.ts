@@ -1,113 +1,71 @@
-import { OpenAICompatibleEmbedder } from "./openai-compatible"
-import { IEmbedder, EmbeddingResponse, EmbedderInfo } from "../interfaces/embedder"
-import { GEMINI_MAX_ITEM_TOKENS } from "../constants"
+import { GoogleGenAI } from "@google/genai"
+import type { IEmbedder, EmbeddingResponse, EmbedderInfo } from "../interfaces/embedder"
+import { INITIAL_RETRY_DELAY_MS, MAX_BATCH_RETRIES } from "../constants"
 import { t } from "../../../i18n"
-import { TelemetryEventName } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
+import { googleEmbeddingInput } from "../shared/google-embedding"
+import { validateEmbeddingBatch } from "../shared/embedding-input"
+import { withValidationErrorHandling } from "../shared/validation-helpers"
 
-/**
- * Gemini embedder implementation that wraps the OpenAI Compatible embedder
- * with configuration for Google's Gemini embedding API.
- *
- * Supported models:
- * - gemini-embedding-001 (dimension: 3072)
- *
- * Note: text-embedding-004 has been deprecated and is automatically
- * migrated to gemini-embedding-001 for backward compatibility.
- */
+/** Native Gemini transport preserves the query/document task contract. */
 export class GeminiEmbedder implements IEmbedder {
-	private readonly openAICompatibleEmbedder: OpenAICompatibleEmbedder
-	private static readonly GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-	private static readonly DEFAULT_MODEL = "gemini-embedding-001"
-	/**
-	 * Deprecated models that are automatically migrated to their replacements.
-	 * Users with these models configured will be silently migrated without interruption.
-	 */
-	private static readonly DEPRECATED_MODEL_MIGRATIONS: Record<string, string> = {
-		"text-embedding-004": "gemini-embedding-001",
-	}
+	private readonly client: GoogleGenAI
 	private readonly modelId: string
-
-	/**
-	 * Migrates deprecated model IDs to their replacements.
-	 * @param modelId The model ID to potentially migrate
-	 * @returns The migrated model ID, or the original if no migration is needed
-	 */
-	private static migrateModelId(modelId: string): string {
-		return GeminiEmbedder.DEPRECATED_MODEL_MIGRATIONS[modelId] ?? modelId
-	}
-
-	/**
-	 * Creates a new Gemini embedder
-	 * @param apiKey The Gemini API key for authentication
-	 * @param modelId The model ID to use (defaults to gemini-embedding-001)
-	 */
 	constructor(apiKey: string, modelId?: string) {
-		if (!apiKey) {
-			throw new Error(t("embeddings:validation.apiKeyRequired"))
-		}
-
-		// Migrate deprecated models to their replacements silently
-		const migratedModelId = modelId ? GeminiEmbedder.migrateModelId(modelId) : undefined
-
-		// Use provided model (after migration) or default
-		this.modelId = migratedModelId || GeminiEmbedder.DEFAULT_MODEL
-
-		// Create an OpenAI Compatible embedder with Gemini's configuration
-		this.openAICompatibleEmbedder = new OpenAICompatibleEmbedder(
-			GeminiEmbedder.GEMINI_BASE_URL,
-			apiKey,
-			this.modelId,
-			GEMINI_MAX_ITEM_TOKENS,
-		)
+		if (!apiKey) throw new Error(t("embeddings:validation.apiKeyRequired"))
+		this.modelId = !modelId || modelId === "text-embedding-004" ? "gemini-embedding-001" : modelId
+		this.client = new GoogleGenAI({ apiKey })
 	}
 
-	/**
-	 * Creates embeddings for the given texts using Gemini's embedding API
-	 * @param texts Array of text strings to embed
-	 * @param model Optional model identifier (uses constructor model if not provided)
-	 * @returns Promise resolving to embedding response
-	 */
-	async createEmbeddings(texts: string[], model?: string): Promise<EmbeddingResponse> {
-		try {
-			// Use the provided model or fall back to the instance's model
-			const modelToUse = model || this.modelId
-			return await this.openAICompatibleEmbedder.createEmbeddings(texts, modelToUse)
-		} catch (error) {
-			TelemetryService.instance.captureEvent(TelemetryEventName.CODE_INDEX_ERROR, {
-				error: error instanceof Error ? error.message : String(error),
-				stack: error instanceof Error ? error.stack : undefined,
-				location: "GeminiEmbedder:createEmbeddings",
-			})
-			throw error
+	async createEmbeddings(
+		texts: string[],
+		model?: string,
+		purpose: "document" | "query" = "document",
+	): Promise<EmbeddingResponse> {
+		const selectedModel = model || this.modelId
+		const result: EmbeddingResponse & { usage: { promptTokens: number; totalTokens: number } } = {
+			embeddings: [],
+			usage: { promptTokens: 0, totalTokens: 0 },
 		}
+		for (let offset = 0; offset < texts.length; offset += 32) {
+			const batch = texts.slice(offset, offset + 32)
+			for (let attempt = 0; ; attempt++) {
+				try {
+					const input = googleEmbeddingInput(batch, selectedModel, purpose)
+					const response = await this.client.models.embedContent({
+						model: selectedModel,
+						...input,
+					})
+					const embeddings = response.embeddings?.map((item) => item.values ?? []) ?? []
+					validateEmbeddingBatch(embeddings, batch.length)
+					result.embeddings.push(...embeddings)
+					const tokens =
+						response.embeddings?.reduce((sum, item, index) => {
+							const content = input.contents[index]
+							const text = typeof content === "string" ? content : content.parts[0].text
+							return sum + (item.statistics?.tokenCount ?? Math.ceil(text.length / 4))
+						}, 0) ?? 0
+					result.usage.promptTokens += tokens
+					result.usage.totalTokens += tokens
+					break
+				} catch (error) {
+					const status = error && typeof error === "object" && "status" in error ? Number(error.status) : 0
+					if (attempt + 1 >= MAX_BATCH_RETRIES || (status !== 429 && (status < 500 || status > 599)))
+						throw error
+					await new Promise((resolve) => setTimeout(resolve, INITIAL_RETRY_DELAY_MS * 2 ** attempt))
+				}
+			}
+		}
+		return result
 	}
 
-	/**
-	 * Validates the Gemini embedder configuration by delegating to the underlying OpenAI-compatible embedder
-	 * @returns Promise resolving to validation result with success status and optional error message
-	 */
 	async validateConfiguration(): Promise<{ valid: boolean; error?: string }> {
-		try {
-			// Delegate validation to the OpenAI-compatible embedder
-			// The error messages will be specific to Gemini since we're using Gemini's base URL
-			return await this.openAICompatibleEmbedder.validateConfiguration()
-		} catch (error) {
-			TelemetryService.instance.captureEvent(TelemetryEventName.CODE_INDEX_ERROR, {
-				error: error instanceof Error ? error.message : String(error),
-				stack: error instanceof Error ? error.stack : undefined,
-				location: "GeminiEmbedder:validateConfiguration",
-			})
-			throw error
-		}
+		return withValidationErrorHandling(async () => {
+			await this.createEmbeddings(["test"])
+			return { valid: true }
+		}, "gemini")
 	}
 
-	/**
-	 * Returns information about this embedder
-	 */
 	get embedderInfo(): EmbedderInfo {
-		return {
-			name: "gemini",
-		}
+		return { name: "gemini" }
 	}
 }

@@ -40,8 +40,25 @@ export class WaitAgentTool extends BaseTool<"wait_agent"> {
 					? provider.waitForAgent(task, timeoutMs, { target, untilTerminal })
 					: provider.waitForAgent(task, timeoutMs),
 			(result) => {
-				if (typeof result !== "object" || result === null || !("claimId" in result)) return
-				const claimId = (result as { claimId?: unknown }).claimId
+				if (typeof result !== "object" || result === null) return
+				// This is the in-process lifecycle host's envelope, never parsed model/MCP text.
+				// Timeout means a bounded blocking wait elapsed; an empty fast path is idle.
+				if ("cancelled" in result && result.cancelled === true) {
+					callbacks.setResultMetadata?.({ status: "cancelled" })
+					return
+				}
+				const idle =
+					("noActiveAgents" in result && result.noActiveAgents === true) ||
+					("alreadyDelivered" in result && result.alreadyDelivered === true)
+				const events = "events" in result && Array.isArray(result.events) ? result.events : []
+				const claimId = "claimId" in result ? result.claimId : undefined
+				const hasClaim = typeof claimId === "string" && claimId.length > 0
+				const activity = hasClaim && events.length > 0
+				const timedOut = "timedOut" in result && result.timedOut === true
+				callbacks.setResultMetadata?.({
+					status: "success",
+					waitOutcome: !idle && (timedOut || activity) ? "active" : "idle",
+				})
 				if (typeof claimId !== "string" || claimId.length === 0) return
 				if (!callbacks.toolCallId) {
 					throw new Error("wait_agent received a mailbox claim without a native tool call ID")

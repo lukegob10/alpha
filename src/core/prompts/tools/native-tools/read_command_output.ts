@@ -28,6 +28,8 @@ The tool supports two modes:
 - **Read mode**: Read output starting from a byte offset with optional limit
 - **Search mode**: Filter lines matching a regex or literal pattern (like grep)
 
+This is an immediate read, not a blocking wait. Follow the returned byte cursor for unread output; avoid repeatedly reading an unchanged page while a command runs.
+
 Parameters:
 - artifact_id: (required) The artifact filename from the truncated output message (e.g., "cmd-1706119234567.txt"). Must match cmd-{digits}.txt and be at most ${READ_COMMAND_OUTPUT_MAX_ARTIFACT_ID_LENGTH} characters.
 - search: (optional) Pattern to filter lines. Supports regex or literal strings. Case-insensitive. Must be 1-256 characters. **Omit this parameter entirely if you don't need to filter - do not pass null or empty string.**

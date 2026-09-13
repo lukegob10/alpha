@@ -106,12 +106,9 @@ describe("VertexGeminiEmbedder", () => {
 			vertexRegion: "us-central1",
 		} as any)
 
-		mockEmbedContent.mockResolvedValueOnce({
-			embeddings: [
-				{ values: [0.1, 0.2], statistics: { tokenCount: 4 } },
-				{ values: [0.3, 0.4], statistics: { tokenCount: 5 } },
-			],
-		})
+		mockEmbedContent
+			.mockResolvedValueOnce({ embeddings: [{ values: [0.1, 0.2], statistics: { tokenCount: 4 } }] })
+			.mockResolvedValueOnce({ embeddings: [{ values: [0.3, 0.4], statistics: { tokenCount: 5 } }] })
 
 		const response = await embedder.createEmbeddings(["first text", "second text"])
 
@@ -125,10 +122,11 @@ describe("VertexGeminiEmbedder", () => {
 				totalTokens: 9,
 			},
 		})
-		expect(mockEmbedContent).toHaveBeenCalledTimes(1)
+		expect(mockEmbedContent).toHaveBeenCalledTimes(2)
 		expect(mockEmbedContent).toHaveBeenCalledWith({
 			model: "gemini-embedding-001",
-			contents: ["first text", "second text"],
+			contents: ["first text"],
+			config: { taskType: "RETRIEVAL_DOCUMENT" },
 		})
 	})
 
@@ -168,6 +166,7 @@ describe("VertexGeminiEmbedder", () => {
 			model: "gateway-embedding-model",
 			contents: ["text"],
 			config: {
+				taskType: "RETRIEVAL_DOCUMENT",
 				httpOptions: {
 					baseUrl: "https://gateway.example.com/vertex",
 					headers: {
@@ -199,6 +198,7 @@ describe("VertexGeminiEmbedder", () => {
 			model: "gateway-embedding-model",
 			contents: ["text"],
 			config: {
+				taskType: "RETRIEVAL_DOCUMENT",
 				httpOptions: {
 					baseUrl: "https://gateway.example.com/vertex",
 					headers: {
@@ -290,7 +290,8 @@ describe("VertexGeminiEmbedder", () => {
 		expect(response.embeddings).toEqual([[0.1, 0.2]])
 		expect(mockEmbedContent).toHaveBeenCalledWith({
 			model: "gemini-embedding-2",
-			contents: [textOverGemini001Limit],
+			contents: [{ parts: [{ text: "title: none | text: " + textOverGemini001Limit }] }],
+			config: {},
 		})
 	})
 
@@ -308,6 +309,46 @@ describe("VertexGeminiEmbedder", () => {
 		expect(mockEmbedContent).toHaveBeenCalledWith({
 			model: "gemini-embedding-001",
 			contents: ["test"],
+			config: { taskType: "RETRIEVAL_DOCUMENT" },
 		})
+	})
+	it("bounds requests across batches and preserves order when responses complete out of order", async () => {
+		const embedder = new VertexGeminiEmbedder({
+			apiProvider: "vertex",
+			vertexProjectId: "project",
+			vertexRegion: "us-central1",
+		})
+		let firstStarted!: () => void
+		let secondStarted!: () => void
+		const first = new Promise<void>((resolve) => {
+			firstStarted = resolve
+		})
+		const second = new Promise<void>((resolve) => {
+			secondStarted = resolve
+		})
+		const pending: Array<() => void> = []
+		mockEmbedContent.mockImplementation(
+			({ contents }) =>
+				new Promise((resolve) => {
+					expect(contents).toHaveLength(1)
+					const index = Number(contents[0])
+					pending.push(() => resolve({ embeddings: [{ values: [index, 1] }] }))
+					if (pending.length === 4) firstStarted()
+					if (pending.length === 8) secondStarted()
+				}),
+		)
+		const response = embedder.createEmbeddings(Array.from({ length: 8 }, (_, index) => String(index)))
+		await first
+		expect(mockEmbedContent).toHaveBeenCalledTimes(4)
+		pending
+			.slice(0, 4)
+			.reverse()
+			.forEach((resolve) => resolve())
+		await second
+		pending
+			.slice(4)
+			.reverse()
+			.forEach((resolve) => resolve())
+		expect((await response).embeddings).toEqual(Array.from({ length: 8 }, (_, index) => [index, 1]))
 	})
 })

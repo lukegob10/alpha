@@ -1,5 +1,6 @@
 {
 	"activityTrace": {
+		"needsAttention": "Needs attention",
 		"workedFor": "Worked for {{duration}}"
 	},
 	"completionReport": "Completion report",
@@ -293,6 +294,7 @@
 		"didSearchOutsideWorkspace": "Alpha searched this directory (outside workspace) for <code>{{regex}}</code>"
 	},
 	"codebaseSearch": {
+		"title": "Codebase search",
 		"wantsToSearch": "Alpha wants to search the codebase for <code>{{query}}</code>",
 		"wantsToSearchWithPath": "Alpha wants to search the codebase for <code>{{query}}</code> in <code>{{path}}</code>",
 		"didSearch_one": "Found 1 result",

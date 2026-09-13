@@ -12,6 +12,172 @@ const failedCheck: ToolProgressObservation = {
 }
 
 describe("outcome-aware tool progress", () => {
+	it("bounds repeated batches larger than resource history, including reordered batches", () => {
+		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2, historyLimit: 8 })
+		const resources = Array.from({ length: 16 }, (_, index) => ({
+			kind: "read" as const,
+			scope: `file-${index}`,
+			stateFingerprint: "same content",
+		}))
+		const read = (reverse: boolean) =>
+			detector.recordOutcome({
+				toolName: "read_file",
+				kind: "read",
+				status: "success",
+				trustedProgress: reverse ? [...resources].reverse() : resources,
+			})
+		expect(read(false).stagnantCalls).toBe(0)
+		expect(read(true).stagnantCalls).toBe(1)
+		expect(read(false).action).toBe("change-strategy")
+		expect(read(true).stagnantCalls).toBe(3)
+		expect(read(false).action).toBe("stop")
+	})
+
+	it("allows novel opaque outcomes without declaring progress or clearing prior strikes", () => {
+		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
+		detector.recordOutcome({ toolName: "no-op", kind: "other", status: "success" })
+		for (let index = 0; index < 200; index++) {
+			expect(
+				detector.recordOutcome({
+					toolName: "use_mcp_tool",
+					kind: "other",
+					status: "success",
+					opaqueResultFingerprint: `result-${index}`,
+				}),
+			).toMatchObject({ action: "continue", stagnantCalls: 1 })
+		}
+		expect(
+			detector.recordOutcome({
+				toolName: "use_mcp_tool",
+				kind: "other",
+				status: "success",
+				opaqueResultFingerprint: "result-199",
+			}),
+		).toMatchObject({ action: "change-strategy", reason: "unconfirmed-progress", stagnantCalls: 2 })
+	})
+
+	it("bounds alternating identical opaque outcomes and does not admit opaque errors", () => {
+		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
+		const outcomes = Array.from({ length: 6 }, (_, index) =>
+			detector.recordOutcome({
+				toolName: "use_mcp_tool",
+				kind: "other",
+				status: "success",
+				opaqueResultFingerprint: String(index % 2),
+			}),
+		)
+		expect(outcomes.at(-1)).toMatchObject({ action: "stop", reason: "unconfirmed-progress" })
+		const failures = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
+		for (let index = 0; index < 4; index++)
+			expect(
+				failures.recordOutcome({
+					toolName: "use_mcp_tool",
+					kind: "other",
+					status: "error",
+					opaqueResultFingerprint: String(index),
+				}).stagnantCalls,
+			).toBe(index + 1)
+	})
+
+	it("remembers every read in a batch independently of ordering and regrouping", () => {
+		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
+		const read = (files: string[]): ToolProgressObservation => ({
+			toolName: "read_file",
+			args: { files },
+			kind: "read",
+			status: "success",
+			scope: "/workspace",
+			trustedProgress: files.map((scope) => ({ kind: "read", scope, stateFingerprint: "contents" })),
+		})
+		expect(detector.recordOutcome(read(["a", "b"])).stagnantCalls).toBe(0)
+		expect(detector.recordOutcome(read(["b"])).stagnantCalls).toBe(1)
+		expect(detector.recordOutcome(read(["b", "a"])).action).toBe("change-strategy")
+		expect(detector.recordOutcome(read(["b", "c"])).stagnantCalls).toBe(0)
+	})
+
+	it("uses returned read state instead of cosmetic argument changes", () => {
+		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
+		const read = (limit: number, stateFingerprint = "same lines"): ToolProgressObservation => ({
+			toolName: "read_file",
+			args: { path: "file.ts", limit },
+			kind: "read",
+			status: "success",
+			scope: "/workspace",
+			trustedProgress: { kind: "read", scope: "/workspace/file.ts", stateFingerprint },
+		})
+		expect(detector.recordOutcome(read(100)).stagnantCalls).toBe(0)
+		expect(detector.recordOutcome(read(200)).stagnantCalls).toBe(1)
+		expect(detector.recordOutcome(read(300)).action).toBe("change-strategy")
+		expect(detector.recordOutcome(read(300, "changed lines")).stagnantCalls).toBe(0)
+	})
+
+	it.each(["error", "denied", "cancelled", "running"] as const)(
+		"does not credit resource progress for %s results",
+		(status) => {
+			const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
+			for (let index = 0; index < 4; index++) {
+				const result = detector.recordOutcome({
+					toolName: "update_ticket",
+					kind: "other",
+					status: status === "running" ? "success" : status,
+					...(status === "running" ? { executionStatus: "running" as const } : {}),
+					trustedProgress: {
+						kind: "mutation",
+						scope: "ticket",
+						previousStateFingerprint: "before",
+						stateFingerprint: `after-${index}`,
+					},
+				})
+				expect(result.stagnantCalls).toBe(index + 1)
+			}
+		},
+	)
+
+	it("requires confirmed deltas and retains alternating resource states after rollover", () => {
+		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2, historyLimit: 8 })
+		const mutation = (before: string | undefined, after: string): ToolProgressObservation => ({
+			toolName: "update_ticket",
+			kind: "other",
+			status: "success",
+			trustedProgress: {
+				kind: "mutation",
+				scope: "ticket",
+				previousStateFingerprint: before,
+				stateFingerprint: after,
+			},
+		})
+		expect(detector.recordOutcome(mutation(undefined, "0")).stagnantCalls).toBe(1)
+		for (let index = 1; index < 40; index++) {
+			expect(detector.recordOutcome(mutation(String(index - 1), String(index)))).toMatchObject({
+				action: "continue",
+				stagnantCalls: 0,
+			})
+		}
+		expect(
+			[38, 39, 38, 39].map(
+				(state, index) => detector.recordOutcome(mutation(index % 2 ? "38" : "39", String(state))).action,
+			),
+		).toEqual(["continue", "change-strategy", "continue", "stop"])
+		detector.resetProgress()
+		expect(detector.recordOutcome(mutation("before", "after")).stagnantCalls).toBe(0)
+	})
+
+	it("keeps frequently revisited reads in memory while new work rotates through the window", () => {
+		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2, historyLimit: 8 })
+		const read = (path: string): ToolProgressObservation => ({
+			toolName: "read_file",
+			args: { path },
+			kind: "read",
+			status: "success",
+			scope: "/workspace",
+		})
+		detector.recordOutcome(read("same-file"))
+		for (let index = 0; index < 40; index++) {
+			expect(detector.recordOutcome(read(`new-file-${index}`)).stagnantCalls).toBe(0)
+			expect(detector.recordOutcome(read("same-file")).stagnantCalls).toBe(1)
+		}
+	})
+
 	it("changes strategy once, then stops repeated failed checks within the configured bound", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 3 })
 		const actions = Array.from(
@@ -93,7 +259,7 @@ describe("outcome-aware tool progress", () => {
 
 	it("keeps productive exploration of different files and ranges running", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
-		for (let index = 0; index < 40; index++) {
+		for (let index = 0; index < 200; index++) {
 			expect(
 				detector.recordOutcome({
 					toolName: "read_file",
@@ -106,7 +272,7 @@ describe("outcome-aware tool progress", () => {
 		}
 	})
 
-	it("does not renew read novelty after the retained-history boundary is cycled", () => {
+	it("continues beyond history rollover while retaining recent alternating reads", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 3, historyLimit: 8 })
 		const read = (index: number): ToolProgressObservation => ({
 			toolName: "read_file",
@@ -116,10 +282,10 @@ describe("outcome-aware tool progress", () => {
 			status: "success",
 		})
 
-		for (let index = 0; index < 8; index++) {
+		for (let index = 0; index < 40; index++) {
 			expect(detector.recordOutcome(read(index))).toMatchObject({ action: "continue", stagnantCalls: 0 })
 		}
-		expect([8, 0, 1, 2, 3, 4].map((index) => detector.recordOutcome(read(index)).action)).toEqual([
+		expect([38, 39, 38, 39, 38, 39].map((index) => detector.recordOutcome(read(index)).action)).toEqual([
 			"continue",
 			"continue",
 			"change-strategy",
@@ -132,7 +298,7 @@ describe("outcome-aware tool progress", () => {
 		expect(detector.recordOutcome(read(0))).toMatchObject({ action: "continue", stagnantCalls: 0 })
 	})
 
-	it.each(["state", "evidence"] as const)("does not renew %s novelty after its bounded memory fills", (novelty) => {
+	it.each(["state", "evidence"] as const)("retains recent %s while admitting new work after rollover", (novelty) => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 3, historyLimit: 8 })
 		const observe = (index: number): ToolProgressObservation => ({
 			toolName: novelty === "state" ? "apply_patch" : "execute_command",
@@ -144,10 +310,16 @@ describe("outcome-aware tool progress", () => {
 				: { evidenceFingerprint: `evidence-${index}` }),
 		})
 
-		for (let index = 0; index < 8; index++) detector.recordOutcome(observe(index))
-		expect(detector.recordOutcome(observe(8)).stagnantCalls).toBe(1)
-		expect(detector.recordOutcome(observe(0)).stagnantCalls).toBe(2)
-		expect(detector.recordOutcome(observe(1)).action).toBe("change-strategy")
+		detector.recordOutcome(observe(0))
+		for (let index = 1; index < 40; index++) {
+			expect(detector.recordOutcome(observe(index))).toMatchObject({
+				action: "continue",
+				stagnantCalls: 0,
+				retainedOutcomes: Math.min(8, index + 1),
+			})
+		}
+		const actions = [38, 39, 38, 39, 38, 39].map((index) => detector.recordOutcome(observe(index)).action)
+		expect(actions).toEqual(["continue", "continue", "change-strategy", "continue", "continue", "stop"])
 	})
 
 	it("keeps forty distinct trusted shell inspections running like dedicated reads", () => {

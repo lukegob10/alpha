@@ -17,7 +17,7 @@ const options = (overrides: Partial<DevelopmentSuiteOptions> = {}): DevelopmentS
 })
 
 test("preserves the existing suites and adds explicit live reliability acceptance", () => {
-	assert.deepEqual(DEVELOPMENT_SUITE_NAMES, ["smoke", "development", "soak", "reliability"])
+	assert.deepEqual(DEVELOPMENT_SUITE_NAMES, ["smoke", "development", "soak", "reliability", "core"])
 	assert.deepEqual(createDevelopmentSuite(options()).scenarioIds, [
 		"dev-git-inspect",
 		"dev-repo-bootstrap",
@@ -50,13 +50,14 @@ test("uses bounded matrix budgets and scales iterations to the selected host cou
 		development: { samples: 1, maxIterations: 72, maxRequests: 1_200, maxDurationMs: 2 * 60 * 60 * 1_000 },
 		soak: { samples: 3, maxIterations: 216, maxRequests: 3_000, maxDurationMs: 6 * 60 * 60 * 1_000 },
 		reliability: { samples: 1, maxIterations: 66, maxRequests: 1_200, maxDurationMs: 2 * 60 * 60 * 1_000 },
+		core: { samples: 1, maxIterations: 27, maxRequests: 300, maxDurationMs: 2 * 60 * 60 * 1_000 },
 	} as const
 
 	for (const suite of DEVELOPMENT_SUITE_NAMES) {
 		const config = createDevelopmentSuite(
 			options({
 				suite,
-				...(suite === "reliability"
+				...(["reliability", "core"].includes(suite)
 					? ({ provider: "live-copilot", modelId: "model", effort: "high" } as const)
 					: {}),
 			}),
@@ -73,6 +74,39 @@ test("uses bounded matrix budgets and scales iterations to the selected host cou
 
 	const singleHost = createDevelopmentSuite(options({ suite: "development", host: { version: "1.136.1" } }))
 	assert.equal(singleHost.budgets.maxIterations, 36)
+})
+
+test("core acceptance uses Copilot on the reference host with explicit bounded sampling", () => {
+	assert.throws(() => createDevelopmentSuite(options({ suite: "core" })), /requires live Copilot/)
+	const config = createDevelopmentSuite(
+		options({
+			suite: "core",
+			provider: "live-copilot",
+			modelId: "exact",
+			effort: "high",
+			samples: 3,
+			maxRequests: 100,
+		}),
+	)
+	assert.deepEqual(config.hosts, [{ version: "1.122.1" }])
+	assert.equal(config.samples, 3)
+	assert.equal(config.budgets.maxRequests, 100)
+	assert.equal(config.budgets.maxIterations, 81)
+	assert.deepEqual(config.scenarioIds, [
+		"dev-git-inspect",
+		"dev-refactor",
+		"dev-search-recovery",
+		"completion-idle",
+		"provider-empty-recovery",
+		"provider-error-recovery",
+		"stream-cancel-recovery",
+		"reload-continuation",
+		"background-isolation",
+	])
+	for (const value of [0, -1, 1.5, NaN, Infinity, 100_001]) {
+		assert.throws(() => createDevelopmentSuite(options({ maxRequests: value })))
+		assert.throws(() => createDevelopmentSuite(options({ samples: value })))
+	}
 })
 
 test("defaults to the exact supported hosts in compatibility order and accepts one host", () => {

@@ -92,7 +92,7 @@ describe("agent lifecycle tools", () => {
 		await closeAgentTool.execute({ target: "child-1" }, task, callbacks)
 
 		expect(provider.listAgents).toHaveBeenCalledWith(task, "/root/review")
-		expect(provider.waitForAgent).toHaveBeenCalledWith(task, 30_000)
+		expect(provider.waitForAgent).toHaveBeenCalledWith(task, 120_000)
 		expect(provider.sendMessageToAgent).toHaveBeenCalledWith(task, "/root/review", "Check this.")
 		expect(provider.reportAgentProgress).toHaveBeenCalledWith(task, "Halfway through.")
 		expect(provider.followupAgentTask).toHaveBeenCalledWith(task, "child-1", "Continue.")

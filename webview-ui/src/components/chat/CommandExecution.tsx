@@ -160,7 +160,10 @@ export const CommandExecution = ({ executionId, text, icon, title, onToggleExpan
 					<ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0", isExpanded && "rotate-90")} />
 					{icon}
 					{title}
-					<code className="min-w-0 truncate text-xs" title={command}>
+					<code
+						className="min-w-0 truncate text-xs"
+						style={{ color: "var(--vscode-foreground)" }}
+						title={command}>
 						{command.split(/\r?\n/)[0]}
 					</code>
 					{status?.status === "exited" && (

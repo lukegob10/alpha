@@ -1,21 +1,20 @@
+import { createIndexPoint, getEmbeddingText, validateEmbeddingBatch } from "../shared/embedding-input"
 import { listFiles } from "../../glob/list-files"
 import { Ignore } from "ignore"
 import { RooIgnoreController } from "../../../core/ignore/RooIgnoreController"
 import { stat } from "fs/promises"
 import * as path from "path"
-import { generateNormalizedAbsolutePath, generateRelativeFilePath } from "../shared/get-relative-path"
+import { generateRelativeFilePath } from "../shared/get-relative-path"
 import { getWorkspacePathForContext } from "../../../utils/path"
 import { scannerExtensions } from "../shared/supported-extensions"
 import * as vscode from "vscode"
-import { CodeBlock, ICodeParser, IEmbedder, IVectorStore, IDirectoryScanner } from "../interfaces"
+import { CodeBlock, PointStruct, ICodeParser, IEmbedder, IVectorStore, IDirectoryScanner } from "../interfaces"
 import { createHash } from "crypto"
-import { v5 as uuidv5 } from "uuid"
 import pLimit from "p-limit"
 import { Mutex } from "async-mutex"
 import { CacheManager } from "../cache-manager"
 import { t } from "../../../i18n"
 import {
-	QDRANT_CODE_BLOCK_NAMESPACE,
 	MAX_FILE_SIZE_BYTES,
 	MAX_LIST_FILES_LIMIT_CODE_INDEX,
 	BATCH_SEGMENT_THRESHOLD,
@@ -149,7 +148,15 @@ export class DirectoryScanner implements IDirectoryScanner {
 			pendingBatchCount++
 
 			const batchPromise = batchLimiter(() =>
-				this.processBatch(batchBlocks, batchTexts, batchFileInfos, scanWorkspace, onError, onBlocksIndexed),
+				this.processBatch(
+					batchBlocks,
+					batchTexts,
+					batchFileInfos,
+					scanWorkspace,
+					onError,
+					onBlocksIndexed,
+					signal,
+				),
 			)
 			activeBatchPromises.add(batchPromise)
 			const cleanup = () => {
@@ -196,7 +203,11 @@ export class DirectoryScanner implements IDirectoryScanner {
 					}
 
 					// File is new or changed - parse it using the injected parser function
-					const blocks = await this.codeParser.parseFile(filePath, { content, fileHash: currentFileHash })
+					const blocks = await this.codeParser.parseFile(filePath, {
+						content,
+						fileHash: currentFileHash,
+						signal,
+					})
 					const fileBlockCount = blocks.length
 					onFileParsed?.(fileBlockCount)
 					processedCount++
@@ -204,8 +215,8 @@ export class DirectoryScanner implements IDirectoryScanner {
 					// Process embeddings if configured
 					if (this.embedder && this.qdrantClient) {
 						const indexedBlocks = blocks
-							.map((block) => ({ block, text: block.content.trim() }))
-							.filter(({ text }) => text.length > 0)
+							.filter((block) => block.content.trim().length > 0)
+							.map((block) => ({ block, text: getEmbeddingText(block, scanWorkspace) }))
 						const release = await mutex.acquire()
 						try {
 							if (signal?.aborted) {
@@ -267,10 +278,16 @@ export class DirectoryScanner implements IDirectoryScanner {
 		)
 
 		// Wait for all parsing to complete
-		await Promise.all(parsePromises)
+		const parsing = await Promise.allSettled(parsePromises)
+		const failure = parsing.find((result) => result.status === "rejected")
+		if (failure?.status === "rejected") {
+			await Promise.allSettled(activeBatchPromises)
+			throw failure.reason
+		}
 
 		// Check abort signal before processing remaining batch
 		if (signal?.aborted) {
+			await Promise.allSettled(activeBatchPromises)
 			return {
 				stats: {
 					processed: processedCount,
@@ -366,14 +383,34 @@ export class DirectoryScanner implements IDirectoryScanner {
 		scanWorkspace: string,
 		onError?: (error: Error) => void,
 		onBlocksIndexed?: (indexedCount: number) => void,
+		signal?: AbortSignal,
 	): Promise<void> {
 		let attempts = 0
 		let success = false
 		let lastError: Error | null = null
 
 		while (attempts < MAX_BATCH_RETRIES && !success) {
+			if (signal?.aborted) return
 			attempts++
 			try {
+				// Validate all provider results before replacing any existing source chunks.
+				const pendingPoints: PointStruct[][] = []
+				for (let offset = 0; offset < batchBlocks.length; offset += this.batchSegmentThreshold) {
+					const blocks = batchBlocks.slice(offset, offset + this.batchSegmentThreshold)
+					await this.embeddingRateLimiter.wait()
+					if (signal?.aborted) return
+					const { embeddings } = await this.embedder.createEmbeddings(
+						batchTexts.slice(offset, offset + blocks.length),
+						undefined,
+						"document",
+					)
+					validateEmbeddingBatch(embeddings, blocks.length)
+					pendingPoints.push(
+						blocks.map((block, index) => createIndexPoint(block, scanWorkspace, embeddings[index])),
+					)
+				}
+				// Cancellation stops before the replacement transaction. Once started, settle every write before teardown.
+				if (signal?.aborted) return
 				// --- Deletion Step ---
 				const uniqueFilePaths = [
 					...new Set(
@@ -415,31 +452,9 @@ export class DirectoryScanner implements IDirectoryScanner {
 				}
 				// --- End Deletion Step ---
 
-				for (let offset = 0; offset < batchBlocks.length; offset += this.batchSegmentThreshold) {
-					const blockChunk = batchBlocks.slice(offset, offset + this.batchSegmentThreshold)
-					const textChunk = batchTexts.slice(offset, offset + this.batchSegmentThreshold)
-					await this.embeddingRateLimiter.wait()
-					const { embeddings } = await this.embedder.createEmbeddings(textChunk)
-
-					const points = blockChunk.map((block, index) => {
-						const normalizedAbsolutePath = generateNormalizedAbsolutePath(block.file_path, scanWorkspace)
-						const pointId = uuidv5(block.segmentHash, QDRANT_CODE_BLOCK_NAMESPACE)
-
-						return {
-							id: pointId,
-							vector: embeddings[index],
-							payload: {
-								filePath: generateRelativeFilePath(normalizedAbsolutePath, scanWorkspace),
-								codeChunk: block.content,
-								startLine: block.start_line,
-								endLine: block.end_line,
-								segmentHash: block.segmentHash,
-							},
-						}
-					})
-
+				for (const points of pendingPoints) {
 					await this.qdrantClient.upsertPoints(points)
-					onBlocksIndexed?.(blockChunk.length)
+					onBlocksIndexed?.(points.length)
 				}
 
 				// Update hashes for successfully processed files in this batch

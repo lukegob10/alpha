@@ -1,5 +1,6 @@
 {
 	"activityTrace": {
+		"needsAttention": "Perlu perhatian",
 		"workedFor": "Bekerja selama {{duration}}"
 	},
 	"completionReport": "Laporan penyelesaian",
@@ -274,6 +275,7 @@
 		"wantsToViewMultipleDirectories": "Alpha ingin melihat beberapa direktori"
 	},
 	"codebaseSearch": {
+		"title": "Pencarian basis kode",
 		"wantsToSearch": "Alpha ingin mencari codebase untuk <code>{{query}}</code>",
 		"wantsToSearchWithPath": "Alpha ingin mencari codebase untuk <code>{{query}}</code> di <code>{{path}}</code>",
 		"didSearch_one": "Ditemukan 1 hasil",

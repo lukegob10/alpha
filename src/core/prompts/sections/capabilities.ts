@@ -24,7 +24,7 @@ CAPABILITIES
 
 - ${roleCapabilities}${delegationCapability}
 - The current workspace directory is '${cwd}'. A recursive workspace file list may be supplied in environment_details. Stay within this workspace and the objective's evidence scope.
-- Complete the bounded objective from available repository evidence, then report through attempt_completion.`
+- Complete the bounded objective from available repository evidence, then report the result.`
 	}
 
 	if (isPlanMode) {

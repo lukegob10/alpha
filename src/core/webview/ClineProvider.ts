@@ -5,6 +5,7 @@ import EventEmitter from "events"
 import crypto from "crypto"
 import { isDeepStrictEqual } from "util"
 import { settlementDiagnostics } from "../agent/SettlementDiagnostics"
+import { resolveWaitTimeout } from "../tools/AgentLifecycleTool"
 
 import { Anthropic } from "@anthropic-ai/sdk"
 import delay from "delay"
@@ -7045,7 +7046,8 @@ export class ClineProvider
 		await this.agentControlStore.settleMailboxClaim(parent.taskId, claimId, "acknowledge", root.rootTaskId)
 	}
 
-	public async waitForAgent(parent: Task, timeoutMs = 30_000, options: WaitForAgentOptions = {}): Promise<unknown> {
+	public async waitForAgent(parent: Task, timeoutMs?: number, options: WaitForAgentOptions = {}): Promise<unknown> {
+		const boundedTimeoutMs = resolveWaitTimeout(timeoutMs)
 		const root = await this.ensureAgentControlRoot(parent)
 		await this.agentControlStore.retryPendingMailboxClaimSettlements(parent.taskId, root.rootTaskId)
 		const reconciledClaimCount = await this.reconcileWaitAgentClaims(parent, root.rootTaskId)
@@ -7059,7 +7061,6 @@ export class ClineProvider
 				`Agent ${target.path} is not an immediate child of this task; terminal results are collected by ${target.parentPath}`,
 			)
 		}
-		const boundedTimeoutMs = Math.max(10_000, Math.min(timeoutMs, 300_000))
 		const takeAvailable = async (): Promise<{ events: AgentMailboxEntry[]; claimId?: string }> => {
 			const claim = await this.agentControlStore.claimMailbox(parent.taskId, {
 				rootTaskId: root.rootTaskId,

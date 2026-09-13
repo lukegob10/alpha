@@ -36,6 +36,8 @@ docs/_site/
 logs
 *.log
 /artifacts/certification/*.json
+/artifacts/core-confidence/
+/artifacts/certification/core-confidence.log
 /artifacts/certification/*.json.tmp-*
 
 # Vite development

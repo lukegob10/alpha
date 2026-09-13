@@ -153,9 +153,11 @@ describe("native tickets", () => {
 			}),
 		)
 		expect(callbacks.pushToolResult).toHaveBeenCalledTimes(1)
-		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({
-			status: outcome === "approved" ? "success" : outcome,
-		})
+		expect(callbacks.setResultMetadata).toHaveBeenCalledWith(
+			expect.objectContaining({
+				status: outcome === "approved" ? "success" : outcome,
+			}),
+		)
 		if (outcome === "approved") {
 			expect(remove).toHaveBeenCalledExactlyOnceWith(input, controller.signal)
 			expect(JSON.parse(task.say.mock.calls[0][1]).ticketActivity).toEqual({

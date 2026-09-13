@@ -4,7 +4,7 @@ import { parseCampaignConfig } from "./config"
 import { HOST_VERSIONS, type CampaignConfig, type CampaignHost } from "./types"
 import { RELIABILITY_ACCEPTANCE_SCENARIO_IDS, isReliabilityScenario } from "../scenarios/reliabilityCatalog"
 
-export const DEVELOPMENT_SUITE_NAMES = ["smoke", "development", "soak", "reliability"] as const
+export const DEVELOPMENT_SUITE_NAMES = ["smoke", "development", "soak", "reliability", "core"] as const
 export type DevelopmentSuiteName = (typeof DEVELOPMENT_SUITE_NAMES)[number]
 
 export interface DevelopmentSuiteOptions {
@@ -14,7 +14,22 @@ export interface DevelopmentSuiteOptions {
 	modelId?: string
 	effort?: string
 	host?: CampaignHost
+	maxRequests?: number
+	samples?: number
 }
+
+/** Routine core-loop coverage; broader reliability and long-context acceptance remain separate. */
+export const CORE_SCENARIO_IDS = [
+	"dev-git-inspect",
+	"dev-refactor",
+	"dev-search-recovery",
+	"completion-idle",
+	"provider-empty-recovery",
+	"provider-error-recovery",
+	"stream-cancel-recovery",
+	"reload-continuation",
+	"background-isolation",
+] as const satisfies readonly WorkflowScenarioId[]
 
 const MAX_REPRODUCTIONS = 2
 const ATTEMPT_TIMEOUT_MS = 10 * 60 * 1_000
@@ -31,6 +46,12 @@ interface SuiteDefinition {
 }
 
 const SUITE_DEFINITIONS: Record<DevelopmentSuiteName, SuiteDefinition> = {
+	core: {
+		scenarioIds: CORE_SCENARIO_IDS,
+		samples: 1,
+		maxRequests: 300,
+		maxDurationMs: 2 * HOUR_MS,
+	},
 	smoke: {
 		scenarioIds: ["dev-git-inspect", "dev-repo-bootstrap", "review-edit-test-commit-followup"],
 		samples: 1,
@@ -69,7 +90,7 @@ export function createDevelopmentSuite(options: DevelopmentSuiteOptions): Campai
 		throw new Error("Invalid development suite")
 	if (options.provider !== "scripted" && options.provider !== "live-copilot")
 		throw new Error("Invalid development suite provider")
-	if (options.suite === "reliability" && options.provider !== "live-copilot")
+	if (["reliability", "core"].includes(options.suite) && options.provider !== "live-copilot")
 		throw new Error("Reliability acceptance requires live Copilot")
 
 	if (options.provider === "scripted" && (options.modelId !== undefined || options.effort !== undefined))
@@ -82,22 +103,25 @@ export function createDevelopmentSuite(options: DevelopmentSuiteOptions): Campai
 	}
 
 	const definition = SUITE_DEFINITIONS[options.suite as DevelopmentSuiteName]
-	const hosts = options.host === undefined ? DEFAULT_HOSTS.map((host) => ({ ...host })) : [options.host]
+	// Routine runs use the release-gating host. Forward compatibility costs an explicit additional run.
+	const defaultHosts = options.suite === "core" ? DEFAULT_HOSTS.slice(0, 1) : DEFAULT_HOSTS
+	const hosts = options.host === undefined ? defaultHosts.map((host) => ({ ...host })) : [options.host]
 	const scenarioIds = [...definition.scenarioIds]
+	const samples = options.samples ?? definition.samples
 
 	return parseCampaignConfig({
 		id: options.id,
 		hosts,
 		scenarioIds,
-		samples: definition.samples,
+		samples,
 		provider: {
 			mode: options.provider,
 			...(options.modelId === undefined ? {} : { modelId: options.modelId }),
 			...(options.effort === undefined ? {} : { effort: options.effort }),
 		},
 		budgets: {
-			maxIterations: scenarioIds.length * hosts.length * definition.samples * (MAX_REPRODUCTIONS + 1),
-			maxRequests: definition.maxRequests,
+			maxIterations: scenarioIds.length * hosts.length * samples * (MAX_REPRODUCTIONS + 1),
+			maxRequests: options.maxRequests ?? definition.maxRequests,
 			maxDurationMs: definition.maxDurationMs,
 			attemptTimeoutMs: ATTEMPT_TIMEOUT_MS,
 		},

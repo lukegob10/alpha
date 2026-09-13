@@ -55,6 +55,7 @@ const DISCARD_OBJECTIVE = "Produce a throwaway Worker proposal that the root wil
 type ScriptRole = "root" | "outer" | "nested" | "discard"
 
 type ScriptChunk =
+	| { type: "text"; text: string }
 	| { type: "tool_call"; id: string; name: string; arguments: string }
 	| { type: "usage"; inputTokens: number; outputTokens: number; totalCost: number }
 
@@ -67,6 +68,9 @@ class ManagedAgentScriptedAI {
 	readonly id = `managed-agent-e2e-${Date.now()}`
 	removeFromCache?: () => void
 	private readonly turnsByTask = new Map<string, number>()
+	private readonly requestCountsByTask = new Map<string, number>()
+	private readonly previousCallsByTask = new Map<string, ScriptedToolCall>()
+	private readonly waitRetriesByTask = new Map<string, number>()
 	private readonly rolesByTask = new Map<string, ScriptRole>()
 	private readonly verificationChangeSetsByRole = new Map<ScriptRole, string[]>()
 
@@ -95,17 +99,37 @@ class ManagedAgentScriptedAI {
 		if (!taskId) throw new Error("Scripted managed-agent E2E request is missing metadata.taskId")
 
 		const role = this.rolesByTask.get(taskId) ?? "root"
-		const turn = this.turnsByTask.get(taskId) ?? 0
+		let turn = this.turnsByTask.get(taskId) ?? 0
+		const priorResult = this.assertPriorToolSucceeded(role, turn, messages)
+		const previousCall = this.previousCallsByTask.get(taskId)
+		const waitResult: unknown = previousCall?.name === "wait_agent" ? JSON.parse(priorResult ?? "null") : undefined
+		if (waitResult && typeof waitResult === "object" && "timedOut" in waitResult && waitResult.timedOut === true) {
+			// Handler success means the bounded wait finished, not that the child
+			// finished. Stay on this script step until its terminal result is consumed.
+			const retries = (this.waitRetriesByTask.get(taskId) ?? 0) + 1
+			assert.ok(retries <= 3, `The ${role} scripted wait exhausted four bounded attempts`)
+			this.waitRetriesByTask.set(taskId, retries)
+			turn -= 1
+		} else {
+			this.waitRetriesByTask.delete(taskId)
+		}
 		console.log(`[managed-agent-e2e] model task=${taskId} role=${role} turn=${turn}`)
-		this.assertPriorToolSucceeded(role, turn, messages)
 		this.turnsByTask.set(taskId, turn + 1)
 		const call = await this.getToolCall(role, turn)
+		this.previousCallsByTask.set(taskId, call)
+		const requestIndex = this.requestCountsByTask.get(taskId) ?? 0
+		this.requestCountsByTask.set(taskId, requestIndex + 1)
 
-		yield {
-			type: "tool_call",
-			id: `managed-agent-e2e-${taskId}-${turn}`,
-			name: call.name,
-			arguments: JSON.stringify(call.arguments),
+		if (role !== "root" && call.name === "attempt_completion") {
+			assert.equal(typeof call.arguments.result, "string")
+			yield { type: "text", text: String(call.arguments.result) }
+		} else {
+			yield {
+				type: "tool_call",
+				id: `managed-agent-e2e-${taskId}-${requestIndex}`,
+				name: call.name,
+				arguments: JSON.stringify(call.arguments),
+			}
 		}
 		yield { type: "usage", inputTokens: 10, outputTokens: 5, totalCost: 0 }
 	}
@@ -132,7 +156,7 @@ class ManagedAgentScriptedAI {
 		return ""
 	}
 
-	private assertPriorToolSucceeded(role: ScriptRole, turn: number, messages: unknown[]): void {
+	private assertPriorToolSucceeded(role: ScriptRole, turn: number, messages: unknown[]): string | undefined {
 		if (turn === 0) return
 		let result: { type?: string; content?: unknown; is_error?: boolean } | undefined
 		for (let index = messages.length - 1; index >= 0 && !result; index--) {
@@ -163,6 +187,7 @@ class ManagedAgentScriptedAI {
 			)
 			throw new Error(`The ${role} scripted turn ${turn} failed: ${serialized.slice(0, 500)}`)
 		}
+		return serialized
 	}
 
 	private async getToolCall(role: ScriptRole, turn: number): Promise<ScriptedToolCall> {
@@ -320,6 +345,12 @@ class ManagedAgentScriptedAI {
 }
 
 interface ManagedAgentHostProvider {
+	getTaskWithId(taskId: string): Promise<{
+		apiConversationHistory: Array<{
+			role: string
+			content: string | Array<{ type: string; name?: string; text?: string }>
+		}>
+	}>
 	getStateToPostToWebview(): Promise<{
 		currentTaskId?: string
 		liveTasksById?: Record<string, LiveTaskMetadata>
@@ -541,6 +572,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 		const groups = new Map<string, SubagentGroupState>()
 		const spawned = new Set<string>()
 		const completed = new Set<string>()
+		const completionCounts = new Map<string, number>()
 		const followupTasks = new Set<string>()
 		const completionPromptTasks = new Set<string>()
 		const toolFailures: string[] = []
@@ -582,6 +614,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 		const onCompleted = (taskId: string) => {
 			console.log(`[managed-agent-e2e] completed task=${taskId}`)
 			completed.add(taskId)
+			completionCounts.set(taskId, (completionCounts.get(taskId) ?? 0) + 1)
 		}
 		const onToolFailed = (taskId: string, tool: string, error: string) => {
 			const failure = `task=${taskId} tool=${tool}: ${error}`
@@ -715,6 +748,33 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			assert.ok(completed.has(outerTaskId), "Outer Worker never reached a terminal completion")
 			assert.ok(completed.has(nestedTaskId), "Nested Worker never reached a terminal completion")
 			assert.ok(completed.has(discardTaskId), "Discard Worker never reached a terminal completion")
+			for (const [taskId, expectedReport] of [
+				[outerTaskId, "Applied and verified the nested proposal, then produced the outer proposal."],
+				[nestedTaskId, "Produced the nested fixture proposal."],
+				[discardTaskId, "Produced the throwaway fixture proposal."],
+			] as const) {
+				assert.equal(completionCounts.get(taskId), 1, "Child completion must be published once")
+				assert.equal(completionPromptTasks.has(taskId), false, "Child review belongs to the parent")
+				const { apiConversationHistory } = await provider.getTaskWithId(taskId)
+				const blocks = apiConversationHistory.flatMap((message) =>
+					Array.isArray(message.content) ? message.content : [],
+				)
+				assert.equal(
+					blocks.some((block) => block.type === "tool_use" && block.name === "attempt_completion"),
+					false,
+					"Ordinary child completion must not create a synthetic tool call",
+				)
+				assert.equal(
+					apiConversationHistory.filter(
+						(message) =>
+							message.role === "assistant" &&
+							Array.isArray(message.content) &&
+							message.content.some((block) => block.type === "text" && block.text === expectedReport),
+					).length,
+					1,
+					"The child final answer must survive transcript persistence",
+				)
+			}
 
 			// Workspace file writes may use host-native CRLF; normalize only EOL before the exact module comparison.
 			assert.equal(

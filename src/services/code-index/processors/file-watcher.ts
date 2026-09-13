@@ -1,14 +1,8 @@
+import { createIndexPoint, getEmbeddingText, validateEmbeddingBatch } from "../shared/embedding-input"
 import * as vscode from "vscode"
-import {
-	QDRANT_CODE_BLOCK_NAMESPACE,
-	MAX_FILE_SIZE_BYTES,
-	BATCH_SEGMENT_THRESHOLD,
-	MAX_BATCH_RETRIES,
-	INITIAL_RETRY_DELAY_MS,
-} from "../constants"
+import { MAX_FILE_SIZE_BYTES, BATCH_SEGMENT_THRESHOLD, MAX_BATCH_RETRIES, INITIAL_RETRY_DELAY_MS } from "../constants"
 import { createHash } from "crypto"
 import { RooIgnoreController } from "../../../core/ignore/RooIgnoreController"
-import { v5 as uuidv5 } from "uuid"
 import { Ignore } from "ignore"
 import { scannerExtensions } from "../shared/supported-extensions"
 import {
@@ -21,7 +15,7 @@ import {
 } from "../interfaces"
 import { codeParser } from "./parser"
 import { CacheManager } from "../cache-manager"
-import { generateNormalizedAbsolutePath, generateRelativeFilePath } from "../shared/get-relative-path"
+import { generateRelativeFilePath } from "../shared/get-relative-path"
 import { isPathInIgnoredDirectory } from "../../glob/ignore-utils"
 import { TelemetryService } from "@alpha-code/telemetry"
 import { TelemetryEventName } from "@alpha-code/types"
@@ -592,7 +586,7 @@ export class FileWatcher implements IFileWatcher {
 
 			// Read file content
 			const fileContent = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath))
-			const content = fileContent.toString()
+			const content = Buffer.from(fileContent).toString("utf8")
 
 			// Calculate hash
 			const newHash = createHash("sha256").update(content).digest("hex")
@@ -612,26 +606,14 @@ export class FileWatcher implements IFileWatcher {
 			// Prepare points for batch processing
 			let pointsToUpsert: PointStruct[] = []
 			if (this.embedder && blocks.length > 0) {
-				const texts = blocks.map((block) => block.content)
+				const texts = blocks.map((block) => getEmbeddingText(block, this.workspacePath))
 				await this.embeddingRateLimiter.wait()
-				const { embeddings } = await this.embedder.createEmbeddings(texts)
+				const { embeddings } = await this.embedder.createEmbeddings(texts, undefined, "document")
 
-				pointsToUpsert = blocks.map((block, index) => {
-					const normalizedAbsolutePath = generateNormalizedAbsolutePath(block.file_path, this.workspacePath)
-					const stableName = `${normalizedAbsolutePath}:${block.start_line}`
-					const pointId = uuidv5(stableName, QDRANT_CODE_BLOCK_NAMESPACE)
-
-					return {
-						id: pointId,
-						vector: embeddings[index],
-						payload: {
-							filePath: generateRelativeFilePath(normalizedAbsolutePath, this.workspacePath),
-							codeChunk: block.content,
-							startLine: block.start_line,
-							endLine: block.end_line,
-						},
-					}
-				})
+				validateEmbeddingBatch(embeddings, blocks.length)
+				pointsToUpsert = blocks.map((block, index) =>
+					createIndexPoint(block, this.workspacePath, embeddings[index]),
+				)
 			}
 
 			return {

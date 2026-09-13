@@ -1,6 +1,7 @@
 import React, { memo, useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslation, Trans } from "react-i18next"
 import deepEqual from "fast-deep-equal"
+import removeMd from "remove-markdown"
 import { VSCodeBadge } from "@vscode/webview-ui-toolkit/react"
 
 import type {
@@ -39,6 +40,7 @@ import { Mention } from "./Mention"
 import { CheckpointSaved } from "./checkpoints/CheckpointSaved"
 import { FollowUpSuggest } from "./FollowUpSuggest"
 import { BatchFilePermission } from "./BatchFilePermission"
+import { BatchListFilesPermission } from "./BatchListFilesPermission"
 import { BatchDiffApproval } from "./BatchDiffApproval"
 import { ProgressIndicator } from "./ProgressIndicator"
 import { Markdown } from "./Markdown"
@@ -46,7 +48,9 @@ import { CommandExecution } from "./CommandExecution"
 import { CommandExecutionError } from "./CommandExecutionError"
 import { AutoApprovedRequestLimitWarning } from "./AutoApprovedRequestLimitWarning"
 import { InProgressRow, CondensationResultRow, CondensationErrorRow, TruncationResultRow } from "./context-management"
-import CodebaseSearchResultsDisplay from "./CodebaseSearchResultsDisplay"
+import CodebaseSearchResultsDisplay, { type CodebaseSearchMatch } from "./CodebaseSearchResultsDisplay"
+import { CodebaseSearchActivity } from "./CodebaseSearchActivity"
+import { FileSearchBatch } from "./FileSearchBatch"
 import { appendImages } from "@src/utils/imageUtils"
 import { McpExecution } from "./McpExecution"
 import { ChatTextArea } from "./ChatTextArea"
@@ -79,6 +83,7 @@ import { PathTooltip } from "../ui/PathTooltip"
 import { OpenMarkdownPreviewButton } from "./OpenMarkdownPreviewButton"
 import { SubagentGroupCard } from "./SubagentGroupCard"
 import { TicketActivity } from "./TicketActivity"
+import { ActivityStep } from "./ActivityStep"
 
 // Helper function to get previous todos before a specific message
 function getPreviousTodos(messages: ClineMessage[], currentMessageTs: number): any[] {
@@ -157,7 +162,16 @@ const ChatRow = memo(
 	(props: ChatRowProps) => {
 		// ChatView filters non-rendered messages before constructing this row.
 		return (
-			<div className="px-[15px] py-[10px] pr-[6px]">
+			<div
+				className={cn(
+					"px-[15px] pr-[6px]",
+					props.message.say === "user_feedback" ||
+						props.message.say === "completion_result" ||
+						props.message.ask === "completion_result" ||
+						props.message.ask === "followup"
+						? "py-[10px]"
+						: "py-1",
+				)}>
 				<ChatRowContentInner {...props} />
 			</div>
 		)
@@ -242,6 +256,7 @@ const ChatRowContentInner = ({
 	const handleToggleExpand = useCallback(() => {
 		onToggleExpand(message.ts)
 	}, [onToggleExpand, message.ts])
+	const activityProps = { isExpanded, onToggleExpand: handleToggleExpand }
 
 	// Handle edit button click
 	const handleEditClick = useCallback(() => {
@@ -445,7 +460,10 @@ const ChatRowContentInner = ({
 
 		if (message.type === "say" && message.say === "tool") {
 			const sayTool = safeJsonParse<ClineSayTool>(message.text)
-			return sayTool?.tool === "listFilesTopLevel" ? sayTool : null
+			return sayTool &&
+				["listFilesTopLevel", "listFilesRecursive", "readFile", "searchFiles"].includes(sayTool.tool)
+				? sayTool
+				: null
 		}
 
 		return null
@@ -471,6 +489,18 @@ const ChatRowContentInner = ({
 		}
 		return null
 	}, [message.type, message.ask, message.partial, message.text])
+	const renderError = (props: React.ComponentProps<typeof ErrorRow>) => (
+		<ActivityStep
+			{...activityProps}
+			summary={
+				<>
+					<CircleAlert className="size-4 shrink-0 text-vscode-errorForeground" />
+					<span>{props.title ?? t("chat:error")}</span>
+				</>
+			}>
+			<ErrorRow {...props} />
+		</ActivityStep>
+	)
 
 	if (tool) {
 		const toolIcon = (name: string) => (
@@ -478,6 +508,20 @@ const ChatRowContentInner = ({
 				className={`codicon codicon-${name}`}
 				style={{ color: "var(--vscode-foreground)", marginBottom: "-1.5px" }}></span>
 		)
+		if (tool.batchDirs?.length) {
+			return (
+				<ActivityStep
+					{...activityProps}
+					summary={
+						<>
+							{toolIcon("list-tree")}
+							<span>{t("chat:directoryOperations.wantsToViewMultipleDirectories")}</span>
+						</>
+					}>
+					<BatchListFilesPermission dirs={tool.batchDirs} ts={message.ts} />
+				</ActivityStep>
+			)
+		}
 
 		switch (tool.tool as string) {
 			case "editedExistingFile":
@@ -493,38 +537,47 @@ const ChatRowContentInner = ({
 				// Check if this is a batch diff request
 				if (message.type === "ask" && tool.batchDiffs && Array.isArray(tool.batchDiffs)) {
 					return (
-						<>
-							<div style={headerStyle}>
-								<FileDiff className="w-4 shrink-0" aria-label="Batch diff icon" />
-								<span style={{ fontWeight: "bold" }}>
-									{t("chat:fileOperations.wantsToApplyBatchChanges")}
-								</span>
-							</div>
+						<ActivityStep
+							{...activityProps}
+							summary={
+								<>
+									<FileDiff className="w-4 shrink-0" aria-label="Batch diff icon" />
+									<span style={{ fontWeight: "normal" }}>
+										{t("chat:fileOperations.wantsToApplyBatchChanges")}
+									</span>
+								</>
+							}>
 							<BatchDiffApproval files={tool.batchDiffs} ts={message.ts} />
-						</>
+						</ActivityStep>
 					)
 				}
 
 				// Regular single file diff
 				return (
-					<>
-						<div style={headerStyle}>
-							{tool.isProtected ? (
-								<span
-									className="codicon codicon-lock"
-									style={{ color: "var(--vscode-editorWarning-foreground)", marginBottom: "-1.5px" }}
-								/>
-							) : (
-								toolIcon("diff")
-							)}
-							<span style={{ fontWeight: "bold" }}>
-								{tool.isProtected
-									? t("chat:fileOperations.wantsToEditProtected")
-									: tool.isOutsideWorkspace
-										? t("chat:fileOperations.wantsToEditOutsideWorkspace")
-										: t("chat:fileOperations.wantsToEdit")}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								{tool.isProtected ? (
+									<span
+										className="codicon codicon-lock"
+										style={{
+											color: "var(--vscode-editorWarning-foreground)",
+											marginBottom: "-1.5px",
+										}}
+									/>
+								) : (
+									toolIcon("diff")
+								)}
+								<span style={{ fontWeight: "normal" }}>
+									{tool.isProtected
+										? t("chat:fileOperations.wantsToEditProtected")
+										: tool.isOutsideWorkspace
+											? t("chat:fileOperations.wantsToEditOutsideWorkspace")
+											: t("chat:fileOperations.wantsToEdit")}
+								</span>
+							</>
+						}>
 						<div className="pl-6">
 							<CodeAccordion
 								path={tool.path}
@@ -538,32 +591,38 @@ const ChatRowContentInner = ({
 								diffStats={tool.diffStats}
 							/>
 						</div>
-					</>
+					</ActivityStep>
 				)
 			case "insertContent":
 				return (
-					<>
-						<div style={headerStyle}>
-							{tool.isProtected ? (
-								<span
-									className="codicon codicon-lock"
-									style={{ color: "var(--vscode-editorWarning-foreground)", marginBottom: "-1.5px" }}
-								/>
-							) : (
-								toolIcon("insert")
-							)}
-							<span style={{ fontWeight: "bold" }}>
-								{tool.isProtected
-									? t("chat:fileOperations.wantsToEditProtected")
-									: tool.isOutsideWorkspace
-										? t("chat:fileOperations.wantsToEditOutsideWorkspace")
-										: tool.lineNumber === 0
-											? t("chat:fileOperations.wantsToInsertAtEnd")
-											: t("chat:fileOperations.wantsToInsertWithLineNumber", {
-													lineNumber: tool.lineNumber,
-												})}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								{tool.isProtected ? (
+									<span
+										className="codicon codicon-lock"
+										style={{
+											color: "var(--vscode-editorWarning-foreground)",
+											marginBottom: "-1.5px",
+										}}
+									/>
+								) : (
+									toolIcon("insert")
+								)}
+								<span style={{ fontWeight: "normal" }}>
+									{tool.isProtected
+										? t("chat:fileOperations.wantsToEditProtected")
+										: tool.isOutsideWorkspace
+											? t("chat:fileOperations.wantsToEditOutsideWorkspace")
+											: tool.lineNumber === 0
+												? t("chat:fileOperations.wantsToInsertAtEnd")
+												: t("chat:fileOperations.wantsToInsertWithLineNumber", {
+														lineNumber: tool.lineNumber,
+													})}
+								</span>
+							</>
+						}>
 						<div className="pl-6">
 							<CodeAccordion
 								path={tool.path}
@@ -576,29 +635,10 @@ const ChatRowContentInner = ({
 								diffStats={tool.diffStats}
 							/>
 						</div>
-					</>
+					</ActivityStep>
 				)
 			case "codebaseSearch": {
-				return (
-					<div style={headerStyle}>
-						{toolIcon("search")}
-						<span style={{ fontWeight: "bold" }}>
-							{tool.path ? (
-								<Trans
-									i18nKey="chat:codebaseSearch.wantsToSearchWithPath"
-									components={{ code: <code></code> }}
-									values={{ query: tool.query, path: tool.path }}
-								/>
-							) : (
-								<Trans
-									i18nKey="chat:codebaseSearch.wantsToSearch"
-									components={{ code: <code></code> }}
-									values={{ query: tool.query }}
-								/>
-							)}
-						</span>
-					</div>
-				)
+				return <CodebaseSearchActivity {...activityProps} query={tool.query} path={tool.path} />
 			}
 			case "ticket":
 				return <TicketActivity tool={tool} />
@@ -615,13 +655,16 @@ const ChatRowContentInner = ({
 
 				if (isBatchRequest) {
 					return (
-						<>
-							<div style={headerStyle}>
-								<Eye className="w-4 shrink-0" aria-label="View files icon" />
-								<span style={{ fontWeight: "bold" }}>
-									{t("chat:fileOperations.wantsToReadMultiple")}
-								</span>
-							</div>
+						<ActivityStep
+							{...activityProps}
+							summary={
+								<>
+									<Eye className="w-4 shrink-0" aria-label="View files icon" />
+									<span style={{ fontWeight: "normal" }}>
+										{t("chat:fileOperations.wantsToReadMultiple")}
+									</span>
+								</>
+							}>
 							<BatchFilePermission
 								files={tool.batchFiles || []}
 								onPermissionResponse={(response) => {
@@ -629,27 +672,30 @@ const ChatRowContentInner = ({
 								}}
 								ts={message?.ts}
 							/>
-						</>
+						</ActivityStep>
 					)
 				}
 
 				// Regular single file read request
 				return (
-					<>
-						<div style={headerStyle}>
-							<FileCode2 className="w-4 shrink-0" aria-label="Read file icon" />
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask"
-									? tool.isOutsideWorkspace
-										? t("chat:fileOperations.wantsToReadOutsideWorkspace")
-										: tool.additionalFileCount && tool.additionalFileCount > 0
-											? t("chat:fileOperations.wantsToReadAndXMore", {
-													count: tool.additionalFileCount,
-												})
-											: t("chat:fileOperations.wantsToRead")
-									: t("chat:fileOperations.didRead")}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								<FileCode2 className="w-4 shrink-0" aria-label="Read file icon" />
+								<span style={{ fontWeight: "normal" }}>
+									{message.type === "ask"
+										? tool.isOutsideWorkspace
+											? t("chat:fileOperations.wantsToReadOutsideWorkspace")
+											: tool.additionalFileCount && tool.additionalFileCount > 0
+												? t("chat:fileOperations.wantsToReadAndXMore", {
+														count: tool.additionalFileCount,
+													})
+												: t("chat:fileOperations.wantsToRead")
+										: t("chat:fileOperations.didRead")}
+								</span>
+							</>
+						}>
 						<div className="pl-6">
 							<ToolUseBlock>
 								<ToolUseBlockHeader
@@ -675,18 +721,21 @@ const ChatRowContentInner = ({
 								</ToolUseBlockHeader>
 							</ToolUseBlock>
 						</div>
-					</>
+					</ActivityStep>
 				)
 			case "skill": {
 				const skillInfo = tool
 				return (
-					<>
-						<div style={headerStyle}>
-							{toolIcon("book")}
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask" ? t("chat:skill.wantsToLoad") : t("chat:skill.didLoad")}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								{toolIcon("book")}
+								<span style={{ fontWeight: "normal" }}>
+									{message.type === "ask" ? t("chat:skill.wantsToLoad") : t("chat:skill.didLoad")}
+								</span>
+							</>
+						}>
 						<div
 							style={{
 								marginTop: "4px",
@@ -743,24 +792,27 @@ const ChatRowContentInner = ({
 								</div>
 							)}
 						</div>
-					</>
+					</ActivityStep>
 				)
 			}
 			case "listFilesTopLevel":
 				return (
-					<>
-						<div style={headerStyle}>
-							<ListTree className="w-4 shrink-0" aria-label="List files icon" />
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask"
-									? tool.isOutsideWorkspace
-										? t("chat:directoryOperations.wantsToViewTopLevelOutsideWorkspace")
-										: t("chat:directoryOperations.wantsToViewTopLevel")
-									: tool.isOutsideWorkspace
-										? t("chat:directoryOperations.didViewTopLevelOutsideWorkspace")
-										: t("chat:directoryOperations.didViewTopLevel")}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								<ListTree className="w-4 shrink-0" aria-label="List files icon" />
+								<span style={{ fontWeight: "normal" }}>
+									{message.type === "ask"
+										? tool.isOutsideWorkspace
+											? t("chat:directoryOperations.wantsToViewTopLevelOutsideWorkspace")
+											: t("chat:directoryOperations.wantsToViewTopLevel")
+										: tool.isOutsideWorkspace
+											? t("chat:directoryOperations.didViewTopLevelOutsideWorkspace")
+											: t("chat:directoryOperations.didViewTopLevel")}
+								</span>
+							</>
+						}>
 						<div className="pl-6">
 							<CodeAccordion
 								path={tool.path}
@@ -770,23 +822,26 @@ const ChatRowContentInner = ({
 								onToggleExpand={handleToggleExpand}
 							/>
 						</div>
-					</>
+					</ActivityStep>
 				)
 			case "listFilesRecursive":
 				return (
-					<>
-						<div style={headerStyle}>
-							<FolderTree className="w-4 shrink-0" aria-label="Folder tree icon" />
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask"
-									? tool.isOutsideWorkspace
-										? t("chat:directoryOperations.wantsToViewRecursiveOutsideWorkspace")
-										: t("chat:directoryOperations.wantsToViewRecursive")
-									: tool.isOutsideWorkspace
-										? t("chat:directoryOperations.didViewRecursiveOutsideWorkspace")
-										: t("chat:directoryOperations.didViewRecursive")}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								<FolderTree className="w-4 shrink-0" aria-label="Folder tree icon" />
+								<span style={{ fontWeight: "normal" }}>
+									{message.type === "ask"
+										? tool.isOutsideWorkspace
+											? t("chat:directoryOperations.wantsToViewRecursiveOutsideWorkspace")
+											: t("chat:directoryOperations.wantsToViewRecursive")
+										: tool.isOutsideWorkspace
+											? t("chat:directoryOperations.didViewRecursiveOutsideWorkspace")
+											: t("chat:directoryOperations.didViewRecursive")}
+								</span>
+							</>
+						}>
 						<div className="pl-6">
 							<CodeAccordion
 								path={tool.path}
@@ -796,71 +851,67 @@ const ChatRowContentInner = ({
 								onToggleExpand={handleToggleExpand}
 							/>
 						</div>
-					</>
+					</ActivityStep>
 				)
 			case "searchFiles":
 				if (tool.batchSearches?.length) {
 					return (
-						<>
-							<div style={headerStyle}>
-								{toolIcon("search")}
-								<span style={{ fontWeight: "bold" }}>
-									{t(
-										message.type === "ask"
-											? "chat:directoryOperations.wantsToSearchMultiple"
-											: "chat:directoryOperations.didSearchMultiple",
-										{ count: tool.batchSearches.length },
-									)}
-								</span>
-							</div>
-							<div className="flex flex-col gap-2 pl-6">
-								{tool.batchSearches.map((search, index) => (
-									<div key={`${search.path}:${search.regex}:${index}`}>
-										<div className="mb-1 text-sm">
-											<code>{search.regex}</code>
-										</div>
-										<CodeAccordion
-											path={search.path + (search.filePattern ? `/(${search.filePattern})` : "")}
-											code={search.content}
-											language="shellsession"
-											isExpanded={isExpanded}
-											onToggleExpand={handleToggleExpand}
-										/>
-									</div>
-								))}
-							</div>
-						</>
+						<FileSearchBatch
+							{...activityProps}
+							searches={tool.batchSearches}
+							label={t(
+								message.type === "ask"
+									? "chat:directoryOperations.wantsToSearchMultiple"
+									: "chat:directoryOperations.didSearchMultiple",
+								{ count: tool.batchSearches.length },
+							)}
+						/>
 					)
 				}
 
 				return (
-					<>
-						<div style={headerStyle}>
-							{toolIcon("search")}
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask" ? (
-									<Trans
-										i18nKey={
-											tool.isOutsideWorkspace
-												? "chat:directoryOperations.wantsToSearchOutsideWorkspace"
-												: "chat:directoryOperations.wantsToSearch"
-										}
-										components={{ code: <code className="font-medium">{tool.regex}</code> }}
-										values={{ regex: tool.regex }}
-									/>
-								) : (
-									<Trans
-										i18nKey={
-											tool.isOutsideWorkspace
-												? "chat:directoryOperations.didSearchOutsideWorkspace"
-												: "chat:directoryOperations.didSearch"
-										}
-										components={{ code: <code className="font-medium">{tool.regex}</code> }}
-										values={{ regex: tool.regex }}
-									/>
-								)}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								{toolIcon("search")}
+								<span style={{ fontWeight: "normal" }}>
+									{message.type === "ask" ? (
+										<Trans
+											i18nKey={
+												tool.isOutsideWorkspace
+													? "chat:directoryOperations.wantsToSearchOutsideWorkspace"
+													: "chat:directoryOperations.wantsToSearch"
+											}
+											components={{
+												code: (
+													<code className="font-medium" style={{ color: normalColor }}>
+														{tool.regex}
+													</code>
+												),
+											}}
+											values={{ regex: tool.regex }}
+										/>
+									) : (
+										<Trans
+											i18nKey={
+												tool.isOutsideWorkspace
+													? "chat:directoryOperations.didSearchOutsideWorkspace"
+													: "chat:directoryOperations.didSearch"
+											}
+											components={{
+												code: (
+													<code className="font-medium" style={{ color: normalColor }}>
+														{tool.regex}
+													</code>
+												),
+											}}
+											values={{ regex: tool.regex }}
+										/>
+									)}
+								</span>
+							</>
+						}>
 						<div className="pl-6">
 							<CodeAccordion
 								path={tool.path! + (tool.filePattern ? `/(${tool.filePattern})` : "")}
@@ -870,50 +921,62 @@ const ChatRowContentInner = ({
 								onToggleExpand={handleToggleExpand}
 							/>
 						</div>
-					</>
+					</ActivityStep>
 				)
 			case "switchMode":
 				return (
-					<>
-						<div style={headerStyle}>
-							<PocketKnife className="w-4 shrink-0" aria-label="Switch mode icon" />
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask" ? (
-									<>
-										{tool.reason ? (
-											<Trans
-												i18nKey="chat:modes.wantsToSwitchWithReason"
-												components={{ code: <code className="font-medium">{tool.mode}</code> }}
-												values={{ mode: tool.mode, reason: tool.reason }}
-											/>
-										) : (
-											<Trans
-												i18nKey="chat:modes.wantsToSwitch"
-												components={{ code: <code className="font-medium">{tool.mode}</code> }}
-												values={{ mode: tool.mode }}
-											/>
-										)}
-									</>
-								) : (
-									<>
-										{tool.reason ? (
-											<Trans
-												i18nKey="chat:modes.didSwitchWithReason"
-												components={{ code: <code className="font-medium">{tool.mode}</code> }}
-												values={{ mode: tool.mode, reason: tool.reason }}
-											/>
-										) : (
-											<Trans
-												i18nKey="chat:modes.didSwitch"
-												components={{ code: <code className="font-medium">{tool.mode}</code> }}
-												values={{ mode: tool.mode }}
-											/>
-										)}
-									</>
-								)}
-							</span>
-						</div>
-					</>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								<PocketKnife className="w-4 shrink-0" aria-label="Switch mode icon" />
+								<span style={{ fontWeight: "bold" }}>
+									{message.type === "ask" ? (
+										<>
+											{tool.reason ? (
+												<Trans
+													i18nKey="chat:modes.wantsToSwitchWithReason"
+													components={{
+														code: <code className="font-medium">{tool.mode}</code>,
+													}}
+													values={{ mode: tool.mode, reason: tool.reason }}
+												/>
+											) : (
+												<Trans
+													i18nKey="chat:modes.wantsToSwitch"
+													components={{
+														code: <code className="font-medium">{tool.mode}</code>,
+													}}
+													values={{ mode: tool.mode }}
+												/>
+											)}
+										</>
+									) : (
+										<>
+											{tool.reason ? (
+												<Trans
+													i18nKey="chat:modes.didSwitchWithReason"
+													components={{
+														code: <code className="font-medium">{tool.mode}</code>,
+													}}
+													values={{ mode: tool.mode, reason: tool.reason }}
+												/>
+											) : (
+												<Trans
+													i18nKey="chat:modes.didSwitch"
+													components={{
+														code: <code className="font-medium">{tool.mode}</code>,
+													}}
+													values={{ mode: tool.mode }}
+												/>
+											)}
+										</>
+									)}
+								</span>
+							</>
+						}>
+						<div className="pl-6 whitespace-pre-wrap break-words">{tool.reason || tool.mode}</div>
+					</ActivityStep>
 				)
 			case "newTask":
 				// Find all newTask messages to determine which child task ID corresponds to this message
@@ -941,17 +1004,20 @@ const ChatRowContentInner = ({
 				const isFollowedBySubtaskResult = nextMessage?.type === "say" && nextMessage?.say === "subtask_result"
 
 				return (
-					<>
-						<div style={headerStyle}>
-							<Split className="size-4" />
-							<span style={{ fontWeight: "bold" }}>
-								<Trans
-									i18nKey="chat:subtasks.wantsToCreate"
-									components={{ code: <code>{tool.mode}</code> }}
-									values={{ mode: tool.mode }}
-								/>
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								<Split className="size-4" />
+								<span style={{ fontWeight: "normal" }}>
+									<Trans
+										i18nKey="chat:subtasks.wantsToCreate"
+										components={{ code: <code>{tool.mode}</code> }}
+										values={{ mode: tool.mode }}
+									/>
+								</span>
+							</>
+						}>
 						<div className="border-l border-muted-foreground/80 ml-2 pl-4 pb-1">
 							<MarkdownBlock markdown={tool.content} />
 							<div>
@@ -967,7 +1033,7 @@ const ChatRowContentInner = ({
 								)}
 							</div>
 						</div>
-					</>
+					</ActivityStep>
 				)
 			case "delegateTask":
 				// The persisted inline SubagentGroupCard is the single presentation surface.
@@ -975,28 +1041,34 @@ const ChatRowContentInner = ({
 				return null
 			case "finishTask":
 				return (
-					<>
-						<div style={headerStyle}>
-							{toolIcon("check-all")}
-							<span style={{ fontWeight: "bold" }}>{t("chat:subtasks.wantsToFinish")}</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								{toolIcon("check-all")}
+								<span style={{ fontWeight: "normal" }}>{t("chat:subtasks.wantsToFinish")}</span>
+							</>
+						}>
 						<div className="text-muted-foreground pl-6">
 							<MarkdownBlock markdown={t("chat:subtasks.completionInstructions")} />
 						</div>
-					</>
+					</ActivityStep>
 				)
 			case "runSlashCommand": {
 				const slashCommandInfo = tool
 				return (
-					<>
-						<div style={headerStyle}>
-							{toolIcon("play")}
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask"
-									? t("chat:slashCommand.wantsToRun")
-									: t("chat:slashCommand.didRun")}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								{toolIcon("play")}
+								<span style={{ fontWeight: "normal" }}>
+									{message.type === "ask"
+										? t("chat:slashCommand.wantsToRun")
+										: t("chat:slashCommand.didRun")}
+								</span>
+							</>
+						}>
 						<div
 							style={{
 								marginTop: "4px",
@@ -1053,31 +1125,37 @@ const ChatRowContentInner = ({
 								</div>
 							)}
 						</div>
-					</>
+					</ActivityStep>
 				)
 			}
 			case "generateImage":
 				return (
-					<>
-						<div style={headerStyle}>
-							{tool.isProtected ? (
-								<span
-									className="codicon codicon-lock"
-									style={{ color: "var(--vscode-editorWarning-foreground)", marginBottom: "-1.5px" }}
-								/>
-							) : (
-								toolIcon("file-media")
-							)}
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask"
-									? tool.isProtected
-										? t("chat:fileOperations.wantsToGenerateImageProtected")
-										: tool.isOutsideWorkspace
-											? t("chat:fileOperations.wantsToGenerateImageOutsideWorkspace")
-											: t("chat:fileOperations.wantsToGenerateImage")
-									: t("chat:fileOperations.didGenerateImage")}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								{tool.isProtected ? (
+									<span
+										className="codicon codicon-lock"
+										style={{
+											color: "var(--vscode-editorWarning-foreground)",
+											marginBottom: "-1.5px",
+										}}
+									/>
+								) : (
+									toolIcon("file-media")
+								)}
+								<span style={{ fontWeight: "normal" }}>
+									{message.type === "ask"
+										? tool.isProtected
+											? t("chat:fileOperations.wantsToGenerateImageProtected")
+											: tool.isOutsideWorkspace
+												? t("chat:fileOperations.wantsToGenerateImageOutsideWorkspace")
+												: t("chat:fileOperations.wantsToGenerateImage")
+										: t("chat:fileOperations.didGenerateImage")}
+								</span>
+							</>
+						}>
 						{message.type === "ask" && (
 							<div className="pl-6">
 								<ToolUseBlock>
@@ -1090,7 +1168,7 @@ const ChatRowContentInner = ({
 								</ToolUseBlock>
 							</div>
 						)}
-					</>
+					</ActivityStep>
 				)
 			default:
 				return null
@@ -1102,7 +1180,30 @@ const ChatRowContentInner = ({
 			switch (message.say) {
 				case "subagent_group":
 					return message.subagentGroup ? (
-						<SubagentGroupCard group={message.subagentGroup} parentTaskId={currentTaskId} />
+						<ActivityStep
+							{...activityProps}
+							summary={
+								<>
+									<Split className="size-4 shrink-0" />
+									<span>
+										{t("common:costs.subtasks")} ({message.subagentGroup.agents.length})
+									</span>
+									{message.subagentGroup.agents.some(
+										(agent) =>
+											agent.pendingApproval ||
+											agent.parentVerification?.blocking ||
+											(agent.changeSet &&
+												["pending_review", "conflicted"].includes(agent.changeSet.status)),
+									) && (
+										<>
+											<CircleAlert className="size-4 shrink-0" aria-hidden="true" />
+											<span>{t("chat:activityTrace.needsAttention")}</span>
+										</>
+									)}
+								</>
+							}>
+							<SubagentGroupCard group={message.subagentGroup} parentTaskId={currentTaskId} />
+						</ActivityStep>
 					) : null
 				case "diff_error":
 					return (
@@ -1117,11 +1218,14 @@ const ChatRowContentInner = ({
 					// Get the child task ID that produced this result
 					const completedChildTaskId = currentTaskItem?.completedByChildId
 					return (
-						<div className="border-l border-muted-foreground/80 ml-2 pl-4 pt-2 pb-1 -mt-5">
-							<div style={headerStyle}>
-								<span style={{ fontWeight: "bold" }}>{t("chat:subtasks.resultContent")}</span>
-								<Check className="size-3" />
-							</div>
+						<ActivityStep
+							{...activityProps}
+							summary={
+								<>
+									<span>{t("chat:subtasks.resultContent")}</span>
+									<Check className="size-3" />
+								</>
+							}>
 							<MarkdownBlock markdown={message.text} />
 							{completedChildTaskId && (
 								<button
@@ -1133,7 +1237,7 @@ const ChatRowContentInner = ({
 									<ArrowRight className="size-3" />
 								</button>
 							)}
-						</div>
+						</ActivityStep>
 					)
 				case "reasoning":
 					return (
@@ -1276,20 +1380,34 @@ const ChatRowContentInner = ({
 					return null // we should never see this message type
 				case "text":
 					return (
-						<article className="group" aria-label={t("chat:text.rooSaid")}>
-							<Markdown
-								markdown={message.text}
-								partial={message.partial}
-								actions={<OpenMarkdownPreviewButton markdown={message.text} />}
-							/>
-							{message.images && message.images.length > 0 && (
-								<div style={{ marginTop: "10px" }}>
-									{message.images.map((image, index) => (
-										<ImageBlock key={index} imageData={image} />
-									))}
-								</div>
+						<ActivityStep
+							{...activityProps}
+							summary={
+								<>
+									<MessageCircle className="size-4 shrink-0" />
+									<span>
+										{removeMd((message.text || "").split(/\r?\n/, 1)[0]).trim() ||
+											t("chat:text.rooSaid")}
+									</span>
+								</>
+							}>
+							{isExpanded && (
+								<article className="group" aria-label={t("chat:text.rooSaid")}>
+									<Markdown
+										markdown={message.text}
+										partial={message.partial}
+										actions={<OpenMarkdownPreviewButton markdown={message.text} />}
+									/>
+									{message.images && message.images.length > 0 && (
+										<div style={{ marginTop: "10px" }}>
+											{message.images.map((image, index) => (
+												<ImageBlock key={index} imageData={image} />
+											))}
+										</div>
+									)}
+								</article>
 							)}
-						</article>
+						</ActivityStep>
 					)
 				case "user_feedback":
 					return (
@@ -1389,31 +1507,29 @@ const ChatRowContentInner = ({
 					const isNoAssistantMessagesError = message.text === "MODEL_NO_ASSISTANT_MESSAGES"
 
 					if (isNoToolsUsedError) {
-						return (
-							<ErrorRow
-								type="error"
-								title={t("chat:modelResponseIncomplete")}
-								message={t("chat:modelResponseErrors.noToolsUsed")}
-								errorDetails={t("chat:modelResponseErrors.noToolsUsedDetails")}
-							/>
-						)
+						return renderError({
+							type: "error",
+							title: t("chat:modelResponseIncomplete"),
+							message: t("chat:modelResponseErrors.noToolsUsed"),
+							errorDetails: t("chat:modelResponseErrors.noToolsUsedDetails"),
+						})
 					}
 
 					if (isNoAssistantMessagesError) {
-						return (
-							<ErrorRow
-								type="error"
-								title={t("chat:modelResponseIncomplete")}
-								message={t("chat:modelResponseErrors.noAssistantMessages")}
-								errorDetails={t("chat:modelResponseErrors.noAssistantMessagesDetails")}
-							/>
-						)
+						return renderError({
+							type: "error",
+							title: t("chat:modelResponseIncomplete"),
+							message: t("chat:modelResponseErrors.noAssistantMessages"),
+							errorDetails: t("chat:modelResponseErrors.noAssistantMessagesDetails"),
+						})
 					}
 
 					// Fallback for generic errors
-					return (
-						<ErrorRow type="error" message={message.text || t("chat:error")} errorDetails={message.text} />
-					)
+					return renderError({
+						type: "error",
+						message: message.text || t("chat:error"),
+						errorDetails: message.text,
+					})
 				case "completion_result":
 					return (
 						<article
@@ -1464,13 +1580,7 @@ const ChatRowContentInner = ({
 					let parsed: {
 						content: {
 							query: string
-							results: Array<{
-								filePath: string
-								score: number
-								startLine: number
-								endLine: number
-								codeChunk: string
-							}>
+							results: CodebaseSearchMatch[]
 						}
 					} | null = null
 
@@ -1489,7 +1599,7 @@ const ChatRowContentInner = ({
 
 					const { results = [] } = parsed?.content || {}
 
-					return <CodebaseSearchResultsDisplay results={results} />
+					return <CodebaseSearchResultsDisplay results={results} {...activityProps} />
 				case "user_edit_todos":
 					return <UpdateTodoListToolBlock userEdited onChange={() => {}} />
 				case "tool" as any:
@@ -1550,16 +1660,21 @@ const ChatRowContentInner = ({
 						case "runSlashCommand": {
 							const slashCommandInfo = sayTool
 							return (
-								<>
-									<div style={headerStyle}>
-										<span
-											className="codicon codicon-terminal-cmd"
-											style={{
-												color: "var(--vscode-foreground)",
-												marginBottom: "-1.5px",
-											}}></span>
-										<span style={{ fontWeight: "bold" }}>{t("chat:slashCommand.didRun")}</span>
-									</div>
+								<ActivityStep
+									{...activityProps}
+									summary={
+										<>
+											<span
+												className="codicon codicon-terminal-cmd"
+												style={{
+													color: "var(--vscode-foreground)",
+													marginBottom: "-1.5px",
+												}}></span>
+											<span style={{ fontWeight: "normal" }}>
+												{t("chat:slashCommand.didRun")}
+											</span>
+										</>
+									}>
 									<div className="pl-6">
 										<ToolUseBlock>
 											<ToolUseBlockHeader
@@ -1614,7 +1729,7 @@ const ChatRowContentInner = ({
 											</ToolUseBlockHeader>
 										</ToolUseBlock>
 									</div>
-								</>
+								</ActivityStep>
 							)
 						}
 						case "readCommandOutput": {
@@ -1816,11 +1931,14 @@ const ChatRowContentInner = ({
 					const server = mcpServers.find((server) => server.name === useMcpServer.serverName)
 
 					return (
-						<>
-							<div style={headerStyle}>
-								{icon}
-								{title}
-							</div>
+						<ActivityStep
+							{...activityProps}
+							summary={
+								<>
+									{icon}
+									{title}
+								</>
+							}>
 							<div className="w-full bg-vscode-editor-background border border-vscode-border rounded-xs p-2 mt-2">
 								{useMcpServer.type === "access_mcp_resource" && (
 									<McpResourceRow
@@ -1853,7 +1971,7 @@ const ChatRowContentInner = ({
 									/>
 								)}
 							</div>
-						</>
+						</ActivityStep>
 					)
 				case "completion_result":
 					if (message.text) {

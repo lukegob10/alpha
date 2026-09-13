@@ -86,6 +86,7 @@ function harness() {
 		isWaitingForFirstChunk: false,
 		taskCancellationController: new AbortController(),
 		pendingCommandVerification: Promise.resolve(),
+		commandExecutionEvidence: new Map(),
 		pendingWaitAgentResultClaims: new Map<string, string>(),
 		persistedToolResultIds: new Set<string>(),
 		toolRepetitionDetector: new ToolRepetitionDetector(3),

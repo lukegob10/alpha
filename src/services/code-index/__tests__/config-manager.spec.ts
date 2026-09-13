@@ -351,7 +351,7 @@ describe("CodeIndexConfigManager", () => {
 			expect(result.requiresRestart).toBe(true)
 		})
 
-		it("should NOT require restart when models have same dimensions", async () => {
+		it("should require restart when models have same dimensions", async () => {
 			// Mock both models to have same dimension
 			mockedGetModelDimension.mockImplementation((provider, modelId) => {
 				if (modelId === "text-embedding-3-small" || modelId === "text-embedding-ada-002") {
@@ -382,7 +382,7 @@ describe("CodeIndexConfigManager", () => {
 			})
 
 			const result = await configManager.loadConfiguration()
-			expect(result.requiresRestart).toBe(false)
+			expect(result.requiresRestart).toBe(true)
 		})
 
 		it("should detect restart requirement when transitioning to enabled+configured", async () => {
@@ -2180,7 +2180,7 @@ describe("CodeIndexConfigManager", () => {
 					expect(restartConfigManager.isFeatureConfigured).toBe(true)
 				})
 
-				it("should not require restart for OpenRouter when same model dimensions are used", async () => {
+				it("should require restart for OpenRouter when same model dimensions are used", async () => {
 					// Mock both models to have same dimension
 					mockedGetModelDimension.mockImplementation((provider, modelId) => {
 						if (provider === "openrouter") {
@@ -2214,8 +2214,8 @@ describe("CodeIndexConfigManager", () => {
 					})
 
 					const result = await configManager.loadConfiguration()
-					// Should NOT require restart since dimensions are the same
-					expect(result.requiresRestart).toBe(false)
+					// Equal dimensions do not make different embedding spaces compatible
+					expect(result.requiresRestart).toBe(true)
 				})
 
 				it("should require restart for OpenRouter when model dimensions change", async () => {

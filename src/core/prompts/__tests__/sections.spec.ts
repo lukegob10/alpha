@@ -159,7 +159,7 @@ describe("getRulesSection", () => {
 		)
 	})
 
-	it("requires managed subagents to publish a durable result", () => {
+	it("allows managed final answers while keeping blocked outcomes explicit", () => {
 		const result = getRulesSection(cwd, {
 			todoListEnabled: true,
 			useAgentRules: true,
@@ -167,9 +167,9 @@ describe("getRulesSection", () => {
 			subagentRole: "worker",
 		})
 
-		expect(result).toContain("When finished or blocked, call attempt_completion once")
-		expect(result).toContain("durable result")
-		expect(result).toContain("ordinary assistant prose alone")
+		expect(result).toContain("provide a concise, self-contained final answer or use attempt_completion")
+		expect(result).toContain("assigned work and required checks are complete")
+		expect(result).toContain("outcome blocked when a constraint prevents completion")
 	})
 })
 

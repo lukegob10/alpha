@@ -1,18 +1,19 @@
 import type OpenAI from "openai"
+import { WAIT_AGENT_DEFAULT_TIMEOUT_MS } from "../../../tools/AgentLifecycleTool"
 
 export const wait_agent = {
 	type: "function",
 	function: {
 		name: "wait_agent",
 		description:
-			"Wait once for a bounded period for a managed-agent update visible to this task. Set until_terminal true to ignore progress/control traffic and wait for a terminal result from any immediate child, or set target to an immediate-child task ID/canonical path to await that child specifically. Target requires until_terminal true. Terminal results return with durable event IDs, sender task/path provenance, and terminal status; their mailbox claim is consumed exactly once only after this tool result is persisted. With until_terminal false, the legacy behavior returns the next mailbox update and a managed child may block for immediate-parent control. A primary/root task with no matching active children or unconsumed updates returns immediately. This blocking tool must be called alone, never alongside another tool in the same response. Use it after continuing useful local work; do not call it repeatedly as a polling loop. Use null for optional defaults.",
+			"Wait for a managed-agent update, waking as soon as a result or relevant input arrives. Set until_terminal true to ignore progress/control traffic and await an immediate child's terminal result; target optionally selects that child by task ID/canonical path and requires until_terminal true. Results carry durable event IDs, sender task/path provenance, and terminal status; their mailbox claim is consumed once only after this tool result is persisted. Otherwise wait for the next mailbox update, including parent control for managed children. Call this blocking tool alone, after useful local work. Prefer the default long wait to repeated short polls. A timeout with work still active can be followed by another bounded wait. If noActiveAgents or alreadyDelivered is true, use the available results or continue other work. Use null for optional defaults.",
 		strict: true,
 		parameters: {
 			type: "object",
 			properties: {
 				timeout_ms: {
 					anyOf: [{ type: "integer", minimum: 10_000, maximum: 300_000 }, { type: "null" }],
-					description: "Bounded wait in milliseconds. Use null for 30000.",
+					description: `Maximum wait in milliseconds; returns early on activity or cancellation. Use null for ${WAIT_AGENT_DEFAULT_TIMEOUT_MS}.`,
 				},
 				target: {
 					anyOf: [

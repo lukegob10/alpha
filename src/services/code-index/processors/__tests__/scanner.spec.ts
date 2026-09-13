@@ -78,7 +78,9 @@ describe("DirectoryScanner", () => {
 	beforeEach(async () => {
 		vi.clearAllMocks()
 		mockEmbedder = {
-			createEmbeddings: vi.fn().mockResolvedValue({ embeddings: [[0.1, 0.2, 0.3]] }),
+			createEmbeddings: vi
+				.fn()
+				.mockImplementation(async (texts: string[]) => ({ embeddings: texts.map(() => [0.1, 0.2, 0.3]) })),
 			embedderInfo: { name: "mock-embedder", dimensions: 384 },
 		}
 		mockVectorStore = {
@@ -601,5 +603,73 @@ describe("DirectoryScanner", () => {
 			// Deleted file cleanup should not have run
 			expect(mockVectorStore.deletePointsByFilePath).not.toHaveBeenCalled()
 		})
+	})
+	it("preserves an existing index when the provider returns too few vectors", async () => {
+		vi.useFakeTimers()
+		try {
+			const { listFiles } = await import("../../../glob/list-files")
+			vi.mocked(listFiles).mockResolvedValue([["test/file1.js"], false])
+			mockCacheManager.getHash.mockReturnValue("old-hash")
+			mockCodeParser.parseFile.mockResolvedValue(
+				[1, 2].map((line) => ({
+					file_path: "test/file1.js",
+					content: "source " + line,
+					start_line: line,
+					end_line: line,
+					identifier: "source",
+					type: "function",
+					fileHash: "new-hash",
+					segmentHash: "segment-" + line,
+				})),
+			)
+			mockEmbedder.createEmbeddings.mockResolvedValue({ embeddings: [[1, 2, 3]] })
+			const onError = vi.fn()
+			const scanning = scanner.scanDirectory("/test", onError)
+			await vi.runAllTimersAsync()
+			await scanning
+			expect(onError).toHaveBeenCalledOnce()
+			expect(mockVectorStore.deletePointsByMultipleFilePaths).not.toHaveBeenCalled()
+			expect(mockVectorStore.upsertPoints).not.toHaveBeenCalled()
+			expect(mockCacheManager.updateHash).not.toHaveBeenCalled()
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+	it("settles an in-flight embedding request on cancellation without replacing the index", async () => {
+		const { listFiles } = await import("../../../glob/list-files")
+		vi.mocked(listFiles).mockResolvedValue([["test/file1.js"], false])
+		mockCacheManager.getHash.mockReturnValue("old-hash")
+		mockCodeParser.parseFile.mockResolvedValue([
+			{
+				file_path: "test/file1.js",
+				content: "source",
+				start_line: 1,
+				end_line: 1,
+				identifier: "source",
+				type: "function",
+				fileHash: "new-hash",
+				segmentHash: "segment",
+			},
+		])
+		let started!: () => void
+		const requestStarted = new Promise<void>((resolve) => {
+			started = resolve
+		})
+		let finish!: (value: { embeddings: number[][] }) => void
+		mockEmbedder.createEmbeddings.mockImplementation(() => {
+			started()
+			return new Promise((resolve) => {
+				finish = resolve
+			})
+		})
+		const controller = new AbortController()
+		const scanning = scanner.scanDirectory("/test", undefined, undefined, undefined, controller.signal)
+		await requestStarted
+		controller.abort()
+		finish({ embeddings: [[1, 2, 3]] })
+		await scanning
+		expect(mockVectorStore.deletePointsByMultipleFilePaths).not.toHaveBeenCalled()
+		expect(mockVectorStore.upsertPoints).not.toHaveBeenCalled()
+		expect(mockCacheManager.updateHash).not.toHaveBeenCalled()
 	})
 })

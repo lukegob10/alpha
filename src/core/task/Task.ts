@@ -264,6 +264,8 @@ export interface CommandExecutionEvidence {
 export interface CompletionGateDecision {
 	allowed: boolean
 	message?: string
+	/** Durable file-level debt used by the shared repair allowance. */
+	blockingObligations?: readonly ParentVerificationObligation[]
 	/** Runtime waits and unavailable evidence never require a model recovery turn. */
 	modelCanResolveRejection: boolean
 	classification?: "ready" | "waiting" | "repairable" | "blocked"
@@ -4934,9 +4936,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						? this.pendingCommandVerification
 						: delayWithAbort(250, lease.signal),
 					lease.signal,
+					this.pendingCommandVerificationCount > 0 ? Date.now() + 30_000 : undefined,
 				)
 			}
-		} catch {
+		} catch (error) {
+			timedOut ||= error instanceof ApiStreamDeadlineError
 			return {
 				allowed: false,
 				classification: "blocked",
@@ -7336,12 +7340,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const host: AgentTurnHost<TaskTurnInput> = {
 			shouldAbort: () => this.abort,
 			canCompleteWithoutTools: () => {
-				// Managed children must publish a durable terminal result through attempt_completion.
-				return (
-					this.taskKind === "primary" &&
-					this.userMessageContent.length === 0 &&
-					this.pendingSteerMessage === undefined
-				)
+				// Text is a completion candidate; the shared durable gate below decides
+				// whether primary and managed-child work can actually finish.
+				return this.userMessageContent.length === 0 && this.pendingSteerMessage === undefined
 			},
 			runStep: async (input) => {
 				// Legacy hosts may return without entering the request loop.
@@ -7430,12 +7431,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// recursivelyMakeClineRequests consumes durable steering before the next API request.
 					nextUserContent = [{ type: "text", text: formatResponse.noToolsUsed() }]
 				} else {
-					const isVisiblePrimaryResponse =
-						this.taskKind === "primary" &&
-						response.toolCalls.length === 0 &&
-						response.text.trim().length > 0
+					const isVisibleResponse = response.toolCalls.length === 0 && response.text.trim().length > 0
 					const queuedMessage =
-						isVisiblePrimaryResponse && !this.messageQueueService.isEmpty()
+						isVisibleResponse && !this.messageQueueService.isEmpty()
 							? this.messageQueueService.dequeueMessage()
 							: undefined
 
@@ -7705,10 +7703,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				continue
 			}
 
-			// Normalize ordinary provider text into the same visible final-result row
-			// used by attempt_completion, then publish a hidden review/follow-up boundary.
+			// Managed children publish through the same completion event as the tool.
+			// Their parent owns review; only primary tasks open the local review boundary.
 			await this.presentCompletionResult(outcome.response.text)
-			const { response, text, images } = await this.ask("completion_result", "", false)
+			const review = this.taskKind === "subagent" ? undefined : await this.ask("completion_result", "", false)
 			if (this.abort || this.didComplete) {
 				await appendTaskTerminalEvent(
 					this.abort ? "aborted" : "completed",
@@ -7720,12 +7718,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 
 			const queuedFollowup =
-				response === "yesButtonClicked" ? this.messageQueueService.dequeueMessage() : undefined
-			const feedbackText = queuedFollowup?.text ?? text ?? ""
-			const feedbackImages = queuedFollowup?.images ?? images ?? []
+				!review || review.response === "yesButtonClicked"
+					? this.messageQueueService.dequeueMessage()
+					: undefined
+			const feedbackText = queuedFollowup?.text ?? review?.text ?? ""
+			const feedbackImages = queuedFollowup?.images ?? review?.images ?? []
 
 			const shouldFinish =
-				(response === "yesButtonClicked" && !queuedFollowup) ||
+				((!review || review.response === "yesButtonClicked") && !queuedFollowup) ||
 				(!feedbackText.trim() && feedbackImages.length === 0)
 			if (shouldFinish) {
 				// A background child or verification obligation can change while the
@@ -7797,6 +7797,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					continue
 				}
 
+				if (this.taskKind === "subagent") this.subagentCompletionOutcome = "completed"
 				const finalized = await this.finalizeTaskCompletion()
 				if (!finalized) {
 					if (this.abort || this.didComplete) {
@@ -9440,12 +9441,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							return { status: "completed", response: this.currentAgentResponse }
 						}
 
-						// Primary tasks may end with ordinary assistant text. Managed children
-						// retain the explicit completion tool because it publishes their durable
-						// terminal result back to the parent.
+						// Visible text reaches the shared completion gate in the outer loop.
+						// Retain no-content recovery without coercing a valid child answer.
 						const didToolUse = hasToolUses
 
-						if (!didToolUse && this.taskKind === "subagent") {
+						if (!didToolUse && this.taskKind === "subagent" && !canonicalResponse?.text.trim()) {
 							// Increment consecutive no-tool-use counter
 							this.consecutiveNoToolUseCount++
 
@@ -9462,7 +9462,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								text: formatResponse.noToolsUsed(),
 							})
 						} else {
-							// Reset the legacy recovery counter after tools or a valid primary response.
+							// Reset recovery after tools or visible text from either task kind.
 							this.consecutiveNoToolUseCount = 0
 						}
 
@@ -10769,6 +10769,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				state,
 				this.combineMessages(this.clineMessages.slice(1)),
 				async (type, data) => waitForBoundedPreflight(this.ask(type, data)),
+				{ currentRequestRecorded: options.ownerHandlesRetry === true },
 			),
 		)
 		assertPreflightWithinBudget()
@@ -11635,33 +11636,69 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// unresolved publisher after its completion wait has already exited.
 		if (name === "attempt_completion" || this.abort || this.didComplete) return
 		try {
-			await this.waitForRequestControl(this.pendingCommandVerification, this.getTaskLifetimeCancellationSignal())
+			await this.waitForRequestControl(
+				this.pendingCommandVerification,
+				this.getTaskLifetimeCancellationSignal(),
+				Date.now() + 30_000,
+			)
 		} catch (error) {
 			if (this.abort || this.getTaskLifetimeCancellationSignal().aborted) return
+			if (error instanceof ApiStreamDeadlineError) {
+				this.suspendAfterCurrentTurn(
+					"Task remains incomplete: command evidence did not finish persisting within 30 seconds. Resume after the existing operation settles; do not repeat it.",
+					"blocked",
+				)
+				return
+			}
 			throw error
 		}
 		if (this.abort) return
 		const failure = status === "success" ? undefined : normalizeToolFailure(result?.failure)
 		const retryWasBlocked = failure ? this.getToolRetryBlock(name, args) : undefined
+		const idleAgentWait = name === "wait_agent" && result?.waitOutcome === "idle"
+		const commandRead = name === "read_command_output"
+		const evidence = result?.callId ? this.commandExecutionEvidence.get(result.callId) : undefined
+		const scopes = Object.entries(evidence?.verificationVersions ?? {}).map(([changeSetId, scope]) => ({
+			changeSetId,
+			matchedFiles: scope.matchedFiles,
+			kind: scope.kind,
+		}))
+		const scopedCheckFailure =
+			name === "execute_command" &&
+			failure?.reason === "execution_failed" &&
+			failure.outcome === "known" &&
+			evidence?.status === "failed" &&
+			evidence.exitCode !== undefined &&
+			scopes.length > 0
+		let failureOwnedByCompletion = false
 		if (failure) this.lastToolFailure = { toolName: name, failure }
-		if (this.completionRecoveryActive) {
+		if (this.completionRecoveryActive || scopedCheckFailure) {
 			let completionDecision: CompletionGateDecision
 			try {
 				completionDecision = await this.waitForRequestControl(
 					this.getCompletionGateDecision(),
 					this.getTaskLifetimeCancellationSignal(),
+					Date.now() + 30_000,
 				)
 			} catch (error) {
 				if (this.abort || this.getTaskLifetimeCancellationSignal().aborted) return
+				if (error instanceof ApiStreamDeadlineError) {
+					this.suspendAfterCurrentTurn(
+						"Task remains incomplete: completion evidence was unavailable for 30 seconds. Resume after task persistence recovers; existing tool results are preserved.",
+						"blocked",
+					)
+					return
+				}
 				throw error
 			}
-			if (completionDecision.classification === "waiting") return
-			if (completionDecision.allowed) {
+			if (completionDecision.classification === "waiting") {
+				// A pending command/child cannot exempt immediate reads or empty waits from stall detection.
+				if (!idleAgentWait && !commandRead) return
+			} else if (completionDecision.allowed) {
 				this.resetCompletionRecoveryState()
 			} else {
 				const metrics = this.getMutableCompletionStageMetrics()
 				metrics.repairToolCount++
-				const evidence = result?.callId ? this.commandExecutionEvidence.get(result.callId) : undefined
 				const verification =
 					args && typeof args === "object" && "verification" in args ? args.verification : undefined
 				const associatedIds =
@@ -11671,11 +11708,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					Array.isArray(verification.change_set_ids)
 						? verification.change_set_ids.filter((id): id is string => typeof id === "string")
 						: []
-				const scopes = Object.entries(evidence?.verificationVersions ?? {}).map(([changeSetId, scope]) => ({
-					changeSetId,
-					matchedFiles: scope.matchedFiles,
-					kind: scope.kind,
-				}))
+				// The existing file-version budget owns confirmed verification failures. A second,
+				// operation-only budget would block a check even after its relevant inputs were repaired.
+				failureOwnedByCompletion = scopedCheckFailure
 				const exhausted =
 					name === "execute_command" &&
 					(this.completionRecovery ??= new CompletionRecovery()).recordCheck(
@@ -11693,14 +11728,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 			}
 		}
-		const artifactId = args && typeof args === "object" && "artifact_id" in args ? args.artifact_id : undefined
-		const polling =
-			name === "wait_agent" ||
-			(name === "read_command_output" &&
-				typeof artifactId === "string" &&
-				[...this.commandExecutionEvidence.values()].some(
-					(item) => item.status === "running" && artifactId === `cmd-${item.executionId.split(":")[0]}.txt`,
-				))
+		const polling = name === "wait_agent" && result?.waitOutcome === "active"
 		const read = ["read_file", "list_files", "search_files", "codebase_search", "read_command_output"].includes(
 			name,
 		)
@@ -11722,7 +11750,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			stateFingerprint: state?.stateFingerprint,
 			evidenceFingerprint: state?.evidenceFingerprint,
 			...(trustedExploration ? { explorationFingerprint: trustedExploration.semanticFingerprint } : {}),
-			...(failure ? { failure } : {}),
+			...(result?.trustedProgress ? { trustedProgress: result.trustedProgress } : {}),
+			...(result?.opaqueResultFingerprint ? { opaqueResultFingerprint: result.opaqueResultFingerprint } : {}),
+			...(failure && !failureOwnedByCompletion ? { failure } : {}),
 			...(result?.executionStatus ? { executionStatus: result.executionStatus } : {}),
 		})
 		if (decision.failure) {
@@ -11740,13 +11770,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		} else if (decision.action === "stop") {
 			this.suspendAfterCurrentTurn(
-				"Task remains incomplete: repeated tool outcomes produced no new state or verification evidence. Resume with a different approach or the missing validation.",
+				decision.reason === "unconfirmed-progress"
+					? "Task remains incomplete: repeated external calls returned unchanged results and progress could not be established. Use the existing results or inspect the relevant postcondition before repeating the operation."
+					: idleAgentWait
+						? "Task remains incomplete: repeated waits returned no usable agent update. Use available child results or continue other work; wait again when agent work or parent control is pending."
+						: "Task remains incomplete: repeated tool outcomes produced no new state or verification evidence. Resume with a different approach or the missing validation.",
 				"blocked",
 			)
 		} else if (decision.action === "change-strategy") {
 			this.userMessageContent.push({
 				type: "text",
-				text: "Repeated tool outcomes produced no new state or verification evidence. Change strategy now: use existing evidence, resolve the missing validation, or report an explicit blocked/unverified outcome.",
+				text:
+					decision.reason === "unconfirmed-progress"
+						? "Repeated external calls returned unchanged results. Use existing results, inspect the relevant postcondition if needed, or choose a different approach. Do not repeat a mutation whose outcome is uncertain."
+						: idleAgentWait
+							? "Repeated waits returned no usable agent update. Use available child results or continue other work; wait again when agent work or parent control is pending."
+							: "Repeated tool outcomes produced no new state or verification evidence. Change strategy now: use existing evidence, resolve the missing validation, or report an explicit blocked/unverified outcome.",
 			})
 		}
 	}

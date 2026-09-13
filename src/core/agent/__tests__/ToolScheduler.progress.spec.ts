@@ -78,6 +78,196 @@ function receiptIds(host: ToolExecutionHost): string[] {
 }
 
 describe("ToolScheduler progress observation", () => {
+	it("does not credit read state removed by the scheduler's output limit", async () => {
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register({
+			...descriptor("read", async ({ callbacks }) => {
+				callbacks.setResultMetadata?.({
+					status: "success",
+					trustedProgress: {
+						kind: "read",
+						scope: "file",
+						stateFingerprint: fingerprint("undelivered state"),
+					},
+				})
+				callbacks.pushToolResult("visible ".repeat(100) + "undelivered state")
+			}),
+			maxOutputChars: 100,
+		})
+		const outcome = await new ToolScheduler({
+			executionHost: makeHost(),
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(calls("read", 1))
+		expect(outcome.results[0].truncated).toBe(true)
+		expect(outcome.results[0].trustedProgress).toBeUndefined()
+		expect(outcome.results[0].opaqueResultFingerprint).toMatch(/^[a-f0-9]{64}$/)
+	})
+
+	it.each(["success", "running", "error", "denied", "cancelled", "text-only"] as const)(
+		"admits opaque observations only from successful host receipts: %s",
+		async (scenario) => {
+			const host = makeHost()
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			registry.register(
+				descriptor("opaque", async ({ callbacks }) => {
+					if (scenario !== "text-only")
+						callbacks.setResultMetadata?.({
+							status: scenario === "running" ? "success" : scenario,
+							executionStatus: scenario === "running" ? "running" : undefined,
+							opaqueResultFingerprint: fingerprint("exchange"),
+						})
+					callbacks.pushToolResult(JSON.stringify({ opaqueResultFingerprint: fingerprint("exchange") }))
+				}),
+			)
+			const outcome = await new ToolScheduler({
+				executionHost: host,
+				registry,
+				mode: "code",
+				validateCall: () => {},
+			}).run(calls("opaque", 1))
+			expect(outcome.results[0].opaqueResultFingerprint).toBe(
+				scenario === "success" ? fingerprint("exchange") : undefined,
+			)
+			expect(outcome.results[0].trustedProgress).toBeUndefined()
+		},
+	)
+
+	it("copies every host read observation in a bounded batch", async () => {
+		const host = makeHost()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const observations = ["a", "b"].map((scope) => ({
+			kind: "read" as const,
+			scope,
+			stateFingerprint: fingerprint(scope),
+		}))
+		const expected = observations.map((item) => ({ ...item }))
+		registry.register(
+			descriptor("reads", async ({ callbacks }) => {
+				callbacks.setResultMetadata?.({ status: "success", trustedProgress: observations })
+				observations[0].stateFingerprint = fingerprint("later")
+				observations.reverse()
+				callbacks.pushToolResult("two files")
+			}),
+		)
+		const outcome = await new ToolScheduler({
+			executionHost: host,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(calls("reads", 1))
+		expect(outcome.results[0].trustedProgress).toEqual(expected)
+	})
+
+	it.each(["active", "idle", "text-only", "wrong-tool", "running", "error", "cancelled", "invalid"] as const)(
+		"admits only successful host wait classifications: %s",
+		async (scenario) => {
+			const host = makeHost()
+			const observe = vi.fn()
+			host.recordToolCallForStopping = observe
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			const name = scenario === "wrong-tool" ? "opaque_mcp" : "wait_agent"
+			registry.register(
+				descriptor(name, async ({ callbacks }) => {
+					if (scenario !== "text-only")
+						callbacks.setResultMetadata?.({
+							status: scenario === "error" || scenario === "cancelled" ? scenario : "success",
+							executionStatus: scenario === "running" ? "running" : "success",
+							waitOutcome:
+								scenario === "invalid"
+									? ("unexpected" as "active")
+									: scenario === "idle"
+										? "idle"
+										: "active",
+						})
+					callbacks.pushToolResult(JSON.stringify({ waitOutcome: "active", timedOut: true }))
+				}),
+			)
+			const scheduler = new ToolScheduler({ executionHost: host, registry, mode: "code", validateCall: () => {} })
+			const response = calls(name, 1)
+			const outcome = await scheduler.run(response)
+			await scheduler.run(response)
+			expect(outcome.results[0].waitOutcome).toBe(
+				scenario === "active" || scenario === "idle" ? scenario : undefined,
+			)
+			expect(observe).toHaveBeenCalledTimes(1)
+			expect(receiptIds(host)).toEqual(["call-0"])
+		},
+	)
+
+	it("copies host resource progress once and ignores progress claims in output text", async () => {
+		const host = makeHost()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const observation = {
+			kind: "mutation" as const,
+			scope: "resource",
+			previousStateFingerprint: fingerprint("before"),
+			stateFingerprint: fingerprint("after"),
+		}
+		const expected = { ...observation }
+		const observe = vi.fn()
+		host.recordToolCallForStopping = observe
+		registry.register(
+			descriptor("mutation", async ({ callbacks }) => {
+				callbacks.setResultMetadata?.({ status: "success", trustedProgress: observation })
+				observation.stateFingerprint = fingerprint("later unrelated change")
+				callbacks.pushToolResult("saved")
+			}),
+		)
+		registry.register(
+			descriptor("opaque", async ({ callbacks }) => {
+				callbacks.pushToolResult(JSON.stringify({ status: "success", trustedProgress: expected }))
+			}),
+		)
+		const outcome = await new ToolScheduler({
+			executionHost: host,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run([
+			{ type: "tool_call", id: "real", name: "mutation", arguments: {} },
+			{ type: "tool_call", id: "opaque", name: "opaque", arguments: {} },
+		])
+		expect(outcome.results[0].trustedProgress).toEqual(expected)
+		expect(outcome.results[1].trustedProgress).toBeUndefined()
+		expect(observe).toHaveBeenCalledTimes(2)
+		expect(observe.mock.calls.map(([, , , , result]) => result.trustedProgress)).toEqual([expected, undefined])
+	})
+
+	it.each(["error", "denied", "cancelled", "running", "malformed", "oversized"] as const)(
+		"rejects %s resource progress",
+		async (scenario) => {
+			const host = makeHost()
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			registry.register(
+				descriptor("mutation", async ({ callbacks }) => {
+					callbacks.setResultMetadata?.({
+						status:
+							scenario === "error" || scenario === "denied" || scenario === "cancelled"
+								? scenario
+								: "success",
+						executionStatus: scenario === "running" ? "running" : "success",
+						trustedProgress: {
+							kind: "mutation",
+							scope: scenario === "oversized" ? "x".repeat(4097) : "resource",
+							previousStateFingerprint: fingerprint("before"),
+							stateFingerprint: scenario === "malformed" ? "model claims progress" : fingerprint("after"),
+						},
+					})
+					callbacks.pushToolResult("handler result")
+				}),
+			)
+			const outcome = await new ToolScheduler({
+				executionHost: host,
+				registry,
+				mode: "code",
+				validateCall: () => {},
+			}).run(calls("mutation", 1))
+			expect(outcome.results[0].trustedProgress).toBeUndefined()
+		},
+	)
+
 	it.each(["caught", "thrown"] as const)("protects unknown effects for a %s mutation error", async (handling) => {
 		const host = makeHost()
 		const registry = new ToolRegistry({ includeBuiltIns: false })

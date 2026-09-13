@@ -1,3 +1,4 @@
+import { getIndexIdentity } from "./shared/embedding-input"
 import * as vscode from "vscode"
 import { Ignore } from "ignore"
 
@@ -183,6 +184,7 @@ export class CodeIndexServiceFactory {
 				this.workspacePath,
 				config.localIndexPath || DEFAULT_LOCAL_INDEX_PATH,
 				vectorSize,
+				getIndexIdentity(config),
 			)
 		}
 
@@ -190,7 +192,13 @@ export class CodeIndexServiceFactory {
 			throw new Error(t("embeddings:serviceFactory.qdrantUrlMissing"))
 		}
 
-		return new QdrantVectorStore(this.workspacePath, config.qdrantUrl, vectorSize, config.qdrantApiKey)
+		return new QdrantVectorStore(
+			this.workspacePath,
+			config.qdrantUrl,
+			vectorSize,
+			config.qdrantApiKey,
+			getIndexIdentity(config),
+		)
 	}
 
 	/**

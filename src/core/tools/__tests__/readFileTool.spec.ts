@@ -206,6 +206,49 @@ describe("ReadFileTool", () => {
 	})
 
 	describe("input validation", () => {
+		it("observes legacy batch members separately and preserves partial failures", async () => {
+			const task = createMockTask()
+			const callbacks = createMockCallbacks()
+			await readFileTool.execute({ files: [{ path: "a.ts" }, { path: "b.ts" }] }, task as any, callbacks)
+			const observations = callbacks.setResultMetadata.mock.calls.at(-1)?.[0].trustedProgress
+			expect(observations).toHaveLength(2)
+			expect(observations[0].scope).not.toBe(observations[1].scope)
+			expect(observations[0].stateFingerprint).toBe(observations[1].stateFingerprint)
+			callbacks.setResultMetadata.mockClear()
+			task.rooIgnoreController.validateAccess.mockReturnValueOnce(false)
+			await readFileTool.execute({ files: [{ path: "a.ts" }, { path: "b.ts" }] }, task as any, callbacks)
+			const merged = Object.assign({}, ...callbacks.setResultMetadata.mock.calls.map(([metadata]) => metadata))
+			expect(merged.status).toBe("denied")
+			expect(merged.trustedProgress).toHaveLength(1)
+		})
+
+		it.each(["slice", "indentation"] as const)(
+			"observes returned %s content independently of display metadata",
+			async (mode) => {
+				const task = createMockTask()
+				const callbacks = createMockCallbacks()
+				const read = async (content: string, totalLines: number, limit: number) => {
+					const result = {
+						content,
+						totalLines,
+						returnedLines: 1,
+						wasTruncated: true,
+						includedRanges: [[1, 1]] as [number, number][],
+					}
+					mockedReadWithSlice.mockReturnValue(result)
+					mockedReadWithIndentation.mockReturnValue(result)
+					callbacks.setResultMetadata.mockClear()
+					await readFileTool.execute({ path: "file.ts", mode, limit }, task as any, callbacks)
+					const metadata = callbacks.setResultMetadata.mock.calls.at(-1)?.[0]
+					expect(metadata).toMatchObject({ status: "success", trustedProgress: { kind: "read" } })
+					return metadata.trustedProgress.stateFingerprint
+				}
+				const initial = await read("1 | original", 100, 10)
+				expect(await read("1 | original", 200, 20)).toBe(initial)
+				expect(await read("1 | changed", 200, 20)).not.toBe(initial)
+			},
+		)
+
 		it("should return error when path is missing", async () => {
 			const mockTask = createMockTask()
 			const callbacks = createMockCallbacks()

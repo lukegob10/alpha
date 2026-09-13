@@ -35,12 +35,14 @@ function renderTicketRow(payload: Record<string, unknown>, type: "say" | "ask" =
 }
 
 describe("ticket chat messages", () => {
-	it("shows an Alpha Tickets banner with the loaded reference and title", () => {
+	it("collapses loaded tickets to a status line and reveals the reference on demand", () => {
 		const { container } = renderTicketRow({
 			ticketActivity: { operation: "read", state: "success", reference: "PM-01", name: "Backend cleanup" },
 		})
 		expect(screen.getByRole("group", { name: "activityTitle" })).toBeInTheDocument()
 		expect(screen.getByText("activityLoaded")).toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "PM-01 · Backend cleanup" })).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "activityLoaded" }))
 		expect(screen.getByRole("button", { name: "PM-01 · Backend cleanup" })).toBeInTheDocument()
 		expect(container.querySelector("pre")).toBeNull()
 	})
@@ -55,6 +57,7 @@ describe("ticket chat messages", () => {
 			},
 		})
 		expect(screen.getByText("activityFound")).toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "activityFound" }))
 		expect(screen.getByRole("button", { name: "PM-01 · Backend cleanup" })).toBeInTheDocument()
 		expect(screen.queryByText("activityLoaded")).not.toBeInTheDocument()
 	})
@@ -70,6 +73,7 @@ describe("ticket chat messages", () => {
 				target,
 			},
 		})
+		fireEvent.click(screen.getByRole("button", { name: "activityCreated" }))
 		fireEvent.click(screen.getByRole("button", { name: "PM-01 · Backend cleanup" }))
 		expect(post).toHaveBeenCalledWith({ type: "openTicket", ticketTarget: target })
 		post.mockRestore()

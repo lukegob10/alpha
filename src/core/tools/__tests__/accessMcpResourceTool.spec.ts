@@ -62,7 +62,35 @@ describe("accessMcpResourceTool", () => {
 			fixture.callbacks,
 		)
 
-		expect(fixture.setResultMetadata).not.toHaveBeenCalled()
+		expect(fixture.setResultMetadata).toHaveBeenCalledWith({
+			status: "success",
+			trustedProgress: {
+				kind: "read",
+				scope: expect.any(String),
+				stateFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+			},
+		})
 		expect(fixture.pushToolResult).toHaveBeenCalledWith("result: (Empty response)")
+	})
+
+	it("observes changed resource contents under the same URI", async () => {
+		const readResource = vi.fn().mockResolvedValue({ contents: [{ text: "original" }] })
+		const fixture = setup(readResource)
+		const run = async () => {
+			await accessMcpResourceTool.execute(
+				{ server_name: "server", uri: "file:///item" },
+				fixture.task,
+				fixture.callbacks,
+			)
+			return fixture.setResultMetadata.mock.calls.at(-1)?.[0].trustedProgress
+		}
+		const original = await run()
+		expect(original).toBeDefined()
+		expect(await run()).toEqual(original)
+		readResource.mockResolvedValue({ contents: [{ text: "changed" }] })
+		expect(await run()).toMatchObject({
+			scope: original.scope,
+			stateFingerprint: expect.not.stringMatching(original.stateFingerprint),
+		})
 	})
 })

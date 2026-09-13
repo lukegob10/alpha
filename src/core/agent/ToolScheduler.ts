@@ -1,12 +1,14 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import { serializeError } from "serialize-error"
 import path from "path"
+import { createHash } from "crypto"
+import stringify from "safe-stable-stringify"
 
 import type { ClineAsk, ClineAskResponse, ClineSay, ModeConfig, ToolProgressStatus } from "@alpha-code/types"
 
 import type { ToolResponse, ToolUse } from "../../shared/tools"
 import type { ToolApprovalResponse, ToolCallbacks, ToolResultMetadata } from "../tools/BaseTool"
-import { ToolReadDeniedError } from "../tools/BaseTool"
+import { MAX_TOOL_PROGRESS_OBSERVATIONS, ToolReadDeniedError } from "../tools/BaseTool"
 import {
 	createToolFailure,
 	formatToolFailureGuidance,
@@ -156,6 +158,9 @@ export interface ToolSchedulerResult {
 	timedOut?: boolean
 	/** Trusted progress-only observation; never verification evidence. */
 	trustedExploration?: ToolResultMetadata["trustedExploration"]
+	trustedProgress?: ToolResultMetadata["trustedProgress"]
+	waitOutcome?: ToolResultMetadata["waitOutcome"]
+	opaqueResultFingerprint?: string
 	failure?: ToolFailureMetadata
 	durationMs: number
 }
@@ -241,7 +246,18 @@ class ToolResultCollector {
 	setMetadata(metadata: ToolResultMetadata): void {
 		const { failure, ...rest } = metadata
 		const normalizedFailure = normalizeToolFailure(failure)
-		this.metadata = { ...this.metadata, ...rest, ...(normalizedFailure ? { failure: normalizedFailure } : {}) }
+		this.metadata = {
+			...this.metadata,
+			...rest,
+			...(rest.trustedProgress
+				? {
+						trustedProgress: Array.isArray(rest.trustedProgress)
+							? rest.trustedProgress.slice(0, MAX_TOOL_PROGRESS_OBSERVATIONS).map((item) => ({ ...item }))
+							: { ...rest.trustedProgress },
+					}
+				: {}),
+			...(normalizedFailure ? { failure: normalizedFailure } : {}),
+		}
 	}
 
 	getMetadata(): ToolResultMetadata {
@@ -380,6 +396,41 @@ function trustedExplorationForResult(
 	return {
 		scope: observation.scope,
 		semanticFingerprint: observation.semanticFingerprint,
+	}
+}
+
+function trustedProgressForResult(
+	metadata: ToolResultMetadata,
+	status: ToolSchedulerResult["status"],
+): ToolResultMetadata["trustedProgress"] | undefined {
+	const observation = metadata.trustedProgress
+	if (Array.isArray(observation)) {
+		if (observation.length === 0 || observation.length > MAX_TOOL_PROGRESS_OBSERVATIONS) return undefined
+		const admitted = observation.flatMap(
+			(item) => trustedProgressForResult({ ...metadata, trustedProgress: item }, status) ?? [],
+		)
+		return admitted.length === observation.length ? admitted : undefined
+	}
+	if (
+		status !== "success" ||
+		(metadata.executionStatus ?? metadata.status) !== "success" ||
+		!observation ||
+		(observation.kind !== "read" && observation.kind !== "mutation") ||
+		typeof observation.scope !== "string" ||
+		!observation.scope.length ||
+		observation.scope.length > 4_096 ||
+		!/^[a-f0-9]{64}$/.test(observation.stateFingerprint) ||
+		(observation.previousStateFingerprint !== undefined &&
+			!/^[a-f0-9]{64}$/.test(observation.previousStateFingerprint))
+	)
+		return undefined
+	return {
+		kind: observation.kind,
+		scope: observation.scope,
+		stateFingerprint: observation.stateFingerprint,
+		...(observation.previousStateFingerprint !== undefined
+			? { previousStateFingerprint: observation.previousStateFingerprint }
+			: {}),
 	}
 }
 
@@ -1542,6 +1593,29 @@ export class ToolScheduler {
 			prepared.call.name,
 			this.executionHost.cwd,
 		)
+		const admittedProgress = trustedProgressForResult(metadata, status)
+		const trustedProgress = collector.isTruncated() ? undefined : admittedProgress
+		let opaqueResultFingerprint =
+			status === "success" &&
+			(metadata.executionStatus ?? metadata.status) === "success" &&
+			typeof metadata.opaqueResultFingerprint === "string" &&
+			/^[a-f0-9]{64}$/.test(metadata.opaqueResultFingerprint)
+				? metadata.opaqueResultFingerprint
+				: undefined
+		if (collector.isTruncated() && (admittedProgress || opaqueResultFingerprint)) {
+			// A host observation may cover content the output policy removed. Retain only
+			// uncertainty about the delivered exchange, never progress from unseen state.
+			opaqueResultFingerprint = createHash("sha256")
+				.update(stringify([prepared.call.name, prepared.call.arguments, collector.getContent()]) ?? "")
+				.digest("hex")
+		}
+		const waitOutcome =
+			prepared.call.name === "wait_agent" &&
+			status === "success" &&
+			executionStatus === "success" &&
+			(metadata.waitOutcome === "active" || metadata.waitOutcome === "idle")
+				? metadata.waitOutcome
+				: undefined
 		return {
 			callId: prepared.call.id,
 			name: prepared.call.name,
@@ -1552,6 +1626,9 @@ export class ToolScheduler {
 			truncated: collector.isTruncated(),
 			timedOut: metadata.timedOut,
 			...(trustedExploration ? { trustedExploration } : {}),
+			...(trustedProgress ? { trustedProgress } : {}),
+			...(waitOutcome ? { waitOutcome } : {}),
+			...(opaqueResultFingerprint ? { opaqueResultFingerprint } : {}),
 			...(status !== "success" && metadata.failure ? { failure: metadata.failure } : {}),
 			durationMs: Math.max(0, performance.now() - startedAt),
 		}

@@ -255,7 +255,7 @@ export function buildSubagentPrompt({
 		"Use read, list, search, and codebase tools as appropriate for the objective, adapting discovery to named and unnamed targets. Tool results may be bounded, missing, or truncated; do not infer absence from incomplete output, and report the limitation or obtain direct evidence when it matters.",
 		"Once the evidence is sufficient for the objective, synthesize it. If the available evidence cannot support the requested conclusion, report the uncertainty or constraint explicitly instead of inventing certainty.",
 		`Keep the final report proportional to the objective and under ${SUBAGENT_REPORT_WORD_BUDGET} words unless extra detail is required for correctness. Prioritize requested deliverables, evidence, uncertainty, and actionable conclusions; do not repeat file contents or narrate the research process.`,
-		"When finished, call attempt_completion once with outcome completed and a concise, self-contained report. Use outcome blocked if a constraint prevented the objective. Include concrete file references where useful.",
+		"When the objective and required checks are complete, provide a concise, self-contained final answer or use attempt_completion. Use attempt_completion with outcome blocked if a constraint prevented the objective. Include concrete file references where useful.",
 		deliverables,
 	].join("\n\n")
 }

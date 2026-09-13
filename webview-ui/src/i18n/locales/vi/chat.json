@@ -1,5 +1,6 @@
 {
 	"activityTrace": {
+		"needsAttention": "Cần chú ý",
 		"workedFor": "Đã làm việc trong {{duration}}"
 	},
 	"completionReport": "Báo cáo hoàn tất",
@@ -389,6 +390,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "Tìm kiếm mã nguồn",
 		"wantsToSearch": "Alpha muốn tìm kiếm trong cơ sở mã cho <code>{{query}}</code>",
 		"wantsToSearchWithPath": "Alpha muốn tìm kiếm trong cơ sở mã cho <code>{{query}}</code> trong <code>{{path}}</code>",
 		"didSearch_one": "Đã tìm thấy 1 kết quả",

@@ -51,6 +51,59 @@ function createTask() {
 }
 
 describe("Task actionable failure recovery", () => {
+	it.each([
+		[false, true],
+		[true, true],
+		[false, false],
+		[true, false],
+	])("uses scoped repair budgets (completion recovery: %s, relevant edit: %s)", async (active, relevant) => {
+		const { task, suspend, changeUnrelatedState } = createTask()
+		Reflect.set(task, "completionRecoveryActive", active)
+		const obligation = {
+			id: "change",
+			rootTaskId: "root",
+			parentTaskId: "root",
+			workerTaskId: "worker",
+			workerNickname: "Worker",
+			groupId: "group",
+			changeSetId: "change",
+			status: "pending" as const,
+			createdAt: 1,
+			updatedAt: 1,
+			contentVersion: 1,
+			changedFiles: ["src/changed.ts"],
+			fileVersions: { "src/changed.ts": "v1" },
+			verificationRequirements: { "src/changed.ts": ["test" as const] },
+		}
+		vi.spyOn(task, "getCompletionGateDecision").mockResolvedValue({
+			allowed: false,
+			classification: "repairable",
+			modelCanResolveRejection: true,
+			blockingObligations: [obligation],
+		})
+		Reflect.set(task, "getTokenUsage", () => ({}))
+		for (let index = 0; index < 20; index++) {
+			if (relevant) obligation.fileVersions["src/changed.ts"] = `repaired-${index}`
+			obligation.contentVersion++
+			changeUnrelatedState()
+			await task.recordToolCallForStopping("apply_patch", { path: "src/changed.ts" }, "success")
+			Reflect.get(task, "commandExecutionEvidence").set(`check-${index}`, {
+				status: "failed",
+				exitCode: 1,
+				verificationVersions: { change: { matchedFiles: ["src/changed.ts"], kind: "test" } },
+			})
+			await task.recordToolCallForStopping("execute_command", operation, "error", undefined, {
+				...result(index),
+				callId: `check-${index}`,
+				failure: { ...failure(), reason: "execution_failed", effectsStarted: "yes" },
+			})
+			expect(task.getToolRetryBlock("execute_command", operation)).toBeUndefined()
+			if (!relevant && index === 7) break
+		}
+		if (relevant) expect(suspend).not.toHaveBeenCalled()
+		else expect(suspend).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("repair actions did not resolve"))
+	})
+
 	it("retains the failed operation's allowance across unrelated reads, writes, and fresh evidence", async () => {
 		const { task, suspend, changeUnrelatedState } = createTask()
 		for (let index = 0; index < 4; index++) {

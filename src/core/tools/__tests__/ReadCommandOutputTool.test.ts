@@ -94,6 +94,46 @@ describe("ReadCommandOutputTool", () => {
 	})
 
 	describe("Basic read functionality", () => {
+		it("observes returned bytes, excluding growth outside the requested page", async () => {
+			let bytes = Buffer.from("stable log line\n".repeat(100))
+			mockFileHandle.read.mockImplementation((buffer: Buffer, offset: number, length: number, position: number) =>
+				Promise.resolve({ bytesRead: bytes.copy(buffer, offset, position, position + length) }),
+			)
+			const read = async () => {
+				vi.mocked(fs.stat).mockResolvedValue({ size: bytes.length } as any)
+				mockCallbacks.setResultMetadata.mockClear()
+				await tool.execute({ artifact_id: "cmd-123.txt", limit: 512 }, mockTask, mockCallbacks)
+				const metadata = mockCallbacks.setResultMetadata.mock.calls.at(-1)?.[0]
+				expect(metadata).toMatchObject({ status: "success", trustedProgress: { kind: "read" } })
+				return metadata.trustedProgress.stateFingerprint
+			}
+			const initial = await read()
+			bytes = Buffer.concat([bytes, Buffer.from("new output outside the page\n")])
+			expect(await read()).toBe(initial)
+			bytes.write("CHANGED")
+			expect(await read()).not.toBe(initial)
+		})
+
+		it("does not treat a different empty search or unrelated log growth as new evidence", async () => {
+			let bytes = Buffer.from("ordinary output\n")
+			mockFileHandle.read.mockImplementation((buffer: Buffer, offset: number, length: number, position: number) =>
+				Promise.resolve({ bytesRead: bytes.copy(buffer, offset, position, position + length) }),
+			)
+			const search = async (pattern: string) => {
+				vi.mocked(fs.stat).mockResolvedValue({ size: bytes.length } as any)
+				mockCallbacks.setResultMetadata.mockClear()
+				await tool.execute({ artifact_id: "cmd-123.txt", search: pattern }, mockTask, mockCallbacks)
+				const metadata = mockCallbacks.setResultMetadata.mock.calls.at(-1)?.[0]
+				expect(metadata).toMatchObject({ status: "success", trustedProgress: { kind: "read" } })
+				return metadata.trustedProgress.stateFingerprint
+			}
+			const initial = await search("error")
+			bytes = Buffer.concat([bytes, Buffer.from("unrelated output\n")])
+			expect(await search("warning")).toBe(initial)
+			bytes = Buffer.concat([bytes, Buffer.from("error found\n")])
+			expect(await search("error")).not.toBe(initial)
+		})
+
 		it("should read artifact file correctly", async () => {
 			const artifactId = "cmd-1706119234567.txt"
 			const content = "Line 1\nLine 2\nLine 3\n"

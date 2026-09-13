@@ -1,5 +1,6 @@
 {
 	"activityTrace": {
+		"needsAttention": "対応が必要",
 		"workedFor": "作業時間 {{duration}}"
 	},
 	"completionReport": "完了レポート",
@@ -388,6 +389,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "コードベース検索",
 		"wantsToSearch": "Alphaはコードベースで <code>{{query}}</code> を検索したい",
 		"wantsToSearchWithPath": "Alphaは <code>{{path}}</code> 内のコードベースで <code>{{query}}</code> を検索したい",
 		"didSearch_one": "1件の結果が見つかりました",

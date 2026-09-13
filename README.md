@@ -6,13 +6,13 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.32 Preview
+## Welcome to Alpha v2.1.34 Preview
 
-Alpha v2.1.32 brings a cleaner extension interface and automatic recovery from recognized Copilot empty-response failures.
+Alpha v2.1.34 brings clearer task progress, compact expandable traces, and stronger code-search tooling.
 
-- Commands start collapsed, and completed activity folds into an expandable elapsed-time row
-- Chat, file-change summaries, settings, history, and shared controls use consistent theme-aware styling
-- Recognized Copilot empty responses retry once automatically without enabling tool auto-approval or replaying partial responses
+- Batch file searches collapse to a count and path list, with each search opening independently for its query and results
+- Running tasks show a live indicator, and queued messages expose front, middle, and back insertion targets while dragging
+- Agent execution and code-index reliability improvements include expanded deterministic and exact-host coverage
 
 <details>
   <summary>🌐 Available languages</summary>

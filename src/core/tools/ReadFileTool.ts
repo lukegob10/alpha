@@ -10,6 +10,7 @@
  */
 import path from "path"
 import * as fs from "fs/promises"
+import { createHash } from "crypto"
 import { isBinaryFile } from "isbinaryfile"
 
 import type { ReadFileParams, ReadFileMode, ReadFileToolParams, FileEntry, LineRange } from "@alpha-code/types"
@@ -36,7 +37,13 @@ import {
 	processImageFile,
 	ImageMemoryTracker,
 } from "./helpers/imageHelpers"
-import { BaseTool, ToolCallbacks, type ToolApprovalResponse } from "./BaseTool"
+import {
+	BaseTool,
+	MAX_TOOL_PROGRESS_OBSERVATIONS,
+	ToolCallbacks,
+	type ToolApprovalResponse,
+	type TrustedToolProgressObservation,
+} from "./BaseTool"
 import { getTaskDisplayPath, getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -64,6 +71,7 @@ interface FileResult {
 	notice?: string
 	nativeContent?: string
 	imageDataUrl?: string
+	observedContent?: string
 	feedbackText?: string
 	feedbackImages?: string[]
 	// Store the original entry for mode processing
@@ -75,6 +83,10 @@ function decodeTextBuffer(buffer: Buffer): string {
 		return buffer.subarray(3).toString("utf8")
 	}
 	return buffer.toString("utf8")
+}
+
+function readProgress(scope: string, content: string): TrustedToolProgressObservation {
+	return { kind: "read", scope, stateFingerprint: createHash("sha256").update(content).digest("hex") }
 }
 
 interface FileReadFailure {
@@ -277,7 +289,8 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 					await task.fileContextTracker.trackFileContext(relPath, "read_tool" as RecordSource)
 
 					updateFileResult(relPath, {
-						nativeContent: `File: ${relPath}\n${result}`,
+						nativeContent: `File: ${relPath}\n${result.content}`,
+						observedContent: result.observedContent,
 					})
 				} catch (error) {
 					if (this.isCancelled(task, callbacks)) throw error
@@ -301,6 +314,16 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 			}
 
 			this.buildAndPushResult(task, fileResults, pushToolResult)
+			if (fileResults.every((result) => result.status === "approved")) {
+				const result = fileResults[0]
+				callbacks.setResultMetadata?.({
+					status: "success",
+					trustedProgress: readProgress(
+						path.resolve(task.cwd, result.path),
+						result.observedContent ?? result.imageDataUrl ?? "content not displayed",
+					),
+				})
+			}
 		} catch (error) {
 			if (this.isCancelled(task, callbacks)) {
 				callbacks.setResultMetadata?.({ status: "cancelled" })
@@ -395,8 +418,8 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 	/**
 	 * Process a text file according to the requested mode.
 	 */
-	private processTextFile(content: string, entry: InternalFileEntry): string {
-		if (content.length === 0) return "Note: File is empty"
+	private processTextFile(content: string, entry: InternalFileEntry): { content: string; observedContent: string } {
+		if (content.length === 0) return { content: "Note: File is empty", observedContent: "" }
 
 		const mode = entry.mode || "slice"
 
@@ -430,7 +453,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				output += `\n\nIncluded ranges: ${rangeStr} (total: ${result.totalLines} lines)`
 			}
 
-			return output
+			return { content: output, observedContent: result.content }
 		}
 
 		// Slice mode (default): simple offset/limit reading
@@ -457,7 +480,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 			output = "Note: File is empty"
 		}
 
-		return output
+		return { content: output, observedContent: result.content }
 	}
 
 	/**
@@ -503,6 +526,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				updateFileResult(relPath, {
 					nativeContent: `File: ${relPath}\nNote: ${imageResult.notice}`,
 					imageDataUrl: imageResult.dataUrl,
+					observedContent: imageResult.dataUrl,
 				})
 				return
 			} catch (error) {
@@ -531,6 +555,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				await task.fileContextTracker.trackFileContext(relPath, "read_tool" as RecordSource)
 
 				updateFileResult(relPath, {
+					observedContent: numberedContent,
 					nativeContent:
 						lineCount > 0
 							? `File: ${relPath}\nLines 1-${lineCount}:\n${numberedContent}`
@@ -885,6 +910,8 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 
 		// Process each file sequentially (legacy behavior)
 		const results: string[] = []
+		const observations: TrustedToolProgressObservation[] = []
+		callbacks.setResultMetadata?.({ status: "success" })
 
 		for (const inputEntry of fileEntries as unknown[]) {
 			if (this.isCancelled(task, callbacks)) {
@@ -1015,6 +1042,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 
 				// Handle line ranges if specified
 				let content: string
+				let observedContent = ""
 				if (entry.lineRanges && entry.lineRanges.length > 0) {
 					// Keep source line numbers on every selected record. Passing bare
 					// strings to formatWithLineNumbers would renumber disjoint ranges
@@ -1037,6 +1065,11 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 						selectedLines.length > 0
 							? formatWithLineNumbers(selectedLines)
 							: "Note: No lines matched the requested ranges"
+					observedContent = formatWithLineNumbers(
+						[...new Map(selectedLines.map((line) => [line.lineNumber, line])).values()].sort(
+							(a, b) => a.lineNumber - b.lineNumber,
+						),
+					)
 				} else {
 					// Read with default limits using slice mode
 					content =
@@ -1045,6 +1078,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 							: (() => {
 									const result = readWithSlice(rawContent, 0, DEFAULT_LINE_LIMIT)
 									let output = result.content
+									observedContent = result.content
 									if (result.wasTruncated) {
 										output += `\n\n[File truncated: showing ${result.returnedLines} of ${result.totalLines} total lines]`
 									}
@@ -1056,6 +1090,8 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 
 				// Track file in context
 				await task.fileContextTracker.trackFileContext(relPath, "read_tool")
+				if (observations.length < MAX_TOOL_PROGRESS_OBSERVATIONS)
+					observations.push(readProgress(fullPath, observedContent))
 			} catch (error) {
 				if (this.isCancelled(task, callbacks)) {
 					callbacks.setResultMetadata?.({ status: "cancelled" })
@@ -1073,6 +1109,8 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 
 		// Push combined results
 		pushToolResult(results.join("\n\n---\n\n"))
+		// Preserve any denied/error status already reported by another member of the batch.
+		callbacks.setResultMetadata?.({ trustedProgress: observations })
 	}
 
 	private validateLegacyEntry(value: unknown): string | undefined {

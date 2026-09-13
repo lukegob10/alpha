@@ -195,6 +195,43 @@ test("a later passing reproduction cannot erase the original failure", () => {
 	assert.equal(evaluateLiveGate(config(), report).status, "failed")
 })
 
+test("gate rejects internally consistent usage that exceeds the declared request budget", () => {
+	const plan = config()
+	const report = completeReport(plan)
+	plan.budgets.maxRequests = report.usage.requests! - 1
+	assert.equal(evaluateLiveGate(plan, report).status, "failed")
+})
+
+test("gate rejects an attempt that exceeds its own assigned request allowance", () => {
+	const plan = config()
+	const report = completeReport(plan)
+	report.attempts[0]!.request.requestLimit = 1
+	assert.equal(evaluateLiveGate(plan, report).status, "failed")
+})
+
+test("core gate labels its subset and cannot substitute one sample for repeated acceptance", () => {
+	const plan = createDevelopmentSuite({
+		suite: "core",
+		id: "core-gate",
+		provider: "live-copilot",
+		modelId: "exact-model",
+		effort: "high",
+	})
+	const report = completeReport(plan)
+	const verdict = evaluateLiveGate(plan, report)
+	assert.equal(verdict.status, "passed")
+	assert.equal(verdict.scenarioScope, "core")
+	assert.equal(verdict.scope, "single-host-only")
+	assert.deepEqual(verdict.cells[0]!.requests, [2])
+	assert.deepEqual(verdict.cells[0]!.elapsedMs, [10])
+	plan.samples = 3
+	const repeated = evaluateLiveGate(plan, report)
+	assert.equal(repeated.status, "failed")
+	assert.equal(repeated.cells.filter((cell) => cell.status === "not-run").length, 18)
+	plan.scenarioIds.pop()
+	assert.throws(() => assertLiveGateConfig(plan))
+})
+
 test("a green workflow matrix reports the retention blocker in its final verdict", () => {
 	const report = completeReport()
 	report.retention = { status: "blocked", receipt: "retention-result.json" }
@@ -276,4 +313,45 @@ test("artifact fingerprints detect modified, added and removed runtime files", a
 	assert.equal(await fingerprintGateArtifacts(root), baseline)
 	await fs.unlink(path.join(root, "src/dist/extension.js"))
 	await assert.rejects(fingerprintGateArtifacts(root))
+})
+
+test("core preparation includes the targeted loop regressions before optional host contracts", async (context) => {
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-live-core-")))
+	context.after(async () => {
+		assert.equal(await fs.realpath(root), root)
+		assert.match(path.basename(root), /^alpha-live-core-/)
+		await fs.rm(root, { recursive: true, force: true })
+	})
+	for (const coverage of ["regressions", "full"] as const) {
+		const directory = path.join(root, coverage)
+		await fs.mkdir(directory)
+		const scripts: string[] = []
+		assert.equal(
+			await prepareLiveGate(
+				root,
+				path.join(root, "pnpm.cjs"),
+				directory,
+				new AbortController().signal,
+				async (command) => {
+					scripts.push(command.args.at(-1)!)
+					return {
+						exitCode: 0,
+						signal: null,
+						stdout: "",
+						stderr: "",
+						outputTruncated: false,
+						cleanupVerified: true,
+					}
+				},
+				coverage,
+			),
+			true,
+		)
+		assert.deepEqual(scripts, [
+			"test:unit",
+			"test:smoke:1221",
+			"test:core:regressions",
+			...(coverage === "full" ? ["test:core:1221:run"] : []),
+		])
+	}
 })

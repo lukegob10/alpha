@@ -105,7 +105,7 @@ RULES
 - Do not use the ~ character or $HOME to refer to the home directory.${workerRules}${frozenContextRules}
 - Treat tool results as evidence. Do not infer success from missing or incomplete output.
 - Stay within the assigned objective and authority.${delegationRules}
-- When finished or blocked, call attempt_completion once with a concise, self-contained durable result. Do not end a managed sub-agent turn with ordinary assistant prose alone.${settings?.isStealthModel ? getVendorConfidentialitySection() : ""}`
+- When the assigned work and required checks are complete, provide a concise, self-contained final answer or use attempt_completion. Use attempt_completion with outcome blocked when a constraint prevents completion.${settings?.isStealthModel ? getVendorConfidentialitySection() : ""}`
 	}
 
 	if (isPlanMode) {

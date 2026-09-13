@@ -85,6 +85,42 @@ describe("useMcpToolTool", () => {
 	})
 
 	describe("parameter validation", () => {
+		it("observes opaque exchanges without treating response claims as verified effects", async () => {
+			const setResultMetadata = vi.fn()
+			const callTool = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "saved successfully" }] })
+			mockAskApproval.mockResolvedValue(true)
+			mockProviderRef.deref.mockReturnValue({
+				getMcpHub: () => ({
+					getAllServers: () => [{ name: "server", tools: [{ name: "tool" }] }],
+					callTool,
+				}),
+				postMessageToWebview: vi.fn(),
+			})
+			const run = async (args: Record<string, unknown>) => {
+				setResultMetadata.mockClear()
+				await useMcpToolTool.execute(
+					{ server_name: "server", tool_name: "tool", arguments: args },
+					mockTask as Task,
+					{
+						askApproval: mockAskApproval,
+						handleError: mockHandleError,
+						pushToolResult: mockPushToolResult,
+						setResultMetadata,
+					},
+				)
+				const metadata = setResultMetadata.mock.calls.at(-1)?.[0]
+				expect(metadata.trustedProgress).toBeUndefined()
+				return metadata.opaqueResultFingerprint
+			}
+			const original = await run({ id: 1, field: "name" })
+			expect(await run({ field: "name", id: 1 })).toBe(original)
+			expect(await run({ id: 2, field: "name" })).not.toBe(original)
+			callTool.mockResolvedValue({ content: [{ type: "text", text: "different external information" }] })
+			expect(await run({ id: 1, field: "name" })).not.toBe(original)
+			callTool.mockResolvedValue({ isError: true, content: [] })
+			expect(await run({ id: 1 })).toBeUndefined()
+		})
+
 		it("should handle missing server_name", async () => {
 			const block: ToolUse = {
 				type: "tool_use",
@@ -465,7 +501,10 @@ describe("useMcpToolTool", () => {
 				},
 			)
 
-			expect(setResultMetadata).not.toHaveBeenCalled()
+			expect(setResultMetadata).toHaveBeenCalledWith({
+				status: "success",
+				opaqueResultFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+			})
 			expect(mockPushToolResult).toHaveBeenCalledWith("Tool result: (No response)")
 			expect(executionStatuses(postMessageToWebview).map(({ status }) => status)).toEqual([
 				"started",

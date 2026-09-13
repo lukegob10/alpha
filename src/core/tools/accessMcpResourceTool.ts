@@ -1,4 +1,5 @@
 import type { ClineAskUseMcpServer } from "@alpha-code/types"
+import { createHash } from "crypto"
 
 import type { ToolUse } from "../../shared/tools"
 import { Task } from "../task/Task"
@@ -95,6 +96,16 @@ export class AccessMcpResourceTool extends BaseTool<"access_mcp_resource"> {
 			await task.say("mcp_server_response", resourceResultPretty, images)
 			signal?.throwIfAborted()
 			pushToolResult(formatResponse.toolResult(resourceResultPretty, images))
+			callbacks.setResultMetadata?.({
+				status: "success",
+				trustedProgress: {
+					kind: "read",
+					scope: `mcp-resource:${JSON.stringify([task.cwd, server_name, uri])}`,
+					stateFingerprint: createHash("sha256")
+						.update(JSON.stringify([resourceResultPretty, images]))
+						.digest("hex"),
+				},
+			})
 		} catch (error) {
 			// Let ToolScheduler turn an aborted MCP request into its one canonical
 			// cancelled receipt. Direct callers still receive ordinary errors.

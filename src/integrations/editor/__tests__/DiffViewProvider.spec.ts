@@ -196,6 +196,26 @@ describe("DiffViewProvider", () => {
 		})
 	})
 
+	it.each([false, true])("preserves edit feedback with the appropriate notice for partial=%s", async (partial) => {
+		mockTask.say = vi.fn()
+		diffViewProvider.userEdits = "user adjustment"
+		diffViewProvider.newProblemsMessage = "diagnostic feedback"
+		const result = JSON.parse(await diffViewProvider.pushToolWriteResult(mockTask, mockCwd, false, { partial }))
+		expect(result).toMatchObject({
+			path: "test.txt",
+			operation: "modified",
+			user_edits: "user adjustment",
+			problems: "diagnostic feedback",
+		})
+		expect(mockTask.say).toHaveBeenCalledOnce()
+		if (partial) {
+			expect(result.notice).toContain("Read the current file")
+			expect(result.notice).not.toContain("You do not need to re-read")
+		} else {
+			expect(result.notice).toContain("You do not need to re-read")
+		}
+	})
+
 	describe("update method", () => {
 		it("preserves the supplied replacement without adding a final newline", async () => {
 			;(diffViewProvider as any).originalContent = "Original content\r\n"

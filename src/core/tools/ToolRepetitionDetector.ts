@@ -3,6 +3,7 @@ import stringify from "safe-stable-stringify"
 import type { ToolUse } from "../../shared/tools"
 import { t } from "../../i18n"
 import { normalizeToolFailure, type ToolFailureMetadata } from "./ToolFailure"
+import type { ToolResultMetadata } from "./BaseTool"
 
 export interface ToolProgressObservation {
 	toolName: string
@@ -18,6 +19,9 @@ export interface ToolProgressObservation {
 	evidenceFingerprint?: string
 	/** Host-issued semantic identity for a supported shell inspection. */
 	explorationFingerprint?: string
+	/** Confirmed resource state, independent of repository verification evidence. */
+	trustedProgress?: ToolResultMetadata["trustedProgress"]
+	opaqueResultFingerprint?: string
 	/** Trusted execution cause. Unrelated progress cannot renew this blocker's retry allowance. */
 	failure?: ToolFailureMetadata
 	/** Running command handlers have not established a successful operation outcome. */
@@ -28,7 +32,7 @@ export interface ToolProgressDecision {
 	action: "continue" | "change-strategy" | "stop"
 	stagnantCalls: number
 	retainedOutcomes: number
-	reason?: "no-progress" | "unchanged-blocker" | "unknown-outcome" | "failure-capacity"
+	reason?: "no-progress" | "unconfirmed-progress" | "unchanged-blocker" | "unknown-outcome" | "failure-capacity"
 	/** A per-operation retry decision, never a global stop on independent work. */
 	failure?: ToolFailureMetadata
 }
@@ -82,6 +86,9 @@ export class ToolRepetitionDetector {
 	private readonly seenStateIdentities = new Set<string>()
 	private readonly seenStateScopes = new Set<string>()
 	private readonly seenEvidenceIdentities = new Set<string>()
+	private readonly seenResourceStates = new Set<string>()
+	private readonly seenOpaqueResults = new Set<string>()
+	private stopReason: "no-progress" | "unconfirmed-progress" = "no-progress"
 	private retainedOutcomeCount = 0
 	private stagnantCalls = 0
 	private strategyChangeIssued = false
@@ -178,8 +185,8 @@ export class ToolRepetitionDetector {
 		const freshState =
 			outcome.state !== undefined &&
 			this.rememberNovelty(this.seenStateIdentities, digest({ scope: outcome.scope, state: outcome.state }))
-		if (outcome.state !== undefined && freshState && this.seenStateScopes.size < this.historyLimit) {
-			this.seenStateScopes.add(outcome.scope)
+		if (outcome.state !== undefined) {
+			this.rememberNovelty(this.seenStateScopes, outcome.scope)
 		}
 		const stateChanged = freshState && stateScopeWasSeen
 		const freshEvidence =
@@ -191,9 +198,20 @@ export class ToolRepetitionDetector {
 		const freshRead =
 			observation.status === "success" &&
 			observation.kind === "read" &&
+			observation.trustedProgress === undefined &&
+			observation.opaqueResultFingerprint === undefined &&
 			observation.scope !== undefined &&
 			this.rememberNovelty(this.seenReadIdentities, digest({ scope: outcome.scope, identity: outcome.identity }))
-		const progressed = stateChanged || freshEvidence || freshRead
+		const resourceProgress = this.observeResourceProgress(observation)
+		const progressed = stateChanged || freshEvidence || freshRead || resourceProgress
+		const opaque =
+			observation.status === "success" &&
+			observation.executionStatus !== "running" &&
+			observation.opaqueResultFingerprint !== undefined
+		const freshOpaque = opaque && this.rememberNovelty(this.seenOpaqueResults, observation.opaqueResultFingerprint!)
+		// Missing external semantics are uncertainty, not demonstrated stagnation. Keep prior strikes
+		// and independent request/deadline budgets; only an unchanged opaque result consumes recovery.
+		if (freshOpaque && !progressed) return this.progressDecision("continue")
 		if (observation.kind === "poll" && observation.status === "success" && !progressed) {
 			return this.progressDecision("continue")
 		}
@@ -208,11 +226,12 @@ export class ToolRepetitionDetector {
 		this.stagnantCalls += 1
 		if (this.stagnantCalls >= this.noProgressLimit * 2) {
 			this.stopped = true
+			this.stopReason = opaque ? "unconfirmed-progress" : "no-progress"
 			return this.progressDecision("stop")
 		}
 		if (this.stagnantCalls >= this.noProgressLimit && !this.strategyChangeIssued) {
 			this.strategyChangeIssued = true
-			return this.progressDecision("change-strategy")
+			return this.progressDecision("change-strategy", opaque ? "unconfirmed-progress" : "no-progress")
 		}
 		return this.progressDecision("continue")
 	}
@@ -224,6 +243,9 @@ export class ToolRepetitionDetector {
 		this.seenStateIdentities.clear()
 		this.seenStateScopes.clear()
 		this.seenEvidenceIdentities.clear()
+		this.seenResourceStates.clear()
+		this.seenOpaqueResults.clear()
+		this.stopReason = "no-progress"
 		this.retainedOutcomeCount = 0
 		this.stagnantCalls = 0
 		this.strategyChangeIssued = false
@@ -258,17 +280,61 @@ export class ToolRepetitionDetector {
 	}
 
 	private rememberNovelty(seen: Set<string>, identity: string): boolean {
-		if (seen.has(identity) || seen.size >= this.historyLimit) return false
+		const fresh = !seen.has(identity)
+		// Retain recent identities, including repeated ones. Filling the window must
+		// not turn all later useful work into stagnation; touching repeats keeps hot
+		// alternating no-ops in the window instead of evicting them as new work arrives.
+		seen.delete(identity)
 		seen.add(identity)
-		return true
+		if (seen.size > this.historyLimit) seen.delete(seen.values().next().value!)
+		return fresh
 	}
 
-	private progressDecision(action: ToolProgressDecision["action"]): ToolProgressDecision {
+	private observeResourceProgress(observation: ToolProgressObservation): boolean {
+		const resources = observation.trustedProgress
+		if (!resources || observation.status !== "success" || observation.executionStatus === "running") return false
+		const resourceList = Array.isArray(resources) ? resources : [resources]
+		// A batch larger than retained resource history must not evict its own observations
+		// and look fresh on every replay. Reuse bounded read history for its canonical identity.
+		const freshBatch =
+			resourceList.length <= 1 ||
+			this.rememberNovelty(
+				this.seenReadIdentities,
+				digest({
+					resourceBatch: [
+						...new Set(
+							resourceList.map(({ kind, scope, stateFingerprint }) =>
+								digest({ kind, scope, stateFingerprint }),
+							),
+						),
+					].sort(),
+				}),
+			)
+		let progressed = false
+		for (const resource of resourceList) {
+			const identity = (state: string) => digest({ scope: resource.scope, state })
+			if (resource.kind === "mutation" && resource.previousStateFingerprint !== undefined) {
+				this.rememberNovelty(this.seenResourceStates, identity(resource.previousStateFingerprint))
+			}
+			const fresh = this.rememberNovelty(this.seenResourceStates, identity(resource.stateFingerprint))
+			// Visit every resource even after finding progress, so regrouped batches cannot manufacture novelty.
+			if (
+				fresh &&
+				(resource.kind === "read" ||
+					(resource.previousStateFingerprint !== undefined &&
+						resource.previousStateFingerprint !== resource.stateFingerprint))
+			)
+				progressed = true
+		}
+		return progressed && freshBatch
+	}
+
+	private progressDecision(action: ToolProgressDecision["action"], reason = this.stopReason): ToolProgressDecision {
 		return {
 			action,
 			stagnantCalls: this.stagnantCalls,
 			retainedOutcomes: this.retainedOutcomeCount,
-			...(action !== "continue" ? { reason: "no-progress" as const } : {}),
+			...(action !== "continue" ? { reason } : {}),
 		}
 	}
 

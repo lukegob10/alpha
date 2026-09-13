@@ -1,5 +1,6 @@
 {
 	"activityTrace": {
+		"needsAttention": "İlgilenilmesi gerekiyor",
 		"workedFor": "{{duration}} boyunca çalıştı"
 	},
 	"completionReport": "Tamamlama raporu",
@@ -389,6 +390,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "Kod tabanında arama",
 		"wantsToSearch": "Alpha kod tabanında <code>{{query}}</code> aramak istiyor",
 		"wantsToSearchWithPath": "Alpha <code>{{path}}</code> içinde kod tabanında <code>{{query}}</code> aramak istiyor",
 		"didSearch_one": "1 sonuç bulundu",

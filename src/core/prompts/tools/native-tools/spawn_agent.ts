@@ -12,8 +12,8 @@ export function createSpawnAgentTool(agentKinds: readonly ManagedAgentKind[] = A
 		function: {
 			name: "spawn_agent",
 			description: readOnlyOnly
-				? "Start one bounded managed Explore or Review sub-agent asynchronously and return its handle immediately. Keep the objective read-only, batch independent spawns when capacity permits, and collect terminal results through wait_agent without polling."
-				: "Start one bounded managed Alpha sub-agent asynchronously and return its handle immediately so the caller can continue. Set task_name and fork_turns. Use worker with a complete, narrow write_scope for file changes and explore or review for read-only inspection. Batch independent spawns when capacity permits. Collect terminal results through wait_agent as native tool results before completing; do not poll.",
+				? "Start one bounded managed Explore or Review sub-agent asynchronously and return its handle immediately. Keep the objective read-only, batch independent spawns when capacity permits, and collect terminal results through bounded wait_agent calls."
+				: "Start one bounded managed Alpha sub-agent asynchronously and return its handle immediately so the caller can continue. Set task_name and fork_turns. Use worker with a complete, narrow write_scope for file changes and explore or review for read-only inspection. Batch independent spawns when capacity permits. Collect terminal results through wait_agent as native tool results before completing.",
 			strict: true,
 			parameters: {
 				type: "object",

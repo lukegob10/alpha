@@ -25,6 +25,18 @@ const liveTask = (lifecycle: TaskLifecycleState, waitingReason?: string): LiveTa
 })
 
 describe("completed activity projection", () => {
+	it("includes preliminary completion reports and verification in the final trace", () => {
+		const messages: ClineMessage[] = [
+			...activity,
+			{ ts: 5000, type: "ask", ask: "command", text: "pnpm check-types" },
+			{ ts: 6000, type: "say", say: "completion_result", text: "Verified the change" },
+		]
+		const result = getCompletedActivity(messages, [...messages, review], liveTask(TaskLifecycleState.Completed))
+		expect([...result.keys()]).toEqual([0, 1, 2, 3, 4])
+		expect(result.get(0)).toEqual({ id: 6000, startIndex: 0, endIndex: 4, durationMs: 5500 })
+		expect(result.has(5)).toBe(false)
+	})
+
 	it("folds activity above the final answer using the hidden review timestamp", () => {
 		const result = getCompletedActivity(
 			activity,

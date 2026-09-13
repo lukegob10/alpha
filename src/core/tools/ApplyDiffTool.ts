@@ -11,7 +11,7 @@ import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
 import { unescapeHtmlEntities } from "../../utils/text-normalization"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { computeDiffStats, sanitizeUnifiedDiff } from "../diff/stats"
-import type { ToolUse } from "../../shared/tools"
+import type { DiffResult, ToolUse } from "../../shared/tools"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import { getTaskReadablePath } from "./taskPathPresentation"
@@ -19,6 +19,11 @@ import { getTaskReadablePath } from "./taskPathPresentation"
 interface ApplyDiffParams {
 	path: string
 	diff: string
+}
+
+function formatDiffFailure(failure: Extract<DiffResult, { success: false }>): string {
+	const details = failure.details ? `\n\nDetails:\n${JSON.stringify(failure.details, null, 2)}` : ""
+	return `<error_details>\n${failure.error ?? "Diff could not be applied"}${details}\n</error_details>`
 }
 
 export class ApplyDiffTool extends BaseTool<"apply_diff"> {
@@ -34,6 +39,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 
 		try {
 			if (!relPath) {
+				callbacks.setResultMetadata?.({ status: "error" })
 				task.consecutiveMistakeCount++
 				task.recordToolError("apply_diff")
 				pushToolResult(await task.sayAndCreateMissingParamError("apply_diff", "path"))
@@ -41,6 +47,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			}
 
 			if (!diffContent) {
+				callbacks.setResultMetadata?.({ status: "error" })
 				task.consecutiveMistakeCount++
 				task.recordToolError("apply_diff")
 				pushToolResult(await task.sayAndCreateMissingParamError("apply_diff", "diff"))
@@ -50,6 +57,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			const accessAllowed = task.rooIgnoreController?.validateAccess(relPath)
 
 			if (!accessAllowed) {
+				callbacks.setResultMetadata?.({ status: "denied" })
 				await task.say("rooignore_error", relPath)
 				pushToolResult(formatResponse.rooIgnoreError(relPath))
 				return
@@ -59,6 +67,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			const fileExists = await fileExistsAtPath(absolutePath)
 
 			if (!fileExists) {
+				callbacks.setResultMetadata?.({ status: "error" })
 				task.consecutiveMistakeCount++
 				task.recordToolError("apply_diff")
 				const formattedError = `File does not exist at path: ${absolutePath}\n\n<error_details>\nThe specified file could not be found. Please verify the file path and try again.\n</error_details>`
@@ -79,33 +88,20 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 				success: false,
 				error: "No diff strategy available",
 			}
+			const failures = diffResult.failParts?.filter((part) => !part.success) ?? []
 
 			if (!diffResult.success) {
+				callbacks.setResultMetadata?.({ status: "error" })
 				task.consecutiveMistakeCount++
 				const currentCount = (task.consecutiveMistakeCountForApplyDiff.get(relPath) || 0) + 1
 				task.consecutiveMistakeCountForApplyDiff.set(relPath, currentCount)
-				let formattedError = ""
 				TelemetryService.instance.captureDiffApplicationError(task.taskId, currentCount)
-
-				if (diffResult.failParts && diffResult.failParts.length > 0) {
-					for (const failPart of diffResult.failParts) {
-						if (failPart.success) {
-							continue
-						}
-
-						const errorDetails = failPart.details ? JSON.stringify(failPart.details, null, 2) : ""
-
-						formattedError = `<error_details>\n${
-							failPart.error
-						}${errorDetails ? `\n\nDetails:\n${errorDetails}` : ""}\n</error_details>`
-					}
-				} else {
-					const errorDetails = diffResult.details ? JSON.stringify(diffResult.details, null, 2) : ""
-
-					formattedError = `Unable to apply diff to file: ${absolutePath}\n\n<error_details>\n${
-						diffResult.error
-					}${errorDetails ? `\n\nDetails:\n${errorDetails}` : ""}\n</error_details>`
-				}
+				const formattedError = `Unable to apply diff to file: ${absolutePath}\n\n${(failures.length > 0
+					? failures
+					: [diffResult]
+				)
+					.map(formatDiffFailure)
+					.join("\n\n")}`
 
 				if (currentCount >= 2) {
 					await task.say("diff_error", formattedError)
@@ -238,12 +234,21 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			task.didEditFile = true
 			let partFailHint = ""
 
-			if (diffResult.failParts && diffResult.failParts.length > 0) {
-				partFailHint = `But unable to apply all diff parts to file: ${absolutePath}. Use the read_file tool to check the newest file version and re-apply diffs.\n`
+			if (failures.length > 0) {
+				partFailHint =
+					`Some SEARCH/REPLACE blocks were not applied to ${absolutePath}. ` +
+					`Successful blocks have been saved. Do not reapply successful blocks. ` +
+					`Omit unchanged blocks; read the current file before correcting the failed blocks.\n\n` +
+					failures.map(formatDiffFailure).join("\n\n") +
+					"\n"
+				callbacks.setResultMetadata?.({ status: "error" })
+				task.recordToolError("apply_diff", partFailHint)
 			}
 
 			// Get the formatted response message
-			const message = await task.diffViewProvider.pushToolWriteResult(task, task.cwd, !fileExists)
+			const message = await task.diffViewProvider.pushToolWriteResult(task, task.cwd, !fileExists, {
+				partial: failures.length > 0,
+			})
 
 			// Check for single SEARCH/REPLACE block warning
 			const searchBlocks = (diffContent.match(/<<<<<<< SEARCH/g) || []).length

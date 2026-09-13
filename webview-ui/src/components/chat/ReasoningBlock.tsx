@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import MarkdownBlock from "../common/MarkdownBlock"
-import { Lightbulb, ChevronUp } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { Lightbulb } from "lucide-react"
+import { ActivityStep } from "./ActivityStep"
 
 interface ReasoningBlockProps {
 	content: string
@@ -43,26 +43,18 @@ export const ReasoningBlock = ({ content, isStreaming, isLast, collapsedByDefaul
 	}
 
 	return (
-		<div className="group">
-			<div
-				className="flex items-center justify-between mb-2.5 pr-2 cursor-pointer select-none"
-				onClick={handleToggle}>
-				<div className="flex items-center gap-2">
+		<ActivityStep
+			isExpanded={!isCollapsed}
+			onToggleExpand={handleToggle}
+			summary={
+				<>
 					<Lightbulb className="w-4" />
-					<span className="font-bold text-vscode-foreground">{t("chat:reasoning.thinking")}</span>
+					<span>{t("chat:reasoning.thinking")}</span>
 					{elapsed > 0 && (
 						<span className="text-sm text-vscode-descriptionForeground mt-0.5">{secondsLabel}</span>
 					)}
-				</div>
-				<div className="flex items-center gap-2">
-					<ChevronUp
-						className={cn(
-							"w-4 transition-all opacity-0 group-hover:opacity-100",
-							isCollapsed && "-rotate-180",
-						)}
-					/>
-				</div>
-			</div>
+				</>
+			}>
 			{(content?.trim()?.length ?? 0) > 0 && !isCollapsed && (
 				<div
 					ref={contentRef}
@@ -70,6 +62,6 @@ export const ReasoningBlock = ({ content, isStreaming, isLast, collapsedByDefaul
 					<MarkdownBlock markdown={content} partial={isLast && isStreaming} />
 				</div>
 			)}
-		</div>
+		</ActivityStep>
 	)
 }

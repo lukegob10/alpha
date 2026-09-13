@@ -1,5 +1,7 @@
 import { t } from "i18next"
 import { ArrowRight, Check, ListChecks, SquareDashed } from "lucide-react"
+import { useState } from "react"
+import { ActivityStep } from "./ActivityStep"
 
 type TodoStatus = "completed" | "in_progress" | "pending"
 
@@ -26,6 +28,7 @@ function getTodoIcon(status: TodoStatus | null) {
 }
 
 export function TodoChangeDisplay({ previousTodos, newTodos }: TodoChangeDisplayProps) {
+	const [isExpanded, setIsExpanded] = useState(false)
 	const isInitialState = previousTodos.length === 0
 
 	// Determine which todos to display
@@ -56,31 +59,34 @@ export function TodoChangeDisplay({ previousTodos, newTodos }: TodoChangeDisplay
 
 	return (
 		<div data-todo-changes className="overflow-hidden">
-			<div className="flex items-center gap-2">
-				<ListChecks className="size-4 shrink-0" />
-				<span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-base font-semibold">
-					{t("chat:todo.updated")}
-				</span>
-			</div>
-
-			<div className="pl-1 pr-1 pt-1 font-light leading-normal">
-				<ul className="list-none space-y-1 my-1">
-					{todosToDisplay.map((todo) => {
-						const status = (todo.status || "pending") as TodoStatus
-						const icon = getTodoIcon(status)
-						return (
-							<li
-								key={todo.id || todo.content}
-								className={`flex flex-row gap-2 items-start ${
-									status === "in_progress" ? "text-vscode-charts-yellow" : ""
-								}`}>
-								{icon}
-								<span>{todo.content}</span>
-							</li>
-						)
-					})}
-				</ul>
-			</div>
+			<ActivityStep
+				isExpanded={isExpanded}
+				onToggleExpand={() => setIsExpanded((value) => !value)}
+				summary={
+					<>
+						<ListChecks className="size-4 shrink-0" />
+						<span>{t("chat:todo.updated")}</span>
+					</>
+				}>
+				<div className="pl-1 pr-1 pt-1 font-light leading-normal">
+					<ul className="list-none space-y-1 my-1">
+						{todosToDisplay.map((todo) => {
+							const status = (todo.status || "pending") as TodoStatus
+							const icon = getTodoIcon(status)
+							return (
+								<li
+									key={todo.id || todo.content}
+									className={`flex flex-row gap-2 items-start ${
+										status === "in_progress" ? "text-vscode-charts-yellow" : ""
+									}`}>
+									{icon}
+									<span>{todo.content}</span>
+								</li>
+							)
+						})}
+					</ul>
+				</div>
+			</ActivityStep>
 		</div>
 	)
 }

@@ -35,12 +35,43 @@ test("suite CLI rejects ambiguous or unsafe selection before creating a campaign
 		["--gate", "--suite", "smoke", "--provider", "live-copilot"],
 		["--gate", "--suite", "development", "--provider", "scripted"],
 		["--gate", "--config", "unused.json"],
+		["--max-requests", "100", "--config", "unused.json"],
+		["--suite", "smoke", "--provider", "scripted", "--max-requests", "1e3"],
+		["--suite", "smoke", "--provider", "scripted", "--samples", "0"],
+		["--suite", "smoke", "--provider", "scripted", "--samples", "1.5"],
+		["--suite", "smoke", "--provider", "scripted", "--samples", "2", "--samples", "3"],
 	])
 		await assert.rejects(
 			main(["--root", root, ...args]),
 			(error: unknown) => error instanceof Error,
 			JSON.stringify(args),
 		)
+})
+
+test("core gate dry-run accepts an explicit budget and repeat count without live requests", async () => {
+	const root = path.join(os.tmpdir(), `alpha-core-preview-${randomUUID()}`)
+	assert.equal(
+		await main([
+			"--suite",
+			"core",
+			"--gate",
+			"--provider",
+			"live-copilot",
+			"--model-id",
+			"gpt-5.6-luna",
+			"--effort",
+			"high",
+			"--samples",
+			"3",
+			"--max-requests",
+			"100",
+			"--root",
+			root,
+			"--dry-run",
+		]),
+		0,
+	)
+	await assert.rejects(fs.stat(root), (error: NodeJS.ErrnoException) => error.code === "ENOENT")
 })
 
 test("dry-run plans a live suite without creating directories or trying to execute the selected binary", async () => {

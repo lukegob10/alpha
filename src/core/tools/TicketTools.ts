@@ -1,3 +1,5 @@
+import { createHash } from "crypto"
+import stringify from "safe-stable-stringify"
 import {
 	createTicketSchema,
 	updateTicketSchema,
@@ -11,6 +13,27 @@ import {
 } from "@alpha-code/types"
 import type { ToolExecutionContext } from "./ToolRegistry"
 import { TicketStore } from "../../services/tickets/TicketStore"
+import type { TrustedToolProgressObservation } from "./BaseTool"
+
+const fingerprint = (value: unknown) =>
+	createHash("sha256")
+		.update(stringify(value) ?? "")
+		.digest("hex")
+
+function ticketState(ticket: Ticket): string {
+	// Revision hashes include updatedAt and Markdown formatting. Neither proves
+	// useful progress; use only substantive fields in the confirmed stored record.
+	return fingerprint({
+		name: ticket.name,
+		status: ticket.status,
+		type: ticket.type ?? null,
+		description: ticket.description,
+		context: ticket.context,
+		successCriteria: ticket.successCriteria,
+		implementationSummary: ticket.implementationSummary,
+		linkedTaskIds: [...(ticket.linkedTaskIds ?? [])].sort(),
+	})
+}
 
 export async function executeTicketTool({ task, call, callbacks, signal }: ToolExecutionContext): Promise<void> {
 	if (call.partial) return
@@ -58,6 +81,7 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 		signal?.throwIfAborted()
 		if (task.abort) throw new Error("Ticket operation cancelled")
 		let result: Ticket | TicketList
+		let previousStateFingerprint: string | undefined
 		switch (call.name) {
 			case "list_tickets":
 				result = await store.list(listTicketsSchema.parse(call.nativeArgs), signal)
@@ -69,13 +93,18 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 				const input = createTicketSchema.parse(call.nativeArgs)
 				if (!(await approveMutation("create", input.name))) return
 				result = await store.create(input, signal)
+				previousStateFingerprint = fingerprint(null)
 				break
 			}
 			case "update_ticket": {
 				const input = updateTicketSchema.parse(call.nativeArgs)
-				const name = input.name ?? (await store.read(input.id, signal)).name
+				const before = await store.read(input.id, signal)
+				const name = input.name ?? before.name
 				if (!(await approveMutation("update", name))) return
 				result = await store.update(input, signal)
+				// Store.update checks this revision under its transaction lock. Only
+				// compare a baseline protected by that same optimistic concurrency check.
+				if (before.revision === input.expectedRevision) previousStateFingerprint = ticketState(before)
 				break
 			}
 			case "delete_ticket": {
@@ -83,6 +112,7 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 				const ticket = await store.read(input.id, signal)
 				if (!(await approveMutation("delete", ticket.name, ticket.reference))) return
 				result = await store.delete(input, signal)
+				previousStateFingerprint = ticketState(result)
 				break
 			}
 			default:
@@ -109,7 +139,32 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 				target: { project: store.projectId, id: result.id },
 			})
 		}
-		callbacks.setResultMetadata?.({ status: "success" })
+		const trustedProgress: TrustedToolProgressObservation =
+			"tickets" in result
+				? {
+						kind: "read",
+						scope: fingerprint(["tickets", store.projectId]),
+						stateFingerprint: fingerprint({
+							tickets: result.tickets
+								.map(({ id, reference, name, status, type }) => ({
+									id,
+									reference,
+									name,
+									status,
+									type: type ?? null,
+								}))
+								.sort((left, right) => left.id.localeCompare(right.id)),
+							total: result.total,
+							invalidFiles: [...result.invalidFiles].sort(),
+						}),
+					}
+				: {
+						kind: inspection ? "read" : "mutation",
+						scope: fingerprint(["ticket", store.projectId, result.id]),
+						stateFingerprint: call.name === "delete_ticket" ? fingerprint(null) : ticketState(result),
+						...(previousStateFingerprint !== undefined ? { previousStateFingerprint } : {}),
+					}
+		callbacks.setResultMetadata?.({ status: "success", trustedProgress })
 		callbacks.pushToolResult(JSON.stringify({ status: "success", result }))
 	} catch (error) {
 		const status = signal?.aborted || task.abort ? "cancelled" : "error"

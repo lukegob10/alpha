@@ -6,6 +6,7 @@ import { LanceDbVectorStore } from "../lancedb-client"
 
 vitest.mock("@lancedb/lancedb", () => ({
 	connect: vitest.fn(),
+	Index: { fts: vitest.fn() },
 }))
 
 vitest.mock("fs/promises", () => ({
@@ -68,7 +69,9 @@ describe("LanceDbVectorStore", () => {
 		mockTable = {
 			query: vitest.fn().mockImplementation(() => createQueryBuilder(queryRowsQueue)),
 			mergeInsert: vitest.fn().mockReturnValue(mergeBuilder),
-			search: vitest.fn().mockReturnValue(searchBuilder),
+			vectorSearch: vitest.fn().mockReturnValue(searchBuilder),
+			createIndex: vitest.fn().mockResolvedValue(undefined),
+			optimize: vitest.fn().mockResolvedValue({}),
 			delete: vitest.fn().mockResolvedValue(undefined),
 			countRows: vitest.fn().mockResolvedValue(0),
 		}
@@ -175,28 +178,28 @@ describe("LanceDbVectorStore", () => {
 				_distance: 0.8,
 			},
 		])
-		mockTable.search.mockReturnValue(searchBuilder)
+		mockTable.vectorSearch.mockReturnValue(searchBuilder)
 
 		const store = new LanceDbVectorStore(workspacePath, ".alpha/code-index/lancedb", vectorSize)
 		const results = await store.search([0.1, 0.2, 0.3], "src\\services", 0.5, 5)
 
-		expect(mockTable.search).toHaveBeenCalledWith([0.1, 0.2, 0.3])
+		expect(mockTable.vectorSearch).toHaveBeenCalledWith([0.1, 0.2, 0.3])
 		expect(searchBuilder.distanceType).toHaveBeenCalledWith("cosine")
 		expect(searchBuilder.where).toHaveBeenCalledWith(
-			"type = 'code' AND (filePath = 'src/services' OR filePath LIKE 'src/services/%')",
+			"type = 'code' AND (filePath = 'src/services' OR starts_with(filePath, 'src/services/'))",
 		)
 		expect(searchBuilder.limit).toHaveBeenCalledWith(5)
 		expect(results).toEqual([
 			{
 				id: "point-1",
 				score: 0.8,
-				payload: {
+				payload: expect.objectContaining({
 					filePath: "src/services/index.ts",
 					codeChunk: "export const ok = true",
 					startLine: 1,
 					endLine: 2,
 					segmentHash: "hash-1",
-				},
+				}),
 			},
 		])
 	})

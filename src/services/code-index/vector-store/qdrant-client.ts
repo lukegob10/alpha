@@ -6,6 +6,8 @@ import { IVectorStore } from "../interfaces/vector-store"
 import { Payload, VectorStoreSearchResult } from "../interfaces"
 import { DEFAULT_MAX_SEARCH_RESULTS, DEFAULT_SEARCH_MIN_SCORE, QDRANT_CODE_BLOCK_NAMESPACE } from "../constants"
 import { t } from "../../../i18n"
+import { lexicalText, lexicalVector } from "../shared/lexical"
+import { CODE_INDEX_VERSION, relativeIndexPath } from "../shared/embedding-input"
 
 /**
  * Qdrant implementation of the vector store interface
@@ -24,7 +26,13 @@ export class QdrantVectorStore implements IVectorStore {
 	 * @param workspacePath Path to the workspace
 	 * @param url Optional URL to the Qdrant server
 	 */
-	constructor(workspacePath: string, url: string, vectorSize: number, apiKey?: string) {
+	constructor(
+		workspacePath: string,
+		url: string,
+		vectorSize: number,
+		apiKey?: string,
+		private readonly indexIdentity = "code-index-" + CODE_INDEX_VERSION,
+	) {
 		// Parse the URL to determine the appropriate QdrantClient configuration
 		const parsedUrl = this.parseQdrantUrl(url)
 
@@ -154,6 +162,7 @@ export class QdrantVectorStore implements IVectorStore {
 			if (collectionInfo === null) {
 				// Collection info not retrieved (assume not found or inaccessible), create it
 				await this.client.createCollection(this.collectionName, {
+					sparse_vectors: { lexical: { modifier: "idf" } },
 					vectors: {
 						size: this.vectorSize,
 						distance: this.DISTANCE_METRIC,
@@ -189,6 +198,20 @@ export class QdrantVectorStore implements IVectorStore {
 				} else {
 					// Exists but wrong vector size, recreate with enhanced error handling
 					created = await this._recreateCollectionWithNewDimension(existingVectorSize)
+				}
+			}
+
+			if (!created) {
+				const metadata = await this.client.retrieve(this.collectionName, {
+					ids: [uuidv5("__indexing_metadata__", QDRANT_CODE_BLOCK_NAMESPACE)],
+					with_payload: true,
+				})
+				if (metadata[0]?.payload?.indexIdentity !== this.indexIdentity) {
+					await this.client.updateCollection(this.collectionName, {
+						sparse_vectors: { lexical: { modifier: "idf" } },
+					})
+					await this.clearCollection()
+					created = true
 				}
 			}
 
@@ -249,6 +272,7 @@ export class QdrantVectorStore implements IVectorStore {
 			)
 			recreationAttempted = true
 			await this.client.createCollection(this.collectionName, {
+				sparse_vectors: { lexical: { modifier: "idf" } },
 				vectors: {
 					size: this.vectorSize,
 					distance: this.DISTANCE_METRIC,
@@ -345,7 +369,9 @@ export class QdrantVectorStore implements IVectorStore {
 		try {
 			const processedPoints = points.map((point) => {
 				if (point.payload?.filePath) {
-					const segments = point.payload.filePath.split(path.sep).filter(Boolean)
+					const segments = relativeIndexPath(point.payload.filePath, this.workspacePath)
+						.split("/")
+						.filter(Boolean)
 					const pathSegments = segments.reduce(
 						(acc: Record<string, string>, segment: string, index: number) => {
 							acc[index.toString()] = segment
@@ -355,6 +381,7 @@ export class QdrantVectorStore implements IVectorStore {
 					)
 					return {
 						...point,
+						vector: { "": point.vector, lexical: lexicalVector(lexicalText(point.payload)) },
 						payload: {
 							...point.payload,
 							pathSegments,
@@ -374,18 +401,54 @@ export class QdrantVectorStore implements IVectorStore {
 		}
 	}
 
-	/**
-	 * Checks if a payload is valid
-	 * @param payload Payload to check
-	 * @returns Boolean indicating if the payload is valid
-	 */
+	private searchFilter(directoryPrefix?: string): Schemas["Filter"] {
+		const prefix = directoryPrefix ? relativeIndexPath(directoryPrefix, this.workspacePath) : "."
+		const must =
+			prefix.replace(/\/$/, "") === "."
+				? []
+				: prefix
+						.split("/")
+						.filter(Boolean)
+						.map((segment, index) => ({
+							key: "pathSegments." + index,
+							match: { value: segment },
+						}))
+		return { ...(must.length ? { must } : {}), must_not: [{ key: "type", match: { value: "metadata" } }] }
+	}
+
+	async searchLexical(
+		query: string,
+		directoryPrefix?: string,
+		maxResults: number = DEFAULT_MAX_SEARCH_RESULTS,
+	): Promise<VectorStoreSearchResult[]> {
+		const vector = lexicalVector(query, true)
+		if (!vector.indices.length) return []
+		const result = await this.client.query(this.collectionName, {
+			query: vector,
+			using: "lexical",
+			filter: this.searchFilter(directoryPrefix),
+			limit: maxResults,
+			with_payload: true,
+		})
+		return result.points.flatMap((point) =>
+			this.isPayloadValid(point.payload) ? [{ id: point.id, score: point.score, payload: point.payload }] : [],
+		)
+	}
+
 	private isPayloadValid(payload: Record<string, unknown> | null | undefined): payload is Payload {
 		if (!payload) {
 			return false
 		}
-		const validKeys = ["filePath", "codeChunk", "startLine", "endLine"]
-		const hasValidKeys = validKeys.every((key) => key in payload)
-		return hasValidKeys
+		return (
+			typeof payload.filePath === "string" &&
+			typeof payload.codeChunk === "string" &&
+			typeof payload.startLine === "number" &&
+			Number.isInteger(payload.startLine) &&
+			payload.startLine >= 1 &&
+			typeof payload.endLine === "number" &&
+			Number.isInteger(payload.endLine) &&
+			payload.endLine >= payload.startLine
+		)
 	}
 
 	/**
@@ -403,45 +466,7 @@ export class QdrantVectorStore implements IVectorStore {
 		maxResults?: number,
 	): Promise<VectorStoreSearchResult[]> {
 		try {
-			let filter:
-				| {
-						must: Array<{ key: string; match: { value: string } }>
-						must_not?: Array<{ key: string; match: { value: string } }>
-				  }
-				| undefined = undefined
-
-			if (directoryPrefix) {
-				// Check if the path represents current directory
-				const normalizedPrefix = path.posix.normalize(directoryPrefix.replace(/\\/g, "/"))
-				// Note: path.posix.normalize("") returns ".", and normalize("./") returns "./"
-				if (normalizedPrefix === "." || normalizedPrefix === "./") {
-					// Don't create a filter - search entire workspace
-					filter = undefined
-				} else {
-					// Remove leading "./" from paths like "./src" to normalize them
-					const cleanedPrefix = path.posix.normalize(
-						normalizedPrefix.startsWith("./") ? normalizedPrefix.slice(2) : normalizedPrefix,
-					)
-					const segments = cleanedPrefix.split("/").filter(Boolean)
-					if (segments.length > 0) {
-						filter = {
-							must: segments.map((segment, index) => ({
-								key: `pathSegments.${index}`,
-								match: { value: segment },
-							})),
-						}
-					}
-				}
-			}
-
-			// Always exclude metadata points at query-time to avoid wasting top-k
-			const metadataExclusion = {
-				must_not: [{ key: "type", match: { value: "metadata" } }],
-			}
-
-			const mergedFilter = filter
-				? { ...filter, must_not: [...(filter.must_not || []), ...metadataExclusion.must_not] }
-				: metadataExclusion
+			const mergedFilter = this.searchFilter(directoryPrefix)
 
 			const searchRequest = {
 				query: queryVector,
@@ -453,7 +478,21 @@ export class QdrantVectorStore implements IVectorStore {
 					exact: false,
 				},
 				with_payload: {
-					include: ["filePath", "codeChunk", "startLine", "endLine", "pathSegments"],
+					include: [
+						"filePath",
+						"codeChunk",
+						"startLine",
+						"endLine",
+						"pathSegments",
+						"context",
+						"identifier",
+						"chunkType",
+						"startOffset",
+						"endOffset",
+						"fileHash",
+						"tokenCount",
+						"segmentHash",
+					],
 				},
 			}
 
@@ -646,6 +685,7 @@ export class QdrantVectorStore implements IVectorStore {
 						vector: new Array(this.vectorSize).fill(0),
 						payload: {
 							type: "metadata",
+							indexIdentity: this.indexIdentity,
 							indexing_complete: true,
 							completed_at: Date.now(),
 						},
@@ -677,6 +717,7 @@ export class QdrantVectorStore implements IVectorStore {
 						vector: new Array(this.vectorSize).fill(0),
 						payload: {
 							type: "metadata",
+							indexIdentity: this.indexIdentity,
 							indexing_complete: false,
 							started_at: Date.now(),
 						},

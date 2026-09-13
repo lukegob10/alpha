@@ -25,6 +25,45 @@ describe("AutoApprovalHandler", () => {
 	})
 
 	describe("checkAutoApprovalLimits", () => {
+		it("retains the newly approved request in the next allowance", async () => {
+			mockState.allowedMaxRequests = 1
+			mockAskForApproval.mockResolvedValue({ response: "yesButtonClicked" })
+			const messages: ClineMessage[] = [1, 2].map((ts) => ({
+				type: "say",
+				say: "api_req_started",
+				text: "{}",
+				ts,
+			}))
+			messages.push({ type: "say", say: "text", text: "preflight context", ts: 3 })
+			await handler.checkAutoApprovalLimits(mockState, messages, mockAskForApproval, {
+				currentRequestRecorded: true,
+			})
+			expect(mockAskForApproval).toHaveBeenCalledTimes(1)
+			messages.push({ type: "say", say: "api_req_started", text: "{}", ts: 3 })
+			await handler.checkAutoApprovalLimits(mockState, messages, mockAskForApproval, {
+				currentRequestRecorded: true,
+			})
+			expect(mockAskForApproval).toHaveBeenCalledTimes(2)
+		})
+
+		it("counts the current request once when the task already recorded its start", async () => {
+			mockState.allowedMaxRequests = 1
+			mockAskForApproval.mockResolvedValue({ response: "noButtonClicked" })
+			const messages: ClineMessage[] = [{ type: "say", say: "api_req_started", text: "{}", ts: 1 }]
+			expect(
+				await handler.checkAutoApprovalLimits(mockState, messages, mockAskForApproval, {
+					currentRequestRecorded: true,
+				}),
+			).toMatchObject({ shouldProceed: true })
+			expect(mockAskForApproval).not.toHaveBeenCalled()
+			messages.push({ type: "say", say: "api_req_started", text: "{}", ts: 2 })
+			expect(
+				await handler.checkAutoApprovalLimits(mockState, messages, mockAskForApproval, {
+					currentRequestRecorded: true,
+				}),
+			).toMatchObject({ shouldProceed: false, requiresApproval: true })
+		})
+
 		it("should proceed when no limits are set", async () => {
 			const messages: ClineMessage[] = []
 			const result = await handler.checkAutoApprovalLimits(mockState, messages, mockAskForApproval)

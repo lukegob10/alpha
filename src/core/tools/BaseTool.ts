@@ -37,6 +37,19 @@ export interface TrustedExplorationObservation {
 	semanticFingerprint: string
 }
 
+/** Semantic resource state captured by a host tool after a confirmed operation, never parsed from tool text. */
+export interface TrustedToolProgressObservation {
+	kind: "read" | "mutation"
+	/** Stable resource or collection identity, scoped to its owning workspace/service. */
+	scope: string
+	/** Digest of substantive returned state, excluding timestamps and execution/revision IDs. */
+	stateFingerprint: string
+	/** For mutations, the state protected by the operation's concurrency check; absence is not a delta. */
+	previousStateFingerprint?: string
+}
+
+export const MAX_TOOL_PROGRESS_OBSERVATIONS = 128
+
 export interface ToolResultMetadata {
 	status?: "success" | "error" | "denied" | "cancelled"
 	executionStatus?: "running" | "success" | "error" | "denied" | "cancelled"
@@ -44,6 +57,12 @@ export interface ToolResultMetadata {
 	timedOut?: boolean
 	/** Host-issued progress observation. This is deliberately not verification evidence. */
 	trustedExploration?: TrustedExplorationObservation
+	/** Progress only. Does not satisfy repository verification or widen execution authority. */
+	trustedProgress?: TrustedToolProgressObservation | TrustedToolProgressObservation[]
+	/** Host wait classification, independent of progress or successful task completion. */
+	waitOutcome?: "active" | "idle"
+	/** Host digest of an opaque external request/result. Novelty permits continuation, never proves progress. */
+	opaqueResultFingerprint?: string
 	/** Trusted bounded cause and recovery information; never extracted from model/tool text. */
 	failure?: ToolFailureMetadata
 }

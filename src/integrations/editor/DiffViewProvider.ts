@@ -214,7 +214,12 @@ export class DiffViewProvider {
 	 * @param isNewFile Whether this is a new file or an existing file being modified
 	 * @returns Formatted message (JSON)
 	 */
-	async pushToolWriteResult(task: Task, cwd: string, isNewFile: boolean): Promise<string> {
+	async pushToolWriteResult(
+		task: Task,
+		cwd: string,
+		isNewFile: boolean,
+		options: { partial?: boolean } = {},
+	): Promise<string> {
 		if (!this.relPath) {
 			throw new Error("No file path available in DiffViewProvider")
 		}
@@ -234,8 +239,14 @@ export class DiffViewProvider {
 
 		// Build notices array
 		const notices = [
-			"You do not need to re-read the file, as you have seen all changes",
-			"Proceed with the task using these changes as the new baseline.",
+			...(options.partial
+				? [
+						"Only part of the requested edit was applied. Read the current file before correcting the remaining changes.",
+					]
+				: [
+						"You do not need to re-read the file, as you have seen all changes",
+						"Proceed with the task using these changes as the new baseline.",
+					]),
 			...(this.userEdits
 				? [
 						"If the user's edits have addressed part of the task or changed the requirements, adjust your approach accordingly.",
