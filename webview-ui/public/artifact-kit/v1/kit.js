@@ -22,6 +22,7 @@
 		if (mounted.has(root)) return mounted.get(root)
 		const doc = root.ownerDocument
 		const cleanups = []
+		let disposed = false
 		const t = (key, values = {}) =>
 			(typeof labels[key] === "string" ? labels[key] : defaults[key]).replace(/\{(\w+)\}/g, (match, name) =>
 				String(values[name] ?? match),
@@ -42,6 +43,8 @@
 			return add(parent, "p", t(key), "kit-status")
 		}
 		function dispose() {
+			if (disposed) return
+			disposed = true
 			for (const cleanup of cleanups.reverse()) cleanup()
 			mounted.delete(root)
 		}
@@ -327,15 +330,21 @@
 				button.setAttribute("role", "tab")
 				button.setAttribute("aria-controls", panel.id)
 				button.id = `${panel.id}-alpha-tab`
-				const previous = [panel.hidden, panel.getAttribute("role"), panel.getAttribute("aria-labelledby")]
+				const previous = [
+					panel.hidden,
+					panel.getAttribute("role"),
+					panel.getAttribute("aria-labelledby"),
+					panel.getAttribute("tabindex"),
+				]
 				cleanups.push(() => {
 					panel.hidden = previous[0]
-					for (const [index, name] of ["role", "aria-labelledby"].entries()) {
+					for (const [index, name] of ["role", "aria-labelledby", "tabindex"].entries()) {
 						if (previous[index + 1] === null) panel.removeAttribute(name)
 						else panel.setAttribute(name, previous[index + 1])
 					}
 				})
 				panel.setAttribute("role", "tabpanel")
+				panel.tabIndex = 0
 				panel.setAttribute("aria-labelledby", button.id)
 				listen(button, "click", () => select(i))
 				listen(button, "keydown", (event) => {

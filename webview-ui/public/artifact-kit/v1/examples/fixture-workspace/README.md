@@ -2,7 +2,7 @@
 
 These deliberately defective TypeScript files supply real source targets for the HTML review and its equivalent Markdown baseline. They are review material, not Alpha implementation code. No real filesystem adapter, package manifest, build setup, or execution command is supplied. Do not copy this implementation into production.
 
-Open this directory as the workspace folder in the supported VS Code host, then open the packaged `review.html` through Alpha's HTML viewer and `review-baseline.md` through its existing Markdown flow. Their source paths resolve relative to this workspace. Keep the source files unchanged while comparing the two formats.
+Copy this directory into a temporary workspace and copy the packaged `review.html` and `review-baseline.md` into that workspace root. Open the workspace folder in the supported VS Code host, then open the copied HTML through Alpha's HTML viewer and the Markdown through its existing Markdown flow. Their source paths resolve relative to this workspace. Keep the source files unchanged while comparing the two formats.
 
 Perform the same three tasks in each format:
 

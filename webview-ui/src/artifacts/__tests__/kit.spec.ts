@@ -221,6 +221,17 @@ describe("Alpha HTML kit charts", () => {
 })
 
 describe("Alpha HTML kit navigation and versions", () => {
+	it("makes disposal idempotent even after mounting a new revision", () => {
+		const { root, mount } = fixture(table)
+		const first = mount()
+		first()
+		const second = mount()
+		first()
+		expect(mount()).toBe(second)
+		expect(root.querySelectorAll("thead button")).toHaveLength(2)
+		second()
+		expect(root.querySelectorAll("thead button")).toHaveLength(0)
+	})
 	it("moves real keyboard focus between tabs, wraps, and restores panel semantics", () => {
 		const { root, mount, window } = fixture(
 			'<section data-alpha-tabs aria-label="Decision detail"><section id="first" data-tab-label="Choice">One</section><section id="second" data-tab-label="Evidence">Two</section></section>',
@@ -241,6 +252,7 @@ describe("Alpha HTML kit navigation and versions", () => {
 			expect(tabs[index].getAttribute("aria-selected")).toBe("true")
 			expect(tabs[index].tabIndex).toBe(0)
 			expect(root.querySelector<HTMLElement>(`#${index ? "second" : "first"}`)!.hidden).toBe(false)
+			expect(root.querySelector<HTMLElement>(`#${index ? "second" : "first"}`)!.tabIndex).toBe(0)
 		}
 		dispose()
 		expect(root.querySelector('[role="tablist"]')).toBeNull()
