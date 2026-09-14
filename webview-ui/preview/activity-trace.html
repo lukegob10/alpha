@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="vscode-dark">
 	<head>
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -110,11 +110,12 @@
 			}
 		</style>
 	</head>
-	<body>
+	<body class="vscode-dark">
 		<nav id="preview-controls">
 			<strong style="margin-right: auto">Alpha · Extension preview</strong><button id="running">Running</button
 			><button id="complete">Complete</button><button id="followup">Follow-up</button>
 			<button id="finish-followup">Finish follow-up</button><button id="narrow">Narrow</button>
+			<button id="long-messages" aria-pressed="false">Long messages</button>
 			<select id="surface" aria-label="Preview surface">
 				<option value="chat">Chat</option>
 				<option value="settings">Settings</option>
@@ -141,6 +142,7 @@
 			import "@vscode/codicons/dist/codicon.css"
 
 			const base = 1700000000000
+			let longMessages = false
 			const messages = [
 				{
 					ts: base,
@@ -152,7 +154,7 @@
 					ts: base + 1000,
 					type: "say",
 					say: "api_req_started",
-					text: JSON.stringify({ cost: 0.01, tokensIn: 2500, tokensOut: 480 }),
+					text: JSON.stringify({ cost: 0.01, tokensIn: 99360, tokensOut: 480 }),
 				},
 				{
 					ts: base + 2000,
@@ -237,7 +239,7 @@
 						text: "pnpm --dir webview-ui test -- CommandPalette.layout.spec.tsx",
 					},
 				]
-				const clineMessages = followup
+				const transcript = followup
 					? [
 							...followupTurn,
 							...(completed
@@ -255,6 +257,30 @@
 					: completed
 						? completedTurn
 						: messages
+				const clineMessages = transcript.map((message, index) => {
+					if (!longMessages) return message
+					if (index === 0)
+						return {
+							...message,
+							text:
+								"Please review this paper. " +
+								"The study examines how keyboard navigation and predictable focus behavior affect usability in a compact editor sidebar. Participants moved between commands, reviewed results, and returned to their work without using a mouse. ".repeat(
+									60,
+								),
+						}
+					if (message.say === "user_feedback")
+						return {
+							...message,
+							text:
+								"Here is the full test log:\n" +
+								Array.from(
+									{ length: 80 },
+									(_, line) =>
+										`[${String(line + 1).padStart(3, "0")}] PASS command palette keyboard navigation and focus restoration`,
+								).join("\n"),
+						}
+					return message
+				})
 				const state = {
 					version: "2.1.3",
 					currentTaskId: taskId,
@@ -263,8 +289,9 @@
 						id: taskId,
 						number: 1,
 						ts: base,
-						task: messages[0].text,
+						task: clineMessages[0].text,
 						status: completed ? "completed" : "active",
+						size: 52_100_000,
 						tokensIn: 2500,
 						tokensOut: 480,
 						totalCost: 0.01,
@@ -298,7 +325,7 @@
 					soundEnabled: false,
 					language: "en",
 					mode: "code",
-					apiConfiguration: { apiProvider: "anthropic" },
+					apiConfiguration: { apiProvider: "anthropic", apiModelId: "claude-3-5-sonnet-20241022" },
 					liveTasksById: {
 						[taskId]: {
 							id: taskId,
@@ -353,6 +380,11 @@
 			document.getElementById("complete").onclick = () => show(true)
 			document.getElementById("followup").onclick = () => show(false, true)
 			document.getElementById("finish-followup").onclick = () => show(true, true)
+			document.getElementById("long-messages").onclick = (event) => {
+				longMessages = !longMessages
+				event.currentTarget.setAttribute("aria-pressed", String(longMessages))
+				show(true, true)
+			}
 			document.getElementById("narrow").onclick = () => {
 				document.getElementById("root").style.width =
 					document.getElementById("root").style.width === "340px" ? "min(100%, 760px)" : "340px"

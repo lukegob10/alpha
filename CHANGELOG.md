@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.36
+
+### Patch Changes
+
+- Improve chat readability with left-aligned user message text, compact previews for long pasted content, and accessible expand and collapse controls.
+
 ## 2.1.35
 
 ### Patch Changes

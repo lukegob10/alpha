@@ -1915,14 +1915,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[setExpandedRows], // setExpandedRows is stable
 	)
 
-	// Scroll when user toggles certain rows.
 	const toggleRowExpansion = useCallback(
 		(ts: number) => {
+			// Release following before either size change, including collapsing a long user message.
+			releaseFollow("row-expansion")
 			handleSetExpandedRow(ts)
-			// The logic to set disableAutoScrollRef.current = true on expansion
-			// is now handled by the useEffect hook that observes expandedRows.
 		},
-		[handleSetExpandedRow],
+		[handleSetExpandedRow, releaseFollow],
 	)
 
 	// Effect to clear checkpoint warning when messages appear or task changes
@@ -2172,7 +2171,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			{task ? (
 				<>
 					<TaskHeader
-						task={task}
 						tokensIn={apiMetrics.totalTokensIn}
 						tokensOut={apiMetrics.totalTokensOut}
 						cacheWrites={apiMetrics.totalCacheWrites}
@@ -2267,6 +2265,19 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							data-testid="chat-transcript-content"
 							data-count={groupedMessages.length}
 							data-rendered-count={renderedGroupedMessages.length}>
+							{/* Keep the prompt outside assistant activity groups and prepend it with the oldest rows. */}
+							{transcriptStartIndex === 0 && (
+								<ChatRow
+									key={`${transcriptTaskKey}:prompt`}
+									message={task}
+									isTaskPrompt
+									environment={chatRowEnvironment}
+									isExpanded={expandedRows[task.ts] || false}
+									isLast={false}
+									isStreaming={isStreaming}
+									onToggleExpand={toggleRowExpansion}
+								/>
+							)}
 							{renderedGroupedMessages.map((message, localIndex) => {
 								const index = transcriptStartIndex + localIndex
 								const trace = completedActivity.get(index)

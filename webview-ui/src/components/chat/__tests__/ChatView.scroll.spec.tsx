@@ -100,7 +100,22 @@ vi.mock("../ChatTextArea", () => {
 })
 
 vi.mock("../ChatRow", () => ({
-	default: ({ message }: { message: ClineMessage }) => <div data-testid="chat-row">{message.ts}</div>,
+	default: ({
+		message,
+		isTaskPrompt,
+		isExpanded,
+		onToggleExpand,
+	}: {
+		message: ClineMessage
+		isTaskPrompt?: boolean
+		isExpanded: boolean
+		onToggleExpand: (ts: number) => void
+	}) => (
+		<div data-testid="chat-row" data-task-prompt={isTaskPrompt} data-expanded={isExpanded}>
+			{message.ts}
+			{isTaskPrompt && <button onClick={() => onToggleExpand(message.ts)}>Toggle opening prompt</button>}
+		</div>
+	),
 }))
 
 const props: ChatViewProps = {
@@ -209,6 +224,38 @@ const getScrollToBottomButton = (): HTMLButtonElement => {
 }
 
 describe("ChatView native scroll behavior", () => {
+	it("keeps an expanded opening prompt open during updates and releases automatic bottom following", async () => {
+		const messages = buildMessages(1000)
+		await hydrate(messages)
+		seedBottomGeometry(getScrollable())
+		const prompt = document.querySelector<HTMLElement>("[data-task-prompt='true']")!
+		fireEvent.click(prompt.querySelector("button")!)
+		expect(prompt).toHaveAttribute("data-expanded", "true")
+		await waitFor(() => expect(getScrollToBottomButton()).toBeVisible())
+		await act(async () => postState([...messages, { type: "say", say: "text", ts: 1003, text: "Next response" }]))
+		expect(prompt).toHaveAttribute("data-expanded", "true")
+		fireEvent.click(getScrollToBottomButton())
+		await waitFor(() => expect(document.querySelector("button[aria-label='chat:scrollToBottom']")).toBeNull())
+		fireEvent.click(prompt.querySelector("button")!)
+		expect(prompt).toHaveAttribute("data-expanded", "false")
+		await waitFor(() => expect(getScrollToBottomButton()).toBeVisible())
+	})
+
+	it("pins metadata outside the scroller and renders the opening prompt once inside it", async () => {
+		const messages = buildMessages(1000)
+		await hydrate(messages)
+		const header = document.querySelector<HTMLElement>("[data-testid='task-header']")
+		const prompts = document.querySelectorAll("[data-task-prompt='true']")
+		expect(getScrollable()).not.toContainElement(header)
+		expect(prompts).toHaveLength(1)
+		expect(getScrollable()).toContainElement(prompts[0] as HTMLElement)
+		expect(prompts[0]).toHaveTextContent("1000")
+		fireEvent.click(header as HTMLElement)
+		await act(async () => postState([...messages, { type: "say", say: "text", ts: 1003, text: "next reply" }]))
+		expect(document.querySelectorAll("[data-task-prompt='true']")).toHaveLength(1)
+		expect(messages[0].say).toBe("text")
+	})
+
 	it("centers the transcript and dock with symmetric scrollbar space", async () => {
 		await hydrate()
 		expect(document.querySelector("[data-testid='chat-transcript-content']")).toHaveClass("chat-column")
@@ -252,6 +299,14 @@ describe("ChatView native scroll behavior", () => {
 
 			expect(document.querySelectorAll("[data-testid='chat-row']")).toHaveLength(180)
 			expect(idleCallbacks).toHaveLength(1)
+			expect(document.querySelector("[data-task-prompt='true']")).toBeNull()
+
+			while (idleCallbacks.length > 0) {
+				const nextBatch = idleCallbacks.shift()
+				await act(async () => nextBatch?.({ didTimeout: false, timeRemaining: () => 50 }))
+			}
+			expect(document.querySelectorAll("[data-testid='chat-row']")).toHaveLength(1001)
+			expect(document.querySelectorAll("[data-task-prompt='true']")).toHaveLength(1)
 		} finally {
 			vi.unstubAllGlobals()
 		}

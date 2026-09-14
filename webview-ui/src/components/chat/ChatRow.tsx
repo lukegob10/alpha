@@ -36,7 +36,7 @@ import WarningRow from "./WarningRow"
 
 import McpResourceRow from "../mcp/McpResourceRow"
 
-import { Mention } from "./Mention"
+import { UserMessageText } from "./UserMessageText"
 import { CheckpointSaved } from "./checkpoints/CheckpointSaved"
 import { FollowUpSuggest } from "./FollowUpSuggest"
 import { BatchFilePermission } from "./BatchFilePermission"
@@ -135,6 +135,8 @@ export interface ChatRowEnvironment
 
 interface ChatRowProps {
 	message: ClineMessage
+	/** The persisted opening prompt is say/text, but displays as a user message. */
+	isTaskPrompt?: boolean
 	environment: ChatRowEnvironment
 	lastModifiedMessage?: ClineMessage
 	isExpanded: boolean
@@ -165,7 +167,8 @@ const ChatRow = memo(
 			<div
 				className={cn(
 					"px-[15px]",
-					props.message.say === "user_feedback" ||
+					props.isTaskPrompt ||
+						props.message.say === "user_feedback" ||
 						props.message.say === "completion_result" ||
 						props.message.ask === "completion_result" ||
 						props.message.ask === "followup"
@@ -205,6 +208,7 @@ export const ChatRowContent = (props: ChatRowContentProps) => {
 
 const ChatRowContentInner = ({
 	message,
+	isTaskPrompt = false,
 	environment,
 	lastModifiedMessage,
 	isExpanded,
@@ -1177,7 +1181,7 @@ const ChatRowContentInner = ({
 
 	switch (message.type) {
 		case "say":
-			switch (message.say) {
+			switch (isTaskPrompt ? "user_feedback" : message.say) {
 				case "subagent_group":
 					return message.subagentGroup ? (
 						<ActivityStep
@@ -1442,25 +1446,18 @@ const ChatRowContentInner = ({
 										/>
 									</div>
 								) : (
-									<div className="flex justify-between">
-										<div
-											className="min-w-0 flex-grow wrap-anywhere"
-											onClick={(e) => {
-												e.stopPropagation()
-												if (!isStreaming) {
-													handleEditClick()
-												}
-											}}
-											title={t("chat:queuedMessages.clickToEdit")}>
-											<Mention text={message.text} withShadow />
-										</div>
-									</div>
+									<UserMessageText
+										text={message.text}
+										isExpanded={isExpanded}
+										onToggleExpand={handleToggleExpand}
+										onEdit={!isTaskPrompt && !isStreaming ? handleEditClick : undefined}
+									/>
 								)}
 								{!isEditing && message.images && message.images.length > 0 && (
 									<Thumbnails images={message.images} style={{ marginTop: "8px" }} />
 								)}
 							</div>
-							{!isEditing && (
+							{!isTaskPrompt && !isEditing && (
 								<div className="flex h-6 items-center gap-3 text-vscode-descriptionForeground">
 									<button
 										type="button"

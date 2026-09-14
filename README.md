@@ -6,11 +6,12 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.35 Preview
+## Welcome to Alpha v2.1.36 Preview
 
-Alpha v2.1.35 refreshes chat styling and improves follow-up history, Copilot editing, and Vertex gateway indexing.
+Alpha v2.1.36 improves chat readability with left-aligned user messages and compact previews for long pasted content.
 
-- Dark chat uses a charcoal and indigo palette, with right-aligned user bubbles and centered text
+- Dark chat uses a charcoal and indigo palette, with right-aligned user bubbles and left-aligned text
+- Long pasted messages collapse to a readable preview and can be expanded when the full content is needed
 - Completed answers and activity traces stay intact and independently collapsed when follow-ups begin
 - Copilot edit tools follow the actual model family, and Gemini 001 Vertex gateway requests preserve their expected payload and pacing
 

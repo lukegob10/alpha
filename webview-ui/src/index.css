@@ -355,7 +355,7 @@
 	}
 
 	.task-context-card {
-		background: var(--surface-raised);
+		background: var(--chat-surface);
 		border: 1px solid var(--border-subtle);
 	}
 
@@ -365,7 +365,7 @@
 		max-width: 92%;
 		margin-left: auto;
 		margin-right: 0;
-		text-align: center;
+		text-align: start;
 		background: var(--user-message-background);
 		color: var(--user-message-foreground);
 		border: 1px solid var(--vscode-contrastBorder, transparent);

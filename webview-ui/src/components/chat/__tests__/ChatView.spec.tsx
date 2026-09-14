@@ -51,14 +51,16 @@ vi.mock("use-sound", () => ({
 vi.mock("../ChatRow", () => ({
 	default: function MockChatRow({
 		message,
+		isTaskPrompt,
 		onSuggestionClick,
 	}: {
 		message: ClineMessage
+		isTaskPrompt?: boolean
 		onSuggestionClick?: (suggestion: { answer: string; mode?: string }, event?: React.MouseEvent) => void
 	}) {
 		return (
 			<div data-testid="chat-row">
-				{JSON.stringify(message)}
+				{isTaskPrompt ? <span>{message.text}</span> : JSON.stringify(message)}
 				{message.ask === "followup" && (
 					<button
 						data-testid="copy-mode-suggestion"
@@ -1500,8 +1502,9 @@ describe("ChatView - Managed agent monitor", () => {
 		const assertRehydratedTranscript = async () => {
 			await waitFor(() => {
 				const rows = getAllByTestId("chat-row")
-				expect(rows).toHaveLength(1)
-				expect(rows[0]).toHaveTextContent(recoveryMessage.text)
+				expect(rows).toHaveLength(2)
+				expect(rows[0]).toHaveTextContent("Recover the task")
+				expect(rows[1]).toHaveTextContent(recoveryMessage.text)
 				expect(rows.map((row) => row.textContent).join(" ")).not.toContain('"resume_task"')
 			})
 		}

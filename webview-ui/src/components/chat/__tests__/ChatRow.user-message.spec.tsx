@@ -11,7 +11,7 @@ const message: ClineMessage = {
 	ts: 10,
 	type: "say",
 	say: "user_feedback",
-	text: "Keep the text centered.\nMake long messages easy to read.",
+	text: "Keep paragraphs easy to scan.\n    Preserve indentation in pasted logs.",
 }
 
 const environment: ChatRowEnvironment = {
@@ -24,11 +24,14 @@ const environment: ChatRowEnvironment = {
 	getClineMessages: () => [message],
 }
 
-function renderMessage(isStreaming = false) {
+function renderMessage(isStreaming = false, isTaskPrompt = false) {
 	return render(
 		<ExtensionStateContextProvider>
 			<ChatRow
-				message={message}
+				message={
+					isTaskPrompt ? { ...message, say: "text", images: ["data:image/png;base64,aGVsbG8="] } : message
+				}
+				isTaskPrompt={isTaskPrompt}
 				environment={environment}
 				isExpanded={false}
 				isLast={false}
@@ -41,6 +44,18 @@ function renderMessage(isStreaming = false) {
 
 describe("user message bubbles", () => {
 	beforeEach(() => vi.clearAllMocks())
+
+	it("renders the opening prompt and attachments as a user bubble without adding message editing actions", () => {
+		const { container } = renderMessage(false, true)
+		const article = screen.getByRole("article", { name: "You said" })
+		expect(article).toHaveClass("items-end")
+		expect(container.querySelector(".user-message")).toHaveTextContent("Keep paragraphs easy to scan.")
+		expect(within(article).getByRole("img")).toHaveAttribute("src", "data:image/png;base64,aGVsbG8=")
+		expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "Delete Message" })).not.toBeInTheDocument()
+		fireEvent.click(screen.getByText(/Keep paragraphs easy to scan/))
+		expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
+	})
 
 	it("right-aligns the message and its actions without losing their labels or task routing", () => {
 		const { container } = renderMessage()
@@ -72,7 +87,7 @@ describe("user message bubbles", () => {
 		renderMessage(true)
 		expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument()
 		expect(screen.queryByRole("button", { name: "Delete Message" })).not.toBeInTheDocument()
-		fireEvent.click(screen.getByText(/Keep the text centered/))
+		fireEvent.click(screen.getByText(/Keep paragraphs easy to scan/))
 		expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
 	})
 })

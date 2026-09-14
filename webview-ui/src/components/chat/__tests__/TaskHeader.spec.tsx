@@ -120,7 +120,6 @@ vi.mock("@alpha/api", () => ({
 
 describe("TaskHeader", () => {
 	const defaultProps: TaskHeaderProps = {
-		task: { type: "say", ts: Date.now(), text: "Test task", images: [] },
 		tokensIn: 100,
 		tokensOut: 50,
 		totalCost: 0.05,
@@ -170,7 +169,7 @@ describe("TaskHeader", () => {
 		const onExpandedChange = vi.fn()
 		renderTaskHeader({ onExpandedChange })
 
-		fireEvent.click(screen.getByText("Test task"))
+		fireEvent.click(screen.getByText("chat:task.title"))
 
 		expect(onExpandedChange).toHaveBeenCalledTimes(1)
 		expect(screen.getByText("chat:task.title")).toBeInTheDocument()
@@ -180,26 +179,32 @@ describe("TaskHeader", () => {
 		renderTaskHeader()
 		const expandButton = screen.getByRole("button", { name: "chat:task.expand" })
 		expect(expandButton).toHaveAttribute("aria-expanded", "false")
+		const details = document.getElementById(expandButton.getAttribute("aria-controls")!)
+		expect(details).toBeInTheDocument()
+		expect(details).not.toBeVisible()
 
 		fireEvent.click(expandButton)
 
 		expect(screen.getByRole("button", { name: "chat:task.collapse" })).toHaveAttribute("aria-expanded", "true")
+		expect(details).toBeVisible()
+		fireEvent.click(screen.getByTestId("context-window-label"))
+		expect(details).toBeVisible()
 	})
 
-	it("restores the shared message bubble after expanding and collapsing task details", () => {
-		renderTaskHeader()
-		expect(screen.getByText("Test task").closest(".user-message")).toBeInTheDocument()
-		expect(screen.getByText("Test task").closest(".chat-column")).toBeInTheDocument()
+	it("keeps the metadata card visible when expanded and collapsed", () => {
+		const { container } = renderTaskHeader()
+		expect(screen.getByText("chat:task.title").closest(".task-context-card")).toBeInTheDocument()
 		fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
-		expect(screen.getByText("Test task").closest(".user-message")).not.toBeInTheDocument()
+		expect(screen.getByTestId("context-window-label")).toBeVisible()
 		fireEvent.click(screen.getByRole("button", { name: "chat:task.collapse" }))
-		expect(screen.getByText("Test task").closest(".user-message")).toBeInTheDocument()
+		expect(screen.getByText("chat:task.title").closest(".task-context-card")).toBeInTheDocument()
+		expect(container.querySelector(".user-message")).not.toBeInTheDocument()
 	})
 
 	it("should render the condense context button when expanded", () => {
 		renderTaskHeader()
 		// First click to expand the task header
-		const taskHeader = screen.getByText("Test task")
+		const taskHeader = screen.getByText("chat:task.title")
 		fireEvent.click(taskHeader)
 
 		// Now find the condense button in the expanded state
@@ -214,7 +219,7 @@ describe("TaskHeader", () => {
 		renderTaskHeader({ handleCondenseContext })
 
 		// First click to expand the task header
-		const taskHeader = screen.getByText("Test task")
+		const taskHeader = screen.getByText("chat:task.title")
 		fireEvent.click(taskHeader)
 
 		// Find the button that contains the FoldVertical icon
@@ -230,7 +235,7 @@ describe("TaskHeader", () => {
 		renderTaskHeader({ buttonsDisabled: true, handleCondenseContext })
 
 		// First click to expand the task header
-		const taskHeader = screen.getByText("Test task")
+		const taskHeader = screen.getByText("chat:task.title")
 		fireEvent.click(taskHeader)
 
 		// Find the button that contains the FoldVertical icon
@@ -541,6 +546,7 @@ describe("TaskHeader", () => {
 			// Old (incorrect) formula would have been: (200 + 200) / 1000 * 100 = 40%
 
 			renderTaskHeader({ contextTokens: 200 })
+			expect(screen.getByText("25%")).toBeVisible()
 			fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
 
 			// The percentage remains available in the expanded task details.

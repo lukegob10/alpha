@@ -1,4 +1,4 @@
-import { memo, useRef, useState, useMemo } from "react"
+import { memo, useId, useState, useMemo } from "react"
 import { useTranslation } from "react-i18next"
 import {
 	ChevronUp,
@@ -11,27 +11,20 @@ import {
 } from "lucide-react"
 import prettyBytes from "pretty-bytes"
 
-import type { ClineMessage } from "@alpha-code/types"
-
 import { getModelMaxOutputTokens } from "@alpha/api"
 
 import { formatLargeNumber } from "@src/utils/format"
-import { cn } from "@src/lib/utils"
 import { StandardTooltip, Button, Table, TableBody, TableRow, TableCell, CircularProgress } from "@src/components/ui"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 import { useSelectedModel } from "@/components/ui/hooks/useSelectedModel"
 import { vscode } from "@src/utils/vscode"
 
-import Thumbnails from "../common/Thumbnails"
-
 import { TaskActions } from "./TaskActions"
 import { ContextWindowProgress } from "./ContextWindowProgress"
-import { Mention } from "./Mention"
 import { TodoListDisplay } from "./TodoListDisplay"
 import { LucideIconButton } from "./LucideIconButton"
 
 export interface TaskHeaderProps {
-	task: ClineMessage
 	tokensIn: number
 	tokensOut: number
 	cacheWrites?: number
@@ -50,7 +43,6 @@ export interface TaskHeaderProps {
 }
 
 const TaskHeader = ({
-	task,
 	tokensIn,
 	tokensOut,
 	cacheWrites,
@@ -71,6 +63,7 @@ const TaskHeader = ({
 	const { apiConfiguration, currentTaskItem } = useExtensionState()
 	const { id: modelId, info: model } = useSelectedModel(apiConfiguration)
 	const [isTaskExpanded, setIsTaskExpanded] = useState(false)
+	const detailsId = useId()
 	const subagentModelRoute = isManagedSubagent ? currentTaskItem?.subagentModelRoute : undefined
 	const isWorkerSubagent = isManagedSubagent && currentTaskItem?.subagentRole === "worker"
 	const subagentRoleLabel =
@@ -103,8 +96,6 @@ const TaskHeader = ({
 				.join(" · ")
 		: undefined
 
-	const textContainerRef = useRef<HTMLDivElement>(null)
-	const textRef = useRef<HTMLDivElement>(null)
 	const contextWindow = model?.contextWindow || 1
 
 	// Calculate maxTokens (reserved for output) once for reuse in percentage and tooltip
@@ -147,7 +138,7 @@ const TaskHeader = ({
 	}
 
 	return (
-		<div className="chat-column group shrink-0 px-[15px] py-3">
+		<div className="chat-column max-h-[40%] shrink-0 overflow-y-auto px-[15px] pt-3 pb-2">
 			{isSubtask && (
 				<div className="mb-2" onClick={(e) => e.stopPropagation()}>
 					<Button
@@ -184,73 +175,25 @@ const TaskHeader = ({
 					)}
 				</div>
 			)}
-			<div
-				className={cn(
-					"px-4 py-2.5 flex flex-col gap-1.5 relative z-1 cursor-pointer",
-					isTaskExpanded ? "task-context-card rounded-xl" : "user-message",
-					hasTodos && "border-b-0",
-				)}
-				onClick={(e) => {
-					// Don't expand if clicking on todos section
-					if (e.target instanceof Element && e.target.closest("[data-todo-list]")) {
-						return
-					}
-
-					// Don't expand if clicking on buttons or interactive elements
-					if (
-						e.target instanceof Element &&
-						(e.target.closest("button") ||
-							e.target.closest('[role="button"]') ||
-							e.target.closest(".share-button") ||
-							e.target.closest("[data-radix-popper-content-wrapper]") ||
-							e.target.closest("img") ||
-							e.target.tagName === "IMG")
-					) {
-						return
-					}
-
-					// Don't expand/collapse if user is selecting text
-					const selection = window.getSelection()
-					if (selection && selection.toString().length > 0) {
-						return
-					}
-
-					toggleTaskExpanded()
-				}}>
-				<div className="flex justify-between items-center gap-0">
-					<div className="flex items-center grow min-w-0">
-						<div className={cn("grow min-w-0", !isTaskExpanded && "pl-7")}>
-							{isTaskExpanded && <span className="font-bold">{t("chat:task.title")}</span>}
-							{!isTaskExpanded && (
-								<div className="line-clamp-4 whitespace-pre-wrap wrap-anywhere">
-									<Mention text={task.text} />
-								</div>
-							)}
-						</div>
-						<div className="flex items-center shrink-0 ml-2" onClick={(e) => e.stopPropagation()}>
-							<StandardTooltip content={isTaskExpanded ? t("chat:task.collapse") : t("chat:task.expand")}>
-								<button
-									onClick={toggleTaskExpanded}
-									aria-label={isTaskExpanded ? t("chat:task.collapse") : t("chat:task.expand")}
-									aria-expanded={isTaskExpanded}
-									className="shrink-0 min-h-[20px] min-w-[20px] p-[2px] cursor-pointer opacity-85 hover:opacity-100 bg-transparent border-none rounded-md focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder">
-									{isTaskExpanded ? (
-										<ChevronUp size={16} />
-									) : (
-										<ChevronDown
-											size={16}
-											className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-										/>
-									)}
-								</button>
-							</StandardTooltip>
-						</div>
-					</div>
-				</div>
-				{isTaskExpanded && contextWindow > 0 && (
-					<div
-						className="flex items-center justify-between text-sm text-muted-foreground/70"
-						onClick={(e) => e.stopPropagation()}>
+			<section
+				className="task-context-card flex flex-col gap-1.5 rounded-xl px-4 py-2.5"
+				aria-label={t("chat:task.title")}>
+				<button
+					type="button"
+					onClick={toggleTaskExpanded}
+					aria-label={isTaskExpanded ? t("chat:task.collapse") : t("chat:task.expand")}
+					aria-expanded={isTaskExpanded}
+					aria-controls={detailsId}
+					className="flex min-h-6 w-full cursor-pointer items-center justify-between gap-2 rounded-md border-0 bg-transparent p-0 text-left text-inherit focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder">
+					<span className="font-bold">{t("chat:task.title")}</span>
+					{isTaskExpanded ? (
+						<ChevronUp size={16} aria-hidden="true" />
+					) : (
+						<ChevronDown size={16} aria-hidden="true" />
+					)}
+				</button>
+				{contextWindow > 0 && (
+					<div className="flex items-center justify-between text-sm text-vscode-descriptionForeground">
 						<div className="flex items-center gap-2">
 							<StandardTooltip
 								content={(() => {
@@ -315,154 +258,145 @@ const TaskHeader = ({
 						</div>
 					</div>
 				)}
-				{/* Expanded state: Show task text and images */}
-				{isTaskExpanded && (
-					<>
-						<div
-							ref={textContainerRef}
-							className="text-vscode-font-size overflow-y-auto break-words break-anywhere relative">
-							<div
-								ref={textRef}
-								className="overflow-auto max-h-80 whitespace-pre-wrap break-words break-anywhere cursor-text py-0.5"
-								style={{
-									display: "-webkit-box",
-									WebkitLineClamp: "unset",
-									WebkitBoxOrient: "vertical",
-								}}>
-								<Mention text={task.text} />
+				<div id={detailsId} hidden={!isTaskExpanded}>
+					{isTaskExpanded && (
+						<>
+							<div onClick={(e) => e.stopPropagation()}>
+								<TaskActions item={currentTaskItem} buttonsDisabled={buttonsDisabled} />
 							</div>
-						</div>
-						{task.images && task.images.length > 0 && <Thumbnails images={task.images} />}
 
-						<div onClick={(e) => e.stopPropagation()}>
-							<TaskActions item={currentTaskItem} buttonsDisabled={buttonsDisabled} />
-						</div>
+							<div className="pt-3 mt-2 -mx-2.5 px-2.5 border-t border-vscode-sideBar-background">
+								<table className="w-full text-sm">
+									<tbody>
+										{contextWindow > 0 && (
+											<tr>
+												<th
+													className="font-medium text-left align-top w-1 whitespace-nowrap pr-3 h-[24px]"
+													data-testid="context-window-label">
+													{t("chat:task.contextWindow")}
+												</th>
+												<td className="font-light align-top">
+													<div className={`max-w-md -mt-1.5 flex flex-nowrap gap-1`}>
+														<ContextWindowProgress
+															contextWindow={contextWindow}
+															contextTokens={contextTokens || 0}
+															maxTokens={maxTokens || undefined}
+														/>
+														{condenseButton}
+													</div>
+												</td>
+											</tr>
+										)}
 
-						<div className="pt-3 mt-2 -mx-2.5 px-2.5 border-t border-vscode-sideBar-background">
-							<table className="w-full text-sm">
-								<tbody>
-									{contextWindow > 0 && (
-										<tr>
-											<th
-												className="font-medium text-left align-top w-1 whitespace-nowrap pr-3 h-[24px]"
-												data-testid="context-window-label">
-												{t("chat:task.contextWindow")}
-											</th>
-											<td className="font-light align-top">
-												<div className={`max-w-md -mt-1.5 flex flex-nowrap gap-1`}>
-													<ContextWindowProgress
-														contextWindow={contextWindow}
-														contextTokens={contextTokens || 0}
-														maxTokens={maxTokens || undefined}
-													/>
-													{condenseButton}
-												</div>
-											</td>
-										</tr>
-									)}
-
-									<tr>
-										<th className="font-medium text-left align-top w-1 whitespace-nowrap pr-3 h-[24px]">
-											{t("chat:task.tokens")}
-										</th>
-										<td className="font-light align-top">
-											<div className="flex items-center gap-1 flex-wrap">
-												{typeof tokensIn === "number" && tokensIn > 0 && (
-													<span>↑ {formatLargeNumber(tokensIn)}</span>
-												)}
-												{typeof tokensOut === "number" && tokensOut > 0 && (
-													<span>↓ {formatLargeNumber(tokensOut)}</span>
-												)}
-											</div>
-										</td>
-									</tr>
-
-									{((typeof cacheReads === "number" && cacheReads > 0) ||
-										(typeof cacheWrites === "number" && cacheWrites > 0)) && (
 										<tr>
 											<th className="font-medium text-left align-top w-1 whitespace-nowrap pr-3 h-[24px]">
-												{t("chat:task.cache")}
+												{t("chat:task.tokens")}
 											</th>
 											<td className="font-light align-top">
 												<div className="flex items-center gap-1 flex-wrap">
-													{typeof cacheWrites === "number" && cacheWrites > 0 && (
-														<>
-															<HardDriveDownload className="size-2.5" />
-															<span>{formatLargeNumber(cacheWrites)}</span>
-														</>
+													{typeof tokensIn === "number" && tokensIn > 0 && (
+														<span>↑ {formatLargeNumber(tokensIn)}</span>
 													)}
-													{typeof cacheReads === "number" && cacheReads > 0 && (
-														<>
-															<HardDriveUpload className="size-2.5" />
-															<span>{formatLargeNumber(cacheReads)}</span>
-														</>
+													{typeof tokensOut === "number" && tokensOut > 0 && (
+														<span>↓ {formatLargeNumber(tokensOut)}</span>
 													)}
 												</div>
 											</td>
 										</tr>
-									)}
 
-									{!!totalCost && (
-										<tr>
-											<th className="font-medium text-left align-top w-1 whitespace-nowrap pr-3 h-[24px]">
-												{t("chat:task.apiCost")}
-											</th>
-											<td className="font-light align-top">
-												<StandardTooltip
-													content={
-														hasSubtasks ? (
-															<div>
+										{((typeof cacheReads === "number" && cacheReads > 0) ||
+											(typeof cacheWrites === "number" && cacheWrites > 0)) && (
+											<tr>
+												<th className="font-medium text-left align-top w-1 whitespace-nowrap pr-3 h-[24px]">
+													{t("chat:task.cache")}
+												</th>
+												<td className="font-light align-top">
+													<div className="flex items-center gap-1 flex-wrap">
+														{typeof cacheWrites === "number" && cacheWrites > 0 && (
+															<>
+																<HardDriveDownload className="size-2.5" />
+																<span>{formatLargeNumber(cacheWrites)}</span>
+															</>
+														)}
+														{typeof cacheReads === "number" && cacheReads > 0 && (
+															<>
+																<HardDriveUpload className="size-2.5" />
+																<span>{formatLargeNumber(cacheReads)}</span>
+															</>
+														)}
+													</div>
+												</td>
+											</tr>
+										)}
+
+										{!!totalCost && (
+											<tr>
+												<th className="font-medium text-left align-top w-1 whitespace-nowrap pr-3 h-[24px]">
+													{t("chat:task.apiCost")}
+												</th>
+												<td className="font-light align-top">
+													<StandardTooltip
+														content={
+															hasSubtasks ? (
 																<div>
-																	{t("chat:costs.totalWithSubtasks", {
-																		cost: (aggregatedCost ?? totalCost).toFixed(2),
+																	<div>
+																		{t("chat:costs.totalWithSubtasks", {
+																			cost: (aggregatedCost ?? totalCost).toFixed(
+																				2,
+																			),
+																		})}
+																	</div>
+																	{costBreakdown && (
+																		<div className="text-xs mt-1">
+																			{costBreakdown}
+																		</div>
+																	)}
+																</div>
+															) : (
+																<div>
+																	{t("chat:costs.total", {
+																		cost: totalCost.toFixed(2),
 																	})}
 																</div>
-																{costBreakdown && (
-																	<div className="text-xs mt-1">{costBreakdown}</div>
-																)}
-															</div>
-														) : (
-															<div>
-																{t("chat:costs.total", { cost: totalCost.toFixed(2) })}
-															</div>
-														)
-													}
-													side="top"
-													sideOffset={8}>
-													<span>
-														${(aggregatedCost ?? totalCost).toFixed(2)}
-														{hasSubtasks && (
-															<span
-																className="text-xs ml-1"
-																title={t("chat:costs.includesSubtasks")}>
-																*
-															</span>
-														)}
-													</span>
-												</StandardTooltip>
-											</td>
-										</tr>
-									)}
+															)
+														}
+														side="top"
+														sideOffset={8}>
+														<span>
+															${(aggregatedCost ?? totalCost).toFixed(2)}
+															{hasSubtasks && (
+																<span
+																	className="text-xs ml-1"
+																	title={t("chat:costs.includesSubtasks")}>
+																	*
+																</span>
+															)}
+														</span>
+													</StandardTooltip>
+												</td>
+											</tr>
+										)}
 
-									{/* Size display */}
-									{!!currentTaskItem?.size && currentTaskItem.size > 0 && (
-										<tr>
-											<th className="font-medium text-left align-top w-1 whitespace-nowrap pr-2 h-[20px]">
-												{t("chat:task.size")}
-											</th>
-											<td className="font-light align-top">
-												{prettyBytes(currentTaskItem.size)}
-											</td>
-										</tr>
-									)}
-								</tbody>
-							</table>
-						</div>
-					</>
-				)}
+										{/* Size display */}
+										{!!currentTaskItem?.size && currentTaskItem.size > 0 && (
+											<tr>
+												<th className="font-medium text-left align-top w-1 whitespace-nowrap pr-2 h-[20px]">
+													{t("chat:task.size")}
+												</th>
+												<td className="font-light align-top">
+													{prettyBytes(currentTaskItem.size)}
+												</td>
+											</tr>
+										)}
+									</tbody>
+								</table>
+							</div>
+						</>
+					)}
+				</div>
 				{/* Todo list - always shown at bottom when todos exist */}
-				{hasTodos && <TodoListDisplay todos={todos ?? (task as any)?.tool?.todos ?? []} />}
-			</div>
+				{hasTodos && <TodoListDisplay todos={todos ?? []} />}
+			</section>
 		</div>
 	)
 }
