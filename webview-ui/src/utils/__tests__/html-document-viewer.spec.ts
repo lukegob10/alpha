@@ -46,9 +46,12 @@ describe("packaged HTML viewer runtime", () => {
 		const details = window.document.getElementById("evidence") as HTMLDetailsElement
 		details.open = true
 		;(window.document.getElementById("filter") as HTMLInputElement).value = "stable"
+		vi.spyOn(window.document, "hasFocus").mockReturnValue(true)
+		;(window.document.getElementById("filter") as HTMLInputElement).focus()
 		send(2, html)
 		expect((window.document.getElementById("evidence") as HTMLDetailsElement).open).toBe(true)
 		expect((window.document.getElementById("filter") as HTMLInputElement).value).toBe("stable")
+		expect(window.document.activeElement?.id).toBe("filter")
 		expect(dispose).toHaveBeenCalledTimes(1)
 		send(1, "old")
 		send(3, "other", { documentId: "file:///other.html" })
@@ -61,10 +64,13 @@ describe("packaged HTML viewer runtime", () => {
 			revision: 2,
 			referenceId: "ref-0",
 		})
-		send(3, '<main class="alpha-doc"><details id="new"><summary>New</summary></details></main>')
+		window.document.getElementById("viewer-source")!.focus()
+		send(3, html)
+		expect(window.document.activeElement?.id).toBe("viewer-source")
+		send(4, '<main class="alpha-doc"><details id="new"><summary>New</summary></details></main>')
 		expect((window.document.getElementById("new") as HTMLDetailsElement).open).toBe(false)
 		window.dispatchEvent(new window.Event("pagehide"))
-		expect(dispose).toHaveBeenCalledTimes(3)
+		expect(dispose).toHaveBeenCalledTimes(4)
 		expect(api.setState).toHaveBeenCalledWith(expect.objectContaining({ target }))
 		window.close()
 	})

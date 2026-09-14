@@ -53,7 +53,7 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 			if (!restoredPanel) existing.panel.reveal(undefined, false)
 			return
 		}
-		if (this.entries.size >= HTML_DOCUMENT_LIMITS.panels) throw new Error("size")
+		if (this.entries.size >= HTML_DOCUMENT_LIMITS.panels) throw new Error("panelLimit")
 		const panel =
 			restoredPanel ??
 			vscode.window.createWebviewPanel(
@@ -137,9 +137,11 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 	}
 
 	private shell(entry: Entry, assets: vscode.Uri): string {
-		const resource = (...parts: string[]) =>
-			escapeHtml(entry.panel.webview.asWebviewUri(vscode.Uri.joinPath(assets, ...parts)).toString())
 		const nonce = randomBytes(24).toString("hex")
+		const resource = (...parts: string[]) =>
+			escapeHtml(
+				entry.panel.webview.asWebviewUri(vscode.Uri.joinPath(assets, ...parts)).toString() + `?v=${nonce}`,
+			)
 		const labels = {
 			...i18n.getResourceBundle("en", "htmlArtifactKit"),
 			...i18n.getResourceBundle(i18n.language, "htmlArtifactKit"),

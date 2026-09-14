@@ -29,6 +29,7 @@ suite("HTML document exact-host adapter", function () {
 		const folder = await fs.mkdtemp(path.join(root, "html-viewer-test-"))
 		const first = vscode.Uri.file(path.join(folder, "first.html"))
 		const second = vscode.Uri.file(path.join(folder, "second.html"))
+		const third = vscode.Uri.file(path.join(folder, "third.html"))
 		try {
 			await fs.writeFile(first.fsPath, html("First document"))
 			await fs.writeFile(second.fsPath, html("Second document"))
@@ -41,6 +42,11 @@ suite("HTML document exact-host adapter", function () {
 			await vscode.commands.executeCommand("alpha.previewHtmlDocument", second)
 			await until(() => tabs().some((tab) => tab.label === "Second document"))
 			assert.equal(tabs().length, 2)
+			await fs.writeFile(third.fsPath, html("Third document"))
+			await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(third))
+			await vscode.commands.executeCommand("alpha.previewHtmlDocument")
+			await until(() => tabs().some((tab) => tab.label === "Third document"))
+			assert.equal(tabs().length, 3)
 			const document = await vscode.workspace.openTextDocument(first)
 			const edit = new vscode.WorkspaceEdit()
 			edit.replace(

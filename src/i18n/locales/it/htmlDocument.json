@@ -11,10 +11,11 @@
 		"scope": "Il documento è fuori dall’area di lavoro aperta. Riapri la sua cartella di lavoro originale.",
 		"missing": "Il file sorgente è assente o illeggibile. Ripristinalo nel percorso originale per recuperare l’anteprima.",
 		"path": "Usa un file locale .html o .htm nell’area di lavoro.",
-		"size": "Il documento supera i limiti del visualizzatore (512 KiB, 12.000 elementi, 64 livelli o 32 widget). Riducine le dimensioni.",
+		"size": "Il documento supera i limiti del visualizzatore (512 KiB, 12.000 elementi, 64 livelli o 32 widget). Riducine le dimensioni. Potrebbe essere stato superato anche il limite di tempo per l’analisi.",
 		"version": "Questo documento richiede alpha-document versione 1. Correggi il marcatore di versione per recuperare l’anteprima.",
 		"reference": "Un riferimento al sorgente non è valido. Usa un percorso relativo all’area di lavoro e un numero di riga positivo.",
 		"data": "I dati di un widget contengono un numero non valido. Correggi il sorgente per recuperare l’anteprima.",
 		"format": "Il documento richiede un titolo e un solo elemento main.alpha-doc con data-alpha-kit=\"1\". Correggi il sorgente per recuperare l’anteprima."
-	}
+	},
+	"panelLimit": "Chiudi un’anteprima di documento HTML prima di aprirne un’altra. È possibile aprire fino a otto anteprime contemporaneamente."
 }

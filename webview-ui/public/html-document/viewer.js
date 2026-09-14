@@ -61,6 +61,10 @@
 		content.dataset.stale = message.stale ? "true" : "false"
 		if (typeof message.html !== "string") return
 		const state = previousState ?? capture()
+		// Preserve keyboard position only inside this active document. A refresh
+		// while the source editor is focused must never move focus into the preview.
+		const focusedId =
+			document.hasFocus() && content.contains(document.activeElement) ? document.activeElement.id : ""
 		previousState = undefined
 		disposeKit?.()
 		content.innerHTML = message.html
@@ -78,6 +82,8 @@
 				node.dispatchEvent(new Event("input", { bubbles: true }))
 			}
 		}
+		if (focusedId)
+			[...content.querySelectorAll("[id]")].find((node) => node.id === focusedId)?.focus({ preventScroll: true })
 		requestAnimationFrame(() => {
 			window.scrollTo(0, Number.isFinite(state?.scroll) ? Math.max(0, state.scroll) : 0)
 			persist()

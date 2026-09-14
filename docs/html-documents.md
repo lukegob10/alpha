@@ -74,7 +74,8 @@ add their own table/chart limits. The host reads at most 512 KiB + 1 byte per
 refresh and disposes watchers, editor subscriptions, timers and widget listeners
 on close. At most one refresh is running and one replacement is scheduled per
 panel; stale results are discarded. Parsing runs in a worker (64 MiB old-generation
-heap, 1.5 s deadline), terminated on completion, cancellation or panel closure.
+heap, 1.5 s deadline), retained warm after success and terminated on failure,
+cancellation or panel closure.
 At most eight document panels may be open at once; close one to open another.
 
 Measurement fixtures: small = complete review example; large = 1,000 rows × 5

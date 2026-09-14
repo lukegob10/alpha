@@ -11,10 +11,11 @@
 		"scope": "Belge, açık çalışma alanının dışında. Özgün çalışma alanı klasörünü yeniden açın.",
 		"missing": "Kaynak dosyası eksik veya okunamıyor. Önizlemeyi kurtarmak için dosyayı özgün yoluna geri yükleyin.",
 		"path": "Çalışma alanında yerel bir .html veya .htm dosyası kullanın.",
-		"size": "Belge görüntüleyici sınırlarını aşıyor (512 KiB, 12.000 öğe, 64 düzey veya 32 bileşen). Boyutunu küçültün.",
+		"size": "Belge görüntüleyici sınırlarını aşıyor (512 KiB, 12.000 öğe, 64 düzey veya 32 bileşen). Boyutunu küçültün. Ayrıştırma süresi sınırı da aşılmış olabilir.",
 		"version": "Bu belge alpha-document sürüm 1 gerektiriyor. Önizlemeyi kurtarmak için sürüm işaretini düzeltin.",
 		"reference": "Bir kaynak başvurusu hatalı. Çalışma alanına göreli bir yol ve pozitif satır numarası kullanın.",
 		"data": "Bileşen verileri geçersiz bir sayı içeriyor. Önizlemeyi kurtarmak için kaynağı düzeltin.",
 		"format": "Belge bir başlık ve data-alpha-kit=\"1\" içeren tek bir main.alpha-doc öğesi gerektiriyor. Önizlemeyi kurtarmak için kaynağı düzeltin."
-	}
+	},
+	"panelLimit": "Başka bir önizleme açmadan önce bir HTML belgesi önizlemesini kapatın. Aynı anda en fazla sekiz önizleme açık olabilir."
 }

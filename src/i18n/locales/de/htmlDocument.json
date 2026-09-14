@@ -11,10 +11,11 @@
 		"scope": "Das Dokument liegt außerhalb des geöffneten Arbeitsbereichs. Öffnen Sie seinen ursprünglichen Arbeitsbereichsordner erneut.",
 		"missing": "Die Quelldatei fehlt oder ist nicht lesbar. Stellen Sie sie am ursprünglichen Pfad wieder her, um die Vorschau wiederherzustellen.",
 		"path": "Verwenden Sie eine lokale .html- oder .htm-Datei im Arbeitsbereich.",
-		"size": "Das Dokument überschreitet die Vorschaugrenzen (512 KiB, 12.000 Elemente, 64 Ebenen oder 32 Widgets). Verkleinern Sie es.",
+		"size": "Das Dokument überschreitet die Vorschaugrenzen (512 KiB, 12.000 Elemente, 64 Ebenen oder 32 Widgets). Verkleinern Sie es. Möglicherweise wurde auch das Zeitlimit für die Verarbeitung überschritten.",
 		"version": "Dieses Dokument benötigt alpha-document Version 1. Korrigieren Sie die Versionsmarkierung, um die Vorschau wiederherzustellen.",
 		"reference": "Ein Quellverweis ist fehlerhaft. Verwenden Sie einen arbeitsbereichsrelativen Pfad und eine positive Zeilennummer.",
 		"data": "Widget-Daten enthalten eine ungültige Zahl. Korrigieren Sie die Quelldatei, um die Vorschau wiederherzustellen.",
 		"format": "Das Dokument benötigt einen Titel und genau ein main.alpha-doc-Element mit data-alpha-kit=\"1\". Korrigieren Sie die Quelldatei, um die Vorschau wiederherzustellen."
-	}
+	},
+	"panelLimit": "Schließen Sie eine HTML-Dokumentvorschau, bevor Sie eine weitere öffnen. Bis zu acht Vorschauen können gleichzeitig geöffnet sein."
 }

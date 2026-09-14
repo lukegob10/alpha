@@ -11,10 +11,11 @@
 		"scope": "Dokumen berada di luar ruang kerja yang terbuka. Buka kembali folder ruang kerja aslinya.",
 		"missing": "File sumber hilang atau tidak dapat dibaca. Pulihkan di lokasi aslinya untuk memulihkan pratinjau ini.",
 		"path": "Gunakan file .html atau .htm lokal dalam ruang kerja.",
-		"size": "Dokumen melebihi batas penampil (512 KiB, 12.000 elemen, 64 tingkat, atau 32 widget). Kurangi ukurannya.",
+		"size": "Dokumen melebihi batas penampil (512 KiB, 12.000 elemen, 64 tingkat, atau 32 widget). Kurangi ukurannya. Batas waktu penguraian mungkin juga telah terlampaui.",
 		"version": "Dokumen ini memerlukan alpha-document versi 1. Perbaiki penanda versinya untuk memulihkan pratinjau.",
 		"reference": "Referensi sumber tidak valid. Gunakan jalur relatif terhadap ruang kerja dan nomor baris positif.",
 		"data": "Data widget berisi angka yang tidak valid. Perbaiki sumber untuk memulihkan pratinjau.",
 		"format": "Dokumen memerlukan judul dan satu elemen main.alpha-doc dengan data-alpha-kit=\"1\". Perbaiki sumber untuk memulihkan pratinjau."
-	}
+	},
+	"panelLimit": "Tutup salah satu pratinjau dokumen HTML sebelum membuka yang lain. Maksimal delapan pratinjau dapat terbuka sekaligus."
 }

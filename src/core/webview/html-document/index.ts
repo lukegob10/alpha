@@ -20,8 +20,15 @@ export async function openHtmlDocumentLink(link: unknown): Promise<void> {
 	}
 	try {
 		await (await viewer()).open(target)
-	} catch {
-		await vscode.window.showErrorMessage(t("htmlDocument:openError"))
+	} catch (error) {
+		console.warn("[HtmlDocument] Unable to open document link", error)
+		await vscode.window.showErrorMessage(
+			t(
+				error instanceof Error && error.message === "panelLimit"
+					? "htmlDocument:panelLimit"
+					: "htmlDocument:openError",
+			),
+		)
 	}
 }
 
@@ -37,8 +44,15 @@ export function registerHtmlDocumentViewer(context: vscode.ExtensionContext): vo
 			}
 			try {
 				await (await viewer()).open({ uri: uri.toString() })
-			} catch {
-				await vscode.window.showErrorMessage(t("htmlDocument:openError"))
+			} catch (error) {
+				console.warn("[HtmlDocument] Unable to preview source", error)
+				await vscode.window.showErrorMessage(
+					t(
+						error instanceof Error && error.message === "panelLimit"
+							? "htmlDocument:panelLimit"
+							: "htmlDocument:openError",
+					),
+				)
 			}
 		}),
 	)

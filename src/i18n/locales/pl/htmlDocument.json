@@ -11,10 +11,11 @@
 		"scope": "Dokument znajduje się poza otwartym obszarem roboczym. Otwórz ponownie jego pierwotny folder roboczy.",
 		"missing": "Brak pliku źródłowego lub nie można go odczytać. Przywróć go pod pierwotną ścieżką, aby odzyskać podgląd.",
 		"path": "Użyj lokalnego pliku .html lub .htm w obszarze roboczym.",
-		"size": "Dokument przekracza limity przeglądarki (512 KiB, 12 000 elementów, 64 poziomy lub 32 widżety). Zmniejsz jego rozmiar.",
+		"size": "Dokument przekracza limity przeglądarki (512 KiB, 12 000 elementów, 64 poziomy lub 32 widżety). Zmniejsz jego rozmiar. Mógł również zostać przekroczony limit czasu parsowania.",
 		"version": "Dokument wymaga alpha-document w wersji 1. Popraw znacznik wersji, aby odzyskać podgląd.",
 		"reference": "Odwołanie do źródła jest nieprawidłowe. Użyj ścieżki względnej wobec obszaru roboczego i dodatniego numeru wiersza.",
 		"data": "Dane widżetu zawierają nieprawidłową liczbę. Popraw źródło, aby odzyskać podgląd.",
 		"format": "Dokument wymaga tytułu i jednego elementu main.alpha-doc z data-alpha-kit=\"1\". Popraw źródło, aby odzyskać podgląd."
-	}
+	},
+	"panelLimit": "Zamknij podgląd dokumentu HTML przed otwarciem kolejnego. Jednocześnie może być otwartych maksymalnie osiem podglądów."
 }
