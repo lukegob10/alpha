@@ -119,6 +119,8 @@ and uncertainty notes, and a table caption. Every table remains visible and
 accessible. Invalid or empty data retains the table and adds an actionable
 explanation. Inspect points with keyboard focus or pointer hover; exact labels
 include category, series, value, and unit. Do not use charts as the sole evidence.
+Large or very small axis ticks use scientific notation; rounded ticks carry `≈`.
+Inspection labels and the canonical table retain the exact supplied values.
 Keep labels concise; full labels remain in the table. Bar charts use zero baseline.
 Charts retain a readable minimum width inside their own keyboard-focusable scroll
 region at narrow widths and increased text zoom. The surrounding document wraps.

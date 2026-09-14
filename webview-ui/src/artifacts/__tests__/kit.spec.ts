@@ -43,6 +43,12 @@ afterEach(() => {
 })
 
 describe("Alpha HTML kit tables", () => {
+	it("enhances nested wrappers only once", () => {
+		const { root, mount } = fixture(`<section data-alpha-table>${table}</section>`)
+		mount()
+		expect(root.querySelectorAll(".kit-status")).toHaveLength(1)
+		expect(root.querySelectorAll("thead button")).toHaveLength(2)
+	})
 	it("sorts complete rows stably, keeping missing values last in both directions", () => {
 		const { root, mount } = fixture(table)
 		const rows = [...root.querySelectorAll("tbody tr")]
@@ -153,6 +159,24 @@ describe("Alpha HTML kit charts", () => {
 			expect(Number(bar.getAttribute("height"))).toBeGreaterThan(0)
 			expect(bar.getAttribute("tabindex")).toBe("0")
 		}
+	})
+
+	it.each(['<th data-unit=" ">Completed</th>', '<th data-unit="requests"> </th>'])(
+		"rejects chart metadata without meaningful labels",
+		(header) => {
+			const { root, mount } = fixture(chart(["1"]).replace('<th data-unit="requests">Completed</th>', header))
+			mount()
+			expect(root.querySelector("svg")).toBeNull()
+			expect(root.querySelector("table")).not.toBeNull()
+		},
+	)
+
+	it("uses bounded axis labels but preserves exact inspection values", () => {
+		const { root, mount } = fixture(chart(["-1000000000000", "123456789012"]))
+		mount()
+		const labels = [...root.querySelectorAll('svg text[text-anchor="end"]')].map((node) => node.textContent)
+		expect(labels).toEqual(["-1e+12", "≈1.23e+11"])
+		expect(root.querySelectorAll("svg circle")[1].getAttribute("aria-label")).toContain("123456789012 requests")
 	})
 
 	it.each(

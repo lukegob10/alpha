@@ -56,6 +56,7 @@
 
 		for (const wrapper of root.querySelectorAll("[data-alpha-table]")) {
 			const table = wrapper.querySelector("table")
+			if (table && table.closest("[data-alpha-table]") !== wrapper) continue
 			const heads = table ? Array.from(table.tHead?.rows[0]?.cells ?? []) : []
 			const body = table?.tBodies[0]
 			const rows = Array.from(body?.rows ?? [])
@@ -154,6 +155,7 @@
 
 		for (const figure of root.querySelectorAll("[data-alpha-chart]")) {
 			const table = figure.querySelector("table[data-alpha-chart-data]")
+			if (table && table.closest("[data-alpha-chart]") !== figure) continue
 			const heads = Array.from(table?.tHead?.rows[0]?.cells ?? [])
 			const rows = Array.from(table?.tBodies[0]?.rows ?? [])
 			const type = figure.dataset.chartType
@@ -177,10 +179,10 @@
 				table.tBodies.length !== 1 ||
 				!["bar", "line"].includes(type) ||
 				!figure.querySelector("figcaption")?.textContent.trim() ||
-				!unit ||
+				!unit?.trim() ||
 				series.length < 1 ||
 				series.length > 3 ||
-				series.some((head) => head.getAttribute("data-unit") !== unit) ||
+				series.some((head) => !head.textContent.trim() || head.getAttribute("data-unit") !== unit) ||
 				rows.length < 1 ||
 				rows.length > 120 ||
 				rows.some((row) => row.cells.length !== heads.length || !row.cells[0].textContent.trim()) ||
@@ -220,11 +222,21 @@
 				max = Math.max(0, ...all)
 			const span = max - min || 1
 			const y = (value) => 245 - ((value - min) / span) * 205
-			const x = (index) => 70 + ((index + 0.5) / rows.length) * 610
-			shape("line", { x1: 60, x2: 690, y1: y(0), y2: y(0), class: "axis" })
-			for (const value of new Set([min, max]))
-				shape("text", { x: 55, y: y(value) + 4, "text-anchor": "end" }, String(value))
-			shape("text", { x: 60, y: 18 }, unit)
+			const x = (index) => 100 + ((index + 0.5) / rows.length) * 590
+			shape("line", { x1: 95, x2: 705, y1: y(0), y2: y(0), class: "axis" })
+			for (const value of new Set([min, max])) {
+				const magnitude = Math.abs(value)
+				const tick =
+					magnitude >= 10000 || (magnitude > 0 && magnitude < 0.001)
+						? value.toExponential(2).replace(/\.?0+e/, "e")
+						: String(Number(value.toPrecision(3)))
+				shape(
+					"text",
+					{ x: 85, y: y(value) + 4, "text-anchor": "end" },
+					`${Number(tick) === value ? "" : "≈"}${tick}`,
+				)
+			}
+			shape("text", { x: 95, y: 18 }, unit)
 			for (const [s, head] of series.entries()) {
 				shape("line", {
 					x1: 65 + s * 205,
