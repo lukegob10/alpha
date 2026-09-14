@@ -98,17 +98,32 @@ the corresponding light/narrow/refresh captures independently:
   actual-host regression test added by NOR-66.
 
 These are concrete walkthrough observations, not a benchmark or a human usability
-study. Focus retention during refresh remains a separate host check. The narrow
+study. NOR-66 subsequently verified focused-filter retention during external
+refresh with its focus-cache correction `7e74d975`. The narrow
 light capture and walkthrough details are also attached/commented on NOR-65.
+
+## Same-content Alpha Markdown comparison
+
+NOR-66 streamed the exact `review-baseline.md` through a fake provider into actual
+Alpha chat in the same VS Code 1.122.1 host. This was Alpha's Markdown flow,
+not VS Code's built-in Markdown preview. NOR-65 independently inspected
+`chat-markdown-top.png` and `chat-markdown-source.png`.
+
+| Reader task                      | Alpha chat Markdown                                                             | HTML viewer                                                                |
+| -------------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Locate the recommendation        | Chat initially followed completion; one reset-to-top exposed the recommendation | Recommendation visible on initial opening                                  |
+| Inspect first finding's evidence | One locator-assisted scroll/focus exposed the same finding and source reference | Same finding, evidence and source reference appear in the findings section |
+| Reach the source                 | Actual keyboard Enter opened `resolveDestination.ts` at line 7, column 1        | Source activation opened the same file and line                            |
+
+Both formats provide the conclusion, evidence and working exact-source access.
+The HTML document avoided the initial return-to-top observed in the completed
+chat. No general claim of fewer actions or faster reading follows: evidence
+targeting was assisted by a DOM locator, viewport widths differed (chat was about
+300px), and this was neither timed nor randomized. This satisfies a functional
+same-content comparison; a human discoverability/usability study was not run.
 
 ## Remaining integrated release evidence
 
-- Resolve the viewer's focus-retention check on external refresh. The key theme,
-  resize, zoom, keyboard inspection and source/filter walkthrough observations
-  are recorded above; they do not exhaust every document/widget combination.
-- Compare the same review in Alpha's Markdown/diff flow and HTML viewer. Record
-  observed steps to identify the conclusion, inspect evidence, and open the exact
-  source. No claim of fewer steps or improved usability has yet been measured.
 - Re-run and verify the integrated VSIX with NOR-66 viewer, extension localization
   placement, and NOR-67 bundled skill; ensure packaged files match final source.
 
