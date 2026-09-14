@@ -81,11 +81,31 @@ the review filter ID/label association and disclosure IDs. `0f5d44d` simplifies
 the short spec comparison to a static table, retaining all alternatives together.
 Those example follow-ups require inclusion in the final combined package.
 
+NOR-66 subsequently performed the following actual-host checks; NOR-65 inspected
+the corresponding light/narrow/refresh captures independently:
+
+- Default Light Modern at zoom 0; review inner width 378 after dragging the real
+  editor-group divider, with no page overflow.
+- Default High Contrast at `window.zoomLevel=1` (120%); spec inner width 852,
+  with no page overflow.
+- Real keyboard Tab from the first report point moved to Jan 2024, exposing
+  the exact 3.1% inspection label.
+- Keyboard-entered review filter `write` and an open disclosure survived an
+  external source refresh acknowledged in 371 ms: two visible rows, the filter
+  value, disclosure state and `scrollY=2818` were retained.
+- Source reference opened the fixture at line 7, column 1; source-to-preview
+  command roundtrip passed after a coherent build/restart, with a three-document
+  actual-host regression test added by NOR-66.
+
+These are concrete walkthrough observations, not a benchmark or a human usability
+study. Focus retention during refresh remains a separate host check. The narrow
+light capture and walkthrough details are also attached/commented on NOR-65.
+
 ## Remaining integrated release evidence
 
-- Complete the actual viewer keyboard/theme/resize/zoom walkthrough, including
-  light theme and refresh-state retention; record settings and observed actions.
-  Representative captures are attached, but screenshots alone do not prove these behaviors.
+- Resolve the viewer's focus-retention check on external refresh. The key theme,
+  resize, zoom, keyboard inspection and source/filter walkthrough observations
+  are recorded above; they do not exhaust every document/widget combination.
 - Compare the same review in Alpha's Markdown/diff flow and HTML viewer. Record
   observed steps to identify the conclusion, inspect evidence, and open the exact
   source. No claim of fewer steps or improved usability has yet been measured.
