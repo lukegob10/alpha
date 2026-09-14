@@ -63,6 +63,9 @@ and intentionally do not claim those fixture files exist in the reader's repo.
 
 ## Tables
 
+Use plain semantic tables for short comparisons that should be read together.
+Add enhancement only when sorting or filtering helps answer a real reader question.
+
 Wrap one rectangular table in `section[data-alpha-table]`. Use one thead row,
 one tbody, scope attributes, and a caption. Add `data-sort="text"` or `"number"`
 to sortable th cells. Numeric cells use `data-sort-value="12.5"`, independent
