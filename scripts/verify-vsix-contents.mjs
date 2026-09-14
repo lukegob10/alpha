@@ -48,6 +48,7 @@ const requiredEntries = [
 	"extension/webview-ui/build/html-document/viewer.css",
 	"extension/package.nls.json",
 	"extension/dist/extension.js",
+	"extension/dist/workers/sanitizeDocument.js",
 	"extension/webview-ui/audio/celebration.wav",
 	"extension/webview-ui/build/assets/index.js",
 	"extension/assets/codicons/codicon.ttf",

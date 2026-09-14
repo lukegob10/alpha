@@ -2918,6 +2918,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			registry: surface.registry,
 			policy: surface.policy,
 			readGrant: surface.readGrant,
+			bundledSkillExtensionPath: this.providerRef.deref()?.contextProxy?.extensionUri?.fsPath,
 			mode,
 			customModes: state?.customModes,
 			experiments: state?.experiments,

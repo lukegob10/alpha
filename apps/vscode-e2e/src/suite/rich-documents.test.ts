@@ -7,7 +7,7 @@ import type { ClineMessage, SkillMetadata } from "@alpha-code/types"
 
 import { readBoundedJson } from "../scenarios/extensionWorkflowHost"
 import { inspectToolTransactions } from "../scenarios/transactionAssertions"
-import { withBoundedFixtureCleanup } from "./proportional-context-support"
+import { createCompletionReviewAcknowledger, withBoundedFixtureCleanup } from "./proportional-context-support"
 import { waitFor } from "./utils"
 
 interface DocumentTask {
@@ -15,6 +15,8 @@ interface DocumentTask {
 	clineMessages: ClineMessage[]
 	taskAsk?: ClineMessage
 	didComplete: boolean
+	approveAsk(): void
+	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
 }
 
@@ -84,7 +86,7 @@ class DocumentScriptedAI {
 
 const html = (revision: number) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="alpha-document" content="1">
-<title>Document revision fixture</title></head><body><main class="alpha-doc" data-alpha-kit="1">
+<title>Document revision fixture ${revision}</title></head><body><main class="alpha-doc" data-alpha-kit="1">
 <h1>Keep revisions in one document</h1><p>This deterministic test spec defines fixture behavior, not production measurements.</p>
 <section><h2>Acceptance criteria</h2><ol><li>Open the HTML in Alpha.</li><li>Revise the same source file.</li></ol></section>
 <section><h2>Revision evidence</h2><p>Scripted revision ${revision}; no measured performance claims.</p></section>
@@ -104,14 +106,40 @@ suite("Rich document authoring through captured task tools", function () {
 				await fs.realpath(vscode.workspace.workspaceFolders![0]!.uri.fsPath),
 				await fs.realpath(workspace),
 			)
-			const extension = vscode.extensions.all.find((item) => item.exports === globalThis.api)
+			const extension = vscode.extensions.all.find((item) => item.isActive && item.exports === globalThis.api)
 			assert.ok(extension, "Resolve packaged resources from the active extension, never a developer checkout")
+			if (process.env.ALPHA_E2E_INSTALLED_EXTENSION_DIR) {
+				assert.equal(
+					await fs.realpath(extension.extensionPath),
+					await fs.realpath(process.env.ALPHA_E2E_INSTALLED_EXTENSION_DIR),
+				)
+				assert.equal(extension.packageJSON.version, process.env.ALPHA_E2E_INSTALLED_EXTENSION_VERSION)
+			}
 			const provider = (globalThis.api as unknown as { sidebarProvider: DocumentProvider }).sidebarProvider
 			const manager = provider.getSkillsManager()
 			const configuration = globalThis.api.getConfiguration()
 			const relativeFile = `rich-document-${source}-${randomUUID()}.html`
 			const documentPath = path.join(workspace, relativeFile)
 			const uri = vscode.Uri.file(documentPath)
+			const readDocument = async () => (await fs.readFile(documentPath, "utf8")).replace(/\r\n/g, "\n")
+			const documentTabs = () =>
+				vscode.window.tabGroups.all
+					.flatMap((group) => group.tabs)
+					.filter(
+						(tab) =>
+							tab.input instanceof vscode.TabInputWebview &&
+							tab.input.viewType.includes("alpha.htmlDocument"),
+					)
+			const waitForRevision = async (revision: number) => {
+				await waitFor(
+					() => documentTabs().some((tab) => tab.label === `Document revision fixture ${revision}`),
+					{
+						timeout: 15_000,
+						description: `document viewer accepted revision ${revision}`,
+					},
+				)
+				assert.equal(documentTabs().length, 1, "The same file must retain one preview panel")
+			}
 			const overrideDirectory = path.join(workspace, ".alpha", "skills", "rich-documents")
 			const overridePath = path.join(overrideDirectory, "SKILL.md")
 			const marker = "Fixture project override: preserve semantic HTML and revise the same source."
@@ -179,6 +207,7 @@ suite("Rich document authoring through captured task tools", function () {
 					},
 				})
 				const settle = async (minimumRequests: number) => {
+					const acknowledge = createCompletionReviewAcknowledger()
 					await waitFor(
 						() => {
 							const task = provider.getLiveTask(taskId)
@@ -187,22 +216,37 @@ suite("Rich document authoring through captured task tools", function () {
 									["completion_result", "tool"].includes(task.taskAsk.ask ?? ""),
 									`Unexpected task boundary: ${task.taskAsk.ask}`,
 								)
+							acknowledge(task)
 							return state.requests >= minimumRequests && task?.didComplete === true
 						},
 						{ timeout: 60_000, description: "document task completion" },
 					)
+					await waitFor(
+						async () => {
+							const task = provider.getLiveTask(taskId)!
+							await task.waitForTermination()
+							await task.flushApiConversationHistoryPersistence()
+							return true
+						},
+						{ timeout: 30_000, description: "document task durable settlement" },
+					)
 				}
 				await settle(4)
-				assert.equal(await fs.readFile(documentPath, "utf8"), html(1))
+				assert.equal(await readDocument(), html(1))
 				assert.ok(
 					state.inputs[1]!.includes(source === "builtin" ? "Rich documents" : marker),
 					"The real skill result must reach the provider",
+				)
+				assert.ok(
+					state.inputs[2]!.includes(source === "builtin" ? "data-alpha-chart" : marker),
+					"The referenced resource must be read through the real file tool",
 				)
 				assert.ok(
 					provider.getLiveTask(taskId)!.clineMessages.some((message) => message.text?.includes(state.link)),
 				)
 				assert.ok((await vscode.commands.getCommands(true)).includes("alpha.previewHtmlDocument"))
 				await vscode.commands.executeCommand("alpha.previewHtmlDocument", uri)
+				await waitForRevision(1)
 				state.plan = [
 					{ name: "read_file", arguments: { path: relativeFile } },
 					{
@@ -221,7 +265,7 @@ suite("Rich document authoring through captured task tools", function () {
 				)
 				await settle(7)
 				assert.equal(
-					await fs.readFile(documentPath, "utf8"),
+					await readDocument(),
 					html(2).replace('name="alpha-document" content="1"', 'name="alpha-document" content="999"'),
 				)
 				await vscode.commands.executeCommand("alpha.previewHtmlDocument", uri)
@@ -233,12 +277,16 @@ suite("Rich document authoring through captured task tools", function () {
 					"Correct the unsupported document marker using the shipped contract in the same document. Do not reset this task.",
 				)
 				await settle(10)
-				assert.equal(await fs.readFile(documentPath, "utf8"), html(3))
+				assert.equal(await readDocument(), html(3))
+				await waitForRevision(3)
+				await vscode.window.tabGroups.close(documentTabs())
 				await vscode.commands.executeCommand("alpha.previewHtmlDocument", uri)
+				await waitForRevision(3)
 				await provider.getLiveTask(taskId)!.flushApiConversationHistoryPersistence()
 				const { taskDirPath } = await provider.getTaskWithId(taskId)
 				const history = await readBoundedJson(path.join(taskDirPath, "api_conversation_history.json"))
 				const transactions = inspectToolTransactions(history)
+				assert.ok(!JSON.stringify(history).includes('"is_error":true'), "All document tool calls must succeed")
 				assert.deepEqual(transactions.errors, [])
 				assert.equal(transactions.callCount, 7)
 				assert.equal(transactions.resultCount, 7)
@@ -254,6 +302,8 @@ suite("Rich document authoring through captured task tools", function () {
 							extensionPath: extension.extensionPath,
 							sourceRevisions: [1, "unsupported-version", 3],
 							previewCommandDispatched: true,
+							viewerAcceptedRevisions: [1, 3],
+							sameFileRefreshAndReopen: true,
 							unverified: [
 								"webview DOM refresh",
 								"extension reload",
@@ -275,6 +325,9 @@ suite("Rich document authoring through captured task tools", function () {
 					)
 				}
 			}, [
+				async () => {
+					await vscode.window.tabGroups.close(documentTabs())
+				},
 				() => globalThis.api.clearCurrentTask(),
 				() => state.removeRegistration?.(),
 				async () => {

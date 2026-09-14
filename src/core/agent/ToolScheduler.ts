@@ -3,6 +3,7 @@ import { serializeError } from "serialize-error"
 import path from "path"
 import { createHash } from "crypto"
 import stringify from "safe-stable-stringify"
+import { isBundledSkillResource } from "../../services/skills/bundledSkillResources"
 
 import type { ClineAsk, ClineAskResponse, ClineSay, ModeConfig, ToolProgressStatus } from "@alpha-code/types"
 
@@ -49,6 +50,8 @@ export interface ToolSchedulerOptions {
 	includedTools?: string[]
 	policy?: ToolPolicySnapshot
 	readGrant?: TaskReadGrant
+	/** Trusted extension adapter location; admits only the packaged authoring reference allowlist for read_file. */
+	bundledSkillExtensionPath?: string
 	signal?: AbortSignal
 	/** Optional test/host override for mode and disabled-tool validation. */
 	validateCall?: (call: AgentToolCall, toolCall: ToolUse<any>) => void
@@ -755,7 +758,8 @@ export class ToolScheduler {
 					? response.items.filter((item) => item?.type === "tool_call")
 					: []
 		).map(normalizeAgentToolCall)
-		const prepared = calls.map((call, index) => this.prepareCall(call, index))
+		const prepared: PreparedCall[] = []
+		for (const [index, call] of calls.entries()) prepared.push(await this.prepareCall(call, index))
 		const results = new Array<ToolSchedulerResult | undefined>(prepared.length)
 
 		if (prepared.length === 0) {
@@ -1147,7 +1151,7 @@ export class ToolScheduler {
 		}
 	}
 
-	private prepareCall(call: AgentToolCall, index: number): PreparedCall {
+	private async prepareCall(call: AgentToolCall, index: number): Promise<PreparedCall> {
 		const prepared: PreparedCall = { index, call }
 		const reject = (
 			reason: ToolFailureMetadata["reason"],
@@ -1199,7 +1203,11 @@ export class ToolScheduler {
 			if (
 				typeof candidate === "string" &&
 				candidate &&
-				!isPathAllowed(this.options.policy, candidate, this.executionHost.cwd ?? "")
+				!isPathAllowed(this.options.policy, candidate, this.executionHost.cwd ?? "") &&
+				!(
+					canonicalName === "read_file" &&
+					(await isBundledSkillResource(this.options.bundledSkillExtensionPath, candidate))
+				)
 			) {
 				prepared.validationError = `Path argument "${candidate}" is outside the allowed workspace roots.`
 				reject("policy_denied", "workspace")

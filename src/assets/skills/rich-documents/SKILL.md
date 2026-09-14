@@ -15,7 +15,7 @@ Lead with the conclusion, decision, or recommendation. Choose the example whose 
 
 Distinguish measured facts, estimates, illustrative examples, and missing information. Never invent values, imply that sample data describes the user's project, or add empty panels to fill a template. Cite actual evidence using inspectable tables, source links, and concise notes. Charts are optional: use them when comparisons or trends become easier to understand. Preserve the semantic data table and a text takeaway so the information remains accessible without widget execution. Use only the reference's supported table/chart schemas, finite numeric values, explicit units, and missing-value conventions.
 
-Let long content flow naturally; use headings, anchor navigation, and native details for supporting evidence. Keep the conclusion and key findings visible. Avoid fixed-height prose panels and decorative controls. Every interaction must help the reader inspect the content.
+Let long content flow naturally; use headings, anchor navigation, and native details for supporting evidence. Keep the conclusion and key findings visible. Avoid fixed-height prose panels and decorative controls. Every interaction must help the reader inspect the content. Use plain semantic tables for small static schemas or comparisons; add `data-alpha-table` only when sorting or filtering is useful.
 
 ## Write, preview, and revise
 

@@ -1,7 +1,7 @@
 import * as fs from "fs/promises"
 import * as path from "path"
 import { tmpdir } from "os"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { Task } from "../../task/Task"
 import { AskIgnoredError } from "../../task/AskIgnoredError"
@@ -90,6 +90,119 @@ function resultIds(task: Task): string[] {
 }
 
 describe("ToolScheduler", () => {
+	describe("packaged skill reference reads", () => {
+		let fixture: string
+		let extension: string
+		let reference: string
+		let task: Task
+		let registry: ToolRegistry
+		let execute: ReturnType<typeof vi.fn>
+
+		beforeEach(async () => {
+			fixture = await fs.mkdtemp(path.join(tmpdir(), "alpha-bundled-read-"))
+			extension = path.join(fixture, "extension")
+			reference = path.join(extension, "webview-ui/build/artifact-kit/v1/reference.md")
+			await fs.mkdir(path.dirname(reference), { recursive: true })
+			await fs.writeFile(reference, "Packaged authoring reference")
+			task = makeTask()
+			Object.assign(task, { cwd: path.join(fixture, "workspace") })
+			registry = new ToolRegistry({ includeBuiltIns: false })
+			execute = vi.fn(async ({ callbacks }) => {
+				if (await callbacks.askApproval("tool", "read resource")) callbacks.pushToolResult("Resource read")
+			})
+			for (const name of ["read_file", "write_to_file", "list_files", "search_files"]) {
+				registry.register(descriptor(name, "serial", execute))
+			}
+		})
+
+		afterEach(async () => {
+			await fs.rm(fixture, { recursive: true, force: true })
+		})
+
+		const run = async (
+			name: string,
+			args: Record<string, unknown>,
+			extensionPath: string | undefined = extension,
+			disabled = false,
+		) => {
+			return new ToolScheduler({
+				task,
+				registry,
+				mode: "code",
+				bundledSkillExtensionPath: extensionPath,
+				policy: createToolPolicySnapshot({
+					visibleTools: [name],
+					disabledTools: disabled ? [name] : [],
+					execution: { workspaceRoots: [task.cwd] },
+				}),
+				validateCall: () => {},
+			}).run(response({ id: "resource", name, arguments: args }))
+		}
+
+		it("admits the installed reference through normal read approval without widening workspace roots", async () => {
+			const ask = vi.fn(async () => ({ response: "yesButtonClicked" as const }))
+			task.ask = ask
+			const outcome = await run("read_file", { path: reference })
+			expect(outcome.results[0].status).toBe("success")
+			expect(ask).toHaveBeenCalledTimes(1)
+			expect(execute).toHaveBeenCalledTimes(1)
+		})
+
+		it.each(["review", "spec", "report"])("admits only the installed %s example", async (example) => {
+			const file = path.join(path.dirname(reference), "examples", `${example}.html`)
+			await fs.mkdir(path.dirname(file), { recursive: true })
+			await fs.writeFile(file, "Example")
+			expect((await run("read_file", { files: [{ path: file }] })).results[0].status).toBe("success")
+		})
+
+		it("preserves denied approval and disabled-tool policy", async () => {
+			task.ask = vi.fn(async () => ({ response: "noButtonClicked" })) as Task["ask"]
+			expect((await run("read_file", { path: reference })).results[0].status).toBe("denied")
+			execute.mockClear()
+			expect((await run("read_file", { path: reference }, extension, true)).results[0].status).toBe("error")
+			expect(execute).not.toHaveBeenCalled()
+		})
+
+		it.each(["write_to_file", "list_files", "search_files"])(
+			"does not admit %s on an otherwise known resource",
+			async (name) => {
+				expect((await run(name, { path: reference })).results[0].status).toBe("error")
+				expect(execute).not.toHaveBeenCalled()
+			},
+		)
+
+		it("rejects arbitrary bundled files, traversal, mixed reads, and missing trusted installation", async () => {
+			for (const candidate of [
+				path.join(extension, "package.json"),
+				`${path.dirname(reference)}${path.sep}examples${path.sep}..${path.sep}reference.md`,
+			]) {
+				expect((await run("read_file", { path: candidate })).results[0].status).toBe("error")
+			}
+			expect(
+				(await run("read_file", { files: [{ path: reference }, { path: path.join(fixture, "secret") }] }))
+					.results[0].status,
+			).toBe("error")
+			expect((await run("read_file", { path: reference }, "")).results[0].status).toBe("error")
+			expect(execute).not.toHaveBeenCalled()
+		})
+
+		it("rejects a known example path when its parent directory is a symlink outside the bundle", async () => {
+			const outside = path.join(fixture, "outside")
+			await fs.mkdir(outside)
+			await fs.writeFile(path.join(outside, "review.html"), "Private content")
+			await fs.symlink(
+				outside,
+				path.join(path.dirname(reference), "examples"),
+				process.platform === "win32" ? "junction" : "dir",
+			)
+			expect(
+				(await run("read_file", { path: path.join(path.dirname(reference), "examples/review.html") }))
+					.results[0].status,
+			).toBe("error")
+			expect(execute).not.toHaveBeenCalled()
+		})
+	})
+
 	it("commits MCP validation failures as error receipts in provider history", async () => {
 		const task = makeTask()
 		Object.assign(task, {
