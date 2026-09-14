@@ -60,7 +60,7 @@ await writeArchive(destination, entries)</code></pre>
 						component; reject separators and reserved names. Independently verify that the resolved
 						destination is a child of the selected root. A display title is not a filesystem identifier.
 					</p>
-					<details>
+					<details id="review-regression-cases">
 						<summary>Regression cases and boundary conditions</summary>
 						<ul>
 							<li>
@@ -102,9 +102,14 @@ await writeArchive(destination, entries)</code></pre>
 			</section>
 			<section data-alpha-table aria-labelledby="coverage">
 				<h2 id="coverage">Review coverage</h2>
-				<label
+				<label for="review-file-filter"
 					>Filter reviewed files
-					<input type="search" data-alpha-filter disabled placeholder="Filename or result"
+					<input
+						id="review-file-filter"
+						type="search"
+						data-alpha-filter
+						disabled
+						placeholder="Filename or result"
 				/></label>
 				<div class="table-scroll">
 					<table>

@@ -81,9 +81,14 @@
 			</div>
 			<section data-alpha-table>
 				<h2>Alternatives and costs</h2>
-				<label
+				<label for="spec-alternatives-filter"
 					>Filter alternatives
-					<input type="search" data-alpha-filter disabled placeholder="Approach or tradeoff"
+					<input
+						id="spec-alternatives-filter"
+						type="search"
+						data-alpha-filter
+						disabled
+						placeholder="Approach or tradeoff"
 				/></label>
 				<div class="table-scroll">
 					<table>
@@ -158,7 +163,7 @@
 						pass in the supported VS Code host.
 					</li>
 				</ul>
-				<details>
+				<details id="spec-rollout">
 					<summary>Rollout and rollback</summary>
 					<p>
 						Ship the first contract version with the viewer and authoring reference together. Exercise the
