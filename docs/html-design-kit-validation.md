@@ -60,10 +60,32 @@ code scrolls within its own block. Temporary browser viewport override was reset
 These are standalone browser observations, **not** the required VS Code host
 inspection. No screenshot-only usability claim is made.
 
-## Outstanding integrated release evidence
+## Actual-host inspection update
 
-- Inspect all three examples in the actual HTML viewer on VS Code 1.122.1;
-  attach representative host screenshots and keyboard/theme/resize/zoom observations.
+NOR-66 supplied Electron CDP captures from its isolated host; its harness asserts
+VS Code 1.122.1. NOR-65 independently inspected the review opening view, report
+opening/chart views, exact-source navigation, and spec high-contrast/zoom view.
+The review conclusion and decision are legible; the split report wraps cleanly,
+retains readable chart labels in its own scroll region, and keeps the data table
+visible. The spec opening composition remains readable in the captured contrast
+theme at increased size. No additional layout defect was visible in these captures.
+
+The source capture shows `src/export/resolveDestination.ts` at line 7, matching
+the fixture evidence. This corroborates the reported source action; it does not
+measure the interaction sequence or establish superiority over Markdown.
+Representative review, report, source and spec captures are attached to
+[NOR-65](https://linear.app/norval/issue/NOR-65).
+
+Host inspection found missing stable IDs in the example filter; `cc8d489` adds
+the review filter ID/label association and disclosure IDs. `0f5d44d` simplifies
+the short spec comparison to a static table, retaining all alternatives together.
+Those example follow-ups require inclusion in the final combined package.
+
+## Remaining integrated release evidence
+
+- Complete the actual viewer keyboard/theme/resize/zoom walkthrough, including
+  light theme and refresh-state retention; record settings and observed actions.
+  Representative captures are attached, but screenshots alone do not prove these behaviors.
 - Compare the same review in Alpha's Markdown/diff flow and HTML viewer. Record
   observed steps to identify the conclusion, inspect evidence, and open the exact
   source. No claim of fewer steps or improved usability has yet been measured.
