@@ -5,6 +5,9 @@
 	--doc-border: var(--vscode-editorGroup-border, #c7cdd4);
 	--doc-accent: var(--vscode-textLink-foreground, #145cac);
 	--doc-focus: var(--vscode-focusBorder, #145cac);
+	--doc-chart-1: var(--vscode-charts-blue, #1768ad);
+	--doc-chart-2: var(--vscode-charts-orange, #a34b12);
+	--doc-chart-3: var(--vscode-charts-purple, #8754b3);
 	color: var(--doc-fg);
 	background: var(--doc-bg);
 	font-family: var(--vscode-font-family, system-ui, sans-serif);
@@ -243,16 +246,16 @@
 	stroke: var(--doc-border);
 }
 .alpha-doc .kit-chart .series-0 {
-	stroke: var(--vscode-charts-blue, #1768ad);
-	fill: var(--vscode-charts-blue, #1768ad);
+	stroke: var(--doc-chart-1);
+	fill: var(--doc-chart-1);
 }
 .alpha-doc .kit-chart .series-1 {
-	stroke: var(--vscode-charts-orange, #a34b12);
-	fill: var(--vscode-charts-orange, #a34b12);
+	stroke: var(--doc-chart-2);
+	fill: var(--doc-chart-2);
 }
 .alpha-doc .kit-chart .series-2 {
-	stroke: var(--vscode-charts-purple, #8754b3);
-	fill: var(--vscode-charts-purple, #8754b3);
+	stroke: var(--doc-chart-3);
+	fill: var(--doc-chart-3);
 }
 .alpha-doc .kit-chart polyline[class] {
 	fill: none;
@@ -271,6 +274,9 @@
 		--doc-border: var(--vscode-editorGroup-border, #545d69);
 		--doc-accent: var(--vscode-textLink-foreground, #80bfff);
 		--doc-focus: var(--vscode-focusBorder, #80bfff);
+		--doc-chart-1: var(--vscode-charts-blue, #78bfff);
+		--doc-chart-2: var(--vscode-charts-orange, #efab71);
+		--doc-chart-3: var(--vscode-charts-purple, #c49af1);
 	}
 }
 @media (forced-colors: active) {
