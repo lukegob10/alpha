@@ -1,0 +1,13 @@
+{
+	"filter": "Zeilen filtern",
+	"sort": "Nach {column} sortieren",
+	"rows": "{visible} von {total} Zeilen",
+	"unsupported": "Diese Kit-Version wird nicht unterstützt. Öffnen Sie den Quelltext und verwenden Sie data-alpha-kit=\"1\".",
+	"invalidTable": "Die Tabellenfunktionen sind nicht verfügbar. Verwenden Sie eine rechteckige Tabelle mit einer Kopfzeile und höchstens 1.000 Zeilen und 20 Spalten.",
+	"invalidChart": "Die Diagrammfunktionen sind nicht verfügbar. Prüfen Sie die Datentabelle: höchstens 120 Zeilen, drei Datenreihen, eine gemeinsame Einheit und endliche Zahlenwerte; lassen Sie fehlende Werte leer.",
+	"invalidTabs": "Registerkarten sind nicht verfügbar. Geben Sie jedem Abschnitt eine eindeutige ID und eine Registerkartenbeschriftung.",
+	"missing": "Fehlend",
+	"inspect": "Die Diagrammwerte stehen in der Datentabelle. Fokussieren Sie einen dargestellten Wert, um ihn zu prüfen.",
+	"sortAscending": "aufsteigend",
+	"sortDescending": "absteigend"
+}

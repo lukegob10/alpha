@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="alpha-document" content="1" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Spec — isolated task documents</title>
+		<link rel="stylesheet" href="../kit.css" />
+		<script defer data-alpha-standalone src="../kit.js"></script>
+	</head>
+	<body>
+		<main class="alpha-doc" data-alpha-kit="1">
+			<header class="doc-header">
+				<p class="eyebrow">Implementation spec · design example</p>
+				<h1>A document belongs to a task, not to a browser session</h1>
+				<p class="lead">
+					Give saved HTML a stable identity and an isolated viewer while keeping the source an ordinary
+					editable file.
+				</p>
+				<p>
+					Status: proposed design. This example explains a decision; it is not the implementation contract for
+					a released feature.
+				</p>
+			</header>
+			<section class="summary">
+				<h2>Recommended approach</h2>
+				<p>
+					Store the document’s identity separately from its rendered content. Open an isolated preview from
+					the task record, load only the packaged design kit, and refresh from validated source changes. The
+					document itself receives no extension API.
+				</p>
+				<p>
+					<strong>Decision needed:</strong> adopt explicit source refresh for the first release. Automatic
+					refresh can follow once unsaved-editor and external-change behavior have a tested contract.
+				</p>
+			</section>
+			<section>
+				<h2>What a reader should be able to do</h2>
+				<ol>
+					<li>Reopen a saved task and find the same report, including after a window reload.</li>
+					<li>
+						Read conclusions, inspect tables and charts, and follow a source reference through the host’s
+						normal authorization boundary.
+					</li>
+					<li>Edit the HTML with the existing editor, save it, and deliberately refresh its preview.</li>
+				</ol>
+				<p>
+					A generated page cannot run its own scripts, fetch remote dependencies, invoke commands, or treat a
+					clicked path as permission to read an arbitrary file.
+				</p>
+			</section>
+			<div class="grid">
+				<section>
+					<h2>Identity and authority</h2>
+					<dl>
+						<dt><strong>Document identifier</strong></dt>
+						<dd>Opaque and stable within a task. A title is display text, never a storage key.</dd>
+						<dt><strong>Source location</strong></dt>
+						<dd>
+							Resolved and checked by the host. A renamed or missing file produces a recoverable
+							explanation.
+						</dd>
+						<dt><strong>Preview revision</strong></dt>
+						<dd>
+							Represents the last successfully loaded source. A failed refresh keeps that revision visible
+							with a clear stale-state notice.
+						</dd>
+					</dl>
+				</section>
+				<section>
+					<h2>Rendering boundary</h2>
+					<p>
+						HTML contributes semantic content and documented widget data. The host supplies theme values,
+						local kit assets, content policy, and permitted navigation.
+					</p>
+					<p>
+						The trusted runtime sorts rows and draws charts locally. It has no persistence responsibility
+						and cannot turn a read-only checklist into an approval workflow.
+					</p>
+				</section>
+			</div>
+			<section data-alpha-table>
+				<h2>Alternatives and costs</h2>
+				<label
+					>Filter alternatives
+					<input type="search" data-alpha-filter disabled placeholder="Approach or tradeoff"
+				/></label>
+				<div class="table-scroll">
+					<table>
+						<caption>
+							Choice is based on saved-task continuity and a small execution boundary.
+						</caption>
+						<thead>
+							<tr>
+								<th scope="col" data-sort="text">Approach</th>
+								<th scope="col">Benefit</th>
+								<th scope="col">Cost or limitation</th>
+								<th scope="col">Decision</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<th scope="row">Isolated HTML + packaged kit</th>
+								<td>Ordinary source edits; no per-document build</td>
+								<td>Widgets must stay within a documented vocabulary</td>
+								<td>Recommended</td>
+							</tr>
+							<tr>
+								<th scope="row">Markdown preview only</th>
+								<td>Existing reading and source-link flow</td>
+								<td>Less control over composed findings and interactive data</td>
+								<td>Keep available for ordinary text</td>
+							</tr>
+							<tr>
+								<th scope="row">Arbitrary page scripts</th>
+								<td>Unrestricted interactions</td>
+								<td>Much larger execution and resource boundary</td>
+								<td>Out of scope</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+			</section>
+			<section>
+				<h2>Refresh behavior</h2>
+				<ol>
+					<li>The reader saves the source and selects Refresh.</li>
+					<li>
+						The host resolves the document record and validates the current source against the supported
+						contract.
+					</li>
+					<li>A valid document replaces the preview as one revision; local sort/filter state resets.</li>
+					<li>
+						If parsing, lookup, or validation fails, the previous revision stays visible and the reader gets
+						an explanation with a source-edit recovery path.
+					</li>
+				</ol>
+				<aside class="callout">
+					<h3>Unresolved: unsaved editor contents</h3>
+					<p>
+						Use the saved file for the initial release. The viewer must say so when an editor contains
+						unsaved changes. Reading the editor buffer would need a separate definition of revision identity
+						and recovery after a reload.
+					</p>
+				</aside>
+			</section>
+			<section>
+				<h2>Acceptance and rollout</h2>
+				<ul class="checklist">
+					<li><strong>Required:</strong> a saved task reopens the same document after a reload.</li>
+					<li><strong>Required:</strong> malformed widget data leaves its semantic table readable.</li>
+					<li>
+						<strong>Required:</strong> content cannot override host controls or execute document scripts.
+					</li>
+					<li><strong>Required:</strong> missing source and unsupported versions explain how to recover.</li>
+					<li>
+						<strong>Required:</strong> keyboard navigation, contrast themes, narrow views, and text zoom
+						pass in the supported VS Code host.
+					</li>
+				</ul>
+				<details>
+					<summary>Rollout and rollback</summary>
+					<p>
+						Ship the first contract version with the viewer and authoring reference together. Exercise the
+						packaged examples before enabling generation guidance. If the viewer cannot load a contract
+						version, preserve the source and offer ordinary editing rather than silently attempting a newer
+						renderer.
+					</p>
+				</details>
+			</section>
+			<footer>
+				<p><a href="index.html">Example gallery</a></p>
+			</footer>
+		</main>
+	</body>
+</html>

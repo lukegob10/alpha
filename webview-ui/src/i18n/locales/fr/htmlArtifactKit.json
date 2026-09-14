@@ -1,0 +1,13 @@
+{
+	"filter": "Filtrer les lignes",
+	"sort": "Trier par {column}",
+	"rows": "{visible} lignes sur {total}",
+	"unsupported": "Cette version du kit n’est pas prise en charge. Ouvrez le code source et utilisez data-alpha-kit=\"1\".",
+	"invalidTable": "Les fonctions du tableau sont indisponibles. Utilisez un tableau rectangulaire avec une ligne d’en-tête et au maximum 1 000 lignes et 20 colonnes.",
+	"invalidChart": "Les fonctions du graphique sont indisponibles. Vérifiez le tableau de données : jusqu’à 120 lignes, trois séries, une unité commune et des valeurs numériques finies ; laissez les valeurs manquantes vides.",
+	"invalidTabs": "Les onglets sont indisponibles. Attribuez à chaque section un ID unique et un libellé d’onglet.",
+	"missing": "Manquant",
+	"inspect": "Les valeurs du graphique figurent dans le tableau de données. Placez le focus sur une valeur représentée pour l’examiner.",
+	"sortAscending": "croissant",
+	"sortDescending": "décroissant"
+}

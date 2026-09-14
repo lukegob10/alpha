@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="alpha-document" content="1" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Review — task export boundary</title>
+		<link rel="stylesheet" href="../kit.css" />
+		<script defer data-alpha-standalone src="../kit.js"></script>
+	</head>
+	<body>
+		<main class="alpha-doc" data-alpha-kit="1">
+			<header class="doc-header">
+				<p class="eyebrow">Engineering review · fictional fixture</p>
+				<h1>Keep task exports inside the chosen folder</h1>
+				<p class="lead">
+					Request changes. Two boundary defects can replace an unrelated file or leave an export permanently
+					incomplete.
+				</p>
+				<p>
+					Scope: path resolution, archive writing, and export tests. This is an illustrative review of
+					invented code, not a claim about Alpha’s repository. Source paths and line numbers below describe
+					that fixture.
+				</p>
+			</header>
+			<section class="summary" aria-labelledby="decision">
+				<h2 id="decision">Decision before merge</h2>
+				<p>
+					Resolve the destination against the export root, then publish the completed archive with a
+					same-directory rename. Add tests for both escape attempts and failed writes before exposing the
+					command.
+				</p>
+				<p>
+					<strong>Two required fixes.</strong> The command’s confirmation copy and archive layout are
+					otherwise consistent with its stated behavior.
+				</p>
+			</section>
+			<section aria-labelledby="findings">
+				<h2 id="findings">Findings, in priority order</h2>
+				<article class="finding" data-severity="high">
+					<h3>High · A task title can escape the export directory</h3>
+					<p>
+						<strong>Trigger:</strong> an imported task has the title <code>../../notes</code>. Joining it to
+						the selected folder produces a destination outside that folder; a preexisting
+						<code>notes.zip</code> can be replaced.
+					</p>
+					<p>
+						<strong>Evidence:</strong>
+						<a data-source="src/export/resolveDestination.ts" data-line="42"
+							>src/export/resolveDestination.ts:42</a
+						>
+						joins the raw title, while
+						<a data-source="src/export/exportTask.ts" data-line="88">src/export/exportTask.ts:88</a> opens
+						that destination for writing.
+					</p>
+					<pre><code>const destination = path.join(exportRoot, `${task.title}.zip`)
+await writeArchive(destination, entries)</code></pre>
+					<p>
+						<strong>Required change:</strong> use an opaque filename or validate a single filename
+						component; reject separators and reserved names. Independently verify that the resolved
+						destination is a child of the selected root. A display title is not a filesystem identifier.
+					</p>
+					<details>
+						<summary>Regression cases and boundary conditions</summary>
+						<ul>
+							<li>
+								Reject traversal using both slash styles, absolute names, and drive-qualified names.
+							</li>
+							<li>
+								Preserve Unicode in the displayed title without using it as authority to choose a
+								destination.
+							</li>
+							<li>When the destination exists, require an explicit overwrite decision before writing.</li>
+						</ul>
+					</details>
+				</article>
+				<article class="finding" data-severity="medium">
+					<h3>Medium · Failed writes leave a final-looking archive</h3>
+					<p>
+						<strong>Trigger:</strong> cancellation or a full disk interrupts archive generation. The partial
+						file already has its final name, so the next export treats it as completed output.
+					</p>
+					<p>
+						<strong>Evidence:</strong>
+						<a data-source="src/export/writeArchive.ts" data-line="61">src/export/writeArchive.ts:61</a>
+						writes directly to the final path.
+						<a data-source="src/export/__tests__/writeArchive.spec.ts" data-line="27"
+							>the current test at line 27</a
+						>
+						covers only a successful write.
+					</p>
+					<pre><code><span class="diff-remove">- await streamArchive(finalPath, entries)</span>
+<span class="diff-add">+ await streamArchive(temporaryPath, entries)</span>
+<span class="diff-add">+ await publishCompletedArchive(temporaryPath, finalPath)</span></code></pre>
+					<p>
+						<strong>Required change:</strong> create a unique temporary file in the destination directory,
+						close the completed archive, and publish it with rename. Clean up the temporary file on failure;
+						retain any existing valid archive. The sketch above omits platform-specific overwrite handling,
+						which must be tested.
+					</p>
+				</article>
+			</section>
+			<section data-alpha-table aria-labelledby="coverage">
+				<h2 id="coverage">Review coverage</h2>
+				<label
+					>Filter reviewed files
+					<input type="search" data-alpha-filter disabled placeholder="Filename or result"
+				/></label>
+				<div class="table-scroll">
+					<table>
+						<caption>
+							Three implementation areas and one test file; counts describe this fixture only.
+						</caption>
+						<thead>
+							<tr>
+								<th scope="col" data-sort="text">File</th>
+								<th scope="col" data-sort="text">Result</th>
+								<th scope="col" data-sort="number">Required fixes</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<th scope="row">src/export/resolveDestination.ts</th>
+								<td>Path boundary missing</td>
+								<td data-sort-value="1">1</td>
+							</tr>
+							<tr>
+								<th scope="row">src/export/writeArchive.ts</th>
+								<td>Failure recovery missing</td>
+								<td data-sort-value="1">1</td>
+							</tr>
+							<tr>
+								<th scope="row">src/export/exportTask.ts</th>
+								<td>Caller affected; no separate finding</td>
+								<td data-sort-value="0">0</td>
+							</tr>
+							<tr>
+								<th scope="row">src/export/__tests__/writeArchive.spec.ts</th>
+								<td>Failure cases required with writer fix</td>
+								<td data-sort-value="0">0</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+			</section>
+			<section>
+				<h2>Verification needed</h2>
+				<ul class="checklist">
+					<li>
+						<strong>Required:</strong> traversal inputs never create a file outside the selected folder.
+					</li>
+					<li>
+						<strong>Required:</strong> an injected write failure preserves an existing archive and removes
+						temporary output.
+					</li>
+					<li><strong>Required:</strong> cancellation and overwrite behavior pass on Windows and POSIX.</li>
+					<li>
+						<strong>Reviewed:</strong> success copy names the chosen destination and does not imply a cloud
+						upload.
+					</li>
+				</ul>
+				<p>
+					These are read-only review requirements, not saved approval state. No test execution is claimed for
+					this fictional patch.
+				</p>
+			</section>
+			<footer>
+				<p>
+					<a href="index.html">Example gallery</a> ·
+					<a href="review-baseline.md">Equivalent Markdown review</a>
+				</p>
+			</footer>
+		</main>
+	</body>
+</html>

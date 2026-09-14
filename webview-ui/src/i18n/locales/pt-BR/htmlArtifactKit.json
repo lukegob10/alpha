@@ -1,0 +1,13 @@
+{
+	"filter": "Filtrar linhas",
+	"sort": "Ordenar por {column}",
+	"rows": "{visible} de {total} linhas",
+	"unsupported": "Esta versão do kit não é compatível. Abra o código-fonte e use data-alpha-kit=\"1\".",
+	"invalidTable": "Os recursos adicionais da tabela estão indisponíveis. Use uma tabela retangular com uma linha de cabeçalho e no máximo 1.000 linhas e 20 colunas.",
+	"invalidChart": "Os recursos adicionais do gráfico estão indisponíveis. Verifique a tabela de dados: até 120 linhas, três séries, uma unidade compartilhada e valores numéricos finitos; deixe os valores ausentes em branco.",
+	"invalidTabs": "As abas estão indisponíveis. Dê a cada seção um ID exclusivo e um rótulo de aba.",
+	"missing": "Ausente",
+	"inspect": "Os valores do gráfico estão disponíveis na tabela de dados. Coloque o foco em um valor representado para inspecioná-lo.",
+	"sortAscending": "crescente",
+	"sortDescending": "decrescente"
+}

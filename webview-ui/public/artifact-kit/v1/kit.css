@@ -1,0 +1,301 @@
+.alpha-doc {
+	--doc-bg: var(--vscode-editor-background, #ffffff);
+	--doc-fg: var(--vscode-editor-foreground, #20252b);
+	--doc-muted: var(--vscode-descriptionForeground, #555e68);
+	--doc-border: var(--vscode-editorGroup-border, #c7cdd4);
+	--doc-accent: var(--vscode-textLink-foreground, #145cac);
+	--doc-focus: var(--vscode-focusBorder, #145cac);
+	color: var(--doc-fg);
+	background: var(--doc-bg);
+	font-family: var(--vscode-font-family, system-ui, sans-serif);
+	font-size: max(1rem, var(--vscode-font-size, 16px));
+	line-height: 1.65;
+	max-width: 72rem;
+	margin: auto;
+	padding: clamp(1rem, 4vw, 3.5rem);
+	overflow-wrap: anywhere;
+	color-scheme: light dark;
+}
+.alpha-doc *,
+.alpha-doc *::before,
+.alpha-doc *::after {
+	box-sizing: border-box;
+}
+.alpha-doc [hidden] {
+	display: none !important;
+}
+.alpha-doc h1,
+.alpha-doc h2,
+.alpha-doc h3 {
+	line-height: 1.2;
+	font-weight: 650;
+	letter-spacing: -0.02em;
+}
+.alpha-doc h1 {
+	font-size: clamp(1.85rem, 5vw, 2.8rem);
+	max-width: 24ch;
+	margin: 0.4em 0;
+}
+.alpha-doc h2 {
+	font-size: 1.5rem;
+	margin: 2.2em 0 0.8em;
+}
+.alpha-doc h3 {
+	font-size: 1.12rem;
+	margin: 1.5em 0 0.6em;
+}
+.alpha-doc p,
+.alpha-doc ul,
+.alpha-doc ol {
+	max-width: 76ch;
+}
+.alpha-doc a {
+	color: var(--doc-accent);
+	text-underline-offset: 0.2em;
+}
+.alpha-doc :focus-visible {
+	outline: 2px solid var(--doc-focus);
+	outline-offset: 4px;
+}
+.alpha-doc .eyebrow {
+	font-size: 0.8em;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--doc-muted);
+}
+.alpha-doc .lead {
+	font-size: 1.2em;
+	max-width: 62ch;
+}
+.alpha-doc .doc-header {
+	border-bottom: 1px solid var(--doc-border);
+	padding-bottom: 1.5rem;
+	margin-bottom: 2rem;
+}
+.alpha-doc .summary {
+	border-left: 4px solid var(--doc-accent);
+	padding: 0.25rem 1.4rem;
+	margin: 2rem 0;
+}
+.alpha-doc .summary h2 {
+	margin-top: 0.6em;
+}
+.alpha-doc .grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+	gap: 1.5rem 2.5rem;
+}
+.alpha-doc .grid > * {
+	min-width: 0;
+}
+.alpha-doc .finding {
+	border-top: 1px solid var(--doc-border);
+	padding: 1rem 0;
+}
+.alpha-doc .finding[data-severity="high"] {
+	border-top: 3px solid var(--vscode-editorError-foreground, #bd3131);
+}
+.alpha-doc .finding[data-severity="medium"] {
+	border-top: 3px solid var(--vscode-editorWarning-foreground, #946600);
+}
+.alpha-doc .callout {
+	border: 1px solid var(--doc-border);
+	border-left-width: 4px;
+	padding: 0.5rem 1.2rem;
+	margin: 1.5rem 0;
+}
+.alpha-doc .checklist {
+	list-style: none;
+	padding-left: 0;
+}
+.alpha-doc .checklist li {
+	border-bottom: 1px solid var(--doc-border);
+	padding: 0.6rem 0;
+}
+.alpha-doc figure {
+	margin: 2rem 0;
+	min-width: 0;
+}
+.alpha-doc figcaption {
+	font-weight: 650;
+	margin-bottom: 0.7rem;
+}
+.alpha-doc small,
+.alpha-doc .caption,
+.alpha-doc .kit-status {
+	color: var(--doc-muted);
+	font-size: 0.875em;
+}
+.alpha-doc .table-scroll,
+.alpha-doc pre {
+	overflow-x: auto;
+	max-width: 100%;
+}
+.alpha-doc table {
+	width: 100%;
+	border-collapse: collapse;
+	font-variant-numeric: tabular-nums;
+	text-align: left;
+}
+.alpha-doc th,
+.alpha-doc td {
+	padding: 0.65rem 0.8rem;
+	border-bottom: 1px solid var(--doc-border);
+	vertical-align: top;
+}
+.alpha-doc th {
+	font-weight: 650;
+}
+.alpha-doc td[data-sort-value],
+.alpha-doc td[data-value] {
+	text-align: right;
+}
+.alpha-doc caption {
+	text-align: left;
+	color: var(--doc-muted);
+	padding: 0.5rem 0;
+}
+.alpha-doc code,
+.alpha-doc pre {
+	font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+	font-size: 0.9em;
+}
+.alpha-doc pre {
+	border: 1px solid var(--doc-border);
+	padding: 1rem;
+	line-height: 1.55;
+	white-space: pre;
+	overflow-wrap: normal;
+}
+.alpha-doc pre code {
+	font-size: 1em;
+}
+.alpha-doc .diff-add {
+	background: var(--vscode-diffEditor-insertedTextBackground, #23863626);
+}
+.alpha-doc .diff-remove {
+	background: var(--vscode-diffEditor-removedTextBackground, #f8514926);
+}
+.alpha-doc details {
+	border-bottom: 1px solid var(--doc-border);
+	padding: 0.8rem 0;
+}
+.alpha-doc summary {
+	cursor: pointer;
+	font-weight: 600;
+}
+.alpha-doc button,
+.alpha-doc input {
+	font: inherit;
+	color: inherit;
+	background: var(--doc-bg);
+	border: 1px solid var(--doc-border);
+	border-radius: 3px;
+	padding: 0.35em 0.65em;
+	max-width: 100%;
+}
+.alpha-doc button {
+	cursor: pointer;
+}
+.alpha-doc button:disabled,
+.alpha-doc input:disabled {
+	opacity: 0.65;
+	cursor: default;
+}
+.alpha-doc th button {
+	text-align: inherit;
+	border-color: transparent;
+	font-weight: inherit;
+	padding: 0.1em;
+	text-decoration: underline;
+	text-underline-offset: 0.2em;
+}
+.alpha-doc [role="tablist"] {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.4rem;
+	border-bottom: 1px solid var(--doc-border);
+	padding-bottom: 0.7rem;
+}
+.alpha-doc [aria-selected="true"] {
+	border-bottom: 3px solid var(--doc-accent);
+}
+.alpha-doc .kit-chart {
+	width: 100%;
+	height: auto;
+	display: block;
+	margin: 1rem 0;
+	overflow: visible;
+}
+.alpha-doc .kit-chart text {
+	fill: var(--doc-fg);
+	font:
+		12px system-ui,
+		sans-serif;
+}
+.alpha-doc .kit-chart .axis {
+	stroke: var(--doc-border);
+}
+.alpha-doc .kit-chart .series-0 {
+	stroke: var(--vscode-charts-blue, #1768ad);
+	fill: var(--vscode-charts-blue, #1768ad);
+}
+.alpha-doc .kit-chart .series-1 {
+	stroke: var(--vscode-charts-orange, #a34b12);
+	fill: var(--vscode-charts-orange, #a34b12);
+}
+.alpha-doc .kit-chart .series-2 {
+	stroke: var(--vscode-charts-purple, #8754b3);
+	fill: var(--vscode-charts-purple, #8754b3);
+}
+.alpha-doc .kit-chart polyline[class] {
+	fill: none;
+	stroke-width: 2;
+}
+.alpha-doc .kit-chart :focus {
+	outline: none;
+	stroke: var(--doc-focus);
+	stroke-width: 4;
+}
+@media (prefers-color-scheme: dark) {
+	.alpha-doc {
+		--doc-bg: var(--vscode-editor-background, #1f2329);
+		--doc-fg: var(--vscode-editor-foreground, #e5e9ef);
+		--doc-muted: var(--vscode-descriptionForeground, #b0b8c2);
+		--doc-border: var(--vscode-editorGroup-border, #545d69);
+		--doc-accent: var(--vscode-textLink-foreground, #80bfff);
+		--doc-focus: var(--vscode-focusBorder, #80bfff);
+	}
+}
+@media (forced-colors: active) {
+	.alpha-doc {
+		--doc-bg: Canvas;
+		--doc-fg: CanvasText;
+		--doc-muted: CanvasText;
+		--doc-border: CanvasText;
+		--doc-accent: LinkText;
+		--doc-focus: Highlight;
+	}
+	.alpha-doc .kit-chart [class^="series-"] {
+		stroke: CanvasText;
+		fill: CanvasText;
+	}
+	.alpha-doc .kit-chart polyline[class] {
+		fill: none;
+	}
+}
+@media (max-width: 32rem) {
+	.alpha-doc th,
+	.alpha-doc td {
+		padding: 0.5rem;
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.alpha-doc *,
+	.alpha-doc *::before,
+	.alpha-doc *::after {
+		scroll-behavior: auto !important;
+		animation: none !important;
+		transition: none !important;
+	}
+}

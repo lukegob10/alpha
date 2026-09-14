@@ -1,0 +1,13 @@
+{
+	"filter": "筛选行",
+	"sort": "按 {column} 排序",
+	"rows": "显示 {visible} 行，共 {total} 行",
+	"unsupported": "不支持此工具包版本。请打开源文件并使用 data-alpha-kit=\"1\"。",
+	"invalidTable": "表格增强功能不可用。请使用各行列数相同的矩形表格，其中包含一行表头，且最多有 1,000 行和 20 列。",
+	"invalidChart": "图表增强功能不可用。请检查数据表：最多 120 行、三个系列、一个共用单位，且数值必须有限；缺失值请留空。",
+	"invalidTabs": "选项卡不可用。请为每个章节指定唯一 ID 和选项卡标签。",
+	"missing": "缺失",
+	"inspect": "图表数值可在数据表中查看。将焦点移至图中某个值即可检查。",
+	"sortAscending": "升序",
+	"sortDescending": "降序"
+}

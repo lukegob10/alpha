@@ -1,0 +1,13 @@
+{
+	"filter": "Filter baris",
+	"sort": "Urutkan menurut {column}",
+	"rows": "{visible} dari {total} baris",
+	"unsupported": "Versi kit ini tidak didukung. Buka sumber dan gunakan data-alpha-kit=\"1\".",
+	"invalidTable": "Fitur tambahan tabel tidak tersedia. Gunakan tabel persegi panjang dengan satu baris header dan maksimal 1.000 baris serta 20 kolom.",
+	"invalidChart": "Fitur tambahan grafik tidak tersedia. Periksa tabel data: maksimal 120 baris, tiga seri, satu satuan bersama, dan nilai numerik berhingga; biarkan nilai yang tidak tersedia kosong.",
+	"invalidTabs": "Tab tidak tersedia. Berikan ID unik dan label tab pada setiap bagian.",
+	"missing": "Tidak tersedia",
+	"inspect": "Nilai grafik tersedia dalam tabel data. Fokuskan nilai yang diplot untuk memeriksanya.",
+	"sortAscending": "menaik",
+	"sortDescending": "menurun"
+}
