@@ -2,7 +2,7 @@
 
 Worktree baseline: `bc66591b605f9ffa77ae40b210c074b525210e4d` (Alpha 2.1.36).
 Implementation commits: `ab2fc77`, `b9255c7`, `66f2d75`.
-Date: 2026-09-14. Status: implementation available for integration; release gates remain open.
+Date: 2026-09-14. Status: required implementation, actual-host, and integrated release gates complete.
 
 ## Implemented contract
 
@@ -122,12 +122,19 @@ targeting was assisted by a DOM locator, viewport widths differed (chat was abou
 300px), and this was neither timed nor randomized. This satisfies a functional
 same-content comparison; a human discoverability/usability study was not run.
 
-## Remaining integrated release evidence
+## Completed integrated release evidence
 
-- Re-run and verify the integrated VSIX with NOR-66 viewer, extension localization
-  placement, and NOR-67 bundled skill; ensure packaged files match final source.
+NOR-67 built the final combined kit, viewer, and skill package from runtime HEAD
+`e7c6e8ec14680413ff5eaeaff5e439567a483f01`. The 1,855-entry archive verifier passed;
+SHA-256 is `0230e9062d986fc505de803f01b7ecac3bda295be7865bb1e67453d049b296ab`.
+NOR-65 independently compared all 13 kit files with the integrated source and
+installed extension: every file matched, including stable IDs `cc8d489` and
+the static specification correction `0f5d44d`.
 
-The installed general-purpose `code` command reports 1.137.0. NOR-66 owns running
-the repository's exact 1.122.1 harness and supplying viewer evidence. NOR-67 owns
-the installed-asset verification across the combined workstream. NOR-65 remains
-In Progress until required integration and host evidence are resolved.
+The exact VS Code 1.122.1 smoke suite passed, including all five LM fixture tests
+in run `390d5e81-ce99-4169-8942-43b131be1c81`. Installed authoring, preference
+preservation across package replacement, and unchanged authored-file reopening in
+a new host passed with verified process ownership. The full run IDs, archive
+provenance, and retained evidence are documented in `rich-documents-validation.md`.
+Required NOR-65 integration gates are complete; the comparison's usability limits
+above still apply.

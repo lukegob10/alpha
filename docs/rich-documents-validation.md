@@ -1,6 +1,6 @@
 # NOR-67 Rich documents validation
 
-Date: 2026-09-14. Baseline: `bc66591b605f9ffa77ae40b210c074b525210e4d`, Alpha 2.1.36, VS Code 1.122.1. Core implementation: `59cc84448174ec38d189628b4eec9c03f9e2a141`. Integration fix: `a30482de858cbd3bafe2439aa049c95b1da5c14f`. Release status remains In Progress until the integrated visual and reload gates are closed.
+Date: 2026-09-14. Baseline: `bc66591b605f9ffa77ae40b210c074b525210e4d`, Alpha 2.1.36, VS Code 1.122.1. Core implementation: `59cc84448174ec38d189628b4eec9c03f9e2a141`. Integration fix: `a30482de858cbd3bafe2439aa049c95b1da5c14f`. Required integration and release checks are complete; evidence limits below remain explicit.
 
 ## Scope
 
@@ -43,7 +43,7 @@ The review identifies premature completion from `forEach(async ...)`; a controll
 
 Browser inspection covered wide and 420 px layouts, keyboard chart focus with exact accessible values, and native disclosure activation. It caught an unnecessary row count on a static spec table; the same artifact and skill guidance were corrected. These browser screenshots preceded the kit's final dark-chart contrast update and do not substitute for actual-host theme validation. Local evaluation files and hashes are recorded under `.tmp/nor67-authoring/`, excluded from source control and extension packaging.
 
-## Remaining release evidence
+## Restart and final package evidence
 
 Second-process installed reopen passed in run `c34b4e60-e0c3-43d5-8286-fef85586d4fc`, with a new VS Code process (39744) and extension host (59668), compared with the first run's 44228 and 60452. The same persisted authored source retained SHA-256 `e73066ea03bcc3d60b2d0ffffbfd4d9f30e6cd293da08de43e0af017788ef5db`, opened cleanly with the accepted revision-3 title, and was not regenerated. The receipt explicitly leaves DOM paint and source-anchor clicks unverified for this fixture, which contains no source anchors.
 
@@ -61,4 +61,12 @@ pnpm --dir apps/vscode-e2e exec node out/runTest.js --vscode-version 1.122.1 --p
 
 The exact retained receipt is `$fixtureRoot/artifacts/c34b4e60-e0c3-43d5-8286-fef85586d4fc/rich-documents-reopen.json`; its sibling manifest records verified process ownership, exact host version, successful completion, and complete evidence capture. A fresh authoring run generates a different file name; select that persisted output and retain its first-run hash before restarting.
 
-Final actual-host visual/theme/focus checks, same-content Alpha Markdown comparison, and final package reconciliation remain required before marking the issue Done. See the NOR-65 and NOR-66 validation records for their own evidence and limitations; do not infer those gates from unit tests or command dispatch.
+The final combined package was built from runtime HEAD `e7c6e8ec14680413ff5eaeaff5e439567a483f01`. It includes kit stable IDs `cc8d489`, static spec correction `0f5d44d`, viewer `d36a646` plus focus/cache correction `7e74d975`, and skill `59cc844` plus scoped-read fix `a30482d`. Later commits only consolidate tests and documentation.
+
+Final archive: `bin/alpha-2.1.36.vsix`, SHA-256 `0230e9062d986fc505de803f01b7ecac3bda295be7865bb1e67453d049b296ab`. The verifier passed all 1,855 entries. Independent NOR-65 inspection confirmed all 13 kit files byte-match the integrated source and installed extension, including the two final kit corrections. Installed `dist/extension.js`, parser worker, viewer script, and skill also byte-match the archive.
+
+Preference preservation was checked across an actual installation of this final package over the earlier artifact in the same dedicated profile. Prepare run `ed0cd806-bec6-43fa-b4a4-6462f2e9482c` saved disablement and an exact owned project override. Fresh-host verify run `b2849599-4087-4a8f-81f5-f58608ba8823` confirmed the preference and override survived, removed the unchanged fixture override, confirmed the disabled default stayed absent, and restored the original preference. `rich-documents-preferences.test.ts` selects these phases through `ALPHA_RICH_PREFERENCES_PHASE=prepare|verify`, using the same installed-profile arguments as the reopen command. Both runs have verified host ownership and complete retained evidence.
+
+Final-package reopen run `ccdb4ab4-e4c6-47b1-99e3-ed994a9fdd30` passed against the same first-run authored file and original hash after the update. No document regeneration was involved. The final exact 1.122.1 smoke suite passed extension run `7ea71c90-d967-4f9e-a8c9-9eb32c8f8c58`, modes run `5f1ef09c-5bd9-4b36-93f4-05b812c9e982`, and all five LM fixture tests in run `390d5e81-ce99-4169-8942-43b131be1c81`. Expected provider errors in the last suite exercise recovery and are not failures.
+
+NOR-66 inspected the independently authored spec and report inside the actual 1.122.1 viewer. Direct screenshot review confirms coherent hierarchy and exact report values, explicit missing data, and separate units. Its walkthrough also verified light/high-contrast themes, increased zoom, narrow panes, keyboard chart access, refresh/focus preservation, and reload/source navigation. NOR-65's same-content comparison used actual Alpha chat Markdown, including a working source link to the same file and line. Both formats expose conclusion and evidence; the observation does not establish a generalized speed advantage. See `html-design-kit-validation.md` and the NOR-66 validation record for the detailed evidence and limits.
