@@ -363,6 +363,7 @@ describe("CodeIndexServiceFactory", () => {
 				embedderProvider: "vertex",
 				modelId: "gemini-embedding-001",
 				vertexOptions,
+				embeddingRateLimitSeconds: 2,
 			}
 			mockConfigManager.getConfig.mockReturnValue(testConfig as any)
 
@@ -370,7 +371,7 @@ describe("CodeIndexServiceFactory", () => {
 			factory.createEmbedder()
 
 			// Assert
-			expect(MockedVertexGeminiEmbedder).toHaveBeenCalledWith(vertexOptions, "gemini-embedding-001")
+			expect(MockedVertexGeminiEmbedder).toHaveBeenCalledWith(vertexOptions, "gemini-embedding-001", 2)
 		})
 
 		it("should throw error when Vertex provider settings are missing", () => {

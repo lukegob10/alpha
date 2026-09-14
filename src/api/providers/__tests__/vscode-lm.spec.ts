@@ -2051,6 +2051,88 @@ describe("VsCodeLmHandler", () => {
 	})
 
 	describe("getModel", () => {
+		it("resolves a cold model before capture and retains it through catalog refresh until the next step", async () => {
+			vi.mocked(vscode.lm.selectChatModels).mockReset()
+			handler.dispose()
+			handler = new VsCodeLmHandler({ vsCodeLmModelSelector: { vendor: "copilot" } })
+			const response = () => ({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Done")
+				})(),
+				text: (async function* () {
+					yield "Done"
+				})(),
+			})
+			const original = { ...mockCopilotGpt55LanguageModelChat, sendRequest: vi.fn(async () => response()) }
+			const replacement = {
+				...mockCopilotClaudeOpus5LanguageModelChat,
+				sendRequest: vi.fn(async () => response()),
+			}
+			vi.mocked(vscode.lm.selectChatModels).mockResolvedValueOnce([original])
+			expect(handler.getModel().info.includedTools).toBeUndefined()
+			await handler.prepareModel()
+			expect(original.sendRequest).not.toHaveBeenCalled()
+			expect(handler.getModel()).toMatchObject({ id: original.id, info: { includedTools: ["apply_patch"] } })
+			for (const [changed] of vi.mocked(vscode.lm.onDidChangeChatModels).mock.calls) changed()
+			vi.mocked(vscode.lm.selectChatModels).mockResolvedValueOnce([replacement])
+			for (let attempt = 0; attempt < 2; attempt++) {
+				for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "Work" }])) {
+					/* consume */
+				}
+			}
+			expect(original.sendRequest).toHaveBeenCalledTimes(2)
+			expect(replacement.sendRequest).not.toHaveBeenCalled()
+			expect(handler.getModel().id).toBe(original.id)
+			await handler.prepareModel()
+			expect(handler.getModel()).toMatchObject({ id: replacement.id, info: { includedTools: ["edit"] } })
+			for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "Work" }])) {
+				/* consume */
+			}
+			expect(replacement.sendRequest).toHaveBeenCalledOnce()
+		})
+
+		it("cancels cold model preparation without retaining a late selection or sending a request", async () => {
+			vi.mocked(vscode.lm.selectChatModels).mockReset()
+			let release!: (models: vscode.LanguageModelChat[]) => void
+			let selected!: () => void
+			const selectionStarted = new Promise<void>((resolve) => {
+				selected = resolve
+			})
+			vi.mocked(vscode.lm.selectChatModels).mockImplementationOnce(() => {
+				selected()
+				return new Promise((resolve) => {
+					release = resolve
+				})
+			})
+			const controller = new AbortController()
+			const preparing = handler.prepareModel({ signal: controller.signal })
+			await selectionStarted
+			controller.abort()
+			await expect(preparing).rejects.toThrow()
+			release([mockLanguageModelChat])
+			await Promise.resolve()
+			expect(handler.getModel().id).toBe("test-vendor/test-family")
+			expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
+		})
+
+		it("does not select a model after the preparation deadline", async () => {
+			vi.mocked(vscode.lm.selectChatModels).mockReset()
+			await expect(handler.prepareModel({ deadline: Date.now() - 1 })).rejects.toThrow()
+			expect(vscode.lm.selectChatModels).not.toHaveBeenCalled()
+		})
+
+		it.each([
+			["gpt-5.6-luna", "apply_patch"],
+			["claude-opus-4.7", "edit"],
+			["gemini-3.1-pro", "edit"],
+		])("uses the selected Copilot %s edit tool rather than selector defaults", (family, tool) => {
+			handler["client"] = { ...mockLanguageModelChat, vendor: "copilot", family, id: "opaque-selected-id" }
+			const model = handler.getModel()
+			expect(model.id).toBe("opaque-selected-id")
+			expect(model.info.includedTools).toEqual([tool])
+			expect(model.info.excludedTools).toEqual(["apply_diff"])
+		})
+
 		it("should return model info when client exists", async () => {
 			const mockModel = { ...mockLanguageModelChat }
 			// The handler starts async initialization in the constructor.

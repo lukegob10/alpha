@@ -47,6 +47,11 @@ export function getIndexIdentity(config: CodeIndexConfig): string {
 					vertex?.gatewayBaseUrl ??
 					vertex?.vertexGatewayBaseUrl,
 				vertexModelRouting: modelRoutes,
+				// Rebuild only gateway indexes when restoring their original embedding inputs.
+				vertexGatewayInput:
+					config.embedderProvider === "vertex" && (vertex?.gatewayBaseUrl || vertex?.vertexGatewayBaseUrl)
+						? "raw-content-v1"
+						: undefined,
 			}),
 		)
 		.digest("hex")

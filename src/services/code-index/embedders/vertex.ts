@@ -17,6 +17,7 @@ import { HelixTokenManager, type HelixParseMode } from "../../../api/providers/u
 import { configureVertexGatewayTransport } from "../../../api/providers/utils/vertex-gateway-transport"
 import { GEMINI_MAX_ITEM_TOKENS, INITIAL_RETRY_DELAY_MS, MAX_BATCH_RETRIES } from "../constants"
 import type { IEmbedder, EmbeddingResponse, EmbedderInfo } from "../interfaces/embedder"
+import { EmbeddingRateLimiter } from "../shared/embedding-rate-limiter"
 import { formatEmbeddingError, withValidationErrorHandling } from "../shared/validation-helpers"
 
 type VertexGatewayRouteTarget = {
@@ -61,6 +62,7 @@ export class VertexGeminiEmbedder implements IEmbedder {
 
 	private readonly client: GoogleGenAI
 	private readonly embeddingRequests = pLimit(4)
+	private readonly embeddingRateLimiter: EmbeddingRateLimiter
 	private readonly modelId: string
 	private readonly options: ProviderSettings
 	private readonly vertexGatewaySettings?: VertexGatewaySettings
@@ -69,7 +71,7 @@ export class VertexGeminiEmbedder implements IEmbedder {
 	private readonly vertexGatewayAuthClient?: VertexGatewayAuthClient
 	private gatewayTransportSetupPromise?: Promise<void>
 
-	constructor(options: ProviderSettings, modelId?: string) {
+	constructor(options: ProviderSettings, modelId?: string, embeddingRateLimitSeconds?: number) {
 		if (
 			options.apiProvider !== "vertex" ||
 			!this.getConfiguredProjectId(options) ||
@@ -80,6 +82,7 @@ export class VertexGeminiEmbedder implements IEmbedder {
 
 		this.options = options
 		this.modelId = modelId || VertexGeminiEmbedder.DEFAULT_MODEL
+		this.embeddingRateLimiter = new EmbeddingRateLimiter((embeddingRateLimitSeconds ?? 0) * 1000)
 		this.vertexGatewaySettings = this.resolveVertexGatewaySettings()
 
 		if (this.vertexGatewaySettings) {
@@ -549,7 +552,11 @@ export class VertexGeminiEmbedder implements IEmbedder {
 
 		for (let attempt = 0; attempt < MAX_BATCH_RETRIES; attempt++) {
 			const requestContext = await this.getRequestContext(selectedModel)
-			const input = googleEmbeddingInput(texts, selectedModel, purpose)
+			// Preserve the gateway's pre-2.1.34 predict payload, including opaque model aliases.
+			// Native Google task types/instructions are not part of that gateway contract.
+			const input = this.vertexGatewaySettings
+				? { contents: texts, config: {} }
+				: googleEmbeddingInput(texts, selectedModel, purpose)
 			const params: EmbedContentParameters = {
 				model: requestContext.model,
 				contents: input.contents,
@@ -560,6 +567,8 @@ export class VertexGeminiEmbedder implements IEmbedder {
 			}
 
 			try {
+				// Scanner delays apply to whole batches; split requests and retries need their own shared bound.
+				await this.embeddingRateLimiter.wait()
 				const response = await requestContext.client.models.embedContent(params)
 				return this.createEmbeddingResponse(response, estimatedTokenCounts)
 			} catch (error) {

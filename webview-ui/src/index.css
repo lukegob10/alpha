@@ -196,6 +196,21 @@
 		--control-primary-foreground: var(--vscode-editor-background);
 		--user-message-background: color-mix(in srgb, var(--alpha-brand-violet) 52%, var(--vscode-editor-background));
 		--user-message-foreground: var(--vscode-editor-foreground, var(--vscode-foreground));
+		--chat-background: var(--vscode-editor-background);
+		--chat-foreground: var(--vscode-editor-foreground, var(--vscode-foreground));
+		--chat-surface: var(--surface-raised);
+		--chat-link: var(--vscode-textLink-foreground);
+		--chat-content-width: 800px;
+	}
+
+	/* Keep the reference palette scoped to dark chat; accessible host themes retain their own colors. */
+	.vscode-dark {
+		--chat-background: #181818;
+		--chat-foreground: #ededed;
+		--chat-surface: #292929;
+		--chat-link: #a0a4ff;
+		--user-message-background: #313477;
+		--user-message-foreground: #f3f2ff;
 	}
 
 	.vscode-light {
@@ -296,7 +311,20 @@
 	}
 
 	.app-shell {
-		background: var(--vscode-editor-background);
+		background: var(--chat-background);
+		color: var(--chat-foreground);
+	}
+
+	.chat-column {
+		box-sizing: border-box;
+		width: 100%;
+		max-width: var(--chat-content-width);
+		min-width: 0;
+		margin-inline: auto;
+	}
+
+	.chat-transcript {
+		--vscode-textLink-foreground: var(--chat-link);
 	}
 
 	.glass-header {
@@ -332,6 +360,12 @@
 	}
 
 	.user-message {
+		box-sizing: border-box;
+		width: fit-content;
+		max-width: 92%;
+		margin-left: auto;
+		margin-right: 0;
+		text-align: center;
 		background: var(--user-message-background);
 		color: var(--user-message-foreground);
 		border: 1px solid var(--vscode-contrastBorder, transparent);
@@ -339,12 +373,16 @@
 		line-height: 1.6;
 	}
 
+	.chat-composer {
+		background: var(--chat-surface);
+	}
+
 	.chat-composer:focus-within {
 		border-color: var(--vscode-focusBorder);
 	}
 
 	.hero-panel {
-		background: var(--surface-raised);
+		background: var(--chat-surface);
 		border: 1px solid var(--border-subtle);
 	}
 

@@ -44,6 +44,34 @@ describe("index representation", () => {
 			}),
 		)
 	})
+	it("rebuilds gateway indexes after restoring raw inputs without invalidating native Vertex indexes", () => {
+		const config: CodeIndexConfig = {
+			isConfigured: true,
+			embedderProvider: "vertex",
+			modelId: "gemini-embedding-001",
+			vertexOptions: { apiProvider: "vertex", projectId: "project", location: "global" },
+		}
+		// Identity fixtures from the 2.1.34 representation before gateway input restoration.
+		expect(getIndexIdentity(config)).toBe("90689e2d5faf745764ba88fe93bbeb48ba619362b1aedec9edc0158ee6d1cac5")
+		const gatewayConfig = {
+			...config,
+			vertexOptions: { ...config.vertexOptions, gatewayBaseUrl: "https://gateway.example.com/vertex" },
+		}
+		const identity = getIndexIdentity(gatewayConfig)
+		expect(identity).not.toBe("11562312d3436aeaedc3be9bb9f54268c5c2767e62b1683e73dc32d57c611afa")
+		expect(identity).toBe(
+			getIndexIdentity({
+				...config,
+				vertexOptions: { ...config.vertexOptions, vertexGatewayBaseUrl: "https://gateway.example.com/vertex" },
+			}),
+		)
+		expect(identity).toBe(
+			getIndexIdentity({
+				...gatewayConfig,
+				vertexOptions: { ...gatewayConfig.vertexOptions, helixCommand: "rotated-token-command" },
+			}),
+		)
+	})
 	it.each(
 		[
 			[[1, 2]],

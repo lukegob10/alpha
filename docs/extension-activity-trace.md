@@ -16,7 +16,11 @@ awaiting-approval work remains visible.
 - `completedActivity.ts` derives presentation ranges from the existing messages and
   selected task's live metadata. The runtime remains the owner of completion.
 - A candidate `completion_result` during live verification does not collapse the
-  trace. A completed historical response remains folded when a follow-up starts.
+  trace. Reaching the recorded completion-review boundary seals the trace even if
+  running metadata for a follow-up arrives before its user message. Both ordinary
+  text and `attempt_completion` retain the prior final answer when direct or queued
+  follow-up input starts another turn. Verification rejection or a completion-commit
+  failure can still retract an invalid completion.
 - Empty completion asks, normally filtered from the UI, supply the end timestamp.
   Elapsed time starts at the first activity row. Older records without a completion
   ask use the final row timestamp; because that row may have started streaming
@@ -65,7 +69,7 @@ approval authority, persistence, or the settings edit buffer.
 Run `pnpm --dir webview-ui dev --host 127.0.0.1`, then open
 `http://127.0.0.1:5173/preview/activity-trace.html` (use the port Vite prints).
 The preview loads the actual chat, settings, and history components with fixture
-state. Its **Running**, **Complete**, and **Narrow** controls exercise the transition
+state. Its **Running**, **Complete**, **Follow-up**, **Finish follow-up**, and **Narrow** controls exercise the transitions
 and a 340-pixel sidebar; surface and theme selectors support visual comparison.
 It sends no model requests and executes no commands. It is a
 development HTML entry, outside the packaged webview's production entry point.
@@ -95,3 +99,16 @@ settings, history, and dark/light/high-contrast themes at wide and narrow sizes.
 The repository translation audit still reports existing missing translations;
 all four keys introduced by this work exist with matching placeholders in all
 18 webview locales.
+
+Follow-up regression review on 2026-09-12: the runtime had retracted a valid final
+answer when accepting another user message, removing the UI's historical trace
+boundary. Direct replies and queued replies at review/finalization now retain that
+answer. Regression coverage checks two separately collapsed turns, live follow-up
+activity, metadata-before-transcript delivery, independent disclosure controls,
+reload, and continued retraction when verification fails.
+
+Validation: 269 runtime tests and 143 webview tests passed (one optional test
+skipped), together with extension/webview typechecks and lint. The exact VS Code
+1.122.1 smoke gate passed. Browser checks of the actual React preview confirmed
+live follow-up isolation, separate completed disclosures, and independent expansion
+at wide and narrow sidebar sizes.

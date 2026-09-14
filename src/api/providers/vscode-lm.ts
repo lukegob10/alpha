@@ -21,6 +21,7 @@ import {
 	createLinkedAbortController,
 	raceApiStreamAbort,
 	type LinkedAbortController,
+	type ApiStreamRequestMetadata,
 } from "../transform/stream"
 import {
 	convertToVsCodeLmMessages,
@@ -31,6 +32,7 @@ import {
 
 import { BaseProvider } from "./base-provider"
 import { getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
+import { applyCopilotToolPreferences } from "./utils/router-tool-preferences"
 import type { SingleCompletionHandler, ApiHandlerCountTokensMetadata, ApiHandlerCreateMessageMetadata } from "../index"
 
 /**
@@ -602,7 +604,7 @@ function buildVsCodeLmModelInfo(
 			: openAiModelInfoSaneDefaults.contextWindow
 	const contextWindow = liveContextWindow ? Math.min(safeContextWindow, liveContextWindow) : safeContextWindow
 
-	return {
+	return applyCopilotToolPreferences(client, {
 		...openAiModelInfoSaneDefaults,
 		...staticInfo,
 		maxTokens: staticInfo?.maxTokens ?? -1,
@@ -612,7 +614,7 @@ function buildVsCodeLmModelInfo(
 		inputPrice: staticInfo?.inputPrice ?? 0,
 		outputPrice: staticInfo?.outputPrice ?? 0,
 		description: [client.name, client.vendor, client.family, client.version, client.id].filter(Boolean).join(" - "),
-	}
+	})
 }
 
 /**
@@ -645,6 +647,8 @@ function buildVsCodeLmModelInfo(
 export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHandler {
 	protected options: ApiHandlerOptions
 	private client: vscode.LanguageModelChat | null
+	/** A model-catalog refresh applies at the next new step, not between capture and dispatch/retry. */
+	private preparedClient: vscode.LanguageModelChat | undefined
 	private disposables: vscode.Disposable[]
 	private currentRequestCancellation: vscode.CancellationTokenSource | null
 	private currentRequestControl: LinkedAbortController | null
@@ -713,6 +717,19 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			const errorMessage = error instanceof Error ? error.message : "Unknown error"
 			console.error("Alpha <Language Model API>: Client initialization failed:", errorMessage)
 			throw new Error(`Alpha <Language Model API>: Failed to initialize client: ${errorMessage}`)
+		}
+	}
+
+	async prepareModel(metadata?: ApiStreamRequestMetadata): Promise<void> {
+		const deadline = getAbsoluteDeadline(metadata?.deadline)
+		if (deadline !== undefined && deadline <= Date.now()) throw new ApiStreamDeadlineError()
+		const control = createLinkedAbortController(metadata)
+		try {
+			const client = await this.getClient(control.signal)
+			throwIfVsCodeLmRequestAborted(control.signal, "model-selection")
+			this.preparedClient = client
+		} finally {
+			control.dispose()
 		}
 	}
 	/**
@@ -815,6 +832,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		this.disposables = []
 
 		this.ensureCleanState()
+		this.preparedClient = undefined
 	}
 
 	/**
@@ -869,7 +887,8 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		}
 
 		// Check for required dependencies
-		if (!this.client) {
+		const client = this.preparedClient ?? this.client
+		if (!client) {
 			console.warn("Alpha <Language Model API>: No client available for token counting")
 			return useFallback()
 		}
@@ -919,7 +938,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			}
 
 			const tokenCount = await raceApiStreamAbort(
-				this.client.countTokens(text, tempCancellation.token),
+				client.countTokens(text, tempCancellation.token),
 				requestControl.signal,
 			)
 
@@ -1106,7 +1125,8 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		try {
 			throwIfVsCodeLmRequestAborted(requestControl.signal, requestPhase)
 
-			const client: vscode.LanguageModelChat = await this.getClient(requestControl.signal)
+			const client: vscode.LanguageModelChat =
+				this.preparedClient ?? (await this.getClient(requestControl.signal))
 			throwIfVsCodeLmRequestAborted(requestControl.signal, requestPhase)
 
 			// Convert Anthropic messages to VS Code LM messages
@@ -1329,14 +1349,15 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 	// Return model information based on the current client state
 	override getModel(): { id: string; info: ModelInfo } {
-		if (this.client) {
+		const client = this.preparedClient ?? this.client
+		if (client) {
 			// Validate client properties
 			const requiredProps = {
-				id: this.client.id,
-				vendor: this.client.vendor,
-				family: this.client.family,
-				version: this.client.version,
-				maxInputTokens: this.client.maxInputTokens,
+				id: client.id,
+				vendor: client.vendor,
+				family: client.family,
+				version: client.version,
+				maxInputTokens: client.maxInputTokens,
 			}
 
 			// Log any missing properties for debugging
@@ -1347,11 +1368,11 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			}
 
 			// Construct model ID using available information
-			const modelParts = [this.client.vendor, this.client.family, this.client.version].filter(Boolean)
+			const modelParts = [client.vendor, client.family, client.version].filter(Boolean)
 
-			const modelId = this.client.id || modelParts.join(SELECTOR_SEPARATOR)
+			const modelId = client.id || modelParts.join(SELECTOR_SEPARATOR)
 
-			const modelInfo = buildVsCodeLmModelInfo(this.client, this.options.vsCodeLmContextSize)
+			const modelInfo = buildVsCodeLmModelInfo(client, this.options.vsCodeLmContextSize)
 
 			return { id: modelId, info: modelInfo }
 		}

@@ -2922,7 +2922,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			customModes: state?.customModes,
 			experiments: state?.experiments,
 			disabledTools: state?.disabledTools,
-			includedTools: this.getTaskAllowedToolNames() ? [...this.getTaskAllowedToolNames()!] : undefined,
+			// Opt-in editors were already selected and authority-filtered at this step's capture boundary.
+			includedTools: [...surface.allowedFunctionNames],
 			signal,
 			executionMode: "selective-parallel",
 			maxConcurrency: 4,
@@ -7753,7 +7754,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				const lateQueuedFeedback = this.messageQueueService.dequeueMessage()
 				if (lateQueuedFeedback) {
-					await this.retractCompletionResult()
 					await this.say("user_feedback", lateQueuedFeedback.text, lateQueuedFeedback.images)
 					nextTurnInput = {
 						userContent: this.buildUserMessageContent(lateQueuedFeedback.text, lateQueuedFeedback.images),
@@ -7812,7 +7812,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 					const concurrentFeedback = this.messageQueueService.dequeueMessage()
 					if (concurrentFeedback) {
-						await this.retractCompletionResult()
 						await this.say("user_feedback", concurrentFeedback.text, concurrentFeedback.images)
 						nextTurnInput = {
 							userContent: this.buildUserMessageContent(
@@ -7846,7 +7845,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				return
 			}
 
-			await this.retractCompletionResult()
+			// A follow-up starts a new conversational turn; retain the prior answer's durable trace boundary.
 			await this.say("user_feedback", feedbackText, feedbackImages)
 			nextTurnInput = {
 				userContent: this.buildUserMessageContent(feedbackText, feedbackImages),
@@ -10461,6 +10460,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await this.maybeWaitForProviderRateLimit(retryAttempt, state, stepInterruptionSignal, options.retryDeadline)
 		}
 		assertPreflightWithinBudget()
+		if (!retainedStep && requestHandler.prepareModel) {
+			await waitForBoundedPreflight(
+				requestHandler.prepareModel({ signal: stepInterruptionSignal, deadline: options.retryDeadline }),
+			)
+			assertPreflightWithinBudget()
+		}
 		const systemPrompt =
 			retainedRequest?.systemPrompt ??
 			(await waitForBoundedPreflight(

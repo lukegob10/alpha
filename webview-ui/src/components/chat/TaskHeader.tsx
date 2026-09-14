@@ -147,7 +147,7 @@ const TaskHeader = ({
 	}
 
 	return (
-		<div className="group pt-2 pb-2 px-3">
+		<div className="chat-column group shrink-0 px-[15px] py-3">
 			{isSubtask && (
 				<div className="mb-2" onClick={(e) => e.stopPropagation()}>
 					<Button
@@ -187,7 +187,7 @@ const TaskHeader = ({
 			<div
 				className={cn(
 					"px-4 py-2.5 flex flex-col gap-1.5 relative z-1 cursor-pointer",
-					isTaskExpanded ? "task-context-card rounded-xl" : "user-message ml-auto w-fit max-w-[92%]",
+					isTaskExpanded ? "task-context-card rounded-xl" : "user-message",
 					hasTodos && "border-b-0",
 				)}
 				onClick={(e) => {
@@ -219,7 +219,7 @@ const TaskHeader = ({
 				}}>
 				<div className="flex justify-between items-center gap-0">
 					<div className="flex items-center grow min-w-0">
-						<div className="grow min-w-0">
+						<div className={cn("grow min-w-0", !isTaskExpanded && "pl-7")}>
 							{isTaskExpanded && <span className="font-bold">{t("chat:task.title")}</span>}
 							{!isTaskExpanded && (
 								<div className="line-clamp-4 whitespace-pre-wrap wrap-anywhere">

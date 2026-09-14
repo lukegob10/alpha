@@ -44,13 +44,13 @@ vitest.mock("@alpha-code/telemetry", () => ({
 	},
 }))
 
-import { describe, it, expect, beforeEach, vitest } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vitest } from "vitest"
 
 import { VertexGeminiEmbedder } from "../vertex"
 
 describe("VertexGeminiEmbedder", () => {
 	beforeEach(() => {
-		vitest.clearAllMocks()
+		vitest.resetAllMocks()
 		mockGetToken.mockResolvedValue("initial-token")
 		mockForceRefreshToken.mockResolvedValue("refreshed-token")
 		mockGetOrCreate.mockReturnValue({
@@ -58,6 +58,39 @@ describe("VertexGeminiEmbedder", () => {
 			forceRefreshToken: mockForceRefreshToken,
 		})
 		mockConfigureTransport.mockResolvedValue("C:\\certs\\gateway.pem")
+	})
+
+	afterEach(() => vitest.useRealTimers())
+
+	it("spaces actual requests across batches, queries, and auth retries", async () => {
+		vitest.useFakeTimers()
+		vitest.setSystemTime(new Date("2026-09-12T12:00:00Z"))
+		const startedAt: number[] = []
+		const embedder = new VertexGeminiEmbedder(
+			{
+				apiProvider: "vertex",
+				projectId: "project",
+				location: "global",
+				gatewayBaseUrl: "https://gateway.example.com/vertex",
+				pemCaBundlePath: "test.pem",
+				helixCommand: "test-token-command",
+			},
+			"gemini-embedding-001",
+			1,
+		)
+		mockEmbedContent.mockImplementation(async () => {
+			startedAt.push(Date.now())
+			if (startedAt.length === 1) throw Object.assign(new Error("Unauthorized"), { status: 401 })
+			return { embeddings: [{ values: [1, 0] }] }
+		})
+		const responses = Promise.all([
+			embedder.createEmbeddings(["first", "second"]),
+			embedder.createEmbeddings(["query"], undefined, "query"),
+		])
+		await vitest.runAllTimersAsync()
+		await responses
+		expect(startedAt.map((time) => time - startedAt[0])).toEqual([0, 1000, 2000, 3000])
+		expect(mockForceRefreshToken).toHaveBeenCalledOnce()
 	})
 
 	it("initializes GoogleGenAI with canonical Vertex gateway options and fake auth", () => {
@@ -166,7 +199,6 @@ describe("VertexGeminiEmbedder", () => {
 			model: "gateway-embedding-model",
 			contents: ["text"],
 			config: {
-				taskType: "RETRIEVAL_DOCUMENT",
 				httpOptions: {
 					baseUrl: "https://gateway.example.com/vertex",
 					headers: {
@@ -198,7 +230,6 @@ describe("VertexGeminiEmbedder", () => {
 			model: "gateway-embedding-model",
 			contents: ["text"],
 			config: {
-				taskType: "RETRIEVAL_DOCUMENT",
 				httpOptions: {
 					baseUrl: "https://gateway.example.com/vertex",
 					headers: {

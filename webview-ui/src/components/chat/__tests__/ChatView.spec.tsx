@@ -350,6 +350,90 @@ describe("ChatView activity trace", () => {
 	const focusDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "focus")!
 	afterEach(() => Object.defineProperty(HTMLElement.prototype, "focus", focusDescriptor))
 
+	it("keeps each completed turn collapsed across follow-ups, lifecycle refreshes, and reload", async () => {
+		const taskId = "successive-traces"
+		const firstTurn: ClineMessage[] = [
+			{ ts: 100, type: "say", say: "task", text: "Run the tests" },
+			{ ts: 1000, type: "say", say: "reasoning", text: "Inspecting tests" },
+			{ ts: 2000, type: "ask", ask: "command", text: "pnpm test" },
+			{ ts: 480000, type: "say", say: "completion_result", text: "First answer" },
+			{ ts: 481000, type: "ask", ask: "completion_result", text: "" },
+		]
+		const followup: ClineMessage[] = [
+			{ ts: 600000, type: "say", say: "user_feedback", text: "Now check the types" },
+			{ ts: 601000, type: "say", say: "reasoning", text: "Checking types" },
+			{ ts: 602000, type: "ask", ask: "command", text: "pnpm check-types" },
+		]
+		const publish = (clineMessages: ClineMessage[], lifecycle: "running" | "completed") =>
+			mockPostMessage({
+				currentTaskId: taskId,
+				clineMessages,
+				liveTasksById: {
+					[taskId]: {
+						id: taskId,
+						status: "idle",
+						lifecycle,
+						isActive: true,
+						isStreaming: false,
+						isTurnActive: lifecycle === "running",
+						isWaitingForInput: false,
+						lastUpdatedAt: clineMessages.at(-1)!.ts,
+						queueCount: 0,
+						tokensIn: 0,
+						tokensOut: 0,
+						totalCost: 0,
+					},
+				},
+			})
+		const view = renderChatView()
+		publish(firstTurn, "completed")
+		await waitFor(() => expect(view.getByTestId("chat-message-0")).not.toBeVisible())
+		expect(view.getByTestId("chat-message-2")).toBeVisible()
+
+		// Host metadata can resume before the durable user-feedback row reaches the UI.
+		await act(async () => {
+			const delivered = new Promise<void>((resolve) =>
+				window.addEventListener("message", () => resolve(), { once: true }),
+			)
+			publish(firstTurn, "running")
+			await delivered
+		})
+		expect(view.getByTestId("chat-message-0")).not.toBeVisible()
+		publish([...firstTurn, ...followup], "running")
+		await waitFor(() => expect(view.getByTestId("chat-message-4")).toBeVisible())
+		expect(view.getByTestId("chat-message-0")).not.toBeVisible()
+		expect(view.getByTestId("chat-message-2")).toBeVisible()
+		expect(view.getByTestId("chat-message-3")).toBeVisible()
+		expect(view.getByTestId("chat-message-5")).toBeVisible()
+
+		const completedTurns: ClineMessage[] = [
+			...firstTurn,
+			...followup,
+			{ ts: 720000, type: "say", say: "completion_result", text: "Second answer" },
+			{ ts: 721000, type: "ask", ask: "completion_result", text: "" },
+		]
+		publish(completedTurns, "completed")
+		await waitFor(() =>
+			expect(view.getAllByRole("button", { name: "chat:activityTrace.workedFor" })).toHaveLength(2),
+		)
+		for (const index of [0, 1, 4, 5]) expect(view.getByTestId(`chat-message-${index}`)).not.toBeVisible()
+		for (const index of [2, 3, 6]) expect(view.getByTestId(`chat-message-${index}`)).toBeVisible()
+		const toggles = view.getAllByRole("button", { name: "chat:activityTrace.workedFor" })
+		for (const toggle of toggles) expect(toggle).toHaveAttribute("aria-expanded", "false")
+		fireEvent.click(toggles[0])
+		expect(view.getByTestId("chat-message-0")).toBeVisible()
+		expect(view.getByTestId("chat-message-4")).not.toBeVisible()
+
+		view.unmount()
+		const reloaded = renderChatView()
+		publish(completedTurns, "completed")
+		await waitFor(() =>
+			expect(reloaded.getAllByRole("button", { name: "chat:activityTrace.workedFor" })).toHaveLength(2),
+		)
+		for (const index of [0, 1, 4, 5]) expect(reloaded.getByTestId(`chat-message-${index}`)).not.toBeVisible()
+		for (const index of [2, 3, 6]) expect(reloaded.getByTestId(`chat-message-${index}`)).toBeVisible()
+	})
+
 	it("shows live activity, folds it above the final response, and restores it on click", async () => {
 		const { getByTestId, getByRole, queryByRole } = renderChatView()
 		const messages: ClineMessage[] = [

@@ -186,6 +186,16 @@ describe("TaskHeader", () => {
 		expect(screen.getByRole("button", { name: "chat:task.collapse" })).toHaveAttribute("aria-expanded", "true")
 	})
 
+	it("restores the shared message bubble after expanding and collapsing task details", () => {
+		renderTaskHeader()
+		expect(screen.getByText("Test task").closest(".user-message")).toBeInTheDocument()
+		expect(screen.getByText("Test task").closest(".chat-column")).toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
+		expect(screen.getByText("Test task").closest(".user-message")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.collapse" }))
+		expect(screen.getByText("Test task").closest(".user-message")).toBeInTheDocument()
+	})
+
 	it("should render the condense context button when expanded", () => {
 		renderTaskHeader()
 		// First click to expand the task header

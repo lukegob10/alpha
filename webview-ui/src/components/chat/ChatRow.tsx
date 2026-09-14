@@ -164,12 +164,12 @@ const ChatRow = memo(
 		return (
 			<div
 				className={cn(
-					"px-[15px] pr-[6px]",
+					"px-[15px]",
 					props.message.say === "user_feedback" ||
 						props.message.say === "completion_result" ||
 						props.message.ask === "completion_result" ||
 						props.message.ask === "followup"
-						? "py-[10px]"
+						? "py-4"
 						: "py-1",
 				)}>
 				<ChatRowContentInner {...props} />
@@ -1411,13 +1411,15 @@ const ChatRowContentInner = ({
 					)
 				case "user_feedback":
 					return (
-						<article className="group flex justify-end" aria-label={t("chat:feedback.youSaid")}>
+						<article
+							className="group flex flex-col items-end gap-1"
+							aria-label={t("chat:feedback.youSaid")}>
 							<div
 								className={cn(
 									"min-w-0 overflow-hidden whitespace-pre-wrap",
 									isEditing
 										? "w-full rounded-xl bg-vscode-editor-background text-vscode-editor-foreground"
-										: "user-message max-w-[92%] cursor-text px-3 py-2",
+										: "user-message cursor-text px-4 py-3",
 								)}>
 								{isEditing ? (
 									<div className="flex flex-col gap-2">
@@ -1442,7 +1444,7 @@ const ChatRowContentInner = ({
 								) : (
 									<div className="flex justify-between">
 										<div
-											className="flex-grow px-2 py-1 wrap-anywhere rounded-lg transition-colors"
+											className="min-w-0 flex-grow wrap-anywhere"
 											onClick={(e) => {
 												e.stopPropagation()
 												if (!isStreaming) {
@@ -1452,40 +1454,42 @@ const ChatRowContentInner = ({
 											title={t("chat:queuedMessages.clickToEdit")}>
 											<Mention text={message.text} withShadow />
 										</div>
-										<div className="flex items-center gap-2 pl-2">
-											<button
-												type="button"
-												aria-label={t("chat:queuedMessages.edit")}
-												className="cursor-pointer shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity bg-transparent border-0 p-0"
-												style={{ visibility: isStreaming ? "hidden" : "visible" }}
-												onClick={(e) => {
-													e.stopPropagation()
-													handleEditClick()
-												}}>
-												<Edit className="w-4 shrink-0" aria-hidden="true" />
-											</button>
-											<button
-												type="button"
-												aria-label={t("common:confirmation.deleteMessage")}
-												className="cursor-pointer shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity bg-transparent border-0 p-0"
-												style={{ visibility: isStreaming ? "hidden" : "visible" }}
-												onClick={(e) => {
-													e.stopPropagation()
-													vscode.postMessage({
-														type: "deleteMessage",
-														value: message.ts,
-														taskId: currentTaskId,
-													})
-												}}>
-												<Trash2 className="w-4 shrink-0" aria-hidden="true" />
-											</button>
-										</div>
 									</div>
 								)}
 								{!isEditing && message.images && message.images.length > 0 && (
 									<Thumbnails images={message.images} style={{ marginTop: "8px" }} />
 								)}
 							</div>
+							{!isEditing && (
+								<div className="flex h-6 items-center gap-3 text-vscode-descriptionForeground">
+									<button
+										type="button"
+										aria-label={t("chat:queuedMessages.edit")}
+										className="cursor-pointer shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity bg-transparent border-0 p-0"
+										style={{ visibility: isStreaming ? "hidden" : "visible" }}
+										onClick={(e) => {
+											e.stopPropagation()
+											handleEditClick()
+										}}>
+										<Edit className="w-4 shrink-0" aria-hidden="true" />
+									</button>
+									<button
+										type="button"
+										aria-label={t("common:confirmation.deleteMessage")}
+										className="cursor-pointer shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity bg-transparent border-0 p-0"
+										style={{ visibility: isStreaming ? "hidden" : "visible" }}
+										onClick={(e) => {
+											e.stopPropagation()
+											vscode.postMessage({
+												type: "deleteMessage",
+												value: message.ts,
+												taskId: currentTaskId,
+											})
+										}}>
+										<Trash2 className="w-4 shrink-0" aria-hidden="true" />
+									</button>
+								</div>
+							)}
 						</article>
 					)
 				case "user_feedback_diff":

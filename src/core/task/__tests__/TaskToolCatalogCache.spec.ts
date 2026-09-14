@@ -1,5 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk"
-import type { McpServer } from "@alpha-code/types"
+import { openAiModelInfoSaneDefaults, vertexModels, type McpServer, type ModelInfo } from "@alpha-code/types"
+import { applyCopilotToolPreferences } from "../../../api/providers/utils/router-tool-preferences"
+import { planModeSlug } from "../../../shared/modes"
 import { customToolRegistry } from "@alpha-code/core"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -171,6 +173,104 @@ function realMcpHost(options: BuildToolsOptions, servers: McpServer[]) {
 afterEach(() => vi.restoreAllMocks())
 
 describe("TaskToolCatalogCache", () => {
+	it.each(["primary", "subagent"] as const)(
+		"captures Copilot edit schemas and executable policy together for %s tasks",
+		async (taskKind) => {
+			const { options } = fixture(0)
+			Object.assign(options, { taskKind, apiConfiguration: { apiProvider: "vscode-lm" } })
+			for (const [family, preferred, hidden] of [
+				["gpt-5.5", "apply_patch", "edit"],
+				["claude-opus-4.7", "edit", "apply_patch"],
+				["gemini-3.1-pro", "edit", "apply_patch"],
+			]) {
+				options.modelInfo = applyCopilotToolPreferences(
+					{ vendor: "copilot", family },
+					openAiModelInfoSaneDefaults,
+				)
+				const current = await capture(options)
+				const names = current.schemas.map((schema) => schema.type === "function" && schema.function.name)
+				expect(names).toContain(preferred)
+				expect(current.resolve(preferred)).toBeDefined()
+				for (const name of [hidden, "apply_diff", "search_replace", "edit_file"]) {
+					expect(names).not.toContain(name)
+					expect(current.isCallable(name)).toBe(false)
+				}
+				expect(current.isCallable("write_to_file")).toBe(true)
+				const rejected = await execute(current, [call("apply_diff", { path: "fixture.ts", diff: "hidden" })])
+				expect(rejected.outcome.results[0].status).toBe("error")
+				expect(rejected.fence).not.toHaveBeenCalled()
+				const disabled = await capture({ ...options, disabledTools: [preferred] })
+				expect(disabled.isCallable(preferred)).toBe(false)
+				const plan = await capture({ ...options, mode: planModeSlug })
+				expect(plan.isCallable(preferred)).toBe(false)
+				const readOnly = await capture({
+					...options,
+					mode: "review-only",
+					customModes: [
+						{ slug: "review-only", name: "Review", roleDefinition: "Review files", groups: ["read"] },
+					],
+				})
+				expect(readOnly.isCallable(preferred)).toBe(false)
+				const restrictedChild = await capture({ ...options, allowedToolNames: ["read_file"] })
+				expect(restrictedChild.isCallable(preferred)).toBe(false)
+			}
+		},
+	)
+
+	it("invalidates the next catalog for model preferences while retaining the prior surface", async () => {
+		const { options } = fixture(0)
+		options.apiConfiguration = { apiProvider: "vscode-lm" }
+		options.modelInfo = applyCopilotToolPreferences(
+			{ vendor: "copilot", family: "gpt-5.5" },
+			openAiModelInfoSaneDefaults,
+		)
+		const original = await capture(options)
+		options.modelInfo = applyCopilotToolPreferences(
+			{ vendor: "copilot", family: "claude-opus-4.7" },
+			openAiModelInfoSaneDefaults,
+		)
+		const next = await capture(options)
+		expect(original.isCallable("apply_patch")).toBe(true)
+		expect(original.isCallable("edit")).toBe(false)
+		expect(next.isCallable("apply_patch")).toBe(false)
+		expect(next.isCallable("edit")).toBe(true)
+		expect(next.digest).not.toBe(original.digest)
+	})
+
+	it.each(["search_replace", "edit_file"])(
+		"retains the explicit %s editor in the Copilot catalog",
+		async (preferred) => {
+			const { options } = fixture(0)
+			options.modelInfo = applyCopilotToolPreferences(
+				{ vendor: "copilot", family: "gpt-5.5" },
+				{ ...openAiModelInfoSaneDefaults, includedTools: [preferred], excludedTools: ["apply_diff"] },
+			)
+			const current = await capture(options)
+			expect(current.isCallable(preferred)).toBe(true)
+			expect(current.isCallable("apply_patch")).toBe(false)
+		},
+	)
+
+	it("keeps existing Vertex and other provider catalogs unchanged", async () => {
+		const { options } = fixture(0)
+		for (const apiProvider of ["vertex", "anthropic", "openrouter"] as const) {
+			const existing = await capture({
+				...options,
+				apiConfiguration: { apiProvider },
+				modelInfo: openAiModelInfoSaneDefaults,
+			})
+			expect(existing.isCallable("apply_diff")).toBe(true)
+			expect(existing.isCallable("apply_patch")).toBe(false)
+			expect(existing.isCallable("edit")).toBe(false)
+		}
+		const existingVertexModels: ModelInfo[] = Object.values(vertexModels)
+		for (const modelInfo of existingVertexModels.filter((model) => model.includedTools?.length)) {
+			const existing = await capture({ ...options, apiConfiguration: { apiProvider: "vertex" }, modelInfo })
+			for (const included of modelInfo.includedTools ?? []) expect(existing.isCallable(included)).toBe(true)
+			for (const excluded of modelInfo.excludedTools ?? []) expect(existing.isCallable(excluded)).toBe(false)
+		}
+	})
+
 	it("reuses deterministic frozen schemas and a sealed registry for equivalent inputs", async () => {
 		const { options, server } = fixture()
 		const first = await capture(options)

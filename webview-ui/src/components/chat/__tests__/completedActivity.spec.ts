@@ -50,8 +50,22 @@ describe("completed activity projection", () => {
 
 	it("keeps candidate completions visible during verification, failure, and cancellation", () => {
 		for (const state of [TaskLifecycleState.Running, TaskLifecycleState.Failed, TaskLifecycleState.Closed]) {
-			expect(getCompletedActivity(activity, [...activity, review], liveTask(state)).size).toBe(0)
+			expect(getCompletedActivity(activity, activity, liveTask(state)).size).toBe(0)
 		}
+	})
+
+	it("keeps a reviewed response sealed when running metadata arrives before the follow-up message", () => {
+		const source = [...activity, review]
+		expect(getCompletedActivity(activity, source, liveTask(TaskLifecycleState.Running)).get(0)).toEqual({
+			id: 4000,
+			startIndex: 0,
+			endIndex: 2,
+			durationMs: 5500,
+		})
+		const retracted: ClineMessage[] = [...activity.slice(0, 3), { ...activity[3], say: "text" }]
+		expect(getCompletedActivity(retracted, [...retracted, review], liveTask(TaskLifecycleState.Running)).size).toBe(
+			0,
+		)
 	})
 
 	it("keeps streaming answers, approvals, errors, and questions visible", () => {

@@ -119,6 +119,9 @@ export interface ApiHandler {
 
 	getModel(): { id: string; info: ModelInfo }
 
+	/** Resolve and retain a dynamic model before a new step captures capabilities and tools. Retries reuse it. */
+	prepareModel?(metadata?: ApiStreamRequestMetadata): Promise<void>
+
 	/**
 	 * Counts tokens for content blocks
 	 * All providers extend BaseProvider which provides a default tiktoken implementation,

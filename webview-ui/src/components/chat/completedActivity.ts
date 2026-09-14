@@ -30,10 +30,11 @@ export function getCompletedActivity(
 	const finish = (historical: boolean) => {
 		if (!candidate) return
 		const hostAllowsCollapse =
+			// Review is a recorded turn boundary, even if the next turn's running metadata arrives first.
+			hasReviewBoundary ||
 			!liveTask ||
 			liveTask.lifecycle === TaskLifecycleState.Completed ||
-			(liveTask.lifecycle === TaskLifecycleState.Waiting &&
-				(hasReviewBoundary || liveTask.waitingReason === "completion"))
+			(liveTask.lifecycle === TaskLifecycleState.Waiting && liveTask.waitingReason === "completion")
 		if (historical || hostAllowsCollapse) {
 			completed.set(candidate.ts, endedAt ?? candidate.ts)
 		}

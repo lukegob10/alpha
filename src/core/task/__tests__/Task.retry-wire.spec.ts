@@ -151,6 +151,80 @@ describe("Task retained retry wire inputs", () => {
 	beforeEach(() => vi.clearAllMocks())
 	afterEach(() => vi.restoreAllMocks())
 
+	it.each(["primary", "subagent"])(
+		"prepares a %s model before its first tool capture and only again on a new step",
+		async (taskKind) => {
+			const { task, originalHandler, live, getSystemPrompt } = harness()
+			Object.assign(task, { taskKind })
+			const prepareModel = vi.fn(async () => {
+				live.surface = surface("apply_patch")
+			})
+			Object.assign(originalHandler, { prepareModel })
+			getSystemPrompt.mockImplementation(async () => {
+				expect(prepareModel).toHaveBeenCalledOnce()
+				return live.prompt
+			})
+			originalHandler.createMessage.mockImplementationOnce(() => failBeforeFirstChunk(new Error("retry fixture")))
+			await expect(
+				task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true }).next(),
+			).rejects.toThrow("retry fixture")
+			const initial = originalHandler.createMessage.mock.calls[0]
+			expect(initial[2]?.tools?.map((tool) => tool.type === "function" && tool.function.name)).toEqual([
+				"apply_patch",
+			])
+			const nextHandler = handler("next-model")
+			const prepareNext = vi.fn(async () => {
+				live.surface = surface("edit")
+			})
+			Object.assign(nextHandler, { prepareModel: prepareNext })
+			task.api = nextHandler
+			for await (const _chunk of task.attemptApiRequest(1, {
+				skipProviderRateLimit: true,
+				ownerHandlesRetry: true,
+				retryCategory: "transport",
+			})) {
+				/* consume */
+			}
+			expect(prepareModel).toHaveBeenCalledOnce()
+			expect(prepareNext).not.toHaveBeenCalled()
+			expect(logicalRequest(originalHandler.createMessage.mock.calls[1])).toEqual(logicalRequest(initial))
+			for await (const _chunk of task.attemptApiRequest(0, {
+				skipProviderRateLimit: true,
+				ownerHandlesRetry: true,
+			})) {
+				/* consume */
+			}
+			expect(prepareNext).toHaveBeenCalledOnce()
+			expect(
+				nextHandler.createMessage.mock.calls[0][2]?.tools?.map(
+					(tool) => tool.type === "function" && tool.function.name,
+				),
+			).toEqual(["edit"])
+		},
+	)
+
+	it("does not capture tools or dispatch when model preparation is interrupted", async () => {
+		const { task, originalHandler } = harness()
+		const controller = new AbortController()
+		const interruption = new Error("Preparation interrupted")
+		Object.assign(originalHandler, {
+			prepareModel: vi.fn(async () => {
+				controller.abort(interruption)
+			}),
+		})
+		await expect(
+			task
+				.attemptApiRequest(0, {
+					skipProviderRateLimit: true,
+					ownerHandlesRetry: true,
+					interruptionSignal: controller.signal,
+				})
+				.next(),
+		).rejects.toBe(interruption)
+		expect(buildNativeToolsArrayWithRestrictions).not.toHaveBeenCalled()
+		expect(originalHandler.createMessage).not.toHaveBeenCalled()
+	})
+
 	it("keeps the runtime FakeAI implementation out of diagnostic options without changing dispatch or retry", async () => {
 		const { task } = harness()
 		const scripted = handler("scripted-model")

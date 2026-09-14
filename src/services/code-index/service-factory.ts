@@ -88,7 +88,7 @@ export class CodeIndexServiceFactory {
 			) {
 				throw new Error(t("embeddings:serviceFactory.vertexConfigMissing"))
 			}
-			return new VertexGeminiEmbedder(config.vertexOptions, config.modelId)
+			return new VertexGeminiEmbedder(config.vertexOptions, config.modelId, config.embeddingRateLimitSeconds)
 		} else if (provider === "mistral") {
 			if (!config.mistralOptions?.apiKey) {
 				throw new Error(t("embeddings:serviceFactory.mistralConfigMissing"))

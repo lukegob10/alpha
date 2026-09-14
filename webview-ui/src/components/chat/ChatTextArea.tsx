@@ -1121,7 +1121,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					"box-border flex flex-col gap-1 outline-none",
 					isEditMode
 						? "chat-composer w-full rounded-xl border border-transparent p-2"
-						: "chat-composer surface-raised relative mx-auto w-[calc(100%-24px)] rounded-2xl p-1.5",
+						: "chat-composer surface-raised relative mx-auto w-[calc(100%-30px)] rounded-2xl p-1.5",
 				)}>
 				<div className={cn(!isEditMode && "relative")}>
 					<div
@@ -1270,7 +1270,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 								autoFocus={true}
 								className={cn(
 									"w-full",
-									"text-vscode-input-foreground",
+									"text-[var(--chat-foreground)]",
 									"font-vscode-font-family",
 									"text-vscode-editor-font-size",
 									"leading-vscode-editor-line-height",

@@ -209,6 +209,13 @@ const getScrollToBottomButton = (): HTMLButtonElement => {
 }
 
 describe("ChatView native scroll behavior", () => {
+	it("centers the transcript and dock with symmetric scrollbar space", async () => {
+		await hydrate()
+		expect(document.querySelector("[data-testid='chat-transcript-content']")).toHaveClass("chat-column")
+		expect(document.querySelector("[data-testid='chat-bottom-dock']")).toHaveClass("chat-column")
+		expect(getScrollable()).toHaveStyle({ scrollbarGutter: "stable both-edges" })
+	})
+
 	it("bounds the synchronous row mount cost for a long transcript", async () => {
 		const idleCallbacks: IdleRequestCallback[] = []
 		vi.stubGlobal(

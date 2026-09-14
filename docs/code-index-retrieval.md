@@ -32,9 +32,9 @@ Initial scanning and filesystem updates share contextual input construction, poi
 
 Cancellation skips a batch before its replacement transaction starts and waits for already accepted work to settle. Once replacement has begun, the existing write sequence finishes before teardown. Existing provider calls may still need to finish before cancellation settles; this change does not add transport abort support to every provider.
 
-Search explicitly requests query embeddings. Cohere uses search-query input, Nova uses text-retrieval purpose, and known Nomic code-search prefixes apply only to queries. Native Gemini and Vertex use the documented 001 task types or Gemini 2 instructed inputs. Providers without a distinct query/document contract keep their normal inputs.
+Search explicitly requests query embeddings. Cohere uses search-query input, Nova uses text-retrieval purpose, and known Nomic code-search prefixes apply only to queries. Native Gemini and direct Vertex use the documented 001 task types or Gemini 2 instructed inputs. Vertex gateways preserve their earlier raw-content prediction payload for both documents and queries, including opaque routed model aliases. Providers without a distinct query/document contract keep their normal inputs.
 
-Gemini 2 inputs have explicit Content boundaries so separate chunks receive separate embeddings. Vertex submits one input per request, with at most four active requests per embedder, bounded scheduling windows, and output restored to input order. This respects the Gemini 001 prediction limit and settles an accepted window before propagating failure.
+Native Gemini 2 inputs have explicit Content boundaries so separate chunks receive separate embeddings. Vertex submits one input per request, with at most four active requests per embedder, bounded scheduling windows, and output restored to input order. This respects the Gemini 001 prediction limit and settles an accepted window before propagating failure. The configured embedding delay also applies to each Vertex request start, shared across batches, queries, and retries; the scanner's outer batch delay alone cannot enforce this after splitting a batch.
 
 ### Hybrid retrieval
 
@@ -64,11 +64,21 @@ Existing collection/table names and saved task/settings formats remain unchanged
 
 A legacy or incompatible index is rebuilt through the existing initialization/cache-reset path. Changing embedding models triggers this even when dimensions match. The first upgrade can therefore re-embed the repository. Key rotation alone does not require re-embedding.
 
-Future changes to chunk representation, document embedding inputs, or lexical term encoding must increment the representation version so stored vectors and query behavior cannot silently diverge.
+Future changes to chunk representation, document embedding inputs, or lexical term encoding must update the relevant representation fingerprint so stored vectors and query behavior cannot silently diverge.
+
+Gateway input restoration adds a gateway-specific `raw-content-v1` fingerprint. This rebuilds affected gateway indexes through the existing initialization path without invalidating direct Vertex or other providers' indexes.
 
 The existing minimum-score setting applies to the semantic candidate channel. Returned hybrid scores express rank agreement, not cosine similarity or a probability of correctness. Lexical-only matches can be returned even when the semantic channel has no result above its threshold.
 
 No new production dependencies or user settings were added. The protected CLI and VS Code shim were not changed.
+
+### Gemini 001 gateway regression review (2026-09-12)
+
+Compared `6a04173` (2.1.34) with its parent and the earlier `c60a47f` Vertex batch/retry implementation. Gateway URL construction, project/location/model routing, Helix authentication, certificate setup, and the installed Google GenAI SDK 1.29.1 were unchanged. The release added retrieval task fields and split each batch into concurrent singleton predictions. The split bypassed the user-configured delay between actual HTTP requests.
+
+Restore the earlier gateway JSON (`instances: [{ content: text }]`) while retaining singleton predictions required by [Google's Gemini 001 contract](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/embeddings/get-text-embeddings), checked on 2026-09-12. Apply the existing rate limiter at the Vertex request boundary. Tests using the real SDK and stubbed HTTP cover canonical/legacy settings, routed URLs and headers, validation/document/query payloads, and 401 token refresh. A fake-clock regression reproduced four simultaneous calls despite a one-second setting; with the fix their starts are 0, 1, 2, and 3 seconds. These are deterministic contract checks; no live customer gateway failure has been reproduced.
+
+Validation passed on Node 20.19.2 / pnpm 10.8.1: `pnpm --dir src test services/code-index shared/__tests__/embeddingModels.spec.ts` (560 tests), `pnpm --dir src check-types`, `pnpm --dir src lint`, and `pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` (actual host 1.122.1).
 
 ## Recorded workload
 

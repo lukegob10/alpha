@@ -796,45 +796,69 @@ describe("attemptCompletionTool", () => {
 				)
 			})
 
-			it("does not emit TaskCompleted when user provides follow-up feedback", async () => {
-				const block: AttemptCompletionToolUse = {
-					type: "tool_use",
-					name: "attempt_completion",
-					params: { result: "2" },
-					nativeArgs: { result: "2" },
-					partial: false,
-				}
+			it.each(["reply", "queue", "finalization"])(
+				"preserves the final answer without completing the task for a follow-up via %s",
+				async (delivery) => {
+					const block: AttemptCompletionToolUse = {
+						type: "tool_use",
+						name: "attempt_completion",
+						params: { result: "2" },
+						nativeArgs: { result: "2" },
+						partial: false,
+					}
 
-				mockTask.ask = vi.fn().mockResolvedValue({
-					response: "messageResponse",
-					text: "Different question now: what is 3+3?",
-					images: [],
-				})
+					mockTask.ask = vi.fn().mockResolvedValue({
+						response: "messageResponse",
+						text: delivery === "reply" ? "Different question now: what is 3+3?" : "",
+						images: [],
+					})
+					if (delivery === "queue") {
+						vi.mocked(mockTask.messageQueueService!.dequeueMessage).mockReturnValueOnce({
+							id: "queued",
+							text: "Different question now: what is 3+3?",
+							images: [],
+							timestamp: 1,
+						})
+					} else if (delivery === "finalization") {
+						vi.mocked(mockTask.finalizeTaskCompletion!).mockImplementationOnce(async () => {
+							vi.mocked(mockTask.messageQueueService!.dequeueMessage).mockReturnValueOnce({
+								id: "queued",
+								text: "Different question now: what is 3+3?",
+								images: [],
+								timestamp: 1,
+							})
+							return false
+						})
+					}
 
-				const callbacks: AttemptCompletionCallbacks = {
-					askApproval: mockAskApproval,
-					handleError: mockHandleError,
-					pushToolResult: mockPushToolResult,
-					askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
-					toolDescription: mockToolDescription,
-				}
+					const callbacks: AttemptCompletionCallbacks = {
+						askApproval: mockAskApproval,
+						handleError: mockHandleError,
+						pushToolResult: mockPushToolResult,
+						askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+						toolDescription: mockToolDescription,
+						toolCallId: "completion-followup",
+					}
 
-				await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
+					await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
 
-				expect(mockHandleError).not.toHaveBeenCalled()
-				expect(mockCaptureTaskCompleted).not.toHaveBeenCalled()
-				expect(mockTask.emit).not.toHaveBeenCalledWith(
-					RooCodeEventName.TaskCompleted,
-					expect.anything(),
-					expect.anything(),
-					expect.anything(),
-				)
-				expect(mockTask.retractCompletionResult).toHaveBeenCalledOnce()
-				expect(
-					(mockTask.retractCompletionResult as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0],
-				).toBeLessThan((mockTask.say as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0])
-				expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("<user_message>"))
-			})
+					expect(mockHandleError).not.toHaveBeenCalled()
+					expect(mockCaptureTaskCompleted).not.toHaveBeenCalled()
+					expect(mockTask.emit).not.toHaveBeenCalledWith(
+						RooCodeEventName.TaskCompleted,
+						expect.anything(),
+						expect.anything(),
+						expect.anything(),
+					)
+					expect(mockTask.retractCompletionResult).not.toHaveBeenCalled()
+					expect(mockTask.say).toHaveBeenCalledWith(
+						"user_feedback",
+						"Different question now: what is 3+3?",
+						[],
+					)
+					expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("<user_message>"))
+				},
+			)
 		})
 	})
 })

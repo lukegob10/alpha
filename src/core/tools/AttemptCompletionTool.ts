@@ -149,8 +149,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				return
 			}
 
-			// User provided feedback - push tool result to continue the conversation
-			await task.retractCompletionResult()
+			// Continue the conversation without retracting the previous answer's durable trace boundary.
 			await task.say("user_feedback", feedbackText, feedbackImages)
 
 			const toolFeedback = `<user_message>\n${feedbackText}\n</user_message>`
@@ -290,7 +289,6 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				if (toolCallId) task.removePendingToolResult(toolCallId)
 				const queued = task.messageQueueService.dequeueMessage()
 				if (queued) {
-					await task.retractCompletionResult()
 					await task.say("user_feedback", queued.text, queued.images)
 					pushToolResult(
 						formatResponse.toolResult(`<user_message>\n${queued.text}\n</user_message>`, queued.images),

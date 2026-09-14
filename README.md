@@ -6,13 +6,13 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.34 Preview
+## Welcome to Alpha v2.1.35 Preview
 
-Alpha v2.1.34 brings clearer task progress, compact expandable traces, and stronger code-search tooling.
+Alpha v2.1.35 refreshes chat styling and improves follow-up history, Copilot editing, and Vertex gateway indexing.
 
-- Batch file searches collapse to a count and path list, with each search opening independently for its query and results
-- Running tasks show a live indicator, and queued messages expose front, middle, and back insertion targets while dragging
-- Agent execution and code-index reliability improvements include expanded deterministic and exact-host coverage
+- Dark chat uses a charcoal and indigo palette, with right-aligned user bubbles and centered text
+- Completed answers and activity traces stay intact and independently collapsed when follow-ups begin
+- Copilot edit tools follow the actual model family, and Gemini 001 Vertex gateway requests preserve their expected payload and pacing
 
 <details>
   <summary>🌐 Available languages</summary>

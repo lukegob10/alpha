@@ -3228,6 +3228,58 @@ describe("Alpha", () => {
 			)
 		})
 
+		it.each(["apply_patch", "edit"])(
+			"executes the advertised %s preference through the Task scheduler",
+			async (name) => {
+				const task = createTask()
+				vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+				vi.spyOn(task, "say").mockResolvedValue(undefined)
+				vi.spyOn(
+					task as unknown as { assertCurrentProviderTranscriptBeforeEffects(): Promise<void> },
+					"assertCurrentProviderTranscriptBeforeEffects",
+				).mockResolvedValue(undefined)
+				const registry = new ToolRegistry({ includeBuiltIns: false })
+				const execute = vi.fn(
+					async ({ callbacks }: { callbacks: { pushToolResult: (text: string) => void } }) => {
+						callbacks.pushToolResult("Edit completed")
+					},
+				)
+				registry.register({
+					name,
+					aliases: [],
+					schema: {
+						type: "function",
+						function: {
+							name,
+							description: "Scoped edit fixture",
+							parameters: { type: "object", properties: {} },
+						},
+					},
+					capabilities: {
+						concurrency: "serial",
+						sideEffects: "none",
+						requiresApproval: false,
+						controlFlow: false,
+					},
+					execute,
+				})
+				const surface = createTaskToolSurface({ registry, mode: "code" })
+				const outcome = await task["executeCanonicalToolCalls"](
+					createAgentResponse([
+						{ type: "tool_call", id: "preferred-edit", name, arguments: {} },
+						{ type: "tool_call", id: "hidden-edit", name: "apply_diff", arguments: {} },
+					]),
+					surface,
+					"code",
+					undefined,
+					new AbortController().signal,
+				)
+				expect(outcome.results[0]).toMatchObject({ status: "success", content: "Edit completed" })
+				expect(outcome.results[1].status).toBe("error")
+				expect(execute).toHaveBeenCalledOnce()
+			},
+		)
+
 		it("finishes a managed child from its streamed final text without a forced tool round", async () => {
 			const task = createTask("subagent")
 			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
@@ -4515,31 +4567,52 @@ describe("Alpha", () => {
 			expect(finalize).not.toHaveBeenCalled()
 		})
 
-		it("lets a queued follow-up arriving at the completion boundary win over acceptance", async () => {
-			const task = createTask()
-			vi.spyOn(task, "ask").mockImplementationOnce(async () => {
-				task.messageQueueService.addMessage("Please add the missing detail.")
-				return { response: "yesButtonClicked", text: "", images: [] }
-			})
-			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
-				.mockImplementationOnce(async () => {
-					task.assistantMessageContent = [{ type: "text", content: "Initial answer.", partial: false }]
-					return false
+		it.each(["review", "review gate", "finalization"])(
+			"preserves the final answer for a follow-up queued during %s",
+			async (boundary) => {
+				const task = createTask()
+				vi.spyOn(task, "ask").mockImplementationOnce(async () => {
+					if (boundary === "review") task.messageQueueService.addMessage("Please add the missing detail.")
+					return { response: "yesButtonClicked", text: "", images: [] }
 				})
-				.mockResolvedValueOnce(true)
+				if (boundary === "review gate") {
+					vi.spyOn(task, "waitForCompletionGateDecision")
+						.mockResolvedValueOnce({ allowed: true, modelCanResolveRejection: false })
+						.mockImplementationOnce(async () => {
+							task.messageQueueService.addMessage("Please add the missing detail.")
+							return { allowed: true, modelCanResolveRejection: false }
+						})
+				} else if (boundary === "finalization") {
+					vi.spyOn(task, "finalizeTaskCompletion").mockImplementationOnce(async () => {
+						task.messageQueueService.addMessage("Please add the missing detail.")
+						return false
+					})
+				}
+				const requestStep = vi
+					.spyOn(task, "recursivelyMakeClineRequests")
+					.mockImplementationOnce(async () => {
+						task.assistantMessageContent = [{ type: "text", content: "Initial answer.", partial: false }]
+						return false
+					})
+					.mockResolvedValueOnce(true)
 
-			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 
-			expect(requestStep).toHaveBeenCalledTimes(2)
-			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
-				[{ type: "text", text: "<user_message>\nPlease add the missing detail.\n</user_message>" }],
-				false,
-			])
-			expect(task.messageQueueService.isEmpty()).toBe(true)
-		})
+				expect(requestStep).toHaveBeenCalledTimes(2)
+				expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+					[{ type: "text", text: "<user_message>\nPlease add the missing detail.\n</user_message>" }],
+					false,
+				])
+				expect(task.messageQueueService.isEmpty()).toBe(true)
+				expect(task.clineMessages).toContainEqual(
+					expect.objectContaining({ say: "completion_result", text: "Initial answer." }),
+				)
+			},
+		)
 
 		it("continues the same task when the user replies at the ordinary completion boundary", async () => {
+			let timestamp = 1000
+			vi.spyOn(Date, "now").mockImplementation(() => ++timestamp)
 			const task = createTask()
 			const retract = vi.spyOn(task, "retractCompletionResult")
 			const ask = vi
@@ -4550,7 +4623,7 @@ describe("Alpha", () => {
 					images: [],
 				})
 				.mockResolvedValueOnce({ response: "yesButtonClicked", text: "", images: [] })
-			const say = vi.spyOn(task, "say").mockResolvedValue(undefined)
+			const say = vi.spyOn(task, "say")
 			const requestStep = vi
 				.spyOn(task, "recursivelyMakeClineRequests")
 				.mockImplementationOnce(async () => {
@@ -4558,9 +4631,7 @@ describe("Alpha", () => {
 					return false
 				})
 				.mockImplementationOnce(async () => {
-					expect(task.clineMessages).toContainEqual(
-						expect.objectContaining({ type: "say", say: "text", text: "First answer." }),
-					)
+					await task.say("text", "Expanded answer.", undefined, false)
 					task.assistantMessageContent = [{ type: "text", content: "Expanded answer.", partial: false }]
 					return false
 				})
@@ -4572,12 +4643,17 @@ describe("Alpha", () => {
 				[{ type: "text", text: "<user_message>\nPlease expand on that.\n</user_message>" }],
 				false,
 			])
-			expect(retract).toHaveBeenCalledOnce()
+			expect(retract).not.toHaveBeenCalled()
 			expect(say).toHaveBeenCalledWith("user_feedback", "Please expand on that.", [])
 			expect(ask).toHaveBeenCalledTimes(2)
+			expect(
+				task.clineMessages
+					.filter((message) => message.say === "completion_result")
+					.map((message) => message.text),
+			).toEqual(["First answer.", "Expanded answer."])
 		})
 
-		it("does not start another model turn when completion demotion cannot be persisted", async () => {
+		it("does not start another model turn when a rejected completion cannot be retracted durably", async () => {
 			const task = createTask()
 			let saveAttempt = 0
 			vi.mocked((task as any).enqueueClineMessagesSave).mockImplementation(
@@ -4591,11 +4667,14 @@ describe("Alpha", () => {
 					return false
 				},
 			)
-			vi.spyOn(task, "ask").mockResolvedValue({
-				response: "messageResponse",
-				text: "Please keep working.",
-				images: [],
-			})
+			vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked", text: "", images: [] })
+			vi.spyOn(task, "waitForCompletionGateDecision")
+				.mockResolvedValueOnce({ allowed: true, modelCanResolveRejection: false })
+				.mockResolvedValueOnce({
+					allowed: false,
+					modelCanResolveRejection: true,
+					message: "Verification failed.",
+				})
 			const say = vi.spyOn(task, "say")
 			const requestStep = vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
 				task.assistantMessageContent = [{ type: "text", content: "Premature answer.", partial: false }]

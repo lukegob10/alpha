@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.35
+
+### Patch Changes
+
+- Refresh dark chat with a charcoal and indigo palette, centered conversation columns, and right-aligned user bubbles with centered text.
+- Preserve completed answers and independently collapsed activity traces when follow-up messages start a new turn.
+- Select Copilot edit tools from the actual model family and keep model selection, captured tools, and execution consistent across retries.
+- Restore Gemini 001 Vertex gateway embedding payloads and apply configured pacing to individual requests, including split batches and retries.
+
 ## 2.1.34
 
 ### Patch Changes

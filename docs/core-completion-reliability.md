@@ -47,6 +47,57 @@ persistence failure/retry, and primary/child gate equivalence. The existing mana
 text for its three Workers and retains explicit root completion. Its nested Apply, parent verification, discard, mailbox
 consumption, and history navigation assertions exercise the real result consumers.
 
+## NOR-49 Copilot edit tools — September 12, 2026
+
+Copilot's selected VS Code LM model now supplies the existing surgical editor defaults:
+GPT/o-series/Codex identities use `apply_patch`; Claude and Gemini identities use `edit`.
+These defaults exclude `apply_diff`, preserve `write_to_file`, and defer to explicit
+model editor exceptions (including opt-in `search_replace` and `edit_file`). Unknown,
+conflicting, missing-vendor, and non-Copilot identities keep their existing preferences.
+Display names and version strings alone do not establish the underlying family. Exact
+selected IDs remain intact. Vertex and other providers' advertised tools are unchanged;
+the existing native OpenAI/router exclusion of `write_to_file` remains in place.
+
+Source inspection and regression tests exposed two gaps. A cold VS Code LM handler was
+selected only after Task had built its first catalog from fallback metadata. Task now
+uses an optional provider preparation hook before prompt, context, and tool capture.
+VS Code LM resolves its actual client there, retains it for dispatch and transport
+retries, and applies catalog refreshes at the next new step. Selection observes the
+existing cancellation and deadline controls. Other providers need no preparation hook.
+
+The Task scheduler also lacked the captured opt-in names, so it could reject an editor
+that the same step advertised. It now validates opt-in tools using the captured
+surface's allowed names. Mode/file restrictions, explicit disabled tools, Worker grants,
+approval, and mutation policy still apply. This also repairs execution of existing
+advertised opt-in editors in other providers without changing their catalogs. Legacy
+`apply_diff` parsing and implementation remain available for transcript compatibility.
+
+The shared Task path covers primary, scheduled/background, and managed-child requests.
+Tests cover cold resolution, cancellation, expired deadlines, refreshes and retries,
+profile/model switches, immutable cached catalogs, custom read-only modes, disabled
+editors, child authority caps, non-Copilot catalogs, and actual Task scheduler admission
+of preferred editors with rejection of hidden tools. Both missing preferences and the
+scheduler rejection were reproduced before their fixes.
+
+Primary API reference: [VS Code LanguageModelChat](https://code.visualstudio.com/api/references/vscode-api#LanguageModelChat),
+retrieved September 12, 2026. Its vendor, family, and opaque ID are separate fields;
+model-list changes require re-querying selection. The implementation uses existing
+stable selection APIs and retains VS Code 1.122.1 as the scripted compatibility gate.
+The editor preferences are this ticket's explicit product contract, not a measured
+claim about model quality.
+
+Focused validation:
+
+```sh
+pnpm --dir src test api/providers/__tests__/vscode-lm.spec.ts api/providers/utils/__tests__/copilot-tool-preferences.spec.ts core/task/__tests__/Task.retry-wire.spec.ts core/task/__tests__/TaskToolCatalogCache.spec.ts core/task/__tests__/Task.spec.ts core/prompts/tools/__tests__/filter-tools-for-mode.spec.ts core/tools/__tests__/TaskToolSurface.spec.ts core/tools/__tests__/nativeToolDispatchContract.spec.ts
+pnpm --dir src check-types
+pnpm --dir src lint
+pnpm test:core:confidence
+```
+
+NOR-48's matched live quality comparison remains separate. No paid model requests or
+solve-rate improvement are claimed by these deterministic regressions.
+
 ## NOR-48 baseline preparation
 
 Selection: [core-completion-v1.json](../evals/subsets/core-completion-v1.json). These are existing visible fixtures and

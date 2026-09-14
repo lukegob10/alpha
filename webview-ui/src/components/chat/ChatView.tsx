@@ -2254,7 +2254,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						data-chat-transcript-scroller="true"
 						tabIndex={0}
 						className="scrollable h-full min-h-0 w-full overflow-y-auto overscroll-contain"
-						style={{ overflowAnchor: "none", scrollbarGutter: "stable" }}
+						style={{ overflowAnchor: "none", scrollbarGutter: "stable both-edges" }}
 						onScroll={handleScrollerScroll}
 						onWheel={handleScrollerWheel}
 						onPointerDown={handleScrollerPointerDown}
@@ -2263,6 +2263,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						onLoadCapture={handleContentLoad}>
 						<div
 							ref={setContentRef}
+							className="chat-column chat-transcript py-3"
 							data-testid="chat-transcript-content"
 							data-count={groupedMessages.length}
 							data-rendered-count={renderedGroupedMessages.length}>
@@ -2338,7 +2339,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				</div>
 			)}
 
-			<div data-testid="chat-bottom-dock" className="relative z-20 flex shrink-0 flex-col">
+			<div data-testid="chat-bottom-dock" className="chat-column relative z-20 flex shrink-0 flex-col">
 				{task && (
 					<>
 						{isCompletedTaskResumePending && !isManagedSubagent && (

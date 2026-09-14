@@ -113,7 +113,8 @@
 	<body>
 		<nav id="preview-controls">
 			<strong style="margin-right: auto">Alpha · Extension preview</strong><button id="running">Running</button
-			><button id="complete">Complete</button><button id="narrow">Narrow</button>
+			><button id="complete">Complete</button><button id="followup">Follow-up</button>
+			<button id="finish-followup">Finish follow-up</button><button id="narrow">Narrow</button>
 			<select id="surface" aria-label="Preview surface">
 				<option value="chat">Chat</option>
 				<option value="settings">Settings</option>
@@ -213,8 +214,47 @@
 					}),
 				),
 			)
-			function show(completed) {
+			function show(completed, followup = false) {
 				const taskId = "trace-preview"
+				const completedTurn = [
+					...messages,
+					answer,
+					{ ts: base + 83000, type: "ask", ask: "completion_result", text: "" },
+				]
+				const followupTurn = [
+					...completedTurn,
+					{
+						ts: base + 120000,
+						type: "say",
+						say: "user_feedback",
+						text: "Now check the narrow sidebar layout.",
+					},
+					{ ts: base + 121000, type: "say", say: "text", text: "I’m checking the palette at sidebar width." },
+					{
+						ts: base + 125000,
+						type: "ask",
+						ask: "command",
+						text: "pnpm --dir webview-ui test -- CommandPalette.layout.spec.tsx",
+					},
+				]
+				const clineMessages = followup
+					? [
+							...followupTurn,
+							...(completed
+								? [
+										{
+											ts: base + 150000,
+											type: "say",
+											say: "completion_result",
+											text: "The narrow sidebar layout checks pass. Keyboard navigation and focus restoration still work.",
+										},
+										{ ts: base + 151000, type: "ask", ask: "completion_result", text: "" },
+									]
+								: []),
+						]
+					: completed
+						? completedTurn
+						: messages
 				const state = {
 					version: "2.1.3",
 					currentTaskId: taskId,
@@ -229,9 +269,7 @@
 						tokensOut: 480,
 						totalCost: 0.01,
 					},
-					clineMessages: completed
-						? [...messages, answer, { ts: base + 83000, type: "ask", ask: "completion_result", text: "" }]
-						: messages,
+					clineMessages,
 					taskHistory: [
 						{
 							id: "history-1",
@@ -271,7 +309,7 @@
 							isTurnActive: !completed,
 							canInterrupt: !completed,
 							isWaitingForInput: false,
-							lastUpdatedAt: base + 83000,
+							lastUpdatedAt: clineMessages.at(-1).ts,
 							queueCount: 0,
 							tokensIn: 2500,
 							tokensOut: 480,
@@ -313,6 +351,8 @@
 			)
 			document.getElementById("running").onclick = () => show(false)
 			document.getElementById("complete").onclick = () => show(true)
+			document.getElementById("followup").onclick = () => show(false, true)
+			document.getElementById("finish-followup").onclick = () => show(true, true)
 			document.getElementById("narrow").onclick = () => {
 				document.getElementById("root").style.width =
 					document.getElementById("root").style.width === "340px" ? "min(100%, 760px)" : "340px"
