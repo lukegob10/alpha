@@ -33,3 +33,6 @@
 !assets/vscode-material-icons/**
 !assets/icons/**
 !assets/images/**
+
+# Installed built-in skill instructions and on-demand references
+!assets/skills/**

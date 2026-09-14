@@ -1017,6 +1017,10 @@
 			"descriptionRequired": "Beschrijving is verplicht",
 			"descriptionTooLong": "Beschrijving moet maximaal 1024 tekens zijn"
 		},
-		"footer": "Maak je eigen skills met de Skill Writer modus, beschikbaar in de <MarketplaceLink>Modes Marketplace</MarketplaceLink>."
+		"footer": "Maak je eigen skills met de Skill Writer modus, beschikbaar in de <MarketplaceLink>Modes Marketplace</MarketplaceLink>.",
+		"builtinSkills": "Ingebouwd",
+		"enabled": "Ingeschakeld",
+		"inspectSkill": "Bekijken",
+		"builtinDescription": "Inbegrepen bij Alpha. Wijzigingen worden toegepast wanneer je de instellingen opslaat. Werkruimtevaardigheden en persoonlijke vaardigheden met dezelfde naam hebben voorrang; het uitschakelen van een ingebouwde vaardigheid schakelt je eigen vervangende versies niet uit."
 	}
 }

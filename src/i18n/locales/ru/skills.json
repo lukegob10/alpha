@@ -11,6 +11,7 @@
 		"missing_update_modes_fields": "Отсутствуют обязательные поля: skillName или source",
 		"manager_unavailable": "Менеджер навыков недоступен",
 		"missing_delete_fields": "Отсутствуют обязательные поля: skillName или source",
-		"skill_not_found": "Навык \"{{name}}\" не найден"
+		"skill_not_found": "Навык \"{{name}}\" не найден",
+		"builtin_read_only": "Встроенные навыки доступны только для чтения. Чтобы заменить их, создайте личный навык или навык рабочей области."
 	}
 }

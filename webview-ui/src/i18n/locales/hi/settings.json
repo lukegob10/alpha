@@ -1017,6 +1017,10 @@
 			"descriptionRequired": "विवरण आवश्यक है",
 			"descriptionTooLong": "विवरण 1024 वर्णों से अधिक नहीं होना चाहिए"
 		},
-		"footer": "Skill Writer मोड के साथ अपने स्वयं के Skills बनाएं, <MarketplaceLink>Modes Marketplace</MarketplaceLink> में उपलब्ध।"
+		"footer": "Skill Writer मोड के साथ अपने स्वयं के Skills बनाएं, <MarketplaceLink>Modes Marketplace</MarketplaceLink> में उपलब्ध।",
+		"builtinSkills": "अंतर्निहित",
+		"enabled": "सक्षम",
+		"inspectSkill": "देखें",
+		"builtinDescription": "Alpha के साथ शामिल है। सेटिंग सहेजने पर बदलाव लागू होते हैं। समान नाम वाले कार्यक्षेत्र और व्यक्तिगत कौशल को प्राथमिकता मिलती है; अंतर्निहित कौशल को अक्षम करने से आपके बनाए विकल्प अक्षम नहीं होते।"
 	}
 }

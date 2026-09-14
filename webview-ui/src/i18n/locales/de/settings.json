@@ -1017,6 +1017,10 @@
 			"descriptionRequired": "Beschreibung ist erforderlich",
 			"descriptionTooLong": "Beschreibung muss 1024 Zeichen oder weniger sein"
 		},
-		"footer": "Erstelle deine eigenen Skills mit dem Skill Writer Modus, verfügbar im <MarketplaceLink>Modes Marketplace</MarketplaceLink>."
+		"footer": "Erstelle deine eigenen Skills mit dem Skill Writer Modus, verfügbar im <MarketplaceLink>Modes Marketplace</MarketplaceLink>.",
+		"builtinSkills": "Integriert",
+		"enabled": "Aktiviert",
+		"inspectSkill": "Ansehen",
+		"builtinDescription": "In Alpha enthalten. Änderungen werden beim Speichern der Einstellungen übernommen. Gleichnamige Fähigkeiten im Arbeitsbereich und persönliche Fähigkeiten haben Vorrang; das Deaktivieren einer integrierten Fähigkeit deaktiviert deine eigenen Varianten nicht."
 	}
 }

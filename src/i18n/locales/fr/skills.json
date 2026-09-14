@@ -11,6 +11,7 @@
 		"missing_update_modes_fields": "Champs obligatoires manquants : skillName ou source",
 		"manager_unavailable": "Le gestionnaire de compétences n'est pas disponible",
 		"missing_delete_fields": "Champs obligatoires manquants : skillName ou source",
-		"skill_not_found": "Compétence \"{{name}}\" introuvable"
+		"skill_not_found": "Compétence \"{{name}}\" introuvable",
+		"builtin_read_only": "Les compétences intégrées sont en lecture seule. Créez une compétence personnelle ou dans l'espace de travail pour les remplacer."
 	}
 }

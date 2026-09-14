@@ -343,6 +343,58 @@ const renderSettingsView = () => {
 	return { onDone, activateTab, getSettingsContent }
 }
 
+describe("SettingsView - Built-in Skills", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	const dispatchSettings = (state: Record<string, unknown>) => {
+		act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state } })))
+	}
+
+	it("keeps built-in enablement buffered across live refreshes and saves both disabled and enabled values", () => {
+		const { activateTab } = renderSettingsView()
+		const skills = [
+			{
+				name: "rich-documents",
+				description: "Substantial HTML documents",
+				path: "/extension/assets/skills/rich-documents/SKILL.md",
+				source: "builtin",
+			},
+		]
+		dispatchSettings({ settingsImportedAt: 1, disabledBuiltinSkills: ["other-default"], skills })
+		act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "skills", skills } })))
+		activateTab("skills")
+		const checkbox = screen.getByLabelText("settings:skills.enabled")
+		expect(checkbox).toBeChecked()
+		fireEvent.click(checkbox)
+		expect(checkbox).not.toBeChecked()
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+
+		dispatchSettings({ disabledBuiltinSkills: [], skills, liveTaskIds: ["background-task"] })
+		expect(checkbox).not.toBeChecked()
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({
+					disabledBuiltinSkills: ["other-default", "rich-documents"],
+				}),
+			}),
+		)
+
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(checkbox)
+		expect(checkbox).toBeChecked()
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({ disabledBuiltinSkills: ["other-default"] }),
+			}),
+		)
+	})
+})
+
 describe("SettingsView - Agents", () => {
 	beforeEach(() => vi.clearAllMocks())
 

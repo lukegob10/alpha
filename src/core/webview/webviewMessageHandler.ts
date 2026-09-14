@@ -204,7 +204,7 @@ export const webviewMessageHandler = async (
 			existingCommandNames.add(skill.name)
 			commandList.push({
 				name: skill.name,
-				source: skill.source,
+				source: skill.source === "builtin" ? "built-in" : skill.source,
 				filePath: skill.path,
 				description: skill.description,
 			})
@@ -2373,7 +2373,7 @@ export const webviewMessageHandler = async (
 					// Import the mode with the specified source level
 					const result = await provider.customModesManager.importModeWithRules(
 						yamlContent,
-						message.source || "project", // Default to project if not specified
+						message.source === "global" ? "global" : "project", // Mode imports support user sources only.
 					)
 
 					if (result.success) {

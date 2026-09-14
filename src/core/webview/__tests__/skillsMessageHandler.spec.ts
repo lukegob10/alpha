@@ -8,8 +8,11 @@ vi.mock("vscode", () => {
 	const showErrorMessage = vi.fn()
 
 	return {
+		Uri: { from: vi.fn((value) => value) },
+		workspace: { openTextDocument: vi.fn().mockResolvedValue({}) },
 		window: {
 			showErrorMessage,
+			showTextDocument: vi.fn(),
 		},
 	}
 })
@@ -41,6 +44,7 @@ import {
 	handleDeleteSkill,
 	handleMoveSkill,
 	handleOpenSkillFile,
+	handleUpdateSkillModes,
 } from "../skillsMessageHandler"
 
 describe("skillsMessageHandler", () => {
@@ -52,6 +56,7 @@ describe("skillsMessageHandler", () => {
 	const mockDeleteSkill = vi.fn()
 	const mockMoveSkill = vi.fn()
 	const mockGetSkill = vi.fn()
+	const mockAssertSkillEditable = vi.fn()
 	const mockFindSkillByNameAndSource = vi.fn()
 
 	const createMockProvider = (hasSkillsManager: boolean = true): ClineProvider => {
@@ -63,6 +68,7 @@ describe("skillsMessageHandler", () => {
 					deleteSkill: mockDeleteSkill,
 					moveSkill: mockMoveSkill,
 					getSkill: mockGetSkill,
+					assertSkillEditable: mockAssertSkillEditable,
 					findSkillByNameAndSource: mockFindSkillByNameAndSource,
 				}
 			: undefined
@@ -92,6 +98,60 @@ describe("skillsMessageHandler", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
+	})
+
+	it.each([
+		["createSkill", handleCreateSkill],
+		["deleteSkill", handleDeleteSkill],
+		["moveSkill", handleMoveSkill],
+		["updateSkillModes", handleUpdateSkillModes],
+	] as const)("rejects bundled asset mutation through %s", async (type, handler) => {
+		await handler(createMockProvider(), {
+			type,
+			source: "builtin",
+			skillName: "rich-documents",
+			skillDescription: "Documents",
+		})
+		expect(vscode.window.showErrorMessage).toHaveBeenCalled()
+		expect(mockCreateSkill).not.toHaveBeenCalled()
+		expect(mockDeleteSkill).not.toHaveBeenCalled()
+		expect(mockMoveSkill).not.toHaveBeenCalled()
+		expect(openFile).not.toHaveBeenCalled()
+	})
+
+	it("rejects opening a user alias of bundled instructions for editing", async () => {
+		mockFindSkillByNameAndSource.mockReturnValue({
+			name: "rich-documents",
+			source: "global",
+			path: "/alias/SKILL.md",
+		})
+		mockAssertSkillEditable.mockRejectedValueOnce(new Error("Built-in skills are read-only"))
+		await handleOpenSkillFile(createMockProvider(), {
+			type: "openSkillFile",
+			source: "global",
+			skillName: "rich-documents",
+		})
+		expect(openFile).not.toHaveBeenCalled()
+		expect(vscode.window.showErrorMessage).toHaveBeenCalled()
+	})
+
+	it("inspects bundled instructions through a read-only virtual document", async () => {
+		mockFindSkillByNameAndSource.mockReturnValue({
+			name: "rich-documents",
+			source: "builtin",
+			path: "/extension/assets/skills/rich-documents/SKILL.md",
+		})
+		await handleOpenSkillFile(createMockProvider(), {
+			type: "openSkillFile",
+			source: "builtin",
+			skillName: "rich-documents",
+		})
+		expect(vscode.workspace.openTextDocument).toHaveBeenCalledWith({
+			scheme: "alpha-builtin-skill",
+			path: "/rich-documents/SKILL.md",
+		})
+		expect(vscode.window.showTextDocument).toHaveBeenCalled()
+		expect(openFile).not.toHaveBeenCalled()
 	})
 
 	describe("handleRequestSkills", () => {

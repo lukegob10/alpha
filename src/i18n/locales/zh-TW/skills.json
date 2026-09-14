@@ -11,6 +11,7 @@
 		"missing_update_modes_fields": "缺少必填欄位：skillName 或 source",
 		"manager_unavailable": "技能管理器無法使用",
 		"missing_delete_fields": "缺少必填欄位：skillName 或 source",
-		"skill_not_found": "找不到技能「{{name}}」"
+		"skill_not_found": "找不到技能「{{name}}」",
+		"builtin_read_only": "內建技能為唯讀。若要覆寫，請建立個人技能或工作區技能。"
 	}
 }

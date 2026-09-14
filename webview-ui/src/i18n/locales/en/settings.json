@@ -172,7 +172,11 @@
 			"descriptionRequired": "Description is required",
 			"descriptionTooLong": "Description must be 1024 characters or less"
 		},
-		"footer": "Create your own skills with the Skill Writer mode, available in the <MarketplaceLink>Modes Marketplace</MarketplaceLink>."
+		"footer": "Create your own skills with the Skill Writer mode, available in the <MarketplaceLink>Modes Marketplace</MarketplaceLink>.",
+		"builtinSkills": "Built-in",
+		"enabled": "Enabled",
+		"inspectSkill": "Inspect",
+		"builtinDescription": "Included with Alpha. Changes apply when you save settings. Workspace and personal skills with the same name take precedence; disabling a built-in does not disable your overrides."
 	},
 	"ui": {
 		"collapseThinking": {

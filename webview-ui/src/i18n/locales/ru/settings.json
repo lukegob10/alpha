@@ -1017,6 +1017,10 @@
 			"descriptionRequired": "Описание обязательно",
 			"descriptionTooLong": "Описание должно быть не более 1024 символов"
 		},
-		"footer": "Создавайте собственные навыки с режимом Skill Writer, доступным в <MarketplaceLink>Modes Marketplace</MarketplaceLink>."
+		"footer": "Создавайте собственные навыки с режимом Skill Writer, доступным в <MarketplaceLink>Modes Marketplace</MarketplaceLink>.",
+		"builtinSkills": "Встроенные",
+		"enabled": "Включён",
+		"inspectSkill": "Просмотреть",
+		"builtinDescription": "Входит в состав Alpha. Изменения применяются при сохранении настроек. Навыки рабочей области и личные навыки с тем же именем имеют приоритет; отключение встроенного навыка не отключает ваши замещающие версии."
 	}
 }

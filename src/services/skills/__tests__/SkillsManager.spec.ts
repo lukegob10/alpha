@@ -173,6 +173,226 @@ describe("SkillsManager", () => {
 		await skillsManager.dispose()
 	})
 
+	describe("built-in skills", () => {
+		const extensionDir = p(SHARED_DIR, "installed-extension")
+		const builtinSkillsDir = p(extensionDir, "assets", "skills")
+		const builtinPath = p(builtinSkillsDir, "rich-documents", "SKILL.md")
+		let disabled: string[]
+		let files: Map<string, string>
+
+		const addSkill = (directory: string, name = "rich-documents", mode?: string) => {
+			files.set(
+				p(directory, name, "SKILL.md"),
+				`---\nname: ${name}\ndescription: Documents from ${directory}\n${mode ? `modeSlugs: [${mode}]\n` : ""}---\nInstructions from ${directory}`,
+			)
+		}
+
+		beforeEach(() => {
+			disabled = []
+			files = new Map()
+			Object.defineProperty(mockProvider, "contextProxy", {
+				configurable: true,
+				value: {
+					extensionUri: { fsPath: extensionDir },
+					getValue: vi.fn((key: string) => (key === "disabledBuiltinSkills" ? disabled : undefined)),
+				} as unknown as ClineProvider["contextProxy"],
+			})
+			mockDirectoryExists.mockImplementation(async (directory: string) =>
+				[...files.keys()].some((file) => path.dirname(path.dirname(file)) === directory),
+			)
+			mockFileExists.mockImplementation(async (file: string) => files.has(file))
+			mockRealpath.mockImplementation(async (directory: string) => directory)
+			mockStat.mockResolvedValue({ isDirectory: () => true })
+			mockReaddir.mockImplementation(async (directory: string) =>
+				[...files.keys()]
+					.filter((file) => path.dirname(path.dirname(file)) === directory)
+					.map((file) => path.basename(path.dirname(file))),
+			)
+			mockReadFile.mockImplementation(async (file: string) => {
+				const content = files.get(file)
+				if (content === undefined) throw Object.assign(new Error("File not found"), { code: "ENOENT" })
+				return content
+			})
+			addSkill(builtinSkillsDir)
+		})
+
+		it("discovers installed assets without copying defaults or eagerly reading linked resources", async () => {
+			await skillsManager.discoverSkills()
+			expect(skillsManager.getSkillsForMode("code")).toEqual([
+				expect.objectContaining({ name: "rich-documents", source: "builtin", path: builtinPath }),
+			])
+			expect(mockReadFile.mock.calls.map(([file]) => file)).toEqual([builtinPath])
+			expect(mockMkdir).not.toHaveBeenCalled()
+			expect(mockWriteFile).not.toHaveBeenCalled()
+		})
+
+		it("resolves project then personal overrides and restores the bundled fallback when overrides disappear", async () => {
+			addSkill(globalSkillsDir)
+			addSkill(projectSkillsDir)
+			await skillsManager.discoverSkills()
+			expect((await skillsManager.getSkillContent("rich-documents", "code"))?.source).toBe("project")
+			expect((await skillsManager.getSkillContent("rich-documents"))?.source).toBe("project")
+			files.delete(p(projectSkillsDir, "rich-documents", "SKILL.md"))
+			await skillsManager.refreshSkills()
+			expect((await skillsManager.getSkillContent("rich-documents", "code"))?.source).toBe("global")
+			files.delete(p(globalSkillsDir, "rich-documents", "SKILL.md"))
+			await skillsManager.refreshSkills()
+			expect((await skillsManager.getSkillContent("rich-documents", "code"))?.source).toBe("builtin")
+		})
+
+		it("keeps user directory and mode precedence when a bundled skill shares the name", async () => {
+			addSkill(globalAgentsSkillsDir)
+			addSkill(globalSkillsDir)
+			addSkill(globalSkillsCodeDir, "rich-documents", "code")
+			addSkill(projectSkillsDir, "rich-documents", "architect")
+			await skillsManager.discoverSkills()
+			expect((await skillsManager.getSkillContent("rich-documents", "code"))?.path).toBe(
+				p(globalSkillsCodeDir, "rich-documents", "SKILL.md"),
+			)
+			expect((await skillsManager.getSkillContent("rich-documents", "architect"))?.source).toBe("project")
+			expect((await skillsManager.getSkillContent("rich-documents", "ask"))?.path).toBe(
+				p(globalSkillsDir, "rich-documents", "SKILL.md"),
+			)
+		})
+
+		it("disables only the bundled default while retaining overrides, unrelated skills, and inspectable metadata", async () => {
+			addSkill(projectSkillsDir, "rich-documents", "architect")
+			addSkill(builtinSkillsDir, "other-skill")
+			await skillsManager.discoverSkills()
+			disabled = ["rich-documents"]
+			expect(skillsManager.getSkillsForMode("code").map((skill) => skill.name)).toEqual(["other-skill"])
+			expect(await skillsManager.getSkillContent("rich-documents", "code")).toBeNull()
+			expect((await skillsManager.getSkillContent("rich-documents", "architect"))?.source).toBe("project")
+			expect(skillsManager.getSkillsMetadata()).toContainEqual(
+				expect.objectContaining({ source: "builtin", name: "rich-documents" }),
+			)
+			files.delete(p(projectSkillsDir, "rich-documents", "SKILL.md"))
+			await skillsManager.refreshSkills()
+			expect(await skillsManager.getSkillContent("rich-documents")).toBeNull()
+			disabled = []
+			expect((await skillsManager.getSkillContent("rich-documents", "code"))?.source).toBe("builtin")
+		})
+
+		it("applies persisted disablement when a new manager starts", async () => {
+			disabled = ["rich-documents"]
+			const reloaded = new SkillsManager(mockProvider as ClineProvider)
+			try {
+				await reloaded.initialize()
+				expect(reloaded.getSkillsForMode("code")).toEqual([])
+				expect(reloaded.findSkillByNameAndSource("rich-documents", "builtin")?.path).toBe(builtinPath)
+			} finally {
+				await reloaded.dispose()
+			}
+		})
+
+		it("retains the exact captured built-in path after disabling and introducing an override", async () => {
+			await skillsManager.discoverSkills()
+			const captured = await skillsManager.getSkillContent("rich-documents", "code")
+			disabled = ["rich-documents"]
+			addSkill(projectSkillsDir)
+			await skillsManager.refreshSkills()
+			expect((await skillsManager.getSkillContent("rich-documents", "code"))?.source).toBe("project")
+			expect(await skillsManager.getSkillContentByPath("rich-documents", builtinPath)).toEqual(captured)
+			expect(await skillsManager.getSkillContentByPath("other-name", builtinPath)).toBeNull()
+			expect(
+				await skillsManager.getSkillContentByPath("rich-documents", p(PROJECT_DIR, "unknown", "SKILL.md")),
+			).toBeNull()
+		})
+
+		it.each(["delete", "move", "update"])(
+			"rejects %s through a personal skill alias into installed assets",
+			async (operation) => {
+				addSkill(globalSkillsDir)
+				await skillsManager.discoverSkills()
+				mockRealpath.mockImplementation(async (candidate: string) => {
+					const relative = path.relative(globalSkillsDir, candidate)
+					return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+						? p(builtinSkillsDir, relative)
+						: candidate
+				})
+				const result =
+					operation === "delete"
+						? skillsManager.deleteSkill("rich-documents", "global")
+						: operation === "move"
+							? skillsManager.moveSkill("rich-documents", "global", undefined, "code")
+							: skillsManager.updateSkillModes("rich-documents", "global", ["code"])
+				await expect(result).rejects.toThrow("skills:errors.builtin_read_only")
+				for (const mutation of [mockMkdir, mockWriteFile, mockRm, mockRename, mockRmdir])
+					expect(mutation).not.toHaveBeenCalled()
+			},
+		)
+
+		it("rejects creation through a linked skill root even when the new directory is missing", async () => {
+			mockRealpath.mockImplementation(async (candidate: string) => {
+				if (candidate === globalSkillsDir) return builtinSkillsDir
+				if (candidate.startsWith(`${globalSkillsDir}${path.sep}`))
+					throw Object.assign(new Error("Missing"), { code: "ENOENT" })
+				return candidate
+			})
+			await expect(skillsManager.createSkill("new-skill", "global", "New skill")).rejects.toThrow(
+				"skills:errors.builtin_read_only",
+			)
+			expect(mockMkdir).not.toHaveBeenCalled()
+			expect(mockWriteFile).not.toHaveBeenCalled()
+		})
+
+		it("rejects moving a user skill into a mode directory linked to bundled assets", async () => {
+			addSkill(globalSkillsDir, "user-skill")
+			await skillsManager.discoverSkills()
+			mockRealpath.mockImplementation(async (candidate: string) => {
+				if (candidate === globalSkillsCodeDir) return builtinSkillsDir
+				if (candidate.startsWith(`${globalSkillsCodeDir}${path.sep}`))
+					throw Object.assign(new Error("Missing"), { code: "ENOENT" })
+				return candidate
+			})
+			await expect(skillsManager.moveSkill("user-skill", "global", undefined, "code")).rejects.toThrow(
+				"skills:errors.builtin_read_only",
+			)
+			expect(mockMkdir).not.toHaveBeenCalled()
+			expect(mockRename).not.toHaveBeenCalled()
+		})
+
+		it("rejects deleting a user alias whose target contains the installed skill root", async () => {
+			addSkill(globalSkillsDir)
+			await skillsManager.discoverSkills()
+			mockRealpath.mockImplementation(async (candidate: string) =>
+				candidate === p(globalSkillsDir, "rich-documents") ? extensionDir : candidate,
+			)
+			await expect(skillsManager.deleteSkill("rich-documents", "global")).rejects.toThrow(
+				"skills:errors.builtin_read_only",
+			)
+			expect(mockRm).not.toHaveBeenCalled()
+		})
+
+		it("preserves user symlink edits outside the bundled root, including a similarly named sibling", async () => {
+			addSkill(globalSkillsDir)
+			await skillsManager.discoverSkills()
+			const userFile = p(globalSkillsDir, "rich-documents", "SKILL.md")
+			mockRealpath.mockImplementation(async (candidate: string) =>
+				candidate === userFile ? p(`${builtinSkillsDir}-personal`, "rich-documents", "SKILL.md") : candidate,
+			)
+			await skillsManager.updateSkillModes("rich-documents", "global", ["architect"])
+			expect(mockWriteFile).toHaveBeenCalledWith(userFile, expect.stringContaining("  - architect"), "utf-8")
+		})
+
+		it("rejects bundled mutations before touching disk, including a no-op move", async () => {
+			await skillsManager.discoverSkills()
+			mockReadFile.mockClear()
+			const operations = [
+				() => skillsManager.createSkill("rich-documents", "builtin", "Description"),
+				() => skillsManager.deleteSkill("rich-documents", "builtin"),
+				() => skillsManager.moveSkill("rich-documents", "builtin", undefined, "code"),
+				() => skillsManager.moveSkill("rich-documents", "builtin", undefined, undefined),
+				() => skillsManager.updateSkillModes("rich-documents", "builtin", ["code"]),
+			]
+			for (const operation of operations)
+				await expect(operation()).rejects.toThrow("skills:errors.builtin_read_only")
+			for (const mutation of [mockMkdir, mockWriteFile, mockRm, mockRename, mockRmdir, mockReadFile]) {
+				expect(mutation).not.toHaveBeenCalled()
+			}
+		})
+	})
+
 	describe("discoverSkills", () => {
 		it("discovers scheduled workspace skills without watching or reading the coding workspace", async () => {
 			const scheduledDir = p(PROJECT_DIR, "scheduled")

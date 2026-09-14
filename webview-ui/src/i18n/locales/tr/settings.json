@@ -1017,6 +1017,10 @@
 			"descriptionRequired": "Açıklama gereklidir",
 			"descriptionTooLong": "Açıklama en fazla 1024 karakter olmalıdır"
 		},
-		"footer": "Skill Writer modu ile kendi becerilerinizi oluşturun. <MarketplaceLink>Modes Marketplace</MarketplaceLink>'de mevcut."
+		"footer": "Skill Writer modu ile kendi becerilerinizi oluşturun. <MarketplaceLink>Modes Marketplace</MarketplaceLink>'de mevcut.",
+		"builtinSkills": "Yerleşik",
+		"enabled": "Etkin",
+		"inspectSkill": "İncele",
+		"builtinDescription": "Alpha ile birlikte gelir. Değişiklikler ayarları kaydettiğinizde uygulanır. Aynı ada sahip çalışma alanı ve kişisel beceriler önceliklidir; yerleşik bir beceriyi devre dışı bırakmak kendi alternatiflerinizi devre dışı bırakmaz."
 	}
 }

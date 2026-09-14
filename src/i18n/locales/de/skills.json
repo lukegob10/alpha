@@ -11,6 +11,7 @@
 		"missing_update_modes_fields": "Erforderliche Felder fehlen: skillName oder source",
 		"manager_unavailable": "Skill-Manager nicht verfügbar",
 		"missing_delete_fields": "Erforderliche Felder fehlen: skillName oder source",
-		"skill_not_found": "Skill \"{{name}}\" nicht gefunden"
+		"skill_not_found": "Skill \"{{name}}\" nicht gefunden",
+		"builtin_read_only": "Integrierte Fähigkeiten sind schreibgeschützt. Erstelle eine persönliche Fähigkeit oder eine Fähigkeit im Arbeitsbereich, um sie zu überschreiben."
 	}
 }

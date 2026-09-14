@@ -1017,6 +1017,10 @@
 			"descriptionRequired": "La descripción es obligatoria",
 			"descriptionTooLong": "La descripción debe tener como máximo 1024 caracteres"
 		},
-		"footer": "Crea tus propias skills con el modo Skill Writer, disponible en el <MarketplaceLink>Modes Marketplace</MarketplaceLink>."
+		"footer": "Crea tus propias skills con el modo Skill Writer, disponible en el <MarketplaceLink>Modes Marketplace</MarketplaceLink>.",
+		"builtinSkills": "Integradas",
+		"enabled": "Activada",
+		"inspectSkill": "Inspeccionar",
+		"builtinDescription": "Incluida con Alpha. Los cambios se aplican al guardar la configuración. Las habilidades del espacio de trabajo y las personales con el mismo nombre tienen prioridad; desactivar una habilidad integrada no desactiva tus versiones."
 	}
 }

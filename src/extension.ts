@@ -1,3 +1,4 @@
+import { registerBuiltinSkillInspection } from "./services/skills/builtinSkillInspection"
 import { TicketPanel } from "./services/tickets/TicketPanel"
 import * as vscode from "vscode"
 import * as dotenvx from "@dotenvx/dotenvx"
@@ -113,6 +114,7 @@ async function checkWorktreeAutoOpen(
 // This method is called when your extension is activated.
 // Your extension is activated the very first time the command is executed.
 export async function activate(context: vscode.ExtensionContext) {
+	context.subscriptions.push(registerBuiltinSkillInspection(context.extensionUri))
 	extensionContext = context
 	outputChannel = vscode.window.createOutputChannel(Package.outputChannel)
 	context.subscriptions.push(outputChannel)

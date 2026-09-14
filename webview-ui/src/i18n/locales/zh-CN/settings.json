@@ -1017,6 +1017,10 @@
 			"descriptionRequired": "描述为必填项",
 			"descriptionTooLong": "描述不得超过1024个字符"
 		},
-		"footer": "使用技能编写器模式创建您自己的技能，可在 <MarketplaceLink>模式市集</MarketplaceLink> 中获得。"
+		"footer": "使用技能编写器模式创建您自己的技能，可在 <MarketplaceLink>模式市集</MarketplaceLink> 中获得。",
+		"builtinSkills": "内置",
+		"enabled": "已启用",
+		"inspectSkill": "查看内容",
+		"builtinDescription": "随 Alpha 提供。保存设置后更改生效。同名的工作区技能和个人技能优先；禁用内置技能不会禁用你提供的替代技能。"
 	}
 }

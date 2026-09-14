@@ -37,6 +37,15 @@ const entries = new Set(
 
 const requiredEntries = [
 	"extension/package.json",
+	"extension/assets/skills/rich-documents/SKILL.md",
+	"extension/webview-ui/build/artifact-kit/v1/kit.css",
+	"extension/webview-ui/build/artifact-kit/v1/kit.js",
+	"extension/webview-ui/build/artifact-kit/v1/reference.md",
+	"extension/webview-ui/build/artifact-kit/v1/examples/review.html",
+	"extension/webview-ui/build/artifact-kit/v1/examples/spec.html",
+	"extension/webview-ui/build/artifact-kit/v1/examples/report.html",
+	"extension/webview-ui/build/html-document/viewer.js",
+	"extension/webview-ui/build/html-document/viewer.css",
 	"extension/package.nls.json",
 	"extension/dist/extension.js",
 	"extension/webview-ui/audio/celebration.wav",

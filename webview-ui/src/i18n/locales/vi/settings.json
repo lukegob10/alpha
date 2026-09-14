@@ -1017,6 +1017,10 @@
 			"descriptionRequired": "Mô tả là bắt buộc",
 			"descriptionTooLong": "Mô tả phải có tối đa 1024 ký tự"
 		},
-		"footer": "Tạo các skill của riêng bạn với chế độ Skill Writer, có sẵn tại <MarketplaceLink>Modes Marketplace</MarketplaceLink>."
+		"footer": "Tạo các skill của riêng bạn với chế độ Skill Writer, có sẵn tại <MarketplaceLink>Modes Marketplace</MarketplaceLink>.",
+		"builtinSkills": "Tích hợp sẵn",
+		"enabled": "Đã bật",
+		"inspectSkill": "Xem nội dung",
+		"builtinDescription": "Đi kèm Alpha. Các thay đổi được áp dụng khi bạn lưu cài đặt. Kỹ năng trong không gian làm việc và kỹ năng cá nhân có cùng tên được ưu tiên; tắt kỹ năng tích hợp sẵn không tắt các phiên bản thay thế của bạn."
 	}
 }

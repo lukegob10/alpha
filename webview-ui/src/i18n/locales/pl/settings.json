@@ -1017,6 +1017,10 @@
 			"descriptionRequired": "Opis jest wymagany",
 			"descriptionTooLong": "Opis musi mieć maksymalnie 1024 znaki"
 		},
-		"footer": "Twórz własne umiejętności za pomocą trybu Skill Writer, dostępnego w <MarketplaceLink>Modes Marketplace</MarketplaceLink>."
+		"footer": "Twórz własne umiejętności za pomocą trybu Skill Writer, dostępnego w <MarketplaceLink>Modes Marketplace</MarketplaceLink>.",
+		"builtinSkills": "Wbudowane",
+		"enabled": "Włączona",
+		"inspectSkill": "Wyświetl",
+		"builtinDescription": "Dołączona do Alpha. Zmiany są stosowane po zapisaniu ustawień. Umiejętności obszaru roboczego i osobiste o tej samej nazwie mają pierwszeństwo; wyłączenie wbudowanej umiejętności nie wyłącza własnych zamienników."
 	}
 }

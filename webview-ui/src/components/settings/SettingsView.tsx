@@ -460,6 +460,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					alwaysAllowWriteProtected: alwaysAllowWriteProtected ?? undefined,
 					alwaysAllowExecute: alwaysAllowExecute ?? undefined,
 					autoApprovalEnabled: autoApprovalEnabled ?? false,
+					disabledBuiltinSkills: cachedState.disabledBuiltinSkills ?? [],
 					alwaysAllowMcp,
 					alwaysAllowModeSwitch,
 					allowedCommands: allowedCommands ?? [],
@@ -954,7 +955,14 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 						{renderTab === "slashCommands" && <SlashCommandsSettings />}
 
 						{/* Skills Section */}
-						{renderTab === "skills" && <SkillsSettings />}
+						{renderTab === "skills" && (
+							<SkillsSettings
+								disabledBuiltinSkills={cachedState.disabledBuiltinSkills ?? []}
+								onDisabledBuiltinSkillsChange={(value) =>
+									setCachedStateField("disabledBuiltinSkills", value)
+								}
+							/>
+						)}
 
 						{/* Checkpoints Section */}
 						{renderTab === "checkpoints" && (

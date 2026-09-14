@@ -11,6 +11,7 @@
 		"missing_update_modes_fields": "Campi obbligatori mancanti: skillName o source",
 		"manager_unavailable": "Il gestore delle skill non è disponibile",
 		"missing_delete_fields": "Campi obbligatori mancanti: skillName o source",
-		"skill_not_found": "Skill \"{{name}}\" non trovata"
+		"skill_not_found": "Skill \"{{name}}\" non trovata",
+		"builtin_read_only": "Le competenze integrate sono di sola lettura. Crea una competenza personale o nell'area di lavoro per sostituirle."
 	}
 }

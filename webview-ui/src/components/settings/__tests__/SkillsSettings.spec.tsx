@@ -172,7 +172,11 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 	useExtensionState: () => mockExtensionState,
 }))
 
-const renderSkillsSettings = (skills: SkillMetadata[] = mockSkills, cwd?: string) => {
+const renderSkillsSettings = (
+	skills: SkillMetadata[] = mockSkills,
+	cwd?: string,
+	props: { disabledBuiltinSkills?: string[]; onDisabledBuiltinSkillsChange?: (names: string[]) => void } = {},
+) => {
 	const queryClient = new QueryClient({
 		defaultOptions: {
 			queries: { retry: false },
@@ -190,7 +194,7 @@ const renderSkillsSettings = (skills: SkillMetadata[] = mockSkills, cwd?: string
 	return render(
 		<QueryClientProvider client={queryClient}>
 			<ExtensionStateContextProvider>
-				<SkillsSettings />
+				<SkillsSettings {...props} />
 			</ExtensionStateContextProvider>
 		</QueryClientProvider>,
 	)
@@ -199,6 +203,55 @@ const renderSkillsSettings = (skills: SkillMetadata[] = mockSkills, cwd?: string
 describe("SkillsSettings", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+	})
+
+	const builtinSkill: SkillMetadata = {
+		name: "rich-documents",
+		description: "Create substantial HTML documents",
+		path: "/extension/assets/skills/rich-documents/SKILL.md",
+		source: "builtin",
+	}
+
+	it("offers inspection and enablement for bundled skills without edit, delete, or mode controls", () => {
+		renderSkillsSettings([builtinSkill], "")
+		expect(screen.getByText("settings:skills.builtinSkills")).toBeInTheDocument()
+		expect(screen.getByTestId("checkbox-builtin-rich-documents")).toBeChecked()
+		const buttons = screen.getAllByTestId("button")
+		expect(
+			buttons.some((button) => button.querySelector(".lucide-square-pen, .lucide-trash-2, .lucide-settings")),
+		).toBe(false)
+		fireEvent.click(screen.getByText("settings:skills.inspectSkill"))
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "openSkillFile",
+			skillName: "rich-documents",
+			source: "builtin",
+			skillMode: undefined,
+		})
+	})
+
+	it("reports disablement only through the buffered prop callback", () => {
+		const onChange = vi.fn()
+		renderSkillsSettings([builtinSkill], undefined, {
+			disabledBuiltinSkills: ["other-default"],
+			onDisabledBuiltinSkillsChange: onChange,
+		})
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(screen.getByTestId("checkbox-builtin-rich-documents"))
+		expect(onChange).toHaveBeenCalledWith(["other-default", "rich-documents"])
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		// The owner must supply the edited prop; the checkbox has no independent saved state.
+		expect(screen.getByTestId("checkbox-builtin-rich-documents")).toBeChecked()
+	})
+
+	it("re-enables only the selected bundled default", () => {
+		const onChange = vi.fn()
+		renderSkillsSettings([builtinSkill], undefined, {
+			disabledBuiltinSkills: ["other-default", "rich-documents"],
+			onDisabledBuiltinSkillsChange: onChange,
+		})
+		expect(screen.getByTestId("checkbox-builtin-rich-documents")).not.toBeChecked()
+		fireEvent.click(screen.getByTestId("checkbox-builtin-rich-documents"))
+		expect(onChange).toHaveBeenCalledWith(["other-default"])
 	})
 
 	it("renders section header", () => {

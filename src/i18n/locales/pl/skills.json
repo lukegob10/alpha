@@ -11,6 +11,7 @@
 		"missing_update_modes_fields": "Brakuje wymaganych pól: skillName lub source",
 		"manager_unavailable": "Menedżer umiejętności niedostępny",
 		"missing_delete_fields": "Brakuje wymaganych pól: skillName lub source",
-		"skill_not_found": "Nie znaleziono umiejętności \"{{name}}\""
+		"skill_not_found": "Nie znaleziono umiejętności \"{{name}}\"",
+		"builtin_read_only": "Wbudowane umiejętności są tylko do odczytu. Utwórz umiejętność osobistą lub obszaru roboczego, aby je zastąpić."
 	}
 }

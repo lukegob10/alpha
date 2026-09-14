@@ -11,6 +11,7 @@
 		"missing_update_modes_fields": "Thiếu các trường bắt buộc: skillName hoặc source",
 		"manager_unavailable": "Trình quản lý kỹ năng không khả dụng",
 		"missing_delete_fields": "Thiếu các trường bắt buộc: skillName hoặc source",
-		"skill_not_found": "Không tìm thấy kỹ năng \"{{name}}\""
+		"skill_not_found": "Không tìm thấy kỹ năng \"{{name}}\"",
+		"builtin_read_only": "Kỹ năng tích hợp sẵn chỉ có thể đọc. Hãy tạo kỹ năng cá nhân hoặc kỹ năng trong không gian làm việc để thay thế."
 	}
 }

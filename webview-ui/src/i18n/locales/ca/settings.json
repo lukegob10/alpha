@@ -1017,6 +1017,10 @@
 			"descriptionRequired": "La descripció és obligatòria",
 			"descriptionTooLong": "La descripció ha de tenir com a màxim 1024 caràcters"
 		},
-		"footer": "Crea les teves pròpies skills amb el mode Skill Writer, disponible al <MarketplaceLink>Modes Marketplace</MarketplaceLink>."
+		"footer": "Crea les teves pròpies skills amb el mode Skill Writer, disponible al <MarketplaceLink>Modes Marketplace</MarketplaceLink>.",
+		"builtinSkills": "Integrades",
+		"enabled": "Activada",
+		"inspectSkill": "Inspecciona",
+		"builtinDescription": "Inclosa amb Alpha. Els canvis s'apliquen quan deses la configuració. Les habilitats de l'espai de treball i les personals amb el mateix nom tenen prioritat; desactivar una habilitat integrada no desactiva les teves alternatives."
 	}
 }
