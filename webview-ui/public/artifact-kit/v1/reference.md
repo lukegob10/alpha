@@ -120,6 +120,12 @@ accessible. Invalid or empty data retains the table and adds an actionable
 explanation. Inspect points with keyboard focus or pointer hover; exact labels
 include category, series, value, and unit. Do not use charts as the sole evidence.
 Keep labels concise; full labels remain in the table. Bar charts use zero baseline.
+Charts retain a readable minimum width inside their own keyboard-focusable scroll
+region at narrow widths and increased text zoom. The surrounding document wraps.
+The viewer also bounds the whole document to 512 KiB, 12,000 elements, depth 64,
+32 widgets and 1,000 source references; these aggregate limits apply in addition
+to each widget's limits. A table within the per-widget maximum may still exceed
+the document element limit, so split large analyses into separate documents.
 
 ## Optional tabs
 

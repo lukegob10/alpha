@@ -18,8 +18,6 @@ function fixture(content: string, version = "1") {
 		runScripts: "outside-only",
 	})
 	windows.push(window)
-	// JSDOM has no CSS.escape; these fixtures deliberately use plain identifier IDs.
-	window.CSS = { escape: (value: string) => value } as typeof CSS
 	window.eval(runtime)
 	const root = window.document.querySelector("main")!
 	return { window, root, mount: () => window.AlphaDocumentKit.mount(root) }
@@ -197,6 +195,28 @@ describe("Alpha HTML kit charts", () => {
 				.querySelectorAll<HTMLTableCellElement>("td[data-value]"),
 		].map((cell) => Number(cell.dataset.value))
 		expect(selected).toEqual([values[0], values[9], values[12]])
+	})
+
+	it("enhances nested data tables in a keyboard-scrollable chart region and cleans up", () => {
+		const markup = chart(["0", "2"])
+			.replace("<table", '<section class="evidence"><table')
+			.replace("</table>", "</table></section>")
+		const { root, mount } = fixture(markup)
+		const dispose = mount()
+		const region = root.querySelector<HTMLElement>(".kit-chart-scroll")!
+		expect(region.tabIndex).toBe(0)
+		expect(region.querySelector("svg")).not.toBeNull()
+		expect(root.querySelector("table")?.previousElementSibling).toBe(region)
+		dispose()
+		expect(root.querySelector(".kit-chart-scroll")).toBeNull()
+		expect(root.querySelector(".evidence table")).not.toBeNull()
+	})
+
+	it("rejects ambiguous merged chart cells and keeps their evidence visible", () => {
+		const { root, mount } = fixture(chart(["1"]).replace('<td data-value="1"', '<td colspan="2" data-value="1"'))
+		mount()
+		expect(root.querySelector("svg")).toBeNull()
+		expect(root.querySelector("td")?.textContent).toBe("1")
 	})
 })
 

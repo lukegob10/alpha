@@ -46,11 +46,11 @@
 					</p>
 					<p>
 						<strong>Evidence:</strong>
-						<a data-source="src/export/resolveDestination.ts" data-line="42"
-							>src/export/resolveDestination.ts:42</a
+						<a data-source="src/export/resolveDestination.ts" data-line="7"
+							>src/export/resolveDestination.ts:7</a
 						>
 						joins the raw title, while
-						<a data-source="src/export/exportTask.ts" data-line="88">src/export/exportTask.ts:88</a> opens
+						<a data-source="src/export/exportTask.ts" data-line="19">src/export/exportTask.ts:19</a> opens
 						that destination for writing.
 					</p>
 					<pre><code>const destination = path.join(exportRoot, `${task.title}.zip`)
@@ -82,10 +82,10 @@ await writeArchive(destination, entries)</code></pre>
 					</p>
 					<p>
 						<strong>Evidence:</strong>
-						<a data-source="src/export/writeArchive.ts" data-line="61">src/export/writeArchive.ts:61</a>
+						<a data-source="src/export/writeArchive.ts" data-line="19">src/export/writeArchive.ts:19</a>
 						writes directly to the final path.
-						<a data-source="src/export/__tests__/writeArchive.spec.ts" data-line="27"
-							>the current test at line 27</a
+						<a data-source="src/export/__tests__/writeArchive.spec.ts" data-line="6"
+							>the current test at line 6</a
 						>
 						covers only a successful write.
 					</p>

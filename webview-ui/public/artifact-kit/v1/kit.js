@@ -181,6 +181,9 @@
 				rows.length < 1 ||
 				rows.length > 120 ||
 				rows.some((row) => row.cells.length !== heads.length || !row.cells[0].textContent.trim()) ||
+				[...heads, ...rows.flatMap((row) => Array.from(row.cells))].some(
+					(cell) => cell.colSpan !== 1 || cell.rowSpan !== 1,
+				) ||
 				values.flat().some((value) => value !== null && (!Number.isFinite(value) || Math.abs(value) > 1e12)) ||
 				!values.flat().some((value) => value !== null)
 			) {
@@ -193,7 +196,12 @@
 			svg.setAttribute("class", "kit-chart")
 			svg.setAttribute("role", "group")
 			svg.setAttribute("aria-label", figure.querySelector("figcaption").textContent.trim())
-			figure.insertBefore(svg, table.closest(".table-scroll") ?? table)
+			const viewport = add(figure, "div", undefined, "kit-chart-scroll")
+			viewport.tabIndex = 0
+			viewport.setAttribute("role", "group")
+			viewport.setAttribute("aria-label", figure.querySelector("figcaption").textContent.trim())
+			viewport.append(svg)
+			table.parentNode.insertBefore(viewport, table)
 			cleanups.push(() => svg.remove())
 			const status = notice(figure, "inspect")
 			status.setAttribute("role", "status")
@@ -211,11 +219,20 @@
 			const y = (value) => 245 - ((value - min) / span) * 205
 			const x = (index) => 70 + ((index + 0.5) / rows.length) * 610
 			shape("line", { x1: 60, x2: 690, y1: y(0), y2: y(0), class: "axis" })
-			for (const value of [min, max])
+			for (const value of new Set([min, max]))
 				shape("text", { x: 55, y: y(value) + 4, "text-anchor": "end" }, String(value))
 			shape("text", { x: 60, y: 18 }, unit)
 			for (const [s, head] of series.entries()) {
-				shape("text", { x: 75 + s * 205, y: 295 }, `${s + 1}. ${head.textContent.trim()}`)
+				shape("line", {
+					x1: 65 + s * 205,
+					x2: 87 + s * 205,
+					y1: 290,
+					y2: 290,
+					class: `series-${s}`,
+					"stroke-width": 3,
+					"stroke-dasharray": s === 0 ? "none" : s === 1 ? "6 3" : "2 3",
+				})
+				shape("text", { x: 94 + s * 205, y: 295 }, `${s + 1}. ${head.textContent.trim().slice(0, 22)}`)
 				let segment = []
 				const flush = () => {
 					if (segment.length > 1)
@@ -245,6 +262,16 @@
 								})
 							: shape("circle", { cx: x(i), cy: y(value), r: 4 + s, class: `series-${s}` })
 					point.setAttribute("tabindex", "0")
+					if (type === "bar" && series.length > 1)
+						shape(
+							"text",
+							{
+								x: x(i) + (s - series.length / 2) * width + width / 2,
+								y: Math.min(y(0), y(value)) - 6,
+								"text-anchor": "middle",
+							},
+							String(s + 1),
+						)
 					point.setAttribute("role", "img")
 					point.setAttribute("aria-label", label)
 					const title = doc.createElementNS(ns, "title")

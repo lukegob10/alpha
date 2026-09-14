@@ -18,7 +18,7 @@ Resolve the destination against the export root, then publish the completed arch
 
 **Trigger:** an imported task has the title `../../notes`. Joining it to the selected folder produces a destination outside that folder; a preexisting `notes.zip` can be replaced.
 
-**Evidence:** [src/export/resolveDestination.ts:42](src/export/resolveDestination.ts:42) joins the raw title, while [src/export/exportTask.ts:88](src/export/exportTask.ts:88) opens that destination for writing.
+**Evidence:** [src/export/resolveDestination.ts:7](src/export/resolveDestination.ts:7) joins the raw title, while [src/export/exportTask.ts:19](src/export/exportTask.ts:19) opens that destination for writing.
 
 ```typescript
 const destination = path.join(exportRoot, `${task.title}.zip`)
@@ -37,7 +37,7 @@ await writeArchive(destination, entries)
 
 **Trigger:** cancellation or a full disk interrupts archive generation. The partial file already has its final name, so the next export treats it as completed output.
 
-**Evidence:** [src/export/writeArchive.ts:61](src/export/writeArchive.ts:61) writes directly to the final path. [The current test at line 27](src/export/__tests__/writeArchive.spec.ts:27) covers only a successful write.
+**Evidence:** [src/export/writeArchive.ts:19](src/export/writeArchive.ts:19) writes directly to the final path. [The current test at line 6](src/export/__tests__/writeArchive.spec.ts:6) covers only a successful write.
 
 ```diff
 - await streamArchive(finalPath, entries)
@@ -51,12 +51,12 @@ await writeArchive(destination, entries)
 
 Three implementation areas and one test file; counts describe this fixture only.
 
-| File                                      | Result                                 | Required fixes |
-| ----------------------------------------- | -------------------------------------- | -------------: |
-| src/export/resolveDestination.ts          | Path boundary missing                  |              1 |
-| src/export/writeArchive.ts                | Failure recovery missing               |              1 |
-| src/export/exportTask.ts                  | Caller affected; no separate finding   |              0 |
-| src/export/**tests**/writeArchive.spec.ts | Failure cases required with writer fix |              0 |
+| File                                        | Result                                 | Required fixes |
+| ------------------------------------------- | -------------------------------------- | -------------: |
+| src/export/resolveDestination.ts            | Path boundary missing                  |              1 |
+| src/export/writeArchive.ts                  | Failure recovery missing               |              1 |
+| src/export/exportTask.ts                    | Caller affected; no separate finding   |              0 |
+| `src/export/__tests__/writeArchive.spec.ts` | Failure cases required with writer fix |              0 |
 
 ## Verification needed
 
@@ -69,4 +69,4 @@ These are read-only review requirements, not saved approval state. No test execu
 
 ---
 
-Comparison procedure (not review content): render this same text through Alpha’s existing Markdown and diff flow, then open `review.html` in the HTML viewer. For each format, record the steps needed to identify the merge recommendation, find the highest-priority finding’s evidence, and activate its source reference. The source files are fictional; source-opening success requires placing matching fixture files in a disposable workspace. Do not report successful navigation merely because a link looks clickable. Record keyboard access, narrow-width reading, and any uncertainty. This baseline supplies comparison material; it does not claim a usability study has run.
+Comparison procedure (not review content): render this same text through Alpha’s existing Markdown and diff flow, then open `review.html` in the HTML viewer. For each format, record the steps needed to identify the merge recommendation, find the highest-priority finding’s evidence, and activate its source reference. The source files are fictional; source-opening success requires opening the supplied fixture-workspace directory. Do not report successful navigation merely because a link looks clickable. Record keyboard access, narrow-width reading, and any uncertainty. This baseline supplies comparison material; it does not claim a usability study has run.
