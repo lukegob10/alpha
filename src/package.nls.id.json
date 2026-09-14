@@ -45,5 +45,6 @@
 	"settings.debugProxy.enabled.description": "**Aktifkan Debug Proxy** — Arahkan semua permintaan jaringan keluar lewat proxy untuk debugging MITM. Hanya aktif saat kamu berjalan dalam mode debug (F5).",
 	"settings.debugProxy.serverUrl.description": "URL proxy (mis. `http://127.0.0.1:8888`). Hanya digunakan ketika **Debug Proxy** diaktifkan.",
 	"settings.debugProxy.tlsInsecure.description": "Terima sertifikat self-signed dari proxy. **Diperlukan untuk inspeksi MITM.** ⚠️ Tidak aman — gunakan hanya untuk debugging lokal.",
-	"command.openTickets.title": "Alpha: Tiket"
+	"command.openTickets.title": "Alpha: Tiket",
+	"command.previewHtmlDocument.title": "Pratinjau Dokumen HTML"
 }

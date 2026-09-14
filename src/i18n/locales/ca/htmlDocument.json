@@ -1,0 +1,20 @@
+{
+	"title": "Document",
+	"openSource": "Obre el codi font",
+	"loading": "S’està carregant el document…",
+	"referenceError": "No s’ha pogut obrir la referència d’origen. Comproveu que el fitxer sigui dins d’aquest espai de treball.",
+	"openError": "No es pot obrir aquest document. Feu servir un fitxer HTML local dins d’una carpeta oberta de l’espai de treball.",
+	"chooseSource": "Obriu un fitxer font HTML i executeu Previsualitza el document HTML.",
+	"reopenError": "No s’ha pogut restaurar aquest document. Torneu a obrir-ne la carpeta de treball i feu servir l’enllaç desat del document.",
+	"stale": "La previsualització no està actualitzada.",
+	"errors": {
+		"scope": "El document és fora de l’espai de treball obert. Torneu a obrir-ne la carpeta de treball original.",
+		"missing": "El fitxer font no existeix o no es pot llegir. Restaureu-lo al camí original per recuperar aquesta previsualització.",
+		"path": "Feu servir un fitxer local .html o .htm dins de l’espai de treball.",
+		"size": "El document supera els límits del visor (512 KiB, 12.000 elements, 64 nivells o 32 ginys). Reduïu-ne la mida.",
+		"version": "Aquest document necessita alpha-document versió 1. Corregiu-ne el marcador de versió per recuperar la previsualització.",
+		"reference": "Una referència d’origen és incorrecta. Feu servir un camí relatiu a l’espai de treball i un número de línia positiu.",
+		"data": "Les dades d’un giny contenen un nombre no vàlid. Corregiu el codi font per recuperar la previsualització.",
+		"format": "El document necessita un títol i un únic element main.alpha-doc amb data-alpha-kit=\"1\". Corregiu el codi font per recuperar la previsualització."
+	}
+}

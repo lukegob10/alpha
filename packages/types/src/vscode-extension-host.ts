@@ -744,6 +744,7 @@ interface WebviewMessageBase {
 		| "openImage"
 		| "saveImage"
 		| "openFile"
+		| "openHtmlDocument"
 		| "readFileContent"
 		| "openMention"
 		| "closeTask"

@@ -45,5 +45,6 @@
 	"settings.debugProxy.enabled.description": "**Bật Debug Proxy** — Chuyển hướng tất cả yêu cầu mạng đi ra qua một proxy để debug MITM. Chỉ hoạt động khi bạn chạy ở chế độ gỡ lỗi (F5).",
 	"settings.debugProxy.serverUrl.description": "Proxy URL (vd: `http://127.0.0.1:8888`). Chỉ được dùng khi **Debug Proxy** được bật.",
 	"settings.debugProxy.tlsInsecure.description": "Chấp nhận chứng chỉ self-signed từ proxy. **Bắt buộc cho việc kiểm tra MITM.** ⚠️ Không an toàn — chỉ dùng cho debug cục bộ.",
-	"command.openTickets.title": "Alpha: Phiếu"
+	"command.openTickets.title": "Alpha: Phiếu",
+	"command.previewHtmlDocument.title": "Xem trước tài liệu HTML"
 }

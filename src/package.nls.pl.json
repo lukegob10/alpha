@@ -45,5 +45,6 @@
 	"settings.debugProxy.enabled.description": "**Włącz Debug Proxy** — Kieruj wszystkie wychodzące żądania sieciowe przez proxy na potrzeby debugowania MITM. Aktywne tylko wtedy, gdy uruchamiasz w trybie debugowania (F5).",
 	"settings.debugProxy.serverUrl.description": "URL proxy (np. `http://127.0.0.1:8888`). Używany tylko wtedy, gdy **Debug Proxy** jest włączony.",
 	"settings.debugProxy.tlsInsecure.description": "Akceptuj certyfikaty self-signed z proxy. **Wymagane do inspekcji MITM.** ⚠️ Niezabezpieczone — używaj tylko do lokalnego debugowania.",
-	"command.openTickets.title": "Alpha: Zgłoszenia"
+	"command.openTickets.title": "Alpha: Zgłoszenia",
+	"command.previewHtmlDocument.title": "Podgląd dokumentu HTML"
 }

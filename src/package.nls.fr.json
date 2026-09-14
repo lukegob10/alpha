@@ -45,5 +45,6 @@
 	"settings.debugProxy.enabled.description": "**Activer le Debug Proxy** — Redirige toutes les requêtes réseau sortantes via un proxy pour le debug MITM. Actif uniquement quand tu es en mode debug (F5).",
 	"settings.debugProxy.serverUrl.description": "URL du proxy (par ex. `http://127.0.0.1:8888`). Utilisée uniquement quand le **Debug Proxy** est activé.",
 	"settings.debugProxy.tlsInsecure.description": "Accepter les certificats auto-signés du proxy. **Requis pour l'inspection MITM.** ⚠️ Non sécurisé — à utiliser uniquement pour le debug local.",
-	"command.openTickets.title": "Alpha: Tickets"
+	"command.openTickets.title": "Alpha: Tickets",
+	"command.previewHtmlDocument.title": "Aperçu du document HTML"
 }

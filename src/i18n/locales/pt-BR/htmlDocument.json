@@ -1,0 +1,20 @@
+{
+	"title": "Documento",
+	"openSource": "Abrir fonte",
+	"loading": "Carregando documento…",
+	"referenceError": "Não foi possível abrir a referência de origem. Verifique se o arquivo está neste espaço de trabalho.",
+	"openError": "Não é possível abrir este documento. Use um arquivo HTML local em uma pasta aberta do espaço de trabalho.",
+	"chooseSource": "Abra um arquivo fonte HTML e execute Visualizar documento HTML.",
+	"reopenError": "Não foi possível restaurar este documento. Reabra sua pasta de trabalho e use o link salvo do documento.",
+	"stale": "A visualização está desatualizada.",
+	"errors": {
+		"scope": "O documento está fora do espaço de trabalho aberto. Reabra sua pasta de trabalho original.",
+		"missing": "O arquivo fonte está ausente ou ilegível. Restaure-o no caminho original para recuperar esta visualização.",
+		"path": "Use um arquivo local .html ou .htm dentro do espaço de trabalho.",
+		"size": "O documento excede os limites do visualizador (512 KiB, 12.000 elementos, 64 níveis ou 32 widgets). Reduza seu tamanho.",
+		"version": "Este documento exige alpha-document versão 1. Corrija o marcador de versão para recuperar a visualização.",
+		"reference": "Uma referência de origem é inválida. Use um caminho relativo ao espaço de trabalho e um número de linha positivo.",
+		"data": "Os dados de um widget contêm um número inválido. Corrija a fonte para recuperar a visualização.",
+		"format": "O documento precisa de um título e um único elemento main.alpha-doc com data-alpha-kit=\"1\". Corrija a fonte para recuperar a visualização."
+	}
+}

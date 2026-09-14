@@ -1,5 +1,6 @@
 import React, { memo, useMemo } from "react"
-import ReactMarkdown from "react-markdown"
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown"
+import { parseHtmlDocumentLink } from "@alpha-code/types"
 import styled from "styled-components"
 import { visit } from "unist-util-visit"
 import rehypeKatex from "rehype-katex"
@@ -224,6 +225,11 @@ const MarkdownBlock = memo(({ markdown, partial = false }: MarkdownBlockProps) =
 			},
 			a: ({ href, children, ...props }: any) => {
 				const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+					if (href?.startsWith("alpha-document:")) {
+						e.preventDefault()
+						if (parseHtmlDocumentLink(href)) vscode.postMessage({ type: "openHtmlDocument", text: href })
+						return
+					}
 					// Only process file:// protocol or local file paths
 					const isLocalPath = href?.startsWith("file://") || href?.startsWith("/") || !href?.includes("://")
 
@@ -319,6 +325,7 @@ const MarkdownBlock = memo(({ markdown, partial = false }: MarkdownBlockProps) =
 	return (
 		<StyledMarkdown>
 			<ReactMarkdown
+				urlTransform={(url) => (parseHtmlDocumentLink(url) ? url : defaultUrlTransform(url))}
 				remarkPlugins={[
 					remarkGfm,
 					remarkMath,

@@ -1,6 +1,7 @@
 import { registerBuiltinSkillInspection } from "./services/skills/builtinSkillInspection"
 import { TicketPanel } from "./services/tickets/TicketPanel"
 import * as vscode from "vscode"
+import { registerHtmlDocumentViewer } from "./core/webview/html-document"
 import * as dotenvx from "@dotenvx/dotenvx"
 import * as fs from "fs"
 import * as path from "path"
@@ -218,6 +219,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	}
 
 	registerCommands({ context, outputChannel, provider })
+	registerHtmlDocumentViewer(context)
 
 	/**
 	 * We use the text document content provider API to show the left side for diff

@@ -45,5 +45,6 @@
 	"settings.debugProxy.enabled.description": "**启用 Debug Proxy** — 通过代理转发所有出站网络请求，用于 MITM 调试。只在调试模式 (F5) 运行时生效。",
 	"settings.debugProxy.serverUrl.description": "代理 URL（例如 `http://127.0.0.1:8888`）。仅在启用 **Debug Proxy** 时使用。",
 	"settings.debugProxy.tlsInsecure.description": "接受来自代理的 self-signed 证书。**MITM 检查所必需。** ⚠️ 不安全——只在本地调试时使用。",
-	"command.openTickets.title": "Alpha: 工单"
+	"command.openTickets.title": "Alpha: 工单",
+	"command.previewHtmlDocument.title": "预览 HTML 文档"
 }

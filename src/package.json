@@ -46,6 +46,7 @@
 		"alpha"
 	],
 	"activationEvents": [
+		"onWebviewPanel:alpha.htmlDocument",
 		"onWebviewPanel:alpha.tickets",
 		"onLanguage",
 		"onStartupFinished"
@@ -71,6 +72,11 @@
 			]
 		},
 		"commands": [
+			{
+				"command": "alpha.previewHtmlDocument",
+				"title": "%command.previewHtmlDocument.title%",
+				"category": "Alpha"
+			},
 			{
 				"command": "alpha.openTickets",
 				"title": "%command.openTickets.title%",

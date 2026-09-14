@@ -1,0 +1,71 @@
+import * as assert from "node:assert"
+import * as fs from "node:fs/promises"
+import * as path from "node:path"
+import * as vscode from "vscode"
+import { setDefaultSuiteTimeout } from "./test-utils"
+
+const html = (title: string) =>
+	`<!doctype html><html><head><meta name="alpha-document" content="1"><title>${title}</title></head><body><main class="alpha-doc" data-alpha-kit="1"><h1>${title}</h1><p>Exact-host fixture.</p></main></body></html>`
+const tabs = () =>
+	vscode.window.tabGroups.all
+		.flatMap((group) => group.tabs)
+		.filter(
+			(tab) => tab.input instanceof vscode.TabInputWebview && tab.input.viewType.includes("alpha.htmlDocument"),
+		)
+async function until(predicate: () => boolean) {
+	const end = Date.now() + 10000
+	while (!predicate()) {
+		if (Date.now() > end) throw new Error("HTML document view did not reach expected state")
+		await new Promise((resolve) => setTimeout(resolve, 25))
+	}
+}
+
+suite("HTML document exact-host adapter", function () {
+	setDefaultSuiteTimeout(this)
+	test("opens once, follows unsaved and external edits, and closes without duplicate tabs", async () => {
+		assert.equal(vscode.version, "1.122.1")
+		const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+		assert.ok(root)
+		const folder = await fs.mkdtemp(path.join(root, "html-viewer-test-"))
+		const first = vscode.Uri.file(path.join(folder, "first.html"))
+		const second = vscode.Uri.file(path.join(folder, "second.html"))
+		try {
+			await fs.writeFile(first.fsPath, html("First document"))
+			await fs.writeFile(second.fsPath, html("Second document"))
+			const cold = Date.now()
+			await vscode.commands.executeCommand("alpha.previewHtmlDocument", first)
+			await until(() => tabs().some((tab) => tab.label === "First document"))
+			console.log(`HTML viewer cold adapter/title: ${Date.now() - cold} ms`)
+			await vscode.commands.executeCommand("alpha.previewHtmlDocument", first)
+			assert.equal(tabs().length, 1)
+			await vscode.commands.executeCommand("alpha.previewHtmlDocument", second)
+			await until(() => tabs().some((tab) => tab.label === "Second document"))
+			assert.equal(tabs().length, 2)
+			const document = await vscode.workspace.openTextDocument(first)
+			const edit = new vscode.WorkspaceEdit()
+			edit.replace(
+				first,
+				new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
+				html("Unsaved revision"),
+			)
+			assert.equal(await vscode.workspace.applyEdit(edit), true)
+			await until(() => tabs().some((tab) => tab.label === "Unsaved revision"))
+			assert.ok(document.isDirty)
+			assert.ok((await fs.readFile(first.fsPath, "utf8")).includes("First document"))
+			await document.save()
+			await fs.writeFile(second.fsPath, html("External revision"))
+			await until(() => tabs().some((tab) => tab.label === "External revision"))
+			await vscode.window.tabGroups.close(tabs())
+			await until(() => tabs().length === 0)
+			for (let index = 0; index < 5; index++) {
+				await vscode.commands.executeCommand("alpha.previewHtmlDocument", first)
+				await until(() => tabs().length === 1)
+				await vscode.window.tabGroups.close(tabs())
+			}
+			assert.equal(tabs().length, 0)
+		} finally {
+			await vscode.window.tabGroups.close(tabs())
+			await fs.rm(folder, { recursive: true, force: true })
+		}
+	})
+})

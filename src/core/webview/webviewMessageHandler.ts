@@ -52,6 +52,7 @@ import { checkExistKey } from "../../shared/checkExistApiConfig"
 import { experimentDefault } from "../../shared/experiments"
 import { Terminal } from "../../integrations/terminal/Terminal"
 import { openFile } from "../../integrations/misc/open-file"
+import { openHtmlDocumentLink } from "./html-document"
 import { openImage, saveImage } from "../../integrations/misc/image-handler"
 import { selectImages } from "../../integrations/misc/process-images"
 import { getTheme } from "../../integrations/theme/getTheme"
@@ -1266,6 +1267,9 @@ export const webviewMessageHandler = async (
 					await saveLastExportPath(provider.contextProxy, "lastImageSavePath", savedUri)
 				}
 			}
+			break
+		case "openHtmlDocument":
+			await openHtmlDocumentLink(message.text)
 			break
 		case "openFile":
 			let filePath: string = message.text!

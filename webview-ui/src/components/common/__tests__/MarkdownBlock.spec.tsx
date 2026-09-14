@@ -1,6 +1,8 @@
 import { render, screen } from "@/utils/test-utils"
 
 import MarkdownBlock from "../MarkdownBlock"
+import { fireEvent } from "@testing-library/react"
+import { vscode } from "@src/utils/vscode"
 
 vi.mock("@src/utils/vscode", () => ({
 	vscode: {
@@ -15,6 +17,23 @@ vi.mock("@src/context/ExtensionStateContext", () => ({
 }))
 
 describe("MarkdownBlock", () => {
+	it("routes explicit document links with durable URI/task identity", () => {
+		const link = "alpha-document://open?uri=file%3A%2F%2F%2FC%3A%2Fwork%2Freview.html&task=task-1"
+		render(<MarkdownBlock markdown={`[Review](${link})`} />)
+		fireEvent.click(screen.getByRole("link", { name: "Review" }))
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "openHtmlDocument", text: link })
+	})
+
+	it("keeps ordinary HTML links in the source-opening flow", () => {
+		render(<MarkdownBlock markdown="[Source](./review.html)" />)
+		fireEvent.click(screen.getByRole("link", { name: "Source" }))
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "openFile", text: "./review.html", values: undefined })
+	})
+
+	it("does not allow arbitrary command schemes through the URL transform", () => {
+		render(<MarkdownBlock markdown="[Unsafe](command:workbench.action.closeWindow)" />)
+		expect(screen.getByText("Unsafe")).not.toHaveAttribute("href", "command:workbench.action.closeWindow")
+	})
 	it("should correctly handle URLs with trailing punctuation", async () => {
 		const markdown = "Check out this link: https://example.com."
 		const { container } = render(<MarkdownBlock markdown={markdown} />)
