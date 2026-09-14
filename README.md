@@ -6,14 +6,14 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.36 Preview
+## Welcome to Alpha v2.1.37 Preview
 
-Alpha v2.1.36 improves chat readability with left-aligned user messages and compact previews for long pasted content.
+Alpha v2.1.37 adds polished rich HTML documents with automatic preview delivery and a broader design kit for reviews, specs, and reports.
 
-- Dark chat uses a charcoal and indigo palette, with right-aligned user bubbles and left-aligned text
-- Long pasted messages collapse to a readable preview and can be expanded when the full content is needed
-- Completed answers and activity traces stay intact and independently collapsed when follow-ups begin
-- Copilot edit tools follow the actual model family, and Gemini 001 Vertex gateway requests preserve their expected payload and pacing
+- Completed rich-document links open in the right editor group while keeping chat focus, with an Open document link for explicit reopening
+- Rich documents use wider responsive layouts, rounded tables and cards, labeled status badges, compact metrics, and evidence-focused examples
+- Existing HTML documents retain their source file identity and refresh in the same preview as they are edited
+- Chat readability, Copilot model-family tool selection, and Vertex gateway request pacing remain intact
 
 <details>
   <summary>🌐 Available languages</summary>

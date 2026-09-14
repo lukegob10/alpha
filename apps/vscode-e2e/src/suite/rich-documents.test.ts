@@ -152,6 +152,7 @@ suite("Rich document authoring through captured task tools", function () {
 			}
 			const scripted = new DocumentScriptedAI(state)
 			await withBoundedFixtureCleanup(async () => {
+				await vscode.commands.executeCommand("alpha.SidebarProvider.focus")
 				if (source === "project") {
 					await fs.mkdir(overrideDirectory, { recursive: true })
 					await fs.writeFile(
@@ -245,8 +246,12 @@ suite("Rich document authoring through captured task tools", function () {
 					provider.getLiveTask(taskId)!.clineMessages.some((message) => message.text?.includes(state.link)),
 				)
 				assert.ok((await vscode.commands.getCommands(true)).includes("alpha.previewHtmlDocument"))
-				await vscode.commands.executeCommand("alpha.previewHtmlDocument", uri)
 				await waitForRevision(1)
+				assert.equal(
+					documentTabs()[0]!.group.viewColumn,
+					vscode.ViewColumn.Two,
+					"Delivery opens in the right group",
+				)
 				state.plan = [
 					{ name: "read_file", arguments: { path: relativeFile } },
 					{
@@ -301,6 +306,7 @@ suite("Rich document authoring through captured task tools", function () {
 							transactions,
 							extensionPath: extension.extensionPath,
 							sourceRevisions: [1, "unsupported-version", 3],
+							automaticDeliveryOpenedPreview: true,
 							previewCommandDispatched: true,
 							viewerAcceptedRevisions: [1, 3],
 							sameFileRefreshAndReopen: true,

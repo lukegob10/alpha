@@ -12,6 +12,9 @@
 		<main class="alpha-doc" data-alpha-kit="1">
 			<header class="doc-header">
 				<p class="eyebrow">Implementation spec · design example</p>
+				<div class="doc-meta">
+					<span class="badge status-info">Proposed design</span><span>Decision and acceptance criteria</span>
+				</div>
 				<h1>A document belongs to a task, not to a browser session</h1>
 				<p class="lead">
 					Give saved HTML a stable identity and an isolated viewer while keeping the source an ordinary
@@ -50,9 +53,9 @@
 				</p>
 			</section>
 			<div class="grid">
-				<section>
+				<section class="card">
 					<h2>Identity and authority</h2>
-					<dl>
+					<dl class="key-values">
 						<dt><strong>Document identifier</strong></dt>
 						<dd>Opaque and stable within a task. A title is display text, never a storage key.</dd>
 						<dt><strong>Source location</strong></dt>

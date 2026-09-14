@@ -12,6 +12,10 @@
 		<main class="alpha-doc" data-alpha-kit="1">
 			<header class="doc-header">
 				<p class="eyebrow">Engineering review · fictional fixture</p>
+				<div class="doc-meta">
+					<span class="badge status-danger">Changes required</span>
+					<span>Path resolution · archive writing · regression coverage</span>
+				</div>
 				<h1>Keep task exports inside the chosen folder</h1>
 				<p class="lead">
 					Request changes. Two boundary defects can replace an unrelated file or leave an export permanently
@@ -23,6 +27,23 @@
 					that fixture.
 				</p>
 			</header>
+			<div class="metrics" aria-label="Findings in this illustrative review">
+				<section class="metric">
+					<p class="metric-label">Required corrections</p>
+					<p class="metric-value">2</p>
+					<p class="metric-detail">Both findings are detailed below</p>
+				</section>
+				<section class="metric">
+					<p class="metric-label">Boundary safety</p>
+					<p><span class="badge status-danger">High severity</span></p>
+					<p class="metric-detail">The destination can escape the selected folder</p>
+				</section>
+				<section class="metric">
+					<p class="metric-label">Failure recovery</p>
+					<p><span class="badge status-warning">Medium severity</span></p>
+					<p class="metric-detail">Interrupted writes can leave a final-looking archive</p>
+				</section>
+			</div>
 			<section class="summary" aria-labelledby="decision">
 				<h2 id="decision">Decision before merge</h2>
 				<p>

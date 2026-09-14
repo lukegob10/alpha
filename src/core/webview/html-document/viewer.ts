@@ -43,14 +43,18 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 			.map((folder) => folder.uri.fsPath)
 	}
 
-	async open(input: unknown, restoredPanel?: vscode.WebviewPanel): Promise<void> {
+	async open(
+		input: unknown,
+		restoredPanel?: vscode.WebviewPanel,
+		options: { automatic?: boolean; isCurrent?: () => boolean } = {},
+	): Promise<void> {
 		const target = htmlDocumentTargetSchema.parse(input)
 		const resolved = await resolveDocumentPath(target.uri, this.roots(), true)
-		if (this.disposed) return
+		if (this.disposed || options.isCurrent?.() === false) return
 		const existing = this.entries.get(resolved.uri)
 		if (existing) {
 			restoredPanel?.dispose()
-			if (!restoredPanel) existing.panel.reveal(undefined, false)
+			if (!restoredPanel && !options.automatic) existing.panel.reveal(undefined, false)
 			return
 		}
 		if (this.entries.size >= HTML_DOCUMENT_LIMITS.panels) throw new Error("panelLimit")
@@ -59,7 +63,10 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 			vscode.window.createWebviewPanel(
 				HTML_DOCUMENT_VIEW_TYPE,
 				path.basename(resolved.fsPath),
-				{ viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
+				{
+					viewColumn: options.automatic ? vscode.ViewColumn.Two : vscode.ViewColumn.Beside,
+					preserveFocus: options.automatic === true,
+				},
 				{},
 			)
 		const entry: Entry = {

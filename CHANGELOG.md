@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.37
+
+### Patch Changes
+
+- Add automatic right-group delivery for completed rich-document links while retaining explicit Open document links and keeping background or restored tasks quiet.
+- Expand the HTML design kit with wider responsive layouts, rounded tables and cards, labeled status badges, compact metrics, key-value groups, and richer review/spec/report examples.
+- Ensure public webview design-kit assets invalidate the build cache so the packaged and development viewers use the current kit.
+
 ## 2.1.36
 
 ### Patch Changes

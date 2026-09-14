@@ -18,6 +18,12 @@
 					conclusion first, then inspect the evidence at the depth you need.
 				</p>
 			</header>
+			<nav class="toc" aria-label="Example documents">
+				<a href="review.html">Engineering review</a>
+				<a href="spec.html">Implementation spec</a>
+				<a href="report.html">Quantitative report</a>
+				<a href="#components">Component examples</a>
+			</nav>
 			<section>
 				<h2><a href="review.html">Review: task export boundary</a></h2>
 				<p>
@@ -39,6 +45,88 @@
 					A sourced historical report with line and bar charts, permanent data tables, reproducible
 					calculations, and limits on interpretation.
 				</p>
+			</section>
+			<section id="components">
+				<div class="section-heading">
+					<h2>Components with a purpose</h2>
+					<span class="badge status-neutral">Illustrative content</span>
+				</div>
+				<p>
+					Use status, hierarchy, and evidence to make a document easier to scan. These sample states
+					demonstrate the kit; they are not release results.
+				</p>
+				<div class="grid">
+					<section class="card">
+						<h3 class="card-title">Clear status, always labeled</h3>
+						<p class="doc-meta">
+							<span class="badge status-good">Verified</span>
+							<span class="badge status-warning">Needs attention</span>
+							<span class="badge status-danger">Blocked</span>
+							<span class="badge status-info">Proposed</span>
+						</p>
+						<p class="caption">Color reinforces the label. A badge never implies an approval action.</p>
+					</section>
+					<section class="card">
+						<h3 class="card-title">Decision context</h3>
+						<dl class="key-values">
+							<dt>Audience</dt>
+							<dd>Engineering review</dd>
+							<dt>Decision</dt>
+							<dd>Choose a release scope</dd>
+							<dt>Evidence</dt>
+							<dd>Findings, tests, and source references</dd>
+						</dl>
+					</section>
+				</div>
+				<section data-alpha-table aria-label="Illustrative release checklist">
+					<div class="table-toolbar">
+						<label for="component-filter">Filter sample checks</label>
+						<input id="component-filter" data-alpha-filter type="search" disabled />
+					</div>
+					<div class="table-scroll">
+						<table>
+							<caption>
+								Illustrative checks · sort or filter to inspect a status
+							</caption>
+							<thead>
+								<tr>
+									<th scope="col" data-sort="text">Area</th>
+									<th scope="col" data-sort="text">Status</th>
+									<th scope="col">Next step</th>
+								</tr>
+							</thead>
+							<tbody>
+								<tr>
+									<th scope="row">Keyboard navigation</th>
+									<td><span class="badge status-good">Verified</span></td>
+									<td>Retain the test evidence in the review.</td>
+								</tr>
+								<tr>
+									<th scope="row">Migration behavior</th>
+									<td><span class="badge status-warning">Needs attention</span></td>
+									<td>Check the oldest supported saved document.</td>
+								</tr>
+								<tr>
+									<th scope="row">Source access</th>
+									<td><span class="badge status-danger">Blocked</span></td>
+									<td>Resolve the missing workspace before opening a reference.</td>
+								</tr>
+								<tr>
+									<th scope="row">Additional chart</th>
+									<td><span class="badge status-info">Proposed</span></td>
+									<td>Add only if the comparison benefits from a chart.</td>
+								</tr>
+							</tbody>
+						</table>
+					</div>
+				</section>
+				<aside class="callout status-warning">
+					<h3>Keep the decision visible</h3>
+					<p>
+						A concise callout is for an unresolved constraint or next action. Supporting detail belongs
+						below it.
+					</p>
+				</aside>
 			</section>
 			<aside class="callout">
 				<h2>How these examples work</h2>

@@ -17,6 +17,16 @@ durable location is `.alpha/documents/<task-id>/<slug>.html` within the workspac
 the viewer neither creates that directory nor writes, saves, or migrates source.
 Moving a document changes its identity: update its saved link or open its new path.
 
+Fresh, non-streaming completion messages in the visible primary task also deliver
+document action links automatically to editor group two, preserving chat focus.
+The extension-side message adapter owns this presentation effect. It never scans
+history snapshots, opens links in code examples, follows another task's tagged
+link, or opens background/subagent output. Per-task deduplication is bounded and
+claims a URI before asynchronous work; at most eight links are opened per message.
+The viewer rechecks task visibility after resolving the file and does not reveal
+an existing panel during automatic delivery. Explicit clicks keep their normal
+focus behavior, including after the reader closes an automatically opened tab.
+
 ## Format and assets
 
 Use UTF-8 HTML with one `<meta name="alpha-document" content="1">`, a nonempty

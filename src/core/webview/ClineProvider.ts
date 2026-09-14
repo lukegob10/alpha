@@ -117,6 +117,8 @@ import { EMBEDDING_MODEL_PROFILES } from "../../shared/embeddingModels"
 
 import { Terminal } from "../../integrations/terminal/Terminal"
 import { downloadTask, getTaskFileName } from "../../integrations/misc/export-markdown"
+import { HtmlDocumentAutoOpen } from "./html-document/autoOpen"
+import { autoOpenHtmlDocument } from "./html-document"
 import { resolveDefaultSaveUri, saveLastExportPath } from "../../utils/export"
 import { getTheme } from "../../integrations/theme/getTheme"
 import WorkspaceTracker from "../../integrations/workspace/WorkspaceTracker"
@@ -368,6 +370,7 @@ export class ClineProvider
 	private disposables: vscode.Disposable[] = []
 	private webviewDisposables: vscode.Disposable[] = []
 	private view?: vscode.WebviewView | vscode.WebviewPanel
+	private readonly htmlDocumentAutoOpen = new HtmlDocumentAutoOpen(autoOpenHtmlDocument)
 	private clineStack: Task[] = []
 	private taskSessions: TaskSessionRegistry
 	/** Canonical lifecycle state is projected independently from ClineMessages. */
@@ -2702,6 +2705,20 @@ export class ClineProvider
 		const clineMessagesSeq = ++this.clineMessagesSeq
 		const liveTask = this.getLiveTaskMetadata()[taskId]
 		await this.postMessageToWebview({ type, taskId, clineMessage, clineMessagesSeq, liveTask })
+		const task = this.getLiveTask(taskId)
+		if (task?.taskKind === "primary") {
+			await this.htmlDocumentAutoOpen.handle(
+				task,
+				taskId,
+				clineMessage,
+				() =>
+					!this._disposed &&
+					!task.abort &&
+					this.getLiveTask(taskId) === task &&
+					this.view?.visible === true &&
+					this.isTaskOnScreen(taskId),
+			)
+		}
 	}
 
 	/** Publish only the visible task's queue instead of rebuilding extension state. */

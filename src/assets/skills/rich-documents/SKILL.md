@@ -17,6 +17,8 @@ Distinguish measured facts, estimates, illustrative examples, and missing inform
 
 Let long content flow naturally; use headings, anchor navigation, and native details for supporting evidence. Keep the conclusion and key findings visible. Avoid fixed-height prose panels and decorative controls. Every interaction must help the reader inspect the content. Use plain semantic tables for small static schemas or comparisons; add `data-alpha-table` only when sorting or filtering is useful.
 
+Use the full document width for headers, summaries, tables, and major findings. The kit handles readable prose and responsive spacing; do not add narrow wrappers or nest the entire report inside a grid cell. Use `badge` with a textual `status-good`, `status-warning`, `status-danger`, `status-info`, or `status-neutral` label for evidenced status. Red, amber, and green must mean risk, attention, and verified health, not decoration. Use cards for distinct options, `metrics` only for sourced quantitative summaries, and a `table-toolbar` for useful filters. Read the reference's composition examples; select a few components that serve this document rather than filling a dashboard template.
+
 ## Write, preview, and revise
 
 Write HTML through the existing file tools, respecting workspace protections and any requested output location. For a new document without a specified destination, use `.alpha/documents/<task-id>/<descriptive-slug>.html` within the current workspace when the actual task ID is available. If it is unavailable, choose a descriptive workspace filename rather than inventing an ID. The canonical file URI is the document identity. When revising, edit the same file and keep its identity and links stable.
@@ -29,7 +31,7 @@ The final response should state the takeaway and link to the file using:
 
 `[Open document](alpha-document://open?uri=<percent-encoded-absolute-file-URI>&task=<actual-task-id>)`
 
-Encode the absolute file URI as a query parameter, including spaces and reserved characters; omit `&task=...` if the actual task ID is unavailable. For example, a real file URI `file:///workspace/.alpha/documents/review.html` becomes `file%3A%2F%2F%2Fworkspace%2F.alpha%2Fdocuments%2Freview.html`. Never substitute this example path for the written file. Preview opens on the user's click; do not repeatedly invoke commands, open tabs, or steal focus. The user can also use **Alpha: Preview HTML Document** for the source file, edit it normally, and reopen the same preview link.
+Encode the absolute file URI as a query parameter, including spaces and reserved characters; omit `&task=...` if the actual task ID is unavailable. For example, a real file URI `file:///workspace/.alpha/documents/review.html` becomes `file%3A%2F%2F%2Fworkspace%2F.alpha%2Fdocuments%2Freview.html`. Never substitute this example path for the written file. On a new completed response in the visible task, Alpha opens the linked document in the right editor group while keeping chat focus. Keep the Open document link for explicit reopening. Do not invoke extra commands or regenerate the source to open it; revisions refresh the existing preview. Background tasks and restored history retain their links without opening tabs. The user can also use **Alpha: Preview HTML Document** for the source file.
 
 ## Validate and repair
 

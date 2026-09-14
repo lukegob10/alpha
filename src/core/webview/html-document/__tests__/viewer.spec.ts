@@ -66,7 +66,7 @@ vi.mock("vscode", async () => {
 					: { scheme: new URL(uri).protocol.slice(0, -1), toString: () => uri },
 			joinPath: (uri: any, ...parts: string[]) => file(nodePath.join(uri.fsPath, ...parts)),
 		},
-		ViewColumn: { Beside: 2 },
+		ViewColumn: { Beside: -2, Two: 2 },
 		env: { openExternal: vi.fn(async () => true) },
 		RelativePattern: class {
 			constructor(
@@ -225,6 +225,29 @@ describe("HTML document viewer lifecycle through host boundaries", () => {
 		expect(latest(first).title).toBe("Changed")
 		expect(latest(second).title).toBe("Second")
 		expect(first.reveal).toHaveBeenCalledTimes(1)
+	})
+
+	it("automatically opens in the right editor group without taking focus or refocusing an existing preview", async () => {
+		await fs.writeFile(path.join(root, "auto.html"), documentHtml("Delivered"))
+		await viewer.open(target("auto.html"), undefined, { automatic: true, isCurrent: () => true })
+		expect(vscode.window.createWebviewPanel).toHaveBeenCalledWith(
+			expect.any(String),
+			"auto.html",
+			{ viewColumn: 2, preserveFocus: true },
+			{},
+		)
+		await viewer.open(target("auto.html"), undefined, { automatic: true })
+		expect(host.panels).toHaveLength(1)
+		expect(host.panels[0].reveal).not.toHaveBeenCalled()
+	})
+
+	it("does not open after the originating task becomes inactive during path validation", async () => {
+		await fs.writeFile(path.join(root, "auto.html"), documentHtml("Delivered"))
+		let current = true
+		const opening = viewer.open(target("auto.html"), undefined, { automatic: true, isCurrent: () => current })
+		current = false
+		await opening
+		expect(host.panels).toHaveLength(0)
 	})
 
 	it("renders unsaved changes without writing and returns to external source after close", async () => {

@@ -22,6 +22,15 @@ const examples = ["review", "spec", "report"] as const
 const sourceFor = (name: string) => readFileSync(path.join(kitDirectory, "examples", `${name}.html`), "utf8")
 
 describe("bundled Rich documents authoring and viewer contract", () => {
+	it("retains labeled status components and table controls from the component gallery", () => {
+		const result = load(sanitizeDocument(sourceFor("index")).html)
+		for (const status of ["good", "warning", "danger", "info"])
+			expect(result(`.badge.status-${status}`).text().trim()).not.toBe("")
+		expect(result(".card .key-values dt")).toHaveLength(3)
+		expect(result(".table-toolbar label").attr("for")).toBe(result("input[data-alpha-filter]").attr("id"))
+		expect(result(".table-scroll tbody tr")).toHaveLength(4)
+	})
+
 	it.each(examples)("preserves %s semantics and widget inputs while removing author execution", (name) => {
 		const source = sourceFor(name)
 		const original = load(source)

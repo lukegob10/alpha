@@ -43,9 +43,52 @@ establishes context, `eyebrow` carries short metadata, `lead` states the conclus
 and `summary` contains the recommendation. `grid` fits two columns when space
 permits and stacks at narrow widths. Keep long prose out of wide grids.
 
+The page fills its available pane up to 104rem, with responsive gutters. Headers,
+tables, summaries and findings occupy the full content width; prose retains a
+readable measure. Never wrap the entire document in a card or one grid column.
+Use `span-all` for a full-width item in a grid. Start with a header, a decision,
+and the evidence; use the remaining components only where their structure helps.
+
+### Status, cards and compact summaries
+
+`badge` gives a status label a colored dot, rounded outline and subtle tint.
+Combine it with `status-good` (verified health), `status-warning` (attention),
+`status-danger` (risk), `status-info` (information), or `status-neutral` (unassessed).
+Always include the status as text. A low-severity finding is not automatically
+healthy; its blue indicator is deliberately distinct from a green verified state.
+The same status classes tint `callout` borders. Status is authored evidence, not
+an interactive approval or a calculated score.
+
+```html
+<div class="doc-meta">
+	<span class="badge status-warning">Needs review</span>
+	<span>API contract · 14 September 2026</span>
+</div>
+<div class="grid">
+	<section class="card">
+		<h3 class="card-title">Keep the current API</h3>
+		<p>Describe the option and its concrete tradeoffs.</p>
+		<span class="badge status-good">Compatibility verified</span>
+	</section>
+	<aside class="callout status-warning">
+		<h3>Decision required</h3>
+		<p>Name the unresolved constraint and the evidence needed.</p>
+	</aside>
+</div>
+```
+
+`metrics` lays out compact `metric` tiles responsively. Inside a tile use
+`metric-label`, `metric-value`, and `metric-detail`. Values must come from the
+document's evidence; do not invent scores, percentages or health statuses to fill
+tiles. Use ordinary prose when the conclusion is qualitative. `key-values` styles
+a semantic `dl` with `dt`/`dd` pairs. `ol.steps` presents a short ordered delivery
+sequence. `nav.toc` contains ordinary fragment links to real section IDs.
+`section-heading` aligns a heading with a brief status or caption. Keep headings
+and important conclusions visible without opening disclosures or tabs.
+
 Use `article.finding[data-severity="high|medium|low"]` with an explicit textual
 severity, trigger, consequence, evidence, source, and proposed correction. The
-severity border supplements that text. `aside.callout` highlights a caveat or
+severity border and dot supplement that text. `aside.callout` highlights a caveat or
 decision. `ul.checklist` is **read-only**; write statuses such as “Required” or
 “Verified” as text, with evidence. Do not imply a saved review state.
 
@@ -65,6 +108,10 @@ and intentionally do not claim those fixture files exist in the reader's repo.
 
 Use plain semantic tables for short comparisons that should be read together.
 Add enhancement only when sorting or filtering helps answer a real reader question.
+All tables receive rounded corners, differentiated headers, alternating row
+surfaces, and hover/focus highlighting. A `badge` can label a status inside a cell;
+retain its full text and sort by the actual meaning when needed. Use
+`table-toolbar` to group a filter's visible label and input above the table.
 
 Wrap one rectangular table in `section[data-alpha-table]`. Use one thead row,
 one tbody, scope attributes, and a caption. Add `data-sort="text"` or `"number"`
@@ -76,8 +123,10 @@ tables remain readable without controls. Colspans and rowspans are not enhanced.
 
 ```html
 <section data-alpha-table>
-	<label for="files">Filter files</label>
-	<input id="files" data-alpha-filter type="search" disabled />
+	<div class="table-toolbar">
+		<label for="files">Filter files</label>
+		<input id="files" data-alpha-filter type="search" disabled />
+	</div>
 	<div class="table-scroll">
 		<table>
 			<caption>
@@ -168,7 +217,7 @@ supported. Do not load this sheet as host-control styling.
 - `examples/review.html`: prioritized fictional multi-file review.
 - `examples/spec.html`: implementation decision, tradeoffs and unresolved policy.
 - `examples/report.html`: archived BLS CPI observations, calculations and limits.
-- `examples/index.html`: executable standalone gallery using the packaged assets.
+- `examples/index.html`: standalone gallery with cards, semantic status badges, a filterable status table, and packaged assets.
 - `examples/review-baseline.md`: same review content for the existing Markdown/diff comparison.
 
 Before release, verify all three in the actual viewer on VS Code 1.122.1: light,

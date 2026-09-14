@@ -2,6 +2,7 @@ import * as vscode from "vscode"
 import { HTML_DOCUMENT_VIEW_TYPE, htmlDocumentTargetSchema, parseHtmlDocumentLink } from "@alpha-code/types"
 import { t } from "../../../i18n"
 import type { HtmlDocumentViewer } from "./viewer"
+import type { HtmlDocumentTarget } from "@alpha-code/types"
 
 let service: Promise<HtmlDocumentViewer> | undefined
 let extensionUri: vscode.Uri | undefined
@@ -29,6 +30,15 @@ export async function openHtmlDocumentLink(link: unknown): Promise<void> {
 					: "htmlDocument:openError",
 			),
 		)
+	}
+}
+
+export async function autoOpenHtmlDocument(target: HtmlDocumentTarget, isCurrent: () => boolean): Promise<void> {
+	try {
+		if (isCurrent()) await (await viewer()).open(target, undefined, { automatic: true, isCurrent })
+	} catch {
+		// Delivery must not fail a completed task. The retained link permits an explicit retry with diagnostics.
+		console.warn("[HtmlDocument] Automatic preview unavailable; the document link remains available")
 	}
 }
 
