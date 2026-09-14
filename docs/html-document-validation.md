@@ -147,6 +147,12 @@ override survive reinstall; removing the override leaves the built-in disabled;
 the fixture restores its original setting. Package hashes differ between
 worktrees; evidence names the package used for each check.
 
+The final integrated 1.122.1 smoke suite passed (extension, modes and five VS Code
+LM fixture tests; final LM run `390d5e81-ce99-4169-8942-43b131be1c81`). The updated
+installed package also reopened the original authored document without changing
+its SHA in run `ccdb4ab4-e4c6-47b1-99e3-ed994a9fdd30`, with actual-host ownership
+and complete capture verified by NOR-67.
+
 These checks establish bounded functional behavior and supported-host
 compatibility. They do not establish long-run memory stability or a measured
 usability advantage. Automatic approval review blocked scratch-directory cleanup;
