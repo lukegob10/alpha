@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.41
+
+### Patch Changes
+
+- Fix VS Code LM chat metadata staying at the default context window after selecting extended context.
+- Use the active task's resolved input limit for the context display and percentage, with the saved selection as a fallback before live model discovery.
+- Keep settings previews, provider input budgets, and chat metadata consistent when switching between standard and extended context.
+
 ## 2.1.40
 
 ### Patch Changes

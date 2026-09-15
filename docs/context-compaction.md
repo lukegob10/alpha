@@ -8,6 +8,11 @@ The advertised model capacity, selected request window, input allowance, and aut
 The provider adapter resolves the selected model's `contextWindow`; for VS Code LM this is capped by the selected live
 model's `maxInputTokens` as well as the configured context size. Compaction uses that resolved window.
 
+The Copilot provider and settings preview share `getVscodeLlmContextWindow`. Before discovery, a supported saved context
+selection supplies the preview; live discovery then caps it. The chat header consumes the resolved model in task-scoped
+`LiveTaskMetadata`, including incremental message updates, so switching between standard and extended context does not
+leave the header on the catalog default. Legacy hosts without this optional metadata use the configured preview.
+
 `getModelReservedOutputTokens` uses the same effective output cap as ordinary requests. A provider declaring
 `contextWindowIncludesOutput: false` already supplies an input-only window, so no output reservation is subtracted from
 it. VS Code LM declares this capability. Providers without the optional field retain the combined-window interpretation.

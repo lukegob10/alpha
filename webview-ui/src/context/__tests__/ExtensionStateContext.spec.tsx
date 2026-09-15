@@ -78,6 +78,7 @@ const BackgroundActivityTestComponent = () => {
 		<>
 			<div data-testid="foreground-message-count">{clineMessages.length}</div>
 			<div data-testid="background-activity">{liveTasksById?.["task-2"]?.lastUpdatedAt ?? 0}</div>
+			<div data-testid="background-context">{liveTasksById?.["task-2"]?.model?.info.contextWindow ?? 0}</div>
 		</>
 	)
 }
@@ -629,6 +630,14 @@ describe("ExtensionStateContext", () => {
 						clineMessage: { ts: 2, type: "say", say: "text", text: "background" },
 						liveTask: {
 							id: "task-2",
+							model: {
+								id: "copilot-claude-opus-4.7",
+								info: {
+									contextWindow: 935_793,
+									supportsPromptCache: false,
+									contextWindowIncludesOutput: false,
+								},
+							},
 							status: "running",
 							lifecycle: "running",
 							isActive: false,
@@ -649,6 +658,7 @@ describe("ExtensionStateContext", () => {
 
 		expect(screen.getByTestId("foreground-message-count")).toHaveTextContent("1")
 		expect(screen.getByTestId("background-activity")).toHaveTextContent("20")
+		expect(screen.getByTestId("background-context")).toHaveTextContent("935793")
 	})
 
 	it("ignores stale incremental messages and replaces duplicate creations idempotently", () => {

@@ -60,8 +60,10 @@ const TaskHeader = ({
 	onExpandedChange,
 }: TaskHeaderProps) => {
 	const { t } = useTranslation()
-	const { apiConfiguration, currentTaskItem } = useExtensionState()
-	const { id: modelId, info: model } = useSelectedModel(apiConfiguration)
+	const { apiConfiguration, currentTaskItem, liveTasksById } = useExtensionState()
+	const selectedModel = useSelectedModel(apiConfiguration)
+	const taskModel = currentTaskItem ? liveTasksById?.[currentTaskItem.id]?.model : undefined
+	const { id: modelId, info: model } = taskModel ?? selectedModel
 	const [isTaskExpanded, setIsTaskExpanded] = useState(false)
 	const detailsId = useId()
 	const subagentModelRoute = isManagedSubagent ? currentTaskItem?.subagentModelRoute : undefined

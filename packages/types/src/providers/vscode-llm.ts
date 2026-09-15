@@ -1,4 +1,5 @@
 import type { ModelInfo } from "../model.js"
+import { openAiModelInfoSaneDefaults } from "./openai.js"
 
 export type VscodeLlmModelId = keyof typeof vscodeLlmModels
 export type VscodeLlmModelInfo = ModelInfo & {
@@ -554,4 +555,25 @@ export function getVscodeLlmExtendedContextSize(model: VscodeLlmModelSelectorLik
 	}
 
 	return modelInfo.extendedContextSize ?? Math.round(maxInputTokens / 1_000) * 1_000
+}
+
+/** Resolve the input budget consistently for requests, settings previews, and chat metadata. */
+export function getVscodeLlmContextWindow(model: VscodeLlmModelSelectorLike, configuredContextSize?: number): number {
+	const staticInfo = getVscodeLlmModelInfo(model)
+	const liveContextWindow =
+		typeof model.maxInputTokens === "number" && Number.isFinite(model.maxInputTokens) && model.maxInputTokens > 0
+			? Math.floor(model.maxInputTokens)
+			: undefined
+	// Before discovery, a saved supported selection is a preview. Once a live model
+	// is available, its advertised capabilities and input limit always constrain it.
+	const extendedContextSize =
+		model.maxInputTokens === undefined ? staticInfo?.extendedContextSize : getVscodeLlmExtendedContextSize(model)
+	const selectedWindow =
+		staticInfo?.supportsContextWindowConfiguration &&
+		extendedContextSize !== undefined &&
+		configuredContextSize === extendedContextSize
+			? extendedContextSize
+			: staticInfo?.contextWindow
+	const contextWindow = selectedWindow ?? liveContextWindow ?? openAiModelInfoSaneDefaults.contextWindow
+	return liveContextWindow === undefined ? contextWindow : Math.min(contextWindow, liveContextWindow)
 }

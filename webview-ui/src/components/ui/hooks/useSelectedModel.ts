@@ -18,6 +18,7 @@ import {
 	vscodeLlmModels,
 	vscodeLlmDefaultModelId,
 	getVscodeLlmModelInfo,
+	getVscodeLlmContextWindow,
 	openAiCodexModels,
 	sambaNovaModels,
 	stellarDefaultModelId,
@@ -305,7 +306,21 @@ function getSelectedModel({
 			const info = apiConfiguration?.vsCodeLmModelSelector
 				? getVscodeLlmModelInfo(apiConfiguration.vsCodeLmModelSelector)
 				: vscodeLlmModels[vscodeLlmDefaultModelId]
-			return { id, info: { ...openAiModelInfoSaneDefaults, ...info } }
+			return {
+				id,
+				info: {
+					...openAiModelInfoSaneDefaults,
+					...info,
+					contextWindow: getVscodeLlmContextWindow(
+						apiConfiguration.vsCodeLmModelSelector ?? {
+							vendor: "copilot",
+							family: vscodeLlmDefaultModelId,
+						},
+						apiConfiguration.vsCodeLmContextSize,
+					),
+					contextWindowIncludesOutput: false,
+				},
+			}
 		}
 		case "sambanova": {
 			const id = apiConfiguration.apiModelId ?? defaultModelId

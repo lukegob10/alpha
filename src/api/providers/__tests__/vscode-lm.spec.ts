@@ -2232,6 +2232,15 @@ describe("VsCodeLmHandler", () => {
 			expect(model.info.supportsReasoningEffort).toEqual(["none", "low", "medium", "high", "xhigh", "max"])
 		})
 
+		it("preserves the selected context while waiting for live model discovery", () => {
+			handler = new VsCodeLmHandler({
+				vsCodeLmModelSelector: { vendor: "copilot", family: "claude-opus-4.7" },
+				vsCodeLmContextSize: 936_000,
+			})
+			expect(handler.getModel().info.contextWindow).toBe(936_000)
+			expect(handler.getModel().info.contextWindowIncludesOutput).toBe(false)
+		})
+
 		it("should ignore a stale extended setting when the live selector only advertises the standard tier", () => {
 			handler = new VsCodeLmHandler({
 				...defaultOptions,

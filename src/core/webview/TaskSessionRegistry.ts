@@ -395,6 +395,7 @@ export class TaskSessionRegistry {
 				typeof task.hasPendingSteerMessage === "function" ? task.hasPendingSteerMessage() : false
 			const metadata: LiveTaskMetadata = {
 				id: task.taskId,
+				model: task.api?.getModel(),
 				status,
 				lifecycle,
 				isActive: task.taskId === this.activeTaskId,
