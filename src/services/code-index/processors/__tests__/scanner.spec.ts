@@ -435,12 +435,64 @@ describe("DirectoryScanner", () => {
 			expect(mockEmbedder.createEmbeddings.mock.calls.map(([texts]: [string[]]) => texts.length)).toEqual([2, 1])
 			expect(mockVectorStore.upsertPoints).toHaveBeenCalledTimes(2)
 			expect(mockCacheManager.updateHash).toHaveBeenCalledOnce()
+			expect(mockEmbedder.createEmbeddings.mock.invocationCallOrder[1]).toBeLessThan(
+				mockVectorStore.deletePointsByMultipleFilePaths.mock.invocationCallOrder[0],
+			)
 			expect(mockVectorStore.deletePointsByMultipleFilePaths.mock.invocationCallOrder[0]).toBeLessThan(
 				mockVectorStore.upsertPoints.mock.invocationCallOrder[0],
 			)
 			expect(mockVectorStore.upsertPoints.mock.invocationCallOrder[1]).toBeLessThan(
 				mockCacheManager.updateHash.mock.invocationCallOrder[0],
 			)
+		})
+
+		it("embeds and stores a parsed file while another file is still being parsed", async () => {
+			mockEmbedder.embedderInfo.preferredBatchSize = 8
+			const streamingScanner = new DirectoryScanner(
+				mockEmbedder,
+				mockVectorStore,
+				mockCodeParser,
+				mockCacheManager,
+				mockIgnoreInstance,
+				60,
+			)
+			let finishParsing!: () => void
+			const parsingBlocked = new Promise<void>((resolve) => {
+				finishParsing = resolve
+			})
+			let firstFileIndexed!: () => void
+			const indexed = new Promise<void>((resolve) => {
+				firstFileIndexed = resolve
+			})
+			mockCodeParser.parseFile.mockImplementation(async (filePath: string) => {
+				if (filePath.endsWith("file2.js")) await parsingBlocked
+				return [
+					{
+						file_path: filePath,
+						content: "source",
+						start_line: 1,
+						end_line: 1,
+						identifier: "fixture",
+						type: "function",
+						fileHash: "hash",
+						segmentHash: filePath,
+					},
+				]
+			})
+			const scan = streamingScanner.scanDirectory("/test", undefined, firstFileIndexed)
+			try {
+				await indexed
+				expect(mockVectorStore.upsertPoints).toHaveBeenCalledOnce()
+				expect(mockEmbedder.createEmbeddings).toHaveBeenCalledWith(
+					[expect.stringContaining("file1.js")],
+					undefined,
+					"document",
+				)
+			} finally {
+				finishParsing()
+				await scan
+			}
+			expect(mockCacheManager.updateHash).toHaveBeenCalledTimes(2)
 		})
 
 		it("commits file metadata when the block count exactly matches the threshold", async () => {

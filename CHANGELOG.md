@@ -6,6 +6,8 @@
 
 - Add Preview HTML Document to the Explorer context menu for local HTML files, opening Alpha's document renderer without an active chat or source editor.
 - Reuse the existing preview tab and translated command label for `.html` and `.htm` documents.
+- Start storing Vertex indexing results earlier with smaller whole-file groups and up to eight continuously refilled embedding requests.
+- Preserve request spacing, result order, failure draining, and whole-file replacement, with deterministic indexing performance coverage.
 
 ## 2.1.41
 

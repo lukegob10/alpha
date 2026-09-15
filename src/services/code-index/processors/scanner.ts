@@ -33,6 +33,7 @@ import { EmbeddingRateLimiter } from "../shared/embedding-rate-limiter"
 
 export class DirectoryScanner implements IDirectoryScanner {
 	private readonly batchSegmentThreshold: number
+	private readonly batchDispatchThreshold: number
 	private readonly embeddingRateLimiter: EmbeddingRateLimiter
 
 	constructor(
@@ -58,6 +59,12 @@ export class DirectoryScanner implements IDirectoryScanner {
 				this.batchSegmentThreshold = BATCH_SEGMENT_THRESHOLD
 			}
 		}
+		// Single-input providers gain no network batching benefit from accumulating many files.
+		// Keep the configured segment size for writes; dispatch smaller whole-file groups sooner.
+		this.batchDispatchThreshold = Math.min(
+			this.batchSegmentThreshold,
+			this.embedder?.embedderInfo.preferredBatchSize ?? this.batchSegmentThreshold,
+		)
 		this.embeddingRateLimiter = new EmbeddingRateLimiter((embeddingRateLimitSeconds ?? 0) * 1000)
 	}
 
@@ -226,7 +233,7 @@ export class DirectoryScanner implements IDirectoryScanner {
 							if (
 								currentBatchBlocks.length > 0 &&
 								indexedBlocks.length > 0 &&
-								currentBatchBlocks.length + indexedBlocks.length > this.batchSegmentThreshold
+								currentBatchBlocks.length + indexedBlocks.length > this.batchDispatchThreshold
 							) {
 								await dispatchCurrentBatch()
 							}
@@ -239,9 +246,11 @@ export class DirectoryScanner implements IDirectoryScanner {
 							}
 
 							if (
-								currentBatchBlocks.length >= this.batchSegmentThreshold ||
+								currentBatchBlocks.length >= this.batchDispatchThreshold ||
+								(this.embedder.embedderInfo.preferredBatchSize !== undefined &&
+									pendingBatchCount === 0) ||
 								(currentBatchBlocks.length === 0 &&
-									currentBatchFileInfos.length >= this.batchSegmentThreshold)
+									currentBatchFileInfos.length >= this.batchDispatchThreshold)
 							) {
 								await dispatchCurrentBatch()
 							}
