@@ -448,24 +448,6 @@ const waitForAgent = async (
 	return findAgent(groups, parentTaskId, objective)!
 }
 
-const approveFixtureCommand = async (provider: ManagedAgentHostProvider, taskId: string): Promise<void> => {
-	await waitFor(
-		() => {
-			const task = provider.getLiveTask(taskId)
-			return (
-				task?.taskAsk?.ask === "command" &&
-				task.activeAsk?.ts === task.taskAsk.ts &&
-				task.askResponse === undefined
-			)
-		},
-		{ timeout: 60_000, interval: 50, description: `explicit command approval for ${taskId}` },
-	)
-	const task = provider.getLiveTask(taskId)!
-	assert.equal(task.taskAsk?.text, "vitest run --maxWorkers=2")
-	// Simulate the user's decision for this exact request, even with wildcard rules enabled.
-	task.approveAsk()
-}
-
 const waitForPendingChangeSet = async (
 	groups: ReadonlyMap<string, SubagentGroupState>,
 	parentTaskId: string,
@@ -684,7 +666,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			assert.equal(nestedApply.success, true, nestedApply.message)
 			assert.equal(nestedApply.changeSetStatus, "applied")
 			scriptedAI.setVerificationChangeSets("outer", [nestedChangeSet.changeSetId])
-			await approveFixtureCommand(provider, outerTaskId)
+			// The inherited vitest rule must approve verification without a harness response.
 
 			const [outerChangeSet, discardChangeSet] = await Promise.all([
 				waitForPendingChangeSet(groups, rootTaskId, OUTER_OBJECTIVE),
@@ -737,7 +719,6 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			await api.sendMessage(
 				"Both root-owned Worker proposals were reviewed; verify the applied files and finish.",
 			)
-			await approveFixtureCommand(provider, rootTaskId)
 			await waitFor(() => completionPromptTasks.has(rootTaskId!), {
 				timeout: 60_000,
 				interval: 50,
