@@ -356,7 +356,16 @@ describe("ChatView native scroll behavior", () => {
 	})
 
 	it("keeps the input dock outside the bounded transcript scroller", async () => {
-		await hydrate()
+		const baseTs = Date.now() - 3_000
+		await hydrate([
+			...buildMessages(baseTs),
+			{
+				type: "say",
+				say: "tool",
+				ts: baseTs + 3,
+				text: JSON.stringify({ tool: "appliedDiff", path: "src/file.ts", diff: "+line" }),
+			},
+		])
 		const scrollable = getScrollable()
 		const viewport = scrollable.parentElement
 		const dock = document.querySelector("[data-testid='chat-bottom-dock']")

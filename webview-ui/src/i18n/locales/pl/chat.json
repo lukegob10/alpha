@@ -323,6 +323,7 @@
 	"contextManagement": {
 		"tokens": "tokeny",
 		"condensation": {
+			"unchanged": "Kontekst już mieści się w limicie",
 			"title": "Kontekst skondensowany",
 			"inProgress": "Kondensowanie kontekstu...",
 			"errorHeader": "Nie udało się skondensować kontekstu"
@@ -498,5 +499,13 @@
 		"title": "Dostawca nie jest już obsługiwany",
 		"message": "Przepraszamy, ten dostawca nie jest już obsługiwany. Zauważyliśmy, że bardzo niewielu użytkowników Alpha faktycznie z niego korzystało, a my musimy zmniejszyć zakres naszego kodu, aby móc dalej szybko dostarczać i dobrze służyć naszej społeczności. To była naprawdę trudna decyzja, ale pozwala nam skupić się na tym, co jest dla ciebie najważniejsze. Wiemy, że to frustrujące.",
 		"openSettings": "Otwórz ustawienia"
+	},
+	"githubActions": {
+		"request": "Żądanie",
+		"create_pull_request": "Utwórz pull request",
+		"get_pull_request": "Wyświetl pull request",
+		"list_checks": "Wyświetl kontrole",
+		"merge_pull_request": "Scal pull request",
+		"comment": "Dodaj komentarz"
 	}
 }

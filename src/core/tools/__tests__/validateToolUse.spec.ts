@@ -113,16 +113,13 @@ describe("mode-validator", () => {
 			})
 		})
 
-		describe("ask mode", () => {
-			it("allows configured tools", () => {
-				// Ask mode has read and mcp groups
-				const askTools = [...TOOL_GROUPS.read.tools, ...TOOL_GROUPS.mcp.tools]
-				askTools.forEach((tool) => {
-					expect(isToolAllowedForMode(tool, askMode, [])).toBe(true)
-				})
-				expect(isToolAllowedForMode("read_page", askMode, [])).toBe(false)
-			})
-		})
+		it.each(["ask", "debug", "orchestrator"])(
+			"does not grant editing or command tools to retired %s mode",
+			(mode) => {
+				expect(isToolAllowedForMode("write_to_file", mode, [])).toBe(false)
+				expect(isToolAllowedForMode("execute_command", mode, [])).toBe(false)
+			},
+		)
 
 		describe("custom modes", () => {
 			const sourceOnlyMode: ModeConfig[] = [
@@ -310,7 +307,7 @@ describe("mode-validator", () => {
 			})
 
 			it("prioritizes requirements over ALWAYS_AVAILABLE_TOOLS", () => {
-				// Tools in ALWAYS_AVAILABLE_TOOLS (switch_mode, new_task, etc.) should still
+				// Always-available tools and stale retired names should still
 				// be blockable via toolRequirements / disabledTools
 				const requirements = { switch_mode: false, new_task: false, attempt_completion: false }
 				expect(isToolAllowedForMode("switch_mode", codeMode, [], requirements)).toBe(false)

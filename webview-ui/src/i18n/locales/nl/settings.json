@@ -281,10 +281,10 @@
 			"timeoutLabel": "Wachttijd voordat het eerste antwoord automatisch wordt geselecteerd"
 		},
 		"execute": {
-			"label": "Uitvoeren",
-			"description": "Automatisch toegestane terminalcommando's uitvoeren zonder goedkeuring",
-			"allowedCommands": "Toegestane automatisch uit te voeren commando's",
-			"allowedCommandsDescription": "Commando-prefixen die automatisch kunnen worden uitgevoerd als 'Altijd goedkeuren voor uitvoeren' is ingeschakeld. Voeg * toe om alle commando's toe te staan (gebruik met voorzichtigheid).",
+			"label": "Opdrachtregels",
+			"description": "Stel opdrachtregels in. Hostopdrachten vereisen altijd goedkeuring omdat scripts buiten de werkruimte kunnen schrijven.",
+			"allowedCommands": "Toegestane opdrachtvoorvoegsels",
+			"allowedCommandsDescription": "Toegestane voorvoegsels gaan voor kortere geweigerde voorvoegsels. Goedkeuring van de opdracht blijft vereist.",
 			"deniedCommands": "Geweigerde commando's",
 			"deniedCommandsDescription": "Commando-prefixen die automatisch worden geweigerd zonder om goedkeuring te vragen. Bij conflicten met toegestane commando's heeft de langste prefixovereenkomst voorrang. Voeg * toe om alle commando's te weigeren.",
 			"commandPlaceholder": "Voer commando-prefix in (bijv. 'git ')",

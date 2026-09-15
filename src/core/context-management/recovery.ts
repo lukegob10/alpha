@@ -7,13 +7,40 @@
  */
 
 /** A bounded recovery operation's terminal state. */
-export type ContextRecoveryStatus = "reduced" | "no_progress" | "exhausted"
+export type ContextRecoveryStatus = "reduced" | "unchanged" | "no_progress" | "exhausted"
 
 /** The default minimum reduction required from a compaction attempt. */
 export const DEFAULT_MIN_REDUCTION_PERCENT = 10
 
-/** The target percentage of usable context after reserving response tokens. */
-export const DEFAULT_COMPACTION_TARGET_PERCENT = 75
+/** Keep a quarter of the working budget after accounting for mandatory input. */
+export const DEFAULT_COMPACTION_TARGET_PERCENT = 25
+export const TOKEN_BUFFER_PERCENTAGE = 0.1
+export const MIN_CONDENSE_THRESHOLD = 5
+export const MAX_CONDENSE_THRESHOLD = 100
+
+/** Global and per-profile percentages use the same validation and raw-window denominator. */
+export function resolveCondenseThreshold(
+	globalThreshold: number,
+	profileThresholds: Record<string, number> = {},
+	currentProfileId = "",
+): number {
+	const valid = (value: number) =>
+		Number.isFinite(value) && value >= MIN_CONDENSE_THRESHOLD && value <= MAX_CONDENSE_THRESHOLD
+	const profile = profileThresholds[currentProfileId]
+	return valid(profile) ? profile : valid(globalThreshold) ? globalThreshold : MAX_CONDENSE_THRESHOLD
+}
+
+/** The configured trigger cannot exceed the input limit with its safety margin. */
+export function getContextLimits(contextWindow: number, reservedTokens: number, thresholdPercent = 100) {
+	const window = Number.isFinite(contextWindow) ? Math.max(0, contextWindow) : 0
+	const usableTokens = getUsableContextTokens(window, reservedTokens)
+	const allowedTokens = Math.max(0, Math.floor(usableTokens - window * TOKEN_BUFFER_PERCENTAGE))
+	const triggerTokens = Math.min(
+		allowedTokens,
+		Math.floor((window * resolveCondenseThreshold(thresholdPercent)) / 100),
+	)
+	return { allowedTokens, triggerTokens }
+}
 
 export type CompactionTargetOptions = {
 	contextWindow: number
@@ -22,6 +49,10 @@ export type CompactionTargetOptions = {
 	/** Backward-friendly spelling used by context-management callers. */
 	maxTokens?: number
 	targetPercent?: number
+	/** The effective automatic trigger, including the user's profile threshold. */
+	triggerTokens?: number
+	/** System instructions and tool schemas cannot be summarized away. */
+	fixedTokens?: number
 }
 
 /**
@@ -37,18 +68,24 @@ export function getUsableContextTokens(contextWindow: number, reservedTokens: nu
 /**
  * Returns the desired post-compaction input budget.
  *
- * The default is 75% of the usable context (context window minus output
- * reservation), rather than 75% of the raw model window.
+ * Allocate the compactable portion relative to the effective trigger, not the
+ * advertised model capacity. Mandatory input is charged before that allocation.
  */
 export function getCompactionTargetTokens({
 	contextWindow,
 	reservedTokens,
 	maxTokens,
 	targetPercent = DEFAULT_COMPACTION_TARGET_PERCENT,
+	triggerTokens,
+	fixedTokens = 0,
 }: CompactionTargetOptions): number {
-	const normalizedPercent = Number.isFinite(targetPercent) ? Math.max(0, targetPercent) : 0
+	const normalizedPercent = Number.isFinite(targetPercent) ? Math.min(100, Math.max(0, targetPercent)) : 0
 	const outputReservation = reservedTokens ?? maxTokens ?? 0
-	return Math.floor((getUsableContextTokens(contextWindow, outputReservation) * normalizedPercent) / 100)
+	const usableTokens = getUsableContextTokens(contextWindow, outputReservation)
+	const limit = triggerTokens === undefined ? usableTokens : Math.min(usableTokens, Math.max(0, triggerTokens))
+	if (!Number.isFinite(limit) || !Number.isFinite(fixedTokens)) return 0
+	const fixed = Math.min(limit, Math.max(0, fixedTokens))
+	return Math.floor(fixed + ((limit - fixed) * normalizedPercent) / 100)
 }
 
 /** Alias for callers that describe the result as a target context budget. */
@@ -89,12 +126,9 @@ export type CompactionProgress = {
 /**
  * Classifies one compaction result without scheduling a retry.
  *
- * A result is successful when it makes the default (10%) measurable reduction.
- * If the input was already under target, no reduction is required.  Reaching
- * the target is reported separately but does not waive the progress guard when
- * the input started above target.  Missing/invalid measurements are
- * deliberately classified as `no_progress` so a caller cannot silently accept
- * an unchanged request.
+ * Success always requires a measured decrease. A smaller decrease is sufficient
+ * when it reaches the target; otherwise require the minimum reduction. Missing,
+ * invalid, unchanged, or larger counts can never be reported as a reduction.
  */
 export function evaluateCompactionProgress({
 	beforeTokens,
@@ -102,9 +136,12 @@ export function evaluateCompactionProgress({
 	targetTokens,
 	minReductionPercent = DEFAULT_MIN_REDUCTION_PERCENT,
 }: CompactionProgressOptions): CompactionProgress {
-	const before = Number.isFinite(beforeTokens) ? Math.max(0, beforeTokens) : 0
-	const hasAfter = afterTokens !== null && afterTokens !== undefined && Number.isFinite(afterTokens)
-	const after = hasAfter ? Math.max(0, afterTokens as number) : undefined
+	const validBefore = Number.isFinite(beforeTokens) && beforeTokens >= 0
+	const before = validBefore ? beforeTokens : 0
+	const after =
+		afterTokens !== null && afterTokens !== undefined && Number.isFinite(afterTokens) && afterTokens >= 0
+			? afterTokens
+			: undefined
 	const target =
 		targetTokens === null || targetTokens === undefined || !Number.isFinite(targetTokens)
 			? undefined
@@ -119,7 +156,8 @@ export function evaluateCompactionProgress({
 	const hasMinimumReduction = after !== undefined && reductionPercent >= requiredReduction
 
 	return {
-		status: alreadyUnderTarget || hasMinimumReduction ? "reduced" : "no_progress",
+		status:
+			validBefore && reductionTokens > 0 && (targetReached || hasMinimumReduction) ? "reduced" : "no_progress",
 		beforeTokens: before,
 		afterTokens: after,
 		reductionTokens,

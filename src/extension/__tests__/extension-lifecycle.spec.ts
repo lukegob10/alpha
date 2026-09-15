@@ -32,6 +32,7 @@ vi.mock("vscode", () => ({
 	window: {
 		createOutputChannel: vi.fn(() => mocks.outputChannel),
 		registerWebviewViewProvider: vi.fn(() => ({ dispose: vi.fn() })),
+		registerWebviewPanelSerializer: vi.fn(() => ({ dispose: vi.fn() })),
 		registerUriHandler: mocks.registerUriHandler,
 	},
 	workspace: {

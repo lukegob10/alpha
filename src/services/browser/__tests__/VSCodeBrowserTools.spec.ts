@@ -141,7 +141,7 @@ describe("VSCodeBrowserTools", () => {
 		expect(vscodeMock.executeCommand).not.toHaveBeenCalled()
 	})
 
-	it("opens a browser page with browser-only auto-approval and restores the setting", async () => {
+	it("opens a browser page through host approval without changing settings or internal context", async () => {
 		vscodeMock.tools.push({ name: "open_browser_page" })
 		vscodeMock.invokeTool.mockResolvedValue({ content: [{ value: "Page ID: page-1" }] })
 
@@ -149,17 +149,11 @@ describe("VSCodeBrowserTools", () => {
 			invokeVSCodeBrowserTool("open_browser_page", { url: "https://example.com", forceNew: true }),
 		).resolves.toBe("Page ID: page-1")
 
-		expect(vscodeMock.executeCommand.mock.calls).toEqual([
-			["setContext", "vscode.chat.tools.global.autoApprove.testMode", true],
-			["setContext", "vscode.chat.tools.global.autoApprove.testMode", false],
-		])
-		expect(vscodeMock.configurationUpdate.mock.calls).toEqual([
-			["autoApprove", { open_browser_page: true }, 1],
-			["autoApprove", undefined, 1],
-		])
+		expect(vscodeMock.executeCommand).not.toHaveBeenCalled()
+		expect(vscodeMock.configurationUpdate).not.toHaveBeenCalled()
 	})
 
-	it("restores browser-only auto-approval when opening fails", async () => {
+	it("leaves approval configuration untouched when opening fails", async () => {
 		vscodeMock.tools.push({ name: "open_browser_page" })
 		vscodeMock.configurationValues.globalValue = { run_playwright_code: false }
 		vscodeMock.invokeTool.mockRejectedValue(new Error("open failed"))
@@ -168,14 +162,109 @@ describe("VSCodeBrowserTools", () => {
 			"open failed",
 		)
 
-		expect(vscodeMock.configurationUpdate.mock.calls).toEqual([
-			["autoApprove", { run_playwright_code: false, open_browser_page: true }, 1],
-			["autoApprove", { run_playwright_code: false }, 1],
-		])
-		expect(vscodeMock.executeCommand).toHaveBeenLastCalledWith(
-			"setContext",
-			"vscode.chat.tools.global.autoApprove.testMode",
-			false,
+		expect(vscodeMock.configurationUpdate).not.toHaveBeenCalled()
+		expect(vscodeMock.executeCommand).not.toHaveBeenCalled()
+	})
+
+	describe.each(["open", "navigate", "navigate-default"] as const)("%s website URLs", (operation) => {
+		const name = operation === "open" ? "open_browser_page" : "navigate_page"
+		const invoke = (url: string) =>
+			operation === "open"
+				? invokeVSCodeBrowserTool("open_browser_page", { url, forceNew: true })
+				: invokeVSCodeBrowserTool("navigate_page", {
+						pageId: "page-1",
+						...(operation === "navigate" ? { type: "url" as const } : {}),
+						url,
+					})
+
+		beforeEach(() => {
+			vscodeMock.tools.push({ name })
+			vscodeMock.invokeTool.mockResolvedValue({ content: [{ value: "Website opened" }] })
+		})
+
+		it.each([
+			"Dockerfile",
+			"./Dockerfile",
+			"../Dockerfile",
+			"/workspace/Dockerfile",
+			"C:\\project\\Dockerfile",
+			"C:/project/Dockerfile",
+			"\\\\server\\share\\Dockerfile",
+			"file:///workspace/Dockerfile",
+			"file:///C:/project/Dockerfile",
+			"FILE:///workspace/index.html",
+			"vscode://file/workspace/Dockerfile",
+			"vscode-remote://ssh-remote+server/workspace/Dockerfile",
+			"data:text/html,<h1>Local page</h1>",
+			"javascript:alert(1)",
+			"ftp://example.com/Dockerfile",
+			"about:blank",
+			"//example.com",
+			"https:example.com",
+			"https:///Dockerfile",
+			"https://",
+			"https://exa mple.com",
+			"",
+			"   ",
+		])("rejects %j before invoking the host", async (url) => {
+			await expect(invoke(url)).rejects.toThrow(/HTTP.*HTTPS.*read_file/)
+			expect(vscodeMock.invokeTool).not.toHaveBeenCalled()
+			expect(vscodeMock.cancellationTokens).toHaveLength(0)
+			expect(vscodeMock.configurationUpdate).not.toHaveBeenCalled()
+			expect(vscodeMock.executeCommand).not.toHaveBeenCalled()
+		})
+
+		it.each([
+			"https://example.com/docs?q=Dockerfile#build",
+			"http://example.com",
+			"http://localhost:3000",
+			"http://127.0.0.1:5173/preview",
+			"http://[::1]:3000/",
+			"https://intranet/docs",
+			"HTTPS://EXAMPLE.COM/docs",
+		])("forwards website URL %j unchanged", async (url) => {
+			await expect(invoke(url)).resolves.toBe("Website opened")
+			expect(vscodeMock.invokeTool).toHaveBeenCalledExactlyOnceWith(
+				name,
+				{ input: expect.objectContaining({ url }), toolInvocationToken: undefined },
+				expect.objectContaining({ isCancellationRequested: false }),
+			)
+			expect(vscodeMock.dispose).toHaveBeenCalledOnce()
+		})
+	})
+
+	it("preserves omitted URLs when requesting access to an already-open website tab", async () => {
+		vscodeMock.tools.push({ name: "open_browser_page" })
+		vscodeMock.invokeTool.mockResolvedValue({ content: [{ value: "Shared page page-1" }] })
+
+		await expect(invokeVSCodeBrowserTool("open_browser_page", {})).resolves.toBe("Shared page page-1")
+		expect(vscodeMock.invokeTool).toHaveBeenCalledWith(
+			"open_browser_page",
+			{ input: {}, toolInvocationToken: undefined },
+			expect.anything(),
+		)
+	})
+
+	it.each([undefined, "url"] as const)("rejects URL navigation without a URL (type=%j)", async (type) => {
+		vscodeMock.tools.push({ name: "navigate_page" })
+		vscodeMock.invokeTool.mockResolvedValue({ content: [{ value: "Unexpected navigation" }] })
+
+		await expect(invokeVSCodeBrowserTool("navigate_page", { pageId: "page-1", type })).rejects.toThrow(
+			/HTTP.*HTTPS.*read_file/,
+		)
+		expect(vscodeMock.invokeTool).not.toHaveBeenCalled()
+	})
+
+	it.each(["back", "forward", "reload"] as const)("preserves %s navigation without a URL", async (type) => {
+		vscodeMock.tools.push({ name: "navigate_page" })
+		vscodeMock.invokeTool.mockResolvedValue({ content: [{ value: "Navigated" }] })
+		const input = { pageId: "page-1", type }
+
+		await expect(invokeVSCodeBrowserTool("navigate_page", input)).resolves.toBe("Navigated")
+		expect(vscodeMock.invokeTool).toHaveBeenCalledWith(
+			"navigate_page",
+			{ input, toolInvocationToken: undefined },
+			expect.anything(),
 		)
 	})
 
@@ -188,7 +277,7 @@ describe("VSCodeBrowserTools", () => {
 
 		await invokeVSCodeBrowserTool("open_browser_page", { url: "https://example.com" })
 
-		expect(vscodeMock.configurationUpdate).toHaveBeenCalledTimes(1)
+		expect(vscodeMock.configurationUpdate).not.toHaveBeenCalled()
 		expect(vscodeMock.configurationValues.globalValue).toBe(true)
 	})
 
@@ -199,14 +288,32 @@ describe("VSCodeBrowserTools", () => {
 		expect(vscodeMock.invokeTool).not.toHaveBeenCalled()
 	})
 
-	it("forwards an already-aborted request to VS Code as a cancelled token", async () => {
+	it("does not invoke the host for an already-aborted request", async () => {
 		vscodeMock.tools.push({ name: "read_page" })
 		vscodeMock.invokeTool.mockResolvedValue({ content: [{ value: "cancelled" }] })
 		const controller = new AbortController()
 		controller.abort()
 
-		await invokeVSCodeBrowserTool("read_page", { pageId: "page-1" }, controller.signal)
+		await expect(invokeVSCodeBrowserTool("read_page", { pageId: "page-1" }, controller.signal)).rejects.toThrow()
+		expect(vscodeMock.invokeTool).not.toHaveBeenCalled()
+	})
 
-		expect(vscodeMock.cancellationTokens[0]?.isCancellationRequested).toBe(true)
+	it("propagates cancellation and rejects a late successful host result", async () => {
+		vscodeMock.tools.push({ name: "open_browser_page" })
+		const controller = new AbortController()
+		let finish!: (value: { content: Array<{ value: string }> }) => void
+		vscodeMock.invokeTool.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					finish = resolve
+				}),
+		)
+		const request = invokeVSCodeBrowserTool("open_browser_page", { url: "https://example.com" }, controller.signal)
+		controller.abort()
+		expect(vscodeMock.cancellationTokens[0].isCancellationRequested).toBe(true)
+		finish({ content: [{ value: "late success" }] })
+		await expect(request).rejects.toThrow()
+		expect(vscodeMock.dispose).toHaveBeenCalledOnce()
+		expect(vscodeMock.configurationUpdate).not.toHaveBeenCalled()
 	})
 })

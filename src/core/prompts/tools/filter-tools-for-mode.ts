@@ -1,8 +1,8 @@
+import { restoreTaskMode } from "@alpha-code/types"
 import type OpenAI from "openai"
 import type { ModeConfig, ToolName, ToolGroup, ModelInfo } from "@alpha-code/types"
 import { getModeBySlug, getToolsForMode, planModeSlug } from "../../../shared/modes"
 import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS, TOOL_ALIASES } from "../../../shared/tools"
-import { defaultModeSlug } from "../../../shared/modes"
 import type { CodeIndexManager } from "../../../services/code-index/manager"
 import type { McpHub } from "../../../services/mcp/McpHub"
 import { isToolAllowedForMode } from "../../../core/tools/validateToolUse"
@@ -56,17 +56,8 @@ function resolveEffectiveMode(
 	mode: string | undefined,
 	customModes: ModeConfig[] | undefined,
 ): { modeSlug: string; modeConfig: ModeConfig } {
-	const requestedModeSlug = mode ?? defaultModeSlug
-	const requestedModeConfig = getModeBySlug(requestedModeSlug, customModes)
-
-	if (requestedModeConfig) {
-		return { modeSlug: requestedModeSlug, modeConfig: requestedModeConfig }
-	}
-
-	return {
-		modeSlug: defaultModeSlug,
-		modeConfig: getModeBySlug(defaultModeSlug, customModes)!,
-	}
+	const modeSlug = restoreTaskMode(mode)
+	return { modeSlug, modeConfig: getModeBySlug(modeSlug, customModes)! }
 }
 
 /**
@@ -250,7 +241,7 @@ export function filterNativeToolsForMode(
 ): OpenAI.Chat.ChatCompletionTool[] {
 	// Get mode configuration and all tools for this mode
 	// Keep the effective slug and config paired so the runtime validator applies
-	// the same Code-mode fallback when a persisted custom mode disappears.
+	// the same conservative Plan fallback for retired or missing custom modes.
 	const { modeSlug, modeConfig } = resolveEffectiveMode(mode, customModes)
 
 	// Get all tools for this mode (including always-available tools)

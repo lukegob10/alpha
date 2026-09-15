@@ -5,6 +5,23 @@ import type { ClineMessage } from "@alpha-code/types"
 import { consolidateCommands, COMMAND_OUTPUT_STRING } from "../consolidateCommands.js"
 
 describe("consolidateCommands", () => {
+	it("associates batched outputs with their own approvals across other commands and reload", () => {
+		const messages: ClineMessage[] = [
+			{ type: "ask", ask: "command", text: "git status", ts: 1000 },
+			{ type: "ask", ask: "command", text: "rg needle src", ts: 1001 },
+			{ type: "say", say: "command_output", text: "matches", ts: 1002, commandExecutionId: "1001" },
+			{ type: "say", say: "command_output", text: "clean", ts: 1003, commandExecutionId: "1000" },
+			{ type: "ask", ask: "command", text: "legacy", ts: 1004 },
+			{ type: "say", say: "command_output", text: "legacy output", ts: 1005 },
+		]
+		const reloaded: ClineMessage[] = JSON.parse(JSON.stringify(messages))
+		expect(consolidateCommands(reloaded).map(({ text }) => text)).toEqual([
+			`git status\n${COMMAND_OUTPUT_STRING}clean`,
+			`rg needle src\n${COMMAND_OUTPUT_STRING}matches`,
+			`legacy\n${COMMAND_OUTPUT_STRING}legacy output`,
+		])
+		expect(messages[0]!.text).toBe("git status")
+	})
 	describe("command sequences", () => {
 		it("should consolidate command and command_output messages", () => {
 			const messages: ClineMessage[] = [

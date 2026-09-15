@@ -4,7 +4,6 @@ import { getCommand, getCommandNames } from "../../services/command/commands"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import type { ToolUse } from "../../shared/tools"
-import { getModeBySlug } from "../../shared/modes"
 import {
 	buildSkillApprovalMessage,
 	buildSkillResult,
@@ -89,7 +88,6 @@ export class RunSlashCommandTool extends BaseTool<"run_slash_command"> {
 				args: args,
 				source: command.source,
 				description: command.description,
-				mode: command.mode,
 			})
 
 			const didApprove = await askApproval("tool", toolMessage)
@@ -98,14 +96,7 @@ export class RunSlashCommandTool extends BaseTool<"run_slash_command"> {
 				return
 			}
 
-			// Switch mode if specified in the command frontmatter
-			if (command.mode) {
-				const provider = task.providerRef.deref()
-				const targetMode = getModeBySlug(command.mode, (await provider?.getState())?.customModes)
-				if (targetMode) {
-					await provider?.setTaskMode(task.taskId, command.mode)
-				}
-			}
+			// Model-invoked commands load instructions; only user actions may change execution mode.
 
 			// Build the result message
 			let result = `Command: /${commandName}`
@@ -116,10 +107,6 @@ export class RunSlashCommandTool extends BaseTool<"run_slash_command"> {
 
 			if (command.argumentHint) {
 				result += `\nArgument hint: ${command.argumentHint}`
-			}
-
-			if (command.mode) {
-				result += `\nMode: ${command.mode}`
 			}
 
 			if (args) {

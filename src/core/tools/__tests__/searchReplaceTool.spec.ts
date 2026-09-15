@@ -265,6 +265,40 @@ describe("searchReplaceTool", () => {
 	})
 
 	describe("search and replace logic", () => {
+		describe.each([false, true])("literal replacements with direct save = %s", (directSave) => {
+			it.each(["$&", "$$", "$`", "$'", "$1", "$<name>"])("preserves %s in replacement text", async (token) => {
+				mockCline.providerRef.deref().getState.mockResolvedValue({
+					diagnosticsEnabled: true,
+					writeDelayMs: 1000,
+					experiments: { preventFocusDisruption: directSave },
+				})
+				const replacement = `const value = "${token}"`
+				const originalContent = "before\nTARGET\nafter"
+				const expectedContent = `before\n${replacement}\nafter`
+
+				await executeSearchReplaceTool(
+					{ old_string: "TARGET", new_string: replacement },
+					{ fileContent: originalContent },
+				)
+
+				expect(mockHandleError).not.toHaveBeenCalled()
+				expect(mockCline.didEditFile).toBe(true)
+				if (directSave) {
+					expect(mockCline.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+						testFilePath,
+						expectedContent,
+						false,
+						true,
+						1000,
+						{ exists: true, content: originalContent },
+					)
+				} else {
+					expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith(expectedContent, true)
+					expect(mockCline.diffViewProvider.saveChanges).toHaveBeenCalled()
+				}
+			})
+		})
+
 		it("returns error when no match is found", async () => {
 			const result = await executeSearchReplaceTool(
 				{ old_string: "NonExistent" },

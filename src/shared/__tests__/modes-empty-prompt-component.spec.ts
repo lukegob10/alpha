@@ -16,17 +16,15 @@ describe("getModeSelection with empty promptComponent", () => {
 	})
 
 	it("should use built-in mode instructions when promptComponent is null", () => {
-		const debugMode = modes.find((m) => m.slug === "debug")!
+		const codeMode = modes.find((m) => m.slug === "code")!
 
 		// Test with null promptComponent
-		const result = getModeSelection("debug", null as any, [])
+		const result = getModeSelection("code", null as any, [])
 
 		// Should use built-in mode values
-		expect(result.roleDefinition).toBe(debugMode.roleDefinition)
-		expect(result.baseInstructions).toBe(debugMode.customInstructions)
-		expect(result.baseInstructions).toContain(
-			"Use the available evidence to identify and verify the most likely root cause",
-		)
+		expect(result.roleDefinition).toBe(codeMode.roleDefinition)
+		expect(result.baseInstructions).toBe(codeMode.customInstructions)
+		expect(result.baseInstructions).toContain("Before consequential code changes")
 	})
 
 	it("should ignore promptComponent content for canonical Plan", () => {
@@ -56,17 +54,17 @@ describe("getModeSelection with empty promptComponent", () => {
 	})
 
 	it("should merge promptComponent with built-in mode when it only has roleDefinition", () => {
-		const debugMode = modes.find((m) => m.slug === "debug")!
+		const codeMode = modes.find((m) => m.slug === "code")!
 
 		// Test with promptComponent that only has roleDefinition
 		const partialPromptComponent: PromptComponent = {
-			roleDefinition: "Custom debug role",
+			roleDefinition: "Custom code role",
 		}
-		const result = getModeSelection("debug", partialPromptComponent, [])
+		const result = getModeSelection("code", partialPromptComponent, [])
 
 		// Should merge: use promptComponent's roleDefinition but fall back to built-in customInstructions
-		expect(result.roleDefinition).toBe("Custom debug role") // Uses promptComponent
-		expect(result.baseInstructions).toBe(debugMode.customInstructions) // Falls back to built-in
+		expect(result.roleDefinition).toBe("Custom code role") // Uses promptComponent
+		expect(result.baseInstructions).toBe(codeMode.customInstructions) // Falls back to built-in
 	})
 
 	it("should keep canonical Plan when promptComponent has both fields", () => {

@@ -282,10 +282,10 @@
 			"timeoutLabel": "Temps d'attente avant la sélection automatique de la première réponse"
 		},
 		"execute": {
-			"label": "Exécuter",
-			"description": "Exécuter automatiquement les commandes de terminal autorisées sans nécessiter d'approbation",
-			"allowedCommands": "Commandes auto-exécutables autorisées",
-			"allowedCommandsDescription": "Préfixes de commandes qui peuvent être auto-exécutés lorsque \"Toujours approuver les opérations d'exécution\" est activé. Ajoutez * pour autoriser toutes les commandes (à utiliser avec précaution).",
+			"label": "Règles de commandes",
+			"description": "Configurez les règles de commandes. Les commandes de l’hôte nécessitent toujours une approbation, car les scripts peuvent écrire hors de l’espace de travail.",
+			"allowedCommands": "Préfixes de commandes autorisés",
+			"allowedCommandsDescription": "Les préfixes autorisés priment sur les préfixes refusés plus courts. L’approbation de la commande reste obligatoire.",
 			"deniedCommands": "Commandes refusées",
 			"deniedCommandsDescription": "Préfixes de commandes qui seront automatiquement refusés sans demander d'approbation. En cas de conflit avec les commandes autorisées, la correspondance de préfixe la plus longue prend la priorité. Ajoutez * pour refuser toutes les commandes.",
 			"commandPlaceholder": "Entrez le préfixe de commande (ex. 'git ')",

@@ -84,6 +84,7 @@ import { OpenMarkdownPreviewButton } from "./OpenMarkdownPreviewButton"
 import { SubagentGroupCard } from "./SubagentGroupCard"
 import { TicketActivity } from "./TicketActivity"
 import { ActivityStep } from "./ActivityStep"
+import { GitHubApiActivity } from "./GitHubApiActivity"
 
 // Helper function to get previous todos before a specific message
 function getPreviousTodos(messages: ClineMessage[], currentMessageTs: number): any[] {
@@ -646,6 +647,8 @@ const ChatRowContentInner = ({
 			}
 			case "ticket":
 				return <TicketActivity tool={tool} />
+			case "githubApi":
+				return <GitHubApiActivity request={tool.github ?? tool} />
 			case "updateTodoList" as any: {
 				const todos = (tool as any).todos || []
 				// Get previous todos from the latest todos in the task context
@@ -1906,6 +1909,7 @@ const ChatRowContentInner = ({
 					return (
 						<CommandExecution
 							executionId={message.ts.toString()}
+							workingDirectory={message.progressStatus?.text}
 							onToggleExpand={handleToggleExpand}
 							text={message.text}
 							icon={icon}

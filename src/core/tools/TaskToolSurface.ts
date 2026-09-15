@@ -67,6 +67,7 @@ export interface TaskToolSurfaceInput {
 	outputLimits?: Readonly<Record<string, number>>
 	execution?: ToolPolicyInput["execution"]
 	cwd?: string
+	taskKind?: "primary" | "subagent"
 }
 
 export interface TaskToolSurface {
@@ -235,6 +236,7 @@ function fingerprintRegistry(registry: ToolRegistry): unknown {
 			capabilities: descriptor.capabilities,
 			maxOutputChars: descriptor.maxOutputChars,
 			auditedParallelRead: !!descriptor.prepareParallelRead,
+			auditedParallelCommand: !!descriptor.prepareParallelCommand,
 		}))
 		.sort((left, right) => left.name.localeCompare(right.name))
 }
@@ -249,12 +251,24 @@ function executionInput(
 	input: TaskToolSurfaceInput,
 	source: PolicySource | undefined,
 ): ToolPolicyInput["execution"] | undefined {
-	if (input.execution) return input.execution
-	if (!source?.execution) return input.cwd ? { workspaceRoots: [input.cwd] } : undefined
+	if (input.execution)
+		return {
+			...input.execution,
+			outsideWorkspace: input.taskKind === "subagent" ? undefined : input.execution.outsideWorkspace,
+		}
+	if (!source?.execution) {
+		return input.cwd
+			? {
+					workspaceRoots: [input.cwd],
+					...(!source && input.taskKind === "primary" ? { outsideWorkspace: "approval" as const } : {}),
+				}
+			: undefined
+	}
 	const execution = source.execution
 	return {
 		sandboxMode: execution.sandboxMode,
 		workspaceRoots: execution.workspaceRoots,
+		outsideWorkspace: input.taskKind === "subagent" ? undefined : execution.outsideWorkspace,
 		command: execution.command,
 		cancellation: execution.cancellation,
 	}

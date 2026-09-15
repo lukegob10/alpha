@@ -84,7 +84,6 @@ export const toolParamNames = [
 	"result",
 	"outcome",
 	"diff",
-	"mode_slug",
 	"reason",
 	"line",
 	"mode",
@@ -238,7 +237,6 @@ export type NativeToolArgs = BrowserToolArgs & {
 					file_pattern?: string | null
 				}>
 		  }
-	switch_mode: { mode_slug: string; reason: string }
 	list_tickets: { query?: string; status?: "backlog" | "in-progress" | "complete"; offset?: number; limit?: number }
 	read_ticket: { id: string }
 	create_ticket: CreateTicket
@@ -402,11 +400,6 @@ export interface AttemptCompletionToolUse extends ToolUse<"attempt_completion"> 
 	params: Partial<Pick<Record<ToolParamName, string>, "result" | "outcome">>
 }
 
-export interface SwitchModeToolUse extends ToolUse<"switch_mode"> {
-	name: "switch_mode"
-	params: Partial<Pick<Record<ToolParamName, string>, "mode_slug" | "reason">>
-}
-
 export interface NewTaskToolUse extends ToolUse<"new_task"> {
 	name: "new_task"
 	params: Partial<Pick<Record<ToolParamName, string>, "mode" | "message" | "todos">>
@@ -473,7 +466,6 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	discover_tools: "discover optional MCP tools",
 	ask_followup_question: "ask questions",
 	attempt_completion: "complete tasks",
-	switch_mode: "switch modes",
 	new_task: "create new task",
 	delegate_task: "delegate bounded tasks",
 	spawn_agent: "spawn a bounded agent",
@@ -529,7 +521,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 		tools: ["github_api"],
 	},
 	modes: {
-		tools: ["switch_mode", "new_task"],
+		tools: ["new_task"],
 		alwaysAvailable: true,
 	},
 	agents: {
@@ -567,7 +559,6 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 export const ALWAYS_AVAILABLE_TOOLS: ToolName[] = [
 	"ask_followup_question",
 	"attempt_completion",
-	"switch_mode",
 	"new_task",
 	"update_todo_list",
 	"run_slash_command",

@@ -1,3 +1,4 @@
+import { assertPrimaryMode, restoreTaskMode } from "@alpha-code/types"
 import * as path from "path"
 import * as fsSync from "fs"
 import * as vscode from "vscode"
@@ -119,7 +120,7 @@ import { getApiMetrics, hasTokenUsageChanged, hasToolUsageChanged } from "../../
 import { ClineAskResponse } from "../../shared/WebviewMessage"
 import { defaultModeSlug, getModeBySlug, getModeSelection, planModeSlug } from "../../shared/modes"
 import { DiffStrategy, type ToolUse, type ToolParamName, toolParamNames } from "../../shared/tools"
-import { getModelMaxOutputTokens } from "../../shared/api"
+import { getModelMaxOutputTokens, getModelReservedOutputTokens } from "../../shared/api"
 import { ensureProposedPlanBlock } from "../../shared/plan-mode"
 
 // services
@@ -179,7 +180,13 @@ import {
 import type { TaskToolSurface } from "../tools/TaskToolSurface"
 import type { AgentTurnEvent } from "../agent/AgentTurnEvents"
 import type { StepContext } from "../agent/StepContext"
-import { manageContext, willManageContext } from "../context-management"
+import {
+	getCompactionTargetTokens,
+	getContextLimits,
+	manageContext,
+	resolveCondenseThreshold,
+	willManageContext,
+} from "../context-management"
 import { ClineProvider } from "../webview/ClineProvider"
 import { MultiSearchReplaceDiffStrategy } from "../diff/strategies/multi-search-replace"
 import {
@@ -334,7 +341,6 @@ const DEFAULT_USAGE_COLLECTION_TIMEOUT_MS = 5000 // 5 seconds
 // timeout safe by preventing the abandoned promise from touching the next
 // turn's state.
 const STREAMING_PREVIEW_DRAIN_TIMEOUT_MS = 1000
-const FORCED_CONTEXT_REDUCTION_PERCENT = 75 // Keep 75% of context (remove 25%) on context window errors
 const MAX_CONTEXT_WINDOW_RETRIES = 3 // Maximum retries for context window errors
 const MAX_AUTOMATIC_MISTAKE_RECOVERIES = 1
 
@@ -1344,6 +1350,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		subagentResearchDeadlineAt,
 	}: TaskOptions) {
 		super()
+		if (!historyItem && taskMode !== undefined) assertPrimaryMode(taskMode)
 
 		if (startTask && !task && !images && !historyItem) {
 			throw new Error("Either historyItem or task/images must be provided")
@@ -1454,7 +1461,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// For history items, use the stored values; for new tasks, we'll set them
 		// after getting state.
 		if (historyItem) {
-			this._taskMode = historyItem.mode || defaultModeSlug
+			this._taskMode = restoreTaskMode(historyItem.mode)
 			this._taskApiConfigName = historyItem.apiConfigName
 			this.taskModeReady = Promise.resolve()
 			this.taskApiConfigReady = Promise.resolve()
@@ -1598,7 +1605,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async initializeTaskMode(provider: ClineProvider): Promise<void> {
 		try {
 			const state = await provider.getState()
-			this._taskMode = state?.mode || defaultModeSlug
+			this._taskMode = restoreTaskMode(state?.mode)
 		} catch (error) {
 			// If there's an error getting state, use the default mode
 			this._taskMode = defaultModeSlug
@@ -1811,6 +1818,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * Update this task's execution mode without changing the foreground provider mode.
 	 */
 	public setTaskMode(mode: string): void {
+		assertPrimaryMode(mode)
 		this._taskMode = mode
 		this.taskModeReady = Promise.resolve()
 	}
@@ -4202,6 +4210,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		partial?: boolean,
 		progressStatus?: ToolProgressStatus,
 		isProtected?: boolean,
+		requiresExplicitApproval?: boolean,
 	): Promise<{ response: ClineAskResponse; text?: string; images?: string[] }> {
 		// If this Alpha instance was aborted by the provider, then the only
 		// thing keeping us alive is a promise still running in the background,
@@ -4243,7 +4252,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// state.
 					askTs = Date.now()
 					this.lastMessageTs = askTs
-					await this.addToClineMessages({ ts: askTs, type: "ask", ask: type, text, partial, isProtected })
+					await this.addToClineMessages({
+						ts: askTs,
+						type: "ask",
+						ask: type,
+						text,
+						partial,
+						isProtected,
+						progressStatus,
+					})
 					// console.log("Task#ask: current ask promise was ignored (#2)")
 					throw new AskIgnoredError("new partial")
 				}
@@ -4281,7 +4298,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.askResponseImages = undefined
 					askTs = Date.now()
 					this.lastMessageTs = askTs
-					await this.addToClineMessages({ ts: askTs, type: "ask", ask: type, text, isProtected })
+					await this.addToClineMessages({
+						ts: askTs,
+						type: "ask",
+						ask: type,
+						text,
+						isProtected,
+						progressStatus,
+					})
 				}
 			}
 		} else {
@@ -4291,7 +4315,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.askResponseImages = undefined
 			askTs = Date.now()
 			this.lastMessageTs = askTs
-			await this.addToClineMessages({ ts: askTs, type: "ask", ask: type, text, isProtected })
+			await this.addToClineMessages({ ts: askTs, type: "ask", ask: type, text, isProtected, progressStatus })
 		}
 
 		this.activeAsk = { type, ts: askTs }
@@ -4301,22 +4325,29 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Automatically approve if the ask according to the user's settings.
 		const provider = this.providerRef.deref()
 		const state = provider ? await provider.getState() : undefined
-		const offscreenAutoResponse = this.getOffscreenAutoAskResponse(type, text, isProtected)
-		const approval = this.isParentAuthorizedSubagentAsk(type, text, isProtected)
-			? ({ decision: "approve" } as const)
-			: offscreenAutoResponse
-				? ({ decision: "ask" } as const)
-				: await checkAutoApprovalWithInheritedPolicy({
-						state,
-						inheritedState:
-							this.taskKind === "subagent"
-								? (this.subagentContextManifest?.runtimePolicy.autoApproval ??
-									disabledSubagentAutoApprovalPolicy)
-								: undefined,
-						ask: type,
-						text,
-						isProtected,
-					})
+		// Host commands can write beyond cwd (including through scripts and hooks).
+		// Commands therefore need a human decision, including on resume and in delegated tasks.
+		requiresExplicitApproval ||= type === "command"
+		const offscreenAutoResponse = requiresExplicitApproval
+			? undefined
+			: this.getOffscreenAutoAskResponse(type, text, isProtected)
+		const approval =
+			!requiresExplicitApproval && this.isParentAuthorizedSubagentAsk(type, text, isProtected)
+				? ({ decision: "approve" } as const)
+				: offscreenAutoResponse
+					? ({ decision: "ask" } as const)
+					: await checkAutoApprovalWithInheritedPolicy({
+							state,
+							inheritedState:
+								this.taskKind === "subagent"
+									? (this.subagentContextManifest?.runtimePolicy.autoApproval ??
+										disabledSubagentAutoApprovalPolicy)
+									: undefined,
+							ask: type,
+							text,
+							isProtected,
+							requiresExplicitApproval,
+						})
 
 		if (offscreenAutoResponse) {
 			this.handleWebviewAskResponse(
@@ -5103,6 +5134,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			})
 		}
 		if (this.abort) throw new Error("Command admission was cancelled")
+		await this.prepareCommandEvidenceSlot(toolCallId)
+		if (this.abort) throw new Error("Command admission was cancelled")
+		this.beginCommandExecution(toolCallId, executionId, command, verificationChangeSetIds)
+		const evidence = this.commandExecutionEvidence.get(toolCallId)!
+		evidence.cwd = commandCwd
+		evidence.verificationVersions = structuredClone(verificationVersions)
+		evidence.verificationDiagnostics = verificationDiagnostics
+	}
+
+	private async prepareCommandEvidenceSlot(toolCallId: string): Promise<void> {
 		this.commandExecutionEvidence.delete(toolCallId)
 		if (this.commandExecutionEvidence.size >= 128) {
 			await this.pendingCommandVerification
@@ -5111,11 +5152,26 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (this.commandExecutionEvidence.size < 128) break
 			}
 		}
-		this.beginCommandExecution(toolCallId, executionId, command, verificationChangeSetIds)
-		const evidence = this.commandExecutionEvidence.get(toolCallId)!
-		evidence.cwd = commandCwd
-		evidence.verificationVersions = structuredClone(verificationVersions)
-		evidence.verificationDiagnostics = verificationDiagnostics
+	}
+
+	/** Joined inspections record process outcomes without claiming verification of workspace mutations. */
+	public async recordCommandInspectionResult(evidence: CommandExecutionEvidence): Promise<void> {
+		const previous = this.commandExecutionEvidence.get(evidence.toolCallId)
+		if (previous?.executionId === evidence.executionId && previous.status !== "running") return
+		await this.prepareCommandEvidenceSlot(evidence.toolCallId)
+		this.commandExecutionEvidence.set(evidence.toolCallId, {
+			toolCallId: evidence.toolCallId,
+			executionId: evidence.executionId,
+			command: evidence.command,
+			cwd: evidence.cwd,
+			startedAt: evidence.startedAt,
+			completedAt: evidence.completedAt,
+			status: this.abort ? "cancelled" : evidence.status,
+			exitCode: evidence.exitCode,
+			signalName: evidence.signalName,
+		})
+		this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
+		this.publishParentVerificationEvidence()
 	}
 
 	public completeCommandExecution(
@@ -6025,7 +6081,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.throwIfStepInterrupted(metadata.signal)
 		const tokens = await countContextTokens(messages, apiHandler, systemPrompt, metadata, countContext)
 		this.throwIfStepInterrupted(metadata.signal)
-		if (!Number.isFinite(tokens) || (targetContextTokens !== undefined && tokens > targetContextTokens)) {
+		if (
+			!Number.isFinite(tokens) ||
+			tokens < 0 ||
+			(targetContextTokens !== undefined && tokens > targetContextTokens)
+		) {
 			this.logCompactionDiagnostic({
 				stage: "validation",
 				tokens,
@@ -6090,8 +6150,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const customCondensingPrompt = state?.customSupportPrompts?.CONDENSE
 		const mode = await this.getTaskMode()
 
-		const { contextTokens: prevContextTokens } = this.getTokenUsage()
-
 		// Build tools for condensing metadata (same tools used for normal API calls)
 		const provider = this.providerRef.deref()
 		let allTools: import("openai").default.Chat.ChatCompletionTool[] = []
@@ -6140,10 +6198,33 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			signal,
 			remoteDeadline: metadata.deadline,
 		})
+		const { id: modelId, info: modelInfo } = apiHandler.getModel()
+		const reservedTokens = getModelReservedOutputTokens({ modelId, model: modelInfo, settings: apiConfiguration })
+		const currentProfileId = await this.getCurrentProfileId(state)
+		const threshold = resolveCondenseThreshold(
+			state?.autoCondenseContextPercent ?? 100,
+			state?.profileThresholds,
+			currentProfileId,
+		)
+		const { triggerTokens } = getContextLimits(modelInfo.contextWindow, reservedTokens, threshold)
+		const fixedTokens = await countContextTokens([], apiHandler, systemPrompt, metadata, countContext)
+		const maxContextTokens = getCompactionTargetTokens({
+			contextWindow: modelInfo.contextWindow,
+			reservedTokens,
+			triggerTokens,
+			fixedTokens,
+		})
+		const prevContextTokens = await countContextTokens(
+			getEffectiveApiHistory(history),
+			apiHandler,
+			systemPrompt,
+			metadata,
+			countContext,
+		)
 		const filesReadByRoo = await this.getFilesReadByRooSafely("condenseContext")
 		this.throwIfStepInterrupted(signal)
 
-		const { messages, summary, cost, error, condenseId, targetContextTokens, diagnostic } =
+		const { messages, summary, cost, error, condenseId, targetContextTokens, diagnostic, status } =
 			await summarizeConversation({
 				messages: history,
 				apiHandler,
@@ -6156,6 +6237,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				cwd: this.cwd,
 				rooIgnoreController: this.rooIgnoreController,
 				countContext,
+				maxContextTokens,
 			})
 		this.logCompactionDiagnostic(diagnostic && { stage: "summary", automatic: false, ...diagnostic })
 		this.throwIfStepInterrupted(signal)
@@ -6175,6 +6257,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			)
 			return
 		}
+		if (status === "unchanged") {
+			await this.say(
+				"condense_context",
+				undefined,
+				undefined,
+				false,
+				undefined,
+				undefined,
+				{ isNonInteractive: true },
+				{
+					outcome: "unchanged",
+					cost,
+					summary: "",
+					prevContextTokens,
+					newContextTokens: prevContextTokens,
+				},
+			)
+			return
+		}
 		let newContextTokens = await this.measureCompactedContext(
 			apiHandler,
 			systemPrompt,
@@ -6185,6 +6286,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			getEffectiveApiHistory(messages),
 			countContext,
 		)
+		if (newContextTokens >= prevContextTokens) throw new ContextRecoveryExhaustedError()
 		this.throwIfStepInterrupted(signal)
 		if (digestProviderTranscript(this.apiConversationHistory) !== historyDigest) {
 			throw new Error("Conversation history changed during context compaction; retry with the current history")
@@ -6202,6 +6304,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			getEffectiveApiHistory(this.apiConversationHistory),
 			countContext,
 		)
+		if (newContextTokens >= prevContextTokens) throw new ContextRecoveryExhaustedError()
 
 		const contextCondense: ContextCondense = {
 			summary,
@@ -6231,6 +6334,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		progressStatus?: ToolProgressStatus,
 		options: {
 			isNonInteractive?: boolean
+			commandExecutionId?: string
 			stateUpdate?: "full" | "task"
 			previewEpoch?: number
 		} = {},
@@ -6356,6 +6460,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					checkpoint,
 					contextCondense,
 					contextTruncation,
+					...(options.commandExecutionId ? { commandExecutionId: options.commandExecutionId } : {}),
 				},
 				options.stateUpdate,
 			)
@@ -10015,7 +10120,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const { contextTokens } = this.getTokenUsage()
 		const modelInfo = apiHandler.getModel().info
 
-		const maxTokens = getModelMaxOutputTokens({
+		const maxTokens = getModelReservedOutputTokens({
 			modelId: apiHandler.getModel().id,
 			model: modelInfo,
 			settings: apiConfiguration,
@@ -10031,7 +10136,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		console.warn(
 			`[Task#${this.taskId}] Context window exceeded for model ${apiHandler.getModel().id}. ` +
 				`Current tokens: ${contextTokens}, Context window: ${contextWindow}. ` +
-				`Forcing truncation to ${FORCED_CONTEXT_REDUCTION_PERCENT}% of current context.`,
+				`Recovering within the configured compaction budget.`,
 		)
 		let contextManagementUiStarted = false
 		let contextRecoveryError: unknown
@@ -10096,7 +10201,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.getSystemPrompt(state, { apiHandler, apiConfiguration }),
 			)
 			assertRecoveryWithinBudget()
-			// Force aggressive truncation by keeping only 75% of the conversation history
+			// Provider rejection forces a real reduction under the same captured settings.
 			const truncateResult = await waitForBoundedRecovery(
 				manageContext({
 					messages: this.apiConversationHistory,
@@ -10105,7 +10210,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					contextWindow,
 					apiHandler,
 					autoCondenseContext: true,
-					autoCondenseContextPercent: FORCED_CONTEXT_REDUCTION_PERCENT,
+					autoCondenseContextPercent: state?.autoCondenseContextPercent ?? 100,
 					forceCompaction: true,
 					systemPrompt,
 					taskId: this.taskId,
@@ -10488,7 +10593,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				options.retryDeadline,
 			)
 
-			const maxTokens = getModelMaxOutputTokens({
+			const maxTokens = getModelReservedOutputTokens({
 				modelId: apiHandler.getModel().id,
 				model: modelInfo,
 				settings: apiConfiguration,
@@ -10656,6 +10761,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							contextCount,
 						),
 					)
+					if (tokens >= truncateResult.prevContextTokens) throw new ContextRecoveryExhaustedError()
 					assertPreflightWithinBudget()
 					// Do not race this generation-owned, queue-capped transcript write.
 					// Completing it before surfacing cancellation prevents a detached
@@ -10677,6 +10783,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							contextCount,
 						),
 					)
+					if (tokens >= truncateResult.prevContextTokens) throw new ContextRecoveryExhaustedError()
 					truncateResult.newContextTokens = tokens
 					truncateResult.newContextTokensAfterTruncation = tokens
 					compactedContextTarget = truncateResult.targetContextTokens

@@ -191,6 +191,29 @@ describe("HTML document viewer lifecycle through host boundaries", () => {
 		})
 	}
 
+	it("refreshes referenced image changes, recovers missing assets, and disposes image watchers", async () => {
+		const panel = await open("images.html", "Images", '<img data-image="screen.png" alt="Screen">')
+		expect(latest(panel).html).toContain("image-unavailable")
+		expect(host.watchers).toHaveLength(2)
+		const imageWatcher = host.watchers[1]
+		await fs.writeFile(
+			path.join(root, "screen.png"),
+			Buffer.from(
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1cAAAAASUVORK5CYII=",
+				"base64",
+			),
+		)
+		await refresh(panel, () => imageWatcher.create.fire())
+		expect(latest(panel).html).toContain("data:image/png;base64,")
+		expect(host.watchers).toHaveLength(2)
+		await fs.writeFile(path.join(root, "images.html"), documentHtml("Images", "<p>Removed image</p>"))
+		await refresh(panel, () => host.watchers[0].change.fire())
+		expect(imageWatcher.dispose).toHaveBeenCalledOnce()
+		expect(imageWatcher.change.listeners.size).toBe(0)
+		panel.dispose()
+		expect(panel.webview.html).toContain("img-src data:")
+	})
+
 	beforeEach(async () => {
 		vi.clearAllMocks()
 		vi.mocked(fs.open)

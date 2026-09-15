@@ -130,7 +130,7 @@ Line 2
 		])("reports $reason without retaining private content in diagnostics", async ({ count, reason }) => {
 			const handler = new MockApiHandler()
 			vi.spyOn(handler, "countTokens").mockImplementation(async (blocks) =>
-				JSON.stringify(blocks).includes("Conversation Summary") ? count : 10,
+				JSON.stringify(blocks).includes("Mock summary of the conversation") ? count : 10,
 			)
 			const messages: ApiMessage[] = [
 				{ role: "user", content: "PRIVATE_TASK_CONTENT" },
@@ -142,6 +142,7 @@ Line 2
 				apiHandler: handler,
 				systemPrompt: "PRIVATE_SYSTEM_CONTENT",
 				taskId,
+				forceCompaction: true,
 				maxContextTokens: 1_000,
 				recentTailTokenBudget: 0,
 			})
@@ -251,7 +252,7 @@ Line 2
 						{ type: "text", text: '<command name="prr">Help content</command>' },
 					],
 				},
-				{ role: "assistant", content: "Second message" },
+				{ role: "assistant", content: "Second message. ".repeat(1000) },
 				{ role: "user", content: "Third message" },
 				{ role: "assistant", content: "Fourth message" },
 				{ role: "user", content: "Fifth message" },
@@ -317,7 +318,7 @@ Line 2
 			expect(effectiveHistory.slice(1)).toEqual(messages.slice(2))
 		})
 
-		it("should return error when not enough messages to summarize", async () => {
+		it("leaves a short single message unchanged", async () => {
 			const messages: ApiMessage[] = [{ role: "user", content: "Only one message" }]
 
 			const result = await summarizeConversation({
@@ -328,8 +329,9 @@ Line 2
 				isAutomaticTrigger: false,
 			})
 
-			// Should return an error since we have only 1 message
-			expect(result.error).toBeDefined()
+			// A short history is a successful no-op, not a failed API operation.
+			expect(result.status).toBe("unchanged")
+			expect(result.error).toBeUndefined()
 			expect(result.messages).toEqual(messages) // Original messages unchanged
 			expect(result.summary).toBe("")
 		})
@@ -348,8 +350,8 @@ Line 2
 				isAutomaticTrigger: false,
 			})
 
-			// Should return an error due to recent summary with no substantial messages after
-			expect(result.error).toBeDefined()
+			expect(result.status).toBe("unchanged")
+			expect(result.error).toBeUndefined()
 			expect(result.messages).toEqual(messages)
 			expect(result.summary).toBe("")
 		})

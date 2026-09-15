@@ -289,10 +289,10 @@
 			"timeoutLabel": "自動選擇第一個答案前的等待時間"
 		},
 		"execute": {
-			"label": "執行命令",
-			"description": "無需核准即可自動執行允許的終端機命令",
-			"allowedCommands": "允許自動執行的命令",
-			"allowedCommandsDescription": "啟用「始終核准執行」時，可自動執行的命令前綴。新增 * 可允許所有命令（請謹慎使用）。",
+			"label": "命令規則",
+			"description": "設定命令規則。指令碼可能寫入工作區之外，因此主機命令一律需要核准。",
+			"allowedCommands": "允許的命令前綴",
+			"allowedCommandsDescription": "允許的前綴優先於較短的拒絕前綴。命令仍然需要核准。",
 			"deniedCommands": "拒絕的命令",
 			"deniedCommandsDescription": "將自動拒絕且不詢問核准的命令前綴。若與允許的命令衝突，將以最長前綴比對優先。新增 * 可拒絕所有命令。",
 			"commandPlaceholder": "輸入命令前綴（例如 'git '）",

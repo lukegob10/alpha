@@ -324,6 +324,7 @@
 	"contextManagement": {
 		"tokens": "token",
 		"condensation": {
+			"unchanged": "Bağlam zaten sınır içinde",
 			"title": "Bağlam Özetlendi",
 			"inProgress": "Bağlam yoğunlaştırılıyor...",
 			"errorHeader": "Bağlam yoğunlaştırılamadı"
@@ -499,5 +500,13 @@
 		"title": "Sağlayıcı artık desteklenmiyor",
 		"message": "Üzgünüz, bu sağlayıcı artık desteklenmiyor. Çok az Alpha kullanıcısının bunu gerçekten kullandığını gördük ve hızlı gelişmeye devam edip topluluğumuza iyi hizmet verebilmek için kod tabanımızın kapsamını daraltmamız gerekiyor. Gerçekten zor bir karardı ama senin için en önemli olana odaklanmamızı sağlıyor. Bunun can sıkıcı olduğunu biliyoruz.",
 		"openSettings": "Ayarları aç"
+	},
+	"githubActions": {
+		"request": "İstek",
+		"create_pull_request": "Çekme isteği oluştur",
+		"get_pull_request": "Çekme isteğini görüntüle",
+		"list_checks": "Kontrolleri listele",
+		"merge_pull_request": "Çekme isteğini birleştir",
+		"comment": "Yorum ekle"
 	}
 }

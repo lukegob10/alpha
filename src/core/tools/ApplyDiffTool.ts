@@ -14,7 +14,7 @@ import { computeDiffStats, sanitizeUnifiedDiff } from "../diff/stats"
 import type { DiffResult, ToolUse } from "../../shared/tools"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
-import { getTaskReadablePath } from "./taskPathPresentation"
+import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 interface ApplyDiffParams {
 	path: string
@@ -137,6 +137,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			const sharedMessageProps: ClineSayTool = {
 				tool: "appliedDiff",
 				path: getTaskReadablePath(task, relPath),
+				isOutsideWorkspace: isTaskPathOutsideWorkspace(task, absolutePath),
 				diff: diffContent,
 			}
 

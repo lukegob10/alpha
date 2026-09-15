@@ -412,7 +412,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 		const originalContent = change.originalContent || ""
 		const newContent = change.newContent || ""
-		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
+		let isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
 		// Initialize diff view
 		task.diffViewProvider.editType = "modify"
@@ -455,7 +455,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			}
 
 			const isMoveOutsideWorkspace = isTaskPathOutsideWorkspace(task, moveAbsolutePath)
-			if (isMoveOutsideWorkspace) {
+			if (isMoveOutsideWorkspace && task.taskKind !== "primary") {
 				task.consecutiveMistakeCount++
 				task.recordToolError("apply_patch")
 				const errorMessage = `Cannot move file to path outside workspace: ${effectiveMovePath}`
@@ -464,6 +464,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				return { status: "error", result: formatResponse.toolError(errorMessage) }
 			}
 
+			isOutsideWorkspace ||= isMoveOutsideWorkspace
 			expectedMoveFileState = await captureExpectedFileState(moveAbsolutePath)
 			await task.diffViewProvider.assertExpectedFileState(
 				moveAbsolutePath,

@@ -81,11 +81,25 @@ beforeEach(() => {
 })
 
 describe("exact recent working set", () => {
+	it("does not request a summary when mandatory input consumes its entire budget", async () => {
+		const provider = new SummaryProvider()
+		const messages = history()
+		const result = await summarizeConversation({
+			...options(messages, provider),
+			systemPrompt: "Mandatory instructions. ".repeat(100),
+			maxContextTokens: 100,
+		})
+		expect(result.status).toBe("exhausted")
+		expect(result.diagnostic?.reason).toBe("insufficient_budget")
+		expect(result.messages).toBe(messages)
+		expect(provider.requests).toEqual([])
+	})
+
 	it("keeps a sole complete step intact when there is no older prefix to summarize", async () => {
 		const messages = history().slice(2)
 		const provider = new SummaryProvider()
 		const result = await summarizeConversation(options(messages, provider))
-		expect(result.status).toBe("exhausted")
+		expect(result.status).toBe("unchanged")
 		expect(result.messages).toBe(messages)
 		expect(provider.requests).toEqual([])
 	})
@@ -223,7 +237,7 @@ describe("exact recent working set", () => {
 	it("leaves the original history intact when system, summary and tail cannot fit", async () => {
 		const messages = history()
 		const result = await summarizeConversation({ ...options(messages), maxContextTokens: 30 })
-		expect(result.status).toBe("no_progress")
+		expect(result.status).toBe("exhausted")
 		expect(result.messages).toBe(messages)
 		expect(result.condenseId).toBeUndefined()
 	})
@@ -258,11 +272,52 @@ describe("exact recent working set", () => {
 		expect(restored).toEqual(messages)
 	})
 
+	it("recompacts an oversized saved summary without requiring new messages", async () => {
+		const provider = new SummaryProvider()
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Original task", ts: 1, condenseParent: "previous" },
+			{
+				role: "user",
+				content: "Earlier checkpoint. ".repeat(1000),
+				ts: 2,
+				isSummary: true,
+				condenseId: "previous",
+			},
+		]
+		const result = await summarizeConversation({ ...options(messages, provider), maxContextTokens: 1000 })
+		expect(result.status).toBe("reduced")
+		expect(result.newContextTokens).toBeLessThanOrEqual(1000)
+		expect(provider.requests).toHaveLength(1)
+		expect(getEffectiveApiHistory(result.messages)).toHaveLength(1)
+		const again = await summarizeConversation({ ...options(result.messages, provider), maxContextTokens: 1000 })
+		expect(again.status).toBe("unchanged")
+		expect(again.error).toBeUndefined()
+		expect(again.messages).toBe(result.messages)
+		expect(provider.requests).toHaveLength(1)
+	})
+
+	it("keeps the original context when a completed summary would make it larger", async () => {
+		const provider = new SummaryProvider()
+		vi.spyOn(provider, "createMessage").mockImplementation(async function* () {
+			yield { type: "text", text: "Unnecessarily detailed summary. ".repeat(50) }
+		})
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Task", ts: 1 },
+			{ role: "assistant", content: "Done", ts: 2 },
+		]
+		const result = await summarizeConversation({ ...options(messages, provider), recentTailTokenBudget: 0 })
+		expect(result.status).toBe("unchanged")
+		expect(result.diagnostic?.reason).toBe("no_reduction")
+		expect(result.messages).toBe(messages)
+		expect(result.condenseId).toBeUndefined()
+	})
+
 	it("repeated compaction summarizes only the superseded prefix and retains the newest exact step", async () => {
 		const provider = new SummaryProvider()
 		const first = await summarizeConversation(options(history(), provider))
 		const noNewWork = await summarizeConversation(options(first.messages, provider))
-		expect(noNewWork.status).toBe("exhausted")
+		expect(noNewWork.status).toBe("unchanged")
+		expect(noNewWork.error).toBeUndefined()
 		expect(noNewWork.messages).toBe(first.messages)
 		const next: ApiMessage[] = [
 			{ role: "assistant", content: "New result. ".repeat(300), ts: Date.now() + 5 },
@@ -334,7 +389,7 @@ describe("budgeted truncation and cancellation", () => {
 		)
 	})
 
-	it("rejects forced truncation when its marker costs more tokens than the removed steps", async () => {
+	it.each([false, true])("rejects a growing truncation marker (forced=%s)", async (forceCompaction) => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "initial", ts: 1 },
 			{ role: "assistant", content: "ok", ts: 2 },

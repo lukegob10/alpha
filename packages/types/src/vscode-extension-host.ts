@@ -15,7 +15,8 @@ import {
 	type InstallMarketplaceItemOptions,
 	marketplaceItemSchema,
 } from "./marketplace.js"
-import type { TodoItem } from "./todo.js"
+import type { TodoItem, TodoApprovalEdit } from "./todo.js"
+import type { GitHubToolApproval } from "./github.js"
 import type { TicketActivity, TicketSearchResponse, TicketTarget } from "./ticket.js"
 import type { SerializedCustomToolDefinition } from "./custom-tool.js"
 import type { GitCommit } from "./git.js"
@@ -695,10 +696,7 @@ export type ClineAskResponse = "yesButtonClicked" | "noButtonClicked" | "message
 
 export type AudioType = "notification" | "celebration" | "progress_loop"
 
-export interface UpdateTodoListPayload {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	todos: any[]
-}
+export type UpdateTodoListPayload = TodoApprovalEdit
 
 export type EditQueuedMessagePayload = Pick<QueuedMessage, "id" | "text" | "images">
 export interface ReorderQueuedMessagePayload {
@@ -1108,6 +1106,7 @@ export interface LanguageModelChatSelector {
 
 export interface ClineSayTool {
 	ticketActivity?: TicketActivity
+	github?: GitHubToolApproval
 	tool:
 		| "editedExistingFile"
 		| "appliedDiff"
@@ -1131,6 +1130,7 @@ export interface ClineSayTool {
 		| "updateTodoList"
 		| "skill"
 		| "browserAction"
+		| "githubApi"
 	path?: string
 	// For readCommandOutput
 	readStart?: number

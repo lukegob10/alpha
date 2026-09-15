@@ -16,6 +16,7 @@ import {
 	type TaskCommand,
 	type CreateTaskOptions,
 	RooCodeEventName,
+	assertPrimaryMode,
 	TaskCommandName,
 	isSecretStateKey,
 	IpcOrigin,
@@ -190,6 +191,7 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 		images?: string[]
 		newTab?: boolean
 	}) {
+		if (configuration.mode !== undefined) assertPrimaryMode(configuration.mode)
 		let provider: ClineProvider
 
 		if (newTab) {

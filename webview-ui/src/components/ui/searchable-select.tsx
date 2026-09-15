@@ -59,8 +59,6 @@ export function SearchableSelect({
 	const [open, setOpen] = React.useState(false)
 	const [searchValue, setSearchValue] = React.useState("")
 	const searchInputRef = React.useRef<HTMLInputElement>(null)
-	const searchResetTimeoutRef = React.useRef<NodeJS.Timeout | null>(null)
-	const isMountedRef = React.useRef(true)
 
 	// Find the selected option
 	const selectedOption = options.find((option) => option.value === value)
@@ -98,24 +96,9 @@ export function SearchableSelect({
 		return limitedOptions
 	}, [options, searchValue, maxDisplayItems, selectedOption])
 
-	// Cleanup timeout on unmount
+	// Reset at the transition; a delayed reset can erase text typed after opening.
 	React.useEffect(() => {
-		return () => {
-			isMountedRef.current = false
-			if (searchResetTimeoutRef.current) {
-				clearTimeout(searchResetTimeoutRef.current)
-			}
-		}
-	}, [])
-
-	// Reset search when value changes
-	React.useEffect(() => {
-		const timeoutId = setTimeout(() => {
-			if (isMountedRef.current) {
-				setSearchValue("")
-			}
-		}, 100)
-		return () => clearTimeout(timeoutId)
+		setSearchValue("")
 	}, [value])
 
 	// Use the shared ESC key handler hook
@@ -123,17 +106,11 @@ export function SearchableSelect({
 
 	const handleOpenChange = (open: boolean) => {
 		setOpen(open)
-		// Reset search when closing
-		if (!open) {
-			if (searchResetTimeoutRef.current) {
-				clearTimeout(searchResetTimeoutRef.current)
-			}
-			searchResetTimeoutRef.current = setTimeout(() => setSearchValue(""), 100)
-		}
+		if (!open) setSearchValue("")
 	}
 
 	const handleSelect = (selectedValue: string) => {
-		setOpen(false)
+		handleOpenChange(false)
 		onValueChange(selectedValue)
 	}
 

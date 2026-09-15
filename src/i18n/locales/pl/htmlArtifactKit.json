@@ -9,5 +9,7 @@
 	"missing": "Brak danych",
 	"inspect": "Wartości wykresu są dostępne w tabeli danych. Ustaw fokus na przedstawionej wartości, aby ją sprawdzić.",
 	"sortAscending": "rosnąco",
-	"sortDescending": "malejąco"
+	"sortDescending": "malejąco",
+	"invalidDiagram": "Diagram jest niedostępny. Użyj tabeli relacji z trzema kolumnami, maksymalnie 24 nazwanymi węzłami i 48 połączeniami, bez cykli. Tabela pozostaje czytelna.",
+	"imageUnavailable": "Obraz jest niedostępny. Sprawdź ścieżkę obszaru roboczego i użyj statycznego pliku PNG lub JPEG zgodnego z udokumentowanymi limitami rozmiaru."
 }

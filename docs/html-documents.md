@@ -34,16 +34,31 @@ title (at most 200 characters), and one direct body child
 `<main class="alpha-doc" data-alpha-kit="1">`. The viewer format and kit version
 are separate markers, both currently `1`. See the kit's
 `webview-ui/public/artifact-kit/v1/reference.md` for semantic markup, tables,
-charts, tabs and complete review/spec/report examples. Data is embedded in ordinary
+charts, tabs, outlines, citations, metrics, images, relationship diagrams and complete review/spec/report examples. Data is embedded in ordinary
 HTML tables. There is no generated TSX, compiler, app server, or export pipeline.
 
 The extension loads trusted `webview-ui/build/artifact-kit/v1/{kit.css,kit.js}` and
 `webview-ui/build/html-document/{viewer.css,viewer.js}` on demand. The host parses
 and sanitizes the document with an allowlist before transmitting it. Authored
-scripts (including JSON script tags), styles, event handlers, media, SVG, forms,
+scripts (including JSON script tags), styles, event handlers, audio/video, SVG, forms,
 imports, remote resources and command URIs are not supported. Code examples use
 escaped text inside `pre > code`. The CSP denies network, frames, forms, objects,
 base URLs and untrusted scripts. The document never receives the VS Code API.
+
+Workspace images use `<img data-image="images/screen.png" alt="Descriptive evidence">`.
+The sanitizer replaces these with opaque slots; the host alone resolves and reads
+static PNG/JPEG bytes, validates dimensions, and supplies data images. Authored
+`src` and `srcset` never survive. CSP permits data images only; local resource roots
+remain restricted to extension assets. Referenced image files accompany the HTML
+when moved. Missing or rejected images have readable recovery text and do not hide
+the document. Image file watchers refresh the same panel and are disposed when
+references disappear or the panel closes.
+
+The additive kit components preserve the version-1 document contract. Older viewers
+retain ordinary headings, metrics, timelines and evidence tables but may omit images
+and enhancements. New outlines require stable heading IDs; diagrams use an acyclic
+three-column relationship table, limited to 24 nodes and 48 links. Generated SVG
+belongs to the trusted kit; authored SVG remains forbidden.
 
 ## Evidence and source editing
 
@@ -54,7 +69,7 @@ schemes, control characters and escaping symlinks are rejected. Every action is
 revalidated, including the document's current workspace membership. Local file
 workspaces are supported; remote/virtual/UNC sources are not part of version 1.
 
-Fragment links scroll within the document. Explicit HTTPS citation clicks open
+Fragment links scroll and move keyboard focus within the document. Explicit HTTPS citation clicks open
 the system browser through the host; credentials and other external protocols are
 unsupported. No citation is fetched by the viewer. The host replaces both kinds
 of evidence links with opaque reference IDs and accepts only strict `ready`,
@@ -80,8 +95,11 @@ closed across reload must be reopened before its document link can resolve.
 
 Established before measuring/tuning: maximum source 512 KiB, 12,000 elements,
 64 levels of depth, 32 enhanced widgets, 1,000 evidence links. Kit enhancements
-add their own table/chart limits. The host reads at most 512 KiB + 1 byte per
-refresh and disposes watchers, editor subscriptions, timers and widget listeners
+add their own table/chart/diagram limits. The host reads at most 512 KiB + 1 byte of
+HTML per refresh. Images add at most eight sequential reads of 1 MiB + 1 byte each;
+displayed images total at most 4 MiB encoded bytes and 8,388,608 pixels, with each
+dimension at most 4,096 pixels. Image headers are inspected without decoding on the
+extension host. The viewer disposes watchers, editor subscriptions, timers and widget listeners
 on close. At most one refresh is running and one replacement is scheduled per
 panel; stale results are discarded. Parsing runs in a worker (64 MiB old-generation
 heap, 1.5 s deadline), retained warm after success and terminated on failure,

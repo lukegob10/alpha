@@ -63,6 +63,13 @@ vi.mock("../ChatRow", () => ({
 				{isTaskPrompt ? <span>{message.text}</span> : JSON.stringify(message)}
 				{message.ask === "followup" && (
 					<button
+						data-testid="auto-mode-suggestion"
+						onClick={() => onSuggestionClick?.({ answer: "Draft plan", mode: "architect" })}>
+						Auto suggestion
+					</button>
+				)}
+				{message.ask === "followup" && (
+					<button
 						data-testid="copy-mode-suggestion"
 						onClick={(event) => onSuggestionClick?.({ answer: "Draft plan", mode: "architect" }, event)}>
 						Copy suggestion
@@ -70,6 +77,24 @@ vi.mock("../ChatRow", () => ({
 				)}
 			</div>
 		)
+	},
+}))
+
+vi.mock("../FileChangesPanel", () => ({
+	default: function MockFileChangesPanel({ clineMessages = [] }: { clineMessages?: ClineMessage[] }) {
+		const paths = clineMessages.flatMap((message) => {
+			if (!message.text) return []
+			try {
+				const tool = JSON.parse(message.text) as {
+					path?: string
+					batchDiffs?: Array<{ path?: string }>
+				}
+				return tool.batchDiffs?.map((file) => file.path).filter(Boolean) ?? (tool.path ? [tool.path] : [])
+			} catch {
+				return []
+			}
+		})
+		return <div data-testid="file-changes-panel">{paths.join(",")}</div>
 	},
 }))
 
@@ -499,6 +524,36 @@ describe("ChatView activity trace", () => {
 	})
 })
 
+describe("ChatView file-change summaries", () => {
+	it("keeps each turn's applied edits below that turn instead of aggregating them", async () => {
+		const view = renderChatView()
+		const edit = (ts: number, path: string): ClineMessage => ({
+			type: "ask",
+			ask: "tool",
+			ts,
+			isAnswered: true,
+			text: JSON.stringify({ tool: "appliedDiff", path, diff: `+${path}` }),
+		})
+		const messages: ClineMessage[] = [
+			{ type: "say", say: "task", ts: 1, text: "Initial request" },
+			edit(2, "first.ts"),
+			{ type: "say", say: "completion_result", ts: 3, text: "First response" },
+			{ type: "say", say: "user_feedback", ts: 4, text: "Make another change" },
+			edit(5, "second.ts"),
+			{ type: "say", say: "completion_result", ts: 6, text: "Second response" },
+		]
+
+		mockPostMessage({ currentTaskId: "diff-task", clineMessages: messages })
+
+		await waitFor(() => expect(view.getAllByTestId("file-changes-panel")).toHaveLength(2))
+		const panels = view.getAllByTestId("file-changes-panel")
+		expect(panels[0]).toHaveTextContent("first.ts")
+		expect(panels[1]).toHaveTextContent("second.ts")
+		const secondTurnPrompt = view.getByTestId("chat-message-2")
+		expect(panels[0].compareDocumentPosition(secondTurnPrompt) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+	})
+})
+
 describe("ChatView - Plan command", () => {
 	beforeEach(() => vi.clearAllMocks())
 
@@ -653,6 +708,25 @@ describe("ChatView - Context Condensation Requests", () => {
 })
 
 describe("ChatView - Follow-up suggestion copy", () => {
+	it.each([true, false])("changes mode only for a user click (manual=%s)", async (manual) => {
+		const { getByTestId } = renderChatView()
+		mockPostMessage({
+			mode: "code",
+			alwaysAllowModeSwitch: true,
+			autoApprovalEnabled: true,
+			currentTaskId: "mode-choice",
+			currentView: { type: "task", taskId: "mode-choice" },
+			clineMessages: [
+				{ type: "say", say: "task", ts: 100, text: "Test" },
+				{ type: "ask", ask: "followup", ts: 101, text: "Choose" },
+			],
+		})
+		const suggestion = await waitFor(() => getByTestId(manual ? "copy-mode-suggestion" : "auto-mode-suggestion"))
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(suggestion)
+		if (manual) expect(vscode.postMessage).toHaveBeenCalledWith({ type: "mode", text: "architect" })
+		else expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "mode" }))
+	})
 	beforeEach(() => vi.clearAllMocks())
 
 	it("cancels follow-up auto-approval for the visible task when typing begins", async () => {

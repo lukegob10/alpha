@@ -128,6 +128,10 @@ version.
 
 ## Agent-harness architecture invariants
 
+Code (`code`) and Plan (`architect`) are the only executable modes. Mode changes are user-controlled host operations;
+models must not receive a `switch_mode` tool. Retired or unknown saved modes resume in Plan without gaining write
+authority. Keep historical transcripts readable; see `docs/mode-retirement.md` for the compatibility contract.
+
 When improving Alpha toward Codex or other frontier harnesses, converge on behavioral principles, not vendor-specific
 source structure or a copied prompt.
 
@@ -139,9 +143,10 @@ source structure or a copied prompt.
   state; children and compaction derive explicit new snapshots. Do not read mutable live settings halfway through a step.
 - Use the canonical `ToolRegistry` and captured `TaskToolSurface`. Schema visibility and executable permission must derive
   from the same effective profile and policy snapshot.
-- `ToolScheduler` is the effect boundary. Parallelize only independent, read-only, approval-free operations. Serialize
-  mutations, approvals, terminal interactions, lifecycle barriers, and operations with overlapping scope. Preserve
-  deterministic result ordering and enforce concurrency bounds/backpressure.
+- `ToolScheduler` is the effect boundary. Parallelize independent read-only operations after their approvals are settled.
+  Serialize mutations, approvals, terminal interactions, and lifecycle barriers. Overlapping scopes remain serial except
+  for audited command reads with isolated processes and ordered finalization. Preserve deterministic result ordering and
+  enforce concurrency bounds/backpressure.
 - Tool calls and results are structured data. Preserve call IDs, emit exactly one terminal result per accepted call, and
   distinguish `success`, `error`, `denied`, and `cancelled`. Never turn an error or cancellation into successful text.
 - Ordinary visible assistant text may complete a turn when no continuation is pending. Completion, failure, exhaustion,

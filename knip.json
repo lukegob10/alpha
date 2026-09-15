@@ -13,7 +13,11 @@
 	],
 	"workspaces": {
 		"src": {
-			"entry": ["extension.ts"],
+			"entry": [
+				"extension.ts",
+				"workers/sanitizeDocument.ts",
+				"core/agent/benchmarks/AgentControlStore.benchmark.ts"
+			],
 			"project": ["**/*.ts"]
 		},
 		"webview-ui": {

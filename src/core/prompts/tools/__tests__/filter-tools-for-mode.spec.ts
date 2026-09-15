@@ -98,30 +98,30 @@ describe("tool filtering - invalid mode fallback", () => {
 	]
 	const mcpTools: OpenAI.Chat.ChatCompletionTool[] = [makeTool("mcp_server_tool")]
 
-	it("uses the complete Code-mode tool policy when a persisted mode no longer exists", () => {
-		const codeTools = filterNativeToolsForMode(nativeTools, "code", undefined, {}, undefined, {})
+	it("uses Plan permissions when a persisted mode no longer exists", () => {
+		const codeTools = filterNativeToolsForMode(nativeTools, "architect", undefined, {}, undefined, {})
 		const fallbackTools = filterNativeToolsForMode(nativeTools, "deleted-custom-mode", undefined, {}, undefined, {})
 
 		expect(fallbackTools).toEqual(codeTools)
 		expect(filterMcpToolsForMode(mcpTools, "deleted-custom-mode", undefined, {})).toEqual(
-			filterMcpToolsForMode(mcpTools, "code", undefined, {}),
+			filterMcpToolsForMode(mcpTools, "architect", undefined, {}),
 		)
 	})
 })
 
-describe("filterNativeToolsForMode - orchestrator delegation", () => {
+describe("filterNativeToolsForMode - Code delegation", () => {
 	const nativeTools: OpenAI.Chat.ChatCompletionTool[] = [
 		makeTool("new_task"),
 		makeTool("switch_mode"),
 		makeTool("read_file"),
 	]
 
-	it("keeps delegation tools available in orchestrator mode", () => {
-		const result = filterNativeToolsForMode(nativeTools, "orchestrator", undefined, undefined, undefined, {})
+	it("keeps task delegation but removes mode switching in Code", () => {
+		const result = filterNativeToolsForMode(nativeTools, "code", undefined, undefined, undefined, {})
 
 		const resultNames = result.map((t) => (t as any).function.name)
 		expect(resultNames).toContain("new_task")
-		expect(resultNames).toContain("switch_mode")
+		expect(resultNames).not.toContain("switch_mode")
 	})
 })
 
@@ -153,9 +153,9 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 		expect(codeNames).toContain("delegate_task")
 		expect(codeNames).toContain("spawn_agent")
 		expect(codeNames).toEqual(expect.arrayContaining(lifecycleTools))
-		expect(askNames).not.toContain("delegate_task")
-		expect(askNames).not.toContain("spawn_agent")
-		expect(askNames.filter((name) => lifecycleTools.includes(name))).toEqual([])
+		expect(askNames).toContain("delegate_task")
+		expect(askNames).toContain("spawn_agent")
+		expect(askNames).toEqual(expect.arrayContaining(lifecycleTools))
 	})
 
 	it("exposes read-only managed orchestration but no legacy or mutating tools in Plan mode", () => {
@@ -232,7 +232,7 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 		expect(names).toContain("delegate_task")
 	})
 
-	it("does not grant asynchronous lifecycle controls to a custom mode through the agents group", () => {
+	it("restores a custom execution mode to the canonical Plan tool policy", () => {
 		const customModes = [
 			{
 				slug: "research",
@@ -246,8 +246,8 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 			(tool) => (tool as any).function.name,
 		)
 
-		expect(names).not.toContain("spawn_agent")
-		expect(names.filter((name) => lifecycleTools.includes(name))).toEqual([])
+		expect(names).toContain("spawn_agent")
+		expect(names).toEqual(expect.arrayContaining(lifecycleTools))
 		expect(names).toContain("delegate_task")
 	})
 })

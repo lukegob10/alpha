@@ -323,6 +323,7 @@
 	"contextManagement": {
 		"tokens": "tokens",
 		"condensation": {
+			"unchanged": "El context ja hi cap",
 			"title": "Context condensat",
 			"inProgress": "Condensant context...",
 			"errorHeader": "Error en condensar el context"
@@ -498,5 +499,13 @@
 		"title": "Proveïdor ja no compatible",
 		"message": "Ho sentim, aquest proveïdor ja no és compatible. Hem vist molt pocs usuaris de Alpha que realment l'utilitzaven i necessitem reduir l'abast del nostre codi per poder seguir avançant ràpidament i servir bé la nostra comunitat en aquest espai. Va ser una decisió molt difícil, però ens permet centrar-nos en el que més t'importa. Ho sabem, és una llàstima.",
 		"openSettings": "Obrir configuració"
+	},
+	"githubActions": {
+		"request": "Sol·licitud",
+		"create_pull_request": "Crea una sol·licitud d’extracció",
+		"get_pull_request": "Mostra la sol·licitud d’extracció",
+		"list_checks": "Llista les comprovacions",
+		"merge_pull_request": "Fusiona la sol·licitud d’extracció",
+		"comment": "Afegeix un comentari"
 	}
 }

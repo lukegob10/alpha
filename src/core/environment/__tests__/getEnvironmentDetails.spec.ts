@@ -162,7 +162,7 @@ describe("getEnvironmentDetails", () => {
 
 		expect(mockProvider.getState).toHaveBeenCalled()
 
-		expect(result).toContain("<name>💻 Code</name>")
+		expect(result).toContain("<name>Code</name>")
 
 		expect(getApiMetrics).toHaveBeenCalledWith(mockCline.clineMessages)
 	})
@@ -170,7 +170,7 @@ describe("getEnvironmentDetails", () => {
 	it("reuses the request state snapshot instead of re-reading provider state", async () => {
 		const result = await getEnvironmentDetails(mockCline as Task, false, mockState)
 
-		expect(result).toContain("<name>💻 Code</name>")
+		expect(result).toContain("<name>Code</name>")
 		expect(mockProvider.getState).not.toHaveBeenCalled()
 	})
 

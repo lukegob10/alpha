@@ -14,6 +14,20 @@ describe("VS Code integrated-browser native tools", () => {
 		expect(toolNames()).toEqual(expect.arrayContaining([...browserToolNames]))
 	})
 
+	it.each(["open_browser_page", "navigate_page"])("limits %s guidance to websites", (name) => {
+		const tool = getNativeTools().find((tool) => tool.type === "function" && tool.function.name === name)
+		expect(tool?.type).toBe("function")
+		if (tool?.type !== "function") throw new Error(`Missing browser tool: ${name}`)
+
+		expect(tool.function.description).toContain("HTTP or HTTPS")
+		expect(tool.function.description).toContain("read_file")
+		expect(tool.function.parameters).toMatchObject({
+			properties: {
+				url: { description: expect.stringContaining("HTTP or HTTPS") },
+			},
+		})
+	})
+
 	it("exposes only browser tools currently registered by VS Code", () => {
 		const names = toolNames({
 			supportsImages: true,

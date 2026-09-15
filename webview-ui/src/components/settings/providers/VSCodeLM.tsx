@@ -130,6 +130,7 @@ function buildVsCodeLmModelInfo(model: VSCodeLmModel, configuredContextSize?: nu
 		...staticInfo,
 		maxTokens: staticInfo?.maxTokens ?? 0,
 		contextWindow,
+		contextWindowIncludesOutput: false,
 		supportsImages: staticInfo?.supportsImages ?? false,
 		supportsPromptCache: staticInfo?.supportsPromptCache ?? false,
 		supportsReasoningEffort: staticInfo?.supportsReasoningEffort,

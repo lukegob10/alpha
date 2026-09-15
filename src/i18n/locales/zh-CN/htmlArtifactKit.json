@@ -9,5 +9,7 @@
 	"missing": "缺失",
 	"inspect": "图表数值可在数据表中查看。将焦点移至图中某个值即可检查。",
 	"sortAscending": "升序",
-	"sortDescending": "降序"
+	"sortDescending": "降序",
+	"invalidDiagram": "无法显示关系图。请使用三列关系表，最多包含24个命名节点和48条连接，且不能有环。表格仍可阅读。",
+	"imageUnavailable": "无法显示图像。请检查工作区路径，并使用符合文档大小限制的静态PNG或JPEG。"
 }

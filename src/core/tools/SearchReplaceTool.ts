@@ -137,7 +137,7 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 			}
 
 			// Apply the single replacement
-			const newContent = fileContent.replace(normalizedOldString, normalizedNewString)
+			const newContent = fileContent.replace(normalizedOldString, () => normalizedNewString)
 
 			// Check if any changes were made
 			if (newContent === fileContent) {

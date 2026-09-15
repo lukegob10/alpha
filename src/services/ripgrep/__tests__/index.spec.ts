@@ -4,7 +4,13 @@ import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
 
+import { RooIgnoreController } from "../../../core/ignore/RooIgnoreController"
 import { clearRipgrepPathCache, regexSearchFiles, resolveRipgrepBinary, truncateLine } from "../index"
+
+vi.mock("vscode", async (importOriginal) => ({
+	...(await importOriginal<typeof import("vscode")>()),
+	RelativePattern: vi.fn().mockImplementation((base, pattern) => ({ base, pattern })),
+}))
 
 describe("Ripgrep line truncation", () => {
 	// The default MAX_LINE_LENGTH is 500 in the implementation
@@ -282,6 +288,13 @@ describe("Ripgrep content search", () => {
 		await expect(regexSearchFiles(tempDir, tempDir, "[")).rejects.toThrow(/ripgrep process error/)
 	})
 
+	it("preserves the failing path diagnostic so a missing search target can be corrected", async () => {
+		const missing = path.join(tempDir, "missing-search-target")
+		await expect(regexSearchFiles(tempDir, missing, "value")).rejects.toThrow("missing-search-target")
+		await fs.writeFile(path.join(tempDir, "source.ts"), "const value = 1\n")
+		await expect(regexSearchFiles(tempDir, tempDir, "value")).resolves.toContain("const value = 1")
+	})
+
 	it("honors an already-aborted search signal before starting ripgrep", async () => {
 		const controller = new AbortController()
 		const reason = new Error("cancelled by test")
@@ -299,5 +312,109 @@ describe("Ripgrep content search", () => {
 
 		expect(output).toContain("# __proto__")
 		expect(output).toContain("needle")
+	})
+
+	it.each(["alpha\\nbeta", "alpha\nbeta", "alpha\\x0Abeta", "alpha\\u{A}beta"])(
+		"supports explicit newline pattern %j with numbered source lines and context",
+		async (regex) => {
+			await fs.writeFile(path.join(tempDir, "source.txt"), "before\nalpha\nbeta\nafter\n")
+
+			await expect(regexSearchFiles(tempDir, tempDir, regex)).resolves.toBe(
+				"Found 1 result.\n\n# source.txt\n  1 | before\n  2 | alpha\n  3 | beta\n  4 | after\n----",
+			)
+		},
+	)
+
+	it("preserves blank lines, CRLF line numbers, and a final line without a newline", async () => {
+		await fs.writeFile(path.join(tempDir, "source.txt"), "before\r\nalpha\r\n\r\nbeta\r\nafter")
+
+		await expect(regexSearchFiles(tempDir, tempDir, "alpha\\r?\\n\\r?\\nbeta")).resolves.toBe(
+			"Found 1 result.\n\n# source.txt\n  1 | before\n  2 | alpha\n  3 | \n  4 | beta\n  5 | after\n----",
+		)
+	})
+
+	it("keeps ordinary whitespace patterns line-oriented", async () => {
+		await fs.writeFile(path.join(tempDir, "source.txt"), "alpha\nbeta\n")
+
+		await expect(regexSearchFiles(tempDir, tempDir, "alpha\\s+beta")).resolves.toBe("Found 0 results.")
+	})
+
+	it("preserves literal backslash-n searches", async () => {
+		await fs.writeFile(path.join(tempDir, "source.txt"), "alpha\\nbeta\n")
+
+		await expect(regexSearchFiles(tempDir, tempDir, String.raw`alpha\\nbeta`)).resolves.toContain(
+			"  1 | alpha\\nbeta",
+		)
+	})
+
+	it("preserves glob filtering when retrying a multiline search", async () => {
+		await fs.writeFile(path.join(tempDir, "source.ts"), "alpha\nbeta\n")
+		await fs.writeFile(path.join(tempDir, "excluded.txt"), "alpha\nbeta\n")
+
+		const output = await regexSearchFiles(tempDir, tempDir, "alpha\\nbeta", "*.ts")
+
+		expect(output).toContain("# source.ts")
+		expect(output).not.toContain("excluded.txt")
+	})
+
+	it("preserves .gitignore and .alphaignore filtering during multiline recovery", async () => {
+		await fs.mkdir(path.join(tempDir, ".git"))
+		await fs.writeFile(path.join(tempDir, ".gitignore"), "git-ignored.txt\n")
+		await fs.writeFile(path.join(tempDir, ".alphaignore"), "alpha-ignored.txt\n")
+		for (const fileName of ["source.txt", "git-ignored.txt", "alpha-ignored.txt"]) {
+			await fs.writeFile(path.join(tempDir, fileName), "alpha\nbeta\n")
+		}
+		const ignoreController = new RooIgnoreController(tempDir)
+		try {
+			await ignoreController.initialize()
+			const output = await regexSearchFiles(tempDir, tempDir, "alpha\\nbeta", undefined, ignoreController)
+
+			expect(output).toContain("# source.txt")
+			expect(output).not.toContain("git-ignored.txt")
+			expect(output).not.toContain("alpha-ignored.txt")
+		} finally {
+			ignoreController.dispose()
+		}
+	})
+
+	it("truncates each source line independently within a multiline match", async () => {
+		await fs.writeFile(path.join(tempDir, "source.txt"), `alpha${"x".repeat(600)}\nbeta\n`)
+
+		const output = await regexSearchFiles(tempDir, tempDir, "alpha[^\\n]*\\nbeta")
+
+		expect(output).toContain(`  1 | alpha${"x".repeat(495)} [truncated...]\n  2 | beta`)
+	})
+
+	it("bounds source lines even when one JSON match spans thousands of lines", async () => {
+		await fs.writeFile(path.join(tempDir, "source.txt"), `alpha\n${"middle\n".repeat(10_000)}beta\n`)
+
+		const output = await regexSearchFiles(tempDir, tempDir, "alpha\\n(?s:.*?)beta")
+
+		expect(output).toContain("  1 | alpha")
+		expect(output).toContain("Search output truncated")
+		expect(output.split("\n").length).toBeLessThan(1_600)
+		expect(output).not.toContain("Found 0 results")
+	})
+
+	it("enforces the result-group limit within a single file", async () => {
+		const content = Array.from({ length: 350 }, (_, index) => `alpha${index}\nbeta\nx\nx\nx\n`).join("")
+		await fs.writeFile(path.join(tempDir, "source.txt"), content)
+
+		const output = await regexSearchFiles(tempDir, tempDir, "alpha\\d+\\nbeta")
+
+		expect(output).toContain("Showing first 300")
+		expect(output.match(/^----$/gm)).toHaveLength(300)
+		expect(output).toContain("alpha299")
+		expect(output).not.toContain("alpha300")
+	})
+
+	it("reports truncation instead of a false empty search when one JSON record exceeds the byte budget", async () => {
+		await fs.writeFile(path.join(tempDir, "source.txt"), `alpha\n${"x".repeat(2_000_000)}beta\n`)
+
+		const output = await regexSearchFiles(tempDir, tempDir, "alpha\\n.*beta")
+
+		expect(output).toContain("Search output truncated")
+		expect(output).not.toContain("Found 0 results")
+		expect(output.length).toBeLessThan(1_000)
 	})
 })

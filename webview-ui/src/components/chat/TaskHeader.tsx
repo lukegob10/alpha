@@ -11,7 +11,7 @@ import {
 } from "lucide-react"
 import prettyBytes from "pretty-bytes"
 
-import { getModelMaxOutputTokens } from "@alpha/api"
+import { getModelReservedOutputTokens } from "@alpha/api"
 
 import { formatLargeNumber } from "@src/utils/format"
 import { StandardTooltip, Button, Table, TableBody, TableRow, TableCell, CircularProgress } from "@src/components/ui"
@@ -102,7 +102,7 @@ const TaskHeader = ({
 	const maxTokens = useMemo(
 		() =>
 			model
-				? getModelMaxOutputTokens({
+				? getModelReservedOutputTokens({
 						modelId,
 						model,
 						settings: apiConfiguration,

@@ -20,7 +20,8 @@ const edit = {
 			properties: {
 				file_path: {
 					type: "string",
-					description: "The path of the file to edit (relative to the working directory)",
+					description:
+						"Absolute file path or path relative to the task workspace. Outside-workspace writes require explicit approval.",
 				},
 				old_string: {
 					type: "string",

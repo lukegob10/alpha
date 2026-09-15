@@ -281,10 +281,10 @@
 			"timeoutLabel": "Czas oczekiwania przed automatycznym wybraniem pierwszej odpowiedzi"
 		},
 		"execute": {
-			"label": "Wykonaj",
-			"description": "Automatycznie wykonuj dozwolone polecenia terminala bez konieczności zatwierdzania",
-			"allowedCommands": "Dozwolone polecenia auto-wykonania",
-			"allowedCommandsDescription": "Prefiksy poleceń, które mogą być automatycznie wykonywane, gdy \"Zawsze zatwierdzaj operacje wykonania\" jest włączone. Dodaj * aby zezwolić na wszystkie polecenia (używaj z ostrożnością).",
+			"label": "Reguły poleceń",
+			"description": "Skonfiguruj reguły poleceń. Polecenia hosta zawsze wymagają zgody, ponieważ skrypty mogą zapisywać poza obszarem roboczym.",
+			"allowedCommands": "Dozwolone prefiksy poleceń",
+			"allowedCommandsDescription": "Dozwolone prefiksy mają pierwszeństwo przed krótszymi zabronionymi prefiksami. Zgoda na polecenie nadal jest wymagana.",
 			"deniedCommands": "Odrzucone polecenia",
 			"deniedCommandsDescription": "Prefiksy poleceń, które będą automatycznie odrzucane bez pytania o zatwierdzenie. W przypadku konfliktów z dozwolonymi poleceniami, najdłuższe dopasowanie prefiksu ma pierwszeństwo. Dodaj * aby odrzucić wszystkie polecenia.",
 			"commandPlaceholder": "Wprowadź prefiks polecenia (np. 'git ')",

@@ -26,23 +26,26 @@ describe("getUserFacingModeOptions", () => {
 		])
 	})
 
-	it("hides unselected custom modes but preserves a selected custom mode", () => {
+	it("omits custom modes even when selected in older records", () => {
 		const custom = customMode("security-review", "Security Review")
 
 		expect(getUserFacingModeOptions([...modes, custom]).map((mode) => mode.slug)).toEqual(["architect", "code"])
-		expect(getUserFacingModeOptions([...modes, custom], custom.slug).at(-1)).toBe(custom)
+		expect(getUserFacingModeOptions([...modes, custom], custom.slug).map(({ slug }) => slug)).toEqual([
+			"architect",
+			"code",
+		])
 	})
 
-	it("keeps the selected legacy mode visible until the user leaves it", () => {
+	it("omits the selected retired mode", () => {
 		const visibleModes = getUserFacingModeOptions(modes, "debug")
 
-		expect(visibleModes.map((mode) => mode.slug)).toEqual(["architect", "code", "debug"])
+		expect(visibleModes.map((mode) => mode.slug)).toEqual(["architect", "code"])
 	})
 
-	it("keeps every selected legacy mode visible for multi-mode records", () => {
+	it("omits retired modes from multi-mode records", () => {
 		const visibleModes = getUserFacingModeOptions(modes, ["ask", "debug"])
 
-		expect(visibleModes.map((mode) => mode.slug)).toEqual(["architect", "code", "ask", "debug"])
+		expect(visibleModes.map((mode) => mode.slug)).toEqual(["architect", "code"])
 	})
 
 	it("ignores an architect override and deduplicates the canonical Plan option", () => {
@@ -67,9 +70,9 @@ describe("follow-up suggestion mode presentation", () => {
 		["architect", "architect"],
 		["plan", "architect"],
 		["code", "code"],
-		["ask", "code"],
-		["debug", "code"],
-		["orchestrator", "code"],
+		["ask", undefined],
+		["debug", undefined],
+		["orchestrator", undefined],
 	] as const)("normalizes %s to %s", (input, expected) => {
 		expect(normalizeUserFacingSuggestionMode(input)).toBe(expected)
 	})

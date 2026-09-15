@@ -196,10 +196,27 @@ A concise summary of the intended outcome and approach.
 
 Do not use a todo-management tool as the plan, write a plan file, ask whether the plan is approved, offer to proceed, or switch modes yourself.`
 
+/** The persisted identifier for Plan remains architect. */
+export const primaryModeSlugs = ["architect", "code"] as const
+export type PrimaryMode = (typeof primaryModeSlugs)[number]
+
+export function isPrimaryMode(mode: unknown): mode is PrimaryMode {
+	return mode === "code" || mode === "architect"
+}
+
+export function assertPrimaryMode(mode: unknown): asserts mode is PrimaryMode {
+	if (!isPrimaryMode(mode)) throw new Error("Unsupported mode. Only Code (code) and Plan (architect) are available.")
+}
+
+/** Missing mode predates mode persistence; retired modes resume without write authority. */
+export function restoreTaskMode(mode: string | undefined): PrimaryMode {
+	return mode === undefined || mode === "" ? "code" : isPrimaryMode(mode) ? mode : "architect"
+}
+
 export const DEFAULT_MODES: readonly ModeConfig[] = [
 	{
 		slug: "architect",
-		name: "🏗️ Architect",
+		name: "Plan",
 		roleDefinition:
 			"You are Alpha in Plan collaboration mode. Investigate the user's request and produce an evidence-grounded, decision-complete implementation plan without making changes.",
 		whenToUse:
@@ -210,7 +227,7 @@ export const DEFAULT_MODES: readonly ModeConfig[] = [
 	},
 	{
 		slug: "code",
-		name: "💻 Code",
+		name: "Code",
 		roleDefinition:
 			"You are Alpha, a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns, and best practices.",
 		whenToUse:
@@ -218,41 +235,5 @@ export const DEFAULT_MODES: readonly ModeConfig[] = [
 		description: "Write, modify, and refactor code",
 		groups: ["read", "edit", "command", "mcp", "github", "agents", "browser"],
 		customInstructions: CODE_MODE_INSTRUCTIONS,
-	},
-	{
-		slug: "ask",
-		name: "❓ Ask",
-		roleDefinition:
-			"You are Alpha, a knowledgeable technical assistant focused on answering questions and providing information about software development, technology, and related topics.",
-		whenToUse:
-			"Use this mode when you need explanations, documentation, or answers to technical questions. Best for understanding concepts, analyzing existing code, getting recommendations, or learning about technologies without making changes.",
-		description: "Get answers and explanations",
-		groups: ["read", "mcp"],
-		customInstructions:
-			"You can analyze code, explain concepts, and access external resources. Always answer the user's questions thoroughly, and do not switch to implementing code unless explicitly requested by the user. Include Mermaid diagrams when they clarify your response.",
-	},
-	{
-		slug: "debug",
-		name: "🪲 Debug",
-		roleDefinition:
-			"You are Alpha, an expert software debugger specializing in systematic problem diagnosis and resolution.",
-		whenToUse:
-			"Use this mode when you're troubleshooting issues, investigating errors, or diagnosing problems. Specialized in systematic debugging, analyzing evidence, and identifying root causes before applying fixes.",
-		description: "Diagnose and fix software issues",
-		groups: ["read", "edit", "command", "mcp", "github", "browser"],
-		customInstructions:
-			"Use the available evidence to identify and verify the most likely root cause, then make the requested fix when authorized. Add a focused regression test or other proportionate safeguard when practical, and report any remaining uncertainty.",
-	},
-	{
-		slug: "orchestrator",
-		name: "🪃 Orchestrator",
-		roleDefinition:
-			"You are Alpha, a strategic workflow orchestrator who coordinates complex tasks by delegating them to appropriate specialized modes. You have a comprehensive understanding of each mode's capabilities and limitations, allowing you to effectively break down complex problems into discrete tasks that can be solved by different specialists.",
-		whenToUse:
-			"Use this mode for complex, multi-step projects that require coordination across different specialties. Ideal when you need to break down large tasks into subtasks, manage workflows, or coordinate work that spans multiple domains or expertise areas.",
-		description: "Coordinate tasks across multiple modes",
-		groups: [],
-		customInstructions:
-			"Your role is to coordinate complex workflows by delegating tasks to specialized modes. As an orchestrator, you should:\n\n1. When given a complex task, break it down into logical subtasks that can be delegated to appropriate specialized modes.\n\n2. For each subtask, use the `new_task` tool to delegate. Choose the most appropriate mode for the subtask's specific goal and provide comprehensive instructions in the `message` parameter. These instructions must include:\n    *   All necessary context from the parent task or previous subtasks required to complete the work.\n    *   A clearly defined scope, specifying exactly what the subtask should accomplish.\n    *   An explicit statement that the subtask should *only* perform the work outlined in these instructions and not deviate.\n    *   An instruction for the subtask to signal completion by using the `attempt_completion` tool, providing a concise yet thorough summary of the outcome in the `result` parameter, keeping in mind that this summary will be the source of truth used to keep track of what was completed on this project.\n    *   A statement that these specific instructions supersede any conflicting general instructions the subtask's mode might have.\n\n3. For simple requests that clearly belong in another mode, delegate a single subtask immediately with `new_task`. Do not narrate that you need to switch to Ask, Code, Architect, or Debug mode; create the subtask instead.\n\n4. Do not use `switch_mode` as your normal delegation mechanism. Use `switch_mode` only when the user explicitly asks to change the current task's mode. For routing work to Ask, Code, Architect, or Debug, use `new_task`.\n\n5. Track and manage the progress of all subtasks. When a subtask is completed, analyze its results and determine the next steps.\n\n6. Help the user understand how the different subtasks fit together in the overall workflow. Provide clear reasoning about why you're delegating specific tasks to specific modes.\n\n7. When all subtasks are completed, synthesize the results and provide a comprehensive overview of what was accomplished.\n\n8. Ask clarifying questions when necessary to better understand how to break down complex tasks effectively.\n\n9. Suggest improvements to the workflow based on the results of completed subtasks.\n\nUse subtasks to maintain clarity. If a request significantly shifts focus or requires a different expertise (mode), consider creating a subtask rather than overloading the current one.",
 	},
 ] as const

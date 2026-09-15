@@ -14,8 +14,8 @@ import { supportPrompt } from "../../shared/support-prompt"
 import { RooIgnoreController } from "../ignore/RooIgnoreController"
 import { generateFoldedFileContext } from "./foldedFileContext"
 import type { ContextRecoveryStatus } from "../context-management/recovery"
-import { getCompactionTargetTokens } from "../context-management/recovery"
-import { ANTHROPIC_DEFAULT_MAX_TOKENS } from "@alpha-code/types"
+import { evaluateCompactionProgress, getCompactionTargetTokens } from "../context-management/recovery"
+import { getModelReservedOutputTokens } from "../../shared/api"
 import { createTokenCountContext, TokenCountContext } from "./tokenCountContext"
 
 export {
@@ -477,8 +477,7 @@ export function filterOrphanToolResults(messages: ApiMessage[]): ApiMessage[] {
 	return changed ? filtered : messages
 }
 
-export const MIN_CONDENSE_THRESHOLD = 5 // Minimum percentage of context window to trigger condensing
-export const MAX_CONDENSE_THRESHOLD = 100 // Maximum percentage of context window to trigger condensing
+export { MIN_CONDENSE_THRESHOLD, MAX_CONDENSE_THRESHOLD } from "../context-management/recovery"
 
 const SUMMARY_PROMPT = `You are a helpful AI assistant tasked with summarizing conversations.
 
@@ -587,6 +586,9 @@ export type CompactionDiagnostic = {
 		| "invalid_candidate_count"
 		| "candidate_over_budget"
 		| "candidate_ready"
+		| "already_compact"
+		| "no_reduction"
+		| "insufficient_budget"
 	elapsedMs: number
 	storedMessages: number
 	activeMessages: number
@@ -601,6 +603,8 @@ export type CompactionDiagnostic = {
 	tailTokens?: number
 	tailMessages?: number
 	candidateTokens?: number
+	beforeTokens?: number
+	summaryBudgetTokens?: number
 	lifecycleRequired?: boolean
 	completedOutcomeObserved?: boolean
 	unsuccessfulOutcome?: ApiStreamOutcomeChunk["status"]
@@ -611,6 +615,8 @@ export type SummarizeResponse = {
 	summary: string // The summary text; empty string for no summary
 	cost: number // The cost of the summarization operation
 	newContextTokens?: number // The number of tokens in the context for the next API request
+	/** Active input measured with the same counter as newContextTokens. */
+	prevContextTokens?: number
 	error?: string // Populated iff the operation fails: error message shown to the user on failure (see Task.ts)
 	errorDetails?: string // Detailed error information including stack trace and API error info
 	condenseId?: string // The unique ID of the created Summary message, for linking to condense_context clineMessage
@@ -642,6 +648,8 @@ export type SummarizeConversationOptions = {
 	recentTailTokenBudget?: number
 	/** Shared token-counting budget/cache for this context-preparation operation. */
 	countContext?: TokenCountContext
+	/** A provider rejection requires progress even when the local estimate fits. */
+	forceCompaction?: boolean
 }
 
 /**
@@ -748,21 +756,6 @@ export async function summarizeConversation(options: SummarizeConversationOption
 		return { ...result, diagnostic: receipt }
 	}
 
-	if (activeMessages.length <= 1) {
-		const error =
-			messages.length <= 1
-				? t("common:errors.condense_not_enough_messages")
-				: t("common:errors.condensed_recently")
-		return finish({ ...response, error, status: "exhausted" }, "insufficient_history")
-	}
-
-	// Check if there's a recent summary in the messages (edge case)
-	const recentSummaryExists = activeMessages.some((message: ApiMessage) => message.isSummary)
-
-	if (recentSummaryExists && activeMessages.length <= 2) {
-		const error = t("common:errors.condensed_recently")
-		return finish({ ...response, error, status: "exhausted" }, "recent_summary")
-	}
 	// Do not manufacture terminal results for a live or incomplete transaction.
 	// Legacy repair helpers remain available to explicit history recovery callers.
 	const storedMessages = new Set(messages)
@@ -783,16 +776,79 @@ export async function summarizeConversation(options: SummarizeConversationOption
 		options.maxContextTokens ??
 		getCompactionTargetTokens({
 			contextWindow: modelInfo.contextWindow,
-			reservedTokens: modelInfo.maxTokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS,
+			reservedTokens: getModelReservedOutputTokens({ modelId: apiHandler.getModel().id, model: modelInfo }),
 		})
 	const maxContextTokens = Number.isFinite(requestedTarget) ? Math.max(0, requestedTarget) : 0
 	diagnostic.targetTokens = maxContextTokens
+	const beforeTokens = await countContextTokens(activeMessages, apiHandler, systemPrompt, metadata, countContext)
+	response.prevContextTokens = beforeTokens
+	diagnostic.beforeTokens = beforeTokens
+	if (!Number.isFinite(beforeTokens) || beforeTokens < 0) {
+		return finish(
+			{ ...response, error: t("common:errors.condense_failed"), status: "no_progress" },
+			"invalid_candidate_count",
+		)
+	}
+	const canLeaveUnchanged = !options.forceCompaction && beforeTokens <= maxContextTokens
+	const unchanged = (cost = 0, reason: CompactionDiagnostic["reason"] = "already_compact") =>
+		finish(
+			{
+				...response,
+				cost,
+				status: "unchanged",
+				newContextTokens: beforeTokens,
+				targetContextTokens: maxContextTokens,
+			},
+			reason,
+		)
+	if (activeMessages.length <= 1 && canLeaveUnchanged) return unchanged()
+	if (activeMessages.length === 0) {
+		return finish(
+			{ ...response, error: t("common:errors.condense_not_enough_messages"), status: "exhausted" },
+			"insufficient_history",
+		)
+	}
+	const commandBlocks = messages[0] ? extractCommandBlocks(messages[0]) : ""
+	const mandatoryContent: Anthropic.Messages.ContentBlockParam[] = []
+	if (commandBlocks) {
+		mandatoryContent.push({
+			type: "text",
+			text: `<system-reminder>
+## Active Workflows
+The following directives must be maintained across all future condensings:
+${commandBlocks}
+</system-reminder>`,
+		})
+	}
+	if (isAutomaticTrigger && environmentDetails?.trim())
+		mandatoryContent.push({ type: "text", text: environmentDetails })
+	const fixedTokens = await countContextTokens(
+		[{ role: "user", content: [{ type: "text", text: "## Conversation Summary\n" }, ...mandatoryContent] }],
+		apiHandler,
+		systemPrompt,
+		metadata,
+		countContext,
+	)
+	if (!Number.isFinite(fixedTokens) || fixedTokens < 0) {
+		return finish(
+			{ ...response, error: t("common:errors.condense_failed"), status: "no_progress" },
+			"invalid_candidate_count",
+		)
+	}
+	const availableHistoryTokens = Math.max(0, maxContextTokens - fixedTokens)
+	if (availableHistoryTokens === 0) {
+		if (canLeaveUnchanged) return unchanged()
+		return finish(
+			{ ...response, error: t("common:errors.condense_failed"), status: "exhausted" },
+			"insufficient_budget",
+		)
+	}
 	const requestedTailBudget =
-		options.recentTailTokenBudget ?? Math.min(DEFAULT_RECENT_TAIL_TOKENS, maxContextTokens / 4)
+		options.recentTailTokenBudget ?? Math.min(DEFAULT_RECENT_TAIL_TOKENS, availableHistoryTokens / 4)
 	const tailBudget = Number.isFinite(requestedTailBudget)
-		? Math.max(0, Math.min(requestedTailBudget, maxContextTokens))
+		? Math.max(0, Math.min(requestedTailBudget, availableHistoryTokens))
 		: 0
-	const minimumTailStart = getLogicalStepStarts(activeMessages).length === 1 ? 0 : 1
+	const minimumTailStart = getLogicalStepStarts(activeMessages).length === 1 && !options.forceCompaction ? 0 : 1
 	const tail = await selectRecentTail(activeMessages, apiHandler, tailBudget, minimumTailStart, signal, countContext)
 	diagnostic.tailTokens = tail.tokens
 	diagnostic.tailMessages = activeMessages.length - tail.startIndex
@@ -805,25 +861,23 @@ export async function summarizeConversation(options: SummarizeConversationOption
 	const messagesToSummarize = activeMessages.slice(0, tail.startIndex)
 	const retainedMessages = activeMessages.slice(tail.startIndex)
 	if (messagesToSummarize.length === 0) {
+		if (canLeaveUnchanged) return unchanged()
 		return finish(
 			{ ...response, error: t("common:errors.condense_not_enough_messages"), status: "exhausted" },
 			"insufficient_history",
 		)
 	}
-	if (messagesToSummarize.length === 1 && messagesToSummarize[0].isSummary) {
-		return finish(
-			{ ...response, error: t("common:errors.condensed_recently"), status: "exhausted" },
-			"recent_summary",
-		)
-	}
+	if (messagesToSummarize.length === 1 && messagesToSummarize[0].isSummary && canLeaveUnchanged) return unchanged()
 
 	// Use custom prompt if provided and non-empty, otherwise use the default CONDENSE prompt
 	// This respects user's custom condensing prompt setting
 	const condenseInstructions = customCondensingPrompt?.trim() || supportPrompt.default.CONDENSE
+	const summaryBudgetTokens = Math.max(0, Math.floor(availableHistoryTokens - tail.tokens))
+	diagnostic.summaryBudgetTokens = summaryBudgetTokens
 
 	const finalRequestMessage: Anthropic.MessageParam = {
 		role: "user",
-		content: condenseInstructions,
+		content: `${condenseInstructions}\n\nKeep the handoff summary within ${summaryBudgetTokens} tokens.`,
 	}
 
 	// Transform tool_use and tool_result blocks to text representations.
@@ -976,31 +1030,15 @@ export async function summarizeConversation(options: SummarizeConversationOption
 		return finish({ ...response, cost, error, status: "no_progress" }, "empty_summary")
 	}
 
-	// Extract command blocks from the first message (original task)
-	// These represent active workflows that must persist across condensings
-	const firstMessage = messages[0]
-	const commandBlocks = firstMessage ? extractCommandBlocks(firstMessage) : ""
-
 	// Build the summary content as separate text blocks
 	const summaryContent: Anthropic.Messages.ContentBlockParam[] = [
 		{ type: "text", text: `## Conversation Summary\n${summary}` },
+		...mandatoryContent,
 	]
 	if (tail.newestStepTooLarge) {
 		summaryContent.push({
 			type: "text",
 			text: "[Recent context: the newest complete step exceeded the exact-tail token budget and was summarized in full. Original records remain in saved history.]",
-		})
-	}
-
-	// Add command blocks (active workflows) in their own system-reminder block if present
-	if (commandBlocks) {
-		summaryContent.push({
-			type: "text",
-			text: `<system-reminder>
-## Active Workflows
-The following directives must be maintained across all future condensings:
-${commandBlocks}
-</system-reminder>`,
 		})
 	}
 
@@ -1012,16 +1050,29 @@ ${commandBlocks}
 				generateFoldedFileContext(filesReadByRoo, {
 					cwd,
 					rooIgnoreController,
+					maxCharacters: Math.min(50_000, summaryBudgetTokens),
 				}),
 				signal,
 			)
 			if (foldedResult.sections.length > 0) {
 				for (const section of foldedResult.sections) {
 					if (section.trim()) {
-						summaryContent.push({
-							type: "text",
-							text: section,
-						})
+						const candidate = [...summaryContent, { type: "text" as const, text: section }]
+						const tokens = await countContextTokens(
+							[{ role: "user", content: candidate }, ...retainedMessages],
+							apiHandler,
+							systemPrompt,
+							metadata,
+							countContext,
+						)
+						if (
+							!Number.isFinite(tokens) ||
+							tokens < 0 ||
+							tokens > maxContextTokens ||
+							tokens >= beforeTokens
+						)
+							break
+						summaryContent.push({ type: "text", text: section })
 					}
 				}
 			}
@@ -1030,16 +1081,6 @@ ${commandBlocks}
 			console.error("[summarizeConversation] Failed to generate folded file context:", error)
 			// Continue without folded context - non-critical failure
 		}
-	}
-
-	// Add environment details as a separate text block if provided AND this is an automatic trigger.
-	// For manual condensing, fresh environment details will be injected on the next turn.
-	// For automatic condensing, the API request is already in progress so we need them in the summary.
-	if (isAutomaticTrigger && environmentDetails?.trim()) {
-		summaryContent.push({
-			type: "text",
-			text: environmentDetails,
-		})
 	}
 
 	// Generate a unique condenseId for this summary
@@ -1067,11 +1108,22 @@ ${commandBlocks}
 	signal?.throwIfAborted()
 	diagnostic.candidateTokens = newContextTokens
 	if (!Number.isFinite(newContextTokens) || newContextTokens > maxContextTokens) {
+		if (Number.isFinite(newContextTokens) && canLeaveUnchanged) return unchanged(cost, "no_reduction")
 		// The tail was excluded from the summary request, so silently dropping it
 		// now would lose unsummarized evidence. Leave history unchanged for fallback.
 		return finish(
 			{ ...response, cost, error: t("common:errors.condense_failed"), status: "no_progress" },
 			Number.isFinite(newContextTokens) ? "candidate_over_budget" : "invalid_candidate_count",
+		)
+	}
+	if (
+		evaluateCompactionProgress({ beforeTokens, afterTokens: newContextTokens, targetTokens: maxContextTokens })
+			.status !== "reduced"
+	) {
+		if (canLeaveUnchanged) return unchanged(cost, "no_reduction")
+		return finish(
+			{ ...response, cost, error: t("common:errors.condense_failed"), status: "no_progress" },
+			"no_reduction",
 		)
 	}
 	const prefix = new Set(messagesToSummarize)
@@ -1086,6 +1138,7 @@ ${commandBlocks}
 			summary,
 			cost,
 			newContextTokens,
+			prevContextTokens: beforeTokens,
 			condenseId,
 			status: "reduced",
 			targetContextTokens: maxContextTokens,

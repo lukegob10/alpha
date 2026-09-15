@@ -1,6 +1,15 @@
 import { getToolUseGuidelinesSection } from "../tool-use-guidelines"
 
 describe("getToolUseGuidelinesSection", () => {
+	it.each([false, true])("requests independent inspection calls together in Plan=%s", (isPlanMode) => {
+		const guidelines = getToolUseGuidelinesSection(undefined, isPlanMode)
+		expect(guidelines).toContain("same model response")
+		expect(guidelines).toContain("Git inspections and searches")
+		expect(guidelines).toContain("runs eligible independent inspections concurrently in bounded batches")
+		expect(guidelines).toContain("separate tool calls")
+		expect(guidelines).toContain("unresolved question")
+	})
+
 	it("should include proper numbered guidelines", () => {
 		const guidelines = getToolUseGuidelinesSection()
 

@@ -609,6 +609,7 @@ function buildVsCodeLmModelInfo(
 		...staticInfo,
 		maxTokens: staticInfo?.maxTokens ?? -1,
 		contextWindow,
+		contextWindowIncludesOutput: false,
 		supportsImages: staticInfo?.supportsImages ?? false,
 		supportsPromptCache: staticInfo?.supportsPromptCache ?? true,
 		inputPrice: staticInfo?.inputPrice ?? 0,

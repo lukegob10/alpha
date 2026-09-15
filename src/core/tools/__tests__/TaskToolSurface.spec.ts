@@ -46,6 +46,38 @@ function registry() {
 }
 
 describe("TaskToolSurface", () => {
+	it.each(["code", "architect"])(
+		"allows primary outside paths under the %s profile without widening inherited policy",
+		(mode) => {
+			const primary = createTaskToolSurface({
+				registry: registry(),
+				cwd: process.cwd(),
+				taskKind: "primary",
+				mode,
+			})
+			expect(primary.policy.execution.outsideWorkspace).toBe("approval")
+			expect(primary.isCallable("write_to_file")).toBe(mode === "code")
+			const child = createTaskToolSurface({
+				registry: registry(),
+				cwd: process.cwd(),
+				taskKind: "subagent",
+				policy: primary.policy,
+				mode,
+			})
+			expect(child.policy.execution.outsideWorkspace).toBeUndefined()
+			const restricted = createTaskToolSurface({ registry: registry(), cwd: process.cwd(), mode })
+			expect(
+				createTaskToolSurface({
+					registry: registry(),
+					cwd: process.cwd(),
+					taskKind: "primary",
+					policy: restricted.policy,
+					mode,
+				}).policy.execution.outsideWorkspace,
+			).toBeUndefined()
+		},
+	)
+
 	it("keeps an explicitly empty projection empty even when the sealed registry has descriptors", () => {
 		const source = registry()
 		const surface = createTaskToolSurface({ registry: source, schemas: [] })

@@ -9,5 +9,7 @@
 	"missing": "Fehlend",
 	"inspect": "Die Diagrammwerte stehen in der Datentabelle. Fokussieren Sie einen dargestellten Wert, um ihn zu prüfen.",
 	"sortAscending": "aufsteigend",
-	"sortDescending": "absteigend"
+	"sortDescending": "absteigend",
+	"invalidDiagram": "Diagramm nicht verfügbar. Verwenden Sie eine Beziehungstabelle mit drei Spalten, höchstens 24 benannten Knoten und 48 Verbindungen ohne Zyklen. Die Tabelle bleibt lesbar.",
+	"imageUnavailable": "Bild nicht verfügbar. Prüfen Sie den Arbeitsbereichspfad und verwenden Sie eine statische PNG- oder JPEG-Datei innerhalb der dokumentierten Größenlimits."
 }

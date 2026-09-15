@@ -184,3 +184,116 @@ function restoreEnv(key: string, value: string | undefined) {
 		process.env[key] = value
 	}
 }
+
+describe("GitHub request cancellation and deadlines", () => {
+	const fetchMock = vi.fn<typeof fetch>()
+	const comment = { owner: "owner", repo: "repo", issue_number: 1, body: "body" }
+
+	beforeEach(() => {
+		vi.useFakeTimers()
+		fetchMock.mockReset()
+		vi.stubGlobal("fetch", fetchMock)
+		vi.mocked(execFile).mockReset()
+		mockHttpConfiguration({ proxySupport: "off" })
+	})
+
+	afterEach(() => {
+		expect(vi.getTimerCount()).toBe(0)
+		vi.useRealTimers()
+		vi.unstubAllGlobals()
+	})
+
+	function waitForAbort(signal: AbortSignal) {
+		return new Promise<never>((_resolve, reject) => {
+			signal.addEventListener("abort", () => reject(new Error("aborted transport")), { once: true })
+		})
+	}
+
+	it("does not dispatch an already-cancelled request", async () => {
+		const controller = new AbortController()
+		controller.abort()
+		await expect(
+			new GitHubApiClient("token", { signal: controller.signal }).comment(comment),
+		).rejects.toMatchObject({ reason: "cancelled", outcomeUnknown: false })
+		expect(fetchMock).not.toHaveBeenCalled()
+		expect(execFile).not.toHaveBeenCalled()
+	})
+
+	it("cancels fetch and reports an uncertain write outcome without leaking abort reasons", async () => {
+		const controller = new AbortController()
+		const removeListener = vi.spyOn(controller.signal, "removeEventListener")
+		fetchMock.mockImplementation((_url, options) => waitForAbort(options!.signal!))
+		const request = new GitHubApiClient("token", { signal: controller.signal }).comment(comment)
+		const rejected = expect(request).rejects.toMatchObject({
+			reason: "cancelled",
+			outcomeUnknown: true,
+			message: expect.stringContaining("check its state before retrying"),
+		})
+		controller.abort(new Error("sensitive abort reason"))
+		await rejected
+		expect(removeListener).toHaveBeenCalledWith("abort", expect.any(Function))
+	})
+
+	it("keeps the deadline active while reading the response body", async () => {
+		let bodyStarted!: () => void
+		const started = new Promise<void>((resolve) => {
+			bodyStarted = resolve
+		})
+		fetchMock.mockImplementation(async (_url, options) => {
+			const response = new Response()
+			vi.spyOn(response, "json").mockImplementation(() => {
+				bodyStarted()
+				return waitForAbort(options!.signal!)
+			})
+			return response
+		})
+		const request = new GitHubApiClient("token", { timeoutMs: 100 }).getPullRequest({
+			owner: "owner",
+			repo: "repo",
+			pull_number: 1,
+		})
+		const rejected = expect(request).rejects.toMatchObject({ reason: "timeout", outcomeUnknown: false })
+		await started
+		await vi.advanceTimersByTimeAsync(100)
+		await rejected
+	})
+
+	it.each(["cancelled", "timeout"] as const)("stops the proxy curl process on %s", async (reason) => {
+		mockHttpConfiguration({ proxy: "http://proxy.example.com:8080" })
+		const controller = new AbortController()
+		vi.mocked(execFile).mockImplementation((_command, _args, options, callback) => {
+			const signal = options?.signal
+			if (!signal) throw new Error("curl must receive the request signal")
+			signal.addEventListener(
+				"abort",
+				() => callback?.(Object.assign(new Error("argv contains secret-token"), { code: "ABORT_ERR" }), "", ""),
+				{ once: true },
+			)
+			return undefined as never
+		})
+		const request = new GitHubApiClient("secret-token", { signal: controller.signal, timeoutMs: 100 }).comment(
+			comment,
+		)
+		const rejected = expect(request).rejects.toMatchObject({
+			reason,
+			outcomeUnknown: true,
+			message: expect.not.stringContaining("secret-token"),
+		})
+		if (reason === "cancelled") controller.abort()
+		else await vi.advanceTimersByTimeAsync(100)
+		await rejected
+		expect(fetchMock).not.toHaveBeenCalled()
+	})
+
+	it("clears request resources after success", async () => {
+		fetchMock.mockResolvedValue(
+			new Response(JSON.stringify({ id: 1, html_url: "https://github.com/owner/repo/issues/1#comment-1" })),
+		)
+		const controller = new AbortController()
+		const removeListener = vi.spyOn(controller.signal, "removeEventListener")
+		await expect(
+			new GitHubApiClient("token", { signal: controller.signal }).comment(comment),
+		).resolves.toMatchObject({ action: "comment", id: 1 })
+		expect(removeListener).toHaveBeenCalledWith("abort", expect.any(Function))
+	})
+})

@@ -27,13 +27,21 @@ interface CommandPattern {
 
 interface CommandExecutionProps {
 	executionId: string
+	workingDirectory?: string
 	text?: string
 	icon?: JSX.Element | null
 	title?: JSX.Element | null
 	onToggleExpand?: () => void
 }
 
-export const CommandExecution = ({ executionId, text, icon, title, onToggleExpand }: CommandExecutionProps) => {
+export const CommandExecution = ({
+	executionId,
+	text,
+	icon,
+	title,
+	onToggleExpand,
+	workingDirectory,
+}: CommandExecutionProps) => {
 	const {
 		currentTaskId,
 		allowedCommands = [],
@@ -146,6 +154,11 @@ export const CommandExecution = ({ executionId, text, icon, title, onToggleExpan
 
 	return (
 		<>
+			{workingDirectory && (
+				<div className="mb-1 ml-6 break-all font-mono text-xs text-vscode-descriptionForeground">
+					{workingDirectory}
+				</div>
+			)}
 			<div className="flex flex-row items-center justify-between gap-2 mb-1">
 				<button
 					type="button"

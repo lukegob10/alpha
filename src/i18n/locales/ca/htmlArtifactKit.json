@@ -9,5 +9,7 @@
 	"missing": "Sense dades",
 	"inspect": "Els valors del gràfic estan disponibles a la taula de dades. Poseu el focus en un valor representat per inspeccionar-lo.",
 	"sortAscending": "ascendent",
-	"sortDescending": "descendent"
+	"sortDescending": "descendent",
+	"invalidDiagram": "Diagrama no disponible. Feu servir una taula de relacions de tres columnes amb un màxim de 24 nodes, 48 enllaços i sense cicles. La taula continua sent llegible.",
+	"imageUnavailable": "Imatge no disponible. Comproveu el camí de l’espai de treball i feu servir un PNG o JPEG estàtic dins dels límits documentats."
 }

@@ -1,4 +1,11 @@
+import { execFile } from "child_process"
+import fs from "fs/promises"
+import os from "os"
+import path from "path"
+import { promisify } from "util"
+
 import type { ToolSchedulerResult } from "../../agent/ToolScheduler"
+import { getTrustedCommandExploration } from "../../tools/CommandExploration"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 import { Task } from "../Task"
 
@@ -41,6 +48,118 @@ function createTask(detector: ToolRepetitionDetector = new ToolRepetitionDetecto
 }
 
 describe("Task trusted exploration progress", () => {
+	it("bounds joined inspection evidence, preserves active commands, and does not issue verification credit", async () => {
+		const { task } = createTask()
+		const publish = vi.fn()
+		Object.assign(task, {
+			taskKind: "primary",
+			providerRef: { deref: () => ({ recordParentVerificationEvidence: publish }) },
+		})
+		for (let index = 0; index < 128; index++) {
+			task.beginCommandExecution(`old-${index}`, `execution-${index}`, "git status")
+			if (index > 0) task.completeCommandExecution(`old-${index}`, { exitCode: 0 })
+		}
+		const result = {
+			toolCallId: "inspection",
+			executionId: "new",
+			command: "rg needle src",
+			cwd: "/workspace",
+			status: "succeeded" as const,
+			exitCode: 0,
+			startedAt: 100,
+			completedAt: 200,
+			verificationChangeSetIds: ["must-not-credit"],
+		}
+		await task.recordCommandInspectionResult(result)
+		await task.recordCommandInspectionResult(result)
+		const evidence = task.getCommandExecutionEvidence()
+		expect(evidence).toHaveLength(128)
+		expect(evidence.find(({ toolCallId }) => toolCallId === "old-0")?.status).toBe("running")
+		expect(evidence.find(({ toolCallId }) => toolCallId === "old-1")).toBeUndefined()
+		expect(evidence.find(({ toolCallId }) => toolCallId === "inspection")).not.toHaveProperty(
+			"verificationChangeSetIds",
+		)
+	})
+	it("continues a real Git review after a recovered search error without workspace edits or new verification", async () => {
+		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-git-review-"))
+		const git = (args: string[]) => promisify(execFile)("git", args, { cwd: workspace })
+		const commit = () =>
+			git([
+				"-c",
+				"user.name=Fixture",
+				"-c",
+				"user.email=fixture@example.invalid",
+				"-c",
+				"core.hooksPath=",
+				"commit",
+				"--quiet",
+				"--allow-empty",
+				"--no-gpg-sign",
+				"-m",
+				"Review fixture",
+			])
+		const { task, suspendAfterCurrentTurn } = createTask()
+		try {
+			await git(["init", "--quiet"])
+			await commit()
+			for (let index = 0; index < 16; index++) {
+				await fs.writeFile(path.join(workspace, `file-${index}.ts`), `export const value${index} = ${index}\n`)
+			}
+			await git(["add", "."])
+			await commit()
+			await task.recordToolCallForStopping("search_files", { path: ".", regex: "[" }, "error", "read")
+			await task.recordToolCallForStopping("search_files", { path: ".", regex: "value" }, "success", "read")
+			for (let index = 0; index < 48; index++) {
+				const target = `file-${Math.floor(index / 3)}.ts`
+				const args =
+					index % 3 === 0
+						? ["show", `HEAD:${target}`]
+						: index % 3 === 1
+							? ["diff", "HEAD~1", "HEAD", "--", target]
+							: ["ls-tree", "HEAD", "--", target]
+				const { stdout } = await git(args)
+				expect(stdout.length).toBeGreaterThan(0)
+				const command = `git ${args.join(" ")}`
+				const trustedExploration = await getTrustedCommandExploration({
+					command,
+					workspaceRoot: workspace,
+					cwd: workspace,
+					executionStatus: "succeeded",
+					exitCode: 0,
+				})
+				await task.recordToolCallForStopping("execute_command", { command }, "success", "read", {
+					...schedulerResult(index),
+					content: stdout,
+					trustedExploration,
+				})
+				// Assert at each boundary: a later read must not hide an earlier false stop.
+				expect(suspendAfterCurrentTurn).not.toHaveBeenCalled()
+			}
+			expect(Reflect.get(task, "userMessageContent")).toEqual([])
+
+			// Re-reading a target with cosmetic changes must still exhaust recovery.
+			for (let index = 0; index < 4; index++) {
+				const command = `git${" ".repeat(index + 1)}--no-pager show --format=label-${index} --no-ext-diff --no-textconv HEAD:file-0.ts`
+				const trustedExploration = await getTrustedCommandExploration({
+					command,
+					workspaceRoot: workspace,
+					cwd: workspace,
+					executionStatus: "succeeded",
+					exitCode: 0,
+				})
+				await task.recordToolCallForStopping("execute_command", { command }, "success", "read", {
+					...schedulerResult(48 + index),
+					trustedExploration,
+				})
+				if (index < 3) expect(suspendAfterCurrentTurn).not.toHaveBeenCalled()
+			}
+			expect(suspendAfterCurrentTurn).toHaveBeenCalledOnce()
+			expect(Reflect.get(task, "userMessageContent")).toHaveLength(1)
+		} finally {
+			await fs.rm(workspace, { recursive: true, force: true })
+		}
+	})
+
 	it("lets forty distinct successful shell inspections continue through the real Task adapter", async () => {
 		const { task, suspendAfterCurrentTurn } = createTask()
 

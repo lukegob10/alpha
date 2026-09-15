@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.1.38
+
+### Patch Changes
+
+- Batch independent Git and ripgrep inspections into bounded parallel runs after collecting each command's approval.
+- Expand rich documents with section navigation, evidence and metric cards, scoped images, relationship diagrams, and timelines while preserving the existing responsive design and automatic document opening.
+- Bundle an evidence-driven debugging skill with focused triggers and existing skill controls.
+- Fix browser routing to reject local files, allow outside-workspace inspection through the existing approval policy, and require approval for outside writes and shell commands.
+- Isolate TODO approvals by task, show complete GitHub action details before approval, propagate GitHub cancellation and deadlines, and preserve literal replacement text.
+- Recover multiline file searches with bounded output and improve context compaction, file-change summaries, and command activity presentation.
+- Retire executable modes other than Code and Plan while preserving readable saved tasks and requiring user-controlled mode changes.
+
 ## 2.1.37
 
 ### Patch Changes

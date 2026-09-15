@@ -2217,6 +2217,7 @@ describe("VsCodeLmHandler", () => {
 			const model = handler.getModel()
 			expect(model.info.supportsReasoningEffort).toEqual(["low", "medium", "high", "xhigh", "max"])
 			expect(model.info.contextWindow).toBe(200_000)
+			expect(model.info.contextWindowIncludesOutput).toBe(false)
 		})
 
 		it("should report the selected extended input window", () => {

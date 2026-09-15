@@ -68,7 +68,6 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setAlwaysAllowWriteProtected: (value: boolean) => void
 	setAlwaysAllowExecute: (value: boolean) => void
 	setAlwaysAllowMcp: (value: boolean) => void
-	setAlwaysAllowModeSwitch: (value: boolean) => void
 	setAlwaysAllowSubtasks: (value: boolean) => void
 	setAlwaysAllowSubagents: (value: boolean) => void
 	setAlwaysAllowTickets: (value: boolean) => void
@@ -797,7 +796,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 			setState((prevState) => ({ ...prevState, alwaysAllowWriteProtected: value })),
 		setAlwaysAllowExecute: (value) => setState((prevState) => ({ ...prevState, alwaysAllowExecute: value })),
 		setAlwaysAllowMcp: (value) => setState((prevState) => ({ ...prevState, alwaysAllowMcp: value })),
-		setAlwaysAllowModeSwitch: (value) => setState((prevState) => ({ ...prevState, alwaysAllowModeSwitch: value })),
 		setAlwaysAllowSubtasks: (value) => setState((prevState) => ({ ...prevState, alwaysAllowSubtasks: value })),
 		setAlwaysAllowSubagents: (value) => setState((prevState) => ({ ...prevState, alwaysAllowSubagents: value })),
 		setAlwaysAllowTickets: (value) => setState((prevState) => ({ ...prevState, alwaysAllowTickets: value })),

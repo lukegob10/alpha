@@ -281,10 +281,10 @@
 			"timeoutLabel": "첫 번째 답변을 자동 선택하기 전 대기 시간"
 		},
 		"execute": {
-			"label": "실행",
-			"description": "승인 없이 자동으로 허용된 터미널 명령 실행",
-			"allowedCommands": "허용된 자동 실행 명령",
-			"allowedCommandsDescription": "\"실행 작업 항상 승인\"이 활성화되었을 때 자동 실행될 수 있는 명령 접두사. 모든 명령을 허용하려면 * 추가(주의해서 사용)",
+			"label": "명령 규칙",
+			"description": "명령 규칙을 설정합니다. 스크립트가 작업 영역 밖에 쓸 수 있으므로 호스트 명령은 항상 승인이 필요합니다.",
+			"allowedCommands": "허용된 명령 접두사",
+			"allowedCommandsDescription": "허용된 접두사는 더 짧은 차단 접두사보다 우선합니다. 명령 승인은 여전히 필요합니다.",
 			"deniedCommands": "거부된 명령",
 			"deniedCommandsDescription": "승인을 요청하지 않고 자동으로 거부될 명령 접두사. 허용된 명령과 충돌하는 경우 가장 긴 접두사 일치가 우선됩니다. 모든 명령을 거부하려면 * 추가",
 			"commandPlaceholder": "명령 접두사 입력(예: 'git ')",

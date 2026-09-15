@@ -17,6 +17,8 @@ import {
 	type ToolFailureMetadata,
 } from "../tools/ToolFailure"
 import { getImageOutputPaths } from "../tools/imageOutputPaths"
+import { resolvePathWithExistingAncestor } from "../tools/pathSafety"
+import { extractMutationPaths } from "./VerificationScope"
 import { formatResponse } from "../prompts/responses"
 import { getModeBySlug } from "../../shared/modes"
 import { sanitizeToolUseId } from "../../utils/tool-id"
@@ -25,7 +27,13 @@ import type { Task } from "../task/Task"
 import { validateToolUse } from "../tools/validateToolUse"
 import type { AgentResponse, AgentToolCall } from "./AgentResponse"
 import type { AgentTurnEvent } from "./AgentTurnEvents"
-import type { PreparedToolRead, TaskReadGrant, ToolDescriptor, ToolRegistry } from "../tools/ToolRegistry"
+import type {
+	PreparedCommandRead,
+	PreparedToolRead,
+	TaskReadGrant,
+	ToolDescriptor,
+	ToolRegistry,
+} from "../tools/ToolRegistry"
 import {
 	getToolOutputLimit,
 	isCommandDeniedByPolicy,
@@ -76,6 +84,7 @@ type ToolExecutionApproval = (
 	partialMessage?: string,
 	progressStatus?: ToolProgressStatus,
 	forceApproval?: boolean,
+	requiresExplicitApproval?: boolean,
 ) => Promise<{ response: ClineAskResponse; text?: string; images?: string[] }>
 
 type ToolExecutionSay = (type: ClineSay, text?: string, images?: string[]) => Promise<unknown>
@@ -86,6 +95,7 @@ type ToolExecutionHostAsk = (
 	partial?: boolean,
 	progressStatus?: ToolProgressStatus,
 	isProtected?: boolean,
+	requiresExplicitApproval?: boolean,
 ) => Promise<{ response: ClineAskResponse; text?: string; images?: string[] }>
 
 /**
@@ -360,8 +370,17 @@ interface PreparedCall {
 	preparationDenied?: boolean
 	readPrepared?: boolean
 	read?: PreparedToolRead
+	commandRead?: PreparedCommandRead
+	commandCollector?: ToolResultCollector
+	commandApproval?: { command: string; response: ToolApprovalResponse }
+	preparationResult?: ToolSchedulerResult
+	preparationDurationMs?: number
+	finalizeCommand?: () => Promise<void>
+	usageRecorded?: boolean
 	scope?: string
 	finalizeRead?: () => Promise<ToolResponse>
+	pathIdentities?: ReadonlyArray<{ absolute: string; canonical: string }>
+	requiresExplicitApproval?: boolean
 }
 
 function scopeContains(root: string, candidate: string): boolean {
@@ -528,8 +547,44 @@ function getPathArguments(toolName: string, argumentsValue: Record<string, unkno
 			...argumentsValue.queries.map((entry) => (entry && typeof entry === "object" ? entry.path : undefined)),
 		)
 	}
+	if (toolName === "apply_patch") {
+		candidates.push(
+			...(extractMutationPaths({
+				type: "tool_use",
+				name: "apply_patch",
+				params: {},
+				partial: false,
+				nativeArgs: argumentsValue as ToolUse<"apply_patch">["nativeArgs"],
+			}) ?? []),
+		)
+	}
 
 	return candidates
+}
+
+// Only tools with native path validation and approval flows may leave a primary root.
+const OUTSIDE_WORKSPACE_TOOLS = new Set([
+	"read_file",
+	"list_files",
+	"search_files",
+	"write_to_file",
+	"apply_diff",
+	"apply_patch",
+	"edit",
+	"edit_file",
+	"search_replace",
+	"generate_image",
+	"execute_command",
+])
+
+function assertPathIdentities(prepared: PreparedCall): void {
+	for (const { absolute, canonical } of prepared.pathIdentities ?? []) {
+		if (path.relative(canonical, resolvePathWithExistingAncestor(absolute)) !== "") {
+			throw new ToolReadDeniedError(
+				`Path target changed during execution or approval: ${absolute}. Retry with the current path.`,
+			)
+		}
+	}
 }
 
 const VERIFICATION_OUTPUT_LIMIT = 8_000
@@ -592,6 +647,14 @@ export class ToolScheduler {
 	private isSelectableParallel(item: PreparedCall | undefined): boolean {
 		const capabilities = item?.descriptor?.capabilities
 		const captured = item?.descriptor && this.options.policy?.capabilities[item.descriptor.name]
+		if (item?.commandRead) {
+			return (
+				!item.commandRead.serialFallback &&
+				!!item.commandRead.run &&
+				this.canPrepareParallelCommand(item) &&
+				!!item.scope
+			)
+		}
 		return (
 			this.executionMode === "selective-parallel" &&
 			capabilities?.concurrency === "parallel" &&
@@ -604,6 +667,18 @@ export class ToolScheduler {
 					!captured.controlFlow &&
 					(!captured.requiresApproval || !!item.read))) &&
 			(!capabilities.requiresApproval || !!item.read)
+		)
+	}
+
+	private canPrepareParallelCommand(item: PreparedCall): boolean {
+		const descriptor = item.descriptor
+		return (
+			this.executionMode === "selective-parallel" &&
+			descriptor?.capabilities.parallelCommandRead === true &&
+			!descriptor.capabilities.controlFlow &&
+			this.options.policy?.capabilities[descriptor.name]?.parallelCommandRead === true &&
+			!this.options.policy.capabilities[descriptor.name].controlFlow &&
+			!!descriptor.prepareParallelCommand
 		)
 	}
 
@@ -669,6 +744,14 @@ export class ToolScheduler {
 	private async prepareRead(item: PreparedCall): Promise<void> {
 		if (item.readPrepared || item.validationError || !item.toolCall || !item.descriptor) return
 		item.readPrepared = true
+		if (this.canPrepareParallelCommand(item)) {
+			const result = await this.executeCall(item, true)
+			item.preparationDurationMs = result.durationMs
+			if (result.status !== "success") item.preparationResult = result
+			if (item.commandRead) item.scope = item.commandRead.scope
+			if (!item.scope || !path.isAbsolute(item.scope)) item.scope = undefined
+			return
+		}
 		const { readGrant, policy } = this.options
 		if (
 			readGrant?.enabled &&
@@ -705,6 +788,22 @@ export class ToolScheduler {
 	}
 
 	private async finalizeRead(item: PreparedCall, result: ToolSchedulerResult): Promise<ToolSchedulerResult> {
+		const finalizeCommand = item.finalizeCommand
+		item.finalizeCommand = undefined
+		if (finalizeCommand) {
+			try {
+				await finalizeCommand()
+			} catch (error) {
+				if (!this.isCancelled()) {
+					this.executionHost.didToolFailInCurrentTurn = true
+					return {
+						...result,
+						status: "error",
+						content: formatFailureResult(this.errorMessage(error), "error"),
+					}
+				}
+			}
+		}
 		const finalize = item.finalizeRead
 		item.finalizeRead = undefined
 		if (item.read && result.status === "error") this.executionHost.didToolFailInCurrentTurn = true
@@ -795,6 +894,11 @@ export class ToolScheduler {
 			}
 
 			const item = prepared[cursor]
+			if (item.preparationResult) {
+				results[item.index] = item.preparationResult
+				cursor++
+				continue
+			}
 			const retryBlock = this.retryBlockResult(item.call)
 			if (retryBlock) {
 				results[item.index] = retryBlock
@@ -830,6 +934,7 @@ export class ToolScheduler {
 				if (!(error instanceof ToolEffectFenceError)) throw error
 				return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
 			}
+			if (item.preparationResult) continue
 			if (item.validationError) {
 				results[item.index] = resultForError(
 					item.call,
@@ -852,10 +957,15 @@ export class ToolScheduler {
 					}
 					if (
 						candidate.validationError ||
+						candidate.preparationResult ||
 						!candidate.descriptor ||
 						!candidate.toolCall ||
 						!this.isSelectableParallel(candidate) ||
-						parallelItems.some((active) => scopesOverlap(active.scope!, candidate.scope!))
+						parallelItems.some(
+							(active) =>
+								scopesOverlap(active.scope!, candidate.scope!) &&
+								!(active.commandRead && candidate.commandRead),
+						)
 					) {
 						break
 					}
@@ -1199,10 +1309,33 @@ export class ToolScheduler {
 			return prepared
 		}
 
-		for (const candidate of getPathArguments(canonicalName, argumentsValue as Record<string, unknown>)) {
+		let pathArguments: string[]
+		try {
+			pathArguments = getPathArguments(canonicalName, argumentsValue as Record<string, unknown>).filter(
+				(value): value is string => typeof value === "string" && value.length > 0,
+			)
+		} catch (error) {
+			prepared.validationError = this.errorMessage(error)
+			reject("invalid_arguments")
+			prepared.descriptor = descriptor
+			return prepared
+		}
+		const outsideAccess =
+			this.options.policy?.execution.outsideWorkspace === "approval" && OUTSIDE_WORKSPACE_TOOLS.has(canonicalName)
+		prepared.requiresExplicitApproval =
+			canonicalName === "execute_command" ||
+			(outsideAccess &&
+				descriptor.capabilities.sideEffects !== "none" &&
+				pathArguments.some(
+					(candidate) => !isPathAllowed(this.options.policy, candidate, this.executionHost.cwd),
+				))
+		prepared.pathIdentities = pathArguments.map((candidate) => {
+			const absolute = path.resolve(this.executionHost.cwd ?? "", candidate)
+			return { absolute, canonical: resolvePathWithExistingAncestor(absolute) }
+		})
+		for (const candidate of pathArguments) {
 			if (
-				typeof candidate === "string" &&
-				candidate &&
+				!outsideAccess &&
 				!isPathAllowed(this.options.policy, candidate, this.executionHost.cwd ?? "") &&
 				!(
 					canonicalName === "read_file" &&
@@ -1273,7 +1406,7 @@ export class ToolScheduler {
 		return prepared
 	}
 
-	private async executeCall(prepared: PreparedCall): Promise<ToolSchedulerResult> {
+	private async executeCall(prepared: PreparedCall, prepareCommand = false): Promise<ToolSchedulerResult> {
 		const startedAt = performance.now()
 		if (this.isCancelled()) {
 			return this.cancelledResultFor(prepared.call)
@@ -1281,17 +1414,23 @@ export class ToolScheduler {
 		const retryBlock = this.retryBlockResult(prepared.call)
 		if (retryBlock) return retryBlock
 
-		const collector = new ToolResultCollector(
-			Math.min(
-				prepared.descriptor?.maxOutputChars ?? Number.MAX_SAFE_INTEGER,
-				getToolOutputLimit(this.options.policy, prepared.call.name),
-			),
-		)
+		const collector =
+			prepared.commandCollector ??
+			new ToolResultCollector(
+				Math.min(
+					prepared.descriptor?.maxOutputChars ?? Number.MAX_SAFE_INTEGER,
+					getToolOutputLimit(this.options.policy, prepared.call.name),
+				),
+			)
 		let executionAdmitted = false
 		const recordExecutionFailure = (status: "error" | "denied" | "cancelled") => {
 			if (collector.getMetadata().failure) return
 			const effectsUnknown =
-				executionAdmitted && prepared.descriptor?.capabilities.sideEffects !== "none" && status !== "denied"
+				executionAdmitted &&
+				!prepareCommand &&
+				(!prepared.commandRead || prepared.commandRead.serialFallback) &&
+				prepared.descriptor?.capabilities.sideEffects !== "none" &&
+				status !== "denied"
 			collector.setMetadata({
 				failure: createToolFailure({
 					reason: effectsUnknown
@@ -1330,6 +1469,17 @@ export class ToolScheduler {
 					throw new ToolReadDeniedError("An approval request cannot run in an approval-free parallel lane.")
 				}
 				const [type, partialMessage, progressStatus, forceApproval] = args
+				assertPathIdentities(prepared)
+				if (
+					!prepareCommand &&
+					prepared.commandRead?.serialFallback &&
+					type === "command" &&
+					prepared.commandApproval &&
+					prepared.commandApproval.command === partialMessage
+				) {
+					return prepared.commandApproval.response
+				}
+				const explicitApproval: [boolean] | [] = prepared.requiresExplicitApproval ? [true] : []
 				const requestId = `${this.executionHost.taskId}:${prepared.call.id}`
 				this.approvalRequestCount += 1
 
@@ -1362,6 +1512,7 @@ export class ToolScheduler {
 								partialMessage,
 								progressStatus,
 								forceApproval || false,
+								...explicitApproval,
 							)
 						}
 						if (this.executionHost.ask) {
@@ -1371,10 +1522,12 @@ export class ToolScheduler {
 								false,
 								progressStatus,
 								forceApproval || false,
+								...explicitApproval,
 							)
 						}
 						throw new Error("Tool execution host does not provide an approval callback.")
 					})
+					assertPathIdentities(prepared)
 				} catch (error) {
 					if (error instanceof AskIgnoredError) {
 						this.supersededAskCount += 1
@@ -1474,6 +1627,9 @@ export class ToolScheduler {
 					approvalFeedback(text, images)
 				}
 				await this.options.onEvent?.({ type: "approval_result", requestId, decision: "approved" })
+				if (prepareCommand && type === "command" && partialMessage) {
+					prepared.commandApproval = { command: partialMessage, response: approval }
+				}
 				return approval
 			})
 
@@ -1543,18 +1699,39 @@ export class ToolScheduler {
 				})
 				await this.checkEffectFence(prepared.call)
 				if (this.isCancelled()) return
-				this.executionHost.recordToolUsage(prepared.call.name)
+				assertPathIdentities(prepared)
+				if (!prepared.usageRecorded) {
+					this.executionHost.recordToolUsage(prepared.call.name)
+					prepared.usageRecorded = true
+				}
 				executionAdmitted = true
-				execution = prepared.read
-					? prepared.read.run(this.executionSignal).then((finalize) => {
-							prepared.finalizeRead = finalize
+				execution = prepareCommand
+					? prepared.descriptor!.prepareParallelCommand!(
+							{
+								task: this.toolTask,
+								call: prepared.toolCall!,
+								signal: this.executionSignal,
+								callbacks,
+							},
+							this.options.policy!,
+						).then((read) => {
+							prepared.commandRead = read
+							if (read) prepared.commandCollector = collector
 						})
-					: prepared.descriptor!.execute({
-							task: this.toolTask,
-							call: prepared.toolCall!,
-							signal: this.executionSignal,
-							callbacks,
-						})
+					: prepared.commandRead?.run && !prepared.commandRead.serialFallback
+						? prepared.commandRead.run(callbacks).then((finalize) => {
+								prepared.finalizeCommand = finalize
+							})
+						: prepared.read
+							? prepared.read.run(this.executionSignal).then((finalize) => {
+									prepared.finalizeRead = finalize
+								})
+							: prepared.descriptor!.execute({
+									task: this.toolTask,
+									call: prepared.toolCall!,
+									signal: this.executionSignal,
+									callbacks,
+								})
 				// Observe an immediate rejection while the admission mutex releases.
 				void execution.catch(() => {})
 			})
@@ -1638,7 +1815,9 @@ export class ToolScheduler {
 			...(waitOutcome ? { waitOutcome } : {}),
 			...(opaqueResultFingerprint ? { opaqueResultFingerprint } : {}),
 			...(status !== "success" && metadata.failure ? { failure: metadata.failure } : {}),
-			durationMs: Math.max(0, performance.now() - startedAt),
+			durationMs:
+				Math.max(0, performance.now() - startedAt) +
+				(prepareCommand ? 0 : (prepared.preparationDurationMs ?? 0)),
 		}
 	}
 

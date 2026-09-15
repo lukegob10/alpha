@@ -333,14 +333,14 @@ describe("SkillsSettings", () => {
 		expect(screen.getByTestId("create-skill-dialog")).toHaveAttribute("data-open", "true")
 	})
 
-	it("keeps every saved legacy mode visible when editing a skill binding", () => {
+	it.each(["ask", "retired-custom"])("keeps saved %s bindings visible and removable", (savedMode) => {
 		const legacySkills: SkillMetadata[] = [
 			{
 				name: "legacy-bound-skill",
 				description: "Uses saved legacy modes",
 				path: "/workspace/.alpha/skills/legacy-bound-skill/SKILL.md",
 				source: "project",
-				modeSlugs: ["ask", "debug"],
+				modeSlugs: [savedMode, "debug"],
 			},
 		]
 		renderSkillsSettings(legacySkills)
@@ -353,7 +353,7 @@ describe("SkillsSettings", () => {
 		expect(screen.getByTestId("checkbox-mode-architect")).toBeInTheDocument()
 		expect(screen.getByText("Plan")).toBeInTheDocument()
 		expect(screen.getByTestId("checkbox-mode-code")).toBeInTheDocument()
-		expect(screen.getByTestId("checkbox-mode-ask")).toBeChecked()
+		expect(screen.getByTestId(`checkbox-mode-${savedMode}`)).toBeChecked()
 		expect(screen.getByTestId("checkbox-mode-debug")).toBeChecked()
 		expect(screen.queryByTestId("checkbox-mode-orchestrator")).not.toBeInTheDocument()
 
@@ -362,7 +362,19 @@ describe("SkillsSettings", () => {
 			type: "updateSkillModes",
 			skillName: "legacy-bound-skill",
 			source: "project",
-			newSkillModeSlugs: ["ask", "debug"],
+			newSkillModeSlugs: [savedMode, "debug"],
+		})
+
+		fireEvent.click(configureButton!)
+		fireEvent.click(screen.getByTestId(`checkbox-mode-${savedMode}`))
+		expect(screen.getByTestId(`checkbox-mode-${savedMode}`)).not.toBeChecked()
+		expect(screen.getByTestId("checkbox-mode-debug")).toBeChecked()
+		fireEvent.click(screen.getByText("settings:skills.modeDialog.save"))
+		expect(vscode.postMessage).toHaveBeenLastCalledWith({
+			type: "updateSkillModes",
+			skillName: "legacy-bound-skill",
+			source: "project",
+			newSkillModeSlugs: ["debug"],
 		})
 	})
 

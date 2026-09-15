@@ -135,6 +135,7 @@ vi.mock("../../../i18n", () => ({
 
 import { SkillsManager } from "../SkillsManager"
 import type { ClineProvider } from "../../../core/webview/ClineProvider"
+import { getSkillsSection } from "../../../core/prompts/sections/skills"
 
 describe("SkillsManager", () => {
 	let skillsManager: SkillsManager
@@ -222,6 +223,39 @@ describe("SkillsManager", () => {
 				expect.objectContaining({ name: "rich-documents", source: "builtin", path: builtinPath }),
 			])
 			expect(mockReadFile.mock.calls.map(([file]) => file)).toEqual([builtinPath])
+			expect(mockMkdir).not.toHaveBeenCalled()
+			expect(mockWriteFile).not.toHaveBeenCalled()
+		})
+
+		it("discovers the shipped debug skill without placing its investigation instructions in every prompt", async () => {
+			const actualFs = await vi.importActual<typeof import("fs/promises")>("fs/promises")
+			const packaged = await actualFs.readFile(p(__dirname, "../../../assets/skills/debug/SKILL.md"), "utf8")
+			const debugPath = p(builtinSkillsDir, "debug", "SKILL.md")
+			files.set(debugPath, packaged)
+			await skillsManager.discoverSkills()
+
+			for (const mode of ["code", "architect"]) {
+				const skill = await skillsManager.getSkillContent("debug", mode)
+				expect(skill).toMatchObject({ name: "debug", source: "builtin", path: debugPath })
+				if (!skill) throw new Error("Packaged debug skill was not discovered")
+				expect(skill.description.length).toBeGreaterThan(0)
+				expect(skill.description.length).toBeLessThanOrEqual(1024)
+				expect(skill.instructions.length).toBeGreaterThan(0)
+				const catalog = await getSkillsSection(skillsManager, mode)
+				expect(catalog).toContain("<name>debug</name>")
+				expect(catalog).not.toContain(skill.instructions)
+			}
+
+			disabled = ["debug"]
+			expect(await skillsManager.getSkillContent("debug", "code")).toBeNull()
+			expect(await getSkillsSection(skillsManager, "code")).not.toContain("<name>debug</name>")
+			addSkill(projectSkillsDir, "debug")
+			await skillsManager.refreshSkills()
+			expect((await skillsManager.getSkillContent("debug", "code"))?.source).toBe("project")
+			files.delete(p(projectSkillsDir, "debug", "SKILL.md"))
+			await skillsManager.refreshSkills()
+			expect(await skillsManager.getSkillContent("debug", "code")).toBeNull()
+			expect((await skillsManager.getSkillContent("rich-documents", "code"))?.source).toBe("builtin")
 			expect(mockMkdir).not.toHaveBeenCalled()
 			expect(mockWriteFile).not.toHaveBeenCalled()
 		})

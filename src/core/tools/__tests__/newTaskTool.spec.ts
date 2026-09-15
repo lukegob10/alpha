@@ -124,6 +124,19 @@ const withNativeArgs = (block: ToolUse<"new_task">): ToolUse<"new_task"> => ({
 })
 
 describe("newTaskTool", () => {
+	it.each(["ask", "debug", "orchestrator", "custom-mode"])(
+		"rejects delegation to retired mode %s before approval",
+		async (mode) => {
+			await newTaskTool.execute({ mode, message: "Investigate" }, mockCline as any, {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+			})
+			expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("Invalid mode"))
+			expect(mockAskApproval).not.toHaveBeenCalled()
+			expect(mockDelegateParentAndOpenChild).not.toHaveBeenCalled()
+		},
+	)
 	beforeEach(() => {
 		// Reset mocks before each test
 		vi.clearAllMocks()

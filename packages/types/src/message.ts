@@ -399,6 +399,8 @@ export const contextCondenseSchema = z.object({
 	newContextTokens: z.number(),
 	summary: z.string(),
 	condenseId: z.string().optional(),
+	/** Omitted by saved events from versions before idempotent manual compaction. */
+	outcome: z.enum(["reduced", "unchanged"]).optional(),
 })
 
 export type ContextCondense = z.infer<typeof contextCondenseSchema>
@@ -440,6 +442,8 @@ export type ContextTruncation = z.infer<typeof contextTruncationSchema>
  * Note: These fields are mutually exclusive - a message will have at most one of them.
  */
 export const clineMessageSchema = z.object({
+	/** Associates completed command output with its approval message when a batch runs concurrently. */
+	commandExecutionId: z.string().optional(),
 	ts: z.number(),
 	type: z.union([z.literal("ask"), z.literal("say")]),
 	ask: clineAskSchema.optional(),

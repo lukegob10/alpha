@@ -918,7 +918,16 @@ describe("ToolScheduler", () => {
 					onEvent: (event) => {
 						events.push(event)
 					},
-				}).run(response({ id: testCase.id, name: testCase.name })),
+				}).run(
+					response({
+						id: testCase.id,
+						name: testCase.name,
+						arguments:
+							testCase.name === "apply_patch"
+								? { patch: "*** Begin Patch\n*** Add File: fixture.txt\n+fixture\n*** End Patch" }
+								: {},
+					}),
+				),
 			)
 		}
 

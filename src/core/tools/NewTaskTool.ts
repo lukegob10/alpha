@@ -1,6 +1,6 @@
 import * as vscode from "vscode"
 
-import { TodoItem } from "@alpha-code/types"
+import { TodoItem, isPrimaryMode } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import { getModeBySlug } from "../../shared/modes"
@@ -91,7 +91,7 @@ export class NewTaskTool extends BaseTool<"new_task"> {
 			// Verify the mode exists
 			const targetMode = getModeBySlug(mode, state?.customModes)
 
-			if (!targetMode) {
+			if (!isPrimaryMode(mode) || !targetMode) {
 				pushToolResult(formatResponse.toolError(`Invalid mode: ${mode}`))
 				return
 			}

@@ -122,10 +122,20 @@ describe("bundled Rich documents authoring and viewer contract", () => {
 					expect(sort.closest("th")!.getAttribute("aria-sort")).toBe("ascending")
 				}
 				if (name === "report") {
+					expect(root.querySelectorAll(".metric-card")).toHaveLength(2)
+					expect(root.querySelector('a[href="#source-1"]')).not.toBeNull()
 					expect(root.querySelectorAll("figure[data-alpha-chart] svg")).toHaveLength(2)
 					expect(root.querySelectorAll("table[data-alpha-chart-data] tbody tr")).toHaveLength(16)
 					expect(root.querySelectorAll("svg [tabindex]").length).toBeGreaterThan(0)
 				}
+				if (name === "spec") {
+					expect(root.querySelectorAll("[data-alpha-diagram] svg rect")).toHaveLength(6)
+					expect(root.querySelectorAll(".timeline > li")).toHaveLength(3)
+					expect(sanitizeDocument(sourceFor(name)).images.get("image-0")?.path).toBe(
+						"images/layout-sample.png",
+					)
+				}
+				expect(root.querySelector("nav[data-alpha-toc] a")).not.toBeNull()
 				dispose()
 				expect(root.querySelectorAll("svg, th button")).toHaveLength(0)
 				expect(tableRows()).toEqual(originalTableText)

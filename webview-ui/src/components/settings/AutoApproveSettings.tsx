@@ -22,7 +22,6 @@ type AutoApproveSettingsProps = HTMLAttributes<HTMLDivElement> & {
 	alwaysAllowWriteOutsideWorkspace?: boolean
 	alwaysAllowWriteProtected?: boolean
 	alwaysAllowMcp?: boolean
-	alwaysAllowModeSwitch?: boolean
 	alwaysAllowSubtasks?: boolean
 	alwaysAllowSubagents?: boolean
 	alwaysAllowTickets?: boolean
@@ -41,7 +40,6 @@ type AutoApproveSettingsProps = HTMLAttributes<HTMLDivElement> & {
 		| "alwaysAllowWriteOutsideWorkspace"
 		| "alwaysAllowWriteProtected"
 		| "alwaysAllowMcp"
-		| "alwaysAllowModeSwitch"
 		| "alwaysAllowSubtasks"
 		| "alwaysAllowSubagents"
 		| "alwaysAllowTickets"
@@ -60,10 +58,9 @@ export const AutoApproveSettings = ({
 	alwaysAllowReadOnly,
 	alwaysAllowReadOnlyOutsideWorkspace,
 	alwaysAllowWrite,
-	alwaysAllowWriteOutsideWorkspace,
+	alwaysAllowWriteOutsideWorkspace: _legacyOutsideWriteApproval,
 	alwaysAllowWriteProtected,
 	alwaysAllowMcp,
-	alwaysAllowModeSwitch,
 	alwaysAllowSubtasks,
 	alwaysAllowSubagents,
 	alwaysAllowTickets,
@@ -153,7 +150,6 @@ export const AutoApproveSettings = ({
 						alwaysAllowReadOnly={alwaysAllowReadOnly}
 						alwaysAllowWrite={alwaysAllowWrite}
 						alwaysAllowMcp={alwaysAllowMcp}
-						alwaysAllowModeSwitch={alwaysAllowModeSwitch}
 						alwaysAllowSubtasks={alwaysAllowSubtasks}
 						alwaysAllowSubagents={alwaysAllowSubagents}
 						alwaysAllowTickets={alwaysAllowTickets}
@@ -205,24 +201,6 @@ export const AutoApproveSettings = ({
 							<span className="codicon codicon-edit" />
 							<div>{t("settings:autoApprove.write.label")}</div>
 						</div>
-						<SearchableSetting
-							settingId="auto-approve-write-outside-workspace"
-							section="autoApprove"
-							label={t("settings:autoApprove.write.outsideWorkspace.label")}>
-							<VSCodeCheckbox
-								checked={alwaysAllowWriteOutsideWorkspace}
-								onChange={(e: any) =>
-									setCachedStateField("alwaysAllowWriteOutsideWorkspace", e.target.checked)
-								}
-								data-testid="always-allow-write-outside-workspace-checkbox">
-								<span className="font-medium">
-									{t("settings:autoApprove.write.outsideWorkspace.label")}
-								</span>
-							</VSCodeCheckbox>
-							<div className="text-vscode-descriptionForeground text-sm mt-1">
-								{t("settings:autoApprove.write.outsideWorkspace.description")}
-							</div>
-						</SearchableSetting>
 						<SearchableSetting
 							settingId="auto-approve-write-protected"
 							section="autoApprove"

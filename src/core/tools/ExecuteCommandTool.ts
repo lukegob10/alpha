@@ -246,7 +246,11 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 
 			task.consecutiveMistakeCount = 0
 
-			const didApprove = await askApproval("command", canonicalCommand)
+			const didApprove = customCwd
+				? await askApproval("command", canonicalCommand, {
+						text: redactTaskPrivatePaths(task, path.resolve(task.cwd, customCwd)),
+					})
+				: await askApproval("command", canonicalCommand)
 
 			if (!didApprove) {
 				task.failCommandExecution?.(commandEvidenceId, "denied")

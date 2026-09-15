@@ -281,10 +281,10 @@
 			"timeoutLabel": "Thời gian chờ trước khi tự động chọn câu trả lời đầu tiên"
 		},
 		"execute": {
-			"label": "Thực thi",
-			"description": "Tự động thực thi các lệnh terminal được phép mà không cần phê duyệt",
-			"allowedCommands": "Các lệnh tự động thực thi được phép",
-			"allowedCommandsDescription": "Tiền tố lệnh có thể được tự động thực thi khi \"Luôn phê duyệt các hoạt động thực thi\" được bật. Thêm * để cho phép tất cả các lệnh (sử dụng cẩn thận).",
+			"label": "Quy tắc lệnh",
+			"description": "Thiết lập quy tắc lệnh. Lệnh trên máy chủ luôn cần phê duyệt vì tập lệnh có thể ghi bên ngoài không gian làm việc.",
+			"allowedCommands": "Tiền tố lệnh được phép",
+			"allowedCommandsDescription": "Tiền tố được phép được ưu tiên hơn tiền tố bị từ chối ngắn hơn. Lệnh vẫn cần được phê duyệt.",
 			"deniedCommands": "Lệnh bị từ chối",
 			"deniedCommandsDescription": "Tiền tố lệnh sẽ được tự động từ chối mà không yêu cầu phê duyệt. Trong trường hợp xung đột với lệnh được phép, khớp tiền tố dài nhất sẽ được ưu tiên. Thêm * để từ chối tất cả lệnh.",
 			"commandPlaceholder": "Nhập tiền tố lệnh (ví dụ: 'git ')",

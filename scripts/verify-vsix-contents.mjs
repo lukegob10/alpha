@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process"
-import { existsSync } from "node:fs"
-import { resolve } from "node:path"
+import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { resolve, dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 
 const archiveArgument = process.argv[2]
 
 if (!archiveArgument) {
-	console.error("Usage: node scripts/verify-vsix-contents.mjs <path-to-vsix>")
+	console.error("Usage: node scripts/verify-vsix-contents.mjs <path-to-vsix> [--check-source]")
 	process.exit(1)
 }
 
@@ -37,12 +38,14 @@ const entries = new Set(
 
 const requiredEntries = [
 	"extension/package.json",
+	"extension/assets/skills/debug/SKILL.md",
 	"extension/assets/skills/rich-documents/SKILL.md",
 	"extension/webview-ui/build/artifact-kit/v1/kit.css",
 	"extension/webview-ui/build/artifact-kit/v1/kit.js",
 	"extension/webview-ui/build/artifact-kit/v1/reference.md",
 	"extension/webview-ui/build/artifact-kit/v1/examples/review.html",
 	"extension/webview-ui/build/artifact-kit/v1/examples/spec.html",
+	"extension/webview-ui/build/artifact-kit/v1/examples/fixture-workspace/images/layout-sample.png",
 	"extension/webview-ui/build/artifact-kit/v1/examples/report.html",
 	"extension/webview-ui/build/html-document/viewer.js",
 	"extension/webview-ui/build/html-document/viewer.css",
@@ -71,3 +74,36 @@ if (packagedEnvironmentFiles.length > 0) {
 }
 
 console.log(`Verified ${entries.size} VSIX entries; required files are present and no .env file is packaged.`)
+
+// Opt-in release check: listing files alone cannot detect stale copied public
+// assets restored from a build cache with incomplete inputs.
+if (process.argv.includes("--check-source")) {
+	const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+	const publicRoot = join(repository, "webview-ui", "public")
+	const files = []
+	function collect(relative) {
+		for (const item of readdirSync(join(publicRoot, relative), { withFileTypes: true })) {
+			const child = `${relative}/${item.name}`
+			if (item.isDirectory()) collect(child)
+			else if (item.isFile()) files.push(child)
+		}
+	}
+	collect("artifact-kit/v1")
+	collect("html-document")
+	for (const relative of files) {
+		const entry = `extension/webview-ui/build/${relative}`
+		const extracted = spawnSync("tar", ["-xOf", archivePath, entry], {
+			windowsHide: true,
+			maxBuffer: 8 * 1024 * 1024,
+		})
+		if (
+			extracted.error ||
+			extracted.status !== 0 ||
+			!extracted.stdout.equals(readFileSync(join(publicRoot, relative)))
+		) {
+			console.error(`Packaged asset differs from current source: ${entry}`)
+			process.exit(1)
+		}
+	}
+	console.log(`Verified ${files.length} document assets match current source bytes.`)
+}

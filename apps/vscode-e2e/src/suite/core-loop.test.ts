@@ -98,7 +98,7 @@ suite("Core loop proportional completion", function () {
 						...configuration,
 						apiProvider: "fake-ai",
 						fakeAi: scripted,
-						mode: "ask",
+						mode: "code",
 						autoApprovalEnabled: true,
 						enableCheckpoints: false,
 						requestDelaySeconds: 0,

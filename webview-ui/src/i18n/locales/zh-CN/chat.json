@@ -324,6 +324,7 @@
 	"contextManagement": {
 		"tokens": "Token",
 		"condensation": {
+			"unchanged": "上下文已在限制范围内",
 			"title": "上下文已压缩",
 			"inProgress": "正在压缩上下文...",
 			"errorHeader": "上下文压缩失败"
@@ -499,5 +500,13 @@
 		"title": "供应商不再受支持",
 		"message": "抱歉，此供应商已不再受支持。我们发现实际使用它的 Alpha 用户非常少，我们需要缩减代码库的范围，以便继续快速交付并更好地服务社区。这是一个非常艰难的决定，但它能让我们专注于对你最重要的事情。我们知道这很遗憾。",
 		"openSettings": "打开设置"
+	},
+	"githubActions": {
+		"request": "请求",
+		"create_pull_request": "创建拉取请求",
+		"get_pull_request": "查看拉取请求",
+		"list_checks": "列出检查",
+		"merge_pull_request": "合并拉取请求",
+		"comment": "添加评论"
 	}
 }

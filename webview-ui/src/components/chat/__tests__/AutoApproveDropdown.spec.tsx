@@ -14,7 +14,6 @@ const mockSetters = {
 	setAlwaysAllowWriteProtected: vi.fn(),
 	setAlwaysAllowExecute: vi.fn(),
 	setAlwaysAllowMcp: vi.fn(),
-	setAlwaysAllowModeSwitch: vi.fn(),
 	setAlwaysAllowSubtasks: vi.fn(),
 	setAlwaysAllowSubagents: vi.fn(),
 	setAlwaysAllowTickets: vi.fn(),
@@ -67,7 +66,6 @@ describe("AutoApproveDropdown", () => {
 			alwaysAllowWriteProtected: false,
 			alwaysAllowExecute: false,
 			alwaysAllowMcp: false,
-			alwaysAllowModeSwitch: false,
 			alwaysAllowSubtasks: false,
 			alwaysAllowSubagents: false,
 			alwaysAllowTickets: false,
@@ -91,7 +89,6 @@ describe("AutoApproveDropdown", () => {
 				alwaysAllowWriteProtected: true,
 				alwaysAllowExecute: true,
 				alwaysAllowMcp: true,
-				alwaysAllowModeSwitch: true,
 				alwaysAllowSubtasks: true,
 				alwaysAllowSubagents: true,
 				alwaysAllowTickets: true,
@@ -185,7 +182,6 @@ describe("AutoApproveDropdown", () => {
 			alwaysAllowWriteProtected: true,
 			alwaysAllowExecute: true,
 			alwaysAllowMcp: true,
-			alwaysAllowModeSwitch: true,
 			alwaysAllowSubtasks: true,
 			alwaysAllowSubagents: true,
 			alwaysAllowTickets: true,
@@ -196,7 +192,7 @@ describe("AutoApproveDropdown", () => {
 		render(<AutoApproveDropdown />)
 
 		expect(screen.queryAllByText("chat:autoApprove.triggerLabelAll")).toHaveLength(0)
-		expect(screen.getAllByText("9 auto-approved").length).toBeGreaterThan(0)
+		expect(screen.getAllByText("8 auto-approved").length).toBeGreaterThan(0)
 	})
 
 	it("does not label a wildcard with command denials as full auto-approval", () => {
@@ -210,7 +206,6 @@ describe("AutoApproveDropdown", () => {
 			alwaysAllowWriteProtected: true,
 			alwaysAllowExecute: true,
 			alwaysAllowMcp: true,
-			alwaysAllowModeSwitch: true,
 			alwaysAllowSubtasks: true,
 			alwaysAllowSubagents: true,
 			alwaysAllowTickets: true,
@@ -222,7 +217,7 @@ describe("AutoApproveDropdown", () => {
 		render(<AutoApproveDropdown />)
 
 		expect(screen.queryAllByText("chat:autoApprove.triggerLabelAll")).toHaveLength(0)
-		expect(screen.getAllByText("9 auto-approved").length).toBeGreaterThan(0)
+		expect(screen.getAllByText("8 auto-approved").length).toBeGreaterThan(0)
 	})
 
 	it.each(["alwaysAllowReadOnlyOutsideWorkspace", "alwaysAllowWriteOutsideWorkspace", "alwaysAllowWriteProtected"])(
@@ -238,7 +233,6 @@ describe("AutoApproveDropdown", () => {
 				alwaysAllowWriteProtected: true,
 				alwaysAllowExecute: true,
 				alwaysAllowMcp: true,
-				alwaysAllowModeSwitch: true,
 				alwaysAllowSubtasks: true,
 				alwaysAllowSubagents: true,
 				alwaysAllowTickets: true,
@@ -264,7 +258,6 @@ describe("AutoApproveDropdown", () => {
 			alwaysAllowWriteProtected: true,
 			alwaysAllowExecute: true,
 			alwaysAllowMcp: true,
-			alwaysAllowModeSwitch: true,
 			alwaysAllowSubtasks: true,
 			alwaysAllowSubagents: true,
 			alwaysAllowTickets: true,
@@ -277,6 +270,6 @@ describe("AutoApproveDropdown", () => {
 		render(<AutoApproveDropdown />)
 
 		expect(screen.queryAllByText("chat:autoApprove.triggerLabelAll")).toHaveLength(0)
-		expect(screen.getAllByText("9 auto-approved").length).toBeGreaterThan(0)
+		expect(screen.getAllByText("8 auto-approved").length).toBeGreaterThan(0)
 	})
 })

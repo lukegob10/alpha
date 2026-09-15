@@ -6,14 +6,7 @@ import { getToolBatchIsolationError, ToolScheduler, type ToolExecutionHost } fro
 import { ToolRegistry } from "../../tools/ToolRegistry"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
 
-const barriers = [
-	"new_task",
-	"delegate_task",
-	"attempt_completion",
-	"switch_mode",
-	"ask_followup_question",
-	"wait_agent",
-]
+const barriers = ["new_task", "delegate_task", "attempt_completion", "ask_followup_question", "wait_agent"]
 
 function toolCall(id: string, name: string, args: unknown = {}): AgentToolCall {
 	return { type: "tool_call", id, name, arguments: args }

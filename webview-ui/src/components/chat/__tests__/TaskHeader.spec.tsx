@@ -112,10 +112,10 @@ vi.mock("@/components/ui/hooks/useSelectedModel", () => ({
 	}),
 }))
 
-// Mock getModelMaxOutputTokens from @alpha/api
+// Mock getModelReservedOutputTokens from @alpha/api
 let mockMaxOutputTokens = 0
 vi.mock("@alpha/api", () => ({
-	getModelMaxOutputTokens: () => mockMaxOutputTokens,
+	getModelReservedOutputTokens: () => mockMaxOutputTokens,
 }))
 
 describe("TaskHeader", () => {
@@ -527,7 +527,7 @@ describe("TaskHeader", () => {
 		beforeEach(() => {
 			// Set up mock model with known contextWindow
 			mockModelInfo = { contextWindow: 1000, maxTokens: 200 }
-			// Set up mock for getModelMaxOutputTokens to return reservedForOutput
+			// Set up mock for getModelReservedOutputTokens to return reservedForOutput
 			mockMaxOutputTokens = 200
 		})
 

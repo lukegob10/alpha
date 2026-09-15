@@ -323,6 +323,7 @@
 	"contextManagement": {
 		"tokens": "Tokens",
 		"condensation": {
+			"unchanged": "Der Kontext passt bereits",
 			"title": "Kontext komprimiert",
 			"inProgress": "Kontext wird komprimiert...",
 			"errorHeader": "Kontext konnte nicht komprimiert werden"
@@ -498,5 +499,13 @@
 		"title": "Anbieter wird nicht mehr unterstützt",
 		"message": "Leider wird dieser Anbieter nicht mehr unterstützt. Wir haben festgestellt, dass nur sehr wenige Alpha-Nutzer ihn tatsächlich verwendet haben, und wir müssen den Umfang unserer Codebasis reduzieren, damit wir weiterhin schnell liefern und unserer Community in diesem Bereich gut dienen können. Es war eine wirklich schwere Entscheidung, aber sie ermöglicht uns, uns auf das zu konzentrieren, was dir am wichtigsten ist. Es ist ärgerlich, das wissen wir.",
 		"openSettings": "Einstellungen öffnen"
+	},
+	"githubActions": {
+		"request": "Anfrage",
+		"create_pull_request": "Pull Request erstellen",
+		"get_pull_request": "Pull Request anzeigen",
+		"list_checks": "Prüfungen auflisten",
+		"merge_pull_request": "Pull Request zusammenführen",
+		"comment": "Kommentar hinzufügen"
 	}
 }

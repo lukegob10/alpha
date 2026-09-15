@@ -70,6 +70,9 @@
 	outline: 2px solid var(--doc-focus);
 	outline-offset: 4px;
 }
+.alpha-doc [id] {
+	scroll-margin-top: 5rem;
+}
 .alpha-doc .eyebrow {
 	font-size: 0.8em;
 	letter-spacing: 0.08em;
@@ -80,6 +83,119 @@
 .alpha-doc .lead {
 	font-size: 1.12em;
 	max-width: 100ch;
+}
+.alpha-doc .document-outline {
+	list-style: none;
+	padding: 0;
+	columns: 2 18rem;
+}
+.alpha-doc .document-outline li {
+	break-inside: avoid;
+	padding: 0.2rem 0;
+}
+.alpha-doc .document-outline .outline-child {
+	padding-left: 1.2rem;
+}
+.alpha-doc nav[data-alpha-toc] {
+	border-bottom: 1px solid var(--doc-border);
+	padding-bottom: 1rem;
+}
+.alpha-doc .metric-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+	gap: 1rem;
+}
+.alpha-doc .metric-card,
+.alpha-doc .evidence-card {
+	border: 1px solid var(--doc-border);
+	padding: 1.2rem;
+	min-width: 0;
+}
+.alpha-doc .metric-card h3,
+.alpha-doc .evidence-card h3 {
+	margin-top: 0;
+}
+.alpha-doc .metric-value {
+	font-size: clamp(1.6rem, 4vw, 2.3rem);
+	font-weight: 650;
+	font-variant-numeric: tabular-nums;
+	margin: 0.3rem 0;
+}
+.alpha-doc .metric-card dl,
+.alpha-doc .evidence-card dl {
+	margin-bottom: 0;
+}
+.alpha-doc dt {
+	font-weight: 650;
+}
+.alpha-doc dd {
+	margin: 0 0 0.7rem;
+}
+.alpha-doc .evidence-card {
+	margin: 1.2rem 0;
+}
+.alpha-doc .footnotes {
+	border-top: 1px solid var(--doc-border);
+	margin-top: 2rem;
+	padding-top: 1rem;
+}
+.alpha-doc .timeline {
+	list-style: none;
+	padding-left: 1.2rem;
+	border-left: 2px solid var(--doc-border);
+}
+.alpha-doc .timeline > li {
+	padding: 0 0 1.5rem 0.7rem;
+}
+.alpha-doc .timeline h3 {
+	margin-top: 0;
+}
+.alpha-doc img {
+	display: block;
+	max-width: 100%;
+	height: auto;
+	border: 1px solid var(--doc-border);
+}
+.alpha-doc .image-unavailable {
+	display: block;
+	border: 1px dashed var(--doc-border);
+	padding: 1rem;
+}
+.alpha-doc .diagram-scroll {
+	overflow: auto;
+	max-width: 100%;
+	margin-bottom: 1rem;
+}
+.alpha-doc .diagram-scroll svg {
+	display: block;
+	max-width: none;
+}
+.alpha-doc .diagram-edge {
+	stroke: var(--doc-accent);
+	stroke-width: 2;
+	fill: none;
+}
+.alpha-doc .diagram-node {
+	fill: var(--doc-bg);
+	stroke: var(--doc-border);
+	stroke-width: 2;
+}
+.alpha-doc .diagram-label {
+	fill: var(--doc-fg);
+	font-family: inherit;
+	font-size: 14px;
+}
+@media (forced-colors: active) {
+	.alpha-doc .diagram-edge,
+	.alpha-doc .diagram-node {
+		stroke: CanvasText;
+	}
+	.alpha-doc .diagram-node {
+		fill: Canvas;
+	}
+	.alpha-doc .diagram-label {
+		fill: CanvasText;
+	}
 }
 .alpha-doc .doc-header {
 	border-bottom: 1px solid var(--doc-line);

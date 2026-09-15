@@ -73,7 +73,7 @@ describe("secondary user-facing mode selectors", () => {
 		expect(screen.queryByTestId("checkbox-create-mode-orchestrator")).not.toBeInTheDocument()
 	})
 
-	it("retains the saved legacy mode when a scheduled task is opened", async () => {
+	it("offers only Code and Plan when a legacy schedule is opened", async () => {
 		mockExtensionState = {
 			...baseState(),
 			scheduledTasks: [
@@ -97,7 +97,7 @@ describe("secondary user-facing mode selectors", () => {
 		render(<ScheduledTasksView onDone={vi.fn()} targetTaskId="legacy-schedule" />)
 
 		await waitFor(() => {
-			expect(screen.getByTestId("select-item-orchestrator")).toHaveTextContent(/Orchestrator/)
+			expect(screen.queryByTestId("select-item-orchestrator")).not.toBeInTheDocument()
 		})
 		expect(screen.getByTestId("select-item-architect")).toHaveTextContent("Plan")
 		expect(screen.getByTestId("select-item-code")).toHaveTextContent("Code")

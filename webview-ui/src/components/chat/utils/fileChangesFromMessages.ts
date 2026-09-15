@@ -1,8 +1,20 @@
 import type { ClineMessage, ClineSayTool } from "@alpha-code/types"
 import { safeJsonParse } from "@alpha/core"
 
-/** File-edit tool names from ClineSayTool["tool"] (packages/types). */
-const FILE_EDIT_TOOLS = new Set<string>(["editedExistingFile", "appliedDiff", "newFileCreated"])
+/** File-edit tool names from ClineSayTool["tool"] plus compatibility aliases. */
+const FILE_EDIT_TOOLS = new Set<string>([
+	"editedExistingFile",
+	"appliedDiff",
+	"newFileCreated",
+	"insertContent",
+	"searchAndReplace",
+	"search_and_replace",
+	"search_replace",
+	"edit",
+	"edit_file",
+	"apply_patch",
+	"apply_diff",
+])
 
 export interface FileChangeEntry {
 	path: string
@@ -10,6 +22,14 @@ export interface FileChangeEntry {
 	diffStats?: { added: number; removed: number }
 	/** Original file content before first edit (for merged diff display) */
 	originalContent?: string
+}
+
+export interface FileChangeTurn {
+	/** Stable identity for the turn's panel, even while later messages stream in. */
+	key: string
+	/** Index of the last rendered message in this turn. */
+	endIndex: number
+	messages: ClineMessage[]
 }
 
 /**
@@ -64,4 +84,39 @@ export function fileChangesFromMessages(messages: ClineMessage[] | undefined): F
 	}
 
 	return entries
+}
+
+/**
+ * Splits rendered transcript messages at user follow-ups and returns only turns
+ * that contain an applied file edit. The end index lets the transcript place a
+ * turn's summary directly below its response instead of aggregating all edits
+ * at the bottom of the conversation.
+ */
+export function fileChangeTurnsFromMessages(messages: ClineMessage[] | undefined, taskKey = "task"): FileChangeTurn[] {
+	if (!messages?.length) return []
+
+	const turns: FileChangeTurn[] = []
+	let startIndex = 0
+
+	for (let endIndex = 0; endIndex <= messages.length; endIndex++) {
+		const nextMessage = messages[endIndex]
+		const isTurnBoundary =
+			endIndex === messages.length ||
+			(endIndex > startIndex && nextMessage?.type === "say" && nextMessage.say === "user_feedback")
+
+		if (!isTurnBoundary) continue
+
+		const turnMessages = messages.slice(startIndex, endIndex)
+		if (turnMessages.length > 0 && fileChangesFromMessages(turnMessages).length > 0) {
+			turns.push({
+				key: `${taskKey}:${turnMessages[0].ts}`,
+				endIndex: endIndex - 1,
+				messages: turnMessages,
+			})
+		}
+
+		startIndex = endIndex
+	}
+
+	return turns
 }

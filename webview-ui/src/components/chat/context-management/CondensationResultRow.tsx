@@ -25,6 +25,18 @@ export function CondensationResultRow({ data }: CondensationResultRowProps) {
 	const prevTokens = prevContextTokens ?? 0
 	const newTokens = newContextTokens ?? 0
 	const displayCost = cost ?? 0
+	if (data.outcome === "unchanged") {
+		return (
+			<div className="mb-2 flex flex-wrap items-center gap-2 text-vscode-descriptionForeground" role="status">
+				<FoldVertical size={16} aria-hidden="true" />
+				<span>{t("chat:contextManagement.condensation.unchanged")}</span>
+				<span className="text-sm">
+					{newTokens.toLocaleString()} {t("chat:contextManagement.tokens")}
+				</span>
+				{displayCost > 0 && <VSCodeBadge>${displayCost.toFixed(2)}</VSCodeBadge>}
+			</div>
+		)
+	}
 
 	return (
 		<div className="mb-2">

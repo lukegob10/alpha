@@ -218,7 +218,7 @@ describe("addCustomInstructions", () => {
 		expect(prompt).toMatchFileSnapshot("./__snapshots__/add-custom-instructions/architect-mode-prompt.snap")
 	})
 
-	it("should generate correct prompt for ask mode", async () => {
+	it("uses the default prompt when the low-level builder receives retired ask mode", async () => {
 		const prompt = await SYSTEM_PROMPT(
 			mockContext,
 			"/test/path",

@@ -4,7 +4,6 @@ import fs from "fs/promises"
 import type { MockedFunction } from "vitest"
 
 import { fileExistsAtPath, createDirectoriesForFile } from "../../../utils/fs"
-import { isPathOutsideWorkspace } from "../../../utils/pathUtils"
 import { getReadablePath } from "../../../utils/path"
 import { ToolUse, ToolResponse } from "../../../shared/tools"
 import { writeToFileTool } from "../WriteToFileTool"
@@ -45,10 +44,6 @@ vi.mock("../../prompts/responses", () => ({
 	},
 }))
 
-vi.mock("../../../utils/pathUtils", () => ({
-	isPathOutsideWorkspace: vi.fn().mockReturnValue(false),
-}))
-
 vi.mock("../../../utils/path", () => ({
 	getReadablePath: vi.fn().mockReturnValue("test/path.txt"),
 }))
@@ -86,7 +81,6 @@ describe("writeToFileTool", () => {
 	// Mocked functions with correct types
 	const mockedFileExistsAtPath = fileExistsAtPath as MockedFunction<typeof fileExistsAtPath>
 	const mockedCreateDirectoriesForFile = createDirectoriesForFile as MockedFunction<typeof createDirectoriesForFile>
-	const mockedIsPathOutsideWorkspace = isPathOutsideWorkspace as MockedFunction<typeof isPathOutsideWorkspace>
 	const mockedGetReadablePath = getReadablePath as MockedFunction<typeof getReadablePath>
 	const mockedPathResolve = path.resolve as MockedFunction<typeof path.resolve>
 	const mockedFsReadFile = fs.readFile as unknown as MockedFunction<
@@ -106,7 +100,6 @@ describe("writeToFileTool", () => {
 		mockedPathResolve.mockReturnValue(absoluteFilePath)
 		mockedFsReadFile.mockResolvedValue("existing content")
 		mockedFileExistsAtPath.mockResolvedValue(false)
-		mockedIsPathOutsideWorkspace.mockReturnValue(false)
 		mockedGetReadablePath.mockReturnValue("test/path.txt")
 
 		mockCline.cwd = "/"
@@ -172,6 +165,7 @@ describe("writeToFileTool", () => {
 		}
 		mockCline.say = vi.fn().mockResolvedValue(undefined)
 		mockCline.ask = vi.fn().mockResolvedValue(undefined)
+		mockCline.processQueuedMessages = vi.fn().mockResolvedValue(undefined)
 		mockCline.recordToolError = vi.fn()
 		mockCline.sayAndCreateMissingParamError = vi.fn().mockResolvedValue("Missing param error")
 
@@ -375,13 +369,23 @@ describe("writeToFileTool", () => {
 			})
 		})
 
-		it("processes files outside workspace boundary", async () => {
-			mockedIsPathOutsideWorkspace.mockReturnValue(true)
+		it.each([false, true])(
+			"marks outside-workspace writes in the approval payload (existing=%s)",
+			async (fileExists) => {
+				const actualPath = await vi.importActual<typeof import("path")>("path")
+				mockedPathResolve.mockImplementation(actualPath.resolve)
+				mockCline.cwd = path.join(path.parse(absoluteFilePath).root, "workspace", "project")
 
-			await executeWriteFileTool({})
+				await executeWriteFileTool({ path: absoluteFilePath }, { fileExists })
 
-			expect(mockedIsPathOutsideWorkspace).toHaveBeenCalled()
-		})
+				expect(mockHandleError).not.toHaveBeenCalled()
+				expect(mockAskApproval).toHaveBeenCalledOnce()
+				expect(JSON.parse(mockAskApproval.mock.calls[0][1])).toMatchObject({
+					tool: fileExists ? "editedExistingFile" : "newFileCreated",
+					isOutsideWorkspace: true,
+				})
+			},
+		)
 
 		it("processes files with large content", async () => {
 			const largeContent = "Line\n".repeat(10000)

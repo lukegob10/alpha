@@ -25,8 +25,9 @@
 					a released feature.
 				</p>
 			</header>
+			<nav data-alpha-toc aria-label="Document contents"><p class="eyebrow">On this page</p></nav>
 			<section class="summary">
-				<h2>Recommended approach</h2>
+				<h2 id="recommendation">Recommended approach</h2>
 				<p>
 					Store the document’s identity separately from its rendered content. Open an isolated preview from
 					the task record, load only the packaged design kit, and refresh from validated source changes. The
@@ -38,7 +39,83 @@
 				</p>
 			</section>
 			<section>
-				<h2>What a reader should be able to do</h2>
+				<h2 id="architecture">Proposed ownership boundaries</h2>
+				<figure data-alpha-diagram>
+					<figcaption>
+						Document opening flow. Arrows show direction; the table names each relationship.
+					</figcaption>
+					<div class="table-scroll">
+						<table>
+							<caption>
+								Proposed responsibilities, not a claim about a released implementation
+							</caption>
+							<thead>
+								<tr>
+									<th scope="col">From</th>
+									<th scope="col">Relationship</th>
+									<th scope="col">To</th>
+								</tr>
+							</thead>
+							<tbody>
+								<tr>
+									<th scope="row">Task link</th>
+									<td>Requests document opening</td>
+									<td>Viewer host</td>
+								</tr>
+								<tr>
+									<th scope="row">Viewer host</th>
+									<td>Reads scoped source</td>
+									<td>Workspace HTML</td>
+								</tr>
+								<tr>
+									<th scope="row">Workspace HTML</th>
+									<td>Provides untrusted markup</td>
+									<td>Sanitizer worker</td>
+								</tr>
+								<tr>
+									<th scope="row">Sanitizer worker</th>
+									<td>Returns validated content</td>
+									<td>Document view</td>
+								</tr>
+								<tr>
+									<th scope="row">Packaged kit</th>
+									<td>Enhances validated content</td>
+									<td>Document view</td>
+								</tr>
+							</tbody>
+						</table>
+					</div>
+				</figure>
+				<figure>
+					<img
+						data-image="images/layout-sample.png"
+						src="fixture-workspace/images/layout-sample.png"
+						alt="Illustrative wireframe with a narrow contents column, a main decision panel, and two evidence cards." />
+					<figcaption>
+						Illustrative layout wireframe, not a product screenshot. To preview this supplied image, open
+						the fixture workspace or copy its images folder into your workspace.
+					</figcaption>
+				</figure>
+			</section>
+			<section>
+				<h2 id="rollout-steps">Proposed implementation sequence</h2>
+				<ol class="timeline">
+					<li>
+						<h3>Define identity</h3>
+						<p>Agree on durable source and link behavior before rendering.</p>
+					</li>
+					<li>
+						<h3>Validate the boundary</h3>
+						<p>Exercise malformed content and recovery before enabling rich widgets.</p>
+					</li>
+					<li>
+						<h3>Verify the reader experience</h3>
+						<p>Check navigation, evidence, themes, and reload in the supported host.</p>
+					</li>
+				</ol>
+			</section>
+			<section>
+				<h2 id="what-a-reader-should-be-able-to-do">What a reader should be able to do</h2>
 				<ol>
 					<li>Reopen a saved task and find the same report, including after a window reload.</li>
 					<li>
@@ -54,7 +131,7 @@
 			</section>
 			<div class="grid">
 				<section class="card">
-					<h2>Identity and authority</h2>
+					<h2 id="identity-and-authority">Identity and authority</h2>
 					<dl class="key-values">
 						<dt><strong>Document identifier</strong></dt>
 						<dd>Opaque and stable within a task. A title is display text, never a storage key.</dd>
@@ -71,7 +148,7 @@
 					</dl>
 				</section>
 				<section>
-					<h2>Rendering boundary</h2>
+					<h2 id="rendering-boundary">Rendering boundary</h2>
 					<p>
 						HTML contributes semantic content and documented widget data. The host supplies theme values,
 						local kit assets, content policy, and permitted navigation.
@@ -83,7 +160,7 @@
 				</section>
 			</div>
 			<section>
-				<h2>Alternatives and costs</h2>
+				<h2 id="alternatives-and-costs">Alternatives and costs</h2>
 				<div class="table-scroll">
 					<table>
 						<caption>
@@ -121,7 +198,7 @@
 				</div>
 			</section>
 			<section>
-				<h2>Refresh behavior</h2>
+				<h2 id="refresh-behavior">Refresh behavior</h2>
 				<ol>
 					<li>The reader saves the source and selects Refresh.</li>
 					<li>
@@ -144,7 +221,7 @@
 				</aside>
 			</section>
 			<section>
-				<h2>Acceptance and rollout</h2>
+				<h2 id="acceptance-and-rollout">Acceptance and rollout</h2>
 				<ul class="checklist">
 					<li><strong>Required:</strong> a saved task reopens the same document after a reload.</li>
 					<li><strong>Required:</strong> malformed widget data leaves its semantic table readable.</li>

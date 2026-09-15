@@ -120,7 +120,7 @@ export function createReadFileTool(options: ReadFileToolOptions = {}): OpenAI.Ch
 				properties: {
 					path: {
 						type: "string",
-						description: "Path to the file, relative to the workspace",
+						description: "Absolute file path or path relative to the task workspace",
 					},
 					line_ranges: {
 						type: "array",
@@ -142,7 +142,7 @@ export function createReadFileTool(options: ReadFileToolOptions = {}): OpenAI.Ch
 		},
 		path: {
 			type: "string",
-			description: "Path to the file to read, relative to the workspace",
+			description: "Absolute file path or path relative to the task workspace",
 		},
 		mode: {
 			type: "string",

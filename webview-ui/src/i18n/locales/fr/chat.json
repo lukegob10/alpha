@@ -323,6 +323,7 @@
 	"contextManagement": {
 		"tokens": "tokens",
 		"condensation": {
+			"unchanged": "Le contexte tient déjà dans la limite",
 			"title": "Contexte condensé",
 			"inProgress": "Condensation du contexte...",
 			"errorHeader": "Échec de la condensation du contexte"
@@ -498,5 +499,13 @@
 		"title": "Fournisseur plus pris en charge",
 		"message": "Désolé, ce fournisseur n'est plus pris en charge. Nous avons constaté que très peu d'utilisateurs de Alpha l'utilisaient réellement et nous devons réduire la portée de notre code pour continuer à avancer rapidement et bien servir notre communauté. C'était une décision vraiment difficile, mais elle nous permet de nous concentrer sur ce qui compte le plus pour toi. C'est rageant, on le sait.",
 		"openSettings": "Ouvrir les paramètres"
+	},
+	"githubActions": {
+		"request": "Requête",
+		"create_pull_request": "Créer une pull request",
+		"get_pull_request": "Afficher la pull request",
+		"list_checks": "Lister les vérifications",
+		"merge_pull_request": "Fusionner la pull request",
+		"comment": "Ajouter un commentaire"
 	}
 }

@@ -807,15 +807,6 @@ export class NativeToolCallParser {
 				}
 				break
 
-			case "switch_mode":
-				if (partialArgs.mode_slug !== undefined || partialArgs.reason !== undefined) {
-					nativeArgs = {
-						mode_slug: partialArgs.mode_slug,
-						reason: partialArgs.reason,
-					}
-				}
-				break
-
 			case "update_todo_list":
 				if (partialArgs.todos !== undefined) {
 					nativeArgs = {
@@ -1252,15 +1243,6 @@ export class NativeToolCallParser {
 							path: args.path,
 							regex: args.regex,
 							file_pattern: args.file_pattern,
-						} as NativeArgsFor<TName>
-					}
-					break
-
-				case "switch_mode":
-					if (args.mode_slug !== undefined && args.reason !== undefined) {
-						nativeArgs = {
-							mode_slug: args.mode_slug,
-							reason: args.reason,
 						} as NativeArgsFor<TName>
 					}
 					break

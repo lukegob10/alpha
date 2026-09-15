@@ -310,8 +310,6 @@ vi.mock("../../../shared/modes", () => ({
 		}
 	}),
 	defaultModeSlug: "code",
-	isCodePlanModeTransition: (currentMode: string | undefined, newMode: string) =>
-		(currentMode === "code" && newMode === "architect") || (currentMode === "architect" && newMode === "code"),
 }))
 
 vi.mock("../../prompts/system", () => ({
@@ -1831,48 +1829,18 @@ describe("ClineProvider", () => {
 		expect(mockPostMessage).toHaveBeenCalled()
 	})
 
-	it("loads saved API config when switching modes", async () => {
+	it.each(["ask", "debug", "orchestrator"])("rejects a retired %s selection from the webview", async (mode) => {
 		await provider.resolveWebviewView(mockWebviewView)
 		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
-
-		const profile: ProviderSettingsEntry = { name: "test-config", id: "test-id", apiProvider: "anthropic" }
-
-		;(provider as any).providerSettingsManager = {
-			getModeConfigId: vi.fn().mockResolvedValue("test-id"),
-			listConfig: vi.fn().mockResolvedValue([profile]),
-			activateProfile: vi.fn().mockResolvedValue(profile),
-			setModeConfig: vi.fn(),
-			getProfile: vi.fn().mockResolvedValue(profile),
-		} as any
-
-		// Switch to a legacy mode that still has its own saved profile.
-		await messageHandler({ type: "mode", text: "debug" })
-
-		// Legacy modes retain mode-specific profile behavior.
-		expect(provider.providerSettingsManager.getModeConfigId).toHaveBeenCalledWith("debug")
-		expect(provider.providerSettingsManager.activateProfile).toHaveBeenCalledWith({ name: "test-config" })
-		expect(mockContext.globalState.update).toHaveBeenCalledWith("currentApiConfigName", "test-config")
-	})
-
-	it("saves current config when switching to mode without config", async () => {
-		await provider.resolveWebviewView(mockWebviewView)
-		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
-
-		;(provider as any).providerSettingsManager = {
-			getModeConfigId: vi.fn().mockResolvedValue(undefined),
-			listConfig: vi
-				.fn()
-				.mockResolvedValue([{ name: "current-config", id: "current-id", apiProvider: "anthropic" }]),
-			setModeConfig: vi.fn(),
-		} as any
-
-		provider.setValue("currentApiConfigName", "current-config")
-
-		// Switch to a legacy mode without a saved profile.
-		await messageHandler({ type: "mode", text: "debug" })
-
-		// Legacy modes retain mode-specific profile behavior.
-		expect(provider.providerSettingsManager.setModeConfig).toHaveBeenCalledWith("debug", "current-id")
+		const lookup = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
+		const activate = vi.spyOn(provider, "activateProviderProfile")
+		const save = vi.spyOn(provider.providerSettingsManager, "setModeConfig")
+		vi.mocked(mockContext.globalState.update).mockClear()
+		await messageHandler({ type: "mode", text: mode })
+		expect(mockContext.globalState.update).not.toHaveBeenCalledWith("mode", mode)
+		expect(lookup).not.toHaveBeenCalled()
+		expect(activate).not.toHaveBeenCalled()
+		expect(save).not.toHaveBeenCalled()
 	})
 
 	it("saves config as default for current mode when loading config", async () => {
@@ -2412,205 +2380,54 @@ describe("ClineProvider", () => {
 	})
 
 	describe("handleModeSwitch", () => {
-		beforeEach(async () => {
-			// Set up webview for each test
-			await provider.resolveWebviewView(mockWebviewView)
-		})
-
-		it("loads saved API config when switching modes", async () => {
-			const profile: ProviderSettingsEntry = {
-				name: "saved-config",
-				id: "saved-config-id",
-				apiProvider: "anthropic",
-			}
-
-			;(provider as any).providerSettingsManager = {
-				getModeConfigId: vi.fn().mockResolvedValue("saved-config-id"),
-				listConfig: vi.fn().mockResolvedValue([profile]),
-				activateProfile: vi.fn().mockResolvedValue(profile),
-				setModeConfig: vi.fn(),
-				getProfile: vi.fn().mockResolvedValue(profile),
-			} as any
-
-			// Switch to a legacy mode with a saved profile.
-			await provider.handleModeSwitch("debug")
-
-			// Verify mode was updated
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "debug")
-
-			// Verify saved config was loaded
-			expect(provider.providerSettingsManager.getModeConfigId).toHaveBeenCalledWith("debug")
-			expect(provider.providerSettingsManager.activateProfile).toHaveBeenCalledWith({ name: "saved-config" })
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("currentApiConfigName", "saved-config")
-
-			// Verify state was posted to webview
-			expect(mockPostMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "state" }))
-		})
-
-		test("saves current config when switching to mode without config", async () => {
-			;(provider as any).providerSettingsManager = {
-				getModeConfigId: vi.fn().mockResolvedValue(undefined),
-				listConfig: vi
-					.fn()
-					.mockResolvedValue([{ name: "current-config", id: "current-id", apiProvider: "anthropic" }]),
-				setModeConfig: vi.fn(),
-			} as any
-
-			// Mock the ContextProxy's getValue method to return the current config name
-			const contextProxy = (provider as any).contextProxy
-			const getValueSpy = vi.spyOn(contextProxy, "getValue")
-			getValueSpy.mockImplementation((key: any) => {
-				if (key === "currentApiConfigName") return "current-config"
-				return undefined
-			})
-
-			// Switch to a legacy mode without a saved profile.
-			await provider.handleModeSwitch("debug")
-
-			// Verify mode was updated
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "debug")
-
-			// Verify current config was saved as default for new mode
-			expect(provider.providerSettingsManager.setModeConfig).toHaveBeenCalledWith("debug", "current-id")
-
-			// Verify state was posted to webview
-			expect(mockPostMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "state" }))
-		})
+		it.each(["ask", "debug", "orchestrator", "custom-mode"])(
+			"rejects %s before state or profile changes",
+			async (mode) => {
+				await provider.resolveWebviewView(mockWebviewView)
+				const lookup = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
+				vi.mocked(mockContext.globalState.update).mockClear()
+				await expect(provider.handleModeSwitch(mode)).rejects.toThrow("Only Code")
+				expect(mockContext.globalState.update).not.toHaveBeenCalledWith("mode", mode)
+				expect(lookup).not.toHaveBeenCalled()
+			},
+		)
 	})
 
 	describe("createTaskWithHistoryItem mode validation", () => {
-		test("validates and falls back to default mode when restored mode no longer exists", async () => {
-			await provider.resolveWebviewView(mockWebviewView)
-
-			// Mock custom modes that don't include the saved mode
-			const mockCustomModesManager = {
-				getCustomModes: vi.fn().mockResolvedValue([
-					{
-						slug: "existing-mode",
-						name: "Existing Mode",
-						roleDefinition: "Test role",
-						groups: ["read"] as const,
-					},
-				]),
-				dispose: vi.fn(),
-			}
-			;(provider as any).customModesManager = mockCustomModesManager
-
-			// Mock getModeBySlug to return undefined for non-existent mode
-			const { getModeBySlug } = await import("../../../shared/modes")
-			vi.mocked(getModeBySlug)
-				.mockReturnValueOnce(undefined) // First call returns undefined (mode doesn't exist)
-				.mockReturnValue({
-					slug: "code",
-					name: "Code Mode",
-					roleDefinition: "You are a code assistant",
-					groups: ["read", "edit"],
-				}) // Subsequent calls return default mode
-
-			// Mock provider settings manager
-			;(provider as any).providerSettingsManager = {
-				getModeConfigId: vi.fn().mockResolvedValue(undefined),
-				listConfig: vi.fn().mockResolvedValue([]),
-			}
-
-			// Spy on log method to verify warning was logged
-			const logSpy = vi.spyOn(provider, "log")
-
-			// Create history item with non-existent mode
-			const historyItem = {
-				id: "test-id",
-				ts: Date.now(),
-				task: "Test task",
-				mode: "non-existent-mode", // This mode doesn't exist
-				number: 1,
-				tokensIn: 0,
-				tokensOut: 0,
-				totalCost: 0,
-			}
-
-			// Initialize with history item
-			await provider.createTaskWithHistoryItem(historyItem)
-
-			// Verify mode validation occurred
-			expect(mockCustomModesManager.getCustomModes).toHaveBeenCalled()
-			expect(getModeBySlug).toHaveBeenCalledWith("non-existent-mode", expect.any(Array))
-
-			// Verify fallback to default mode
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "code")
-			expect(logSpy).toHaveBeenCalledWith(
-				"Mode 'non-existent-mode' from history no longer exists. Falling back to default mode 'code'.",
-			)
-
-			// Verify history item was updated with default mode
-			expect(historyItem.mode).toBe("code")
-		})
-
-		test("preserves mode when it exists in custom modes", async () => {
-			await provider.resolveWebviewView(mockWebviewView)
-
-			// Mock custom modes that include the saved mode
-			const mockCustomModesManager = {
-				getCustomModes: vi.fn().mockResolvedValue([
-					{
-						slug: "custom-mode",
-						name: "Custom Mode",
-						roleDefinition: "Custom role",
-						groups: ["read", "edit"] as const,
-					},
-				]),
-				dispose: vi.fn(),
-			}
-			;(provider as any).customModesManager = mockCustomModesManager
-
-			// Mock getModeBySlug to return the custom mode
-			const { getModeBySlug } = await import("../../../shared/modes")
-			vi.mocked(getModeBySlug).mockReturnValue({
-				slug: "custom-mode",
-				name: "Custom Mode",
-				roleDefinition: "Custom role",
-				groups: ["read", "edit"],
-			})
-
-			// Mock provider settings manager
-			;(provider as any).providerSettingsManager = {
-				getModeConfigId: vi.fn().mockResolvedValue("config-id"),
-				listConfig: vi
-					.fn()
-					.mockResolvedValue([{ name: "test-config", id: "config-id", apiProvider: "anthropic" }]),
-				activateProfile: vi
-					.fn()
-					.mockResolvedValue({ name: "test-config", id: "config-id", apiProvider: "anthropic" }),
-			}
-
-			// Spy on log method to verify no warning was logged
-			const logSpy = vi.spyOn(provider, "log")
-
-			// Create history item with existing custom mode
-			const historyItem = {
-				id: "test-id",
-				ts: Date.now(),
-				task: "Test task",
-				mode: "custom-mode",
-				number: 1,
-				tokensIn: 0,
-				tokensOut: 0,
-				totalCost: 0,
-			}
-
-			// Initialize with history item
-			await provider.createTaskWithHistoryItem(historyItem)
-
-			// Verify mode validation occurred
-			expect(mockCustomModesManager.getCustomModes).toHaveBeenCalled()
-			expect(getModeBySlug).toHaveBeenCalledWith("custom-mode", expect.any(Array))
-
-			// Verify mode was preserved
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "custom-mode")
-			expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("no longer exists"))
-
-			// Verify history item mode was not changed
-			expect(historyItem.mode).toBe("custom-mode")
-		})
+		test.each(["ask", "debug", "orchestrator", "non-existent-mode", "custom-mode"])(
+			"restores %s into Plan without mutating the supplied history",
+			async (mode) => {
+				await provider.resolveWebviewView(mockWebviewView)
+				;(provider as any).customModesManager = {
+					getCustomModes: vi
+						.fn()
+						.mockResolvedValue([
+							{ slug: "custom-mode", name: "Custom", roleDefinition: "Custom", groups: ["edit"] },
+						]),
+					dispose: vi.fn(),
+				}
+				;(provider as any).providerSettingsManager = {
+					getModeConfigId: vi.fn().mockResolvedValue(undefined),
+					listConfig: vi.fn().mockResolvedValue([]),
+				}
+				const historyItem = {
+					id: "test-id",
+					ts: Date.now(),
+					task: "Test task",
+					mode,
+					number: 1,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				}
+				await provider.createTaskWithHistoryItem(historyItem)
+				expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "architect")
+				expect(vi.mocked(Task)).toHaveBeenLastCalledWith(
+					expect.objectContaining({ historyItem: expect.objectContaining({ mode: "architect" }) }),
+				)
+				expect(historyItem.mode).toBe(mode)
+			},
+		)
 
 		test("preserves mode when it exists in built-in modes", async () => {
 			await provider.resolveWebviewView(mockWebviewView)

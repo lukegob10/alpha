@@ -24,6 +24,14 @@
 	const persist = () => api.setState({ target: config.target, view: capture() })
 	const send = (action, extra = {}) =>
 		api.postMessage({ action, documentId: config.documentId, token: config.token, revision, ...extra })
+	const focusTarget = (target) => {
+		if (!target) return
+		if (target.tabIndex < 0 && !target.hasAttribute("tabindex")) {
+			target.setAttribute("tabindex", "-1")
+			target.addEventListener("blur", () => target.removeAttribute("tabindex"), { once: true })
+		}
+		target.focus({ preventScroll: true })
+	}
 	document.getElementById("viewer-source").addEventListener("click", () => send("source"))
 	document.addEventListener("submit", (event) => event.preventDefault(), true)
 	document.addEventListener(
@@ -37,7 +45,10 @@
 				const href = link.getAttribute("href")
 				if (/^#[A-Za-z][\w-]{0,127}$/.test(href ?? "")) {
 					const target = [...content.querySelectorAll("[id]")].find((node) => `#${node.id}` === href)
-					target?.scrollIntoView()
+					if (target) {
+						target.scrollIntoView()
+						focusTarget(target)
+					}
 				}
 			}
 		},
@@ -82,8 +93,7 @@
 				node.dispatchEvent(new Event("input", { bubbles: true }))
 			}
 		}
-		if (focusedId)
-			[...content.querySelectorAll("[id]")].find((node) => node.id === focusedId)?.focus({ preventScroll: true })
+		if (focusedId) focusTarget([...content.querySelectorAll("[id]")].find((node) => node.id === focusedId))
 		requestAnimationFrame(() => {
 			window.scrollTo(0, Number.isFinite(state?.scroll) ? Math.max(0, state.scroll) : 0)
 			persist()

@@ -4,7 +4,7 @@ const ASK_FOLLOWUP_QUESTION_DESCRIPTION = `Ask the user a question to gather add
 
 Parameters:
 - question: (required) A clear, specific question addressing the information needed
-- follow_up: (required) A list of 2-4 suggested answers. Suggestions must be complete, actionable answers without placeholders. Optionally include mode to switch modes (code/architect/etc.)
+- follow_up: (required) A list of 2-4 suggested answers. Suggestions must be complete, actionable answers without placeholders. Optionally suggest Code (code) or Plan (architect); a mode change requires the user to choose the suggestion.
 
 Example: Asking for file path
 { "question": "What is the path to the frontend-config.json file?", "follow_up": [{ "text": "./src/frontend-config.json", "mode": null }, { "text": "./config/frontend-config.json", "mode": null }, { "text": "./frontend-config.json", "mode": null }] }
@@ -18,7 +18,7 @@ const FOLLOW_UP_PARAMETER_DESCRIPTION = `Required list of 2-4 suggested response
 
 const FOLLOW_UP_TEXT_DESCRIPTION = `Suggested answer the user can pick`
 
-const FOLLOW_UP_MODE_DESCRIPTION = `Optional mode slug to switch to if this suggestion is chosen (e.g., code, architect)`
+const FOLLOW_UP_MODE_DESCRIPTION = `Optional Code (code) or Plan (architect) mode to select when the user chooses this suggestion`
 
 export default {
 	type: "function",
@@ -45,6 +45,7 @@ export default {
 							},
 							mode: {
 								type: ["string", "null"],
+								enum: ["code", "architect", null],
 								description: FOLLOW_UP_MODE_DESCRIPTION,
 							},
 						},

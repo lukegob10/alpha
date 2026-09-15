@@ -384,6 +384,33 @@ describe("Task persistence", () => {
 	})
 
 	// ── saveApiConversationHistory (via retrySaveApiConversationHistory) ──
+
+	it.each(["ask", "debug", "orchestrator", "custom-mode"])(
+		"restores historical %s tasks in Plan without rewriting the input record",
+		async (mode) => {
+			const historyItem: HistoryItem = {
+				id: "retired-mode",
+				number: 1,
+				ts: 1,
+				task: "Saved work",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				mode,
+			}
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				historyItem,
+				startTask: false,
+			})
+			expect(await task.getTaskMode()).toBe("architect")
+			expect(historyItem.mode).toBe(mode)
+			expect(() => task.setTaskMode(mode)).toThrow("Unsupported mode")
+			expect(await task.getTaskMode()).toBe("architect")
+		},
+	)
+
 	describe("environment delivery fence", () => {
 		function createEnvironmentTask() {
 			const task = new Task({
@@ -928,7 +955,7 @@ describe("Task persistence", () => {
 			})
 
 			it.each(
-				["wait_agent", "switch_mode", "ask_followup_question"].flatMap((barrier) =>
+				["wait_agent", "ask_followup_question"].flatMap((barrier) =>
 					[false, true].map((cancelled) => ({ barrier, cancelled })),
 				),
 			)(

@@ -7,8 +7,8 @@ Craft your regex patterns carefully to balance specificity and flexibility. Use 
 Use path/regex for one search. When several independent searches are already known, use one bounded queries batch with 1 to 8 entries. Never concatenate multiple root JSON objects.
 
 Parameters:
-- path: (required) The path of the directory to search in (relative to the current workspace directory). This directory will be recursively searched.
-- regex: (required) The regular expression pattern to search for. Uses Rust regex syntax.
+- path: (required) Absolute directory path or path relative to the task workspace. This directory will be recursively searched.
+- regex: (required) The regular expression pattern to search for. Uses Rust regex syntax. Searches are line-oriented by default; explicit newline matches (\\n) automatically enable multiline search.
 - file_pattern: (optional) Glob pattern to filter files (e.g., '*.ts' for TypeScript files). If not provided, it will search all files (*).
 - queries: (optional) Batch of 1 to 8 search objects. Use this instead of the top-level path/regex fields for multiple independent searches.
 
@@ -21,7 +21,7 @@ Example: Searching for function definitions in JavaScript files
 Example: Searching frontend and backend in one model turn
 { "queries": [{ "path": "frontend/src", "regex": "fetch|submit", "file_pattern": "*.tsx" }, { "path": "backend/app", "regex": "@router|def ", "file_pattern": "*.py" }] }`
 
-const PATH_PARAMETER_DESCRIPTION = `Directory to search recursively, relative to the workspace`
+const PATH_PARAMETER_DESCRIPTION = `Absolute directory path or path relative to the task workspace, searched recursively`
 
 const REGEX_PARAMETER_DESCRIPTION = `Rust-compatible regular expression pattern to match`
 

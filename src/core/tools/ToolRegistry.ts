@@ -15,6 +15,8 @@ import {
 import type { ToolResponse, ToolUse } from "../../shared/tools"
 import type { ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { captureVerificationContent, extractMutationPaths } from "../agent/VerificationScope"
+import path from "path"
+import { isPathWithinRoot } from "./pathSafety"
 import { TOOL_ALIASES } from "../../shared/tools"
 import { normalizeMcpToolName, parseMcpToolName } from "../../utils/mcp-name"
 import { getNativeTools } from "../prompts/tools/native-tools"
@@ -35,6 +37,7 @@ import { delegateTaskTool } from "./DelegateTaskTool"
 import { editFileTool } from "./EditFileTool"
 import { editTool } from "./EditTool"
 import { executeCommandTool } from "./ExecuteCommandTool"
+import { prepareParallelCommand } from "./ParallelCommandRead"
 import { generateImageTool } from "./GenerateImageTool"
 import { githubApiTool } from "./GitHubApiTool"
 import { followupTaskTool } from "./FollowupTaskTool"
@@ -51,7 +54,6 @@ import { sendMessageTool } from "./SendMessageTool"
 import { reportProgressTool } from "./ReportProgressTool"
 import { skillTool } from "./SkillTool"
 import { spawnAgentTool } from "./SpawnAgentTool"
-import { switchModeTool } from "./SwitchModeTool"
 import { updateTodoListTool } from "./UpdateTodoListTool"
 import { useMcpToolTool } from "./UseMcpToolTool"
 import { waitAgentTool } from "./WaitAgentTool"
@@ -78,6 +80,8 @@ export interface ToolCapabilities {
 	sideEffects: ToolSideEffects
 	controlFlow: boolean
 	requiresApproval: boolean
+	/** Audited command preparation may narrow a serial command to an approved independent read. */
+	parallelCommandRead?: boolean
 }
 
 export interface ToolExecutionContext {
@@ -99,6 +103,16 @@ export interface PreparedToolRead {
 	run(signal?: AbortSignal): Promise<() => Promise<ToolResponse>>
 }
 
+export interface PreparedCommandRead {
+	readonly scope: string
+	/** Preserve the already collected approval when a host binary lacks required read isolation. */
+	readonly serialFallback?: boolean
+	/** No approvals or shared Task/UI writes while this isolated process runs. */
+	run?: (
+		callbacks: Pick<ToolCallbacks, "signal" | "pushToolResult" | "setResultMetadata">,
+	) => Promise<() => Promise<void>>
+}
+
 export interface ToolDescriptor {
 	name: string
 	/** Alternate model-facing names. All entries resolve to `name`. */
@@ -117,6 +131,11 @@ export interface ToolDescriptor {
 		policy: ToolPolicySnapshot,
 		signal?: AbortSignal,
 	) => Promise<PreparedToolRead | undefined>
+	/** Serial approval/preflight, followed by an isolated read and an ordered finalizer. */
+	prepareParallelCommand?: (
+		context: ToolExecutionContext,
+		policy: ToolPolicySnapshot,
+	) => Promise<PreparedCommandRead | undefined>
 	execute(context: ToolExecutionContext): Promise<void>
 }
 
@@ -141,7 +160,6 @@ const BARRIER_TOOLS = new Set([
 	"delegate_task",
 	"wait_agent",
 	"attempt_completion",
-	"switch_mode",
 	"ask_followup_question",
 ])
 
@@ -190,7 +208,6 @@ const TASK_TOOLS = new Set([
 	"cancel_agent",
 	"close_agent",
 	"attempt_completion",
-	"switch_mode",
 	"ask_followup_question",
 ])
 
@@ -282,7 +299,6 @@ const TOOL_NAMES = [
 	"search_files",
 	"search_replace",
 	"skill",
-	"switch_mode",
 	"update_todo_list",
 	"use_mcp_tool",
 	"write_to_file",
@@ -361,6 +377,9 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 	return {
 		concurrency,
 		sideEffects,
+		...(name === "execute_command" && options.parallelExecutionEnabled !== false
+			? { parallelCommandRead: true }
+			: {}),
 		controlFlow: BARRIER_TOOLS.has(name) || name === "run_slash_command" || name === "skill",
 		// Individual tool handlers own the exact approval prompt. This flag is
 		// metadata for scheduling and future policy decisions, not a second prompt.
@@ -395,8 +414,6 @@ function getToolDescription(call: ToolUse): string {
 			return `[${call.name} for '${value("server_name") ?? ""}']`
 		case "ask_followup_question":
 			return `[${call.name} for '${value("question") ?? ""}']`
-		case "switch_mode":
-			return `[${call.name} to '${value("mode_slug") ?? ""}']`
 		case "new_task":
 			return `[${call.name} in '${value("mode") ?? ""}' mode]`
 		default:
@@ -451,8 +468,15 @@ function executeBaseTool<TName extends BuiltInToolName>(tool: BaseTool<TName>, n
 				if (CHECKPOINT_TOOLS.has(name) || name === "new_task") {
 					await checkpointBeforeMutation(task)
 				}
-				const paths = task.taskKind === "primary" ? extractMutationPaths(call) : undefined
-				const before = paths ? await captureVerificationContent(task.cwd, paths) : undefined
+				// Receipts and checkpoints describe this workspace only. Approved external
+				// edits are recorded in the tool transaction, not attributed to workspace verification.
+				const paths =
+					task.taskKind === "primary"
+						? extractMutationPaths(call)?.filter((candidate) =>
+								isPathWithinRoot(task.cwd, path.resolve(task.cwd, candidate)),
+							)
+						: undefined
+				const before = paths?.length ? await captureVerificationContent(task.cwd, paths) : undefined
 				const mutationOwner = task.providerRef.deref()
 				const reservation = callbacks.toolCallId ?? randomUUID()
 				if (before) {
@@ -608,7 +632,6 @@ export class ToolRegistry {
 		this.registerBuiltIn("search_files", searchFilesTool, schemas)
 		this.registerBuiltIn("search_replace", searchReplaceTool, schemas)
 		this.registerBuiltIn("skill", skillTool, schemas)
-		this.registerBuiltIn("switch_mode", switchModeTool, schemas)
 		this.registerBuiltIn("update_todo_list", updateTodoListTool, schemas)
 		this.registerBuiltIn("use_mcp_tool", useMcpToolTool, schemas, undefined, legacyMcpSchema)
 		this.registerBuiltIn("write_to_file", writeToFileTool, schemas)
@@ -759,6 +782,7 @@ export class ToolRegistry {
 			...(name === "list_files"
 				? { prepareParallelRead: listFilesTool.prepareParallelRead.bind(listFilesTool) }
 				: {}),
+			...(name === "execute_command" ? { prepareParallelCommand } : {}),
 			execute: customExecute ?? executeBaseTool(tool, name),
 		})
 	}

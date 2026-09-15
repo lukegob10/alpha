@@ -323,6 +323,7 @@
 	"contextManagement": {
 		"tokens": "tokens",
 		"condensation": {
+			"unchanged": "O contexto já está dentro do limite",
 			"title": "Contexto condensado",
 			"inProgress": "Condensando contexto...",
 			"errorHeader": "Falha ao condensar contexto"
@@ -498,5 +499,13 @@
 		"title": "Provedor não é mais suportado",
 		"message": "Desculpe, este provedor não é mais suportado. Percebemos que muito poucos usuários do Alpha realmente o utilizavam e precisamos reduzir o escopo do nosso código para continuar entregando rápido e servindo bem nossa comunidade. Foi uma decisão muito difícil, mas nos permite focar no que mais importa para você. Sabemos que é chato.",
 		"openSettings": "Abrir configurações"
+	},
+	"githubActions": {
+		"request": "Solicitação",
+		"create_pull_request": "Criar pull request",
+		"get_pull_request": "Ver pull request",
+		"list_checks": "Listar verificações",
+		"merge_pull_request": "Mesclar pull request",
+		"comment": "Adicionar comentário"
 	}
 }

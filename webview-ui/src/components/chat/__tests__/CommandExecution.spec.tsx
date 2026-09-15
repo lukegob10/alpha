@@ -72,6 +72,14 @@ const publishStatus = (status: CommandExecutionStatus) => {
 }
 
 describe("CommandExecution", () => {
+	it("shows the requested working directory before expanding the command", () => {
+		render(
+			<ExtensionStateWrapper>
+				<CommandExecution executionId="outside" text="node script.js" workingDirectory="/other/project" />
+			</ExtensionStateWrapper>,
+		)
+		expect(screen.getByText("/other/project")).toBeVisible()
+	})
 	beforeEach(() => {
 		vi.clearAllMocks()
 	})

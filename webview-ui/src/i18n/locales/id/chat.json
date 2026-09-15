@@ -219,6 +219,7 @@
 	"contextManagement": {
 		"tokens": "token",
 		"condensation": {
+			"unchanged": "Konteks sudah sesuai batas",
 			"title": "Konteks Dikondensasi",
 			"inProgress": "Mengondensasi konteks...",
 			"errorHeader": "Gagal mengondensasi konteks"
@@ -504,5 +505,13 @@
 		"title": "Penyedia tidak lagi didukung",
 		"message": "Maaf, penyedia ini tidak lagi didukung. Kami melihat sangat sedikit pengguna Alpha yang benar-benar menggunakannya dan kami perlu mengurangi cakupan kode kami agar bisa terus bergerak cepat dan melayani komunitas kami dengan baik. Ini adalah keputusan yang sangat sulit, tapi ini memungkinkan kami fokus pada apa yang paling penting bagimu. Memang menyebalkan, kami tahu.",
 		"openSettings": "Buka Pengaturan"
+	},
+	"githubActions": {
+		"request": "Permintaan",
+		"create_pull_request": "Buat pull request",
+		"get_pull_request": "Lihat pull request",
+		"list_checks": "Daftar pemeriksaan",
+		"merge_pull_request": "Gabungkan pull request",
+		"comment": "Tambahkan komentar"
 	}
 }

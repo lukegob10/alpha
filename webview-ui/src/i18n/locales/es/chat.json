@@ -323,6 +323,7 @@
 	"contextManagement": {
 		"tokens": "tokens",
 		"condensation": {
+			"unchanged": "El contexto ya cabe",
 			"title": "Contexto condensado",
 			"inProgress": "Condensando contexto...",
 			"errorHeader": "Error al condensar el contexto"
@@ -498,5 +499,13 @@
 		"title": "Proveedor ya no compatible",
 		"message": "Lo sentimos, este proveedor ya no es compatible. Vimos que muy pocos usuarios de Alpha lo usaban realmente y necesitamos reducir el alcance de nuestro código para poder seguir avanzando rápido y servir bien a nuestra comunidad en este espacio. Fue una decisión muy difícil, pero nos permite enfocarnos en lo que más te importa. Lo sabemos, es una lástima.",
 		"openSettings": "Abrir configuración"
+	},
+	"githubActions": {
+		"request": "Solicitud",
+		"create_pull_request": "Crear solicitud de extracción",
+		"get_pull_request": "Ver solicitud de extracción",
+		"list_checks": "Listar comprobaciones",
+		"merge_pull_request": "Fusionar solicitud de extracción",
+		"comment": "Añadir comentario"
 	}
 }

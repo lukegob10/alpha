@@ -1238,6 +1238,10 @@ describe("Alpha", () => {
 					vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
 					let compacted = false
 					if (recovery !== "none") {
+						// Model a real reduction while retaining the tool transaction and refreshed environment.
+						vi.spyOn(task.api, "countTokens").mockImplementation(async (blocks) =>
+							JSON.stringify(blocks).includes("hidden old") ? 1000 : 1,
+						)
 						task.apiConversationHistory = [
 							{ role: "user", content: "hidden old user" },
 							{ role: "assistant", content: "hidden old assistant" },
@@ -3266,7 +3270,15 @@ describe("Alpha", () => {
 				const surface = createTaskToolSurface({ registry, mode: "code" })
 				const outcome = await task["executeCanonicalToolCalls"](
 					createAgentResponse([
-						{ type: "tool_call", id: "preferred-edit", name, arguments: {} },
+						{
+							type: "tool_call",
+							id: "preferred-edit",
+							name,
+							arguments:
+								name === "apply_patch"
+									? { patch: "*** Begin Patch\n*** Add File: fixture.txt\n+fixture\n*** End Patch" }
+									: {},
+						},
 						{ type: "tool_call", id: "hidden-edit", name: "apply_diff", arguments: {} },
 					]),
 					surface,
@@ -3441,84 +3453,80 @@ describe("Alpha", () => {
 			},
 		)
 
-		it.each([
-			"new_task",
-			"delegate_task",
-			"attempt_completion",
-			"switch_mode",
-			"ask_followup_question",
-			"wait_agent",
-		])("rejects a mixed %s batch before persisting the assistant response", async (barrier) => {
-			const task = createTask()
-			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
-			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
-			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
-			const events = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
-			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
-			const fence = vi
-				.spyOn(task as any, "assertCurrentProviderTranscriptBeforeEffects")
-				.mockResolvedValue(undefined)
-			const execute = vi.spyOn(task as any, "executeCanonicalToolCallsForTurn")
-			const usage = vi.spyOn(task, "recordToolUsage")
-			const surface = createTaskToolSurface({
-				registry: new ToolRegistry({
-					mcpTools: [
-						{
-							type: "function",
-							function: { name: "mcp--docs--lookup", parameters: { type: "object", properties: {} } },
-						},
-					],
-				}),
-				mode: "code",
-			})
-			const snapshots: Task["userMessageContent"][] = []
-			const persist = vi
-				.spyOn(task as any, "persistAssistantResponseBeforeEffects")
-				.mockImplementation(async () => {
-					snapshots.push([...task.userMessageContent])
-					return true
+		it.each(["new_task", "delegate_task", "attempt_completion", "ask_followup_question", "wait_agent"])(
+			"rejects a mixed %s batch before persisting the assistant response",
+			async (barrier) => {
+				const task = createTask()
+				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				const events = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+				const fence = vi
+					.spyOn(task as any, "assertCurrentProviderTranscriptBeforeEffects")
+					.mockResolvedValue(undefined)
+				const execute = vi.spyOn(task as any, "executeCanonicalToolCallsForTurn")
+				const usage = vi.spyOn(task, "recordToolUsage")
+				const surface = createTaskToolSurface({
+					registry: new ToolRegistry({
+						mcpTools: [
+							{
+								type: "function",
+								function: { name: "mcp--docs--lookup", parameters: { type: "object", properties: {} } },
+							},
+						],
+					}),
+					mode: "code",
 				})
-			vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
-				(async function* (): AsyncGenerator<ApiStreamChunk> {
-					// A real request captures this surface before reading provider chunks.
-					Object.assign(task, { currentTaskToolSurface: surface })
-					yield { type: "reasoning", text: "Inspect the workspace first." }
-					yield { type: "text", text: "Preparing the tools." }
-					for (const [id, name] of [
-						["read-first", "read_file"],
-						["barrier", barrier],
-						["mcp-last", "mcp__docs__lookup"],
-					]) {
-						yield { type: "tool_call", id, name, arguments: "{}" }
-					}
-				})(),
-			)
+				const snapshots: Task["userMessageContent"][] = []
+				const persist = vi
+					.spyOn(task as any, "persistAssistantResponseBeforeEffects")
+					.mockImplementation(async () => {
+						snapshots.push([...task.userMessageContent])
+						return true
+					})
+				vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+					(async function* (): AsyncGenerator<ApiStreamChunk> {
+						// A real request captures this surface before reading provider chunks.
+						Object.assign(task, { currentTaskToolSurface: surface })
+						yield { type: "reasoning", text: "Inspect the workspace first." }
+						yield { type: "text", text: "Preparing the tools." }
+						for (const [id, name] of [
+							["read-first", "read_file"],
+							["barrier", barrier],
+							["mcp-last", "mcp__docs__lookup"],
+						]) {
+							yield { type: "tool_call", id, name, arguments: "{}" }
+						}
+					})(),
+				)
 
-			await task.recursivelyMakeClineRequests([{ type: "text", text: "start" }], false)
+				await task.recursivelyMakeClineRequests([{ type: "text", text: "start" }], false)
 
-			expect(persist).toHaveBeenCalledOnce()
-			expect(execute).toHaveBeenCalledOnce()
-			expect(fence).toHaveBeenCalledOnce() // Scheduler-entry fence only; no per-effect fence is reached.
-			expect(usage).not.toHaveBeenCalled()
-			expect(snapshots[0]).toEqual([
-				expect.objectContaining({ type: "tool_result", tool_use_id: "read-first", is_error: true }),
-				expect.objectContaining({ type: "tool_result", tool_use_id: "barrier", is_error: true }),
-				expect.objectContaining({ type: "tool_result", tool_use_id: "mcp-last", is_error: true }),
-			])
-			expect(task.assistantMessageContent).toEqual([])
-			expect(task.userMessageContentReady).toBe(true)
-			expect(task.userMessageContent).toEqual(snapshots[0])
-			expect(
-				events.mock.calls.flatMap(([input]) => {
-					const event = input as AgentTurnEvent
-					return event.type === "tool_result" ? [{ callId: event.callId, status: event.status }] : []
-				}),
-			).toEqual([
-				{ callId: "read-first", status: "error" },
-				{ callId: "barrier", status: "error" },
-				{ callId: "mcp-last", status: "error" },
-			])
-		})
+				expect(persist).toHaveBeenCalledOnce()
+				expect(execute).toHaveBeenCalledOnce()
+				expect(fence).toHaveBeenCalledOnce() // Scheduler-entry fence only; no per-effect fence is reached.
+				expect(usage).not.toHaveBeenCalled()
+				expect(snapshots[0]).toEqual([
+					expect.objectContaining({ type: "tool_result", tool_use_id: "read-first", is_error: true }),
+					expect.objectContaining({ type: "tool_result", tool_use_id: "barrier", is_error: true }),
+					expect.objectContaining({ type: "tool_result", tool_use_id: "mcp-last", is_error: true }),
+				])
+				expect(task.assistantMessageContent).toEqual([])
+				expect(task.userMessageContentReady).toBe(true)
+				expect(task.userMessageContent).toEqual(snapshots[0])
+				expect(
+					events.mock.calls.flatMap(([input]) => {
+						const event = input as AgentTurnEvent
+						return event.type === "tool_result" ? [{ callId: event.callId, status: event.status }] : []
+					}),
+				).toEqual([
+					{ callId: "read-first", status: "error" },
+					{ callId: "barrier", status: "error" },
+					{ callId: "mcp-last", status: "error" },
+				])
+			},
+		)
 
 		it.each([
 			["successful", false],
@@ -5198,6 +5206,18 @@ describe("Plan completion presentation", () => {
 })
 
 describe("Queued message processing after condense", () => {
+	function prepareCompaction(task: Task) {
+		task.apiConversationHistory = [{ role: "user", content: "Original context before compaction" }]
+		vi.spyOn(task.api, "countTokens").mockImplementation(async (blocks) =>
+			JSON.stringify(blocks).includes("Original context before compaction") ? 1000 : 1,
+		)
+		vi.spyOn(
+			task as unknown as { saveApiConversationHistory(): Promise<boolean> },
+			"saveApiConversationHistory",
+		).mockResolvedValue(true)
+		vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("system")
+	}
+
 	function createProvider(): any {
 		const storageUri = { fsPath: path.join(os.tmpdir(), "test-storage") }
 		const ctx = {
@@ -5252,11 +5272,7 @@ describe("Queued message processing after condense", () => {
 			task: "initial task",
 			startTask: false,
 		})
-		vi.spyOn(task as any, "overwriteApiConversationHistory").mockResolvedValue(true)
-		vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
-
-		// Make condense fast + deterministic
-		vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("system")
+		prepareCompaction(task)
 		const submitSpy = vi.spyOn(task, "submitUserMessage").mockResolvedValue(undefined)
 		task.consecutiveMistakeCount = 1
 		task.consecutiveNoToolUseCount = 2
@@ -5319,13 +5335,8 @@ describe("Queued message processing after condense", () => {
 			task: "task B",
 			startTask: false,
 		})
-		vi.spyOn(taskA as any, "overwriteApiConversationHistory").mockResolvedValue(true)
-		vi.spyOn(taskB as any, "overwriteApiConversationHistory").mockResolvedValue(true)
-		vi.spyOn(taskA as any, "saveApiConversationHistory").mockResolvedValue(true)
-		vi.spyOn(taskB as any, "saveApiConversationHistory").mockResolvedValue(true)
-
-		vi.spyOn(taskA as any, "getSystemPrompt").mockResolvedValue("system")
-		vi.spyOn(taskB as any, "getSystemPrompt").mockResolvedValue("system")
+		prepareCompaction(taskA)
+		prepareCompaction(taskB)
 
 		const spyA = vi.spyOn(taskA, "submitUserMessage").mockResolvedValue(undefined)
 		const spyB = vi.spyOn(taskB, "submitUserMessage").mockResolvedValue(undefined)

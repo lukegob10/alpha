@@ -59,7 +59,9 @@ function compactedResult(messages: ApiMessage[]): SummarizeResponse {
 function harness() {
 	const api = {
 		getModel: () => ({ id: "test-model", info: { contextWindow: 128_000, maxTokens: 4096 } as ModelInfo }),
-		countTokens: vi.fn<ApiHandler["countTokens"]>(async () => 10),
+		countTokens: vi.fn<ApiHandler["countTokens"]>(async (blocks) =>
+			JSON.stringify(blocks).includes("Original request") ? 100 : 10,
+		),
 		createMessage: vi.fn<ApiHandler["createMessage"]>(async function* () {}),
 	} satisfies ApiHandler
 	const provider = {
@@ -252,6 +254,38 @@ describe("Task proportional context preflight", () => {
 })
 
 describe("Task manual compaction boundary", () => {
+	it("uses the selected profile threshold and effective output reservation for manual compaction", async () => {
+		const { task, provider } = harness()
+		provider.getState.mockResolvedValue({ autoCondenseContextPercent: 5, profileThresholds: { default: 20 } })
+		await task.condenseContext()
+		expect(summarizeConversation).toHaveBeenCalledWith(expect.objectContaining({ maxContextTokens: 6407 }))
+	})
+
+	it("publishes an unchanged result without rewriting history or resetting its environment", async () => {
+		const { task, history, save } = harness()
+		vi.mocked(summarizeConversation).mockResolvedValue({
+			messages: history,
+			summary: "",
+			cost: 0,
+			status: "unchanged",
+			newContextTokens: 130,
+		})
+		await task.condenseContext()
+		expect(task.apiConversationHistory).toBe(history)
+		expect(save).not.toHaveBeenCalled()
+		expect(Reflect.get(task, "environmentContext").reset).not.toHaveBeenCalled()
+		expect(task.say).toHaveBeenCalledWith(
+			"condense_context",
+			undefined,
+			undefined,
+			false,
+			undefined,
+			undefined,
+			{ isNonInteractive: true },
+			expect.objectContaining({ outcome: "unchanged", prevContextTokens: 130, newContextTokens: 130 }),
+		)
+	})
+
 	beforeEach(() => vi.clearAllMocks())
 	afterEach(() => vi.restoreAllMocks())
 
@@ -921,18 +955,31 @@ describe("Task context recovery admission", () => {
 		expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0][14]).toBe("test-model")
 	})
 
-	it.each([60, 100])(
-		"stops forced recovery when refreshed environment tokens (%s) undo its reduction",
-		async (environmentTokens) => {
+	it.each([
+		["manual", 60],
+		["manual", 100],
+		["automatic", 60],
+		["automatic", 100],
+		["forced", 60],
+		["forced", 100],
+	] as const)(
+		"stops %s recovery when refreshed environment tokens (%s) undo its reduction",
+		async (trigger, environmentTokens) => {
 			const { task, api, history } = harness()
-			vi.mocked(manageContext).mockResolvedValue({
+			const result = {
 				...compactedResult(history),
 				prevContextTokens: 100,
 				targetContextTokens: 200,
-				status: "reduced",
-			})
+				status: "reduced" as const,
+			}
+			vi.mocked(manageContext).mockResolvedValue(result)
+			vi.mocked(summarizeConversation).mockResolvedValue(result)
 			api.countTokens.mockImplementation(async (blocks) =>
-				JSON.stringify(blocks).includes("Fresh environment") ? environmentTokens : 10,
+				JSON.stringify(blocks).includes("Fresh environment")
+					? environmentTokens
+					: JSON.stringify(blocks).includes("Original request")
+						? 60
+						: 10,
 			)
 			Reflect.set(
 				task,
@@ -942,12 +989,12 @@ describe("Task context recovery admission", () => {
 				}),
 			)
 
-			await expect(runRecovery(task, "forced")).rejects.toMatchObject({
+			await expect(runRecovery(task, trigger)).rejects.toMatchObject({
 				name: "ContextRecoveryExhaustedError",
 				retryable: false,
 			})
 
-			expect(manageContext).toHaveBeenCalledOnce()
+			expect(trigger === "manual" ? summarizeConversation : manageContext).toHaveBeenCalledOnce()
 			expect(api.createMessage).not.toHaveBeenCalled()
 			expect(task.say).not.toHaveBeenCalled()
 		},

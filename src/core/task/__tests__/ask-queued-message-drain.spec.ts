@@ -39,7 +39,33 @@ describe("Task.ask queued message drain", () => {
 		commandApproval: createSubagentCommandApprovalPolicy(["git"], ["git push"], "7".repeat(64)),
 	}
 
-	it("uses the inherited command policy for a managed child", async () => {
+	it("requires a human decision for primary commands despite wildcard auto-approval and retains the directory", async () => {
+		const task = await createAskOnlyTask()
+		Object.assign(task, {
+			taskKind: "primary",
+			providerRef: {
+				deref: () => ({
+					getState: async () => ({
+						autoApprovalEnabled: true,
+						alwaysAllowExecute: true,
+						allowedCommands: ["*"],
+					}),
+					isTaskOnScreen: () => true,
+				}),
+			},
+		})
+		const autoApprove = vi.spyOn(task, "approveAsk")
+		const pending = task.ask("command", "node script.js", false, { text: "../outside" })
+		await vi.waitFor(() => expect(task["addToClineMessages"]).toHaveBeenCalled())
+		expect(autoApprove).not.toHaveBeenCalled()
+		expect(task["addToClineMessages"]).toHaveBeenCalledWith(
+			expect.objectContaining({ progressStatus: { text: "../outside" } }),
+		)
+		task.handleWebviewAskResponse("noButtonClicked")
+		await expect(pending).resolves.toMatchObject({ response: "noButtonClicked" })
+	})
+
+	it("still requires explicit approval for a command covered by an inherited grant", async () => {
 		const task = await createAskOnlyTask()
 		;(task as any).taskKind = "subagent"
 		;(task as any).subagentContextManifest = { runtimePolicy: { autoApproval: inheritedCommandPolicy } }
@@ -54,8 +80,13 @@ describe("Task.ask queued message drain", () => {
 			}),
 		}
 
-		await expect(task.ask("command", "git diff", false)).resolves.toMatchObject({
-			response: "yesButtonClicked",
+		const autoApprove = vi.spyOn(task, "approveAsk")
+		const pending = task.ask("command", "git diff", false)
+		await vi.waitFor(() => expect(task["addToClineMessages"]).toHaveBeenCalled())
+		expect(autoApprove).not.toHaveBeenCalled()
+		task.handleWebviewAskResponse("noButtonClicked")
+		await expect(pending).resolves.toMatchObject({
+			response: "noButtonClicked",
 		})
 	})
 

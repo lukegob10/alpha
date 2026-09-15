@@ -27,6 +27,7 @@ describe("DocumentParser built worker", () => {
 		expect(result.title).toBe("Worker document")
 		expect(result.html).not.toContain("evil")
 		expect(result.references).toBeInstanceOf(Map)
+		expect(result.images).toBeInstanceOf(Map)
 		expect(result.references.get("ref-0")).toMatchObject({ kind: "source", path: "src/file.ts", line: 7 })
 	})
 

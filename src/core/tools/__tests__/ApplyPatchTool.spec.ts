@@ -115,6 +115,39 @@ function createCallbacks(): any {
 }
 
 describe("ApplyPatchTool", () => {
+	it.each([true, false])(
+		"reviews an external move destination for a primary task (approved: %s)",
+		async (approved) => {
+			const missing = Object.assign(new Error("missing"), { code: "ENOENT" })
+			mockedFs.readFile.mockImplementation(async (filePath: unknown) => {
+				if (String(filePath).endsWith("moved.txt")) throw missing
+				return "old\n"
+			})
+			const task = createTask()
+			Object.assign(task, { taskKind: "primary" })
+			const callbacks = createCallbacks()
+			callbacks.askApproval.mockResolvedValue(approved)
+			await new ApplyPatchTool().execute(
+				{
+					patch: "*** Begin Patch\n*** Update File: source.txt\n*** Move to: ../outside/moved.txt\n@@\n-old\n+new\n*** End Patch",
+				},
+				task,
+				callbacks,
+			)
+			expect(callbacks.askApproval).toHaveBeenCalledOnce()
+			expect(JSON.parse(callbacks.askApproval.mock.calls[0][1])).toMatchObject({
+				isOutsideWorkspace: true,
+				content: expect.stringContaining("moved.txt"),
+			})
+			if (approved) {
+				expect(task.diffViewProvider.saveDirectly).toHaveBeenCalled()
+			} else {
+				expect(task.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
+				expect(mockedFs.unlink).not.toHaveBeenCalled()
+			}
+		},
+	)
+
 	beforeEach(() => {
 		vi.clearAllMocks()
 		vi.mocked(experiments.isEnabled).mockReturnValue(true)

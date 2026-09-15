@@ -22,8 +22,7 @@ suite.skip("Alpha Subtasks", () => {
 		// Start a parent task that will create a subtask.
 		const parentTaskId = await api.startNewTask({
 			configuration: {
-				mode: "ask",
-				alwaysAllowModeSwitch: true,
+				mode: "code",
 				alwaysAllowSubtasks: true,
 				autoApprovalEnabled: true,
 				enableCheckpoints: false,

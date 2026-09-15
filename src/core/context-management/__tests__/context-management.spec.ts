@@ -276,7 +276,7 @@ describe("Context Management", () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "First message" },
 			{ role: "assistant", content: "Second message" },
-			{ role: "user", content: "Third message" },
+			{ role: "user", content: "Third message. ".repeat(200) },
 			{ role: "assistant", content: "Fourth message" },
 			{ role: "user", content: "Fifth message" },
 		]
@@ -343,7 +343,9 @@ describe("Context Management", () => {
 			expect(result.messagesRemoved).toBe(2) // With 4 messages after first, 0.5 fraction = 2 to remove
 			expect(result.summary).toBe("")
 			expect(result.cost).toBe(0)
-			expect(result.prevContextTokens).toBe(totalTokens)
+			expect(result.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
+			)
 			// Should have all original messages + truncation marker (non-destructive)
 			expect(result.messages.length).toBe(6) // 5 original + 1 marker
 		})
@@ -505,7 +507,9 @@ describe("Context Management", () => {
 			expect(resultWithLarge.messages).not.toEqual(messagesWithLargeContent) // Should truncate
 			expect(resultWithLarge.summary).toBe("")
 			expect(resultWithLarge.cost).toBe(0)
-			expect(resultWithLarge.prevContextTokens).toBe(baseTokensForLarge + largeContentTokens)
+			expect(resultWithLarge.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithLargeContent, mockApiHandler, "System prompt"),
+			)
 
 			// Test case 3: Very large content that will definitely exceed threshold
 			const veryLargeContent = [{ type: "text" as const, text: "X".repeat(1000) }]
@@ -533,7 +537,9 @@ describe("Context Management", () => {
 			expect(resultWithVeryLarge.messages).not.toEqual(messagesWithVeryLargeContent) // Should truncate
 			expect(resultWithVeryLarge.summary).toBe("")
 			expect(resultWithVeryLarge.cost).toBe(0)
-			expect(resultWithVeryLarge.prevContextTokens).toBe(baseTokensForVeryLarge + veryLargeContentTokens)
+			expect(resultWithVeryLarge.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithVeryLargeContent, mockApiHandler, "System prompt"),
+			)
 		})
 
 		it("should truncate if tokens are within TOKEN_BUFFER_PERCENTAGE of the threshold", async () => {
@@ -566,7 +572,9 @@ describe("Context Management", () => {
 			expect(result.messagesRemoved).toBe(2) // With 4 messages after first, 0.5 fraction = 2 to remove
 			expect(result.summary).toBe("")
 			expect(result.cost).toBe(0)
-			expect(result.prevContextTokens).toBe(totalTokens)
+			expect(result.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
+			)
 			// Should have all original messages + truncation marker (non-destructive)
 			expect(result.messages.length).toBe(6) // 5 original + 1 marker
 		})
@@ -614,7 +622,7 @@ describe("Context Management", () => {
 			// Verify summarizeConversation was called with the right parameters
 			expect(summarizeSpy).toHaveBeenCalledWith(
 				expect.objectContaining({
-					maxContextTokens: 52500,
+					maxContextTokens: 15002,
 					messages: messagesWithSmallContent,
 					apiHandler: mockApiHandler,
 					systemPrompt: "System prompt",
@@ -685,7 +693,9 @@ describe("Context Management", () => {
 			expect(result.truncationId).toBeDefined()
 			expect(result.messagesRemoved).toBe(2)
 			expect(result.summary).toBe("")
-			expect(result.prevContextTokens).toBe(totalTokens)
+			expect(result.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
+			)
 			// Should have all original messages + truncation marker
 			expect(result.messages.length).toBe(6) // 5 original + 1 marker
 			// The cost might be different than expected, so we don't check it
@@ -736,7 +746,9 @@ describe("Context Management", () => {
 			expect(result.messagesRemoved).toBe(2)
 			expect(result.summary).toBe("")
 			expect(result.cost).toBe(0)
-			expect(result.prevContextTokens).toBe(totalTokens)
+			expect(result.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
+			)
 			// Should have all original messages + truncation marker
 			expect(result.messages.length).toBe(6) // 5 original + 1 marker
 
@@ -789,7 +801,7 @@ describe("Context Management", () => {
 			// Verify summarizeConversation was called with the right parameters
 			expect(summarizeSpy).toHaveBeenCalledWith(
 				expect.objectContaining({
-					maxContextTokens: 52500,
+					maxContextTokens: 12502,
 					messages: messagesWithSmallContent,
 					apiHandler: mockApiHandler,
 					systemPrompt: "System prompt",
@@ -886,7 +898,9 @@ describe("Context Management", () => {
 			expect(result.truncationId).toBeDefined()
 			expect(result.messagesRemoved).toBe(2)
 			expect(result.error).toContain("max input tokens exceeded")
-			expect(result.prevContextTokens).toBe(50000)
+			expect(result.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
+			)
 
 			summarizeSpy.mockRestore()
 		})
@@ -905,7 +919,7 @@ describe("Context Management", () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "First message" },
 			{ role: "assistant", content: "Second message" },
-			{ role: "user", content: "Third message" },
+			{ role: "user", content: "Third message. ".repeat(200) },
 			{ role: "assistant", content: "Fourth message" },
 			{ role: "user", content: "Fifth message" },
 		]
@@ -962,7 +976,7 @@ describe("Context Management", () => {
 			// Verify summarizeConversation was called with filesReadByRoo, cwd, and rooIgnoreController
 			expect(summarizeSpy).toHaveBeenCalledWith(
 				expect.objectContaining({
-					maxContextTokens: 52500,
+					maxContextTokens: 15002,
 					messages: messagesWithSmallContent,
 					apiHandler: mockApiHandler,
 					systemPrompt: "System prompt",
@@ -1030,7 +1044,7 @@ describe("Context Management", () => {
 			// Verify summarizeConversation was called with undefined parameters
 			expect(summarizeSpy).toHaveBeenCalledWith(
 				expect.objectContaining({
-					maxContextTokens: 52500,
+					maxContextTokens: 15002,
 					messages: messagesWithSmallContent,
 					apiHandler: mockApiHandler,
 					systemPrompt: "System prompt",
@@ -1094,7 +1108,7 @@ describe("Context Management", () => {
 			// Verify summarizeConversation was called with empty array
 			expect(summarizeSpy).toHaveBeenCalledWith(
 				expect.objectContaining({
-					maxContextTokens: 52500,
+					maxContextTokens: 15002,
 					messages: messagesWithSmallContent,
 					apiHandler: mockApiHandler,
 					systemPrompt: "System prompt",
@@ -1123,7 +1137,7 @@ describe("Context Management", () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "First message" },
 			{ role: "assistant", content: "Second message" },
-			{ role: "user", content: "Third message" },
+			{ role: "user", content: "Third message. ".repeat(200) },
 			{ role: "assistant", content: "Fourth message" },
 			{ role: "user", content: "Fifth message" },
 		]
@@ -1331,7 +1345,7 @@ describe("Context Management", () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "First message" },
 			{ role: "assistant", content: "Second message" },
-			{ role: "user", content: "Third message" },
+			{ role: "user", content: "Third message. ".repeat(200) },
 			{ role: "assistant", content: "Fourth message" },
 			{ role: "user", content: "Fifth message" },
 		]
@@ -1389,7 +1403,9 @@ describe("Context Management", () => {
 			expect(result2.messagesRemoved).toBe(2)
 			expect(result2.summary).toBe("")
 			expect(result2.cost).toBe(0)
-			expect(result2.prevContextTokens).toBe(50001)
+			expect(result2.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
+			)
 		})
 
 		it("should use ANTHROPIC_DEFAULT_MAX_TOKENS as buffer when maxTokens is undefined", async () => {
@@ -1444,7 +1460,9 @@ describe("Context Management", () => {
 			expect(result2.truncationId).toBeDefined()
 			expect(result2.summary).toBe("")
 			expect(result2.cost).toBe(0)
-			expect(result2.prevContextTokens).toBe(81809)
+			expect(result2.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
+			)
 		})
 
 		it("should handle small context windows appropriately", async () => {
@@ -1679,7 +1697,7 @@ describe("Context Management", () => {
 			const messages: ApiMessage[] = [
 				{ role: "user", content: "First message" },
 				{ role: "assistant", content: "Second message" },
-				{ role: "user", content: "Third message" },
+				{ role: "user", content: "Third message. ".repeat(200) },
 				{ role: "assistant", content: "Fourth message" },
 				{ role: "user", content: "" }, // Small content in last message
 			]
@@ -1721,7 +1739,7 @@ describe("Context Management", () => {
 			const messages: ApiMessage[] = [
 				{ role: "user", content: "First message" },
 				{ role: "assistant", content: "Second message" },
-				{ role: "user", content: "Third message" },
+				{ role: "user", content: "Third message. ".repeat(200) },
 				{ role: "assistant", content: "Fourth message" },
 				{ role: "user", content: "" }, // Small content in last message
 			]

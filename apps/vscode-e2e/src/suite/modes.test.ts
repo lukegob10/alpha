@@ -5,7 +5,7 @@ import { RooCodeEventName, type RooCodeSettings } from "@alpha-code/types"
 import { setDefaultSuiteTimeout } from "./test-utils"
 import { waitFor } from "./utils"
 
-const CANONICAL_MODE_SLUGS = ["architect", "code", "ask", "debug", "orchestrator"]
+const CANONICAL_MODE_SLUGS = ["architect", "code"]
 
 type ScriptChunk =
 	| { type: "tool_call"; id: string; name: string; arguments: string }
@@ -61,10 +61,6 @@ class ModeSwitchScriptedAI {
 		}
 
 		const calls = [
-			{
-				name: "switch_mode",
-				arguments: { mode_slug: "architect", reason: "Enter the canonical planning mode." },
-			},
 			{
 				name: "attempt_completion",
 				arguments: { result: "<proposed_plan>\nMode switch verified.\n</proposed_plan>" },
@@ -132,11 +128,7 @@ interface ModeHostProvider {
 				resumeCompletedTaskFollowup(text: string, images?: string[]): Promise<void>
 		  }
 		| undefined
-	setTaskMode(
-		taskId: string,
-		mode: string,
-		options?: { postState?: boolean; applyModeProfile?: boolean },
-	): Promise<void>
+	setTaskMode(taskId: string, mode: string, options?: { postState?: boolean }): Promise<void>
 	getStateToPostToWebview(): Promise<{ currentTaskId?: string; mode?: string }>
 }
 
@@ -173,7 +165,7 @@ const getHostProvider = (): ModeHostProvider => {
 suite("Alpha Modes", function () {
 	setDefaultSuiteTimeout(this)
 
-	test("defaults to Code and keeps architect-backed Plan plus legacy modes loadable", async () => {
+	test("defaults to Code and exposes only Code and architect-backed Plan", async () => {
 		const provider = getHostProvider()
 		const switchedModes: string[] = []
 		let taskId: string | undefined
@@ -207,14 +199,18 @@ suite("Alpha Modes", function () {
 			assert.equal(await task.getTaskMode(), "code")
 
 			for (const mode of CANONICAL_MODE_SLUGS) {
-				await provider.setTaskMode(taskId, mode, { applyModeProfile: false })
+				await provider.setTaskMode(taskId, mode)
 				assert.equal(await task.getTaskMode(), mode)
 			}
 
 			assert.deepStrictEqual(switchedModes, CANONICAL_MODE_SLUGS)
 			const state = await provider.getStateToPostToWebview()
 			assert.equal(state.currentTaskId, taskId)
-			assert.equal(state.mode, "orchestrator")
+			assert.equal(state.mode, "code")
+			for (const mode of ["ask", "debug", "orchestrator", "custom-mode"]) {
+				await assert.rejects(provider.setTaskMode(taskId, mode), /Unsupported mode/)
+				assert.equal(await task.getTaskMode(), "code")
+			}
 		} finally {
 			globalThis.api.off(RooCodeEventName.TaskModeSwitched, onModeSwitched)
 			await globalThis.api.clearCurrentTask().catch(() => undefined)
@@ -246,9 +242,8 @@ suite("Alpha Modes", function () {
 				...globalThis.api.getConfiguration(),
 				apiProvider: "fake-ai",
 				fakeAi: scriptedAI,
-				mode: "code",
+				mode: "architect",
 				autoApprovalEnabled: true,
-				alwaysAllowModeSwitch: true,
 				requestDelaySeconds: 0,
 				writeDelayMs: 0,
 				enableCheckpoints: false,
@@ -271,18 +266,12 @@ suite("Alpha Modes", function () {
 			const initialApi = initialTask.api
 			const initialApiConfiguration = initialTask.apiConfiguration
 			const initialApiConfigName = await initialTask.getTaskApiConfigName()
-			assert.equal(await initialTask.getTaskMode(), "code")
+			assert.equal(await initialTask.getTaskMode(), "architect")
 			assert.equal(initialApiConfiguration.apiProvider, "fake-ai")
 			assert.strictEqual(initialApiConfiguration.fakeAi, scriptedAI)
 
 			scriptedAI.allowModeSwitches()
 
-			await waitFor(() => scriptedAI!.requestedTaskIds.length === 2, {
-				timeout: 30_000,
-				interval: 25,
-				description: "the Architect plan request",
-				onTimeout: () => getTaskStartupDiagnostics(provider, taskId!),
-			})
 			await waitFor(
 				() =>
 					completedTaskIds.filter((completedTaskId) => completedTaskId === taskId).length >= 1 ||
@@ -295,7 +284,7 @@ suite("Alpha Modes", function () {
 				},
 			)
 			assert.equal(await initialTask.getTaskMode(), "architect")
-			assert.deepStrictEqual(scriptedAI.dispatchedToolNames, ["switch_mode", "attempt_completion"])
+			assert.deepStrictEqual(scriptedAI.dispatchedToolNames, ["attempt_completion"])
 			if (completedTaskIds.filter((completedTaskId) => completedTaskId === taskId).length < 1) {
 				const task = provider.getLiveTask(taskId)
 				assert.ok(task, "The mode-switch task disappeared before completion could be accepted")
@@ -317,10 +306,10 @@ suite("Alpha Modes", function () {
 
 			// Plan mode deliberately cannot dispatch switch_mode. Returning to Code is
 			// an explicit host/user transition, after which the completed task resumes.
-			await provider.setTaskMode(taskId, "code", { applyModeProfile: false })
+			await provider.setTaskMode(taskId, "code")
 			assert.equal(await completedTask.getTaskMode(), "code")
 			await completedTask.resumeCompletedTaskFollowup("Continue this retained task in Code.")
-			await waitFor(() => scriptedAI!.requestedTaskIds.length === 3, {
+			await waitFor(() => scriptedAI!.requestedTaskIds.length === 2, {
 				timeout: 30_000,
 				interval: 25,
 				description: "the same-task Code continuation request",
@@ -347,17 +336,13 @@ suite("Alpha Modes", function () {
 				onTimeout: () => getTaskStartupDiagnostics(provider, taskId!),
 			})
 
-			assert.deepStrictEqual(scriptedAI.requestedTaskIds, [taskId, taskId, taskId])
-			assert.deepStrictEqual(scriptedAI.dispatchedToolNames, [
-				"switch_mode",
-				"attempt_completion",
-				"attempt_completion",
-			])
+			assert.deepStrictEqual(scriptedAI.requestedTaskIds, [taskId, taskId])
+			assert.deepStrictEqual(scriptedAI.dispatchedToolNames, ["attempt_completion", "attempt_completion"])
 			assert.deepStrictEqual(
 				switchedModes.filter((event) => event.taskId === taskId).map((event) => event.mode),
-				["architect", "code"],
+				["code"],
 			)
-			assert.deepStrictEqual(localSwitchedModes, ["architect", "code"])
+			assert.deepStrictEqual(localSwitchedModes, ["code"])
 			assert.strictEqual(provider.getLiveTask(taskId), initialTask)
 			assert.strictEqual(initialTask.api, initialApi)
 			assert.strictEqual(initialTask.apiConfiguration, initialApiConfiguration)

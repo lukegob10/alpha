@@ -9,5 +9,7 @@
 	"missing": "Missing",
 	"inspect": "Chart values are available in the data table. Focus a plotted value to inspect it.",
 	"sortAscending": "ascending",
-	"sortDescending": "descending"
+	"sortDescending": "descending",
+	"invalidDiagram": "Diagram unavailable. Use a three-column relationship table with at most 24 named nodes, 48 links, and no cycles. The table remains readable.",
+	"imageUnavailable": "Image unavailable. Check the workspace path and use a static PNG or JPEG within the documented size limits."
 }

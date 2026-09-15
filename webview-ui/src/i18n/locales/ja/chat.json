@@ -323,6 +323,7 @@
 	"contextManagement": {
 		"tokens": "トークン",
 		"condensation": {
+			"unchanged": "コンテキストは既に上限内です",
 			"title": "コンテキスト要約",
 			"inProgress": "コンテキストを圧縮中...",
 			"errorHeader": "コンテキストの圧縮に失敗しました"
@@ -498,5 +499,13 @@
 		"title": "プロバイダーのサポート終了",
 		"message": "申し訳ございませんが、このプロバイダーはサポートを終了しました。実際に利用しているAlphaユーザーが非常に少なく、コードベースの範囲を縮小して、迅速な開発とコミュニティへの貢献を続ける必要がありました。本当に難しい決断でしたが、あなたにとって最も重要なことに集中するためです。残念ですが、ご理解ください。",
 		"openSettings": "設定を開く"
+	},
+	"githubActions": {
+		"request": "リクエスト",
+		"create_pull_request": "プルリクエストを作成",
+		"get_pull_request": "プルリクエストを表示",
+		"list_checks": "チェックを一覧表示",
+		"merge_pull_request": "プルリクエストをマージ",
+		"comment": "コメントを追加"
 	}
 }
