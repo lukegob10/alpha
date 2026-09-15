@@ -55,11 +55,13 @@ Two Windows compatibility adaptations are confined to the launcher:
 - Git receives process-local `safe.directory` entries for the task's roots because the sandbox uses another Windows
   identity. It never writes a wildcard trust grant to the user's Git configuration. In-root `.git` metadata is writable;
   metadata resolving outside the root is not granted.
-- Node 20's JavaScript `realpathSync` can fail while enumerating an ancestor that Windows does not expose, even when the
-  target is accessible. A Windows Node preload retries only those `EPERM`/`EACCES` `lstat` failures through the native
-  handle-based implementation. OS access checks still apply. `--preserve-symlinks-main` allows the preload to initialize
-  before Node resolves the entry point. This Windows adaptation requires Node with `--import` support (18.18+); the
-  development and release baseline remains Node **20.19.2**.
+- One-time global setup grants the native online sandbox account non-inheritable read/list access to the profile
+  directory itself. Build tools need to inspect that ancestor even when their project files are already readable.
+  The fixed helper changes only the directory DACL, preserving ownership, auditing and integrity labels. It opens the
+  directory with `MAXIMUM_ALLOWED`, which suppresses child ACL propagation in `SetSecurityInfo`. It grants no write,
+  delete, ownership, or permission-change rights. Existing native setup is reused; fresh setup first runs a fixed no-op
+  with a read-only workspace grant. Successful setup is shared across concurrent projects, and the ACL persists across
+  reloads. Setup failure or cancellation prevents command execution. Node options remain unchanged.
 
 PowerShell commands use encoded arguments. For CMD, a fixed encoded PowerShell adapter passes the original interactive
 command line to CMD using its native quoting rules, streams stdout/stderr, and closes stdin for noninteractive execution. Command text and executable
@@ -86,10 +88,10 @@ managed-agent worktrees. Passing a simple Node command is insufficient evidence 
 ### Windows release findings (2026-09-15)
 
 The pinned elevated backend can deny enumeration of the user-profile directory itself while permitting reads of its
-children. This breaks esbuild's ancestor search. The proposed setup repair is a non-inheritable `ReadAndExecute` entry on
-the profile directory for the native online sandbox account only; it must grant no write, delete, ownership, or ACL-change
-rights and must not change child ACLs. The repair and complete real-host acceptance gate remain release blockers until
-validated. Alpha does not silently alter profile permissions or choose a weaker backend after a command fails.
+children. This broke esbuild's ancestor search. The directory-only setup above fixes the cause for Node and native build
+tools. The native regression verifies the child's security descriptor is byte-for-byte unchanged, the parent grant
+contains only read/execute/synchronize rights with no inheritance, and repeating setup leaves the parent ACL unchanged.
+Alpha does not choose a weaker backend after a command fails.
 
 The upstream unelevated fallback was evaluated in disposable fixtures and rejected: a process could delete an outside
 sentinel even though an outside overwrite was denied. The elevated backend blocked both operations in the same class of
@@ -109,8 +111,8 @@ establish macOS/Linux compatibility.
 - [Sandbox CLI source at the pinned revision](https://github.com/openai/codex/blob/1e66aaa95b5ab39d3ef3057cd50bdecd576a8356/codex-rs/cli/src/debug_sandbox.rs)
 - [Pinned runtime release and asset digests](https://github.com/openai/codex/releases/tag/rust-v0.144.6)
 - [Windows sandbox design](https://learn.chatgpt.com/docs/windows/windows-sandbox)
-- [Node 20.19.2 preload options](https://nodejs.org/download/release/v20.19.2/docs/api/cli.html#--importmodule)
-- [Node native realpath](https://nodejs.org/download/release/v20.19.2/docs/api/fs.html#fsrealpathsyncnativepath-options)
+- [Windows directory-handle ACL updates and propagation](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo)
+- [Non-inheritable access rules](https://learn.microsoft.com/en-us/dotnet/api/system.security.accesscontrol.inheritanceflags)
 
 The Codex runtime is distributed upstream under Apache-2.0. Alpha's integration is independent of the selected model
 provider and does not invoke the Codex agent loop.

@@ -5,22 +5,7 @@ import { createHash } from "node:crypto"
 import os from "node:os"
 import { isPathWithinRoot, resolvePathWithExistingAncestor } from "../../core/tools/pathSafety"
 import { ensureSandboxRuntime } from "./SandboxRuntime"
-
-// Windows can permit opening a file while denying ancestor metadata enumeration.
-// Node's JavaScript realpath implementation walks those ancestors; its native implementation
-// resolves the already-authorized target by handle. No permissions or path scope are changed.
-const WINDOWS_NODE_PRELOAD = `import fs from 'node:fs';const original=fs.realpathSync;fs.realpathSync=Object.assign(function(value,options){try{return original(value,options)}catch(error){if(error?.syscall!=='lstat'||!['EPERM','EACCES'].includes(error.code))throw error;try{return original.native(value,options)}catch{throw error}}},{native:original.native});`
-
-export function sandboxNodeOptions(existing = process.env.NODE_OPTIONS): string | undefined {
-	if (process.platform !== "win32") return existing
-	return [
-		existing,
-		"--preserve-symlinks-main",
-		`--import=data:text/javascript,${encodeURIComponent(WINDOWS_NODE_PRELOAD)}`,
-	]
-		.filter(Boolean)
-		.join(" ")
-}
+import { ensureWindowsSandboxSetup } from "./WindowsSandboxSetup"
 
 export interface SandboxedCommand {
 	readonly executable: string
@@ -169,7 +154,7 @@ export async function prepareSandboxedCommand(
 		gitEnvironment.GIT_CONFIG_COUNT = String(count + directories.length)
 	}
 	options.signal?.throwIfAborted()
-	return {
+	const launch: SandboxedCommand = {
 		assertScope: () => {
 			options.signal?.throwIfAborted()
 			const identities = [
@@ -202,7 +187,6 @@ export async function prepareSandboxedCommand(
 		],
 		env: {
 			...gitEnvironment,
-			NODE_OPTIONS: sandboxNodeOptions(),
 			CODEX_HOME: runtimeHome,
 			TMPDIR: scratch,
 			TMP: scratch,
@@ -213,4 +197,23 @@ export async function prepareSandboxedCommand(
 			PYTHONDONTWRITEBYTECODE: "1",
 		},
 	}
+	if (process.platform === "win32") {
+		// Provision once with a fixed no-op under a read-only workspace grant, before running user commands.
+		const bootstrapArgs = [...launch.args.slice(0, launch.args.indexOf("--") + 1)]
+		bootstrapArgs[2] = JSON.stringify(sandboxState(roots, cwd, scratch, true))
+		bootstrapArgs.push(
+			...shellInvocation(
+				"exit 0",
+				path.join(
+					process.env.SystemRoot || "C:\\Windows",
+					"System32",
+					"WindowsPowerShell",
+					"v1.0",
+					"powershell.exe",
+				),
+			),
+		)
+		await ensureWindowsSandboxSetup({ ...launch, args: bootstrapArgs }, cwd, options.signal)
+	}
+	return launch
 }

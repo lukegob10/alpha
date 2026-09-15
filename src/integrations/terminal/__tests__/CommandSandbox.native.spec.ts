@@ -6,6 +6,7 @@ import { createRequire } from "node:module"
 import { execa } from "execa"
 import { prepareSandboxedCommand, shellInvocation } from "../CommandSandbox"
 import { ExecaTerminal } from "../ExecaTerminal"
+import { windowsProfileReadScript } from "../WindowsSandboxSetup"
 
 // Point at the checksum-verified release package to run this gate without another download.
 vi.mock("../SandboxRuntime", () => ({
@@ -190,4 +191,47 @@ console.log('WRITE_BOUNDARY_OK');`
 		expect(result.stdout).toContain("BUNDLED")
 		expect(await fs.readFile(path.join(root, "bundle.js"), "utf8")).toContain("BUNDLE_OK")
 	}, 45_000)
+
+	it.skipIf(process.platform !== "win32")(
+		"applies directory-only setup once without changing child ACLs or granting writes",
+		async () => {
+			const child = path.join(root, "child.txt")
+			await fs.writeFile(child, "unchanged")
+			const powershell = path.join(
+				process.env.SystemRoot || "C:\\Windows",
+				"System32",
+				"WindowsPowerShell",
+				"v1.0",
+				"powershell.exe",
+			)
+			const hostScript = (script: string) =>
+				execa(powershell, shellInvocation(script, powershell).slice(1), {
+					windowsHide: true,
+					timeout: 15_000,
+					env: { PSModulePath: path.join(path.dirname(powershell), "Modules") },
+				})
+			const decode = (value: string) =>
+				`[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(value).toString("base64")}'))`
+			const childAcl = () =>
+				hostScript(
+					`([Security.AccessControl.FileSecurity]::new((${decode(child)}),[Security.AccessControl.AccessControlSections]::Access)).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)`,
+				)
+			const directoryAcl = `[Security.AccessControl.DirectorySecurity]::new((${decode(root)}),[Security.AccessControl.AccessControlSections]::Access)`
+			const rootAcl = () =>
+				hostScript(
+					`(${directoryAcl}).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)`,
+				)
+			const before = (await childAcl()).stdout
+			await hostScript(windowsProfileReadScript(root))
+			expect((await childAcl()).stdout).toBe(before)
+			const configured = (await rootAcl()).stdout
+			await hostScript(windowsProfileReadScript(root))
+			expect((await rootAcl()).stdout).toBe(configured)
+			const rights = await hostScript(
+				`$s=([Security.Principal.NTAccount]::new([Environment]::MachineName,'CodexSandboxOnline')).Translate([Security.Principal.SecurityIdentifier]);(${directoryAcl}).GetAccessRules($true,$false,[Security.Principal.SecurityIdentifier])|Where-Object {$_.IdentityReference -eq $s}|ForEach-Object { [pscustomobject]@{rights=[int]$_.FileSystemRights;inheritance=[int]$_.InheritanceFlags;propagation=[int]$_.PropagationFlags} }|ConvertTo-Json -Compress`,
+			)
+			expect(JSON.parse(rights.stdout)).toEqual({ rights: 1179817, inheritance: 0, propagation: 0 })
+		},
+		45_000,
+	)
 })

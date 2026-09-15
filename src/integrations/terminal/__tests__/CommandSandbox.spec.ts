@@ -3,8 +3,10 @@ import os from "node:os"
 import path from "node:path"
 import { prepareSandboxedCommand, sandboxState, shellInvocation } from "../CommandSandbox"
 import { ensureSandboxRuntime } from "../SandboxRuntime"
+import { ensureWindowsSandboxSetup } from "../WindowsSandboxSetup"
 
 vi.mock("../SandboxRuntime", () => ({ ensureSandboxRuntime: vi.fn(async () => "trusted-sandbox") }))
+vi.mock("../WindowsSandboxSetup", () => ({ ensureWindowsSandboxSetup: vi.fn(async () => {}) }))
 
 describe("command sandbox launch contract", () => {
 	let fixture: string
@@ -44,6 +46,15 @@ describe("command sandbox launch contract", () => {
 				.map((entry: { path: { path: string } }) => entry.path.path),
 		).toEqual([root, path.join(root, ".git"), launch.env.TEMP])
 		expect(() => launch.assertScope()).not.toThrow()
+		if (process.platform === "win32") {
+			const [bootstrap] = vi.mocked(ensureWindowsSandboxSetup).mock.calls[0]
+			const bootstrapState = JSON.parse(bootstrap.args[2])
+			expect(
+				bootstrapState.permissionProfile.file_system.entries.filter(
+					(entry: { access: string }) => entry.access === "write",
+				),
+			).toEqual([{ path: { type: "path", path: launch.env.TEMP }, access: "write" }])
+		}
 	})
 
 	it("does not widen write scope when cwd is outside the workspace", async () => {
