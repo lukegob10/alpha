@@ -7,6 +7,7 @@ import { pipeline } from "node:stream/promises"
 import { x as extract } from "tar"
 import * as vscode from "vscode"
 import { t } from "../../i18n"
+import { renameWithRetry } from "../../core/task-persistence/atomicWrite"
 
 export const SANDBOX_RUNTIME_VERSION = "0.144.6"
 // Official release digests, pinned with the protocol adapter. See docs/command-sandbox.md.
@@ -127,7 +128,9 @@ async function installRuntime(storage: string, signal?: AbortSignal): Promise<st
 					controller.signal.throwIfAborted()
 					await fs.access(path.join(unpacked, "bin", path.basename(executable)))
 					try {
-						await fs.rename(unpacked, destination)
+						// Windows scanners/watchers can briefly deny renaming newly extracted executables.
+						// Reuse the bounded atomic-publication retry, without downloading again or widening access.
+						await renameWithRetry(unpacked, destination, controller.signal)
 					} catch (error) {
 						// Another extension host may have finished the same immutable installation.
 						try {

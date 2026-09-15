@@ -2,6 +2,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import http from "node:http"
+import { createRequire } from "node:module"
 import { execa } from "execa"
 import { prepareSandboxedCommand, shellInvocation } from "../CommandSandbox"
 import { ExecaTerminal } from "../ExecaTerminal"
@@ -171,7 +172,22 @@ console.log('WRITE_BOUNDARY_OK');`
 			reject: false,
 		})
 		expect(result.exitCode, result.stderr).toBe(0)
+		expect(result.stdout).not.toContain("System.Threading.Tasks.VoidTaskResult")
 		expect(await fs.readFile(path.join(root, "dist/output.txt"), "utf8")).toBe("BUILD_OK")
 		await expect(fs.access(path.join(root, ".git/index"))).resolves.toBeUndefined()
+	}, 45_000)
+
+	it("bundles a real build entry point beneath the Windows user profile", async () => {
+		const requireFromRoot = createRequire(path.resolve(__dirname, "../../../../package.json"))
+		const esbuild = requireFromRoot.resolve("esbuild/bin/esbuild")
+		await fs.writeFile(path.join(root, "entry.js"), "console.log('BUNDLE_OK')")
+		const result = await run(
+			root,
+			storage,
+			`require('child_process').execFileSync(process.execPath,[${JSON.stringify(esbuild)},'entry.js','--bundle','--outfile=bundle.js'],{stdio:'inherit'});console.log('BUNDLED')`,
+		)
+		expect(result.exitCode, result.stderr).toBe(0)
+		expect(result.stdout).toContain("BUNDLED")
+		expect(await fs.readFile(path.join(root, "bundle.js"), "utf8")).toContain("BUNDLE_OK")
 	}, 45_000)
 })

@@ -6,8 +6,10 @@ import * as lockfile from "proper-lockfile"
 // while allowing short-lived filesystem sharing violations to clear.
 const atomicReplaceRetryDelaysMs = [25, 50, 100, 200, 400] as const
 
-async function renameWithRetry(source: string, destination: string): Promise<void> {
+/** Publish a closed file or directory without deleting the destination on sharing violations. */
+export async function renameWithRetry(source: string, destination: string, signal?: AbortSignal): Promise<void> {
 	for (let attempt = 0; ; attempt++) {
+		signal?.throwIfAborted()
 		try {
 			await fs.rename(source, destination)
 			return
@@ -19,8 +21,9 @@ async function renameWithRetry(source: string, destination: string): Promise<voi
 			) {
 				throw error
 			}
-			// Retry only the atomic replacement: the same synced, closed temp file
-			// and the caller's transaction lock remain owned throughout the wait.
+			signal?.throwIfAborted()
+			// Retry only publication: the same closed staging path and any caller-owned
+			// transaction lock remain owned throughout the wait.
 			await new Promise<void>((resolve) => setTimeout(resolve, atomicReplaceRetryDelaysMs[attempt]))
 		}
 	}

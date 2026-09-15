@@ -43,6 +43,8 @@ selection is involved. Alpha supplies a complete managed permission profile thro
 Windows elevated-sandbox setting, and a fixed environment policy. User or project Codex configuration cannot replace the
 filesystem grant with full access. Installation verifies the official archive SHA-256 before extraction and atomically
 publishes the versioned directory. Failed or cancelled downloads leave no usable partial installation.
+Windows sharing violations during publication use the existing bounded atomic-rename retry; the verified archive is not
+downloaded again, and cancellation prevents further publication attempts.
 
 Windows uses the native restricted process identity and private desktop. macOS and Linux use the runtime's native sandbox
 backends. Unsupported platforms and failed native initialization fail closed. The runtime is downloaded once (roughly
@@ -78,6 +80,20 @@ pnpm --dir src test -- integrations/terminal/__tests__/CommandSandbox.native.spe
 The native gate exercises writes/deletes/renames, junction escapes, descendant writes, two independent projects sharing
 setup, read-only Plan execution, loopback networking, inline cancellation, quoted executable paths, pnpm builds, and Git
 metadata writes. Mocked lifecycle tests do not substitute for this gate.
+The real esbuild regression also requires ancestor enumeration for a project below the Windows user profile, as used by
+managed-agent worktrees. Passing a simple Node command is insufficient evidence of build-tool compatibility.
+
+### Windows release findings (2026-09-15)
+
+The pinned elevated backend can deny enumeration of the user-profile directory itself while permitting reads of its
+children. This breaks esbuild's ancestor search. The proposed setup repair is a non-inheritable `ReadAndExecute` entry on
+the profile directory for the native online sandbox account only; it must grant no write, delete, ownership, or ACL-change
+rights and must not change child ACLs. The repair and complete real-host acceptance gate remain release blockers until
+validated. Alpha does not silently alter profile permissions or choose a weaker backend after a command fails.
+
+The upstream unelevated fallback was evaluated in disposable fixtures and rejected: a process could delete an outside
+sentinel even though an outside overwrite was denied. The elevated backend blocked both operations in the same class of
+fixture. Keep elevated execution and the outside-delete assertion as required contracts.
 
 The preview release workflow also runs `test:command-sandbox:1221:run` after building the extension. This real-host test
 requires a successful command through the production installer and launcher, with global `*` approval, zero command
