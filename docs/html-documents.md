@@ -1,8 +1,13 @@
 # HTML documents in Alpha
 
-Run **Alpha: Preview HTML Document** with an HTML source file active (or invoke
-`alpha.previewHtmlDocument` with a VS Code file URI). An explicit Markdown action
-opens the same view from any chat, including a saved task:
+In the VS Code Explorer, right-click a local `.html` or `.htm` file and choose
+**Preview HTML Document** to open it in Alpha's document viewer. This works for
+documents saved in `docs/` or elsewhere in the workspace without opening the chat
+or source editor first. The menu accepts either filename case and excludes folders.
+
+You can also run **Alpha: Preview HTML Document** with an HTML source file active
+(or invoke `alpha.previewHtmlDocument` with a VS Code file URI). An explicit Markdown
+action opens the same view from any chat, including a saved task:
 
 ```text
 [Review](alpha-document://open?uri=file%3A%2F%2F%2FC%3A%2Fwork%2F.alpha%2Fdocuments%2Ftask-1%2Freview.html&task=task-1)

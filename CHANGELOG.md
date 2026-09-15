@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.42
+
+### Patch Changes
+
+- Add Preview HTML Document to the Explorer context menu for local HTML files, opening Alpha's document renderer without an active chat or source editor.
+- Reuse the existing preview tab and translated command label for `.html` and `.htm` documents.
+
 ## 2.1.41
 
 ### Patch Changes

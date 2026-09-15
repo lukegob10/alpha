@@ -3,7 +3,7 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "2.1.41",
+	"version": "2.1.42",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
@@ -184,6 +184,13 @@
 			}
 		],
 		"menus": {
+			"explorer/context": [
+				{
+					"command": "alpha.previewHtmlDocument",
+					"group": "navigation@10",
+					"when": "!explorerResourceIsFolder && resourceScheme == file && resourceExtname =~ /^\\.html?$/i"
+				}
+			],
 			"editor/context": [
 				{
 					"submenu": "alpha.contextMenu",

@@ -22,24 +22,36 @@ async function until(predicate: () => boolean) {
 
 suite("HTML document exact-host adapter", function () {
 	setDefaultSuiteTimeout(this)
-	test("opens once, follows unsaved and external edits, and closes without duplicate tabs", async () => {
+	test("Explorer preview opens without chat, follows edits, and closes without duplicate tabs", async () => {
 		assert.equal(vscode.version, "1.122.1")
+		const extensionId = process.env.ALPHA_E2E_EXTENSION_ID
+		assert.ok(extensionId)
+		const extension = vscode.extensions.getExtension(extensionId)
+		assert.ok(extension)
+		const explorerItems: { command?: string }[] = extension.packageJSON.contributes.menus["explorer/context"] ?? []
+		const previewCommand = explorerItems.find((item) => item.command === "alpha.previewHtmlDocument")?.command
+		assert.ok(previewCommand, "Explorer must expose the HTML document renderer")
+		await vscode.commands.executeCommand("workbench.action.closeAllEditors")
+		await vscode.commands.executeCommand("workbench.view.explorer")
+		await until(() => vscode.window.activeTextEditor === undefined)
 		const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
 		assert.ok(root)
 		const folder = await fs.mkdtemp(path.join(root, "html-viewer-test-"))
 		const first = vscode.Uri.file(path.join(folder, "first.html"))
-		const second = vscode.Uri.file(path.join(folder, "second.html"))
+		const second = vscode.Uri.file(path.join(folder, "second.HTM"))
 		const third = vscode.Uri.file(path.join(folder, "third.html"))
 		try {
 			await fs.writeFile(first.fsPath, html("First document"))
 			await fs.writeFile(second.fsPath, html("Second document"))
 			const cold = Date.now()
-			await vscode.commands.executeCommand("alpha.previewHtmlDocument", first)
+			await vscode.commands.executeCommand(previewCommand, first)
 			await until(() => tabs().some((tab) => tab.label === "First document"))
 			console.log(`HTML viewer cold adapter/title: ${Date.now() - cold} ms`)
-			await vscode.commands.executeCommand("alpha.previewHtmlDocument", first)
+			await vscode.commands.executeCommand(previewCommand, first)
 			assert.equal(tabs().length, 1)
-			await vscode.commands.executeCommand("alpha.previewHtmlDocument", second)
+			await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(first))
+			// Explorer supplies the clicked URI even when a different source is active.
+			await vscode.commands.executeCommand(previewCommand, second)
 			await until(() => tabs().some((tab) => tab.label === "Second document"))
 			assert.equal(tabs().length, 2)
 			await fs.writeFile(third.fsPath, html("Third document"))
