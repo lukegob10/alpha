@@ -1910,6 +1910,7 @@ const ChatRowContentInner = ({
 						<CommandExecution
 							executionId={message.ts.toString()}
 							workingDirectory={message.progressStatus?.text}
+							pathApproval={message.progressStatus?.commandPathApproval}
 							onToggleExpand={handleToggleExpand}
 							text={message.text}
 							icon={icon}

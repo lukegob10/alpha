@@ -37,7 +37,7 @@ describe("containsDangerousSubstitution", () => {
 
 describe("getCommandDecision", () => {
 	it.each(['echo "$(date)"', 'echo "${var@P}"', 'node -e "console.log(1)"'])(
-		"honors explicit global wildcard approval for dynamic sandboxed commands: %s",
+		"honors explicit global wildcard approval for dynamic commands: %s",
 		(command) => {
 			expect(getCommandDecision(command, ["*"])).toBe("auto_approve")
 			const policy = createSubagentCommandApprovalPolicy(["*"], [], "b".repeat(64))

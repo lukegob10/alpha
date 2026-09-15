@@ -135,9 +135,10 @@ export function analyzeShellCommands(source: string): ShellCommandAnalysis {
 interface ShellTokenDetail {
 	value: string
 	startsWithDynamicExpansion: boolean
+	redirection?: boolean
 }
 
-function tokenizeShellCommandDetails(source: string): ShellTokenDetail[][] {
+function tokenizeShellCommandDetails(source: string, splitRedirections = false): ShellTokenDetail[][] {
 	const commands: ShellTokenDetail[][] = []
 	let tokens: ShellTokenDetail[] = []
 	let current = ""
@@ -174,7 +175,11 @@ function tokenizeShellCommandDetails(source: string): ShellTokenDetail[][] {
 			else current += character
 			continue
 		}
-		if (character === "\\" && nextCharacter !== undefined) {
+		if (
+			character === "\\" &&
+			nextCharacter !== undefined &&
+			!(splitRedirections && process.platform === "win32" && nextCharacter === "\\")
+		) {
 			const canEscape = quote === "double" ? /["\\$`]/.test(nextCharacter) : /[\s'"\\$`]/.test(nextCharacter)
 			if (canEscape) {
 				current += nextCharacter
@@ -223,6 +228,19 @@ function tokenizeShellCommandDetails(source: string): ShellTokenDetail[][] {
 			continue
 		}
 		if (quote === null) {
+			if (splitRedirections && (character === ">" || character === "<")) {
+				// Keep descriptor duplication inert (2>&1) and expose file redirections, even without spaces.
+				if (/^\d*$/.test(current)) current = ""
+				pushToken()
+				let operator = character
+				if (nextCharacter === character || nextCharacter === "|") operator += source[++index]
+				if (source[index + 1] === "&") {
+					operator += source[++index]
+					while (/[\d-]/.test(source[index + 1] ?? "")) operator += source[++index]
+				}
+				tokens.push({ value: operator, startsWithDynamicExpansion: false, redirection: true })
+				continue
+			}
 			const doubleSeparator =
 				(character === "&" && nextCharacter === "&") || (character === "|" && nextCharacter === "|")
 			if (doubleSeparator) {
@@ -256,12 +274,19 @@ export function tokenizeShellCommands(source: string): string[][] {
 	return tokenizeShellCommandDetails(source).map((tokens) => tokens.map(({ value }) => value))
 }
 
+/** Distinguish file redirection operators from quoted text for command path preflight. */
+export function tokenizeShellCommandPaths(source: string): Array<Array<{ value: string; redirection?: boolean }>> {
+	return tokenizeShellCommandDetails(source, true)
+}
+
 export function containsDynamicExecutable(source: string): boolean {
 	const extracted = extractCommandSubstitutions(source)
-	return [source, ...extracted.commands].flatMap(tokenizeShellCommandDetails).some((tokens) => {
-		let commandIndex = 0
-		while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[commandIndex]?.value ?? "")) commandIndex++
-		const executable = tokens[commandIndex]
-		return executable?.startsWithDynamicExpansion === true && /^(?:\$|`)/.test(executable.value)
-	})
+	return [source, ...extracted.commands]
+		.flatMap((command) => tokenizeShellCommandDetails(command))
+		.some((tokens) => {
+			let commandIndex = 0
+			while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[commandIndex]?.value ?? "")) commandIndex++
+			const executable = tokens[commandIndex]
+			return executable?.startsWithDynamicExpansion === true && /^(?:\$|`)/.test(executable.value)
+		})
 }

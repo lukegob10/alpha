@@ -284,13 +284,16 @@
 			"label": "Reglas de comandos",
 			"description": "Aprobar automáticamente comandos dentro del ámbito de escritura de la tarea. La red está habilitada. Se bloquean escrituras fuera del ámbito. La configuración global se conserva entre proyectos.",
 			"allowedCommands": "Prefijos de comandos permitidos",
-			"allowedCommandsDescription": "Use * para aprobar todos los comandos, incluidos scripts. Las reglas de denegación siguen vigentes. El entorno aislado aplica el límite de escritura.",
+			"allowedCommandsDescription": "Usa * para aprobar automáticamente comandos, incluidos scripts. Las reglas guardadas se aplican globalmente. Las escrituras detectadas fuera de la raíz y las rutas de escritura no resueltas requieren aprobación. Es una comprobación de comandos y rutas, no un aislamiento del sistema.",
 			"deniedCommands": "Comandos denegados",
 			"deniedCommandsDescription": "Prefijos de comandos que serán automáticamente denegados sin pedir aprobación. En caso de conflictos con comandos permitidos, la coincidencia de prefijo más larga tiene prioridad. Añade * para denegar todos los comandos.",
 			"commandPlaceholder": "Ingrese prefijo de comando (ej. 'git ')",
 			"deniedCommandPlaceholder": "Ingrese prefijo de comando a denegar (ej. 'rm -rf')",
 			"addButton": "Añadir",
-			"autoDenied": "Los comandos con el prefijo `{{prefix}}` han sido prohibidos por el usuario. No eludes esta restricción ejecutando otro comando."
+			"autoDenied": "Los comandos con el prefijo `{{prefix}}` han sido prohibidos por el usuario. No eludes esta restricción ejecutando otro comando.",
+			"pathApprovalTitle": "Las rutas de archivo requieren aprobación",
+			"pathApprovalDescription": "Este comando puede modificar archivos fuera de la raíz de la tarea. La aprobación solo se aplica a esta ejecución.",
+			"pathApprovalUnresolved": "No se pudieron resolver algunas rutas de escritura."
 		},
 		"apiRequestLimit": {
 			"title": "Solicitudes máximas",
@@ -714,7 +717,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Usar terminal en línea (recomendado)",
-			"description": "Los comandos usan el entorno aislado integrado para proteger las escrituras. La configuración es global y reutiliza la configuración existente de Windows."
+			"description": "Ejecuta comandos en el terminal en línea (chat) para evitar perfiles/integración del shell para ejecuciones más rápidas y confiables. Cuando está desactivado, Alpha usa el terminal de VS Code con tu perfil de shell, prompts y plugins. <0>Más información</0>"
 		},
 		"commandDelay": {
 			"label": "Retraso de comando del terminal",

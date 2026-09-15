@@ -6,7 +6,6 @@ import { execFile, type ExecFileException } from "node:child_process"
 import type { RooTerminal } from "./types"
 import { BaseTerminal } from "./BaseTerminal"
 import { BaseTerminalProcess } from "./BaseTerminalProcess"
-import type { SandboxedCommand } from "./CommandSandbox"
 
 const PROCESS_TERMINATION_TIMEOUT_MS = 5_000
 const PID_UPDATE_TIMEOUT_MS = 1_000
@@ -39,30 +38,26 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 		return terminal
 	}
 
-	public override async run(command: string, launch?: SandboxedCommand) {
+	public override async run(command: string) {
 		this.command = command
 
 		try {
 			this.isHot = true
-			launch?.assertScope()
 
-			const options = {
-				cwd: this.terminal.getCurrentWorkingDirectory(),
-				all: true as const,
+			this.subprocess = execa({
+				shell: BaseTerminal.getExecaShellPath() || true,
 				windowsHide: true,
+				cwd: this.terminal.getCurrentWorkingDirectory(),
+				all: true,
 				// Ignore stdin to ensure non-interactive mode and prevent hanging
-				stdin: "ignore" as const,
+				stdin: "ignore",
 				env: {
 					...process.env,
 					// Ensure UTF-8 encoding for Ruby, CocoaPods, etc.
 					LANG: "en_US.UTF-8",
 					LC_ALL: "en_US.UTF-8",
-					...launch?.env,
 				},
-			}
-			this.subprocess = launch
-				? execa(launch.executable, [...launch.args], { ...options, shell: false })
-				: execa({ ...options, shell: BaseTerminal.getExecaShellPath() || true })`${command}`
+			})`${command}`
 
 			this.pid = this.subprocess.pid
 
@@ -138,9 +133,6 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				this.aborted ? { exitCode: 137, signalName: "SIGKILL" } : { exitCode: 0 },
 			)
 		} catch (error) {
-			if (!this.fullOutput && !this.aborted) {
-				this.fullOutput = error instanceof Error ? error.message : String(error)
-			}
 			if (error instanceof ExecaError) {
 				if (!this.aborted) console.error(`[ExecaTerminalProcess#run] shell execution error: ${error.message}`)
 				this.emit("shell_execution_complete", {

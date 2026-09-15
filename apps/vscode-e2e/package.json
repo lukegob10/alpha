@@ -21,7 +21,7 @@
 		"test:core:1221": "pnpm test:smoke:1221 && pnpm test:core:1221:run",
 		"test:core:1221:run": "pnpm compile && node ./out/runTest.js --vscode-version 1.122.1 --provider scripted --file core-loop.test && node ./out/runTest.js --vscode-version 1.122.1 --provider scripted --file completion-idle.test && node ./out/runTest.js --vscode-version 1.122.1 --provider scripted --file managed-agents.acceptance.test",
 		"test:smoke:1221:run": "rimraf out && tsc -p tsconfig.json && node ./out/runTest.js --vscode-version 1.122.1 --provider scripted --file extension.test && node ./out/runTest.js --vscode-version 1.122.1 --provider scripted --file modes.test && node ./out/runTest.js --vscode-version 1.122.1 --provider vscode-lm-fixture --file vscode-lm-contract.test",
-		"test:command-sandbox:1221:run": "pnpm compile && node ./out/runTest.js --vscode-version 1.122.1 --provider scripted --file command-sandbox.test",
+		"test:command-paths:1221:run": "pnpm compile && node ./out/runTest.js --vscode-version 1.122.1 --provider scripted --file command-path-approval.test",
 		"test:vscode-lm:1221:run": "rimraf out && tsc -p tsconfig.json && node ./out/runTest.js --vscode-version 1.122.1 --provider vscode-lm-fixture --file vscode-lm-contract.test",
 		"test:smoke:latest": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm test:smoke:latest:run",
 		"test:smoke:latest:run": "rimraf out && tsc -p tsconfig.json && node ./out/runTest.js --vscode-version stable --provider scripted --file extension.test && node ./out/runTest.js --vscode-version stable --provider scripted --file modes.test",

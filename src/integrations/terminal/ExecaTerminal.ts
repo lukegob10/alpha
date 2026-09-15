@@ -2,7 +2,6 @@ import type { RooTerminalCallbacks, RooTerminalProcessResultPromise } from "./ty
 import { BaseTerminal } from "./BaseTerminal"
 import { ExecaTerminalProcess } from "./ExecaTerminalProcess"
 import { mergePromise } from "./mergePromise"
-import type { SandboxedCommand } from "./CommandSandbox"
 
 export class ExecaTerminal extends BaseTerminal {
 	constructor(id: number, cwd: string) {
@@ -16,11 +15,7 @@ export class ExecaTerminal extends BaseTerminal {
 		return false
 	}
 
-	public override runCommand(
-		command: string,
-		callbacks: RooTerminalCallbacks,
-		launch?: SandboxedCommand,
-	): RooTerminalProcessResultPromise {
+	public override runCommand(command: string, callbacks: RooTerminalCallbacks): RooTerminalProcessResultPromise {
 		this.busy = true
 
 		const process = new ExecaTerminalProcess(this)
@@ -35,7 +30,7 @@ export class ExecaTerminal extends BaseTerminal {
 		const promise = new Promise<void>((resolve, reject) => {
 			process.once("continue", () => resolve())
 			process.once("error", (error) => reject(error))
-			process.run(command, launch)
+			process.run(command)
 		})
 
 		return mergePromise(process, promise)

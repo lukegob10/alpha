@@ -257,10 +257,5 @@
 	"docsLink": {
 		"label": "Docs",
 		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
-	},
-	"commandSandbox": {
-		"installing": "Konfigurowanie piaskownicy poleceń (raz na użytkownika)",
-		"preparing": "Przygotowywanie piaskownicy",
-		"unavailable": "Piaskownica jest niedostępna. Sprawdź błąd konfiguracji lub pobierania i spróbuj ponownie. Polecenie nie zostało uruchomione na hoście."
 	}
 }

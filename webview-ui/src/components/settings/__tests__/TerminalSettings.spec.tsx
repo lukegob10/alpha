@@ -1,4 +1,4 @@
-import { act, render, screen } from "@/utils/test-utils"
+import { act, fireEvent, render, screen } from "@/utils/test-utils"
 
 import { vscode } from "@/utils/vscode"
 
@@ -53,7 +53,7 @@ describe("TerminalSettings", () => {
 		messageHandler = undefined
 	})
 
-	it("explains sandbox execution without exposing an ineffective host-terminal switch", () => {
+	it("buffers inherit-environment edits without updating VS Code immediately", () => {
 		const setCachedStateField = vi.fn()
 
 		render(
@@ -66,9 +66,9 @@ describe("TerminalSettings", () => {
 		)
 		vi.mocked(vscode.postMessage).mockClear()
 
-		expect(screen.queryByTestId("terminal-inherit-env-checkbox")).not.toBeInTheDocument()
-		expect(screen.getByText("settings:terminal.shellIntegrationDisabled.description")).toBeInTheDocument()
-		expect(setCachedStateField).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByTestId("terminal-inherit-env-checkbox"))
+
+		expect(setCachedStateField).toHaveBeenCalledWith("terminalInheritEnv", false)
 		expect(vscode.postMessage).not.toHaveBeenCalled()
 	})
 

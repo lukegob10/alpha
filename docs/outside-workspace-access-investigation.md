@@ -3,7 +3,8 @@
 Implemented 2026-09-14 after investigating the Code-mode report.
 
 **Historical record for 2.1.38.** The blanket command-approval policy described below is superseded by
-[command sandboxing and automatic approval](command-sandbox.md). Native outside-file approval semantics remain in force.
+[command and path approval](command-sandbox.md). Version 2.1.40 replaces the 2.1.39 native runtime with application-level
+command/path preflight. Native outside-file approval semantics remain in force.
 
 ## Behavior introduced in 2.1.38
 

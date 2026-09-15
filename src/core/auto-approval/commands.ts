@@ -311,7 +311,7 @@ export function getCommandDecision(
 	allowedCommands: string[],
 	deniedCommands?: string[],
 ): CommandDecision {
-	// An unrestricted command grant does not need shell classification. The execution sandbox owns write scope.
+	// A global wildcard accepts scripts and computed commands. Path review is a separate scheduler check.
 	if (allowedCommands.includes("*") && !deniedCommands?.length) return "auto_approve"
 	return aggregateCommandDecision(command, (singleCommand) =>
 		getSingleCommandDecision(singleCommand, allowedCommands, deniedCommands),

@@ -252,10 +252,5 @@
 	"docsLink": {
 		"label": "Docs",
 		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
-	},
-	"commandSandbox": {
-		"installing": "Befehlssandbox einrichten (einmal pro Benutzer)",
-		"preparing": "Sandbox-Laufzeit vorbereiten",
-		"unavailable": "Die Befehlssandbox ist nicht verfügbar. Prüfen Sie den Einrichtungs- oder Downloadfehler und versuchen Sie es erneut. Der Befehl wurde nicht auf dem Host ausgeführt."
 	}
 }

@@ -3,7 +3,12 @@ import { useEvent } from "react-use"
 import { t } from "i18next"
 import { ChevronRight, OctagonX } from "lucide-react"
 
-import { type ExtensionMessage, type CommandExecutionStatus, commandExecutionStatusSchema } from "@alpha-code/types"
+import {
+	type ExtensionMessage,
+	type CommandExecutionStatus,
+	type ToolProgressStatus,
+	commandExecutionStatusSchema,
+} from "@alpha-code/types"
 
 import { safeJsonParse } from "@alpha/core"
 import { COMMAND_OUTPUT_STRING } from "@alpha/combineCommandSequences"
@@ -28,6 +33,7 @@ interface CommandPattern {
 interface CommandExecutionProps {
 	executionId: string
 	workingDirectory?: string
+	pathApproval?: ToolProgressStatus["commandPathApproval"]
 	text?: string
 	icon?: JSX.Element | null
 	title?: JSX.Element | null
@@ -41,6 +47,7 @@ export const CommandExecution = ({
 	title,
 	onToggleExpand,
 	workingDirectory,
+	pathApproval,
 }: CommandExecutionProps) => {
 	const {
 		currentTaskId,
@@ -154,6 +161,28 @@ export const CommandExecution = ({
 
 	return (
 		<>
+			{pathApproval && (
+				<div
+					className="mb-2 ml-6 rounded border border-vscode-inputValidation-warningBorder p-2 text-sm"
+					role="note">
+					<div className="font-medium">{t("settings:autoApprove.execute.pathApprovalTitle")}</div>
+					<p className="my-1 text-vscode-descriptionForeground">
+						{t("settings:autoApprove.execute.pathApprovalDescription")}
+					</p>
+					{pathApproval.outsidePaths.length > 0 && (
+						<ul className="my-1 pl-4">
+							{pathApproval.outsidePaths.map((target) => (
+								<li key={target} className="break-all font-mono text-xs">
+									{target}
+								</li>
+							))}
+						</ul>
+					)}
+					{pathApproval.unresolved && (
+						<p className="my-1">{t("settings:autoApprove.execute.pathApprovalUnresolved")}</p>
+					)}
+				</div>
+			)}
 			{workingDirectory && (
 				<div className="mb-1 ml-6 break-all font-mono text-xs text-vscode-descriptionForeground">
 					{workingDirectory}
@@ -235,7 +264,7 @@ export const CommandExecution = ({
 						</div>
 					)}
 				</div>
-				{command && command.trim() && (
+				{!pathApproval && command && command.trim() && (
 					<CommandPatternSelector
 						patterns={commandPatterns}
 						allowedCommands={allowedCommands}

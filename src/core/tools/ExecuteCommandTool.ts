@@ -1,7 +1,6 @@
 import fs from "fs/promises"
 import * as path from "path"
 import { randomUUID } from "crypto"
-import nodeProcess from "node:process"
 import * as vscode from "vscode"
 
 import delay from "delay"
@@ -24,12 +23,6 @@ import {
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
 import { Terminal } from "../../integrations/terminal/Terminal"
 import { OutputInterceptor } from "../../integrations/terminal/OutputInterceptor"
-import { BaseTerminal } from "../../integrations/terminal/BaseTerminal"
-import {
-	prepareSandboxedCommand,
-	shellInvocation,
-	type SandboxedCommand,
-} from "../../integrations/terminal/CommandSandbox"
 import { Package } from "../../shared/package"
 import { t } from "../../i18n"
 import { getTaskDirectoryPath } from "../../utils/storage"
@@ -315,7 +308,6 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				executionId,
 				toolCallId: commandEvidenceId,
 				command: canonicalCommand,
-				commandWorkspaceRoots: callbacks.commandWorkspaceRoots,
 				customCwd,
 				verificationChangeSetIds: verification?.change_set_ids,
 				terminalShellIntegrationDisabled,
@@ -449,7 +441,6 @@ export type ExecuteCommandOptions = {
 	executionId: string
 	toolCallId?: string
 	command: string
-	commandWorkspaceRoots?: readonly string[]
 	customCwd?: string
 	verificationChangeSetIds?: readonly string[]
 	terminalShellIntegrationDisabled?: boolean
@@ -466,7 +457,6 @@ export async function executeCommandInTerminal(
 		executionId,
 		toolCallId,
 		command,
-		commandWorkspaceRoots,
 		customCwd,
 		verificationChangeSetIds,
 		terminalShellIntegrationDisabled = true,
@@ -561,29 +551,8 @@ export async function executeCommandInTerminal(
 
 	// Managed workers run unattended and must use the terminal provider whose
 	// process tree can be deterministically terminated by task cancellation.
-	const sandboxed = nodeProcess.env.ROO_CLI_RUNTIME !== "1"
-	const terminalProvider = sandboxed || isManagedWorker || terminalShellIntegrationDisabled ? "execa" : "vscode"
+	const terminalProvider = isManagedWorker || terminalShellIntegrationDisabled ? "execa" : "vscode"
 	const provider = await task.providerRef.deref()
-	let sandboxLaunch: SandboxedCommand | undefined
-	if (sandboxed) {
-		const storagePath = provider?.context?.globalStorageUri?.fsPath ?? ""
-		sandboxLaunch = await prepareSandboxedCommand(
-			{
-				storagePath,
-				workspaceRoots: commandWorkspaceRoots?.length ? commandWorkspaceRoots : [task.cwd],
-				cwd: workingDir,
-				readOnly: isPlanMode,
-				signal: task.getTaskLifetimeCancellationSignal(),
-			},
-			shellInvocation(
-				command,
-				BaseTerminal.getExecaShellPath() ||
-					(nodeProcess.platform === "win32"
-						? nodeProcess.env.ComSpec || "cmd.exe"
-						: nodeProcess.env.SHELL || "/bin/sh"),
-			),
-		)
-	}
 	const handleCommandMutationFailure = (error: unknown): Promise<{ recoveryError?: unknown }> => {
 		commandMutationFailureHandling ??= (async () => {
 			const receiptError =
@@ -963,7 +932,7 @@ export async function executeCommandInTerminal(
 	let process: ReturnType<RooTerminal["runCommand"]>
 	try {
 		onExecutionState?.("unknown")
-		process = terminal.runCommand(command, callbacks, sandboxLaunch)
+		process = terminal.runCommand(command, callbacks)
 		onExecutionState?.("yes")
 	} catch (error) {
 		const launchError = new CommandExecutionLifecycleError("launch-command", error)

@@ -257,10 +257,5 @@
 	"docsLink": {
 		"label": "Docs",
 		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
-	},
-	"commandSandbox": {
-		"installing": "Configurazione sandbox dei comandi (una volta per utente)",
-		"preparing": "Preparazione della sandbox",
-		"unavailable": "La sandbox non è disponibile. Controlla l’errore di configurazione o download e riprova. Il comando non è stato eseguito sull’host."
 	}
 }

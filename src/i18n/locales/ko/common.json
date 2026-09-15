@@ -257,10 +257,5 @@
 	"docsLink": {
 		"label": "Docs",
 		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
-	},
-	"commandSandbox": {
-		"installing": "명령 샌드박스 설정 중(사용자당 한 번)",
-		"preparing": "샌드박스 준비 중",
-		"unavailable": "명령 샌드박스를 사용할 수 없습니다. 설정 또는 다운로드 오류를 확인하고 다시 시도하세요. 호스트에서 명령을 실행하지 않았습니다."
 	}
 }

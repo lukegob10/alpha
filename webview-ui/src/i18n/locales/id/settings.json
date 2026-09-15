@@ -284,13 +284,16 @@
 			"label": "Aturan perintah",
 			"description": "Setujui otomatis perintah dalam cakupan tulis tugas. Jaringan diaktifkan. Penulisan di luar cakupan diblokir. Penyiapan global tetap tersimpan antarproyek.",
 			"allowedCommands": "Awalan perintah yang diizinkan",
-			"allowedCommandsDescription": "Gunakan * untuk menyetujui semua perintah, termasuk skrip. Aturan penolakan tetap berlaku. Sandbox menerapkan batas penulisan.",
+			"allowedCommandsDescription": "Gunakan * untuk menyetujui perintah secara otomatis, termasuk skrip. Aturan tersimpan berlaku global. Penulisan di luar akar tugas yang terdeteksi dan jalur tulis yang belum diketahui tetap memerlukan persetujuan. Ini pemeriksaan perintah/jalur, bukan sandbox OS.",
 			"deniedCommands": "Perintah yang ditolak",
 			"deniedCommandsDescription": "Prefix perintah yang akan ditolak secara otomatis tanpa memerlukan persetujuan. Dalam kasus konflik dengan perintah yang diizinkan, pencocokan prefix terpanjang diprioritaskan. Tambahkan * untuk menolak semua perintah.",
 			"commandPlaceholder": "Masukkan prefix perintah (misalnya, 'git ')",
 			"deniedCommandPlaceholder": "Masukkan prefix perintah untuk ditolak (misalnya, 'rm -rf')",
 			"addButton": "Tambah",
-			"autoDenied": "Perintah dengan awalan `{{prefix}}` telah dilarang oleh pengguna. Jangan menghindari pembatasan ini dengan menjalankan perintah lain."
+			"autoDenied": "Perintah dengan awalan `{{prefix}}` telah dilarang oleh pengguna. Jangan menghindari pembatasan ini dengan menjalankan perintah lain.",
+			"pathApprovalTitle": "Jalur file memerlukan persetujuan",
+			"pathApprovalDescription": "Perintah ini dapat mengubah file di luar akar tugas. Persetujuan hanya berlaku untuk eksekusi ini.",
+			"pathApprovalUnresolved": "Beberapa jalur tulis tidak dapat ditentukan."
 		},
 		"apiRequestLimit": {
 			"title": "Permintaan Maks",
@@ -714,7 +717,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Gunakan Terminal Inline (disarankan)",
-			"description": "Perintah menggunakan sandbox inline untuk perlindungan penulisan yang konsisten. Penyiapan bersifat global dan menggunakan kembali penyiapan Windows yang ada."
+			"description": "Jalankan perintah di Terminal Inline (obrolan) untuk melewati profil/integrasi shell untuk proses lebih cepat dan andal. Saat dinonaktifkan, Alpha menggunakan terminal VS Code dengan profil shell, prompt, dan plugin Anda. <0>Pelajari lebih lanjut</0>"
 		},
 		"commandDelay": {
 			"label": "Delay perintah terminal",

@@ -284,13 +284,16 @@
 			"label": "Opdrachtregels",
 			"description": "Opdrachten binnen het schrijfbereik van de taak automatisch goedkeuren. Netwerktoegang is ingeschakeld. Schrijven buiten het bereik wordt geblokkeerd. De globale installatie blijft behouden tussen projecten.",
 			"allowedCommands": "Toegestane opdrachtvoorvoegsels",
-			"allowedCommandsDescription": "Gebruik * om alle opdrachten, inclusief scripts, goed te keuren. Weigerregels blijven gelden. De sandbox handhaaft de schrijfgrens.",
+			"allowedCommandsDescription": "Gebruik * om opdrachten, inclusief scripts, automatisch goed te keuren. Opgeslagen regels gelden globaal. Gedetecteerde schrijfacties buiten de taakmap en onopgeloste schrijfpaden vereisen goedkeuring. Dit is een controle van opdrachten en paden, geen OS-sandbox.",
 			"deniedCommands": "Geweigerde commando's",
 			"deniedCommandsDescription": "Commando-prefixen die automatisch worden geweigerd zonder om goedkeuring te vragen. Bij conflicten met toegestane commando's heeft de langste prefixovereenkomst voorrang. Voeg * toe om alle commando's te weigeren.",
 			"commandPlaceholder": "Voer commando-prefix in (bijv. 'git ')",
 			"deniedCommandPlaceholder": "Voer te weigeren commando-prefix in (bijv. 'rm -rf')",
 			"addButton": "Toevoegen",
-			"autoDenied": "Commando's met het prefix `{{prefix}}` zijn verboden door de gebruiker. Omzeil deze beperking niet door een ander commando uit te voeren."
+			"autoDenied": "Commando's met het prefix `{{prefix}}` zijn verboden door de gebruiker. Omzeil deze beperking niet door een ander commando uit te voeren.",
+			"pathApprovalTitle": "Bestandspaden vereisen goedkeuring",
+			"pathApprovalDescription": "Deze opdracht kan bestanden buiten de taakmap wijzigen. Goedkeuring geldt alleen voor deze uitvoering.",
+			"pathApprovalUnresolved": "Sommige schrijfpaden konden niet worden bepaald."
 		},
 		"apiRequestLimit": {
 			"title": "Maximale verzoeken",
@@ -714,7 +717,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Inline Terminal gebruiken (aanbevolen)",
-			"description": "Opdrachten gebruiken de inline-sandbox voor consistente schrijfbeveiliging. De installatie is globaal; bestaande Windows-sandboxconfiguratie wordt hergebruikt."
+			"description": "Voer commando's uit in de Inline Terminal (chat) om shell-profielen/integratie te omzeilen voor snellere, betrouwbaardere runs. Wanneer uitgeschakeld gebruikt Alpha de VS Code-terminal met je shell-profiel, prompts en plugins. <0>Meer informatie</0>"
 		},
 		"commandDelay": {
 			"label": "Terminal-commandovertraging",

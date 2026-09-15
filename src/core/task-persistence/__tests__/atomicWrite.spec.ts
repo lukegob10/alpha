@@ -2,7 +2,7 @@ import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
 
-import { atomicWriteText, withFileLock, renameWithRetry } from "../atomicWrite"
+import { atomicWriteText, withFileLock } from "../atomicWrite"
 
 vi.mock("fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("fs/promises")>()
@@ -27,31 +27,6 @@ afterEach(async () => {
 })
 
 describe("atomic replacement under filesystem contention", () => {
-	it("publishes a complete runtime directory after a transient sharing violation", async () => {
-		const staged = path.join(directory, "staged")
-		const published = path.join(directory, "runtime")
-		await fs.mkdir(staged)
-		await fs.writeFile(path.join(staged, "runner"), "verified runtime")
-		vi.mocked(fs.rename).mockRejectedValueOnce(
-			Object.assign(new Error("scanner holds directory"), { code: "EPERM" }),
-		)
-		await renameWithRetry(staged, published)
-		expect(await fs.readFile(path.join(published, "runner"), "utf8")).toBe("verified runtime")
-		expect(fs.rename).toHaveBeenCalledTimes(2)
-		expect(fs.rm).not.toHaveBeenCalledWith(published, expect.anything())
-	})
-
-	it("cancels directory publication before retrying a sharing violation", async () => {
-		const controller = new AbortController()
-		vi.mocked(fs.rename).mockImplementationOnce(async () => {
-			controller.abort(new Error("installation cancelled"))
-			throw Object.assign(new Error("sharing violation"), { code: "EPERM" })
-		})
-		await expect(renameWithRetry("staged", "published", controller.signal)).rejects.toThrow(
-			"installation cancelled",
-		)
-		expect(fs.rename).toHaveBeenCalledOnce()
-	})
 	it.each(["EPERM", "EACCES", "EBUSY"])(
 		"retries transient %s without deleting the previous snapshot",
 		async (code) => {

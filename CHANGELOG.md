@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.40
+
+### Patch Changes
+
+- Replace the downloaded sandbox executable and Windows provisioning with command and path preflight in Alpha.
+- Keep saved global `*` auto-approval for ordinary commands and scripts. Detected outside-root writes/deletes and unresolved write destinations require approval for that run, with the affected paths shown in the command card.
+- Restore the saved inline/VS Code terminal choice and its settings. No per-project setup or new executable is required.
+- Clarify that command/path checks are best effort and do not isolate arbitrary scripts or child processes.
+
 ## 2.1.39
 
 ### Patch Changes

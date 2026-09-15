@@ -157,16 +157,65 @@ describe("outside workspace execution", () => {
 		},
 	)
 
-	it.each([undefined, "../outside"])(
-		"uses command auto-approval for a sandboxed command with cwd %s",
-		async (commandCwd) => {
-			const fixture = harness("execute_command", { command: "node script.js", cwd: commandCwd }, true, false)
-			const effect = vi.fn()
-			expect((await fixture.run(inspection("execute_command", effect))).results[0].status).toBe("success")
-			expect(fixture.prompt).not.toHaveBeenCalled()
-			expect(effect).toHaveBeenCalledOnce()
-		},
-	)
+	it.each([undefined, "."])("uses global command auto-approval inside cwd %s", async (commandCwd) => {
+		const fixture = harness("execute_command", { command: "node script.js", cwd: commandCwd }, true, false)
+		const effect = vi.fn()
+		expect((await fixture.run(inspection("execute_command", effect))).results[0].status).toBe("success")
+		expect(fixture.prompt).not.toHaveBeenCalled()
+		expect(effect).toHaveBeenCalledOnce()
+	})
+
+	it.each([
+		{ command: "echo changed > ../outside/file.txt" },
+		{ command: "Remove-Item -LiteralPath ../outside/file.txt" },
+		{ command: "node script.js", cwd: "../outside" },
+	])("requires a decision for a detected outside command path: %j", async (args) => {
+		const fixture = harness("execute_command", args, true, false)
+		const effect = vi.fn()
+		expect((await fixture.run(inspection("execute_command", effect))).results[0].status).toBe("denied")
+		expect(fixture.prompt).toHaveBeenCalledOnce()
+		expect(effect).not.toHaveBeenCalled()
+	})
+
+	it.each([true, false])("honors the one-run decision %s for command mutations", async (approve) => {
+		const file = path.join(outside, "command.txt")
+		await fs.writeFile(file, "original")
+		const fixture = harness("execute_command", { command: `echo changed > "${file}"` }, true, approve)
+		await fixture.run(inspection("execute_command", () => fs.writeFile(file, "changed")))
+		expect(fixture.prompt).toHaveBeenCalledOnce()
+		expect(await fs.readFile(file, "utf8")).toBe(approve ? "changed" : "original")
+		expect(fixture.host.askApproval).toHaveBeenCalledWith(
+			"command",
+			"node script.js",
+			expect.objectContaining({ commandPathApproval: { outsidePaths: [file], unresolved: false } }),
+			false,
+			true,
+		)
+	})
+
+	it("does not offer outside-command approval when inherited policy forbids it", async () => {
+		const fixture = harness("execute_command", { command: "rm ../outside/file.txt" }, false)
+		const effect = vi.fn()
+		expect((await fixture.run(inspection("execute_command", effect))).results[0].content).toContain(
+			"exceed the task scope",
+		)
+		expect(fixture.prompt).not.toHaveBeenCalled()
+		expect(effect).not.toHaveBeenCalled()
+	})
+
+	it("rechecks a command destination junction after path approval", async () => {
+		const link = path.join(cwd, "linked")
+		await fs.symlink(outside, link, process.platform === "win32" ? "junction" : "dir")
+		const fixture = harness("execute_command", { command: "echo changed > linked/file.txt" })
+		const effect = vi.fn()
+		fixture.prompt.mockImplementation(async () => {
+			await fs.unlink(link)
+			await fs.symlink(cwd, link, process.platform === "win32" ? "junction" : "dir")
+			return true
+		})
+		expect((await fixture.run(inspection("execute_command", effect))).results[0].status).toBe("denied")
+		expect(effect).not.toHaveBeenCalled()
+	})
 
 	it.each([true, false])(
 		"runs an external write only after the human decision %s and excludes it from workspace receipts",

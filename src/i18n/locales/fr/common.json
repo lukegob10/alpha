@@ -257,10 +257,5 @@
 	"docsLink": {
 		"label": "Docs",
 		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
-	},
-	"commandSandbox": {
-		"installing": "Configuration du bac à sable des commandes (une fois par utilisateur)",
-		"preparing": "Préparation du bac à sable",
-		"unavailable": "Le bac à sable est indisponible. Vérifiez l’erreur de configuration ou de téléchargement puis réessayez. La commande n’a pas été exécutée sur l’hôte."
 	}
 }

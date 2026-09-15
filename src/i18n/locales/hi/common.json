@@ -257,10 +257,5 @@
 	"docsLink": {
 		"label": "Docs",
 		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
-	},
-	"commandSandbox": {
-		"installing": "कमांड सैंडबॉक्स सेट किया जा रहा है (प्रति उपयोगकर्ता एक बार)",
-		"preparing": "सैंडबॉक्स तैयार किया जा रहा है",
-		"unavailable": "कमांड सैंडबॉक्स उपलब्ध नहीं है। सेटअप या डाउनलोड की त्रुटि जाँचकर पुनः प्रयास करें। कमांड होस्ट पर नहीं चला।"
 	}
 }

@@ -285,13 +285,16 @@
 			"label": "Règles de commandes",
 			"description": "Approuver automatiquement les commandes dans le périmètre d’écriture de la tâche. Le réseau est activé. Les écritures hors périmètre sont bloquées. La configuration globale persiste entre les projets.",
 			"allowedCommands": "Préfixes de commandes autorisés",
-			"allowedCommandsDescription": "Utilisez * pour approuver toutes les commandes, scripts compris. Les règles de refus restent actives. Le bac à sable impose la limite d’écriture.",
+			"allowedCommandsDescription": "Utilisez * pour approuver automatiquement les commandes, y compris les scripts. Les règles enregistrées sont globales. Les écritures détectées hors de la racine et les chemins d’écriture non résolus nécessitent une approbation. Il s’agit d’une vérification des commandes et chemins, pas d’un bac à sable système.",
 			"deniedCommands": "Commandes refusées",
 			"deniedCommandsDescription": "Préfixes de commandes qui seront automatiquement refusés sans demander d'approbation. En cas de conflit avec les commandes autorisées, la correspondance de préfixe la plus longue prend la priorité. Ajoutez * pour refuser toutes les commandes.",
 			"commandPlaceholder": "Entrez le préfixe de commande (ex. 'git ')",
 			"deniedCommandPlaceholder": "Entrez le préfixe de commande à refuser (ex. 'rm -rf')",
 			"addButton": "Ajouter",
-			"autoDenied": "Les commandes avec le préfixe `{{prefix}}` ont été interdites par l'utilisateur. Ne contourne pas cette restriction en exécutant une autre commande."
+			"autoDenied": "Les commandes avec le préfixe `{{prefix}}` ont été interdites par l'utilisateur. Ne contourne pas cette restriction en exécutant une autre commande.",
+			"pathApprovalTitle": "Les chemins de fichiers nécessitent une approbation",
+			"pathApprovalDescription": "Cette commande peut modifier des fichiers hors de la racine de la tâche. L’approbation ne vaut que pour cette exécution.",
+			"pathApprovalUnresolved": "Certains chemins d’écriture n’ont pas pu être résolus."
 		},
 		"apiRequestLimit": {
 			"title": "Requêtes maximales",
@@ -714,7 +717,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Utiliser le terminal en ligne (recommandé)",
-			"description": "Les commandes utilisent le bac à sable intégré pour protéger les écritures. La configuration est globale et réutilise celle de Windows si elle existe."
+			"description": "Exécute des commandes dans le terminal en ligne (chat) pour contourner les profils/intégration du shell pour des exécutions plus rapides et fiables. Lorsque désactivé, Alpha utilise le terminal VS Code avec votre profil de shell, invites et plugins. <0>En savoir plus</0>"
 		},
 		"commandDelay": {
 			"label": "Délai de commande du terminal",

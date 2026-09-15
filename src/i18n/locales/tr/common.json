@@ -257,10 +257,5 @@
 	"docsLink": {
 		"label": "Docs",
 		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
-	},
-	"commandSandbox": {
-		"installing": "Komut korumalı alanı kuruluyor (kullanıcı başına bir kez)",
-		"preparing": "Korumalı alan hazırlanıyor",
-		"unavailable": "Komut korumalı alanı kullanılamıyor. Kurulum veya indirme hatasını kontrol edip yeniden deneyin. Komut ana sistemde çalıştırılmadı."
 	}
 }

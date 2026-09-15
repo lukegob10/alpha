@@ -284,13 +284,16 @@
 			"label": "Regras de comandos",
 			"description": "Aprovar comandos automaticamente no escopo de escrita da tarefa. A rede está habilitada. Escritas fora do escopo são bloqueadas. A configuração global permanece entre projetos.",
 			"allowedCommands": "Prefixos de comandos permitidos",
-			"allowedCommandsDescription": "Use * para aprovar todos os comandos, incluindo scripts. As regras de bloqueio continuam valendo. A sandbox impõe o limite de escrita.",
+			"allowedCommandsDescription": "Use * para aprovar comandos automaticamente, incluindo scripts. As regras salvas são globais. Gravações detectadas fora da raiz e caminhos de gravação não resolvidos exigem aprovação. Esta é uma verificação de comandos e caminhos, não um isolamento do sistema.",
 			"deniedCommands": "Comandos negados",
 			"deniedCommandsDescription": "Prefixos de comandos que serão automaticamente negados sem pedir aprovação. Em caso de conflitos com comandos permitidos, a correspondência de prefixo mais longa tem precedência. Adicione * para negar todos os comandos.",
 			"commandPlaceholder": "Digite o prefixo do comando (ex. 'git ')",
 			"deniedCommandPlaceholder": "Digite o prefixo do comando para negar (ex. 'rm -rf')",
 			"addButton": "Adicionar",
-			"autoDenied": "Comandos com o prefixo `{{prefix}}` foram proibidos pelo usuário. Não contorne esta restrição executando outro comando."
+			"autoDenied": "Comandos com o prefixo `{{prefix}}` foram proibidos pelo usuário. Não contorne esta restrição executando outro comando.",
+			"pathApprovalTitle": "Os caminhos de arquivo exigem aprovação",
+			"pathApprovalDescription": "Este comando pode alterar arquivos fora da raiz da tarefa. A aprovação vale apenas para esta execução.",
+			"pathApprovalUnresolved": "Não foi possível resolver alguns caminhos de gravação."
 		},
 		"apiRequestLimit": {
 			"title": "Máximo de Solicitações",
@@ -714,7 +717,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Usar Terminal Inline (recomendado)",
-			"description": "Os comandos usam a sandbox integrada para proteger as escritas. A configuração é global e reutiliza uma sandbox Windows existente."
+			"description": "Execute comandos no Terminal Inline (chat) para contornar perfis/integração de shell para execuções mais rápidas e confiáveis. Quando desativado, o Alpha usa o terminal do VS Code com seu perfil de shell, prompts e plugins. <0>Saiba mais</0>"
 		},
 		"commandDelay": {
 			"label": "Atraso de comando do terminal",

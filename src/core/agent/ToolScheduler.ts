@@ -4,6 +4,8 @@ import path from "path"
 import { createHash } from "crypto"
 import stringify from "safe-stable-stringify"
 import { isBundledSkillResource } from "../../services/skills/bundledSkillResources"
+import { assessCommandPaths } from "../auto-approval/commandPathScope"
+import { unescapeHtmlEntities } from "../../utils/text-normalization"
 
 import type { ClineAsk, ClineAskResponse, ClineSay, ModeConfig, ToolProgressStatus } from "@alpha-code/types"
 
@@ -381,6 +383,7 @@ interface PreparedCall {
 	finalizeRead?: () => Promise<ToolResponse>
 	pathIdentities?: ReadonlyArray<{ absolute: string; canonical: string }>
 	requiresExplicitApproval?: boolean
+	commandPathApproval?: { outsidePaths: string[]; unresolved: boolean }
 }
 
 function scopeContains(root: string, candidate: string): boolean {
@@ -1322,7 +1325,33 @@ export class ToolScheduler {
 		}
 		const outsideAccess =
 			this.options.policy?.execution.outsideWorkspace === "approval" && OUTSIDE_WORKSPACE_TOOLS.has(canonicalName)
+		if (canonicalName === "execute_command") {
+			const args = argumentsValue as Record<string, unknown>
+			if (typeof args.command === "string") {
+				const taskRoot = this.executionHost.cwd ?? ""
+				const roots = this.options.policy?.execution.workspaceRoots
+				const scope = assessCommandPaths(
+					unescapeHtmlEntities(args.command),
+					path.resolve(taskRoot, typeof args.cwd === "string" ? args.cwd : "."),
+					roots?.length ? roots : [taskRoot],
+				)
+				pathArguments.push(...scope.writePaths)
+				if (scope.outsidePaths.length || scope.unresolvedWrite) {
+					prepared.commandPathApproval = {
+						outsidePaths: scope.outsidePaths,
+						unresolved: scope.unresolvedWrite,
+					}
+					if (this.options.policy && !outsideAccess) {
+						prepared.validationError = "Command write paths exceed the task scope or could not be resolved."
+						reject("policy_denied", "workspace")
+						prepared.descriptor = descriptor
+						return prepared
+					}
+				}
+			}
+		}
 		prepared.requiresExplicitApproval =
+			!!prepared.commandPathApproval ||
 			(canonicalName === "execute_command" && process.env.ROO_CLI_RUNTIME === "1") ||
 			(canonicalName !== "execute_command" &&
 				outsideAccess &&
@@ -1469,7 +1498,11 @@ export class ToolScheduler {
 				if (this.isSelectableParallel(prepared)) {
 					throw new ToolReadDeniedError("An approval request cannot run in an approval-free parallel lane.")
 				}
-				const [type, partialMessage, progressStatus, forceApproval] = args
+				const [type, partialMessage, originalProgressStatus, forceApproval] = args
+				const progressStatus =
+					type === "command" && prepared.commandPathApproval
+						? { ...originalProgressStatus, commandPathApproval: prepared.commandPathApproval }
+						: originalProgressStatus
 				assertPathIdentities(prepared)
 				if (
 					!prepareCommand &&
@@ -1665,7 +1698,6 @@ export class ToolScheduler {
 			setResultMetadata: (metadata: ToolResultMetadata) => collector.setMetadata(metadata),
 			toolCallId: prepared.call.id,
 			signal: this.executionSignal,
-			commandWorkspaceRoots: this.options.policy?.execution.workspaceRoots,
 			resolveCommandTimeoutMs: (requestedTimeoutMs, command) =>
 				resolveCommandTimeoutMs(this.options.policy, requestedTimeoutMs ?? 0, command),
 		}

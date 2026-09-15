@@ -284,13 +284,16 @@
 			"label": "Reguły poleceń",
 			"description": "Automatycznie zatwierdzaj polecenia w zakresie zapisu zadania. Sieć jest włączona. Zapis poza zakresem jest blokowany. Konfiguracja globalna pozostaje między projektami.",
 			"allowedCommands": "Dozwolone prefiksy poleceń",
-			"allowedCommandsDescription": "Użyj *, aby zatwierdzać wszystkie polecenia, także skrypty. Reguły odmowy nadal obowiązują. Piaskownica wymusza granicę zapisu.",
+			"allowedCommandsDescription": "Użyj *, aby automatycznie zatwierdzać polecenia, także skrypty. Zapisane reguły są globalne. Wykryte zapisy poza katalogiem zadania i nierozpoznane ścieżki zapisu nadal wymagają zgody. To kontrola poleceń i ścieżek, a nie piaskownica systemowa.",
 			"deniedCommands": "Odrzucone polecenia",
 			"deniedCommandsDescription": "Prefiksy poleceń, które będą automatycznie odrzucane bez pytania o zatwierdzenie. W przypadku konfliktów z dozwolonymi poleceniami, najdłuższe dopasowanie prefiksu ma pierwszeństwo. Dodaj * aby odrzucić wszystkie polecenia.",
 			"commandPlaceholder": "Wprowadź prefiks polecenia (np. 'git ')",
 			"deniedCommandPlaceholder": "Wprowadź prefiks polecenia do odrzucenia (np. 'rm -rf')",
 			"addButton": "Dodaj",
-			"autoDenied": "Polecenia z prefiksem `{{prefix}}` zostały zabronione przez użytkownika. Nie obchodź tego ograniczenia uruchamiając inne polecenie."
+			"autoDenied": "Polecenia z prefiksem `{{prefix}}` zostały zabronione przez użytkownika. Nie obchodź tego ograniczenia uruchamiając inne polecenie.",
+			"pathApprovalTitle": "Ścieżki plików wymagają zgody",
+			"pathApprovalDescription": "To polecenie może zmienić pliki poza katalogiem zadania. Zgoda dotyczy tylko tego uruchomienia.",
+			"pathApprovalUnresolved": "Nie udało się ustalić niektórych ścieżek zapisu."
 		},
 		"apiRequestLimit": {
 			"title": "Maksymalna liczba żądań",
@@ -714,7 +717,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Użyj terminala wbudowanego (zalecane)",
-			"description": "Polecenia używają wbudowanej piaskownicy do ochrony zapisu. Konfiguracja jest globalna; istniejąca konfiguracja Windows jest używana ponownie."
+			"description": "Uruchamiaj polecenia w terminalu wbudowanym (czat), aby ominąć profile/integrację powłoki dla szybszych, bardziej niezawodnych uruchomień. Gdy wyłączony, Alpha używa terminala VS Code z twoim profilem powłoki, monitami i wtyczkami. <0>Dowiedz się więcej</0>"
 		},
 		"commandDelay": {
 			"label": "Opóźnienie polecenia terminala",

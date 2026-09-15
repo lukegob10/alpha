@@ -1,11 +1,3 @@
-vi.mock("../../../integrations/terminal/CommandSandbox", () => ({
-	prepareSandboxedCommand: vi.fn(async (_options, invocation: string[]) => ({
-		executable: invocation[0],
-		args: invocation.slice(1),
-		env: {},
-		assertScope: vi.fn(),
-	})),
-}))
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
@@ -39,11 +31,7 @@ describe("isolated command reads", () => {
 			if (/^GIT_|^RIPGREP_CONFIG_PATH$/i.test(key)) vi.stubEnv(key, undefined)
 		vi.stubEnv(Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ?? "PATH", bin)
 		state = { disabledTools: [], allowedCommands: [], deniedCommands: [] }
-		const provider = {
-			getValues: () => state,
-			postMessageToWebview: vi.fn(),
-			context: { globalStorageUri: { fsPath: path.join(directory, "storage") } },
-		}
+		const provider = { getValues: () => state, postMessageToWebview: vi.fn(), context: {} }
 		const task = {
 			taskId: "command-read",
 			taskKind: "primary",

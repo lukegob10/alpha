@@ -1,13 +1,3 @@
-// These lifecycle fixtures isolate the native launcher; CommandSandbox.native.spec.ts exercises OS enforcement.
-vitest.mock("../../../integrations/terminal/CommandSandbox", async (importOriginal) => ({
-	...(await importOriginal<typeof import("../../../integrations/terminal/CommandSandbox")>()),
-	prepareSandboxedCommand: vitest.fn(async (_options, invocation: string[]) => ({
-		executable: invocation[0],
-		args: invocation.slice(1),
-		env: {},
-		assertScope: vitest.fn(),
-	})),
-}))
 // npx vitest run src/core/tools/__tests__/executeCommandTool.spec.ts
 
 import type { ToolUsage } from "@alpha-code/types"

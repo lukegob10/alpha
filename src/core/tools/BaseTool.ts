@@ -76,8 +76,6 @@ export interface ToolCallbacks {
 	setResultMetadata?: (metadata: ToolResultMetadata) => void
 	toolCallId?: string
 	signal?: AbortSignal
-	/** Immutable write scope captured by the execution kernel, never supplied by the model. */
-	commandWorkspaceRoots?: readonly string[]
 	/** Recheck the captured MCP contract after approval/UI waits, immediately before dispatch. */
 	beforeMcpDispatch?: (serverName: string, toolName: string, source?: "global" | "project") => void
 	/** Host-captured server scope for a dynamic descriptor; never read from model arguments. */

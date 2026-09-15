@@ -284,13 +284,16 @@
 			"label": "Regles d’ordres",
 			"description": "Aprova automàticament ordres dins l’àmbit d’escriptura de la tasca. La xarxa està habilitada. Es bloquegen escriptures externes. La configuració global es conserva entre projectes.",
 			"allowedCommands": "Prefixos d’ordres permesos",
-			"allowedCommandsDescription": "Feu servir * per aprovar totes les ordres, inclosos els scripts. Les regles de denegació continuen vigents. L’entorn aïllat imposa el límit d’escriptura.",
+			"allowedCommandsDescription": "Fes servir * per aprovar automàticament ordres, inclosos scripts. Les regles desades són globals. Les escriptures detectades fora de l’arrel i les rutes no resoltes requereixen aprovació. És una comprovació d’ordres i rutes, no un aïllament del sistema.",
 			"deniedCommands": "Comandes denegades",
 			"deniedCommandsDescription": "Prefixos de comandes que es rebutjaran automàticament sense requerir aprovació. En cas de conflicte amb comandes permeses, la coincidència de prefix més llarga té prioritat. Afegeix * per denegar totes les comandes.",
 			"commandPlaceholder": "Introduïu prefix de comanda (ex. 'git ')",
 			"deniedCommandPlaceholder": "Introduïu prefix de comanda a denegar (ex. 'rm -rf')",
 			"addButton": "Afegir",
-			"autoDenied": "Les comandes amb el prefix `{{prefix}}` han estat prohibides per l'usuari. No eludeixis aquesta restricció executant una altra comanda."
+			"autoDenied": "Les comandes amb el prefix `{{prefix}}` han estat prohibides per l'usuari. No eludeixis aquesta restricció executant una altra comanda.",
+			"pathApprovalTitle": "Cal aprovar les rutes de fitxer",
+			"pathApprovalDescription": "Aquesta ordre pot modificar fitxers fora de l’arrel de la tasca. L’aprovació només s’aplica a aquesta execució.",
+			"pathApprovalUnresolved": "Algunes rutes d’escriptura no s’han pogut resoldre."
 		},
 		"apiRequestLimit": {
 			"title": "Màximes Sol·licituds",
@@ -714,7 +717,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Utilitza terminal en línia (recomanat)",
-			"description": "Les ordres utilitzen l’entorn aïllat integrat per protegir les escriptures. La configuració és global i reutilitza la configuració Windows existent."
+			"description": "Executa comandes al terminal en línia (xat) per evitar perfils/integració del shell per a execucions més ràpides i fiables. Quan està desactivat, Alpha usa el terminal de VS Code amb el teu perfil de shell, prompts i connectors. <0>Aprèn-ne més</0>"
 		},
 		"commandDelay": {
 			"label": "Retard de comanda del terminal",

@@ -257,10 +257,5 @@
 	"docsLink": {
 		"label": "Docs",
 		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
-	},
-	"commandSandbox": {
-		"installing": "正在設定命令沙盒（每位使用者僅需一次）",
-		"preparing": "正在準備沙盒",
-		"unavailable": "命令沙盒無法使用。請檢查設定或下載錯誤後重試。命令未在主機系統上執行。"
 	}
 }

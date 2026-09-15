@@ -284,13 +284,16 @@
 			"label": "Komut kuralları",
 			"description": "Görevin yazma kapsamındaki komutları otomatik onayla. Ağ erişimi açıktır. Kapsam dışı yazmalar engellenir. Genel kurulum projeler arasında korunur.",
 			"allowedCommands": "İzin verilen komut önekleri",
-			"allowedCommandsDescription": "Betikler dahil tüm komutları onaylamak için * kullanın. Engelleme kuralları geçerliliğini korur. Korumalı alan yazma sınırını uygular.",
+			"allowedCommandsDescription": "Betikler dahil komutları otomatik onaylamak için * kullanın. Kaydedilen kurallar tüm projelerde geçerlidir. Görev kökü dışında algılanan yazmalar ve çözülemeyen yazma yolları onay gerektirir. Bu bir komut ve yol denetimidir, işletim sistemi korumalı alanı değildir.",
 			"deniedCommands": "Reddedilen komutlar",
 			"deniedCommandsDescription": "Onay istenmeden otomatik olarak reddedilecek komut önekleri. İzin verilen komutlarla çakışma durumunda, en uzun önek eşleşmesi öncelik alır. Tüm komutları reddetmek için * ekleyin.",
 			"commandPlaceholder": "Komut öneki girin (örn. 'git ')",
 			"deniedCommandPlaceholder": "Reddetmek için komut öneki girin (örn. 'rm -rf')",
 			"addButton": "Ekle",
-			"autoDenied": "`{{prefix}}` önekli komutlar kullanıcı tarafından yasaklandı. Başka bir komut çalıştırarak bu kısıtlamayı aşma."
+			"autoDenied": "`{{prefix}}` önekli komutlar kullanıcı tarafından yasaklandı. Başka bir komut çalıştırarak bu kısıtlamayı aşma.",
+			"pathApprovalTitle": "Dosya yolları onay gerektiriyor",
+			"pathApprovalDescription": "Bu komut görev kökü dışındaki dosyaları değiştirebilir. Onay yalnızca bu çalıştırma için geçerlidir.",
+			"pathApprovalUnresolved": "Bazı yazma yolları çözümlenemedi."
 		},
 		"apiRequestLimit": {
 			"title": "Maksimum İstek",
@@ -714,7 +717,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Satır İçi Terminal Kullan (önerilir)",
-			"description": "Komutlar yazma koruması için satır içi korumalı alanı kullanır. Kurulum geneldir; mevcut Windows kurulumu yeniden kullanılır."
+			"description": "Daha hızlı, daha güvenilir çalıştırmalar için kabuk profillerini/entegrasyonunu atlamak için Satır İçi Terminal'de (sohbet) komutları çalıştırın. Devre dışı bırakıldığında Alpha, kabuk profiliniz, istemleriniz ve eklentilerinizle VS Code terminalini kullanır. <0>Daha fazla bilgi edinin</0>"
 		},
 		"commandDelay": {
 			"label": "Terminal komut delay",

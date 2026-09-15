@@ -1,13 +1,3 @@
-// These lifecycle fixtures isolate the native launcher; CommandSandbox.native.spec.ts exercises OS enforcement.
-vitest.mock("../CommandSandbox", async (importOriginal) => ({
-	...(await importOriginal<typeof import("../CommandSandbox")>()),
-	prepareSandboxedCommand: vitest.fn(async (_options, invocation: string[]) => ({
-		executable: invocation[0],
-		args: invocation.slice(1),
-		env: {},
-		assertScope: vitest.fn(),
-	})),
-}))
 import { execFileSync } from "node:child_process"
 import path from "node:path"
 import { fileURLToPath } from "node:url"

@@ -191,6 +191,7 @@ export type ClineSay = z.infer<typeof clineSaySchema>
  */
 
 export const toolProgressStatusSchema = z.object({
+	commandPathApproval: z.object({ outsidePaths: z.array(z.string()), unresolved: z.boolean() }).optional(),
 	icon: z.string().optional(),
 	text: z.string().optional(),
 })

@@ -257,10 +257,5 @@
 	"docsLink": {
 		"label": "Docs",
 		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
-	},
-	"commandSandbox": {
-		"installing": "Configurant l’entorn aïllat d’ordres (un cop per usuari)",
-		"preparing": "Preparant l’entorn aïllat",
-		"unavailable": "L’entorn aïllat no està disponible. Reviseu l’error de configuració o descàrrega i torneu-ho a provar. L’ordre no s’ha executat a l’amfitrió."
 	}
 }
