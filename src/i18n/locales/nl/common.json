@@ -257,5 +257,10 @@
 	"docsLink": {
 		"label": "Docs",
 		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
+	},
+	"commandSandbox": {
+		"installing": "Opdrachtsandbox instellen (eenmalig per gebruiker)",
+		"preparing": "Sandbox voorbereiden",
+		"unavailable": "De opdrachtsandbox is niet beschikbaar. Controleer de installatie- of downloadfout en probeer opnieuw. De opdracht is niet op de host uitgevoerd."
 	}
 }

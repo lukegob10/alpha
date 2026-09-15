@@ -282,9 +282,9 @@
 		},
 		"execute": {
 			"label": "Komut kuralları",
-			"description": "Komut kurallarını yapılandırın. Betikler çalışma alanı dışına yazabildiğinden ana makine komutları her zaman onay gerektirir.",
+			"description": "Görevin yazma kapsamındaki komutları otomatik onayla. Ağ erişimi açıktır. Kapsam dışı yazmalar engellenir. Genel kurulum projeler arasında korunur.",
 			"allowedCommands": "İzin verilen komut önekleri",
-			"allowedCommandsDescription": "İzin verilen önekler daha kısa yasaklı öneklerden önceliklidir. Komut onayı yine de gereklidir.",
+			"allowedCommandsDescription": "Betikler dahil tüm komutları onaylamak için * kullanın. Engelleme kuralları geçerliliğini korur. Korumalı alan yazma sınırını uygular.",
 			"deniedCommands": "Reddedilen komutlar",
 			"deniedCommandsDescription": "Onay istenmeden otomatik olarak reddedilecek komut önekleri. İzin verilen komutlarla çakışma durumunda, en uzun önek eşleşmesi öncelik alır. Tüm komutları reddetmek için * ekleyin.",
 			"commandPlaceholder": "Komut öneki girin (örn. 'git ')",
@@ -714,7 +714,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Satır İçi Terminal Kullan (önerilir)",
-			"description": "Daha hızlı, daha güvenilir çalıştırmalar için kabuk profillerini/entegrasyonunu atlamak için Satır İçi Terminal'de (sohbet) komutları çalıştırın. Devre dışı bırakıldığında Alpha, kabuk profiliniz, istemleriniz ve eklentilerinizle VS Code terminalini kullanır. <0>Daha fazla bilgi edinin</0>"
+			"description": "Komutlar yazma koruması için satır içi korumalı alanı kullanır. Kurulum geneldir; mevcut Windows kurulumu yeniden kullanılır."
 		},
 		"commandDelay": {
 			"label": "Terminal komut delay",

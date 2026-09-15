@@ -1,15 +1,12 @@
 import { HTMLAttributes, useCallback } from "react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { vscode } from "@/utils/vscode"
-import { VSCodeCheckbox, VSCodeLink } from "@vscode/webview-ui-toolkit/react"
-import { Trans } from "react-i18next"
-import { buildDocLink } from "@src/utils/docLinks"
 import { useEvent, useMount } from "react-use"
 
 import { type ExtensionMessage, type TerminalOutputPreviewSize } from "@alpha-code/types"
 
 import { cn } from "@/lib/utils"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Slider } from "@/components/ui"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui"
 
 import type { SettingsCachedState } from "./managed-agent-settings"
 import { SectionHeader } from "./SectionHeader"
@@ -48,19 +45,9 @@ type TerminalSettingsProps = HTMLAttributes<HTMLDivElement> & {
 
 export const TerminalSettings = ({
 	terminalOutputPreviewSize,
-	terminalShellIntegrationTimeout,
-	terminalShellIntegrationDisabled,
-	terminalCommandDelay,
-	terminalPowershellCounter,
-	terminalZshClearEolMark,
-	terminalZshOhMy,
-	terminalZshP10k,
-	terminalZdotdir,
-	terminalInheritEnv,
 	onTerminalInheritEnvLoaded,
 	setCachedStateField,
 	className,
-	...props
 }: TerminalSettingsProps) => {
 	const { t } = useAppTranslation()
 
@@ -90,7 +77,7 @@ export const TerminalSettings = ({
 	useEvent("message", onMessage)
 
 	return (
-		<div className={cn("flex flex-col", className)} {...props}>
+		<div className={cn("flex flex-col", className)}>
 			<SectionHeader>{t("settings:sections.terminal")}</SectionHeader>
 
 			<Section>
@@ -137,278 +124,15 @@ export const TerminalSettings = ({
 					</div>
 				</div>
 
-				{/* Advanced Settings */}
-				<div className="flex flex-col gap-3">
-					<div className="flex flex-col gap-1">
-						<div className="flex items-center gap-2 font-bold">
-							<span className="codicon codicon-tools" />
-							<div>{t("settings:terminal.advanced.label")}</div>
-						</div>
-						<div className="text-vscode-descriptionForeground">
-							{t("settings:terminal.advanced.description")}
-						</div>
-					</div>
-					<div className="flex flex-col gap-3 pl-3 border-l-2 border-vscode-button-background">
-						<SearchableSetting
-							settingId="terminal-shell-integration-disabled"
-							section="terminal"
-							label={t("settings:terminal.shellIntegrationDisabled.label")}>
-							<VSCodeCheckbox
-								checked={terminalShellIntegrationDisabled ?? true}
-								onChange={(e: any) =>
-									setCachedStateField("terminalShellIntegrationDisabled", e.target.checked)
-								}>
-								<span className="font-medium">
-									{t("settings:terminal.shellIntegrationDisabled.label")}
-								</span>
-							</VSCodeCheckbox>
-							<div className="text-vscode-descriptionForeground text-sm mt-1">
-								<Trans i18nKey="settings:terminal.shellIntegrationDisabled.description">
-									<VSCodeLink
-										href={buildDocLink(
-											"features/shell-integration#use-inline-terminal-recommended",
-											"settings_terminal_shell_integration_disabled",
-										)}
-										style={{ display: "inline" }}>
-										{" "}
-									</VSCodeLink>
-								</Trans>
-							</div>
-						</SearchableSetting>
-
-						{!terminalShellIntegrationDisabled && (
-							<>
-								<SearchableSetting
-									settingId="terminal-inherit-env"
-									section="terminal"
-									label={t("settings:terminal.inheritEnv.label")}>
-									<VSCodeCheckbox
-										checked={terminalInheritEnv ?? true}
-										onChange={(e: any) =>
-											setCachedStateField("terminalInheritEnv", e.target.checked)
-										}
-										data-testid="terminal-inherit-env-checkbox">
-										<span className="font-medium">{t("settings:terminal.inheritEnv.label")}</span>
-									</VSCodeCheckbox>
-									<div className="text-vscode-descriptionForeground text-sm mt-1">
-										<Trans i18nKey="settings:terminal.inheritEnv.description">
-											<VSCodeLink
-												href={buildDocLink(
-													"features/shell-integration#inherit-environment-variables",
-													"settings_terminal_inherit_env",
-												)}
-												style={{ display: "inline" }}>
-												{" "}
-											</VSCodeLink>
-										</Trans>
-									</div>
-								</SearchableSetting>
-
-								<SearchableSetting
-									settingId="terminal-shell-integration-timeout"
-									section="terminal"
-									label={t("settings:terminal.shellIntegrationTimeout.label")}>
-									<label className="block font-medium mb-1">
-										{t("settings:terminal.shellIntegrationTimeout.label")}
-									</label>
-									<div className="flex items-center gap-2">
-										<Slider
-											min={1000}
-											max={60000}
-											step={1000}
-											value={[terminalShellIntegrationTimeout ?? 5000]}
-											onValueChange={([value]) =>
-												setCachedStateField(
-													"terminalShellIntegrationTimeout",
-													Math.min(60000, Math.max(1000, value)),
-												)
-											}
-										/>
-										<span className="w-10">
-											{(terminalShellIntegrationTimeout ?? 5000) / 1000}s
-										</span>
-									</div>
-									<div className="text-vscode-descriptionForeground text-sm mt-1">
-										<Trans i18nKey="settings:terminal.shellIntegrationTimeout.description">
-											<VSCodeLink
-												href={buildDocLink(
-													"features/shell-integration#terminal-shell-integration-timeout",
-													"settings_terminal_shell_integration_timeout",
-												)}
-												style={{ display: "inline" }}>
-												{" "}
-											</VSCodeLink>
-										</Trans>
-									</div>
-								</SearchableSetting>
-
-								<SearchableSetting
-									settingId="terminal-command-delay"
-									section="terminal"
-									label={t("settings:terminal.commandDelay.label")}>
-									<label className="block font-medium mb-1">
-										{t("settings:terminal.commandDelay.label")}
-									</label>
-									<div className="flex items-center gap-2">
-										<Slider
-											min={0}
-											max={1000}
-											step={10}
-											value={[terminalCommandDelay ?? 0]}
-											onValueChange={([value]) =>
-												setCachedStateField(
-													"terminalCommandDelay",
-													Math.min(1000, Math.max(0, value)),
-												)
-											}
-										/>
-										<span className="w-10">{terminalCommandDelay ?? 50}ms</span>
-									</div>
-									<div className="text-vscode-descriptionForeground text-sm mt-1">
-										<Trans i18nKey="settings:terminal.commandDelay.description">
-											<VSCodeLink
-												href={buildDocLink(
-													"features/shell-integration#terminal-command-delay",
-													"settings_terminal_command_delay",
-												)}
-												style={{ display: "inline" }}>
-												{" "}
-											</VSCodeLink>
-										</Trans>
-									</div>
-								</SearchableSetting>
-
-								<SearchableSetting
-									settingId="terminal-powershell-counter"
-									section="terminal"
-									label={t("settings:terminal.powershellCounter.label")}>
-									<VSCodeCheckbox
-										checked={terminalPowershellCounter ?? false}
-										onChange={(e: any) =>
-											setCachedStateField("terminalPowershellCounter", e.target.checked)
-										}
-										data-testid="terminal-powershell-counter-checkbox">
-										<span className="font-medium">
-											{t("settings:terminal.powershellCounter.label")}
-										</span>
-									</VSCodeCheckbox>
-									<div className="text-vscode-descriptionForeground text-sm mt-1">
-										<Trans i18nKey="settings:terminal.powershellCounter.description">
-											<VSCodeLink
-												href={buildDocLink(
-													"features/shell-integration#enable-powershell-counter-workaround",
-													"settings_terminal_powershell_counter",
-												)}
-												style={{ display: "inline" }}>
-												{" "}
-											</VSCodeLink>
-										</Trans>
-									</div>
-								</SearchableSetting>
-
-								<SearchableSetting
-									settingId="terminal-zsh-clear-eol-mark"
-									section="terminal"
-									label={t("settings:terminal.zshClearEolMark.label")}>
-									<VSCodeCheckbox
-										checked={terminalZshClearEolMark ?? true}
-										onChange={(e: any) =>
-											setCachedStateField("terminalZshClearEolMark", e.target.checked)
-										}
-										data-testid="terminal-zsh-clear-eol-mark-checkbox">
-										<span className="font-medium">
-											{t("settings:terminal.zshClearEolMark.label")}
-										</span>
-									</VSCodeCheckbox>
-									<div className="text-vscode-descriptionForeground text-sm mt-1">
-										<Trans i18nKey="settings:terminal.zshClearEolMark.description">
-											<VSCodeLink
-												href={buildDocLink(
-													"features/shell-integration#clear-zsh-eol-mark",
-													"settings_terminal_zsh_clear_eol_mark",
-												)}
-												style={{ display: "inline" }}>
-												{" "}
-											</VSCodeLink>
-										</Trans>
-									</div>
-								</SearchableSetting>
-
-								<SearchableSetting
-									settingId="terminal-zsh-oh-my"
-									section="terminal"
-									label={t("settings:terminal.zshOhMy.label")}>
-									<VSCodeCheckbox
-										checked={terminalZshOhMy ?? false}
-										onChange={(e: any) => setCachedStateField("terminalZshOhMy", e.target.checked)}
-										data-testid="terminal-zsh-oh-my-checkbox">
-										<span className="font-medium">{t("settings:terminal.zshOhMy.label")}</span>
-									</VSCodeCheckbox>
-									<div className="text-vscode-descriptionForeground text-sm mt-1">
-										<Trans i18nKey="settings:terminal.zshOhMy.description">
-											<VSCodeLink
-												href={buildDocLink(
-													"features/shell-integration#enable-oh-my-zsh-integration",
-													"settings_terminal_zsh_oh_my",
-												)}
-												style={{ display: "inline" }}>
-												{" "}
-											</VSCodeLink>
-										</Trans>
-									</div>
-								</SearchableSetting>
-
-								<SearchableSetting
-									settingId="terminal-zsh-p10k"
-									section="terminal"
-									label={t("settings:terminal.zshP10k.label")}>
-									<VSCodeCheckbox
-										checked={terminalZshP10k ?? false}
-										onChange={(e: any) => setCachedStateField("terminalZshP10k", e.target.checked)}
-										data-testid="terminal-zsh-p10k-checkbox">
-										<span className="font-medium">{t("settings:terminal.zshP10k.label")}</span>
-									</VSCodeCheckbox>
-									<div className="text-vscode-descriptionForeground text-sm mt-1">
-										<Trans i18nKey="settings:terminal.zshP10k.description">
-											<VSCodeLink
-												href={buildDocLink(
-													"features/shell-integration#enable-powerlevel10k-integration",
-													"settings_terminal_zsh_p10k",
-												)}
-												style={{ display: "inline" }}>
-												{" "}
-											</VSCodeLink>
-										</Trans>
-									</div>
-								</SearchableSetting>
-
-								<SearchableSetting
-									settingId="terminal-zdotdir"
-									section="terminal"
-									label={t("settings:terminal.zdotdir.label")}>
-									<VSCodeCheckbox
-										checked={terminalZdotdir ?? false}
-										onChange={(e: any) => setCachedStateField("terminalZdotdir", e.target.checked)}
-										data-testid="terminal-zdotdir-checkbox">
-										<span className="font-medium">{t("settings:terminal.zdotdir.label")}</span>
-									</VSCodeCheckbox>
-									<div className="text-vscode-descriptionForeground text-sm mt-1">
-										<Trans i18nKey="settings:terminal.zdotdir.description">
-											<VSCodeLink
-												href={buildDocLink(
-													"features/shell-integration#enable-zdotdir-handling",
-													"settings_terminal_zdotdir",
-												)}
-												style={{ display: "inline" }}>
-												{" "}
-											</VSCodeLink>
-										</Trans>
-									</div>
-								</SearchableSetting>
-							</>
-						)}
-					</div>
-				</div>
+				<SearchableSetting
+					settingId="terminal-shell-integration-disabled"
+					section="terminal"
+					label={t("settings:terminal.shellIntegrationDisabled.label")}>
+					<div className="font-medium">{t("settings:terminal.shellIntegrationDisabled.label")}</div>
+					<p className="text-vscode-descriptionForeground text-sm mt-1">
+						{t("settings:terminal.shellIntegrationDisabled.description")}
+					</p>
+				</SearchableSetting>
 			</Section>
 		</div>
 	)

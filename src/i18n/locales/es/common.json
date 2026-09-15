@@ -252,5 +252,10 @@
 	"docsLink": {
 		"label": "Docs",
 		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
+	},
+	"commandSandbox": {
+		"installing": "Configurando el entorno aislado de comandos (una vez por usuario)",
+		"preparing": "Preparando el entorno aislado",
+		"unavailable": "El entorno aislado no está disponible. Revise el error de configuración o descarga y vuelva a intentarlo. El comando no se ejecutó en el sistema anfitrión."
 	}
 }

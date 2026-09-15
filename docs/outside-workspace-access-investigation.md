@@ -2,7 +2,10 @@
 
 Implemented 2026-09-14 after investigating the Code-mode report.
 
-## Current behavior
+**Historical record for 2.1.38.** The blanket command-approval policy described below is superseded by
+[command sandboxing and automatic approval](command-sandbox.md). Native outside-file approval semantics remain in force.
+
+## Behavior introduced in 2.1.38
 
 - Primary tasks can use native file tools to inspect other directories. With automatic read approval and **outside-workspace reads** enabled, these reads run automatically. Otherwise Alpha asks for approval.
 - Native writes outside the task workspace always require explicit approval. This includes additions, edits, deletions, patch moves, and generated images. The old outside-write auto-approval setting is retained for saved-setting compatibility but ignored; its checkbox is removed.

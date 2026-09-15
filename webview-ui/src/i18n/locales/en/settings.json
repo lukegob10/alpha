@@ -377,9 +377,9 @@
 		},
 		"execute": {
 			"label": "Command rules",
-			"description": "Configure command rules. Host commands always require approval because scripts can write outside the workspace.",
+			"description": "Auto-approve commands within the task write scope. Network access is enabled. Writes outside that scope are blocked. Setup is global and persists across projects.",
 			"allowedCommands": "Allowed command prefixes",
-			"allowedCommandsDescription": "Allowed prefixes take precedence over shorter denied prefixes. They do not waive command approval.",
+			"allowedCommandsDescription": "Use * to approve all commands, including scripts. Denied rules still apply. The sandbox enforces the write boundary.",
 			"deniedCommands": "Denied Commands",
 			"deniedCommandsDescription": "Command prefixes that will be automatically denied without asking for approval. In case of conflicts with allowed commands, the longest prefix match takes precedence. Add * to deny all commands.",
 			"commandPlaceholder": "Enter command prefix (e.g., 'git ')",
@@ -861,7 +861,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Use Inline Terminal (recommended)",
-			"description": "Run commands in the Inline Terminal (chat) to bypass shell profiles/integration for faster, more reliable runs. When disabled Alpha uses the VS Code terminal with your shell profile, prompts, and plugins. <0>Learn more</0>"
+			"description": "Commands use the inline sandbox for consistent write protection. Setup is global; an existing Windows sandbox setup is reused."
 		},
 		"commandDelay": {
 			"label": "Terminal command delay",

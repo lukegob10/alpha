@@ -257,5 +257,10 @@
 	"docsLink": {
 		"label": "Docs",
 		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
+	},
+	"commandSandbox": {
+		"installing": "Menyiapkan sandbox perintah (sekali per pengguna)",
+		"preparing": "Menyiapkan runtime sandbox",
+		"unavailable": "Sandbox perintah tidak tersedia. Periksa kesalahan penyiapan atau unduhan lalu coba lagi. Perintah tidak dijalankan di host."
 	}
 }

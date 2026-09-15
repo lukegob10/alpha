@@ -6,6 +6,7 @@ import { execa } from "execa"
 import type { CommandExecutionStatus } from "@alpha-code/types"
 import { DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE } from "@alpha-code/types"
 import { OutputInterceptor } from "../../integrations/terminal/OutputInterceptor"
+import { prepareSandboxedCommand } from "../../integrations/terminal/CommandSandbox"
 import { unescapeHtmlEntities } from "../../utils/text-normalization"
 import { getTaskDirectoryPath } from "../../utils/storage"
 import { ToolReadDeniedError } from "./BaseTool"
@@ -210,21 +211,43 @@ export async function prepareParallelCommand(
 		}
 	}
 	await assertAuthorized(signal)
+	if (!globalStoragePath && process.env.ROO_CLI_RUNTIME !== "1") return undefined
+	const sandboxOptions =
+		globalStoragePath && process.env.ROO_CLI_RUNTIME !== "1"
+			? {
+					storagePath: globalStoragePath,
+					workspaceRoots: policy.execution.workspaceRoots.length ? policy.execution.workspaceRoots : [root],
+					cwd,
+					readOnly: true,
+					signal,
+				}
+			: undefined
+	const launch = sandboxOptions
+		? await prepareSandboxedCommand(sandboxOptions, [executable, ...invocation.args])
+		: undefined
 	if (invocation.executable === "git" && cachedGitSupport?.identity !== binaryIdentity) {
 		// Probe once per binary version, under this command's approval. Older Git
 		// lacks --no-lazy-fetch and must retain the ordinary serial command path.
-		const probe = await execa(executable, ["--no-lazy-fetch", "--version"], {
-			cwd,
-			env,
-			shell: false,
-			stdin: "ignore",
-			reject: false,
-			windowsHide: true,
-			maxBuffer: 4_096,
-			timeout: Math.min(timeout, 5_000),
-			cancelSignal: signal,
-			forceKillAfterDelay: 1_000,
-		})
+		const probeLaunch = sandboxOptions
+			? await prepareSandboxedCommand(sandboxOptions, [executable, "--no-lazy-fetch", "--version"])
+			: undefined
+		probeLaunch?.assertScope()
+		const probe = await execa(
+			probeLaunch?.executable ?? executable,
+			probeLaunch ? [...probeLaunch.args] : ["--no-lazy-fetch", "--version"],
+			{
+				cwd,
+				env: { ...env, ...probeLaunch?.env },
+				shell: false,
+				stdin: "ignore",
+				reject: false,
+				windowsHide: true,
+				maxBuffer: 4_096,
+				timeout: Math.min(timeout, 5_000),
+				cancelSignal: signal,
+				forceKillAfterDelay: 1_000,
+			},
+		)
 		signal?.throwIfAborted()
 		if (probe.isCanceled || probe.timedOut)
 			throw new ToolReadDeniedError("Git capability preflight did not complete.")
@@ -243,9 +266,16 @@ export async function prepareParallelCommand(
 		run: async (resultCallbacks) => {
 			await assertAuthorized(resultCallbacks.signal)
 			const startedAt = Date.now()
-			const result = await execa(executable, invocation.args, {
+			launch?.assertScope()
+			const result = await execa(launch?.executable ?? executable, launch ? [...launch.args] : invocation.args, {
 				cwd,
-				env: { ...env, GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0" },
+				env: {
+					...env,
+					...launch?.env,
+					GIT_OPTIONAL_LOCKS: "0",
+					GIT_NO_LAZY_FETCH: "1",
+					GIT_TERMINAL_PROMPT: "0",
+				},
 				shell: false,
 				stdin: "ignore",
 				all: true,

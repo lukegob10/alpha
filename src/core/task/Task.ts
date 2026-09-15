@@ -4325,9 +4325,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Automatically approve if the ask according to the user's settings.
 		const provider = this.providerRef.deref()
 		const state = provider ? await provider.getState() : undefined
-		// Host commands can write beyond cwd (including through scripts and hooks).
-		// Commands therefore need a human decision, including on resume and in delegated tasks.
-		requiresExplicitApproval ||= type === "command"
+		// The execution boundary supplies mandatory approval requirements. Otherwise,
+		// apply the user's settings and any narrower inherited command grant.
+		requiresExplicitApproval ||= type === "command" && process.env.ROO_CLI_RUNTIME === "1"
 		const offscreenAutoResponse = requiresExplicitApproval
 			? undefined
 			: this.getOffscreenAutoAskResponse(type, text, isProtected)

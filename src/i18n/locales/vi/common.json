@@ -264,5 +264,10 @@
 	"docsLink": {
 		"label": "Docs",
 		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
+	},
+	"commandSandbox": {
+		"installing": "Thiết lập hộp cát lệnh (một lần cho mỗi người dùng)",
+		"preparing": "Đang chuẩn bị hộp cát",
+		"unavailable": "Hộp cát lệnh không khả dụng. Kiểm tra lỗi thiết lập hoặc tải xuống rồi thử lại. Lệnh chưa chạy trên máy chủ."
 	}
 }

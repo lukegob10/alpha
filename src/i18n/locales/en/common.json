@@ -249,5 +249,10 @@
 	"docsLink": {
 		"label": "Docs",
 		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
+	},
+	"commandSandbox": {
+		"installing": "Setting up command sandbox (once per user)",
+		"preparing": "Preparing sandbox runtime",
+		"unavailable": "Command sandbox is unavailable. Check the setup or download error and retry; the command was not run on the host."
 	}
 }

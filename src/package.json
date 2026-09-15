@@ -3,7 +3,7 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "2.1.38",
+	"version": "2.1.39",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
@@ -558,6 +558,7 @@
 		"string-similarity": "^4.0.4",
 		"strip-ansi": "^7.2.0",
 		"strip-bom": "^5.0.0",
+		"tar": "7.5.22",
 		"tiktoken": "^1.0.21",
 		"tmp": "^0.2.3",
 		"tree-sitter-wasms": "^0.1.12",

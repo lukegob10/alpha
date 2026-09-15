@@ -282,9 +282,9 @@
 		},
 		"execute": {
 			"label": "命令规则",
-			"description": "配置命令规则。脚本可能写入工作区之外，因此主机命令始终需要批准。",
+			"description": "自动批准任务写入范围内的命令。允许网络访问，阻止范围外写入。全局设置在所有项目间持久保存。",
 			"allowedCommands": "允许的命令前缀",
-			"allowedCommandsDescription": "允许的前缀优先于较短的拒绝前缀。命令仍然需要批准。",
+			"allowedCommandsDescription": "使用 * 批准所有命令，包括脚本。拒绝规则仍然生效。沙盒负责限制写入范围。",
 			"deniedCommands": "拒绝的命令",
 			"deniedCommandsDescription": "将自动拒绝的命令前缀，无需用户批准。与允许命令冲突时，最长前缀匹配优先。添加 * 拒绝所有命令。",
 			"commandPlaceholder": "输入命令前缀（例如 'git '）",
@@ -714,7 +714,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "使用内联终端（推荐）",
-			"description": "在内联终端（聊天）中运行命令以绕过 shell 配置文件/集成，实现更快、更可靠的运行。禁用时，Alpha 使用 VS Code 终端及您的 shell 配置文件、提示和插件。<0>了解更多</0>"
+			"description": "命令使用内联沙盒提供一致的写入保护。设置全局生效，并复用已有的 Windows 沙盒设置。"
 		},
 		"commandDelay": {
 			"label": "终端命令延迟",

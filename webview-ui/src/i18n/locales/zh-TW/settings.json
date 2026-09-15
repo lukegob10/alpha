@@ -290,9 +290,9 @@
 		},
 		"execute": {
 			"label": "命令規則",
-			"description": "設定命令規則。指令碼可能寫入工作區之外，因此主機命令一律需要核准。",
+			"description": "自動核准工作寫入範圍內的命令。允許網路存取，封鎖範圍外寫入。全域設定會在所有專案間持續保留。",
 			"allowedCommands": "允許的命令前綴",
-			"allowedCommandsDescription": "允許的前綴優先於較短的拒絕前綴。命令仍然需要核准。",
+			"allowedCommandsDescription": "使用 * 核准所有命令，包括指令碼。拒絕規則仍然生效。沙盒負責限制寫入範圍。",
 			"deniedCommands": "拒絕的命令",
 			"deniedCommandsDescription": "將自動拒絕且不詢問核准的命令前綴。若與允許的命令衝突，將以最長前綴比對優先。新增 * 可拒絕所有命令。",
 			"commandPlaceholder": "輸入命令前綴（例如 'git '）",
@@ -724,7 +724,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "使用內嵌終端機（建議）",
-			"description": "在內嵌終端機（聊天）中執行命令以繞過 shell 設定檔/整合，實現更快、更可靠的執行。停用時，Alpha 使用 VS Code 終端機及您的 shell 設定檔、提示和外掛程式。<0>了解更多</0>"
+			"description": "命令使用內嵌沙盒提供一致的寫入保護。設定全域生效，並重用現有的 Windows 沙盒設定。"
 		},
 		"commandDelay": {
 			"label": "終端機命令延遲",

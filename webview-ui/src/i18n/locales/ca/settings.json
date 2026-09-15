@@ -282,9 +282,9 @@
 		},
 		"execute": {
 			"label": "Regles d’ordres",
-			"description": "Configura les regles d’ordres. Les ordres del sistema sempre requereixen aprovació perquè els scripts poden escriure fora de l’espai de treball.",
+			"description": "Aprova automàticament ordres dins l’àmbit d’escriptura de la tasca. La xarxa està habilitada. Es bloquegen escriptures externes. La configuració global es conserva entre projectes.",
 			"allowedCommands": "Prefixos d’ordres permesos",
-			"allowedCommandsDescription": "Els prefixos permesos tenen prioritat sobre els prefixos denegats més curts. No eliminen l’aprovació de l’ordre.",
+			"allowedCommandsDescription": "Feu servir * per aprovar totes les ordres, inclosos els scripts. Les regles de denegació continuen vigents. L’entorn aïllat imposa el límit d’escriptura.",
 			"deniedCommands": "Comandes denegades",
 			"deniedCommandsDescription": "Prefixos de comandes que es rebutjaran automàticament sense requerir aprovació. En cas de conflicte amb comandes permeses, la coincidència de prefix més llarga té prioritat. Afegeix * per denegar totes les comandes.",
 			"commandPlaceholder": "Introduïu prefix de comanda (ex. 'git ')",
@@ -714,7 +714,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Utilitza terminal en línia (recomanat)",
-			"description": "Executa comandes al terminal en línia (xat) per evitar perfils/integració del shell per a execucions més ràpides i fiables. Quan està desactivat, Alpha usa el terminal de VS Code amb el teu perfil de shell, prompts i connectors. <0>Aprèn-ne més</0>"
+			"description": "Les ordres utilitzen l’entorn aïllat integrat per protegir les escriptures. La configuració és global i reutilitza la configuració Windows existent."
 		},
 		"commandDelay": {
 			"label": "Retard de comanda del terminal",

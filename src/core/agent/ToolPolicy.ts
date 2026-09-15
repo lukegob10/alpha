@@ -220,12 +220,13 @@ function formatToolPolicySummary(
 	const timeout = execution.command.userTimeoutMs > 0 ? `${execution.command.userTimeoutMs}ms` : "none"
 	const outputLimit = Math.max(0, ...Object.values(outputLimits)) || DEFAULT_TOOL_OUTPUT_LIMIT
 	return [
-		`File policy: ${execution.sandboxMode}; commands run on the host without an OS sandbox`,
+		`File policy: ${execution.sandboxMode}; extension commands run in an OS sandbox with network access`,
 		`Workspace roots: ${execution.workspaceRoots.join(", ") || "task workspace"}`,
 		...(execution.outsideWorkspace === "approval"
-			? ["Outside file reads use read approvals; outside writes and host commands require explicit approval"]
+			? ["Outside file reads use read approvals; outside file writes require explicit approval"]
 			: ["File tools are restricted to the workspace roots"]),
-		"Command approval: explicit approval required; command rules are revalidated",
+		"Command approval: follows auto-approval and command rules; scripts and child processes retain the write scope",
+		"Outside-root command writes are blocked. Use an approved file tool for an external edit; do not retry unsandboxed.",
 		`Command timeout: ${timeout}`,
 		`Tool output limit: ${outputLimit} characters; large command output may be available as an artifact`,
 		"Cancellation: aborts active tool processes",

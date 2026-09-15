@@ -282,9 +282,9 @@
 		},
 		"execute": {
 			"label": "Reguły poleceń",
-			"description": "Skonfiguruj reguły poleceń. Polecenia hosta zawsze wymagają zgody, ponieważ skrypty mogą zapisywać poza obszarem roboczym.",
+			"description": "Automatycznie zatwierdzaj polecenia w zakresie zapisu zadania. Sieć jest włączona. Zapis poza zakresem jest blokowany. Konfiguracja globalna pozostaje między projektami.",
 			"allowedCommands": "Dozwolone prefiksy poleceń",
-			"allowedCommandsDescription": "Dozwolone prefiksy mają pierwszeństwo przed krótszymi zabronionymi prefiksami. Zgoda na polecenie nadal jest wymagana.",
+			"allowedCommandsDescription": "Użyj *, aby zatwierdzać wszystkie polecenia, także skrypty. Reguły odmowy nadal obowiązują. Piaskownica wymusza granicę zapisu.",
 			"deniedCommands": "Odrzucone polecenia",
 			"deniedCommandsDescription": "Prefiksy poleceń, które będą automatycznie odrzucane bez pytania o zatwierdzenie. W przypadku konfliktów z dozwolonymi poleceniami, najdłuższe dopasowanie prefiksu ma pierwszeństwo. Dodaj * aby odrzucić wszystkie polecenia.",
 			"commandPlaceholder": "Wprowadź prefiks polecenia (np. 'git ')",
@@ -714,7 +714,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Użyj terminala wbudowanego (zalecane)",
-			"description": "Uruchamiaj polecenia w terminalu wbudowanym (czat), aby ominąć profile/integrację powłoki dla szybszych, bardziej niezawodnych uruchomień. Gdy wyłączony, Alpha używa terminala VS Code z twoim profilem powłoki, monitami i wtyczkami. <0>Dowiedz się więcej</0>"
+			"description": "Polecenia używają wbudowanej piaskownicy do ochrony zapisu. Konfiguracja jest globalna; istniejąca konfiguracja Windows jest używana ponownie."
 		},
 		"commandDelay": {
 			"label": "Opóźnienie polecenia terminala",

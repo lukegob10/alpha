@@ -1323,8 +1323,9 @@ export class ToolScheduler {
 		const outsideAccess =
 			this.options.policy?.execution.outsideWorkspace === "approval" && OUTSIDE_WORKSPACE_TOOLS.has(canonicalName)
 		prepared.requiresExplicitApproval =
-			canonicalName === "execute_command" ||
-			(outsideAccess &&
+			(canonicalName === "execute_command" && process.env.ROO_CLI_RUNTIME === "1") ||
+			(canonicalName !== "execute_command" &&
+				outsideAccess &&
 				descriptor.capabilities.sideEffects !== "none" &&
 				pathArguments.some(
 					(candidate) => !isPathAllowed(this.options.policy, candidate, this.executionHost.cwd),
@@ -1664,6 +1665,7 @@ export class ToolScheduler {
 			setResultMetadata: (metadata: ToolResultMetadata) => collector.setMetadata(metadata),
 			toolCallId: prepared.call.id,
 			signal: this.executionSignal,
+			commandWorkspaceRoots: this.options.policy?.execution.workspaceRoots,
 			resolveCommandTimeoutMs: (requestedTimeoutMs, command) =>
 				resolveCommandTimeoutMs(this.options.policy, requestedTimeoutMs ?? 0, command),
 		}

@@ -282,9 +282,9 @@
 		},
 		"execute": {
 			"label": "Aturan perintah",
-			"description": "Atur aturan perintah. Perintah host selalu memerlukan persetujuan karena skrip dapat menulis di luar ruang kerja.",
+			"description": "Setujui otomatis perintah dalam cakupan tulis tugas. Jaringan diaktifkan. Penulisan di luar cakupan diblokir. Penyiapan global tetap tersimpan antarproyek.",
 			"allowedCommands": "Awalan perintah yang diizinkan",
-			"allowedCommandsDescription": "Awalan yang diizinkan mengungguli awalan yang ditolak jika lebih panjang. Persetujuan perintah tetap diperlukan.",
+			"allowedCommandsDescription": "Gunakan * untuk menyetujui semua perintah, termasuk skrip. Aturan penolakan tetap berlaku. Sandbox menerapkan batas penulisan.",
 			"deniedCommands": "Perintah yang ditolak",
 			"deniedCommandsDescription": "Prefix perintah yang akan ditolak secara otomatis tanpa memerlukan persetujuan. Dalam kasus konflik dengan perintah yang diizinkan, pencocokan prefix terpanjang diprioritaskan. Tambahkan * untuk menolak semua perintah.",
 			"commandPlaceholder": "Masukkan prefix perintah (misalnya, 'git ')",
@@ -714,7 +714,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Gunakan Terminal Inline (disarankan)",
-			"description": "Jalankan perintah di Terminal Inline (obrolan) untuk melewati profil/integrasi shell untuk proses lebih cepat dan andal. Saat dinonaktifkan, Alpha menggunakan terminal VS Code dengan profil shell, prompt, dan plugin Anda. <0>Pelajari lebih lanjut</0>"
+			"description": "Perintah menggunakan sandbox inline untuk perlindungan penulisan yang konsisten. Penyiapan bersifat global dan menggunakan kembali penyiapan Windows yang ada."
 		},
 		"commandDelay": {
 			"label": "Delay perintah terminal",

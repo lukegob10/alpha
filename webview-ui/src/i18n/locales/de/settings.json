@@ -282,9 +282,9 @@
 		},
 		"execute": {
 			"label": "Befehlsregeln",
-			"description": "Befehlsregeln konfigurieren. Hostbefehle erfordern immer eine Genehmigung, da Skripte außerhalb des Arbeitsbereichs schreiben können.",
+			"description": "Befehle im Schreibbereich der Aufgabe automatisch genehmigen. Netzwerkzugriff ist aktiviert. Schreibzugriffe außerhalb werden blockiert. Die globale Einrichtung bleibt projektübergreifend erhalten.",
 			"allowedCommands": "Erlaubte Befehlspräfixe",
-			"allowedCommandsDescription": "Erlaubte Präfixe haben Vorrang vor kürzeren gesperrten Präfixen. Die Befehlsausführung muss weiterhin genehmigt werden.",
+			"allowedCommandsDescription": "Mit * alle Befehle einschließlich Skripten genehmigen. Verbotsregeln gelten weiterhin. Die Sandbox erzwingt die Schreibgrenze.",
 			"deniedCommands": "Verweigerte Befehle",
 			"deniedCommandsDescription": "Befehlspräfixe, die automatisch verweigert werden, ohne nach Genehmigung zu fragen. Bei Konflikten mit erlaubten Befehlen hat die längste Präfix-Übereinstimmung Vorrang. Fügen Sie * hinzu, um alle Befehle zu verweigern.",
 			"commandPlaceholder": "Befehlspräfix eingeben (z.B. 'git ')",
@@ -714,7 +714,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Inline-Terminal verwenden (empfohlen)",
-			"description": "Führe Befehle im Inline-Terminal (Chat) aus, um Shell-Profile/Integration für schnellere, zuverlässigere Läufe zu umgehen. Wenn deaktiviert, nutzt Alpha das VS Code-Terminal mit deinem Shell-Profil, Prompts und Plugins. <0>Mehr erfahren</0>"
+			"description": "Befehle verwenden die Inline-Sandbox für einheitlichen Schreibschutz. Die Einrichtung ist global; eine vorhandene Windows-Sandbox wird wiederverwendet."
 		},
 		"commandDelay": {
 			"label": "Terminal-Befehlsverzögerung",

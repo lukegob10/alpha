@@ -39,7 +39,39 @@ describe("Task.ask queued message drain", () => {
 		commandApproval: createSubagentCommandApprovalPolicy(["git"], ["git push"], "7".repeat(64)),
 	}
 
-	it("requires a human decision for primary commands despite wildcard auto-approval and retains the directory", async () => {
+	it.each([
+		{ taskKind: "primary", onScreen: true },
+		{ taskKind: "primary", onScreen: false },
+		{ taskKind: "subagent", onScreen: true },
+		{ taskKind: "subagent", onScreen: false },
+	])("honors command auto-approval for $taskKind tasks (on screen: $onScreen)", async ({ taskKind, onScreen }) => {
+		const task = await createAskOnlyTask()
+		Object.assign(task, {
+			taskKind,
+			subagentContextManifest: { runtimePolicy: { autoApproval: inheritedCommandPolicy } },
+			providerRef: {
+				deref: () => ({
+					getState: async () => ({
+						autoApprovalEnabled: true,
+						alwaysAllowExecute: true,
+						allowedCommands: ["*"],
+					}),
+					isTaskOnScreen: () => onScreen,
+				}),
+			},
+		})
+		const autoApprove = vi.spyOn(task, "approveAsk")
+		const pending = task.ask("command", "git status", false)
+		try {
+			await vi.waitFor(() => expect(autoApprove).toHaveBeenCalledOnce())
+			await expect(pending).resolves.toMatchObject({ response: "yesButtonClicked" })
+		} finally {
+			task.handleWebviewAskResponse("noButtonClicked")
+			await pending
+		}
+	})
+
+	it("preserves an explicit approval requirement despite wildcard auto-approval and retains the directory", async () => {
 		const task = await createAskOnlyTask()
 		Object.assign(task, {
 			taskKind: "primary",
@@ -55,7 +87,7 @@ describe("Task.ask queued message drain", () => {
 			},
 		})
 		const autoApprove = vi.spyOn(task, "approveAsk")
-		const pending = task.ask("command", "node script.js", false, { text: "../outside" })
+		const pending = task.ask("command", "node script.js", false, { text: "../outside" }, false, true)
 		await vi.waitFor(() => expect(task["addToClineMessages"]).toHaveBeenCalled())
 		expect(autoApprove).not.toHaveBeenCalled()
 		expect(task["addToClineMessages"]).toHaveBeenCalledWith(
@@ -81,7 +113,7 @@ describe("Task.ask queued message drain", () => {
 		}
 
 		const autoApprove = vi.spyOn(task, "approveAsk")
-		const pending = task.ask("command", "git diff", false)
+		const pending = task.ask("command", "git diff", false, undefined, false, true)
 		await vi.waitFor(() => expect(task["addToClineMessages"]).toHaveBeenCalled())
 		expect(autoApprove).not.toHaveBeenCalled()
 		task.handleWebviewAskResponse("noButtonClicked")

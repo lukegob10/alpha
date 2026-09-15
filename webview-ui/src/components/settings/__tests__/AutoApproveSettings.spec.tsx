@@ -16,6 +16,27 @@ vi.mock("@vscode/webview-ui-toolkit/react", async (importOriginal) => ({
 }))
 
 describe("outside workspace approval settings", () => {
+	it("labels command inputs and adds a wildcard to the local edit buffer with Enter", () => {
+		const setCachedStateField = vi.fn()
+		render(
+			<AutoApproveSettings
+				autoApprovalEnabled
+				alwaysAllowExecute
+				allowedCommands={[]}
+				deniedCommands={[]}
+				setCachedStateField={setCachedStateField}
+			/>,
+		)
+		const allowed = screen.getByLabelText("settings:autoApprove.execute.allowedCommands")
+		const denied = screen.getByLabelText("settings:autoApprove.execute.deniedCommands")
+		expect(allowed).not.toBe(denied)
+		fireEvent.change(allowed, { target: { value: " * " } })
+		fireEvent.keyDown(allowed, { key: "Enter" })
+		expect(setCachedStateField).toHaveBeenCalledTimes(1)
+		expect(setCachedStateField).toHaveBeenCalledWith("allowedCommands", ["*"])
+		expect(allowed).toHaveValue("")
+	})
+
 	it("keeps the outside read edit buffer and removes legacy outside write auto-approval", () => {
 		const setCachedStateField = vi.fn()
 		const props = {

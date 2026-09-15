@@ -257,5 +257,10 @@
 	"docsLink": {
 		"label": "Docs",
 		"url": "https://github.com/AlphaInc/Alpha/tree/main/docs"
+	},
+	"commandSandbox": {
+		"installing": "コマンドサンドボックスを設定中（ユーザーごとに一度）",
+		"preparing": "サンドボックスを準備中",
+		"unavailable": "コマンドサンドボックスを利用できません。設定またはダウンロードのエラーを確認して再試行してください。ホスト上ではコマンドを実行していません。"
 	}
 }

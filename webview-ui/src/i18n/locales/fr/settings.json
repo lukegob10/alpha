@@ -283,9 +283,9 @@
 		},
 		"execute": {
 			"label": "Règles de commandes",
-			"description": "Configurez les règles de commandes. Les commandes de l’hôte nécessitent toujours une approbation, car les scripts peuvent écrire hors de l’espace de travail.",
+			"description": "Approuver automatiquement les commandes dans le périmètre d’écriture de la tâche. Le réseau est activé. Les écritures hors périmètre sont bloquées. La configuration globale persiste entre les projets.",
 			"allowedCommands": "Préfixes de commandes autorisés",
-			"allowedCommandsDescription": "Les préfixes autorisés priment sur les préfixes refusés plus courts. L’approbation de la commande reste obligatoire.",
+			"allowedCommandsDescription": "Utilisez * pour approuver toutes les commandes, scripts compris. Les règles de refus restent actives. Le bac à sable impose la limite d’écriture.",
 			"deniedCommands": "Commandes refusées",
 			"deniedCommandsDescription": "Préfixes de commandes qui seront automatiquement refusés sans demander d'approbation. En cas de conflit avec les commandes autorisées, la correspondance de préfixe la plus longue prend la priorité. Ajoutez * pour refuser toutes les commandes.",
 			"commandPlaceholder": "Entrez le préfixe de commande (ex. 'git ')",
@@ -714,7 +714,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Utiliser le terminal en ligne (recommandé)",
-			"description": "Exécute des commandes dans le terminal en ligne (chat) pour contourner les profils/intégration du shell pour des exécutions plus rapides et fiables. Lorsque désactivé, Alpha utilise le terminal VS Code avec votre profil de shell, invites et plugins. <0>En savoir plus</0>"
+			"description": "Les commandes utilisent le bac à sable intégré pour protéger les écritures. La configuration est globale et réutilise celle de Windows si elle existe."
 		},
 		"commandDelay": {
 			"label": "Délai de commande du terminal",

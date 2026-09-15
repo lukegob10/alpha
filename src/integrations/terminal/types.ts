@@ -1,4 +1,5 @@
 import EventEmitter from "events"
+import type { SandboxedCommand } from "./CommandSandbox"
 
 export type RooTerminalProvider = "vscode" | "execa"
 
@@ -21,7 +22,11 @@ export interface RooTerminal {
 	process?: RooTerminalProcess
 	getCurrentWorkingDirectory(): string
 	isClosed: () => boolean
-	runCommand: (command: string, callbacks: RooTerminalCallbacks) => RooTerminalProcessResultPromise
+	runCommand: (
+		command: string,
+		callbacks: RooTerminalCallbacks,
+		launch?: SandboxedCommand,
+	) => RooTerminalProcessResultPromise
 	setActiveStream(stream: AsyncIterable<string> | undefined, pid?: number): void
 	shellExecutionComplete(exitDetails: ExitCodeDetails): void
 	getProcessesWithOutput(): RooTerminalProcess[]

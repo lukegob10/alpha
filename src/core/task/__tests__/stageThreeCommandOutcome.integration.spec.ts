@@ -1,3 +1,13 @@
+// These lifecycle fixtures isolate the native launcher; CommandSandbox.native.spec.ts exercises OS enforcement.
+vitest.mock("../../../integrations/terminal/CommandSandbox", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../integrations/terminal/CommandSandbox")>()),
+	prepareSandboxedCommand: vitest.fn(async (_options, invocation: string[]) => ({
+		executable: invocation[0],
+		args: invocation.slice(1),
+		env: {},
+		assertScope: vitest.fn(),
+	})),
+}))
 import { execFile } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"

@@ -282,9 +282,9 @@
 		},
 		"execute": {
 			"label": "Reglas de comandos",
-			"description": "Configura las reglas de comandos. Los comandos del sistema siempre requieren aprobación porque los scripts pueden escribir fuera del espacio de trabajo.",
+			"description": "Aprobar automáticamente comandos dentro del ámbito de escritura de la tarea. La red está habilitada. Se bloquean escrituras fuera del ámbito. La configuración global se conserva entre proyectos.",
 			"allowedCommands": "Prefijos de comandos permitidos",
-			"allowedCommandsDescription": "Los prefijos permitidos tienen prioridad sobre los prefijos denegados más cortos. No eliminan la aprobación del comando.",
+			"allowedCommandsDescription": "Use * para aprobar todos los comandos, incluidos scripts. Las reglas de denegación siguen vigentes. El entorno aislado aplica el límite de escritura.",
 			"deniedCommands": "Comandos denegados",
 			"deniedCommandsDescription": "Prefijos de comandos que serán automáticamente denegados sin pedir aprobación. En caso de conflictos con comandos permitidos, la coincidencia de prefijo más larga tiene prioridad. Añade * para denegar todos los comandos.",
 			"commandPlaceholder": "Ingrese prefijo de comando (ej. 'git ')",
@@ -714,7 +714,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Usar terminal en línea (recomendado)",
-			"description": "Ejecuta comandos en el terminal en línea (chat) para evitar perfiles/integración del shell para ejecuciones más rápidas y confiables. Cuando está desactivado, Alpha usa el terminal de VS Code con tu perfil de shell, prompts y plugins. <0>Más información</0>"
+			"description": "Los comandos usan el entorno aislado integrado para proteger las escrituras. La configuración es global y reutiliza la configuración existente de Windows."
 		},
 		"commandDelay": {
 			"label": "Retraso de comando del terminal",

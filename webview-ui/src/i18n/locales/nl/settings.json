@@ -282,9 +282,9 @@
 		},
 		"execute": {
 			"label": "Opdrachtregels",
-			"description": "Stel opdrachtregels in. Hostopdrachten vereisen altijd goedkeuring omdat scripts buiten de werkruimte kunnen schrijven.",
+			"description": "Opdrachten binnen het schrijfbereik van de taak automatisch goedkeuren. Netwerktoegang is ingeschakeld. Schrijven buiten het bereik wordt geblokkeerd. De globale installatie blijft behouden tussen projecten.",
 			"allowedCommands": "Toegestane opdrachtvoorvoegsels",
-			"allowedCommandsDescription": "Toegestane voorvoegsels gaan voor kortere geweigerde voorvoegsels. Goedkeuring van de opdracht blijft vereist.",
+			"allowedCommandsDescription": "Gebruik * om alle opdrachten, inclusief scripts, goed te keuren. Weigerregels blijven gelden. De sandbox handhaaft de schrijfgrens.",
 			"deniedCommands": "Geweigerde commando's",
 			"deniedCommandsDescription": "Commando-prefixen die automatisch worden geweigerd zonder om goedkeuring te vragen. Bij conflicten met toegestane commando's heeft de langste prefixovereenkomst voorrang. Voeg * toe om alle commando's te weigeren.",
 			"commandPlaceholder": "Voer commando-prefix in (bijv. 'git ')",
@@ -714,7 +714,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Inline Terminal gebruiken (aanbevolen)",
-			"description": "Voer commando's uit in de Inline Terminal (chat) om shell-profielen/integratie te omzeilen voor snellere, betrouwbaardere runs. Wanneer uitgeschakeld gebruikt Alpha de VS Code-terminal met je shell-profiel, prompts en plugins. <0>Meer informatie</0>"
+			"description": "Opdrachten gebruiken de inline-sandbox voor consistente schrijfbeveiliging. De installatie is globaal; bestaande Windows-sandboxconfiguratie wordt hergebruikt."
 		},
 		"commandDelay": {
 			"label": "Terminal-commandovertraging",

@@ -158,13 +158,13 @@ describe("outside workspace execution", () => {
 	)
 
 	it.each([undefined, "../outside"])(
-		"requires explicit approval for a host command with cwd %s",
+		"uses command auto-approval for a sandboxed command with cwd %s",
 		async (commandCwd) => {
 			const fixture = harness("execute_command", { command: "node script.js", cwd: commandCwd }, true, false)
 			const effect = vi.fn()
-			expect((await fixture.run(inspection("execute_command", effect))).results[0].status).toBe("denied")
-			expect(fixture.prompt).toHaveBeenCalledOnce()
-			expect(effect).not.toHaveBeenCalled()
+			expect((await fixture.run(inspection("execute_command", effect))).results[0].status).toBe("success")
+			expect(fixture.prompt).not.toHaveBeenCalled()
+			expect(effect).toHaveBeenCalledOnce()
 		},
 	)
 

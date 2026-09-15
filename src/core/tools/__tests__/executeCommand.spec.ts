@@ -1,3 +1,13 @@
+// These lifecycle fixtures isolate the native launcher; CommandSandbox.native.spec.ts exercises OS enforcement.
+vitest.mock("../../../integrations/terminal/CommandSandbox", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../integrations/terminal/CommandSandbox")>()),
+	prepareSandboxedCommand: vitest.fn(async (_options, invocation: string[]) => ({
+		executable: invocation[0],
+		args: invocation.slice(1),
+		env: {},
+		assertScope: vitest.fn(),
+	})),
+}))
 //
 // Tests the ExecuteCommand tool itself vs calling the tool where the tool is mocked.
 //
@@ -222,7 +232,7 @@ describe("executeCommand", () => {
 
 			// Verify
 			expect(rejected).toBe(false)
-			expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledWith(customCwd, mockTask.taskId, "vscode")
+			expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledWith(customCwd, mockTask.taskId, "execa")
 			expect(result).toContain(`within working directory '${customCwd}'`)
 		})
 
@@ -251,7 +261,7 @@ describe("executeCommand", () => {
 
 			// Verify
 			expect(rejected).toBe(false)
-			expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledWith(resolvedCwd, mockTask.taskId, "vscode")
+			expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledWith(resolvedCwd, mockTask.taskId, "execa")
 			expect(result).toContain(`within working directory '${resolvedCwd.toPosix()}'`)
 		})
 
@@ -279,7 +289,7 @@ describe("executeCommand", () => {
 	})
 
 	describe("Terminal Provider Selection", () => {
-		it("should use vscode provider when shell integration is enabled", async () => {
+		it("uses the sandboxed inline provider even with a saved host-terminal preference", async () => {
 			mockTerminal.runCommand.mockImplementation((command: string, callbacks: RooTerminalCallbacks) => {
 				setTimeout(() => {
 					callbacks.onCompleted("Command output", mockProcess)
@@ -298,7 +308,7 @@ describe("executeCommand", () => {
 			await executeCommandInTerminal(mockTask, options)
 
 			// Verify
-			expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledWith(mockTask.cwd, mockTask.taskId, "vscode")
+			expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledWith(mockTask.cwd, mockTask.taskId, "execa")
 		})
 
 		it("should use execa provider when shell integration is disabled", async () => {

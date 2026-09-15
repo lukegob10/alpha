@@ -1,4 +1,4 @@
-import { HTMLAttributes, useState } from "react"
+import { HTMLAttributes, useId, useState } from "react"
 import { X } from "lucide-react"
 import { Trans } from "react-i18next"
 import { Package } from "@alpha/package"
@@ -78,6 +78,8 @@ export const AutoApproveSettings = ({
 	const { t } = useAppTranslation()
 	const [commandInput, setCommandInput] = useState("")
 	const [deniedCommandInput, setDeniedCommandInput] = useState("")
+	const allowedCommandInputId = useId()
+	const deniedCommandInputId = useId()
 	const effectiveAutoApprovalEnabled = autoApprovalEnabled ?? false
 
 	const handleAddCommand = () => {
@@ -261,7 +263,10 @@ export const AutoApproveSettings = ({
 							settingId="auto-approve-allowed-commands"
 							section="autoApprove"
 							label={t("settings:autoApprove.execute.allowedCommands")}>
-							<label className="block font-medium mb-1" data-testid="allowed-commands-heading">
+							<label
+								htmlFor={allowedCommandInputId}
+								className="block font-medium mb-1"
+								data-testid="allowed-commands-heading">
 								{t("settings:autoApprove.execute.allowedCommands")}
 							</label>
 							<div className="text-vscode-descriptionForeground text-sm mt-1">
@@ -271,6 +276,7 @@ export const AutoApproveSettings = ({
 
 						<div className="flex gap-2">
 							<Input
+								id={allowedCommandInputId}
 								value={commandInput}
 								onChange={(e: any) => setCommandInput(e.target.value)}
 								onKeyDown={(e: any) => {
@@ -312,7 +318,10 @@ export const AutoApproveSettings = ({
 							section="autoApprove"
 							label={t("settings:autoApprove.execute.deniedCommands")}
 							className="mt-6">
-							<label className="block font-medium mb-1" data-testid="denied-commands-heading">
+							<label
+								htmlFor={deniedCommandInputId}
+								className="block font-medium mb-1"
+								data-testid="denied-commands-heading">
 								{t("settings:autoApprove.execute.deniedCommands")}
 							</label>
 							<div className="text-vscode-descriptionForeground text-sm mt-1">
@@ -322,6 +331,7 @@ export const AutoApproveSettings = ({
 
 						<div className="flex gap-2">
 							<Input
+								id={deniedCommandInputId}
 								value={deniedCommandInput}
 								onChange={(e: any) => setDeniedCommandInput(e.target.value)}
 								onKeyDown={(e: any) => {

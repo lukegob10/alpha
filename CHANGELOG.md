@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.39
+
+### Patch Changes
+
+- Restore saved global command auto-approval rules, including `*`, with native OS enforcement of each task's filesystem write scope.
+- Install the pinned command sandbox once per user, reuse Windows setup across projects, and keep network access available for approved commands.
+- Simplify terminal settings to show effective inline execution and preserve cancellation, streaming output, Windows quoting, Git, and pnpm compatibility.
+
 ## 2.1.38
 
 ### Patch Changes

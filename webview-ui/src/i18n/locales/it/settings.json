@@ -282,9 +282,9 @@
 		},
 		"execute": {
 			"label": "Regole dei comandi",
-			"description": "Configura le regole dei comandi. I comandi dell’host richiedono sempre approvazione perché gli script possono scrivere fuori dall’area di lavoro.",
+			"description": "Approva automaticamente i comandi nell’ambito di scrittura dell’attività. La rete è abilitata. Le scritture esterne sono bloccate. La configurazione globale persiste tra i progetti.",
 			"allowedCommands": "Prefissi dei comandi consentiti",
-			"allowedCommandsDescription": "I prefissi consentiti prevalgono sui prefissi negati più brevi. L’approvazione del comando resta obbligatoria.",
+			"allowedCommandsDescription": "Usa * per approvare tutti i comandi, inclusi gli script. Le regole di blocco restano attive. La sandbox applica il limite di scrittura.",
 			"deniedCommands": "Comandi negati",
 			"deniedCommandsDescription": "Prefissi di comandi che verranno automaticamente negati senza richiedere approvazione. In caso di conflitti con comandi consentiti, la corrispondenza del prefisso più lungo ha la precedenza. Aggiungi * per negare tutti i comandi.",
 			"commandPlaceholder": "Inserisci prefisso comando (es. 'git ')",
@@ -714,7 +714,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "Usa terminale in linea (consigliato)",
-			"description": "Esegui comandi nel terminale in linea (chat) per bypassare profili/integrazione shell per esecuzioni più veloci e affidabili. Quando disabilitato, Alpha usa il terminale VS Code con il tuo profilo shell, prompt e plugin. <0>Scopri di più</0>"
+			"description": "I comandi usano la sandbox integrata per proteggere le scritture. La configurazione è globale e riutilizza una sandbox Windows esistente."
 		},
 		"commandDelay": {
 			"label": "Ritardo comando terminale",
