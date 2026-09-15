@@ -140,7 +140,9 @@ export async function prepareSandboxedCommand(
 	}
 	await fs.mkdir(options.storagePath, { recursive: true })
 	const storage = await fs.realpath(options.storagePath)
-	if (storage !== intendedStorage) throw new Error("Command sandbox storage identity changed during setup.")
+	// VS Code lowercases Windows drive letters, while native realpath may preserve their casing.
+	if (path.relative(storage, intendedStorage) !== "")
+		throw new Error("Command sandbox storage identity changed during setup.")
 	const runtimeHome = await resolveSandboxHome(storage)
 	if (roots.some((root) => isPathWithinRoot(root, runtimeHome))) {
 		throw new Error("Command sandbox setup must be outside the task workspace.")
@@ -175,7 +177,12 @@ export async function prepareSandboxedCommand(
 				[options.cwd, cwd],
 				[options.storagePath, storage],
 			]
-			if (identities.some(([original, canonical]) => resolvePathWithExistingAncestor(original) !== canonical)) {
+			if (
+				identities.some(
+					([original, canonical]) =>
+						path.relative(resolvePathWithExistingAncestor(original), canonical) !== "",
+				)
+			) {
 				throw new Error("Command workspace identity changed before execution.")
 			}
 		},

@@ -66,6 +66,7 @@ paths enter the adapter as base64 data. The wrapper itself runs inside the sandb
 ## Validation
 
 `CommandSandbox.spec.ts` covers the explicit grant, outside cwd, cancellation, and unavailable runtime.
+It also covers VS Code's lowercase Windows drive spelling and scope identity changes before launch.
 `SandboxRuntime.spec.ts` covers global reuse, checksum failure, cleanup, and retry.
 `CommandSandbox.native.spec.ts` is an opt-in real-OS gate: set `ALPHA_SANDBOX_NATIVE_RUNTIME` to the executable from the
 checksum-verified pinned release package, then run:
@@ -77,6 +78,11 @@ pnpm --dir src test -- integrations/terminal/__tests__/CommandSandbox.native.spe
 The native gate exercises writes/deletes/renames, junction escapes, descendant writes, two independent projects sharing
 setup, read-only Plan execution, loopback networking, inline cancellation, quoted executable paths, pnpm builds, and Git
 metadata writes. Mocked lifecycle tests do not substitute for this gate.
+
+The preview release workflow also runs `test:command-sandbox:1221:run` after building the extension. This real-host test
+requires a successful command through the production installer and launcher, with global `*` approval, zero command
+approvals from the harness, an in-root write, and blocked outside writes/deletes. It fails on a command error even if
+the task lifecycle reaches completion.
 
 Release gates also include affected unit tests, both package typechecks/lint, localization, packaging verification, and
 the exact **VS Code 1.122.1** smoke gate. Platform-specific evidence must be reported separately; a Windows run does not

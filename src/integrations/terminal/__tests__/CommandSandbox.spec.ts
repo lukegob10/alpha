@@ -58,6 +58,16 @@ describe("command sandbox launch contract", () => {
 		})
 	})
 
+	it("accepts VS Code's lowercase Windows drive spelling for the same canonical scope", async () => {
+		const vscodePath = (value: string) =>
+			process.platform === "win32" ? value[0].toLowerCase() + value.slice(1) : value
+		const launch = await prepareSandboxedCommand(
+			{ workspaceRoots: [vscodePath(root)], cwd: vscodePath(root), storagePath: vscodePath(storage) },
+			["echo"],
+		)
+		expect(() => launch.assertScope()).not.toThrow()
+	})
+
 	it("fails closed before running when the runtime is missing or setup fails", async () => {
 		vi.mocked(ensureSandboxRuntime).mockRejectedValueOnce(new Error("setup failed"))
 		await expect(
