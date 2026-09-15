@@ -7,6 +7,8 @@
 - Fix VS Code LM chat metadata staying at the default context window after selecting extended context.
 - Use the active task's resolved input limit for the context display and percentage, with the saved selection as a fallback before live model discovery.
 - Keep settings previews, provider input budgets, and chat metadata consistent when switching between standard and extended context.
+- Preserve embedding provider and endpoint edits during chat state refreshes until Save or Discard.
+- Restart indexing with the newly selected embedding provider after saving, while respecting the workspace indexing toggle.
 
 ## 2.1.40
 
