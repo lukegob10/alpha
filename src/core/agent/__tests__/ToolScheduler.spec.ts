@@ -820,6 +820,7 @@ describe("ToolScheduler", () => {
 				cwd: workspace,
 				consecutiveMistakeCount: 0,
 				recordToolError: () => {},
+				rooIgnoreController: { validateAccess: () => true },
 			})
 			const events: any[] = []
 			const eventLog = new AgentTurnEventLog("stale-apply-patch", telemetryStorage)

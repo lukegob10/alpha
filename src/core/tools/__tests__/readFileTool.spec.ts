@@ -235,6 +235,7 @@ describe("ReadFileTool", () => {
 						wasTruncated: true,
 						includedRanges: [[1, 1]] as [number, number][],
 					}
+					mockedFsReadFile.mockResolvedValue(Buffer.from(content.replace(/^1 \| /, "")))
 					mockedReadWithSlice.mockReturnValue(result)
 					mockedReadWithIndentation.mockReturnValue(result)
 					callbacks.setResultMetadata.mockClear()
@@ -588,7 +589,7 @@ describe("ReadFileTool", () => {
 
 			await readFileTool.execute({ path: "test.ts" }, mockTask as any, callbacks)
 
-			expect(mockedReadWithSlice).toHaveBeenCalled()
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith("File: test.ts\n1 | line 1\n2 | line 2\n3 | line 3")
 			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("line 1"))
 		})
 
@@ -611,7 +612,8 @@ describe("ReadFileTool", () => {
 				callbacks,
 			)
 
-			expect(mockedReadWithSlice).toHaveBeenCalledWith(expect.any(String), 1, 2) // offset converted to 0-based
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("2 | line 2\n3 | line 3"))
+			expect(callbacks.pushToolResult.mock.calls[0][0]).not.toMatch(/^[14] \|/m)
 		})
 
 		it("should read text file with indentation mode", async () => {
@@ -650,7 +652,7 @@ describe("ReadFileTool", () => {
 			const mockTask = createMockTask()
 			const callbacks = createMockCallbacks()
 
-			mockedFsReadFile.mockResolvedValue(Buffer.from("lots of content..."))
+			mockedFsReadFile.mockResolvedValue(Buffer.from("source line\n".repeat(5000)))
 			mockedReadWithSlice.mockReturnValue({
 				content: "1 | truncated content",
 				returnedLines: 100,
@@ -661,8 +663,8 @@ describe("ReadFileTool", () => {
 
 			await readFileTool.execute({ path: "large.ts" }, mockTask as any, callbacks)
 
-			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("truncated"))
-			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("To read more"))
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Partial read"))
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Continuation:"))
 		})
 
 		it("should handle empty files", async () => {
@@ -697,7 +699,7 @@ describe("ReadFileTool", () => {
 
 			await readFileTool.execute({ path: "bom.txt" }, mockTask as any, callbacks)
 
-			expect(mockedReadWithSlice).toHaveBeenCalledWith("content", 0, expect.any(Number))
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith("File: bom.txt\n1 | content")
 			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.not.stringContaining("\uFEFF"))
 		})
 	})
@@ -786,10 +788,13 @@ describe("ReadFileTool", () => {
 		it("keeps successful legacy reads when a sibling file is denied", async () => {
 			const mockTask = createMockTask()
 			const callbacks = createMockCallbacks()
-			callbacks.askApprovalResponse = vi
-				.fn()
-				.mockResolvedValueOnce({ response: "noButtonClicked" })
-				.mockResolvedValueOnce({ response: "yesButtonClicked" })
+			callbacks.askApprovalResponse = vi.fn().mockImplementation(async (_type, message) => {
+				const { batchFiles } = JSON.parse(message)
+				return {
+					response: "objectResponse",
+					text: JSON.stringify({ [batchFiles[0].key]: false, [batchFiles[1].key]: true }),
+				}
+			})
 
 			await readFileTool.execute(
 				{
@@ -829,10 +834,7 @@ describe("ReadFileTool", () => {
 			await (readFileTool as any).requestApproval(
 				mockTask,
 				fileResults,
-				(filePath: string, updates: Record<string, unknown>) => {
-					const result = fileResults.find((file) => file.path === filePath)
-					Object.assign(result, updates)
-				},
+				(result: object, updates: Record<string, unknown>) => Object.assign(result, updates),
 				callbacks,
 			)
 

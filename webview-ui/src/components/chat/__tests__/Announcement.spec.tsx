@@ -12,7 +12,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "2.1.3",
+		version: "2.1.43",
 	},
 }))
 
@@ -32,10 +32,10 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		render(<Announcement hideAnnouncement={vi.fn()} />)
 
-		expect(screen.getByText("Welcome to Alpha v2.1.3")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v2.1.43")).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Alpha v2.1.3 focuses everyday agent work on a clean Plan and Code workflow without changing the proven Code loop.",
+				"Alpha v2.1.43 makes file evidence safer and more precise while preserving the proven Code loop.",
 			),
 		).toBeInTheDocument()
 	})
@@ -44,9 +44,19 @@ describe("Announcement", () => {
 		render(<Announcement hideAnnouncement={vi.fn()} />)
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
-		expect(screen.getByText("Plan and Code are the only ordinary user-facing mode choices.")).toBeInTheDocument()
-		expect(screen.getByText("Press Shift+Tab in the chat composer to switch between them.")).toBeInTheDocument()
-		expect(screen.getByText("Code and Plan stay in the same task and provider configuration.")).toBeInTheDocument()
-		expect(screen.getByText("Existing legacy and custom-mode tasks remain compatible.")).toBeInTheDocument()
+		expect(
+			screen.getByText(
+				"Large reads return complete visible lines with an honest continuation when more evidence is needed.",
+			),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText("Batch reads and searches honor each file's requested scope and output mode."),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText(
+				"File edits preserve the user's bytes, including line endings and literal replacement text.",
+			),
+		).toBeInTheDocument()
+		expect(screen.getByText("Plan and Code remain the ordinary user-facing mode choices.")).toBeInTheDocument()
 	})
 })

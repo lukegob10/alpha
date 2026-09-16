@@ -295,6 +295,51 @@ describe("Ripgrep content search", () => {
 		await expect(regexSearchFiles(tempDir, tempDir, "value")).resolves.toContain("const value = 1")
 	})
 
+	it.each(["files", "count"] as const)("returns compact %s output without snippets", async (outputMode) => {
+		await fs.writeFile(path.join(tempDir, "first.txt"), "context before\nTODO TODO\ncontext after\nTODO\n")
+		await fs.writeFile(path.join(tempDir, "second.txt"), "TODO\n")
+		const output = await regexSearchFiles(tempDir, tempDir, "TODO", undefined, undefined, undefined, { outputMode })
+		expect(output.split("\n").sort()).toEqual(
+			outputMode === "files" ? ["first.txt", "second.txt"] : ["first.txt: 3", "second.txt: 1"],
+		)
+		expect(output).not.toMatch(/TODO|context|\|/)
+	})
+
+	it("searches literal metacharacters without a regex compilation error", async () => {
+		await fs.writeFile(path.join(tempDir, "literal.txt"), "foo(.bar\n")
+		await fs.writeFile(path.join(tempDir, "other.txt"), "fooxbar\n")
+		await expect(
+			regexSearchFiles(tempDir, tempDir, "foo(.bar", undefined, undefined, undefined, {
+				outputMode: "files",
+				literal: true,
+			}),
+		).resolves.toBe("literal.txt")
+	})
+
+	it.each([undefined, null, "content"] as const)("keeps default snippets for mode %s", async (outputMode) => {
+		await fs.writeFile(path.join(tempDir, "source.txt"), "before\nTODO\nafter\n")
+		await expect(
+			regexSearchFiles(tempDir, tempDir, "TODO", undefined, undefined, undefined, { outputMode }),
+		).resolves.toBe("Found 1 result.\n\n# source.txt\n  1 | before\n  2 | TODO\n  3 | after\n----")
+	})
+
+	it.each([false, null])("keeps multiline regex recovery for literal=%s in every mode", async (literal) => {
+		await fs.writeFile(path.join(tempDir, "source.txt"), "before\nalpha\nbeta\nafter\n")
+		for (const outputMode of ["content", "files", "count"] as const) {
+			const output = await regexSearchFiles(tempDir, tempDir, "alpha\\nbeta", undefined, undefined, undefined, {
+				outputMode,
+				literal,
+			})
+			expect(output).toBe(
+				outputMode === "content"
+					? "Found 1 result.\n\n# source.txt\n  1 | before\n  2 | alpha\n  3 | beta\n  4 | after\n----"
+					: outputMode === "files"
+						? "source.txt"
+						: "source.txt: 1",
+			)
+		}
+	})
+
 	it("honors an already-aborted search signal before starting ripgrep", async () => {
 		const controller = new AbortController()
 		const reason = new Error("cancelled by test")
@@ -357,25 +402,36 @@ describe("Ripgrep content search", () => {
 		expect(output).not.toContain("excluded.txt")
 	})
 
-	it("preserves .gitignore and .alphaignore filtering during multiline recovery", async () => {
-		await fs.mkdir(path.join(tempDir, ".git"))
-		await fs.writeFile(path.join(tempDir, ".gitignore"), "git-ignored.txt\n")
-		await fs.writeFile(path.join(tempDir, ".alphaignore"), "alpha-ignored.txt\n")
-		for (const fileName of ["source.txt", "git-ignored.txt", "alpha-ignored.txt"]) {
-			await fs.writeFile(path.join(tempDir, fileName), "alpha\nbeta\n")
-		}
-		const ignoreController = new RooIgnoreController(tempDir)
-		try {
-			await ignoreController.initialize()
-			const output = await regexSearchFiles(tempDir, tempDir, "alpha\\nbeta", undefined, ignoreController)
+	it.each(["content", "files", "count"] as const)(
+		"preserves .gitignore and .alphaignore during %s multiline recovery",
+		async (outputMode) => {
+			await fs.mkdir(path.join(tempDir, ".git"))
+			await fs.writeFile(path.join(tempDir, ".gitignore"), "git-ignored.txt\n")
+			await fs.writeFile(path.join(tempDir, ".alphaignore"), "alpha-ignored.txt\n")
+			for (const fileName of ["source.txt", "git-ignored.txt", "alpha-ignored.txt"]) {
+				await fs.writeFile(path.join(tempDir, fileName), "alpha\nbeta\n")
+			}
+			const ignoreController = new RooIgnoreController(tempDir)
+			try {
+				await ignoreController.initialize()
+				const output = await regexSearchFiles(
+					tempDir,
+					tempDir,
+					"alpha\\nbeta",
+					undefined,
+					ignoreController,
+					undefined,
+					{ outputMode },
+				)
 
-			expect(output).toContain("# source.txt")
-			expect(output).not.toContain("git-ignored.txt")
-			expect(output).not.toContain("alpha-ignored.txt")
-		} finally {
-			ignoreController.dispose()
-		}
-	})
+				expect(output).toContain(outputMode === "content" ? "# source.txt" : "source.txt")
+				expect(output).not.toContain("git-ignored.txt")
+				expect(output).not.toContain("alpha-ignored.txt")
+			} finally {
+				ignoreController.dispose()
+			}
+		},
+	)
 
 	it("truncates each source line independently within a multiline match", async () => {
 		await fs.writeFile(path.join(tempDir, "source.txt"), `alpha${"x".repeat(600)}\nbeta\n`)

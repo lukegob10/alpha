@@ -1,7 +1,38 @@
 import { parsePatch, ParseError } from "../parser"
+import { applyChunksToContent } from "../apply"
 
 describe("apply_patch parser", () => {
 	describe("parsePatch", () => {
+		it.each(["LF", "CRLF", "mixed"])("keeps %s patch separators out of CRLF file content", (separators) => {
+			const replacement = "value = $& $$ $1 $` $' &lt; &amp; &#36;"
+			const original = "\uFEFFheader\r\nvalue = old\r\nfooter"
+			const lines = [
+				"*** Begin Patch",
+				"*** Update File: bytes.txt",
+				"@@",
+				"-header",
+				"-value = old",
+				"-footer",
+				"+header",
+				`+${replacement}`,
+				"+footer",
+				"*** End Patch",
+			]
+			const patch = lines
+				.map((line, index) => {
+					if (index === lines.length - 1) return line
+					const crlf = separators === "CRLF" || (separators === "mixed" && line.startsWith("+"))
+					return line + (crlf ? "\r\n" : "\n")
+				})
+				.join("")
+			const hunk = parsePatch(patch).hunks[0]!
+			expect(hunk.type).toBe("UpdateFile")
+			if (hunk.type !== "UpdateFile") throw new Error("Expected update hunk")
+			expect(hunk.path).toBe("bytes.txt")
+			const content = applyChunksToContent(original, hunk.path, hunk.chunks)
+			expect(Buffer.from(content)).toEqual(Buffer.from(original.replace("value = old", () => replacement)))
+		})
+
 		it("should reject patch without Begin Patch marker", () => {
 			expect(() => parsePatch("bad")).toThrow(ParseError)
 			expect(() => parsePatch("bad")).toThrow("The first line of the patch must be '*** Begin Patch'")

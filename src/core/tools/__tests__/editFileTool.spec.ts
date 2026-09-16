@@ -694,6 +694,24 @@ describe("editFileTool", () => {
 		})
 	})
 
+	it.each(["\n", "\r\n"])("preserves BOM and %j endings while replacing literal dollar text", async (eol) => {
+		await executeEditFileTool(
+			{ old_string: "Line 1\nLine 2", new_string: "$& $$ $' &amp;\nchanged" },
+			{ fileContent: `\uFEFFLine 1${eol}Line 2${eol}Line 3` },
+		)
+		expect(mockTask.diffViewProvider.update).toHaveBeenCalledWith(
+			`\uFEFF$& $$ $' &amp;${eol}changed${eol}Line 3`,
+			true,
+		)
+	})
+
+	it("rejects mixed endings without requesting approval or saving", async () => {
+		const result = await executeEditFileTool({}, { fileContent: "Line 1\r\nLine 2\nLine 3" })
+		expect(result).toMatch(/mixed line endings/i)
+		expect(mockAskApproval).not.toHaveBeenCalled()
+		expect(mockTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+	})
+
 	describe("CRLF normalization", () => {
 		it("preserves CRLF line endings on output", async () => {
 			const contentWithCRLF = "Line 1\r\nLine 2\r\nLine 3"

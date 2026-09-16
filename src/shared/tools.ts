@@ -18,6 +18,7 @@ import type {
 	SubagentForkTurns,
 	BrowserToolArgs,
 	DiscoverToolsParams,
+	SearchFilesParams,
 } from "@alpha-code/types"
 
 export type ToolResponse = string | Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam>
@@ -47,6 +48,8 @@ export const toolParamNames = [
 	"content",
 	"regex",
 	"file_pattern",
+	"output_mode",
+	"literal",
 	"recursive",
 	"action",
 	"url",
@@ -228,15 +231,7 @@ export type NativeToolArgs = BrowserToolArgs & {
 	generate_image: GenerateImageParams
 	run_slash_command: { command: string; args?: string }
 	skill: { skill: string; args?: string }
-	search_files:
-		| { path: string; regex: string; file_pattern?: string | null }
-		| {
-				queries: Array<{
-					path: string
-					regex: string
-					file_pattern?: string | null
-				}>
-		  }
+	search_files: SearchFilesParams
 	list_tickets: { query?: string; status?: "backlog" | "in-progress" | "complete"; offset?: number; limit?: number }
 	read_ticket: { id: string }
 	create_ticket: CreateTicket
@@ -372,7 +367,9 @@ export interface CodebaseSearchToolUse extends ToolUse<"codebase_search"> {
 
 export interface SearchFilesToolUse extends ToolUse<"search_files"> {
 	name: "search_files"
-	params: Partial<Pick<Record<ToolParamName, string>, "path" | "regex" | "file_pattern" | "queries">>
+	params: Partial<
+		Pick<Record<ToolParamName, string>, "path" | "regex" | "file_pattern" | "queries" | "output_mode" | "literal">
+	>
 }
 
 export interface ListFilesToolUse extends ToolUse<"list_files"> {

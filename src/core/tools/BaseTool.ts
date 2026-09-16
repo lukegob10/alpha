@@ -73,6 +73,8 @@ export interface ToolCallbacks {
 	askApprovalResponse?: AskApprovalResponse
 	handleError: HandleError
 	pushToolResult: PushToolResult
+	/** Remaining text allowance after scheduler-owned approval feedback; read tools reserve their own framing. */
+	getRemainingOutputChars?: () => number
 	setResultMetadata?: (metadata: ToolResultMetadata) => void
 	toolCallId?: string
 	signal?: AbortSignal

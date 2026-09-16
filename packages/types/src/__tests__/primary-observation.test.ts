@@ -39,5 +39,8 @@ describe("primary observation compatibility", () => {
 			isLegacyReadFileParams({ files: [{ path: "a", lineRanges: [{ start: 1, end: 2 }] }], _legacyFormat: true }),
 		).toBe(true)
 		expect(isLegacyReadFileParams({ path: "a" })).toBe(false)
+		const singleWithNullableBatch = { path: "a", files: null }
+		expect(isLegacyReadFileParams(singleWithNullableBatch)).toBe(false)
+		expect(isLegacyReadFileParams({ files: [] })).toBe(true)
 	})
 })

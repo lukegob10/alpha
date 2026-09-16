@@ -3,7 +3,7 @@ export function getToolUseGuidelinesSection(
 	isPlanMode = false,
 ): string {
 	const inspectionGuidance =
-		"For investigations and reviews, request a small batch of independent Git inspections and searches as separate tool calls in the same model response when their arguments are already known. The host collects command approvals serially, runs eligible independent inspections concurrently in bounded batches, and returns individual results together; wait for results before choosing dependent calls. Keep output focused on the unresolved question, reuse collected evidence, and synthesize once the requested coverage is complete."
+		"For investigations and reviews, batch independent inspections only when each resolves a concrete unanswered question in the requested scope. Use known file locations directly. For a known symbol without a known line, locate it with targeted search before reading a large file from its beginning; read the relevant section and its dependencies. Use semantic search when the implementation location is unknown. Reuse current evidence and passing checks; refresh affected evidence after changes or failures. Continue partial output only when the missing portion matters. For a command that already ran, inspect its retained output or status instead of rerunning it merely to obtain more output. Synthesize once the requested coverage is complete; an explicitly comprehensive task still requires its full coverage."
 	if (subagentRole) {
 		return `# Tool Use Guidelines
 

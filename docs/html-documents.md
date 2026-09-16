@@ -17,13 +17,16 @@ Encode the full absolute file URI with `encodeURIComponent`; `task` is optional,
 bounded metadata, never an authority grant or a reference to the focused task.
 Ordinary `.html` links retain ordinary source-opening behavior. Canonical real
 file URI is the document identity, shared across sidebar and editor chat. Opening
-it again focuses one existing tab. Refresh does not focus a tab. The suggested
+it again brings that existing tab into the active editor group. New previews open
+as tabs in the group active when opening was requested, without creating a side
+group. This also works when an editor chat webview has focus. Restored previews keep
+their saved placement. Refresh does not focus a tab. The suggested
 durable location is `.alpha/documents/<task-id>/<slug>.html` within the workspace;
 the viewer neither creates that directory nor writes, saves, or migrates source.
 Moving a document changes its identity: update its saved link or open its new path.
 
 Fresh, non-streaming completion messages in the visible primary task also deliver
-document action links automatically to editor group two, preserving chat focus.
+document action links automatically to the active editor group, preserving chat focus.
 The extension-side message adapter owns this presentation effect. It never scans
 history snapshots, opens links in code examples, follows another task's tagged
 link, or opens background/subagent output. Per-task deduplication is bounded and

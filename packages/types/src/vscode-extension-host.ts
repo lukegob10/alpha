@@ -27,6 +27,7 @@ import type { SkillMetadata } from "./skills.js"
 import type { WorktreeIncludeStatus } from "./worktree.js"
 import type { SubagentChangeSetActionCapability, SubagentChangeSetActionResult } from "./subagent.js"
 import type { BrowserToolName } from "./browser.js"
+import type { SearchFilesOutputMode, SearchFilesQueryResult } from "./tool-params.js"
 import type {
 	CreateScheduledTaskPayload,
 	ScheduledTask,
@@ -1146,6 +1147,9 @@ export interface ClineSayTool {
 	diffStats?: { added: number; removed: number }
 	regex?: string
 	filePattern?: string
+	outputMode?: SearchFilesOutputMode
+	literal?: boolean
+	searchStatus?: "success" | "error"
 	mode?: string
 	reason?: string
 	isOutsideWorkspace?: boolean
@@ -1161,13 +1165,7 @@ export interface ClineSayTool {
 		key: string
 		content?: string
 	}>
-	batchSearches?: Array<{
-		path: string
-		regex: string
-		filePattern?: string
-		isOutsideWorkspace?: boolean
-		content: string
-	}>
+	batchSearches?: SearchFilesQueryResult[]
 	batchDiffs?: Array<{
 		path: string
 		changeCount: number

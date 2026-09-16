@@ -210,6 +210,28 @@ describe("searchReplaceTool", () => {
 		return toolResult
 	}
 
+	it.each(["\n", "\r\n"])("preserves BOM and %j endings while replacing literal dollar text", async (eol) => {
+		const replacement = "$& $$ $' &amp;\nchanged"
+		await executeSearchReplaceTool(
+			{ old_string: "Line 1\nLine 2", new_string: replacement },
+			{ fileContent: `\uFEFFLine 1${eol}Line 2${eol}Line 3` },
+		)
+		expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith(
+			`\uFEFF$& $$ $' &amp;${eol}changed${eol}Line 3`,
+			true,
+		)
+	})
+
+	it("rejects mixed endings without requesting approval or saving", async () => {
+		await executeSearchReplaceTool({}, { fileContent: "Line 1\r\nLine 2\nLine 3" })
+		expect(mockHandleError).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.objectContaining({ message: expect.stringMatching(/mixed line endings/i) }),
+		)
+		expect(mockAskApproval).not.toHaveBeenCalled()
+		expect(mockCline.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+	})
+
 	describe("parameter validation", () => {
 		it("returns error when file_path is missing", async () => {
 			const result = await executeSearchReplaceTool({ file_path: undefined })
@@ -498,7 +520,7 @@ describe("searchReplaceTool", () => {
 
 			expect(mockCline.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
 				testFilePath,
-				"Line 1\nModified Line 2\nLine 3",
+				"Line 1\r\nModified Line 2\r\nLine 3",
 				false,
 				true,
 				0,

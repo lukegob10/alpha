@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.1.43
+
+### Patch Changes
+
+- Preserve the user's file bytes during edits, including line endings, BOMs, missing final newlines, and literal replacement text.
+- Return bounded file reads with truthful continuation cursors, shared batch limits, and version checks for changed files.
+- Add selectable search output modes, literal matching, isolated batch outcomes, and clearer truncation diagnostics.
+- Reduce redundant investigation guidance by reusing evidence, targeting known symbols, and delegating only distinct questions.
+- Add live GPT-5.6 Luna coverage for file edits, reads, searches, continuation, repair, and review workflows.
+
 ## 2.1.42
 
 ### Patch Changes

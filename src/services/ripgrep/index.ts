@@ -5,50 +5,13 @@ import * as path from "path"
 import { StringDecoder } from "string_decoder"
 
 import * as vscode from "vscode"
+import type { SearchFilesOutputMode } from "@alpha-code/types"
 
 import { RooIgnoreController } from "../../core/ignore/RooIgnoreController"
 import { fileExistsAtPath } from "../../utils/fs"
-/*
-This file provides functionality to perform regex searches on files using ripgrep.
-Inspired by: https://github.com/DiscreteTom/vscode-ripgrep-utils
-
-Key components:
-1. getBinPath: Resolves ripgrep from bundled dependencies, PATH, then VS Code internals.
-2. execRipgrep: Executes the ripgrep command and returns the output.
-3. regexSearchFiles: The main function that performs regex searches on files.
-   - Parameters:
-     * cwd: The current working directory (for relative path calculation)
-     * directoryPath: The directory to search in
-     * regex: The regular expression to search for (Rust regex syntax)
-     * filePattern: Optional glob pattern to filter files (default: '*')
-   - Returns: A formatted string containing search results with context
-
-The search results include:
-- Relative file paths
-- 2 lines of context before and after each match
-- Matches formatted with pipe characters for easy reading
-
-Usage example:
-const results = await regexSearchFiles('/path/to/cwd', '/path/to/search', 'TODO:', '*.ts');
-
-rel/path/to/app.ts
-│----
-│function processData(data: any) {
-│  // Some processing logic here
-│  // TODO: Implement error handling
-│  return processedData;
-│}
-│----
-
-rel/path/to/helper.ts
-│----
-│  let result = 0;
-│  for (let i = 0; i < input; i++) {
-│    // TODO: Optimize this function for performance
-│    result += Math.pow(i, 2);
-│  }
-│----
-*/
+// All search modes share binary resolution, bounded JSON capture, and ignore filtering.
+// Content mode adds one context line on each side; files/count omit source snippets.
+// Originally inspired by https://github.com/DiscreteTom/vscode-ripgrep-utils.
 
 export type RipgrepResolutionSource = "bundled" | "system" | "vscode-internal"
 
@@ -90,6 +53,7 @@ let cachedResolution: RipgrepResolution | undefined
 interface SearchFileResult {
 	file: string
 	searchResults: SearchResult[]
+	matchCount: number
 }
 
 interface SearchResult {
@@ -480,6 +444,11 @@ async function execRipgrep(bin: string, args: string[], signal?: AbortSignal): P
 	})
 }
 
+export interface SearchFilesOptions {
+	outputMode?: SearchFilesOutputMode | null
+	literal?: boolean | null
+}
+
 export async function regexSearchFiles(
 	cwd: string,
 	directoryPath: string,
@@ -487,8 +456,10 @@ export async function regexSearchFiles(
 	filePattern?: string,
 	rooIgnoreController?: RooIgnoreController,
 	signal?: AbortSignal,
+	options: SearchFilesOptions = {},
 ): Promise<string> {
 	signal?.throwIfAborted()
+	const outputMode = options.outputMode ?? "content"
 	const rgPath = await getBinPath()
 
 	if (!rgPath) {
@@ -496,6 +467,10 @@ export async function regexSearchFiles(
 	}
 
 	const args = ["--json", "-e", regex]
+	if (options.literal) args.push("--fixed-strings")
+	// Keep one bounded JSON capture/parser for every mode. Stop early per file
+	// when only its path is needed; count mode must retain every occurrence.
+	if (outputMode === "files") args.push("--max-count", "1")
 
 	// Only add --glob if a specific file pattern is provided
 	// Using --glob "*" overrides .gitignore behavior, so we omit it when no pattern is specified
@@ -505,7 +480,8 @@ export async function regexSearchFiles(
 
 	// Keep file-access diagnostics: suppressing them turns a recoverable bad path
 	// or permission problem into an unactionable "exited with code 2" error.
-	args.push("--context", "1", "--", directoryPath)
+	if (outputMode === "content") args.push("--context", "1")
+	args.push("--", directoryPath)
 
 	let searchOutput: RipgrepOutput
 	try {
@@ -543,12 +519,19 @@ export async function regexSearchFiles(
 					currentFile = {
 						file: filePath,
 						searchResults: [],
+						matchCount: 0,
 					}
 				} else if (parsed.type === "end") {
 					// Reset the current result when a new file is encountered
 					if (currentFile) results.push(currentFile)
 					currentFile = null
 				} else if ((parsed.type === "match" || parsed.type === "context") && currentFile) {
+					if (parsed.type === "match") {
+						currentFile.matchCount += Array.isArray(parsed.data.submatches)
+							? parsed.data.submatches.length
+							: 1
+					}
+					if (outputMode !== "content") continue
 					const text = parsed.data.lines?.text
 					if (typeof text !== "string" || !Number.isInteger(parsed.data.line_number)) {
 						continue
@@ -590,10 +573,30 @@ export async function regexSearchFiles(
 		? results.filter((result) => rooIgnoreController.validateAccess(result.file))
 		: results
 
-	return formatResults(filteredResults, cwd, truncated)
+	return formatResults(filteredResults, cwd, truncated, outputMode)
 }
 
-function formatResults(fileResults: SearchFileResult[], cwd: string, truncated: boolean): string {
+function formatResults(
+	fileResults: SearchFileResult[],
+	cwd: string,
+	truncated: boolean,
+	outputMode: SearchFilesOutputMode,
+): string {
+	if (outputMode !== "content") {
+		const counts = new Map<string, number>()
+		for (const file of fileResults) {
+			if (file.matchCount === 0) continue
+			const relativePath = path.relative(cwd, file.file).toPosix()
+			counts.set(relativePath, (counts.get(relativePath) ?? 0) + file.matchCount)
+		}
+		const entries = [...counts.entries()].slice(0, MAX_RESULTS)
+		const output = entries.map(([file, count]) => (outputMode === "files" ? file : `${file}: ${count}`)).join("\n")
+		if (truncated || counts.size > MAX_RESULTS) {
+			return `Search output truncated. Showing ${entries.length} partial file results.${outputMode === "count" ? " Counts are lower bounds." : ""} Refine path, regex, or file_pattern.\n\n${output}`.trim()
+		}
+		return output || (outputMode === "files" ? "Found 0 files." : "Found 0 matches.")
+	}
+
 	const groupedResults = new Map<string, SearchResult[]>()
 
 	const totalResults = fileResults.reduce((sum, file) => sum + file.searchResults.length, 0)

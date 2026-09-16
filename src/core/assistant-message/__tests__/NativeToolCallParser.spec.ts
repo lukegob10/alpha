@@ -571,6 +571,39 @@ describe("NativeToolCallParser", () => {
 		})
 
 		describe("read_file tool", () => {
+			it("preserves batch defaults and per-file selections", () => {
+				const result = NativeToolCallParser.parseToolCall({
+					id: "batch-defaults",
+					name: "read_file",
+					arguments: JSON.stringify({
+						path: "first.ts",
+						offset: 220,
+						limit: 3,
+						files: [
+							{ path: "first.ts", line_ranges: null },
+							{ path: "second.ts", offset: 40, limit: 2 },
+						],
+					}),
+				})
+				expect(result?.type === "tool_use" && result.nativeArgs).toMatchObject({
+					offset: 220,
+					limit: 3,
+					files: [{ path: "first.ts" }, { path: "second.ts", offset: 40, limit: 2 }],
+				})
+			})
+
+			it("preserves opaque continuations for a single file", () => {
+				const result = NativeToolCallParser.parseToolCall({
+					id: "continuation",
+					name: "read_file",
+					arguments: JSON.stringify({ path: "first.ts", continuation: "opaque-cursor" }),
+				})
+				expect(result?.type === "tool_use" && result.nativeArgs).toMatchObject({
+					path: "first.ts",
+					continuation: "opaque-cursor",
+				})
+			})
+
 			it("should parse minimal single-file read_file args", () => {
 				const toolCall = {
 					id: "toolu_123",

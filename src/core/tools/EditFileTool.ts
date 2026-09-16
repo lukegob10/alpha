@@ -13,6 +13,7 @@ import type { ToolUse } from "../../shared/tools"
 import type { ExpectedFileState } from "../../integrations/editor/DiffViewProvider"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { fileEditContent, normalizeToLF } from "./fileEditContent"
 import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 interface EditFileParams {
@@ -21,8 +22,6 @@ interface EditFileParams {
 	new_string: string
 	expected_replacements?: number
 }
-
-type LineEnding = "\r\n" | "\n"
 
 /**
  * Count occurrences of a substring in a string.
@@ -39,45 +38,6 @@ function countOccurrences(str: string, substr: string): number {
 		pos = str.indexOf(substr, pos + substr.length)
 	}
 	return count
-}
-
-/**
- * Safely replace all occurrences of a literal string, handling $ escape sequences.
- * Standard String.replaceAll treats $ specially in the replacement string.
- * This function ensures literal replacement.
- *
- * @param str The original string
- * @param oldString The string to replace
- * @param newString The replacement string
- * @returns The string with all occurrences replaced
- */
-function safeLiteralReplace(str: string, oldString: string, newString: string): string {
-	if (oldString === "" || !str.includes(oldString)) {
-		return str
-	}
-
-	// If newString doesn't contain $, we can use replaceAll directly
-	if (!newString.includes("$")) {
-		return str.replaceAll(oldString, newString)
-	}
-
-	// Escape $ to prevent ECMAScript GetSubstitution issues
-	// $$ becomes a single $ in the output, so we double-escape
-	const escapedNewString = newString.replaceAll("$", "$$$$")
-	return str.replaceAll(oldString, escapedNewString)
-}
-
-function detectLineEnding(content: string): LineEnding {
-	return content.includes("\r\n") ? "\r\n" : "\n"
-}
-
-function normalizeToLF(content: string): string {
-	return content.replace(/\r\n/g, "\n")
-}
-
-function restoreLineEnding(contentLF: string, eol: LineEnding): string {
-	if (eol === "\n") return contentLF
-	return contentLF.replace(/\n/g, "\r\n")
 }
 
 function escapeRegExp(input: string): string {
@@ -225,16 +185,16 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 
 			let currentContent: string | null = null
 			let currentContentLF: string | null = null
-			let originalEol: LineEnding = "\n"
+			let projection: ReturnType<typeof fileEditContent> | undefined
 			let isNewFile = false
 
 			// Read file or determine if creating new
 			if (fileExists) {
 				try {
 					currentContent = await fs.readFile(absolutePath, "utf8")
-					originalEol = detectLineEnding(currentContent)
+					projection = fileEditContent(currentContent)
 					// Normalize line endings to LF for matching
-					currentContentLF = normalizeToLF(currentContent)
+					currentContentLF = projection.content
 				} catch (error) {
 					task.consecutiveMistakeCount++
 					task.didToolFailInCurrentTurn = true
@@ -303,7 +263,7 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 				const exactOccurrences = countOccurrences(currentContentLF, oldLF)
 				if (exactOccurrences === expectedReplacements) {
 					// Apply literal replacement on LF-normalized content
-					currentContentLF = safeLiteralReplace(currentContentLF, oldLF, newLF)
+					currentContentLF = currentContentLF.replaceAll(oldLF, () => newLF)
 				} else {
 					// Strategy 2: whitespace-tolerant regex
 					const wsOccurrences = countRegexMatches(currentContentLF, wsRegex)
@@ -354,9 +314,7 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 			}
 
 			// Apply the replacement
-			const newContent = isNewFile
-				? new_string
-				: restoreLineEnding(currentContentLF ?? currentContent ?? "", originalEol)
+			const newContent = isNewFile ? new_string : projection!.restore(currentContentLF ?? "")
 
 			// Check if any changes were made
 			if (!isNewFile && newContent === currentContent) {

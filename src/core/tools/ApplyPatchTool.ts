@@ -24,19 +24,26 @@ interface ApplyPatchParams {
 }
 
 interface ApplyPatchChangeOutcome {
-	status: "success" | "denied" | "error"
+	status: "success" | "denied" | "error" | "cancelled"
 	result: ToolResponse
 }
 
-function combineToolResponses(responses: ToolResponse[]): ToolResponse {
-	if (responses.length === 1) return responses[0]
-	if (responses.every((response) => typeof response === "string")) {
-		return (responses as string[]).join("\n\n")
-	}
+interface PatchFileResult {
+	path: string
+	movePath?: string
+	status: "applied" | "skipped" | "error"
+	reason?: string
+	result?: ToolResponse
+}
 
-	return responses.flatMap((response) =>
-		typeof response === "string" ? [{ type: "text" as const, text: response }] : response,
-	)
+interface PreflightChange {
+	change: ApplyPatchFileChange
+	isWriteProtected: boolean
+	expectedMoveFileState?: ExpectedFileState
+}
+
+function isPatchCancelled(task: Task, callbacks: ToolCallbacks): boolean {
+	return !!(callbacks.signal?.aborted || task.abort || task.abandoned)
 }
 
 export class ApplyPatchTool extends BaseTool<"apply_patch"> {
@@ -104,90 +111,160 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				return
 			}
 
-			// Validate the complete patch before reading any source file. In
-			// particular, an ignored later hunk must prevent reads of earlier hunks.
-			for (const hunk of parsedPatch.hunks) {
-				const paths = [hunk.path, hunk.type === "UpdateFile" ? hunk.movePath : undefined]
-				for (const candidatePath of paths) {
-					if (!candidatePath || task.rooIgnoreController?.validateAccess(candidatePath) !== false) continue
+			const files: PatchFileResult[] = parsedPatch.hunks.map((hunk) => ({
+				path: hunk.path,
+				movePath: hunk.type === "UpdateFile" ? (hunk.movePath ?? undefined) : undefined,
+				status: "skipped",
+				reason: "Not attempted",
+			}))
+			const prepared: Array<PreflightChange | undefined> = []
+			let status: ApplyPatchChangeOutcome["status"] = "success"
 
-					await task.say("rooignore_error", candidatePath)
-					pushToolResult(formatResponse.rooIgnoreError(candidatePath))
-					return
+			// Preflight is sequential and read-only. A bad file must not hide the
+			// outcome of independent files, and ignored paths must never be read.
+			for (const [index, hunk] of parsedPatch.hunks.entries()) {
+				if (isPatchCancelled(task, callbacks)) {
+					files[index].reason = "Patch cancelled before preflight"
+					status = "cancelled"
+					continue
+				}
+				try {
+					const paths = [hunk.path, hunk.type === "UpdateFile" ? hunk.movePath : undefined]
+					const ignored = paths.find(
+						(candidate) => candidate && !task.rooIgnoreController?.validateAccess(candidate),
+					)
+					if (ignored) {
+						files[index].reason = `Access denied by .alphaignore: ${ignored}`
+						if (status === "success") status = "denied"
+						await task.say("rooignore_error", ignored)
+						continue
+					}
+					const absolutePath = path.resolve(task.cwd, hunk.path)
+					const isWriteProtected = task.rooProtectedController?.isWriteProtected(hunk.path) || false
+					if (hunk.type === "AddFile" && (await fileExistsAtPath(absolutePath))) {
+						throw new Error(`File already exists: ${hunk.path}. Use Update File instead.`)
+					}
+					let expectedMoveFileState: ExpectedFileState | undefined
+					if (
+						hunk.type === "UpdateFile" &&
+						hunk.movePath &&
+						!arePathsEqual(absolutePath, path.resolve(task.cwd, hunk.movePath))
+					) {
+						if (task.rooProtectedController?.isWriteProtected(hunk.movePath)) {
+							throw new Error(`Cannot move file to write-protected path: ${hunk.movePath}`)
+						}
+						const moveAbsolutePath = path.resolve(task.cwd, hunk.movePath)
+						if (isTaskPathOutsideWorkspace(task, moveAbsolutePath) && task.taskKind !== "primary") {
+							throw new Error(`Cannot move file to path outside workspace: ${hunk.movePath}`)
+						}
+						expectedMoveFileState = await captureExpectedFileState(moveAbsolutePath)
+					}
+					const [change] = await processAllHunks([hunk], (filePath) =>
+						fs.readFile(path.resolve(task.cwd, filePath), "utf8"),
+					)
+					prepared[index] = { change, isWriteProtected, expectedMoveFileState }
+				} catch (error) {
+					files[index].status = "error"
+					files[index].reason = error instanceof Error ? error.message : String(error)
+					status = "error"
 				}
 			}
 
-			// Process each hunk
-			const readFile = async (filePath: string): Promise<string> => {
-				const absolutePath = path.resolve(task.cwd, filePath)
-				return await fs.readFile(absolutePath, "utf8")
-			}
-
-			let changes: ApplyPatchFileChange[]
-			try {
-				changes = await processAllHunks(parsedPatch.hunks, readFile)
-			} catch (error) {
-				task.consecutiveMistakeCount++
-				task.recordToolError("apply_patch")
-				const errorMessage = `Failed to process patch: ${error instanceof Error ? error.message : String(error)}`
-				pushToolResult(formatResponse.toolError(errorMessage))
-				return
-			}
-
-			const results: ApplyPatchChangeOutcome[] = []
-
-			// Process each file change, stopping after the first denial or failure.
-			for (const change of changes) {
-				const relPath = change.path
-				const absolutePath = path.resolve(task.cwd, relPath)
-
-				// Check access permissions
-				const accessAllowed = task.rooIgnoreController?.validateAccess(relPath)
-				if (!accessAllowed) {
-					await task.say("rooignore_error", relPath)
-					pushToolResult(formatResponse.rooIgnoreError(relPath))
-					return
+			let stopped: string | undefined
+			for (const [index, entry] of prepared.entries()) {
+				if (!entry) continue
+				const file = files[index]
+				if (isPatchCancelled(task, callbacks)) {
+					stopped = "Patch cancelled"
+					status = "cancelled"
 				}
-
-				// Check if file is write-protected
-				const isWriteProtected = task.rooProtectedController?.isWriteProtected(relPath) || false
-
+				if (stopped) {
+					file.reason = stopped
+					continue
+				}
+				const { change, expectedMoveFileState } = entry
+				const isWriteProtected =
+					entry.isWriteProtected || task.rooProtectedController?.isWriteProtected(change.path) || false
+				const absolutePath = path.resolve(task.cwd, change.path)
+				const markApplied = () => {
+					file.status = "applied"
+					task.didEditFile = true
+				}
 				let outcome: ApplyPatchChangeOutcome
-				if (change.type === "add") {
-					// Create new file
-					outcome = await this.handleAddFile(change, absolutePath, relPath, task, callbacks, isWriteProtected)
-				} else if (change.type === "delete") {
-					// Delete file
-					outcome = await this.handleDeleteFile(
-						change,
-						absolutePath,
-						relPath,
-						task,
-						callbacks,
-						isWriteProtected,
+				try {
+					// Recheck access after earlier files' approval waits.
+					const deniedPath = [change.path, change.movePath].find(
+						(candidate) => candidate && !task.rooIgnoreController?.validateAccess(candidate),
 					)
-				} else {
-					// Update file
-					outcome = await this.handleUpdateFile(
-						change,
-						absolutePath,
-						relPath,
-						task,
-						callbacks,
-						isWriteProtected,
-					)
+					if (deniedPath) {
+						outcome = { status: "denied", result: `Access denied by .alphaignore: ${deniedPath}` }
+					} else if (change.type === "add") {
+						outcome = await this.handleAddFile(
+							change,
+							absolutePath,
+							change.path,
+							task,
+							callbacks,
+							isWriteProtected,
+							markApplied,
+						)
+					} else if (change.type === "delete") {
+						outcome = await this.handleDeleteFile(
+							change,
+							absolutePath,
+							change.path,
+							task,
+							callbacks,
+							isWriteProtected,
+							markApplied,
+						)
+					} else {
+						outcome = await this.handleUpdateFile(
+							change,
+							absolutePath,
+							change.path,
+							task,
+							callbacks,
+							isWriteProtected,
+							markApplied,
+							expectedMoveFileState,
+						)
+					}
+				} catch (error) {
+					outcome = {
+						status: isPatchCancelled(task, callbacks) ? "cancelled" : "error",
+						result: error instanceof Error ? error.message : String(error),
+					}
+					await task.diffViewProvider.reset()
 				}
-
-				results.push(outcome)
-				if (outcome.status !== "success") {
-					pushToolResult(combineToolResponses(results.map(({ result }) => result)))
-					return
+				file.status =
+					file.status === "applied" || outcome.status === "success"
+						? "applied"
+						: outcome.status === "error"
+							? "error"
+							: "skipped"
+				if (outcome.status === "success") {
+					file.result = outcome.result
+					delete file.reason
+				} else {
+					file.reason =
+						(file.status === "applied" ? "Changes saved, but follow-up failed: " : "") +
+						(typeof outcome.result === "string" ? outcome.result : JSON.stringify(outcome.result))
+					status = outcome.status
+					stopped = `Not attempted after ${outcome.status} in ${change.path}`
 				}
 			}
 
-			pushToolResult(combineToolResponses(results.map(({ result }) => result)))
-			task.consecutiveMistakeCount = 0
-			task.recordToolUsage("apply_patch")
+			callbacks.setResultMetadata?.({ status })
+			if (status === "success") {
+				task.consecutiveMistakeCount = 0
+				task.recordToolUsage("apply_patch")
+			} else if (status === "error") {
+				task.consecutiveMistakeCount++
+				task.didToolFailInCurrentTurn = true
+				task.recordToolError("apply_patch")
+			}
+			pushToolResult(JSON.stringify({ files }))
 		} catch (error) {
 			await handleError("apply patch", error as Error)
 			await task.diffViewProvider.reset()
@@ -201,6 +278,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		task: Task,
 		callbacks: ToolCallbacks,
 		isWriteProtected: boolean,
+		onApplied: () => void,
 	): Promise<ApplyPatchChangeOutcome> {
 		const { askApproval } = callbacks
 
@@ -259,13 +337,15 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 		const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
 
-		if (!didApprove) {
+		if (!didApprove || isPatchCancelled(task, callbacks)) {
 			if (!isPreventFocusDisruptionEnabled) {
 				await task.diffViewProvider.revertChanges()
 			}
 			await task.diffViewProvider.reset()
-			task.didRejectTool = true
-			return { status: "denied", result: "Changes were rejected by the user." }
+			task.didRejectTool = !isPatchCancelled(task, callbacks)
+			return isPatchCancelled(task, callbacks)
+				? { status: "cancelled", result: "Patch cancelled during approval" }
+				: { status: "denied", result: "Changes were rejected by the user." }
 		}
 
 		// Save the changes
@@ -277,6 +357,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)
 		}
 
+		onApplied()
 		// Track file edit operation
 		await task.fileContextTracker.trackFileContext(relPath, "roo_edited" as RecordSource)
 		task.didEditFile = true
@@ -294,6 +375,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		task: Task,
 		callbacks: ToolCallbacks,
 		isWriteProtected: boolean,
+		onApplied: () => void,
 	): Promise<ApplyPatchChangeOutcome> {
 		const { askApproval, signal } = callbacks
 		const isCancelled = () => signal?.aborted || task.abort || task.abandoned
@@ -349,7 +431,6 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 			if (isCancelled()) throw new Error(t("tools:applyPatch.deleteCancelled"))
 			if (!didApprove) {
-				callbacks.setResultMetadata?.({ status: "denied" })
 				task.didRejectTool = true
 				return { status: "denied", result: "Delete operation was rejected by the user." }
 			}
@@ -373,12 +454,11 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			// no intervening await before unlink. External filesystem writes are not atomic with unlink.
 			assertCanDelete()
 			await fs.unlink(absolutePath)
+			onApplied()
 		} catch (error) {
 			if (isCancelled()) {
-				callbacks.setResultMetadata?.({ status: "cancelled" })
-				return { status: "error", result: t("tools:applyPatch.deleteCancelled") }
+				return { status: "cancelled", result: t("tools:applyPatch.deleteCancelled") }
 			}
-			callbacks.setResultMetadata?.({ status: "error" })
 			const errorMessage = `Failed to delete file '${relPath}': ${error instanceof Error ? error.message : String(error)}`
 			await task.say("error", errorMessage)
 			task.recordToolError("apply_patch")
@@ -397,6 +477,8 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		task: Task,
 		callbacks: ToolCallbacks,
 		isWriteProtected: boolean,
+		onApplied: () => void,
+		expectedMoveFileState?: ExpectedFileState,
 	): Promise<ApplyPatchChangeOutcome> {
 		const { askApproval } = callbacks
 
@@ -431,7 +513,6 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				? change.movePath
 				: undefined
 		const expectedSourceFileState: ExpectedFileState = { exists: true, content: originalContent }
-		let expectedMoveFileState: ExpectedFileState | undefined
 
 		// Validate and snapshot the move destination before showing the diff or
 		// asking for approval. Both save paths re-check this snapshot before
@@ -465,7 +546,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			}
 
 			isOutsideWorkspace ||= isMoveOutsideWorkspace
-			expectedMoveFileState = await captureExpectedFileState(moveAbsolutePath)
+			expectedMoveFileState ??= await captureExpectedFileState(moveAbsolutePath)
 			await task.diffViewProvider.assertExpectedFileState(
 				moveAbsolutePath,
 				effectiveMovePath,
@@ -513,13 +594,15 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 		const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
 
-		if (!didApprove) {
+		if (!didApprove || isPatchCancelled(task, callbacks)) {
 			if (!isPreventFocusDisruptionEnabled) {
 				await task.diffViewProvider.revertChanges()
 			}
 			await task.diffViewProvider.reset()
-			task.didRejectTool = true
-			return { status: "denied", result: "Changes were rejected by the user." }
+			task.didRejectTool = !isPatchCancelled(task, callbacks)
+			return isPatchCancelled(task, callbacks)
+				? { status: "cancelled", result: "Patch cancelled during approval" }
+				: { status: "denied", result: "Changes were rejected by the user." }
 		}
 
 		// Handle file move if specified and distinct from the source path.
@@ -578,6 +661,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				return { status: "error", result: formatResponse.toolError(errorMessage) }
 			}
 
+			onApplied()
 			await task.fileContextTracker.trackFileContext(effectiveMovePath, "roo_edited" as RecordSource)
 		} else {
 			// Save changes to the same file
@@ -594,6 +678,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)
 			}
 
+			onApplied()
 			await task.fileContextTracker.trackFileContext(relPath, "roo_edited" as RecordSource)
 		}
 

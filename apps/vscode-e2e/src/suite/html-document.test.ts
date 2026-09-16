@@ -44,8 +44,12 @@ suite("HTML document exact-host adapter", function () {
 			await fs.writeFile(first.fsPath, html("First document"))
 			await fs.writeFile(second.fsPath, html("Second document"))
 			const cold = Date.now()
+			const originalGroup = vscode.window.tabGroups.activeTabGroup
+			const originalGroupCount = vscode.window.tabGroups.all.length
 			await vscode.commands.executeCommand(previewCommand, first)
 			await until(() => tabs().some((tab) => tab.label === "First document"))
+			assert.equal(tabs()[0]?.group, originalGroup)
+			assert.equal(vscode.window.tabGroups.all.length, originalGroupCount, "Preview must not create a side group")
 			console.log(`HTML viewer cold adapter/title: ${Date.now() - cold} ms`)
 			await vscode.commands.executeCommand(previewCommand, first)
 			assert.equal(tabs().length, 1)
@@ -54,6 +58,25 @@ suite("HTML document exact-host adapter", function () {
 			await vscode.commands.executeCommand(previewCommand, second)
 			await until(() => tabs().some((tab) => tab.label === "Second document"))
 			assert.equal(tabs().length, 2)
+			assert.ok(tabs().every((tab) => tab.group === originalGroup))
+			// An active webview has no active text editor; it still owns the destination group.
+			const chat = vscode.window.createWebviewPanel(
+				"alpha.e2e.documentGroup",
+				"Chat fixture",
+				vscode.ViewColumn.Beside,
+				{},
+			)
+			try {
+				await until(() => chat.active && vscode.window.activeTextEditor === undefined)
+				const chatGroup = vscode.window.tabGroups.activeTabGroup
+				const groupCount = vscode.window.tabGroups.all.length
+				await vscode.commands.executeCommand(previewCommand, first)
+				await until(() => tabs().some((tab) => tab.label === "First document" && tab.group === chatGroup))
+				assert.equal(tabs().length, 2, "Moving an existing preview must not duplicate it")
+				assert.equal(vscode.window.tabGroups.all.length, groupCount)
+			} finally {
+				chat.dispose()
+			}
 			await fs.writeFile(third.fsPath, html("Third document"))
 			await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(third))
 			await vscode.commands.executeCommand("alpha.previewHtmlDocument")

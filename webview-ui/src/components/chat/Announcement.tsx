@@ -35,14 +35,20 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 				</DialogHeader>
 				<div className="space-y-2 text-sm">
 					<p>
-						Alpha v{Package.version} focuses everyday agent work on a clean Plan and Code workflow without
-						changing the proven Code loop.
+						Alpha v{Package.version} makes file evidence safer and more precise while preserving the proven
+						Code loop.
 					</p>
 					<ul className="list-disc space-y-1 pl-5">
-						<li>Plan and Code are the only ordinary user-facing mode choices.</li>
-						<li>Press Shift+Tab in the chat composer to switch between them.</li>
-						<li>Code and Plan stay in the same task and provider configuration.</li>
-						<li>Existing legacy and custom-mode tasks remain compatible.</li>
+						<li>
+							Large reads return complete visible lines with an honest continuation when more evidence is
+							needed.
+						</li>
+						<li>Batch reads and searches honor each file&apos;s requested scope and output mode.</li>
+						<li>
+							File edits preserve the user&apos;s bytes, including line endings and literal replacement
+							text.
+						</li>
+						<li>Plan and Code remain the ordinary user-facing mode choices.</li>
 					</ul>
 				</div>
 			</DialogContent>

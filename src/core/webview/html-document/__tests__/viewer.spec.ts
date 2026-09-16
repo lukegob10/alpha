@@ -111,6 +111,7 @@ vi.mock("vscode", async () => {
 			}),
 		},
 		window: {
+			tabGroups: { activeTabGroup: { viewColumn: 3 } },
 			createWebviewPanel: vi.fn(() => {
 				const panel = host.panel()
 				host.panels.push(panel)
@@ -216,6 +217,7 @@ describe("HTML document viewer lifecycle through host boundaries", () => {
 
 	beforeEach(async () => {
 		vi.clearAllMocks()
+		Object.assign(vscode.window.tabGroups.activeTabGroup, { viewColumn: 3 })
 		vi.mocked(fs.open)
 			.mockReset()
 			.mockImplementation((await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).open)
@@ -241,6 +243,7 @@ describe("HTML document viewer lifecycle through host boundaries", () => {
 		expect(JSON.parse(load(second.webview.html)("body").attr("data-viewer-config")!).target.taskId).toBe("task-two")
 		await viewer.open(target("one.html"))
 		expect(first.reveal).toHaveBeenCalledOnce()
+		expect(first.reveal).toHaveBeenCalledWith(3, false)
 		expect(second.reveal).not.toHaveBeenCalled()
 		expect(host.panels).toHaveLength(2)
 		await fs.writeFile(path.join(root, "one.html"), documentHtml("Changed"))
@@ -250,13 +253,26 @@ describe("HTML document viewer lifecycle through host boundaries", () => {
 		expect(first.reveal).toHaveBeenCalledTimes(1)
 	})
 
-	it("automatically opens in the right editor group without taking focus or refocusing an existing preview", async () => {
+	it("opens in the originating tab group even if focus changes during path validation", async () => {
+		await fs.writeFile(path.join(root, "current.html"), documentHtml("Current"))
+		const opening = viewer.open(target("current.html"))
+		Object.assign(vscode.window.tabGroups.activeTabGroup, { viewColumn: 1 })
+		await opening
+		expect(vscode.window.createWebviewPanel).toHaveBeenCalledWith(
+			expect.any(String),
+			"current.html",
+			{ viewColumn: 3, preserveFocus: false },
+			{},
+		)
+	})
+
+	it("automatically opens in the active tab group without taking focus or refocusing an existing preview", async () => {
 		await fs.writeFile(path.join(root, "auto.html"), documentHtml("Delivered"))
 		await viewer.open(target("auto.html"), undefined, { automatic: true, isCurrent: () => true })
 		expect(vscode.window.createWebviewPanel).toHaveBeenCalledWith(
 			expect.any(String),
 			"auto.html",
-			{ viewColumn: 2, preserveFocus: true },
+			{ viewColumn: 3, preserveFocus: true },
 			{},
 		)
 		await viewer.open(target("auto.html"), undefined, { automatic: true })

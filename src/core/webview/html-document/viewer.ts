@@ -50,13 +50,15 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 		restoredPanel?: vscode.WebviewPanel,
 		options: { automatic?: boolean; isCurrent?: () => boolean } = {},
 	): Promise<void> {
+		// Capture the tab group before file validation yields, including when an editor webview has focus.
+		const viewColumn = vscode.window.tabGroups.activeTabGroup.viewColumn
 		const target = htmlDocumentTargetSchema.parse(input)
 		const resolved = await resolveDocumentPath(target.uri, this.roots(), true)
 		if (this.disposed || options.isCurrent?.() === false) return
 		const existing = this.entries.get(resolved.uri)
 		if (existing) {
 			restoredPanel?.dispose()
-			if (!restoredPanel && !options.automatic) existing.panel.reveal(undefined, false)
+			if (!restoredPanel && !options.automatic) existing.panel.reveal(viewColumn, false)
 			return
 		}
 		if (this.entries.size >= HTML_DOCUMENT_LIMITS.panels) throw new Error("panelLimit")
@@ -66,7 +68,7 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 				HTML_DOCUMENT_VIEW_TYPE,
 				path.basename(resolved.fsPath),
 				{
-					viewColumn: options.automatic ? vscode.ViewColumn.Two : vscode.ViewColumn.Beside,
+					viewColumn,
 					preserveFocus: options.automatic === true,
 				},
 				{},

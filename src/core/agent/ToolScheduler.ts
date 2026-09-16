@@ -243,6 +243,7 @@ class AsyncMutex {
 
 class ToolResultCollector {
 	private result: ToolResponse | undefined
+	private approvalResult: ToolResponse | undefined
 	private feedback?: { text: string; images?: string[] }
 	private status: ToolSchedulerResult["status"] = "success"
 	private metadata: ToolResultMetadata = {}
@@ -279,6 +280,20 @@ class ToolResultCollector {
 		return this.metadata
 	}
 
+	getRemainingOutputChars(): number {
+		const feedback = this.feedback ? formatResponse.toolApprovedWithFeedback(this.feedback.text).length + 2 : 0
+		const approval = this.approvalResult === undefined ? 0 : getToolResultParts(this.approvalResult).text.length + 2
+		return Math.max(0, this.maxOutputChars - feedback - approval)
+	}
+
+	// Approval may end one file in a batch after earlier files were committed.
+	// Keep its feedback without consuming the tool's final outcome slot.
+	pushApprovalResult(content: ToolResponse): void {
+		const limited = limitToolResponse(content, this.maxOutputChars)
+		this.approvalResult = limited.content
+		this.truncated ||= limited.truncated
+	}
+
 	push(content: ToolResponse): void {
 		if (this.result !== undefined) {
 			return
@@ -299,6 +314,15 @@ class ToolResultCollector {
 			}
 		}
 
+		if (this.approvalResult !== undefined) {
+			content =
+				typeof content === "string" && typeof this.approvalResult === "string"
+					? `${this.approvalResult}\n\n${content}`
+					: [this.approvalResult, content].flatMap((response) =>
+							typeof response === "string" ? [{ type: "text" as const, text: response }] : response,
+						)
+		}
+
 		const limited = limitToolResponse(content, this.maxOutputChars)
 		content = limited.content
 		this.truncated ||= limited.truncated
@@ -316,11 +340,11 @@ class ToolResultCollector {
 	}
 
 	getContent(): ToolResponse {
-		return this.result ?? "(tool did not return anything)"
+		return this.result ?? this.approvalResult ?? "(tool did not return anything)"
 	}
 
 	hasResult(): boolean {
-		return this.result !== undefined
+		return this.result !== undefined || this.approvalResult !== undefined
 	}
 
 	isTruncated(): boolean {
@@ -810,6 +834,9 @@ export class ToolScheduler {
 		const finalize = item.finalizeRead
 		item.finalizeRead = undefined
 		if (item.read && result.status === "error") this.executionHost.didToolFailInCurrentTurn = true
+		// Effectful tools may report writes committed before cancellation. Keep
+		// those outcomes while still discarding late read-only output.
+		if (!finalize && item.descriptor?.capabilities.sideEffects !== "none") return result
 		if (!finalize || this.isCancelled()) return this.isCancelled() ? this.cancelledResultFor(item.call) : result
 		const startedAt = performance.now()
 		try {
@@ -1520,7 +1547,7 @@ export class ToolScheduler {
 				if (this.isCancelled()) {
 					this.approvalCancelledCount += 1
 					collector.setStatus("cancelled")
-					collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
+					collector.pushApprovalResult(formatFailureResult("Tool execution was cancelled.", "cancelled"))
 					await this.options.onEvent?.({
 						type: "approval_result",
 						requestId,
@@ -1568,7 +1595,9 @@ export class ToolScheduler {
 						this.approvalCancelledCount += 1
 						const status = this.isCancelled() ? "cancelled" : "error"
 						collector.setStatus(status)
-						collector.push(formatFailureResult(`Approval request was superseded: ${error.message}`, status))
+						collector.pushApprovalResult(
+							formatFailureResult(`Approval request was superseded: ${error.message}`, status),
+						)
 						await this.options.onEvent?.({
 							type: "approval_result",
 							requestId,
@@ -1583,7 +1612,7 @@ export class ToolScheduler {
 				if (!approval) {
 					this.approvalCancelledCount += 1
 					collector.setStatus("cancelled")
-					collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
+					collector.pushApprovalResult(formatFailureResult("Tool execution was cancelled.", "cancelled"))
 					await this.options.onEvent?.({
 						type: "approval_result",
 						requestId,
@@ -1627,7 +1656,7 @@ export class ToolScheduler {
 						...(response !== "objectResponse" && text ? { reason: text } : {}),
 					})
 					if (decision === "cancelled") {
-						collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
+						collector.pushApprovalResult(formatFailureResult("Tool execution was cancelled.", "cancelled"))
 						return undefined
 					}
 					return approval
@@ -1637,11 +1666,13 @@ export class ToolScheduler {
 					const decision = response === "noButtonClicked" || text ? "denied" : "cancelled"
 					if (text) {
 						await this.executionHost.say("user_feedback", text, images)
-						collector.push(formatResponse.toolResult(formatResponse.toolDeniedWithFeedback(text), images))
+						collector.pushApprovalResult(
+							formatResponse.toolResult(formatResponse.toolDeniedWithFeedback(text), images),
+						)
 					} else if (decision === "denied") {
-						collector.push(formatResponse.toolDenied())
+						collector.pushApprovalResult(formatResponse.toolDenied())
 					} else {
-						collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
+						collector.pushApprovalResult(formatFailureResult("Tool execution was cancelled.", "cancelled"))
 					}
 					collector.setStatus(decision)
 					approvalFailure(decision)
@@ -1695,6 +1726,7 @@ export class ToolScheduler {
 				}
 			},
 			pushToolResult: (content: ToolResponse) => collector.push(content),
+			getRemainingOutputChars: () => collector.getRemainingOutputChars(),
 			setResultMetadata: (metadata: ToolResultMetadata) => collector.setMetadata(metadata),
 			toolCallId: prepared.call.id,
 			signal: this.executionSignal,

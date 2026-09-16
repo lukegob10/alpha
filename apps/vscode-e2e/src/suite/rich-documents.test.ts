@@ -188,6 +188,7 @@ suite("Rich document authoring through captured task tools", function () {
 					},
 					{ name: "write_to_file", arguments: { path: relativeFile, content: html(1) } },
 				]
+				const deliveryGroup = vscode.window.tabGroups.activeTabGroup
 				const taskId = await globalThis.api.startNewTask({
 					text: "Use the rich-documents skill to create a substantial HTML spec for same-file document revisions. Return a preview link.",
 					configuration: {
@@ -247,11 +248,7 @@ suite("Rich document authoring through captured task tools", function () {
 				)
 				assert.ok((await vscode.commands.getCommands(true)).includes("alpha.previewHtmlDocument"))
 				await waitForRevision(1)
-				assert.equal(
-					documentTabs()[0]!.group.viewColumn,
-					vscode.ViewColumn.Two,
-					"Delivery opens in the right group",
-				)
+				assert.equal(documentTabs()[0]!.group, deliveryGroup, "Delivery opens in the existing active group")
 				state.plan = [
 					{ name: "read_file", arguments: { path: relativeFile } },
 					{
