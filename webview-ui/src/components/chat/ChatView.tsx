@@ -323,6 +323,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const hasOpenCompletedTaskResponseBoundary =
 		completedTaskResponseAsk === "resume_completed_task" ||
 		(completedTaskResponseAsk === "completion_result" && !isVisibleTaskCompleted)
+	// A completion ask is a user-facing review boundary, even if the task
+	// metadata still reports the underlying model turn as active. Keep the
+	// provider selector usable at that boundary so a stale turn flag cannot
+	// leave the completed-task composer partially disabled.
+	const isCompletedTaskResponseBoundary = completedTaskResponseAsk !== undefined
 	const isVisibleTaskFailedOrClosed =
 		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Failed ||
 		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Closed
@@ -2519,7 +2524,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							isCondensing ||
 							Boolean(pendingQueueRequest)
 						}
-						selectApiConfigDisabled={isTurnActive && clineAsk !== "api_req_failed"}
+						selectApiConfigDisabled={
+							isTurnActive && !isCompletedTaskResponseBoundary && clineAsk !== "api_req_failed"
+						}
 						placeholderText={placeholderText}
 						selectedImages={selectedImages}
 						setSelectedImages={setSelectedImages}

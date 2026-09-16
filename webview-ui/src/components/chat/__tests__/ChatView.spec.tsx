@@ -225,6 +225,7 @@ interface ChatTextAreaProps {
 	inputValue?: string
 	setInputValue?: (value: string) => void
 	sendingDisabled?: boolean
+	selectApiConfigDisabled?: boolean
 	placeholderText?: string
 	selectedImages?: string[]
 	shouldDisableImages?: boolean
@@ -281,6 +282,9 @@ vi.mock("../ChatTextArea", () => {
 				/>
 				<button data-testid="mock-stop" disabled={!props.isStreaming} onClick={props.onStop}>
 					Stop
+				</button>
+				<button data-testid="mock-provider-selector" disabled={props.selectApiConfigDisabled}>
+					Provider
 				</button>
 				<button data-testid="mock-enqueue" disabled={props.enqueueDisabled} onClick={props.onEnqueueMessage}>
 					Queue
@@ -2035,6 +2039,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		const input = (await waitFor(() => getByTestId("chat-textarea").querySelector("input"))) as HTMLInputElement
 		await waitFor(() => expect(input).toHaveAttribute("data-is-streaming", "true"))
 		expect(getByTestId("mock-stop")).toBeEnabled()
+		expect(getByTestId("mock-provider-selector")).toBeDisabled()
 	})
 
 	it("ignores a stale API transcript marker when live task metadata says the turn is idle", async () => {
@@ -3722,7 +3727,7 @@ describe("ChatView - Message Queueing Tests", () => {
 	)
 
 	it("keeps Start New Task enabled at an open completion review boundary", async () => {
-		const { getByRole } = renderChatView()
+		const { getByRole, getByTestId } = renderChatView()
 
 		mockPostMessage({
 			currentTaskId: "task-1",
@@ -3734,6 +3739,7 @@ describe("ChatView - Message Queueing Tests", () => {
 					lifecycle: "completed",
 					isActive: true,
 					isStreaming: false,
+					isTurnActive: true,
 					isWaitingForInput: false,
 					lastUpdatedAt: 101,
 					queueCount: 0,
@@ -3755,6 +3761,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		const startNewTaskButton = await waitFor(() => getByRole("button", { name: "chat:startNewTask.title" }))
+		expect(getByTestId("mock-provider-selector")).not.toBeDisabled()
 		vi.mocked(vscode.postMessage).mockClear()
 
 		fireEvent.click(startNewTaskButton)
