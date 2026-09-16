@@ -299,7 +299,10 @@ export class DiffViewProvider {
 	}
 
 	private assertEditingGeneration(generation: number): void {
-		if (generation !== this.editGeneration) throw new Error(t("tools:diffView.editCancelled"))
+		const task = this.taskRef.deref()
+		if (generation !== this.editGeneration || task?.abort || task?.abandoned) {
+			throw new Error(t("tools:diffView.editCancelled"))
+		}
 	}
 
 	private async closeAllDiffViews(): Promise<void> {
@@ -512,6 +515,13 @@ export class DiffViewProvider {
 	}> {
 		const absolutePath = path.resolve(this.cwd, relPath)
 		const expectedState = expectedFileState
+		const generation = this.editGeneration
+		const signal = this.taskRef.deref()?.getTaskCancellationSignal()
+		const assertActiveEdit = () => {
+			this.assertEditingGeneration(generation)
+			signal?.throwIfAborted()
+		}
+		assertActiveEdit()
 
 		// Get diagnostics before editing the file
 		if (!this.isEditing) this.preDiagnostics = vscode.languages.getDiagnostics()
@@ -520,7 +530,11 @@ export class DiffViewProvider {
 		// the target itself, and the exclusive create below closes the remaining
 		// expected-missing race.
 		await createDirectoriesForFile(absolutePath)
+		assertActiveEdit()
 		await this.assertExpectedFileState(absolutePath, relPath, expectedState)
+		// Background saves have no preview to invalidate, but still belong to
+		// the task and edit generation that began this operation.
+		assertActiveEdit()
 		validateBeforeWrite?.()
 
 		try {
@@ -560,7 +574,7 @@ export class DiffViewProvider {
 						`The file '${relPath}' was written, but its open editor has unsaved changes.`,
 					)
 				}
-			} else {
+			} else if (diagnosticsEnabled) {
 				const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(absolutePath))
 				if (doc.isDirty) {
 					postWriteWarnings.push(

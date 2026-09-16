@@ -401,7 +401,7 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 				await task.diffViewProvider.saveDirectly(
 					relPath,
 					newContent,
-					isNewFile,
+					false,
 					diagnosticsEnabled,
 					writeDelayMs,
 					expectedFileState,

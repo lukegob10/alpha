@@ -107,6 +107,8 @@ export async function captureEnvironmentDetails(
 		signal,
 	)
 	if (verification) add("Workspace Verification", verification)
+	const commandOutcomes = cline.getBackgroundCommandContext?.()
+	if (commandOutcomes) add("Background Command Outcomes", commandOutcomes)
 	const pacing = cline.getRequestPacingMetrics?.()
 	if (pacing && pacing.configuredIntervalSeconds > 0) {
 		add(

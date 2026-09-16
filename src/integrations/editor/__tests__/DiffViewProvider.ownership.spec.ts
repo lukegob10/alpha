@@ -342,6 +342,7 @@ function createProvider(options: {
 
 	const task = {
 		cwd: mockCwd,
+		getTaskCancellationSignal: vi.fn(() => new AbortController().signal),
 		taskKind: "primary",
 		consecutiveMistakeCount: 0,
 		didEditFile: false,

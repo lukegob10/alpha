@@ -452,7 +452,7 @@ export class ClineProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "september-2026-v2.1.43-evidence-safe-file-tools" // v2.1.43 evidence-safe file tools
+	public readonly latestAnnouncementId = "september-2026-v2.1.44-background-editing-ux" // v2.1.44 background editing UX
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

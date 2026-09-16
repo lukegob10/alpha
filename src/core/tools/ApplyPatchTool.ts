@@ -350,7 +350,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 		// Save the changes
 		if (isPreventFocusDisruptionEnabled) {
-			await task.diffViewProvider.saveDirectly(relPath, newContent, true, diagnosticsEnabled, writeDelayMs, {
+			await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs, {
 				exists: false,
 			})
 		} else {

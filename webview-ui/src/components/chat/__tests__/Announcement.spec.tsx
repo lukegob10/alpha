@@ -12,7 +12,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "2.1.43",
+		version: "2.1.44",
 	},
 }))
 
@@ -32,10 +32,10 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		render(<Announcement hideAnnouncement={vi.fn()} />)
 
-		expect(screen.getByText("Welcome to Alpha v2.1.43")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v2.1.44")).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Alpha v2.1.43 makes file evidence safer and more precise while preserving the proven Code loop.",
+				"Alpha v2.1.44 makes background editing safer and calmer while preserving the proven Code loop.",
 			),
 		).toBeInTheDocument()
 	})
@@ -45,18 +45,16 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText(
-				"Large reads return complete visible lines with an honest continuation when more evidence is needed.",
-			),
+			screen.getByText("Background edits keep your focus, open tabs, cursor, and unsaved typing in place."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Batch reads and searches honor each file's requested scope and output mode."),
+			screen.getByText("Cancelled or abandoned saves stop before a late write can change the workspace."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"File edits preserve the user's bytes, including line endings and literal replacement text.",
-			),
+			screen.getByText("Directory reads explain how to continue with the list-files tool."),
 		).toBeInTheDocument()
-		expect(screen.getByText("Plan and Code remain the ordinary user-facing mode choices.")).toBeInTheDocument()
+		expect(
+			screen.getByText("Background command results now report their actual exit status to the next model step."),
+		).toBeInTheDocument()
 	})
 })

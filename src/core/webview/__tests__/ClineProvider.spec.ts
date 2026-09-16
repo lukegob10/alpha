@@ -583,8 +583,8 @@ describe("ClineProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the v2.1.43 announcement once per installation", async () => {
-		const announcementId = "september-2026-v2.1.43-evidence-safe-file-tools"
+	test("shows the v2.1.44 announcement once per installation", async () => {
+		const announcementId = "september-2026-v2.1.44-background-editing-ux"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 

@@ -397,20 +397,77 @@ describe("ReadFileTool", () => {
 	})
 
 	describe("directory handling", () => {
-		it("should return error when trying to read a directory", async () => {
+		it.each([{ path: "docs" }, { files: [{ path: "docs" }] }])(
+			"should return directory guidance to the model without an extension error for %j",
+			async (params) => {
+				const mockTask = createMockTask()
+				const callbacks = createMockCallbacks()
+
+				mockedFsStat.mockResolvedValue({ isDirectory: () => true } as any)
+
+				await readFileTool.execute(params, mockTask as any, callbacks)
+
+				expect(mockTask.say).not.toHaveBeenCalledWith("error", expect.anything())
+				expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+					"File: docs\nError: Cannot read 'docs' because it is a directory. Use list_files tool instead.",
+				)
+				expect(callbacks.setResultMetadata).toHaveBeenLastCalledWith({ status: "error" })
+				expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+				expect(mockedIsBinaryFile).not.toHaveBeenCalled()
+				expect(mockedFsReadFile).not.toHaveBeenCalled()
+				expect(mockTask.fileContextTracker.trackFileContext).not.toHaveBeenCalled()
+			},
+		)
+
+		it.each(["binary detection", "file read"])(
+			"should recover when a file becomes a directory during %s",
+			async (phase) => {
+				const mockTask = createMockTask()
+				const callbacks = createMockCallbacks()
+				const error = Object.assign(
+					new Error("EISDIR: illegal operation on a directory, read 'C:\\private\\workspace\\docs'"),
+					{ code: "EISDIR" },
+				)
+				if (phase === "binary detection") mockedIsBinaryFile.mockRejectedValueOnce(error)
+				else mockedFsReadFile.mockRejectedValueOnce(error)
+
+				await readFileTool.execute({ path: "docs" }, mockTask as any, callbacks)
+
+				expect(mockTask.say).not.toHaveBeenCalledWith("error", expect.anything())
+				expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
+				expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("it is a directory"))
+				expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("list_files"))
+				expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.not.stringContaining("C:\\private"))
+				expect(callbacks.setResultMetadata).toHaveBeenLastCalledWith({ status: "error" })
+				expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+				expect(mockTask.fileContextTracker.trackFileContext).not.toHaveBeenCalled()
+			},
+		)
+
+		it("should preserve successful file reads alongside a directory error in a batch", async () => {
 			const mockTask = createMockTask()
 			const callbacks = createMockCallbacks()
+			mockedFsStat.mockResolvedValueOnce({ isDirectory: () => true } as any)
 
-			mockedFsStat.mockResolvedValue({ isDirectory: () => true } as any)
-
-			await readFileTool.execute({ path: "src/utils" }, mockTask as any, callbacks)
-
-			expect(mockTask.say).toHaveBeenCalledWith(
-				"error",
-				expect.stringContaining("Cannot read 'src/utils' because it is a directory"),
+			await readFileTool.execute(
+				{ files: [{ path: "docs" }, { path: "docs/guide.md" }] },
+				mockTask as any,
+				callbacks,
 			)
-			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("it is a directory"))
+
+			expect(mockTask.say).not.toHaveBeenCalledWith("error", expect.anything())
+			expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+				"File: docs\nError: Cannot read 'docs' because it is a directory. Use list_files tool instead.\n\n---\n\nFile: docs/guide.md\n1 | test content",
+			)
+			const metadata = Object.assign({}, ...callbacks.setResultMetadata.mock.calls.map(([value]) => value))
+			expect(metadata.status).toBe("error")
+			expect(metadata.trustedProgress).toHaveLength(1)
 			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(mockedFsReadFile).toHaveBeenCalledOnce()
+			expect(mockTask.fileContextTracker.trackFileContext).toHaveBeenCalledExactlyOnceWith(
+				"docs/guide.md",
+				"read_tool",
+			)
 		})
 	})
 

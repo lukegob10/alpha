@@ -712,6 +712,28 @@ describe("editFileTool", () => {
 		expect(mockTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
 	})
 
+	it("keeps newly created files out of editor tabs during background editing", async () => {
+		mockTask.providerRef.deref.mockReturnValue({
+			getState: vi.fn().mockResolvedValue({
+				diagnosticsEnabled: false,
+				writeDelayMs: 0,
+				experiments: { preventFocusDisruption: true },
+			}),
+		})
+
+		await executeEditFileTool({ old_string: "", new_string: "new content" }, { fileExists: false })
+
+		expect(mockTask.diffViewProvider.open).not.toHaveBeenCalled()
+		expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledExactlyOnceWith(
+			testFilePath,
+			"new content",
+			false,
+			false,
+			0,
+			{ exists: false },
+		)
+	})
+
 	describe("CRLF normalization", () => {
 		it("preserves CRLF line endings on output", async () => {
 			const contentWithCRLF = "Line 1\r\nLine 2\r\nLine 3"

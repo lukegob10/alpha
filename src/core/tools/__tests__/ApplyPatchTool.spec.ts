@@ -61,6 +61,7 @@ function createTask(
 ) {
 	return {
 		cwd: "/workspace",
+		getTaskCancellationSignal: vi.fn(() => new AbortController().signal),
 		taskKind: "subagent",
 		subagentRole: "worker",
 		consecutiveMistakeCount: 0,
@@ -120,6 +121,32 @@ function createCallbacks(): any {
 }
 
 describe("ApplyPatchTool", () => {
+	it("keeps newly created files out of editor tabs during background editing", async () => {
+		mockedFileExists.mockResolvedValue(false)
+		mockedFs.readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }))
+		const task = createTask(() => true, { diagnosticsEnabled: false, writeDelayMs: 0 })
+		task.diffViewProvider = new DiffViewProvider(task.cwd, task)
+		const openPreview = vi.spyOn(task.diffViewProvider, "open")
+		const callbacks = createCallbacks()
+
+		await new ApplyPatchTool().execute(
+			{ patch: "*** Begin Patch\n*** Add File: new.txt\n+new content\n*** End Patch" },
+			task,
+			callbacks,
+		)
+
+		expect(callbacks.askApproval).toHaveBeenCalledOnce()
+		expect(mockedFs.writeFile).toHaveBeenCalledWith(path.resolve(task.cwd, "new.txt"), "new content\n", {
+			encoding: "utf-8",
+			flag: "wx",
+		})
+		expect(vscode.window.showTextDocument).not.toHaveBeenCalled()
+		expect(openPreview).not.toHaveBeenCalled()
+		expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).files).toMatchObject([
+			{ path: "new.txt", status: "applied" },
+		])
+	})
+
 	it("reports committed bytes even if post-write tracking fails", async () => {
 		mockedFileExists.mockResolvedValue(false)
 		const task = createTask()
@@ -218,7 +245,7 @@ describe("ApplyPatchTool", () => {
 			expect(task.diffViewProvider.saveDirectly).toHaveBeenCalledExactlyOnceWith(
 				"first.txt",
 				"first\n",
-				true,
+				false,
 				true,
 				0,
 				{ exists: false },

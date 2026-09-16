@@ -1158,6 +1158,9 @@ export async function executeCommandInTerminal(
 	}
 
 	const displayOutput = result || latestCompressedOutput || ""
+	if (toolCallId && (message || (!completed && !exitDetails))) {
+		task.markCommandExecutionBackgrounded?.(toolCallId, physicalExecutionId)
+	}
 	if (!completed && !exitDetails) {
 		backgroundResultReturned = true
 		void handleBackgroundOutputBookkeepingFailure()

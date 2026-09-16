@@ -89,6 +89,13 @@ function describeFileReadFailure(error: unknown): FileReadFailure {
 			: undefined
 	const pathIsUnavailable = code === "ENOENT" || code === "ENOTDIR" || /\b(?:ENOENT|ENOTDIR)\b/i.test(rawMessage)
 
+	if (code === "EISDIR" || /\bEISDIR\b/i.test(rawMessage)) {
+		return {
+			message: "Cannot read the requested path because it is a directory. Use list_files tool instead.",
+			shouldShowDiagnostic: false,
+		}
+	}
+
 	if (pathIsUnavailable) {
 		return {
 			message:
@@ -252,7 +259,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 							nativeContent: `File: ${relPath}\nError: ${errorMsg}`,
 						})
 						callbacks.setResultMetadata?.({ status: "error" })
-						await task.say("error", `Error reading file ${relPath}: ${errorMsg}`)
+						// A model path mistake is recoverable through the tool result, like a missing file.
 						continue
 					}
 

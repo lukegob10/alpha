@@ -148,6 +148,7 @@ describe("DiffViewProvider", () => {
 
 		// Create a mock Task instance
 		mockTask = {
+			getTaskCancellationSignal: vi.fn(() => new AbortController().signal),
 			providerRef: {
 				deref: vi.fn().mockReturnValue({
 					getState: vi.fn().mockResolvedValue({
@@ -436,6 +437,81 @@ describe("DiffViewProvider", () => {
 			const fs = await import("fs/promises")
 			vi.mocked(fs.readFile).mockResolvedValue("file content" as any)
 			vi.mocked(fs.writeFile).mockResolvedValue(undefined)
+		})
+
+		it.each(["abort", "abandoned"])("rejects a direct save after task %s", async (reason) => {
+			mockTask[reason] = true
+
+			await expect(
+				diffViewProvider.saveDirectly("test.ts", "replacement", false, false, 0, {
+					exists: true,
+					content: "file content",
+				}),
+			).rejects.toThrow(/cancelled/i)
+			expect(fs.writeFile).not.toHaveBeenCalled()
+		})
+
+		it.each(["reset", "abort"])(
+			"rejects a direct save when %s occurs during baseline validation",
+			async (reason) => {
+				vi.mocked(fs.readFile).mockImplementationOnce(async () => {
+					if (reason === "reset") await diffViewProvider.reset()
+					else mockTask.abort = true
+					return "file content"
+				})
+
+				await expect(
+					diffViewProvider.saveDirectly("test.ts", "replacement", false, false, 0, {
+						exists: true,
+						content: "file content",
+					}),
+				).rejects.toThrow(/cancelled/i)
+				expect(fs.writeFile).not.toHaveBeenCalled()
+				expect(vscode.window.showTextDocument).not.toHaveBeenCalled()
+			},
+		)
+
+		it("keeps the document closed when background diagnostics are disabled", async () => {
+			await diffViewProvider.saveDirectly("test.ts", "new content", false, false, 0, {
+				exists: true,
+				content: "file content",
+			})
+
+			expect(fs.writeFile).toHaveBeenCalledOnce()
+			expect(vscode.window.showTextDocument).not.toHaveBeenCalled()
+			expect(vscode.workspace.openTextDocument).not.toHaveBeenCalled()
+		})
+
+		it("retains the cancellation signal captured before a background save begins", async () => {
+			const controller = new AbortController()
+			mockTask.getTaskCancellationSignal.mockReturnValue(controller.signal)
+			vi.mocked(fs.readFile).mockImplementationOnce(async () => {
+				controller.abort()
+				// A later model step must not revive the interrupted save.
+				mockTask.getTaskCancellationSignal.mockReturnValue(new AbortController().signal)
+				return "file content"
+			})
+
+			await expect(
+				diffViewProvider.saveDirectly("test.ts", "replacement", false, false, 0, {
+					exists: true,
+					content: "file content",
+				}),
+			).rejects.toMatchObject({ name: "AbortError" })
+			expect(fs.writeFile).not.toHaveBeenCalled()
+		})
+
+		it("reports committed bytes when the background document refresh fails", async () => {
+			vi.mocked(vscode.workspace.openTextDocument).mockRejectedValueOnce(new Error("refresh failed"))
+			const result = await diffViewProvider.saveDirectly("test.ts", "new content", false, true, 0, {
+				exists: true,
+				content: "file content",
+			})
+
+			expect(fs.writeFile).toHaveBeenCalledOnce()
+			expect(result.finalContent).toBe("new content")
+			expect(result.newProblemsMessage).toContain("written, but the editor could not be refreshed")
+			expect(vscode.window.showTextDocument).not.toHaveBeenCalled()
 		})
 
 		it("should write content directly to file without opening diff view", async () => {

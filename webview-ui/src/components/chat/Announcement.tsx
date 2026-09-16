@@ -35,20 +35,14 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 				</DialogHeader>
 				<div className="space-y-2 text-sm">
 					<p>
-						Alpha v{Package.version} makes file evidence safer and more precise while preserving the proven
+						Alpha v{Package.version} makes background editing safer and calmer while preserving the proven
 						Code loop.
 					</p>
 					<ul className="list-disc space-y-1 pl-5">
-						<li>
-							Large reads return complete visible lines with an honest continuation when more evidence is
-							needed.
-						</li>
-						<li>Batch reads and searches honor each file&apos;s requested scope and output mode.</li>
-						<li>
-							File edits preserve the user&apos;s bytes, including line endings and literal replacement
-							text.
-						</li>
-						<li>Plan and Code remain the ordinary user-facing mode choices.</li>
+						<li>Background edits keep your focus, open tabs, cursor, and unsaved typing in place.</li>
+						<li>Cancelled or abandoned saves stop before a late write can change the workspace.</li>
+						<li>Directory reads explain how to continue with the list-files tool.</li>
+						<li>Background command results now report their actual exit status to the next model step.</li>
 					</ul>
 				</div>
 			</DialogContent>

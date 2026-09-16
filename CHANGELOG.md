@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.1.44
+
+### Patch Changes
+
+- Keep background file edits out of the user's focus, tabs, and unsaved buffers while preserving diagnostics and conflict checks.
+- Cancel direct saves when the task is aborted, abandoned, or superseded, so a late write cannot revive an interrupted edit.
+- Return actionable directory guidance from batched file reads without turning a recoverable path mistake into a task-level error.
+- Project bounded background command outcomes into the next model step, including successful, failed, cancelled, timed-out, and unknown exits.
+- Add exact-host and live Copilot coverage for background editing and command outcome delivery.
+
 ## 2.1.43
 
 ### Patch Changes

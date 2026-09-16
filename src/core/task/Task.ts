@@ -153,6 +153,7 @@ import { formatToolFailureGuidance, normalizeToolFailure, type ToolFailureMetada
 import type { ParentCommandVerificationEvidence } from "../agent/AgentControlStore"
 import { AgentControlTransactionError } from "../agent/AgentControlTransaction"
 import type { CommandVerificationDiagnostic } from "../agent/VerificationScope"
+import { formatBackgroundCommandContext } from "../agent/CommandOutcomeContext"
 import { CompletionRecovery } from "../agent/CompletionRecovery"
 import { redactTaskPrivatePaths } from "../tools/taskPathPresentation"
 import { restoreTodoListForTask } from "../tools/UpdateTodoListTool"
@@ -259,6 +260,8 @@ export interface CommandExecutionEvidence {
 	signalName?: string
 	startedAt: number
 	completedAt?: number
+	/** This invocation returned before delivering its final process outcome to the model. */
+	returnedInBackground?: boolean
 	/** Task-memory only. Durable verification stores the covered applied paths, never command text. */
 	command?: string
 	/** Explicit applied change sets this command was requested to verify. */
@@ -5167,6 +5170,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			startedAt: evidence.startedAt,
 			completedAt: evidence.completedAt,
 			status: this.abort ? "cancelled" : evidence.status,
+			...(previous?.executionId === evidence.executionId && previous.returnedInBackground
+				? { returnedInBackground: true }
+				: {}),
 			exitCode: evidence.exitCode,
 			signalName: evidence.signalName,
 		})
@@ -5227,6 +5233,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public getCommandExecutionEvidence(): CommandExecutionEvidence[] {
 		return structuredClone([...this.commandExecutionEvidence.values()])
+	}
+
+	public markCommandExecutionBackgrounded(toolCallId: string, executionId: string): void {
+		const evidence = this.commandExecutionEvidence.get(toolCallId)
+		if (evidence?.executionId === executionId) evidence.returnedInBackground = true
+	}
+
+	public getBackgroundCommandContext(): string | undefined {
+		return formatBackgroundCommandContext(this.commandExecutionEvidence.values())
 	}
 
 	public hasActiveCommandExecutions(): boolean {
