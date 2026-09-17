@@ -34,9 +34,9 @@ Cancellation skips a batch before its replacement transaction starts and waits f
 
 Search explicitly requests query embeddings. Cohere uses search-query input, Nova uses text-retrieval purpose, and known Nomic code-search prefixes apply only to queries. Native Gemini and direct Vertex use the documented 001 task types or Gemini 2 instructed inputs. Vertex gateways preserve their earlier raw-content prediction payload for both documents and queries, including opaque routed model aliases. Providers without a distinct query/document contract keep their normal inputs.
 
-Native Gemini 2 inputs have explicit Content boundaries so separate chunks receive separate embeddings. Vertex submits one input per request, with at most eight active requests shared across batches and queries on an embedder instance. Each caller queues at most eight tasks; free slots refill immediately and output retains input order. Failed calls stop scheduling new texts and drain accepted requests before rejecting. The configured embedding delay applies to each Vertex request start, including retries; eight slots do not override an enabled rate limit.
+Native Gemini 2 inputs have explicit Content boundaries so separate chunks receive separate embeddings. Vertex submits one input per request, with at most 16 active requests for a configured `gemini-embedding-2` model and eight for other models, shared across batches and queries on an embedder instance. Each caller queues at most that many tasks; free slots refill immediately and output retains input order. Failed calls stop scheduling new texts and drain accepted requests before rejecting. The configured embedding delay applies to each Vertex request start, including retries; concurrency does not override an enabled rate limit.
 
-Vertex prefers indexing groups of eight blocks while preserving whole-file groups, including files larger than that target. Embedding can start while later files are still parsing. This scheduling policy changes neither the embedding input nor vector dimensions and requires no index rebuild.
+Vertex prefers indexing groups matching its request concurrency while preserving whole-file groups, including files larger than that target. Embedding can start while later files are still parsing. This scheduling policy changes neither the embedding input nor vector dimensions and requires no index rebuild.
 
 ### Vertex scheduling check
 
@@ -44,7 +44,19 @@ Vertex prefers indexing groups of eight blocks while preserving whole-file group
 pnpm --dir src exec vitest run services/code-index/processors/__tests__/vertex-indexing.benchmark.spec.ts --no-silent
 ```
 
-The benchmark uses the real scanner and Vertex adapter with mocked parsing, SDK responses, and vector writes. Its cold-index fixture has 85 files and 1,700 blocks, controlled request delays, and fake timers. It asserts eight peak requests, first stored results below three simulated seconds, and total time below 26 simulated seconds. Rate-limit delay and retries are disabled; there are no live network calls. These thresholds check scheduling behavior, not live GCP throughput: quotas, gateway latency, configured spacing, parsing, and storage can dominate a real run.
+The benchmark uses the real scanner and Vertex adapter with mocked parsing, SDK responses, and vector writes. Its cold-index fixture has 85 files and 1,700 blocks: parsing takes 20 ms per file, every seventeenth request takes 400 ms and the rest take 100 ms, and writes take 2 ms. Fake timers measure scheduling independently of machine speed. Both model paths assert their shared request cap and that embedding and writes overlap parsing. Gemini 001 retains thresholds of three seconds to first stored results and 26 seconds total; Gemini 2 uses 1.8 and 14 seconds respectively.
+
+The Gemini 2 concurrency change was measured on 2026-09-17 with Node 20.19.2 and pnpm 10.8.1 using the same fixture before and after the production edit:
+
+| Gemini 2 metric           | Before (8 requests) | After (16 requests) |
+| ------------------------- | ------------------: | ------------------: |
+| Requests / indexed blocks |       1,700 / 1,700 |       1,700 / 1,700 |
+| First stored results      |            2,522 ms |            1,222 ms |
+| Total simulated time      |           25,022 ms |           12,622 ms |
+
+The deterministic workload shows 49.6% less simulated elapsed time. Rate-limit delay and retries are disabled in this benchmark; there are no live network calls. Separate adapter tests cover shared bounds across batches and queries, out-of-order completion, failure draining, and request spacing across authentication and 429 retries. These checks do not establish live GCP throughput: quotas, gateway latency, configured spacing, parsing, and storage can dominate a real run. Higher concurrency may encounter more throttling on constrained projects or gateways; the existing per-request delay and retry backoff still apply.
+
+[Google's Gemini 2 request examples](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/embeddings/get-multimodal-embeddings) and [quotas](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/quotas), retrieved 2026-09-17, confirm the `embedContent` request shape and model quota accounting. Multiple parts in one content represent one embedding input; this change overlaps independent requests rather than concatenating source chunks. The installed Google GenAI SDK remains 1.47.0. The selected concurrency is an Alpha scheduling bound, not a claim about any user's available quota.
 
 ### Hybrid retrieval
 

@@ -62,38 +62,41 @@ describe("VertexGeminiEmbedder", () => {
 
 	afterEach(() => vitest.useRealTimers())
 
-	it.each(["gemini-embedding-001", "gemini-embedding-2"])("spaces %s requests across batches, queries, and retries", async (model) => {
-		vitest.useFakeTimers()
-		vitest.setSystemTime(new Date("2026-09-12T12:00:00Z"))
-		const startedAt: number[] = []
-		const embedder = new VertexGeminiEmbedder(
-			{
-				apiProvider: "vertex",
-				projectId: "project",
-				location: "global",
-				gatewayBaseUrl: "https://gateway.example.com/vertex",
-				pemCaBundlePath: "test.pem",
-				helixCommand: "test-token-command",
-			},
-			model,
-			1,
-		)
-		mockEmbedContent.mockImplementation(async () => {
-			startedAt.push(Date.now())
-			if (startedAt.length === 1) throw Object.assign(new Error("Unauthorized"), { status: 401 })
-			if (startedAt.length === 2) throw Object.assign(new Error("Rate limited"), { status: 429 })
-			return { embeddings: [{ values: [1, 0] }] }
-		})
-		const responses = Promise.all([
-			embedder.createEmbeddings(["first", "second"]),
-			embedder.createEmbeddings(["query"], undefined, "query"),
-		])
-		await vitest.runAllTimersAsync()
-		await responses
-		// The 429 at one second retains the provider's five-second fallback backoff.
-		expect(startedAt.map((time) => time - startedAt[0])).toEqual([0, 1000, 2000, 3000, 6000])
-		expect(mockForceRefreshToken).toHaveBeenCalledOnce()
-	})
+	it.each(["gemini-embedding-001", "gemini-embedding-2"])(
+		"spaces %s requests across batches, queries, and retries",
+		async (model) => {
+			vitest.useFakeTimers()
+			vitest.setSystemTime(new Date("2026-09-12T12:00:00Z"))
+			const startedAt: number[] = []
+			const embedder = new VertexGeminiEmbedder(
+				{
+					apiProvider: "vertex",
+					projectId: "project",
+					location: "global",
+					gatewayBaseUrl: "https://gateway.example.com/vertex",
+					pemCaBundlePath: "test.pem",
+					helixCommand: "test-token-command",
+				},
+				model,
+				1,
+			)
+			mockEmbedContent.mockImplementation(async () => {
+				startedAt.push(Date.now())
+				if (startedAt.length === 1) throw Object.assign(new Error("Unauthorized"), { status: 401 })
+				if (startedAt.length === 2) throw Object.assign(new Error("Rate limited"), { status: 429 })
+				return { embeddings: [{ values: [1, 0] }] }
+			})
+			const responses = Promise.all([
+				embedder.createEmbeddings(["first", "second"]),
+				embedder.createEmbeddings(["query"], undefined, "query"),
+			])
+			await vitest.runAllTimersAsync()
+			await responses
+			// The 429 at one second retains the provider's five-second fallback backoff.
+			expect(startedAt.map((time) => time - startedAt[0])).toEqual([0, 1000, 2000, 3000, 6000])
+			expect(mockForceRefreshToken).toHaveBeenCalledOnce()
+		},
+	)
 
 	it("initializes GoogleGenAI with canonical Vertex gateway options and fake auth", () => {
 		new VertexGeminiEmbedder(
@@ -348,93 +351,114 @@ describe("VertexGeminiEmbedder", () => {
 	it.each([
 		{ model: "gemini-embedding-001", concurrency: 8 },
 		{ model: "gemini-embedding-2", concurrency: 16 },
-	])("refills $model request slots before slower requests finish and preserves result order", async ({ model, concurrency }) => {
-		const embedder = new VertexGeminiEmbedder({
-			apiProvider: "vertex",
-			vertexProjectId: "project",
-			vertexRegion: "global",
-		}, model)
-		let firstStarted!: () => void
-		let secondStarted!: () => void
-		let slotRefilled!: () => void
-		const first = new Promise<void>((resolve) => {
-			firstStarted = resolve
-		})
-		const second = new Promise<void>((resolve) => {
-			secondStarted = resolve
-		})
-		const refilled = new Promise<void>((resolve) => {
-			slotRefilled = resolve
-		})
-		const pending: Array<() => void> = []
-		mockEmbedContent.mockImplementation(
-			({ contents }) =>
-				new Promise((resolve) => {
-					expect(contents).toHaveLength(1)
-					const text = typeof contents[0] === "string" ? contents[0] : contents[0].parts[0].text
-					const index = Number(text.match(/\d+$/)?.[0])
-					pending.push(() => resolve({ embeddings: [{ values: [index, 1] }] }))
-					if (pending.length === concurrency) firstStarted()
-					if (pending.length === concurrency + 1) slotRefilled()
-					if (pending.length === concurrency * 2) secondStarted()
-				}),
-		)
-		const response = embedder.createEmbeddings(Array.from({ length: concurrency * 2 }, (_, index) => String(index)))
-		await first
-		expect(mockEmbedContent).toHaveBeenCalledTimes(concurrency)
-		pending[concurrency - 1]()
-		await refilled
-		expect(mockEmbedContent).toHaveBeenCalledTimes(concurrency + 1)
-		pending
-			.slice(0, concurrency - 1)
-			.reverse()
-			.forEach((resolve) => resolve())
-		await second
-		pending
-			.slice(concurrency)
-			.reverse()
-			.forEach((resolve) => resolve())
-		expect((await response).embeddings).toEqual(Array.from({ length: concurrency * 2 }, (_, index) => [index, 1]))
-	})
+	])(
+		"refills $model request slots before slower requests finish and preserves result order",
+		async ({ model, concurrency }) => {
+			const embedder = new VertexGeminiEmbedder(
+				{
+					apiProvider: "vertex",
+					vertexProjectId: "project",
+					vertexRegion: "global",
+				},
+				model,
+			)
+			let firstStarted!: () => void
+			let secondStarted!: () => void
+			let slotRefilled!: () => void
+			const first = new Promise<void>((resolve) => {
+				firstStarted = resolve
+			})
+			const second = new Promise<void>((resolve) => {
+				secondStarted = resolve
+			})
+			const refilled = new Promise<void>((resolve) => {
+				slotRefilled = resolve
+			})
+			const pending: Array<() => void> = []
+			mockEmbedContent.mockImplementation(
+				({ contents }) =>
+					new Promise((resolve) => {
+						expect(contents).toHaveLength(1)
+						const text = typeof contents[0] === "string" ? contents[0] : contents[0].parts[0].text
+						const index = Number(text.match(/\d+$/)?.[0])
+						pending.push(() => resolve({ embeddings: [{ values: [index, 1] }] }))
+						if (pending.length === concurrency) firstStarted()
+						if (pending.length === concurrency + 1) slotRefilled()
+						if (pending.length === concurrency * 2) secondStarted()
+					}),
+			)
+			const response = embedder.createEmbeddings(
+				Array.from({ length: concurrency * 2 }, (_, index) => String(index)),
+			)
+			await first
+			expect(mockEmbedContent).toHaveBeenCalledTimes(concurrency)
+			pending[concurrency - 1]()
+			await refilled
+			expect(mockEmbedContent).toHaveBeenCalledTimes(concurrency + 1)
+			pending
+				.slice(0, concurrency - 1)
+				.reverse()
+				.forEach((resolve) => resolve())
+			await second
+			pending
+				.slice(concurrency)
+				.reverse()
+				.forEach((resolve) => resolve())
+			expect((await response).embeddings).toEqual(
+				Array.from({ length: concurrency * 2 }, (_, index) => [index, 1]),
+			)
+		},
+	)
 
 	it.each([
 		{ model: "gemini-embedding-001", concurrency: 8 },
 		{ model: "gemini-embedding-2", concurrency: 16 },
-	])("drains accepted $model requests and stops scheduling more work after a failure", async ({ model, concurrency }) => {
-		vitest.useFakeTimers()
-		const embedder = new VertexGeminiEmbedder({
-			apiProvider: "vertex",
-			projectId: "project",
-			location: "global",
-		}, model)
-		let completed = 0
-		mockEmbedContent.mockImplementation(async ({ contents }) => {
-			const text = typeof contents[0] === "string" ? contents[0] : contents[0].parts[0].text
-			if (text.match(/\d+$/)?.[0] === "0") throw Object.assign(new Error("Invalid input"), { status: 400 })
-			await new Promise((resolve) => setTimeout(resolve, 100))
-			completed++
-			return { embeddings: [{ values: [1, 0] }] }
-		})
-		let settled = false
-		const response = embedder.createEmbeddings(Array.from({ length: concurrency * 3 }, (_, index) => String(index)))
-		const rejection = expect(response).rejects.toThrow()
-		void response.catch(() => {
-			settled = true
-		})
-		await vitest.advanceTimersByTimeAsync(0)
-		expect(settled).toBe(false)
-		await vitest.runAllTimersAsync()
-		await rejection
-		expect(completed).toBe(concurrency - 1)
-		expect(mockEmbedContent).toHaveBeenCalledTimes(concurrency)
-	})
+	])(
+		"drains accepted $model requests and stops scheduling more work after a failure",
+		async ({ model, concurrency }) => {
+			vitest.useFakeTimers()
+			const embedder = new VertexGeminiEmbedder(
+				{
+					apiProvider: "vertex",
+					projectId: "project",
+					location: "global",
+				},
+				model,
+			)
+			let completed = 0
+			mockEmbedContent.mockImplementation(async ({ contents }) => {
+				const text = typeof contents[0] === "string" ? contents[0] : contents[0].parts[0].text
+				if (text.match(/\d+$/)?.[0] === "0") throw Object.assign(new Error("Invalid input"), { status: 400 })
+				await new Promise((resolve) => setTimeout(resolve, 100))
+				completed++
+				return { embeddings: [{ values: [1, 0] }] }
+			})
+			let settled = false
+			const response = embedder.createEmbeddings(
+				Array.from({ length: concurrency * 3 }, (_, index) => String(index)),
+			)
+			const rejection = expect(response).rejects.toThrow()
+			void response.catch(() => {
+				settled = true
+			})
+			await vitest.advanceTimersByTimeAsync(0)
+			expect(settled).toBe(false)
+			await vitest.runAllTimersAsync()
+			await rejection
+			expect(completed).toBe(concurrency - 1)
+			expect(mockEmbedContent).toHaveBeenCalledTimes(concurrency)
+		},
+	)
 
 	it.each([
 		{ model: "gemini-embedding-001", concurrency: 8 },
 		{ model: "gemini-embedding-2", concurrency: 16 },
 	])("shares the $model request bound across indexing batches and queries", async ({ model, concurrency }) => {
 		vitest.useFakeTimers()
-		const embedder = new VertexGeminiEmbedder({ apiProvider: "vertex", projectId: "project", location: "global" }, model)
+		const embedder = new VertexGeminiEmbedder(
+			{ apiProvider: "vertex", projectId: "project", location: "global" },
+			model,
+		)
 		let active = 0
 		let maxActive = 0
 		mockEmbedContent.mockImplementation(async () => {
