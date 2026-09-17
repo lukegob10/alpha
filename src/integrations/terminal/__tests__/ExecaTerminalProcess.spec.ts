@@ -36,6 +36,7 @@ describe("ExecaTerminalProcess", () => {
 	let originalEnv: NodeJS.ProcessEnv
 
 	beforeEach(() => {
+		vitest.useFakeTimers()
 		originalEnv = { ...process.env }
 		execFileMock.mockReset()
 		execFileMock.mockImplementation((_file, _args, _options, callback) => {
@@ -63,7 +64,11 @@ describe("ExecaTerminalProcess", () => {
 		terminalProcess = new ExecaTerminalProcess(mockTerminal)
 	})
 
-	afterEach(() => {
+	afterEach(async () => {
+		// POSIX runs schedule optional PID refinement after the output stream ends.
+		// Settle those callbacks before the next test replaces the ps-tree mock.
+		await vitest.runOnlyPendingTimersAsync()
+		vitest.useRealTimers()
 		process.env = originalEnv
 		vitest.clearAllMocks()
 	})
@@ -418,7 +423,6 @@ describe("ExecaTerminalProcess", () => {
 
 		it("bounds POSIX process-tree discovery", async () => {
 			const processKill = vitest.spyOn(process, "kill").mockImplementation(() => true)
-			vitest.useFakeTimers()
 			Object.defineProperty(process, "platform", { value: "linux" })
 			;(terminalProcess as any).subprocess = { pid: 12_345 }
 			;(terminalProcess as any).pid = 12_345
@@ -432,7 +436,6 @@ describe("ExecaTerminalProcess", () => {
 				expect(processKill).toHaveBeenCalledWith(12_345, "SIGKILL")
 			} finally {
 				Object.defineProperty(process, "platform", { value: "win32" })
-				vitest.useRealTimers()
 				processKill.mockRestore()
 			}
 		})
@@ -464,7 +467,6 @@ describe("ExecaTerminalProcess", () => {
 		it("bounds the optional POSIX PID refinement before abort discovery", async () => {
 			const warning = vitest.spyOn(console, "warn").mockImplementation(() => undefined)
 			const processKill = vitest.spyOn(process, "kill").mockImplementation(() => true)
-			vitest.useFakeTimers()
 			Object.defineProperty(process, "platform", { value: "linux" })
 			let releaseStream!: () => void
 			const subprocess = {
@@ -493,7 +495,6 @@ describe("ExecaTerminalProcess", () => {
 				await run
 			} finally {
 				Object.defineProperty(process, "platform", { value: "win32" })
-				vitest.useRealTimers()
 				warning.mockRestore()
 				processKill.mockRestore()
 			}

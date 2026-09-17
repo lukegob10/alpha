@@ -6,6 +6,7 @@
 
 - Preserve acceptance-check evidence when a task rewords a check, reorders the same input files, or uses an equivalent default working directory, preventing false completion rejections in Code and Plan modes.
 - Keep saved receipt compatibility and running check results while continuing to reject failed checks and changed inputs.
+- Preserve recursive file discovery in workspaces beneath directories named `tmp` or `temp`, while retaining nested ignore rules.
 - Update the extension and release-announcement version to 2.1.47.
 
 ## 2.1.46

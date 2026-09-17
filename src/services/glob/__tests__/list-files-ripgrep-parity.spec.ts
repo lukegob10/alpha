@@ -16,13 +16,15 @@ if (!unavailable && (binary.error || binary.status !== 0)) {
 }
 
 describe("real ripgrep listing parity", () => {
-	it.skipIf(unavailable)(
-		"preserves recursive file discovery and nested ignore rules without listing directories",
-		async () => {
+	it.skipIf(unavailable).each(["workspace", "tmp/workspace", "temp/workspace"])(
+		"preserves recursive file discovery and nested ignore rules under %s without listing directories",
+		async (relativeWorkspace) => {
 			vi.mocked(getBinPath).mockResolvedValue("rg")
 			const tempBase = await fs.realpath(os.tmpdir())
-			const workspaceRoot = await fs.mkdtemp(path.join(tempBase, "alpha-rg-discovery-"))
+			const fixtureRoot = await fs.mkdtemp(path.join(tempBase, "alpha-rg-discovery-"))
+			const workspaceRoot = path.join(fixtureRoot, relativeWorkspace)
 			try {
+				await fs.mkdir(workspaceRoot, { recursive: true })
 				for (const directory of [".git", "src", "generated", ".hidden", "node_modules"]) {
 					await fs.mkdir(path.join(workspaceRoot, directory))
 				}
@@ -56,9 +58,9 @@ describe("real ripgrep listing parity", () => {
 					expect(names).not.toContain(ignored)
 				}
 			} finally {
-				expect(path.dirname(path.resolve(workspaceRoot))).toBe(tempBase)
-				expect(path.basename(workspaceRoot)).toMatch(/^alpha-rg-discovery-/)
-				await fs.rm(workspaceRoot, { recursive: true, force: true })
+				expect(path.dirname(path.resolve(fixtureRoot))).toBe(tempBase)
+				expect(path.basename(fixtureRoot)).toMatch(/^alpha-rg-discovery-/)
+				await fs.rm(fixtureRoot, { recursive: true, force: true })
 			}
 		},
 	)

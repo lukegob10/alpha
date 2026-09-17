@@ -290,11 +290,10 @@ async function listFilesWithRipgrep(
 		rgArgs.unshift("--no-config", "--no-ignore")
 	}
 
-	const relativePaths = await execRipgrep(rgPath, rgArgs, limit, signal, options)
+	const absolutePath = path.resolve(dirPath)
+	const relativePaths = await execRipgrep(rgPath, rgArgs, absolutePath, limit, signal, options)
 
 	// Convert relative paths from ripgrep to absolute paths
-	// Resolve dirPath once here for the mapping operation
-	const absolutePath = path.resolve(dirPath)
 	return relativePaths.map((relativePath) => path.resolve(absolutePath, relativePath))
 }
 
@@ -306,9 +305,9 @@ function buildRipgrepArgs(dirPath: string, recursive: boolean, followSymlinks = 
 	const args = ["--files", "--hidden", followSymlinks ? "--follow" : "--no-follow"]
 
 	if (recursive) {
-		return [...args, ...buildRecursiveArgs(dirPath), dirPath]
+		return [...args, ...buildRecursiveArgs(dirPath), "."]
 	} else {
-		return [...args, ...buildNonRecursiveArgs(), dirPath]
+		return [...args, ...buildNonRecursiveArgs(), "."]
 	}
 }
 
@@ -882,13 +881,16 @@ function formatAndCombineResults(files: string[], directories: string[], limit: 
 async function execRipgrep(
 	rgPath: string,
 	args: string[],
+	cwd: string,
 	limit: number,
 	signal?: AbortSignal,
 	options: ListFilesOptions = {},
 ): Promise<string[]> {
 	signal?.throwIfAborted()
 	return new Promise((resolve, reject) => {
-		const rgProcess = childProcess.spawn(rgPath, args)
+		// Scope exclusion globs to this listing; an ancestor named tmp or temp
+		// must not exclude every file in an explicitly requested workspace.
+		const rgProcess = childProcess.spawn(rgPath, args, { cwd })
 		let output = ""
 		const results: string[] = []
 		let stopped = false
