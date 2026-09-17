@@ -32,7 +32,8 @@ vitest.mock("child_process", async (importOriginal) => {
 	}
 })
 
-vitest.mock("@google/genai", () => ({
+vitest.mock("@google/genai", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@google/genai")>()),
 	GoogleGenAI: mockGoogleGenAI,
 	FunctionCallingConfigMode: {
 		ANY: "ANY",

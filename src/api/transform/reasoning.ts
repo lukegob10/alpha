@@ -1,6 +1,6 @@
 import { BetaThinkingConfigParam } from "@anthropic-ai/sdk/resources/beta"
 import OpenAI from "openai"
-import type { GenerateContentConfig } from "@google/genai"
+import { ThinkingLevel, type GenerateContentConfig } from "@google/genai"
 
 import type { ModelInfo, ProviderSettings, ReasoningEffortExtended } from "@alpha-code/types"
 
@@ -30,9 +30,7 @@ export function isGeminiThinkingLevel(value: unknown): value is GeminiThinkingLe
 	return typeof value === "string" && GEMINI_THINKING_LEVELS.includes(value as GeminiThinkingLevel)
 }
 
-export type GeminiReasoningParams = GenerateContentConfig["thinkingConfig"] & {
-	thinkingLevel?: GeminiThinkingLevel
-}
+export type GeminiReasoningParams = GenerateContentConfig["thinkingConfig"]
 
 export type GetModelReasoningOptions = {
 	model: ModelInfo
@@ -165,5 +163,12 @@ export const getGeminiReasoning = ({
 		return undefined
 	}
 
-	return { thinkingLevel: effortToUse, includeThoughts: true }
+	// Settings retain their lowercase values; the SDK exposes the wire enum explicitly.
+	const thinkingLevels: Record<GeminiThinkingLevel, ThinkingLevel> = {
+		minimal: ThinkingLevel.MINIMAL,
+		low: ThinkingLevel.LOW,
+		medium: ThinkingLevel.MEDIUM,
+		high: ThinkingLevel.HIGH,
+	}
+	return { thinkingLevel: thinkingLevels[effortToUse], includeThoughts: true }
 }

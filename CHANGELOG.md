@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.46
+
+### Patch Changes
+
+- Fix Vertex AI Gemini Embedding 2 requests by using the model's `:embedContent` endpoint through Google GenAI SDK 1.47.0 while preserving Gemini 001's existing prediction contract. Preserve routed gateway headers and token refresh behavior, and report the actual number of HTTP attempts for non-retryable embedding failures.
+
 ## 2.1.45
 
 ### Patch Changes

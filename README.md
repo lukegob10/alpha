@@ -6,9 +6,11 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.45 Preview
+## Welcome to Alpha v2.1.46 Preview
 
-Alpha v2.1.45 adds reusable verification evidence, background command controls, and durable task and skill context in the existing extension workflow.
+Alpha v2.1.46 adds reliable Vertex Gemini Embedding 2 indexing alongside reusable verification evidence, background command controls, and durable task and skill context in the existing extension workflow.
+
+- Vertex Gemini Embedding 2 requests use the model's `:embedContent` endpoint while Gemini 001 keeps its existing contract
 
 - Optional acceptance checks reuse passing evidence while their declared inputs remain unchanged
 - Tasks can wait for, send input to, and stop their own background commands under existing approval rules

@@ -89,6 +89,59 @@ describe("Vertex gateway embedding wire compatibility", () => {
 		}
 	})
 
+	it("routes Gemini 2 embedContent through the gateway and refreshes bearer auth", async () => {
+		getToken.mockResolvedValueOnce("expired-token").mockResolvedValue("refreshed-token")
+		forceRefreshToken.mockResolvedValue("refreshed-token")
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ error: { code: 401, message: "Unauthorized" } }), { status: 401 }),
+			)
+			.mockImplementation(
+				async () => new Response(JSON.stringify({ embedding: { values: [1, 0] } }), { status: 200 }),
+			)
+		vi.stubGlobal("fetch", fetch)
+		const embedder = new VertexGeminiEmbedder(
+			{
+				apiProvider: "vertex",
+				projectId: "default-project",
+				location: "us-central1",
+				gatewayBaseUrl: "https://gateway.example.com/vertex",
+				pemCaBundlePath: "test.pem",
+				helixCommand: "test-token-command",
+				modelRoutingMap: {
+					"gemini-embedding-2": {
+						projectId: "routed-project",
+						location: "global",
+						modelOverride: "gemini-embedding-2-preview",
+						extraHeaders: { "x-route": "embedding" },
+					},
+				},
+			},
+			"gemini-embedding-2",
+		)
+
+		await expect(embedder.createEmbeddings(["document"])).resolves.toMatchObject({ embeddings: [[1, 0]] })
+		await expect(embedder.createEmbeddings(["query"], undefined, "query")).resolves.toMatchObject({
+			embeddings: [[1, 0]],
+		})
+		expect(forceRefreshToken).toHaveBeenCalledOnce()
+		expect(configureTransport).toHaveBeenCalledOnce()
+		expect(fetch).toHaveBeenCalledTimes(3)
+		for (const [index, [url, request]] of fetch.mock.calls.entries()) {
+			expect(url).toBe(
+				"https://gateway.example.com/vertex/v1beta1/projects/routed-project/locations/global/publishers/google/models/gemini-embedding-2-preview:embedContent",
+			)
+			const headers = new Headers(request.headers)
+			expect(headers.get("Authorization")).toBe(index === 0 ? "Bearer expired-token" : "Bearer refreshed-token")
+			expect(headers.get("x-route")).toBe("embedding")
+			// Preserve the gateway's existing raw inputs for both document and query embeddings.
+			expect(JSON.parse(request.body)).toEqual({
+				content: { role: "user", parts: [{ text: index < 2 ? "document" : "query" }] },
+			})
+		}
+	})
+
 	it("replays the same prediction with refreshed bearer auth after a gateway 401", async () => {
 		getToken.mockResolvedValueOnce("expired-token").mockResolvedValue("refreshed-token")
 		forceRefreshToken.mockResolvedValue("refreshed-token")
