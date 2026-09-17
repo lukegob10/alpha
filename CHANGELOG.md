@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.47
+
+### Patch Changes
+
+- Preserve acceptance-check evidence when a task rewords a check, reorders the same input files, or uses an equivalent default working directory, preventing false completion rejections in Code and Plan modes.
+- Keep saved receipt compatibility and running check results while continuing to reject failed checks and changed inputs.
+- Update the extension and release-announcement version to 2.1.47.
+
 ## 2.1.46
 
 ### Patch Changes

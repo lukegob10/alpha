@@ -3,7 +3,7 @@ import * as os from "os"
 import * as path from "path"
 
 import type { Anthropic } from "@anthropic-ai/sdk"
-import { AlphaCodeEventName, agentControlStateSchema } from "@alpha-code/types"
+import { AlphaCodeEventName, agentControlStateSchema, type TaskWorkPlan } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { AgentControlStore, FileAgentControlPersistence } from "../../agent/AgentControlStore"
@@ -128,6 +128,7 @@ async function createHarness() {
 		presentCompletionResult,
 		retractCompletionResult,
 		flushPendingToolResultsToHistory: flush,
+		requireAlphaMessagesSaved: vi.fn(async () => undefined),
 		emitFinalTokenUsageUpdate: vi.fn(),
 		beginCanonicalLifecycleTurn: vi.fn(async () => undefined),
 		finishCanonicalLifecycleTurn: vi.fn(async () => undefined),
@@ -536,6 +537,47 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
 		expect(harness.store.getParentCompletionDecision(TASK_ID).allowed).toBe(true)
 	})
+
+	it.each(["text", "explicit"] as const)(
+		"finishes %s once after a passing acceptance check is reworded without rerunning it",
+		async (kind) => {
+			const harness = await setup(kind)
+			await fs.writeFile(path.join(harness.storagePath, "check.js"), "process.exit(0)")
+			const plan: TaskWorkPlan = {
+				objective: "Verify the requested change",
+				constraints: [],
+				notes: [],
+				checks: [
+					{
+						id: "behavior",
+						description: "Run the check",
+						command: "node check.js",
+						cwd: null,
+						paths: ["check.js"],
+						reusable: true,
+					},
+				],
+			}
+			await harness.task.updateWorkPlan(plan)
+			await harness.task.admitCommandExecution("check", "physical-check", "node check.js", harness.storagePath)
+			harness.task.completeCommandExecution("check", { exitCode: 0 }, "physical-check")
+			await harness.task.getWorkContext()
+			await harness.task.updateWorkPlan({
+				...plan,
+				checks: [{ ...plan.checks[0], description: "Confirm the completed behavior", cwd: "." }],
+			})
+
+			await harness.run()
+
+			expect(harness.requests).toHaveLength(1)
+			expect(harness.task.workContext?.receipts[0].status).toBe("passed")
+			expect(harness.task.getCompletionStageMetrics()).toMatchObject({ candidateCount: 1, rejectionCount: 0 })
+			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+			expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(
+				1,
+			)
+		},
+	)
 
 	it.each(COMPLETION_OBLIGATIONS)(
 		"allows %s completion with a real durable advisory %s receipt",

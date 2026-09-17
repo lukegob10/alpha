@@ -2,6 +2,7 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { taskWorkPlanSchema, historyItemSchema, type TaskWorkPlan } from "@alpha-code/types"
+import { digestValue } from "../StepContext"
 import {
 	captureAcceptanceChecks,
 	settleAcceptanceChecks,
@@ -55,6 +56,53 @@ describe("task acceptance evidence", () => {
 		const repaired = await settleAcceptanceChecks({ ...failed, receipts: captured }, root, captured, true, 0)
 		expect(await getOutstandingAcceptanceChecks(repaired, root)).toEqual([])
 		expect(repaired.receipts).toHaveLength(1)
+	})
+	it.each([true, false])(
+		"preserves observed evidence through descriptive plan updates (passed=%s)",
+		async (passed) => {
+			const context = await run(passed)
+			const replacement = structuredClone(plan)
+			replacement.checks[0].description = "Verify the finished program"
+			replacement.checks[0].paths.reverse()
+			replacement.checks[0].cwd = "."
+			const updated = restoreWorkContext(replaceWorkPlan(context, replacement))
+			expect(updated.receipts).toHaveLength(1)
+			expect(updated.receipts[0].status).toBe(passed ? "passed" : "failed")
+			expect(await getOutstandingAcceptanceChecks(updated, root)).toEqual(passed ? [] : ["behavior: failed"])
+		},
+	)
+	it("settles a running check after its description and input order change", async () => {
+		const context = replaceWorkPlan(undefined, plan)
+		const captured = await captureAcceptanceChecks(context, root, "python app.py", root, "running")
+		context.receipts = captured
+		const replacement = structuredClone(plan)
+		replacement.checks[0].description = "Verify the finished program"
+		replacement.checks[0].paths.reverse()
+		const updated = replaceWorkPlan(context, replacement)
+		const settled = await settleAcceptanceChecks(updated, root, captured, true, 0)
+		expect(await getOutstandingAcceptanceChecks(settled, root)).toEqual([])
+		expect(settled.receipts[0]).toMatchObject({ executionId: "running", status: "passed" })
+	})
+	it("preserves legacy receipt evidence when the plan is reworded after reload", async () => {
+		const context = await run()
+		context.receipts[0].definitionDigest = digestValue(plan.checks[0])
+		const restored = restoreWorkContext(context)
+		expect(await getOutstandingAcceptanceChecks(restored, root)).toEqual([])
+		const replacement = structuredClone(plan)
+		replacement.checks[0].description = "A clearer label for the same check"
+		expect(await getOutstandingAcceptanceChecks(replaceWorkPlan(restored, replacement), root)).toEqual([])
+	})
+	it.each(["command", "cwd", "paths", "reusable"] as const)("invalidates evidence when %s changes", async (field) => {
+		const context = await run()
+		const replacement = structuredClone(plan)
+		const check = replacement.checks[0]
+		if (field === "command") check.command = "python other.py"
+		if (field === "cwd") check.cwd = "subdirectory"
+		if (field === "paths") check.paths.push("other.py")
+		if (field === "reusable") check.reusable = false
+		const updated = replaceWorkPlan(context, replacement)
+		expect(updated.receipts).toEqual([])
+		expect(await getOutstandingAcceptanceChecks(updated, root)).toEqual(["behavior: not run"])
 	})
 	it.each(["app.py", "config.json"])("invalidates a later change to %s", async (file) => {
 		const context = await run()

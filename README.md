@@ -6,9 +6,11 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.46 Preview
+## Welcome to Alpha v2.1.47
 
-Alpha v2.1.46 adds reliable Vertex Gemini Embedding 2 indexing alongside reusable verification evidence, background command controls, and durable task and skill context in the existing extension workflow.
+Alpha v2.1.47 fixes false completion rejections by preserving valid acceptance-check evidence through harmless task-plan updates, alongside reliable Vertex Gemini Embedding 2 indexing and the existing background command controls.
+
+- Rewording a check or reordering its unchanged input files preserves passing evidence so finished tasks can complete
 
 - Vertex Gemini Embedding 2 requests use the model's `:embedContent` endpoint while Gemini 001 keeps its existing contract
 

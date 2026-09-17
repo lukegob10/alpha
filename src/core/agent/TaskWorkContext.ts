@@ -1,10 +1,28 @@
 import path from "path"
 import fs from "fs/promises"
-import type { AcceptanceReceipt, TaskWorkContext, TaskWorkPlan } from "@alpha-code/types"
+import type { AcceptanceCheck, AcceptanceReceipt, TaskWorkContext, TaskWorkPlan } from "@alpha-code/types"
 import { digestValue } from "./StepContext"
 import { captureVerificationContent } from "./VerificationScope"
 
 type CanRead = (file: string) => boolean
+
+/** Evidence belongs to an execution contract, not its prose or input-list ordering. */
+function checkDefinitionDigest(check: AcceptanceCheck): string {
+	return digestValue({
+		command: check.command,
+		cwd: check.cwd ?? ".",
+		paths: [...new Set(check.paths)].sort(),
+		reusable: check.reusable,
+	})
+}
+
+function matchesDefinition(receipt: AcceptanceReceipt, check: AcceptanceCheck): boolean {
+	return (
+		receipt.checkId === check.id &&
+		(receipt.definitionDigest === checkDefinitionDigest(check) || receipt.definitionDigest === digestValue(check))
+	)
+}
+
 async function captureInputs(workspace: string, paths: string[], canRead?: CanRead) {
 	if (paths.some((file) => canRead && !canRead(path.resolve(workspace, file))))
 		throw new Error("Check input is ignored")
@@ -15,11 +33,19 @@ export function replaceWorkPlan(context: TaskWorkContext | undefined, plan: Task
 	return {
 		plan: structuredClone(plan),
 		skills: context?.skills ?? [],
-		receipts: (context?.receipts ?? []).filter((receipt) =>
-			plan.checks.some(
-				(check) => check.id === receipt.checkId && digestValue(check) === receipt.definitionDigest,
-			),
-		),
+		receipts: (context?.receipts ?? []).flatMap((receipt) => {
+			const previous = context?.plan?.checks.find((check) => check.id === receipt.checkId)
+			const next = plan.checks.find((check) => check.id === receipt.checkId)
+			// Upgrade legacy full-definition digests only against their original plan.
+			if (
+				!previous ||
+				!next ||
+				!matchesDefinition(receipt, previous) ||
+				checkDefinitionDigest(previous) !== checkDefinitionDigest(next)
+			)
+				return []
+			return [{ ...receipt, definitionDigest: checkDefinitionDigest(next) }]
+		}),
 	}
 }
 
@@ -45,7 +71,7 @@ export async function captureAcceptanceChecks(
 		if (declaredCwd !== canonicalCwd) continue
 		const receipt: AcceptanceReceipt = {
 			checkId: check.id,
-			definitionDigest: digestValue(check),
+			definitionDigest: checkDefinitionDigest(check),
 			executionId,
 			status: "running",
 			observedAt: Date.now(),
@@ -71,7 +97,7 @@ export async function settleAcceptanceChecks(
 	const settled: AcceptanceReceipt[] = []
 	for (const captured of receipts) {
 		const check = context.plan?.checks.find((item) => item.id === captured.checkId)
-		if (!check || digestValue(check) !== captured.definitionDigest) continue
+		if (!check || !matchesDefinition(captured, check)) continue
 		const latest = context.receipts.find((item) => item.checkId === check.id)
 		// A new request or execution supersedes this physical command's evidence.
 		if (latest && (latest.executionId !== captured.executionId || latest.status === "stale")) continue
@@ -102,9 +128,7 @@ export async function getOutstandingAcceptanceChecks(
 ): Promise<string[]> {
 	const outstanding: string[] = []
 	for (const check of context.plan?.checks ?? []) {
-		const receipt = context.receipts.find(
-			(item) => item.checkId === check.id && item.definitionDigest === digestValue(check),
-		)
+		const receipt = context.receipts.find((item) => matchesDefinition(item, check))
 		let reason: string | undefined
 		if (!receipt || receipt.status !== "passed") reason = receipt?.status ?? "not run"
 		else {
